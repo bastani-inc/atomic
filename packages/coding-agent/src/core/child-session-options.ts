@@ -77,5 +77,8 @@ export function inheritChildSessionOptions(
 			parentGate && childGate
 				? (model, effort) => parentGate(model, effort) && childGate(model, effort)
 				: (parentGate ?? childGate),
+		...(parent.parentIntercomPolicy === undefined
+			? {}
+			: { parentIntercomPolicy: parent.parentIntercomPolicy, intercom: undefined }),
 	};
 }

@@ -124,14 +124,26 @@ import {
 } from "./crash-points.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
-import { handleBrokerPresence } from "./presence-handler.js";
+import { handleBrokerPresence, replaceSessionReach } from "./presence-handler.js";
 import { PresenceFanout } from "./presence-fanout.js";
 import {
+	type HoldSender,
 	knownGroupSummaries,
+	reachesGroups,
+	reachesSession,
 	sessionGroups,
 	setSessionGroups,
 } from "./group-membership.js";
 import { replyToList } from "./list-reply.js";
+import {
+	admitsMemberships,
+	canPeek,
+	childReachPolicy,
+	createReachPolicy,
+	type IntercomReachPolicy,
+	isReachable,
+	reachPolicyError,
+} from "../reach-policy.js";
 import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { AwayAsks, awayQueueFullReason } from "./away-asks.js";
 import { TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
@@ -299,6 +311,7 @@ interface SessionRegistrationRequest {
   readonly supervisorOwnerToken?: unknown;
   readonly acknowledgesReceipt?: unknown;
   readonly supervisor?: unknown;
+  readonly reachPolicy?: IntercomReachPolicy;
 }
 
 function isSupervisorRegistration(value: unknown): value is SupervisorRegistration {
@@ -312,6 +325,58 @@ const RESTORING_RECIPIENT_ALIASES_MAX = 4;
 
 function isRestoringRecipientAliasList(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= RESTORING_RECIPIENT_ALIASES_MAX && value.every((alias) => typeof alias === "string");
+}
+
+const HOSTED_REPLY_ONLY_REFUSAL =
+	"A session hosted by a session with an Intercom reach policy can only reply to an ask it received";
+
+function isPendingReply(clientMessage: SendClientMessage): boolean {
+	const message = clientMessage.message;
+	return (
+		clientMessage.type === "send" &&
+		clientMessage.requirePendingReply === true &&
+		isMessage(message) &&
+		message.replyTo !== undefined &&
+		message.expectsReply !== true
+	);
+}
+
+function hostedWithinReach(reach: IntercomReachPolicy, item: ParsedHostedSession): boolean {
+	for (const group of normalizeGroups(item.session.groups, item.session.group)) {
+		if (!isReachable(reach, group) && !group.startsWith("workflow:")) return false;
+	}
+	return true;
+}
+
+function readRegistrationReach(
+	frame: JsonWireValue | undefined,
+	session: Omit<SessionInfo, "id">,
+	registrationGroup: string | undefined,
+): { readonly reach?: IntercomReachPolicy; readonly refusal?: string } {
+	if (frame === undefined) return {};
+	if (typeof frame !== "object" || frame === null || Array.isArray(frame)) throw new Error("Invalid reach policy");
+	const error = reachPolicyError(frame.home, frame.reachable);
+	if (error !== undefined || typeof frame.home !== "string" || !Array.isArray(frame.reachable)
+    || !frame.reachable.every((group): group is string => typeof group === "string"))
+    throw new Error(`Invalid reach policy: ${error ?? "reachable"}`);
+	const reach = createReachPolicy(frame.home, frame.reachable);
+	const groups = [...normalizeGroups(session.groups, session.group)];
+	if (registrationGroup !== undefined && normalizeGroup(registrationGroup) !== reach.home)
+		return { refusal: `Intercom registration group ${normalizeGroup(registrationGroup)} is not the reach policy's home group ${reach.home}` };
+	if (!admitsMemberships(reach, groups))
+		return {
+			refusal: `Intercom memberships ${groups.join(", ")} are outside the reach policy (home group ${reach.home}; reachable groups: ${reach.reachable.join(", ") || "none"})`,
+		};
+	return { reach };
+}
+
+function holdSenderOf(from: ConnectedSession, answersAsk?: true): HoldSender {
+	return {
+		id: from.info.id,
+		info: from.info,
+		...(from.reach === undefined ? {} : { reach: from.reach }),
+		...(answersAsk === undefined ? {} : { answersAsk }),
+	};
 }
 
 function invocationOwnsGroup(invocationGroup: string, candidateGroup: string): boolean {
@@ -926,7 +991,7 @@ class IntercomBroker {
 			if (!roster.stages.some((stage) => stage.group === selected && invocationOwnsGroup(roster.group, selected))) continue;
 			return groups.has(selected) || this.canControlWorkflowInvocation(requester, roster.group);
 		}
-		return true;
+		return requester.reach === undefined || canPeek(requester.reach, selected);
 	}
 
 	/**
@@ -997,7 +1062,6 @@ class IntercomBroker {
 	// remains the only operation that interprets the same path as an owned subgroup.
 
 	private workflowStagesVisibleTo(requester: ConnectedSession, selectedGroup?: string): WorkflowStageRosterEntry[] {
-	const requesterGroups = sessionGroups(requester.info);
 	const selected = selectedGroup === undefined ? undefined : normalizeGroup(selectedGroup);
 	const entries: WorkflowStageRosterEntry[] = [];
 	for (const [runId, roster] of this.workflowRosters) {
@@ -1005,7 +1069,7 @@ class IntercomBroker {
 			if (!stage.routeEligible || !isAgentRecipient(stage)) continue;
 			const parentControl =
 				this.canControlWorkflowInvocation(requester, roster.group) && invocationOwnsGroup(roster.group, stage.group);
-			const directMembership = requesterGroups.has(stage.group);
+			const directMembership = reachesGroups(requester, [stage.group]);
 			if (!parentControl && !directMembership) continue;
 			if (selected !== undefined && selected !== stage.group) continue;
 			const live = this.liveWorkflowStageRoutes.get(stage.target);
@@ -1099,12 +1163,12 @@ class IntercomBroker {
   }
 
   /** #4642: register one session hosted by `hostId`, listed and addressed like a connected one, on the host's socket. */
-  private hostSession(hostId: string, socket: net.Socket, item: ParsedHostedSession): ConnectedSession {
+  private hostSession(hostId: string, socket: net.Socket, item: ParsedHostedSession, confined: boolean): ConnectedSession {
     const id = randomUUID();
     const initialGroups = normalizeGroups(item.session.groups, item.session.group);
     const legacyGroup = normalizeGroup(item.session.group ?? initialGroups.values().next().value);
     const info: SessionInfo = { ...item.session, id };
-    setSessionGroups(info, initialGroups, legacyGroup);
+    setSessionGroups(info, confined ? new Set([legacyGroup]) : initialGroups, legacyGroup);
     const name = info.name?.trim();
     const hosted: ConnectedSession = {
       socket,
@@ -1113,6 +1177,7 @@ class IntercomBroker {
       ...(name ? { registrationName: name } : {}),
       ...(item.returnAddress === undefined ? {} : { registrationReturnAddress: item.returnAddress }),
       hostedBy: hostId,
+      ...(confined ? { reach: childReachPolicy(legacyGroup) } : {}),
     };
     this.sessions.set(id, hosted);
     let hosts = this.hostedSessions.get(hostId);
@@ -1303,13 +1368,13 @@ class IntercomBroker {
 			this.workflowStageAliases.forgetRun(stage.runId);
 			return undefined;
 		}
-		const reachable = hasGroup(sessionGroups(sender.info), stage.group) || this.canControlWorkflowInvocation(sender, route.group);
+		const reachable = reachesGroups(sender, [stage.group]) || this.canControlWorkflowInvocation(sender, route.group);
 		if (!reachable) return undefined;
 		// #4642: a released stage whose hosted peer is gone and that no live session answers for is refused with why
 		// by the send itself, not forwarded to a run that has nothing to queue for it.
 		const live = this.liveWorkflowStageRoutes.get(stage.target);
 		const liveSession = live === undefined ? undefined : this.sessions.get(live.sessionId);
-		if (liveSession === undefined && this.departedChildren.isReleasedStage(alias, { id: sender.info.id, info: sender.info })) {
+		if (liveSession === undefined && this.departedChildren.isReleasedStage(alias, holdSenderOf(sender))) {
 			return undefined;
 		}
 		return stage.target;
@@ -1985,8 +2050,8 @@ class IntercomBroker {
         this.sessions.set(id, {
           socket,
           info,
-          registrationGroup: typeof clientMessage.registrationGroup === "string"
-            ? normalizeGroup(clientMessage.registrationGroup) : legacyGroup,
+          registrationGroup: clientMessage.reachPolicy?.home ?? (typeof clientMessage.registrationGroup === "string"
+            ? normalizeGroup(clientMessage.registrationGroup) : legacyGroup),
 			...(typeof info.name === "string" && info.name.trim().length > 0
 				? { registrationName: info.name.trim() }
 				: {}),
@@ -2001,6 +2066,7 @@ class IntercomBroker {
             ? { supervisorOwnerToken: clientMessage.supervisorOwnerToken }
             : {}),
           ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
+          ...(clientMessage.reachPolicy === undefined ? {} : { reach: clientMessage.reachPolicy }),
         });
 
         if (this.shutdownTimer) {
@@ -2026,6 +2092,7 @@ class IntercomBroker {
             marksEndedChildren: true as const,
             multiNodeRouting: this.multiNodeStatus,
             protocol: { ...BROKER_PROTOCOL },
+            ...(clientMessage.reachPolicy === undefined ? {} : { enforcesReach: true as const }),
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
@@ -2224,6 +2291,20 @@ class IntercomBroker {
 		if (clientMessage.protocol !== undefined && !isBrokerProtocolRange(clientMessage.protocol)) {
 			throw new Error("Invalid protocol range");
 		}
+		const registrationReach = readRegistrationReach(
+			clientMessage.reach,
+			clientMessage.session,
+			typeof clientMessage.registrationGroup === "string" ? clientMessage.registrationGroup : undefined,
+		);
+		if (registrationReach.refusal !== undefined) {
+			writeMessageIfOpen(socket, {
+				type: "registration_failed",
+				reason: registrationReach.refusal,
+				code: "reach_policy_refused",
+			});
+			this.endRefusedConnection(socket, currentId, setId);
+			return;
+		}
 
         if (currentId || this.claimingSessionIds.has(socket)) {
           throw new Error("Received duplicate register message");
@@ -2262,7 +2343,11 @@ class IntercomBroker {
         );
         const multiNode = this.multiNode;
         const returnAddress = clientMessage.returnAddress;
-        const registration: SessionRegistrationRequest = { ...clientMessage, session: clientMessage.session };
+        const registration: SessionRegistrationRequest = {
+          ...clientMessage,
+          session: clientMessage.session,
+          ...(registrationReach.reach === undefined ? {} : { reachPolicy: registrationReach.reach }),
+        };
         if (preferred !== undefined && multiNode !== undefined && typeof returnAddress === "string") {
           // In multi-node mode the id carries authority on every broker (shared ask routes and known sessions name
           // sessions by id), so it is granted only to the return address it is bound to in shared storage.
@@ -2316,6 +2401,7 @@ class IntercomBroker {
 		replyToList({
 			requestId,
 			requesterInfo: requester.info,
+			...(requester.reach === undefined ? {} : { requesterReach: requester.reach }),
 			selectedGroup,
 			localSessions: () => this.sessions,
 			remoteSessions: multiNode === undefined ? undefined : () => multiNode.remoteSessions(),
@@ -2338,7 +2424,7 @@ class IntercomBroker {
 		writeMessageIfOpen(socket, {
 			type: "groups",
 			requestId: clientMessage.requestId,
-			groups: knownGroupSummaries(this.sessions, requester.info),
+			groups: knownGroupSummaries(this.sessions, requester.info, requester.reach),
 		});
         break;
       }
@@ -2427,12 +2513,23 @@ class IntercomBroker {
           writeMessageIfOpen(socket, { type: "hosted_sessions_ack", requestId, refusal: validation.refusal });
           break;
         }
+        const hostReach = host.reach;
+        const outsideReach =
+          hostReach === undefined ? undefined : validation.sessions.find((item) => !hostedWithinReach(hostReach, item));
+        if (outsideReach !== undefined) {
+          writeMessageIfOpen(socket, {
+            type: "hosted_sessions_ack",
+            requestId,
+            refusal: { code: "invalid_hosted_session", key: outsideReach.key },
+          });
+          break;
+        }
         const assignments: HostedSessionAssignment[] = [];
         const presences: Promise<void>[] = [];
         // #4639: a host back after its connection closed takes over the departures it kept; hosting a name again ends its.
         this.adoptOrphans(currentId, host);
         for (const item of validation.sessions) {
-          const hosted = this.hostSession(currentId, socket, item);
+          const hosted = this.hostSession(currentId, socket, item, hostReach !== undefined);
           if (hosted.registrationName !== undefined)
             this.dispatchHeldSends(this.departedChildren.supersede(currentId, hosted.registrationName));
           const presence = this.multiNode?.sessionRegistered(hosted);
@@ -2863,6 +2960,16 @@ class IntercomBroker {
 				this.refuseHostedSender(socket, clientMessage, hostedSender);
 				break;
 			}
+			if (this.sessions.get(currentId)?.reach !== undefined && !isPendingReply(clientMessage)) {
+				const message = clientMessage.message;
+				writeMessageIfOpen(socket, {
+					type: "delivery_failed",
+					messageId: isMessage(message) ? message.id : "unknown",
+					...(typeof clientMessage.attemptId === "string" ? { attemptId: clientMessage.attemptId } : {}),
+					reason: HOSTED_REPLY_ONLY_REFUSAL,
+				});
+				break;
+			}
 			this.dispatchSend(socket, clientMessage, hostedSender);
 			break;
 		}
@@ -2919,6 +3026,34 @@ class IntercomBroker {
 			this.settlePendingStageNotification(currentId, clientMessage.requestId, clientMessage.delivered);
 			break;
 		}
+
+      case "set_reach": {
+        const session = this.sessions.get(currentId);
+        if (session === undefined || typeof clientMessage.requestId !== "string") throw new Error("Invalid set_reach message");
+        const requestId = clientMessage.requestId;
+        if (session.reach === undefined) {
+          writeMessageIfOpen(socket, {
+            type: "reach_failed",
+            requestId,
+            reason: "This session registered without an Intercom reach policy, so its reach cannot change",
+          });
+          break;
+        }
+        const error = reachPolicyError(session.reach.home, clientMessage.reachable);
+        if (error !== undefined || !Array.isArray(clientMessage.reachable)
+          || !clientMessage.reachable.every((group): group is string => typeof group === "string")) {
+          writeMessageIfOpen(socket, { type: "reach_failed", requestId, reason: error ?? "Intercom reachable must be an array" });
+          break;
+        }
+        this.replaceReach(session, createReachPolicy(session.reach.home, clientMessage.reachable));
+        writeMessageIfOpen(socket, {
+          type: "reach_ack",
+          requestId,
+          reachable: [...session.reach.reachable],
+          groups: [...sessionGroups(session.info)],
+        });
+        break;
+      }
 
       case "presence":
 	  case "join_group":
@@ -3279,16 +3414,12 @@ class IntercomBroker {
    * #3760: a send to a subagent its owner is restoring is held, by whichever sender, instead of failing with
    * `Session not found`; a send to one its owner reported gone gets the gone refusal.
    */
-  private readonly holdForRestoringRecipient: RestoringRecipientHold = ({ socket, from, clientMessage, target, messageId, attemptId }) => {
+  private readonly holdForRestoringRecipient: RestoringRecipientHold = ({ socket, from, clientMessage, target, messageId, attemptId, answersAsk }) => {
     const held: HeldSend = { socket, senderId: from.info.id, messageId, clientMessage, ...(attemptId === undefined ? {} : { attemptId }) };
-    const admission = this.restoringRecipients.admit(
-      target,
-      { id: from.info.id, info: from.info },
-      held,
-      clientMessage.awaitRestoringRecipient === true,
-    );
+    const sender = holdSenderOf(from, answersAsk);
+    const admission = this.restoringRecipients.admit(target, sender, held, clientMessage.awaitRestoringRecipient === true);
     if (admission.kind === "none")
-      return this.holdForDepartedChild(held, target, from, clientMessage.awaitRestoringRecipient === true);
+      return this.holdForDepartedChild(held, target, sender, clientMessage.awaitRestoringRecipient === true);
     if (admission.kind === "refused" && admission.error !== undefined) this.failHeldSendWith(held, admission.error);
     else if (admission.kind === "refused") this.failHeldSend(held, admission.reason, admission.reasonCode);
     else writeMessageIfOpen(socket, { type: "send_held", messageId, ...(attemptId === undefined ? {} : { attemptId }), timeoutMs: admission.timeoutMs });
@@ -3333,6 +3464,7 @@ class IntercomBroker {
       target: pending.childName,
       messageId: pending.message.id,
       ...(pending.attemptId === undefined ? {} : { attemptId: pending.attemptId }),
+      answersAsk: true,
     });
     // The route stays with the owner, so a reply whose held delivery fails (the child does not wake in time) can be
     // sent again and wake the child again; the child's inbox shows a reply once however often it arrives.
@@ -3341,8 +3473,8 @@ class IntercomBroker {
   }
 
   /** #4639: a subagent whose session is gone: hold the send for its return or its owner's verdict, or refuse it with why. */
-  private holdForDepartedChild(held: HeldSend, target: string, from: ConnectedSession, canHold: boolean): boolean {
-    const admission = this.departedChildren.admit(target, { id: from.info.id, info: from.info }, held, canHold);
+  private holdForDepartedChild(held: HeldSend, target: string, sender: HoldSender, canHold: boolean): boolean {
+    const admission = this.departedChildren.admit(target, sender, held, canHold);
     if (admission.kind === "none") return false;
     if (admission.kind === "refused") this.refuseHeldSends([{ held, error: admission.error }]);
     else
@@ -3806,12 +3938,41 @@ class IntercomBroker {
 	if (isAgentRecipient(departed.info)) this.broadcastToMemberships({ type: "session_left", sessionId }, sessionGroups(departed.info), sessionId);
 	for (const send of unreserved) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
 	}
+  private replaceReach(session: ConnectedSession, reach: IntercomReachPolicy): void {
+    const reachedBefore = this.reachedSessionIds(session);
+    replaceSessionReach(
+      this.sessions,
+      (target, message) => writeMessageIfOpen(target, message),
+      session,
+      reach,
+      (peer, changed) => this.presenceFanout.queue(peer, changed.info.id),
+    );
+    const reachedAfter = this.reachedSessionIds(session);
+    for (const id of reachedAfter) {
+      const reached = this.sessions.get(id);
+      if (!reachedBefore.has(id) && reached !== undefined)
+        writeMessageIfOpen(session.socket, { type: "session_joined", session: reached.info });
+    }
+    for (const id of reachedBefore) {
+      if (!reachedAfter.has(id)) writeMessageIfOpen(session.socket, { type: "session_left", sessionId: id });
+    }
+    this.multiNode?.sessionUpdated(session);
+  }
+
+  private reachedSessionIds(session: ConnectedSession): Set<string> {
+    const reached = new Set<string>();
+    for (const [id, peer] of this.sessions) {
+      if (id !== session.info.id && isAgentRecipient(peer.info) && reachesSession(session, peer.info)) reached.add(id);
+    }
+    return reached;
+  }
+
   /** Deliver a broadcast once to each session represented in any given group. */
   private broadcastToMemberships(msg: BrokerMessage, groups: ReadonlySet<string>, exclude?: string): void {
     for (const [id, session] of this.sessions) {
       // #4642: a hosted session shares its host's socket and needs no copy of its own.
       if (session.hostedBy !== undefined) continue;
-      if (id !== exclude && [...groups].some((group) => hasGroup(sessionGroups(session.info), group))) {
+      if (id !== exclude && reachesGroups(session, groups)) {
         writeMessageIfOpen(session.socket, msg);
       }
     }

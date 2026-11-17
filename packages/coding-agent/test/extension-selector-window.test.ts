@@ -101,7 +101,10 @@ describe("extension selector", () => {
 		selector.handleInput("\r");
 		assert.deepEqual(onSelect.mock.calls, [["No"]]);
 		selector.handleInput("\x1b");
-		assert.equal(onCancel.mock.calls.length, 1);
+		assert.equal(onCancel.mock.calls.length, 0);
+		const cancelled = choose(["Yes", "No", "Later"]);
+		cancelled.selector.handleInput("\x1b");
+		assert.equal(cancelled.onCancel.mock.calls.length, 1);
 	});
 
 	it("shows the first title line as the title and the rest as dim lines under it (#5224)", () => {
@@ -150,5 +153,83 @@ describe("extension selector", () => {
 		assert.equal(hint(selector), "↑↓ select · enter choose · 1-2 pick · esc cancel · ? keys");
 		selector.handleInput("2");
 		assert.deepEqual(onSelect.mock.calls, [["No"]]);
+	});
+
+	it("wraps long titles and options across lines instead of truncating paths and commands (#5237)", () => {
+		const missingCwdTitle =
+			"Session cwd does not exist: /home/user/projects/some-very-long-client-name/monorepo/packages/service-a";
+		const missingCwdOptions = [
+			"Continue in /home/user/projects/another-very-long-directory-name/current-working-dir (asks again next time)",
+			"Fork into /home/user/projects/another-very-long-directory-name/current-working-dir (new session ID, original kept)",
+			"Cancel",
+		];
+		for (const width of [80, 100]) {
+			const selected: string[] = [];
+			const cwdSelector = new ExtensionSelectorComponent(
+				missingCwdTitle,
+				missingCwdOptions,
+				(option) => selected.push(option),
+				() => {},
+			);
+			const rendered = lines(cwdSelector, width);
+			const normalized = rendered.join("\n").replace(/\s+/g, " ");
+			assert.ok(normalized.includes(missingCwdTitle), `missing title at width ${width}: ${normalized}`);
+			for (const option of missingCwdOptions) {
+				assert.ok(normalized.includes(option), `missing option at width ${width}: ${option}`);
+			}
+			for (const line of rendered) assert.ok(line.length <= width, `${width}: ${line}`);
+			const continuationY = rendered.findIndex((line) => line.includes("original kept"));
+			assert.ok(continuationY >= 0);
+			cwdSelector.handleMouse({
+				type: "press",
+				button: "left",
+				x: 4,
+				y: continuationY,
+				screenX: 4,
+				screenY: continuationY,
+				width,
+				height: rendered.length,
+				shift: false,
+				alt: false,
+				ctrl: false,
+			});
+			cwdSelector.handleMouse({
+				type: "click",
+				button: "left",
+				x: 4,
+				y: continuationY,
+				screenX: 4,
+				screenY: continuationY,
+				width,
+				height: rendered.length,
+				shift: false,
+				alt: false,
+				ctrl: false,
+			});
+			assert.deepEqual(selected, [missingCwdOptions[1]]);
+		}
+
+		const deployTitle =
+			"The deploy extension wants to run: kubectl --context prod-eu-west-1 rollout restart deployment/payments-api -n payments";
+		const deployOptions = [
+			"Run it now in production",
+			"Run it in staging first (kubectl --context staging-eu-west-1 rollout restart ...)",
+			"Skip",
+		];
+		for (const width of [60, 80, 100]) {
+			const deploySelector = new ExtensionSelectorComponent(
+				deployTitle,
+				deployOptions,
+				() => {},
+				() => {},
+			);
+			const rendered = lines(deploySelector, width);
+			const normalized = rendered.join("\n").replace(/\s+/g, " ");
+			assert.ok(normalized.includes(deployTitle), `missing deploy title at width ${width}: ${normalized}`);
+			for (const option of deployOptions) {
+				assert.ok(normalized.includes(option), `missing deploy option at width ${width}: ${option}`);
+			}
+			for (const line of rendered) assert.ok(line.length <= width, `${width}: ${line}`);
+		}
 	});
 });
