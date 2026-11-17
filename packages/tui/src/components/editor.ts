@@ -255,19 +255,16 @@ interface LayoutLine {
 	cursorPos?: number;
 }
 
-/** One key the open @ or / menu offers: the keybindings that trigger it and what it does. */
 export interface EditorAutocompleteHintEntry {
 	readonly actions: readonly Keybinding[];
 	readonly resolvedKeys?: readonly string[];
 	readonly label: string;
-	/** Kept when a narrow line has to drop entries. */
 	readonly essential?: boolean;
 }
 
 export interface EditorTheme {
 	borderColor: (str: string) => string;
 	selectList: SelectListTheme;
-	/** Draws the one hint line under the open @ or / menu; without it the menu has no hint line. */
 	autocompleteHint?: (entries: readonly EditorAutocompleteHintEntry[], width: number) => string;
 }
 
@@ -477,7 +474,6 @@ export class Editor implements Component, Focusable {
 		return render(entries, width);
 	}
 
-	/** Past prompts for up/down and history search, newest first. */
 	getHistory(): readonly string[] {
 		return [...this.history];
 	}
@@ -875,6 +871,10 @@ export class Editor implements Component, Focusable {
 					if (this.autocompletePrefix.startsWith("/")) {
 						this.cancelAutocomplete();
 						// Fall through to submit
+						if (!kb.matches(data, "tui.input.submit")) {
+							if (!this.disableSubmit) this.submitValue();
+							return;
+						}
 					} else {
 						this.cancelAutocomplete();
 						if (this.onChange) this.onChange(this.getText());

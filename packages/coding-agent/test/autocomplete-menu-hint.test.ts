@@ -157,8 +157,8 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 			const keybindings = new KeybindingsManager(overrides);
 			setKeybindings(keybindings);
 			const editor = new CustomEditor(new TuiMainScreen(new RecordingTerminal()), getEditorTheme(), keybindings);
-			let sent = 0;
-			editor.onSubmit = () => sent++;
+			const sent: string[] = [];
+			editor.onSubmit = (text) => sent.push(text);
 			editor.setAutocompleteProvider({
 				getSuggestions: async () => ({
 					items: [
@@ -179,7 +179,18 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 			editor.handleInput("\t");
 			assert.equal(editor.getText(), "/tree");
 			assert.equal(editor.isShowingAutocomplete(), false);
-			assert.equal(sent, 0, "Tab completes rather than running a selected command");
+			assert.deepEqual(sent, [], "Tab completes rather than running a selected command");
+
+			const runKey = / (\S+) run · /.exec(` ${hint}`)?.[1];
+			if (runKey === undefined) return;
+			editor.setText("");
+			editor.handleInput("/");
+			await flushAutocomplete();
+			const sequences: Record<string, string> = { enter: "\r", "ctrl+q": "\x11" };
+			const runSequence = sequences[runKey];
+			assert.ok(runSequence, `no input sequence for the advertised run key in ${hint}`);
+			editor.handleInput(runSequence);
+			assert.deepEqual(sent, ["/tree"], `${runKey} runs the selected command as advertised`);
 		});
 	}
 
