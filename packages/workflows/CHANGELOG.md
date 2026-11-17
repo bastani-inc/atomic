@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `/compact` in a workflow stage chat takes optional instructions, for example `/compact keep the API notes`, for a stage in this process or on a local worker. They reach the stage's compaction as they do in the main chat
 - `PendingPrompt.source` identifies a stage's extension dialog as `stage-dialog`; `expiresAt` gives its timeout deadline when one was set. Hosts can show these prompts in their stage chats and answer them through the workflow tool ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
 - `o` in a workflow graph opens run details with outputs, artifacts, ordered events, nested blockers and logs. `/workflows` also lists definitions that failed to load; Enter shows their actionable error details and `/reload` guidance without starting a run ([#5255](https://github.com/bastani-inc/atomic/pull/5255))
+- In a fullscreen stage chat, a click on the header of a tool block, grouped-call summary or agent card expands or collapses that block, as in the main chat. Clicks in a block's output still select text
 
 ### Changed
 
