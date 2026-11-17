@@ -97,8 +97,27 @@ const EXIT_BUDGET_MS = 30_000;
 /** A real CLI and engine through a pseudo-terminal: startup, the scenario and exit, each within its own budget. */
 const SCENARIO_TIMEOUT_MS = STARTUP_BUDGET_MS + SCENARIO_BUDGET_MS + EXIT_BUDGET_MS + 10_000;
 const LOG_POLL_MS = 100;
+/** Idle time after the editor first draws, before the scenario clears it and starts. */
+const EDITOR_SETTLE_MS = 500;
 /** How long the provider must be idle before a scenario that waits on model replies counts as settled. */
 const PROVIDER_QUIET_MS = 2_000;
+
+const KEY = {
+	left: "\x1b[D",
+	end: "\x1b[F",
+	backspace: "\x7f",
+	deleteWordBackward: "\x17",
+	clearLine: "\x15",
+	pageUp: "\x1b[5~",
+	pageDown: "\x1b[6~",
+	transcriptTop: "\x1b[1;5H",
+	transcriptBottom: "\x1b[1;5F",
+	wheelUp: `\x1b[<64;${COLS / 2};${ROWS / 2}M`,
+	wheelDown: `\x1b[<65;${COLS / 2};${ROWS / 2}M`,
+} as const;
+
+/** Keystrokes 15 ms apart: a fast typist. */
+const TYPING_INTERVAL_MS = 15;
 
 let root: string;
 let agentDir: string;
@@ -209,13 +228,19 @@ async function runScenario(
 	try {
 		await waitForRecords(log, bothReady, STARTUP_BUDGET_MS, `${name}: host and engine ready`, program);
 		await program.waitForScreen((screen) => screen.includes("❯"), STARTUP_BUDGET_MS, "the editor");
+		// Under ConPTY a stray character can reach the editor while the terminal answers startup queries; start empty.
+		await sleep(EDITOR_SETTLE_MS);
+		program.write(KEY.clearLine);
 		const drivenAt = Date.now();
 		await drive(program);
 		await sleep(Math.max(0, MIN_SCENARIO_MS - (Date.now() - drivenAt)));
-		program.write("/quit");
+		program.write(KEY.clearLine);
+		await typeText(program, "/quit", TYPING_INTERVAL_MS);
 		await sleep(200);
 		program.write("\r");
-		await program.exited;
+		const exited = await Promise.race([program.exited, sleep(EXIT_BUDGET_MS).then(() => undefined)]);
+		if (exited === undefined)
+			assert.fail(`${name}: still running ${EXIT_BUDGET_MS} ms after /quit. Screen:\n${program.screen()}`);
 		const records = await waitForRecords(log, quitRecorded, EXIT_BUDGET_MS, `${name}: quit records`, program);
 		const delays = (role: ProcessRole): ProcessDelays => ({
 			startup: delayOf(records, role, "startup") as DelayRecord,
@@ -329,23 +354,6 @@ async function waitForReplies(
 		await sleep(LOG_POLL_MS);
 	}
 }
-
-const KEY = {
-	left: "\x1b[D",
-	end: "\x1b[F",
-	backspace: "\x7f",
-	deleteWordBackward: "\x17",
-	clearLine: "\x15",
-	pageUp: "\x1b[5~",
-	pageDown: "\x1b[6~",
-	transcriptTop: "\x1b[1;5H",
-	transcriptBottom: "\x1b[1;5F",
-	wheelUp: `\x1b[<64;${COLS / 2};${ROWS / 2}M`,
-	wheelDown: `\x1b[<65;${COLS / 2};${ROWS / 2}M`,
-} as const;
-
-/** Keystrokes 15 ms apart: a fast typist. */
-const TYPING_INTERVAL_MS = 15;
 
 describe("the interactive host and engine keep their event loops responsive", () => {
 	test(
