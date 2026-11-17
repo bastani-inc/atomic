@@ -30,6 +30,8 @@ export class TaskNavigation {
 	focus: TaskFocus = { kind: "composer" };
 	selectedTaskId?: TaskId;
 	private tasks: TaskRecord[] = [];
+	/** Every selectable row's id in display order: task ids and other sources' item ids, such as workflow runs. */
+	private order: string[] = [];
 	/** `x` stops a task only when pressed again on the same task within three seconds. */
 	readonly stopConfirm: TwoPressConfirm;
 	/**
@@ -48,13 +50,20 @@ export class TaskNavigation {
 		this.stopConfirm = new TwoPressConfirm(now);
 	}
 
-	update(tasks: readonly TaskRecord[]): void {
-		this.tasks = [
+	/**
+	 * The tasks, and every row's id in the order the list shows them. Rows that are not tasks (another source's items)
+	 * can be selected, but the task actions ignore them; their owner handles their keys.
+	 */
+	update(
+		tasks: readonly TaskRecord[],
+		order: readonly string[] = [
 			...tasks.filter((task) => task.kind === "agent"),
 			...tasks.filter((task) => task.kind === "command"),
-		];
-		if (!this.tasks.some((task) => task.ref.taskId === this.selectedTaskId))
-			this.selectedTaskId = this.tasks[0]?.ref.taskId;
+		].map((task) => task.ref.taskId),
+	): void {
+		this.tasks = [...tasks];
+		this.order = [...order];
+		if (!this.order.includes(this.selectedTaskId ?? "")) this.selectedTaskId = this.order[0] as TaskId | undefined;
 		const armed = this.stopConfirm.pending();
 		const settled = this.tasks.find((task) => task.ref.taskId === armed && task.execution.kind === "settled");
 		if (settled !== undefined) {
@@ -65,7 +74,7 @@ export class TaskNavigation {
 	}
 
 	open(taskId?: TaskId): void {
-		if (taskId !== undefined && this.tasks.some((task) => task.ref.taskId === taskId)) this.selectedTaskId = taskId;
+		if (taskId !== undefined && this.order.includes(taskId)) this.selectedTaskId = taskId;
 		this.focus = { kind: "tasks" };
 	}
 
@@ -97,9 +106,19 @@ export class TaskNavigation {
 		}
 	}
 
+	/** The selected row's id, which is a task id only when the row is a task. */
+	get selectedId(): string | undefined {
+		return this.selectedTaskId;
+	}
+	select(id: string): void {
+		if (this.order.includes(id)) this.selectedTaskId = id as TaskId;
+	}
+
 	moveSelection(delta: number): void {
-		const index = this.tasks.findIndex((task) => task.ref.taskId === this.selectedTaskId);
-		this.selectedTaskId = this.tasks[Math.max(0, Math.min(this.tasks.length - 1, index + delta))]?.ref.taskId;
+		const index = this.order.indexOf(this.selectedTaskId ?? "");
+		this.selectedTaskId = this.order[Math.max(0, Math.min(this.order.length - 1, index + delta))] as
+			| TaskId
+			| undefined;
 	}
 
 	handleInput(data: string, inputOwner: "composer" | "hil" | "tasks"): boolean {
@@ -127,16 +146,16 @@ export class TaskNavigation {
 			void this.activate("input");
 			return true;
 		}
-		const index = this.tasks.findIndex((task) => task.ref.taskId === this.selectedTaskId);
+		const index = this.order.indexOf(this.selectedTaskId ?? "");
 		let next = index;
 		if (matchesKey(data, "up")) next--;
 		else if (matchesKey(data, "down")) next++;
 		else if (matchesKey(data, "home")) next = 0;
-		else if (matchesKey(data, "end")) next = this.tasks.length - 1;
+		else if (matchesKey(data, "end")) next = this.order.length - 1;
 		else if (matchesKey(data, "pageUp")) next -= 10;
 		else if (matchesKey(data, "pageDown")) next += 10;
 		else return false;
-		this.selectedTaskId = this.tasks[Math.max(0, Math.min(this.tasks.length - 1, next))]?.ref.taskId;
+		this.selectedTaskId = this.order[Math.max(0, Math.min(this.order.length - 1, next))] as TaskId | undefined;
 		return true;
 	}
 }

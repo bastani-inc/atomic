@@ -21,7 +21,7 @@ Below the main chat's prompt, the **agent panel** lists the session's running an
 - **Each row shows** the status, the agent's name (a workflow's name for a run, `shell` for a shell), what it works on, and how long it has run. Agents also show the tokens they have used. A workflow run shows its stage progress and current stage.
 - **Status glyphs:**
   - `∀` running
-  - `◆` needs input, showing the question
+  - `◆` needs input, with its question when it waits on one
   - `‖` paused
   - `○` queued
   - `✓` done
@@ -50,8 +50,10 @@ Extension authors can add rows with [`pi.registerAgentPanelSource()`](/extension
 
 Run `/tasks` to inspect work without stopping it:
 
-- The compact picker opens in the editor slot, with the conversation visible above it. It lists only tasks owned by that chat.
-- Within the **Agents** and **Shells** sections, tasks are ordered by status: running (tasks needing attention first), stopping, queued, failed, cancelled, then completed. The newest launch or settlement comes first within each status, and your selection follows its task when it moves.
+- The list opens in the editor slot, with the conversation visible above it. It lists the subagents and shells that chat owns and the session's workflow runs, running and finished.
+- Its header counts them, for example `Tasks  1 needs input · 3 working · 2 done`, and the rows are grouped **Needs input**, **Working** and **Done**. Each row shows its status mark, its name and task, and on the right how long it has waited, run or took, with its tokens. A failed workflow run adds a short reason. The selected subagent also shows its model and what it is doing now.
+- Space on a workflow run opens a peek card under the row. A run waiting on one question shows the question, its visible numbered choices and a reply box. A run waiting on several questions or on a custom prompt has no reply box; open its graph to answer. A number fills in the corresponding visible choice; Enter sends the reply. Escape closes the card and keeps an unsent draft. While the reply is sending, the card shows `Sending…` and other keys are ignored until it finishes. Your first typed character or numbered choice binds the draft to the question last shown. An empty reply can start against a newly shown question. If the question changes after typing starts, the old reply is refused; clear the draft to start a new reply. When the question disappears, the card stops taking reply text and its list keys work again. Typing before any question is shown cannot answer it. A send failure keeps your reply while the inspector stays open. If you close it during a send or stop, a later failure appears in the chat. Space on a subagent or shell opens its detail page; a waiting subagent's **Open question** action takes you to its question.
+- `/` filters the list by name or task; Enter keeps the filter and Escape clears it.
 - Detail, transcript, input, and cancellation-confirmation pages use the full screen.
 - Escape returns to the picker with your selection preserved, then to chat.
 - Completed background work remains available, including after a later foreground wait. Foreground-only commands are excluded.
@@ -238,7 +240,7 @@ The cadence is fixed when the task starts, and a running task's `/tasks` detail 
 
 | View | Controls |
 | --- | --- |
-| Task list | Up/Down selects; Enter or Right opens the task's chat (a shell's output); Space opens its detail page; `x` stops the selected task when pressed twice within 3 seconds, and dismisses a finished one with one press; `?` lists the keys; Escape or Left returns to chat. |
+| Task list | Up/Down selects; Enter or Right opens the task's chat (a shell's output, a workflow run's graph); Space opens a peek card for a workflow run, and the detail page of a subagent or shell; `/` filters; `x` stops the selected task or run when pressed twice within 3 seconds, and dismisses a finished one with one press; `?` lists the keys; Escape or Left returns to chat. |
 | Task detail | Up/Down selects an action; Enter activates it; PageUp/PageDown scrolls the body. |
 | Transcript | Scrolls like a workflow stage chat: it opens at the latest message and follows new output; PageUp/PageDown move one viewport; Ctrl+Home/Ctrl+End jump to the top and to the latest message; Ctrl+Up/Ctrl+Down jump between prompts; the mouse wheel scrolls (Alt+wheel five times faster). Earlier retained history loads as you scroll toward the top. |
 | Transcript display | A transcript opens with the chat's thinking and tool-output settings. Ctrl+T toggles thinking blocks, as in the chat, and Ctrl+O toggles the transcript's tool output. |
@@ -253,7 +255,7 @@ Configured task bindings take precedence over the default Left, page, and `x` sh
 
 Scrolling settings apply to transcripts as they do to the chat: `fullscreenWheelScrollLines` sets the wheel step and `fullscreenScrollbar` shows the scrollbar. When you scroll away from the latest message, the last row shows a pill: **↓ jump to bottom**, or **↓ N new messages** once new output arrives. Status updates and loading earlier history do not add to the count. Click it, press Ctrl+End or page down to the bottom to follow the output again; typing doesn't.
 
-The list groups **Agents** and **Shells**, with counts and status symbols. Detail views pin identity, state, available metrics, and the selected action while their body scrolls. Missing metrics are omitted rather than displayed as zero. Recorded zero values remain visible.
+The list groups subagents, workflow runs and shells by **Needs input**, **Working** and **Done**, with counts and status symbols. Detail views pin identity, state, available metrics, and the selected action while their body scrolls. Missing metrics are omitted rather than displayed as zero. Recorded zero values remain visible.
 
 Agent rows and completion cards show the resolved model and reasoning setting, for example `openai-codex/gpt-6-astra · thinking medium`. These settings update on fallback and remain after completion. Foreground results retain the same metadata. Missing settings are not inferred from token counts; early launch receipts may not yet have a resolved model.
 

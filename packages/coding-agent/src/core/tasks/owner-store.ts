@@ -9,7 +9,7 @@ import type {
 	WaitError,
 	WatchError,
 } from "./contracts.js";
-import { observeTaskClocks } from "./live-elapsed.js";
+import { bindTaskClock, createManagedTaskClocks, taskClockRunning } from "./live-elapsed.ts";
 import type { OwnerLease, TaskLease, TaskSubscription, TaskSupervisor } from "./supervisor.js";
 
 /** Activity previews are bounded independently of authoritative session history. */
@@ -33,11 +33,13 @@ export class OwnerTaskStore {
 	private subscription?: TaskSubscription;
 	private listeners = new Set<() => void>();
 	private records = new Map<TaskId, TaskRecord>();
+	private panelRevisionValue = 0;
 	private activity = new Map<TaskId, TaskActivity[]>();
 	private activityCursors = new Map<TaskId, bigint>();
 	private omittedActivity = new Set<TaskId>();
 	private backgroundIds = new Set<TaskId>();
 	private settlements = new Map<TaskId, bigint>();
+	private readonly elapsedClocks = createManagedTaskClocks(this);
 	readonly anchors = new Map<TaskId, TaskAnchor>();
 	private current?: OwnerSnapshot;
 	readonly supervisor: TaskSupervisor;
@@ -55,6 +57,12 @@ export class OwnerTaskStore {
 	}
 	get tasks(): TaskRecord[] {
 		return [...this.records.values()];
+	}
+	get panelRevision(): number {
+		return this.panelRevisionValue;
+	}
+	taskRecord(id: TaskId): TaskRecord | undefined {
+		return this.records.get(id);
 	}
 	/** Background membership survives foreground waits and terminal observation cleanup. */
 	get backgroundTasks(): TaskRecord[] {
@@ -112,24 +120,55 @@ export class OwnerTaskStore {
 			throw new Error("StaleGeneration: cannot replace a task owner projection");
 		if (this.current && BigInt(snapshot.cursor.sequence) <= BigInt(this.current.cursor.sequence)) return;
 		this.current = snapshot;
-		this.forgetEvicted(snapshot);
+		const priorSize = this.records.size;
+		let existingSeen = 0;
 		for (const event of events)
 			if (event.payload.kind === "task-settled" && !this.settlements.has(event.payload.ref.taskId))
 				this.settlements.set(event.payload.ref.taskId, BigInt(event.cursor.sequence));
-		let changedClocks: TaskRecord[] | undefined;
 		for (const task of snapshot.tasks) {
 			const previous = this.records.get(task.ref.taskId);
-			if (previous?.execution.kind !== task.execution.kind) {
-				changedClocks ??= [];
-				changedClocks.push(task);
+			if (previous !== undefined) existingSeen++;
+			if (previous === task) continue;
+			if (
+				previous === undefined ||
+				previous.kind !== task.kind ||
+				previous.execution.kind !== task.execution.kind ||
+				previous.attention.kind !== task.attention.kind ||
+				previous.parentTaskId !== task.parentTaskId ||
+				previous.title !== task.title ||
+				previous.agentName !== task.agentName ||
+				previous.wasBackground !== task.wasBackground ||
+				isBackground(previous.observation) !== isBackground(task.observation)
+			) {
+				this.panelRevisionValue++;
 			}
-			if (isBackground(task.observation) || isBackground(previous?.observation))
-				this.backgroundIds.add(task.ref.taskId);
+			if (
+				previous?.execution.kind !== "settled" &&
+				task.execution.kind !== "queued" &&
+				(previous?.execution.kind !== task.execution.kind ||
+					previous?.metrics?.elapsedMs !== task.metrics?.elapsedMs)
+			) {
+				if (task.execution.kind === "settled" && previous !== undefined)
+					this.elapsedClocks.settle(task.ref.taskId, task.metrics?.elapsedMs);
+				else
+					this.elapsedClocks.elapsedMs(
+						task.ref.taskId,
+						task.metrics?.elapsedMs,
+						taskClockRunning(task.execution.kind),
+					);
+			}
+			if (isBackground(task.observation) || isBackground(previous?.observation)) {
+				if (!this.backgroundIds.has(task.ref.taskId)) {
+					this.backgroundIds.add(task.ref.taskId);
+				}
+			}
 			// Native settlement is immutable, even when recovering a view from a snapshot.
-			this.records.set(
-				task.ref.taskId,
-				previous?.execution.kind === "settled" ? { ...task, execution: previous.execution } : task,
-			);
+			const record =
+				previous?.execution.kind === "settled" && task.execution !== previous.execution
+					? { ...task, execution: previous.execution }
+					: task;
+			if (record !== previous) bindTaskClock(record, this.elapsedClocks);
+			this.records.set(task.ref.taskId, record);
 			if (task.execution.kind === "settled" && !this.settlements.has(task.ref.taskId))
 				this.settlements.set(task.ref.taskId, BigInt(snapshot.cursor.sequence));
 			if (!this.anchors.has(task.ref.taskId))
@@ -140,7 +179,7 @@ export class OwnerTaskStore {
 					followBottom: true,
 				});
 		}
-		if (changedClocks !== undefined) observeTaskClocks(changedClocks);
+		if (existingSeen < priorSize) this.forgetEvicted(snapshot);
 		this.notify();
 	}
 	/** A task absent from the authoritative projection was evicted by its owner (#4385): keep none of its view state. */
@@ -149,6 +188,8 @@ export class OwnerTaskStore {
 		for (const id of [...this.records.keys()]) {
 			if (retained.has(id)) continue;
 			this.records.delete(id);
+			this.panelRevisionValue++;
+			this.elapsedClocks.delete(id);
 			this.settlements.delete(id);
 			this.anchors.delete(id);
 			this.backgroundIds.delete(id);
@@ -170,6 +211,9 @@ export class OwnerTaskStore {
 	}
 	private retainActivity(event: NativeEvent): void {
 		if (event.payload.kind === "host-observation-changed" && isBackground(event.payload.observation)) {
+			if (!this.backgroundIds.has(event.payload.ref.taskId)) {
+				this.panelRevisionValue++;
+			}
 			this.backgroundIds.add(event.payload.ref.taskId);
 			this.notify();
 		}

@@ -18,7 +18,7 @@ import {
 } from "../interactive-engine/remote-input-ownership.ts";
 import { agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
-import { showTaskInspector } from "../rpc/task-ui-bridge.js";
+import { agentPanelBoardSource, showTaskInspector } from "../rpc/task-ui-bridge.js";
 import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { MainComposerKeyOverlay } from "./components/main-composer-keys.ts";
@@ -335,6 +335,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					},
 					store,
 					argument,
+					{ board: agentPanelBoardSource(this.session) },
 				);
 				return;
 			}

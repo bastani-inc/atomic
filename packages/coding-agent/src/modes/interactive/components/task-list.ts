@@ -1,8 +1,9 @@
 import type { Component } from "@bastani/atomic-tui";
-import { taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
+import { agentPanelTaskId, taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
 import { theme } from "../theme/theme.js";
-import { renderAgentPanelRows } from "./agent-panel.ts";
+import { AGENT_PANEL_IDLE_ROWS, renderAgentPanelRows } from "./agent-panel.ts";
 import { TaskRow, taskLabel, taskTitle } from "./task-row.js";
 
 /** Complete projection; viewport owners, not this list, decide how much to mount. */
@@ -60,14 +61,45 @@ export function taskListSections(
 export function isActiveBackgroundTask(task: TaskRecord): boolean {
 	return task.observation.kind === "background" && task.execution.kind !== "settled";
 }
+
 /**
  * The rows of a chat's active background agents and shells, as the agent panel draws them: a stage or subagent chat
  * shows its own tasks this way below its prompt. Finished tasks leave at once; `/tasks` keeps them.
  */
-export function renderTaskFooter(tasks: readonly TaskRecord[], width: number): string[] {
-	const active = tasks.filter(isActiveBackgroundTask);
+export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
+	const input: TaskRecord[] = [];
+	const running: TaskRecord[] = [];
+	const other: TaskRecord[] = [];
+	let total = 0;
+	for (let index = tasks.length - 1; index >= 0; index--) {
+		const task = tasks[index]!;
+		if (!isActiveBackgroundTask(task)) continue;
+		total++;
+		if (task.execution.kind === "running") {
+			if (task.attention.kind === "none") {
+				if (input.length + running.length < AGENT_PANEL_IDLE_ROWS) running.push(task);
+			} else if (input.length < AGENT_PANEL_IDLE_ROWS) {
+				input.push(task);
+			}
+		} else if (input.length + running.length + other.length < AGENT_PANEL_IDLE_ROWS) {
+			other.push(task);
+		}
+	}
+	if (total === 0) return [];
+	const shownTasks = [...input, ...running, ...other].slice(0, AGENT_PANEL_IDLE_ROWS);
+	const now = Date.now();
+	const items = taskPanelItems({ backgroundTasks: shownTasks }, new Set(), { topLevelOnly: false }).map((row) => {
+		if (row.state === "queued") return row;
+		const itemClocks = taskClockOf(row) ?? clocks;
+		if (itemClocks === undefined) return row;
+		const taskId = agentPanelTaskId(row.id) ?? row.id;
+		const elapsedMs = itemClocks.elapsedMs(taskId, row.elapsedMs, taskClockRunning(row.state), now);
+		return elapsedMs === undefined || elapsedMs === row.elapsedMs || (row.elapsedMs === undefined && elapsedMs < 1000)
+			? row
+			: { ...row, elapsedMs };
+	});
 	return renderAgentPanelRows(
-		taskPanelItems({ backgroundTasks: active }, new Set(), { topLevelOnly: false }).reverse(),
+		items,
 		width,
 		{
 			dim: (text) => theme.fg("dim", text),
@@ -80,5 +112,6 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number): s
 			error: (text) => theme.fg("error", text),
 			warning: (text) => theme.fg("warning", text),
 		},
+		{ hiddenBelow: total - items.length },
 	);
 }

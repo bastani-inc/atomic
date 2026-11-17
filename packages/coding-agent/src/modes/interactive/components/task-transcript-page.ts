@@ -2,7 +2,7 @@ import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bast
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { isRunningTaskClock, liveElapsedMs } from "../../../core/tasks/live-elapsed.js";
+import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import {
@@ -127,6 +127,7 @@ async function settled<T>(read: T | Promise<T>): Promise<T> {
  * the task through its Intercom target.
  */
 export class TaskAgentTranscriptPage implements TaskTranscriptPage {
+	private readonly elapsedClocks: TaskElapsedClocks;
 	readonly chat: ChatSessionHost;
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
@@ -165,6 +166,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		reportLate: (reason: string) => void = (reason) => env.notify?.(reason),
 	) {
 		this.source = source;
+		this.elapsedClocks = taskClocksFor(source);
 		this.taskId = taskId;
 		this.env = env;
 		this.requestRender = requestRender;
@@ -324,11 +326,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 							: taskState(task)
 						: task.metrics?.elapsedMs === undefined
 							? "running"
-							: formatPanelElapsed(
-									liveElapsedMs(
+							: // The clock the agent panel and /tasks share, so all three agree.
+								formatPanelElapsed(
+									this.elapsedClocks.elapsedMs(
 										task.ref.taskId,
 										task.metrics.elapsedMs,
-										isRunningTaskClock(task.execution.kind),
+										taskClockRunning(task.execution.kind),
 									) ?? task.metrics.elapsedMs,
 								);
 		const stopped = this.source.taskStopped?.(this.taskId) === true;
