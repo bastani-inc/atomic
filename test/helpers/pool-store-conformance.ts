@@ -749,6 +749,28 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			assert.deepEqual(failures, []);
 		});
 
+		test("a rate bucket whose interval is not a whole number of milliseconds grants no more than its rate (#4768)", async (f) => {
+			// About 17 391 requests a minute: the bucket keeps its schedule in whole milliseconds, and a schedule rounded
+			// down by a fraction of the interval at each grant would let every host through faster than the rate.
+			const shape = { intervalMs: 3.45, burst: 50 };
+			const failures: Error[] = [];
+			const hosts = await Promise.all(
+				Array.from({ length: 6 }, async () => SqlRateBuckets.open(await f.peer(failures))),
+			);
+			const started = await databaseNow(f.database);
+			const outcomes = await Promise.all(
+				hosts.flatMap((store) => Array.from({ length: 25 }, () => store.acquire("anthropic", 1, shape))),
+			);
+			const elapsedMs = (await databaseNow(f.database)) - started;
+			const granted = outcomes.reduce((sum, outcome) => sum + outcome.granted, 0);
+			// GCRA's bound: its burst, plus one token per interval of the database's clock that passed.
+			assert.ok(
+				granted <= shape.burst + elapsedMs / shape.intervalMs + 1e-6,
+				JSON.stringify({ granted, elapsedMs }),
+			);
+			assert.deepEqual(failures, []);
+		});
+
 		test("a 429 cooldown one host shares holds every host's acquires and reaches their polls (#4768)", async (f) => {
 			const one = await SqlRateBuckets.open(f.journal);
 			const other = await SqlRateBuckets.open(await f.peer());

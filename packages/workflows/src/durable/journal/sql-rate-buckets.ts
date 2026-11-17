@@ -139,14 +139,18 @@ export class SqlRateBuckets {
 		// One reading of the clock: PostgreSQL's moves on between two, and a check reading it twice fits more than the burst.
 		const now = "(SELECT now FROM clock)";
 		const next = `${d.greatest("tat", now)} + ? * interval_ms`;
+		// The schedule is kept in whole milliseconds, rounded up: rounded down, as a cast does on SQLite and can on
+		// PostgreSQL, an interval that is not a whole number of milliseconds would grant more than the rate (#4768).
+		const whole = `CAST(${next} AS ${d.types.int})`;
 		const statements: SqliteStatement[] = [
 			...(shape === undefined ? [] : [this.shape(scope, shape)]),
 			{
 				sql: `WITH clock AS (SELECT ${this.now} AS now)
-					UPDATE ${this.table} SET tat = CAST(${next} AS ${d.types.int}), ${RATE_BUCKET_ACQUIRED} = ${RATE_BUCKET_ACQUIRED} + ?, updated_at = ${now}
+					UPDATE ${this.table} SET tat = CASE WHEN ${next} > ${whole} THEN ${whole} + 1 ELSE ${whole} END,
+					${RATE_BUCKET_ACQUIRED} = ${RATE_BUCKET_ACQUIRED} + ?, updated_at = ${now}
 					WHERE scope = ? AND ${next} - ${now} <= burst * interval_ms AND cooldown_until <= ${now}
 					RETURNING tat`,
-				params: [count, count, scope, count],
+				params: [count, count, count, count, count, scope, count],
 			},
 			{
 				sql: `SELECT tat, interval_ms, burst, cooldown_until, ${this.now} AS now FROM ${this.table} WHERE scope = ?`,
