@@ -269,6 +269,7 @@ export interface AgentSessionConfig {
 	 */
 	contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	orchestrationContext?: OrchestrationContext;
+	intercomPolicy?: import("./intercom-policy.ts").SessionIntercomPolicy;
 	/** Resolved worktree snapshot settings; default: the settings manager's `snapshots.*`. */
 	worktreeSnapshots?: import("./worktree-snapshot/types.ts").WorktreeSnapshotSettings;
 }

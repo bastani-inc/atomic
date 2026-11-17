@@ -10,6 +10,13 @@ import { sharedAliases } from "../../vitest.base.js";
 const defaultTestTimeoutMs = process.platform === "win32" ? 90_000 : 30_000;
 
 /**
+ * Setup and teardown hooks here create git sandboxes and open SQLite session stores. Under a loaded
+ * Windows shard that structural work regularly passes vitest's 10 s hook default, so Windows hooks get
+ * the same headroom ratio as the tests; other platforms keep the default.
+ */
+const defaultHookTimeoutMs = process.platform === "win32" ? 30_000 : 10_000;
+
+/**
  * The `exclude` list is preserved verbatim from before the migration. Narrowing
  * it is a separate change and must not ride along in a toolchain migration.
  */
@@ -53,6 +60,7 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 			"../../test/helpers/checkout-snapshot-isolation.ts",
 		],
 		globalSetup: [
+			"../../test/global-setup-lost-workers.ts",
 			"../../test/global-setup-herdr-isolation.ts",
 			"../../test/global-setup-provider-credential-isolation.ts",
 			"../../test/global-setup-debug-isolation.ts",
@@ -61,6 +69,7 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 			"../../test/global-setup-workflow-journal.ts",
 		],
 		testTimeout: defaultTestTimeoutMs,
+		hookTimeout: defaultHookTimeoutMs,
 		include,
 		exclude: ["**/node_modules/**", ...exclude],
 		server: { deps: { external: [/@silvia-odwyer\/photon-node/] } },

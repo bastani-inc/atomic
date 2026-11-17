@@ -20,6 +20,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { exitedProcess } from "../../../test/helpers/exited-process.js";
 import { setNativeLocksForTesting, TAKEOVER_MUTEX_STALE_MS, takeTakeoverMutex } from "../src/core/lock-takeover.ts";
 import { processStartToken } from "../src/core/process-start-token.ts";
 import { attachSessionClaim, claimSession } from "../src/core/session-claims.ts";
@@ -74,22 +75,6 @@ async function liveProcess(): Promise<number> {
 	return child.pid!;
 }
 
-/**
- * A process that ran and is gone, named as a claim names its holder: by its pid and, where that can be read, when it
- * started, read while it ran. Windows soon gives an exited process's pid to another process, and only the start tells
- * that process from the one that is gone; a claim naming the pid alone would be that process's.
- */
-async function deadProcess(): Promise<{ readonly pid: number; readonly started?: string }> {
-	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-	await new Promise<void>((resolve) => child.once("spawn", () => resolve()));
-	const pid = child.pid!;
-	const started = processStartToken(pid);
-	const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
-	child.kill("SIGKILL");
-	await exited;
-	return started === undefined ? { pid } : { pid, started };
-}
-
 function claimedByThisProcess(sessionId: string): boolean {
 	const record = JSON.parse(readFileSync(claimFile(sessionId), "utf8")) as { pid: number; host: string };
 	return record.pid === process.pid && record.host === hostname();
@@ -138,7 +123,7 @@ describe("session claims (#5135)", () => {
 
 	test("a claim whose holder is gone is taken over (#5135)", async () => {
 		const sessionId = newSessionId();
-		writeClaim(sessionId, { token: "dead", ...(await deadProcess()), host: hostname() });
+		writeClaim(sessionId, { token: "dead", ...exitedProcess(), host: hostname() });
 		claim(sessionId);
 		assert.ok(claimedByThisProcess(sessionId));
 	});
@@ -251,7 +236,7 @@ describe("session claims (#5135)", () => {
 	test("without the native lock, a takeover lock left by a dead process is broken (#5135)", async () => {
 		setNativeLocksForTesting(null);
 		const sessionId = newSessionId();
-		writeClaim(sessionId, { token: "dead", ...(await deadProcess()), host: hostname() });
+		writeClaim(sessionId, { token: "dead", ...exitedProcess(), host: hostname() });
 		const lock = `${claimFile(sessionId)}.takeover`;
 		mkdirSync(lock);
 		const at = new Date(Date.now() - 11_000);
@@ -264,7 +249,7 @@ describe("session claims (#5135)", () => {
 	test("without the native lock, a takeover lock held by a live takeover is waited out, then the claim is reported held (#5135)", async () => {
 		setNativeLocksForTesting(null);
 		const sessionId = newSessionId();
-		const dead = await deadProcess();
+		const dead = exitedProcess();
 		writeClaim(sessionId, { token: "dead", ...dead, host: hostname() });
 		const lock = `${claimFile(sessionId)}.takeover`;
 		mkdirSync(lock);
@@ -280,7 +265,7 @@ describe("session claims (#5135)", () => {
 
 	test("an advisory takeover lock held by a live takeover is waited out, then the claim is reported held (#5193)", async () => {
 		const sessionId = newSessionId();
-		const dead = await deadProcess();
+		const dead = exitedProcess();
 		writeClaim(sessionId, { token: "dead", ...dead, host: hostname() });
 		const mutex = takeTakeoverMutex(claimFile(sessionId));
 		assert.ok(mutex);
@@ -299,11 +284,11 @@ describe("session claims (#5135)", () => {
 
 	test("a takeover directory a killed process left behind does not stop the takeover (#5193)", async () => {
 		const sessionId = newSessionId();
-		writeClaim(sessionId, { token: "dead", ...(await deadProcess()), host: hostname() });
+		writeClaim(sessionId, { token: "dead", ...exitedProcess(), host: hostname() });
 		mkdirSync(`${claimFile(sessionId)}.takeover`);
 		writeFileSync(
 			join(`${claimFile(sessionId)}.takeover`, "owner"),
-			JSON.stringify({ host: hostname(), ...(await deadProcess()), id: "killed" }),
+			JSON.stringify({ host: hostname(), ...exitedProcess(), id: "killed" }),
 		);
 		claim(sessionId);
 		assert.ok(claimedByThisProcess(sessionId));

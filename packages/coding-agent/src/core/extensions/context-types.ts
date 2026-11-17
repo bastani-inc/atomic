@@ -234,6 +234,11 @@ export interface ExtensionContext {
 	readonly orchestrationContext?: OrchestrationContext;
 	/** Typed capability policy for an in-process subagent child, when this session is one. */
 	readonly subagentPolicy?: SubagentChildPolicy;
+	/**
+	 * the session's Intercom home group and reach, when its host set one with `createAgentSession({ intercom })`
+	 * or it is a workflow stage or subagent of such a session.
+	 */
+	readonly intercomPolicy?: import("../intercom-policy.ts").IntercomPolicyView;
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
 	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */

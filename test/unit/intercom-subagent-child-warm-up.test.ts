@@ -36,7 +36,7 @@ type ConnectRegistration = Parameters<IntercomClient["connect"]>[0];
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
 vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
-	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 3 } }),
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 4 } }),
 }));
 
 const EXTENSION_PATH = "<intercom>";
@@ -293,6 +293,65 @@ describe("Intercom heavy runtime admitted child registration", () => {
 			assert.deepEqual(current.groups, ["workflow:run-1"]);
 		} finally {
 			await current.fire(SESSION_SHUTDOWN);
+		}
+	});
+
+	test("session_start waits for a held message to be saved as first-turn context (#5341)", async () => {
+		const saving = Promise.withResolvers<void>();
+		const releaseSave = Promise.withResolvers<void>();
+		const handlers: LifecycleHandlers = new Map();
+		const pi = harnessPi(handlers, new Map());
+		const sendMessage = vi.fn(async (_message: unknown, _options?: unknown) => {
+			saving.resolve();
+			await releaseSave.promise;
+		});
+		pi.sendMessage = sendMessage;
+		mockBrokerClient(() => {});
+		vi.mocked(IntercomClient.prototype.connect).mockImplementation(async function (this: IntercomClient) {
+			this.emit(
+				"message",
+				{
+					id: "held-message-sender",
+					cwd: process.cwd(),
+					model: "test-model",
+					pid: process.pid,
+					startedAt: Date.now(),
+					lastActivity: Date.now(),
+					groups: ["workflow:run-1"],
+				},
+				{ id: "held-before-first-turn", timestamp: Date.now(), content: { text: "held first-turn context" } },
+			);
+		});
+		vi.spyOn(IntercomClient.prototype, "listSessions").mockResolvedValue([]);
+		intercomHeavy(pi);
+		const ctx = connectedChildContext({
+			...admittedChildPolicy,
+			startup: {
+				signal: new AbortController().signal,
+				enterStep() {},
+				firstTurnPending: () => true,
+			},
+		});
+		let started = false;
+		const starting = emitThroughHost(handlers, ctx, SESSION_START).then((reported) => {
+			started = true;
+			return reported;
+		});
+		try {
+			await saving.promise;
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(started, false, "the first turn cannot start while its held context is still being saved");
+			releaseSave.resolve();
+			assert.deepEqual(await starting, []);
+			assert.equal(sendMessage.mock.calls.length, 1);
+			const call = sendMessage.mock.calls[0];
+			assert.ok(call);
+			assert.match(JSON.stringify(call[0]), /Messages received before you started/);
+			assert.notEqual((call[1] as { triggerTurn?: boolean } | undefined)?.triggerTurn, true);
+		} finally {
+			releaseSave.resolve();
+			await starting;
+			await emitThroughHost(handlers, ctx, SESSION_SHUTDOWN);
 		}
 	});
 

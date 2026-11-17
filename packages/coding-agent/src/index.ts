@@ -506,6 +506,15 @@ export {
 	serializeIntercomBrokerError,
 } from "./core/intercom-broker-error.ts";
 export {
+	confinedIntercomChildGroup,
+	IntercomPolicyError,
+	type IntercomPolicyView,
+	type IntercomReachApplier,
+	type IntercomSessionOptions,
+	MAX_INTERCOM_REACHABLE_GROUPS,
+	type SessionIntercom,
+} from "./core/intercom-policy.ts";
+export {
 	isProjectGroupError,
 	ProjectGroupError,
 	type ProjectGroupErrorCode,
@@ -959,7 +968,9 @@ export {
 export { boundOversizedText } from "./core/tools/oversized-tool-result.js";
 export {
 	assertPrivateDirectory,
+	assertPrivateDirectoryAsync,
 	ensurePrivateTempDir,
+	ensurePrivateTempDirAsync,
 	TempDirRefusedError,
 } from "./core/tools/session-temp-dir.ts";
 export {

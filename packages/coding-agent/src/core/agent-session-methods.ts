@@ -300,7 +300,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		previousModel: Model<Api> | undefined,
 		source: "set" | "cycle" | "restore" | "fallback",
 	): Promise<void>;
-	setModel(model: Model<Api>, options?: ModelMutationOptions): Promise<void>;
+	setModel(model: Model<Api>, options?: ModelMutationOptions & { thinkingLevel?: ThinkingLevel }): Promise<void>;
 	cycleModel(
 		direction?: "forward" | "backward",
 		options?: ModelMutationOptions,
@@ -672,6 +672,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_orchestrationContext?: OrchestrationContext;
 	_workspace?: import("./workspace/resolve.ts").BoundWorkspace;
 	_subagentPolicy?: import("./extensions/index.js").SubagentChildPolicy;
+	_intercomPolicy?: import("./intercom-policy.ts").SessionIntercomPolicy;
 	_subagentMessageAdmission?: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary;
 	_extensionUIContext?: ExtensionUIContext;
 	_extensionHumanInput?: import("./extensions/host-input.js").HostInput | null;

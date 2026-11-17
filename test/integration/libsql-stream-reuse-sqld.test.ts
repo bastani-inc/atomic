@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { test, vi } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { StorageTransientError } from "../../packages/coding-agent/src/core/storage/index.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { startOutageProxy } from "../helpers/outage-proxy.js";
@@ -14,6 +14,9 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
  */
 
 useTemporaryAgentDir();
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
 
 const url = process.env.ATOMIC_TEST_LIBSQL_URL;
 const withSqld = test.skipIf(url === undefined || url === "");
@@ -164,6 +167,48 @@ withSqld(
 			await other.exec(`DROP TABLE IF EXISTS ${table}`).catch(() => {});
 			await other.close();
 			await kept.close();
+		}
+	},
+);
+
+withSqld(
+	"against sqld at a ws: URL, statements, a write batch and a transaction all go over its WebSocket (#5151, #4768)",
+	async () => {
+		const server = new URL(url!);
+		server.protocol = server.protocol === "http:" ? "ws:" : "wss:";
+		let fetched = 0;
+		const real = globalThis.fetch;
+		vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+			fetched++;
+			return real(input, init);
+		});
+		const database = await openLibsqlDatabase({ url: server.href });
+		const table = `ws_${randomBytes(6).toString("hex")}`;
+		try {
+			await database.exec(`CREATE TABLE ${table}(n INTEGER NOT NULL)`);
+			await database.run(`INSERT INTO ${table} VALUES (?)`, 1);
+			assert.equal(
+				Number((await database.get<{ count: bigint }>(`SELECT COUNT(*) AS count FROM ${table}`))?.count),
+				1,
+			);
+			await database.batch!(
+				[
+					{ sql: `INSERT INTO ${table} VALUES (?)`, params: [2] },
+					{ sql: `INSERT INTO ${table} VALUES (?)`, params: [3] },
+				],
+				{ lockWaitMs: 30_000 },
+			);
+			await database.transaction((transaction) => transaction.run(`INSERT INTO ${table} VALUES (?)`, 4));
+			const rows = await database.all<{ n: bigint }>(`SELECT n FROM ${table} ORDER BY n`);
+			assert.deepEqual(
+				rows.map((row) => Number(row.n)),
+				[1, 2, 3, 4],
+			);
+			assert.equal(fetched, 0);
+		} finally {
+			await database.exec(`DROP TABLE IF EXISTS ${table}`).catch(() => {});
+			await database.close();
+			vi.unstubAllGlobals();
 		}
 	},
 );

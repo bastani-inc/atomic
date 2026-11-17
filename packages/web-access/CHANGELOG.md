@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, GitHub clone cache checks no longer pause the main thread. A configuration load still waiting for its private directory cannot restore old settings after the session resets its configuration ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
+
 ## [0.9.88] - 2026-11-16
 
 ### Fixed

@@ -268,15 +268,17 @@ Messages are `AgentMessage` objects (see [Types](#types)).
 
 #### set_model
 
-Switch to a specific model. Omit `persist` (or set it false) to change only the current session. Set `"persist": true` to also save `defaultProvider`, `defaultModel`, and the effective thinking level in settings, matching an interactive `/model` selection.
+Switch to a specific model. Pass optional `thinkingLevel` (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`) to choose the model and its reasoning level in one call. A level the model does not support is clamped to a supported level. An unrecognized value returns an error response without changing the model.
+
+Omit `persist` (or set it false) to change only the current session. Set `"persist": true` to also save `defaultProvider`, `defaultModel`, and the effective thinking level in settings, matching an interactive `/model` selection.
 
 ```json
 {"type": "set_model", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514"}
 ```
 
-Persist as the startup default:
+Persist as the startup default with an explicit reasoning level:
 ```json
-{"type": "set_model", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514", "persist": true}
+{"type": "set_model", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514", "thinkingLevel": "high", "persist": true}
 ```
 
 Response contains the full [Model](/rpc/protocol#model) object:
@@ -288,6 +290,8 @@ Response contains the full [Model](/rpc/protocol#model) object:
   "data": {...}
 }
 ```
+
+When `persist` is true, the model object also includes `persistedDefaults` with `provider`, `modelId`, `thinkingLevel` and `defaultThinkingLevel`. These fields report the startup model, its reasoning preference and the reasoning default saved to the global settings file, without project overrides. They can differ from the live session if an extension makes a session-only change during model selection. Use `get_state` to read the live model and reasoning level.
 
 #### cycle_model
 
@@ -311,7 +315,19 @@ Response:
 }
 ```
 
-The `model` field is a full [Model](#model) object.
+The `model` field is a full [Model](#model) object. With `persist: true`, the response data also includes `persistedDefaults` in the same format as [`set_model`](#set_model).
+
+#### set_scoped_models
+
+Replace the current session's model-cycling scope. Model searches limited to the scope and `cycle_model` use the new list immediately. An empty `models` list removes the cycling restriction. Unknown model references are ignored. Invalid thinking levels return an error without changing the scope.
+
+```json
+{"type": "set_scoped_models", "models": [{"provider": "openai", "modelId": "o3", "thinkingLevel": "high"}]}
+```
+
+Each entry requires `provider` and `modelId`; `thinkingLevel` is optional. The optional `enabledModels` field also updates the global saved model patterns. Omit it to leave saved settings unchanged, pass an array to replace them, or pass `null` to enable all models. Project settings remain unchanged.
+
+A successful response has `command: "set_scoped_models"` and the same catalog `data` as `get_available_models`, including the updated `scopedModels`.
 
 #### get_available_models
 

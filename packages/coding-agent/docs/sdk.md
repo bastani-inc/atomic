@@ -377,6 +377,30 @@ Without a per-run or per-session option, `ATOMIC_WORKFLOWS_JOURNAL` or a non-emp
 
 Workflow stages run by the standalone `run()` API can use Intercom when the stage has access to the `intercom` tool, including with `executionMode: "non_interactive"`. Atomic opens Intercom when an eligible stage starts and closes the workflow route when the run settles. Intercom remains unavailable when a stage excludes the tool or disables its builtin package. A local session that needs to steer a standalone run can join `workflow:<rootRunId>` and send to a stage or `workflow:<rootRunId>/**`. See [Programmatic usage](/workflows/api-reference#programmatic-usage) for details.
 
+### Intercom group and reach
+
+A host that runs several sessions in one process can give each one its own [Intercom](/intercom) group and decide which other groups it can reach. Pass `intercom` to `createAgentSession()`:
+
+```typescript
+const { session } = await createAgentSession({
+  intercom: { group: "doc-1842", reachable: ["doc-1907"] },
+});
+
+// Later, while the session runs:
+await session.intercom.setReachable(["doc-1907", "doc-2011"]);
+```
+
+- `group` is the session's home group. It takes precedence over `ATOMIC_INTERCOM_GROUP`, the Intercom `config.json` `"group"` and the project group. The session stays an ordinary top-level session and keeps its workflow extension.
+- `reachable` lists the other groups the session may reach. Missing or empty means none; up to 1,000 groups.
+- The session can `list`, `send` to and `ask` only sessions in `group`, `reachable`, or a subgroup under `group`, plus the workflow stages it starts. A send or ask to any other session is refused with a reason and is not queued.
+- `groups` shows only `group` and `reachable`, `join` accepts only those names, and `leave` can't remove `group`. A `list` or `status` peek is limited to groups the session reaches, including subgroups under its home.
+- Reach is one way: listing B's group lets the session reach B, not B reach the session. B can still reply to the session's asks.
+- Workflow stages keep their own subgroups under the run's `workflow:<rootRunId>` group, and the session keeps its control over them. A subagent launched with `group: "x"` is placed in `<group>/x`, which the session can reach. Stages and subagents never get the session's `reachable` groups: each reaches only its own group and the subgroups under it.
+- The Intercom broker holds and enforces the policy, so a client that skips the `intercom` tool cannot get around it. The policy is registered again after a reconnect or a broker restart.
+- A child workflow that runs on a [local worker pool](/workflows/api-reference#programmatic-usage) runs its stages in the worker processes, which follow their own Intercom settings and do not get this policy. Leave `localWorkers` off for sessions that need this isolation.
+
+`createAgentSessionFromServices()` accepts the same `intercom` option, so a runtime factory can pass it through. `session.intercom.setReachable(groups)` takes effect from the session's next Intercom call; its promise settles once the broker holds the new set, or at once while the session is not connected, which then registers with the new set. Narrowing it also leaves any group the session joined that is no longer reachable. `session.intercom.group` and `session.intercom.reachable` report the current policy. On a session created without the option, `group` is `undefined` and `setReachable` rejects with `IntercomPolicyError`; such sessions keep the usual Intercom rules. An invalid `intercom` option (an empty or reserved group name such as `auto`, or more than 1,000 reachable groups) makes `createAgentSession()` reject with `IntercomPolicyError` before anything is created.
+
 ### Workflow run control
 
 `session.workflows` controls this session's runs without slash commands or the model-facing `workflow` tool. A fresh session can inspect a durable root by its full UUID within the same working directory and journal. Inspection stays read-only and does not add the run to `listRuns()`.
@@ -573,7 +597,7 @@ interface AgentSession {
   readonly workflows: SessionWorkflows;
 
   // Model and thinking control
-  setModel(model: Model): Promise<void>;
+  setModel(model: Model, options?: { persist?: boolean; thinkingLevel?: ThinkingLevel }): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
   cycleModel(): Promise<ModelCycleResult | undefined>;
   cycleThinkingLevel(): ThinkingLevel | undefined;
@@ -601,6 +625,8 @@ interface AgentSession {
   dispose(): Promise<void>;
 }
 ```
+
+Pass `thinkingLevel` to `session.setModel(model, { thinkingLevel: "high" })` to choose a model and its reasoning level together. Unsupported levels are clamped to the model's supported levels. Add `persist: true` to save the model and reasoning preferences to global settings. Project overrides stay in the project settings file and still take precedence when a session starts.
 
 Always `await session.dispose()` in `finally`. Disposal immediately refuses new work, cancels and drains owned operations, settles questions, shuts down extensions and releases session leases. Repeated calls await the same outcome.
 

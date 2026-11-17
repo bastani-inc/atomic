@@ -21,7 +21,7 @@ try {
 
 `exec`, `run`, `get`, and `all` return promises. Bind values through positional `?` parameters; `run` returns `{ changes }`, `get` returns a row or `undefined`, and `all` returns an array. Values may be null, number, bigint, string, or Uint8Array. Binary values are copied when the call is made, so reusing a buffer afterward does not change queued work. INTEGER values inside the safe integer range are returned as numbers; larger values are returned as bigints.
 
-The node adapter creates parent directories and enables WAL, full synchronization, and foreign keys. Its busy timeout defaults to 5000 ms; override it with `openNodeSqliteDatabase(path, { busyTimeoutMs: 1000 })`. Use `:memory:` for an ephemeral database. Pass `{ readOnly: true }` to inspect an existing file without creating it or changing its journal mode.
+The node adapter creates parent directories and enables WAL, full synchronization, and foreign keys. Its busy timeout defaults to 5000 ms; override it with `openNodeSqliteDatabase(path, { busyTimeoutMs: 1000 })`. Use `:memory:` for an ephemeral database. Pass `{ readOnly: true }` to inspect an existing file without creating it or changing its journal mode. `openNodeSqliteDatabase` and `wrapNodeSqliteDatabase` connections hold a shared lock on `<file>-open.lock` while they are open, `file:` URIs included, so Atomic removes a local checkpoint journal only when none of them has it open. An `openNodeSqliteDatabase` read-only connection takes the lock only beside a database that has a `<file>-holders` directory, a `<file>-open.lock` or a `<file>.lock` file, and goes without it where it cannot create the lock file, such as in a read-only directory. `wrapNodeSqliteDatabase` attempts the lock for every file-backed connection, including a read-only connection to an untouched database, because the caller's connection does not expose its read-only setting. It removes the lock file when the last connection releases it. Wrapping also works without the lock when the lock file is not writable, including when a Windows directory's permissions refuse new files. Journal cleanup never removes a file while an Atomic-created or Atomic-wrapped connection uses it. Tools that open checkpoint journal files directly outside Atomic do not take this lock; do not run them against a crashed host's journal while a new host starts.
 
 Transactions from separate `openNodeSqliteDatabase` connections to the same file queue asynchronously within one process; symlink paths refer to the same queue. Separate in-memory databases remain independent. Wrap a caller-owned connection consistently: its transaction queue is shared by wrappers of that connection, not by other connections to its file.
 
@@ -266,6 +266,8 @@ Save the token with `turso db tokens create <db> > turso-token` and keep it read
 
 A process that stops for a while in the middle of a write, for example one paused by a signal, starved of CPU, or on a laptop that slept, can find on resuming that the server expired its idle stream or rolled back its transaction; a server that is restarting refuses connections for a moment. A request the server leaves unanswered for 30 seconds is abandoned and reported the same way, with `outcome: "unknown"`. The adapter reports these as `StorageTransientError`, and a statement, a batch, or a workflow journal or session write that they ended before it wrote anything runs again, up to five times over about four seconds. A write whose connection broke after the server may have applied it is never sent again: it fails with `StorageTransientError` and `outcome: "unknown"`. Workflow runs that still fail this way can be continued with `/workflow resume`.
 
+The adapter uses WebSockets for `ws:` and `wss:` URLs, including `run`, `get` and `all` statements. A batch is successful only when its COMMIT ran. If the server skipped COMMIT without an explicit rollback error, Atomic reports `StorageUnavailableError` with cause code `TRANSACTION_CLOSED` rather than assuming success or retrying an unconfirmed write.
+
 #### Size limits
 
 A libSQL server limits how much one statement can carry. sqld 0.24 refuses any value, computed string, or row over 5,000,000 bytes by default. Its `max_row_size` sets SQLite's `SQLITE_LIMIT_LENGTH` on every connection. sqld also refuses a statement whose response is over 10 MB (`--max-response-size`). SQLite files allow 1,000,000,000 bytes per value and PostgreSQL about 1 GB per field.
@@ -279,9 +281,11 @@ Atomic's stores keep every value well under the smallest of these limits, so ses
 - A workflow journal event whose JSON is over 1 MiB, such as a large `ctx.step` result or stage output, is stored as rows of at most 1 MiB in `wf_event_chunks`, in the transaction that appends the event. Its `wf_events` row keeps a summary with the event's short top-level fields and its `worktreeSnapshots`, which the queries that read event JSON in SQL use: the snapshot reference index, a run's latest snapshot and checkpoint time, and run status.
 - A worker pool child's inputs over 1 MiB, and a pooled child's result over 1 MiB, are stored the same way, in `wf_runs_work_input_chunks` and `wf_runs_work_result_chunks`.
 
-Blobs, entries, events, inputs and results written before this release stay in one row and are still read.
+Blobs, entries, events, inputs and results written before this release stay readable in their original rows. Snapshot collection moves worktree-snapshot blobs over 1 MiB into chunks regardless of their age, writing at most 16 MiB of chunks per transaction. Recording unknown ages for smaller blobs also rewrites at most 16 MiB per transaction. Moving a blob preserves its existing age, so conversion does not restart its grace window. A stopped move resumes on the next collection, and deleting the blob removes its partial chunks.
 
-**This upgrade is one way.** The first session entry this release stores in chunks upgrades the session schema to version 2, in the sessions meta table. Until then, a new database or an existing version 1 database stays at version 1, and older builds keep opening it. A database already at version 2 is not downgraded, even after its chunked entries are deleted. When this release opens a workflow journal, it upgrades the journal schema (`wf_meta`) to version 2, and a worker pool's schema (`wf_runs_pool_meta`) to version 3. Older Atomic builds then refuse the database with `StorageSchemaVersionError` (`JournalSchemaVersionError` for a journal) instead of reading a large entry, event, input, result or worktree snapshot blob as a stub. Storing a worktree snapshot over 1 MiB does the same to the journal schema even where no workflow has run yet, so an older build cannot open that database's journal. Upgrade every host that shares a store together, before any of them opens it with this release.
+Refreshing or storing a blob of unknown age leaves it protected until collection records its age. A blob whose age an older build already recorded keeps its normal age refresh, so refreshing a large inline blob can still rewrite its whole row before the first collection moves it. Publishing the chunks also frees the old inline pages under the write lock, with time proportional to the blob's size.
+
+**This upgrade is one way.** The first session entry this release stores in chunks upgrades the session schema to version 2, in the sessions meta table. Until then, a new database or an existing version 1 database stays at version 1, and older builds keep opening it. A database already at version 2 is not downgraded, even after its chunked entries are deleted. When this release opens a workflow journal, it upgrades the journal schema (`wf_meta`) to version 2, and a worker pool's schema (`wf_runs_pool_meta`) to version 3. Older Atomic builds then refuse the database with `StorageSchemaVersionError` (`JournalSchemaVersionError` for a journal) instead of reading a large entry, event, input, result or worktree snapshot blob as a stub. Storing a worktree snapshot over 1 MiB, or a collection finishing the move of an older one into chunks, does the same to the journal schema even where no workflow has run yet, so an older build cannot open that database's journal. Upgrade every host that shares a store together, before any of them opens it with this release.
 
 **Stop every older Atomic process on a shared store before the first run of this release**, worker hosts and pool workers included. A process that opened the store before the upgrade keeps it open and never reads its schema version again, so it can read a chunked session entry or workflow event as a stub. The lazy session upgrade does not make it safe to run older and newer builds on the same store at once. An older process running across the first chunked entry can also leave deleted session content behind in chunk rows when it rewrites or deletes that session. After stopping it, reopen the SQLite/libSQL store with write access using this release to remove those rows. Opening it read-only leaves those rows unchanged. This release stores large journal events, pool inputs and pool results whole while it can tell that an older process is live: one holds a workflow run's lease renewed in the last two minutes that no build of this release granted, or a worker host without the journal schema it reads reported in that window. Whole, such a value fails on a libSQL server with `StoragePayloadTooLargeError`, as before this release. An older process that only reads cannot be told apart. From this release on, each session transaction and each read and write of a workflow journal checks its schema version. A process of this release refuses a session schema newer than version 2 with `StorageSchemaVersionError`, or a journal a later release upgrades with `JournalSchemaVersionError`. An older build that reads a large worktree snapshot through a workflow journal, without opening the session store, reports the snapshot as corrupt (`WorkspaceRestoreError` `blob-corrupt`), because it cannot read the snapshot's chunks.
 
@@ -559,8 +563,13 @@ You can also implement `SqliteDatabase` yourself by following the same rules. Ei
 
 This module is a complete adapter. Install `@libsql/client` where the module can import it, for example as a dependency of an [Atomic package](#adapters-from-atomic-packages). It accepts caller-provided credentials only. For a local file, create its parent directory first; no network or credentials are needed.
 
+Keep `closeEachConnectionOnce` and `releaseClosedConnections` when you copy the example. For a local file, `@libsql/client` 0.18 uses the native `libsql` 0.5 driver, which closes a connection's SQLite handle twice when no statement still holds the connection. The second close reads freed memory, and on Windows the process can then exit without an error message. `closeEachConnectionOnce` prepares a statement before each close and holds it until the close returns, so the handle closes once, when the statement is garbage-collected. For a local file, `close()` therefore runs two garbage collections before it resolves, so the database's files are released when it returns and Windows can delete them. `@bastani/atomic-storage-libsql` does the same.
+
 {/* custom-driver-example */}
 ```ts
+import { createRequire } from "node:module";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import type { Client, Transaction } from "@libsql/client";
 import {
 	createSqliteDatabase,
@@ -598,6 +607,76 @@ function urlCredentials(url: string): string[] {
 	return secrets;
 }
 
+const closesOnce = Symbol.for("@bastani/atomic-storage-libsql.closesOnce");
+
+interface LibsqlConnection {
+	open: boolean;
+	close(): void;
+	prepare(sql: string): object;
+}
+
+interface LibsqlConnectionClass {
+	prototype: LibsqlConnection & { [closesOnce]?: true };
+}
+
+const statementsHeldWhileClosing = new Set<object>();
+
+function statementHoldingConnection(connection: LibsqlConnection): object | undefined {
+	if (!connection.open) return undefined;
+	try {
+		return connection.prepare("SELECT 1");
+	} catch {
+		return undefined;
+	}
+}
+
+function closeEachConnectionOnce(): void {
+	const client = createRequire(import.meta.url).resolve("@libsql/client");
+	const Connection = createRequire(client)("libsql") as LibsqlConnectionClass;
+	if (Connection.prototype[closesOnce]) return;
+	const close = Connection.prototype.close;
+	Connection.prototype.close = function (this: LibsqlConnection) {
+		const statement = statementHoldingConnection(this);
+		if (statement) statementsHeldWhileClosing.add(statement);
+		try {
+			close.call(this);
+		} finally {
+			if (statement) statementsHeldWhileClosing.delete(statement);
+		}
+	};
+	Connection.prototype[closesOnce] = true;
+}
+
+interface GarbageCollectingRuntime {
+	gc?: () => void;
+	Bun?: { gc(force: boolean): void };
+}
+
+function exposedGc(): () => void {
+	setFlagsFromString("--expose-gc");
+	try {
+		return runInNewContext("gc") as () => void;
+	} finally {
+		setFlagsFromString("--no-expose-gc");
+	}
+}
+
+function collectGarbage(): void {
+	const runtime = globalThis as GarbageCollectingRuntime;
+	if (runtime.gc) runtime.gc();
+	else if (runtime.Bun) runtime.Bun.gc(true);
+	else exposedGc()();
+}
+
+const COLLECTION_PASSES = 2;
+
+async function releaseClosedConnections(): Promise<void> {
+	for (let pass = 0; pass < COLLECTION_PASSES; pass++) {
+		collectGarbage();
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+}
+
 function statements(connection: () => Client | Transaction): SqliteDriverExecutor {
 	return {
 		async execute(sql, params) {
@@ -612,6 +691,7 @@ export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptio
 	let createClient: typeof import("@libsql/client").createClient;
 	try {
 		({ createClient } = await import("@libsql/client"));
+		closeEachConnectionOnce();
 	} catch (cause) {
 		throw new StorageAdapterLoadError("@libsql/client", cause as StorageFailureCause);
 	}
@@ -631,7 +711,10 @@ export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptio
 				close: () => transaction.close(),
 			};
 		},
-		close: () => client?.close(),
+		async close() {
+			client?.close();
+			if (/^file:/i.test(url)) await releaseClosedConnections();
+		},
 	});
 	try {
 		await database.exec("PRAGMA foreign_keys = ON");
@@ -888,8 +971,7 @@ These storage errors carry a stable `code` and a `hint` with the remedy:
 | `SessionSpillError` | `spill-dir-refused` | Not thrown: recorded once, as above. The directory for released sessions' files could not be created under the agent directory; released sessions keep their history in memory, and the store tries again no more than once a minute. | `directory`, `errno` | Make the agent directory writable by this account. |
 | `SessionSpillError` | `spill-cleanup-failed` | Not thrown: recorded once, as above. A deleted or replaced session's file, or a closed store's directory, could not be removed. | `directory`, `sessionId` (for one session's file), `errno`, `cause` | Nothing in the store is affected; the process's directory is removed when it exits, or by the next start's sweep once it is gone. |
 
-Each has a guard that also recognizes a copy from another module instance or process: `isStorageConfigError`, `isStorageWriteLockTimeoutError`, `isStorageUnsupportedOperationError`, `isStorageWriterQueueDegradedError`, `isStorageWriterQueueUnusableError`, and `isStorageTransientError` (`STORAGE_TRANSIENT_ERROR_CODES` lists its codes). `isStorageError(error)` matches any storage error on this page, including a rehydrated one, and a copy of one of these coded errors. `findStorageWriteLockTimeoutError(error)` and `isRetryableStorageError(error)` look through up to eight levels of `cause`. To pass a storage error to another process, send `serializeStorageError(error)` as JSON and call `rehydrateStorageError` on the other side: any of the storage errors on this page comes back as the same class with the same message, fields, cause chain, `rollbackCause`, and `cleanupCause`. Only scalar facts travel, so a `StorageSchemaVersionError` whose `found` was a bigint or binary value comes back with `found: null`. A storage error the receiving version does not know becomes a `StorageError` that keeps the original `name`, `code`, and fields.
-Each has a guard that also recognizes a copy from another module instance or process: `isStorageConfigError`, `isStorageWriteLockTimeoutError`, `isStorageUnsupportedOperationError`, `isStorageWriterQueueDegradedError`, `isStorageWriterQueueUnusableError`, `isSessionBlobError`, and `isSessionSpillError`. `SESSION_BLOB_ERROR_CODES` lists `SessionBlobError`'s codes, none of which is retryable; `SESSION_SPILL_ERROR_CODES` lists `SessionSpillError`'s. `isStorageError(error)` matches any storage error on this page, including a rehydrated one, and a copy of one of these coded errors. `findStorageWriteLockTimeoutError(error)` and `isRetryableStorageError(error)` look through up to eight levels of `cause`. To pass a storage error to another process, send `serializeStorageError(error)` as JSON and call `rehydrateStorageError` on the other side: any of the storage errors on this page comes back as the same class with the same message, fields, cause chain, `rollbackCause`, and `cleanupCause`. Only scalar facts travel, so a `StorageSchemaVersionError` whose `found` was a bigint or binary value comes back with `found: null`. A storage error the receiving version does not know becomes a `StorageError` that keeps the original `name`, `code`, and fields.
+Each has a guard that also recognizes a copy from another module instance or process: `isStorageConfigError`, `isStorageWriteLockTimeoutError`, `isStorageUnsupportedOperationError`, `isStorageWriterQueueDegradedError`, `isStorageWriterQueueUnusableError`, `isStorageTransientError`, `isSessionBlobError`, and `isSessionSpillError`. `STORAGE_TRANSIENT_ERROR_CODES` lists `StorageTransientError`'s codes; `SESSION_BLOB_ERROR_CODES` lists `SessionBlobError`'s codes, none of which is retryable; `SESSION_SPILL_ERROR_CODES` lists `SessionSpillError`'s. `isStorageError(error)` matches any storage error on this page, including a rehydrated one, and a copy of one of these coded errors. `findStorageWriteLockTimeoutError(error)` and `isRetryableStorageError(error)` look through up to eight levels of `cause`. To pass a storage error to another process, send `serializeStorageError(error)` as JSON and call `rehydrateStorageError` on the other side: any of the storage errors on this page comes back as the same class with the same message, fields, cause chain, `rollbackCause`, and `cleanupCause`. Only scalar facts travel, so a `StorageSchemaVersionError` whose `found` was a bigint or binary value comes back with `found: null`. A storage error the receiving version does not know becomes a `StorageError` that keeps the original `name`, `code`, and fields.
 
 Session operations can raise `SessionNotFoundError` or `SessionExistsError` with `sessionId`; `SessionIdMismatchError` with `requested` and `found`; and `SessionConflictError` with `sessionId`, `expectedSeq`, and `actualSeq`. Keep one writer per session. After a conflict, reopen the session rather than writing from stale state.
 

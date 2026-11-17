@@ -948,6 +948,7 @@ async function reloadOwnedGeneration(
 		new ModelRegistry(this._modelRuntime),
 		this._orchestrationContext,
 		this._subagentPolicy,
+		this._intercomPolicy,
 	);
 	const publication = new ExtensionPublicationGate(
 		resourceTransaction.loader,

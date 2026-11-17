@@ -112,12 +112,13 @@ export interface SnapshotBlob {
 
 /** Content-addressed storage for snapshot patches and bundles, kept in the same storage as sessions or journals. */
 export interface SnapshotBlobStore {
-	/** Stores each blob once. Storing a hash that exists keeps its bytes and restarts its age, which protects it from collection. */
+	/** Stores each blob once. Re-storing protects it from collection, refreshing a known age or preserving an unknown one. */
 	putBlobs(blobs: readonly SnapshotBlob[]): Promise<void>;
 	getBlob(hash: string): Promise<Uint8Array | undefined>;
 	/**
-	 * Restarts the age of each stored hash, as storing it again would, without its bytes. Resolves false when any is
-	 * missing. Capture calls it before reusing an earlier snapshot's blobs, so collection keeps them until the new
+	 * Protects each stored hash as storing it again would, without its bytes: known ages restart, unknown ages remain
+	 * protected until collection stamps them. Resolves false when any is missing. Capture calls it before reusing an
+	 * earlier snapshot's blobs, so collection keeps them until the new
 	 * snapshot that references them is published.
 	 */
 	refreshBlobs(hashes: readonly string[]): Promise<boolean>;

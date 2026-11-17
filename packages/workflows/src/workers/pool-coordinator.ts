@@ -149,7 +149,7 @@ import {
 } from "./resource-admission.js";
 import { RestoreBackoff } from "./restore-backoff.js";
 import { RunChangesEncoder } from "./run-changes.js";
-import { ShipShard, shipShardPath } from "./ship-shard.js";
+import { retireEndedShipShards, ShipShard, shipJournalDirectory, shipShardPath } from "./ship-shard.js";
 import {
 	earlierSessionReceipt,
 	endedIntercomReason,
@@ -539,6 +539,10 @@ function holding(slot: WorkerSlot): boolean {
 	return slot.work !== undefined || slot.claiming === true;
 }
 
+function workerEndsCleanly(slot: WorkerSlot): boolean {
+	return slot.leaving === true || slot.recycled === true || slot.retired === true;
+}
+
 interface WorkerSlot {
 	readonly worker: string;
 	readonly child: ChildProcess;
@@ -562,6 +566,7 @@ interface WorkerSlot {
 	worktree?: string;
 	/** The pool had more workers than its waiting attempts needed: this idle worker ends, and nothing replaces it. */
 	retired?: boolean;
+	leaving?: boolean;
 	readonly idle: IdleClaimBackoff;
 }
 
@@ -1196,9 +1201,9 @@ export class PoolCoordinator {
 		this.idleClaims.wakeAll();
 		const message: WorkerPoolControl = { kind: "pool-control", control };
 		for (const slot of this.slots)
-			if (this.readyWorkers.has(slot.worker) && slot.child.connected)
+			if (this.readyWorkers.has(slot.worker) && slot.child.connected && !workerEndsCleanly(slot))
 				slot.child.send(message, (error) => {
-					if (error) slot.child.kill("SIGKILL");
+					if (error && !workerEndsCleanly(slot)) slot.child.kill("SIGKILL");
 				});
 	}
 
@@ -1274,7 +1279,14 @@ export class PoolCoordinator {
 		shared: SharedPoolCoordination,
 		queue: SqlPoolQueue,
 	): Promise<CheckpointShipping | undefined> {
-		if (this.closed || shared.checkpointShipping === undefined || durable === undefined) return undefined;
+		if (this.closed || durable === undefined) return undefined;
+		const identity = durableJournalIdentity(durable);
+		if (this.remote === undefined)
+			await retireEndedShipShards(
+				shipJournalDirectory(shared.stateDirectory, identity),
+				(roots, works, unidentified) => queue.endedShipRoots(roots, works, unidentified),
+			).catch(() => {});
+		if (this.closed || shared.checkpointShipping === undefined) return undefined;
 		if (this.remote !== undefined)
 			throw new WorkerPlacementConfigError(
 				"sdk",
@@ -1284,10 +1296,7 @@ export class PoolCoordinator {
 			);
 		let shard: ShipShard;
 		try {
-			shard = await ShipShard.open(
-				shipShardPath(shared.stateDirectory, durableJournalIdentity(durable), root),
-				root,
-			);
+			shard = await ShipShard.open(shipShardPath(shared.stateDirectory, identity, root), root);
 		} catch (error) {
 			if (!this.closed)
 				this.port.send({
@@ -2511,7 +2520,7 @@ export class PoolCoordinator {
 			child.kill("SIGKILL");
 		};
 		const replied = (error: Error | null) => {
-			if (error) terminate();
+			if (error && !workerEndsCleanly(slot)) terminate();
 		};
 		return new Promise((resolve, reject) => {
 			const startup = setTimeout(() => {
@@ -3048,7 +3057,8 @@ export class PoolCoordinator {
 					void handled.then(answered, answered);
 				}
 				void response.then(
-					(value) =>
+					(value) => {
+						if (!child.connected && workerEndsCleanly(slot)) return;
 						child.send(
 							{
 								id: message.id,
@@ -3056,13 +3066,16 @@ export class PoolCoordinator {
 								...(slot.retired === true ? { retire: true } : {}),
 							},
 							replied,
-						),
+						);
+					},
 					(error: unknown) => {
 						// The root's lease is gone (a late one was waited out above): workers end without counting as crashes.
 						if (isStaleLeaseError(error)) {
 							this.rootLeaseLost = true;
+							slot.leaving = true;
 							this.detach(error);
 						}
+						if (!child.connected && workerEndsCleanly(slot)) return;
 						child.send({ id: message.id, error: serializeError(error) }, replied);
 					},
 				);
