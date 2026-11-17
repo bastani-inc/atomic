@@ -28,8 +28,9 @@ knowledge:
     contents: |
       Root suites run under vitest: `npm run test:unit`, `npm run test:integration`, or both with
       `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
-      scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
-      suites load the built packages.
+      scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). The TUI package uses
+      `npm run test --workspace=@bastani/atomic-tui` (`node --test`), not a Vitest config.
+      Build first: several suites load the built packages.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

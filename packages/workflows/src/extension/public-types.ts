@@ -34,6 +34,10 @@ export interface PiRenderContext {
 	};
 	invalidate?: () => void;
 	isError?: boolean;
+	/** The call's arguments. */
+	args?: unknown;
+	/** What this renderer returned for the same row last time, so it can update it in place. */
+	lastComponent?: unknown;
 }
 
 export interface PiRenderResultOpts extends RenderResultOpts {

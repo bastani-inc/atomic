@@ -6,9 +6,14 @@ import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-cust
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
 import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import { AgentTaskHost } from "./tasks/agent-adapter.js";
-import { type ChildTaskCompletionRoute, childTaskCompletionRoute } from "./tasks/child-command-owner.js";
-import { type TaskCompletionEnvelope, TaskCompletionOutbox } from "./tasks/completion.js";
+import {
+	type ChildTaskCompletionRoute,
+	deliverToLaunchingSession,
+	type TaskCompletionMessage,
+} from "./tasks/child-command-owner.js";
+import { type AdmittedTaskCompletion, type TaskCompletionEnvelope, TaskCompletionOutbox } from "./tasks/completion.js";
 import { commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
+import type { TaskCompletionSource } from "./tasks/completion-ordering.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
 import type * as C from "./tasks/contracts.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE, type TaskHeartbeatDelivery } from "./tasks/heartbeat.js";
@@ -57,6 +62,21 @@ export function childCommandTaskHost(session: AgentSession): AgentTaskHost {
 	return stageTaskAdmission(session)?.agentTaskHost() ?? session.getAgentTaskHost();
 }
 
+/** A finished task's notice, built and ready to deliver. */
+interface PreparedNotice {
+	readonly envelope: TaskCompletionEnvelope;
+	readonly message: TaskCompletionMessage;
+	/** Whether the task's record was read: a notice without one starts no turn. */
+	readonly hasTask: boolean;
+	readonly completionSource: TaskCompletionSource | undefined;
+}
+
+/** {@link childCommandTaskHost} when the session already holds it, without opening one. */
+export function openChildCommandTaskHost(session: AgentSession): AgentTaskHost | undefined {
+	if (session._disposed) return undefined;
+	return stageTaskAdmission(session)?.agentTaskHost() ?? session._agentTaskHost;
+}
+
 export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 	if (this._disposed || sessionGenerationClosing.has(this)) throw new Error("Task owner is closed");
 	if (this._agentTaskHost) return this._agentTaskHost;
@@ -69,84 +89,125 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			this.sessionManager.getSessionRecoveryState?.().admissionKeys,
 		);
 	this._taskAdmission = admission;
+	/** A settled task's notice, read from the owner's snapshot; undefined for a foreground shell, which has none. */
+	const prepare = async (envelope: TaskCompletionEnvelope): Promise<PreparedNotice | undefined> => {
+		// Settlement can precede the UI projection's next drain. Read the owner
+		// snapshot, not the display store, when attaching completion context.
+		const host = this._agentTaskHost;
+		const task = host
+			?.taskRecords(new Set([envelope.taskId as C.TaskId]))
+			.find((item) => item.ref.ownerId === envelope.ownerId && settledWithCompletion(host, envelope));
+		// Foreground shell results already return through their tool call. Do not
+		// create a second model turn or background card for that same execution.
+		if (task?.kind === "command" && !task.wasBackground) return undefined;
+		const lease = task ? host?.resolveTask(envelope.taskId) : undefined;
+		const source = lease?.ok ? taskTranscriptSource(lease.value) : undefined;
+		// A finished child keeps its history in its session store, not in memory (#5186).
+		const ownEntries = lease?.ok ? await loadTaskOwnTranscriptEntries(lease.value) : undefined;
+		const response = ownEntries
+			? ownEntries
+					.slice()
+					.reverse()
+					.find(
+						(entry) =>
+							entry.type === "message" &&
+							entry.message.role === "assistant" &&
+							entry.message.content.some((block) => block.type === "text" && block.text.trim()),
+					)
+			: undefined;
+		let output =
+			response?.type === "message" && response.message.role === "assistant"
+				? response.message.content
+						.filter((block) => block.type === "text")
+						.map((block) => block.text)
+						.join("\n")
+				: undefined;
+		if (task?.kind === "command" && lease?.ok && host) output = await commandOutputExcerpt(host, lease.value, task);
+		return {
+			envelope,
+			message: taskCompletionMessage(envelope, task, output),
+			hasTask: task !== undefined,
+			completionSource: source?.ok ? source.value.session.completionSource : undefined,
+		};
+	};
+	/**
+	 * The notices of tasks that finished together reach their session as one message, so as one turn. A shell a subagent
+	 * launched in this owner belongs to that subagent's session: its notice goes there, now or when it runs again, and
+	 * never to this session; it is acknowledged here once the subagent took it. This session's own notices reach it or
+	 * wait for it: a closed stage keeps them rather than sending them on to the chat that launched the workflow.
+	 */
+	const admitBatch = async (
+		envelopes: readonly TaskCompletionEnvelope[],
+		restored: boolean,
+	): Promise<AdmittedTaskCompletion[]> => {
+		const prepared = await Promise.all(envelopes.map(prepare));
+		const admitted: AdmittedTaskCompletion[] = envelopes.map(() => undefined);
+		const own: PreparedNotice[] = [];
+		const launched = new Map<string, PreparedNotice[]>();
+		for (const notice of prepared) {
+			if (notice === undefined) continue;
+			const launcher = notice.envelope.launchedBy;
+			if (launcher === undefined) own.push(notice);
+			else launched.set(launcher, [...(launched.get(launcher) ?? []), notice]);
+		}
+		const host = this._agentTaskHost;
+		for (const [launcher, notices] of launched) {
+			if (host === undefined) throw new Error("Task owner is closed");
+			for (const notice of notices)
+				admitted[envelopes.indexOf(notice.envelope)] = {
+					saved: deliverToLaunchingSession(host, launcher, notice.envelope.taskId, notice.message),
+				};
+		}
+		if (own.length === 0) return admitted;
+		for (const notice of own) {
+			if (notice.completionSource === undefined) continue;
+			await flushTaskCompletionMessages(
+				getExtensionRuntimeEventBus(this._resourceLoader.getExtensions().runtime),
+				notice.completionSource,
+				notice.envelope.completionId,
+			);
+		}
+		const key = own[0]!.envelope.completionId;
+		// A restored notice, or one whose task is gone, joins the transcript without starting a turn. Notices admitted
+		// together reach the model in one request, which they start as one turn.
+		const live = !restored && own.some((notice) => notice.hasTask);
+		const options = {
+			triggerTurn: live,
+			...(live ? { persistWhenStreaming: true } : {}),
+			stageAdmissionKey: key,
+			stayInSession: true,
+		};
+		const deliver = () =>
+			own.length === 1
+				? this.sendCustomMessage(own[0]!.message, options)
+				: this.sendCustomMessages(
+						own.map((notice) => notice.message),
+						// Each notice keeps its own entry, recognized by its own completion after a restart.
+						{ ...options, stageAdmissionKeys: own.map((notice) => notice.envelope.completionId) },
+					);
+		if (stageAdmission) await deliver();
+		else
+			await admission.admit(key, deliver, () => {
+				throw new Error("Task owner is closed");
+			}).completion;
+		// Without a turn, a notice admitted mid-turn waits in memory for that turn's end; it is acknowledged once saved (#5047).
+		if (!live)
+			for (const notice of own) {
+				const saved = pendingCustomMessageSaved(this, notice.envelope.completionId);
+				if (saved !== undefined) admitted[envelopes.indexOf(notice.envelope)] = { saved };
+			}
+		return admitted;
+	};
 	const outbox = new TaskCompletionOutbox(
 		this.sessionManager,
 		() => !this._disposed && admission.isOpen(),
-		async (envelope, restored) => {
-			// Settlement can precede the UI projection's next drain. Read the owner
-			// snapshot, not the display store, when attaching completion context.
-			const host = this._agentTaskHost;
-			const task = host
-				?.taskRecords(new Set([envelope.taskId as C.TaskId]))
-				.find((item) => item.ref.ownerId === envelope.ownerId && settledWithCompletion(host, envelope));
-			// Foreground shell results already return through their tool call. Do not
-			// create a second model turn or background card for that same execution.
-			if (task?.kind === "command" && !task.wasBackground) return;
-			const lease = task ? host?.resolveTask(envelope.taskId) : undefined;
-			const source = lease?.ok ? taskTranscriptSource(lease.value) : undefined;
-			// A finished child keeps its history in its session store, not in memory (#5186).
-			const ownEntries = lease?.ok ? await loadTaskOwnTranscriptEntries(lease.value) : undefined;
-			const response = ownEntries
-				? ownEntries
-						.slice()
-						.reverse()
-						.find(
-							(entry) =>
-								entry.type === "message" &&
-								entry.message.role === "assistant" &&
-								entry.message.content.some((block) => block.type === "text" && block.text.trim()),
-						)
-				: undefined;
-			let output =
-				response?.type === "message" && response.message.role === "assistant"
-					? response.message.content
-							.filter((block) => block.type === "text")
-							.map((block) => block.text)
-							.join("\n")
-					: undefined;
-			if (task?.kind === "command" && lease?.ok && host)
-				output = await commandOutputExcerpt(host, lease.value, task);
-			const message = taskCompletionMessage(envelope, task, output);
-			const childRoute =
-				host && task?.kind === "command" ? childTaskCompletionRoute(host, envelope.taskId) : undefined;
-			if (childRoute) {
-				try {
-					await childRoute.deliver(message);
-					return;
-				} catch {
-					// The launching child ended before delivery; the owning parent receives the notice.
-				}
-			}
-			const completionSource = source?.ok ? source.value.session.completionSource : undefined;
-			if (completionSource) {
-				await flushTaskCompletionMessages(
-					getExtensionRuntimeEventBus(this._resourceLoader.getExtensions().runtime),
-					completionSource,
-					envelope.completionId,
-				);
-			}
-			const deliver = () =>
-				this.sendCustomMessage(
-					message,
-					restored || !task
-						? { triggerTurn: false, stageAdmissionKey: envelope.completionId }
-						: { triggerTurn: true, persistWhenStreaming: true, stageAdmissionKey: envelope.completionId },
-				);
-			if (stageAdmission) await deliver();
-			else {
-				await admission.admit(envelope.completionId, deliver, () => {
-					throw new Error("Task owner is closed");
-				}).completion;
-			}
-			// A restored notice admitted mid-turn waits in memory for the turn to end; it is acknowledged once saved (#5047).
-			const saved = restored || !task ? pendingCustomMessageSaved(this, envelope.completionId) : undefined;
-			return saved === undefined ? undefined : { saved };
-		},
+		async (envelope, restored) => (await admitBatch([envelope], restored))[0],
 		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the
 		// notice is built from (#4385).
 		(envelope) => this._agentTaskHost?.releaseTaskRecord(envelope.taskId),
 		() => !waitsOnDetachedResults(this),
 		(envelope) => releaseDeliveredTaskRecord(this._agentTaskHost, envelope),
+		{ admitBatch },
 	);
 	this._taskCompletionOutbox = outbox;
 	const heartbeat: TaskHeartbeatDelivery = {
@@ -179,14 +240,21 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			if (isSubagentChildSession(this)) throw new Error("Subagent delegation is not available inside a subagent");
 		},
 		onTaskSettled: (
-			...[ref, receipt]: Parameters<NonNullable<import("./tasks/supervisor.js").TrustedTaskHost["onTaskSettled"]>>
+			...[ref, receipt, timing]: Parameters<
+				NonNullable<import("./tasks/supervisor.js").TrustedTaskHost["onTaskSettled"]>
+			>
 		) => {
 			// Save the task's kind with the intent: a notice replayed after a restart has no task record to read it from.
 			const kind =
 				closingTaskKinds.get(this)?.get(receipt.taskId) ??
 				this._agentTaskHost?.taskRecords(new Set([receipt.taskId]))[0]?.kind;
 			this._agentTaskHost?.retainTaskRecord(receipt.taskId);
-			outbox.record(ref.ownerId, receipt, kind);
+			// The intent keeps how long a command ran, for its notice line.
+			outbox.record(
+				ref.ownerId,
+				timing?.elapsedMs === undefined ? receipt : { ...receipt, elapsedMs: timing.elapsedMs },
+				kind,
+			);
 			void outbox.flush();
 		},
 		onTaskCleanupQuarantined: (ref: C.NativeTaskRef, resources: readonly C.ResourceFailure[]) =>
@@ -266,6 +334,21 @@ export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner
 		this._parentCommandTaskOwner.bind(this.sessionManager.getSessionId(), route, this._childTaskWaits),
 		hasToolDetachment(this),
 	);
+}
+
+/**
+ * A subagent session that runs, or runs again, takes the notices of the shells it launched that were kept for it while
+ * it could not, as soon as it opens rather than at its first shell call.
+ */
+export function bindChildTaskNotices(session: AgentSession): void {
+	if (!isSubagentChildSession(session) || session._parentCommandTaskOwner === undefined) return;
+	// Only a child something waits for binds now; the others bind at their first shell call, as before.
+	if (!session._parentCommandTaskOwner.hasKeptNotices(session.sessionManager.getSessionId())) return;
+	try {
+		session._getCommandTaskOwner();
+	} catch {
+		// The launcher's task owner is closed: it keeps nothing for this session.
+	}
 }
 
 type TaskWait = NonNullable<SupervisedCommandOwner["waitForTask"]>;

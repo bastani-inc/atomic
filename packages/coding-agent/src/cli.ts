@@ -10,11 +10,13 @@
  * loads dynamically so metadata fast paths (for example `--version`) skip it.
  */
 import { APP_NAME, VERSION } from "./config.js";
-import { markLifecycleTiming } from "./core/lifecycle-timings.ts";
+import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 import { enablePersistentCompileCache } from "./utils/compile-cache.ts";
 import { headlessHeapRelaunchArgs, relaunchWithHeap } from "./utils/heap-relaunch.ts";
+import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "./utils/interactive-engine-bootstrap.ts";
 
+installLifecycleTraceFromEnv();
 markLifecycleTiming("process-entry");
 
 enablePersistentCompileCache();
@@ -31,18 +33,36 @@ if (args[0] === "--version" || args[0] === "-v") {
 	process.exit(0);
 }
 
-const heapArgs = headlessHeapRelaunchArgs(args);
+// A prewarmed engine child loads the application now and learns its arguments from its host afterwards.
+const prewarmedEngine = args[0] === INTERACTIVE_ENGINE_PREWARM_FLAG;
+const heapArgs = prewarmedEngine ? [] : headlessHeapRelaunchArgs(args);
 if (heapArgs.length > 0) {
 	relaunchWithHeap(heapArgs, args);
 } else {
+	// An interactive host starts its engine child first, so the child loads the application while this process does;
+	// a prewarmed child loads it while it waits for its arguments.
+	const interactiveHost = !prewarmedEngine && process.stdin.isTTY === true && process.stdout.isTTY === true;
+	const prewarm =
+		prewarmedEngine || interactiveHost ? import("./modes/interactive-engine/engine-prewarm.ts") : undefined;
+	const started = interactiveHost
+		? prewarm!.then(({ prewarmInteractiveEngine }) => prewarmInteractiveEngine(args)).catch(() => {})
+		: Promise.resolve();
+	const mainArgs = prewarmedEngine
+		? prewarm!.then(({ readPrewarmedEngineArgs }) => readPrewarmedEngineArgs())
+		: Promise.resolve(args);
 	// No top-level await: the compiled binary is built with --bytecode (CJS),
 	// which forbids TLA anywhere in the bundled graph.
-	void Promise.all([
-		import("./core/http-dispatcher.ts"),
-		import("./main.ts"),
-		import("./cli/settings-startup.ts"),
-	]).then(([{ configureHttpDispatcher }, { main }, { exitOnDecisionConfigError }]) => {
-		configureHttpDispatcher();
-		main(args).catch(exitOnDecisionConfigError);
-	});
+	void started
+		.then(() =>
+			Promise.all([
+				import("./core/http-dispatcher.ts"),
+				import("./main.ts"),
+				import("./cli/settings-startup.ts"),
+				mainArgs,
+			]),
+		)
+		.then(([{ configureHttpDispatcher }, { main }, { exitOnDecisionConfigError }, runArgs]) => {
+			configureHttpDispatcher();
+			main(runArgs).catch(exitOnDecisionConfigError);
+		});
 }

@@ -13,10 +13,14 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdir, mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { ENGINE_SHUTDOWN_GRACE_MS } from "../../packages/coding-agent/src/modes/rpc/rpc-client-process.js";
 import {
 	atomicWriteJson,
 	createStatusWriter,
@@ -573,4 +577,178 @@ describe("createStatusWriter — statusFile:true", () => {
 			writer.unsubscribe();
 		}
 	});
+
+	test("waits out a reader holding status.json across several retries and repeated drain cycles without a failure notice (#5322)", async () => {
+		const filePath = join(tmpDir, "reader-hold-cycles.json");
+		const store = createStore();
+		let readerHeld = false;
+		let failedRenames = 0;
+		renameInterceptor = async (oldPath, newPath, originalRename) => {
+			if (readerHeld && newPath === filePath) {
+				failedRenames++;
+				throw Object.assign(new Error(`EPERM: operation not permitted, rename '${oldPath}' -> '${newPath}'`), {
+					code: "EPERM",
+				});
+			}
+			return originalRename(oldPath, newPath);
+		};
+		const writer = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		try {
+			await writer.flush();
+
+			for (const [status, minFailedRenames] of [
+				["running", 13],
+				["completed", 7],
+			] as const) {
+				failedRenames = 0;
+				const reader = await open(filePath, "r");
+				readerHeld = true;
+				try {
+					const heldSnapshot = JSON.parse(await reader.readFile("utf8")) as {
+						runs: Array<{ id: string; status: string }>;
+					};
+					assert.ok(Array.isArray(heldSnapshot.runs));
+					if (status === "running") {
+						store.recordRunStart({
+							id: "r-hold",
+							name: "wf",
+							inputs: {},
+							status: "running",
+							toolNodes: [],
+							stages: [],
+							startedAt: 1000,
+						});
+					} else {
+						store.recordRunEnd("r-hold", "completed", { done: true });
+					}
+					await vi.waitFor(() => assert.ok(failedRenames >= minFailedRenames, `failedRenames=${failedRenames}`), {
+						timeout: 5_000,
+						interval: 20,
+					});
+					assert.equal(store.notices().filter((n) => n.message.includes("status file write failed")).length, 0);
+				} finally {
+					readerHeld = false;
+					await reader.close();
+				}
+				await writer.flush();
+				assert.equal(store.notices().filter((n) => n.message.includes("status file write failed")).length, 0);
+				const published = JSON.parse(await readFile(filePath, "utf8")) as {
+					runs: Array<{ id: string; status: string }>;
+					notices: Array<{ message: string }>;
+				};
+				assert.equal(published.runs[0]?.id, "r-hold");
+				assert.equal(published.runs[0]?.status, status);
+				assert.deepEqual(published.notices, []);
+				await assert.rejects(stat(`${filePath}.tmp`));
+			}
+		} finally {
+			writer.unsubscribe();
+		}
+	});
+
+	test("bounds flush under a persistent EPERM reader hold within the engine shutdown grace and records one warning (#5322)", async () => {
+		const filePath = join(tmpDir, "persistent-hold-flush.json");
+		const store = createStore();
+		renameInterceptor = async (oldPath, newPath) => {
+			throw Object.assign(new Error(`EPERM: operation not permitted, rename '${oldPath}' -> '${newPath}'`), {
+				code: "EPERM",
+			});
+		};
+		store.recordRunStart({
+			id: "r-persistent-flush",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1000,
+		});
+		const writer = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		try {
+			const started = performance.now();
+			await writer.flush();
+			const elapsed = performance.now() - started;
+			assert.ok(elapsed < ENGINE_SHUTDOWN_GRACE_MS / 2, `flush took ${Math.round(elapsed)}ms`);
+			const notices = store.notices().filter((n) => n.message.includes("status file write failed"));
+			assert.equal(notices.length, 1);
+			assert.equal(notices[0]?.level, "warning");
+			await assert.rejects(stat(`${filePath}.tmp`));
+		} finally {
+			writer.unsubscribe();
+		}
+	});
+
+	test.skipIf(process.platform !== "win32")(
+		"waits out another Windows process holding status.json open for a long read across several retries without a failure notice (#5322)",
+		async () => {
+			const filePath = join(tmpDir, "windows-reader-hold.json");
+			const store = createStore();
+			const writer = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+			try {
+				await writer.flush();
+				for (const status of ["running", "completed"] as const) {
+					let failedRenames = 0;
+					renameInterceptor = async (oldPath, newPath, originalRename) => {
+						try {
+							await originalRename(oldPath, newPath);
+						} catch (err) {
+							failedRenames++;
+							throw err;
+						}
+					};
+					const holder = spawn(
+						"powershell.exe",
+						[
+							"-NoProfile",
+							"-NonInteractive",
+							"-Command",
+							"$file = [System.IO.File]::Open($env:STATUS_FILE, 'Open', 'Read', 'Read'); [Console]::Out.WriteLine('held'); [Console]::Out.Flush(); [void][Console]::In.ReadLine(); $file.Close()",
+						],
+						{
+							env: { ...process.env, STATUS_FILE: filePath },
+							stdio: ["pipe", "pipe", "ignore"],
+						},
+					);
+					try {
+						const [output] = (await once(holder.stdout, "data")) as [Buffer];
+						assert.match(output.toString(), /held/);
+						if (status === "running") {
+							store.recordRunStart({
+								id: "r-win-hold",
+								name: "wf",
+								inputs: {},
+								status: "running",
+								toolNodes: [],
+								stages: [],
+								startedAt: 1000,
+							});
+						} else {
+							store.recordRunEnd("r-win-hold", "completed", { ok: true });
+						}
+						await vi.waitFor(() => assert.ok(failedRenames >= 8, `failedRenames=${failedRenames}`), {
+							timeout: 5_000,
+							interval: 25,
+						});
+						assert.equal(store.notices().filter((n) => n.message.includes("status file write failed")).length, 0);
+						holder.stdin.end("\n");
+						await once(holder, "exit");
+					} finally {
+						holder.kill();
+					}
+					await writer.flush();
+					assert.equal(store.notices().filter((n) => n.message.includes("status file write failed")).length, 0);
+					const parsed = JSON.parse(await readFile(filePath, "utf8")) as {
+						runs: Array<{ id: string; status: string }>;
+						notices: Array<{ message: string }>;
+					};
+					assert.equal(parsed.runs[0]?.id, "r-win-hold");
+					assert.equal(parsed.runs[0]?.status, status);
+					assert.deepEqual(parsed.notices, []);
+					await assert.rejects(stat(`${filePath}.tmp`));
+				}
+			} finally {
+				writer.unsubscribe();
+			}
+		},
+	);
 });

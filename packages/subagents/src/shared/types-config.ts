@@ -223,6 +223,8 @@ export interface RunSyncOptions {
 	progressArtifactPath?: string;
 	/** How long the child's session may take to start before it fails; `SUBAGENT_SESSION_START_TIMEOUT_MS` when omitted. */
 	sessionStartTimeoutMs?: number;
+	/** The child's start ran out of its budget and is about to be retried: hold sends to it again for the retry. */
+	onStartRetry?: () => Promise<void> | void;
 	/** Test-only in-process session stub configuration; production runs create a real AgentSession. */
 	testSession?:
 		| false

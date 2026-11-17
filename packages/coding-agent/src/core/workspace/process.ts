@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
 import { killProcessTree } from "../../utils/shell.ts";
 
 /** How long a stopped process gets to clean up after itself before its process group is killed. */
@@ -33,7 +33,7 @@ function errnoCode(error: unknown): unknown {
  * Ask a process and the processes it started to stop. On POSIX its group gets SIGTERM, which git catches to remove a
  * half-added worktree; Windows has no such signal, so the tree is killed and a later bind repairs what is left.
  */
-function terminate(child: ChildProcess): void {
+function terminate(child: HostChildProcess): void {
 	if (child.pid === undefined) return;
 	if (!OWN_PROCESS_GROUP) {
 		killProcessTree(child.pid);
@@ -65,7 +65,7 @@ function groupRunning(pid: number): boolean {
 export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<WorkspaceProcessOutcome> {
 	const startedAt = Date.now();
 	return new Promise<WorkspaceProcessOutcome>((resolvePromise, reject) => {
-		const child = spawn(run.path, run.args, {
+		const child = spawnHostProcess(run.path, run.args, {
 			cwd: run.cwd,
 			env: run.env,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -103,8 +103,8 @@ export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<Workspace
 						stop(() => reject(run.timeoutError!(elapsedMs)));
 					}, run.timeoutMs);
 		run.signal?.addEventListener("abort", onAbort, { once: true });
-		child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-		child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+		child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+		child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
 		child.on("error", (error) => {
 			settle(() => {
 				if (stopped !== undefined) stopped();

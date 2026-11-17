@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 
 /** One Git process the code under test starts, and the hooks that let a test act at that exact moment. */
 interface SpawnedGit {
@@ -119,6 +120,8 @@ import {
 	type WorktreeSnapshot,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
+
+startHostProcessesThroughChildProcess();
 
 /**
  * Faults at exact moments of a restore and of the sweep that cleans up after one: a Git command is replaced or given
