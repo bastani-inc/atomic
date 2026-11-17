@@ -1,5 +1,5 @@
 import type * as nodeFs from "node:fs";
-import { guardLockRemoval, lockHolder } from "./lock-takeover.ts";
+import { guardLockRemoval, lockHolder, prepareTakeoverMutex } from "./lock-takeover.js";
 
 export { lockHolder };
 
@@ -133,7 +133,10 @@ export async function waitForLock<T>(
 			try {
 				return await acquire(guard.fs);
 			} catch (error) {
-				await delay(waiter.next(error), signal);
+				const sleepMs = waiter.next(error);
+				void prepareTakeoverMutex(wait.lockPath);
+				signal?.throwIfAborted();
+				await delay(sleepMs, signal);
 			}
 		}
 	} finally {

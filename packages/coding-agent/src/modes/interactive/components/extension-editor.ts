@@ -26,6 +26,7 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 	private tui: TUI;
 	private keybindings: KeybindingsManager;
 	private externalEditorCommand: string;
+	private titleText: Text;
 	/** Shows external editor failures; renders nothing while empty. */
 	private externalEditorStatus = new Text("", 1, 0);
 
@@ -36,6 +37,14 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 	set focused(value: boolean) {
 		this._focused = value;
 		this.editor.focused = value;
+	}
+
+	getCursor(): { line: number; col: number } {
+		return this.editor.getCursor();
+	}
+
+	setTitle(title: string): void {
+		this.titleText.setText(theme.fg("accent", title));
 	}
 
 	constructor(
@@ -58,7 +67,8 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("accent", title), 1, 0));
+		this.titleText = new Text(theme.fg("accent", title), 1, 0);
+		this.addChild(this.titleText);
 		this.addChild(new Spacer(1));
 
 		this.editor = new Editor(tui, getEditorTheme(), options);

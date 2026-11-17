@@ -8,13 +8,13 @@ import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
 import { canonicalizeWorktreePath } from "./paths.ts";
 import { isDeniedSnapshotPath } from "./policy.ts";
-import { HOST, holderRuns as processHolderRuns, thisProcess } from "./process-holder.ts";
+import { HOST, holderRuns as processHolderRuns, thisProcess } from "./process-holder.js";
 import { type RepositoryId, sharedRepositoryIdOf, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./restore.ts";
 import { lockShared, sharedClockNow } from "./shared-clock.ts";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
 
-export { processStartToken } from "../process-start-token.ts";
+export { processStartToken } from "../process-start-token.js";
 
 /**
  * The per-machine pool of restored worktrees (#4748). A session resume restores into a slot at a stable path,
@@ -162,15 +162,16 @@ const heldSlots = new Map<string, HeldSlot>();
 /** The hold each lease of this process shares. */
 const leaseHolds = new WeakMap<WorktreeLease, HeldSlot>();
 const released = new WeakSet<WorktreeLease>();
-let processLease: string | undefined;
+let processLease: Promise<string> | undefined;
 /**
  * Names this process's leases: its host and pid, a random part, as the pid alone could be reused by a later process,
  * and when this process started, where that can be read (#4990, #5141). Read once, on first use.
  */
-function ownLease(): string {
-	if (processLease !== undefined) return processLease;
-	const { start: started } = thisProcess();
-	processLease = `${HOST}-${process.pid}-${randomUUID().slice(0, 8)}${started === undefined ? "" : `-${started}`}`;
+function ownLease(): Promise<string> {
+	processLease ??= thisProcess().then(
+		({ start: started }) =>
+			`${HOST}-${process.pid}-${randomUUID().slice(0, 8)}${started === undefined ? "" : `-${started}`}`,
+	);
 	return processLease;
 }
 /**
@@ -185,7 +186,7 @@ const LEASE_NAME = /^([0-9a-f]{12})-(\d+)-[0-9a-f]{8}(?:-([0-9a-f]{12}))?\.lease
  * started belongs to a process of that id that started then, never to a later one given the id (#4990), on Windows too
  * (#5141). A lease of another host, or one naming no host, is judged by its age alone.
  */
-function holderRuns(name: string, age: number): boolean {
+async function holderRuns(name: string, age: number): Promise<boolean> {
 	const lease = LEASE_NAME.exec(name);
 	if (lease === null) return false;
 	return processHolderRuns({ host: lease[1]!, pid: Number(lease[2]), start: lease[3] }, age, UNSTARTED_LEASE_LIMIT_MS);
@@ -303,8 +304,8 @@ async function withSlotLock<T>(
 	const token = randomUUID();
 	let named = false;
 	try {
-		await writeFile(`${lockTokenFile(file)}.${ownLease()}.tmp`, token, { mode: 0o600 });
-		await renameWithRetry(`${lockTokenFile(file)}.${ownLease()}.tmp`, lockTokenFile(file));
+		await writeFile(`${lockTokenFile(file)}.${await ownLease()}.tmp`, token, { mode: 0o600 });
+		await renameWithRetry(`${lockTokenFile(file)}.${await ownLease()}.tmp`, lockTokenFile(file));
 		named = true;
 	} catch (error) {
 		reportDebug("storage", "worktree-pool-lock-token-failed", { file, ...failureDebugFields(error) });
@@ -327,7 +328,7 @@ async function withSlotLock<T>(
  * Until {@link giveBackRecord} or {@link putRecord}, the slot has no record: no hold, claim or eviction takes it.
  */
 async function takeRecord(file: string, expected: PoolSlotRecord): Promise<string | undefined> {
-	const taken = `${file}.${ownLease()}.taken`;
+	const taken = `${file}.${await ownLease()}.taken`;
 	try {
 		await renameWithRetry(file, taken);
 	} catch (error) {
@@ -387,7 +388,7 @@ async function leaseSlot(
 	held: Pick<HeldSlot, "compromised">,
 	signal?: AbortSignal,
 ): Promise<() => Promise<void>> {
-	const lease = `${file}.${ownLease()}.lease`;
+	const lease = `${file}.${await ownLease()}.lease`;
 	const unlock = await lockPath(
 		lease,
 		false,
@@ -419,7 +420,7 @@ async function takeSlot(
  */
 async function otherLeases(file: string, grace: boolean): Promise<number> {
 	const prefix = `${basename(file)}.`;
-	const own = `${basename(file)}.${ownLease()}.lease.lock`;
+	const own = `${basename(file)}.${await ownLease()}.lease.lock`;
 	let live = 0;
 	// Ages are measured by the clock of the filesystem holding the leases, which their holders stamp refreshes in, so a
 	// holder on a host whose clock is off is judged by when it last refreshed its lease (#5050).
@@ -435,7 +436,7 @@ async function otherLeases(file: string, grace: boolean): Promise<number> {
 			continue;
 		}
 		const expired = age > LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS;
-		if (age <= LEASE_STALE_MS || (grace && !expired) || holderRuns(name.slice(prefix.length), age)) live++;
+		if (age <= LEASE_STALE_MS || (grace && !expired) || (await holderRuns(name.slice(prefix.length), age))) live++;
 		else if (expired) await rm(lock, { recursive: true, force: true }).catch(() => {});
 	}
 	return live;
@@ -476,7 +477,7 @@ async function stillHolds(file: string, storeDir: string, held: HeldSlot): Promi
 }
 
 async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> {
-	const temporary = `${file}.${ownLease()}.tmp`;
+	const temporary = `${file}.${await ownLease()}.tmp`;
 	await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
 	await renameWithRetry(temporary, file);
 }
