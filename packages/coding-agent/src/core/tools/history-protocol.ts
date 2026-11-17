@@ -1131,6 +1131,7 @@ async function searchRunLinesBounded(
 						ownedFrom: leftChars,
 						ownedTo: leftChars + ownedChars,
 						cut,
+						entryStart: first === 1 ? 0 : -1,
 					},
 					normalized,
 					ignoreCase,
@@ -1331,15 +1332,17 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		return { sessions: parked.items.map((item) => item.summary), keys: parked.items.map((item) => item.key) };
 	}
 
-	async function recentRuns(budget: HistoryCallBudget): Promise<WorkflowRunSummary[]> {
+	async function recentRuns(budget: HistoryCallBudget, wanted?: string): Promise<WorkflowRunSummary[]> {
 		const control = requireWorkflows();
 		const parked = parkedRunListings.get(control);
 		if (parked) {
 			clearTimeout(parked.timer);
 			parkedRunListings.delete(control);
 		}
-		const listing = parked?.runs ?? control.listProjectRuns?.() ?? control.listRuns({ includeDurable: true });
-		const startedAt = parked?.startedAt ?? performance.now();
+		const adopted =
+			parked !== undefined && performance.now() - parked.startedAt < DISCOVERY_TTL_MS ? parked : undefined;
+		const listing = adopted?.runs ?? control.listProjectRuns?.() ?? control.listRuns({ includeDurable: true });
+		const startedAt = adopted?.startedAt ?? performance.now();
 		let runs: readonly WorkflowRunSummary[];
 		try {
 			runs = await budget.race(listing);
@@ -1355,12 +1358,14 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			}
 			throw error;
 		}
+		if (adopted && wanted !== undefined && !runs.some((run) => run.runId.startsWith(wanted)))
+			return recentRuns(budget);
 		return [...runs].sort((a, b) => b.startedAt - a.startedAt);
 	}
 
 	async function belongsToProjectRun(runId: string, budget: HistoryCallBudget): Promise<boolean> {
 		try {
-			return (await recentRuns(budget)).some((run) => run.runId === runId);
+			return (await recentRuns(budget, runId)).some((run) => run.runId === runId);
 		} catch (error) {
 			if (budget.signal?.aborted || isHistoryDeadlineError(error)) throw error;
 			return false;
@@ -1469,7 +1474,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 	}
 
 	async function authorizedRunId(id: string, budget: HistoryCallBudget): Promise<string> {
-		const runs = await recentRuns(budget);
+		const runs = await recentRuns(budget, id);
 		const exact = runs.find((run) => run.runId === id);
 		if (exact) return exact.runId;
 		const prefixed = runs.filter((run) => run.runId.startsWith(id));

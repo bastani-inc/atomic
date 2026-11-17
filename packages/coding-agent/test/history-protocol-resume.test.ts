@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import type {
 	WorkflowRunDetail,
 	WorkflowRunStageSummary,
@@ -21,6 +21,8 @@ const SLOW_LISTING_MS = 400;
 const LATER_RUN_TIME_MS = 100;
 const LATE_DETAILS_MS = 175;
 const CUT_ONLY_BYTES = 910;
+const LONG_WAIT_MS = 1_500;
+const PARKED_LISTING_TTL_MS = 60_000;
 
 function message(id: string, text: string, at: number): SessionEntry {
 	return {
@@ -68,6 +70,33 @@ function detail(runId: string, startedAt: number, text: string, stages: readonly
 		stages,
 	};
 	return run;
+}
+
+function pendingListings(
+	runs: readonly WorkflowRunSummary[],
+	listings: ((listed: readonly WorkflowRunSummary[]) => void)[],
+): WorkflowRunHistory {
+	return {
+		listRuns: async () => runs,
+		listProjectRuns: () =>
+			new Promise((resolve) => {
+				listings.push(resolve);
+			}),
+		getRun: async (runId) => detail(runId, BASE, "run summary"),
+	};
+}
+
+function routerOver(workflows: WorkflowRunHistory, timeMs: number) {
+	return createHistoryRouter({
+		cwd: PROJECT,
+		sessionStore: () => undefined,
+		workflows: () => workflows,
+		budget: { timeMs },
+	});
+}
+
+async function until(ready: () => boolean): Promise<void> {
+	while (!ready()) await new Promise((resolve) => setImmediate(resolve));
 }
 
 function continuation(text: string): string | undefined {
@@ -280,6 +309,163 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 		listings[1]!(runs);
 		assert.equal(listings.length, 2);
 		assert.match(next, /^history:\/\/workflows\/run-a \|/m, next);
+	});
+
+	it("an older run listing replaces a younger parked one when its own call runs out of time later (#5250)", async () => {
+		const runs = [summary("run-a", BASE)];
+		const listings: ((listed: readonly WorkflowRunSummary[]) => void)[] = [];
+		const workflows = pendingListings(runs, listings);
+		const older = routerOver(workflows, LONG_WAIT_MS).read!("history://workflows");
+		await until(() => listings.length === 1);
+		const younger = routerOver(workflows, SLOW_TIME_MS).read!("history://workflows");
+		for (const output of await Promise.all([older, younger]))
+			assert.match(output ?? "", /the time budget ran out waiting for the store/, output);
+		assert.equal(listings.length, 2);
+		listings[0]!(runs);
+		const next = (await routerOver(workflows, SLOW_TIME_MS).read!("history://workflows")) ?? "";
+		listings[1]!(runs);
+		assert.equal(listings.length, 2);
+		assert.match(next, /^history:\/\/workflows\/run-a \|/m, next);
+	});
+
+	it("a parked run listing keeps its start time when a call takes it over and parks it again (#5250)", async () => {
+		const runs = [summary("run-a", BASE)];
+		const listings: ((listed: readonly WorkflowRunSummary[]) => void)[] = [];
+		const workflows = pendingListings(runs, listings);
+		const first = routerOver(workflows, SLOW_TIME_MS).read!("history://workflows");
+		await until(() => listings.length === 1);
+		const overlapping = routerOver(workflows, LONG_WAIT_MS).read!("history://workflows");
+		await until(() => listings.length === 2);
+		assert.match((await first) ?? "", /the time budget ran out waiting for the store/);
+		const adopted = (await routerOver(workflows, SLOW_TIME_MS).read!("history://workflows")) ?? "";
+		assert.match(adopted, /the time budget ran out waiting for the store/, adopted);
+		assert.match((await overlapping) ?? "", /the time budget ran out waiting for the store/);
+		listings[0]!(runs);
+		const next = (await routerOver(workflows, SLOW_TIME_MS).read!("history://workflows")) ?? "";
+		listings[1]!(runs);
+		assert.equal(listings.length, 2);
+		assert.match(next, /^history:\/\/workflows\/run-a \|/m, next);
+	});
+
+	it("a run listing that failed is not handed to the next call (#5250)", async () => {
+		const runs = [summary("run-a", BASE)];
+		let calls = 0;
+		const workflows: WorkflowRunHistory = {
+			listRuns: async () => runs,
+			listProjectRuns: async () => {
+				calls++;
+				if (calls === 1) throw new Error("run listing failed");
+				return runs;
+			},
+			getRun: async (runId) => detail(runId, BASE, "run summary"),
+		};
+		await assert.rejects(routerOver(workflows, SLOW_TIME_MS).read!("history://workflows"), /run listing failed/);
+		const next = (await routerOver(workflows, SLOW_TIME_MS).read!("history://workflows")) ?? "";
+		assert.equal(calls, 2);
+		assert.match(next, /^history:\/\/workflows\/run-a \|/m, next);
+	});
+
+	it("a parked run listing expires a fixed time after it was last parked (#5250)", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const runs = [summary("run-a", BASE)];
+			const listings: ((listed: readonly WorkflowRunSummary[]) => void)[] = [];
+			const workflows = pendingListings(runs, listings);
+			const read = () => routerOver(workflows, SLOW_TIME_MS).read!("history://workflows");
+			assert.match((await read()) ?? "", /the time budget ran out waiting for the store/);
+			vi.advanceTimersByTime(PARKED_LISTING_TTL_MS / 2);
+			assert.match((await read()) ?? "", /the time budget ran out waiting for the store/);
+			assert.equal(vi.getTimerCount(), 1);
+			vi.advanceTimersByTime(PARKED_LISTING_TTL_MS * 0.75);
+			assert.match((await read()) ?? "", /the time budget ran out waiting for the store/);
+			assert.equal(listings.length, 1);
+			vi.advanceTimersByTime(PARKED_LISTING_TTL_MS);
+			const fresh = read();
+			await until(() => listings.length === 2);
+			listings[1]!(runs);
+			assert.match((await fresh) ?? "", /^history:\/\/workflows\/run-a \|/m);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a younger parked run listing that an older one replaces leaves no expiry behind (#5250)", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const runs = [summary("run-a", BASE)];
+			const listings: ((listed: readonly WorkflowRunSummary[]) => void)[] = [];
+			const workflows = pendingListings(runs, listings);
+			const older = routerOver(workflows, LONG_WAIT_MS).read!("history://workflows");
+			await until(() => listings.length === 1);
+			const younger = routerOver(workflows, SLOW_TIME_MS).read!("history://workflows");
+			await Promise.all([older, younger]);
+			assert.equal(vi.getTimerCount(), 1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a parked run listing that has not finished long after it started is replaced by a fresh one (#5250)", async () => {
+		const runs = [summary("run-a", BASE)];
+		let calls = 0;
+		const workflows: WorkflowRunHistory = {
+			listRuns: async () => runs,
+			listProjectRuns: () => (++calls === 1 ? new Promise<never>(() => {}) : Promise.resolve(runs)),
+			getRun: async (runId) => detail(runId, BASE, "run summary"),
+		};
+		const read = () => routerOver(workflows, SLOW_TIME_MS).read!("history://workflows");
+		assert.match((await read()) ?? "", /the time budget ran out waiting for the store/);
+		const now = performance.now.bind(performance);
+		const later = vi.spyOn(performance, "now").mockImplementation(() => now() + PARKED_LISTING_TTL_MS);
+		try {
+			const next = (await read()) ?? "";
+			assert.equal(calls, 2);
+			assert.match(next, /^history:\/\/workflows\/run-a \|/m, next);
+		} finally {
+			later.mockRestore();
+		}
+	});
+
+	it("a run or stage session that started after a parked run listing began is found when a call takes that listing over (#5250)", async () => {
+		const before = [summary("run-a", BASE)];
+		const after = [summary("run-b", BASE + 1000), ...before];
+		for (const url of ["history://workflows/run-b", "history://sessions/stage-b"]) {
+			const store = new MemorySessionStore();
+			await store.create(
+				{
+					id: "stage-b",
+					version: SESSION_FORMAT_VERSION,
+					createdAt: new Date(BASE + 1000).toISOString(),
+					cwd: resolve("/projects/history-resume-worktree"),
+					internal: true,
+					workflow: { runId: "run-b", stageId: "s1", stageName: "build" },
+				},
+				[message("stage-b-e1", "stage work", BASE + 1001)],
+			);
+			const gate = gated();
+			let calls = 0;
+			const workflows: WorkflowRunHistory = {
+				listRuns: async () => after,
+				listProjectRuns: async () => {
+					calls++;
+					if (calls > 1) return after;
+					await gate.opened;
+					return before;
+				},
+				getRun: async (runId) => detail(runId, BASE, "run summary"),
+			};
+			const router = createHistoryRouter({
+				cwd: PROJECT,
+				sessionStore: () => store,
+				workflows: () => workflows,
+				budget: { timeMs: SLOW_TIME_MS },
+			});
+			const first = (await router.read!(url)) ?? "";
+			assert.match(first, /the time budget ran out waiting for the store/, first);
+			gate.open();
+			const next = (await router.read!(continuation(first)!)) ?? "";
+			assert.match(next, url.includes("workflows") ? /^# workflow run run-b$/m : /stage work/, next);
+		}
 	});
 
 	it("a workflow search does not wait past its time budget for a later run's details and resumes in that run (#5250)", async () => {

@@ -74,6 +74,7 @@
 
 ### Fixed
 
+- `history://` multi-line searches accept quantified `\A` such as `\A?` and no longer let a lookahead match text past a search window that stopped before the end. With a lookbehind, `^` (without multi-line mode) and `\A` match at the start of the entry the match starts in, as they do without one. JSONL session reads retry when the file is truncated while a read resumes. A workflow run or stage session that started while a slow run listing was pending is found instead of being reported as missing or as belonging to another project, and a run listing that has not finished a minute after it started is replaced by a fresh one ([#5250](https://github.com/bastani-inc/atomic/issues/5250))
 - A workflow or task notice sent as a turn ends now joins the next request of that run however long saving its card takes, instead of depending on the save finishing within a few internal steps and otherwise costing an extra request. Notices whose save is still pending from earlier in the turn do not hold up the next request
 - A subagent's shells no longer leave a record per shell in the parent's task owner for as long as the parent runs: the record is released once the shell has finished and its completion notice is acknowledged, and the subagent can still wait on and read a finished shell while its result is kept
 - Read results keep image-capability warnings visible and use the chat's theme, including custom renderer hosts ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
