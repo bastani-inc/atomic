@@ -1482,30 +1482,49 @@ test("codemode rejects a // @options: line that is not the first line before the
 });
 
 test("codemode discovery names model-only tools instead of returning nothing (#3510)", async () => {
+	const modelOnlyTool = (name: string) => ({
+		name,
+		label: name,
+		description: `Run ${name}`,
+		exposure: "model-only" as const,
+		parameters: Type.Object({}),
+		execute: async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} }),
+	});
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
 			(pi) => {
-				pi.registerTool({
-					name: "delegate-work",
-					label: "Delegate",
-					description: "Delegate work",
-					exposure: "model-only",
-					parameters: Type.Object({}),
-					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
-				});
+				pi.registerTool(modelOnlyTool("delegate-work"));
+				pi.registerTool(modelOnlyTool("subagent"));
+				pi.registerTool(modelOnlyTool("workflow"));
 			},
 		],
-		initialActiveToolNames: ["read", "codemode", "delegate-work"],
+		initialActiveToolNames: ["read", "codemode", "delegate-work", "subagent", "workflow"],
 	});
 	try {
 		const description = harness.session.agent.state.tools.find((tool) => tool.name === "codemode")?.description ?? "";
 		assert.match(description, /tools, ALL_TOOLS and searchTools\(\) matches cover only script-callable tools/);
+		assert.match(description, /cannot be called from inside a codemode script/);
+		assert.match(description, /separate top-level subagent or workflow tool/);
+		assert.match(description, /never try to reach it through codemode/);
+		assert.match(description, /call it directly as a top-level tool, not from a script/);
+		assert.match(harness.session.systemPrompt, /cannot be called from inside a `codemode` script/);
+		assert.match(harness.session.systemPrompt, /call the separate top-level `subagent` or `workflow` tool directly/);
 		harness.setResponses([
 			fauxAssistantMessage(
 				[
 					fauxToolCall("codemode", {
-						code: 'return { hits: await searchTools("delegate-work"), described: await describeTool("delegate_work"), listed: ALL_TOOLS.some(tool => tool.name === "delegate_work"), callable: "delegate_work" in tools, other: await searchTools("read") };',
+						code: `return {
+							hits: await searchTools("delegate-work"),
+							described: await describeTool("delegate_work"),
+							subagentHits: await searchTools("subagent"),
+							subagentDescribed: await describeTool("subagent"),
+							workflowHits: await searchTools("workflow"),
+							workflowDescribed: await describeTool("workflow"),
+							listed: ALL_TOOLS.some(tool => ["delegate_work", "subagent", "workflow"].includes(tool.name)),
+							callable: "delegate_work" in tools || "subagent" in tools || "workflow" in tools,
+							other: await searchTools("read"),
+						};`,
 					}),
 				],
 				{ stopReason: "toolUse" },
@@ -1516,12 +1535,19 @@ test("codemode discovery names model-only tools instead of returning nothing (#3
 		const result = harness.session.messages.find((message) => message.role === "toolResult");
 		assert(result?.role === "toolResult" && !result.isError, getMessageText(result));
 		const output = JSON.parse(getMessageText(result).split("\n").at(-1) ?? "");
-		const hint = "`delegate-work` is model-only: call it directly, not from a script.";
-		assert.deepEqual(output.hits[0], { name: "delegate-work", description: hint });
-		assert.equal(output.described, hint);
+		const hint = (name: string) =>
+			`\`${name}\` is model-only: call it directly as a top-level tool, not from a script.`;
+		assert.deepEqual(output.hits[0], { name: "delegate-work", description: hint("delegate-work") });
+		assert.equal(output.described, hint("delegate-work"));
+		assert.deepEqual(output.subagentHits[0], { name: "subagent", description: hint("subagent") });
+		assert.equal(output.subagentDescribed, hint("subagent"));
+		assert.deepEqual(output.workflowHits[0], { name: "workflow", description: hint("workflow") });
+		assert.equal(output.workflowDescribed, hint("workflow"));
 		assert.equal(output.listed, false);
 		assert.equal(output.callable, false);
-		assert(!output.other.some((hit: { name: string }) => hit.name === "delegate-work"));
+		assert(
+			!output.other.some((hit: { name: string }) => ["delegate-work", "subagent", "workflow"].includes(hit.name)),
+		);
 	} finally {
 		await harness.cleanup();
 	}

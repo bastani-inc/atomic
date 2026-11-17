@@ -444,7 +444,7 @@ function discoveryGlobals(
 					[name, toCodemodeIdentifier(name)].some((candidate) => candidate.toLowerCase() === wanted),
 			);
 		return name
-			? { name, description: `\`${name}\` is model-only: call it directly, not from a script.` }
+			? { name, description: `\`${name}\` is model-only: call it directly as a top-level tool, not from a script.` }
 			: undefined;
 	};
 	return [

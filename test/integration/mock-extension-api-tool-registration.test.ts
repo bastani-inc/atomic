@@ -325,16 +325,16 @@ describe("MockExtensionAPI — tool registration", () => {
 		assert.equal(typeof mock.tools[0]!.opts.renderResult, "function");
 	});
 
-	test("tool renders its own shell", () => {
-		assert.equal(mock.tools[0]!.opts.renderShell, "self");
+	test("tool renders in the host's tool band like every other tool", () => {
+		assert.equal(mock.tools[0]!.opts.renderShell, undefined);
 	});
 
 	test("tool renderCall slot delegates correctly", () => {
 		const slot = mock.tools[0]!.opts.renderCall!;
 		const out = slot({ workflow: "test-wf", inputs: {}, action: "run" }, {} as never, {} as never);
-		assert.ok(out.includes('workflow: run "test-wf"'));
+		assert.ok(out.includes("Workflow(test-wf)"));
 		const inspection = slot({ workflow: "test-wf", action: "inputs" }, {} as never, {} as never);
-		assert.ok(inspection.includes('workflow: show inputs for "test-wf"'));
+		assert.ok(inspection.includes("workflow inputs test-wf"));
 	});
 
 	test("tool renderResult slot delegates correctly", () => {
@@ -359,9 +359,8 @@ describe("MockExtensionAPI — tool registration", () => {
 				{} as never,
 			);
 			const rendered = renderToolCard(out);
-			assert.match(rendered, /database unavailable/);
-			assert.match(rendered, /ERROR/);
-			assert.doesNotMatch(rendered, /no result/);
+			assert.match(rendered, /✗ database unavailable/);
+			assert.doesNotMatch(rendered, /No result/);
 		}
 	});
 
@@ -372,9 +371,8 @@ describe("MockExtensionAPI — tool registration", () => {
 				isError: true,
 			});
 			const rendered = renderToolCard(out);
-			assert.match(rendered, /database unavailable/);
-			assert.match(rendered, /ERROR/);
-			assert.doesNotMatch(rendered, /no result/);
+			assert.match(rendered, /✗ database unavailable/);
+			assert.doesNotMatch(rendered, /No result/);
 		}
 	});
 
@@ -396,8 +394,8 @@ describe("MockExtensionAPI — tool registration", () => {
 			);
 			for (const isError of [false, undefined]) {
 				const rendered = renderToolCard(slot({ isError, content }, opts, {} as never, {} as never));
-				assert.match(rendered, /no result/);
-				assert.doesNotMatch(rendered, /ERROR|database unavailable/);
+				assert.match(rendered, /No result/);
+				assert.doesNotMatch(rendered, /✗|database unavailable/);
 			}
 		}
 	});

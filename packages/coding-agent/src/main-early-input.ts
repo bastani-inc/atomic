@@ -22,6 +22,12 @@ interface ActiveEarlyInputCapture {
 	keepDraft(text: string): void;
 }
 
+/**
+ * How long a startup dialog waits for input already typed to arrive before it takes stdin: long enough for the event
+ * loop to poll stdin and for a Windows read thread to hand over what it read, short enough not to be seen.
+ */
+const STARTUP_DIALOG_INPUT_GRACE_MS = 25;
+
 let activeCapture: ActiveEarlyInputCapture | undefined;
 let startupDialogDrafts: string[] = [];
 let startupDialogQueue: Promise<void> | undefined;
@@ -40,7 +46,10 @@ export async function withEarlyInputHeldForStartupDialog<T>(
 		if (previous) await previous;
 		if (activeCapture) {
 			activeCapture.resume();
-			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			// A timer that is not yet due makes the event loop wait in its I/O poll, so input the terminal or a
+			// Windows read thread already holds reaches the capture before the dialog takes stdin. A zero-delay timer
+			// and an immediate can both run before that poll, which lost input under Bun and on loaded runners.
+			await new Promise<void>((resolve) => setTimeout(resolve, STARTUP_DIALOG_INPUT_GRACE_MS));
 			await new Promise<void>((resolve) => setImmediate(resolve));
 		}
 		capture = activeCapture;
@@ -80,6 +89,8 @@ interface EarlyInputStream {
 	setRawMode?(mode: boolean): void;
 	setEncoding?(encoding: BufferEncoding): void;
 	resume(): void;
+	pause?(): void;
+	read?(size?: number): unknown;
 	on(event: "data", listener: (chunk: Buffer | string) => void): void;
 	off?(event: "data", listener: (chunk: Buffer | string) => void): void;
 	removeListener(event: "data", listener: (chunk: Buffer | string) => void): void;
@@ -118,7 +129,9 @@ function escapeSequenceEndIndex(sequence: string): number | undefined {
 	const next = chars[1];
 	if (next === undefined) return undefined;
 	if (next !== "[" && next !== "O") return 1;
-	for (let index = 2; index < chars.length; index += 1) {
+	// The Linux console and libuv on Windows send F1-F5 as ESC [ [ A..E: the second "[" opens the sequence.
+	const start = next === "[" && chars[2] === "[" ? 3 : 2;
+	for (let index = start; index < chars.length; index += 1) {
 		const code = chars[index]?.charCodeAt(0) ?? 0;
 		if (code >= 0x40 && code <= 0x7e) return index + 1;
 	}
@@ -221,6 +234,8 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 			paused = true;
 			heldForStartupDecision = true;
 			detach();
+			// Without a reader a flowing stream drops what arrives: keep it for the dialog's reader instead.
+			stdin.pause?.();
 			clearPendingEscapeTimer();
 			state.pendingEscape = undefined;
 			stdin.setRawMode?.(wasRaw);
@@ -281,6 +296,10 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 	});
 	activeCapture = control;
 	stdin.resume();
+	// Start the OS read now rather than on the next tick: keys typed while startup runs without yielding must already
+	// be on their way when a startup dialog takes stdin. On Windows a read completes through a helper thread, so a
+	// read started only when startup yields can miss the dialog's handoff.
+	stdin.read?.(0);
 
 	return {
 		consume() {
