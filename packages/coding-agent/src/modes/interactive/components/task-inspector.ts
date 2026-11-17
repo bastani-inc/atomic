@@ -631,10 +631,13 @@ export class TaskInspector implements Component {
 		const result = await this.store.writeTaskInput(task.ref.taskId, text);
 		const focus = this.navigation.focus;
 		const showingInput = focus.kind === "stdin" && focus.taskId === task.ref.taskId;
-		if (showingInput) {
-			this.status = result.ok ? `Sent ${result.value.acceptedBytes} bytes` : taskDisplayText(result.error.message);
-		} else if (!result.ok) {
-			this.reportLate(`Could not send input: ${taskDisplayText(result.error.message)}`, environment);
+		if (!result.ok) {
+			const message = taskDisplayText(result.error.message);
+			if (this.disposed || focus.kind === "composer")
+				this.reportLate(`Could not send input: ${message}`, environment);
+			else this.status = message;
+		} else if (showingInput) {
+			this.status = `Sent ${result.value.acceptedBytes} bytes`;
 		}
 		if (result.ok) {
 			if (showingInput && this.input.getValue() === text) this.input.setValue("");
