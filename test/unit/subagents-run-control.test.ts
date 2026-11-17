@@ -2569,8 +2569,7 @@ test("a paused worktree child keeps its uncommitted work after every sibling fin
 	const resumed = await h.call({ action: "resume", id: childA.childId });
 	assert.notEqual(resumed.isError, true, text(resumed));
 	await settled(h, resumedTaskId(resumed));
-	const removedBy = Date.now() + RECORD_WAIT_MS;
-	while (existsSync(childA.cwd) && Date.now() < removedBy) await sleep(10);
+	await waitForWorktreeCleanup(h, childA);
 	assert.equal(existsSync(childA.cwd), false, "the worktree is removed once the resumed child finished");
 });
 
@@ -2605,6 +2604,16 @@ async function launchWorktreeRun(
 async function waitUntilRemoved(path: string): Promise<void> {
 	const removedBy = Date.now() + RECORD_WAIT_MS;
 	while (existsSync(path) && Date.now() < removedBy) await sleep(10);
+}
+
+/** Cleanup removes the checkout before deleting its branch; until then Git still uses the fixture repository. */
+async function waitForWorktreeCleanup(h: Harness, child: SubagentChildRecord): Promise<void> {
+	const branch = child.worktree?.branch;
+	assert.ok(branch, "the child record names its worktree branch");
+	await vi.waitFor(() => assert.equal(gitOutput(h.cwd, ["branch", "--list", branch]), ""), {
+		timeout: RECORD_WAIT_MS,
+		interval: 10,
+	});
 }
 
 test("a queued worktree child resumed behind its cancelled dispatch starts in its worktree after the sibling finishes (#3760 run control)", async () => {
@@ -2875,7 +2884,7 @@ test("a dirty paused worktree child's worktree is kept when its session closes, 
 
 	resumedDone.resolve();
 	await settled(h, resumedTask);
-	await waitUntilRemoved(childA.cwd);
+	await waitForWorktreeCleanup(h, childA);
 	assert.equal(existsSync(childA.cwd), false, "the worktree is removed once the resumed child finished");
 });
 
@@ -3012,8 +3021,7 @@ test("pausing a worktree child that finished on its own as the pause reached it 
 	assert.equal(h.latest(childB.childId)?.terminalStatus, "ok");
 	assert.equal(takeSubagentChildStop(childB.taskId as string), undefined, "no stop request is left for it");
 	assert.equal(existsSync(childB.cwd), true, "the sibling still holds the run's worktrees");
-	releaseSibling();
-	await waitUntilRemoved(childB.cwd);
+	await releaseSibling();
 	assert.equal(existsSync(childB.cwd), false, "its worktree is removed as any finished child's is, not kept parked");
 	const [patch] = savedPatches(childB);
 	assert.ok(patch, "its edits were saved as a patch");
