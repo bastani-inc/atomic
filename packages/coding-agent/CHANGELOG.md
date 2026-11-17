@@ -4,14 +4,21 @@
 
 ### Added
 
+- Ctrl+R (`app.history.search`) searches past prompts: the prompts ↑ and ↓ walk through, newest first and each once, then older prompts of the session, each with how long ago it was sent. Typing filters, Enter puts the chosen prompt in the composer without sending it, and Esc leaves the draft alone. See [Keybindings](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/docs/keybindings.md) ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 - Added `AgentSession.setModel(model, { thinkingLevel })` to set a model and its reasoning level in one call. Unsupported levels clamp to a supported level, and `persist: true` saves both. RPC `set_model` also accepts `thinkingLevel` and rejects unrecognized values without switching the model. `RpcClient.setModel(provider, modelId, { thinkingLevel })` sends the option. Persisted `set_model` and `cycle_model` responses include `persistedDefaults` to distinguish saved startup preferences from session-only changes ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 
 ### Changed
+
+- `/settings` uses the shared picker: a title, the rounded search box, the ❯ marker, a value column with › after a value that opens its own picker, the selected setting's description under the list, "↑ N more · ↓ N more" in place of a position counter, and one hint line that says whether enter or space changes the selected setting or opens its picker. The value pickers (decision model, compaction model, per-model thinking level, theme) mark the current value ● and the others ○ and open on the current value; esc clears a search before it goes back ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- The editor's `@` and `/` menus end with one hint line listing the keys that work there: select, tab to complete, enter to run a command or insert a path, and esc to close. An `@` row no longer repeats a path its name already shows. `atomic config` lists its keys on one hint line under the list instead of beside the title ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 - `/resume` and `/workflow resume` share one picker design: two-line rows (a session's name or first message, then its age, message count, folder and summary; a run's workflow and objective, then its status, stage, elapsed time, cost, checkpoints or failure reason), a search box, Space to preview the selected row, Enter or → (on an empty search) to resume, and one hint line listing only the keys that work. Esc clears a search before it closes the picker. The picker opens, and clears a search, in about the same time whatever the number of sessions: opening 3,000 sessions took about 73 ms and now takes about 1 ms ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - The fork picker, `/tree`, `atomic config`, the editor's `@` and `/` menus, and the `/mcp` and `/llama` pickers share the same picker look: the ❯ selection marker, a rounded search box, and "↑ N more · ↓ N more" in place of a position counter. The fork picker gains type-to-search, and `/mcp` and `/llama` lists longer than one screen get a search box ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Fixed
+
+- `atomic config` names the settings file of the agent directory in use for global resources; with `ATOMIC_CODING_AGENT_DIR` set it showed `~/.atomic/agent/settings.json` ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 - Pickers ignore a repeated Enter or click instead of answering twice, and an extension dialog shown again after another dialog repaints in the current theme. Ctrl+C cancels a filtered picker with Kitty and modifyOtherKeys keyboard protocols too; `/scoped-models` keeps its clear-search-first behavior ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 - Isolated interactive mode applies the reasoning level chosen in `/model` and keeps model and reasoning changes made by extensions during `/model` or Ctrl+P without saving session-only changes. Saving a model choice no longer copies project model defaults or scoped-model lists into global settings ([#5237](https://github.com/bastani-inc/atomic/pull/5237))

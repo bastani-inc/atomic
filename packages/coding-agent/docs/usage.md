@@ -40,11 +40,14 @@ Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening
 |---------|-----|
 | File reference | Type `@` to fuzzy-search project files |
 | Path completion | Press Tab to complete paths |
+| Prompt history | ↑ and ↓ walk through past prompts; Ctrl+R searches them and puts the chosen one in the editor without sending it |
 | Multi-line input | SHIFT+Enter, or CTRL+Enter on Windows Terminal |
 | Images | Paste with CTRL+V, ALT+V on Windows, or drag into the terminal |
 | Shell command | `!command` runs and sends output to the model |
 | Hidden shell command | `!!command` runs without sending output to the model |
 | External editor | CTRL+G opens `$VISUAL` or `$EDITOR` |
+
+The `@` and `/` menus end with one hint line naming the keys that work there: ↑↓ to select, Tab to complete, Enter to run a command or insert a path, and Esc to close.
 
 See [Keybindings](/keybindings) for all shortcuts and customization.
 
@@ -70,6 +73,8 @@ Startup typing does not apply to non-TTY input, print or RPC mode, or metadata c
 ## Slash Commands
 
 Type `/` in the editor to open command completion. Extensions can register custom commands, skills are available as `/skill:name`, and prompt templates expand via `/templatename`.
+
+`/settings` lists each setting with its value. Type to search; Enter or Space changes the selected setting, stepping a value in place or opening its picker (a value followed by `›`). The selected setting's description shows under the list, and Esc clears a search before it closes.
 
 | Command | Description |
 |---------|-------------|

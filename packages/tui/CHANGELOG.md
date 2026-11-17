@@ -4,6 +4,14 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- `EditorTheme.autocompleteHint` draws one hint line under the editor's open autocomplete menu from the entries the editor passes: select (when there is more than one row), complete, run or insert, and close. `Editor.getHistory()` returns the prompt history, newest first, and `SelectList.getItemCount()` the number of rows after its filter ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
+### Changed
+
+- A fuzzy `@` file suggestion no longer repeats its path as the description when the file's name already shows it; a nested file still names its folder ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ## [0.9.88] - 2026-11-16
 
 ### Added
