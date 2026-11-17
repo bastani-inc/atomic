@@ -6,7 +6,7 @@ import chalk from "chalk";
 import { getAgentDir, getAgentDirs } from "../config.js";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
-import { findGitPaths } from "./footer-data-provider.ts";
+import { findGitPaths, findGitPathsAsync } from "./footer-data-provider.ts";
 
 type ContextFile = { path: string; content: string };
 
@@ -178,7 +178,7 @@ function findShadowedContextFile(cwd: string): string | undefined {
 
 /** {@link findShadowedContextFile} without blocking on the files it reads. */
 async function findShadowedContextFileAsync(cwd: string): Promise<string | undefined> {
-	const gitPaths = findGitPaths(cwd);
+	const gitPaths = await findGitPathsAsync(cwd);
 	if (!gitPaths) return undefined;
 	const commonGitDir = await realPathAsync(gitPaths.commonGitDir);
 	const worktreeRoot = await realPathAsync(gitPaths.repoDir);

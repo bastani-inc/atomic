@@ -7,6 +7,7 @@ import {
 	isRetryableGitProvisionError,
 	resolveGit,
 	resolveGitSync,
+	resolveInstalledGit,
 } from "@bastani/atomic";
 import { type WorkflowGitRequiredFields, wrapGitRequired } from "../../shared/workflow-git-required-error.js";
 import { spawnCollect } from "./spawn-collect.js";
@@ -64,7 +65,7 @@ function spawnGitSync(cwd: string, args: readonly string[]): GitResult {
 	};
 }
 async function spawnGit(cwd: string, args: readonly string[], plain: boolean): Promise<GitResult> {
-	const git = resolveGitSync();
+	const git = await resolveInstalledGit();
 	const startedAt = Date.now();
 	const result = await spawnCollect(git.path, plain ? args : gitCommandArgs(args), {
 		cwd,
@@ -108,7 +109,7 @@ export async function prepareRunGit(
 export async function prepareTaskGit(signal: AbortSignal): Promise<void> {
 	if (gitRunnerOverride !== undefined) return;
 	try {
-		resolveGitSync();
+		await resolveInstalledGit();
 		return;
 	} catch (error) {
 		const notInstalled = isGitUnavailableError(error) && error.code === "not-installed";

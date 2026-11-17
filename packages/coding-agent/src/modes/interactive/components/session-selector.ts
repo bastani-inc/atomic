@@ -10,6 +10,7 @@ import { SessionSelectorHeader } from "./session-selector-header.ts";
 import { SessionList } from "./session-selector-list.ts";
 import type { NameFilter, SortMode } from "./session-selector-search.ts";
 import type { SessionScope, SessionsLoader } from "./session-selector-types.ts";
+import { resolveSessionPathKeys, sessionComparisonPaths } from "./session-selector-utils.ts";
 
 /**
  * Component that renders a session selector
@@ -41,6 +42,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private sortMode: SortMode = "threaded";
 	private nameFilter: NameFilter = "all";
 	private currentSessions: SessionInfo[] | null = null;
+	private readonly currentDirectory: string | undefined;
 	private allSessions: SessionInfo[] | null = null;
 	private currentSessionsLoader: SessionsLoader;
 	private allSessionsLoader: SessionsLoader;
@@ -108,6 +110,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		currentSession?: { id: string; directory: string },
 	) {
 		super();
+		this.currentDirectory = currentSession?.directory;
 		this.keybindings = options?.keybindings ?? KeybindingsManager.create();
 		this.currentSessionsLoader = currentSessionsLoader;
 		this.allSessionsLoader = allSessionsLoader;
@@ -311,6 +314,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				}
 				if (scope === this.scope) {
 					this.sessionList.setSessions(sessions, showCwd, true);
+					void this.refreshPathKeys(scope, sessions, showCwd, isActive, true);
 				}
 			}
 			if (scope !== this.scope) return;
@@ -338,6 +342,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.header.setLoading(false);
 			this.sessionList.setSessions(sessions, showCwd);
 			this.requestRender();
+			void this.refreshPathKeys(scope, sessions, showCwd, isActive);
 
 			if (scope === "all" && sessions.length === 0 && (this.currentSessions?.length ?? 0) === 0) {
 				this.onCancel();
@@ -366,6 +371,26 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			}
 			this.requestRender();
 		}
+	}
+
+	/**
+	 * Resolves the symlinks of the shown sessions' paths off the event loop, then shows the same sessions again so
+	 * threading and the current-session check compare canonical paths. Until then they compare by spelling.
+	 */
+	private async refreshPathKeys(
+		scope: SessionScope,
+		sessions: SessionInfo[],
+		showCwd: boolean,
+		isActive: () => boolean,
+		partial = false,
+	): Promise<void> {
+		const changed = await resolveSessionPathKeys(sessionComparisonPaths(sessions, this.currentDirectory));
+		if (!changed || !isActive() || scope !== this.scope) return;
+		if (partial !== (scope === "current" ? this.currentLoading : this.allLoading)) return;
+		const shown = scope === "current" ? this.currentSessions : this.allSessions;
+		if (shown !== sessions) return;
+		this.sessionList.setSessions(sessions, showCwd, partial);
+		this.requestRender();
 	}
 
 	private toggleSortMode(): void {

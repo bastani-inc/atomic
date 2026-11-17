@@ -22,6 +22,10 @@ vi.mock("child_process", () => ({
 			_options: unknown,
 			callback: (error: Error | null, stdout: string, stderr: string) => void,
 		) => {
+			if (args[0] === "--version") {
+				setTimeout(() => callback(null, "git version 2.45.0\n", ""), 0);
+				return;
+			}
 			if (args[1] === "symbolic-ref") {
 				setTimeout(
 					() => callback(gitBranch ? null : new Error("detached"), gitBranch ? `${gitBranch}\n` : "", ""),

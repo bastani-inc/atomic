@@ -305,11 +305,12 @@ describe("session selector path/delete interactions", () => {
 			() => {},
 			{ keybindings },
 		);
-		await flushPromises();
-
-		const output = stripAnsi(selector.render(120).join("\n"));
-		expect(output).toContain("Parent");
-		expect(output).toContain("└─ Child");
+		// The picker threads by canonical path once it has resolved the aliases off the event loop.
+		await vi.waitFor(() => {
+			const output = stripAnsi(selector.render(120).join("\n"));
+			expect(output).toContain("Parent");
+			expect(output).toContain("└─ Child");
+		});
 	});
 
 	it("treats the current session as active across symlink aliases", async () => {

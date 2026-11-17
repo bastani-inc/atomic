@@ -5,7 +5,7 @@ import {
 	getAgentDir,
 	isGitProvisionError,
 	resolveGit,
-	resolveGitSync,
+	resolveInstalledGit,
 	restoreRunWorktree,
 } from "@bastani/atomic";
 import { isPostgresUrl, type StorageNotificationSubscription, type StorageSelection } from "@bastani/atomic/storage";
@@ -152,7 +152,7 @@ interface HostGit {
 /**
  * The git a worker host runs: the one `options.git` names, probed, or else the git `@bastani/atomic` resolves, with
  * the environment it needs. Only a host given a restore function, which needs git, is provisioned a portable git
- * (`resolveGit()`); any other host takes the git this machine has (`resolveGitSync()`), never downloads one, and
+ * (`resolveGit()`); any other host takes the git this machine has (`resolveInstalledGit()`), never downloads one, and
  * restores by default only with it.
  */
 async function hostGit(options: WorkflowWorkerHostOptions): Promise<HostGit> {
@@ -163,7 +163,7 @@ async function hostGit(options: WorkflowWorkerHostOptions): Promise<HostGit> {
 			: { source, command: options.git };
 	}
 	try {
-		const resolved = typeof options.restore === "function" ? await resolveGit() : resolveGitSync();
+		const resolved = typeof options.restore === "function" ? await resolveGit() : await resolveInstalledGit();
 		return { source: resolved.source, command: { path: resolved.path, env: gitVariables(resolved.env) } };
 	} catch (error) {
 		if (!isGitProvisionError(error)) throw error;

@@ -11,7 +11,7 @@ import {
 } from "../utils/fs-watch.ts";
 import { createGitEnvironment } from "../utils/git-env.ts";
 import { isGitProvisionError } from "../utils/git-errors.ts";
-import { type ResolvedGit, resolveGitSync } from "../utils/tools-manager.ts";
+import { type ResolvedGit, resolveInstalledGit } from "../utils/tools-manager.ts";
 import { pathExists } from "./tools/path-utils.ts";
 
 export type GitPaths = {
@@ -94,9 +94,9 @@ export async function findGitPathsAsync(cwd: string): Promise<GitPaths | null> {
 }
 
 /** The resolved git, or undefined when none is available; the status surface reports the typed reason. */
-function availableGit(): ResolvedGit | undefined {
+async function availableGit(): Promise<ResolvedGit | undefined> {
 	try {
-		return resolveGitSync();
+		return await resolveInstalledGit();
 	} catch (error) {
 		if (isGitProvisionError(error)) return undefined;
 		throw error;
@@ -104,9 +104,9 @@ function availableGit(): ResolvedGit | undefined {
 }
 
 /** Ask git for the current branch asynchronously. Returns null on detached HEAD or if git is unavailable. */
-function resolveBranchWithGitAsync(repoDir: string): Promise<string | null> {
-	const git = availableGit();
-	if (git === undefined) return Promise.resolve(null);
+async function resolveBranchWithGitAsync(repoDir: string): Promise<string | null> {
+	const git = await availableGit();
+	if (git === undefined) return null;
 	return new Promise((resolvePromise) => {
 		execFile(
 			git.path,
