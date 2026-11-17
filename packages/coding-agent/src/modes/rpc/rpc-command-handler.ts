@@ -597,7 +597,7 @@ export function createRpcCommandHandler({
 			}
 
 			case "get_tools": {
-				return createRpcSuccessResponse(id, "get_tools", session.getToolStatus());
+				return createRpcSuccessResponse(id, "get_tools", await session.getToolStatusAsync());
 			}
 
 			case "export_html": {

@@ -557,7 +557,13 @@ export function createSearchToolDefinition(
 					const text = archive
 						? await searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
 						: target.sqlite
-							? searchSqliteSelector(target.sqlite, params.pattern, ignoreCase, contextBefore, contextAfter)
+							? await searchSqliteSelector(
+									target.sqlite,
+									params.pattern,
+									ignoreCase,
+									contextBefore,
+									contextAfter,
+								)
 							: await searchInternalSelector(
 									target.internal!,
 									executionCwd,
@@ -625,7 +631,13 @@ export function createSearchToolDefinition(
 					let text = archive
 						? await searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
 						: target.sqlite
-							? searchSqliteSelector(target.sqlite, params.pattern, ignoreCase, contextBefore, contextAfter)
+							? await searchSqliteSelector(
+									target.sqlite,
+									params.pattern,
+									ignoreCase,
+									contextBefore,
+									contextAfter,
+								)
 							: await searchInternalSelector(
 									target.internal!,
 									executionCwd,

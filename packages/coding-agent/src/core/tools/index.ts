@@ -322,6 +322,15 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 }
 
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): BuiltinToolMap<ToolDef> {
+	return createToolDefinitionsFor(cwd, options, isPowerShellAvailable());
+}
+
+/** {@link createAllToolDefinitions} with PowerShell availability the caller already resolved. */
+export function createToolDefinitionsFor(
+	cwd: string,
+	options: ToolsOptions | undefined,
+	powerShellAvailable: boolean,
+): BuiltinToolMap<ToolDef> {
 	const definitions: BuiltinToolMap<ToolDef> = {
 		read: createReadToolDefinition(cwd, options?.read),
 		bash: createBashToolDefinition(cwd, options?.bash),
@@ -334,7 +343,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): B
 		ask_user_question: createLoadedAskUserQuestionToolDefinition(),
 		todo: createTodoToolDefinition(cwd),
 	};
-	if (isPowerShellAvailable()) {
+	if (powerShellAvailable) {
 		definitions.powershell = createPowerShellToolDefinition(cwd, options?.powershell);
 	}
 	return definitions;

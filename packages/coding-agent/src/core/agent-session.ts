@@ -9,6 +9,7 @@
 import { join } from "node:path";
 import type { Agent, AgentMessage, AgentTool, ThinkingLevel } from "@bastani/atomic-agent-core";
 import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
+import { isPowerShellAvailable } from "../utils/shell.ts";
 import { installAgentSessionAccessors } from "./agent-session-accessors.ts";
 import { agentSessionAutoCompactionMethods } from "./agent-session-auto-compaction.ts";
 import {
@@ -497,6 +498,7 @@ class AgentSessionBase {
 			internals._buildRuntime({
 				activeToolNames: this._initialActiveToolNames,
 				includeAllExtensionTools: true,
+				powerShellAvailable: isPowerShellAvailable(),
 			});
 			internals._restoreToolsFromTranscript({ startup: true });
 			if (this._workflowStageAdmission?.hasAgentTaskHost() && !isSubagentChildSession(internals))

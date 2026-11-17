@@ -1,5 +1,4 @@
 import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -14,6 +13,7 @@ import { readConflictUrl } from "./conflict-registry.ts";
 import { pathExists } from "./path-utils.ts";
 import { loadNativeSearchBinding } from "./search-native.ts";
 import { plainShellWordMask } from "./shell-plain-words.ts";
+import { SqliteSelectorConnection, type SqliteSelectorValue } from "./sqlite-selector-connection.ts";
 import { listTarMembers, writeTarMember } from "./tar-archive.ts";
 
 const deflateRaw = promisify(deflateRawCallback);
@@ -76,87 +76,8 @@ export function isInternalUrl(value: string): boolean {
 export function isUrlLike(value: string): boolean {
 	return URL_LIKE_PREFIX.test(value);
 }
-type SqliteValue = string | number | boolean | null;
-interface SqliteQuery {
-	all(...params: SqliteValue[]): Record<string, SqliteValue>[];
-	get?(...params: SqliteValue[]): Record<string, SqliteValue> | undefined;
-	iterate?(): Iterable<Record<string, SqliteValue>>;
-	run(...params: SqliteValue[]): { changes?: number; lastInsertRowid?: number | bigint };
-}
-interface SqliteDatabase {
-	query(sql: string): SqliteQuery;
-	close(): void;
-}
-type SqliteDatabaseConstructor = new (path: string, options?: { readonly?: boolean }) => SqliteDatabase;
-/**
- * SQLite via `node:sqlite`.
- *
- * It is unflagged from Node v22.13.0, it is the module upstream pi uses, and
- * Bun ships it from 1.4.0 (oven-sh/bun#32498), before the current 1.4.2 floor,
- * so both runtimes provide it. The `bun:sqlite` fallback that covered older
- * Bun binaries was removed with the earlier 1.4.0 floor.
- *
- * `better-sqlite3` was evaluated and rejected: it segfaults Bun 1.3.14 on
- * construction, which is worse than a catchable missing-module error.
- *
- * The adapter keeps the `bun:sqlite`-shaped API these selectors were written
- * against and normalizes the deltas: `node:sqlite` spells the option
- * `readOnly` and rejects it when passed explicitly as `undefined`, and it
- * refuses to bind booleans, which are stored as integer 1/0.
- */
-interface NodeSqliteStatement {
-	all(...params: unknown[]): Record<string, SqliteValue>[];
-	get(...params: unknown[]): Record<string, SqliteValue> | undefined;
-	iterate(...params: unknown[]): Iterable<Record<string, SqliteValue>>;
-	run(...params: unknown[]): { changes?: number | bigint; lastInsertRowid?: number | bigint };
-}
-interface NodeSqliteDatabase {
-	prepare(sql: string): NodeSqliteStatement;
-	close(): void;
-}
-type NodeSqliteConstructor = new (path: string, options?: { readOnly?: boolean }) => NodeSqliteDatabase;
-
-/** Callers may pass booleans; `node:sqlite` refuses to bind them, so store integer 1/0. */
-export function toSqliteBindValues(params: readonly SqliteValue[]): unknown[] {
-	return params.map((param) => (typeof param === "boolean" ? (param ? 1 : 0) : param));
-}
-
-function nodeSqliteAdapter(DatabaseSync: NodeSqliteConstructor): SqliteDatabaseConstructor {
-	return class NodeSqliteAdapter implements SqliteDatabase {
-		private readonly db: NodeSqliteDatabase;
-		constructor(path: string, options?: { readonly?: boolean }) {
-			// Passing `undefined` explicitly fails node:sqlite's arity validation.
-			this.db = options?.readonly === true ? new DatabaseSync(path, { readOnly: true }) : new DatabaseSync(path);
-		}
-		query(sql: string): SqliteQuery {
-			const statement = this.db.prepare(sql);
-			return {
-				all: (...params: SqliteValue[]) => statement.all(...toSqliteBindValues(params)),
-				get: (...params: SqliteValue[]) => statement.get(...toSqliteBindValues(params)),
-				iterate: () => statement.iterate(),
-				run: (...params: SqliteValue[]) => {
-					const result = statement.run(...toSqliteBindValues(params));
-					return { changes: Number(result.changes ?? 0), lastInsertRowid: result.lastInsertRowid };
-				},
-			};
-		}
-		close(): void {
-			this.db.close();
-		}
-	};
-}
-
-function sqliteDatabase(): SqliteDatabaseConstructor {
-	const requireModule = createRequire(import.meta.url);
-	try {
-		const { DatabaseSync } = requireModule("node:sqlite") as { DatabaseSync: NodeSqliteConstructor };
-		return nodeSqliteAdapter(DatabaseSync);
-	} catch {
-		throw new Error(
-			"SQLite selectors need node:sqlite (Node >= 22.13 or Bun >= 1.4.2); this runtime does not provide it.",
-		);
-	}
-}
+type SqliteValue = SqliteSelectorValue;
+type SqliteDatabase = SqliteSelectorConnection;
 const SQLITE_HEADER = "SQLite format 3\0";
 async function existingSqliteFile(path: string): Promise<boolean | undefined> {
 	if (!(await pathExists(path))) return undefined;
@@ -1021,29 +942,18 @@ function validateRawSqliteQuery(query: string): string {
 	return trimmed;
 }
 
-function readRawSqliteRows(query: SqliteQuery): Record<string, SqliteValue>[] {
-	const rows: Record<string, SqliteValue>[] = [];
-	const iterable = query.iterate?.();
-	if (!iterable) return query.all().slice(0, MAX_RAW_QUERY_ROWS);
-	for (const row of iterable) {
-		if (rows.length >= MAX_RAW_QUERY_ROWS) break;
-		rows.push(row);
-	}
-	return rows;
-}
-
-function sqliteTableColumns(db: SqliteDatabase, table: string): string[] {
-	return (db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name?: string }>)
+async function sqliteTableColumns(db: SqliteDatabase, table: string): Promise<string[]> {
+	return ((await db.all(`pragma table_info(${quoteSqliteIdent(table)})`)) as Array<{ name?: string }>)
 		.map((row) => String(row.name ?? ""))
 		.filter(Boolean);
 }
 
-function boundedSqliteRowCount(db: SqliteDatabase, table: string): string | number {
-	const row = db
-		.query(
+async function boundedSqliteRowCount(db: SqliteDatabase, table: string): Promise<string | number> {
+	const row = (
+		await db.all(
 			`select count(*) as count from (select 1 from ${quoteSqliteIdent(table)} limit ${ROW_COUNT_PROBE_CAP + 1})`,
 		)
-		.all()[0];
+	)[0];
 	const count = Number(row?.count ?? 0);
 	return count > ROW_COUNT_PROBE_CAP ? `${ROW_COUNT_PROBE_CAP}+` : count;
 }
@@ -1054,9 +964,9 @@ function normalizeSqliteWriteValue(value: unknown, column: string): SqliteValue 
 }
 
 /** The columns that identify one row: the complete primary key in key order, or `rowid` for a table without one. */
-function sqliteRowKey(db: SqliteDatabase, table: string): string[] {
+async function sqliteRowKey(db: SqliteDatabase, table: string): Promise<string[]> {
 	const columns = (
-		db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name: string; pk: number }>
+		(await db.all(`pragma table_info(${quoteSqliteIdent(table)})`)) as unknown as Array<{ name: string; pk: number }>
 	)
 		.filter((row) => row.pk > 0)
 		.sort((a, b) => a.pk - b.pk)
@@ -1068,13 +978,21 @@ function sqliteRowKey(db: SqliteDatabase, table: string): string[] {
  * compares, but a column declared without a type (or as BLOB) compares exactly, so a stored `2` never equals the text
  * `'2'`: such a column binds a canonical number as a number.
  */
-function sqliteSingleKeyValue(db: SqliteDatabase, table: string, column: string, rowId: string): SqliteValue {
+async function sqliteSingleKeyValue(
+	db: SqliteDatabase,
+	table: string,
+	column: string,
+	rowId: string,
+): Promise<SqliteValue> {
 	const value = Number(rowId);
 	if (!Number.isFinite(value) || String(value) !== rowId) return rowId;
 	const type = (
-		(db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name: string; type: string }>).find(
-			(row) => row.name === column,
-		)?.type ?? ""
+		(
+			(await db.all(`pragma table_info(${quoteSqliteIdent(table)})`)) as unknown as Array<{
+				name: string;
+				type: string;
+			}>
+		).find((row) => row.name === column)?.type ?? ""
 	).toUpperCase();
 	// SQLite's affinity rules: INT, then CHAR/CLOB/TEXT, then BLOB or no type, which is the only one without affinity.
 	return !/INT|CHAR|CLOB|TEXT/.test(type) && (type === "" || type.includes("BLOB")) ? value : rowId;
@@ -1084,8 +1002,13 @@ function sqliteSingleKeyValue(db: SqliteDatabase, table: string, column: string,
  * JSON array with one value per key column, in key order, such as `["acme",2]`. Anything else is refused, because
  * matching on part of a composite key would select several rows.
  */
-function sqliteRowKeyValues(db: SqliteDatabase, key: string[], rowId: string, table: string): SqliteValue[] {
-	if (key.length === 1) return [sqliteSingleKeyValue(db, table, key[0] as string, rowId)];
+async function sqliteRowKeyValues(
+	db: SqliteDatabase,
+	key: string[],
+	rowId: string,
+	table: string,
+): Promise<SqliteValue[]> {
+	if (key.length === 1) return [await sqliteSingleKeyValue(db, table, key[0] as string, rowId)];
 	let values: unknown;
 	try {
 		values = JSON.parse(rowId);
@@ -1102,7 +1025,7 @@ function sqliteRowKeyWhere(key: string[]): string {
 	return key.map((column) => `${quoteSqliteIdent(column)} = ?`).join(" and ");
 }
 /** Runs a row update or delete that changes at most one row, refusing (and changing nothing) when more match. */
-function runSingleRowWrite(
+async function runSingleRowWrite(
 	db: SqliteDatabase,
 	table: string,
 	rowId: string,
@@ -1110,51 +1033,49 @@ function runSingleRowWrite(
 	keyValues: SqliteValue[],
 	statement: string,
 	params: SqliteValue[],
-): number {
-	db.query("begin immediate").run();
+): Promise<number> {
+	await db.run("begin immediate");
 	let committed = false;
 	try {
 		const matched = Number(
-			db.query(`select count(*) as count from ${quoteSqliteIdent(table)} where ${where}`).all(...keyValues)[0]
-				?.count,
+			(await db.all(`select count(*) as count from ${quoteSqliteIdent(table)} where ${where}`, keyValues))[0]?.count,
 		);
 		if (matched > 1)
 			throw new Error(
 				`SQLite row selector '${rowId}' matches ${matched} rows in ${table}; refusing to change more than one row. Select the row by its complete primary key.`,
 			);
-		const changes = db.query(statement).run(...params).changes ?? 0;
-		db.query("commit").run();
+		const changes = (await db.run(statement, params)).changes;
+		await db.run("commit");
 		committed = true;
 		return changes;
 	} finally {
-		if (!committed) db.query("rollback").run();
+		if (!committed) await db.run("rollback");
 	}
 }
 function sqliteRowKeyText(key: string[], row: Record<string, unknown>, fallback: number): string {
 	if (key.length > 1) return JSON.stringify(key.map((column) => row[column]));
 	return String(row[key[0] as string] ?? fallback);
 }
-export function readSqliteSelector(selector: SqliteSelector): string {
-	const Database = sqliteDatabase();
-	const db = new Database(selector.databasePath, { readonly: true });
+export async function readSqliteSelector(selector: SqliteSelector): Promise<string> {
+	const db = await SqliteSelectorConnection.open(selector.databasePath, { readonly: true });
 	try {
-		if (selector.query) return rowsToJsonLines(readRawSqliteRows(db.query(validateRawSqliteQuery(selector.query))));
+		if (selector.query)
+			return rowsToJsonLines(await db.rows(validateRawSqliteQuery(selector.query), MAX_RAW_QUERY_ROWS));
 		if (!selector.table) {
-			const tables = db
-				.query("select name from sqlite_master where type='table' and name not like 'sqlite_%' order by name")
-				.all()
-				.slice(0, 500);
-			return tables
-				.map((row) => {
-					const name = String(row.name ?? "");
-					return JSON.stringify({ table: name, rows: boundedSqliteRowCount(db, name) });
-				})
-				.join("\n");
+			const tables = (
+				await db.all("select name from sqlite_master where type='table' and name not like 'sqlite_%' order by name")
+			).slice(0, 500);
+			const lines: string[] = [];
+			for (const row of tables) {
+				const name = String(row.name ?? "");
+				lines.push(JSON.stringify({ table: name, rows: await boundedSqliteRowCount(db, name) }));
+			}
+			return lines.join("\n");
 		}
-		const schemaRows = db.query(`pragma table_info(${quoteSqliteIdent(selector.table)})`).all();
+		const schemaRows = await db.all(`pragma table_info(${quoteSqliteIdent(selector.table)})`);
 		if (selector.schema) return rowsToJsonLines(schemaRows);
-		const key = sqliteRowKey(db, selector.table);
-		const keyValues = selector.rowId ? sqliteRowKeyValues(db, key, selector.rowId, selector.table) : [];
+		const key = await sqliteRowKey(db, selector.table);
+		const keyValues = selector.rowId ? await sqliteRowKeyValues(db, key, selector.rowId, selector.table) : [];
 		const where = selector.rowId ? sqliteRowKeyWhere(key) : validateSqliteWhere(selector.where);
 		const order = formatSqliteOrder(selector.order);
 		const isQuery = selector.limit !== undefined || selector.offset !== undefined || selector.where || selector.order;
@@ -1168,11 +1089,11 @@ export function readSqliteSelector(selector: SqliteSelector): string {
 		]
 			.filter(Boolean)
 			.join(" ");
-		const rows = db.query(sql).all(...keyValues, limit, offset);
+		const rows = await db.all(sql, [...keyValues, limit, offset]);
 		if (selector.rowId || isQuery || selector.sampleRows !== undefined) return rowsToJsonLines(rows);
 		return [`# ${selector.table}`, "Schema:", rowsToJsonLines(schemaRows), "Rows:", rowsToJsonLines(rows)].join("\n");
 	} finally {
-		db.close();
+		await db.close();
 	}
 }
 function stripJson5Comments(input: string): string {
@@ -1288,14 +1209,13 @@ export async function writeSqliteSelector(selector: SqliteSelector, content: str
 		throw new Error(`SQLite database does not exist: ${selector.databasePath}`);
 	if (content.trim() === "") {
 		if (!selector.rowId) throw new Error("SQLite empty content deletes a row only when a row id is present.");
-		const Database = sqliteDatabase();
-		const db = new Database(selector.databasePath);
+		const db = await SqliteSelectorConnection.open(selector.databasePath);
 		try {
 			const table = selector.table;
-			const key = sqliteRowKey(db, table);
-			const keyValues = sqliteRowKeyValues(db, key, selector.rowId, table);
+			const key = await sqliteRowKey(db, table);
+			const keyValues = await sqliteRowKeyValues(db, key, selector.rowId, table);
 			const where = sqliteRowKeyWhere(key);
-			const changes = runSingleRowWrite(
+			const changes = await runSingleRowWrite(
 				db,
 				table,
 				selector.rowId,
@@ -1308,18 +1228,17 @@ export async function writeSqliteSelector(selector: SqliteSelector, content: str
 				? `Deleted row '${selector.rowId}' in ${table}`
 				: `No row deleted for '${selector.rowId}' in ${table}`;
 		} finally {
-			db.close();
+			await db.close();
 		}
 	}
 	const data = parseLooseJsonObject(content);
-	const Database = sqliteDatabase();
-	const db = new Database(selector.databasePath);
+	const db = await SqliteSelectorConnection.open(selector.databasePath);
 	try {
 		const table = selector.table;
 		const quotedTable = quoteSqliteIdent(table);
-		const key = sqliteRowKey(db, table);
-		const keyValues = selector.rowId ? sqliteRowKeyValues(db, key, selector.rowId, table) : [];
-		const validColumns = new Set(sqliteTableColumns(db, table));
+		const key = await sqliteRowKey(db, table);
+		const keyValues = selector.rowId ? await sqliteRowKeyValues(db, key, selector.rowId, table) : [];
+		const validColumns = new Set(await sqliteTableColumns(db, table));
 		const [single = ""] = key;
 		if (!selector.rowId && key.length === 1 && Object.hasOwn(data, "id") && !Object.hasOwn(data, single)) {
 			data[single] = data.id;
@@ -1330,21 +1249,22 @@ export async function writeSqliteSelector(selector: SqliteSelector, content: str
 			if (!validColumns.has(column)) throw new Error(`SQLite table '${table}' has no column named '${column}'`);
 		if (columns.length === 0) {
 			if (!selector.rowId) {
-				db.query(`insert into ${quotedTable} default values`).run();
+				await db.run(`insert into ${quotedTable} default values`);
 				return `Inserted row into ${table}`;
 			}
 			throw new Error("SQLite update content must include at least one column.");
 		}
 		if (!selector.rowId) {
 			const quoted = columns.map(quoteSqliteIdent).join(", ");
-			db.query(`insert into ${quotedTable} (${quoted}) values (${columns.map(() => "?").join(", ")})`).run(
-				...columns.map((column) => data[column]),
+			await db.run(
+				`insert into ${quotedTable} (${quoted}) values (${columns.map(() => "?").join(", ")})`,
+				columns.map((column) => data[column] as SqliteValue),
 			);
 			return `Inserted row into ${table}`;
 		}
 		const assignments = columns.map((column) => `${quoteSqliteIdent(column)} = ?`).join(", ");
 		const where = sqliteRowKeyWhere(key);
-		const changes = runSingleRowWrite(
+		const changes = await runSingleRowWrite(
 			db,
 			table,
 			selector.rowId,
@@ -1357,33 +1277,32 @@ export async function writeSqliteSelector(selector: SqliteSelector, content: str
 			? `Updated row '${selector.rowId}' in ${table}`
 			: `No row updated for '${selector.rowId}' in ${table}`;
 	} finally {
-		db.close();
+		await db.close();
 	}
 }
-export function searchSqliteSelector(
+export async function searchSqliteSelector(
 	selector: SqliteSelector,
 	pattern: string,
 	ignoreCase = false,
 	contextBefore = 1,
 	contextAfter = 3,
-): string {
+): Promise<string> {
 	const normalized = normalizeSearchPattern(pattern, ignoreCase);
 	const matcher = new RegExp(normalized.pattern, normalized.flags);
 	if (!selector.table || selector.query)
 		return searchTextSelectorLines(
 			`${selector.databasePath}:${selector.table ?? "tables"}`,
-			readSqliteSelector(selector),
+			await readSqliteSelector(selector),
 			pattern,
 			ignoreCase,
 			false,
 			contextBefore,
 			contextAfter,
 		).join("\n");
-	const Database = sqliteDatabase();
-	const db = new Database(selector.databasePath, { readonly: true });
+	const db = await SqliteSelectorConnection.open(selector.databasePath, { readonly: true });
 	try {
-		const key = sqliteRowKey(db, selector.table);
-		const keyValues = selector.rowId ? sqliteRowKeyValues(db, key, selector.rowId, selector.table) : [];
+		const key = await sqliteRowKey(db, selector.table);
+		const keyValues = selector.rowId ? await sqliteRowKeyValues(db, key, selector.rowId, selector.table) : [];
 		const where = selector.rowId ? sqliteRowKeyWhere(key) : validateSqliteWhere(selector.where);
 		const order = formatSqliteOrder(selector.order);
 		const limit = selector.sampleRows ?? selector.limit ?? 1000;
@@ -1399,7 +1318,7 @@ export function searchSqliteSelector(
 		]
 			.filter(Boolean)
 			.join(" ");
-		const rows = db.query(sql).all(...keyValues, limit, offset);
+		const rows = await db.all(sql, [...keyValues, limit, offset]);
 		return rows
 			.map((rawRow, index) => {
 				const row = rawRow as Record<string, unknown>;
@@ -1416,6 +1335,6 @@ export function searchSqliteSelector(
 			)
 			.join("\n");
 	} finally {
-		db.close();
+		await db.close();
 	}
 }

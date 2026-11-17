@@ -1531,10 +1531,44 @@ function pendingUpdate(selection: GitSelection): GitUpdateStatus | undefined {
 	};
 }
 
+async function pendingUpdateAsync(selection: GitSelection): Promise<GitUpdateStatus | undefined> {
+	const target = await currentGitTargetAsync();
+	if (
+		selection.layout === undefined ||
+		!target.supported ||
+		(await isCurrentReleaseAsync(selection.layout, target.target))
+	)
+		return undefined;
+	const tag = gitProvisionSettings.release.tag;
+	const installedTag = (await readReleaseMarkerAsync(selection.layout))?.tag;
+	return {
+		pinnedTag: tag,
+		...(typeof installedTag === "string" ? { installedTag } : {}),
+		...(staleRefresh?.tag === tag ? { reason: staleRefresh.error.toJSON() } : {}),
+	};
+}
+
 export function getGitStatus(): GitToolStatus {
 	try {
 		const selection = selectGitSync();
 		const update = pendingUpdate(selection);
+		return {
+			source: selection.source,
+			version: selection.version,
+			path: selection.path,
+			...(update === undefined ? {} : { update }),
+		};
+	} catch (error) {
+		if (!isGitProvisionError(error)) throw error;
+		return { source: "unavailable", error: error.toJSON() };
+	}
+}
+
+/** Asynchronous equivalent of {@link getGitStatus}. */
+export async function getGitStatusAsync(): Promise<GitToolStatus> {
+	try {
+		const selection = await selectInstalledGitAsync();
+		const update = await pendingUpdateAsync(selection);
 		return {
 			source: selection.source,
 			version: selection.version,

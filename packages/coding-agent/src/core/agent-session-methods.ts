@@ -132,6 +132,7 @@ export interface RuntimeBuildOptions {
 	flagValues?: Map<string, boolean | string>;
 	includeAllExtensionTools?: boolean;
 	preserveRunner?: boolean;
+	powerShellAvailable: boolean;
 }
 
 export interface AgentSessionQueuePauseControl {
@@ -240,6 +241,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getToolDefinition(name: string): ToolDefinition | undefined;
 	/** Explain which tools are active, which are not (and why), and which selected names nothing registered. */
 	getToolStatus(): ToolStatusReport;
+	/** {@link getToolStatus} without blocking the event loop while git is resolved. */
+	getToolStatusAsync(): Promise<ToolStatusReport>;
 	setActiveToolsByName(toolNames: string[]): void;
 	_setActiveTools(toolNames: string[]): void;
 	setScopedModels(scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>): void;
@@ -531,6 +534,7 @@ export interface AgentSessionPublicSurface
 		| "getAllTools"
 		| "getToolDefinition"
 		| "getToolStatus"
+		| "getToolStatusAsync"
 		| "setActiveToolsByName"
 		| "setScopedModels"
 		| "prompt"

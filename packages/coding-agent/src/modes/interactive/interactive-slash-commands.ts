@@ -401,7 +401,7 @@ InteractiveModeBase.prototype.handleToolsCommand = async function (this: Interac
 		report =
 			this.runtimeHost instanceof IsolatedInteractiveRuntime
 				? await this.runtimeHost.getToolStatus()
-				: this.session.getToolStatus();
+				: await this.session.getToolStatusAsync();
 	} catch (error) {
 		this.showError(`Could not read tool status: ${error instanceof Error ? error.message : String(error)}`);
 		return;

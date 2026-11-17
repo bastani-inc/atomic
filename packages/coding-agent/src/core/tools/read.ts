@@ -473,7 +473,7 @@ export function createReadToolDefinition(
 								return;
 							}
 							if (sqlite) {
-								const textContent = readSqliteSelector(sqlite),
+								const textContent = await readSqliteSelector(sqlite),
 									selection = applyReadLineSelection(
 										textContent.split("\n"),
 										effectiveRanges,

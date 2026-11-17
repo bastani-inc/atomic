@@ -27,7 +27,7 @@ type PromptTurnContext = {
 		resumeQueuedMessages: () => Promise<boolean>;
 		prompt: (text: string) => Promise<void>;
 		resourceLoader: { getThemes: () => { themes: [] } };
-		getToolStatus: () => { missing: [] };
+		getToolStatusAsync: () => { missing: [] };
 		extensionRunner: Record<string, never>;
 		modelRegistry: { getError: () => string | undefined };
 		_tryExecuteExtensionCommand: (text: string) => Promise<boolean>;
@@ -96,7 +96,7 @@ function createContext(overrides: {
 				context.session.isStreaming = false;
 			}),
 			resourceLoader: { getThemes: () => ({ themes: [] as [] }) },
-			getToolStatus: () => ({ missing: [] as [] }),
+			getToolStatusAsync: () => ({ missing: [] as [] }),
 			extensionRunner: {},
 			modelRegistry: { getError: () => undefined },
 			_tryExecuteExtensionCommand: vi.fn(async () => overrides.slashHandled === true),

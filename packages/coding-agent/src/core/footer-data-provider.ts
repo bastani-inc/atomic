@@ -7,7 +7,7 @@ import {
 	closeWatcher,
 	FS_WATCH_RETRY_DELAY_MS,
 	isSafeFsWatchPathError,
-	watchWithErrorHandler,
+	watchWithErrorHandlerAsync,
 } from "../utils/fs-watch.ts";
 import { createGitEnvironment } from "../utils/git-env.ts";
 import { isGitProvisionError } from "../utils/git-errors.ts";
@@ -549,7 +549,7 @@ export class FooterDataProvider {
 		// Watch the directory containing HEAD, not HEAD itself.
 		// Git uses atomic writes (write temp, rename over HEAD), which changes the inode.
 		// fs.watch on a file stops working after the inode changes.
-		this.headWatcher = watchWithErrorHandler(
+		const headWatcher = await watchWithErrorHandlerAsync(
 			dirname(gitPaths.headPath),
 			(_eventType, filename) => {
 				if (!isCurrent()) return;
@@ -566,6 +566,11 @@ export class FooterDataProvider {
 				this.handleGitWatcherError();
 			},
 		);
+		if (!isCurrent()) {
+			closeWatcher(headWatcher);
+			return;
+		}
+		this.headWatcher = headWatcher;
 		if (pollGitHead) {
 			this.installHeadPollingFallback();
 		}
@@ -583,7 +588,7 @@ export class FooterDataProvider {
 		if (!isCurrent()) return;
 		this.reftableTablesListPath = tablesListPath;
 		this.reftableTablesListFingerprint = fingerprint;
-		this.reftableWatcher = watchWithErrorHandler(
+		const reftableWatcher = await watchWithErrorHandlerAsync(
 			reftableDir,
 			(_eventType, filename) => {
 				if (!isCurrent()) return;
@@ -597,9 +602,14 @@ export class FooterDataProvider {
 				this.handleGitWatcherError();
 			},
 		);
+		if (!isCurrent()) {
+			closeWatcher(reftableWatcher);
+			return;
+		}
+		this.reftableWatcher = reftableWatcher;
 
 		if (tablesListExists) {
-			this.reftableTablesListWatcher = watchWithErrorHandler(
+			const reftableTablesListWatcher = await watchWithErrorHandlerAsync(
 				tablesListPath,
 				() => {
 					if (!isCurrent()) return;
@@ -614,7 +624,12 @@ export class FooterDataProvider {
 					this.handleGitWatcherError();
 				},
 			);
-			if (isCurrent()) this.installReftableTablesListPolling(tablesListPath);
+			if (!isCurrent()) {
+				closeWatcher(reftableTablesListWatcher);
+				return;
+			}
+			this.reftableTablesListWatcher = reftableTablesListWatcher;
+			this.installReftableTablesListPolling(tablesListPath);
 		}
 	}
 }

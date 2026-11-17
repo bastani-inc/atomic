@@ -730,6 +730,19 @@ describe("git resolution (#4322)", () => {
 		assert.deepEqual(tools.getGitStatus(), { source: "provisioned", version: "2.56.0", path: executable });
 	});
 
+	it("reports git in the status surface without blocking the event loop", async () => {
+		const systemGit = makeSystemGit("2.43.0");
+		usePath(join(systemGit, ".."));
+		assert.deepEqual(await tools.getGitStatusAsync(), { source: "system", version: "2.43.0", path: systemGit });
+		usePath(join(tempDir, "none"));
+		const executable = makeProvisionedGit("2.56.0");
+		assert.deepEqual(await tools.getGitStatusAsync(), {
+			source: "provisioned",
+			version: "2.56.0",
+			path: executable,
+		});
+	});
+
 	it("caches the system probe per PATH", () => {
 		const systemGit = makeSystemGit("2.43.0");
 		const alternate = makeSystemGit("2.44.0");

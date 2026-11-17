@@ -255,6 +255,41 @@ test("get_tools RPC returns the session's tool status", async () => {
 	);
 });
 
+test("/tools in the in-process host reads the status without probing git on the event loop", async () => {
+	const report: ToolStatusReport = {
+		selection: { source: "built-in-defaults", description: "the built-in defaults", names: ["read"], modifiers: [] },
+		tools: [
+			{
+				name: "read",
+				active: true,
+				exposure: "direct",
+				source: "built-in",
+				sourcePath: "<builtin:read>",
+				summary: "Read files",
+			},
+		],
+		missing: [],
+		excluded: [],
+	};
+	const chatContainer = new Container();
+	const errors: string[] = [];
+
+	await InteractiveModeBase.prototype.handleToolsCommand.call({
+		session: {
+			getToolStatus: () => {
+				throw new Error("the synchronous status runs git and reads its install on the event loop");
+			},
+			getToolStatusAsync: async () => report,
+		},
+		chatContainer,
+		ui: { requestRender() {} },
+		showError: (message: string) => errors.push(message),
+	} as never);
+
+	assert.deepEqual(errors, []);
+	assert.match(stripAnsi(chatContainer.render(120).join("\n")), /Active \(1\)/);
+});
+
 test("/tools in the isolated host shows the engine's tool status, not the host session's", async () => {
 	const engineReport: ToolStatusReport = {
 		selection: {
@@ -285,6 +320,9 @@ test("/tools in the isolated host shows the engine's tool status, not the host s
 		runtimeHost,
 		session: {
 			getToolStatus: () => {
+				throw new Error("the host session has no extensions and must not be asked");
+			},
+			getToolStatusAsync: () => {
 				throw new Error("the host session has no extensions and must not be asked");
 			},
 		},
