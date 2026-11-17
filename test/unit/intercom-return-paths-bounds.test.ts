@@ -147,3 +147,20 @@ test("a path dropped under pressure is not reopened by the message that opened i
 	paths.stageStarted(stage, `${target}/stage`, () => false);
 	assert.equal(paths.holds(stage, launcher), false);
 });
+
+test("a message handed over before its sender ended for good opens nothing, even once that end is forgotten", () => {
+	const recipient = party("recipient");
+	const sender = party("ended-sender");
+	const { paths } = clocked(2);
+	const handedOver = paths.mark();
+	paths.revoke(sender.identity as string);
+	paths.open(recipient, sender, "late-receipt", handedOver);
+	assert.equal(paths.holds(recipient, sender), false);
+	// More identities end than the paths remember: the sender's end is forgotten, and an old mark still opens nothing.
+	for (let index = 0; index < 3; index++) paths.revoke(party(`other-${index}`).identity as string);
+	paths.open(recipient, sender, "late-receipt-after-forgetting", handedOver);
+	assert.equal(paths.holds(recipient, sender), false);
+	// A message the identity sends after it registers again opens its path.
+	paths.open(recipient, sender, "new-message", paths.mark());
+	assert.equal(paths.holds(recipient, sender), true);
+});

@@ -211,6 +211,42 @@ test("across brokers, a child that went offline is still answered by the name it
 	assert.equal(byId.queued, true, JSON.stringify(byId));
 });
 
+/**
+ * How long a broker may take to decide, after a session of an identity ends for good, whether a registration of it is
+ * still live on another broker: one read of the shared database.
+ */
+const DEPARTURE_DECISION_SETTLE_MS = 1_000;
+
+test("across brokers, a duplicate of a live sender that ends for good leaves the sender's return path open", async ({
+	annotate,
+}) => {
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: nothing crosses brokers");
+		return;
+	}
+	const senderGroup = unique("duplicated-sender-group");
+	const responderGroup = unique("duplicate-responder-group");
+	const sender = await harness.connect("a", unique("duplicated-sender"), {
+		group: senderGroup,
+		reachable: [responderGroup],
+	});
+	const responder = await harness.connect("b", unique("duplicate-responder"), { group: responderGroup });
+	const opening = await sender.client.send(responder.sessionId, { text: "opening" });
+	assert.equal(opening.delivered, true, JSON.stringify(opening));
+	await waitForMessage(responder, opening.id);
+	// A second registration of the sender's identity, on the responder's broker, ends for good; the sender stays live.
+	const duplicate = await harness.connect("b", sender.name, {
+		group: senderGroup,
+		reachable: [responderGroup],
+		returnAddress: sender.returnAddress,
+	});
+	await harness.disconnect(duplicate);
+	await sleep(DEPARTURE_DECISION_SETTLE_MS);
+	const answer = await responder.client.send(sender.name, { text: "for the live sender" });
+	assert.equal(answer.delivered, true, JSON.stringify(answer));
+	assert.equal((await waitForMessage(sender, answer.id)).message.content.text, "for the live sender");
+});
+
 test(
 	"harness self-test: two brokers on separate sockets each serve only their own clients and share one storage file",
 	async () => {

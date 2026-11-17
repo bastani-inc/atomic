@@ -68,6 +68,14 @@ export class ReturnPaths {
 	private readonly queued = new Map<string, QueuedOpening>();
 	/** The inbound messages that opened a path, per path: kept when the path itself is dropped. */
 	private readonly seen = new Map<string, true>();
+	/**
+	 * Each identity whose registrations all ended for good, with the number of such ends counted when it last did: a
+	 * message one of them sent before then opens nothing, however late its receipt arrives.
+	 */
+	private readonly ended = new Map<string, number>();
+	private ends = 0;
+	/** The latest end dropped from `ended` to stay within bounds: an opening older than it may be that identity's. */
+	private endsForgotten = 0;
 
 	constructor(
 		private readonly now: () => number = () => performance.now(),
@@ -78,11 +86,13 @@ export class ReturnPaths {
 
 	/**
 	 * The inbound message `operationId` from `sender` reached `responder`, which shares none of its groups. The same
-	 * message reaching it again (a retry, a replay, a re-forward) changes nothing.
+	 * message reaching it again (a retry, a replay, a re-forward) changes nothing. `since` is the {@link mark} taken when
+	 * the message was handed over: when every registration of the sender has ended for good since, it opens nothing.
 	 */
-	open(responder: ReturnPathParty, sender: ReturnPathParty, operationId: string): void {
+	open(responder: ReturnPathParty, sender: ReturnPathParty, operationId: string, since?: number): void {
 		if (responder.identity === undefined || sender.identity === undefined) return;
 		if (responder.identity === sender.identity) return;
+		if (since !== undefined && this.endedSince(sender.identity, since)) return;
 		const key = pathKey(responder.identity, sender.identity);
 		const opening = `${key}\0${operationId}`;
 		if (this.seen.has(opening)) return;
@@ -196,7 +206,10 @@ export class ReturnPaths {
 		return senders;
 	}
 
-	/** A registration ended for good: every return path it opened or holds goes with it. */
+	/**
+	 * Every registration of `identity` ended for good: every return path it opened or holds goes with it, and so does any
+	 * message it sent that reaches its recipient later.
+	 */
 	revoke(identity: string): void {
 		for (const key of [...(this.byResponder.get(identity) ?? []), ...(this.bySender.get(identity) ?? [])]) {
 			this.deletePath(key);
@@ -204,6 +217,23 @@ export class ReturnPaths {
 		for (const [key, opening] of this.queued) {
 			if (opening.senderIdentity === identity) this.queued.delete(key);
 		}
+		this.ended.delete(identity);
+		this.ended.set(identity, ++this.ends);
+		while (this.ended.size > this.maxEntries) {
+			const [oldest, at] = this.ended.entries().next().value as [string, number];
+			this.ended.delete(oldest);
+			this.endsForgotten = at;
+		}
+	}
+
+	/** A mark for {@link open}: a message handed over now opens nothing once every registration of its sender ended. */
+	mark(): number {
+		return this.ends;
+	}
+
+	private endedSince(identity: string, mark: number): boolean {
+		const at = this.ended.get(identity);
+		return at === undefined ? mark < this.endsForgotten : at > mark;
 	}
 
 	/** A run ended: the messages still queued for its stages never reach them. */

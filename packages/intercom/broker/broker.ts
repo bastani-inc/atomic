@@ -1023,8 +1023,8 @@ class IntercomBroker {
 		);
 	}
 
-	/** Whether a live session other than `departed` is registered under `departed`'s return-path identity, `identity`. */
-	private identityLiveElsewhere(departed: ConnectedSession, identity: string): boolean {
+	/** Whether a live session here other than `departed` is registered under `departed`'s return-path identity. */
+	private identityLiveHere(departed: ConnectedSession, identity: string): boolean {
 		for (const session of this.sessions.values()) {
 			if (session === departed || session.registrationReturnAddress !== departed.registrationReturnAddress) continue;
 			if (returnPathParty(session).identity === identity) return true;
@@ -1727,6 +1727,8 @@ class IntercomBroker {
 			writeMessageIfOpen(pending.senderSocket, { type: "question_target", messageId: pending.messageId, attemptId: pending.attemptId, sessionId: target.info.id });
 		const frame: BrokerMessage = messageFrameFor(target, pending.sender, pending.message);
 		const signature = pending.signature;
+		// Taken as the message is handed over: its receipt opens nothing once every registration of the sender ended since.
+		const handedOver = this.returnPaths.mark();
 		const finish = (recipient: ConnectedSession, sender: ReceiptSender | undefined): void => {
 			const notify = (message: BrokerMessage): void => {
 				if (sender !== undefined) writeMessageIfOpen(sender.socket, message);
@@ -1763,9 +1765,7 @@ class IntercomBroker {
 			if (pending.message.replyTo !== undefined && this.pendingQuestions.clearReply(from.info.id, recipient.info.id, pending.message.replyTo)) {
 				this.deliveredMessages.settleQuestion(pending.message.replyTo);
 			}
-			// A sender that ended for good before this receipt took its paths with it; this late receipt opens none back.
-			if (from.endedForGood !== true)
-				this.returnPathAuthority.delivered(recipient, returnPathParty(from), from.info, pending.messageId);
+			this.returnPathAuthority.delivered(recipient, returnPathParty(from), from.info, pending.messageId, handedOver);
 			notify({ type: "delivered", messageId: pending.messageId, ...senderAttempt });
 		};
 		const sender: ReceiptSender = {
@@ -3856,12 +3856,17 @@ class IntercomBroker {
     this.departedChildren.dropSender(sessionId);
     // A session that ended for good takes its return paths with it, both ways: a later session given its id or name
     // inherits nothing, nor does a receipt that arrives later for what it sent. One that is only away keeps them for
-    // when it registers again under the same identity. Paths belong to the identity, so while another live session
-    // registered under it (a duplicate) remains, they stay with that one.
+    // when it registers again under the same identity. Paths belong to the identity, so while another registration of
+    // it (a duplicate) is live, here or, with multi-node routing, on another broker, they stay with that one.
     const departedIdentity = returnPathParty(departed).identity;
-    if (ended) departed.endedForGood = true;
-    if (ended && departedIdentity !== undefined && !this.identityLiveElsewhere(departed, departedIdentity))
-      this.returnPaths.revoke(departedIdentity);
+    if (ended && departedIdentity !== undefined && !this.identityLiveHere(departed, departedIdentity)) {
+      const multiNode = this.multiNode;
+      if (multiNode === undefined) this.returnPaths.revoke(departedIdentity);
+      else
+        void multiNode.identityPresentElsewhere(departedIdentity).then((present) => {
+          if (!present) this.returnPaths.revoke(departedIdentity);
+        });
+    }
     // #3760: a departed owner restores nothing more; what it held goes through ordinary routing once it is gone.
     // #4639: a session whose connection closes while it keeps released children, as a suspended stage's does, keeps
     // them: sends to them are held until its host session connects again and reserves them.

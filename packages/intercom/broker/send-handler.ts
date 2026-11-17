@@ -53,8 +53,6 @@ export interface BrokerConnectedSession {
   /** #4642: the session id of the connection hosting this session, whose `socket` it shares. */
   readonly hostedBy?: string;
   reach?: IntercomReachPolicy;
-  /** Set when the session ended for good: a receipt that arrives later for what it sent opens no return path to it. */
-  endedForGood?: true;
 }
 
 /** A message frame for `recipient`; the connection hosting a hosted recipient learns which of its sessions it is for. */
@@ -160,8 +158,20 @@ export interface ReturnPathAuthority {
 	use(sender: BrokerConnectedSession, target: ReturnPathParty, messageId: string): boolean;
 	/** Whether `sender` holds a return path to `target` that has closed. */
 	closed(sender: BrokerConnectedSession, target: ReturnPathParty): boolean;
-	/** The message `operationId` from `from` reached `recipient`: opens its path back when they share no group. */
-	delivered(recipient: BrokerConnectedSession, from: ReturnPathParty, fromInfo: SessionInfo, operationId: string): void;
+	/**
+	 * The message `operationId` from `from` reached `recipient`: opens its path back when they share no group. `since`
+	 * is the {@link mark} taken when the message was handed over; a sender whose registrations all ended for good since
+	 * then gets no path, however late the recipient confirmed it.
+	 */
+	delivered(
+		recipient: BrokerConnectedSession,
+		from: ReturnPathParty,
+		fromInfo: SessionInfo,
+		operationId: string,
+		since?: number,
+	): void;
+	/** A mark to pass to {@link delivered} for a message handed over now. */
+	mark(): number;
 }
 
 /** The broker's return paths, over the sessions it serves. */
@@ -188,11 +198,12 @@ export function createReturnPathAuthority(
 		},
 		use: (sender, target, messageId) => paths.use(returnPathParty(sender), target, messageId),
 		closed: (sender, target) => paths.closed(returnPathParty(sender), target),
-		delivered: (recipient, from, fromInfo, operationId) => {
+		delivered: (recipient, from, fromInfo, operationId, since) => {
 			// A recipient that can already reach the sender needs no path; one with a reach policy never uses one.
 			if (recipient.reach === undefined && !reachesSession(recipient, fromInfo))
-				paths.open(returnPathParty(recipient), from, operationId);
+				paths.open(returnPathParty(recipient), from, operationId, since);
 		},
+		mark: () => paths.mark(),
 	};
 }
 
@@ -1021,6 +1032,8 @@ export function handleBrokerSend(
 	}
 	if (message.expectsReply === true && clientMessage.resolveReplyTarget === true && attemptId !== undefined)
 		write(socket, { type: "question_target", messageId: message.id, attemptId, sessionId: target.info.id });
+    // Taken as the message is handed over: its receipt opens nothing once every registration of the sender ended since.
+    const handedOver = returnPaths?.mark();
     const finishDelivery = (recipient: BrokerConnectedSession, sender: ReceiptSender | undefined): void => {
 	  const notify = (frame: BrokerMessage): void => {
 		if (sender !== undefined) write(sender.socket, frame);
@@ -1072,8 +1085,7 @@ export function handleBrokerSend(
       if (message.replyTo !== undefined)
         pendingQuestions.releaseHeldFailures(message.replyTo, fromSession.info.id, recipient.registrationReturnAddress);
       if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, recipient.info.id);
-      if (fromSession.endedForGood !== true)
-        returnPaths?.delivered(recipient, returnPathParty(fromSession), fromSession.info, message.id);
+      returnPaths?.delivered(recipient, returnPathParty(fromSession), fromSession.info, message.id, handedOver);
       notify({ type: "delivered", messageId: message.id, attemptId: senderAttemptId });
     };
     const senderWaiting: ReceiptSender = { socket, ...(attemptId === undefined ? {} : { attemptId }) };

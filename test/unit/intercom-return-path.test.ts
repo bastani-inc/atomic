@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, beforeAll, test } from "vitest";
+import { afterAll, beforeAll, test, vi } from "vitest";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { RETURN_PATH_MESSAGE_LIMIT, returnPathClosedReason } from "../../packages/intercom/broker/return-paths.js";
@@ -680,6 +680,44 @@ test("a stage whose receipt arrives after the launcher ended for good opens noth
 	const copy = new WireClient();
 	await register(copy, run.launcherName, "default");
 	const answer = await stage.sendTo(run.launcherName, "receipt-ended-answer", "only for the launcher that ended");
+	assert.equal(answer.type, "delivery_failed", JSON.stringify(answer));
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+	assert.equal(
+		copy.received.some((frame) => frame.type === "message"),
+		false,
+	);
+});
+
+test("a stage whose receipt arrives after the launcher crashed, came back and ended for good opens nothing", async () => {
+	const run = await launchedRun("receipt-hop", "5a1e0019-0000-4000-8000-000000000019", ["later"]);
+	const stage = await startReceiptStage(run, "receipt-hop-stage");
+	await launcherNoteReaches(run, stage, "receipt-hop-note");
+	// The launcher's connection drops without a goodbye, and the broker notices it is away.
+	const observer = new WireClient();
+	await register(observer, "receipt-hop-observer", "default");
+	run.launcher.socket.destroy();
+	await vi.waitFor(async () => {
+		observer.send({ type: "list", requestId: "receipt-hop-away" });
+		const sessions = (await observer.next("sessions", (frame) => frame.requestId === "receipt-hop-away")).sessions;
+		assert.equal(
+			sessions.some((session) => session.id === run.launcherId),
+			false,
+		);
+	});
+	// It comes back under a new id, then says goodbye for good.
+	const back = new WireClient();
+	await register(back, run.launcherName, "default");
+	back.send({ type: "unregister" });
+	await new Promise<void>((done) => {
+		back.socket.once("close", () => done());
+		back.socket.end();
+	});
+	// The stage confirms the message the launcher's first connection sent only now.
+	stage.send({ type: "received", messageId: "receipt-hop-note" });
+	await listed(stage, "receipt-hop-processed");
+	const copy = new WireClient();
+	await register(copy, run.launcherName, "default");
+	const answer = await stage.sendTo(run.launcherName, "receipt-hop-answer", "only for the launcher that ended");
 	assert.equal(answer.type, "delivery_failed", JSON.stringify(answer));
 	await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
 	assert.equal(

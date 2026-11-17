@@ -1224,6 +1224,34 @@ export class MultiNodeRouter {
 	}
 
 	/**
+	 * Whether another broker holds the live presence of `targetIdentity`: a registration of that identity is connected
+	 * there. Asked behind this broker's own registrations and departures of the identity. A database that fails or does
+	 * not answer within `REMOTE_SESSIONS_BOUND_MS` counts as no.
+	 */
+	identityPresentElsewhere(targetIdentity: string): Promise<boolean> {
+		if (this.closed) return Promise.resolve(false);
+		return new Promise((resolve) => {
+			const bound = setTimeout(() => resolve(false), REMOTE_SESSIONS_BOUND_MS);
+			bound.unref?.();
+			this.serial(targetIdentity, async () => {
+				try {
+					const read = await this.state.leases.read({ kind: "presence", targetIdentity });
+					resolve(
+						read.status === "found" &&
+							read.lease.holderId !== this.brokerId &&
+							read.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS,
+					);
+				} catch (error) {
+					resolve(false);
+					throw error;
+				} finally {
+					clearTimeout(bound);
+				}
+			});
+		});
+	}
+
+	/**
 	 * The host names of the other brokers whose membership lease is live, for status reports. `undefined` when the
 	 * database fails or does not answer within `REMOTE_SESSIONS_BOUND_MS`.
 	 */
