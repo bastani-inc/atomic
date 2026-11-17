@@ -30,7 +30,7 @@ export function isCurrentSessionHeader(stored: StoredSessionHeader): boolean {
 	return stored.version === SESSION_FORMAT_VERSION && !isEarlyFormat4Header(stored);
 }
 
-function legacyVersion(stored: StoredSessionHeader, path: string): LegacyVersion {
+export function legacyVersion(stored: StoredSessionHeader, path: string): LegacyVersion {
 	const version = stored.version === undefined ? 1 : stored.version;
 	if (version === 1 || version === 2 || version === 3) return version;
 	if (isEarlyFormat4Header(stored)) return SESSION_FORMAT_VERSION;

@@ -228,7 +228,11 @@ parentPort.on("message", (msg) => {
 					offset += c.byteLength;
 				}
 			}
-			const entry = JSON.parse(decoder.decode(bytes));
+			const parsed = JSON.parse(decoder.decode(bytes));
+			const entry =
+				msg.formatVersion !== undefined && msg.formatVersion < 3 && parsed && parsed.type === "message" && parsed.message && parsed.message.role === "hookMessage"
+					? { ...parsed, message: { ...parsed.message, role: "custom" } }
+					: parsed;
 			const outline = classify(entry, msg.previewChars);
 			const lines = entryLines(entry);
 			const renderedUtf8 = encoder.encode(lines.join("\\n"));
@@ -404,6 +408,7 @@ export async function renderRawEntryInWorker(
 	previewChars: number,
 	timeoutMs: number,
 	signal?: AbortSignal,
+	formatVersion?: number,
 ): Promise<{ readonly outline: WorkerOutlineInfo; readonly renderedUtf8: Uint8Array } | { readonly timedOut: true }> {
 	const transfer: ArrayBuffer[] = [];
 	for (const chunk of rawChunks) {
@@ -416,7 +421,7 @@ export async function renderRawEntryInWorker(
 		}
 	}
 	const result = await runWorkerTask<{ outline: WorkerOutlineInfo; renderedUtf8: Uint8Array }>(
-		{ op: "entry", chunks: rawChunks, previewChars },
+		{ op: "entry", chunks: rawChunks, previewChars, formatVersion },
 		timeoutMs,
 		signal,
 		transfer,

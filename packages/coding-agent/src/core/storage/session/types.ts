@@ -202,6 +202,7 @@ export interface SessionEntryAt {
 	readonly seq: number;
 	readonly entry: SessionEntry;
 	readonly rawChunks?: readonly Uint8Array[];
+	readonly rawFormatVersion?: number;
 }
 
 export interface SessionEntriesQuery {

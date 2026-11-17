@@ -462,31 +462,92 @@ export class MemorySessionStore implements SessionStore {
 					}
 				}
 			}
-			const [, end] = this.spanOf(held, throughSeq, throughSeq);
-			let bytes: Uint8Array;
-			try {
-				bytes = await this.bytesOf(sessionId, held, start, end);
-			} catch (error) {
-				this.assertOpen();
-				if (this.records.get(sessionId) !== record || record.file !== held.file) continue;
-				throw error;
-			}
-			const skipped = query.skipTypes === undefined ? undefined : new Set(query.skipTypes);
-			const entries: SessionEntryAt[] = [];
-			for (let seq = fromSeq; seq <= throughSeq; seq++) {
-				const [entryStart, entryEnd] = this.spanOf(held, seq, seq);
-				const raw = bytes.subarray(entryStart - start, entryEnd - start);
-				if (query.largeEntryBytes !== undefined && raw.byteLength > query.largeEntryBytes) {
-					const rawChunks: Uint8Array[] = [];
-					for (let offset = 0; offset < raw.byteLength; offset += RAW_CHUNK_BYTES)
-						rawChunks.push(raw.slice(offset, Math.min(raw.byteLength, offset + RAW_CHUNK_BYTES)));
-					entries.push({ seq, entry: STUB_ENTRY, rawChunks });
-					continue;
-				}
-				const entry = this.parseRun(sessionId, held, raw)[0] as SessionEntry;
-				if (!skipped?.has(entry.type)) entries.push({ seq, entry });
-			}
+			const entries = await this.entriesIn(sessionId, record, held, fromSeq, throughSeq, query);
+			if (entries === undefined) continue;
 			return { lastSeq, entries, throughSeq };
+		}
+	}
+
+	private async entriesIn(
+		sessionId: string,
+		record: StoredSession,
+		held: HeldBytes,
+		fromSeq: number,
+		throughSeq: number,
+		query: SessionEntriesQuery,
+	): Promise<SessionEntryAt[] | undefined> {
+		const oversized = (seq: number): boolean => {
+			if (query.largeEntryBytes === undefined) return false;
+			const [entryStart, entryEnd] = this.spanOf(held, seq, seq);
+			return entryEnd - entryStart > query.largeEntryBytes;
+		};
+		const skipped = query.skipTypes === undefined ? undefined : new Set(query.skipTypes);
+		const entries: SessionEntryAt[] = [];
+		for (let seq = fromSeq; seq <= throughSeq; ) {
+			if (oversized(seq)) {
+				const [entryStart, entryEnd] = this.spanOf(held, seq, seq);
+				const rawChunks = await this.whileHeld(sessionId, record, held, () =>
+					this.chunksOf(sessionId, held, entryStart, entryEnd, query.signal),
+				);
+				if (rawChunks === undefined) return undefined;
+				entries.push({ seq, entry: STUB_ENTRY, rawChunks });
+				seq++;
+				continue;
+			}
+			let last = seq;
+			while (last < throughSeq && !oversized(last + 1)) last++;
+			const [start, end] = this.spanOf(held, seq, last);
+			const bytes = await this.whileHeld(sessionId, record, held, () => this.bytesOf(sessionId, held, start, end));
+			if (bytes === undefined) return undefined;
+			query.signal?.throwIfAborted();
+			for (let at = seq; at <= last; at++) {
+				const [entryStart, entryEnd] = this.spanOf(held, at, at);
+				const raw = bytes.subarray(entryStart - start, entryEnd - start);
+				const entry = this.parseRun(sessionId, held, raw)[0] as SessionEntry;
+				if (!skipped?.has(entry.type)) entries.push({ seq: at, entry });
+			}
+			seq = last + 1;
+		}
+		return entries;
+	}
+
+	private async chunksOf(
+		sessionId: string,
+		held: HeldBytes,
+		start: number,
+		end: number,
+		signal: AbortSignal | undefined,
+	): Promise<Uint8Array[]> {
+		const whole =
+			held.directory !== undefined && held.directory.readRange === undefined && start < held.spilledBytes
+				? await this.bytesOf(sessionId, held, start, end)
+				: undefined;
+		const chunks: Uint8Array[] = [];
+		for (let offset = start; offset < end; offset += RAW_CHUNK_BYTES) {
+			signal?.throwIfAborted();
+			const chunkEnd = Math.min(end, offset + RAW_CHUNK_BYTES);
+			const part =
+				whole?.subarray(offset - start, chunkEnd - start) ??
+				(await this.bytesOf(sessionId, held, offset, chunkEnd));
+			chunks.push(new Uint8Array(part));
+			await nextTurn();
+		}
+		signal?.throwIfAborted();
+		return chunks;
+	}
+
+	private async whileHeld<T>(
+		sessionId: string,
+		record: StoredSession,
+		held: HeldBytes,
+		read: () => Promise<T>,
+	): Promise<T | undefined> {
+		try {
+			return await read();
+		} catch (error) {
+			this.assertOpen();
+			if (this.records.get(sessionId) !== record || record.file !== held.file) return undefined;
+			throw error;
 		}
 	}
 
@@ -1037,6 +1098,10 @@ function runsOf(seqs: readonly number[]): (readonly [number, number])[] {
 		else runs.push([seq, seq]);
 	}
 	return runs;
+}
+
+function nextTurn(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
 }
 
 function concatBytes(parts: readonly Uint8Array[]): Uint8Array {

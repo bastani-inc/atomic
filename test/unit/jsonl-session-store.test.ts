@@ -31,7 +31,10 @@ import {
 	JsonlStoragePoisonedError,
 	SessionFormatVersionError,
 } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
+import { upgradeLegacySessionEntry } from "../../packages/coding-agent/src/core/storage/session/legacy-format.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { renderRawEntryInWorker } from "../../packages/coding-agent/src/core/tools/history-regex-worker.js";
+import { renderedLines } from "../../packages/coding-agent/src/core/tools/history-session.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs/promises")>();
@@ -59,6 +62,7 @@ const entry = {
 	timestamp: header.createdAt,
 	name: " Name ",
 } as const;
+const LEGACY_ENTRY_CHARS = 2 * 1024 * 1024;
 
 async function withStore(body: (store: JsonlSessionStore, directory: string) => Promise<void>): Promise<void> {
 	const directory = await mkdtemp(join(tmpdir(), "jsonl-session-"));
@@ -625,6 +629,38 @@ it("accepts another process's append after a last record without a newline only 
 			});
 		}
 		assert.equal(await readFile(path, "utf8"), content);
+	});
+});
+
+it("reads an oversized legacy JSONL entry without parsing it on the main thread (#5250)", async () => {
+	await withStore(async (store, directory) => {
+		const path = join(directory, "2026-10-15T00-00-00-000Z_legacy.jsonl");
+		const legacyHeader = { type: "session", version: 1, id: "legacy", timestamp: header.createdAt, cwd: "/project" };
+		const hookMessage = (content: string) => ({
+			type: "message",
+			timestamp: header.createdAt,
+			message: { role: "hookMessage", customType: "hook", content, display: true, timestamp: 1 },
+		});
+		const small = hookMessage("small hook text");
+		const big = hookMessage(`${"z ".repeat(LEGACY_ENTRY_CHARS / 2)}big hook tail`);
+		await writeFile(path, `${[legacyHeader, small, big].map((line) => JSON.stringify(line)).join("\n")}\n`);
+		const page = await store.readFileEntryRange(path, { fromSeq: 1, toSeq: 2, largeEntryBytes: 64 * 1024 });
+		assert.deepEqual(
+			page.entries.map((at) => at.seq),
+			[1, 2],
+		);
+		const [parsed, raw] = page.entries;
+		assert.equal(parsed?.rawChunks, undefined);
+		assert.deepEqual(parsed?.entry, upgradeLegacySessionEntry(legacyHeader, small as never, 1, path));
+		assert.ok(raw?.rawChunks, "the oversized legacy entry comes back as raw chunks");
+		assert.ok(Buffer.concat(raw.rawChunks).equals(Buffer.from(JSON.stringify(big))));
+		const rendered = await renderRawEntryInWorker(raw.rawChunks, 72, 60_000, undefined, raw.rawFormatVersion);
+		assert.ok(!("timedOut" in rendered));
+		assert.deepEqual(
+			new TextDecoder().decode(rendered.renderedUtf8).split("\n"),
+			renderedLines(upgradeLegacySessionEntry(legacyHeader, big as never, 2, path)),
+		);
+		assert.equal(rendered.outline.count, "customMessage");
 	});
 });
 

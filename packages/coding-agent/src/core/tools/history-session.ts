@@ -342,6 +342,7 @@ async function materializeEntry(
 		PREVIEW_CHARS,
 		budget.remainingMs(),
 		budget.signal,
+		item.rawFormatVersion,
 	);
 	if ("timedOut" in workerResult) return workerResult;
 	return { entry: await largeRenderedEntry(item.seq, workerResult.renderedUtf8, budget) };

@@ -58,6 +58,9 @@ const mkdir = vi.mocked(fsPromises.mkdir);
 const rename = vi.mocked(fsPromises.rename);
 const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 
+const OVERSIZED_ENTRY_BYTES = 8 * 1024 * 1024;
+const RAW_ENTRY_CHUNK_BYTES = 1024 * 1024;
+
 /** Lets `turns` turns of the event loop pass, enough for file operations already started to finish. */
 async function eventLoopTurns(turns: number): Promise<void> {
 	for (let turn = 0; turn < turns; turn++) await new Promise((resolve) => setImmediate(resolve));
@@ -618,6 +621,56 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		);
 		assert.equal(capped.throughSeq, 9);
 		assert.deepEqual((await store.readEntryRange("s", { fromSeq: 21, toSeq: 30 })).entries, []);
+	});
+
+	test("prepares oversized memory-store chunks without holding the event loop and stops on abort (#5250)", async () => {
+		const store = newStore();
+		const big = entry("big", `${"y".repeat(OVERSIZED_ENTRY_BYTES)} big-tail`);
+		const around = [entry("before"), entry("after")];
+		await created(store, "s", [around[0]!, big, around[1]!]);
+		const expected = Buffer.from(JSON.stringify(big));
+		const query = { fromSeq: 1, toSeq: 3, largeEntryBytes: 64 * 1024 };
+		for (const released of [false, true]) {
+			if (released) await store.releaseSession("s");
+			let turns = 0;
+			let reading = true;
+			const turn = () => {
+				turns++;
+				if (reading) setImmediate(turn);
+			};
+			setImmediate(turn);
+			const page = await store.readEntryRange("s", query).finally(() => {
+				reading = false;
+			});
+			assert.deepEqual(
+				page.entries.map((at) => at.seq),
+				[1, 2, 3],
+			);
+			assert.deepEqual(page.entries[0]?.entry, around[0]);
+			assert.deepEqual(page.entries[2]?.entry, around[1]);
+			const chunks = page.entries[1]?.rawChunks ?? [];
+			assert.ok(Buffer.concat(chunks).equals(expected), "the chunks hold the entry's stored bytes");
+			for (const chunk of chunks) {
+				assert.ok(chunk.byteLength <= RAW_ENTRY_CHUNK_BYTES);
+				assert.equal(chunk.byteOffset, 0);
+				assert.equal(chunk.byteLength, chunk.buffer.byteLength, "each chunk is a copy the caller may transfer");
+			}
+			assert.ok(
+				turns >= chunks.length - 1,
+				`the read let the event loop turn ${turns} times while it prepared ${chunks.length} chunks`,
+			);
+			structuredClone(chunks, { transfer: chunks.map((chunk) => chunk.buffer as ArrayBuffer) });
+			const again = await store.readEntryRange("s", query);
+			assert.ok(
+				Buffer.concat(again.entries[1]?.rawChunks ?? []).equals(expected),
+				"transferring chunks left the store intact",
+			);
+		}
+		const controller = new AbortController();
+		const aborted = store.readEntryRange("s", { ...query, fromSeq: 2, toSeq: 2, signal: controller.signal });
+		controller.abort(new Error("stop reading"));
+		await assert.rejects(aborted, /stop reading/);
+		assert.deepEqual((await store.load("s")).entries, [around[0], big, around[1]]);
 	});
 
 	test("a write the filesystem takes in parts still writes the whole history, and the file is closed once", async () => {

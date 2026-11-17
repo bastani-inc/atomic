@@ -35,6 +35,7 @@ import {
 } from "./errors.js";
 import {
 	isCurrentSessionHeader,
+	legacyVersion,
 	type StoredSessionHeader,
 	upgradeLegacySessionEntries,
 	upgradeLegacySessionEntry,
@@ -582,12 +583,17 @@ export class JsonlSessionStore implements SessionStore {
 					if (seq > query.toSeq) return true;
 					const head = parts[0]!.subarray(0, Math.min(parts[0]!.length, 64)).toString("utf8");
 					if (!isSkipped(head)) {
-						if (
-							legacyHeader === undefined &&
-							query.largeEntryBytes !== undefined &&
-							byteLength > query.largeEntryBytes
-						) {
-							entries.push({ seq, entry: STUB_ENTRY, rawChunks: parts });
+						if (query.largeEntryBytes !== undefined && byteLength > query.largeEntryBytes) {
+							entries.push(
+								legacyHeader === undefined
+									? { seq, entry: STUB_ENTRY, rawChunks: parts }
+									: {
+											seq,
+											entry: STUB_ENTRY,
+											rawChunks: parts,
+											rawFormatVersion: legacyVersion(legacyHeader, path),
+										},
+							);
 						} else {
 							const text = (parts.length === 1 ? parts[0]! : Buffer.concat(parts)).toString("utf8");
 							const raw = JSON.parse(text) as SessionEntry;
