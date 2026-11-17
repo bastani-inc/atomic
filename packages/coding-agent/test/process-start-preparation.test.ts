@@ -190,6 +190,22 @@ test("a dead holder's expired start is refreshed after a peer read times out and
 });
 
 for (const target of ["trust", "auth"] as const) {
+	test(`a cold synchronous ${target} save recovers a stale mutex whose owner's pid was reused (#5315)`, async () => {
+		const path = join(directory, `${target}.json`);
+		writeFileSync(path, "{}");
+		const lockPath = `${path}.lock`;
+		await reusedPidMutex(lockPath);
+		if (target === "trust") {
+			const store = new ProjectTrustStore(directory);
+			store.set(directory, true);
+			assert.equal(store.get(directory), true);
+		} else {
+			const backend = new FileAuthStorageBackend(path);
+			backend.withLock(() => ({ result: undefined, next: JSON.stringify({ saved: true }) }));
+			assert.equal((JSON.parse(backend.read() ?? "{}") as { saved?: boolean }).saved, true);
+		}
+	});
+
 	test(`a synchronous ${target} save uses an answered start read even after the query took longer than its cache window (#5315)`, async () => {
 		const path = join(directory, `${target}.json`);
 		writeFileSync(path, "{}");

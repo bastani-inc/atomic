@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { FileAuthStorageBackend } from "../src/core/auth-storage-backends.js";
 import { lockHolderPath } from "../src/core/lock-holder.js";
 import {
 	lockHolder,
@@ -26,6 +36,7 @@ import {
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { FileSettingsStorage } from "../src/core/settings-storage.js";
 import type { SettingsScope } from "../src/core/settings-types.js";
+import { ProjectTrustStore } from "../src/core/trust-manager.js";
 import { HOST, holderRuns, thisProcess } from "../src/core/worktree-snapshot/process-holder.js";
 
 const windows = process.platform === "win32";
@@ -77,6 +88,48 @@ async function runningProcess(): Promise<{ readonly pid: number; readonly start:
 }
 
 describe("callers reading starts without the native module (#5315)", () => {
+	for (const target of ["trust", "auth"] as const) {
+		test.skipIf(!windows)(
+			`a cold synchronous ${target} save recovers a stale lock and reused mutex pid with PowerShell (#5315)`,
+			async () => {
+				const later = await runningProcess();
+				const path = join(agentDir, `${target}.json`);
+				writeFileSync(path, "{}");
+				const lockPath = `${path}.lock`;
+				mkdirSync(lockPath);
+				const stale = new Date(Date.now() - 60_000);
+				utimesSync(lockPath, stale, stale);
+				const mutexPath = takeoverMutexPath(lockPath);
+				mkdirSync(mutexPath);
+				writeFileSync(
+					join(mutexPath, "owner"),
+					JSON.stringify({ host: hostname(), pid: later.pid, started: GONE_START, id: "old-owner" }),
+				);
+				setNativeLocksForTesting(null);
+				setNativeProcessCreationTimeForTesting(null);
+				if (target === "trust") {
+					const store = new ProjectTrustStore(agentDir);
+					store.set(agentDir, true);
+					assert.equal(store.get(agentDir), true);
+				} else {
+					const backend = new FileAuthStorageBackend(path);
+					backend.withLock(() => ({ result: undefined, next: JSON.stringify({ saved: true }) }));
+					assert.equal((JSON.parse(backend.read() ?? "{}") as { saved?: boolean }).saved, true);
+				}
+				const mutex = takeTakeoverMutex(lockPath);
+				assert.ok(mutex);
+				try {
+					const owner = JSON.parse(readFileSync(join(mutexPath, "owner"), "utf8")) as { started?: string };
+					assert.match(owner.started ?? "", /^[0-9a-f]{12}$/);
+					assert.equal(owner.started, await readProcessStartToken(process.pid));
+				} finally {
+					mutex.release();
+				}
+			},
+			POWERSHELL_READS_TIMEOUT_MS,
+		);
+	}
+
 	test.skipIf(!windows)(
 		"a resume takes over a claim whose holder is gone though another process has its pid, and names this process's start (#5315)",
 		async () => {
