@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import type { TUI } from "@bastani/atomic-tui";
-import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
+import { getKeybindings, setKeybindings, type TUI } from "@bastani/atomic-tui";
+import { afterEach, beforeAll, beforeEach, describe, onTestFinished, test, vi } from "vitest";
 import type { ToolRenderers } from "../../packages/coding-agent/src/core/extensions/tool-types.js";
 import type { MessageRenderer } from "../../packages/coding-agent/src/core/extensions/types.js";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { renderChatMessageEntry } from "../../packages/coding-agent/src/modes/interactive/components/chat-message-renderer.js";
 import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
 import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
@@ -208,6 +209,25 @@ describe("the workflow tool's result line (#5224)", () => {
 			assert.ok(stripVTControlCharacters(lines[0]!).length <= width);
 		}
 		assert.doesNotMatch(plain(block(store).render(160))[0]!, /…/);
+	});
+
+	test("a line too long for its width drops its key hint before it cuts its text", () => {
+		const previous = getKeybindings();
+		setKeybindings(new KeybindingsManager());
+		onTestFinished(() => setKeybindings(previous));
+		const store = runningStore();
+		store.recordRunEnd(RUN_ID, "failed", undefined, "tests failed: 3 of 12 checks did not pass", {
+			failedStageId: "implement",
+		});
+		const row = new WorkflowToolResultBlock(store, workflowBlockTheme(undefined), { now: () => START }).update(
+			STARTED,
+			{ expanded: false, isError: false },
+		);
+		const wide = plain(row.render(160))[0]!;
+		assert.match(wide, /\(ctrl\+o to expand\)$/);
+		const narrow = plain(row.render(80))[0]!;
+		assert.doesNotMatch(narrow, /ctrl\+o/);
+		assert.ok(narrow.length <= 80);
 	});
 
 	test("expanding shows the run's inputs, stages and outputs", () => {

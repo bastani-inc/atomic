@@ -5,7 +5,7 @@
 
 import type { ThemeColor } from "@bastani/atomic";
 import { formatTokenCount, formatTokenSegment, keyHintIfBound } from "@bastani/atomic";
-import { wrapTextWithAnsi } from "@bastani/atomic-tui";
+import { visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import { meter_run, type RunUsageTree } from "../shared/budget-meter.js";
 import type { StoreInvalidationListener } from "../shared/store-public-types.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
@@ -574,8 +574,9 @@ export class WorkflowToolResultBlock implements PiRenderComponent {
 		const marker = TONE_MARKERS[summary.tone];
 		const glyph = marker.glyph === "" ? "" : `${this.theme.fg(marker.color, marker.glyph)} `;
 		const text = summary.tone === "info" ? this.theme.fg("dim", summary.text) : summary.text;
-		const head = `${this.theme.fg("dim", FIRST_PREFIX)}${glyph}${text}${this.hint(summary)}`;
-		const lines = [truncateToWidth(head, width, "…")];
+		const head = `${this.theme.fg("dim", FIRST_PREFIX)}${glyph}${text}`;
+		const hinted = `${head}${this.hint(summary)}`;
+		const lines = [visibleWidth(hinted) <= width ? hinted : truncateToWidth(head, width, "…")];
 		if (!this.view.expanded) return lines;
 		const innerWidth = Math.max(1, width - DETAIL_PREFIX.length);
 		for (const line of this.detailLines(innerWidth)) {
