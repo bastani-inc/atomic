@@ -29,6 +29,7 @@ export interface GlobalLedgerEntry {
 export interface RootLedgerEntry {
 	readonly state: "running" | "success" | "failed";
 	readonly at: string;
+	readonly build?: string;
 }
 
 export interface BlueprintLedger {
