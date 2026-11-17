@@ -793,7 +793,6 @@ export function openWorkflowResumeSelector(
 			applyRows(next.catalog);
 			handle.update(sessions.map(toPickerRow));
 		} catch {
-			// Keep previous rows when a refresh fails.
 		} finally {
 			refreshing = false;
 		}

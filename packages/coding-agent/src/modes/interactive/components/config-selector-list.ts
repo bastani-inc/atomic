@@ -202,7 +202,6 @@ export class ResourceList implements Component, Focusable {
 		input.focused = this._focused;
 		return input;
 	}
-	/** The rounded search box every picker shows. */
 	private renderSearch(width: number): string[] {
 		const boxWidth = Math.max(8, width - 2);
 		const field = Math.max(1, boxWidth - 4);
@@ -381,7 +380,6 @@ export class ResourceList implements Component, Focusable {
 			return true;
 		}
 		if (kb.matches(data, "tui.select.cancel")) {
-			// Esc clears a search first, then closes, as in every picker; ctrl+c always closes.
 			if (this.searchInput.getValue() && !matchesKey(data, "ctrl+c")) {
 				this.searchInput = this.createSearchInput();
 				this.filterItems("");

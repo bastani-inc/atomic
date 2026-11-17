@@ -35,10 +35,8 @@ import {
 import { buildSessionTree, type FlatSessionNode, flattenSessionTree } from "./session-selector-tree.ts";
 import { formatSessionDate, getSessionPathKey, shortenPath, truncatePathStart } from "./session-selector-utils.ts";
 
-/** What a resume picker lists: saved sessions (with folder scope and names), workflow runs, or both grouped together. */
 export type SessionListVariant = "sessions" | "runs" | "mixed";
 
-/** The line under the list: a pending delete question or a transient status. */
 export interface SessionListNotice {
 	readonly text: string;
 	readonly tone: "error" | "accent" | "muted";
@@ -55,7 +53,6 @@ const HINT_STYLE: NavKeyStyle = {
 const CLEAN_TEXT_CACHE_SIZE = 4096;
 const cleanTextCache = new Map<string, string>();
 
-/** Control characters out and whitespace collapsed, so one row stays one line. */
 function cleanText(text: string): string {
 	const cached = cleanTextCache.get(text);
 	if (cached !== undefined) return cached;
@@ -81,21 +78,15 @@ function fitText(text: string, room: number): string {
 	return fitted;
 }
 
-/** `2h ago`, `just now`. */
 function ageText(date: Date): string {
 	const short = formatSessionDate(date);
 	return short === "now" ? "just now" : `${short} ago`;
 }
 
-/** A row's first line: a synthetic row's own title, else the session's name or first message. */
 export function sessionRowTitle(session: SessionInfo): string {
 	return cleanText(session.title ?? session.name ?? session.firstMessage) || "(no messages)";
 }
 
-/**
- * Labels in the order a narrow hint gives them up: the reminders and view toggles first, then the row actions, so
- * how to move, preview, resume and leave stay longest.
- */
 const RESUME_HINT_DROP_ORDER = [
 	"to search",
 	"keys",
@@ -247,7 +238,6 @@ export class SessionList implements Component, Focusable {
 		return input;
 	}
 
-	/** Empty the search with a fresh box, so its undo history cannot bring the old text back. */
 	private clearSearch(): void {
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		const selectedPath = selected?.path;
@@ -470,7 +460,6 @@ export class SessionList implements Component, Focusable {
 
 	invalidate(): void {}
 
-	/** What the picker lists, which decides its title, empty text and keys. */
 	setVariant(variant: SessionListVariant): void {
 		const changed = this.variant !== variant;
 		this.variant = variant;
@@ -482,17 +471,14 @@ export class SessionList implements Component, Focusable {
 		}
 	}
 
-	/** Whether the picker can delete a row (Ctrl+D); its hint and key follow this. */
 	setCanDelete(canDelete: boolean): void {
 		this.canDelete = canDelete;
 	}
 
-	/** Whether the picker can rename a row; its hint follows this. */
 	setCanRename(canRename: boolean): void {
 		this.canRename = canRename;
 	}
 
-	/** Read the state line under the list: a pending delete question or a transient status. */
 	setNoticeProvider(provider: () => SessionListNotice | undefined): void {
 		this.noticeProvider = provider;
 	}
@@ -622,10 +608,6 @@ export class SessionList implements Component, Focusable {
 		return lines;
 	}
 
-	/**
-	 * The row's dim second line, fitted to `room`: its own detail, or age · messages · folder · path · summary. A long
-	 * folder or session path loses its start, never its end, and a summary takes only what the paths leave.
-	 */
 	private rowDetail(session: SessionInfo, room: number): string {
 		if (session.detail !== undefined) return fitText(cleanText(session.detail), room);
 		const sep = " · ";
@@ -656,7 +638,6 @@ export class SessionList implements Component, Focusable {
 		return truncateToWidth(line, room, "…");
 	}
 
-	/** The selected row in full: its title, summary and where it lives, wrapped under the list. */
 	private renderPreview(width: number): string[] {
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		if (!selected) return [];
@@ -681,7 +662,6 @@ export class SessionList implements Component, Focusable {
 			}
 		};
 		add(sessionRowTitle(selected), (text) => theme.bold(theme.fg("text", text)), 3);
-		// A row with its own detail line already carries its summary there; a session shows its summary in full.
 		if (selected.detail !== undefined) add(selected.detail, (text) => theme.fg("muted", text), 4);
 		else if (selected.summary) add(selected.summary, (text) => theme.fg("text", text), 6);
 		const isWorkflow = this.isWorkflowSession(selected);
@@ -800,7 +780,6 @@ export class SessionList implements Component, Focusable {
 		return this.hintEntries().filter((entry) => entry.action !== "app.keys.help");
 	}
 
-	/** The keys that work now, in hint order; narrow terminals drop the least needed first. */
 	private hintEntries(): NavKey[] {
 		const kb = this.activeKeybindings();
 		const entries: NavKey[] = [];
@@ -878,7 +857,6 @@ export class SessionList implements Component, Focusable {
 		return parts.join("") + branch;
 	}
 
-	/** The tree guide under a row's title, so a child's second line stays inside its branch. */
 	private buildTreeContinuation(node: FlatSessionNode): string {
 		if (node.depth === 0) return "";
 		const parts = node.ancestorContinues.map((continues) => (continues ? "│  " : "   "));
@@ -921,7 +899,6 @@ export class SessionList implements Component, Focusable {
 			return true;
 		}
 
-		// A preview closes before anything else leaves; it follows the selection while open.
 		if (this.previewOpen && kb.matches(keyData, "tui.select.cancel") && !matchesKey(keyData, "ctrl+c")) {
 			this.previewOpen = false;
 			return true;
@@ -1029,9 +1006,7 @@ export class SessionList implements Component, Focusable {
 			(kb.matches(keyData, "app.list.open") && !this.searchInput.getValue())
 		) {
 			this.selectSession();
-		}
-		// Escape clears a search first, then cancels; ctrl+c always cancels.
-		else if (kb.matches(keyData, "tui.select.cancel")) {
+		} else if (kb.matches(keyData, "tui.select.cancel")) {
 			if (this.searchInput.getValue() && !matchesKey(keyData, "ctrl+c")) this.clearSearch();
 			else this.onCancel?.();
 		}
@@ -1042,7 +1017,6 @@ export class SessionList implements Component, Focusable {
 		return true;
 	}
 
-	/** A new search selects its best match; emptying it returns to the row that was selected, as in every picker. */
 	private editSearch(keyData: string): void {
 		const before = this.searchInput.getValue().trim();
 		const previous = this.filteredSessions[this.selectedIndex]?.session;

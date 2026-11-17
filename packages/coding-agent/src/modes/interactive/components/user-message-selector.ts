@@ -11,7 +11,6 @@ interface UserMessageItem {
  * selected, with type-to-search. Enter forks from the chosen message.
  */
 export class UserMessageSelectorComponent extends FramedSelector<string> {
-	/** Fork from an entry as if it were chosen; the same path Enter takes. */
 	readonly onSelect: (entryId: string) => void;
 
 	constructor(
@@ -52,7 +51,6 @@ export class UserMessageSelectorComponent extends FramedSelector<string> {
 		}
 	}
 
-	/** The focus target; kept for callers that focused the old inner list. */
 	getMessageList(): this {
 		return this;
 	}

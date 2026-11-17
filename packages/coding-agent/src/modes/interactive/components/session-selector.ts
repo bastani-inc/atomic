@@ -104,11 +104,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			 * and keeps live rows visible if the loader later errors.
 			 */
 			initialSessions?: SessionInfo[];
-			/** What the picker lists; `runs` drops folder scope, name filtering and paths. Defaults to sessions. */
 			variant?: SessionListVariant;
-			/** The picker's title; defaults to "Resume", "Resume session" or "Resume workflow run". */
 			title?: string;
-			/** Whether Ctrl+D deletes a row. Defaults to true. */
 			canDelete?: boolean;
 		},
 		currentSession?: { id: string; directory: string },
@@ -463,7 +460,6 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		// Invalidate any pending load so its seq check fails on resolve.
 		this.currentLoadSeq += 1;
 		this.allLoadSeq += 1;
 		this.header.setStatusMessage(null);
