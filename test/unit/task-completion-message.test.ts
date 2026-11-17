@@ -552,6 +552,22 @@ test("a styled result preview cut to the width keeps within it and closes its st
 	}
 });
 
+test("a result preview whose first row holds a very long token is cut with an ellipsis, not wrapped before it", () => {
+	initTheme("dark");
+	setKeybindings(new KeybindingsManager());
+	const long = agentNotice(`**Intro ${"X".repeat(2000)}**`);
+	const softBreak = agentNotice("**Bold that runs\nonto a second line**");
+	for (const width of [24, 80]) {
+		const [, cut] = new TaskCompletionMessage(long, false).render(width);
+		assert.ok(visibleWidth(cut!) <= width, `width ${width}`);
+		assert.match(stripVTControlCharacters(cut!), /^ {3}⎿ {2}Intro X+…$/, `width ${width}`);
+		assert.ok(cut!.endsWith("\u001b[0m"), `width ${width}: styles closed`);
+		const [, open] = new TaskCompletionMessage(softBreak, false).render(width);
+		assert.equal(stripVTControlCharacters(open!), "   ⎿  Bold that runs", `width ${width}`);
+		assert.ok(open!.endsWith("\u001b[0m"), `width ${width}: a row that fits closes its styles too`);
+	}
+});
+
 test("agent completion previews emit no colour under NO_COLOR, like their notice line", async () => {
 	vi.stubEnv("NO_COLOR", "1");
 	onTestFinished(() => {

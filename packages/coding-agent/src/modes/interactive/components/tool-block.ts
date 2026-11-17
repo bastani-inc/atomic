@@ -252,12 +252,36 @@ export class ToolBlockMarkdown implements Component {
 	}
 }
 
-/** Wide enough that a preview's first row is cut to the width it is shown at, not wrapped before it. */
-const MARKDOWN_PREVIEW_ROW_WIDTH = 1024;
+/** The narrowest width previews are rendered at: rows of later blocks wrap no narrower than this. */
+const MARKDOWN_PREVIEW_MIN_ROW_WIDTH = 256;
+const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})/;
 
 /**
- * Markdown as one-row previews: its rendered rows, unwrapped, without blank rows, code fences or heading markers, and
- * with links as their text. Plain text takes `color`; bold, italic and code keep their emphasis within it.
+ * Columns enough to render the leading block of `text` without wrapping: from its first non-blank line to the next
+ * blank line outside a code fence. Each line gets room for table borders and list or quote markers.
+ */
+function leadingBlockWidth(text: string): number {
+	let width = MARKDOWN_PREVIEW_MIN_ROW_WIDTH;
+	let fence: string | undefined;
+	let started = false;
+	for (const line of text.split("\n")) {
+		if (!line.trim()) {
+			if (started && fence === undefined) break;
+			continue;
+		}
+		started = true;
+		const marker = FENCE_MARKER.exec(line)?.[1];
+		if (marker !== undefined && (fence === undefined || marker[0] === fence[0])) fence = fence ? undefined : marker;
+		const pipes = line.split("|").length - 1;
+		width = Math.max(width, visibleWidth(line.replace(/\t/g, "   ")) + 2 * pipes + 16);
+	}
+	return width;
+}
+
+/**
+ * Markdown as one-row previews: its rendered rows, its first block unwrapped, without blank rows, code fences or heading
+ * markers, and with links as their text. Each row closes its styles. Plain text takes `color`; bold, italic and code keep
+ * their emphasis within it.
  */
 export function markdownPreviewRows(text: string, color: (text: string) => string): string[] {
 	const base = getMarkdownTheme();
@@ -268,8 +292,10 @@ export function markdownPreviewRows(text: string, color: (text: string) => strin
 		codeBlockBorder: () => "",
 		codeBlockIndent: "",
 	};
-	return new Markdown(terminalDisplayText(text), 0, 0, previewTheme, { color }, { hyperlinks: false, images: false })
-		.render(MARKDOWN_PREVIEW_ROW_WIDTH)
+	const display = terminalDisplayText(text);
+	return new Markdown(display, 0, 0, previewTheme, { color }, { hyperlinks: false, images: false })
+		.render(leadingBlockWidth(display))
 		.map((row) => row.trimEnd())
-		.filter((row) => stripTerminalSequences(row).trim().length > 0);
+		.filter((row) => stripTerminalSequences(row).trim().length > 0)
+		.map((row) => (row.includes("\x1b[") ? `${row}\x1b[0m` : row));
 }
