@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { Type } from "typebox";
-import { createChildProcessEnvironment, ensurePrivateTempDir } from "@bastani/atomic";
+import { createChildProcessEnvironment, ensurePrivateTempDirAsync } from "@bastani/atomic";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 
 
@@ -125,25 +125,25 @@ const TMP_ARTIFACT_DIR = "open-claude-design";
  * per-user OS tmpdir when the project tree is not writable (CI sandboxes,
  * mocks, etc.).
  */
-export function prepareArtifactDir(cwd = process.cwd()): {
+export async function prepareArtifactDir(cwd = process.cwd()): Promise<{
   readonly runId: string;
   readonly artifactDir: string;
   readonly previewPath: string;
   readonly specPath: string;
-} {
+}> {
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${Math.random().toString(36).slice(2, 8)}`;
   // Under automated tests, prefer the OS tmpdir so a full `d.run()` does not
   // pollute the project's `specs/design/` tree with per-run artifact folders.
   // The temp fallback lives below a directory only this account owns (see
-  // `ensurePrivateTempDir`), never a fixed name another account could create.
-  const tmpCandidate = (): string => join(ensurePrivateTempDir(TMP_ARTIFACT_DIR), runId);
+  // `ensurePrivateTempDirAsync`), never a fixed name another account could create.
+  const tmpCandidate = async (): Promise<string> => join(await ensurePrivateTempDirAsync(TMP_ARTIFACT_DIR), runId);
   const candidates =
     process.env.NODE_ENV === "test"
       ? [tmpCandidate]
-      : [() => join(cwd, "specs", "design", runId), tmpCandidate];
+      : [async () => join(cwd, "specs", "design", runId), tmpCandidate];
   for (const resolveCandidate of candidates) {
     try {
-      const candidate = resolveCandidate();
+      const candidate = await resolveCandidate();
       mkdirSync(candidate, { recursive: true });
       return {
         runId,
