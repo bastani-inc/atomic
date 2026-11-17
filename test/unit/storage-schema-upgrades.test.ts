@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
@@ -34,8 +35,44 @@ const SCHEMA_ONLY_OPEN_SPEEDUP = 2;
  * one transaction.
  */
 const LEGACY_CONVERSION_WRITE_BYTES = 16 * SESSION_BLOB_CHUNK_BYTES;
+/**
+ * How long one write transaction of a 256 MiB legacy upgrade may hold the writer, not counting time the whole host
+ * stood still (see `hostStallClock`). Each writes at most 16 MiB of blob bytes: the longest took 0.11 s at the median on
+ * Linux runners and 0.38 s at the median and 2.6 s at most on loaded Windows runners, where the host itself also stood
+ * still for 2 s and more at a time.
+ */
+const LONGEST_WRITE_MS = 5_000;
 /** Converting and stamping 256 MiB took up to 134 s together beside other suites on loaded Windows runners. */
 const LEGACY_UPGRADE_TEST_TIMEOUT_MS = 300_000;
+/** A heartbeat of another thread that comes this much later than its period means the whole host stood still. */
+const HOST_STALL_TICK_MS = 10;
+const HOST_STALL_MIN_MS = 50;
+
+/**
+ * Milliseconds the whole host stood still since it started: a heartbeat on another thread, which keeps running while
+ * this one works or waits, counts every tick that came late. A stall inside this process does not stop it.
+ */
+function hostStallClock(): { stalledMs(): number; stop(): Promise<void> } {
+	const stalled = new Float64Array(new SharedArrayBuffer(8));
+	const worker = new Worker(
+		`const { workerData } = require("node:worker_threads");
+const stalled = new Float64Array(workerData);
+let last = performance.now();
+setInterval(() => {
+	const now = performance.now();
+	const late = now - last - ${HOST_STALL_TICK_MS};
+	if (late > ${HOST_STALL_MIN_MS}) stalled[0] += late;
+	last = now;
+}, ${HOST_STALL_TICK_MS});`,
+		{ eval: true, workerData: stalled.buffer },
+	);
+	return {
+		stalledMs: () => stalled[0]!,
+		stop: async () => {
+			await worker.terminate();
+		},
+	};
+}
 
 /** `database`, calling `afterCommit` after each of its transactions ends. */
 function afterEachTransaction(database: SqliteDatabase, afterCommit: () => Promise<void>): SqliteDatabase {
@@ -643,6 +680,8 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				await database.exec(`DROP INDEX snapshot_blobs_age; DROP TABLE snapshot_blobs;
 				CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL) STRICT`);
 				await database.run("INSERT INTO snapshot_blobs VALUES (?, ?, ?)", hash, bytes, original);
+				const hostStalls = hostStallClock();
+				closers.push(() => hostStalls.stop());
 				const durations: number[] = [];
 				let measuring: (() => Promise<number>) | undefined;
 				let written = 0;
@@ -656,11 +695,13 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 					close: database.close.bind(database),
 					async transaction(callback, options) {
 						let acquired = 0;
+						let stalledBefore = 0;
 						const result = await database.transaction((tx) => {
 							acquired = performance.now();
+							stalledBefore = hostStalls.stalledMs();
 							return callback(tx);
 						}, options);
-						durations.push(performance.now() - acquired);
+						durations.push(performance.now() - acquired - (hostStalls.stalledMs() - stalledBefore));
 						if (measuring !== undefined) {
 							const now = await measuring();
 							mostWritten = Math.max(mostWritten, now - written);
@@ -711,6 +752,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 					conversionMostWritten > 0 && conversionMostWritten <= LEGACY_CONVERSION_WRITE_BYTES,
 					`one conversion write transaction wrote ${conversionMostWritten} bytes of blobs`,
 				);
+				assert.ok(longest < LONGEST_WRITE_MS, `one write transaction held the lock for ${longest.toFixed(0)} ms`);
 				assert.ok(durations.length > 2, "large blobs must commit between chunk batches");
 				const restored = await upgraded.getBlob("session", hash);
 				assert.equal(restored?.byteLength, bytes);
@@ -729,6 +771,10 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				assert.ok(
 					mostWritten <= SNAPSHOT_LEGACY_STAMP_BYTES,
 					`one snapshot maintenance transaction wrote ${mostWritten} bytes of blobs`,
+				);
+				assert.ok(
+					maintenanceWriteMs < LONGEST_WRITE_MS,
+					`snapshot maintenance held the writer for ${maintenanceWriteMs.toFixed(0)} ms`,
 				);
 				assert.ok(await database.get("SELECT name FROM sqlite_schema WHERE name = 'snapshot_blobs_age'"));
 				const stamped = await database.get(
