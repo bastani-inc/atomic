@@ -21,6 +21,7 @@ import { afterAll, beforeAll, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import type { Cleanup } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { AuthStorage, ModelRuntime } from "../../packages/coding-agent/src/index.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { requestSupervisorAuthorization } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
@@ -44,7 +45,9 @@ const STALL_MS = BUDGET_MS + 500;
 /** Structural cost: a real broker and two real child starts, the first held past its budget. */
 const REAL_RETRY_TEST_TIMEOUT_MS = 180_000;
 const STALL_HOOK = "__subagentStartRetryHoldStall";
-const globals = globalThis as typeof globalThis & { [STALL_HOOK]?: () => Promise<void> | undefined };
+const globals = globalThis as typeof globalThis & {
+	[STALL_HOOK]?: (point: "start" | "shutdown") => Promise<void> | undefined;
+};
 
 beforeAll(async () => {
 	await fixture.startSourceBroker(20_000);
@@ -134,9 +137,13 @@ async function launchingParent(cwd: string) {
 	return { events };
 }
 
-for (const stallAt of ["before_agent_start", "session_start"] as const)
+for (const { stallAt, resume } of [
+	{ stallAt: "before_agent_start", resume: false },
+	{ stallAt: "session_start", resume: false },
+	{ stallAt: "session_start", resume: true },
+] as const)
 	test(
-		`sends held for a launching child reach its retry before its first turn when its first start stalls in ${stallAt}`,
+		`held sends and cleanup belong to the ${resume ? "resumed child" : "launch"} retry when the first start stalls in ${stallAt} (#5341)`,
 		async () => {
 			const cwd = mkdtempSync(join(tmpdir(), "start-retry-hold-cwd-"));
 			fixture.onCleanup(() => rmSync(cwd, { recursive: true, force: true }));
@@ -192,8 +199,16 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 
 			// A child-only extension: the first start stalls in session_start past its budget, then lets go.
 			let starts = 0;
-			globals[STALL_HOOK] = () => (++starts === 1 ? sleep(STALL_MS) : undefined);
+			const retryDisposing = Promise.withResolvers<void>();
+			const releaseRetry = Promise.withResolvers<void>();
+			globals[STALL_HOOK] = (point) => {
+				if (point === "start") return ++starts === 1 ? sleep(STALL_MS) : undefined;
+				if (starts !== 2) return undefined;
+				retryDisposing.resolve();
+				return releaseRetry.promise;
+			};
 			fixture.onCleanup(() => {
+				releaseRetry.resolve();
 				delete globals[STALL_HOOK];
 			});
 			mkdirSync(join(agentDir, "extensions"), { recursive: true });
@@ -201,7 +216,8 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 				join(agentDir, "extensions", "stall.ts"),
 				[
 					"export default function (pi) {",
-					`\tpi.on(${JSON.stringify(stallAt)}, async () => { await globalThis.${STALL_HOOK}?.(); });`,
+					`\tpi.on(${JSON.stringify(stallAt)}, async () => { await globalThis.${STALL_HOOK}?.("start"); });`,
+					`\tpi.on("session_shutdown", async () => { await globalThis.${STALL_HOOK}?.("shutdown"); });`,
 					"}",
 				].join("\n"),
 			);
@@ -233,9 +249,25 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 			});
 			fixture.onCleanup(() => peer.disconnect().catch(() => undefined));
 			const heldSend = peer.send(childName, { text: "HELD-1 before the child registered" });
+			const resumedSession = resume ? await SessionManager.create(cwd, join(cwd, "resumed-child")) : undefined;
+			if (resumedSession) {
+				await resumedSession.appendMessage({ role: "user", content: "previous task", timestamp: Date.now() });
+				await resumedSession.appendCustomMessageEntry(
+					"intercom_message",
+					"PRIOR-1 saved before the child was resumed",
+					true,
+				);
+				await resumedSession.appendCustomMessageEntry(
+					"intercom_message",
+					"PRIOR-2 saved before the child was resumed",
+					true,
+				);
+			}
 
 			const reports: string[] = [];
 			let executions = 0;
+			let executionCleanup: Promise<Cleanup> | undefined;
+			let cleanupSettled = false;
 			let gapSend: Promise<unknown> | undefined;
 			const taskExecution: TaskExecutionHooks = {
 				signal: new AbortController().signal,
@@ -246,8 +278,12 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 					if (progress.attempt === 2 && gapSend === undefined)
 						gapSend = peer.send(childName, { text: "GAP-2 while the first start stalled" });
 				},
-				onExecution() {
+				onExecution(execution) {
 					executions += 1;
+					executionCleanup = execution.cleanup;
+					void execution.cleanup.then(() => {
+						cleanupSettled = true;
+					});
 				},
 				yieldTaskWait() {},
 				isParentObserving: () => false,
@@ -281,26 +317,41 @@ for (const stallAt of ["before_agent_start", "session_start"] as const)
 				orchestratorIntercomTarget: authorization.supervisorSessionId,
 				intercomGroup: "default",
 				intercomEvents: parent.events as never,
+				...(resumedSession ? { sessionManager: resumedSession, resumeSession: true } : {}),
 				onStartRetry: () => startHold.renew(),
 				taskExecution,
 			});
 			startHold.settle(result);
+			try {
+				assert.equal(starts, 2, "the first start stalled and was retried once");
+				assert.equal(result.status, "ok", JSON.stringify(result));
+				await retryDisposing.promise;
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				assert.equal(cleanupSettled, false, "the task still owns the retry while its session is disposing");
+				assert.ok(executionCleanup);
+			} finally {
+				releaseRetry.resolve();
+			}
+			assert.deepEqual(await executionCleanup, { kind: "reaped" });
 			const held = (await heldSend) as { delivered?: boolean; reason?: string };
 			const gap = (await gapSend) as { delivered?: boolean; reason?: string } | undefined;
 			const seen = (text: string) => contexts.some((context) => context.includes(text));
 
-			assert.equal(starts, 2, "the first start stalled and was retried once");
-			assert.equal(result.status, "ok", JSON.stringify(result));
 			assert.equal(held.delivered, true, held.reason);
 			assert.ok(seen("HELD-1"), "a send held before the first start registered reaches the retry's first turn");
 			assert.ok(gap, "a send was made while the start was retried");
 			assert.equal(gap.delivered, true, gap.reason);
 			assert.ok(seen("GAP-2"), "a send made while the start was retried reaches the retry's first turn");
 			const first = contexts[0] ?? "";
-			assert.ok(
-				first.includes("HELD-1") && first.includes("GAP-2"),
-				`the child's first model request has both: ${contexts.length} requests`,
-			);
+			const expectedMarkers = [...(resume ? ["PRIOR-1", "PRIOR-2"] : []), "HELD-1", "GAP-2"];
+			for (const marker of expectedMarkers) {
+				assert.ok(
+					first.includes(marker),
+					`the child's first model request includes ${marker}: ${contexts.length} requests`,
+				);
+				assert.equal(first.split(marker).length - 1, 1, `${marker} appears once in the retry's first-turn context`);
+			}
+			if (resumedSession) assert.equal(result.sessionFile, resumedSession.getSessionFile());
 			assert.equal(executions, 1, "the task has one execution, its retried start included");
 			assert.ok(
 				reports.some((report) => report.startsWith("attempt 2")),

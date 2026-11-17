@@ -287,26 +287,102 @@ describe("isolated OAuth frontend transport", () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
 		const reload = vi.spyOn(harness.session.modelRuntime, "reloadCredentials");
-		const apply = vi.fn();
 		const remoteCatalog = { models: [], scopedModels: [], customAuthProviders: [], oauthProviders: [] };
+		let capturedBeforeRequest = false;
 		const client = {
 			onExtensionUIRequest: () => () => {},
 			respondExtensionUI: async () => {},
 			cancelLoginProvider: async () => {},
-			requestInternal: async (command: { provider: string }) => ({
-				provider: command.provider,
-				cancelled: false,
-				...remoteCatalog,
-			}),
+			requestInternal: async (command: { provider: string }) => {
+				capturedBeforeRequest = getScopeSnapshot.mock.calls.length === 1;
+				return {
+					provider: command.provider,
+					cancelled: false,
+					...remoteCatalog,
+				};
+			},
 		};
+		const catalog = new RemoteModelCatalog(client as never);
+		const getScopeSnapshot = vi.spyOn(catalog, "getScopeSnapshot");
+		const apply = vi.spyOn(catalog, "apply");
 
-		await loginIsolatedOAuthProvider(harness.session, client as never, { apply } as never, "corp", {
+		await loginIsolatedOAuthProvider(harness.session, client as never, catalog, "corp", {
 			onAuth() {},
 			onDeviceCode() {},
 			onPrompt: async () => "",
 			onSelect: async () => undefined,
 		});
-		expect(apply).toHaveBeenCalledWith(expect.objectContaining({ provider: "corp", cancelled: false }));
+		expect(capturedBeforeRequest).toBe(true);
+		expect(getScopeSnapshot).toHaveBeenCalledOnce();
+		const capturedScope = getScopeSnapshot.mock.results[0]?.value;
+		expect(apply).toHaveBeenCalledOnce();
+		expect(apply).toHaveBeenCalledWith(
+			expect.objectContaining({ provider: "corp", cancelled: false }),
+			capturedScope,
+		);
+		expect(apply.mock.calls[0]?.[1]).toBe(capturedScope);
+		expect(reload).toHaveBeenCalledOnce();
+		expect(reload).toHaveBeenCalledWith({ refreshAvailability: false });
+	});
+
+	it("preserves a scope change completed during OAuth acquisition when a stale catalog arrives (#5224)", async () => {
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+		const initialModel = {
+			id: "alpha",
+			name: "Alpha",
+			api: "openai-completions" as const,
+			provider: "builtin",
+			baseUrl: "https://builtin.test/v1",
+			reasoning: false,
+			input: ["text" as const],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 4_096,
+		};
+		const nextModel = { ...initialModel, id: "beta", name: "Beta" };
+		const acquiredModel = { ...initialModel, id: "corp-model", name: "Corp Model", provider: "corp" };
+		const reload = vi.spyOn(harness.session.modelRuntime, "reloadCredentials");
+		const client = {
+			onExtensionUIRequest: () => () => {},
+			respondExtensionUI: async () => {},
+			cancelLoginProvider: async () => {},
+			requestInternal: async (command: { provider: string }) => {
+				await catalog.syncScopedModels([{ model: nextModel }], async () => ({
+					models: [initialModel, nextModel],
+					scopedModels: [{ model: nextModel }],
+					customAuthProviders: [],
+					oauthProviders: [],
+				}));
+				return {
+					provider: command.provider,
+					cancelled: false,
+					models: [initialModel, nextModel, acquiredModel],
+					scopedModels: [{ model: initialModel }],
+					customAuthProviders: [],
+					oauthProviders: [{ id: "corp", name: "Corp OAuth" }],
+				};
+			},
+		};
+		const catalog = new RemoteModelCatalog(client as never);
+		catalog.apply({
+			models: [initialModel, nextModel],
+			scopedModels: [{ model: initialModel }],
+			customAuthProviders: [],
+			oauthProviders: [],
+		});
+		catalog.patch(harness.session);
+
+		await loginIsolatedOAuthProvider(harness.session, client as never, catalog, "corp", {
+			onAuth() {},
+			onDeviceCode() {},
+			onPrompt: async () => "",
+			onSelect: async () => undefined,
+		});
+
+		expect(harness.session.scopedModels).toEqual([{ model: nextModel }]);
+		expect(harness.session.modelRuntime.getModels("corp")).toEqual([acquiredModel]);
+		expect(harness.session.modelRuntime.getOAuthProviderMetadata()).toEqual([{ id: "corp", name: "Corp OAuth" }]);
 		expect(reload).toHaveBeenCalledOnce();
 		expect(reload).toHaveBeenCalledWith({ refreshAvailability: false });
 	});
@@ -315,17 +391,18 @@ describe("isolated OAuth frontend transport", () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
 		const reload = vi.spyOn(harness.session.modelRuntime, "reloadCredentials");
-		const apply = vi.fn();
 		const baseClient = {
 			onExtensionUIRequest: () => () => {},
 			respondExtensionUI: async () => {},
 			cancelLoginProvider: async () => {},
 			requestInternal: async () => ({ provider: "corp", cancelled: true }),
 		};
+		const catalog = new RemoteModelCatalog(baseClient as never);
+		const apply = vi.spyOn(catalog, "apply");
 		const callbacks = { onAuth() {}, onDeviceCode() {}, onPrompt: async () => "", onSelect: async () => undefined };
 
 		await expect(
-			loginIsolatedOAuthProvider(harness.session, baseClient as never, { apply } as never, "corp", callbacks),
+			loginIsolatedOAuthProvider(harness.session, baseClient as never, catalog, "corp", callbacks),
 		).rejects.toMatchObject({ message: "Login cancelled" });
 		const persistenceFailure = new Error("auth.json is read-only");
 		await expect(
@@ -337,7 +414,7 @@ describe("isolated OAuth frontend transport", () => {
 						throw persistenceFailure;
 					},
 				} as never,
-				{ apply } as never,
+				catalog,
 				"corp",
 				callbacks,
 			),
@@ -351,7 +428,6 @@ describe("isolated OAuth frontend transport", () => {
 		harnesses.push(harness);
 		const abort = new DOMException("dialog closed", "AbortError");
 		let listener: ((request: RpcExtensionUIRequest) => void) | undefined;
-		const apply = vi.fn();
 		const reload = vi.spyOn(harness.session.modelRuntime, "reloadCredentials");
 		const client = {
 			onExtensionUIRequest: (next: (request: RpcExtensionUIRequest) => void) => {
@@ -372,9 +448,11 @@ describe("isolated OAuth frontend transport", () => {
 				return { provider: command.provider, cancelled: true };
 			},
 		};
+		const catalog = new RemoteModelCatalog(client as never);
+		const apply = vi.spyOn(catalog, "apply");
 
 		await expect(
-			loginIsolatedOAuthProvider(harness.session, client as never, { apply } as never, "corp", {
+			loginIsolatedOAuthProvider(harness.session, client as never, catalog, "corp", {
 				onAuth: () => {
 					throw abort;
 				},
