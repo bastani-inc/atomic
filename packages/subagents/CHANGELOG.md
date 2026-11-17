@@ -18,6 +18,8 @@
 - Fixed `contact_supervisor` reaching the wrong session. A background subagent named as its supervisor whichever session in the Atomic process had connected to Intercom last, such as another subagent or a workflow stage hosted in that process, instead of the session that launched it. Its updates and questions went to that session and never reached its parent. A child now names the Intercom id its launching session registered under, or that session's own name until it has one, and a child relaunched after a restart does the same.
 - Subagent artifact storage for sessions without a session file is created only when a subagent needs it, not at every session start. On Windows, it waits for its private-directory check, using the native module with an asynchronous PowerShell fallback, without pausing the main thread. A subagent cancelled during that check creates no child storage or supervisor authorization, and a storage failure returns a tool error. Startup artifact cleanup stays single-flight until its asynchronous work finishes, even if the session that started it ends ([#5285](https://github.com/bastani-inc/atomic/issues/5285), [#5324](https://github.com/bastani-inc/atomic/issues/5324))
 
+- A background subagent's final answer stays visible in `/tasks`, its transcript and completion card when saving it fails, even while its session is still shutting down ([#5210](https://github.com/bastani-inc/atomic/issues/5210))
+
 ## [0.9.88] - 2026-11-16
 
 ### Added

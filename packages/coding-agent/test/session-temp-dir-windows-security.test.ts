@@ -36,6 +36,7 @@ import {
 	assertPrivateDirectoryAsync,
 	ensurePrivateTempDir,
 	ensurePrivateTempDirAsync,
+	ensureSessionTempDirAsync,
 	getSessionTempDir,
 	getSessionTempDirAsync,
 	getTempRootDir,
@@ -597,6 +598,7 @@ try {
 const MAIN_THREAD_BLOCK_LIMIT_MS = 50;
 const BACKGROUND_EXIT_BOUND_MS = 8_000;
 const SECURITY_MODULE = join(moduleDir(import.meta.url), "..", "src", "core", "tools", "windows-directory-security.ts");
+const SESSION_TEMP_DIR_MODULE = join(moduleDir(import.meta.url), "..", "src", "core", "tools", "session-temp-dir.ts");
 const FAKE_READ_SECONDS = 0.3;
 
 type FakePowerShellMode = "answer" | "hang" | "garbage" | "fail" | "ownerAtStart";
@@ -1256,9 +1258,9 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 	});
 
 	it("session start verifies the private roots in the background, so a later synchronous caller finds them verified (#5285)", async () => {
-		const reads: string[] = [];
-		setWindowsDirectorySecurityReaderForTesting(async (path) => {
-			reads.push(path);
+		const reads: Array<{ path: string; background: boolean | undefined }> = [];
+		setWindowsDirectorySecurityReaderForTesting(async (path, options) => {
+			reads.push({ path, background: options.background });
 			return security();
 		});
 		if (!isWindows) simulateWindows();
@@ -1267,12 +1269,12 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 		const cacheRoot = join(agentDir, "cache", "tmp");
 
 		setActiveSessionTempId("first-session");
-		await waitFor(() => reads.includes(ownerRoot));
+		await waitFor(() => reads.some((read) => read.path === ownerRoot));
 		assert.equal(existsSync(agentDir), false, "session start never creates the agent directory's cache");
 
 		mkdirSync(cacheRoot, { recursive: true });
 		setActiveSessionTempId("prewarmed-session");
-		await waitFor(() => reads.includes(cacheRoot));
+		await waitFor(() => reads.some((read) => read.path === cacheRoot));
 		await waitFor(() => {
 			try {
 				getSessionTempDir("prewarmed-session");
@@ -1285,9 +1287,64 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 		const settledReads = reads.length;
 		assert.ok(getSessionTempDir("prewarmed-session").startsWith(`${ownerRoot}${sep}`));
 		assert.ok(ensurePrivateTempDir("extensions").startsWith(`${cacheRoot}${sep}`));
-		assert.deepEqual(reads.slice(0, 2).sort(), [cacheRoot, ownerRoot].sort());
+		assert.deepEqual(
+			reads.slice(0, 2).sort((left, right) => left.path.localeCompare(right.path)),
+			[
+				{ path: cacheRoot, background: true },
+				{ path: ownerRoot, background: true },
+			].sort((left, right) => left.path.localeCompare(right.path)),
+		);
 		assert.equal(reads.length, settledReads, "nothing is read again once the roots are verified");
+
+		const explicitDir = join(sandbox, "explicit-private");
+		mkdirSync(explicitDir);
+		await assertPrivateDirectoryAsync(explicitDir);
+		const callerDir = join(sandbox, "caller-temp", "leaf");
+		await ensureSessionTempDirAsync(callerDir);
+		assert.deepEqual(reads.slice(settledReads), [
+			{ path: explicitDir, background: undefined },
+			{ path: callerDir, background: undefined },
+		]);
 	});
+
+	it.skipIf(isWindows)(
+		"session-start private root verification does not keep a finished process alive (#5324)",
+		async () => {
+			fake = installFakePowerShell("hang");
+			const cacheRoot = join(process.env.ATOMIC_CODING_AGENT_DIR ?? "", "cache", "tmp");
+			mkdirSync(cacheRoot, { recursive: true });
+			const probe = join(sandbox, "session-start-probe.mjs");
+			writeFileSync(
+				probe,
+				[
+					`Object.defineProperty(process, "platform", { value: "win32", configurable: true });`,
+					`const { setActiveSessionTempId } = await import(${JSON.stringify(pathToFileURL(SESSION_TEMP_DIR_MODULE).href)});`,
+					`process.stdout.write(setActiveSessionTempId("short-lived-session"));`,
+				].join("\n"),
+			);
+			const child = spawnProcess([...NODE_SOURCE_RUNTIME, probe], { stdout: "pipe", stderr: "pipe" });
+			try {
+				const output = Promise.all([readStreamText(child.stdout), readStreamText(child.stderr)]);
+				const exitedInTime = await Promise.race([
+					child.exited.then(() => true),
+					sleep(BACKGROUND_EXIT_BOUND_MS).then(() => false),
+				]);
+				if (!exitedInTime) child.kill();
+				const [stdout, stderr] = await output;
+
+				assert.ok(exitedInTime, "session-start verification kept the process alive");
+				assert.equal(child.exitCode, 0, stderr);
+				assert.ok(stdout.endsWith(`${sep}short-lived-session`));
+				await waitFor(() => (fake?.launches().length ?? 0) >= 1);
+			} finally {
+				for (const { pid } of fake.launches()) {
+					try {
+						process.kill(pid);
+					} catch {}
+				}
+			}
+		},
+	);
 
 	it.skipIf(isWindows)("session start creates and reads nothing on POSIX (#5285)", () => {
 		let reads = 0;

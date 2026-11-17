@@ -45,6 +45,7 @@ const { trackSessionWork } = await import("../src/core/session-lifecycle-work.js
 const {
 	readWindowsDirectorySecurityAsync,
 	resetWindowsDirectorySecurityStateForTesting,
+	trackWindowsDirectorySecurityWork,
 	verifyWindowsDirectorySecurity,
 	waitForWindowsDirectorySecurityReadsForTesting,
 } = await import("../src/core/tools/windows-directory-security.js");
@@ -165,6 +166,40 @@ test.each(["session", "runtime", "nested session", "nested runtime"] as const)(
 		}
 	},
 );
+
+test("shutdown handlers run before disposal waits for pending directory metadata (#5324)", async () => {
+	let release!: () => void;
+	const verification = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let shutdowns = 0;
+	const harness = await createHarness({
+		extensionFactories: [
+			(api) => {
+				api.on("session_shutdown", () => {
+					shutdowns += 1;
+				});
+			},
+		],
+	});
+	let closed = false;
+	try {
+		await trackSessionWork(harness.session, async () => {
+			void trackWindowsDirectorySecurityWork(() => verification);
+		});
+		const closing = harness.session.dispose().then(() => {
+			closed = true;
+		});
+		await setImmediate();
+		assert.equal(shutdowns, 1, "pending metadata must not delay extension shutdown");
+		assert.equal(closed, false, "disposal still owns pending directory work");
+		release();
+		await closing;
+	} finally {
+		release();
+		await harness.cleanup();
+	}
+});
 
 test("closing one host leaves another host's shared ACL read running (#5324)", async () => {
 	const child = pendingChild();

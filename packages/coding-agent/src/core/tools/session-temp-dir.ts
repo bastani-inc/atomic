@@ -29,7 +29,6 @@ import {
 import { lstat, mkdir, realpath, rm } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { APP_NAME, getAgentDir } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
@@ -237,7 +236,6 @@ function attemptWithoutBackgroundVerification<T>(attempt: () => T): T {
 }
 
 async function afterVerification<T>(attempt: () => T): Promise<T> {
-	if (process.platform === "win32") await yieldToEventLoop();
 	const verified = new Set<string>();
 	for (;;) {
 		try {
@@ -696,10 +694,10 @@ export function ensureSessionTempDir(explicitDir?: string): string {
 	return ensureTempDir(explicitDir ?? resolveSessionTempDirPath());
 }
 
-async function verifyWindowsOwnedDirectoryAsync(path: string): Promise<void> {
+async function verifyWindowsOwnedDirectoryAsync(path: string, options: { background?: boolean } = {}): Promise<void> {
 	const before = await lstat(path, { bigint: true });
 	assertRealDirectory(path, before);
-	const refusal = await verifyWindowsDirectorySecurityAsync(path);
+	const refusal = await verifyWindowsDirectorySecurityAsync(path, undefined, options);
 	if (refusal !== undefined) throw new TempDirRefusedError(path, refusal);
 	const after = await lstat(path, { bigint: true });
 	assertRealDirectory(path, after);
@@ -712,7 +710,7 @@ function assertRealDirectory(path: string, stat: Stats | BigIntStats): void {
 	if (!stat.isDirectory()) throw new TempDirRefusedError(path, "it is not a directory");
 }
 
-async function ensureWindowsOwnedDirectoryAsync(path: string): Promise<void> {
+async function ensureWindowsOwnedDirectoryAsync(path: string, options: { background?: boolean } = {}): Promise<void> {
 	try {
 		await lstat(path);
 	} catch {
@@ -722,7 +720,7 @@ async function ensureWindowsOwnedDirectoryAsync(path: string): Promise<void> {
 			if (getErrnoCode(error) !== "EEXIST") throw new TempDirRefusedError(path, "it could not be created");
 		}
 	}
-	await verifyWindowsOwnedDirectoryAsync(path);
+	await verifyWindowsOwnedDirectoryAsync(path, options);
 }
 
 async function ensureWindowsLeafDirectoryAsync(path: string, preserveExistingLeaf: boolean): Promise<void> {
@@ -753,7 +751,6 @@ export async function ensureTempDirAsync(
 ): Promise<string> {
 	const resolvedDir = resolve(dir);
 	if (process.platform !== "win32") return afterVerification(() => ensureTempDir(resolvedDir, options));
-	await yieldToEventLoop();
 	const base = await baseTempDirsAsync();
 	const checkedDir = canonicalTempChild(resolvedDir, base);
 	if (checkedDir !== undefined) {
@@ -845,12 +842,12 @@ function startPrivateRootVerification(): void {
 	void trackWindowsDirectorySecurityWork(async () => {
 		try {
 			const ownerRoot = canonicalTempChild(getTempRootDir(), await baseTempDirsAsync());
-			if (ownerRoot !== undefined) await ensureWindowsOwnedDirectoryAsync(ownerRoot);
+			if (ownerRoot !== undefined) await ensureWindowsOwnedDirectoryAsync(ownerRoot, { background: true });
 		} catch {}
 	}).catch(() => undefined);
 	void trackWindowsDirectorySecurityWork(async () => {
 		try {
-			await verifyWindowsOwnedDirectoryAsync(join(getAgentDir(), "cache", "tmp"));
+			await verifyWindowsOwnedDirectoryAsync(join(getAgentDir(), "cache", "tmp"), { background: true });
 		} catch {}
 	}).catch(() => undefined);
 }

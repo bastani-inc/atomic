@@ -750,7 +750,6 @@ export function closeAgentSession(
 		await attempt("reload rollback", () => drainSessionReload(session));
 		await attempt("tasks", () => session.closeSessionTasks());
 		await attempt("summary", () => session.abortSessionSummary());
-		await attempt("directory checks", () => drainWindowsDirectorySecurityReads(sessionLifetime(session)));
 		if (handoff) {
 			await attempt("peer work", () => drainSessionWork(session, true, true));
 			await attempt("retired authority", () => session._extensionRunner.revokeAuthority());
@@ -775,6 +774,7 @@ export function closeAgentSession(
 		await attempt("extensions", async () => {
 			await emitSessionShutdownEvent(session._extensionRunner, event);
 		});
+		await attempt("directory checks", () => drainWindowsDirectorySecurityReads(sessionLifetime(session)));
 		await attempt("messages", () => prepareProtectedStreamingCustomMessagesForDisposal(session));
 		await attempt("shell persistence", async () => await session._flushPendingBashMessages());
 		await attempt("settings", async () => {

@@ -235,12 +235,12 @@ type ChildStream = (Readable & Partial<Pick<Socket, "ref" | "unref">>) | null;
 const outsideAnyCaller = AsyncLocalStorage.snapshot();
 
 const sharedReads = new Map<string, SharedSecurityRead>();
-const currentReadOwner = new AsyncLocalStorage<AbortSignal>();
+const currentReadOwner = new AsyncLocalStorage<WeakRef<AbortSignal>>();
 const ownedReads = new WeakMap<AbortSignal, Set<Promise<void>>>();
 const activeReads = new Set<Promise<void>>();
 
 export function trackWindowsDirectorySecurityWork<T>(operation: () => Promise<T>): Promise<T> {
-	const owner = currentReadOwner.getStore();
+	const owner = currentReadOwner.getStore()?.deref();
 	const result = operation();
 	const settled = result.then(
 		() => undefined,
@@ -263,7 +263,8 @@ export function withWindowsDirectorySecurityOwner<T>(
 	operation: () => T,
 	options: { inherit?: boolean } = {},
 ): T {
-	return currentReadOwner.run(options.inherit ? (currentReadOwner.getStore() ?? signal) : signal, operation);
+	const inheritedOwner = options.inherit ? currentReadOwner.getStore()?.deref() : undefined;
+	return currentReadOwner.run(new WeakRef(inheritedOwner ?? signal), operation);
 }
 
 export async function drainWindowsDirectorySecurityReads(signal: AbortSignal): Promise<void> {
@@ -443,7 +444,7 @@ export function readWindowsDirectorySecurityAsync(
 	options: ReadWindowsDirectorySecurityOptions = {},
 ): Promise<WindowsDirectorySecurity | undefined> {
 	return trackWindowsDirectorySecurityWork(async () => {
-		const owner = currentReadOwner.getStore();
+		const owner = currentReadOwner.getStore()?.deref();
 		const signal = owner && options.signal ? AbortSignal.any([owner, options.signal]) : (owner ?? options.signal);
 		if (signal?.aborted) return undefined;
 		const generation = stateGeneration;
