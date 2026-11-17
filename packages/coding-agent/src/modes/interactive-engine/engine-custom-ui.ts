@@ -500,6 +500,7 @@ export class EngineCustomUiService {
 		}
 		const requested = record.frameRequested === true;
 		record.frameRequested = false;
+		record.staleWhileHidden = false;
 		let lines: string[];
 		try {
 			lines = runSynchronousCallback({ kind: "renderer", name: componentId }, () =>

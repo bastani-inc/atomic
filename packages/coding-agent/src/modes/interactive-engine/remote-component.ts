@@ -146,6 +146,7 @@ class RemoteComponent implements Component {
 		// self-invalidate.
 		if (this.width > 0) {
 			const renderSettings = this.getRenderSettings();
+			this.keyFrameRequestId = this.requestId + 1;
 			this.requestFrame(
 				this.width,
 				this.getRows(),
@@ -153,7 +154,6 @@ class RemoteComponent implements Component {
 				renderSettings,
 				renderSettingsCacheKey(renderSettings),
 			);
-			this.keyFrameRequestId = this.requestId;
 		} else {
 			this.dirty = true;
 			this.requestRender();
