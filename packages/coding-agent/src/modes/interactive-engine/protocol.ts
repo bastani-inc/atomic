@@ -10,6 +10,8 @@ import type {
 } from "../../core/extensions/ui-types.js";
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
 import type { KeyId } from "../../core/keybindings.ts";
+import { parseHostSessionPickerRows } from "../../core/workflow-resume.ts";
+import type { ToolGroupFamily, ToolGroupRole } from "../interactive/components/tool-block.ts";
 
 /**
  * Version 4 separates minimal session binding from optional resource readiness.
@@ -82,6 +84,7 @@ export type InteractiveEngineMessage =
 	| { type: "engine_activity_finished"; activityId: string }
 	/** Workflow activity the host reports as terminal program status. Roots carry no graph. */
 	| { type: "engine_workflow_activity"; frame: WorkflowActivityFrame }
+	| { type: "engine_agent_panel_state"; total: number; needsInput: number }
 	| { type: "engine_ui_prompt"; event: UIPromptStartEvent | UIPromptEndEvent }
 	/**
 	 * The child took ownership of a correlated RPC request: it has parsed the
@@ -125,9 +128,19 @@ export type InteractiveEngineMessage =
 			componentId: string;
 			sessions: HostSessionPickerRow[];
 			showRenameHint?: boolean;
+			title?: string;
+			variant?: "sessions" | "runs";
+			/** Whether the child handles row deletion; absent means it does (older children). */
+			canDelete?: boolean;
 	  }
 	| { type: "engine_session_picker_update"; componentId: string; sessions: HostSessionPickerRow[] }
-	| { type: "engine_session_picker_error"; componentId: string; message: string }
+	| {
+			type: "engine_session_picker_error";
+			componentId: string;
+			message: string;
+			deletePath?: string;
+			deleteRequestId?: number;
+	  }
 	| { type: "engine_session_picker_close"; componentId: string }
 	| {
 			type: "engine_input_form_open";
@@ -205,15 +218,18 @@ export type InteractiveEngineCommand =
 			width: number;
 			toolName: string;
 			toolCallId: string;
+			rendererTaskId?: string;
 			args: JsonValue;
 			result?: JsonObject;
 			executionStarted: boolean;
+			executionStartedAt?: number;
 			argsComplete: boolean;
 			isPartial: boolean;
 			expanded: boolean;
 			showImages: boolean;
 			imageWidthCells: number;
 			outputPad?: number;
+			groupRole?: ToolGroupRole;
 	  }
 	| {
 			type: "engine_message_render";
@@ -227,7 +243,7 @@ export type InteractiveEngineCommand =
 	| { type: "engine_render_dispose"; componentId: string }
 	| { type: "engine_session_picker_select"; componentId: string; path: string }
 	| { type: "engine_session_picker_cancel"; componentId: string }
-	| { type: "engine_session_picker_delete"; componentId: string; path: string }
+	| { type: "engine_session_picker_delete"; componentId: string; path: string; deleteRequestId?: number }
 	| { type: "engine_input_form_submit"; componentId: string; values: Record<string, string> }
 	| { type: "engine_input_form_cancel"; componentId: string };
 
@@ -357,67 +373,8 @@ function parseEngineTerminalControl(value: JsonValue | undefined): EngineTermina
 	return { kind: "autowrap", enabled: value.enabled };
 }
 
-const SESSION_PICKER_MESSAGE_COLORS = ["success", "warning", "accent", "error"] as const;
-
-function parseSessionPickerRow(value: JsonValue): HostSessionPickerRow | undefined {
-	if (!isJsonObject(value)) return undefined;
-	const {
-		path,
-		id,
-		cwd,
-		createdAt,
-		modifiedAt,
-		messageCount,
-		firstMessage,
-		summary,
-		allMessagesText,
-		name,
-		messageColor,
-	} = value;
-	if (
-		typeof path !== "string" ||
-		typeof id !== "string" ||
-		typeof cwd !== "string" ||
-		typeof createdAt !== "number" ||
-		typeof modifiedAt !== "number" ||
-		typeof messageCount !== "number" ||
-		typeof firstMessage !== "string"
-	)
-		return undefined;
-	if (summary !== undefined && typeof summary !== "string") return undefined;
-	if (allMessagesText !== undefined && typeof allMessagesText !== "string") return undefined;
-	if (name !== undefined && typeof name !== "string") return undefined;
-	if (
-		messageColor !== undefined &&
-		!SESSION_PICKER_MESSAGE_COLORS.includes(messageColor as (typeof SESSION_PICKER_MESSAGE_COLORS)[number])
-	)
-		return undefined;
-	return {
-		path,
-		id,
-		cwd,
-		createdAt,
-		modifiedAt,
-		messageCount,
-		firstMessage,
-		...(summary !== undefined ? { summary } : {}),
-		...(allMessagesText !== undefined ? { allMessagesText } : {}),
-		...(name !== undefined ? { name } : {}),
-		...(messageColor !== undefined
-			? { messageColor: messageColor as (typeof SESSION_PICKER_MESSAGE_COLORS)[number] }
-			: {}),
-	};
-}
-
 function parseSessionPickerRows(value: JsonValue | undefined): HostSessionPickerRow[] | undefined {
-	if (!Array.isArray(value)) return undefined;
-	const rows: HostSessionPickerRow[] = [];
-	for (const entry of value) {
-		const row = parseSessionPickerRow(entry);
-		if (!row) return undefined;
-		rows.push(row);
-	}
-	return rows;
+	return parseHostSessionPickerRows(value);
 }
 
 const INPUT_FORM_FIELD_TYPES = ["string", "text", "number", "integer", "boolean", "select"] as const;
@@ -450,6 +407,28 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 		});
 	}
 	return fields;
+}
+
+const TOOL_GROUP_FAMILIES: readonly ToolGroupFamily[] = ["read", "search", "find", "list", "bash"];
+
+function parseToolGroupRole(value: JsonValue | undefined): ToolGroupRole | undefined {
+	if (value === undefined || !isJsonObject(value)) return undefined;
+	if (value.kind === "standalone" || value.kind === "hidden") return { kind: value.kind };
+	if (value.kind !== "head" || !Array.isArray(value.clauses)) return undefined;
+	const clauses: { family: ToolGroupFamily; count: number }[] = [];
+	for (const clause of value.clauses) {
+		if (
+			!isJsonObject(clause) ||
+			typeof clause.count !== "number" ||
+			!Number.isInteger(clause.count) ||
+			clause.count < 1
+		)
+			return undefined;
+		const family = TOOL_GROUP_FAMILIES.find((candidate) => candidate === clause.family);
+		if (family === undefined) return undefined;
+		clauses.push({ family, count: clause.count });
+	}
+	return clauses.length > 0 ? { kind: "head", clauses } : undefined;
 }
 
 function parseStringRecord(value: JsonValue | undefined): Record<string, string> | undefined {
@@ -560,6 +539,16 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				},
 			};
 		}
+		case "engine_agent_panel_state":
+			return typeof value.total === "number" &&
+				Number.isSafeInteger(value.total) &&
+				value.total >= 0 &&
+				typeof value.needsInput === "number" &&
+				Number.isSafeInteger(value.needsInput) &&
+				value.needsInput >= 0 &&
+				value.needsInput <= value.total
+				? { type: value.type, total: value.total, needsInput: value.needsInput }
+				: undefined;
 		case "engine_workflow_activity": {
 			const frame = parseWorkflowActivityFrame(value.frame);
 			return frame ? { type: value.type, frame } : undefined;
@@ -667,12 +656,18 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 			const sessions = parseSessionPickerRows(value.sessions);
 			return typeof value.componentId === "string" &&
 				sessions &&
-				(value.showRenameHint === undefined || typeof value.showRenameHint === "boolean")
+				(value.showRenameHint === undefined || typeof value.showRenameHint === "boolean") &&
+				(value.title === undefined || typeof value.title === "string") &&
+				(value.variant === undefined || value.variant === "sessions" || value.variant === "runs") &&
+				(value.canDelete === undefined || typeof value.canDelete === "boolean")
 				? {
 						type: value.type,
 						componentId: value.componentId,
 						sessions,
 						...(typeof value.showRenameHint === "boolean" ? { showRenameHint: value.showRenameHint } : {}),
+						...(typeof value.title === "string" ? { title: value.title } : {}),
+						...(value.variant === "sessions" || value.variant === "runs" ? { variant: value.variant } : {}),
+						...(typeof value.canDelete === "boolean" ? { canDelete: value.canDelete } : {}),
 					}
 				: undefined;
 		}
@@ -684,7 +679,17 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		}
 		case "engine_session_picker_error":
 			return typeof value.componentId === "string" && typeof value.message === "string"
-				? { type: value.type, componentId: value.componentId, message: value.message }
+				? {
+						type: value.type,
+						componentId: value.componentId,
+						message: value.message,
+						...(typeof value.deletePath === "string" ? { deletePath: value.deletePath } : {}),
+						...(typeof value.deleteRequestId === "number" &&
+						Number.isSafeInteger(value.deleteRequestId) &&
+						value.deleteRequestId > 0
+							? { deleteRequestId: value.deleteRequestId }
+							: {}),
+					}
 				: undefined;
 		case "engine_session_picker_close":
 		case "engine_input_form_close":
@@ -773,7 +778,17 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		(value.type === "engine_session_picker_select" || value.type === "engine_session_picker_delete") &&
 		typeof value.path === "string"
 	) {
-		return { type: value.type, componentId: value.componentId, path: value.path };
+		return {
+			type: value.type,
+			componentId: value.componentId,
+			path: value.path,
+			...(value.type === "engine_session_picker_delete" &&
+			typeof value.deleteRequestId === "number" &&
+			Number.isSafeInteger(value.deleteRequestId) &&
+			value.deleteRequestId > 0
+				? { deleteRequestId: value.deleteRequestId }
+				: {}),
+		};
 	}
 	if (value.type === "engine_session_picker_cancel") return { type: value.type, componentId: value.componentId };
 	if (value.type === "engine_input_form_cancel") return { type: value.type, componentId: value.componentId };
@@ -794,12 +809,20 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		typeof value.showImages === "boolean" &&
 		typeof value.imageWidthCells === "number"
 	) {
+		if (
+			value.rendererTaskId !== undefined &&
+			(typeof value.rendererTaskId !== "string" ||
+				value.rendererTaskId.length === 0 ||
+				value.rendererTaskId.length > 256)
+		)
+			return undefined;
 		return {
 			type: value.type,
 			componentId: value.componentId,
 			requestId: value.requestId,
 			width: value.width,
 			toolName: value.toolName,
+			...(value.rendererTaskId === undefined ? {} : { rendererTaskId: value.rendererTaskId }),
 			toolCallId: value.toolCallId,
 			args: value.args,
 			result: isJsonObject(value.result) ? value.result : undefined,
@@ -810,6 +833,11 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			showImages: value.showImages,
 			imageWidthCells: value.imageWidthCells,
 			outputPad: typeof value.outputPad === "number" ? value.outputPad : undefined,
+			executionStartedAt:
+				typeof value.executionStartedAt === "number" && Number.isFinite(value.executionStartedAt)
+					? value.executionStartedAt
+					: undefined,
+			groupRole: parseToolGroupRole(value.groupRole),
 		};
 	}
 	if (

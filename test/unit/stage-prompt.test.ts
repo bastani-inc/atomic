@@ -98,6 +98,45 @@ describe("buildStagePromptAdapter", () => {
 		});
 	});
 
+	test("exact option values win over case and whitespace normalization (#5224)", () => {
+		for (const labels of [
+			["YES", "yes"],
+			["yes ", "yes"],
+		]) {
+			const adapter = buildStagePromptAdapter(
+				"p",
+				"ask_user_question",
+				{
+					questions: [{ question: "Choose", header: "Release", options: labels.map((label) => ({ label })) }],
+				},
+				1,
+			)!;
+			const result = adapter.buildResult({ text: labels[1]! }) as BuiltResult;
+			assert.equal(result.answers[0]?.answer, labels[1]);
+		}
+	});
+
+	test("exact option values stay distinct in a multi-select answer (#5224)", () => {
+		const labels = ["YES", "yes"];
+		const adapter = buildStagePromptAdapter(
+			"p",
+			"ask_user_question",
+			{
+				questions: [
+					{
+						question: "Choose",
+						header: "Release",
+						multiSelect: true,
+						options: labels.map((label) => ({ label })),
+					},
+				],
+			},
+			1,
+		)!;
+		const result = adapter.buildResult({ optionLabels: labels }) as BuiltResult;
+		assert.deepEqual(result.answers[0]?.selected, labels);
+	});
+
 	test("matches an option label case-insensitively → kind option", () => {
 		const adapter = buildStagePromptAdapter("p", "ask_user_question", COLOR_ARGS, 1)!;
 		const result = adapter.buildResult({ text: "blue" }) as BuiltResult;

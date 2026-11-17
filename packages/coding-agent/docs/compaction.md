@@ -49,15 +49,15 @@ SDK `prepareNextTurn` and `prepareNextTurnWithContext` callbacks receive the reb
 
 With the default `compactionModel`, compaction makes no model call. After the boundary the model sees the system prompt and one `Context cleared` message. The message tells the agent:
 
-- How many tokens the earlier conversation held, and that it is stored verbatim at `history://sessions/<session id>`, the exact URL of this session. It names the lines that hold the earlier conversation, the line the boundary starts on, and how many lines the history has.
+- How many tokens the earlier conversation held, and that it is stored verbatim at `history://sessions/<session id>`, the exact URL of this session. It names the saved entries that hold the earlier conversation, the boundary's entry position, and how many entries the history has.
 - What to recover, in order. First every `<keepContext>` span, verbatim and whole, found by searching the URL for `keepContext`. Then the user's objectives and latest requests, constraints and prohibitions, decisions and their reasons, identifiers such as branches, worktrees, pull requests, run ids, file paths and commands, open work, and tool results it still needs. It prefers the most recent records, because later requests replace earlier ones.
-- How to recover it. Search first, then read narrow ranges of about 200 lines with `read history://sessions/<id>:N-M`. A plain `history://sessions` search skips the current session, so the agent uses the exact URL. It copies what it needs verbatim. A tool result that shows `Full output saved to: <location>` or `Full output: <location>` kept its full output at that path or `tool-output://` or `artifact://` URL, which may have been cleaned up since.
+- How to recover it. Search first, then read narrow ranges of about 200 saved entries with `read history://sessions/<id>:N-M`. Ranges select entries, not rendered lines. Follow any continuation URL to finish a range or search. A plain `history://sessions` search skips the current session, so the agent uses the exact URL. It copies what it needs verbatim. A tool result that shows `Full output saved to: <location>` or `Full output: <location>` kept its full output at that path or `tool-output://` or `artifact://` URL, which may have been cleaned up since.
 - Your `/compact` instructions, if you gave any, and then to continue the task.
 
 The agent recovers with its own `read` and `search` tools in its next turn. An abbreviated example:
 
 ```text
-Context cleared. Your earlier conversation (182,340 tokens) is no longer in your context window. It is stored verbatim in this session's history at history://sessions/019f6a2e-…: lines 1-4210 hold the earlier conversation, this boundary starts at line 4211, and the history has 4232 lines now. Before you continue, recover what the task needs from there.
+Context cleared. Your earlier conversation (182,340 tokens) is no longer in your context window. It is stored verbatim in this session's history at history://sessions/019f6a2e-…: entries 1-4210 hold the earlier conversation, this boundary is entry 4211, and the history has 4211 entries now. Before you continue, recover what the task needs from there.
 
 Recover what you need, in this order:
 1. Every <keepContext> span, verbatim and whole: search history://sessions/019f6a2e-… for "keepContext". …
@@ -73,7 +73,7 @@ See [Recalling earlier work](/sessions#recalling-earlier-work) for how `history:
 
 ### Agents without read or search
 
-Some agents cannot read their history with their own tools, such as a subagent or workflow stage whose tool allowlist leaves out `read` or `search`. After its first clear, such an agent gets one read-only tool, `session_history`, and a resumed session gets it whenever its resumed tools leave out `read` or `search`. `{"pattern": "<regex>"}` searches its own session's history and `{"lines": "N-M"}` reads a range of it. The tool reaches no other session, workflow run, file or project, and the agent's other tools stay as they were.
+Some agents cannot read their history with their own tools, such as a subagent or workflow stage whose tool allowlist leaves out `read` or `search`. After its first clear, such an agent gets one read-only tool, `session_history`, and a resumed session gets it whenever its resumed tools leave out `read` or `search`. `{"pattern": "<regex>"}` searches its own session's history and `{"lines": "N-M"}` reads a saved-entry range of it, despite the parameter's name. To continue a bounded read, pass `{"lines": "<continuation URL>"}`. To continue a search, pass `{"pattern": "<same regex>", "lines": "<continuation URL>"}`. The tool reaches no other session, workflow run, file or project, and the agent's other tools stay as they were.
 
 ## Context compacted
 

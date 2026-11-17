@@ -24,10 +24,10 @@ const command: NoticeLineSpec = {
 
 test("a notice collapses to exactly one line, at 80 and at 160 columns", () => {
 	assert.deepEqual(plain(new NoticeLine(command).render(160)), [
-		'● Background command "Print six ticks spaced 30 seconds apart" completed (exit code 0) · 3m 2s',
+		' ● Background command "Print six ticks spaced 30 seconds apart" completed (exit code 0) · 3m 2s',
 	]);
 	assert.deepEqual(plain(new NoticeLine(command).render(80)), [
-		'● Background command "Print six ticks spaced 3…" completed (exit code 0) · 3m 2s',
+		' ● Background command "Print six ticks spaced …" completed (exit code 0) · 3m 2s',
 	]);
 	assert.equal(visibleWidth(plain(new NoticeLine(command).render(80))[0]!), 80);
 });
@@ -35,22 +35,22 @@ test("a notice collapses to exactly one line, at 80 and at 160 columns", () => {
 test("each status has its own marker and colour, so it reads without colour too", () => {
 	const markers = (["success", "failure", "stopped", "warning", "paused"] as const).map((status) => {
 		const [line] = new NoticeLine({ status, label: "Task", subject: "x", outcome: "ended" }).render(80);
-		return { glyph: stripVTControlCharacters(line!).slice(0, 1), line: line! };
+		return { glyph: stripVTControlCharacters(line!).slice(1, 2), line: line! };
 	});
 	assert.deepEqual(
 		markers.map((marker) => marker.glyph),
 		["●", "✗", "◼", "!", "⏸"],
 	);
-	assert.ok(markers[0]!.line.startsWith(theme.fg("success", "●")));
-	assert.ok(markers[1]!.line.startsWith(theme.fg("error", "✗")));
-	assert.ok(markers[2]!.line.startsWith(theme.fg("muted", "◼")));
-	assert.ok(markers[3]!.line.startsWith(theme.fg("warning", "!")));
-	assert.ok(markers[4]!.line.startsWith(theme.fg("muted", "⏸")));
+	assert.ok(markers[0]!.line.startsWith(` ${theme.fg("success", "●")}`));
+	assert.ok(markers[1]!.line.startsWith(` ${theme.fg("error", "✗")}`));
+	assert.ok(markers[2]!.line.startsWith(` ${theme.fg("muted", "◼")}`));
+	assert.ok(markers[3]!.line.startsWith(` ${theme.fg("warning", "!")}`));
+	assert.ok(markers[4]!.line.startsWith(` ${theme.fg("muted", "⏸")}`));
 });
 
 test("a narrow line shortens the quoted subject first and keeps how it ended", () => {
 	const [line] = plain(new NoticeLine(command).render(60));
-	assert.equal(line, '● Background command "Prin…" completed (exit code 0) · 3m 2s');
+	assert.equal(line, ' ● Background command "Pri…" completed (exit code 0) · 3m 2s');
 	assert.equal(visibleWidth(line!), 60);
 	for (const width of [1, 5, 20, 40]) {
 		const rendered = plain(new NoticeLine(command).render(width));
@@ -62,7 +62,7 @@ test("a narrow line shortens the quoted subject first and keeps how it ended", (
 test("expanding shows the detail under the line, and collapsing hides it again", () => {
 	const notice = new NoticeLine(command);
 	notice.setExpanded(true);
-	assert.deepEqual(plain(notice.render(80)).slice(1), ["  ⎿  tick 1", "     tick 2", "     tick 3"]);
+	assert.deepEqual(plain(notice.render(80)).slice(1), ["   ⎿  tick 1", "      tick 2", "      tick 3"]);
 	notice.setExpanded(false);
 	assert.equal(notice.render(80).length, 1);
 	assert.equal(new NoticeLine({ ...command, detail: undefined }, true).render(80).length, 1);
@@ -81,5 +81,5 @@ test("terminal controls and line breaks in what a task reports cannot break the 
 	const lines = notice.render(80);
 	assert.equal(lines.length, 2);
 	for (const line of lines) assert.doesNotMatch(stripVTControlCharacters(line), /[\u0000-\u001f]/);
-	assert.match(stripVTControlCharacters(lines[1]!), /^ {2}⎿ {2}out/);
+	assert.match(stripVTControlCharacters(lines[1]!), /^ {3}⎿ {2}out/);
 });

@@ -5,6 +5,7 @@ import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
+import { AtomicWorkedStatusComponent } from "./components/atomic-working-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactive-mode-deps.ts";
 import { clearChatForRerender } from "./interactive-render-chat.ts";
@@ -202,6 +203,11 @@ InteractiveModeBase.prototype.renderCurrentSessionState = function (this: Intera
 	this.pendingTools.clear();
 	if (!this.session.isStreaming) {
 		this.workingRunMeter.stop();
+		this.workingMessage = undefined;
+		this.lastWorkingMessage = undefined;
+		for (const child of [...this.statusContainer.children]) {
+			if (child instanceof AtomicWorkedStatusComponent) this.statusContainer.removeChild(child);
+		}
 	}
 	this.renderInitialMessages();
 };

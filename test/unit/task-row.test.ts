@@ -3,6 +3,7 @@ import { setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { TaskId, TaskRecord, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { taskDetailSummary } from "../../packages/coding-agent/src/modes/interactive/components/task-detail.js";
 import {
 	renderTaskFooter,
 	TaskList,
@@ -10,6 +11,8 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import {
 	TaskRow,
+	taskDuration,
+	taskMetricsText,
 	taskShortId,
 	taskStatusAppearance,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
@@ -126,7 +129,9 @@ test("groups retain all tasks, one expansion hint and separate inspector type or
 			["Agents", "Shells"],
 		);
 		assert.deepEqual(taskListSections(mixed)[0].tasks, [mixed[2], mixed[0]]);
-		assert.equal(plain(renderTaskFooter(tasks, 80)), "Tasks  6 local agents running · /tasks");
+		// Active tasks render as agent-panel rows: four, then the rest folded (#5224).
+		assert.equal(renderTaskFooter(tasks, 80).length, 5);
+		assert.equal(plain(renderTaskFooter(tasks, 80)).split("\n").at(-1), "  +2 more");
 		assert.deepEqual(renderTaskFooter([], 80), []);
 	} finally {
 		await fixture.dispose();
@@ -223,16 +228,13 @@ test("short labels distinguish shared ID suffixes and descriptions colliding at 
 	}
 });
 
-test("task footer colors current work and hides settled results without deleting them", () => {
+test("task footer rows color current work and hide settled results without deleting them (#5224)", () => {
 	for (const mode of ["dark", "light"] as const) {
 		initTheme(mode);
 		const task = taskRecord("footer-theme");
-		const assertColor = (color: "accent" | "warning") => {
-			const rows = renderTaskFooter([task], 80);
-			assert.equal(rows[0], theme.fg(color, plain(rows)));
-			assert.notEqual(rows[0], theme.fg("dim", plain(rows)));
-		};
-		assertColor("accent");
+		const glyph = (color: "accent" | "warning", text: string) =>
+			assert.ok((renderTaskFooter([task], 80)[0] ?? "").includes(theme.fg(color, text)));
+		assert.match(plain(renderTaskFooter([task], 80)), /^ {2}∀ agent/);
 		task.execution = { kind: "settled", result: { kind: "completed", output: task.output } };
 		assert.deepEqual(renderTaskFooter([task], 80), []);
 		task.execution = { kind: "settled", result: { kind: "failed", code: "Test", message: "Failure" } };
@@ -241,22 +243,50 @@ test("task footer colors current work and hides settled results without deleting
 		task.execution = { kind: "settled", result: { kind: "cancelled", cause: "user" } };
 		assert.deepEqual(renderTaskFooter([task], 80), []);
 		task.execution = { kind: "cancelling", cause: "user" };
-		assertColor("warning");
+		glyph("warning", "◼");
+		assert.match(plain(renderTaskFooter([task], 80)), /stopping$/);
 	}
 });
 
-test("task footer summarizes only active background tasks, not retained failures", () => {
+test("task footer lists only active background tasks, newest first, not retained failures (#5224)", () => {
 	const agent = taskRecord("agent");
 	const shell = { ...taskRecord("shell"), kind: "command" as const };
-	assert.equal(plain(renderTaskFooter([agent], 100)), "Tasks  1 local agent running · /tasks");
-	assert.equal(plain(renderTaskFooter([agent, agent], 100)), "Tasks  2 local agents running · /tasks");
-	assert.equal(plain(renderTaskFooter([shell], 100)), "Tasks  1 shell running · /tasks");
-	assert.equal(plain(renderTaskFooter([shell, shell], 100)), "Tasks  2 shells running · /tasks");
-	assert.equal(plain(renderTaskFooter([agent, shell], 100)), "Tasks  2 background tasks running · /tasks");
+	const rows = (tasks: Parameters<typeof renderTaskFooter>[0], width: number) =>
+		plain(renderTaskFooter(tasks, width))
+			.split("\n")
+			.map((line) => line.replace(/ {2,}/g, "  ").trimEnd());
+	assert.deepEqual(rows([agent], 100), ["  ∀ agent  Task agent  running"]);
+	assert.deepEqual(rows([agent, shell], 100), ["  ⧗ shell  Task shell  running", "  ∀ agent  Task agent  running"]);
 	const failure = taskRecord("failure");
 	failure.execution = { kind: "settled", result: { kind: "failed", code: "fixture", message: "Failed" } };
-	const rows = renderTaskFooter([agent, shell, failure], 60);
-	assert.equal(plain(rows), "Tasks  2 background tasks running · /tasks");
-	assert.equal(rows[0], theme.fg("accent", plain(rows)));
+	assert.deepEqual(rows([agent, shell, failure], 60), [
+		"  ⧗ shell  Task shell  running",
+		"  ∀ agent  Task agent  running",
+	]);
 	assert.deepEqual(renderTaskFooter([failure], 60), []);
+});
+
+test("taskDuration, taskMetricsText, taskDetailSummary and TaskRow use panel elapsed formatting (3m and 1h 6m, not 3m 12s or 66m 40s) (#5239)", () => {
+	assert.equal(taskDuration(192_000), "3m");
+	assert.equal(taskDuration(4_000_000), "1h 6m");
+	const threeMinTask: TaskRecord = {
+		...taskRecord("three-min"),
+		execution: { kind: "settled", result: { kind: "completed", output: taskRecord("three-min").output } },
+		metrics: { elapsedMs: 192_000, tokenCount: 1200, toolCount: 2 },
+	};
+	const hourTask: TaskRecord = {
+		...taskRecord("hour-six"),
+		execution: { kind: "settled", result: { kind: "completed", output: taskRecord("hour-six").output } },
+		metrics: { elapsedMs: 4_000_000 },
+	};
+	assert.equal(taskMetricsText(threeMinTask), "3m · 1,200 tokens · 2 tools");
+	assert.match(taskDetailSummary(threeMinTask), /\b3m\b/);
+	assert.doesNotMatch(taskDetailSummary(threeMinTask), /3m 12s/);
+	assert.equal(taskMetricsText(hourTask), "1h 6m");
+	assert.match(taskDetailSummary(hourTask), /\b1h 6m\b/);
+	assert.doesNotMatch(taskDetailSummary(hourTask), /66m 40s/);
+	assert.match(plain(new TaskRow(threeMinTask).render(80)), /· 3m\b/);
+	assert.doesNotMatch(plain(new TaskRow(threeMinTask).render(80)), /3m 12s/);
+	assert.match(plain(new TaskRow(hourTask).render(80)), /· 1h 6m\b/);
+	assert.doesNotMatch(plain(new TaskRow(hourTask).render(80)), /66m 40s/);
 });

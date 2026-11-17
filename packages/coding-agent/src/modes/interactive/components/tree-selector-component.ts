@@ -58,17 +58,17 @@ export class TreeSelectorComponent extends Container implements Focusable {
 
 		this.labelInputContainer = new Container();
 
+		const rule = () => new DynamicBorder((text) => theme.fg("borderMuted", text));
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold("  Session Tree"), 1, 0));
-		this.addChild(new TreeHelp());
+		this.addChild(rule());
+		this.addChild(new Text(theme.bold(theme.fg("text", "Session tree")), 1, 0));
 		this.addChild(this.searchLine);
-		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		this.addChild(this.treeContainer);
 		this.addChild(this.labelInputContainer);
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
+		this.addChild(new TreeHelp());
+		this.addChild(rule());
 
 		if (tree.length === 0) {
 			setTimeout(() => onCancel(), 100);

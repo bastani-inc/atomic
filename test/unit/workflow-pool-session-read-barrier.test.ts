@@ -88,7 +88,7 @@ const header = (id: string) => ({
 	version: 4 as const,
 	createdAt: new Date(0).toISOString(),
 	cwd: "/work",
-	workflow: { runId: RUN.id, stageId: STAGE.id },
+	workflow: { runId: RUN.id, stageId: STAGE.id, stageName: STAGE.name },
 });
 
 test("a session the attempt wrote is read only after the pool ships its writes, and one it did not is read at once (#4768)", async () => {
@@ -119,6 +119,32 @@ test("a session the attempt wrote is read only after the pool ships its writes, 
 	assert.deepEqual(pool.syncs, ["stage-session"]);
 	await pool.worker.readHeader("stage-session");
 	assert.deepEqual(pool.syncs, ["stage-session"], "once shipped, it is read without shipping again");
+});
+
+test("bounded history reads ship a pooled session's pending writes before reading its range (#5250)", async () => {
+	const pool = await shippingPool();
+	await pool.worker.create(header("stage-session"), []);
+	await pool.worker.append(
+		"stage-session",
+		[
+			{
+				type: "message",
+				id: "prompt",
+				parentId: null,
+				timestamp: new Date(0).toISOString(),
+				message: { role: "user", content: "prompt", timestamp: 0 },
+			},
+		],
+		{ expectSeq: 0 },
+	);
+	const page = await pool.worker.readEntryRange!("stage-session", { fromSeq: 1, toSeq: 1 });
+	assert.deepEqual(
+		page.entries.map(({ entry }) => entry.id),
+		["prompt"],
+	);
+	assert.deepEqual(pool.syncs, ["stage-session"]);
+	await pool.worker.readEntryRange!("stage-session", { fromSeq: 1, toSeq: 1 });
+	assert.deepEqual(pool.syncs, ["stage-session"], "a shipped session needs no second sync");
 });
 
 test("a blob of a session whose create the pool may not have shipped ships the create first, and only then (#4768)", async () => {

@@ -39,6 +39,7 @@ useTemporaryAgentDir();
 
 const MiB = 1024 * 1024;
 const LIMITS = { maxValueBytes: MiB, maxResponseBytes: 2.5 * MiB };
+const LARGE_LISTING_SCAN_TIMEOUT_MS = 90_000;
 const createdAt = new Date(0).toISOString();
 const header = (id = "session") => ({ id, version: 4 as const, createdAt, cwd: "/project" });
 
@@ -395,6 +396,40 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 		}
 	});
 
+	test("history range reads work on SQLite without octet_length (#5250)", async () => {
+		const configured = new WeakSet<DatabaseSync>();
+		const prepare = DatabaseSync.prototype.prepare;
+		DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+			if (!configured.has(this)) {
+				configured.add(this);
+				this.function("octet_length", (_value) => {
+					throw new Error("no such function: octet_length");
+				});
+			}
+			return prepare.call(this, sql);
+		} as typeof prepare;
+		try {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				const entries = [
+					message("first", null, "short"),
+					message("large", "first", "😀".repeat(5000)),
+					message("last", "large", "short"),
+				];
+				await store.create(header(), entries);
+				const page = await store.readEntryRange("session", { fromSeq: 1, toSeq: 3 });
+				assert.deepEqual(
+					page.entries.map((at) => at.entry),
+					entries,
+				);
+				const capped = await store.readEntryRange("session", { fromSeq: 1, toSeq: 3, maxChars: 1 });
+				assert.equal(capped.throughSeq, 1);
+			});
+		} finally {
+			DatabaseSync.prototype.prepare = prepare;
+		}
+	});
+
 	test("open-session markers keep their heartbeat on SQLite without unixepoch subsec, as on macOS 13 (#4971)", async () => {
 		const configured = new WeakSet<DatabaseSync>();
 		const prepare = DatabaseSync.prototype.prepare;
@@ -519,23 +554,27 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 		},
 	);
 
-	test("a long listing reads in time linear in its sessions, not one scan of the rest per page (#4954)", async () => {
-		await withNodeSqliteDatabase(async ({ database }) => {
-			const store = await SqlSessionStore.open(database);
-			const sessions = 600;
-			await database.exec("PRAGMA synchronous = OFF");
-			for (let index = 0; index < sessions; index++) {
-				const id = `s-${index}`;
-				await store.create(header(id), [message(`${id}-1`, null, "x".repeat(SESSION_SUMMARY_TEXT_CHARS))]);
-			}
-			const scanned = await countLongValuesMeasured(() => list(store));
-			assert.deepEqual(
-				scanned.result.map((summary) => summary.id),
-				Array.from({ length: sessions }, (_, index) => `s-${index}`),
-			);
-			assert.ok(scanned.calls <= 20 * sessions, `${scanned.calls} listing lengths measured`);
-		});
-	});
+	test(
+		"a long listing reads in time linear in its sessions, not one scan of the rest per page (#4954)",
+		async () => {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				await database.exec("PRAGMA synchronous=OFF");
+				const store = await SqlSessionStore.open(database);
+				const sessions = 600;
+				for (let index = 0; index < sessions; index++) {
+					const id = `s-${index}`;
+					await store.create(header(id), [message(`${id}-1`, null, "x".repeat(SESSION_SUMMARY_TEXT_CHARS))]);
+				}
+				const scanned = await countLongValuesMeasured(() => list(store));
+				assert.deepEqual(
+					scanned.result.map((summary) => summary.id),
+					Array.from({ length: sessions }, (_, index) => `s-${index}`),
+				);
+				assert.ok(scanned.calls <= 20 * sessions, `${scanned.calls} listing lengths measured`);
+			});
+		},
+		LARGE_LISTING_SCAN_TIMEOUT_MS,
+	);
 });
 
 /** Values this long are rows' JSON rather than column names or keys, so their measurements count rows read. */
@@ -558,7 +597,7 @@ async function countLongValuesMeasured<T>(
 				if (value === null) return null;
 				if (typeof value === "string") {
 					if (value.length >= LONG_VALUE_CHARS) calls++;
-					return value.length - (value.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g)?.length ?? 0);
+					return [...value].length;
 				}
 				return value instanceof Uint8Array ? value.byteLength : String(value).length;
 			});

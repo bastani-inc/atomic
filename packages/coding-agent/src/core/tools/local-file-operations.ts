@@ -1,6 +1,11 @@
 import { constants } from "fs";
 import { access, mkdir, readFile, writeFile } from "fs/promises";
 import { stripBom } from "../../utils/text.ts";
+import {
+	isBuiltinToolCallRenderer,
+	isBuiltinToolResultRenderer,
+	markBuiltinToolRenderers,
+} from "./builtin-renderers.js";
 import type { createEditToolDefinition, EditOperations } from "./edit.ts";
 import { normalizeToLF } from "./edit-diff.ts";
 import { isNotebookPath, readEditableNotebookText, serializeEditedNotebookText } from "./notebook.ts";
@@ -49,13 +54,16 @@ function withoutNotebookEdits<T extends EditCallArgs | undefined>(args: T): T {
  */
 export function withNotebookEditPreview(definition: EditToolDefinition): EditToolDefinition {
 	const { renderCall, renderResult } = definition;
-	return {
+	const wrapped: EditToolDefinition = {
 		...definition,
 		renderCall: (args, theme, context) =>
 			renderCall!(withoutNotebookEdits(args), theme, { ...context, args: withoutNotebookEdits(context.args) }),
 		renderResult: (result, options, theme, context) =>
 			renderResult!(result, options, theme, { ...context, args: withoutNotebookEdits(context.args) }),
 	};
+	if (isBuiltinToolCallRenderer(renderCall) && isBuiltinToolResultRenderer(renderResult))
+		markBuiltinToolRenderers(wrapped);
+	return wrapped;
 }
 
 /** Local filesystem operations behind Atomic's built-in `write`; every write drops the file from the scan cache. */

@@ -135,7 +135,7 @@ test("keeps the configured per-model thinking level marked while browsing", () =
 
 	// The cursor opens on "off"; the configured level is still the one carrying the marker, and
 	// every unmarked row is padded to the same column so the list stays aligned.
-	expect(rowFor("off").startsWith("→   ")).toBe(true);
+	expect(rowFor("off").startsWith("❯   ")).toBe(true);
 	expect(rowFor("medium · default").startsWith("  ✓ ")).toBe(true);
 	expect(rowFor("high").startsWith("    ")).toBe(true);
 	expect(rowFor("clear override").startsWith("    ")).toBe(true);
@@ -143,6 +143,6 @@ test("keeps the configured per-model thinking level marked while browsing", () =
 	// Browsing away must not move or drop the marker.
 	submenu.handleInput?.("\x1b[B");
 	expect(rowFor("off").startsWith("    ")).toBe(true);
-	expect(rowFor("minimal").startsWith("→   ")).toBe(true);
+	expect(rowFor("minimal").startsWith("❯   ")).toBe(true);
 	expect(rowFor("medium · default").startsWith("  ✓ ")).toBe(true);
 });

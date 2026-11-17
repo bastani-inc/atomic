@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import type { PendingRecoveryDelivery, Theme, ToolDefinition } from "@bastani/atomic";
-import { afterEach, test } from "vitest";
+import { initTheme, type PendingRecoveryDelivery, type Theme, type ToolDefinition } from "@bastani/atomic";
+import { stripTerminalSequences } from "@bastani/atomic-tui";
+import { afterEach, beforeAll, test } from "vitest";
 import { boundedReleaseReasons } from "../../packages/intercom/broker/restoring-recipients.js";
 import intercom from "../../packages/intercom/index.js";
 import { previewText } from "../../packages/intercom/intercom-utils.js";
@@ -10,6 +11,10 @@ import type { SessionInfo } from "../../packages/intercom/types.js";
 const EMOJI = "😀";
 const ORCHESTRATOR_TARGET_ENV = "ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET";
 const previousOrchestratorTarget = process.env[ORCHESTRATOR_TARGET_ENV];
+
+beforeAll(() => {
+	initTheme("dark", false);
+});
 
 afterEach(() => {
 	if (previousOrchestratorTarget === undefined) delete process.env[ORCHESTRATOR_TARGET_ENV];
@@ -59,7 +64,7 @@ function contactSupervisorCallLine(message: string): string {
 	const tool = tools.find((candidate) => candidate.name === "contact_supervisor");
 	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
 	const component = tool?.renderCall?.({ reason: "progress_update", message }, theme, {} as never);
-	return (component?.render(1_000) ?? []).map((line) => line.trimEnd()).join("\n");
+	return (component?.render(1_000) ?? []).map((line) => stripTerminalSequences(line).trim()).join("\n");
 }
 
 test("an Intercom message preview cuts before a split emoji (#5097)", () => {
@@ -92,11 +97,11 @@ test("the broker bounds a restoring child's release reasons without splitting an
 	});
 });
 
-test("a subagent's contact_supervisor call line cuts a long message before a split emoji (#5097)", () => {
-	assert.equal(contactSupervisorCallLine("m".repeat(96)), `contact_supervisor progress_update\n  ${"m".repeat(96)}`);
+test("a subagent's contact_supervisor call line omits the message preview on the header (#5097, #5350)", () => {
+	assert.equal(contactSupervisorCallLine("m".repeat(96)), "∀ Supervisor(progress update)");
 	assert.equal(
 		contactSupervisorCallLine(`${"m".repeat(92)}${EMOJI}${"m".repeat(3)}`),
-		`contact_supervisor progress_update\n  ${"m".repeat(92)}...`,
+		"∀ Supervisor(progress update)",
 	);
-	assert.equal(contactSupervisorCallLine("   "), "contact_supervisor progress_update");
+	assert.equal(contactSupervisorCallLine("   "), "∀ Supervisor(progress update)");
 });

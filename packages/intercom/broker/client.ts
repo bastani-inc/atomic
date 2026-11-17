@@ -183,6 +183,7 @@ export interface ExpectedRouting {
 export interface SendOptions {
   text: string;
   attachments?: Attachment[];
+  displayRanges?: readonly import("../types.js").MessageDisplayRange[];
   replyTo?: string;
   expectsReply?: boolean;
   /** How a busy recipient receives the message; absent means `steer`. */
@@ -2293,7 +2294,11 @@ export class IntercomClient extends EventEmitter {
       replyError: options.replyError,
       ...(options.broadcastId === undefined ? {} : { broadcastId: options.broadcastId }),
       source: this._messageSource,
-      content: { text: options.text, attachments: options.attachments },
+      content: {
+        text: options.text,
+        attachments: options.attachments,
+        ...(options.displayRanges === undefined ? {} : { displayRanges: options.displayRanges }),
+      },
     };
     if (options.onReplyTarget !== undefined) {
       this.pendingReplyTargets.set(acquired.attempt.attemptId, { messageId, bind: options.onReplyTarget });

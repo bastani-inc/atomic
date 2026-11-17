@@ -68,8 +68,22 @@ class ChildCommandTaskRoutes {
 		return this.deliveries.size;
 	}
 
-	forgetDelivery(completionId: string): void {
+	get launchCount(): number {
+		return this.launchedBy.size;
+	}
+
+	forgetDelivery(completionId: string, settledTaskId?: TaskId): void {
 		this.deliveries.delete(completionId);
+		if (settledTaskId === undefined) return;
+		const childId = this.launchedBy.get(settledTaskId);
+		if (childId === undefined) return;
+		this.launchedBy.delete(settledTaskId);
+		const running = this.running.get(childId);
+		running?.delete(settledTaskId);
+		if (running?.size !== 0) return;
+		this.running.delete(childId);
+		const route = this.routes.get(childId);
+		if (route !== undefined && this.releasedRoutes.has(route) && !this.kept.has(childId)) this.routes.delete(childId);
 	}
 
 	/** Notices kept for children that could not take them yet; counted by tests. */
@@ -202,8 +216,12 @@ export function childDeliveryCount(host: AgentTaskHost): number {
 	return routesByHost.get(host)?.deliveryCount ?? 0;
 }
 
-export function forgetChildDelivery(host: AgentTaskHost, completionId: string): void {
-	routesByHost.get(host)?.forgetDelivery(completionId);
+export function childLaunchCount(host: AgentTaskHost): number {
+	return routesByHost.get(host)?.launchCount ?? 0;
+}
+
+export function forgetChildDelivery(host: AgentTaskHost, completionId: string, settledTaskId?: TaskId): void {
+	routesByHost.get(host)?.forgetDelivery(completionId, settledTaskId);
 }
 
 /** How many completion notices wait in this host's owner for the child `childId` to take them. */
@@ -256,7 +274,9 @@ export function createChildCommandTaskOwner(
 				owner,
 				// The subagent's own `/tasks` lists the shells that name it.
 				parentTaskId: runningSubagentTask(host, childId),
-				ownsTask: (taskId) => routes.launchedByChild(taskId, childId),
+				ownsTask: (taskId) =>
+					routes.launchedByChild(taskId, childId) ||
+					host.taskRecords(new Set([taskId]))[0]?.launchedBy === childId,
 				onCommandStarted: (taskId) => routes.recordLaunch(taskId, childId),
 				launchOrigin: "subagent-child",
 				// The child's session, not the owner's, takes their notices and lists them.

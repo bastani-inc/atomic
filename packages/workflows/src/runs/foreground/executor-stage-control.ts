@@ -127,6 +127,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		pendingToolExecutionEvents() {
 			return toolExecutions.replayEvents();
 		},
+		inFlightAttemptUsage() {
+			return runtime.innerCtx.__inFlightAttemptUsage?.();
+		},
 		queuedUserMessages() {
 			return queuedUserMessages.snapshot();
 		},

@@ -73,6 +73,7 @@ export type TaskCompletionNotice = {
 	status: "completed" | "failed" | "cancelled";
 	taskId: string;
 	taskKind?: TaskRecord["kind"];
+	agentName?: string;
 	model?: string;
 	thinking?: string;
 	/** The model the launch asked for, when the task records one. */
@@ -162,6 +163,7 @@ export function taskCompletionNotice(
 		status: taskOutcomeStatus(envelope.result, task?.kind),
 		taskId: envelope.taskId,
 		...((task?.kind ?? envelope.taskKind) === undefined ? {} : { taskKind: task?.kind ?? envelope.taskKind }),
+		...(task?.kind === "agent" && task.agentName !== undefined ? { agentName: task.agentName } : {}),
 		...(task?.kind === "agent" && task.model !== undefined ? { model: task.model } : {}),
 		...(task?.kind === "agent" && task.thinking !== undefined ? { thinking: task.thinking } : {}),
 		...(task?.kind === "agent" && task.requestedModel !== undefined ? { requestedModel: task.requestedModel } : {}),

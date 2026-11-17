@@ -1,5 +1,5 @@
 import { mountStageCustomUi, type StageCustomUiRequest } from "../shared/stage-ui-broker.js";
-import { embedStageLabelInWidgetTopRule } from "./stage-chat-view-footer-status.js";
+import { embedCustomUiBackHint, embedStageLabelInWidgetTopRule } from "./stage-chat-view-footer-status.js";
 import { setComponentFocused } from "./stage-chat-view-render-helpers.js";
 import { currentStage } from "./stage-chat-view-state.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
@@ -74,9 +74,8 @@ export function renderCustomUi(ctx: StageChatViewContext, width: number): string
 	if (!component) return [];
 	setComponentFocused(component, ctx.focused);
 	const rendered = component.render(width);
-	// Case 2 of #2886: inject [stage: name] into the widget's top rule. A custom widget owns every key, including the
-	// back keys, so it carries no back-to-graph hint; Ctrl+C closes the workflow view.
-	return embedStageLabelInWidgetTopRule(ctx, currentStage(ctx)?.name, rendered, width);
+	const labeled = embedStageLabelInWidgetTopRule(ctx, currentStage(ctx)?.name, rendered, width);
+	return embedCustomUiBackHint(ctx, labeled, width);
 }
 
 export function hideMountedCustomUi(ctx: StageChatViewContext, request: StageCustomUiRequest): void {

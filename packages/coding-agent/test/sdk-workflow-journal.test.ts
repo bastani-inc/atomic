@@ -19,6 +19,7 @@ import type { Settings } from "../src/core/settings-types.js";
 import { StorageConfigError } from "../src/core/storage/errors.js";
 import { wrapNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 
 const REAL_SDK_WORKFLOW_TIMEOUT_MS = 120_000;
 const SESSIONS_PER_JOURNAL_KIND = 5;
@@ -39,6 +40,7 @@ beforeEach(() => {
 	root = mkdtempSync(join(tmpdir(), "atomic-sdk-workflow-journal-"));
 	mkdirSync(join(root, "project"), { recursive: true });
 	mkdirSync(join(root, "agent", "workflows"), { recursive: true });
+	linkSharedTranspileCache(join(root, "agent"));
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(root, "agent"));
 	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", "");
 	writeFileSync(
@@ -369,6 +371,7 @@ test(
 		const cwd = join(root, "project");
 		const agentDir = join(root, "tenant", "agent");
 		mkdirSync(agentDir, { recursive: true });
+		linkSharedTranspileCache(agentDir);
 		vi.stubEnv("ATOMIC_STORAGE", JSON.stringify({ path: "shared.sqlite" }));
 		const { session } = await createAgentSession({
 			cwd,

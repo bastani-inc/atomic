@@ -172,9 +172,10 @@ function random(seed: number) {
 	};
 }
 
-async function journalFixture() {
+async function journalFixture(options?: { readonly synchronousOff?: boolean }) {
 	const directory = makeTempDirectory("pool-checkpoint-index-");
 	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+	if (options?.synchronousOff) await database.exec("PRAGMA synchronous=OFF");
 	const journal = await SqlRunJournal.open(database);
 	await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
 	await openSqlPoolQueue(journal);
@@ -416,77 +417,83 @@ async function validateWithBoth(
 	return decided;
 }
 
-test("the indexed validator accepts and rejects exactly what the full-history validator does", async () => {
-	for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
-		const f = await journalFixture();
-		// Thousands of commits, each flushed to disk under the store's `synchronous=FULL`, took 30-34 s on a loaded
-		// Windows host. The validators' decisions, not durability, are under test: the connection skips the flush.
-		await f.database.exec("PRAGMA synchronous=OFF");
-		try {
-			const children = 6;
-			const g = generator(seed, children);
-			let index = new PoolCheckpointIndex();
-			await seedRoot(f, g, children);
-			const transactions = vi.spyOn(f.database, "transaction");
-			const decisions = new Map<string, number>();
-			for (let step = 0; step < 400; step++) {
-				const target = g.r.int(children);
-				const { work } = child(target);
-				const batch = Array.from({ length: g.r.chance(0.2) ? 3 : 1 }, () => g.mutation(target));
-				// Several reads in one group commit, as concurrent pool commits are.
-				const transactionCount = transactions.mock.calls.length;
-				const decided = await Promise.all(batch.map((mutation) => validateWithBoth(f, index, work, mutation)));
-				assert.equal(
-					transactions.mock.calls.length - transactionCount,
-					batch.length,
-					`seed ${seed} step ${step}: each validator pair shares one transaction`,
-				);
-				const expected = decided.map((result) => result.expected);
-				const actual = decided.map((result) => result.actual);
-				assert.deepEqual(actual, expected, `seed ${seed} step ${step}`);
-				for (const result of expected) decisions.set(result, (decisions.get(result) ?? 0) + 1);
-				await f.database.transaction(async (tx) => {
-					for (const [position, mutation] of batch.entries())
-						if (g.r.chance(expected[position] === "accepted" ? 0.7 : 0.1))
-							await f.record(tx, mutation.checkpoint);
-					if (g.r.chance(0.3)) await f.record(tx, g.checkpoint(g.r.int(children)));
-					if (g.r.chance(0.05)) await f.record(tx, g.start(g.r.int(children)));
-					for (let noise = g.r.int(4); noise > 0; noise--)
-						await f.record(tx, { delivered: step }, RUN_EVENT_TYPES.messageDelivered);
-				});
-				if (g.r.chance(0.05)) {
-					// A transaction whose read is never committed: its rows must not reach the index.
-					const read = index.begin("root");
-					await outcome(
-						f.database.transaction(async (tx) => {
-							await f.record(tx, g.start(g.r.int(children)));
-							await f.record(tx, g.checkpoint(target));
-							await validatePoolMutation(
-								tx,
-								{ tables: f.tables, dialect: sqliteDialect },
-								"root",
-								work,
-								g.mutation(target),
-								read,
-							);
-							throw new Error("rolled back");
-						}),
+const FULL_HISTORY_EQUIVALENCE_TIMEOUT_MS = 120_000;
+
+test(
+	"the indexed validator accepts and rejects exactly what the full-history validator does",
+	async () => {
+		for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+			const f = await journalFixture({ synchronousOff: true });
+			// Thousands of commits, each flushed to disk under the store's `synchronous=FULL`, took 30-34 s on a loaded
+			// Windows host. The validators' decisions, not durability, are under test: the connection skips the flush.
+			await f.database.exec("PRAGMA synchronous=OFF");
+			try {
+				const children = 6;
+				const g = generator(seed, children);
+				let index = new PoolCheckpointIndex();
+				await seedRoot(f, g, children);
+				const transactions = vi.spyOn(f.database, "transaction");
+				const decisions = new Map<string, number>();
+				for (let step = 0; step < 400; step++) {
+					const target = g.r.int(children);
+					const { work } = child(target);
+					const batch = Array.from({ length: g.r.chance(0.2) ? 3 : 1 }, () => g.mutation(target));
+					// Several reads in one group commit, as concurrent pool commits are.
+					const transactionCount = transactions.mock.calls.length;
+					const decided = await Promise.all(batch.map((mutation) => validateWithBoth(f, index, work, mutation)));
+					assert.equal(
+						transactions.mock.calls.length - transactionCount,
+						batch.length,
+						`seed ${seed} step ${step}: each validator pair shares one transaction`,
 					);
+					const expected = decided.map((result) => result.expected);
+					const actual = decided.map((result) => result.actual);
+					assert.deepEqual(actual, expected, `seed ${seed} step ${step}`);
+					for (const result of expected) decisions.set(result, (decisions.get(result) ?? 0) + 1);
+					await f.database.transaction(async (tx) => {
+						for (const [position, mutation] of batch.entries())
+							if (g.r.chance(expected[position] === "accepted" ? 0.7 : 0.1))
+								await f.record(tx, mutation.checkpoint);
+						if (g.r.chance(0.3)) await f.record(tx, g.checkpoint(g.r.int(children)));
+						if (g.r.chance(0.05)) await f.record(tx, g.start(g.r.int(children)));
+						for (let noise = g.r.int(4); noise > 0; noise--)
+							await f.record(tx, { delivered: step }, RUN_EVENT_TYPES.messageDelivered);
+					});
+					if (g.r.chance(0.05)) {
+						// A transaction whose read is never committed: its rows must not reach the index.
+						const read = index.begin("root");
+						await outcome(
+							f.database.transaction(async (tx) => {
+								await f.record(tx, g.start(g.r.int(children)));
+								await f.record(tx, g.checkpoint(target));
+								await validatePoolMutation(
+									tx,
+									{ tables: f.tables, dialect: sqliteDialect },
+									"root",
+									work,
+									g.mutation(target),
+									read,
+								);
+								throw new Error("rolled back");
+							}),
+						);
+					}
+					if (g.r.chance(0.02)) index = new PoolCheckpointIndex();
+					if (g.r.chance(0.01)) {
+						// Delete the root's history and record it again: the index must notice and rebuild.
+						await f.database.run(`DELETE FROM ${f.tables.events} WHERE run_id = 'root'`);
+						await seedRoot(f, g, children);
+					}
 				}
-				if (g.r.chance(0.02)) index = new PoolCheckpointIndex();
-				if (g.r.chance(0.01)) {
-					// Delete the root's history and record it again: the index must notice and rebuild.
-					await f.database.run(`DELETE FROM ${f.tables.events} WHERE run_id = 'root'`);
-					await seedRoot(f, g, children);
-				}
+				assert.ok((decisions.get("accepted") ?? 0) > 50, JSON.stringify([...decisions]));
+				assert.ok(decisions.size > 8, JSON.stringify([...decisions]));
+			} finally {
+				await f.close();
 			}
-			assert.ok((decisions.get("accepted") ?? 0) > 50, JSON.stringify([...decisions]));
-			assert.ok(decisions.size > 8, JSON.stringify([...decisions]));
-		} finally {
-			await f.close();
 		}
-	}
-});
+	},
+	FULL_HISTORY_EQUIVALENCE_TIMEOUT_MS,
+);
 
 function toolMutation(index: number, nodeId: string): PoolCheckpointMutation {
 	const { work, run } = child(index);

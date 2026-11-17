@@ -45,7 +45,7 @@ A successful run appends a `type:"compaction"` entry:
     "parameters": {"query": "fix the failing test"},
     "stats": {"linesBefore": 812, "linesDeleted": 812, "linesKept": 0, "rangeCount": 0, "tokensBefore": 51234, "tokensAfter": 2210, "percentReduction": 95.7},
     "form": "cleared",
-    "history": {"sessionId": "019f6a2e-…", "linesBefore": 4210, "boundaryLine": 4211, "totalLines": 4232}
+    "history": {"sessionId": "019f6a2e-…", "rangeUnit": "entries", "entriesBefore": 4210, "boundaryEntry": 4211, "totalEntries": 4211}
   }
 }
 ```
@@ -61,7 +61,7 @@ A successful run appends a `type:"compaction"` entry:
 | `details.backend` | `compactor` or `extension`; present only on a `compacted` boundary |
 | `details.model` | The compactor as `provider/model`, when one produced the text |
 | `details.fallbackReason` | Why the configured compactor was not used and the context was cleared instead |
-| `details.history` | Where the boundary sits in `history://sessions/<sessionId>`: `linesBefore` is the last line of the earlier conversation, `boundaryLine` the boundary's first line, and `totalLines` the history's length right after the boundary was written |
+| `details.history` | Where the boundary sits in `history://sessions/<sessionId>`: `rangeUnit` is `"entries"`, `entriesBefore` is the last saved position before the boundary, `boundaryEntry` is the boundary's saved position, and `totalEntries` is the history's entry count right after the boundary was written |
 | `details.historyAccess` | How the boundary told the agent to reach its history: `read-search` (its own `read` and `search` tools) or `session-history-tool`. A resumed session after a boundary gets `session_history` whenever its resumed tools leave out `read` or `search` |
 | `details.stats` | Heuristic estimates. `tokensAfter` counts the system prompt and the boundary message. `linesBefore` counts the serialized lines of the replaced context and `linesKept` the lines of compacted text, `0` on a clear. `rangeCount` is always `0` |
 | `details.backupPath` | The pre-compaction backup, when it could be written |
@@ -91,7 +91,7 @@ pi.on("session_before_compact", async (event) => {
 
 `preparation` is a deep-frozen clone. `preparation.region.lines` holds everything in context since the last boundary, serialized as role-tagged lines (`[User]: `, `[Assistant]: `, `[Assistant tool calls]: `, `[Tool result]: `), with the previous boundary's text first. Nothing in it is protected: `firstKeptEntryId` is `null` and `keptTailMessageCount` is `0`. `parameters.query` is the `/compact` instructions or the latest user request.
 
-Returning `{ cancel: true }` cancels the compaction. Returning `compactedText` writes a `Context compacted` boundary without calling the configured compactor: the model sees the text in a `<compacted-context>` block, followed by the recovery instructions. Empty or whitespace text is no replacement; the configured form runs as if the handler had returned nothing. A replacement needs no provider credentials. The hook runs before any compactor request and receives the compaction's abort signal.
+Returning `{ cancel: true }` cancels the compaction. Returning `compactedText` writes a `Context compacted` boundary without calling the configured compactor: the model sees the text in a `<compacted-context>` block, followed by the recovery instructions. Empty or whitespace text is no replacement; the configured form runs as if the handler had returned nothing. Text over the compactor's output limit, or that would not fit below the automatic trigger together with the system prompt and the recovery instructions, is refused like a compactor's: the context is cleared instead, with the fallback reason `extension failed: output too long (…)`. A replacement needs no provider credentials. The hook runs before any compactor request and receives the compaction's abort signal.
 
 ### `session_compact`
 
@@ -101,7 +101,7 @@ After the boundary is saved, Atomic emits an observe-only event:
 pi.on("session_compact", async (event) => {
   console.log(event.result.form, event.result.backend, event.result.model); // "cleared" | "compacted"
   console.log(event.result.fallbackReason);    // set when a configured compactor was not used
-  console.log(event.result.history);           // { sessionId, linesBefore, boundaryLine, totalLines }
+  console.log(event.result.history);           // { sessionId, rangeUnit: "entries", entriesBefore, boundaryEntry, totalEntries }
   console.log(event.compactionEntry.details.strategy); // "verbatim-lines"
   console.log(event.fromExtension);
 });
@@ -128,7 +128,7 @@ pi.on("session_compact_failed", async (event) => {
 
 | Export | Use |
 |---|---|
-| `buildBoundaryText(input, totalLines)` | The boundary message for a session, its history location, and optional instructions or compacted text |
+| `buildBoundaryText(input, totalEntries)` | The boundary message for a session, its history location, and optional instructions or compacted text |
 | `buildCompactorMessages(messages, isBoundary)` | Frame a context's messages the way the compactor receives them |
 | `requestCompactorOutput(request)` | Send one `CompactorRequest` to a compactor endpoint; resolves with `{ text, usage? }` and throws `CompactorFailure` with the reason on any failure |
 | `resolveCompactionModel(configured, models)` | Resolve a `compactionModel` value to a `CompactionModelSelection`: `auto`, with the reason a chat, classifier or unknown value was ignored, or a compactor |

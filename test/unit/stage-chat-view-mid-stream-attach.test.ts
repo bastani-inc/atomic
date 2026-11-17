@@ -140,8 +140,11 @@ test("stage task snapshot reattaches beyond launch-tool replay", async () => {
 	let view = mountStageChat(handle);
 	try {
 		await fixture.start("survives pane detach");
-		assert.match(stripAnsi(view.render(80).join("\n")), /Tasks {2}1 local agent running/);
-		assert.doesNotMatch(stripAnsi(view.render(80).join("\n")), /survives pane detach/);
+		assert.match(
+			stripAnsi(view.render(80).join("\n")),
+			/∀ worker {2}survives pane detach/,
+			"its row lists it (#5224)",
+		);
 		view.dispose();
 		fixture.store.dispose();
 		taskValue(
@@ -152,10 +155,11 @@ test("stage task snapshot reattaches beyond launch-tool replay", async () => {
 		);
 		taskValue(fixture.store.connect());
 		view = mountStageChat(handle);
-		assert.match(stripAnsi(view.render(80).join("\n")), /Tasks {2}1 local agent running/);
+		assert.match(stripAnsi(view.render(80).join("\n")), /∀ worker {2}/);
 		submitStageChatText(view, "/tasks");
 		await vi.waitFor(() => assert.match(stripAnsi(view.render(80).join("\n")), /survives pane detach/));
 		view.handleInput(" ");
+		view.handleInput("\r");
 		await vi.waitFor(() => assert.match(stripAnsi(view.render(80).join("\n")), /updated while detached/));
 		await fixture.settle();
 		assert.match(stripAnsi(view.render(80).join("\n")), /completed/i);

@@ -93,12 +93,12 @@ test("keeps the configured fixed theme marked while browsing", () => {
 
 	let output = render(submenu);
 	expect(output).toContain("  Automatic");
-	expect(output).toContain("→ ✓ dark");
+	expect(output).toContain("❯ ✓ dark");
 
 	submenu.handleInput?.("\x1b[B");
 	output = render(submenu);
 	expect(output).toContain("  ✓ dark");
-	expect(output).toContain("→   light");
+	expect(output).toContain("❯   light");
 });
 
 test("keeps a configured automatic theme marked while browsing", () => {
@@ -115,12 +115,12 @@ test("keeps a configured automatic theme marked while browsing", () => {
 	// picker, whose configured value is "light".
 	submenu.handleInput?.("\r");
 	let output = render(submenu);
-	expect(output).toContain("→ ✓ light");
+	expect(output).toContain("❯ ✓ light");
 
 	submenu.handleInput?.("\x1b[B");
 	output = render(submenu);
 	expect(output).toContain("  ✓ light");
-	expect(output).toContain("→   other");
+	expect(output).toContain("❯   other");
 });
 
 function openRouterSubmenu(
@@ -159,7 +159,7 @@ test("router settings list registered classifiers and use the current chat model
 	expect(config.availableDefaultModels).toEqual([]);
 
 	const reopened = openRouterSubmenu(config, changed);
-	expect(render(reopened)).toContain("→ ✓ judge/custom");
+	expect(render(reopened)).toContain("❯ ✓ judge/custom");
 	reopened.handleInput?.("\x1b[A");
 	reopened.handleInput?.("\r");
 	expect(changed).toHaveBeenLastCalledWith("");
@@ -195,7 +195,7 @@ test("router settings search exact provider/model IDs without changing chat defa
 	const changed = vi.fn();
 	const submenu = openRouterSubmenu(config, changed);
 	for (const character of "nested") submenu.handleInput?.(character);
-	expect(render(submenu)).toContain("→   test/nested/model");
+	expect(render(submenu)).toContain("❯   test/nested/model");
 	expect(changed).not.toHaveBeenCalled();
 	submenu.handleInput?.("\r");
 	expect(changed).toHaveBeenCalledExactlyOnceWith("test/nested/model");
@@ -208,7 +208,7 @@ test("router settings preserve an unavailable selection and cancellation does no
 	const changed = vi.fn();
 	const done = vi.fn();
 	const submenu = openRouterSubmenu(config, changed, done);
-	expect(render(submenu)).toContain("→ ✓ missing/model");
+	expect(render(submenu)).toContain("❯ ✓ missing/model");
 	expect(render(submenu)).toContain("not currently available");
 	submenu.handleInput?.("\x1b");
 	expect(changed).not.toHaveBeenCalled();
@@ -226,7 +226,7 @@ test("router picker marks an unavailable classifier ID and excludes non-chat exe
 	});
 	const menu = openRouterSubmenu(config, vi.fn());
 	const output = render(menu);
-	expect(output).toContain("→ ✓ typesafe-ai/jev-latest");
+	expect(output).toContain("❯ ✓ typesafe-ai/jev-latest");
 	expect(output).toContain("Configured model is not currently available");
 	expect(output).not.toContain("gallery/paint");
 	expect(output).not.toContain("judge/jev");
@@ -274,7 +274,7 @@ test("decision model setter accepts auto and rejects malformed IDs with a typed 
 	manager.setDecisionModel("auto");
 	expect(manager.getDecisionModel()).toBe("auto");
 	const submenu = openRouterSubmenu(settingsConfig({ decisionModel: manager.getDecisionModel() }), vi.fn());
-	expect(render(submenu)).toContain("→ ✓ Automatic");
+	expect(render(submenu)).toContain("❯ ✓ Automatic");
 });
 
 test("router menu edits the project override including Automatic without changing global defaults", async () => {
@@ -509,7 +509,7 @@ test("/settings shows the decision model, its scope and what Automatic means (#4
 	assert.ok(shown.includes("Decision model"));
 	assert.ok(shown.includes("Saves to project settings. Choose a provider permitted to receive decision context."));
 	assert.ok(shown.includes("Automatic saves an empty decisionModel."));
-	assert.ok(shown.includes("→ ✓ Automatic"));
+	assert.ok(shown.includes("❯ ✓ Automatic"));
 	submenu.handleInput?.("\r");
 	assert.ok(done.mock.calls.some((args: unknown[]) => args.length === 1 && args[0] === "Automatic"));
 	assert.equal(projectConfig.decisionModel, "");
@@ -540,7 +540,7 @@ test("an unset decision model opens on Automatic and the submenu names the globa
 	const config = settingsConfig({ decisionModel: undefined, availableDefaultModels: [] });
 	const item = buildSettingsItems(config, {} as SettingsCallbacks).find(({ id }) => id === "decision-model");
 	const shown = render(item!.submenu!(item!.currentValue, vi.fn()) as Container);
-	assert.ok(shown.includes("→ ✓ Automatic"));
+	assert.ok(shown.includes("❯ ✓ Automatic"));
 	assert.ok(!shown.includes("not currently available"));
 	assert.ok(shown.includes("Saves to global settings. Choose a provider permitted to receive decision context."));
 });

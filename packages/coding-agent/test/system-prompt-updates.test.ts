@@ -22,6 +22,7 @@ import {
 	diffSystemPromptSections,
 } from "../src/core/system-prompt.js";
 import type { ExtensionFactory } from "../src/index.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 import { createHarness } from "./suite/harness.js";
 
 describe("system prompt updates", () => {
@@ -101,6 +102,7 @@ describe("system prompt updates", () => {
 
 	test("opens a transcript without a system message and declares the prompt on the first request", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-system-prompt-migration-"));
+		linkSharedTranspileCache(join(tempDir, "agent"));
 		try {
 			const sessionManager = SessionManager.inMemory(tempDir);
 			await sessionManager.appendMessage({ role: "user", content: "existing", timestamp: 1 });

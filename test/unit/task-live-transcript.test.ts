@@ -163,13 +163,13 @@ test("live transcript keeps earlier pages and scroll position while new state ar
 		const beforeLines = before.split("\n");
 		const pillIndex = beforeLines.findIndex((line) => line.includes("↓ jump to bottom · ctrl+end"));
 		assert.notEqual(pillIndex, -1);
-		assert.equal(beforeLines[pillIndex]?.trim(), "↓ jump to bottom · ctrl+end");
+		assert.equal(beforeLines[pillIndex]?.trim(), "╭─ ↓ jump to bottom · ctrl+end ─╮");
 		listener?.({ type: "message_start", message: assistant("New live response") });
 		const after = text();
 		assert.match(after, /HISTORY-000/);
 		const afterLines = after.split("\n");
 		assert.equal(afterLines.length, beforeLines.length);
-		assert.equal(afterLines[pillIndex]?.trim(), "↓ 1 new message · ctrl+end");
+		assert.equal(afterLines[pillIndex]?.trim(), "╭─ ↓ 1 new message · ctrl+end ─╮");
 		assert.deepEqual(
 			afterLines.filter((_, index) => index !== pillIndex),
 			beforeLines.filter((_, index) => index !== pillIndex),

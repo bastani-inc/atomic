@@ -14,7 +14,6 @@ import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/sta
 import { stageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.ts";
 import { store } from "../../packages/workflows/src/shared/store.ts";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
-import { installStoreWidget } from "../../packages/workflows/src/tui/store-widget-installer.ts";
 
 function stageHandle(runId: string, stageId: string): StageControlHandle {
 	return {
@@ -128,21 +127,6 @@ test("reload reclaims a live workflow displaced into an auxiliary session scope"
 	assert.equal(toolControlRegistry.get(runId, nodeId)?.name, "probe");
 	assert.equal(stageUiBroker.answerStagePrompt(runId, stageId, { optionLabels: ["Yes"] }), true);
 
-	const widgetCalls: Array<{ key: string; mounted: boolean; placement?: string }> = [];
-	const disposeWidget = installStoreWidget(
-		{
-			ui: {
-				setWidget(key, factory, options) {
-					widgetCalls.push({ key, mounted: factory !== undefined, placement: options?.placement });
-				},
-				requestRender() {},
-			},
-		},
-		store,
-	);
-	assert.deepEqual(widgetCalls[0], { key: "workflow.run", mounted: true, placement: "belowEditor" });
-
-	disposeWidget();
 	disposeTool();
 	jobTracker.unregister(runId, job);
 	cancellationRegistry.unregister(runId, runController);

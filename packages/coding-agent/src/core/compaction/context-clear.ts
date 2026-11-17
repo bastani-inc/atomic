@@ -1,4 +1,3 @@
-import { textLines } from "../tools/history-transcript.ts";
 import type { CompactionHistoryLocation, HistoryAccess } from "./compaction-types.js";
 
 /** The tool a restricted agent gets after a clear to search and read its own session's history. */
@@ -9,8 +8,7 @@ export type { HistoryAccess } from "./compaction-types.js";
 export interface BoundaryTextInput {
 	readonly sessionId: string;
 	readonly tokensBefore: number;
-	/** The last line of the earlier conversation in `history://sessions/<sessionId>`. */
-	readonly linesBefore: number;
+	readonly entriesBefore: number;
 	readonly access: HistoryAccess;
 	/** The `/compact` instructions, when the user gave any. */
 	readonly instructions?: string;
@@ -27,10 +25,10 @@ function howToRecover(input: BoundaryTextInput): string[] {
 	const access =
 		input.access === "read-search"
 			? [
-					`- Search first: use \`search\` with paths "${url}" (a plain "history://sessions" search skips this session). Then read narrow ranges with \`read ${url}:N-M\`, about 200 lines at a time.`,
+					`- Search first: use \`search\` with paths "${url}" (a plain "history://sessions" search skips this session). Then read narrow ranges with \`read ${url}:N-M\`, about 200 entries at a time. Follow any continuation URL to finish the selected range or search.`,
 				]
 			: [
-					`- Use the \`${SESSION_HISTORY_TOOL_NAME}\` tool, which reaches only ${url}: search first with {"pattern": "<regex>"}, then read narrow ranges with {"lines": "N-M"}, about 200 lines at a time.`,
+					`- Use the \`${SESSION_HISTORY_TOOL_NAME}\` tool, which reaches only ${url}: search first with {"pattern": "<regex>"}, then read narrow ranges with {"lines": "N-M"}, about 200 entries at a time.`,
 				];
 	return [
 		"How to recover:",
@@ -54,10 +52,10 @@ function whatToRecover(input: BoundaryTextInput): string[] {
  * The whole boundary message the model sees after a clear or a compaction: what happened, where the earlier
  * conversation is, what to recover from it first and how, any `/compact` instructions, then "continue".
  */
-export function buildBoundaryText(input: BoundaryTextInput, totalLines: number): string {
+export function buildBoundaryText(input: BoundaryTextInput, totalEntries: number): string {
 	const url = historyUrl(input.sessionId);
 	const tokens = input.tokensBefore.toLocaleString("en-US");
-	const location = `It is stored verbatim in this session's history at ${url}: lines 1-${input.linesBefore} hold the earlier conversation, this boundary starts at line ${input.linesBefore + 1}, and the history has ${totalLines} lines now.`;
+	const location = `It is stored verbatim in this session's history at ${url}: entries 1-${input.entriesBefore} hold the earlier conversation, this boundary is entry ${input.entriesBefore + 1}, and the history has ${totalEntries} entries now.`;
 	const sections: string[][] = input.compacted
 		? [
 				[
@@ -80,34 +78,19 @@ export function buildBoundaryText(input: BoundaryTextInput, totalLines: number):
 	return sections.map((lines) => lines.join("\n")).join("\n\n");
 }
 
-/** Lines the boundary entry occupies in the history view: its heading plus its text. */
-function boundaryEntryLineCount(text: string): number {
-	return 1 + textLines(text).length;
-}
-
-/**
- * Build the boundary text with the history's line count right after the boundary is written. The count depends on
- * the text, which states the count, so it is recomputed until it is stable (one extra pass at most in practice).
- */
 export function buildBoundaryTextWithLocation(input: BoundaryTextInput): {
 	text: string;
 	history: CompactionHistoryLocation;
 } {
-	let totalLines = input.linesBefore + boundaryEntryLineCount(buildBoundaryText(input, input.linesBefore + 1));
-	let text = buildBoundaryText(input, totalLines);
-	for (let pass = 0; pass < 3; pass++) {
-		const counted = input.linesBefore + boundaryEntryLineCount(text);
-		if (counted === totalLines) break;
-		totalLines = counted;
-		text = buildBoundaryText(input, totalLines);
-	}
+	const boundaryEntry = input.entriesBefore + 1;
 	return {
-		text,
+		text: buildBoundaryText(input, boundaryEntry),
 		history: {
 			sessionId: input.sessionId,
-			linesBefore: input.linesBefore,
-			boundaryLine: input.linesBefore + 1,
-			totalLines,
+			rangeUnit: "entries",
+			entriesBefore: input.entriesBefore,
+			boundaryEntry,
+			totalEntries: boundaryEntry,
 		},
 	};
 }

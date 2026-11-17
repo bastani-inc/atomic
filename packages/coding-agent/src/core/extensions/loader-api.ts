@@ -8,6 +8,7 @@ import { getNativeMcpToolIdentity, markNativeMcpToolDefinition } from "../mcp-ch
 import type { McpServerConfig, McpServerContribution } from "../mcp-servers.ts";
 import { lifecycleScopeForOwner } from "../session-lifecycle-scope.ts";
 import { drainSessionWork, hasCallingSessionWork, trackSessionWork } from "../session-lifecycle-work.ts";
+import type { AgentPanelSource } from "../tasks/agent-panel-source.ts";
 import {
 	assertExtensionAction,
 	extensionWorkOpen,
@@ -197,6 +198,11 @@ export function createExtensionAPI(
 			assertActive();
 			const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
 			return { ...publisher, dispose: trackRelease(() => publisher.dispose()) };
+		},
+		registerAgentPanelSource(source: AgentPanelSource) {
+			assertActive();
+			const registration = runtime.agentPanelSourceHub.register(source);
+			return { dispose: trackRelease(() => registration.dispose()) };
 		},
 		registerWorkflowRunControl(control: WorkflowRunControl) {
 			assertActive();

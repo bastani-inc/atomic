@@ -30,6 +30,7 @@ type ManagedToolsThis = {
 	lastStatusSpacer: Spacer | undefined;
 	lastStatusText: Text | undefined;
 	chatContainer: Container;
+	statusContainer: Container;
 	ui: { requestRender: ReturnType<typeof vi.fn> };
 	setupAutocompleteProvider: ReturnType<typeof vi.fn>;
 	showManagedToolStatus: (status: ToolStatus) => void;
@@ -65,6 +66,7 @@ function createMode(): ManagedToolsThis {
 		lastStatusSpacer: undefined,
 		lastStatusText: undefined,
 		chatContainer: new Container(),
+		statusContainer: new Container(),
 		ui: { requestRender: vi.fn() },
 		setupAutocompleteProvider: vi.fn(),
 		showManagedToolStatus: undefined as never,

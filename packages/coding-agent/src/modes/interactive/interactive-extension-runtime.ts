@@ -260,11 +260,15 @@ InteractiveModeBase.prototype.clearExtensionWidgets = function (this: Interactiv
 
 InteractiveModeBase.prototype.resetExtensionUI = function (this: InteractiveModeBase): void {
 	if (this.extensionDialogs.length > 0) {
-		for (const dialog of this.extensionDialogs) {
-			dialog.component.dispose?.();
-		}
+		const dropped = this.extensionDialogs;
 		this.extensionDialogs = [];
+		for (const dialog of dropped) {
+			try {
+				dialog.component.dispose?.();
+			} catch {}
+		}
 		this.showTopExtensionDialog();
+		for (const dialog of dropped) dialog.release?.();
 	}
 	// Reload and session switches replace every extension without calling done(): remove their overlays,
 	// newest first, the same way done() does, but leave the promises pending as for inline dialogs.

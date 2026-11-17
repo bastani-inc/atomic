@@ -9,8 +9,10 @@
  *   { id, title, tags, status, created_at, assigned_to_session }
  * - After the JSON block comes optional markdown body text separated by a blank line.
  */
+
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { executeTodoToolAction } from "./todos-execute.ts";
 import { getTodosDirLabel } from "./todos-paths.ts";
 import { renderTodoCall, renderTodoResult } from "./todos-render.ts";
@@ -27,7 +29,7 @@ export function createTodoToolDefinition(
 ): ToolDefinition<typeof TodoParams, TodoToolDetails> {
 	const todosDirLabel = getTodosDirLabel(cwd);
 
-	return {
+	return withBuiltinToolBlockRenderers<ToolDefinition<typeof TodoParams, TodoToolDetails>>({
 		name: "todo",
 		concurrency: "exclusive",
 		label: "Todo",
@@ -42,5 +44,5 @@ export function createTodoToolDefinition(
 		execute: (_toolCallId, params, _signal, _onUpdate, ctx) => executeTodoToolAction(params, ctx),
 		renderCall: renderTodoCall,
 		renderResult: renderTodoResult,
-	};
+	});
 }

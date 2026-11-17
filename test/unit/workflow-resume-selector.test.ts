@@ -14,7 +14,11 @@ import { describe, test } from "vitest";
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
-import { workflowResumeSelectorItems } from "../../packages/workflows/src/tui/workflow-resume-selector.js";
+import {
+	toWorkflowPickerRow,
+	workflowResumeSelectorItems,
+} from "../../packages/workflows/src/tui/workflow-resume-selector.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 function entry(
 	id: string,
@@ -69,10 +73,24 @@ describe("workflow resume selector rows", () => {
 				...pausedLiveRun(runId),
 				result: { transcript_path: join(root, "runs", runId, "transcripts", "stage.md") },
 			};
-			const items = workflowResumeSelectorItems([run], [entry(runId, "paused")], [entry(runId, "completed")]);
+			const items = workflowResumeSelectorItems(
+				[run],
+				[entry(runId, "paused")],
+				[entry(runId, "completed")],
+				undefined,
+				undefined,
+				undefined,
+				{
+					includeCompletedWithoutResumable: true,
+				},
+			);
 			assert.deepEqual(
 				items.map((item) => item.result.kind),
 				["completed"],
+			);
+			assert.deepEqual(
+				workflowResumeSelectorItems([run], [entry(runId, "paused")], [entry(runId, "completed")]),
+				[],
 			);
 		} finally {
 			if (previousRoot === undefined) delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
@@ -88,12 +106,23 @@ describe("workflow resume selector rows", () => {
 			endedAt: 500,
 			resumable: false,
 		};
-		const items = workflowResumeSelectorItems([completed], [], [entry(runId, "completed")]);
+		const items = workflowResumeSelectorItems(
+			[completed],
+			[],
+			[entry(runId, "completed")],
+			undefined,
+			undefined,
+			undefined,
+			{
+				includeCompletedWithoutResumable: true,
+			},
+		);
 		assert.deepEqual(
 			items.map((item) => item.result.kind),
 			["completed"],
 		);
 		assert.equal(items[0]?.result.kind === "completed" ? items[0].result.workflowId : undefined, runId);
+		assert.deepEqual(workflowResumeSelectorItems([completed], [], [entry(runId, "completed")]), []);
 	});
 
 	test("offers a healthy paused live run exactly once instead of durable or completed duplicates", async () => {
@@ -327,5 +356,295 @@ describe("workflow resume selector row presentation", () => {
 		assert.doesNotMatch(item!.session.summary!, /running/);
 		assert.equal(item!.session.messageColor, "error");
 		assert.match(item!.session.allMessagesText, /crashed/);
+	});
+});
+
+describe("workflow resume picker rows: a title and one detail line (#5224)", () => {
+	const NOW = 10_000_000;
+
+	test("a live run's title names the workflow and its identity; its detail is status · stage · age · elapsed · cost", () => {
+		const run: RunSnapshot = {
+			...pausedLiveRun("run-ship", NOW - 60_000),
+			name: "ralph",
+			label: "fix the shipping benchmark",
+			startedAt: NOW - 3_000_000,
+			durationMs: 41 * 60_000,
+			stages: [
+				{ ...stage("plan", NOW - 2_000_000), status: "completed" },
+				{ ...stage("research", NOW - 1_900_000), status: "completed" },
+				{ ...stage("implement", NOW - 100_000), status: "running", endedAt: undefined },
+				{ ...stage("review", NOW), status: "pending", startedAt: undefined, endedAt: undefined },
+				{ ...stage("verify", NOW), status: "pending", startedAt: undefined, endedAt: undefined },
+			],
+			budgetState: { accounting: { cost: 1.84 } } as RunSnapshot["budgetState"],
+		};
+		const [item] = workflowResumeSelectorItems([run], [], [], undefined, undefined, NOW);
+		assert.equal(item?.session.title, "ralph · fix the shipping benchmark");
+		assert.equal(item?.session.detail, "paused · stage 3/5 implement · 1m ago · 41m · $1.84");
+	});
+
+	test("a finished run's detail says how long ago it ended; a failed run's says why", () => {
+		const completed = { ...entry("done-run", "completed", NOW - 2 * 3_600_000), name: "review-pr", label: "#5222" };
+		const failed = {
+			...entry("bad-run", "failed", NOW - 60_000),
+			name: "goal",
+			error: "Error: gate failed: 2 jobs\n    at run (x.ts:1:1)",
+		};
+		const items = workflowResumeSelectorItems([], [failed], [completed], undefined, undefined, NOW);
+		const byId = new Map(items.map((item) => [item.session.id, item.session]));
+		assert.equal(byId.get("done-run")?.title, "review-pr · #5222");
+		assert.equal(byId.get("done-run")?.detail, "✓ completed · 2h ago");
+		assert.equal(byId.get("bad-run")?.detail, "failed · 1m ago · ✗ gate failed: 2 jobs");
+	});
+
+	test.each(["at least one reviewer rejected the change", "at capacity: the provider is overloaded"])(
+		"keeps literal failure reasons beginning with 'at': %s (#5256)",
+		(reason) => {
+			for (const field of ["error", "exitReason"] as const) {
+				for (const prefix of ["", "    at run (runner.ts:1:2)\n", "    at runner.ts:1:2\n"]) {
+					const [item] = workflowResumeSelectorItems(
+						[],
+						[{ ...entry("literal-reason", "failed"), [field]: prefix + reason }],
+						[],
+						undefined,
+						undefined,
+						NOW,
+					);
+					assert.ok(item?.session.detail?.endsWith(`✗ ${reason}`), `${field}: ${prefix + reason}`);
+				}
+			}
+		},
+	);
+
+	test("keeps Unicode intact when shortening a workflow failure reason (#5256)", () => {
+		const prefix = "x".repeat(58);
+		const [item] = workflowResumeSelectorItems(
+			[],
+			[{ ...entry("unicode-failure", "failed"), error: `Error: ${prefix}🚀 retry failed` }],
+			[],
+			undefined,
+			undefined,
+			NOW,
+		);
+		assert.ok(item?.session.detail?.endsWith(`✗ ${prefix}…`));
+	});
+
+	test("a saved run's detail omits raw checkpoint counts and reports whether it waits on an answer", () => {
+		const saved = { ...entry("saved-run", "paused", NOW - 120_000), completedCheckpoints: 4, pendingPrompts: 1 };
+		const [item] = workflowResumeSelectorItems([], [saved], [], undefined, undefined, NOW);
+		assert.equal(item?.session.detail, "paused · waiting on 1 answer · 2m ago");
+	});
+
+	test("a run without a label or objective uses its workflow description or omits the id suffix (#5256)", () => {
+		const id = "11111111-1111-4111-8111-111111111111";
+		const [fallbackItem] = workflowResumeSelectorItems([], [entry(id, "paused")], [], undefined, undefined, NOW);
+		assert.equal(fallbackItem?.session.title, "paused-workflow");
+
+		const [describedItem] = workflowResumeSelectorItems(
+			[],
+			[{ ...entry(id, "paused"), name: "slowflow" }],
+			[],
+			undefined,
+			undefined,
+			NOW,
+			{ resolveDescription: (name) => (name === "slowflow" ? "Fix the shipping benchmark" : undefined) },
+		);
+		assert.equal(describedItem?.session.title, "slowflow · Fix the shipping benchmark");
+	});
+
+	test("durable, completed, and older durable runs render stage n/m name, age, elapsed, cost, and recorded branch instead of checkpoint counts (#5256)", async () => {
+		const backend = await createMemoryTestBackend();
+		const workspace = {
+			remotes: ["https://example.com/repo.git"],
+			head: "0123456789abcdef0123456789abcdef01234567",
+			tree: "89abcdef0123456789abcdef0123456789abcdef",
+			envHash: "env-hash",
+			repository: "repo",
+			branch: "feat/ship",
+		};
+
+		const pausedId = "aaaaaaaa-1111-4111-8111-111111111111";
+		await backend.commitWorkflowRegistration({
+			workflowId: pausedId,
+			name: "slowflow",
+			inputs: {},
+			createdAt: NOW - 120_000,
+			updatedAt: NOW - 60_000,
+			status: "paused",
+			completedCheckpoints: 2,
+			possibleStages: ["plan", "implement", "review"],
+			workspace,
+		});
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: pausedId,
+			checkpointId: "stage:plan",
+			name: "plan",
+			replayKey: "stage:plan:1",
+			output: "planned",
+			startedAt: NOW - 120_000,
+			endedAt: NOW - 90_000,
+			durationMs: 30_000,
+			completedAt: NOW - 90_000,
+			modelAttempts: [
+				{
+					model: "gpt-4o",
+					status: "completed",
+					success: true,
+					usage: { input: 100, output: 50, cost: 1.84 },
+				},
+			],
+		});
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: pausedId,
+			checkpointId: "stage:implement",
+			name: "implement",
+			replayKey: "stage:implement:1",
+			startedAt: NOW - 90_000,
+			durationMs: 11_000,
+			completedAt: NOW - 60_000,
+		});
+
+		const completedId = "bbbbbbbb-2222-4222-8222-222222222222";
+		await backend.commitWorkflowRegistration({
+			workflowId: completedId,
+			name: "quickflow",
+			inputs: {},
+			createdAt: NOW - 240_000,
+			updatedAt: NOW - 237_000,
+			status: "completed",
+			completedCheckpoints: 1,
+			possibleStages: ["summarise"],
+			workspace,
+		});
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: completedId,
+			checkpointId: "stage:summarise",
+			name: "summarise",
+			replayKey: "stage:summarise:1",
+			output: "done",
+			startedAt: NOW - 240_000,
+			endedAt: NOW - 237_000,
+			durationMs: 3_000,
+			completedAt: NOW - 237_000,
+			modelAttempts: [
+				{
+					model: "gpt-4o",
+					status: "completed",
+					success: true,
+					usage: { input: 50, output: 20, cost: 0.42 },
+				},
+			],
+		});
+
+		const liveFailed: RunSnapshot = {
+			...pausedLiveRun("cccccccc-3333-4333-8333-333333333333", NOW - 30_000),
+			name: "failflow",
+			status: "failed",
+			startedAt: NOW - 31_000,
+			endedAt: NOW - 30_000,
+			durationMs: 1_000,
+			error: "Error: at least one reviewer rejected the change",
+			resumable: true,
+			stages: [{ ...stage("draft", NOW - 30_000), status: "completed" }],
+		};
+		await backend.commitWorkflowRegistration({
+			workflowId: liveFailed.id,
+			name: "failflow",
+			inputs: {},
+			createdAt: NOW - 31_000,
+			updatedAt: NOW - 30_000,
+			status: "failed",
+			resumable: true,
+			completedCheckpoints: 1,
+			workspace,
+		});
+
+		const items = workflowResumeSelectorItems(
+			[liveFailed],
+			backend.listResumableWorkflows().filter((item) => item.workflowId === pausedId),
+			backend.listCompletedWorkflows(),
+			[liveFailed],
+			backend,
+			NOW,
+			{
+				resolveDescription: (name) =>
+					({
+						slowflow: "Fix the shipping benchmark",
+						quickflow: "Summarise the release notes",
+						failflow: "Review the lock change",
+					})[name],
+			},
+		);
+		const byId = new Map(items.map((item) => [item.session.id, item]));
+		assert.equal(byId.get(pausedId)?.session.title, "slowflow · Fix the shipping benchmark");
+		assert.equal(
+			byId.get(pausedId)?.session.detail,
+			"paused · stage 2/3 implement · 1m ago · 1m · $1.84 · feat/ship",
+		);
+		assert.equal(byId.get(completedId)?.session.title, "quickflow · Summarise the release notes");
+		assert.equal(
+			byId.get(completedId)?.session.detail,
+			"✓ completed · stage 1/1 summarise · 3m ago · 3s · $0.42 · feat/ship",
+		);
+		assert.equal(byId.get(liveFailed.id)?.session.title, "failflow · Review the lock change");
+		assert.equal(
+			byId.get(liveFailed.id)?.session.detail,
+			"failed · stage 1/1 draft · just now · 1s · feat/ship · ✗ at least one reviewer rejected the change",
+		);
+	});
+
+	test("labels a quit live run as paused and matches canDelete to the retention policy (#5256)", () => {
+		const quitLive: RunSnapshot = {
+			...pausedLiveRun("quit-live", NOW - 10_000),
+			status: "running",
+			exitReason: "quit",
+			resumable: true,
+			durationMs: 60_000,
+			stages: [
+				{ ...stage("plan", NOW - 50_000), status: "completed" },
+				{ ...stage("build", NOW - 10_000), status: "running", endedAt: undefined },
+				{ ...stage("verify", NOW), status: "pending", startedAt: undefined, endedAt: undefined },
+			],
+		};
+		const failedLive: RunSnapshot = {
+			...pausedLiveRun("failed-live", NOW - 5_000),
+			status: "failed",
+			endedAt: NOW - 5_000,
+			durationMs: 10_000,
+			resumable: true,
+			error: "Error: boom",
+			failedStageId: "build",
+			stages: [
+				{ ...stage("plan", NOW - 15_000), status: "completed" },
+				{ ...stage("build", NOW - 5_000), status: "failed" },
+			],
+		};
+		const crashedDurable = entry("crashed-durable", "running", NOW - 20_000);
+		const pausedDurable = entry("paused-durable", "paused", NOW - 30_000);
+		const completedDurable = entry("completed-durable", "completed", NOW - 40_000);
+
+		const items = workflowResumeSelectorItems(
+			[quitLive, failedLive],
+			[crashedDurable, pausedDurable],
+			[completedDurable],
+			[quitLive, failedLive],
+			undefined,
+			NOW,
+		);
+		const byId = new Map(items.map((item) => [item.session.id, item]));
+
+		assert.equal(byId.get("quit-live")?.session.detail, "paused · stage 2/3 build · just now · 1m");
+		assert.equal(byId.get("quit-live")?.session.messageColor, "warning");
+		assert.equal(toWorkflowPickerRow(byId.get("quit-live")!).canDelete, false);
+
+		assert.equal(byId.get("failed-live")?.session.detail, "failed · stage 2/2 build · just now · 10s · ✗ boom");
+		assert.equal(toWorkflowPickerRow(byId.get("failed-live")!).canDelete, true);
+
+		assert.equal(toWorkflowPickerRow(byId.get("crashed-durable")!).canDelete, false);
+		assert.equal(toWorkflowPickerRow(byId.get("paused-durable")!).canDelete, true);
+		assert.equal(toWorkflowPickerRow(byId.get("completed-durable")!).canDelete, true);
 	});
 });

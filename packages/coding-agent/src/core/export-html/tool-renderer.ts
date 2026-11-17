@@ -6,8 +6,9 @@
  */
 
 import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
-import type { Component } from "@bastani/atomic-tui";
+import { type Component, Text } from "@bastani/atomic-tui";
 import { keyHint, keyText } from "../../modes/interactive/components/keybinding-hints.js";
+import { isToolBlock } from "../../modes/interactive/components/tool-block.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { ToolRenderContext, ToolRenderers } from "../extensions/types.ts";
 import { ansiLinesToHtml, stripAnsiEscapes } from "./ansi-to-html.ts";
@@ -59,6 +60,7 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 
 	const renderedCallComponents = new Map<string, Component>();
 	const renderedResultComponents = new Map<string, Component>();
+	const canonicalResultCallHtml = new Map<string, string>();
 	const renderedStates = new Map<string, Record<string, unknown>>();
 	const renderedArgs = new Map<string, unknown>();
 
@@ -100,12 +102,18 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 
 	return {
 		renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined {
+			renderedArgs.set(toolCallId, args);
+			const canonicalCallHtml = canonicalResultCallHtml.get(toolCallId);
+			if (canonicalCallHtml !== undefined) {
+				return canonicalCallHtml;
+			}
+			let hasCustomCallRenderer = false;
 			try {
-				renderedArgs.set(toolCallId, args);
 				const toolDef = getToolRenderers(toolName);
 				if (!toolDef?.renderCall) {
 					return undefined;
 				}
+				hasCustomCallRenderer = true;
 
 				const component = toolDef.renderCall(
 					args,
@@ -113,11 +121,19 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 					createRenderContext(toolCallId, renderedCallComponents.get(toolCallId), false, true, false),
 				);
 				renderedCallComponents.set(toolCallId, component);
-				const lines = component.render(width);
+				const rawLines = component.render(width);
+				const lines = isToolBlock(component) ? trimRenderedResultLines(rawLines) : rawLines;
 				return ansiLinesToHtml(lines);
 			} catch {
-				// On error, return undefined so HTML export can fall back to structured result rendering
-				return undefined;
+				renderedCallComponents.delete(toolCallId);
+				if (!hasCustomCallRenderer) {
+					return undefined;
+				}
+				const title =
+					typeof theme?.fg === "function" && typeof theme?.bold === "function"
+						? theme.fg("toolTitle", theme.bold(toolName))
+						: toolName;
+				return ansiLinesToHtml(new Text(title, 0, 0).render(width));
 			}
 		},
 
@@ -128,11 +144,18 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 			details: unknown,
 			isError: boolean,
 		): { collapsed?: string; expanded?: string } | undefined {
+			canonicalResultCallHtml.delete(toolCallId);
+			let hasCustomResultRenderer = false;
 			try {
 				const toolDef = getToolRenderers(toolName);
 				if (!toolDef?.renderResult) {
+					const callComponent = renderedCallComponents.get(toolCallId);
+					if (callComponent && isToolBlock(callComponent)) {
+						return { expanded: "" };
+					}
 					return undefined;
 				}
+				hasCustomResultRenderer = true;
 
 				// Build AgentToolResult from content array
 				// Cast content since session storage uses generic object types
@@ -150,7 +173,8 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 					createRenderContext(toolCallId, renderedResultComponents.get(toolCallId), false, false, isError),
 				);
 				renderedResultComponents.set(toolCallId, collapsedComponent);
-				const collapsed = ansiLinesToHtml(trimRenderedResultLines(collapsedComponent.render(width)));
+				const collapsedLines = trimRenderedResultLines(collapsedComponent.render(width));
+				const collapsed = ansiLinesToHtml(collapsedLines);
 
 				// Render expanded
 				const expandedComponent = toolDef.renderResult(
@@ -160,15 +184,46 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 					createRenderContext(toolCallId, renderedResultComponents.get(toolCallId), true, false, isError),
 				);
 				renderedResultComponents.set(toolCallId, expandedComponent);
-				const expanded = ansiLinesToHtml(trimRenderedResultLines(expandedComponent.render(width)));
+				const expandedLines = trimRenderedResultLines(expandedComponent.render(width));
+				const expanded = ansiLinesToHtml(expandedLines);
+
+				if (isToolBlock(collapsedComponent) || isToolBlock(expandedComponent)) {
+					const [collapsedHeader, ...collapsedRest] = collapsedLines;
+					const [expandedHeader, ...expandedRest] = expandedLines;
+					if (
+						!collapsed ||
+						collapsed === expanded ||
+						collapsedHeader === undefined ||
+						collapsedHeader !== expandedHeader
+					) {
+						canonicalResultCallHtml.set(toolCallId, expanded || collapsed);
+						return { expanded: "" };
+					}
+					canonicalResultCallHtml.set(toolCallId, ansiLinesToHtml([collapsedHeader]));
+					const collapsedBody = ansiLinesToHtml(trimRenderedResultLines(collapsedRest));
+					const expandedBody = ansiLinesToHtml(trimRenderedResultLines(expandedRest));
+					return {
+						...(collapsedBody && collapsedBody !== expandedBody ? { collapsed: collapsedBody } : {}),
+						expanded: expandedBody,
+					};
+				}
 
 				return {
 					...(collapsed && collapsed !== expanded ? { collapsed } : {}),
 					expanded,
 				};
 			} catch {
-				// On error, return undefined so HTML export can fall back to structured result rendering
-				return undefined;
+				renderedResultComponents.delete(toolCallId);
+				if (!hasCustomResultRenderer) {
+					return undefined;
+				}
+				const warning =
+					typeof theme?.fg === "function"
+						? theme.fg("warning", "Result renderer failed")
+						: "Result renderer failed";
+				return {
+					expanded: ansiLinesToHtml(trimRenderedResultLines(new Text(warning, 0, 0).render(width))),
+				};
 			}
 		},
 	};
