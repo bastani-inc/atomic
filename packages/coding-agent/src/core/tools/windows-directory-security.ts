@@ -191,6 +191,7 @@ export interface ReadWindowsDirectorySecurityOptions {
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	background?: boolean;
+	identity?: string;
 }
 
 type SecurityAttempt = { security: WindowsDirectorySecurity } | { failure: string };
@@ -208,11 +209,13 @@ class SharedSecurityRead {
 	private foregroundWaiters = 0;
 	private child: ChildProcess | undefined;
 	private readonly path: string;
+	private readonly key: string;
 
-	constructor(path: string) {
+	constructor(path: string, key: string) {
 		this.path = path;
+		this.key = key;
 		this.result = outsideAnyCaller(() => this.readCandidates()).finally(() => {
-			if (sharedReads.get(path) === this) sharedReads.delete(path);
+			if (sharedReads.get(key) === this) sharedReads.delete(key);
 		});
 	}
 
@@ -246,7 +249,7 @@ class SharedSecurityRead {
 	}
 
 	cancel(): void {
-		if (sharedReads.get(this.path) === this) sharedReads.delete(this.path);
+		if (sharedReads.get(this.key) === this) sharedReads.delete(this.key);
 		this.controller.abort();
 	}
 
@@ -348,10 +351,13 @@ export function readWindowsDirectorySecurityAsync(
 	options: ReadWindowsDirectorySecurityOptions = {},
 ): Promise<WindowsDirectorySecurity | undefined> {
 	if (options.signal?.aborted) return Promise.resolve(undefined);
-	let read = sharedReads.get(path);
+	const identity = options.identity ?? identityOf(path);
+	if (identity === undefined) return Promise.resolve(undefined);
+	const key = `${identity}\0${path}`;
+	let read = sharedReads.get(key);
 	if (read === undefined) {
-		read = new SharedSecurityRead(path);
-		sharedReads.set(path, read);
+		read = new SharedSecurityRead(path, key);
+		sharedReads.set(key, read);
 	}
 	return read.join(options.timeoutMs ?? READ_SECURITY_TIMEOUT_MS, options.signal, options.background ?? false);
 }
@@ -448,7 +454,7 @@ export async function verifyWindowsDirectorySecurityAsync(
 		return undefined;
 	}
 	const generation = stateGeneration;
-	const security = await securityReader(path, { signal, background: options.background });
+	const security = await securityReader(path, { signal, background: options.background, identity });
 	if (security === undefined) {
 		return "its ownership could not be verified";
 	}
