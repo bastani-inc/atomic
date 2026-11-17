@@ -289,9 +289,9 @@ export async function handleRunControlCommand(
 					undefined,
 					requireStoreDurableBackend(store, resolved.runId),
 				);
+				if (run !== undefined) await refreshWorkflowArtifactPresence([run], store.runs());
 				const isPaused = run !== undefined && workflowHasPausedState(store, resolved.runId);
 				const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
-				if (run !== undefined) await refreshWorkflowArtifactPresence([run], store.runs());
 				const isResumableContinuation =
 					run !== undefined &&
 					!isPaused &&
@@ -473,11 +473,11 @@ export async function handleRunControlCommand(
 		const stageId = resolvedStage.stageId;
 		const stageRunId = resolvedStage.runId ?? runId;
 		const run = store.run(stageRunId);
+		if (run !== undefined) await refreshWorkflowArtifactPresence([run], store.runs());
 		const hadPausedRunState = run?.status === "paused";
 		const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
 		const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
 		const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
-		if (run !== undefined) await refreshWorkflowArtifactPresence([run], store.runs());
 		const isResumableContinuation =
 			run !== undefined &&
 			!isPaused &&

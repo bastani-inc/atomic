@@ -224,6 +224,58 @@ describe("workflow resume confirmation and definition source guards (#5256)", ()
 		assert.deepEqual(errors, []);
 	});
 
+	test("a resume whose session retires while the released run's directories are checked does not resume it (#5256)", async () => {
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		const runId = testRunId("adoption-retire-durable");
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: sampleDefinition.name,
+			inputs: {},
+			createdAt: 1_000,
+			updatedAt: 2_000,
+			status: "paused",
+			completedCheckpoints: 1,
+			invocationCwd: process.cwd(),
+			modelOwner: "released-session",
+			releasedModelOwner: "released-session",
+		});
+		const runtime = createExtensionRuntime({ definitions: [sampleDefinition], store });
+		const resumeSpy = vi.spyOn(runtime, "resumeDurableWorkflow").mockImplementation(async (id) => ({
+			ok: true,
+			runId: id,
+			workflowId: id,
+			name: sampleDefinition.name,
+			message: `Resumed ${id}`,
+		}));
+		let generationCurrent = true;
+		const loadHandle = backend.getLoadableWorkflow.bind(backend);
+		vi.spyOn(backend, "getLoadableWorkflow").mockImplementation((id) => {
+			const handle = loadHandle(id);
+			// The session retires once the released run's handle is read, while its directories are still being checked.
+			if (id === runId && handle?.releasedModelOwner !== undefined)
+				queueMicrotask(() => (generationCurrent = false));
+			return handle;
+		});
+		const ctx: PiCommandContext = {
+			hasUI: false,
+			cwd: process.cwd(),
+			ui: { notify: () => undefined },
+		};
+		const deps: WorkflowRunControlDeps = {
+			pi: {},
+			overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+			runtimeForContext: () => runtime,
+			ensureWorkflowResourcesLoaded: () => undefined,
+			isGenerationCurrent: () => generationCurrent,
+		};
+
+		await handleDurableResume(runId, ctx, { info: () => undefined, error: () => undefined }, deps);
+
+		assert.equal(generationCurrent, false);
+		assert.equal(resumeSpy.mock.calls.length, 0);
+	});
+
 	test("persists definitionSource through toMetadata, preserves stored digest until accepted on resume, and updates digest on fork (#5256)", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);

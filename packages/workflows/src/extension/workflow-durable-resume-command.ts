@@ -651,6 +651,7 @@ async function resumeDurableTarget(
 	}
 	if (!isResumeContextActive(ctx, deps.isGenerationCurrent)) return true;
 	const adoption = await releasedRunAdoption(workflowId, ctx, runtime);
+	if (!isResumeContextActive(ctx, deps.isGenerationCurrent)) return true;
 	const runResume = (opts: DurableResumeCommandOptions) =>
 		runtime.resumeDurableWorkflow(workflowId, {
 			policy: workflowPolicyFromContext(ctx),
