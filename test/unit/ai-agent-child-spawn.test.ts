@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
-import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from "node:child_process";
+import type {
+	ChildProcess,
+	SpawnOptions,
+	SpawnSyncOptionsWithStringEncoding,
+	SpawnSyncReturns,
+} from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
+import { PassThrough } from "node:stream";
 import { test, vi } from "vitest";
 import {
 	cleanupWorktrees as cleanupSubagentWorktrees,
@@ -14,10 +21,12 @@ import {
 	createWorktrees as createWorkflowWorktrees,
 } from "../../packages/workflows/src/runs/shared/worktree-setup.js";
 
+type RecordedSpawnOptions = SpawnSyncOptionsWithStringEncoding | (SpawnOptions & { input?: string });
+
 interface SpawnObservation {
 	command: string;
 	args: string[];
-	options: SpawnSyncOptionsWithStringEncoding | undefined;
+	options: RecordedSpawnOptions | undefined;
 }
 
 const observations = vi.hoisted(() => [] as SpawnObservation[]);
@@ -41,7 +50,36 @@ vi.mock("node:child_process", async (importOriginal) => {
 			signal: null,
 		};
 	};
-	return { ...actual, spawnSync };
+	const spawn = (command: string, args: readonly string[] = [], options?: SpawnOptions): ChildProcess => {
+		const recordedOptions: SpawnOptions & { input?: string } = {
+			...(options ?? {}),
+		};
+		observations.push({ command, args: [...args], options: recordedOptions });
+		if (isGitCommand(command)) return actual.spawn(command, args, options ?? {});
+		const fake = new EventEmitter() as ChildProcess;
+		const stdin = new PassThrough();
+		const stdout = new PassThrough();
+		const stderr = new PassThrough();
+		const stdinChunks: Buffer[] = [];
+		stdin.on("data", (chunk: Buffer | string) => {
+			stdinChunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+			recordedOptions.input = Buffer.concat(stdinChunks).toString("utf-8");
+		});
+		Object.assign(fake, {
+			pid: process.pid,
+			stdin,
+			stdout,
+			stderr,
+			kill: () => true,
+		});
+		queueMicrotask(() => {
+			stdout.end('{"syntheticPaths":[]}');
+			stderr.end();
+			fake.emit("close", 0, null);
+		});
+		return fake;
+	};
+	return { ...actual, spawn, spawnSync };
 });
 
 function createRepository(prefix: string): { root: string; repo: string } {
@@ -57,13 +95,13 @@ function createRepository(prefix: string): { root: string; repo: string } {
 	return { root, repo };
 }
 
-function withCallerEnvironment<T>(callback: () => T): T {
+async function withCallerEnvironment<T>(callback: () => Promise<T> | T): Promise<T> {
 	const previousAiAgent = process.env.AI_AGENT;
 	const previousGitDir = process.env.GIT_DIR;
 	process.env.AI_AGENT = "caller";
 	process.env.GIT_DIR = "/tmp/not-this-repository.git";
 	try {
-		return callback();
+		return await callback();
 	} finally {
 		if (previousAiAgent === undefined) delete process.env.AI_AGENT;
 		else process.env.AI_AGENT = previousAiAgent;
@@ -93,22 +131,22 @@ function assertSetupHookSpawn(hookPath: string, timeout: number): void {
 	assert.equal(typeof hookCall.options?.input, "string");
 }
 
-test("subagent worktree Git and setup-hook spawns receive Atomic attribution", () => {
+test("subagent worktree Git and setup-hook spawns receive Atomic attribution", async () => {
 	const { root, repo } = createRepository("atomic-ai-agent-subagent-spawn-");
 	const hook = join(root, "setup-hook");
 	writeFileSync(hook, "placeholder\n");
-	let setup: ReturnType<typeof createSubagentWorktrees> | undefined;
+	let setup: Awaited<ReturnType<typeof createSubagentWorktrees>> | undefined;
 	try {
 		observations.length = 0;
-		withCallerEnvironment(() => {
-			setup = createSubagentWorktrees(repo, "env/subagent", 1, {
+		await withCallerEnvironment(async () => {
+			setup = await createSubagentWorktrees(repo, "env/subagent", 1, {
 				setupHook: { hookPath: hook },
 			});
 			assertAtomicGitSpawns();
 			assertSetupHookSpawn(hook, 30_000);
 		});
 	} finally {
-		if (setup) cleanupSubagentWorktrees(setup);
+		if (setup) await cleanupSubagentWorktrees(setup);
 		rmSync(root, { recursive: true, force: true });
 	}
 });

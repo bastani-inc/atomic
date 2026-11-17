@@ -40,8 +40,10 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"killSupervisedProcessTrees",
 	"processCreationTime",
 	"renameNoReplace",
+	"renameNoReplaceAsync",
 	"search",
 	"tryAdvisoryLock",
+	"tryAdvisoryLockAsync",
 ] as const;
 
 const requireNativeBinding = process.env.ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE === "1";

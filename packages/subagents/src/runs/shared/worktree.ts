@@ -1,7 +1,9 @@
-import { spawnSync } from "node:child_process";
-import * as fs from "node:fs";
+import { spawn } from "node:child_process";
+import type { Stats } from "node:fs";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { createChildProcessEnvironment, createGitEnvironment, isPathInside } from "@bastani/atomic";
 import { performPostCreationSetup } from "./worktree-post-create.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
@@ -87,20 +89,125 @@ const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
 const GIT_OUTPUT_MAX_BUFFER = 512 * 1024 * 1024;
 const HOOK_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
 const C_GIT_LOCALE_ENV: NodeJS.ProcessEnv = { LC_ALL: "C", LANGUAGE: "C" };
-export function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): GitResult {
-	const result = spawnSync("git", ["-C", cwd, ...args], {
-		encoding: "utf-8",
+
+async function pathExists(target: string): Promise<boolean> {
+	try {
+		await fs.access(target);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+interface SpawnCollectOptions {
+	cwd?: string;
+	env?: NodeJS.ProcessEnv;
+	input?: string;
+	maxBuffer: number;
+	timeout?: number;
+	shell?: boolean;
+}
+interface SpawnCollectResult {
+	stdout: string;
+	stderr: string;
+	status: number | null;
+	error?: Error & { code?: string };
+}
+function spawnCollect(command: string, args: string[], options: SpawnCollectOptions): Promise<SpawnCollectResult> {
+	return new Promise((resolve) => {
+		const startedAt = Date.now();
+		const child = spawn(command, args, {
+			...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+			...(options.env !== undefined ? { env: options.env } : {}),
+			...(options.shell !== undefined ? { shell: options.shell } : {}),
+			...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+			stdio: [options.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		const stdoutChunks: Buffer[] = [];
+		const stderrChunks: Buffer[] = [];
+		let stdoutBytes = 0;
+		let stderrBytes = 0;
+		let spawnError: (Error & { code?: string }) | undefined;
+		let timedOut = false;
+		let settled = false;
+		const finish = (status: number | null) => {
+			if (settled) return;
+			settled = true;
+			if (timer !== undefined) clearTimeout(timer);
+			if (
+				status === null &&
+				!spawnError &&
+				options.timeout !== undefined &&
+				Date.now() - startedAt >= options.timeout
+			) {
+				timedOut = true;
+				spawnError = Object.assign(new Error(`spawn ${command} ETIMEDOUT`), { code: "ETIMEDOUT" });
+			}
+			resolve({
+				stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
+				stderr: Buffer.concat(stderrChunks).toString("utf-8"),
+				status: timedOut ? null : status,
+				...(spawnError ? { error: spawnError } : {}),
+			});
+		};
+		const timer =
+			options.timeout !== undefined
+				? setTimeout(() => {
+						timedOut = true;
+						spawnError = Object.assign(new Error(`spawn ${command} ETIMEDOUT`), { code: "ETIMEDOUT" });
+						child.kill();
+					}, options.timeout)
+				: undefined;
+		child.stdout?.on("data", (chunk: Buffer | string) => {
+			const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+			stdoutBytes += buf.length;
+			if (stdoutBytes <= options.maxBuffer) {
+				stdoutChunks.push(buf);
+			} else if (!spawnError) {
+				spawnError = Object.assign(new Error(`spawn ${command} ENOBUFS`), { code: "ENOBUFS" });
+				child.kill();
+			}
+		});
+		child.stderr?.on("data", (chunk: Buffer | string) => {
+			const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+			stderrBytes += buf.length;
+			if (stderrBytes <= options.maxBuffer) {
+				stderrChunks.push(buf);
+			} else if (!spawnError) {
+				spawnError = Object.assign(new Error(`spawn ${command} ENOBUFS`), { code: "ENOBUFS" });
+				child.kill();
+			}
+		});
+		child.on("error", (error: Error & { code?: string }) => {
+			spawnError ??= error;
+			if (child.pid === undefined) finish(null);
+		});
+		if (options.input !== undefined && child.stdin && !child.stdin.destroyed) {
+			child.stdin.on("error", (error: Error & { code?: string }) => {
+				spawnError ??= error;
+			});
+			child.stdin.end(options.input);
+		}
+		child.on("close", (code) => {
+			finish(code);
+		});
+	});
+}
+
+export async function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<GitResult> {
+	const result = await spawnCollect("git", ["-C", cwd, ...args], {
 		env: createGitEnvironment(env, createChildProcessEnvironment()),
 		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
 	});
 	return {
-		stdout: result.stdout ?? "",
-		stderr: result.stderr ?? "",
+		stdout: result.stdout,
+		stderr: result.stderr,
 		status: result.status,
 	};
 }
-export function runGitChecked(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): string {
-	const result = runGit(cwd, args, env);
+export async function runGitChecked(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<string> {
+	const result = await runGit(cwd, args, env);
 	if (result.status !== 0) {
 		const command = `git -C ${cwd} ${args.join(" ")}`;
 		const message = result.stderr.trim() || result.stdout.trim() || `${command} failed`;
@@ -108,55 +215,55 @@ export function runGitChecked(cwd: string, args: string[], env: NodeJS.ProcessEn
 	}
 	return result.stdout;
 }
-function originDefaultBranch(mainRoot: string): string | undefined {
-	const symbolic = runGit(mainRoot, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], C_GIT_LOCALE_ENV);
+async function originDefaultBranch(mainRoot: string): Promise<string | undefined> {
+	const symbolic = await runGit(mainRoot, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], C_GIT_LOCALE_ENV);
 	let branch =
 		symbolic.status === 0 && symbolic.stdout.trim().startsWith("origin/")
 			? symbolic.stdout.trim().slice("origin/".length)
 			: undefined;
 	if (!branch) {
-		const remote = runGit(mainRoot, ["remote", "show", "origin"], C_GIT_LOCALE_ENV);
+		const remote = await runGit(mainRoot, ["remote", "show", "origin"], C_GIT_LOCALE_ENV);
 		branch = remote.status === 0 ? remote.stdout.match(/^\s*HEAD branch:\s*(\S+)\s*$/m)?.[1] : undefined;
 	}
 	if (!branch || branch === "(unknown)") return undefined;
 	const remoteRef = `refs/remotes/origin/${branch}`;
 	if (
-		runGit(mainRoot, ["show-ref", "--verify", "--quiet", remoteRef], C_GIT_LOCALE_ENV).status !== 0 &&
-		runGit(mainRoot, ["fetch", "origin", `${branch}:${remoteRef}`]).status !== 0
+		(await runGit(mainRoot, ["show-ref", "--verify", "--quiet", remoteRef], C_GIT_LOCALE_ENV)).status !== 0 &&
+		(await runGit(mainRoot, ["fetch", "origin", `${branch}:${remoteRef}`])).status !== 0
 	)
 		return undefined;
 	return `origin/${branch}`;
 }
-function resolveRepoState(cwd: string): RepoState {
-	const cwdRelative = resolveRepoCwdRelative(cwd);
-	const toplevel = path.resolve(runGitChecked(cwd, ["rev-parse", "--show-toplevel"], C_GIT_LOCALE_ENV).trim());
-	const mainRoot = findCanonicalGitRoot(toplevel);
+async function resolveRepoState(cwd: string): Promise<RepoState> {
+	const cwdRelative = await resolveRepoCwdRelative(cwd);
+	const toplevel = path.resolve((await runGitChecked(cwd, ["rev-parse", "--show-toplevel"], C_GIT_LOCALE_ENV)).trim());
+	const mainRoot = await findCanonicalGitRoot(toplevel);
 	if (mainRoot === undefined) throw new Error(`unable to resolve canonical main Git repository root from ${toplevel}`);
-	const status = runGitChecked(toplevel, ["status", "--porcelain", "--untracked-files=no"]);
+	const status = await runGitChecked(toplevel, ["status", "--porcelain", "--untracked-files=no"]);
 	if (status.trim().length > 0)
 		throw new Error("worktree isolation requires a clean git working tree. Commit or stash changes first.");
-	const baseRef = originDefaultBranch(mainRoot) || "HEAD";
-	const baseCommit = runGitChecked(mainRoot, ["rev-parse", baseRef], C_GIT_LOCALE_ENV).trim();
+	const baseRef = (await originDefaultBranch(mainRoot)) || "HEAD";
+	const baseCommit = (await runGitChecked(mainRoot, ["rev-parse", baseRef], C_GIT_LOCALE_ENV)).trim();
 	return { mainRoot, cwdRelative, baseCommit, baseRef };
 }
-function normalizeComparableCwd(cwd: string): string {
+async function normalizeComparableCwd(cwd: string): Promise<string> {
 	const resolved = path.resolve(cwd);
 	try {
-		return fs.realpathSync(resolved);
+		return await fs.realpath(resolved);
 	} catch {
 		return resolved;
 	}
 }
-export function findWorktreeTaskCwdConflict(
+export async function findWorktreeTaskCwdConflict(
 	tasks: ReadonlyArray<{ agent: string; cwd?: string }>,
 	sharedCwd: string,
-): WorktreeTaskCwdConflict | undefined {
-	const normalizedSharedCwd = normalizeComparableCwd(sharedCwd);
+): Promise<WorktreeTaskCwdConflict | undefined> {
+	const normalizedSharedCwd = await normalizeComparableCwd(sharedCwd);
 	for (let index = 0; index < tasks.length; index++) {
 		const task = tasks[index]!;
 		if (!task.cwd) continue;
 		const taskCwd = path.isAbsolute(task.cwd) ? task.cwd : path.resolve(sharedCwd, task.cwd);
-		if (normalizeComparableCwd(taskCwd) === normalizedSharedCwd) continue;
+		if ((await normalizeComparableCwd(taskCwd)) === normalizedSharedCwd) continue;
 		return { index, agent: task.agent, cwd: task.cwd };
 	}
 	return undefined;
@@ -174,29 +281,37 @@ function worktreePatchName(index: number, agent: string, execution: number): str
  * The patches saved for a child's worktree, oldest first: one per execution of the child, each with every edit since
  * the run's base, so the last one holds all of them.
  */
-export function savedWorktreePatches(diffsDir: string, index: number, agent: string): string[] {
+export async function savedWorktreePatches(diffsDir: string, index: number, agent: string): Promise<string[]> {
 	const saved: string[] = [];
 	for (let execution = 1; ; execution++) {
 		const patchPath = path.join(diffsDir, worktreePatchName(index, agent, execution));
-		if (!fs.existsSync(patchPath)) return saved;
+		if (!(await pathExists(patchPath))) return saved;
 		saved.push(patchPath);
 	}
 }
 /** Where the next execution of a child saves its worktree's edits, past every patch an earlier execution saved. */
-export function nextWorktreePatchPath(diffsDir: string, index: number, agent: string): string {
-	return path.join(diffsDir, worktreePatchName(index, agent, savedWorktreePatches(diffsDir, index, agent).length + 1));
+export async function nextWorktreePatchPath(diffsDir: string, index: number, agent: string): Promise<string> {
+	return path.join(
+		diffsDir,
+		worktreePatchName(index, agent, (await savedWorktreePatches(diffsDir, index, agent)).length + 1),
+	);
 }
 /**
  * Put a child's saved edits back into its worktree, recreated at the run's base after it was removed. A worktree not at
  * the base (its branch survived, with its commits) is left as it is. When the edits cannot be applied, the recreated
  * worktree is removed again and the error is thrown: the child must not continue without its earlier work.
  */
-export function restoreWorktreePatch(setup: WorktreeSetup, worktree: WorktreeInfo, patchPath: string): void {
-	if (!fs.readFileSync(patchPath, "utf-8").trim()) return;
-	if (runGitChecked(worktree.path, ["rev-parse", "HEAD"], C_GIT_LOCALE_ENV).trim() !== setup.baseCommit) return;
-	const applied = runGit(worktree.path, ["apply", "--whitespace=nowarn", patchPath]);
+export async function restoreWorktreePatch(
+	setup: WorktreeSetup,
+	worktree: WorktreeInfo,
+	patchPath: string,
+): Promise<void> {
+	if (!(await fs.readFile(patchPath, "utf-8")).trim()) return;
+	if ((await runGitChecked(worktree.path, ["rev-parse", "HEAD"], C_GIT_LOCALE_ENV)).trim() !== setup.baseCommit)
+		return;
+	const applied = await runGit(worktree.path, ["apply", "--whitespace=nowarn", patchPath]);
 	if (applied.status === 0) return;
-	cleanupSingleWorktree(setup.cwd, worktree);
+	await cleanupSingleWorktree(setup.cwd, worktree);
 	throw new Error(applied.stderr.trim() || `could not apply ${patchPath}`);
 }
 function flattenedWorktreeName(runId: string, index: number): string {
@@ -208,24 +323,24 @@ function buildWorktreeBranch(runId: string, index: number): string {
 function buildWorktreePath(mainRoot: string, runId: string, index: number): string {
 	return path.join(mainRoot, ".atomic", "worktrees", flattenedWorktreeName(runId, index));
 }
-export function ensureWorktreeIgnore(mainRoot: string): void {
+export async function ensureWorktreeIgnore(mainRoot: string): Promise<void> {
 	const root = path.join(mainRoot, ".atomic", "worktrees");
-	fs.mkdirSync(root, { recursive: true });
-	fs.writeFileSync(path.join(root, ".gitignore"), "*\n", "utf8");
+	await fs.mkdir(root, { recursive: true });
+	await fs.writeFile(path.join(root, ".gitignore"), "*\n", "utf8");
 }
-export function resolveRepoCwdRelative(cwd: string): string {
-	const repoCheck = runGit(cwd, ["rev-parse", "--is-inside-work-tree"], C_GIT_LOCALE_ENV);
+export async function resolveRepoCwdRelative(cwd: string): Promise<string> {
+	const repoCheck = await runGit(cwd, ["rev-parse", "--is-inside-work-tree"], C_GIT_LOCALE_ENV);
 	if (repoCheck.status !== 0 || repoCheck.stdout.trim() !== "true") {
 		throw new Error("worktree isolation requires a git repository");
 	}
-	const rawPrefix = runGitChecked(cwd, ["rev-parse", "--show-prefix"], C_GIT_LOCALE_ENV).trim();
+	const rawPrefix = (await runGitChecked(cwd, ["rev-parse", "--show-prefix"], C_GIT_LOCALE_ENV)).trim();
 	const normalizedPrefix = rawPrefix ? path.normalize(rawPrefix.replace(/[\\/]+$/, "")) : "";
 	return normalizedPrefix === "." ? "" : normalizedPrefix;
 }
-export function resolveExpectedWorktreeAgentCwd(cwd: string, runId: string, index: number): string {
-	const cwdRelative = resolveRepoCwdRelative(cwd);
-	const toplevel = path.resolve(runGitChecked(cwd, ["rev-parse", "--show-toplevel"], C_GIT_LOCALE_ENV).trim());
-	const mainRoot = findCanonicalGitRoot(toplevel);
+export async function resolveExpectedWorktreeAgentCwd(cwd: string, runId: string, index: number): Promise<string> {
+	const cwdRelative = await resolveRepoCwdRelative(cwd);
+	const toplevel = path.resolve((await runGitChecked(cwd, ["rev-parse", "--show-toplevel"], C_GIT_LOCALE_ENV)).trim());
+	const mainRoot = await findCanonicalGitRoot(toplevel);
 	if (mainRoot === undefined) throw new Error(`unable to resolve canonical main Git repository root from ${toplevel}`);
 	const worktreePath = buildWorktreePath(mainRoot, runId, index);
 	return cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
@@ -237,10 +352,10 @@ function parseHookTimeout(timeoutMs: number | undefined): number {
 	}
 	return timeoutMs;
 }
-function resolveWorktreeSetupHook(
+async function resolveWorktreeSetupHook(
 	repoRoot: string,
 	config: WorktreeSetupHookConfig | undefined,
-): ResolvedWorktreeSetupHook | undefined {
+): Promise<ResolvedWorktreeSetupHook | undefined> {
 	if (!config) return undefined;
 	const hookPath = config.hookPath.trim();
 	if (!hookPath) {
@@ -255,10 +370,10 @@ function resolveWorktreeSetupHook(
 	} else {
 		throw new Error("worktree setup hook must be an absolute path or a repo-relative path");
 	}
-	if (!fs.existsSync(resolvedPath)) {
+	if (!(await pathExists(resolvedPath))) {
 		throw new Error(`worktree setup hook not found: ${resolvedPath}`);
 	}
-	if (fs.statSync(resolvedPath).isDirectory()) {
+	if ((await fs.stat(resolvedPath)).isDirectory()) {
 		throw new Error(`worktree setup hook must be a file, got directory: ${resolvedPath}`);
 	}
 	return {
@@ -280,8 +395,8 @@ function normalizeSyntheticPath(worktreePath: string, rawPath: string): string {
 	}
 	return path.normalize(relative);
 }
-function hasTrackedEntries(worktreePath: string, relativePath: string): boolean {
-	const result = runGit(worktreePath, ["ls-files", "--", relativePath], C_GIT_LOCALE_ENV);
+async function hasTrackedEntries(worktreePath: string, relativePath: string): Promise<boolean> {
+	const result = await runGit(worktreePath, ["ls-files", "--", relativePath], C_GIT_LOCALE_ENV);
 	return result.status === 0 && result.stdout.trim().length > 0;
 }
 function parseWorktreeSetupHookOutput(rawStdout: string): WorktreeSetupHookOutput {
@@ -302,7 +417,7 @@ function parseWorktreeSetupHookOutput(rawStdout: string): WorktreeSetupHookOutpu
 	return parsed as WorktreeSetupHookOutput;
 }
 /**
- * Whether a `spawnSync` error is only the parent's stdin write losing its reader.
+ * Whether a spawn error is only the parent's stdin write losing its reader.
  *
  * A setup hook is handed its JSON input on stdin, but nothing requires a hook to
  * read it and most do not. When such a hook exits before that write is flushed,
@@ -315,10 +430,9 @@ function parseWorktreeSetupHookOutput(rawStdout: string): WorktreeSetupHookOutpu
 export function isSpuriousHookStdinWriteFailure(code: string | undefined, status: number | null): boolean {
 	return code === "EPIPE" && status !== null;
 }
-function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSetupHookInput): string[] {
-	const result = spawnSync(hook.hookPath, [], {
+async function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSetupHookInput): Promise<string[]> {
+	const result = await spawnCollect(hook.hookPath, [], {
 		cwd: input.worktreePath,
-		encoding: "utf-8",
 		input: JSON.stringify(input),
 		// A hook that installs dependencies can log past the default 1 MiB cap, which kills it mid-run (#4876).
 		maxBuffer: HOOK_OUTPUT_MAX_BUFFER,
@@ -350,15 +464,15 @@ function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSe
 			throw new Error("worktree setup hook output field 'syntheticPaths' must contain only strings");
 		}
 		const normalizedPath = normalizeSyntheticPath(input.worktreePath, candidate);
-		if (hasTrackedEntries(input.worktreePath, normalizedPath)) {
+		if (await hasTrackedEntries(input.worktreePath, normalizedPath)) {
 			throw new Error(`worktree setup hook cannot mark tracked paths as synthetic: ${normalizedPath}`);
 		}
 		uniquePaths.add(normalizedPath);
 	}
 	return [...uniquePaths];
 }
-function waitForGitLockRelease(): void {
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+async function waitForGitLockRelease(): Promise<void> {
+	await delay(100);
 }
 type RemovableWorktree = Pick<WorktreeInfo, "path"> & { readonly syntheticPaths?: readonly string[] };
 /**
@@ -366,32 +480,35 @@ type RemovableWorktree = Pick<WorktreeInfo, "path"> & { readonly syntheticPaths?
  * Git for Windows keeps a junction and every directory above it while reporting success, and older versions delete
  * through a junction into the main checkout.
  */
-function unlinkWorktreeLinks(worktree: RemovableWorktree): void {
+async function unlinkWorktreeLinks(worktree: RemovableWorktree): Promise<void> {
 	for (const relativePath of new Set(["node_modules", ...(worktree.syntheticPaths ?? [])])) {
 		const linkPath = path.resolve(worktree.path, relativePath);
 		if (!path.relative(worktree.path, linkPath) || !isPathInside(worktree.path, linkPath)) continue;
 		try {
-			if (fs.lstatSync(linkPath).isSymbolicLink()) fs.unlinkSync(linkPath);
+			if ((await fs.lstat(linkPath)).isSymbolicLink()) await fs.unlink(linkPath);
 		} catch {
 			/* absent */
 		}
 	}
 }
-function removeWorktreeCheckout(repoCwd: string, worktree: RemovableWorktree): void {
-	unlinkWorktreeLinks(worktree);
-	runGit(repoCwd, ["worktree", "remove", "--force", worktree.path]);
+async function removeWorktreeCheckout(repoCwd: string, worktree: RemovableWorktree): Promise<void> {
+	await unlinkWorktreeLinks(worktree);
+	await runGit(repoCwd, ["worktree", "remove", "--force", worktree.path]);
 }
-function cleanupSingleWorktree(repoCwd: string, worktree: RemovableWorktree & Pick<WorktreeInfo, "branch">): void {
-	removeWorktreeCheckout(repoCwd, worktree);
-	waitForGitLockRelease();
+async function cleanupSingleWorktree(
+	repoCwd: string,
+	worktree: RemovableWorktree & Pick<WorktreeInfo, "branch">,
+): Promise<void> {
+	await removeWorktreeCheckout(repoCwd, worktree);
+	await waitForGitLockRelease();
 	try {
-		runGitChecked(repoCwd, ["branch", "-D", worktree.branch]);
+		await runGitChecked(repoCwd, ["branch", "-D", worktree.branch]);
 	} catch {
 		/* idempotent */
 	}
 }
 /** Synthetic paths the setup created in a new worktree: copied settings, the `node_modules` link, and hook output. */
-function prepareWorktree(
+async function prepareWorktree(
 	mainRoot: string,
 	worktreePath: string,
 	agentCwd: string,
@@ -402,11 +519,11 @@ function prepareWorktree(
 	setupHook: ResolvedWorktreeSetupHook | undefined,
 	agent: string | undefined,
 	warnings: string[],
-): string[] {
-	const syntheticPaths = performPostCreationSetup(runGit, mainRoot, worktreePath, warnings);
+): Promise<string[]> {
+	const syntheticPaths = await performPostCreationSetup(runGit, mainRoot, worktreePath, warnings);
 	if (setupHook) {
 		syntheticPaths.push(
-			...runWorktreeSetupHook(setupHook, {
+			...(await runWorktreeSetupHook(setupHook, {
 				version: 1,
 				repoRoot: mainRoot,
 				worktreePath,
@@ -416,12 +533,12 @@ function prepareWorktree(
 				runId,
 				baseCommit,
 				agent,
-			}),
+			})),
 		);
 	}
 	return syntheticPaths;
 }
-function createSingleWorktree(
+async function createSingleWorktree(
 	mainRoot: string,
 	cwdRelative: string,
 	runId: string,
@@ -430,19 +547,19 @@ function createSingleWorktree(
 	baseCommit: string,
 	setupHook: ResolvedWorktreeSetupHook | undefined,
 	agent: string | undefined,
-): WorktreeInfo {
+): Promise<WorktreeInfo> {
 	const branch = buildWorktreeBranch(runId, index);
 	const worktreePath = buildWorktreePath(mainRoot, runId, index);
-	const add = runGit(mainRoot, ["worktree", "add", "-B", branch, worktreePath, baseRef]);
+	const add = await runGit(mainRoot, ["worktree", "add", "-B", branch, worktreePath, baseRef]);
 	if (add.status !== 0) {
 		const message = add.stderr.trim() || add.stdout.trim() || `failed to create worktree ${worktreePath}`;
-		cleanupSingleWorktree(mainRoot, { path: worktreePath, branch });
+		await cleanupSingleWorktree(mainRoot, { path: worktreePath, branch });
 		throw new Error(message);
 	}
 	const agentCwd = cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
 	const warnings: string[] = [];
 	try {
-		const syntheticPaths = prepareWorktree(
+		const syntheticPaths = await prepareWorktree(
 			mainRoot,
 			worktreePath,
 			agentCwd,
@@ -464,7 +581,7 @@ function createSingleWorktree(
 			...(warnings.length > 0 ? { setupWarnings: warnings } : {}),
 		};
 	} catch (error) {
-		cleanupSingleWorktree(mainRoot, { path: worktreePath, branch });
+		await cleanupSingleWorktree(mainRoot, { path: worktreePath, branch });
 		throw error;
 	}
 }
@@ -475,17 +592,17 @@ function createSingleWorktree(
  * `node_modules` link, included files) is re-applied where it is missing: capturing the worktree's diff removes it.
  * Returns the worktree as it now is.
  */
-export function recreateWorktree(
+export async function recreateWorktree(
 	setup: WorktreeSetup,
 	worktree: WorktreeInfo,
 	runId: string,
 	options?: { setupHook?: WorktreeSetupHookConfig; agent?: string },
-): WorktreeInfo {
-	if (fs.existsSync(worktree.path)) {
+): Promise<WorktreeInfo> {
+	if (await pathExists(worktree.path)) {
 		let restored: string[];
 		const warnings: string[] = [];
 		try {
-			restored = performPostCreationSetup(runGit, setup.cwd, worktree.path, warnings);
+			restored = await performPostCreationSetup(runGit, setup.cwd, worktree.path, warnings);
 		} catch {
 			// The worktree itself is intact: the child resumes in it without the setup that could not be re-applied.
 			return worktree;
@@ -499,11 +616,11 @@ export function recreateWorktree(
 			...(warnings.length > 0 ? { setupWarnings: warnings } : {}),
 		};
 	}
-	runGit(setup.cwd, ["worktree", "prune"]);
+	await runGit(setup.cwd, ["worktree", "prune"]);
 	const branchExists =
-		runGit(setup.cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.branch}`], C_GIT_LOCALE_ENV)
+		(await runGit(setup.cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.branch}`], C_GIT_LOCALE_ENV))
 			.status === 0;
-	runGitChecked(
+	await runGitChecked(
 		setup.cwd,
 		branchExists
 			? ["worktree", "add", worktree.path, worktree.branch]
@@ -511,7 +628,7 @@ export function recreateWorktree(
 	);
 	const warnings: string[] = [];
 	try {
-		const syntheticPaths = prepareWorktree(
+		const syntheticPaths = await prepareWorktree(
 			setup.cwd,
 			worktree.path,
 			worktree.agentCwd,
@@ -519,7 +636,7 @@ export function recreateWorktree(
 			runId,
 			worktree.index,
 			setup.baseCommit,
-			resolveWorktreeSetupHook(setup.cwd, options?.setupHook),
+			await resolveWorktreeSetupHook(setup.cwd, options?.setupHook),
 			options?.agent,
 			warnings,
 		);
@@ -532,8 +649,8 @@ export function recreateWorktree(
 		};
 	} catch (error) {
 		// A branch that already existed may hold commits: remove only the worktree.
-		if (branchExists) removeWorktreeCheckout(setup.cwd, worktree);
-		else cleanupSingleWorktree(setup.cwd, worktree);
+		if (branchExists) await removeWorktreeCheckout(setup.cwd, worktree);
+		else await cleanupSingleWorktree(setup.cwd, worktree);
 		throw error;
 	}
 }
@@ -542,9 +659,9 @@ export function recreateWorktree(
  * Whether removing this worktree would lose work: uncommitted or untracked changes other than its synthetic paths, or
  * commits not in the run's base. When git cannot tell, the work is treated as unsaved.
  */
-export function worktreeHasUnsavedWork(setup: WorktreeSetup, worktree: WorktreeInfo): boolean {
-	if (!fs.existsSync(worktree.path)) return false;
-	const status = runGit(worktree.path, ["status", "--porcelain", "--untracked-files=all"]);
+export async function worktreeHasUnsavedWork(setup: WorktreeSetup, worktree: WorktreeInfo): Promise<boolean> {
+	if (!(await pathExists(worktree.path))) return false;
+	const status = await runGit(worktree.path, ["status", "--porcelain", "--untracked-files=all"]);
 	if (status.status !== 0) return true;
 	const synthetic = worktree.syntheticPaths.map((syntheticPath) => syntheticPath.split(path.sep).join("/"));
 	const changed = status.stdout
@@ -555,10 +672,10 @@ export function worktreeHasUnsavedWork(setup: WorktreeSetup, worktree: WorktreeI
 			(changedPath) => !synthetic.some((entry) => changedPath === entry || changedPath.startsWith(`${entry}/`)),
 		);
 	if (changed.length > 0) return true;
-	const ahead = runGit(worktree.path, ["rev-list", "--count", `${setup.baseCommit}..HEAD`], C_GIT_LOCALE_ENV);
+	const ahead = await runGit(worktree.path, ["rev-list", "--count", `${setup.baseCommit}..HEAD`], C_GIT_LOCALE_ENV);
 	return ahead.status !== 0 || ahead.stdout.trim() !== "0";
 }
-function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): void {
+async function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): Promise<void> {
 	const resolved = path.resolve(worktree.path, syntheticPath);
 	const relative = path.relative(worktree.path, resolved);
 	if (
@@ -570,9 +687,9 @@ function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): voi
 	) {
 		return;
 	}
-	let stat: fs.Stats;
+	let stat: Stats;
 	try {
-		stat = fs.lstatSync(resolved);
+		stat = await fs.lstat(resolved);
 	} catch (error) {
 		const code =
 			error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
@@ -580,22 +697,22 @@ function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): voi
 		throw error;
 	}
 	if (stat.isSymbolicLink()) {
-		fs.unlinkSync(resolved);
+		await fs.unlink(resolved);
 		return;
 	}
 	if (stat.isDirectory()) {
-		fs.rmSync(resolved, { recursive: true, force: true });
+		await fs.rm(resolved, { recursive: true, force: true });
 		return;
 	}
-	fs.rmSync(resolved, { force: true });
+	await fs.rm(resolved, { force: true });
 }
-function removeSyntheticPathsBeforeDiff(worktree: WorktreeInfo): void {
+async function removeSyntheticPathsBeforeDiff(worktree: WorktreeInfo): Promise<void> {
 	if (worktree.syntheticPaths.length === 0) return;
 	const seen = new Set<string>();
 	for (const syntheticPath of worktree.syntheticPaths) {
 		if (seen.has(syntheticPath)) continue;
 		seen.add(syntheticPath);
-		removeSyntheticPath(worktree, syntheticPath);
+		await removeSyntheticPath(worktree, syntheticPath);
 	}
 }
 function emptyDiff(worktree: WorktreeInfo, agent: string, patchPath: string): WorktreeDiff {
@@ -629,17 +746,17 @@ function parseNumstat(numstat: string): { filesChanged: number; insertions: numb
 	}
 	return { filesChanged, insertions, deletions };
 }
-function captureWorktreeDiff(
+async function captureWorktreeDiff(
 	setup: WorktreeSetup,
 	worktree: WorktreeInfo,
 	agent: string,
 	patchPath: string,
-): WorktreeDiff {
-	removeSyntheticPathsBeforeDiff(worktree);
-	runGitChecked(worktree.path, ["add", "-A"]);
-	const diffStat = runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit]).trim();
-	const numstat = runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
-	writePatchFile(patchPath, (partialPath) =>
+): Promise<WorktreeDiff> {
+	await removeSyntheticPathsBeforeDiff(worktree);
+	await runGitChecked(worktree.path, ["add", "-A"]);
+	const diffStat = (await runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit])).trim();
+	const numstat = await runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
+	await writePatchFile(patchPath, (partialPath) =>
 		runGitChecked(worktree.path, ["diff", "--cached", "--binary", `--output=${partialPath}`, setup.baseCommit]),
 	);
 	const parsed = parseNumstat(numstat);
@@ -660,13 +777,13 @@ function captureWorktreeDiff(
  * Have git write the patch to a file of its own, so no output buffer caps it, and put it at `patchPath` only once it
  * is complete: a failed capture never replaces a patch an earlier capture saved there.
  */
-function writePatchFile(patchPath: string, write: (partialPath: string) => void): void {
+async function writePatchFile(patchPath: string, write: (partialPath: string) => Promise<unknown>): Promise<void> {
 	const partialPath = `${patchPath}.${process.pid}.partial`;
 	try {
-		write(partialPath);
-		fs.renameSync(partialPath, patchPath);
+		await write(partialPath);
+		await fs.rename(partialPath, patchPath);
 	} finally {
-		fs.rmSync(partialPath, { force: true });
+		await fs.rm(partialPath, { force: true });
 	}
 }
 /** Worktrees whose last diff capture failed: they hold work no patch has, so they are never removed (#4876). */
@@ -678,20 +795,20 @@ function errorMessage(error: unknown): string {
 function hasWorktreeChanges(diff: WorktreeDiff): boolean {
 	return diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0 || diff.diffStat.trim().length > 0;
 }
-export function createWorktrees(
+export async function createWorktrees(
 	cwd: string,
 	runId: string,
 	count: number,
 	options?: CreateWorktreesOptions,
-): WorktreeSetup {
-	const repo = resolveRepoState(cwd);
-	ensureWorktreeIgnore(repo.mainRoot);
-	const setupHook = resolveWorktreeSetupHook(repo.mainRoot, options?.setupHook);
+): Promise<WorktreeSetup> {
+	const repo = await resolveRepoState(cwd);
+	await ensureWorktreeIgnore(repo.mainRoot);
+	const setupHook = await resolveWorktreeSetupHook(repo.mainRoot, options?.setupHook);
 	const worktrees: WorktreeInfo[] = [];
 	try {
 		for (let index = 0; index < count; index++) {
 			worktrees.push(
-				createSingleWorktree(
+				await createSingleWorktree(
 					repo.mainRoot,
 					repo.cwdRelative,
 					runId,
@@ -704,7 +821,7 @@ export function createWorktrees(
 			);
 		}
 	} catch (error) {
-		cleanupWorktrees({ cwd: repo.mainRoot, worktrees, baseCommit: repo.baseCommit });
+		await cleanupWorktrees({ cwd: repo.mainRoot, worktrees, baseCommit: repo.baseCommit });
 		throw error;
 	}
 	return { cwd: repo.mainRoot, worktrees, baseCommit: repo.baseCommit };
@@ -713,20 +830,20 @@ export function createWorktrees(
  * Save each worktree's edits since the run's base as a patch. `patchPaths` names where a worktree's patch goes when an
  * earlier execution of its child already saved one there.
  */
-export function diffWorktrees(
+export async function diffWorktrees(
 	setup: WorktreeSetup,
 	agents: string[],
 	diffsDir: string,
 	patchPaths?: ReadonlyMap<number, string>,
-): WorktreeDiff[] {
+): Promise<WorktreeDiff[]> {
 	const diffs: WorktreeDiff[] = [];
 	for (const worktree of setup.worktrees) {
 		const index = worktree.index;
 		const agent = agents[index] ?? `task-${index + 1}`;
 		const patchPath = patchPaths?.get(index) ?? path.join(diffsDir, worktreePatchName(index, agent, 1));
 		try {
-			fs.mkdirSync(path.dirname(patchPath), { recursive: true });
-			diffs.push(captureWorktreeDiff(setup, worktree, agent, patchPath));
+			await fs.mkdir(path.dirname(patchPath), { recursive: true });
+			diffs.push(await captureWorktreeDiff(setup, worktree, agent, patchPath));
 			uncapturedWorktrees.delete(worktree.path);
 		} catch (error) {
 			uncapturedWorktrees.add(worktree.path);
@@ -736,11 +853,11 @@ export function diffWorktrees(
 	return diffs;
 }
 /** Remove the worktrees, except one whose last diff capture failed: it is kept with its work for the user. */
-export function cleanupWorktrees(setup: WorktreeSetup): void {
+export async function cleanupWorktrees(setup: WorktreeSetup): Promise<void> {
 	for (let index = setup.worktrees.length - 1; index >= 0; index--) {
 		const worktree = setup.worktrees[index]!;
 		if (uncapturedWorktrees.has(worktree.path)) continue;
-		cleanupSingleWorktree(setup.cwd, worktree);
+		await cleanupSingleWorktree(setup.cwd, worktree);
 	}
 }
 /** A worktree's setup warnings, one line each, naming its task. */

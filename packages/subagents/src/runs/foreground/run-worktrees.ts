@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { ensureNamedWorktree, type NamedWorktree, type NamedWorktreeOptions } from "../shared/named-worktree.js";
 import {
 	cleanupWorktrees,
@@ -42,6 +42,8 @@ interface RunWorktrees {
 	readonly removed: Set<number>;
 	/** The run returned: nothing more is launched by it, so worktrees go once no execution holds them. */
 	returned: boolean;
+	/** Serializes sweeps and resumes of this run's worktrees. */
+	sweeping: Promise<void>;
 	/** Edits are saved as a patch before a worktree is removed, also for a run tracked again after a restart. */
 	readonly diffs?: {
 		readonly diffsDir: string;
@@ -49,6 +51,15 @@ interface RunWorktrees {
 		/** Where a resumed child saves its edits, past the patches its earlier executions saved. */
 		readonly patchPaths: Map<number, string>;
 	};
+}
+
+async function pathExists(target: string): Promise<boolean> {
+	try {
+		await access(target);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /** Runs whose worktrees still exist in this process, by run id. */
@@ -88,36 +99,52 @@ export function registerNamedRunWorktrees(
  * is kept, so it can resume in it; a clean one is removed and resume recreates it. A worktree whose edits could not be
  * saved as a patch is kept too, and a later sweep tries again (#4876).
  */
-function sweep(run: RunWorktrees): void {
-	if (!run.returned || run.holds.size > 0) return;
-	const removing = run.setup.worktrees.filter(
-		(worktree) =>
-			!run.removed.has(worktree.index) &&
-			!(run.stopped.has(worktree.index) && worktreeHasUnsavedWork(run.setup, worktree)),
-	);
-	if (removing.length > 0) {
-		const subset: WorktreeSetup = { ...run.setup, worktrees: removing };
-		const uncaptured = new Set<number>();
-		try {
-			if (run.diffs) {
-				for (const diff of diffWorktrees(subset, run.diffs.agents, run.diffs.diffsDir, run.diffs.patchPaths))
-					if (diff.captureError !== undefined) uncaptured.add(diff.index);
-			}
-		} finally {
-			// cleanupWorktrees keeps a worktree whose capture failed.
-			cleanupWorktrees(subset);
-			for (const worktree of removing) if (!uncaptured.has(worktree.index)) run.removed.add(worktree.index);
+function sweep(run: RunWorktrees): Promise<void> {
+	const next = run.sweeping.then(async () => {
+		if (!run.returned || run.holds.size > 0) return;
+		const removing: WorktreeInfo[] = [];
+		for (const worktree of run.setup.worktrees) {
+			if (run.removed.has(worktree.index)) continue;
+			if (run.stopped.has(worktree.index) && (await worktreeHasUnsavedWork(run.setup, worktree))) continue;
+			removing.push(worktree);
 		}
-	}
-	if (run.setup.worktrees.every((worktree) => run.removed.has(worktree.index)) && runs.get(run.runId) === run)
-		runs.delete(run.runId);
+		if (!run.returned || run.holds.size > 0) return;
+		if (removing.length > 0) {
+			const subset: WorktreeSetup = { ...run.setup, worktrees: removing };
+			const uncaptured = new Set<number>();
+			try {
+				if (run.diffs) {
+					for (const diff of await diffWorktrees(
+						subset,
+						run.diffs.agents,
+						run.diffs.diffsDir,
+						run.diffs.patchPaths,
+					))
+						if (diff.captureError !== undefined) uncaptured.add(diff.index);
+				}
+			} finally {
+				// cleanupWorktrees keeps a worktree whose capture failed.
+				await cleanupWorktrees(subset);
+				for (const worktree of removing) if (!uncaptured.has(worktree.index)) run.removed.add(worktree.index);
+			}
+		}
+		if (
+			run.holds.size === 0 &&
+			run.setup.worktrees.every((worktree) => run.removed.has(worktree.index)) &&
+			runs.get(run.runId) === run
+		)
+			runs.delete(run.runId);
+	});
+	run.sweeping = next.catch(() => {});
+	return next;
 }
 
-function hold(run: RunWorktrees): () => void {
+function hold(run: RunWorktrees): () => Promise<void> {
 	const token = Symbol("worktree hold");
 	run.holds.add(token);
 	return () => {
-		if (run.holds.delete(token)) sweep(run);
+		if (run.holds.delete(token)) return sweep(run);
+		return run.sweeping;
 	};
 }
 function track(runId: string, setup: WorktreeSetup, diffs?: RunWorktreeDiffs): RunWorktrees {
@@ -128,6 +155,7 @@ function track(runId: string, setup: WorktreeSetup, diffs?: RunWorktreeDiffs): R
 		stopped: new Set(),
 		removed: new Set(),
 		returned: false,
+		sweeping: Promise.resolve(),
 		...(diffs ? { diffs: { diffsDir: diffs.diffsDir, agents: [...diffs.agents], patchPaths: new Map() } } : {}),
 	};
 	runs.set(runId, run);
@@ -142,20 +170,20 @@ export function registerRunWorktrees(
 	runId: string,
 	setup: WorktreeSetup,
 	diffs?: RunWorktreeDiffs,
-): { readonly release: () => void } {
+): { readonly release: () => Promise<void> } {
 	const run = track(runId, setup, diffs);
 	return {
 		release() {
 			run.returned = true;
-			sweep(run);
+			return sweep(run);
 		},
 	};
 }
 
-const noHold = () => {};
+const noHold = (): Promise<void> => Promise.resolve();
 
 /** Hold the run's worktrees for one execution of a child; the returned release ends only this hold. */
-export function holdRunWorktree(runId: string, index: number): () => void {
+export function holdRunWorktree(runId: string, index: number): () => Promise<void> {
 	const run = runs.get(runId);
 	if (!run?.setup.worktrees.some((worktree) => worktree.index === index)) return noHold;
 	return hold(run);
@@ -167,10 +195,10 @@ export function parkRunWorktree(runId: string, index: number): void {
 }
 
 /** A stopped child can no longer resume, or was not stopped after all: its worktree goes with the others. */
-export function unparkRunWorktree(runId: string, index: number): void {
+export function unparkRunWorktree(runId: string, index: number): Promise<void> {
 	const run = runs.get(runId);
-	if (!run?.stopped.delete(index)) return;
-	sweep(run);
+	if (!run?.stopped.delete(index)) return Promise.resolve();
+	return sweep(run);
 }
 
 /**
@@ -256,19 +284,20 @@ export async function resumeRunWorktree(
 	}
 	const release = hold(run);
 	run.stopped.add(child.index);
+	await run.sweeping;
 	const position = run.setup.worktrees.findIndex((worktree) => worktree.index === child.index);
-	const removed = !existsSync(run.setup.worktrees[position]!.path);
+	const removed = !(await pathExists(run.setup.worktrees[position]!.path));
 	try {
-		const worktree = recreateWorktree(run.setup, run.setup.worktrees[position]!, child.runId, {
+		const worktree = await recreateWorktree(run.setup, run.setup.worktrees[position]!, child.runId, {
 			...(setupHook ? { setupHook } : {}),
 			agent: child.agent,
 		});
 		run.setup.worktrees[position] = worktree;
 		if (run.diffs) {
 			const agent = run.diffs.agents[child.index] ?? child.agent;
-			const saved = savedWorktreePatches(run.diffs.diffsDir, child.index, agent).at(-1);
-			if (removed && saved) restoreWorktreePatch(run.setup, worktree, saved);
-			run.diffs.patchPaths.set(child.index, nextWorktreePatchPath(run.diffs.diffsDir, child.index, agent));
+			const saved = (await savedWorktreePatches(run.diffs.diffsDir, child.index, agent)).at(-1);
+			if (removed && saved) await restoreWorktreePatch(run.setup, worktree, saved);
+			run.diffs.patchPaths.set(child.index, await nextWorktreePatchPath(run.diffs.diffsDir, child.index, agent));
 		}
 		run.removed.delete(child.index);
 	} catch {

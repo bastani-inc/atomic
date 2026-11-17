@@ -141,29 +141,29 @@ describe("canonical main Git root parser", () => {
 		}
 	});
 
-	test("subagent parser mirrors canonical-root edge cases", () => {
+	test("subagent parser mirrors canonical-root edge cases", async () => {
 		const { root, repo, worktree } = createGitRepository();
 		const malformed = join(root, "malformed");
 		const foreign = createGitRepository();
 		mkdirSync(malformed);
 		try {
-			assert.equal(findSubagentGitRoot(join(repo, "tracked.txt")), repo);
-			assert.equal(resolveSubagentMainRepoRoot(repo), repo);
+			assert.equal(await findSubagentGitRoot(join(repo, "tracked.txt")), repo);
+			assert.equal(await resolveSubagentMainRepoRoot(repo), repo);
 			runGitChecked(repo, ["worktree", "add", "--detach", worktree]);
 			const nested = join(worktree, "nested", "deeper");
 			mkdirSync(nested, { recursive: true });
-			assert.equal(findSubagentCanonicalGitRoot(nested), repo);
+			assert.equal(await findSubagentCanonicalGitRoot(nested), repo);
 
 			writeFileSync(join(malformed, ".git"), "missing-prefix: ../foreign\n");
-			assert.equal(resolveSubagentMainRepoRoot(malformed), undefined);
+			assert.equal(await resolveSubagentMainRepoRoot(malformed), undefined);
 			writeFileSync(join(malformed, ".git"), "gitdir:   \n");
-			assert.equal(resolveSubagentMainRepoRoot(malformed), undefined);
+			assert.equal(await resolveSubagentMainRepoRoot(malformed), undefined);
 			writeFileSync(join(malformed, ".git"), "gitdir: ../foreign/admin\n");
-			assert.equal(resolveSubagentMainRepoRoot(malformed), undefined);
+			assert.equal(await resolveSubagentMainRepoRoot(malformed), undefined);
 
 			runGitChecked(foreign.repo, ["worktree", "add", "--detach", foreign.worktree]);
 			writeFileSync(join(malformed, ".git"), readFileSync(join(foreign.worktree, ".git")));
-			assert.equal(resolveSubagentMainRepoRoot(malformed), undefined);
+			assert.equal(await resolveSubagentMainRepoRoot(malformed), undefined);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 			rmSync(foreign.root, { recursive: true, force: true });

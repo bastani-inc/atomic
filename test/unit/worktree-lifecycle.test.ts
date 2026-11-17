@@ -281,17 +281,17 @@ test("temporary base ref precedence is explicit then origin default then HEAD", 
 		rmSync(fallbackRepo.root, { recursive: true, force: true });
 	}
 });
-test("subagent worktrees use the same linked-invocation lifecycle", () => {
+test("subagent worktrees use the same linked-invocation lifecycle", async () => {
 	const { root, repo } = createRepository();
 	const linked = join(root, "subagent-linked");
-	let setup: ReturnType<typeof createWorktrees> | undefined;
+	let setup: Awaited<ReturnType<typeof createSubagentWorktrees>> | undefined;
 	try {
 		runGitChecked(repo, ["worktree", "add", "--detach", linked]);
-		setup = createSubagentWorktrees(linked, "subagent/nested", 1);
+		setup = await createSubagentWorktrees(linked, "subagent/nested", 1);
 		assert.equal(setup.worktrees[0]!.path, join(repo, ".atomic", "worktrees", "subagent+nested-0"));
 		assert.equal(setup.worktrees[0]!.branch, "worktree-subagent+nested-0");
 	} finally {
-		if (setup) cleanupSubagentWorktrees(setup);
+		if (setup) await cleanupSubagentWorktrees(setup);
 		assert.equal(runGitChecked(repo, ["branch", "--list", "worktree-subagent+nested-0"]).trim(), "");
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -371,7 +371,7 @@ unixTest("a setup hook that never reads stdin still has its output honored", () 
 	}
 });
 
-unixTest("subagent setup hooks receive Atomic attribution in a real child", () => {
+unixTest("subagent setup hooks receive Atomic attribution in a real child", async () => {
 	const { root, repo } = createRepository();
 	const hook = join(root, "subagent-env-hook.sh");
 	const output = join(root, "subagent-env.txt");
@@ -384,14 +384,14 @@ printf '{}'
 `,
 	);
 	chmodSync(hook, 0o755);
-	let setup: ReturnType<typeof createSubagentWorktrees> | undefined;
+	let setup: Awaited<ReturnType<typeof createSubagentWorktrees>> | undefined;
 	const previousAiAgent = process.env.AI_AGENT;
 	process.env.AI_AGENT = "caller";
 	try {
-		setup = createSubagentWorktrees(repo, "env/subagent-hook", 1, { setupHook: { hookPath: hook } });
+		setup = await createSubagentWorktrees(repo, "env/subagent-hook", 1, { setupHook: { hookPath: hook } });
 		assert.equal(readFileSync(output, "utf8"), "atomic");
 	} finally {
-		if (setup) cleanupSubagentWorktrees(setup);
+		if (setup) await cleanupSubagentWorktrees(setup);
 		if (previousAiAgent === undefined) delete process.env.AI_AGENT;
 		else process.env.AI_AGENT = previousAiAgent;
 		rmSync(root, { recursive: true, force: true });
