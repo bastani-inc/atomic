@@ -190,6 +190,7 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			this.showModelSelector();
 		})();
 	});
+	this.defaultEditor.onAction("app.history.search", () => this.showPromptHistorySearch());
 	this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 	this.defaultEditor.onAction("app.keys.help", () => {
 		void this.showExtensionCustom<void>(
