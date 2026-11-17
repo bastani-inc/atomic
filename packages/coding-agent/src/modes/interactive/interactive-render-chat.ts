@@ -19,7 +19,7 @@ import { createMarkdownTransform } from "./components/markdown-transform.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ThemedText } from "./components/themed-text.js";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
-import { countChatMessages, InteractiveModeBase } from "./interactive-mode-base.ts";
+import { countChatMessages, InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import {
 	type AgentMessage,
 	APP_NAME,
@@ -31,6 +31,7 @@ import {
 	type ChatMessageRenderOptions,
 	CompactionBoundaryMessageComponent,
 	type Component,
+	Container,
 	CustomMessageComponent,
 	chatEntriesFromAgentMessages,
 	hasTrustRequiringProjectResources,
@@ -50,6 +51,7 @@ import {
 	UserMessageComponent,
 	type VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
+import { StartupChatContainer, trackChatHistoryBuild } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { refreshInteractiveTasks } from "./interactive-task-projection.js";
 
@@ -589,6 +591,142 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 	this.ui.requestRender();
 };
 
+/** One addition a session's entries make to the chat, in order. */
+type TranscriptStep =
+	| { readonly kind: "entry"; readonly entry: ChatMessageEntry }
+	| { readonly kind: "custom"; readonly entry: CustomEntry }
+	| { readonly kind: "cost"; readonly type: "compaction" | "branch_summary"; readonly usage: Usage };
+
+/** Steps of a long session's end built at once: more than a terminal shows, so its first frame is full. */
+const TAIL_STEPS = 128;
+/** How long building the history before a session's end may run before it yields the event loop. */
+const HISTORY_SLICE_BUDGET_MS = 8;
+/** At most this many steps of that history are built in one slice, however fast each is. */
+const HISTORY_SLICE_STEPS = 24;
+
+/** The chat's additions for `sessionEntries`, in order; adds user prompts to the editor history when asked. */
+function planTranscript(
+	mode: InteractiveModeBase,
+	sessionEntries: SessionEntry[],
+	options: { populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult },
+): TranscriptStep[] {
+	const steps: TranscriptStep[] = [];
+	let messageBuffer: AgentMessage[] = [];
+	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
+	let firstMessage = true;
+	const flushMessages = (): void => {
+		if (
+			options.suppressCompactionBoundary &&
+			firstMessage &&
+			isSynthesizedCompactionBoundary(messageBuffer[0], options.suppressCompactionBoundary)
+		) {
+			messageBuffer = messageBuffer.slice(1);
+		}
+		firstMessage = false;
+		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta)) {
+			steps.push({ kind: "entry", entry });
+			if (options.populateHistory && entry.kind === "user") mode.editor.addToHistory?.(entry.text);
+		}
+		messageBuffer = [];
+	};
+	for (const entry of sessionEntries) {
+		if (entry.type === "custom") {
+			// An unrendered record between a tool call and its result must not split them into two cards.
+			if (!mode.session.extensionRunner.getEntryRenderer(entry.customType)) continue;
+			flushMessages();
+			steps.push({ kind: "custom", entry });
+		} else {
+			const messages = sessionEntryToContextMessages(entry);
+			for (const message of messages) messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
+			messageBuffer.push(...messages);
+			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
+				flushMessages();
+				const suppressedLiveBoundary =
+					entry.type === "compaction" &&
+					options.suppressCompactionBoundary !== undefined &&
+					entry.summary === options.suppressCompactionBoundary.compactedText &&
+					entry.tokensBefore === options.suppressCompactionBoundary.tokensBefore;
+				if (!suppressedLiveBoundary) steps.push({ kind: "cost", type: entry.type, usage: entry.usage });
+			}
+		}
+	}
+	flushMessages();
+	return steps;
+}
+
+/** Adds one step's components to the end of `mode.chatContainer`. */
+function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep): void {
+	if (step.kind === "custom") {
+		mode.addCustomEntryToChat(step.entry);
+		return;
+	}
+	if (step.kind === "cost") {
+		mode.addCompactionCostNotice(step.type, step.usage);
+		return;
+	}
+	const { entry } = step;
+	const component = mode.addRenderedChatEntry(entry);
+	if (entry.kind === "assistant") addServiceTierWarnings(mode, entry.message);
+	if (entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
+		mode.pendingTools.set(entry.toolCallId, component);
+	}
+}
+
+/**
+ * Builds the history before a session's end into the chat, before `end`, a bounded slice per event-loop turn and
+ * newest first, so a long session's end shows at once and its history fills in behind it. Ends early when the chat is
+ * cleared. The chat is built exactly as all at once: every step follows other chat content, so each takes the spacing
+ * it would there.
+ */
+function buildHistoryInSlices(mode: InteractiveModeBase, history: readonly TranscriptStep[], end: Component): void {
+	const chat = mode.chatContainer;
+	let remaining = history.length;
+	let before = end;
+	/** Builds up to `maxSteps` steps within `budgetMs`; whether steps remain. */
+	const build = (budgetMs: number, maxSteps: number): boolean => {
+		const at = chat.children.indexOf(before);
+		if (at < 0 || remaining === 0) return false;
+		const deadline = performance.now() + budgetMs;
+		const built: Component[][] = [];
+		const preceding = new Spacer(0);
+		const scratch = new Container();
+		// The step functions add to the chat; for this synchronous slice they add to a scratch container that, like
+		// the chat at this point, already holds content.
+		mode.chatContainer = scratch;
+		try {
+			for (let steps = 0; remaining > 0 && steps < maxSteps; steps++) {
+				scratch.children = [preceding];
+				addTranscriptStep(mode, history[--remaining]!);
+				built.push(scratch.children.slice(1));
+				if (performance.now() >= deadline) break;
+			}
+		} finally {
+			mode.chatContainer = chat;
+		}
+		const components = built.reverse().flat();
+		if (components.length > 0) {
+			if (chat instanceof StartupChatContainer) chat.insertChildren(at, components);
+			else chat.children.splice(at, 0, ...components);
+			before = components[0]!;
+			const messages = components.filter(isChatMessageComponent).length;
+			if (messages > 0) (mode.ui as AltScreenMessageCounterHost).newMessages?.historyPrepended(messages);
+			mode.ui.requestRender();
+		}
+		if (remaining > 0) return true;
+		chat.removeChild(end);
+		return false;
+	};
+	const tracked = trackChatHistoryBuild(chat, () => {
+		build(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
+		tracked.done();
+	});
+	const slice = (): void => {
+		if (build(HISTORY_SLICE_BUDGET_MS, HISTORY_SLICE_STEPS)) setImmediate(slice);
+		else tracked.done();
+	};
+	setImmediate(slice);
+}
+
 InteractiveModeBase.prototype.renderSessionEntries = function (
 	this: InteractiveModeBase,
 	sessionEntries: SessionEntry[],
@@ -605,50 +743,17 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
 	}
-	let messageBuffer: AgentMessage[] = [];
-	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
-	let firstMessage = true;
-	const flushMessages = (): void => {
-		if (
-			options.suppressCompactionBoundary &&
-			firstMessage &&
-			isSynthesizedCompactionBoundary(messageBuffer[0], options.suppressCompactionBoundary)
-		) {
-			messageBuffer = messageBuffer.slice(1);
-		}
-		firstMessage = false;
-		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta)) {
-			const component = this.addRenderedChatEntry(entry);
-			if (entry.kind === "assistant") addServiceTierWarnings(this, entry.message);
-			if (entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
-				this.pendingTools.set(entry.toolCallId, component);
-			}
-			if (options.populateHistory && entry.kind === "user") this.editor.addToHistory?.(entry.text);
-		}
-		messageBuffer = [];
-	};
-	for (const entry of sessionEntries) {
-		if (entry.type === "custom") {
-			// An unrendered record between a tool call and its result must not split them into two cards.
-			if (!this.session.extensionRunner.getEntryRenderer(entry.customType)) continue;
-			flushMessages();
-			this.addCustomEntryToChat(entry);
-		} else {
-			const messages = sessionEntryToContextMessages(entry);
-			for (const message of messages) messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
-			messageBuffer.push(...messages);
-			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
-				flushMessages();
-				const suppressedLiveBoundary =
-					entry.type === "compaction" &&
-					options.suppressCompactionBoundary !== undefined &&
-					entry.summary === options.suppressCompactionBoundary.compactedText &&
-					entry.tokensBefore === options.suppressCompactionBoundary.tokensBefore;
-				if (!suppressedLiveBoundary) this.addCompactionCostNotice(entry.type, entry.usage);
-			}
-		}
+	const steps = planTranscript(this, sessionEntries, options);
+	// The fullscreen transcript shows a long session's end built now, and its history as it is built behind it, so
+	// resuming never blocks on the history. The main-screen renderer prints the transcript in order, so it is built
+	// at once.
+	const tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - TAIL_STEPS) : 0;
+	if (tailStart > 0) {
+		const historyEnd = new Spacer(0);
+		this.chatContainer.addChild(historyEnd);
+		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd);
 	}
-	flushMessages();
+	for (let index = tailStart; index < steps.length; index++) addTranscriptStep(this, steps[index]!);
 	if (this.settingsManager.getShowCacheMissNotices()) {
 		for (const miss of collectCacheMisses(
 			sessionEntries,
