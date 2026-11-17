@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import type { SqliteDatabase } from "./database.js";
 import {
@@ -429,11 +430,47 @@ export function readTeamTokenFile(
 	try {
 		text = readFileSync(path, "utf8");
 	} catch (error) {
-		throw invalid("unreadable-token-file", source, field, `Check that ${path} exists and is readable.`, {
-			path,
-			cause: error as Error,
-		});
+		throw unreadableTokenFile(path, source, field, error as Error);
 	}
+	return teamTokenOf(text, path, source, field, read);
+}
+
+/** {@link readTeamTokenFile} without blocking the event loop. */
+export async function readTeamTokenFileAsync(
+	path: string,
+	source: TeamInputSource,
+	field: string = FIELDS[source].tokenFile,
+	read: "trimmed" | "as-connections-read" = "trimmed",
+): Promise<string> {
+	let text: string;
+	try {
+		text = await readFile(path, "utf8");
+	} catch (error) {
+		throw unreadableTokenFile(path, source, field, error as Error);
+	}
+	return teamTokenOf(text, path, source, field, read);
+}
+
+function unreadableTokenFile(
+	path: string,
+	source: TeamInputSource,
+	field: string,
+	cause: Error,
+): TeamProfileConfigError {
+	return invalid("unreadable-token-file", source, field, `Check that ${path} exists and is readable.`, {
+		path,
+		cause,
+	});
+}
+
+/** The token a token file's `text` holds, read as {@link readTeamTokenFile} reads it. */
+function teamTokenOf(
+	text: string,
+	path: string,
+	source: TeamInputSource,
+	field: string,
+	read: "trimmed" | "as-connections-read",
+): string {
 	// A file referenced in place is read again by every new connection, which drops only one final line ending.
 	const token =
 		read === "trimmed"
@@ -545,6 +582,27 @@ function environmentValue(env: NodeJS.ProcessEnv, name: string): string | undefi
  * the profile without its URL or token, is `incomplete-profile` naming every missing variable at once.
  */
 export function environmentTeamProfile(env: NodeJS.ProcessEnv = process.env): TeamStorageSelection | undefined {
+	const parsed = parseEnvironmentTeamProfile(env);
+	if (parsed?.tokenFile !== undefined) readTeamTokenFile(parsed.tokenFile, "env");
+	return parsed?.selection;
+}
+
+/** {@link environmentTeamProfile} without blocking the event loop: the token file is checked asynchronously. */
+export async function environmentTeamProfileAsync(
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<TeamStorageSelection | undefined> {
+	const parsed = parseEnvironmentTeamProfile(env);
+	if (parsed?.tokenFile !== undefined) await readTeamTokenFileAsync(parsed.tokenFile, "env");
+	return parsed?.selection;
+}
+
+/**
+ * The selection of {@link environmentTeamProfile} and the token file it references, if any, checked in every way but
+ * reading that file, which is the last check.
+ */
+function parseEnvironmentTeamProfile(
+	env: NodeJS.ProcessEnv,
+): { readonly selection: TeamStorageSelection; readonly tokenFile?: string } | undefined {
 	const profile = environmentValue(env, TEAM_PROFILE_ENV);
 	const url = environmentValue(env, TEAM_URL_ENV);
 	const token = environmentValue(env, TEAM_TOKEN_ENV);
@@ -583,6 +641,7 @@ export function environmentTeamProfile(env: NodeJS.ProcessEnv = process.env): Te
 	}
 	const checkedPrefix = checkTeamPrefix(prefix, "env");
 	let secrets: Readonly<Record<string, SecretRef>> | undefined;
+	let checkedTokenFile: string | undefined;
 	if (token !== undefined) {
 		if (token.trim().length === 0) throw emptyTeamToken("env");
 		secrets = { authToken: { env: TEAM_TOKEN_ENV } };
@@ -595,16 +654,16 @@ export function environmentTeamProfile(env: NodeJS.ProcessEnv = process.env): Te
 				`Set ${TEAM_TOKEN_FILE_ENV} to an absolute path, for example under $RUNNER_TEMP: the processes Atomic starts would resolve a relative path against their own working directory.`,
 			);
 		}
-		const path = resolve(tokenFile);
-		readTeamTokenFile(path, "env");
-		secrets = { authToken: { file: path } };
+		checkedTokenFile = resolve(tokenFile);
+		secrets = { authToken: { file: checkedTokenFile } };
 	}
-	return {
+	const selection: TeamStorageSelection = {
 		adapter: LIBSQL_ADAPTER_PACKAGE,
 		options: { url: checkedUrl },
 		...(secrets === undefined ? {} : { secrets }),
 		...(checkedPrefix === undefined ? {} : { prefix: checkedPrefix }),
 	};
+	return checkedTokenFile === undefined ? { selection } : { selection, tokenFile: checkedTokenFile };
 }
 
 // The team setup SDK loads the settings and storage machinery on first use, so importing the storage module stays

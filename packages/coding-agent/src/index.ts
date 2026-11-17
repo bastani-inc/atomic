@@ -59,7 +59,9 @@ export * from "./core/storage/index.js";
 export {
 	type ProcessStorageChoice,
 	processSharedStorageSelection,
+	processSharedStorageSelectionAsync,
 	processStorageEnvironment,
+	processStorageEnvironmentAsync,
 	type StorageDomain,
 	selectProcessStorage,
 } from "./core/storage/process-selection.js";

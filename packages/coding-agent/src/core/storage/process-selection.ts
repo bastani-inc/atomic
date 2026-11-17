@@ -9,7 +9,13 @@ import { StorageConfigError, StoragePrefixError } from "./errors.js";
 import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { validateStoragePrefix } from "./prefix.js";
 import type { StorageSelection } from "./provider.js";
-import { environmentTeamProfile, selectStorage, selectsDefaultJournalStore, TEAM_PROFILE_ENV } from "./selection.js";
+import {
+	environmentTeamProfile,
+	environmentTeamProfileAsync,
+	selectStorage,
+	selectsDefaultJournalStore,
+	TEAM_PROFILE_ENV,
+} from "./selection.js";
 
 export const STORAGE_ENV = "ATOMIC_STORAGE";
 export const SESSIONS_STORAGE_ENV = "ATOMIC_SESSIONS_STORAGE";
@@ -205,10 +211,26 @@ export function processSharedStorageSelection(): string | undefined {
 	return team === undefined ? undefined : JSON.stringify(team);
 }
 
+/** {@link processSharedStorageSelection} without blocking the event loop on the team profile's token file. */
+export async function processSharedStorageSelectionAsync(): Promise<string | undefined> {
+	const cli = registry[CLI_SELECTION];
+	if (cli !== undefined) return JSON.stringify(cli.value);
+	const shared = environmentValue(STORAGE_ENV);
+	if (shared !== undefined) return shared;
+	const team = await environmentTeamProfileAsync();
+	return team === undefined ? undefined : JSON.stringify(team);
+}
+
 /**
  * `process.env` with `ATOMIC_STORAGE` set to {@link processSharedStorageSelection}, as the Intercom broker this
  * process starts receives it: the environment to compare a running broker's storage against.
  */
 export function processStorageEnvironment(): NodeJS.ProcessEnv {
 	return { ...process.env, [STORAGE_ENV]: processSharedStorageSelection() ?? "" };
+}
+
+/** {@link processStorageEnvironment} without blocking the event loop on the team profile's token file. */
+export async function processStorageEnvironmentAsync(): Promise<NodeJS.ProcessEnv> {
+	const selection = await processSharedStorageSelectionAsync();
+	return { ...process.env, [STORAGE_ENV]: selection ?? "" };
 }
