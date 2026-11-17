@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { setKeybindings, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { beforeAll, beforeEach, describe, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
@@ -132,7 +133,7 @@ describe("package and resource picker on the shared look (#5224)", () => {
 		);
 		const out = header.render(100).map((line) => stripTerminalSequences(line).trim());
 		assert.ok(out.includes("Global resources"), out.join("\n"));
-		assert.ok(out.includes("/custom/agent-a/settings.json"), out.join("\n"));
+		assert.ok(out.includes(join("/custom/agent-a", "settings.json")), out.join("\n"));
 		assert.ok(!out.some((line) => line.includes("~/.atomic/agent/settings.json")));
 		assert.ok(!out.some((line) => line.includes("Global resources") && line.includes("esc")));
 	});
