@@ -51,10 +51,9 @@ const CLI = join(PACKAGE, "dist/cli.js");
  * reach 150 ms, where a keystroke visibly lands late and the spinner and streamed text stop. They hold from the host's
  * first frame on, its deferred startup included. Measured in milliseconds over every scenario, on a local Linux
  * machine and two runs each on a remote Linux and a remote Windows runner (Windows timers add about 5.6 ms to every
- * tick): p99 was 1.1–10.5 on Linux and 9.8–21.5 on Windows; max 9–88 on Linux. On Windows one block per scenario breaks
- * the max, a synchronous child process in the session-temp cleanup (434–510), which the failure message names as
- * another change's. Before its first frame (0.3–0.7 s) the host's longest block was 112 ms, and once 1.5 s on a fresh
- * Windows runner, spawning the engine.
+ * tick): p99 was 1.1–12.1 on Linux and 9.8–21.7 on Windows; max 9–88 on Linux and 24–54 on Windows. Before its first
+ * frame (0.3–0.7 s) the host's longest block was 112 ms, and once 1.5 s on a fresh Windows runner, spawning the
+ * engine.
  */
 const HOST_LOOP_DELAY_P99_BUDGET_MS = 50;
 const HOST_LOOP_DELAY_MAX_BUDGET_MS = 150;
@@ -62,8 +61,9 @@ const HOST_LOOP_DELAY_MAX_BUDGET_MS = 150;
  * Engine budgets. The engine runs the agent, its tools and extensions; its stalls hold back streamed text, tool
  * progress and extension frames on their way to the host, and the host's requests (custom UI input, renders) waiting
  * on them. A pause of a quarter second in streamed output reads as a hiccup, a longer one as a hang. Measured as
- * above: p99 1.1–5.3 on Linux and 5.9–12 on Windows; max 15–101 on Linux. On Windows the session-temp cleanup's child
- * process holds it 292–369. Its startup, until its session and extensions are loaded, is a one-time load of 0.5–3.7 s
+ * above: p99 0.6–5.3 on Linux and 5.9–14.4 on Windows; max 15–101 on Linux and 62–143 on Windows, except a workflow's
+ * journal statements on the node:sqlite driver (up to 545 ms on Windows), which the failure message names as another
+ * change's (#5376). Its startup, until its session and extensions are loaded, is a one-time load of 0.5–3.7 s
  * (single module evaluations of 0.1–2.1 s) while the host's editor already takes keys; it is reported in the failure
  * message but not held to these budgets.
  */
