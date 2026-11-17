@@ -232,8 +232,8 @@ describe("Coding Agent Tools", () => {
 			} as any);
 			const rendered = component?.render(200).join("\n") ?? "";
 
-			expect(rendered).toContain("<toolOutput>File read blocked");
-			expect(rendered).toContain("</toolOutput>");
+			expect(rendered).toContain("<error>File read blocked");
+			expect(rendered).toContain("</error>");
 		});
 		it("should handle line selectors embedded in path", async () => {
 			const testFile = join(testDir, "selector.txt");
@@ -395,6 +395,20 @@ describe("Coding Agent Tools", () => {
 			component.setExpanded(true);
 			assert.ok(stripVTControlCharacters(component.render(120).join("\n")).includes(warning));
 
+			component.updateResult({
+				...result,
+				details: { ...result.details, imageUnsupportedByModel: "evil\u001b[2J\u202e\nmodel" },
+				isError: false,
+			});
+			const sanitizedWarning = component.render(120).join("\n");
+			assert.equal(sanitizedWarning.includes("\u001b[2J"), false);
+			assert.equal(sanitizedWarning.includes("\u202e"), false);
+			assert.ok(
+				stripVTControlCharacters(sanitizedWarning).includes(
+					"[evil<U+202E> model does not support images; it saw a placeholder instead]",
+				),
+			);
+
 			const visionCtx = {
 				cwd: testDir,
 				model: { id: "vision-ok", input: ["text", "image"] },
@@ -453,7 +467,7 @@ describe("Coding Agent Tools", () => {
 				});
 				assert.equal(
 					stripVTControlCharacters(component.render(120).join("\n")).trim(),
-					expanded ? "file contents" : "",
+					expanded ? "1  file contents" : "Read 1 line",
 				);
 			}
 		});

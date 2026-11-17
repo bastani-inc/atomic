@@ -546,6 +546,64 @@ test.each(["select", "input", "editor"] as const)(
 	},
 );
 
+test.each(["select", "input", "editor"] as const)(
+	"Left and Backspace on a stacked %s dialog keep the custom UI attached (#5354)",
+	async (kind) => {
+		const root = mkdtempSync(join(tmpdir(), "stage-custom-dialog-left-"));
+		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		const { session: main } = await createAgentSession(sessionOptions(root));
+		cleanups.push(() => main.dispose());
+		await main.bindExtensions({ uiContext: mainChat([]), mode: "tui" });
+		const { stage, store, broker } = await workflowStage(root, main);
+		const runId = "3a8b8e63-2704-4212-af75-60bff16c299b";
+		let detaches = 0;
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId,
+			stageId: "stage-1",
+			workflowName: "prompt-scope",
+			onDetach() {
+				detaches++;
+			},
+			onClose() {},
+			piTui: makeTestTui(32),
+			piTheme: {},
+			piKeybindings: makeFakeKeybindings(),
+			stageUiBroker: broker,
+		});
+		cleanups.push(() => view.dispose());
+		const ui = stage.extensionRunner.createContext().ui;
+		const custom = ui.custom<boolean>((_tui, _theme, _keys, done) => ({
+			render: () => ["CUSTOM-WAITING"],
+			invalidate() {},
+			handleInput(data) {
+				if (data === "\r") done(true);
+				return true;
+			},
+		}));
+		void custom.catch(() => {});
+		await vi.waitFor(() => assert.match(stripAnsi(view.render(80).join("\n")), /CUSTOM-WAITING/));
+		const dialog =
+			kind === "select"
+				? ui.select("Choose", ["Approve", "Reject"])
+				: kind === "input"
+					? ui.input("Name")
+					: ui.editor("Edit", "");
+		void dialog.catch(() => {});
+		assert.equal(store.run(runId)?.stages[0]?.pendingPrompt?.kind, kind);
+		view.handleInput("\x1b[D");
+		view.handleInput("\x7f");
+		assert.equal(detaches, 0);
+		assert.equal(store.run(runId)?.stages[0]?.pendingPrompt?.kind, kind);
+		view.handleInput("\x1b");
+		assert.equal(await dialog, undefined);
+		assert.match(stripAnsi(view.render(80).join("\n")), /CUSTOM-WAITING/);
+		view.handleInput("\r");
+		assert.equal(await custom, true);
+	},
+);
+
 test("a stage's custom prompt waits behind its live dialog instead of replacing it", async () => {
 	const root = mkdtempSync(join(tmpdir(), "stage-dialog-collision-"));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));

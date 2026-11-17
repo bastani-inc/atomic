@@ -60,7 +60,7 @@ describe("subagent notification expand affordance", () => {
 	test("omits only the unavailable affordance when expansion is unbound", () => {
 		installExpandBinding([]);
 		const rendered = renderNotification();
-		assert.match(rendered, /✓ scout completed/);
+		assert.match(rendered, /● scout completed/);
 		assert.match(rendered, /⎿ {2}one/);
 		assert.doesNotMatch(rendered, /full notification|ctrl\+o|\(\s*\)/);
 	});
@@ -68,20 +68,20 @@ describe("subagent notification expand affordance", () => {
 
 describe("web-search collapsed line-count affordance", () => {
 	test("uses the default effective expand key", () => {
-		assert.match(renderWebSearch(), /\.\.\. \(3 more lines, 5 total, ctrl\+o Expand\)/);
+		assert.match(renderWebSearch(), /… \+1 line \(ctrl\+o to expand\)/);
 	});
 
 	test("uses a custom effective expand key", () => {
 		installExpandBinding("ctrl+x");
 		const rendered = renderWebSearch();
-		assert.match(rendered, /\.\.\. \(3 more lines, 5 total, ctrl\+x Expand\)/);
+		assert.match(rendered, /… \+1 line \(ctrl\+x to expand\)/);
 		assert.doesNotMatch(rendered, /CTRL\+O|ctrl\+o/);
 	});
 
 	test("keeps exact line counts while omitting an unbound affordance", () => {
 		installExpandBinding([]);
 		const rendered = renderWebSearch();
-		assert.match(rendered, /\.\.\. \(3 more lines, 5 total\)/);
-		assert.doesNotMatch(rendered, /Expand|CTRL\+O|,\s*\)/);
+		assert.match(rendered, /… \+1 line/);
+		assert.doesNotMatch(rendered, /to expand|Expand|CTRL\+O|,\s*\)/);
 	});
 });

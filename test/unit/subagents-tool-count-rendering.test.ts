@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { test } from "vitest";
 import type { TaskId, WaitId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import {
@@ -42,9 +43,13 @@ test("parallel result labels preserve count expansion beyond 50 children", () =>
 			},
 		},
 	};
-	const text = renderSubagentToolResult(result, { expanded: false, isPartial: false }, theme, context)
-		.render(120)
-		.join("\n");
-	assert.match(text, /51\. alpha · Launched in background/);
-	assert.match(text, /52\. beta · Launched in background/);
+	const text = stripVTControlCharacters(
+		renderSubagentToolResult(result, { expanded: false, isPartial: false }, theme, context).render(120).join("\n"),
+	);
+	const headers = text.split("\n").filter((line) => /Agent\(/.test(line));
+	assert.deepEqual(
+		headers.map((line) => line.trim()),
+		[...Array.from({ length: 51 }, () => "∀ Agent(alpha · Repeated)"), "∀ Agent(beta · Last)"],
+	);
+	assert.equal(text.split("\n").filter((line) => /⎿ {2}Running/.test(line)).length, 52);
 });

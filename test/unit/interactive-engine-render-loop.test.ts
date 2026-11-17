@@ -21,9 +21,13 @@
  */
 
 import assert from "node:assert/strict";
-import { beforeAll, describe, test } from "vitest";
+import { beforeAll, describe, test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import type { ToolRenderers } from "../../packages/coding-agent/src/core/extensions/types.ts";
+import {
+	ATOMIC_WORKING_FRAME_MS,
+	ATOMIC_WORKING_FRAMES,
+} from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 import type { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { EngineRenderService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-render-service.ts";
@@ -120,6 +124,7 @@ function makeHarness(): Harness {
 
 describe("EngineRenderService remote tool render loop", () => {
 	test("re-rendering the same tool card converges instead of ping-ponging", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 		const harness = makeHarness();
 		try {
 			let requestId = 1;
@@ -131,23 +136,42 @@ describe("EngineRenderService remote tool render loop", () => {
 			// the next frame. A converging renderer goes quiet after at most one
 			// invalidate-driven round trip (the initial seeding render); the buggy
 			// renderer emits a fresh invalidate for every request, forever.
-			let rerenderRounds = 0;
-			const maxRounds = 4;
-			while (rerenderRounds < maxRounds) {
-				// Window comfortably exceeds TUI.MIN_RENDER_INTERVAL_MS (16ms).
-				const invalidates = await harness.settleInvalidates(120);
-				if (invalidates === 0) break;
-				rerenderRounds++;
-				harness.send(++requestId);
-				await harness.waitForFrame(requestId);
-			}
+			const rerenderRounds = async (): Promise<number> => {
+				let rounds = 0;
+				const maxRounds = 4;
+				while (rounds < maxRounds) {
+					// Window comfortably exceeds TUI.MIN_RENDER_INTERVAL_MS (16ms).
+					const invalidates = await harness.settleInvalidates(120);
+					if (invalidates === 0) break;
+					rounds++;
+					harness.send(++requestId);
+					await harness.waitForFrame(requestId);
+				}
+				return rounds;
+			};
 
+			const seeded = await rerenderRounds();
 			assert.ok(
-				rerenderRounds <= 1,
-				`remote tool renderer did not converge: ${rerenderRounds} invalidate-driven re-render rounds (render ping-pong / TUI flicker)`,
+				seeded <= 1,
+				`remote tool renderer did not converge: ${seeded} invalidate-driven re-render rounds (render ping-pong / TUI flicker)`,
+			);
+
+			let ticked = 0;
+			for (let frame = 0; frame < ATOMIC_WORKING_FRAMES.length && ticked === 0; frame++) {
+				vi.advanceTimersByTime(ATOMIC_WORKING_FRAME_MS);
+				ticked = await harness.settleInvalidates(60);
+			}
+			assert.ok(ticked >= 1, "the shared clock repaints the running card");
+			harness.send(++requestId);
+			await harness.waitForFrame(requestId);
+			const afterTick = await rerenderRounds();
+			assert.ok(
+				afterTick <= 1,
+				`one clock tick started ${afterTick} invalidate-driven re-render rounds instead of one repaint`,
 			);
 		} finally {
 			harness.service.dispose();
+			vi.useRealTimers();
 		}
 	});
 

@@ -23,6 +23,7 @@ export type TaskNavigationActions = {
 	input(task: TaskRecord): void;
 	stdinAvailable(task: TaskRecord): boolean;
 	openQuestion(route: PromptRoute): void;
+	currentTask?(taskId: TaskId): TaskRecord | undefined;
 };
 
 /** Shared focus state; activity updates never take ownership of editor input. */
@@ -30,6 +31,8 @@ export class TaskNavigation {
 	focus: TaskFocus = { kind: "composer" };
 	selectedTaskId?: TaskId;
 	private tasks: TaskRecord[] = [];
+
+	private order: string[] = [];
 	/** `x` stops a task only when pressed again on the same task within three seconds. */
 	readonly stopConfirm: TwoPressConfirm;
 	/**
@@ -39,6 +42,7 @@ export class TaskNavigation {
 	finishedWhileArmed?: TaskRecord;
 	/** The press after a {@link finishedWhileArmed} task finished was swallowed; the next one dismisses it. */
 	finishedAcknowledged = false;
+	private readonly paintedExecution = new Map<TaskId, TaskRecord["execution"]["kind"]>();
 
 	private keys: KeybindingsManager;
 	private actions: TaskNavigationActions;
@@ -48,13 +52,20 @@ export class TaskNavigation {
 		this.stopConfirm = new TwoPressConfirm(now);
 	}
 
-	update(tasks: readonly TaskRecord[]): void {
-		this.tasks = [
+	update(
+		tasks: readonly TaskRecord[],
+		order: readonly string[] = [
 			...tasks.filter((task) => task.kind === "agent"),
 			...tasks.filter((task) => task.kind === "command"),
-		];
-		if (!this.tasks.some((task) => task.ref.taskId === this.selectedTaskId))
-			this.selectedTaskId = this.tasks[0]?.ref.taskId;
+		].map((task) => task.ref.taskId),
+	): void {
+		this.tasks = [...tasks];
+		const retained = new Set(tasks.map((task) => task.ref.taskId));
+		for (const id of this.paintedExecution.keys()) if (!retained.has(id)) this.paintedExecution.delete(id);
+		const previous = this.order;
+		this.order = [...order];
+		if (!this.order.includes(this.selectedTaskId ?? ""))
+			this.selectedTaskId = nearestSurvivor(previous, this.order, this.selectedTaskId) as TaskId | undefined;
 		const armed = this.stopConfirm.pending();
 		const settled = this.tasks.find((task) => task.ref.taskId === armed && task.execution.kind === "settled");
 		if (settled !== undefined) {
@@ -65,14 +76,37 @@ export class TaskNavigation {
 	}
 
 	open(taskId?: TaskId): void {
-		if (taskId !== undefined && this.tasks.some((task) => task.ref.taskId === taskId)) this.selectedTaskId = taskId;
+		if (taskId !== undefined && this.order.includes(taskId)) this.selectedTaskId = taskId;
 		this.focus = { kind: "tasks" };
 	}
 
+	paint(tasks: readonly TaskRecord[]): void {
+		for (const task of tasks) this.paintedExecution.set(task.ref.taskId, task.execution.kind);
+	}
+
 	async activate(action: TaskDetailAction): Promise<void> {
-		const task = this.tasks.find((task) => task.ref.taskId === this.selectedTaskId);
+		const listed = this.tasks.find((task) => task.ref.taskId === this.selectedTaskId);
+		if (!listed) return;
+		const task = this.actions.currentTask ? this.actions.currentTask(listed.ref.taskId) : listed;
 		if (!task) return;
 		if (action === "transcript") return this.actions.transcript(task);
+		const armed = this.stopConfirm.pending();
+		if (
+			action === "cancel" &&
+			task.execution.kind === "settled" &&
+			armed !== undefined &&
+			armed !== task.ref.taskId
+		) {
+			this.stopConfirm.reset();
+			return;
+		}
+		const paintedKind = this.paintedExecution.get(task.ref.taskId);
+		if (action === "cancel" && task.execution.kind === "settled" && paintedKind !== "settled") {
+			this.stopConfirm.reset();
+			this.finishedWhileArmed = task;
+			this.finishedAcknowledged = true;
+			return;
+		}
 		if (task.execution.kind === "settled") {
 			if (action !== "cancel") return;
 			// The second press meant for a stop arrives after the task finished on its own: it only acknowledges the
@@ -97,9 +131,18 @@ export class TaskNavigation {
 		}
 	}
 
+	get selectedId(): string | undefined {
+		return this.selectedTaskId;
+	}
+	select(id: string): void {
+		if (this.order.includes(id)) this.selectedTaskId = id as TaskId;
+	}
+
 	moveSelection(delta: number): void {
-		const index = this.tasks.findIndex((task) => task.ref.taskId === this.selectedTaskId);
-		this.selectedTaskId = this.tasks[Math.max(0, Math.min(this.tasks.length - 1, index + delta))]?.ref.taskId;
+		const index = this.order.indexOf(this.selectedTaskId ?? "");
+		this.selectedTaskId = this.order[Math.max(0, Math.min(this.order.length - 1, index + delta))] as
+			| TaskId
+			| undefined;
 	}
 
 	handleInput(data: string, inputOwner: "composer" | "hil" | "tasks"): boolean {
@@ -114,7 +157,8 @@ export class TaskNavigation {
 			const task = this.tasks.find((task) => task.ref.taskId === this.selectedTaskId);
 			if (task) {
 				this.focus = { kind: "detail" };
-				if (this.keys.matches(data, "app.list.open")) this.actions.openChat(task);
+				if (this.keys.matches(data, "app.list.open") || task.attention.kind === "input-needed")
+					this.actions.openChat(task);
 				else this.actions.inspect(task);
 			}
 			return true;
@@ -127,16 +171,31 @@ export class TaskNavigation {
 			void this.activate("input");
 			return true;
 		}
-		const index = this.tasks.findIndex((task) => task.ref.taskId === this.selectedTaskId);
+		const index = this.order.indexOf(this.selectedTaskId ?? "");
 		let next = index;
 		if (matchesKey(data, "up")) next--;
 		else if (matchesKey(data, "down")) next++;
 		else if (matchesKey(data, "home")) next = 0;
-		else if (matchesKey(data, "end")) next = this.tasks.length - 1;
+		else if (matchesKey(data, "end")) next = this.order.length - 1;
 		else if (matchesKey(data, "pageUp")) next -= 10;
 		else if (matchesKey(data, "pageDown")) next += 10;
 		else return false;
-		this.selectedTaskId = this.tasks[Math.max(0, Math.min(this.tasks.length - 1, next))]?.ref.taskId;
+		this.selectedTaskId = this.order[Math.max(0, Math.min(this.order.length - 1, next))] as TaskId | undefined;
 		return true;
 	}
+}
+
+function nearestSurvivor(
+	previous: readonly string[],
+	next: readonly string[],
+	selected: string | undefined,
+): string | undefined {
+	const index = selected === undefined ? -1 : previous.indexOf(selected);
+	if (index >= 0) {
+		const survivors = new Set(next);
+		for (let after = index + 1; after < previous.length; after++)
+			if (survivors.has(previous[after]!)) return previous[after];
+		for (let before = index - 1; before >= 0; before--) if (survivors.has(previous[before]!)) return previous[before];
+	}
+	return next[0];
 }

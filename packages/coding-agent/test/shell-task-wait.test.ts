@@ -89,10 +89,14 @@ for (const factory of [createBashToolDefinition, createPowerShellToolDefinition]
 		initTheme("dark");
 		const tool = factory(process.cwd());
 		const rendered = tool
-			.renderCall?.({ action: "wait", id: "task-123" }, {} as never, { state: {}, executionStarted: false } as never)
+			.renderCall?.(
+				{ action: "wait", id: "task-123" },
+				{ fg: (_: string, value: string) => value, bold: (value: string) => value } as never,
+				{ state: {}, executionStarted: false, cwd: process.cwd() } as never,
+			)
 			.render(100)
 			.join("\n");
-		assert.match(stripVTControlCharacters(rendered ?? ""), /wait task-123/);
+		assert.match(stripVTControlCharacters(rendered ?? ""), /Wait\(task-123\)/);
 	});
 	test(`${factory.name} rejects unbound existing-task waits without execution`, async () => {
 		let executed = false;

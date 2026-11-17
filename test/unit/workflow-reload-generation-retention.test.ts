@@ -52,7 +52,6 @@ async function registerGeneration(
 			setNotificationsActive() {},
 			updateHostStageSessionDir() {},
 		} as unknown as WorkflowExtensionRuntimeState,
-		storeWidgetRef: { current: null },
 		intercomControlRef: { current: null },
 		runState,
 	});

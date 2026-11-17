@@ -84,7 +84,7 @@ const QUEUED_BADGE = "✉ 2 queued";
 
 /** Footer hints that identify which of the overlay's two views is drawn. */
 const GRAPH_FOOTER = "↵ open stage chat";
-const CHAT_FOOTER = "← return to graph";
+const CHAT_FOOTER = "← graph · ";
 
 const ENTER = "\r";
 const CTRL_F = "\x06";
@@ -475,7 +475,7 @@ describe("issue #2074 — stage steering and queued-message state through the re
 	test("the stage really is mid-turn, so the typed messages are queued rather than delivered", () => {
 		assert.equal(evidence.whileAttached.includes(STAGE_TEXT), true);
 		// The chat only shows the interrupt hint while the stage session streams.
-		assert.equal(evidence.whileAttached.includes("esc to interrupt"), true);
+		assert.equal(evidence.whileAttached.includes("esc interrupt"), true);
 	});
 
 	test("Enter queues into the steering queue and ctrl+f into the follow-up queue", () => {

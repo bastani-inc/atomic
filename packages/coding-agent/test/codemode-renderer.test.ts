@@ -55,7 +55,7 @@ test("codemode renderer hides the script header and shows the output", () => {
 			],
 			details: { calls: [{ id: "call/1", name: "read", args: '{"path":"a"}', status: "ok", durationMs: 5 }] },
 		}),
-		'✓ read {"path":"a"} 5ms\n\nhello',
+		'⎿  ● Read(a)\n       ⎿  {"path":"a"}\n  ⎿  hello',
 	);
 });
 
@@ -73,10 +73,15 @@ test("codemode renderer shows model call costs and their total", () => {
 			},
 		}),
 		[
-			"✓ models.classify scorer/judge 5ms $0.000013",
-			"✓ models.classify scorer/judge 5ms $0.02",
-			"✓ models.classify scorer/judge 5ms",
-			"Model calls: $0.02",
+			"⎿  ● models.classify(scorer/judge) · $0.000013",
+			"       ⎿  scorer/judge",
+			"",
+			"     ● models.classify(scorer/judge) · $0.02",
+			"       ⎿  scorer/judge",
+			"",
+			"     ● models.classify(scorer/judge)",
+			"       ⎿  scorer/judge",
+			"  ⎿  Model calls: $0.02",
 		].join("\n"),
 	);
 });
@@ -87,7 +92,7 @@ test("codemode renderer shows rejected options without a script header", () => {
 			content: [{ type: "text", text: "The @options line must be followed by JavaScript source" }],
 			details: undefined,
 		}),
-		"The @options line must be followed by JavaScript source",
+		"⎿  The @options line must be followed by JavaScript source",
 	);
 });
 
@@ -101,20 +106,20 @@ test("codemode collapsed output is limited by wrapped lines and keeps the full o
 	};
 	const lines = render(result, false, 50).split("\n");
 	assert.equal(lines.length, 7);
-	assert.deepEqual(lines.slice(0, 5), Array(5).fill("x".repeat(50)));
-	assert.match(lines[5], /^\.\.\. \(15 more lines,/);
-	assert.equal(lines[6], "Full output: /tmp/out.txt");
-	assert.equal(render(result, true, 50).split("\n").length, 20);
+	assert.deepEqual(lines.slice(0, 5), [`⎿  ${"x".repeat(45)}`, ...Array(4).fill(`     ${"x".repeat(45)}`)]);
+	assert.match(lines[5], /^ {5}… \+18 lines/);
+	assert.equal(lines[6], "  ⎿  Full output: /tmp/out.txt");
+	assert.equal(render(result, true, 50).split("\n").length, 24);
+	assert.equal(render(result, true, 50).split("\n").slice(0, -1).join("").match(/x/g)?.length, 1000);
 });
 
-test("codemode collapsed script call is limited by wrapped lines", () => {
+test("codemode collapsed script call stays on one bounded header row (#5350)", () => {
 	const component = codemodeRenderers.renderCall?.({ code: "x".repeat(1000) }, theme, context(false)) as Component;
 	const lines = component.render(50).map(stripVTControlCharacters);
-	assert.equal(lines.length, 12);
-	assert.match(lines[11], /10 more lines/);
+	assert.deepEqual(lines, [`codemode(${"x".repeat(39)}…)`]);
 });
 
-test("codemode row shows the elapsed time while the script runs and the total once it finished (pi#10708)", () => {
+test("codemode shares the header elapsed time during execution and after completion (#5350)", () => {
 	vi.useFakeTimers();
 	vi.setSystemTime(0);
 	const tui = { requestRender: () => {} } as unknown as TUI;
@@ -123,10 +128,11 @@ test("codemode row shows the elapsed time while the script runs and the total on
 	component.markExecutionStarted();
 	component.updateResult({ content: [], details: { calls: [] }, isError: false }, true);
 	vi.advanceTimersByTime(3_000);
-	assert.match(text(), /Elapsed 3\.0s/);
+	assert.match(text(), /∀ codemode\(\) · 3s/);
+	assert.doesNotMatch(text(), /Took|Elapsed/);
 
 	component.updateResult({ content: [], details: { calls: [] }, isError: false, durationMs: 5_100 }, false);
-	assert.match(text(), /Took 5\.1s/);
-	assert.doesNotMatch(text(), /Elapsed/);
+	assert.match(text(), /● codemode\(\) · 5s/);
+	assert.doesNotMatch(text(), /Took|Elapsed/);
 	component.dispose();
 });

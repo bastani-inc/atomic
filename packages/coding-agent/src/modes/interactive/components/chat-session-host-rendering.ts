@@ -1,4 +1,15 @@
+import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import type { TaskId } from "../../../core/tasks/contracts.js";
+import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
+import { getOwnerTaskSession, getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
+import {
+	type ChatBoxSession,
+	loadTaskOwnTranscriptHistory,
+	taskTranscriptSource,
+} from "../../../core/tasks/supervisor.js";
+import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
+import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
 import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
@@ -11,7 +22,9 @@ import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
-import { compactionMeta } from "./working-run-meter.ts";
+import { taskDisplayText } from "./task-row.js";
+import { toolGroupRoleKey } from "./tool-group-tracker.ts";
+import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
 export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -20,6 +33,8 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	budget: number,
 ): string[] {
 	const components: Component[] = [];
+	state.liveChat.setGroupBash(state.getChatRenderSettings?.()?.groupBash ?? true);
+	hydrateToolExecutionStarts(state);
 	state.transcriptRenderSettingsKey = chatRenderSettingsCacheKey(state);
 	if (state.transcript.length > 0) {
 		components.push(state.transcriptComponent);
@@ -31,6 +46,17 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	state.bodyViewport.setVisibleRows(budget);
 	state.bodyViewport.setComponents(components);
 	return state.bodyViewport.render(width);
+}
+
+function hydrateToolExecutionStarts<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): void {
+	const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+	if (session === undefined) return;
+	for (const toolCallId of state.liveChat.pendingToolIds()) {
+		const startedAt = getToolExecutionStartedAt(session, toolCallId);
+		if (startedAt !== undefined) state.liveChat.markToolExecutionStarted(toolCallId, startedAt);
+	}
 }
 
 export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -62,11 +88,88 @@ export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscr
 	return lines;
 }
 
+interface TranscriptTokenCache {
+	firstEntry: ChatTranscriptEntryLike | undefined;
+	lastSettledEntry: ChatTranscriptEntryLike | undefined;
+	settledCount: number;
+	meter: AgentTokenMeter;
+}
+
+const transcriptTokenCaches = new WeakMap<object, TranscriptTokenCache>();
+
+function readTranscriptTokens<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): { readonly settledTokens: number; readonly streamingTokens: number } {
+	let cache = transcriptTokenCaches.get(state);
+	if (
+		!cache ||
+		state.transcript.length < cache.settledCount ||
+		state.transcript[0] !== cache.firstEntry ||
+		(cache.settledCount > 0 && state.transcript[cache.settledCount - 1] !== cache.lastSettledEntry)
+	) {
+		cache = {
+			firstEntry: state.transcript[0],
+			lastSettledEntry: undefined,
+			settledCount: 0,
+			meter: new AgentTokenMeter(),
+		};
+		transcriptTokenCaches.set(state, cache);
+	}
+	let streaming: AssistantMessage | undefined;
+	let sawStreaming = false;
+	for (let index = cache.settledCount; index < state.transcript.length; index += 1) {
+		const entry = state.transcript[index]!;
+		if (isChatMessageEntry(entry) && entry.kind === "assistant") {
+			if (state.liveChat.isStreamingAssistantEntry(entry)) {
+				streaming = entry.message;
+				sawStreaming = true;
+				continue;
+			}
+			if (!sawStreaming) {
+				cache.meter.settled(entry.message);
+			}
+		}
+		if (!sawStreaming) {
+			if (cache.settledCount === 0) cache.firstEntry = state.transcript[0];
+			cache.settledCount = index + 1;
+			cache.lastSettledEntry = entry;
+		}
+	}
+	return {
+		settledTokens: cache.meter.total(),
+		streamingTokens: streaming === undefined ? 0 : agentTokenTotal([], streaming),
+	};
+}
+
+export function chatSessionTokenCount<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): number {
+	const { settledTokens, streamingTokens } = readTranscriptTokens(state);
+	const counted = state.workingTokenCount?.();
+	if (counted !== undefined && counted > 0) return counted + streamingTokens;
+	return settledTokens + streamingTokens;
+}
+
+export function chatSessionWorkingMeta<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): WorkingRunSnapshot | undefined {
+	const snapshot = state.workingRunMeter.snapshot();
+	return snapshot === undefined ? undefined : { ...snapshot, tokens: chatSessionTokenCount(state) };
+}
+
 export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	width: number,
 ): string[] {
-	if (!isChatSessionStreaming(state)) return [];
+	if (!isChatSessionStreaming(state)) {
+		const worked = state.workedRun;
+		if (worked === undefined || state.workingLifecycleActive || state.compacting || state.statusMessage) return [];
+		return new AtomicWorkedStatusComponent({
+			message: worked.message,
+			snapshot: worked.snapshot,
+			color: (text) => state.style.dim(text),
+		}).render(width);
+	}
 	if (state.statusMessage && !state.compacting) return [];
 	const palette = state.style.workingIndicatorPalette;
 	const useCallerStyling =
@@ -91,8 +194,8 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	if (!state.workingLifecycleActive) return [];
 	return new WorkingStatusComponent({
 		frame: state.workingFrame,
-		message: state.workingMessage ?? "Working...",
-		meta: state.workingRunMeter.snapshot(),
+		message: state.workingMessage ?? DEFAULT_WORKING_MESSAGE,
+		meta: chatSessionWorkingMeta(state),
 		palette,
 		spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 		spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
@@ -149,6 +252,14 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	const session = agentSession ?? state.getChatBoxSession?.();
 	state.footerNavigationActive = navigationActive || agentSession === undefined;
 	if (session && state.footerData) {
+		const taskSource = () => {
+			const currentAgent = state.getAgentSession?.();
+			const currentSession = currentAgent ?? state.getChatBoxSession?.();
+			return (
+				(currentAgent === undefined ? state.getTaskSource?.() : undefined) ??
+				(currentSession ? getOwnerTaskStore(currentSession) : undefined)
+			);
+		};
 		state.footer ??= new FooterComponent(
 			session,
 			state.footerData,
@@ -158,8 +269,12 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 				warning: (text) => state.style.accent(text),
 			},
 			() => state.footerNavigationActive,
-			// A task's session has no task store of its own: its footer counts the tasks the host shows for it.
-			agentSession === undefined ? () => state.getTaskSource?.()?.backgroundTasks ?? [] : undefined,
+			() => taskSource()?.backgroundTasks ?? [],
+			undefined,
+			() => {
+				const source = taskSource();
+				return source === undefined ? undefined : taskClocksFor(source);
+			},
 		);
 		state.footer.setSession(session);
 		return state.footer.render(width);
@@ -167,6 +282,42 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	state.footer?.dispose();
 	state.footer = undefined;
 	return [];
+}
+
+const HEADER_PROMPT_ECHO_PREFIX_CELLS = 3;
+
+function resolveEchoedInitialPrompt<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): string | undefined {
+	const raw =
+		typeof state.echoedInitialPrompt === "function" ? state.echoedInitialPrompt() : state.echoedInitialPrompt;
+	return raw !== undefined && raw.length > 0 ? raw : undefined;
+}
+
+export function fitsSingleLineHeaderEcho(prompt: string, width: number): boolean {
+	if (width <= HEADER_PROMPT_ECHO_PREFIX_CELLS) return false;
+	if (/[\r\n\u2028\u2029]/u.test(prompt)) return false;
+	const displayed = taskDisplayText(prompt);
+	if (displayed.length === 0) return false;
+	return HEADER_PROMPT_ECHO_PREFIX_CELLS + visibleWidth(displayed) <= width;
+}
+
+class EchoedInitialPromptComponent implements Component {
+	private readonly inner: Component;
+	private readonly prompt: string;
+
+	constructor(inner: Component, prompt: string) {
+		this.inner = inner;
+		this.prompt = prompt;
+	}
+
+	render(width: number): string[] {
+		return fitsSingleLineHeaderEcho(this.prompt, width) ? [] : this.inner.render(width);
+	}
+
+	invalidate(): void {
+		this.inner.invalidate();
+	}
 }
 
 export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -179,10 +330,20 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 	if (isChatMessageEntry(entry)) {
 		const isStreaming = isChatSessionStreaming(state) && state.liveChat.isStreamingAssistantEntry(entry);
 		const options = chatMessageRenderOptions(state, isStreaming);
-		return renderChatMessageEntry(
+		const component = renderChatMessageEntry(
 			streamingWindowedEntry(state, entry, isStreaming),
-			entry.kind === "tool" ? { ...options, ui: entryTui(state, entry) } : options,
+			entry.kind === "tool" || entry.kind === "custom" ? { ...options, ui: entryTui(state, entry) } : options,
 		);
+		const echoed = resolveEchoedInitialPrompt(state);
+		if (
+			entry.kind === "user" &&
+			state.firstUserEntry === entry &&
+			echoed !== undefined &&
+			state.firstUserEntryExactText === echoed
+		) {
+			return new EchoedInitialPromptComponent(component, echoed);
+		}
+		return component;
 	}
 	if (!state.renderExtraEntry) {
 		return new Text("", 0, 0);
@@ -230,10 +391,53 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 	return {
 		...inherited,
 		ui: toolTui(state),
-		cwd: state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager.getCwd() ?? process.cwd(),
+		cwd:
+			state.getCwd?.() ??
+			state.getAgentSession?.()?.sessionManager?.getCwd() ??
+			state.getChatBoxSession?.()?.sessionManager?.getCwd() ??
+			process.cwd(),
 		markdownTheme: inherited?.markdownTheme ?? state.getMarkdownTheme?.(),
 		isStreaming,
 		showImages: inherited?.showImages ?? true,
+		groupBash: inherited?.groupBash ?? true,
+		getToolDefinition: (toolName: string) => {
+			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+			return (
+				session?.extensionRunner?.resolveToolRenderers?.(toolName, () => session.getToolDefinition?.(toolName)) ??
+				session?.getToolDefinition?.(toolName) ??
+				inherited?.getToolDefinition?.(toolName)
+			);
+		},
+		getCustomMessageRenderer: (customType: string) => {
+			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+			const taskSource = state.getTaskSource?.();
+			const owner =
+				taskSource === undefined ? undefined : (getOwnerTaskSession(taskSource) as ChatBoxSession | undefined);
+			return (
+				session?.extensionRunner?.getMessageRenderer?.(customType) ??
+				inherited?.getCustomMessageRenderer?.(customType) ??
+				owner?.extensionRunner?.getMessageRenderer?.(customType)
+			);
+		},
+		getTaskRecord: (taskId: TaskId) => {
+			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+			const store = session === undefined ? undefined : getOwnerTaskStore(session);
+			return store?.getTask(taskId) ?? inherited?.getTaskRecord?.(taskId);
+		},
+		hasTaskTranscript: (taskId: TaskId) => {
+			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+			const store = session === undefined ? undefined : getOwnerTaskStore(session);
+			const lease = store?.resolveTask(taskId);
+			if (lease?.ok && taskTranscriptSource(lease.value).ok) return true;
+			return inherited?.hasTaskTranscript?.(taskId) ?? false;
+		},
+		loadTaskTranscript: async (taskId: TaskId) => {
+			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+			const store = session === undefined ? undefined : getOwnerTaskStore(session);
+			const lease = store?.resolveTask(taskId);
+			if (lease?.ok) return loadTaskOwnTranscriptHistory(lease.value);
+			return inherited?.loadTaskTranscript?.(taskId);
+		},
 	};
 }
 
@@ -243,7 +447,7 @@ function entryTui<TExtraEntry extends ChatTranscriptEntryLike>(
 ): Pick<TUI, "requestRender"> {
 	return {
 		requestRender: () => {
-			state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
+			state.transcriptComponent.requestEntryRender(entry);
 			state.requestRender?.();
 		},
 	};
@@ -261,6 +465,8 @@ function chatRenderSettingsCacheKey<TExtraEntry extends ChatTranscriptEntryLike>
 	const inherited = state.getChatRenderSettings?.();
 	const markdownTransformersKey =
 		inherited?.markdownTransformers?.map((transformer) => renderIdentityKey(state, transformer)).join(",") ?? "";
+	const taskSource = state.getTaskSource?.();
+	const owner = taskSource === undefined ? undefined : (getOwnerTaskSession(taskSource) as ChatBoxSession | undefined);
 	return cacheKey([
 		"settings",
 		inherited?.hideThinkingBlock === true,
@@ -270,10 +476,14 @@ function chatRenderSettingsCacheKey<TExtraEntry extends ChatTranscriptEntryLike>
 		inherited?.imageWidthCells ?? null,
 		inherited?.outputPad ?? null,
 		inherited?.renderLatex !== false,
+		inherited?.groupBash ?? true,
 		markdownTransformersKey,
-		state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager.getCwd() ?? process.cwd(),
+		state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager?.getCwd() ?? process.cwd(),
+		owner?.sessionManager?.getSessionId?.() ?? "",
 		state.bodyViewport.getScrollFromBottom() === 0,
 		isChatSessionStreaming(state),
+		resolveEchoedInitialPrompt(state) ?? "",
+		state.firstUserEntryExactText ?? "",
 	]);
 }
 
@@ -294,6 +504,10 @@ function entryContentCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
 				entry.toolName,
 				entry.isPartial === true,
 				entry.result === undefined ? null : renderIdentityKey(state, entry.result),
+				entry.argsComplete === true,
+				entry.executionStarted === true,
+				entry.startedAt ?? null,
+				toolGroupRoleKey(entry.groupRole),
 			]);
 		case "bashExecution":
 			return cacheKey([
@@ -307,7 +521,13 @@ function entryContentCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
 				entry.message.fullOutputPath ?? null,
 			]);
 		case "user":
-			return cacheKey(["user", entry.text]);
+			return cacheKey([
+				"user",
+				entry.text,
+				state.firstUserEntry === entry &&
+					state.firstUserEntryExactText !== undefined &&
+					resolveEchoedInitialPrompt(state) === state.firstUserEntryExactText,
+			]);
 		case "custom":
 			return cacheKey(["custom", renderIdentityKey(state, entry.message)]);
 		case "branchSummary":
