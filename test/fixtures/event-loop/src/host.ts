@@ -41,10 +41,15 @@ function handleKey(data: string): void {
 	pbkdf2Sync(data, "salt", 1, 32, "sha256");
 	listOwnedArea();
 	void readLazily();
+	process.once("exit", flushOnExit);
 }
 
 function pollStatus(): string {
 	return execSync("git status --short", { encoding: "utf8" });
+}
+
+function flushOnExit(): void {
+	writeFileSync("exit.flush", "flushed");
 }
 
 export function startHost(): void {

@@ -28,6 +28,7 @@ const fixturePolicy: EventLoopPolicy = {
 			reason: "the fixture's stand-in for a reviewed helper that only runs before the first frame",
 		},
 	],
+	exitOnly: [],
 	reviewedRegexes: [],
 };
 
@@ -62,7 +63,13 @@ describe("event-loop check", () => {
 
 	test("does not report startup code, exit handlers, or classes that are never rendered", () => {
 		const functions = new Set(report.violations.map((v) => v.function));
-		for (const quiet of ["loadConfigBeforeFirstFrame", "startHost", "UnusedLine.render", "MemoryStore.save"]) {
+		for (const quiet of [
+			"loadConfigBeforeFirstFrame",
+			"startHost",
+			"flushOnExit",
+			"UnusedLine.render",
+			"MemoryStore.save",
+		]) {
 			assert.equal(functions.has(quiet), false, quiet);
 		}
 		assert.equal(

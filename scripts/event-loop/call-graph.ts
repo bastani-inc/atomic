@@ -410,6 +410,8 @@ export class CallGraphBuilder {
 	/** Assignments resolved to the declarations they write. */
 	private readonly assignmentFlows: Array<{ readonly into: readonly string[] } & ValueSources> = [];
 	private readonly detachedFunctions = new Set<number>();
+	/** References passed to a call whose callbacks only run as the process exits. */
+	private readonly detachedReferences = new Set<number>();
 	private readonly objectValueFlows: Array<{ readonly into: readonly string[] } & ValueSources> = [];
 	private readonly assignedFunctions = new Map<string, number[]>();
 	private readonly pendingObjectMembers: Array<{
@@ -1089,6 +1091,9 @@ export class CallGraphBuilder {
 		const sources = (node.arguments ?? []).map((argument) =>
 			this.captureCreated(context, () => this.visit(argument, context)),
 		);
+		const detached = this.isDetachedCall(node);
+		if (detached)
+			for (const source of sources) for (const index of source.references) this.detachedReferences.add(index);
 		if (callee === undefined) return;
 		this.calls.push({
 			container: context.container,
@@ -1098,7 +1103,7 @@ export class CallGraphBuilder {
 			argumentReferences: sources.flatMap((source) => source.references),
 			arguments: sources,
 			firstArgument: stringArgument(node.arguments?.[0]),
-			detached: this.isDetachedCall(node),
+			detached,
 		});
 	}
 
@@ -1668,6 +1673,7 @@ export class CallGraphBuilder {
 	}
 
 	private applyReference(reference: PendingReference, symbol: TsSymbol | undefined, index: number): readonly number[] {
+		if (this.detachedReferences.has(index)) return [];
 		if (symbol === undefined) {
 			this.stats.unresolved++;
 			if (reference.role === "call") this.recordUnresolvedBlocking(reference);

@@ -205,6 +205,12 @@ export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
  */
 export const STARTUP_ONLY: readonly ReviewedSelector[] = [];
 
+/**
+ * Reviewed exceptions: functions that only run as the process exits or after an error that ends the session, when a
+ * blocking write is the only way the record lands. The walk does not enter them.
+ */
+export const EXIT_ONLY: readonly ReviewedSelector[] = [];
+
 export interface ReviewedRegex {
 	readonly file: string;
 	/** The pattern's source, exactly as the check prints it. */
@@ -229,6 +235,7 @@ export interface EventLoopPolicy {
 	readonly detachedCallbacks: readonly SinkSpec[];
 	readonly ownedElsewhere: readonly OwnedArea[];
 	readonly startupOnly: readonly ReviewedSelector[];
+	readonly exitOnly: readonly ReviewedSelector[];
 	readonly reviewedRegexes: readonly ReviewedRegex[];
 }
 
@@ -242,5 +249,6 @@ export const INTERACTIVE_HOST_POLICY: EventLoopPolicy = {
 	detachedCallbacks: DETACHED_CALLBACKS,
 	ownedElsewhere: OWNED_ELSEWHERE,
 	startupOnly: STARTUP_ONLY,
+	exitOnly: EXIT_ONLY,
 	reviewedRegexes: REVIEWED_REGEXES,
 };

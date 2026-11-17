@@ -155,6 +155,8 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 		}
 	}
 	const startupOnly = reviewed(policy.startupOnly, "STARTUP_ONLY");
+	const exitOnly = reviewed(policy.exitOnly, "EXIT_ONLY");
+	for (const [id, reason] of exitOnly) startupOnly.set(id, reason);
 	for (const id of otherModes.keys()) startupOnly.set(id, "other mode");
 	const loadedAtStartup = startupModuleNodes(graph, policy.startupModules, policyErrors);
 	const interactive = reach(
@@ -167,14 +169,17 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 		},
 		registrations,
 	);
-	for (const [id] of startupOnly) {
-		if (
-			!interactive.stoppedFrom.has(id) &&
-			policy.startupOnly.some((entry) => byName.get(selectorKey(entry)) === id)
-		) {
-			policyErrors.push(
-				`STARTUP_ONLY: ${describe(graph.functions[id])} is no longer reached from an interactive root`,
-			);
+	for (const [list, entries] of [
+		["STARTUP_ONLY", policy.startupOnly],
+		["EXIT_ONLY", policy.exitOnly],
+	] as const) {
+		for (const entry of entries) {
+			const id = byName.get(selectorKey(entry));
+			if (id !== undefined && !interactive.stoppedFrom.has(id)) {
+				policyErrors.push(
+					`${list}: ${describe(graph.functions[id])} is no longer reached from an interactive root`,
+				);
+			}
 		}
 	}
 
