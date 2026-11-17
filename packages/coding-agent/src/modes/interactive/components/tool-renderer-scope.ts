@@ -1,6 +1,6 @@
 import { Text } from "@bastani/atomic-tui";
-import type { ToolRenderers } from "../../../core/extensions/types.js";
-import { ToolBlock } from "./tool-block.js";
+import type { ToolRenderers } from "../../../core/extensions/types.ts";
+import { ToolBlock } from "./tool-block.ts";
 
 export const RETAINED_TOOL_RENDERERS = new Set([
 	"read",
