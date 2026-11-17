@@ -402,13 +402,22 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			["minimal", " \u00b7 ", tightSep],
 			["keys", " \u00b7 ", tightSep],
 		];
+		const keepsExits = (mode: GraphKeyTier): boolean =>
+			this._graphKeys(mode, frameContext).every((entry) =>
+				entry.keys === "esc" ||
+				entry.action === APP_ACTION.keysHelp ||
+				(entry.action === undefined && entry.keys === "?")
+					? entry.label.length > 0
+					: true,
+			);
 		let chosen: { width: number; styled: string } | undefined;
 		for (const [mode, sepText, sepStyled] of candidates) {
 			const candidate = buildRendered(mode, sepText, sepStyled);
 			chosen = candidate;
-			if (candidate.width <= hintsBudget) {
+			if (candidate.width <= hintsBudget && keepsExits(mode)) {
 				break;
 			}
+			chosen = { width: Number.POSITIVE_INFINITY, styled: candidate.styled };
 		}
 		if (chosen !== undefined && chosen.width > hintsBudget) {
 			chosen = this._fitGraphKeys(frameContext, hintsBudget, (entries) =>
