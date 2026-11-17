@@ -138,7 +138,7 @@ test("the finished-while-armed hint names the next x action before and after ack
 });
 
 test("the main panel row lists its live open keys (#5239)", () => {
-	const { focus } = focusHarness([row("run:worker")]);
+	const { focus } = focusHarness([{ ...row("task:worker"), kind: "agent" }]);
 	focus.handleInput("home", literalKey);
 	assert.match(renderAgentPanelHint(focus, 160, plain, keys), /enter\/→ to open/);
 	assert.doesNotMatch(renderAgentPanelHint(focus, 160, plain, keys), /x stop/);

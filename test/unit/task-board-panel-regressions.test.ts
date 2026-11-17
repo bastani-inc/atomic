@@ -210,7 +210,7 @@ test("agent panel rank cache refreshes extension row text at group-offset slots 
 		for (const listener of listeners) listener();
 		const cachedLines = widget.render(100);
 		assert.equal(cachedLines.length, initialLines.length);
-		assert.ok(cachedLines.length <= AGENT_PANEL_IDLE_ROWS + 1);
+		assert.ok(cachedLines.length <= 1 + AGENT_PANEL_IDLE_ROWS + 1, "main, the capped rows and +N more");
 	} finally {
 		dispose();
 	}
