@@ -339,6 +339,8 @@ export const OPENAI_TOOL_SEARCH_MODEL_IDS = new Set([
 	"gpt-6-luna",
 	"gpt-6.1-sol",
 	"gpt-6.1-terra",
+	"gpt-6.2-astra",
+	"gpt-6.2-sol",
 ]);
 export const OPENAI_ADDITIONAL_TOOLS_MODEL_IDS = OPENAI_TOOL_SEARCH_MODEL_IDS;
 export const OPENAI_MID_CONVO_SYSTEM_MESSAGE_MODEL_IDS = new Set([
@@ -357,6 +359,8 @@ export const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS = new Set([
 	"gpt-6-luna",
 	"gpt-6.1-sol",
 	"gpt-6.1-terra",
+	"gpt-6.2-astra",
+	"gpt-6.2-sol",
 ]);
 // OpenAI documents configuration_update for the GPT-6 family.
 // https://developers.openai.com/api/docs/guides/reasoning
@@ -372,6 +376,8 @@ export const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS = new Set([
 	"gpt-6-luna",
 	"gpt-6.1-sol",
 	"gpt-6.1-terra",
+	"gpt-6.2-astra",
+	"gpt-6.2-sol",
 ]);
 export const OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS = new Set([
 	"gpt-5.4",
@@ -386,6 +392,8 @@ export const OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS = new Set([
 	"gpt-6-luna",
 	"gpt-6.1-sol",
 	"gpt-6.1-terra",
+	"gpt-6.2-astra",
+	"gpt-6.2-sol",
 ]);
 
 // Keep the generated default no less restrictive than coding-agent's historical
@@ -425,11 +433,15 @@ export const OPENAI_STANDARD_COSTS: Record<string, ModelCost> = {
 	"gpt-6-sol": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
 	"gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
 	"gpt-6.1-terra": { input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25 },
+	"gpt-6.2-astra": { input: 8, output: 40, cacheRead: 0.4, cacheWrite: 10 },
+	"gpt-6.2-sol": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
 };
 
 // Published Fast and Ultrafast rates per model. A model absent from a table does not offer that tier.
 // https://developers.openai.com/api/docs/pricing (Fast and Ultrafast tabs)
 export const OPENAI_FAST_COSTS: Record<string, ModelCost> = {
+	"gpt-6.2-astra": { input: 16, output: 80, cacheRead: 0.8, cacheWrite: 20 },
+	"gpt-6.2-sol": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
 	"gpt-6-astra": { input: 20, output: 100, cacheRead: 2, cacheWrite: 25 },
 	"gpt-6.1-sol": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
 	// GPT-6.1 Terra Fast is published as 2x Standard (https://developers.openai.com/api/docs/models/gpt-6.1-terra).
@@ -457,8 +469,11 @@ export const OPENAI_FAST_COSTS: Record<string, ModelCost> = {
 };
 // GPT-6 Astra and GPT-6.1 Sol Ultrafast rates are published, at 6x Standard for input, cached input, cache write and
 // output (https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast). GPT-5.6 Sol Ultrafast is a preview without published
-// rates, so it follows the 6x-Standard convention.
+// rates, so it follows the 6x-Standard convention. GPT-6.2 Astra and GPT-6.2 Sol Ultrafast cost 3x Standard through
+// February 28, 2027 and 6x Standard from March 1, 2027 (Pacific time); these are the current 3x rates.
 export const OPENAI_ULTRAFAST_COSTS: Record<string, ModelCost> = {
+	"gpt-6.2-astra": { input: 24, output: 120, cacheRead: 1.2, cacheWrite: 30 },
+	"gpt-6.2-sol": { input: 6, output: 30, cacheRead: 0.3, cacheWrite: 7.5 },
 	"gpt-6-astra": { input: 60, output: 300, cacheRead: 6, cacheWrite: 75 },
 	"gpt-6.1-sol": { input: 12, output: 60, cacheRead: 0.6, cacheWrite: 15 },
 	"gpt-5.6-sol": { input: 24, output: 120, cacheRead: 2.4, cacheWrite: 30 },
@@ -492,6 +507,9 @@ export const CODEX_SERVICE_TIER_IDS: Record<string, ModelServiceTierId[]> = {
 	"gpt-6.1-terra": [],
 	"gpt-6-sol": ["priority"],
 	"gpt-6-luna": ["priority"],
+	// Codex lists Fast for GPT-6.2; OpenAI's launch post adds Ultrafast for Pro subscribers on both models.
+	"gpt-6.2-astra": ["priority", "ultrafast"],
+	"gpt-6.2-sol": ["priority", "ultrafast"],
 };
 
 // The Codex subscription charges no long-context fee for these models, on any service tier (OpenAI announcement).
@@ -677,9 +695,15 @@ export function isOpenAiGpt6ModelId(modelId: string): boolean {
 		modelId === "gpt-6-sol" ||
 		modelId === "gpt-6-luna" ||
 		modelId === "gpt-6.1-sol" ||
-		modelId === "gpt-6.1-terra"
+		modelId === "gpt-6.1-terra" ||
+		modelId === "gpt-6.2-astra" ||
+		modelId === "gpt-6.2-sol"
 	);
 }
+
+// GPT-6 models whose API rejects reasoning.effort "none", so `off` is unavailable.
+// https://developers.openai.com/api/docs/models/gpt-6.2-sol
+const OPENAI_GPT6_NO_NONE_EFFORT_MODEL_IDS = new Set(["gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"]);
 
 /** Strips Bedrock's `openai.` model prefix and optional `us.`/`global.` inference-profile prefix. */
 export function getOpenAiBaseModelId(model: Model<Api>): string {
@@ -1286,9 +1310,12 @@ export function applyThinkingLevelMetadata(model: Model<any>): void {
 	) {
 		const baseModelId = getOpenAiBaseModelId(model);
 		mergeThinkingLevelMap(model, {
-			// GPT-6 Astra and GPT-6.1 Sol reject reasoning.effort "none"; GPT-6.1 Terra accepts it. All reject
-			// "minimal" (verified on Codex, October 2026).
-			off: isOpenAiGpt6AstraModelId(baseModelId) || baseModelId === "gpt-6.1-sol" ? null : "none",
+			// GPT-6 Astra, GPT-6.1 Sol and GPT-6.2 reject reasoning.effort "none"; GPT-6.1 Terra accepts it. All
+			// reject "minimal" (verified on Codex, October 2026).
+			off:
+				isOpenAiGpt6AstraModelId(baseModelId) || OPENAI_GPT6_NO_NONE_EFFORT_MODEL_IDS.has(baseModelId)
+					? null
+					: "none",
 			minimal: null,
 			low: "low",
 			medium: "medium",
@@ -2922,6 +2949,30 @@ export function finalizeChatModels(sourceModels: readonly Model<any>[]): Model<A
 	const missingOpenAiModels: Model<"openai-responses">[] = [
 		gpt6AstraOpenAiModel,
 		{
+			id: "gpt-6.2-astra",
+			name: "GPT-6.2 Astra",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.com/v1",
+			provider: "openai",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.2-astra"]),
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
+			maxTokens: 128000,
+		},
+		{
+			id: "gpt-6.2-sol",
+			name: "GPT-6.2 Sol",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.com/v1",
+			provider: "openai",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.2-sol"]),
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
+			maxTokens: 128000,
+		},
+		{
 			id: "gpt-6.1-sol",
 			name: "GPT-6.1 Sol",
 			api: "openai-responses",
@@ -3207,10 +3258,36 @@ export function finalizeChatModels(sourceModels: readonly Model<any>[]): Model<A
 	// Codex and Work raised GPT-6.1 Sol's default context to 500k (up from 272k) for ChatGPT subscriptions only, and
 	// OpenAI does not charge long-context fees for it when usage draws from the subscription. The API model
 	// (`openai` and `openai-api`) keeps the 272k cap and the whole-request long-context tier. Codex also serves
-	// GPT-6.1 Terra with a 500k context, but OpenAI has not waived its long-context fee.
+	// GPT-6.1 Terra with a 500k context, but OpenAI has not waived its long-context fee. Codex serves GPT-6.2 Sol with
+	// 500k and GPT-6.2 Astra with its 272k default, and no long-context fee waiver is announced for either.
 	const CODEX_GPT_61_CONTEXT = 500000;
+	const CODEX_GPT_62_SOL_CONTEXT = 500000;
 	const CODEX_MAX_TOKENS = 128000;
 	const codexModels: Model<"openai-codex-responses">[] = [
+		{
+			id: "gpt-6.2-astra",
+			name: "GPT-6.2 Astra",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: CODEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.2-astra"]),
+			contextWindow: CODEX_CONTEXT,
+			maxTokens: CODEX_MAX_TOKENS,
+		},
+		{
+			id: "gpt-6.2-sol",
+			name: "GPT-6.2 Sol",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: CODEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6.2-sol"]),
+			contextWindow: CODEX_GPT_62_SOL_CONTEXT,
+			maxTokens: CODEX_MAX_TOKENS,
+		},
 		{
 			id: "gpt-5.6-luna",
 			name: "GPT-5.6 Luna",
@@ -3396,6 +3473,8 @@ export function finalizeChatModels(sourceModels: readonly Model<any>[]): Model<A
 		"gpt-6-sol": 1050000,
 		"gpt-6.1-sol": 1050000,
 		"gpt-6.1-terra": 1050000,
+		"gpt-6.2-astra": 1050000,
+		"gpt-6.2-sol": 1050000,
 	};
 	const azureOpenAiModels: Model<Api>[] = allModels
 		.filter((model) => model.provider === "openai" && model.api === "openai-responses" && model.id !== "gpt-6-astra")
