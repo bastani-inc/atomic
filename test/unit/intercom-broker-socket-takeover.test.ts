@@ -332,26 +332,37 @@ describe("a slow-starting broker beside a live one", { timeout: BROKER_TEST_TIME
 	unixOnly("(#3505) a spawn succeeds when its broker exits cleanly because a live broker answers", async () => {
 		const handoffGate = join(gateDir, "handoff");
 		const childRunning = join(gateDir, "running");
-		const exitsOnGate = `const fs = require("fs"); fs.writeFileSync(process.argv[1], ""); setInterval(() => { if (fs.existsSync(process.argv[2])) process.exit(0); }, 2);`;
+		const exitsOnGate = `const fs = require("fs"); fs.appendFileSync(process.argv[3], process.pid + "\\n"); fs.writeFileSync(process.argv[1], ""); setInterval(() => { if (fs.existsSync(process.argv[2])) process.exit(0); }, 2);`;
 		for (let attempt = 0; attempt < YIELD_ATTEMPTS; attempt++) {
 			removePathSync(handoffGate, { force: true });
 			removePathSync(childRunning, { force: true });
 			const spawned = spawnModule.spawnBrokerIfNeeded(
 				process.execPath,
-				["-e", exitsOnGate, childRunning, handoffGate],
+				["-e", exitsOnGate, childRunning, handoffGate, startsFile],
 				LATER_SPAWN_READY_TIMEOUT_MS,
 			);
-			// The socket the child yields to starts answering only once the child runs.
-			assert.ok(
-				await waitUntil(() => fileExistsSync(childRunning), BROKER_BUDGET_MS),
-				"the spawned child never ran",
-			);
-			const liveBroker = await listenOnBrokerSocket();
-			writeTextSync(handoffGate, "");
+			spawned.catch(() => {});
+			let liveBroker: net.Server | undefined;
 			try {
+				// The socket the child yields to starts answering only once the child runs.
+				assert.ok(
+					await waitUntil(() => fileExistsSync(childRunning), BROKER_BUDGET_MS),
+					"the spawned child never ran",
+				);
+				liveBroker = await listenOnBrokerSocket();
+				writeTextSync(handoffGate, "");
 				await spawned;
 			} finally {
-				await closeServer(liveBroker);
+				try {
+					try {
+						writeTextSync(handoffGate, "");
+					} catch {
+						for (const pid of startedBrokerPids()) await terminate(pid);
+					}
+					await spawned.catch(() => {});
+				} finally {
+					if (liveBroker !== undefined) await closeServer(liveBroker);
+				}
 			}
 		}
 	});
