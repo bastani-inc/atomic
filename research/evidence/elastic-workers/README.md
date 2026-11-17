@@ -28,6 +28,7 @@ provisioning script and the cloud-init they will use.
 | `run-local-journal.mjs` | The same fan-out on the local journal store with W local workers: the per-host ceiling |
 | `trace-proxy.mjs` | HTTP proxy that rebuilds write transactions from Hrana batons: requests per transaction, lock hold, `BEGIN IMMEDIATE` wait |
 | `sqld-contention-repro.mjs`, `sqld-contention-multiprocess.sh` | Atomic-free load: interactive multi-request write transactions against one-request write batches |
+| `run-session-commits.mjs` | Shared-writer commits per child step for agent-stage children, with every process opening the journal through `counting-adapter.mjs` (`session-commits-root.mjs`, `session-commits-child.mjs`) |
 | `stats.mjs` | Percentiles and throughput |
 | `azure/provision.sh`, `azure/cloud-init.yaml` | Azure topology for §13.4 (not yet run) |
 
@@ -141,6 +142,21 @@ In every run, a replayed child ran exactly the steps its host held unshipped, ne
 ### Why the first runs showed 82 s against 2 356 s
 
 The early local sqld × 8 pair ran on the 80-core dev box at load average 30. The sync run collapsed under write-lock contention: it took 220 s instead of about 27 s. A rerun shows the native sqld binary and its Docker image cost the same per checkpoint (22.6 against 20.4 ms in sync). The farm runs after it predate batching.
+
+### Agent-stage children: session writes, usage and snapshots ship too
+
+Until this change, shipping covered plain checkpoints only. A stage's session writes, the checkpoints that bill model usage and those that carry worktree snapshots committed to the shared journal directly, and each first shipped whatever the child held before it. An agent-stage child therefore sent nearly every step through the shared writer with shipping on as with it off.
+
+`run-session-commits.mjs` counts the shared store's write commits, from every process, while one root with shared placement and 4 workers runs 8 children on a libSQL file. Each child runs `stages` agent stages on a stub model, each after one `ctx.tool` step, so a child step is one tool call or one agent turn. Each mode runs with 2 and with 4 stages per child, and the table shows the marginal commits per step between them, which leaves out what a run costs whatever its children do (the schema, the root's own writes, claims and completions). `{ intervalMs: 2000, maxBatch: 64, maxLagMs: 30000 }`:
+
+| Commits per child step | Before, sync | Before, ship | After, sync | After, ship |
+| --- | --- | --- | --- | --- |
+| Checkpoints and stage sessions | 3.50 | 3.44 | 3.50 | **0.44** |
+| Session admission permits | 1.50 | 1.34 | 1.44 | 1.50 |
+| Stage placement records | 0.50 | 0.50 | 0.50 | 0.50 |
+| Total | 5.53 | 5.25 | 5.44 | **2.44** |
+
+Before is `5fdd015948` (`results/session-commits-before-5fdd0159.json`), after is this change (`results/session-commits-after.json`). The checkpoint and session path falls 7.8×: the one commit left per stage is the batch that ships the stage's end, with its session writes and checkpoints, before the step returns, which also records the stage's usage. Sync mode is unchanged. The session admission permits (`admission.limits.session`) and the records of where each stage runs are coordination every host must see at once, and stay shared writes.
 
 ## Idle workers wait for wake-ups (#5230)
 
