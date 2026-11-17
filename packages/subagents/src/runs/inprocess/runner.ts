@@ -105,6 +105,28 @@ export interface ParentContext {
 	readonly resourceLoaderInheritanceSnapshot?: import("@bastani/atomic").DefaultResourceLoaderInheritanceSnapshot;
 }
 
+/**
+ * What a run's control keeps of the session that launched it: who it is, never the session itself. A control outlives
+ * its launching session, as a workflow stage's runs outlive the stage, so it must not hold the closures and snapshots of
+ * {@link ParentContext} that reach that session's history, extensions and tools. Each admission brings its own parent.
+ */
+export type ParentIdentity = Pick<
+	ParentContext,
+	"path" | "depth" | "sessionId" | "intercomGroup" | "workflowStageSubagentGuard"
+>;
+
+function parentIdentity(parent: ParentContext): ParentIdentity {
+	return {
+		path: parent.path,
+		depth: parent.depth,
+		...(parent.sessionId === undefined ? {} : { sessionId: parent.sessionId }),
+		...(parent.intercomGroup === undefined ? {} : { intercomGroup: parent.intercomGroup }),
+		...(parent.workflowStageSubagentGuard === undefined
+			? {}
+			: { workflowStageSubagentGuard: parent.workflowStageSubagentGuard }),
+	};
+}
+
 export interface TestSessionOptions {
 	readonly output?: string;
 	readonly promptLogPath?: string;
@@ -1510,7 +1532,7 @@ export interface RunningAttempt {
 
 export class SubagentControlRuntime {
 	readonly native: SubagentControl;
-	readonly parent: ParentContext;
+	readonly parent: ParentIdentity;
 	readonly sessionRoot: string;
 	private readonly runningAttempts = new Map<number, RunningAttempt>();
 	private readonly attemptTokens = new Map<string, number>();
@@ -1524,7 +1546,7 @@ export class SubagentControlRuntime {
 	private nextAttemptId = 1;
 
 	constructor(parent: ParentContext, sessionRoot?: string, runningCapacity?: number) {
-		this.parent = { ...parent };
+		this.parent = parentIdentity(parent);
 		this.sessionRoot = trustedSessionRoot(this.parent, sessionRoot);
 		this.native = new SubagentControl(this.parent.path, runningCapacity);
 	}
@@ -1562,6 +1584,14 @@ export class SubagentControlRuntime {
 
 	holdsNothing(): boolean {
 		return Object.values(this.registrySizes()).every((size) => size === 0);
+	}
+
+	/** No attempt of this run is in flight and none of its children is pending, running or continued. */
+	isFinished(): boolean {
+		if (this.runningAttempts.size > 0 || this.attemptTerminators.size > 0) return false;
+		return this.native
+			.listChildren()
+			.every((child) => child.status !== "pending" && child.status !== "running" && child.status !== "continued");
 	}
 
 	registerAgents(agents: readonly AgentConfig[]): void {

@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - With `workers.checkpointShipping`, a worker host now also keeps its children's agent-stage session transcripts, the checkpoints that bill model usage, and those that carry worktree snapshots in its local journal and ships them with the children's checkpoints, so an agent-stage child no longer commits each step to the shared journal: about 0.4 shared-journal commits per step for checkpoints and transcripts, down from 3.4. A step that ends a stage returns once it is shipped, so the root's budget sees the stage's usage and the shared journal holds its transcript when the stage ends. If a host dies, the session writes it had not shipped are dropped with its unshipped steps, and the replay continues each session from what was shipped ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 
+### Fixed
+
+- Fixed a session that ended for good, such as an SDK session that ran workflows and was disposed, staying in memory through the workflow hand-off kept for a session that might replace it.
+- Fixed each `/reload` keeping the previous copy of the workflows extension, and the extensions and session it reaches, in memory for as long as the session ran.
+
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes

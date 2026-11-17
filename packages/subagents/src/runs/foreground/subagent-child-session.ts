@@ -25,8 +25,13 @@ export function readPreviousIntercomId(sessionManager: SessionManager): string |
  * (forked children live in the store of the session that launched them, which is a database by default and has no
  * session file).
  */
+/** Where a child's session is reopened from: only the session store, never the session that asks. */
+export interface SessionStoreSource {
+	readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionStore">;
+}
+
 export async function reopenChildSession(
-	ctx: Pick<ExtensionContext, "sessionManager">,
+	ctx: SessionStoreSource,
 	record: Pick<SubagentChildRecord, "childSessionId" | "childSessionFile" | "cwd">,
 ): Promise<{ readonly sessionManager: SessionManager } | { readonly reason: string }> {
 	try {
