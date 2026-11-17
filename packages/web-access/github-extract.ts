@@ -1,9 +1,9 @@
 import { access, readFile, rm, stat, readdir, open, realpath, lstat, mkdir, writeFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
-import { assertPrivateDirectoryAsync, createChildProcessEnvironment } from "@bastani/atomic";
+import { assertPrivateDirectoryAsync, createChildProcessEnvironment, killProcessTree } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
 import { flattenTruncatedString } from "./flat-string.js";
@@ -145,28 +145,28 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			if (process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid) {
-				try {
-					process.kill(-child.pid, "SIGTERM");
-				} catch {}
+			if (child.pid !== undefined && child.pid !== process.pid) {
+				killProcessTree(child.pid);
 			}
-			child.kill();
+			child.kill("SIGKILL");
 			if (exited || child.pid === undefined) finish(true);
 		};
 		const onAbort = () => stop();
-		const child = execFile(
-			args[0],
-			args.slice(1),
-			{ timeout: timeoutMs, env: createChildProcessEnvironment() },
-			(err) => {
-				finish(stopped || Boolean(err) || Boolean(signal?.aborted));
-			},
-		);
+		const child = spawn(args[0]!, args.slice(1), {
+			timeout: timeoutMs,
+			detached: process.platform !== "win32",
+			windowsHide: true,
+			stdio: ["ignore", "pipe", "pipe"],
+			env: createChildProcessEnvironment(),
+		});
 		const timer = setTimeout(stop, timeoutMs);
 		child.on("error", () => finish(true));
 		child.on("exit", (code, exitSignal) => {
 			exited = true;
 			if (code !== 0 || exitSignal !== null || signal?.aborted) stop();
+			finish(stopped || code !== 0 || exitSignal !== null || Boolean(signal?.aborted));
+		});
+		child.on("close", (code, exitSignal) => {
 			finish(stopped || code !== 0 || exitSignal !== null || Boolean(signal?.aborted));
 		});
 		if (signal) {

@@ -106,4 +106,30 @@ test("settles promptly on timeout and maxBuffer when a background grandchild hol
 	);
 	assert.equal(errorCode(overflow.error), "ENOBUFS");
 	assert.equal(overflow.stdout.length, 1024);
+
+	const ignoredSigterm = await within(
+		spawnCollect(
+			node,
+			[
+				"-e",
+				"const { spawn } = require('node:child_process'); process.on('SIGTERM', () => {}); const g = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000);\"], { stdio: 'inherit' }); process.stdout.write(String(g.pid)); setTimeout(() => {}, 30000);",
+			],
+			{ cwd: process.cwd(), env: process.env, timeout: 150, maxBuffer: 1024 },
+		),
+		1_500,
+	);
+	assert.equal(errorCode(ignoredSigterm.error), "ETIMEDOUT");
+	assert.equal(ignoredSigterm.status, null);
+	const grandchildPid = Number(ignoredSigterm.stdout.trim());
+	if (Number.isInteger(grandchildPid) && grandchildPid > 0 && process.platform !== "win32") {
+		for (let i = 0; i < 50; i++) {
+			try {
+				process.kill(grandchildPid, 0);
+			} catch {
+				break;
+			}
+			await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		}
+		assert.throws(() => process.kill(grandchildPid, 0), { code: "ESRCH" });
+	}
 });

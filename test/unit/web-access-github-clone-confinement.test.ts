@@ -29,34 +29,41 @@ const boundary = vi.hoisted(() => ({
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
-	return {
-		...actual,
-		execFile: (_command: string, args: string[], options: object, callback: Callback) => {
-			boundary.calls.push(args);
-			if (args[0] === "repo" && args[1] === "clone" && boundary.cloneScript) {
-				return actual.execFile(process.execPath, ["-e", boundary.cloneScript], options, callback);
-			}
-			queueMicrotask(() => {
-				if (args[0] === "--version") return callback(null, "gh version 2");
-				if (args[0] === "repo" && args[1] === "clone") {
-					const target = args[3]!;
-					if (!target.startsWith(`${boundary.sandbox}${sep}`)) return callback(new Error("outside sandbox"));
-					for (const [name, content] of Object.entries(boundary.files)) {
-						mkdirSync(dirname(join(target, name)), { recursive: true });
-						writeFileSync(join(target, name), content);
-					}
-					for (const [name, link] of Object.entries(boundary.links)) {
-						mkdirSync(dirname(join(target, name)), { recursive: true });
-						symlinkSync(link.target, join(target, name), link.type);
-					}
-					return callback(boundary.failClone ? new Error("clone failed") : null, "");
+	const execFile = (_command: string, args: string[], _options: object, callback: Callback) => {
+		boundary.calls.push(args);
+		queueMicrotask(() => {
+			if (args[0] === "--version") return callback(null, "gh version 2");
+			if (args[0] === "repo" && args[1] === "clone") {
+				const target = args[3]!;
+				if (!target.startsWith(`${boundary.sandbox}${sep}`)) return callback(new Error("outside sandbox"));
+				for (const [name, content] of Object.entries(boundary.files)) {
+					mkdirSync(dirname(join(target, name)), { recursive: true });
+					writeFileSync(join(target, name), content);
 				}
-				const output = boundary.api[`${args[1]} ${args[3]}`];
-				return output === undefined ? callback(new Error("offline"), "") : callback(null, output);
-			});
-			return Object.assign(new EventEmitter(), { kill: () => true });
-		},
+				for (const [name, link] of Object.entries(boundary.links)) {
+					mkdirSync(dirname(join(target, name)), { recursive: true });
+					symlinkSync(link.target, join(target, name), link.type);
+				}
+				return callback(boundary.failClone ? new Error("clone failed") : null, "");
+			}
+			const output = boundary.api[`${args[1]} ${args[3]}`];
+			return output === undefined ? callback(new Error("offline"), "") : callback(null, output);
+		});
+		return Object.assign(new EventEmitter(), { kill: () => true });
 	};
+	const spawn = (command: string, args: string[] = [], options: object = {}) => {
+		if (args[0] === "repo" && args[1] === "clone" && boundary.cloneScript) {
+			boundary.calls.push(args);
+			return actual.spawn(process.execPath, ["-e", boundary.cloneScript], options);
+		}
+		const child = Object.assign(new EventEmitter(), { kill: () => true });
+		execFile(command, args, options, (err) => {
+			child.emit("exit", err ? 1 : 0, null);
+			child.emit("close", err ? 1 : 0, null);
+		});
+		return child;
+	};
+	return { ...actual, execFile, spawn };
 });
 vi.mock("../../packages/web-access/config-paths.ts", () => ({ findReadableConfigPath: () => boundary.configPath }));
 
@@ -542,8 +549,8 @@ test("invalid GitHub URLs name the part that was rejected", () => {
 });
 
 test("aborting or clearing a clone with a background grandchild holding stdio settles promptly (#5377)", async () => {
-	boundary.cloneScript =
-		"const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2500)'], { stdio: 'inherit' }); setTimeout(() => {}, 2500);";
+	const pidFile = join(sandbox, "grandchild.pid");
+	boundary.cloneScript = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); process.on('SIGTERM', () => {}); const g = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setTimeout(() => {}, 2500);"], { stdio: 'inherit' }); writeFileSync(${JSON.stringify(pidFile)}, String(g.pid)); setTimeout(() => {}, 2500);`;
 	const within = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
@@ -557,16 +564,39 @@ test("aborting or clearing a clone with a background grandchild holding stdio se
 			if (timer !== undefined) clearTimeout(timer);
 		}
 	};
+	const waitForPidFile = async (): Promise<number> => {
+		for (let i = 0; i < 40; i++) {
+			if (existsSync(pidFile)) {
+				const pid = Number((await readText(pidFile)).trim());
+				if (Number.isInteger(pid) && pid > 0) return pid;
+			}
+			await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		}
+		throw new Error("grandchild pid file not written");
+	};
+	const waitForProcessExit = async (pid: number): Promise<void> => {
+		if (process.platform === "win32") return;
+		for (let i = 0; i < 50; i++) {
+			try {
+				process.kill(pid, 0);
+			} catch {
+				return;
+			}
+			await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		}
+		assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+	};
 	const controller = new AbortController();
-	const abortTimer = setTimeout(() => controller.abort(), 80);
-	try {
-		assert.equal(await within(extractGitHub("https://github.com/octo/widgets", controller.signal, true), 800), null);
-	} finally {
-		clearTimeout(abortTimer);
-	}
+	const abortClone = extractGitHub("https://github.com/octo/widgets", controller.signal, true);
+	const firstGrandchildPid = await waitForPidFile();
+	controller.abort();
+	assert.equal(await within(abortClone, 800), null);
+	await waitForProcessExit(firstGrandchildPid);
 
+	writeFileSync(pidFile, "");
 	const pendingClone = extractGitHub("https://github.com/octo/widgets", undefined, true);
-	await new Promise<void>((resolve) => setTimeout(resolve, 80));
+	const secondGrandchildPid = await waitForPidFile();
 	await within(clearCloneCache(), 800);
 	assert.equal(await within(pendingClone, 800), null);
+	await waitForProcessExit(secondGrandchildPid);
 });

@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { createChildProcessEnvironment, createGitEnvironment, isPathInside } from "@bastani/atomic";
+import { createChildProcessEnvironment, createGitEnvironment, isPathInside, killProcessTree } from "@bastani/atomic";
 import { performPostCreationSetup } from "./worktree-post-create.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
 export interface WorktreeSetup {
@@ -163,12 +163,10 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			if (process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid) {
-				try {
-					process.kill(-child.pid, "SIGTERM");
-				} catch {}
+			if (child.pid !== undefined && child.pid !== process.pid) {
+				killProcessTree(child.pid);
 			}
-			child.kill("SIGTERM");
+			child.kill("SIGKILL");
 			if (exited || child.pid === undefined) finish(null);
 		};
 		const timer =

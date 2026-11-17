@@ -6,7 +6,17 @@ import { test, vi } from "vitest";
 import { fileExists, makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const boundary = vi.hoisted(() => ({ path: "", clone: vi.fn() }));
-vi.mock("node:child_process", () => ({ execFile: boundary.clone }));
+vi.mock("node:child_process", () => ({
+	execFile: boundary.clone,
+	spawn: (command: string, args: string[] = [], options: object = {}) => {
+		const child = Object.assign(new EventEmitter(), { kill: () => true });
+		boundary.clone(command, args, options, (err: Error | null) => {
+			child.emit("exit", err ? 1 : 0, null);
+			child.emit("close", err ? 1 : 0, null);
+		});
+		return child;
+	},
+}));
 vi.mock("../../packages/web-access/config-paths.ts", () => ({ findReadableConfigPath: () => boundary.path }));
 
 // #3105: same-repository clone work and deletion belong to the invoking owner.

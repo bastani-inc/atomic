@@ -20,10 +20,10 @@ type Callback = (error: Error | null, stdout?: string) => void;
 /** `gh`/`git` launches are faked: the fake clone only writes inside the per-test directory. */
 const boundary = vi.hoisted(() => ({ configPath: "", sandbox: "", calls: [] as string[][] }));
 
-vi.mock("node:child_process", async (importOriginal) => ({
+vi.mock("node:child_process", async (importOriginal) => {
 	// Everything else stays real (the Windows ownership check reads ACLs through it).
-	...(await importOriginal<typeof import("node:child_process")>()),
-	execFile: (_command: string, args: string[], _options: object, callback: Callback) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	const execFile = (_command: string, args: string[], _options: object, callback: Callback) => {
 		boundary.calls.push(args);
 		queueMicrotask(() => {
 			if (args[0] === "--version") return callback(null, "gh version 2");
@@ -37,8 +37,18 @@ vi.mock("node:child_process", async (importOriginal) => ({
 			return callback(new Error("offline"), "");
 		});
 		return Object.assign(new EventEmitter(), { kill: () => true });
-	},
-}));
+	};
+	const spawn = (command: string, args: string[] = [], options: object = {}) => {
+		if (command !== "gh" && command !== "git") return actual.spawn(command, args, options);
+		const child = Object.assign(new EventEmitter(), { kill: () => true });
+		execFile(command, args, options, (err) => {
+			child.emit("exit", err ? 1 : 0, null);
+			child.emit("close", err ? 1 : 0, null);
+		});
+		return child;
+	};
+	return { ...actual, execFile, spawn };
+});
 vi.mock("../../packages/web-access/config-paths.ts", () => ({ findReadableConfigPath: () => boundary.configPath }));
 
 const suiteDirectory = makeTempDirectory("web-gh-default-dir-suite-");

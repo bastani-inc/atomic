@@ -441,7 +441,11 @@ printf '{}'
 unixTest("worktree setup hooks settle on timeout when a background grandchild holds stdio (#5377)", async () => {
 	const { root, repo } = await createRepository();
 	const hook = join(root, "grandchild-hook.sh");
-	writeFileSync(hook, "#!/bin/sh\n(sleep 30) &\nsleep 30\n");
+	const pidFile = join(root, "grandchild.pid");
+	writeFileSync(
+		hook,
+		`#!/bin/sh\ntrap '' TERM\n(trap '' TERM; sleep 30) &\necho $! > '${pidFile.replaceAll("'", "'\\''")}'\nsleep 30\n`,
+	);
 	chmodSync(hook, 0o755);
 	const within = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
 		let timer: ReturnType<typeof setTimeout> | undefined;
@@ -456,6 +460,17 @@ unixTest("worktree setup hooks settle on timeout when a background grandchild ho
 			if (timer !== undefined) clearTimeout(timer);
 		}
 	};
+	const waitForProcessExit = async (pid: number): Promise<void> => {
+		for (let i = 0; i < 50; i++) {
+			try {
+				process.kill(pid, 0);
+			} catch {
+				return;
+			}
+			await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		}
+		assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+	};
 	try {
 		await assert.rejects(
 			() =>
@@ -469,6 +484,8 @@ unixTest("worktree setup hooks settle on timeout when a background grandchild ho
 				),
 			/worktree setup hook timed out after 150ms/,
 		);
+		await waitForProcessExit(Number(readFileSync(pidFile, "utf8").trim()));
+
 		await assert.rejects(
 			() =>
 				within(
@@ -479,6 +496,7 @@ unixTest("worktree setup hooks settle on timeout when a background grandchild ho
 				),
 			/worktree setup hook timed out after 150ms/,
 		);
+		await waitForProcessExit(Number(readFileSync(pidFile, "utf8").trim()));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

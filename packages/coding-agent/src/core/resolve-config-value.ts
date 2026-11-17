@@ -5,7 +5,7 @@
 
 import { execSync, spawn, spawnSync } from "child_process";
 import { createChildProcessEnvironment } from "../utils/child-process.ts";
-import { getShellConfig, getShellConfigAsync } from "../utils/shell.ts";
+import { getShellConfig, getShellConfigAsync, killProcessTree } from "../utils/shell.ts";
 
 // Cache for shell command results (persists for process lifetime)
 const commandResultCache = new Map<string, string | undefined>();
@@ -321,12 +321,10 @@ function runCommand(
 			error ??= failure;
 			child.stdin?.destroy();
 			child.stdout?.destroy();
-			if (process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid) {
-				try {
-					process.kill(-child.pid, "SIGTERM");
-				} catch {}
+			if (child.pid !== undefined && child.pid !== process.pid) {
+				killProcessTree(child.pid);
 			}
-			child.kill("SIGTERM");
+			child.kill("SIGKILL");
 			if (exited || child.pid === undefined) finish(null);
 		};
 		const child = spawn(file, args, {

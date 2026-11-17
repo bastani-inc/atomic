@@ -68,19 +68,41 @@ describe("resolveConfigValueAsync", () => {
 				if (timer !== undefined) clearTimeout(timer);
 			}
 		};
+		const waitForProcessExit = async (pid: number): Promise<void> => {
+			for (let i = 0; i < 50; i++) {
+				try {
+					process.kill(pid, 0);
+				} catch {
+					return;
+				}
+				await new Promise<void>((resolve) => setTimeout(resolve, 10));
+			}
+			expect(() => process.kill(pid, 0)).toThrow();
+		};
+		const pidFile = join(tempDir, "grandchild.pid");
+		const escapedPidPath = pidFile.replace(/\\/g, "/").replace(/[\\"]/g, "\\$&");
 		expect(
 			await within(
 				resolveConfigValueUncachedAsync(
-					"!sh -c '(sleep 30) & dd if=/dev/zero bs=1024 count=1100 2>/dev/null; sleep 30'",
+					`!node -e 'const { spawn } = require("node:child_process"); const { writeFileSync } = require("node:fs"); process.on("SIGTERM", () => {}); const g = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setTimeout(() => {}, 30000);"], { stdio: "inherit" }); writeFileSync("${escapedPidPath}", String(g.pid)); process.stdout.write("x".repeat(1100000)); setTimeout(() => {}, 30000);'`,
 				),
 				1_500,
 			),
 		).toBeUndefined();
+		await waitForProcessExit(Number(readFileSync(pidFile, "utf-8").trim()));
 
 		const realSetTimeout = globalThis.setTimeout;
 		vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...rest: unknown[]) =>
 			realSetTimeout(fn, ms === 10_000 ? 100 : ms, ...rest)) as typeof setTimeout);
-		expect(await within(resolveConfigValueUncachedAsync("!sh -c '(sleep 30) & sleep 30'"), 1_500)).toBeUndefined();
+		expect(
+			await within(
+				resolveConfigValueUncachedAsync(
+					`!node -e 'const { spawn } = require("node:child_process"); const { writeFileSync } = require("node:fs"); process.on("SIGTERM", () => {}); const g = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setTimeout(() => {}, 30000);"], { stdio: "inherit" }); writeFileSync("${escapedPidPath}", String(g.pid)); setTimeout(() => {}, 30000);'`,
+				),
+				1_500,
+			),
+		).toBeUndefined();
+		await waitForProcessExit(Number(readFileSync(pidFile, "utf-8").trim()));
 	});
 
 	test("runs a command once for concurrent resolutions, and shares the cache with the synchronous one", async () => {

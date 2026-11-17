@@ -1,4 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { killProcessTree } from "@bastani/atomic";
+
+const SIGKILL_ESCALATION_MS = 100;
 
 export interface SpawnCollectOptions {
 	readonly cwd: string;
@@ -43,12 +46,19 @@ export function spawnCollect(
 		let settled = false;
 		let exited = false;
 		let stopped = false;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let child: ChildProcess;
 		const startedAt = Date.now();
+		const killTree = () => {
+			if (child.pid !== undefined && child.pid !== process.pid) {
+				killProcessTree(child.pid);
+			}
+		};
 		const finish = (status: number | null, signal: NodeJS.Signals | null) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
+			clearTimeout(killTimer);
 			// The runtime's own `timeout` may end the process before the timer below reports it.
 			if (error === undefined && signal !== null && Date.now() - startedAt >= options.timeout)
 				error = codedError(command, "ETIMEDOUT");
@@ -71,9 +81,19 @@ export function spawnCollect(
 				try {
 					process.kill(-child.pid, "SIGTERM");
 				} catch {}
+			} else {
+				killTree();
 			}
 			child.kill("SIGTERM");
-			if (exited || child.pid === undefined) finish(null, "SIGTERM");
+			if (exited || child.pid === undefined) {
+				killTree();
+				finish(null, "SIGTERM");
+				return;
+			}
+			killTimer ??= setTimeout(() => {
+				killTree();
+				child.kill("SIGKILL");
+			}, SIGKILL_ESCALATION_MS);
 		};
 		try {
 			child = spawn(command, [...args], {
@@ -120,7 +140,10 @@ export function spawnCollect(
 			if (error === undefined && signal !== null && Date.now() - startedAt >= options.timeout) {
 				stop(codedError(command, "ETIMEDOUT"));
 			}
-			if (stopped) finish(status, signal);
+			if (stopped) {
+				killTree();
+				finish(status, signal);
+			}
 		});
 		child.on("close", (status, signal) => finish(status, signal));
 		if (options.input !== undefined && child.stdin !== null) {
