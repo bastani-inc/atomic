@@ -544,7 +544,7 @@ class ReleaseNotices {
 }
 
 let holderSequence = 0;
-const HOLDER_RECORD = /^held (\d{15})\n/;
+const HOLDER_RECORD = /^(held|want) (\d{15})\n/;
 
 function processAlive(pid: number): boolean {
 	try {
@@ -556,10 +556,13 @@ function processAlive(pid: number): boolean {
 }
 
 /**
- * Which process holds the write lock, for the error of a writer that gives up waiting for it. Each connection that
- * takes the lock records when it took it in a file of its own next to the database, named by its process, and marks
- * the record free once it lets go; only the holder writes its record, so records never race. Nothing reads them
- * until a writer gives up: the live record taken most recently names the holder. A connection removes the records
+ * Which process holds the write lock, for the error of a writer that gives up waiting for it. Each connection
+ * records in a file of its own next to the database, named by its process, when it starts trying for the lock (before
+ * its first attempt, which waits for the record to be written), when it took the lock, and that it is free once it
+ * lets go or gives up; only its connection writes a record, so records never race. Nothing reads them until a writer
+ * gives up: the live record taken most recently names the holder. A holder whose record does not yet say it took the
+ * lock, stopped or starved right after taking it, still says it was trying for it, and the record trying the longest
+ * of the other connections names it then. A connection removes the records
  * of exited processes when it creates its own, so the killed ones do not pile up. Recording is a diagnostic: a
  * record that cannot be created, written or cleaned up never fails a transaction. The failure is recorded as a
  * degradation instead, and a writer that gives up waiting may then name no holder.
@@ -593,6 +596,11 @@ class SqliteHolderRecord {
 		}
 	}
 
+	/** Records that this connection is about to try for the lock; written before its first attempt. */
+	trying(): Promise<void> {
+		return this.write(`want ${String(Date.now()).padStart(15, "0")}\n`);
+	}
+
 	held(): Promise<void> {
 		return this.write(`held ${String(Date.now()).padStart(15, "0")}\n`);
 	}
@@ -603,7 +611,7 @@ class SqliteHolderRecord {
 
 	/** The process, this one or another, whose record says it took the write lock most recently. */
 	latestHolder(): Promise<{ readonly pid: number; readonly heldMs: number } | undefined> {
-		return writeLockHolder(this.directory);
+		return writeLockHolder(this.directory, basename(this.path));
 	}
 
 	async close(): Promise<void> {
@@ -852,15 +860,23 @@ async function removeExitedHolderRecords(directory: string, failed: (cause: unkn
 	}
 }
 
-/** The records of live processes, as pid and the time each took the lock (undefined when free); others are removed. */
-async function liveHolderRecords(directory: string): Promise<{ readonly pid: number; readonly since?: number }[]> {
+/** A live process's record: when it took the lock, or started trying for it; neither when it is free. */
+interface LiveHolderRecord {
+	readonly name: string;
+	readonly pid: number;
+	readonly heldSince?: number;
+	readonly tryingSince?: number;
+}
+
+/** The records of live processes; the records of exited ones are removed. */
+async function liveHolderRecords(directory: string): Promise<LiveHolderRecord[]> {
 	let names: string[];
 	try {
 		names = await readdir(directory);
 	} catch {
 		return [];
 	}
-	const live: { pid: number; since?: number }[] = [];
+	const live: LiveHolderRecord[] = [];
 	for (const name of names) {
 		const pid = holderPid(name);
 		if (pid === undefined) continue;
@@ -878,19 +894,35 @@ async function liveHolderRecords(directory: string): Promise<{ readonly pid: num
 		} catch {
 			continue;
 		}
-		const since = HOLDER_RECORD.exec(record)?.[1];
-		live.push({ pid, ...(since === undefined ? {} : { since: Number(since) }) });
+		const [, state, since] = HOLDER_RECORD.exec(record) ?? [];
+		live.push({
+			name,
+			pid,
+			...(state === "held" ? { heldSince: Number(since) } : {}),
+			...(state === "want" ? { tryingSince: Number(since) } : {}),
+		});
 	}
 	return live;
 }
 
-/** The live process whose record says it took the write lock most recently, and for how long it has held it. */
+/**
+ * The live process whose record says it took the write lock most recently, and for how long it has held it. When no
+ * record says so, the holder took the lock before its record could say it: the record of another connection, not
+ * `own`, that has been trying for the lock the longest names it, held since it started trying.
+ */
 async function writeLockHolder(
 	directory: string,
+	own: string,
 ): Promise<{ readonly pid: number; readonly heldMs: number } | undefined> {
-	let holder: { pid: number; since: number } | undefined;
-	for (const { pid, since } of await liveHolderRecords(directory))
-		if (since !== undefined && (holder === undefined || since > holder.since)) holder = { pid, since };
+	let held: { pid: number; since: number } | undefined;
+	let trying: { pid: number; since: number } | undefined;
+	for (const record of await liveHolderRecords(directory)) {
+		const { pid, heldSince, tryingSince } = record;
+		if (heldSince !== undefined && (held === undefined || heldSince > held.since)) held = { pid, since: heldSince };
+		if (record.name !== own && tryingSince !== undefined && (trying === undefined || tryingSince < trying.since))
+			trying = { pid, since: tryingSince };
+	}
+	const holder = held ?? trying;
 	return holder === undefined ? undefined : { pid: holder.pid, heldMs: Math.max(0, Date.now() - holder.since) };
 }
 
@@ -1237,6 +1269,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		let notices: ReleaseNotices | undefined;
 		let holding = false;
 		try {
+			// Before its first attempt, so a holder stopped or starved the moment it takes the lock is still named.
+			await this.holderRecord?.trying();
 			// Writers already waiting in other processes go first.
 			const queue = this.writeQueue;
 			queue?.observe();
@@ -1295,6 +1329,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			// the holder could not go on. Its ticket leaves while the transaction runs; the release waits for it to be gone.
 			if (holding && ticket !== undefined) this.leaving = { ticket: ticket.name, left: ticket.leave() };
 			else await ticket?.leave();
+			if (!holding) await this.holderRecord?.free();
 		}
 	}
 

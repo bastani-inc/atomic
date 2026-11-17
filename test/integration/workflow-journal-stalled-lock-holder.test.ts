@@ -55,12 +55,15 @@ async function readLine(child: SpawnedProcess): Promise<string> {
  * Another Atomic process takes the write lock mid-transaction and stalls holding it: stopped by a signal, or with its
  * own event loop blocked. Resolves once the lock is held; `release` lets the holder commit and waits for it to exit.
  */
-async function stallingHolder(path: string, stall: Stall) {
-	const holder = spawnProcess([process.execPath, HOLDER, path, stall === "stopped" ? "stdin" : `spin:${STALL_MS}`], {
-		stdin: "pipe",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+async function stallingHolder(path: string, stall: Stall, record: string[] = []) {
+	const holder = spawnProcess(
+		[process.execPath, HOLDER, path, stall === "stopped" ? "stdin" : `spin:${STALL_MS}`, ...record],
+		{
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+		},
+	);
 	assert.equal(await readLine(holder), "locked");
 	if (stall === "stopped") holder.kill("SIGSTOP");
 	return {
@@ -265,6 +268,38 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(error.holderPid, holder.pid);
 			assert.ok((error.holderHeldMs ?? -1) >= 0);
 			assert.equal(error.timeoutMs, LOCK_WAIT_MS);
+			await holder.release();
+		} finally {
+			await holder?.kill();
+			await database.close();
+			removeTempDirectory(directory);
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+/** Long enough that the holder's record of taking the lock cannot land before the waiting writer gives up. */
+const SLOW_RECORD_MS = 4 * LOCK_WAIT_MS;
+
+test.skipIf(process.platform === "win32")(
+	"a writer that gives up on a write lock names the process holding it even when that process stopped before it recorded taking the lock",
+	async () => {
+		const directory = makeTempDirectory("journal-stalled-holder-unrecorded-");
+		const path = join(directory, "journal.sqlite");
+		const database = await openNodeSqliteDatabase(path, { busyTimeoutMs: 0, lockWaitMs: LOCK_WAIT_MS });
+		let holder: Awaited<ReturnType<typeof stallingHolder>> | undefined;
+		try {
+			await database.exec("CREATE TABLE probe(x)");
+			holder = await stallingHolder(path, "stopped", [`slow-record:${SLOW_RECORD_MS}`]);
+			const error = await database
+				.transaction((tx) => tx.run("INSERT INTO probe VALUES (1)"))
+				.then(
+					() => assert.fail("write succeeded under a held lock"),
+					(cause: unknown) => cause,
+				);
+			assert.ok(error instanceof StorageWriteLockTimeoutError, String(error));
+			assert.equal(error.holderPid, holder.pid);
+			assert.ok((error.holderHeldMs ?? -1) >= 0);
 			await holder.release();
 		} finally {
 			await holder?.kill();
