@@ -401,13 +401,13 @@ describe("synced upstream skill trees", () => {
 		);
 	});
 
-	test("pins the agent-browser v0.42.0 discovery stub and provenance", () => {
+	test("pins the agent-browser v0.43.0 discovery stub and provenance", () => {
 		const skillRoot = join(subagentSkills, "agent-browser");
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot), ["SKILL.md"]);
 		const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
 		assert.equal(
 			sha256(body.replace(/^\n/u, "")),
-			"c626ad60ef89c45f580034fab99ccfb965c7019d9798f9934ffe9e9f2b07b6d8",
+			"f7d40c8f0e8794240d9b1728e9b2ea195c6044045c120986c45d216d4804a333",
 		);
 		assert.match(frontmatter, /^name: agent-browser$/mu);
 		assert.match(frontmatter, /^hidden: true$/mu);
@@ -415,8 +415,8 @@ describe("synced upstream skill trees", () => {
 		for (const [key, value] of [
 			["github-repo", "https://github.com/vercel-labs/agent-browser"],
 			["github-path", "skills/agent-browser"],
-			["github-ref", "refs/tags/v0.42.0"],
-			["github-tree-sha", "29ba9c12789b1c54ab76ad40e2472e646d141b85"],
+			["github-ref", "refs/tags/v0.43.0"],
+			["github-tree-sha", "cd4185523189fb04c1d24bea0100b6aa2ce7421e"],
 		] as const) {
 			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
 		}
