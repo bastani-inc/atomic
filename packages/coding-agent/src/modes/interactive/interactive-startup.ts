@@ -1,4 +1,5 @@
 import { replaceControlCharacters, ScrollView, VStack } from "@bastani/atomic-tui";
+import { markEventLoopStartupComplete } from "../../core/event-loop-monitor.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
@@ -293,6 +294,9 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// still stay behind the engine-bound gate below.
 	markLifecycleTiming("tui-start");
 	this.ui.start();
+	// The first frame is on its way and keys reach the editor from here on: what the host does next, the deferred
+	// startup included, happens while the user works.
+	markEventLoopStartupComplete();
 	this.programStatus.report();
 	ensurePngTranscoder(() => {
 		this.ui.invalidate();

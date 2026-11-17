@@ -5,7 +5,8 @@
  * session phase, and exits on its own. It prints one JSON line: whether the monitor started and, on Node, the async resources starting it created.
  *
  * With `exit-inside-block` as the fourth argument it instead exits at the end of the long block, in the same task, as
- * a quit that ends in a long synchronous step does.
+ * a quit that ends in a long synchronous step does. With `phase-inside-block` it ends the startup phase at the end of
+ * the long block, in the same task, as the host does when the step before its first frame is long.
  */
 import { createHook } from "node:async_hooks";
 import { setTimeout as delay } from "node:timers/promises";
@@ -43,6 +44,7 @@ hook?.disable();
 await delay(Number(settleMs));
 holdTheEventLoopForLong(Number(longBlockMs));
 if (mode === "exit-inside-block") process.exit(0);
+if (mode === "phase-inside-block") markEventLoopStartupComplete();
 await delay(Number(settleMs));
 holdTheEventLoopBriefly(Number(shortBlockMs));
 await delay(Number(settleMs));

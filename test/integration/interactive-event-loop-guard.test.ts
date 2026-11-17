@@ -48,13 +48,13 @@ const CLI = join(PACKAGE, "dist/cli.js");
 /**
  * Host budgets. The host draws every frame and echoes every keystroke, so its delay is the lag a user sees. Input that
  * answers within 100 ms feels instant: a p99 under half that keeps a typing burst smooth, and no single stall may
- * reach 150 ms, where a keystroke visibly lands late and the spinner and streamed text stop. Measured in milliseconds,
- * three runs each on a local Linux machine, a remote Linux runner and a remote Windows runner (Windows timers add
- * about 5.6 ms to every tick): while typing, streaming, a workflow and subagents ran, p99 was 0.9–7 on Linux and
- * 6–22 on Windows, and max 2–38 on Linux; host startup max was 47–104 on Linux. Blocks in the product break the max today,
- * and the failure messages name them: on Windows a synchronous child process in the session-temp cleanup (275–495)
- * and, at startup, the engine spawn and the builtin extensions' load (147–1,359); on both, rendering a resumed
- * transcript of 10,400 entries (0.5–1.8 s).
+ * reach 150 ms, where a keystroke visibly lands late and the spinner and streamed text stop. They hold from the host's
+ * first frame on, its deferred startup included. Measured in milliseconds over every scenario, on a local Linux
+ * machine and two runs each on a remote Linux and a remote Windows runner (Windows timers add about 5.6 ms to every
+ * tick): p99 was 1.1–10.5 on Linux and 9.8–21.5 on Windows; max 9–88 on Linux. On Windows one block per scenario breaks
+ * the max, a synchronous child process in the session-temp cleanup (434–510), which the failure message names as
+ * another change's. Before its first frame (0.3–0.7 s) the host's longest block was 112 ms, and once 1.5 s on a fresh
+ * Windows runner, spawning the engine.
  */
 const HOST_LOOP_DELAY_P99_BUDGET_MS = 50;
 const HOST_LOOP_DELAY_MAX_BUDGET_MS = 150;
@@ -62,10 +62,10 @@ const HOST_LOOP_DELAY_MAX_BUDGET_MS = 150;
  * Engine budgets. The engine runs the agent, its tools and extensions; its stalls hold back streamed text, tool
  * progress and extension frames on their way to the host, and the host's requests (custom UI input, renders) waiting
  * on them. A pause of a quarter second in streamed output reads as a hiccup, a longer one as a hang. Measured as
- * above: p99 0.4–15 on Linux and 6–42 on Windows; max 58–136 on Linux, the largest a workflow-discovery scan as the
- * session starts. On Windows that scan and the session-temp cleanup's child process hold it 303–352, and the resumed
- * session's output 1.4–1.6 s. Its startup, a one-time extension load of 0.6–2.8 s while the host keeps the terminal
- * responsive, is reported in the failure message but not held to these budgets.
+ * above: p99 1.1–5.3 on Linux and 5.9–12 on Windows; max 15–101 on Linux. On Windows the session-temp cleanup's child
+ * process holds it 292–369. Its startup, until its session and extensions are loaded, is a one-time load of 0.5–3.7 s
+ * (single module evaluations of 0.1–2.1 s) while the host's editor already takes keys; it is reported in the failure
+ * message but not held to these budgets.
  */
 const ENGINE_LOOP_DELAY_P99_BUDGET_MS = 50;
 const ENGINE_LOOP_DELAY_MAX_BUDGET_MS = 250;
@@ -194,11 +194,14 @@ interface ScenarioResult {
 	readonly blocks: readonly BlockRecord[];
 }
 
-/** The phase a block was recorded in: the one it ended in, as the delay histogram records a block when it ends. */
+/**
+ * The phase a block ran in: the one it started in. A process ends any block still running when it enters a phase, and
+ * counts it in the phase it leaves, so no block runs across two.
+ */
 function phaseOf(block: BlockRecord, delays: ProcessDelays): Phase {
-	const end = Date.parse(block.at) + block.durationMs;
-	if (delays.shutdown !== undefined && end >= Date.parse(delays.shutdown.at)) return "shutdown";
-	return end >= Date.parse(delays.session.at) ? "session" : "startup";
+	const start = Date.parse(block.at);
+	if (delays.shutdown !== undefined && start >= Date.parse(delays.shutdown.at)) return "shutdown";
+	return start >= Date.parse(delays.session.at) ? "session" : "startup";
 }
 
 async function runScenario(
@@ -269,12 +272,13 @@ async function runScenario(
 }
 
 /**
- * Fails naming every budget a scenario broke, with the blocks of that process and phase and their stacks. Quitting is
- * a one-time transition like the engine's startup: its phase is reported in the failure message but not budgeted.
- * Startup, up to the host's first frame and the engine's binding, is held by the startup work in progress elsewhere
- * (#5339) and is reported, not budgeted, here. A broken max whose every block over the budget ran in code another open
- * change is making non-blocking (the static check's OWNED_ELSEWHERE) is printed as theirs instead of failing; a broken
- * p99, or any block of this code's own, fails.
+ * Fails naming every budget a scenario broke, with the blocks of that process and phase and their stacks. The host is
+ * held to its budgets from its first frame on, when its editor takes keys, its deferred startup included; only what
+ * comes before that frame is its startup. The engine's startup, until its session and extensions are loaded, is a
+ * one-time load the user does not wait on: the host's editor already takes keys, and a prompt sent meanwhile waits for
+ * the engine to be ready. Like quitting, it is reported in the failure message but not budgeted. A broken max whose
+ * every block over the budget ran in code another open change is making non-blocking (the static check's
+ * OWNED_ELSEWHERE) is printed as theirs instead of failing; a broken p99, or any block of this code's own, fails.
  */
 function assertWithinBudgets(result: ScenarioResult): void {
 	const violations: string[] = [];

@@ -8,9 +8,10 @@
  * - `block`: the event loop turned that many milliseconds or more after it was due, with the stacks of the code that
  *   held it;
  * - `delay`: the process's event-loop delay (p50, p99, max) over each phase of its life: its startup, written once it
- *   is ready for input; its session, written once it starts to quit; and its shutdown, written as it exits. A process
- *   that never becomes ready, or is ended before it can quit (as Windows ends the engine), writes the phase it was in
- *   as far as it got.
+ *   is ready for input (the host once it starts drawing its first frame, when its editor takes keys; the engine once
+ *   its session and extensions are loaded); its session, written once it starts to quit; and its shutdown, written as
+ *   it exits. A process that never becomes ready, or is ended before it can quit (as Windows ends the engine), writes
+ *   the phase it was in as far as it got.
  *
  * Unset, nothing here runs: no timer, worker, profiler or histogram.
  *
@@ -453,8 +454,14 @@ const epochUs = () => Math.round((performance.timeOrigin + performance.now()) * 
 
 const PHASES: readonly EventLoopPhase[] = ["startup", "session", "shutdown"];
 
+function startDelayHistogram(): IntervalHistogram {
+	const histogram = monitorEventLoopDelay({ resolution: DELAY_RESOLUTION_MS });
+	histogram.enable();
+	return histogram;
+}
+
 class EventLoopMonitor {
-	private readonly histogram: IntervalHistogram;
+	private histogram: IntervalHistogram;
 	private readonly pending: string[] = [];
 	private draining: Promise<void> | undefined;
 	private readonly sampler: StackSampler;
@@ -472,8 +479,7 @@ class EventLoopMonitor {
 		this.logPath = logPath;
 		this.lastBeatUs = epochUs();
 		this.phaseStartedUs = this.lastBeatUs;
-		this.histogram = monitorEventLoopDelay({ resolution: DELAY_RESOLUTION_MS });
-		this.histogram.enable();
+		this.histogram = startDelayHistogram();
 		this.sampler = createSampler(thresholdMs, this.lastBeatUs);
 		this.sampler.beat(this.lastBeatUs);
 		setInterval(() => this.beat(), HEARTBEAT_MS).unref();
@@ -495,15 +501,20 @@ class EventLoopMonitor {
 	/** Writes the phase that ends here and starts `next`, unless the process is already past it. */
 	enter(next: EventLoopPhase): void {
 		if (PHASES.indexOf(next) <= PHASES.indexOf(this.phase)) return;
-		const ended = this.delayRecord();
+		// A block the phase ends inside belongs to this phase, but its histogram would count it only at its next tick. It
+		// is beaten and counted here, and the next phase gets a histogram of its own that starts after it.
+		const lateMs = this.beat();
+		const ended = this.delayRecord(lateMs);
 		if (next === "shutdown") this.writeAtQuit(ended);
 		else this.write(ended);
-		this.histogram.reset();
+		this.histogram.disable();
+		this.histogram = startDelayHistogram();
 		this.phase = next;
 		this.phaseStartedUs = epochUs();
 	}
 
-	private beat(): void {
+	/** Records a block that ends now, and returns how late this beat is in milliseconds. */
+	private beat(): number {
 		const nowUs = epochUs();
 		const sinceUs = this.lastBeatUs;
 		this.lastBeatUs = nowUs;
@@ -524,9 +535,11 @@ class EventLoopMonitor {
 			);
 		}
 		this.sampler.beat(nowUs);
+		return durationMs;
 	}
 
-	private delayRecord(): EventLoopRecord {
+	/** This phase's delay so far; `lateMs` is a late tick the histogram has not counted yet. */
+	private delayRecord(lateMs = 0): EventLoopRecord {
 		// Node records each tick's whole interval, Bun only how late it was.
 		const lagMs = (nanoseconds: number) =>
 			roundMs(Math.max(0, nanoseconds / 1e6 - (isBunRuntime ? 0 : DELAY_RESOLUTION_MS)));
@@ -541,7 +554,7 @@ class EventLoopMonitor {
 			ticks,
 			p50Ms: ticks === 0 ? 0 : lagMs(this.histogram.percentile(50)),
 			p99Ms: ticks === 0 ? 0 : lagMs(this.histogram.percentile(99)),
-			maxMs: ticks === 0 ? 0 : lagMs(this.histogram.max),
+			maxMs: Math.max(ticks === 0 ? 0 : lagMs(this.histogram.max), roundMs(lateMs)),
 		};
 	}
 
@@ -603,7 +616,10 @@ export function startEventLoopMonitor(role: EventLoopProcessRole, env: NodeJS.Pr
 	return true;
 }
 
-/** Ends the startup phase of the event-loop delay record: the process is ready for input. */
+/**
+ * Ends the startup phase of the event-loop delay record: the process is ready for input. The interactive host calls it
+ * as it starts its terminal and first frame, before its deferred startup; the engine once its resources are loaded.
+ */
 export function markEventLoopStartupComplete(): void {
 	monitor?.enter("session");
 }
