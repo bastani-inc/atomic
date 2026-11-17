@@ -9,6 +9,7 @@ import {
 	TeamProfileConfigError,
 	type TeamProfileConfigErrorCode,
 } from "./errors.js";
+import type { StorageSteps } from "./file-identity.js";
 import { validateStoragePrefix } from "./prefix.js";
 import type { AdapterOptions, SecretRef, StorageSelection } from "./provider.js";
 import type {
@@ -79,11 +80,35 @@ export function selectsDefaultJournalStore(value: StorageInputSelection | undefi
 	return keys.every((key) => key === "path") && (path === undefined || path === "");
 }
 
+const PENDING_DEFAULT_PATH = "\0";
+
+function takesDefaultPath(
+	value: StorageInputSelection,
+	selection: StorageSelection,
+): selection is Extract<StorageSelection, { kind: "sqlite" }> {
+	return (
+		selection.kind === "sqlite" &&
+		selection.path === PENDING_DEFAULT_PATH &&
+		(value as { readonly path?: unknown }).path !== PENDING_DEFAULT_PATH
+	);
+}
+
 export function selectStorage(
 	value: StorageInputSelection,
 	source: "sdk" | "settings" | "env" | "cli",
 	field: string,
 	defaultPath: string | (() => string),
+): StorageSelection {
+	if (typeof defaultPath === "string") return selectStorageAt(value, source, field, defaultPath);
+	const selection = selectStorageAt(value, source, field, PENDING_DEFAULT_PATH);
+	return takesDefaultPath(value, selection) ? { ...selection, path: defaultPath() } : selection;
+}
+
+function selectStorageAt(
+	value: StorageInputSelection,
+	source: "sdk" | "settings" | "env" | "cli",
+	field: string,
+	defaultPath: string,
 ): StorageSelection {
 	const invalid = (reason: string): never => {
 		throw new StorageConfigError(source, field, reason);
@@ -157,12 +182,32 @@ export function selectStorage(
 	if (value.options !== undefined || value.secrets !== undefined) return invalid("adapter-required");
 	if (value.path && value.memory === true) return invalid("path-and-memory");
 	if (value.memory === true) return { kind: "memory" };
-	const resolvedDefault = (): string => (typeof defaultPath === "function" ? defaultPath() : defaultPath);
 	return {
 		kind: "sqlite",
-		path: source === "sdk" && value.path !== undefined ? value.path : value.path || resolvedDefault(),
+		path: source === "sdk" && value.path !== undefined ? value.path : value.path || defaultPath,
 		...(value.prefix === undefined ? {} : { prefix: value.prefix }),
 	};
+}
+
+export async function selectStorageAsync(
+	value: StorageInputSelection,
+	source: "sdk" | "settings" | "env" | "cli",
+	field: string,
+	defaultPath: () => Promise<string>,
+): Promise<StorageSelection> {
+	const selection = selectStorageAt(value, source, field, PENDING_DEFAULT_PATH);
+	return takesDefaultPath(value, selection) ? { ...selection, path: await defaultPath() } : selection;
+}
+
+export function* selectStorageSteps(
+	value: StorageInputSelection,
+	source: "sdk" | "settings" | "env" | "cli",
+	field: string,
+	defaultPath: string | (() => StorageSteps<string>),
+): StorageSteps<StorageSelection> {
+	if (typeof defaultPath === "string") return selectStorageAt(value, source, field, defaultPath);
+	const selection = selectStorageAt(value, source, field, PENDING_DEFAULT_PATH);
+	return takesDefaultPath(value, selection) ? { ...selection, path: yield* defaultPath() } : selection;
 }
 
 /** The first-party libSQL / Turso adapter package that team setup and `atomic storage join` select. */

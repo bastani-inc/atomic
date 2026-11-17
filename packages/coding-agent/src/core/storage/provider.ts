@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Jiti, JitiResolveOptions } from "jiti";
@@ -14,7 +14,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { storageHomeDir } from "./file-identity.js";
+import { storageHomeDir, storageHomeDirAsync } from "./file-identity.js";
 import { legacyDefaultJournalPath } from "./journal-adoption.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { validateStoragePrefix } from "./prefix.js";
@@ -44,7 +44,28 @@ let lastRelativeSecretPaths: RelativeSecretPaths | undefined;
 /** Where a `secrets` `{ file }` reference points: an absolute path, or a path relative to Atomic home. */
 export function secretFilePath(file: string, agentDir: string): string {
 	if (isAbsolute(file)) return file;
-	const home = storageHomeDir(agentDir);
+	const paths = relativeSecretPaths(file, agentDir, storageHomeDir(agentDir));
+	if (paths.primary === paths.legacy) return paths.primary;
+	if (!existsSync(paths.legacy) && !paths.managedLegacyToken) return paths.primary;
+	return existsSync(paths.primary) ? paths.primary : paths.legacy;
+}
+
+export async function secretFilePathAsync(file: string, agentDir: string): Promise<string> {
+	if (isAbsolute(file)) return file;
+	const paths = relativeSecretPaths(file, agentDir, await storageHomeDirAsync(agentDir));
+	if (paths.primary === paths.legacy) return paths.primary;
+	if (!(await pathExists(paths.legacy)) && !paths.managedLegacyToken) return paths.primary;
+	return (await pathExists(paths.primary)) ? paths.primary : paths.legacy;
+}
+
+function pathExists(path: string): Promise<boolean> {
+	return access(path).then(
+		() => true,
+		() => false,
+	);
+}
+
+function relativeSecretPaths(file: string, agentDir: string, home: string): RelativeSecretPaths {
 	const cwd = isAbsolute(agentDir) ? undefined : process.cwd();
 	let paths = lastRelativeSecretPaths;
 	if (
@@ -71,9 +92,7 @@ export function secretFilePath(file: string, agentDir: string): string {
 		};
 		lastRelativeSecretPaths = paths;
 	}
-	if (paths.primary === paths.legacy) return paths.primary;
-	if (!existsSync(paths.legacy) && !paths.managedLegacyToken) return paths.primary;
-	return existsSync(paths.primary) ? paths.primary : paths.legacy;
+	return paths;
 }
 export type AdapterOptions = Readonly<Record<string, SqliteValue | boolean>>;
 export type RunJournalOption =
@@ -349,7 +368,7 @@ async function readSecret(
 	}
 	let text: string;
 	try {
-		text = await readFile(secretFilePath(ref.file, agentDir), "utf8");
+		text = await readFile(await secretFilePathAsync(ref.file, agentDir), "utf8");
 	} catch (cause) {
 		throw new StorageUnavailableError(
 			{ adapter: selection.module, location: ref.file },

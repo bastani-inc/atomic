@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { createChildProcessEnvironment } from "@bastani/atomic";
 import {
 	type AdapterOptions,
+	claimFileAtomicallyAsync,
+	readClaimFileAsync,
 	type StorageSelection,
-	sameDirectory,
-	storageHomeDir,
+	sameDirectoryAsync,
+	storageHomeDirAsync,
 	storageSelectionKey,
 	workflowsStorageDir,
 } from "@bastani/atomic/storage";
@@ -246,19 +248,12 @@ async function adoptedHostId(agentDir: string): Promise<string | undefined> {
 	const legacy = join(dirname(agentDir), "workflows", "pool", "host-id");
 	const id = await readId(legacy);
 	if (id === undefined) return undefined;
-	if (!sameDirectory(storageHomeDir(agentDir), dirname(agentDir))) return undefined;
+	if (!(await sameDirectoryAsync(await storageHomeDirAsync(agentDir), dirname(agentDir)))) return undefined;
 	const claim = `${legacy}.adopted-by`;
 	const self = resolve(agentDir);
-	const staged = `${claim}.${randomUUID()}`;
-	try {
-		await writeFile(staged, `${self}\n`, { flag: "wx" });
-		await link(staged, claim);
-	} catch {
-	} finally {
-		await rm(staged, { force: true });
-	}
-	const owner = await readId(claim);
-	return owner !== undefined && sameDirectory(owner, self) ? id : undefined;
+	await claimFileAtomicallyAsync(claim, `${self}\n`);
+	const owner = await readClaimFileAsync(claim);
+	return owner !== undefined && (await sameDirectoryAsync(owner, self)) ? id : undefined;
 }
 
 /** Calls of {@link poolHostId} still running, by agent directory: one made at the same time gets the same id. */

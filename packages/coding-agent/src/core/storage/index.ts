@@ -23,14 +23,23 @@ export * from "./errors.js";
 export * from "./fenced-paths.js";
 export {
 	claimFileAtomically,
+	claimFileAtomicallyAsync,
+	defaultJournalStoreDirectoryAsync,
 	defaultSessionDatabasePath,
+	defaultSessionDatabasePathAsync,
 	defaultSharedStoragePath,
+	defaultSharedStoragePathAsync,
 	readClaimFile,
+	readClaimFileAsync,
 	type StorageHomeSettings,
 	sameDirectory,
+	sameDirectoryAsync,
 	storageHomeDir,
+	storageHomeDirAsync,
 	storagePathBaseDir,
+	storagePathBaseDirAsync,
 	workflowsStorageDir,
+	workflowsStorageDirAsync,
 } from "./file-identity.js";
 export * from "./journal-adoption.js";
 export * from "./journal-catalog.js";
@@ -70,6 +79,7 @@ export {
 	type StorageInputSelection,
 	type StorageSettingsSelection,
 	selectStorage,
+	selectStorageAsync,
 	selectsDefaultJournalStore,
 	TEAM_PREFIX_ENV,
 	TEAM_PROFILE_ENV,

@@ -6,9 +6,9 @@ import {
 	StorageAdapterLoadError,
 	StorageConfigError,
 	type StorageSelection,
-	secretFilePath,
+	secretFilePathAsync,
 } from "@bastani/atomic/storage";
-import { type RunJournalOption, selectRunJournal } from "../durable/journal/resolution.js";
+import { type RunJournalOption, selectRunJournalAsync } from "../durable/journal/resolution.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import {
 	SharedPoolSetupError,
@@ -32,7 +32,7 @@ export async function sharedJournalSelection(
 			journal === undefined
 				? (await SettingsManager.createAsync(options.cwd ?? process.cwd(), options.agentDir)).getSettings()
 				: undefined;
-		return selectRunJournal({ agentDir: options.agentDir, journal, settings });
+		return await selectRunJournalAsync({ agentDir: options.agentDir, journal, settings });
 	} catch (error) {
 		if (!(error instanceof StorageConfigError)) throw error;
 		throw new WorkerPlacementConfigError("sdk", "journal", "invalid-option", error.reason, { cause: error });
@@ -60,7 +60,7 @@ export async function sharedSelectionProblems(
 	for (const [secret, ref] of Object.entries(selection.secrets ?? {})) {
 		if ("env" in ref) {
 			if (process.env[ref.env] === undefined) problems.push(sharedPoolProblems.secretUnavailable(secret, ref));
-		} else if ("file" in ref && !(await readable(secretFilePath(ref.file, agentDir))))
+		} else if ("file" in ref && !(await readable(await secretFilePathAsync(ref.file, agentDir))))
 			problems.push(sharedPoolProblems.secretUnavailable(secret, ref));
 	}
 	return problems;

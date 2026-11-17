@@ -8,7 +8,7 @@ import {
 } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../../durable/backend.js";
 import { initializeDurableBackendReadingSettings, readDurableJournalSettings } from "../../durable/factory.js";
-import { selectRunJournal } from "../../durable/journal/resolution.js";
+import { selectRunJournalAsync } from "../../durable/journal/resolution.js";
 import { availableRunDurableBackend } from "../../durable/run-owner-backend.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../../durable/store-backend.js";
 import { run as engineRun } from "../../engine/run.js";
@@ -87,7 +87,7 @@ async function openRunBackend(opts: RunOpts, resumedRunId: string | undefined): 
 	const settings = opts.journal === undefined ? await readDurableJournalSettings({ cwd: opts.cwd }) : undefined;
 	if (resumedRunId === undefined)
 		return initializeDurableBackendReadingSettings({ journal: opts.journal, cwd: opts.cwd, settings });
-	const selection = selectRunJournal({ journal: opts.journal, settings });
+	const selection = await selectRunJournalAsync({ journal: opts.journal, settings });
 	if (!("kind" in selection) || selection.kind !== "adapter")
 		return initializeDurableBackendReadingSettings({ journal: opts.journal, cwd: opts.cwd, settings });
 	const abandon = new AbortController();

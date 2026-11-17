@@ -64,6 +64,7 @@ export {
 	processStorageEnvironmentAsync,
 	type StorageDomain,
 	selectProcessStorage,
+	selectProcessStorageAsync,
 } from "./core/storage/process-selection.js";
 export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
 // Internal trusted-host task integration (not model authority).

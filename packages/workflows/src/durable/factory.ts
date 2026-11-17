@@ -11,7 +11,7 @@ import {
 	openSelectedRunJournal,
 	type RunJournalOption,
 	type RunJournalSettings,
-	selectRunJournal,
+	selectRunJournalAsync,
 	withRunJournalConfigSource,
 } from "./journal/resolution.js";
 import "./journal/workflows-host-module.js";
@@ -109,14 +109,15 @@ export async function initializeDurableBackendReadingSettings(
 	return openDurableBackend(options, settings);
 }
 
-function openDurableBackend(
+async function openDurableBackend(
 	options: DurableBackendOptions,
 	settings: RunJournalSettings | undefined,
 ): Promise<DurableWorkflowBackend> {
 	const owner = getDurableBackendProcessOwner();
 	const choice = options.journal;
 	const agentDir = options.agentDir ?? getAgentDir();
-	const selection = selectRunJournal({ agentDir, journal: choice, settings });
+	const abandonedBefore = options.abandonSignal?.aborted === true;
+	const selection = await selectRunJournalAsync({ agentDir, journal: choice, settings });
 	const holder = options.holder;
 	const key =
 		"createRun" in selection
@@ -158,7 +159,8 @@ function openDurableBackend(
 	if (holder === undefined) entry.pinned = true;
 	else entry.holders.add(holder);
 	callersOfOpening.set(entry, (callersOfOpening.get(entry) ?? 0) + 1);
-	options.abandonSignal?.addEventListener("abort", () => abandonOpening(selected, key, entry), { once: true });
+	if (options.abandonSignal?.aborted && !abandonedBefore) abandonOpening(selected, key, entry);
+	else options.abandonSignal?.addEventListener("abort", () => abandonOpening(selected, key, entry), { once: true });
 	const answered = options.onJournalAnswered;
 	if (answered !== undefined) {
 		void (entry.answered ?? entry.ready).then(

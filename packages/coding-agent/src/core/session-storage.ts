@@ -8,14 +8,19 @@ import { SessionStorageSelectionSchema } from "./settings-schema.ts";
 import type { Settings } from "./settings-types.ts";
 import { StorageConfigError } from "./storage/errors.js";
 import {
-	defaultSessionDatabasePath,
-	defaultSharedStoragePath,
+	defaultSessionDatabasePathAsync,
+	defaultSessionDatabasePathSteps,
+	defaultSharedStoragePathSteps,
+	runStorageSteps,
+	runStorageStepsSync,
 	type StorageHomeSettings,
-	storagePathBaseDir,
+	type StorageSteps,
+	storagePathBaseDirSteps,
+	storageSettingsSteps,
 } from "./storage/file-identity.js";
-import { selectProcessStorage } from "./storage/process-selection.js";
+import { selectProcessStorageSteps } from "./storage/process-selection.js";
 import { StorageProvider, type StorageSelection } from "./storage/provider.js";
-import { selectStorage } from "./storage/selection.js";
+import { selectStorageSteps } from "./storage/selection.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { LegacySessionStore } from "./storage/session/legacy-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
@@ -92,12 +97,9 @@ export function selectSessionStorage(
 	options: SessionStorageOptions = {},
 ): SessionStore | StorageSelection {
 	const agentDir = options.agentDir ?? getAgentDir();
-	return (
-		selectSessionStorageBeforeSettings(cwd, options, agentDir) ??
-		selectSessionStorageFromSettings(
-			options.settings ?? SettingsManager.create(cwd, agentDir).getSettings(),
-			agentDir,
-		)
+	return runStorageStepsSync(
+		selectSessionStorageSteps(cwd, options, agentDir),
+		() => options.settings ?? SettingsManager.create(cwd, agentDir).getSettings(),
 	);
 }
 
@@ -106,19 +108,39 @@ export function selectSessionStorageWithSettings(
 	cwd: string,
 	options: SessionStorageOptions & { readonly settings: Settings },
 ): SessionStore | StorageSelection {
-	const agentDir = options.agentDir ?? getAgentDir();
+	return runStorageStepsSync(
+		selectSessionStorageSteps(cwd, options, options.agentDir ?? getAgentDir()),
+		() => options.settings,
+	);
+}
+
+export function selectSessionStorageWithSettingsAsync(
+	cwd: string,
+	options: SessionStorageOptions & { readonly settings: Settings },
+): Promise<SessionStore | StorageSelection> {
+	return runStorageSteps(
+		selectSessionStorageSteps(cwd, options, options.agentDir ?? getAgentDir()),
+		async () => options.settings,
+	);
+}
+
+function* selectSessionStorageSteps(
+	cwd: string,
+	options: SessionStorageOptions,
+	agentDir: string,
+): StorageSteps<SessionStore | StorageSelection> {
 	return (
-		selectSessionStorageBeforeSettings(cwd, options, agentDir) ??
-		selectSessionStorageFromSettings(options.settings, agentDir)
+		(yield* selectSessionStorageBeforeSettingsSteps(cwd, options, agentDir)) ??
+		(yield* selectSessionStorageFromSettingsSteps(yield* storageSettingsSteps<Settings>(), agentDir))
 	);
 }
 
 /** The session storage `options` or the process environment select; `undefined` leaves the choice to settings. */
-function selectSessionStorageBeforeSettings(
+function* selectSessionStorageBeforeSettingsSteps(
 	cwd: string,
 	options: SessionStorageOptions,
 	agentDir: string,
-): SessionStore | StorageSelection | undefined {
+): StorageSteps<SessionStore | StorageSelection | undefined> {
 	if (options.sessionStore !== undefined) {
 		const value = options.sessionStore;
 		if (value !== null && typeof value === "object" && "load" in value) {
@@ -162,7 +184,7 @@ function selectSessionStorageBeforeSettings(
 		sources.set(selection, { source: "cli", field: "--session-dir" });
 		return selection;
 	}
-	const processChoice = selectProcessStorage("sessions", agentDir, cwd, options.settings);
+	const processChoice = yield* selectProcessStorageSteps("sessions", agentDir, cwd);
 	if (processChoice !== undefined) {
 		sources.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
 		return processChoice.selection;
@@ -170,7 +192,7 @@ function selectSessionStorageBeforeSettings(
 	return undefined;
 }
 
-function selectSessionStorageFromSettings(settings: Settings, agentDir: string): StorageSelection {
+function* selectSessionStorageFromSettingsSteps(settings: Settings, agentDir: string): StorageSteps<StorageSelection> {
 	if (
 		settings.sessions !== undefined &&
 		(settings.sessions === null || typeof settings.sessions !== "object" || Array.isArray(settings.sessions))
@@ -178,9 +200,9 @@ function selectSessionStorageFromSettings(settings: Settings, agentDir: string):
 		throw new StorageConfigError("settings", "sessions", "selection-object-required");
 	}
 	const value = settings.sessions?.storage !== undefined ? settings.sessions.storage : settings.storage;
-	if (value === undefined) return { kind: "sqlite", path: defaultSessionDatabasePath(agentDir, settings) };
+	if (value === undefined) return { kind: "sqlite", path: yield* defaultSessionDatabasePathSteps(agentDir, settings) };
 	const field = settings.sessions?.storage !== undefined ? "sessions.storage" : "storage";
-	const selection = selectSessionSetting(value, field, agentDir, settings);
+	const selection = yield* selectSessionSettingSteps(value, field, agentDir, settings);
 	sources.set(selection, { source: "settings", field });
 	return selection;
 }
@@ -196,6 +218,15 @@ export function selectSessionSetting(
 	agentDir: string,
 	settings?: StorageHomeSettings,
 ): StorageSelection {
+	return runStorageStepsSync(selectSessionSettingSteps(value, field, agentDir, settings));
+}
+
+function* selectSessionSettingSteps(
+	value: NonNullable<NonNullable<Settings["sessions"]>["storage"]>,
+	field: "sessions.storage" | "storage",
+	agentDir: string,
+	settings?: StorageHomeSettings,
+): StorageSteps<StorageSelection> {
 	if (!Value.Check(SessionStorageSelectionSchema, value) || (field === "storage" && "dir" in value)) {
 		throw new StorageConfigError("settings", field, "invalid-selection");
 	}
@@ -206,22 +237,22 @@ export function selectSessionSetting(
 			kind: "jsonl",
 			dir: resolveStoragePath(
 				value.dir,
-				storagePathBaseDir(value.dir, agentDir, effectiveSettings),
+				yield* storagePathBaseDirSteps(value.dir, agentDir, effectiveSettings),
 				"settings",
 				field,
 			),
 		};
-	const selection = selectStorage(value, "settings", field, () =>
+	const selection = yield* selectStorageSteps(value, "settings", field, () =>
 		field === "storage"
-			? defaultSharedStoragePath(agentDir, effectiveSettings)
-			: defaultSessionDatabasePath(agentDir, effectiveSettings),
+			? defaultSharedStoragePathSteps(agentDir, effectiveSettings)
+			: defaultSessionDatabasePathSteps(agentDir, effectiveSettings),
 	);
 	if (selection.kind === "sqlite" && !isAbsolute(selection.path)) {
 		return {
 			...selection,
 			path: resolveStoragePath(
 				selection.path,
-				storagePathBaseDir(selection.path, agentDir, effectiveSettings),
+				yield* storagePathBaseDirSteps(selection.path, agentDir, effectiveSettings),
 				"settings",
 				field,
 			),
@@ -234,24 +265,21 @@ export function selectSessionSetting(
  * The shared default database, selected directly or handed to the engine child. Sessions saved
  * before it became the default stay readable from the agent directory's JSONL files.
  */
-function isDefaultDatabase(
-	selection: StorageSelection,
-	agentDir: string,
-): selection is Extract<StorageSelection, { kind: "sqlite" }> {
+async function isDefaultDatabase(selection: StorageSelection, agentDir: string): Promise<boolean> {
 	return (
 		selection.kind === "sqlite" &&
 		!selection.prefix &&
 		selection.path !== "" &&
 		selection.path !== ":memory:" &&
-		resolve(selection.path) === resolve(defaultSessionDatabasePath(agentDir))
+		resolve(selection.path) === resolve(await defaultSessionDatabasePathAsync(agentDir))
 	);
 }
 
 export async function resolveSessionStore(cwd: string, options: SessionStorageOptions = {}): Promise<SessionStore> {
 	const agentDir = options.agentDir ?? getAgentDir();
 	const settings = options.settings ?? (await SettingsManager.createAsync(cwd, agentDir)).getSettings();
-	const select = () => selectSessionStorageWithSettings(cwd, { ...options, settings });
-	let selection = select();
+	const select = () => selectSessionStorageWithSettingsAsync(cwd, { ...options, settings });
+	let selection = await select();
 	if (selection !== null && typeof selection === "object" && "load" in selection) return selection;
 	if (
 		(selection.kind === "sqlite" || selection.kind === "jsonl") &&
@@ -260,7 +288,7 @@ export async function resolveSessionStore(cwd: string, options: SessionStorageOp
 		options.sessionDir === undefined
 	) {
 		await mkdir(agentDir, { recursive: true });
-		selection = select() as StorageSelection;
+		selection = (await select()) as StorageSelection;
 	}
 	// Released sessions' history that a killed process left in this agent directory goes, once per process (#4502).
 	void import("./storage/session/released-history-files.js").then(
@@ -269,12 +297,13 @@ export async function resolveSessionStore(cwd: string, options: SessionStorageOp
 	);
 	try {
 		const opened = await provider.openSessionStore(selection, { agentDir, domain: "sessions" });
-		const store = isDefaultDatabase(selection, agentDir)
-			? new LegacySessionStore(opened, {
-					legacyDirectory: join(agentDir, "sessions"),
-					databasePath: resolve(selection.path),
-				})
-			: opened;
+		const store =
+			selection.kind === "sqlite" && (await isDefaultDatabase(selection, agentDir))
+				? new LegacySessionStore(opened, {
+						legacyDirectory: join(agentDir, "sessions"),
+						databasePath: resolve(selection.path),
+					})
+				: opened;
 		if (selection.kind === "sqlite" && selection.path !== "" && selection.path !== ":memory:") {
 			engineSelections.set(store, {
 				kind: "sqlite",
