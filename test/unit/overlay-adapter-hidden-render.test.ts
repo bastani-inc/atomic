@@ -176,8 +176,10 @@ async function registerIsolatedTests(): Promise<void> {
 					for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
 					assert.equal(snapshotReads(), 0, "focused burst performs zero snapshot reads");
 					assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
-					jest.advanceTimersByTime(2 * STORE_RENDER_FRAME_MS);
-					for (let turn = 0; turn < 10; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+					for (let elapsed = 0; elapsed < 2 * STORE_RENDER_FRAME_MS; elapsed++) {
+						jest.advanceTimersByTime(1);
+						for (let turn = 0; turn < 10; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+					}
 					assert.equal(renderRequests.count, before + 1, "one frame paints the entire burst");
 					assert.equal(snapshotReads(), 0, "the frame and its deferred work perform zero snapshot reads");
 				} finally {
