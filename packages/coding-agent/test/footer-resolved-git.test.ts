@@ -24,6 +24,12 @@ vi.mock("../src/utils/tools-manager.js", async (importOriginal) => ({
 
 import { FooterDataProvider } from "../src/core/footer-data-provider.js";
 
+/** The branch after one complete read, which a render starts on its first lookup. */
+async function readBranch(provider: FooterDataProvider): Promise<string | null> {
+	await (provider as unknown as { refreshGitBranchAsync(): Promise<void> }).refreshGitBranchAsync();
+	return provider.getGitBranch();
+}
+
 const provisioned = {
 	path: "/agent/bin/git/bin/git",
 	source: "provisioned",
@@ -49,13 +55,14 @@ describe("footer branch through the resolved git (#4322)", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("runs the resolved executable with its portable environment and without repository bindings", () => {
+	it("runs the resolved executable with its portable environment and without repository bindings", async () => {
 		git.resolve.mockReturnValue(provisioned);
-		git.spawnSync.mockReturnValue({ status: 0, stdout: "feature\n", stderr: "" });
+		git.execFile.mockImplementation((_command, _args, _options, callback) => callback(null, "feature\n", ""));
 		const provider = new FooterDataProvider(repoDir);
 		try {
-			assert.equal(provider.getGitBranch(), "feature");
-			const [command, args, options] = git.spawnSync.mock.calls[0]!;
+			assert.equal(await readBranch(provider), "feature");
+			assert.equal(git.spawnSync.mock.calls.length, 0);
+			const [command, args, options] = git.execFile.mock.calls[0]!;
 			assert.equal(command, provisioned.path);
 			assert.deepEqual(args, ["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"]);
 			assert.equal(options.env.GIT_EXEC_PATH, provisioned.env.GIT_EXEC_PATH);
@@ -68,14 +75,14 @@ describe("footer branch through the resolved git (#4322)", () => {
 
 	it("refreshes asynchronously through the resolved executable and environment", async () => {
 		git.resolve.mockReturnValue(provisioned);
-		git.spawnSync.mockReturnValue({ status: 0, stdout: "main\n", stderr: "" });
-		git.execFile.mockImplementation((_command, _args, _options, callback) => callback(null, "renamed\n", ""));
+		git.execFile
+			.mockImplementationOnce((_command, _args, _options, callback) => callback(null, "main\n", ""))
+			.mockImplementation((_command, _args, _options, callback) => callback(null, "renamed\n", ""));
 		const provider = new FooterDataProvider(repoDir);
 		try {
-			assert.equal(provider.getGitBranch(), "main");
-			await (provider as unknown as { refreshGitBranchAsync(): Promise<void> }).refreshGitBranchAsync();
-			assert.equal(provider.getGitBranch(), "renamed");
-			const [command, , options] = git.execFile.mock.calls[0]!;
+			assert.equal(await readBranch(provider), "main");
+			assert.equal(await readBranch(provider), "renamed");
+			const [command, , options] = git.execFile.mock.calls[1]!;
 			assert.equal(command, provisioned.path);
 			assert.equal(options.env.GIT_EXEC_PATH, provisioned.env.GIT_EXEC_PATH);
 			assert.equal(options.env.GIT_DIR, undefined);
@@ -95,9 +102,8 @@ describe("footer branch through the resolved git (#4322)", () => {
 		});
 		const provider = new FooterDataProvider(repoDir);
 		try {
-			assert.equal(provider.getGitBranch(), "detached");
-			await (provider as unknown as { refreshGitBranchAsync(): Promise<void> }).refreshGitBranchAsync();
-			assert.equal(provider.getGitBranch(), "detached");
+			assert.equal(await readBranch(provider), "detached");
+			assert.equal(await readBranch(provider), "detached");
 			assert.equal(git.spawnSync.mock.calls.length, 0);
 			assert.equal(git.execFile.mock.calls.length, 0);
 		} finally {
@@ -105,13 +111,13 @@ describe("footer branch through the resolved git (#4322)", () => {
 		}
 	});
 
-	it("does not treat an unexpected resolution failure as an unavailable git", () => {
+	it("does not treat an unexpected resolution failure as an unavailable git", async () => {
 		git.resolve.mockImplementation(() => {
 			throw new TypeError("resolver bug");
 		});
 		const provider = new FooterDataProvider(repoDir);
 		try {
-			assert.equal(provider.getGitBranch(), null);
+			assert.equal(await readBranch(provider), null);
 		} finally {
 			provider.dispose();
 		}

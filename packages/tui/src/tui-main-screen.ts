@@ -124,6 +124,29 @@ export interface TuiMainScreenRenderState {
 	previousViewportTop: number;
 }
 
+let debugLogAppends: Promise<void> = Promise.resolve();
+
+/** Appends a debug log entry in the background, after the entries before it. Logging errors are ignored. */
+function appendDebugLog(logPath: string, data: string): void {
+	debugLogAppends = debugLogAppends.then(async () => {
+		try {
+			await fs.promises.mkdir(path.dirname(logPath), { recursive: true });
+			await fs.promises.appendFile(logPath, data);
+		} catch {
+			// Debug logging must not break rendering.
+		}
+	});
+}
+
+/**
+ * Writes the dump of a frame that cannot be drawn. It is written before the render throws, which ends the process,
+ * so it stays synchronous: written later, it would never be.
+ */
+function writeRenderCrashLog(crashLogPath: string, crashData: string): void {
+	fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
+	fs.writeFileSync(crashLogPath, crashData);
+}
+
 /** TUI implementation that renders into the terminal's main screen and scrollback. */
 export class TuiMainScreen extends TuiBase implements TUI {
 	readonly mode = "regular" as const;
@@ -329,8 +352,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			if (redrawLogDirectory === undefined) return;
 			const logPath = path.join(redrawLogDirectory, "pi-tui-debug.log");
 			const msg = `[${new Date().toISOString()}] fullRender: ${reason} (prev=${this.previousLines.length}, new=${newLines.length}, height=${height})\n`;
-			fs.mkdirSync(path.dirname(logPath), { recursive: true });
-			fs.appendFileSync(logPath, msg);
+			appendDebugLog(logPath, msg);
 		};
 
 		// First render - just output everything without clearing (assumes clean screen)
@@ -532,8 +554,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 					...newLines.map((l, idx) => `[${idx}] (w=${visibleWidth(l)}) ${l}`),
 					"",
 				].join("\n");
-				fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
-				fs.writeFileSync(crashLogPath, crashData);
+				writeRenderCrashLog(crashLogPath, crashData);
 
 				// Clean up terminal state before throwing
 				this.stop();
@@ -574,7 +595,6 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		if (getTuiEnvValue("TUI_DEBUG") === "1") {
 			const debugDir = "/tmp/tui";
-			fs.mkdirSync(debugDir, { recursive: true });
 			const debugPath = path.join(debugDir, `render-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
 			const debugData = [
 				`firstChanged: ${firstChanged}`,
@@ -598,7 +618,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				"=== buffer ===",
 				`[${output.length} chars written in bounded chunks]`,
 			].join("\n");
-			fs.writeFileSync(debugPath, debugData);
+			appendDebugLog(debugPath, debugData);
 		}
 
 		output.flush();

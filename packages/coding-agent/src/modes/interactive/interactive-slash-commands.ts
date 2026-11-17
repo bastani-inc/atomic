@@ -36,7 +36,6 @@ import {
 	Spacer,
 	setRegisteredThemes,
 	spawn,
-	spawnSync,
 	Text,
 	theme,
 } from "./interactive-mode-deps.ts";
@@ -239,14 +238,26 @@ InteractiveModeBase.prototype.handleImportCommand = async function (
 	}
 };
 
+/** A `gh auth status` that has not answered by then counts as not logged in. */
+const GH_AUTH_STATUS_TIMEOUT_MS = 30_000;
+
+/** The exit status of `gh auth status`, or null when gh could not be run. */
+function ghAuthStatus(): Promise<number | null> {
+	return new Promise((resolve) => {
+		const child = spawn("gh", ["auth", "status"], {
+			env: createChildProcessEnvironment(),
+			stdio: "ignore",
+			timeout: GH_AUTH_STATUS_TIMEOUT_MS,
+		});
+		child.once("error", () => resolve(null));
+		child.once("close", (code) => resolve(code));
+	});
+}
+
 InteractiveModeBase.prototype.handleShareCommand = async function (this: InteractiveModeBase): Promise<void> {
 	// Check if gh is available and logged in
 	try {
-		const authResult = spawnSync("gh", ["auth", "status"], {
-			encoding: "utf-8",
-			env: createChildProcessEnvironment(),
-		});
-		if (authResult.status !== 0) {
+		if ((await ghAuthStatus()) !== 0) {
 			this.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
 			return;
 		}
@@ -257,7 +268,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 
 	// Share an export-only JSONL copy carrying context for the viewer. The
 	// persisted session is not mutated.
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-share-"));
+	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "atomic-share-"));
 	const tmpFile = path.join(tempDir, "session.jsonl");
 	try {
 		await this.session.exportToJsonl(tmpFile, {
@@ -266,7 +277,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 			toolOutputContent: false,
 		});
 	} catch (error: unknown) {
-		fs.rmSync(tempDir, { recursive: true, force: true });
+		await fs.promises.rm(tempDir, { recursive: true, force: true });
 		this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
 		return;
 	}
@@ -283,11 +294,9 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
 		this.ui.setFocus(this.editor);
-		try {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		} catch {
+		fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {
 			// Ignore cleanup errors
-		}
+		});
 	};
 
 	// Create a secret gist asynchronously

@@ -1,10 +1,11 @@
 /**
  * Log messages MCP servers send with `notifications/message`, appended to `mcp.log` in the agent
- * directory. Several pi processes may write to the same file, so every message is one synchronous
- * append. The file is rotated to `mcp.log.1` once it grows past `MAX_LOG_BYTES`.
+ * directory. Several pi processes may write to the same file, so every message is one append; a
+ * process appends its messages one at a time, in the order they arrived. The file is rotated to
+ * `mcp.log.1` once it grows past `MAX_LOG_BYTES`.
  */
 
-import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
@@ -35,6 +36,7 @@ export function formatMcpLogMessage(server: string, params: unknown, now: Date =
 export class McpServerLog {
 	readonly path: string;
 	private size: number | undefined;
+	private appending: Promise<void> = Promise.resolve();
 
 	constructor(path: string) {
 		this.path = path;
@@ -42,26 +44,35 @@ export class McpServerLog {
 
 	write(server: string, params: unknown): void {
 		const line = formatMcpLogMessage(server, params);
+		this.appending = this.appending.then(() => this.append(line));
+	}
+
+	/** Resolves once every message written so far is in the file, or was dropped because it could not be. */
+	flush(): Promise<void> {
+		return this.appending;
+	}
+
+	private async append(line: string): Promise<void> {
 		try {
 			if (this.size === undefined) {
-				mkdirSync(dirname(this.path), { recursive: true });
-				this.size = this.currentSize();
+				await mkdir(dirname(this.path), { recursive: true });
+				this.size = await this.currentSize();
 			}
 			if (this.size > MAX_LOG_BYTES) {
 				// Another process may have rotated it already; check before renaming.
-				if (this.currentSize() > MAX_LOG_BYTES) renameSync(this.path, `${this.path}.1`);
-				this.size = this.currentSize();
+				if ((await this.currentSize()) > MAX_LOG_BYTES) await rename(this.path, `${this.path}.1`);
+				this.size = await this.currentSize();
 			}
-			appendFileSync(this.path, line);
+			await appendFile(this.path, line);
 			this.size += Buffer.byteLength(line);
 		} catch {
 			// Ignore: the log is best effort.
 		}
 	}
 
-	private currentSize(): number {
+	private async currentSize(): Promise<number> {
 		try {
-			return statSync(this.path).size;
+			return (await stat(this.path)).size;
 		} catch {
 			return 0;
 		}

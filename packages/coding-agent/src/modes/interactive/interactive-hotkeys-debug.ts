@@ -9,6 +9,7 @@ import {
 	getDebugLogPath,
 	type Keybinding,
 	keyDisplayText,
+	loadEarendilAnnouncementImage,
 	Markdown,
 	path,
 	Spacer,
@@ -175,7 +176,7 @@ InteractiveModeBase.prototype.handleClearCommand = async function (this: Interac
 	}
 };
 
-InteractiveModeBase.prototype.handleDebugCommand = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.handleDebugCommand = async function (this: InteractiveModeBase): Promise<void> {
 	const width = this.ui.terminal.columns;
 	const height = this.ui.terminal.rows;
 	const allLines = getPaintedDebugLines(this.ui, width);
@@ -198,8 +199,8 @@ InteractiveModeBase.prototype.handleDebugCommand = function (this: InteractiveMo
 		"",
 	].join("\n");
 
-	fs.mkdirSync(path.dirname(debugLogPath), { recursive: true });
-	fs.appendFileSync(debugLogPath, debugData);
+	await fs.promises.mkdir(path.dirname(debugLogPath), { recursive: true });
+	await fs.promises.appendFile(debugLogPath, debugData);
 
 	this.chatContainer.addChild(new Spacer(1));
 	this.chatContainer.addChild(
@@ -214,8 +215,9 @@ InteractiveModeBase.prototype.handleArminSaysHi = function (this: InteractiveMod
 	this.ui.requestRender();
 };
 
-InteractiveModeBase.prototype.handleDementedDelves = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.handleDementedDelves = async function (this: InteractiveModeBase): Promise<void> {
+	const imageBase64 = await loadEarendilAnnouncementImage();
 	this.chatContainer.addChild(new Spacer(1));
-	this.chatContainer.addChild(new EarendilAnnouncementComponent());
+	this.chatContainer.addChild(new EarendilAnnouncementComponent(imageBase64));
 	this.ui.requestRender();
 };

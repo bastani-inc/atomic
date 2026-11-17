@@ -1,6 +1,6 @@
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { type ExecFileException, execFile } from "node:child_process";
 import { unlink } from "node:fs/promises";
+import { pathExists } from "../../../core/tools/path-utils.ts";
 import { createChildProcessEnvironment } from "../../../utils/child-process.ts";
 
 export interface DeleteSessionFileResult {
@@ -9,13 +9,41 @@ export interface DeleteSessionFileResult {
 	error?: string;
 }
 
+/** A `trash` that has not finished by then is treated as failed, and the file is unlinked instead. */
+const TRASH_TIMEOUT_MS = 30_000;
+
+interface TrashResult {
+	status: number | null;
+	stderr: string;
+	error?: Error;
+}
+
+function runTrash(args: string[]): Promise<TrashResult> {
+	return new Promise((resolve) => {
+		execFile(
+			"trash",
+			args,
+			{ encoding: "utf-8", env: createChildProcessEnvironment(), timeout: TRASH_TIMEOUT_MS },
+			(error: ExecFileException | null, _stdout: string, stderr: string) => {
+				if (!error) {
+					resolve({ status: 0, stderr });
+					return;
+				}
+				// A numeric code is the exit status; anything else means `trash` did not run to completion.
+				if (typeof error.code === "number") resolve({ status: error.code, stderr });
+				else resolve({ status: null, stderr, error });
+			},
+		);
+	});
+}
+
 /**
  * Delete a session file, trying the `trash` CLI first, then falling back to unlink
  */
 export async function deleteSessionFile(sessionPath: string): Promise<DeleteSessionFileResult> {
 	// Try `trash` first (if installed)
 	const trashArgs = sessionPath.startsWith("-") ? ["--", sessionPath] : [sessionPath];
-	const trashResult = spawnSync("trash", trashArgs, { encoding: "utf-8", env: createChildProcessEnvironment() });
+	const trashResult = await runTrash(trashArgs);
 
 	const getTrashErrorHint = (): string | null => {
 		const parts: string[] = [];
@@ -31,7 +59,7 @@ export async function deleteSessionFile(sessionPath: string): Promise<DeleteSess
 	};
 
 	// If trash reports success, or the file is gone afterwards, treat it as successful
-	if (trashResult.status === 0 || !existsSync(sessionPath)) {
+	if (trashResult.status === 0 || !(await pathExists(sessionPath))) {
 		return { ok: true, method: "trash" };
 	}
 

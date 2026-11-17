@@ -4,6 +4,7 @@ import {
 	configureHttpDispatcher,
 	decisionSettingScopes,
 	getAvailableThemes,
+	refreshCustomThemes,
 	SettingsSelectorComponent,
 	setDebugSetting,
 	ToolExecutionComponent,
@@ -45,7 +46,9 @@ InteractiveModeBase.prototype.showSelector = function (
 	this.ui.requestRender();
 };
 
-InteractiveModeBase.prototype.showSettingsSelector = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.showSettingsSelector = async function (this: InteractiveModeBase): Promise<void> {
+	// The theme list includes custom theme files added since they were last read.
+	await refreshCustomThemes();
 	this.showSelector((done) => {
 		const { decisionModelScope, autoAdvanceAfterSteerScope } = decisionSettingScopes(
 			this.settingsManager.getProjectSettings(),

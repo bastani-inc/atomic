@@ -412,7 +412,7 @@ export async function runPiSummaryFallback(
 			const failedResponse = refusal ?? response;
 			const failureMessage = `Summarization failed: ${failedResponse.errorMessage || (refusal ? "The model refused to complete the request" : "Unknown error")}`;
 			const failure = classifyPlannerFailure(failedResponse, model.contextWindow);
-			const diagnosticPath = writeDiagnosticSidecar({
+			const diagnosticPath = await writeDiagnosticSidecar({
 				sessionFilePath: options.sessionFilePath,
 				sidecarDirectory: options.sidecarDirectory,
 				model,

@@ -125,7 +125,7 @@ export async function planMorphRanges(
 		apiKey: string | undefined;
 		signal?: AbortSignal;
 		fetchFn?: typeof fetch;
-		onDiagnostics?: (diagnostics: MorphRangeDiagnostics) => void;
+		onDiagnostics?: (diagnostics: MorphRangeDiagnostics) => Promise<void> | void;
 	},
 ): Promise<LineRange[]> {
 	if (options.signal?.aborted) throw new Error("Compaction cancelled");
@@ -149,7 +149,7 @@ export async function planMorphRanges(
 	});
 	if (!response.ok) {
 		const message = await morphHttpErrorMessage(response, options.apiKey);
-		options.onDiagnostics?.({
+		await options.onDiagnostics?.({
 			droppedRangeCount: 0,
 			acceptedRangeCount: 0,
 			failureCategory: isProviderPolicyRefusal(message) ? "policy_refusal" : "provider_error",
@@ -177,7 +177,7 @@ export async function planMorphRanges(
 		}),
 	);
 	const mismatch = protectedMismatchLineCount(body, input, offsets, region);
-	options.onDiagnostics?.({
+	await options.onDiagnostics?.({
 		droppedRangeCount,
 		acceptedRangeCount: records.length,
 		...(mismatch > 0 ? { protectedMismatchLineCount: mismatch } : {}),

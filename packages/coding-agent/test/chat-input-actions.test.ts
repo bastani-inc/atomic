@@ -75,7 +75,7 @@ describeExternalEditor("openExternalEditorForText", () => {
 });
 
 describe("cleanupStaleClipboardFiles", () => {
-	it("removes only stale atomic clipboard files", () => {
+	it("removes only stale atomic clipboard files", async () => {
 		const now = Date.now();
 		const oldFile = path.join(os.tmpdir(), "atomic-clipboard-old-test.png");
 		const freshFile = path.join(os.tmpdir(), "atomic-clipboard-fresh-test.png");
@@ -89,7 +89,7 @@ describe("cleanupStaleClipboardFiles", () => {
 		fs.utimesSync(oldFile, oldTime, oldTime);
 		fs.utimesSync(oldDir, oldTime, oldTime);
 
-		cleanupStaleClipboardFiles(now);
+		await cleanupStaleClipboardFiles(now);
 
 		expect(fs.existsSync(oldFile)).toBe(false);
 		expect(fs.existsSync(freshFile)).toBe(true);

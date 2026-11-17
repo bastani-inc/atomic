@@ -82,7 +82,7 @@ async function nativeChild(
 	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 	const configPath = join(agentDir, "mcp.json");
 	writeFileSync(configPath, JSON.stringify({ mcpServers: { github: config } }));
-	assert.deepEqual(loadMcpConfig({ agentDir, cwd: root, projectTrusted: false }).errors, []);
+	assert.deepEqual((await loadMcpConfig({ agentDir, cwd: root, projectTrusted: false })).errors, []);
 	const settingsManager = SettingsManager.inMemory();
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: root,

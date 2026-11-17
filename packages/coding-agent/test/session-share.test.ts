@@ -37,6 +37,11 @@ describe("InteractiveMode /share", () => {
 		const processes: ShareProcess[] = [];
 		const uploadPaths: string[] = [];
 		childProcessMocks.spawn.mockImplementation((_command: string, args: string[]) => {
+			if (args[0] === "auth") {
+				const auth = new EventEmitter();
+				setImmediate(() => auth.emit("close", 0));
+				return auth;
+			}
 			uploadPaths.push(args.at(-1)!);
 			const child = Object.assign(new EventEmitter(), {
 				stdout: new PassThrough(),

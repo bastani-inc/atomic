@@ -1,4 +1,4 @@
-import * as fs from "node:fs";
+import { readFile } from "node:fs/promises";
 import { Container, Image, Spacer, Text } from "@bastani/atomic-tui";
 import { getBundledInteractiveAssetPath } from "../../../config.js";
 import { theme } from "../theme/theme.js";
@@ -7,25 +7,19 @@ import { DynamicBorder } from "./dynamic-border.ts";
 const BLOG_URL = "https://mariozechner.at/posts/2026-04-08-ive-sold-out/";
 const IMAGE_FILENAME = "clankolas.png";
 
-let cachedImageBase64: string | undefined;
-let attemptedImageLoad = false;
+let announcementImage: Promise<string | undefined> | undefined;
 
-function loadImageBase64(): string | undefined {
-	if (attemptedImageLoad) {
-		return cachedImageBase64;
-	}
-
-	attemptedImageLoad = true;
-	try {
-		cachedImageBase64 = fs.readFileSync(getBundledInteractiveAssetPath(IMAGE_FILENAME)).toString("base64");
-	} catch {
-		cachedImageBase64 = undefined;
-	}
-	return cachedImageBase64;
+/** The announcement image, read once; undefined when the bundled asset cannot be read. */
+export function loadEarendilAnnouncementImage(): Promise<string | undefined> {
+	announcementImage ??= readFile(getBundledInteractiveAssetPath(IMAGE_FILENAME)).then(
+		(bytes) => bytes.toString("base64"),
+		() => undefined,
+	);
+	return announcementImage;
 }
 
 export class EarendilAnnouncementComponent extends Container {
-	constructor() {
+	constructor(imageBase64?: string) {
 		super();
 
 		this.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
@@ -35,7 +29,6 @@ export class EarendilAnnouncementComponent extends Container {
 		this.addChild(new Text(theme.fg("mdLink", BLOG_URL), 1, 0));
 		this.addChild(new Spacer(1));
 
-		const imageBase64 = loadImageBase64();
 		if (imageBase64) {
 			this.addChild(
 				new Image(

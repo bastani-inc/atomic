@@ -152,7 +152,7 @@ export { CountdownTimer } from "./components/countdown-timer.ts";
 export { CustomEditor } from "./components/custom-editor.ts";
 export { CustomMessageComponent } from "./components/custom-message.ts";
 export { DynamicBorder } from "./components/dynamic-border.ts";
-export { EarendilAnnouncementComponent } from "./components/earendil-announcement.ts";
+export { EarendilAnnouncementComponent, loadEarendilAnnouncementImage } from "./components/earendil-announcement.ts";
 export { ExtensionEditorComponent } from "./components/extension-editor.ts";
 export { ExtensionInputComponent } from "./components/extension-input.ts";
 export { ExtensionSelectorComponent } from "./components/extension-selector.ts";
@@ -179,6 +179,7 @@ export {
 	getMarkdownTheme,
 	getThemeByName,
 	onThemeChange,
+	refreshCustomThemes,
 	setRegisteredThemes,
 	stopThemeWatcher,
 	Theme,

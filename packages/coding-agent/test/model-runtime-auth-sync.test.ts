@@ -218,7 +218,7 @@ describe("extension OAuth credentials stay in sync with auth.json", () => {
 	test("an OAuth token rotation saved by another process keeps catalog passes shareable (#3620)", async () => {
 		await saveRestrictedCopilotLogin();
 		const runtime = await sessionRuntime();
-		const generation = runtime.getCatalogInputsGeneration();
+		const generation = await runtime.getCatalogInputsGeneration();
 
 		await saveRestrictedCopilotLogin({
 			access: "tid=rotated;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
@@ -226,7 +226,7 @@ describe("extension OAuth credentials stay in sync with auth.json", () => {
 
 		assert.equal(runtime.hasConfiguredAuth("github-copilot"), true);
 		assert.deepEqual(copilotAvailable(runtime), ["claude-opus-4.8"]);
-		assert.equal(runtime.getCatalogInputsGeneration(), generation);
+		assert.equal(await runtime.getCatalogInputsGeneration(), generation);
 	});
 
 	test("reports a login saved by another process after an authoritative engine logout (#3620)", async () => {
