@@ -1,19 +1,16 @@
 import {
-	closeSync,
+	close,
 	existsSync,
 	type FSWatcher,
 	open,
 	readdirSync,
-	readFileSync,
 	realpathSync,
-	rmSync,
 	statSync,
 	unlinkSync,
-	utimesSync,
 	watch,
-	writeSync,
+	write,
 } from "node:fs";
-import { mkdir, readdir, realpath, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { platform } from "node:os";
 import { basename, dirname, join, resolve, win32 } from "node:path";
@@ -268,11 +265,11 @@ class SqliteWriteQueue {
 	 * writer's ticket alive nor undo the owner's refresh that came after the queue was read. A ticket that left
 	 * meanwhile passes the turn to the next one.
 	 */
-	wakeNext(): void {
-		for (const ticket of this.liveTicketEntries()) {
+	async wakeNext(): Promise<void> {
+		for (const ticket of await this.liveTicketsOffLoop()) {
 			try {
 				const now = new Date();
-				utimesSync(join(this.noticeDirectory, ticket.name), now, now);
+				await utimes(join(this.noticeDirectory, ticket), now, now);
 				return;
 			} catch (error) {
 				if (!isVanishedTicket(error)) throw error;
@@ -320,9 +317,8 @@ class SqliteWriteQueue {
 	}
 
 	/**
-	 * Live tickets other than `except`, for a writer waiting in the queue: read off the event loop and judged like
-	 * `liveTicketEntries`, in no particular order. Entries are read together; the first failure in listing order that
-	 * is not a vanished entry is thrown.
+	 * Live tickets other than `except`, oldest first: read off the event loop and judged like `liveTicketEntries`.
+	 * Entries are read together; the first failure in listing order that is not a vanished entry is thrown.
 	 */
 	async liveTicketsOffLoop(except?: string): Promise<string[]> {
 		let names: string[];
@@ -332,7 +328,8 @@ class SqliteWriteQueue {
 			if (!isMissingFile(error)) throw error;
 			return [];
 		}
-		const listed = names.filter((name) => name !== except);
+		if (names.length === 0) return [];
+		const listed = names.sort().filter((name) => name !== except);
 		const read = await Promise.all(
 			listed.map((name) =>
 				stat(join(this.directory, name)).then(
@@ -484,6 +481,7 @@ function processAlive(pid: number): boolean {
  */
 class SqliteHolderRecord {
 	private descriptor?: number;
+	private writes: Promise<void> = Promise.resolve();
 	private readonly directory: string;
 	private readonly path: string;
 	private readonly unavailable: (cause: unknown) => void;
@@ -519,19 +517,25 @@ class SqliteHolderRecord {
 	}
 
 	/** The process, this one or another, whose record says it took the write lock most recently. */
-	latestHolder(): { readonly pid: number; readonly heldMs: number } | undefined {
+	latestHolder(): Promise<{ readonly pid: number; readonly heldMs: number } | undefined> {
 		return writeLockHolder(this.directory);
 	}
 
-	close(): void {
-		if (this.descriptor === undefined) return;
+	async close(): Promise<void> {
+		await this.writes;
+		await this.remove();
+	}
+
+	private async remove(): Promise<void> {
+		const descriptor = this.descriptor;
+		if (descriptor === undefined) return;
+		this.descriptor = undefined;
 		try {
-			closeSync(this.descriptor);
-			unlinkSync(this.path);
+			await closeFile(descriptor);
+			await unlink(this.path);
 		} catch {
 			// Already gone; a leftover record of an exited process is ignored and removed by whoever reads it.
 		}
-		this.descriptor = undefined;
 	}
 
 	/**
@@ -539,13 +543,16 @@ class SqliteHolderRecord {
 	 * connection without a record, read-only or unable to create one, writes nothing.
 	 */
 	private write(record: string): void {
-		if (this.descriptor === undefined) return;
-		try {
-			writeSync(this.descriptor, record, 0);
-		} catch (cause) {
-			this.close();
-			this.unavailable(cause);
-		}
+		this.writes = this.writes.then(async () => {
+			const descriptor = this.descriptor;
+			if (descriptor === undefined) return;
+			try {
+				await writeFileAt(descriptor, record, 0);
+			} catch (cause) {
+				await this.remove();
+				this.unavailable(cause);
+			}
+		});
 	}
 }
 
@@ -625,6 +632,13 @@ function isMissingOpenLockDir(error: unknown): boolean {
 	return /No such file or directory|cannot find the path|os error [23]\b/i.test(message);
 }
 
+function pathExists(path: string): Promise<boolean> {
+	return stat(path).then(
+		() => true,
+		() => false,
+	);
+}
+
 async function resolveOpenLockTarget(filePath: string, readOnly: boolean): Promise<string | undefined> {
 	try {
 		return await realpath(filePath);
@@ -648,7 +662,12 @@ async function acquireOpenLock(
 		const target = await resolveOpenLockTarget(filePath, readOnly);
 		if (target === undefined) return undefined;
 		const lockPath = sqliteOpenLockPath(target);
-		if (readOnly && !existsSync(holderDirectory(target)) && !existsSync(lockPath) && !existsSync(`${target}.lock`))
+		if (
+			readOnly &&
+			!(await pathExists(holderDirectory(target))) &&
+			!(await pathExists(lockPath)) &&
+			!(await pathExists(`${target}.lock`))
+		)
 			return undefined;
 		let lock: { release(): void } | null = null;
 		try {
@@ -659,8 +678,8 @@ async function acquireOpenLock(
 		}
 		if (lock !== null) {
 			const held: HeldOpenLock = { lock, path: sqliteFilePath(lockPath), target };
-			if (readOnly && !existsSync(target)) {
-				releaseOpenLock(held);
+			if (readOnly && !(await pathExists(target))) {
+				await releaseOpenLock(held);
 				return undefined;
 			}
 			return held;
@@ -708,14 +727,14 @@ function acquireOpenLockSync(location: string): HeldOpenLock | undefined {
 	return { lock, path: lockPath, target };
 }
 
-function releaseOpenLock(openLock: HeldOpenLock | undefined): void {
+async function releaseOpenLock(openLock: HeldOpenLock | undefined): Promise<void> {
 	if (openLock === undefined) return;
 	openLock.lock.release();
 	try {
 		const exclusive = openLocks()?.tryAdvisoryLock(openLock.path, 0) ?? null;
 		if (exclusive !== null) {
 			try {
-				rmSync(openLock.path, { force: true });
+				await rm(openLock.path, { force: true });
 			} finally {
 				exclusive.release();
 			}
@@ -724,6 +743,8 @@ function releaseOpenLock(openLock: HeldOpenLock | undefined): void {
 }
 
 const openFile = promisify(open);
+const closeFile = promisify(close);
+const writeFileAt = promisify(write) as (descriptor: number, data: string, position: number) => Promise<unknown>;
 
 /** The process a holder record belongs to, from its name: `<pid>-<sequence>`. */
 function holderPid(name: string): number | undefined {
@@ -748,10 +769,10 @@ async function removeExitedHolderRecords(directory: string, failed: (cause: unkn
 }
 
 /** The records of live processes, as pid and the time each took the lock (undefined when free); others are removed. */
-function liveHolderRecords(directory: string): { readonly pid: number; readonly since?: number }[] {
+async function liveHolderRecords(directory: string): Promise<{ readonly pid: number; readonly since?: number }[]> {
 	let names: string[];
 	try {
-		names = readdirSync(directory);
+		names = await readdir(directory);
 	} catch {
 		return [];
 	}
@@ -761,7 +782,7 @@ function liveHolderRecords(directory: string): { readonly pid: number; readonly 
 		if (pid === undefined) continue;
 		if (!processAlive(pid)) {
 			try {
-				unlinkSync(join(directory, name));
+				await unlink(join(directory, name));
 			} catch {
 				// Another connection removed it first.
 			}
@@ -769,7 +790,7 @@ function liveHolderRecords(directory: string): { readonly pid: number; readonly 
 		}
 		let record: string;
 		try {
-			record = readFileSync(join(directory, name), "utf8");
+			record = await readFile(join(directory, name), "utf8");
 		} catch {
 			continue;
 		}
@@ -780,9 +801,11 @@ function liveHolderRecords(directory: string): { readonly pid: number; readonly 
 }
 
 /** The live process whose record says it took the write lock most recently, and for how long it has held it. */
-function writeLockHolder(directory: string): { readonly pid: number; readonly heldMs: number } | undefined {
+async function writeLockHolder(
+	directory: string,
+): Promise<{ readonly pid: number; readonly heldMs: number } | undefined> {
 	let holder: { pid: number; since: number } | undefined;
-	for (const { pid, since } of liveHolderRecords(directory))
+	for (const { pid, since } of await liveHolderRecords(directory))
 		if (since !== undefined && (holder === undefined || since > holder.since)) holder = { pid, since };
 	return holder === undefined ? undefined : { pid: holder.pid, heldMs: Math.max(0, Date.now() - holder.since) };
 }
@@ -1129,9 +1152,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		try {
 			// Writers already waiting in other processes go first.
 			const queue = this.writeQueue;
-			if (queue?.contended()) {
-				// Read on the event loop, once, before the writer asks for the lock: its place in line has to be prompt.
-				const waiting = this.queueOp(() => queue.liveTickets());
+			if (queue !== undefined) {
+				const waiting = await this.queueFileOp(() => queue.liveTicketsOffLoop());
 				if (waiting.length > 0) ticket = await this.queueFileOp(() => queue.join(waiting));
 			}
 			// Read only once this writer waits, so an uncontended transaction pays nothing for it.
@@ -1164,7 +1186,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 					stalledSince = performance.now();
 				}
 				const stalledMs = performance.now() - stalledSince;
-				if (stalledMs >= lockWaitMs) throw this.lockWaitTimeout(lockWaitMs, stalledMs, behind, lastCause);
+				if (stalledMs >= lockWaitMs) throw await this.lockWaitTimeout(lockWaitMs, stalledMs, behind, lastCause);
 				if (!behind && committed && (await this.attemptThroughRelease())) {
 					this.acquired(waitStarted);
 					return;
@@ -1224,13 +1246,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		return ticket.watch((cause) => this.degraded("watch-unavailable", cause));
 	}
 
-	private lockWaitTimeout(
+	private async lockWaitTimeout(
 		lockWaitMs: number,
 		stalledMs: number,
 		behind: boolean,
 		lastCause: unknown,
-	): StorageWriteLockTimeoutError {
-		const holder = this.holderRecord?.latestHolder();
+	): Promise<StorageWriteLockTimeoutError> {
+		const holder = await this.holderRecord?.latestHolder();
 		return new StorageWriteLockTimeoutError(
 			this.descriptor,
 			{
@@ -1254,11 +1276,11 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * delay the next writer: it hands the turn to the oldest writer waiting in another process. A turn that cannot be
 	 * handed on is still noticed by that writer's recheck timer, so it never fails the transaction.
 	 */
-	private released(committed: boolean): void {
+	private async released(committed: boolean): Promise<void> {
 		this.lockUse.released(committed);
 		this.holderRecord?.free();
 		try {
-			this.writeQueue?.wakeNext();
+			await this.writeQueue?.wakeNext();
 		} catch (cause) {
 			this.degraded("wake-failed", cause);
 		}
@@ -1451,18 +1473,18 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			const value = await queued.callback(this.createExecutor(() => active));
 			active = false;
 			await this.executor.exec("COMMIT");
-			this.released(true);
+			await this.released(true);
 			queued.resolve(value);
 		} catch (cause) {
 			active = false;
 			try {
 				await this.executor.exec("ROLLBACK");
 			} catch (rollbackCause) {
-				this.released(false);
+				await this.released(false);
 				queued.reject(new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause));
 				return;
 			}
-			this.released(false);
+			await this.released(false);
 			queued.reject(cause);
 		}
 	}
@@ -1506,7 +1528,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			commitCause = cause;
 			await this.rollbackQuietly();
 		}
-		this.released(committed);
+		await this.released(committed);
 		ran.forEach((queued, index) => {
 			const outcome = outcomes[index]!;
 			if (!committed) queued.reject(outcome.ok ? commitCause : outcome.error);
@@ -1528,7 +1550,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		rollbackCause: unknown,
 	): Promise<void> {
 		await this.rollbackQuietly();
-		this.released(false);
+		await this.released(false);
 		const failed = outcomes.length;
 		const ran = batch.members.splice(0, failed + 1);
 		ran.slice(0, failed).forEach((queued, index) => {
@@ -1550,17 +1572,17 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	close(): Promise<void> {
 		if (!this.closePromise) {
 			this.closing = true;
-			this.closePromise = this.tail.then(() =>
-				this.driver(() => {
-					try {
-						this.holderRecord?.close();
+			this.closePromise = this.tail.then(async () => {
+				try {
+					await this.holderRecord?.close();
+					this.driver(() => {
 						if (this.ownsConnection) this.connection.close();
 						finalizeReleasedStatements();
-					} finally {
-						releaseOpenLock(this.openLock);
-					}
-				}),
-			);
+					});
+				} finally {
+					await releaseOpenLock(this.openLock);
+				}
+			});
 		}
 		return this.closePromise;
 	}
@@ -1669,7 +1691,7 @@ export async function openNodeSqliteDatabase(
 					? heldOpenLock.target
 					: await realpath(location);
 		if (typeof identity === "string" && heldOpenLock !== undefined && heldOpenLock.target !== identity) {
-			releaseOpenLock(heldOpenLock);
+			await releaseOpenLock(heldOpenLock);
 			heldOpenLock = await acquireOpenLock(identity, readOnly, busyTimeoutMs);
 		}
 		const database = new NodeSqliteDatabase(connection, descriptor, true, identity, lockWaitMs, holdMs, heldOpenLock);
@@ -1682,7 +1704,7 @@ export async function openNodeSqliteDatabase(
 		} catch {
 			// Preserve the opening failure if cleanup also fails.
 		} finally {
-			releaseOpenLock(heldOpenLock);
+			await releaseOpenLock(heldOpenLock);
 		}
 		throw unavailable(descriptor, cause);
 	}
@@ -1703,7 +1725,7 @@ export function wrapNodeSqliteDatabase(connection: DatabaseSync): SqliteDatabase
 		connection.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
 		return new NodeSqliteDatabase(connection, descriptor, false, connection, undefined, undefined, heldOpenLock);
 	} catch (cause) {
-		releaseOpenLock(heldOpenLock);
+		void releaseOpenLock(heldOpenLock);
 		throw unavailable(descriptor, cause);
 	}
 }
