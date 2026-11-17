@@ -27,6 +27,7 @@ import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId, resolveModelCandidate, resultRanOnLine } from "../shared/model-fallback.js";
 import { routeSubagentModel } from "../shared/model-router.js";
+import { isExecutionTicket } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
 import {
 	finalizeSingleOutput,
@@ -328,6 +329,7 @@ export async function runSinglePath(
 			// #3981: a queued child starts after its launch; by then model fallback can have retired the launching session, whose
 			// context throws on every read. The working directory is fixed at launch.
 			const launchCwd = ctx.cwd;
+			const schedule = params[BURST_EXECUTION_SCHEDULE];
 			// No task host owns this launch: it is recorded in this session like one, so run control reaches it.
 			r = await runOwnerlessChild({
 				agent: params.agent!,
@@ -336,7 +338,7 @@ export async function runSinglePath(
 				cwd: effectiveCwd,
 				options: runOptions,
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
-				...(params[BURST_EXECUTION_SCHEDULE] ? { schedule: params[BURST_EXECUTION_SCHEDULE] } : {}),
+				...(schedule ? { schedule } : {}),
 				runSync: (childTask, options) => deps.runtime.runSync(launchCwd, agents, params.agent!, childTask, options),
 			}).result.finally(() => startHold?.settle());
 		}
@@ -344,6 +346,10 @@ export async function runSinglePath(
 		startHold?.settle();
 		await cleanupTransientProgress(progressDir, artifactConfig.enabled);
 		throw error;
+	} finally {
+		if (isExecutionTicket(params[BURST_EXECUTION_SCHEDULE])) {
+			params[BURST_EXECUTION_SCHEDULE].release();
+		}
 	}
 	// Detached children still own this storage until their process closes.
 	if (!r.detached) await cleanupTransientProgress(progressDir, artifactConfig.enabled);

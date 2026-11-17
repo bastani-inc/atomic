@@ -22,7 +22,7 @@ import { workflowSessionMetadataFromContext } from "../../shared/types-depth.js"
 import { mapConcurrent } from "../../shared/utils.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
-import { createExecutionScheduler } from "../shared/parallel-utils.js";
+import { createExecutionScheduler, type ExecutionScheduler, type ExecutionTicket } from "../shared/parallel-utils.js";
 import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../shared/single-output.js";
 import { subagentStartHoldMs } from "../shared/start-progress.js";
 import type { WorktreeSetup } from "../shared/worktree.js";
@@ -30,7 +30,7 @@ import { runOwnerlessChild } from "./ownerless-children.js";
 import { holdStartingChild, type StartingChildHold } from "./subagent-child-hold.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
 import { markLiveResultIndices } from "./subagent-executor-live-update.js";
-import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
+import { type SubagentExecutorRuntimeDeps, TASK_EXECUTION_TICKETS, type TaskParam } from "./subagent-executor-types.js";
 import { resolveParallelTaskCwd } from "./subagent-executor-worktree.js";
 import { runAgentTask } from "./task-execution.js";
 
@@ -74,7 +74,7 @@ interface ForegroundParallelRunInput {
 	concurrencyLimit: number;
 	runningCapacity?: number;
 	sessionStartTimeoutMs?: number;
-	schedule?: (dispatch: () => Promise<void>) => void;
+	schedule?: ExecutionScheduler;
 	liveResults: (SingleResult | undefined)[];
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: SubagentToolResult) => void;
@@ -157,15 +157,25 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 	const host = input.ctx.getAgentTaskHost?.();
 	// Admit observations independently; only actual execution holds a concurrency slot.
 	const schedule = input.schedule ?? createExecutionScheduler(input.concurrencyLimit);
+	// Reserve ordered tickets synchronously before any async setup so admission and slots follow task order.
+	const tickets = input.tasks.map((task) => task[TASK_EXECUTION_TICKETS]?.[0] ?? schedule.reserve?.());
 	// Every child's cwd is checked before any launches, so siblings still launch in their order.
 	const cwdVerdicts = await Promise.all(
 		input.tasks.map((task, index) =>
 			checkLaunchCwd(resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index)),
 		),
-	);
+	).catch((error: unknown) => {
+		for (const ticket of tickets) ticket?.release();
+		throw error;
+	});
 	// Each child's hold on its Intercom target, until it registers or its start ends.
 	const startHolds = new Map<number, StartingChildHold>();
-	const runChild = async (task: TaskParam, index: number): Promise<SingleResult> => {
+	const runChild = async (
+		task: TaskParam,
+		index: number,
+		ticket: ExecutionTicket | undefined,
+	): Promise<SingleResult> => {
+		const childSchedule = ticket ?? schedule;
 		const behavior = input.behaviors[index];
 		const effectiveSkills = behavior?.skills;
 		const taskCwd = resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index);
@@ -346,7 +356,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 					? {}
 					: { heartbeatMs: task.heartbeatMs ?? input.heartbeatMs }),
 				// Dispatch also settles when native cancellation skips a queued runner.
-				schedule,
+				schedule: childSchedule,
 				onTerminal: (child) => {
 					terminalChild = child;
 					startHold.settle(child);
@@ -376,7 +386,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			cwd: taskCwd,
 			options: runOptions,
 			recordChild: input.recordChild ?? { record() {} },
-			schedule,
+			schedule: childSchedule,
 			runSync: (childTask, options) => input.runtime.runSync(launchCwd, taskAgents, task.agent, childTask, options),
 		}).result;
 		return launched.finally(() => {
@@ -388,14 +398,19 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		});
 	};
 	return mapConcurrent(input.tasks, input.tasks.length, async (task, index) => {
+		const ticket = tickets[index];
 		try {
-			return await runChild(task, index);
+			return await runChild(task, index, ticket);
 		} catch (error) {
 			// A launch that fails before its child starts ends its hold.
 			startHolds.get(index)?.settle();
 			// Cancelling the parent cancels the call; any other failure ends only this child.
 			if (input.signal.aborted) throw error;
 			return unstartedChildResult(task, error);
+		} finally {
+			ticket?.release();
 		}
+	}).finally(() => {
+		for (const ticket of tickets) ticket?.release();
 	});
 }

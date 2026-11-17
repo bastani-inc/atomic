@@ -45,12 +45,21 @@ afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()!();
 });
 
-function harness(runSync: SubagentExecutorRuntimeDeps["runSync"], defaultContext?: "fork", concurrency = 4) {
+function harness(
+	runSync: SubagentExecutorRuntimeDeps["runSync"],
+	defaultContext?: "fork",
+	concurrency = 4,
+	hooks?: {
+		beforeDiscover?: (callIndex: number) => Promise<void> | void;
+		onEventEmit?: (eventName: string, payload: unknown) => void;
+	},
+) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-burst-owner-"));
 	const parentManager = SessionManager.inMemory(cwd);
 	const ready = parentManager.appendMessage({ role: "user", content: "parent context", timestamp: Date.now() });
 	const sessionId = `burst-owner-${++sessions}`;
 	const host = new AgentTaskHost({ scope: { kind: "session", sessionId }, authorizeLaunch() {} });
+	let discoveryCall = 0;
 	const ctx = {
 		cwd,
 		mode: "tui",
@@ -71,7 +80,10 @@ function harness(runSync: SubagentExecutorRuntimeDeps["runSync"], defaultContext
 	} as unknown as ExtensionContext;
 	const executor = createSubagentExecutor({
 		pi: {
-			events: { on: () => () => {}, emit: () => {} },
+			events: {
+				on: () => () => {},
+				emit: (eventName: string, payload: unknown) => hooks?.onEventEmit?.(eventName, payload),
+			},
 			getSessionName: () => "parent",
 		} as unknown as ExecutorDeps["pi"],
 		state: {
@@ -86,7 +98,10 @@ function harness(runSync: SubagentExecutorRuntimeDeps["runSync"], defaultContext
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
-		discoverAgents: () => ({ agents: [{ ...agent(), defaultContext }] }),
+		discoverAgents: async () => {
+			await hooks?.beforeDiscover?.(discoveryCall++);
+			return { agents: [{ ...agent(), defaultContext }] };
+		},
 		runtime: { runSync },
 	});
 	cleanups.push(async () => {
@@ -463,4 +478,74 @@ test("an out-of-range subagent heartbeatMs is refused before any child launches"
 	assert.equal(parallelCall.isError, true);
 	assert.match(text(parallelCall), /^Invalid tasks\[1\]\.heartbeatMs NaN/);
 	assert.equal(launches, 0);
+});
+
+test("burst admission grants concurrency slots in call order even when an earlier call's async setup finishes later, and releases tickets when setup fails (#3427)", async () => {
+	const release = Promise.withResolvers<void>();
+	const launched: string[] = [];
+	let authCalls = 0;
+	let holdCalls = 0;
+	const { call } = harness(
+		async (_cwd, _agents, _agent, task) => {
+			launched.push(task);
+			if (task === "foreground") await release.promise;
+			return childResult(task);
+		},
+		undefined,
+		1,
+		{
+			beforeDiscover: async (callIndex) => {
+				if (callIndex === 0) await new Promise<void>((resolve) => setTimeout(resolve, 20));
+			},
+			onEventEmit: (eventName, payload) => {
+				if (eventName === "subagent:supervisor-authorization" && payload && typeof payload === "object") {
+					const index = authCalls++;
+					const req = payload as {
+						childName: string;
+						completion?: Promise<{ capability: string; supervisorSessionId: string; childName: string }>;
+					};
+					req.completion = (async () => {
+						if (index % 2 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 20));
+						return {
+							capability: `cap-${index}`,
+							supervisorSessionId: "parent",
+							childName: req.childName,
+						};
+					})();
+				}
+				if (eventName === "subagent:reserve-restoring-child" && payload && typeof payload === "object") {
+					const index = holdCalls++;
+					const req = payload as { completion?: Promise<void> };
+					req.completion = (async () => {
+						if (index % 2 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 20));
+					})();
+				}
+			},
+		},
+	);
+	cleanups.push(() => release.resolve());
+
+	const foreground = call("foreground", { agent: "echo", task: "foreground", wait: { kind: "foreground" } });
+	const background = await call("background", { agent: "echo", task: "background", wait: { kind: "background" } });
+	assert.equal(single(background).observation.kind, "yielded");
+	assert.deepEqual(launched, ["foreground"], "slower async setup on the first call still takes the first slot");
+	release.resolve();
+	assert.equal(single(await foreground).observation.kind, "settled");
+	assert.deepEqual(launched, ["foreground", "background"]);
+
+	const [parallelFirst, parallelSecond] = await Promise.all([
+		call("p1", { agent: "echo", task: "p1", wait: { kind: "foreground" } }),
+		call("p2", { agent: "echo", task: "p2", wait: { kind: "foreground" } }),
+	]);
+	assert.equal(single(parallelFirst).observation.kind, "settled");
+	assert.equal(single(parallelSecond).observation.kind, "settled");
+	assert.deepEqual(launched, ["foreground", "background", "p1", "p2"]);
+
+	const [failedSetup, afterFailed] = await Promise.all([
+		call("bad", { agent: "nonexistent", task: "bad", wait: { kind: "background" } }),
+		call("good", { agent: "echo", task: "good", wait: { kind: "foreground" } }),
+	]);
+	assert.equal(failedSetup.isError, true);
+	assert.equal(single(afterFailed).observation.kind, "settled");
+	assert.deepEqual(launched, ["foreground", "background", "p1", "p2", "good"]);
 });
