@@ -24,10 +24,12 @@ import {
 	defaultWorktreeSnapshotStoreDir,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/paths.ts";
 import { bunExecutable, moduleDir, readStreamText, spawnProcess } from "../helpers/runtime.js";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, gitConfigPath } from "../helpers/worktree-snapshot.js";
 
-/** The benchmark writes several thousand files and captures them twice. */
+/** The benchmark writes several thousand files and captures them four times, Git cleaning each file it reads. */
 const BENCHMARK_TIMEOUT_MS = 120_000;
+const CHECKOUT_FILES = 3000;
+const COUNTING_CLEAN_FILTER = join(moduleDir(import.meta.url), "..", "fixtures", "git-counting-clean-filter.mjs");
 /** The cross-process test starts real Bun processes, each loading the capture module before it captures. */
 const CHILD_PROCESS_TIMEOUT_MS = 90_000;
 const CAPTURE_PROCESSES = 4;
@@ -36,7 +38,9 @@ const CAPTURE_CHILD = join(moduleDir(import.meta.url), "..", "fixtures", "worktr
 
 let sandbox: GitSandbox;
 beforeEach(() => {
-	sandbox = new GitSandbox();
+	sandbox = new GitSandbox(
+		`[filter "count"]\n\tprocess = \\"${gitConfigPath(process.execPath)}\\" \\"${gitConfigPath(COUNTING_CLEAN_FILTER)}\\"\n`,
+	);
 });
 afterEach(() => {
 	vi.unstubAllEnvs();
@@ -459,7 +463,7 @@ describe("where the private index may not go (#4748)", () => {
 	});
 });
 
-describe("capture cost with a persistent private index (#4748)", () => {
+describe("capture cost with a persistent private index (#4748, #5343)", () => {
 	/** A clone of `files` whose entries are as new as its index, as after a fresh clone: Git must read each file. */
 	async function racilyCleanClone(name: string, files: Record<string, string>): Promise<string> {
 		const { clone } = await sandbox.remoteWithClone(name, files);
@@ -470,49 +474,49 @@ describe("capture cost with a persistent private index (#4748)", () => {
 		return clone;
 	}
 
-	/** Median times of a capture that seeds the private index of `clone` and of the capture after it, three of each. */
-	async function captureTimes(clone: string) {
-		const index = await privateIndexOf(clone);
-		const timed = async () => {
-			const started = performance.now();
-			const tree = await treeOf(clone);
-			return { tree, ms: performance.now() - started };
+	async function filesReadByCapture(clone: string): Promise<{ tree: string; read: number }> {
+		const counted = sandbox.path(`clean-${Date.now()}-${Math.random()}.txt`);
+		const executable = {
+			...sandbox.executable,
+			env: { ...sandbox.executable.env, ATOMIC_TEST_CLEAN_COUNT: counted },
 		};
-		const seeding: number[] = [];
-		const reusing: number[] = [];
-		const trees = new Set<string>();
-		for (let round = 0; round < 3; round++) {
-			rmSync(index, { force: true });
-			rmSync(`${index}.json`, { force: true });
-			const first = await timed();
-			const second = await timed();
-			seeding.push(first.ms);
-			reusing.push(second.ms);
-			trees.add(first.tree).add(second.tree);
+		setWorktreeSnapshotGit(async () => executable);
+		try {
+			const tree = await treeOf(clone);
+			return {
+				tree,
+				read: existsSync(counted) ? readFileSync(counted, "utf8").split("\n").filter(Boolean).length : 0,
+			};
+		} finally {
+			setWorktreeSnapshotGit(async () => sandbox.executable);
 		}
-		assert.equal(trees.size, 1, "every capture records the same tree");
-		const median = (values: number[]) => values.sort((left, right) => left - right)[1]!;
-		return { seeded: median(seeding), reused: median(reusing) };
 	}
 
 	test(
-		"on a racily clean 3,000-file checkout a capture with its private index costs at most half one that seeds it (#4748)",
+		"on a racily clean 3,000-file checkout a capture with its private index reads at most half the files one that seeds it reads (#4748, #5343)",
 		async () => {
-			const files: Record<string, string> = {};
-			const body = "x".repeat(32 * 1024);
-			for (let index = 0; index < 3000; index++) files[`d${index % 30}/f${index}.txt`] = `${index}\n${body}`;
-			const large = await racilyCleanClone("large", files);
-			const small = await racilyCleanClone("small", { "a.txt": "a\n" });
-
-			const { seeded, reused } = await captureTimes(large);
-			// What every capture costs whatever the checkout's size (starting Git about twenty times), measured here so a
-			// host where starting a process is slow, as on Windows, compares only the part the private index changes.
-			const fixed = (await captureTimes(small)).reused;
-
-			assert.ok(
-				reused - fixed <= (seeded - fixed) * 0.5,
-				`with its private index ${reused.toFixed(0)} ms, seeding it ${seeded.toFixed(0)} ms, a one-file capture ${fixed.toFixed(0)} ms: expected at most half beyond the one-file capture`,
-			);
+			const files: Record<string, string> = { ".gitattributes": "*.txt filter=count\n" };
+			const body = "x".repeat(1024);
+			for (let index = 0; index < CHECKOUT_FILES; index++)
+				files[`d${index % 30}/f${index}.txt`] = `${index}\n${body}`;
+			const clone = await racilyCleanClone("large", files);
+			const index = await privateIndexOf(clone);
+			const reads: { seeded: number; reused: number }[] = [];
+			const trees = new Set<string>();
+			for (let round = 0; round < 2; round++) {
+				rmSync(index, { force: true });
+				rmSync(`${index}.json`, { force: true });
+				const seeding = await filesReadByCapture(clone);
+				const reusing = await filesReadByCapture(clone);
+				reads.push({ seeded: seeding.read, reused: reusing.read });
+				trees.add(seeding.tree).add(reusing.tree);
+			}
+			await assertUsedPrivateIndex(clone);
+			assert.equal(trees.size, 1, "every capture records the same tree");
+			for (const { seeded, reused } of reads) {
+				assert.ok(seeded >= CHECKOUT_FILES, `seeding read ${seeded} of the ${CHECKOUT_FILES} racily clean files`);
+				assert.ok(reused <= seeded * 0.5, `with its private index ${reused} files read, seeding it ${seeded}`);
+			}
 		},
 		BENCHMARK_TIMEOUT_MS,
 	);
