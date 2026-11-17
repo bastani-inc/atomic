@@ -120,8 +120,52 @@ function liveTaskIds(host: AgentTaskHost | undefined): Set<string> {
 	}
 }
 
-function ownedRecords(ctx: ExtensionContext): Map<string, SubagentChildRecord> {
-	return readSubagentChildRecords(ctx.sessionManager.getEntries(), subagentChildOwner(ctx).sessionId);
+/** The session state `ownedRecords` read its records from; any append, branch change or history load replaces it. */
+interface OwnedRecordsRead {
+	readonly sessionId: string;
+	readonly owner: string;
+	readonly lastSeq: number;
+	readonly leafId: string | null;
+	readonly fullHistory: boolean;
+	readonly records: ReadonlyMap<string, SubagentChildRecord>;
+}
+
+const ownedRecordReads = new WeakMap<object, OwnedRecordsRead>();
+
+/**
+ * The children this session launched, read once per session state. A subagent's chat asks on every frame whether its
+ * child is stopped or read-only, and folding a long session's every entry for each frame cost a stage of work per
+ * paint.
+ */
+function ownedRecords(ctx: ExtensionContext): ReadonlyMap<string, SubagentChildRecord> {
+	const manager = ctx.sessionManager;
+	const owner = subagentChildOwner(ctx).sessionId;
+	if (
+		typeof manager.getLastSeq !== "function" ||
+		typeof manager.getLeafId !== "function" ||
+		typeof manager.hasFullHistory !== "function"
+	)
+		return readSubagentChildRecords(manager.getEntries(), owner);
+	const state = {
+		sessionId: manager.getSessionId(),
+		owner,
+		lastSeq: manager.getLastSeq(),
+		leafId: manager.getLeafId(),
+		fullHistory: manager.hasFullHistory(),
+	};
+	const read = ownedRecordReads.get(manager);
+	if (
+		read !== undefined &&
+		read.sessionId === state.sessionId &&
+		read.owner === state.owner &&
+		read.lastSeq === state.lastSeq &&
+		read.leafId === state.leafId &&
+		read.fullHistory === state.fullHistory
+	)
+		return read.records;
+	const records = readSubagentChildRecords(manager.getEntries(), owner);
+	ownedRecordReads.set(manager, { ...state, records });
+	return records;
 }
 
 /**

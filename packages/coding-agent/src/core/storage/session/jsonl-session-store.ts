@@ -260,7 +260,12 @@ async function scanSessionLines(
 ): Promise<RangeCursor> {
 	if (from.offset >= size) return from;
 	let { seq, header } = from;
-	let tail = from.offset === 0 ? Buffer.alloc(0) : await witnessAt(file, from.offset);
+	let tail: Buffer = Buffer.alloc(0);
+	if (from.offset !== 0) {
+		const start = await witnessAt(file, from.offset).catch(() => undefined);
+		if (start === undefined) return { offset: from.offset, seq, header: false, changed: true };
+		tail = start;
+	}
 	let chunk = Buffer.allocUnsafe(Math.min(RANGE_CHUNK_BYTES, size - from.offset));
 	let retained = false;
 	let position = from.offset;

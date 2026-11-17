@@ -1,6 +1,6 @@
-import { Container, SettingsList } from "@bastani/atomic-tui";
-import { getSettingsListTheme } from "../theme/theme.js";
+import { Container } from "@bastani/atomic-tui";
 import { DynamicBorder } from "./dynamic-border.ts";
+import { SettingsPicker } from "./settings-picker.ts";
 import { createSettingsChangeHandler } from "./settings-selector-handlers.ts";
 import { buildSettingsItems } from "./settings-selector-items.ts";
 import type { SettingsCallbacks, SettingsConfig } from "./settings-selector-types.ts";
@@ -12,27 +12,25 @@ export type { SettingsCallbacks, SettingsConfig } from "./settings-selector-type
  * Main settings selector component.
  */
 export class SettingsSelectorComponent extends Container {
-	private settingsList: SettingsList;
+	private settingsList: SettingsPicker;
 
 	constructor(config: SettingsConfig, callbacks: SettingsCallbacks) {
 		super();
 
 		this.addChild(new DynamicBorder());
 
-		this.settingsList = new SettingsList(
+		this.settingsList = new SettingsPicker(
 			buildSettingsItems(config, callbacks),
-			10,
-			getSettingsListTheme(),
 			createSettingsChangeHandler(callbacks),
 			callbacks.onCancel,
-			{ enableSearch: true },
+			{ title: "Settings", search: true },
 		);
 
 		this.addChild(this.settingsList);
 		this.addChild(new DynamicBorder());
 	}
 
-	getSettingsList(): SettingsList {
+	getSettingsList(): SettingsPicker {
 		return this.settingsList;
 	}
 }

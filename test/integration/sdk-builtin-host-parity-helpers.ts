@@ -3,13 +3,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withoutSqliteExperimentalWarning } from "../fixtures/sdk-host-fixture-support.mjs";
-import {
-	makeTempDirectory,
-	moduleDir,
-	removeTempDirectory,
-	type SyncSpawnResult,
-	spawnSyncCollect,
-} from "../helpers/runtime.js";
+import { removeFixtureTree } from "../helpers/fixture-removal.js";
+import { makeTempDirectory, moduleDir, type SyncSpawnResult, spawnSyncCollect } from "../helpers/runtime.js";
 
 /** Spawn budget for one built-Node fixture process. Mirrors, but is not the
  *  source of, each suite file's vitest budget — the duration guard resolves
@@ -46,7 +41,7 @@ export function runBuiltNodeFixture(
 			},
 		);
 	} finally {
-		removeTempDirectory(home);
+		removeFixtureTree(home);
 	}
 }
 

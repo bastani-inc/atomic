@@ -6,10 +6,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
-import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
+import {
+	SESSION_BLOB_CHUNK_BYTES,
+	SqlSessionStore,
+} from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
 import {
 	SNAPSHOT_BLOB_CHUNK_BYTES,
 	SNAPSHOT_COLLECTION_BATCH,
@@ -25,12 +29,60 @@ let directory: string;
 /** How many times faster than converting the 256 MiB legacy blob its schema-only open must at least be: it measured 5 to 7. */
 const SCHEMA_ONLY_OPEN_SPEEDUP = 2;
 /**
- * How long one write transaction of a 256 MiB legacy upgrade may hold the writer. Each writes at most 16 MiB of blob
- * bytes: the lazy session conversion's longest took 0.11 s at the median on Linux runners, and 0.38 s at the median and
- * 2.6 s at most on loaded Windows runners. Stamping the legacy snapshot blob's age once rewrote all 256 MiB in one
- * transaction, which took 0.9 s on Linux and 3 to 6 s on Windows.
+ * The most blob bytes one write transaction of a 256 MiB legacy session blob's conversion may write: its chunk batch.
+ * Bounding the bytes rather than the time keeps the bound where a loaded runner cannot move it: one transaction of a
+ * batch stalled for 19 s on a loaded Windows runner. Stamping the legacy snapshot blob's age once rewrote all 256 MiB in
+ * one transaction.
  */
-const LONGEST_WRITE_MS = 5_000;
+const LEGACY_CONVERSION_WRITE_BYTES = 16 * SESSION_BLOB_CHUNK_BYTES;
+/**
+ * How long one write transaction of a 256 MiB legacy upgrade may hold the writer, not counting time the whole host
+ * stood still (see `hostStallClock`). Each writes at most 16 MiB of blob bytes: the longest took 0.11 s at the median on
+ * Linux runners, and up to 5.7 s on Windows runners four to a host, the database's own writes waiting on a shared disk.
+ */
+const LONGEST_WRITE_MS = 15_000;
+/**
+ * How long one write transaction may hold the writer outside the database's own statements, not counting time the
+ * whole host stood still: preparing a batch's bytes, which a loaded disk cannot slow. A stall of the upgrade's own
+ * code while it holds the lock, such as a wait between two statements, shows here.
+ */
+const LONGEST_HOLD_OUTSIDE_STATEMENTS_MS = 2_000;
+/** Converting and stamping 256 MiB took up to 134 s together beside other suites on loaded Windows runners. */
+const LEGACY_UPGRADE_TEST_TIMEOUT_MS = 300_000;
+/**
+ * Tests that fork jiti-loaded openers of the database: each fork loads the storage sources before it opens, and the
+ * slowest pass of the SIGKILL resume test, which forks two, took 26.7 s on a loaded Windows runner.
+ */
+const OPENER_FORKING_TEST_TIMEOUT_MS = 120_000;
+/** A heartbeat of another thread that comes this much later than its period means the whole host stood still. */
+const HOST_STALL_TICK_MS = 10;
+const HOST_STALL_MIN_MS = 50;
+
+/**
+ * Milliseconds the whole host stood still since it started: a heartbeat on another thread, which keeps running while
+ * this one works or waits, counts every tick that came late. A stall inside this process does not stop it.
+ */
+function hostStallClock(): { stalledMs(): number; stop(): Promise<void> } {
+	const stalled = new Float64Array(new SharedArrayBuffer(8));
+	const worker = new Worker(
+		`const { workerData } = require("node:worker_threads");
+const stalled = new Float64Array(workerData);
+let last = performance.now();
+setInterval(() => {
+	const now = performance.now();
+	const late = now - last - ${HOST_STALL_TICK_MS};
+	if (late > ${HOST_STALL_MIN_MS}) stalled[0] += late;
+	last = now;
+}, ${HOST_STALL_TICK_MS});`,
+		{ eval: true, workerData: stalled.buffer },
+	);
+	return {
+		stalledMs: () => stalled[0]!,
+		stop: async () => {
+			await worker.terminate();
+		},
+	};
+}
 
 /** `database`, calling `afterCommit` after each of its transactions ends. */
 function afterEachTransaction(database: SqliteDatabase, afterCommit: () => Promise<void>): SqliteDatabase {
@@ -57,6 +109,11 @@ async function writtenSnapshotBytes(database: SqliteDatabase): Promise<number> {
 	const row = await database.get(`SELECT
 		(SELECT coalesce(sum(length(data)), 0) FROM snapshot_blobs WHERE created_at > 0) +
 		(SELECT coalesce(sum(length(data)), 0) FROM snapshot_blob_chunks) AS bytes`);
+	return Number(row?.bytes);
+}
+
+async function writtenSessionBytes(database: SqliteDatabase): Promise<number> {
+	const row = await database.get("SELECT coalesce(sum(length(data)), 0) AS bytes FROM session_blob_chunks");
 	return Number(row?.bytes);
 }
 
@@ -615,228 +672,294 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			assert.equal(publish, false, "conversion must finish after the reader sees the legacy header");
 		});
 
-		test("opens a 256 MiB legacy blob without rewriting it and converts only on its next write (#5327)", async () => {
-			const database = await openDatabase();
-			const sessions = await SqlSessionStore.open(database);
-			closers.push(() => sessions.close());
-			await createSession(sessions, "session", []);
-			await database.exec(`DROP TABLE session_blobs; DROP TABLE session_blob_chunks;
+		test(
+			"opens a 256 MiB legacy blob without rewriting it and converts only on its next write (#5327)",
+			async () => {
+				const database = await openDatabase();
+				const sessions = await SqlSessionStore.open(database);
+				closers.push(() => sessions.close());
+				await createSession(sessions, "session", []);
+				await database.exec(`DROP TABLE session_blobs; DROP TABLE session_blob_chunks;
 				CREATE TABLE session_blobs (session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL,
 				data BLOB NOT NULL, PRIMARY KEY (session_id, hash)) STRICT`);
-			const bytes = 256 * 1024 * 1024;
-			const pattern = Buffer.from(Array.from({ length: 251 }, (_, index) => index));
-			const original = Buffer.alloc(bytes).fill(pattern);
-			const hash = createHash("sha256").update(original).digest("hex");
-			await database.run("INSERT INTO session_blobs VALUES ('session', ?, ?, ?)", hash, bytes, original);
-			await database.exec(`DROP INDEX snapshot_blobs_age; DROP TABLE snapshot_blobs;
+				const bytes = 256 * 1024 * 1024;
+				const pattern = Buffer.from(Array.from({ length: 251 }, (_, index) => index));
+				const original = Buffer.alloc(bytes).fill(pattern);
+				const hash = createHash("sha256").update(original).digest("hex");
+				await database.run("INSERT INTO session_blobs VALUES ('session', ?, ?, ?)", hash, bytes, original);
+				await database.exec(`DROP INDEX snapshot_blobs_age; DROP TABLE snapshot_blobs;
 				CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL) STRICT`);
-			await database.run("INSERT INTO snapshot_blobs VALUES (?, ?, ?)", hash, bytes, original);
-			const durations: number[] = [];
-			let maintenance = false;
-			let written = 0;
-			let mostWritten = 0;
-			const measured: SqliteDatabase = {
-				descriptor: database.descriptor,
-				exec: database.exec.bind(database),
-				run: database.run.bind(database),
-				get: database.get.bind(database),
-				all: database.all.bind(database),
-				close: database.close.bind(database),
-				async transaction(callback, options) {
-					let acquired = 0;
-					const result = await database.transaction((tx) => {
-						acquired = performance.now();
-						return callback(tx);
-					}, options);
-					durations.push(performance.now() - acquired);
-					if (maintenance) {
-						const now = await writtenSnapshotBytes(database);
-						mostWritten = Math.max(mostWritten, now - written);
-						written = now;
-					}
-					return result;
-				},
-			};
-			const started = performance.now();
-			const upgraded = await SqlSessionStore.open(measured);
-			closers.push(() => upgraded.close());
-			const openMs = performance.now() - started;
-			const pending = await database.get(
-				"SELECT chunks, length(data) AS bytes FROM session_blobs WHERE hash = ?",
-				hash,
-			);
-			assert.equal(Number(pending?.chunks), -1);
-			assert.equal(Number(pending?.bytes), bytes);
-			assert.equal(Number((await database.get("SELECT count(*) AS chunks FROM session_blob_chunks"))?.chunks), 0);
-			assert.equal(
-				Number((await database.get("SELECT created_at FROM snapshot_blobs WHERE hash = ?", hash))?.created_at),
-				0,
-			);
-			assert.equal(
-				await database.get("SELECT name FROM sqlite_schema WHERE name = 'snapshot_blobs_age'"),
-				undefined,
-			);
-			durations.length = 0;
-			const conversionStarted = performance.now();
-			assert.deepEqual(await upgraded.putBlob("session", original), { hash, bytes });
-			const elapsed = performance.now() - conversionStarted;
-			const longest = Math.max(...durations);
-			process.stdout.write(
-				`${adapter}: 256 MiB open ${openMs.toFixed(0)} ms; lazy conversion ${elapsed.toFixed(0)} ms; longest write ${longest.toFixed(0)} ms\n`,
-			);
-			// Measured against the conversion on the same machine, so a loaded runner slows both: an open that read or
-			// rewrote the blob would cost about as much as converting it.
-			assert.ok(
-				openMs * SCHEMA_ONLY_OPEN_SPEEDUP < elapsed,
-				`schema-only open took ${openMs.toFixed(0)} ms against ${elapsed.toFixed(0)} ms to convert the blob`,
-			);
-			assert.ok(longest < LONGEST_WRITE_MS, `one write transaction held the lock for ${longest.toFixed(0)} ms`);
-			assert.ok(durations.length > 2, "large blobs must commit between chunk batches");
-			const restored = await upgraded.getBlob("session", hash);
-			assert.equal(restored?.byteLength, bytes);
-			assert.equal(createHash("sha256").update(restored!).digest("hex"), hash);
-			durations.length = 0;
-			written = await writtenSnapshotBytes(database);
-			maintenance = true;
-			const collectionStarted = performance.now();
-			assert.deepEqual((await collectSnapshotGarbage(upgraded.snapshotBlobs, { graceSeconds: 0 })).deleted, []);
-			const maintenanceMs = performance.now() - collectionStarted;
-			maintenance = false;
-			const maintenanceWriteMs = Math.max(...durations);
-			process.stdout.write(
-				`${adapter}: 256 MiB deferred age index + stamp ${maintenanceMs.toFixed(0)} ms; longest write ${maintenanceWriteMs.toFixed(0)} ms; most blob bytes in one write ${mostWritten}\n`,
-			);
-			assert.ok(
-				mostWritten <= SNAPSHOT_LEGACY_STAMP_BYTES,
-				`one snapshot maintenance transaction wrote ${mostWritten} bytes of blobs`,
-			);
-			assert.ok(
-				maintenanceWriteMs < LONGEST_WRITE_MS,
-				`snapshot maintenance held the writer for ${maintenanceWriteMs.toFixed(0)} ms`,
-			);
-			assert.ok(await database.get("SELECT name FROM sqlite_schema WHERE name = 'snapshot_blobs_age'"));
-			const stamped = await database.get(
-				"SELECT created_at, chunks, length(data) AS inline FROM snapshot_blobs WHERE hash = ?",
-				hash,
-			);
-			assert.ok(Number(stamped?.created_at) > 0);
-			assert.equal(
-				Number(stamped?.chunks),
-				bytes / SNAPSHOT_BLOB_CHUNK_BYTES,
-				"a legacy blob too large to stamp in one write moves to chunks",
-			);
-			assert.equal(Number(stamped?.inline), 0);
-			assert.equal(
-				createHash("sha256")
-					.update((await upgraded.snapshotBlobs.getBlob(hash))!)
-					.digest("hex"),
-				hash,
-			);
-			assert.deepEqual(
-				(await collectSnapshotGarbage(upgraded.snapshotBlobs)).deleted,
-				[],
-				"stamped legacy blobs get the full grace window",
-			);
-		}, 120_000);
+				await database.run("INSERT INTO snapshot_blobs VALUES (?, ?, ?)", hash, bytes, original);
+				const hostStalls = hostStallClock();
+				closers.push(() => hostStalls.stop());
+				const durations: number[] = [];
+				const outsideStatements: number[] = [];
+				let measuring: (() => Promise<number>) | undefined;
+				let written = 0;
+				let mostWritten = 0;
+				const measured: SqliteDatabase = {
+					descriptor: database.descriptor,
+					exec: database.exec.bind(database),
+					run: database.run.bind(database),
+					get: database.get.bind(database),
+					all: database.all.bind(database),
+					close: database.close.bind(database),
+					async transaction(callback, options) {
+						let acquired = 0;
+						let stalledBefore = 0;
+						let inStatementsMs = 0;
+						let running = 0;
+						let runningSince = 0;
+						const timed = <T>(statement: () => Promise<T>): Promise<T> => {
+							if (running++ === 0) runningSince = performance.now();
+							return statement().finally(() => {
+								if (--running === 0) inStatementsMs += performance.now() - runningSince;
+							});
+						};
+						const result = await database.transaction(async (tx) => {
+							acquired = performance.now();
+							stalledBefore = hostStalls.stalledMs();
+							const value = await callback({
+								exec: (sql) => timed(() => tx.exec(sql)),
+								run: (sql, ...params) => timed(() => tx.run(sql, ...params)),
+								get: <R extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+									timed(() => tx.get<R>(sql, ...params)),
+								all: <R extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+									timed(() => tx.all<R>(sql, ...params)),
+							});
+							outsideStatements.push(
+								performance.now() - acquired - inStatementsMs - (hostStalls.stalledMs() - stalledBefore),
+							);
+							return value;
+						}, options);
+						durations.push(performance.now() - acquired - (hostStalls.stalledMs() - stalledBefore));
+						if (measuring !== undefined) {
+							const now = await measuring();
+							mostWritten = Math.max(mostWritten, now - written);
+							written = now;
+						}
+						return result;
+					},
+				};
+				const started = performance.now();
+				const upgraded = await SqlSessionStore.open(measured);
+				closers.push(() => upgraded.close());
+				const openMs = performance.now() - started;
+				const pending = await database.get(
+					"SELECT chunks, length(data) AS bytes FROM session_blobs WHERE hash = ?",
+					hash,
+				);
+				assert.equal(Number(pending?.chunks), -1);
+				assert.equal(Number(pending?.bytes), bytes);
+				assert.equal(Number((await database.get("SELECT count(*) AS chunks FROM session_blob_chunks"))?.chunks), 0);
+				assert.equal(
+					Number((await database.get("SELECT created_at FROM snapshot_blobs WHERE hash = ?", hash))?.created_at),
+					0,
+				);
+				assert.equal(
+					await database.get("SELECT name FROM sqlite_schema WHERE name = 'snapshot_blobs_age'"),
+					undefined,
+				);
+				durations.length = 0;
+				outsideStatements.length = 0;
+				written = await writtenSessionBytes(database);
+				measuring = () => writtenSessionBytes(database);
+				const conversionStarted = performance.now();
+				assert.deepEqual(await upgraded.putBlob("session", original), { hash, bytes });
+				const elapsed = performance.now() - conversionStarted;
+				measuring = undefined;
+				const conversionMostWritten = mostWritten;
+				mostWritten = 0;
+				const longest = Math.max(...durations);
+				const longestOutside = Math.max(...outsideStatements);
+				process.stdout.write(
+					`${adapter}: 256 MiB open ${openMs.toFixed(0)} ms; lazy conversion ${elapsed.toFixed(0)} ms; longest write ${longest.toFixed(0)} ms, ${longestOutside.toFixed(0)} ms of it outside statements; most blob bytes in one write ${conversionMostWritten}\n`,
+				);
+				// Measured against the conversion on the same machine, so a loaded runner slows both: an open that read or
+				// rewrote the blob would cost about as much as converting it.
+				assert.ok(
+					openMs * SCHEMA_ONLY_OPEN_SPEEDUP < elapsed,
+					`schema-only open took ${openMs.toFixed(0)} ms against ${elapsed.toFixed(0)} ms to convert the blob`,
+				);
+				assert.ok(
+					conversionMostWritten > 0 && conversionMostWritten <= LEGACY_CONVERSION_WRITE_BYTES,
+					`one conversion write transaction wrote ${conversionMostWritten} bytes of blobs`,
+				);
+				assert.ok(longest < LONGEST_WRITE_MS, `one write transaction held the lock for ${longest.toFixed(0)} ms`);
+				assert.ok(
+					longestOutside < LONGEST_HOLD_OUTSIDE_STATEMENTS_MS,
+					`one write transaction held the lock for ${longestOutside.toFixed(0)} ms outside its statements`,
+				);
+				assert.ok(durations.length > 2, "large blobs must commit between chunk batches");
+				const restored = await upgraded.getBlob("session", hash);
+				assert.equal(restored?.byteLength, bytes);
+				assert.equal(createHash("sha256").update(restored!).digest("hex"), hash);
+				durations.length = 0;
+				outsideStatements.length = 0;
+				written = await writtenSnapshotBytes(database);
+				measuring = () => writtenSnapshotBytes(database);
+				const collectionStarted = performance.now();
+				assert.deepEqual((await collectSnapshotGarbage(upgraded.snapshotBlobs, { graceSeconds: 0 })).deleted, []);
+				const maintenanceMs = performance.now() - collectionStarted;
+				measuring = undefined;
+				const maintenanceWriteMs = Math.max(...durations);
+				const maintenanceOutside = Math.max(...outsideStatements);
+				process.stdout.write(
+					`${adapter}: 256 MiB deferred age index + stamp ${maintenanceMs.toFixed(0)} ms; longest write ${maintenanceWriteMs.toFixed(0)} ms, ${maintenanceOutside.toFixed(0)} ms of it outside statements; most blob bytes in one write ${mostWritten}\n`,
+				);
+				assert.ok(
+					mostWritten <= SNAPSHOT_LEGACY_STAMP_BYTES,
+					`one snapshot maintenance transaction wrote ${mostWritten} bytes of blobs`,
+				);
+				assert.ok(
+					maintenanceWriteMs < LONGEST_WRITE_MS,
+					`snapshot maintenance held the writer for ${maintenanceWriteMs.toFixed(0)} ms`,
+				);
+				assert.ok(
+					maintenanceOutside < LONGEST_HOLD_OUTSIDE_STATEMENTS_MS,
+					`snapshot maintenance held the writer for ${maintenanceOutside.toFixed(0)} ms outside its statements`,
+				);
+				assert.ok(await database.get("SELECT name FROM sqlite_schema WHERE name = 'snapshot_blobs_age'"));
+				const stamped = await database.get(
+					"SELECT created_at, chunks, length(data) AS inline FROM snapshot_blobs WHERE hash = ?",
+					hash,
+				);
+				assert.ok(Number(stamped?.created_at) > 0);
+				assert.equal(
+					Number(stamped?.chunks),
+					bytes / SNAPSHOT_BLOB_CHUNK_BYTES,
+					"a legacy blob too large to stamp in one write moves to chunks",
+				);
+				assert.equal(Number(stamped?.inline), 0);
+				assert.equal(
+					createHash("sha256")
+						.update((await upgraded.snapshotBlobs.getBlob(hash))!)
+						.digest("hex"),
+					hash,
+				);
+				assert.deepEqual(
+					(await collectSnapshotGarbage(upgraded.snapshotBlobs)).deleted,
+					[],
+					"stamped legacy blobs get the full grace window",
+				);
+			},
+			LEGACY_UPGRADE_TEST_TIMEOUT_MS,
+		);
 
-		test("a concurrent opener succeeds during a lazy 256 MiB conversion while mixed-layout blobs remain readable", async () => {
-			const database = await openDatabase();
-			const sessions = await SqlSessionStore.open(database);
-			closers.push(() => sessions.close());
-			await createSession(sessions, "session", []);
-			await database.exec(`DROP TABLE session_blobs; DROP TABLE session_blob_chunks;
+		test(
+			"a concurrent opener succeeds during a lazy 256 MiB conversion while mixed-layout blobs remain readable",
+			async () => {
+				const database = await openDatabase();
+				const sessions = await SqlSessionStore.open(database);
+				closers.push(() => sessions.close());
+				await createSession(sessions, "session", []);
+				await database.exec(`DROP TABLE session_blobs; DROP TABLE session_blob_chunks;
 				CREATE TABLE session_blobs (session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL,
 				data BLOB NOT NULL, PRIMARY KEY (session_id, hash)) STRICT`);
-			const reader = await SqlSessionStore.open(database);
-			closers.push(() => reader.close());
-			const bytes = 256 * 1024 * 1024;
-			const digest = createHash("sha256");
-			const block = new Uint8Array(1024 * 1024);
-			for (let index = 0; index < 256; index++) digest.update(block);
-			const hash = digest.digest("hex");
-			await database.run(
-				"INSERT INTO session_blobs (session_id, hash, bytes, data) VALUES ('session', ?, ?, zeroblob(?))",
-				hash,
-				bytes,
-				bytes,
-			);
-			const old = textBlob("still legacy during conversion");
-			await database.run(
-				"INSERT INTO session_blobs (session_id, hash, bytes, data) VALUES ('session', ?, ?, ?)",
-				old.hash,
-				old.data.length,
-				old.data,
-			);
-			const fresh = textBlob("already chunked during conversion");
-			await reader.putBlob("session", fresh.data);
-			const migrator = startOpener(adapter, hash, "pause");
-			await migrator.wait("locked");
-			const contender = startOpener(adapter, hash);
-			await contender.wait("opening");
-			assert.deepEqual(await reader.getBlob("session", old.hash), old.data);
-			assert.deepEqual(await reader.getBlob("session", fresh.hash), fresh.data);
-			migrator.child.send("continue");
-			await migrator.wait("batch");
-			assert.equal(await contender.wait("opened"), "opened");
-			assert.deepEqual(await contender.exited, [0, null]);
-			migrator.child.send("continue");
-			assert.deepEqual(await migrator.wait("written"), { type: "written", hash });
-			assert.deepEqual(await migrator.exited, [0, null]);
-			assert.deepEqual(await database.get("PRAGMA integrity_check"), { integrity_check: "ok" });
-			assert.deepEqual(await reader.getBlob("session", old.hash), old.data);
-			assert.deepEqual(await reader.getBlob("session", fresh.hash), fresh.data);
-			const reopened = await SqlSessionStore.open(database);
-			closers.push(() => reopened.close());
-			assert.equal(
-				createHash("sha256")
-					.update((await reopened.getBlob("session", hash))!)
-					.digest("hex"),
-				hash,
-			);
-		}, 120_000);
+				const reader = await SqlSessionStore.open(database);
+				closers.push(() => reader.close());
+				const bytes = 256 * 1024 * 1024;
+				const digest = createHash("sha256");
+				const block = new Uint8Array(1024 * 1024);
+				for (let index = 0; index < 256; index++) digest.update(block);
+				const hash = digest.digest("hex");
+				await database.run(
+					"INSERT INTO session_blobs (session_id, hash, bytes, data) VALUES ('session', ?, ?, zeroblob(?))",
+					hash,
+					bytes,
+					bytes,
+				);
+				const old = textBlob("still legacy during conversion");
+				await database.run(
+					"INSERT INTO session_blobs (session_id, hash, bytes, data) VALUES ('session', ?, ?, ?)",
+					old.hash,
+					old.data.length,
+					old.data,
+				);
+				const fresh = textBlob("already chunked during conversion");
+				await reader.putBlob("session", fresh.data);
+				const migrator = startOpener(adapter, hash, "pause");
+				await migrator.wait("locked");
+				const contender = startOpener(adapter, hash);
+				await contender.wait("opening");
+				assert.deepEqual(await reader.getBlob("session", old.hash), old.data);
+				assert.deepEqual(await reader.getBlob("session", fresh.hash), fresh.data);
+				migrator.child.send("continue");
+				await migrator.wait("batch");
+				assert.equal(await contender.wait("opened"), "opened");
+				assert.deepEqual(await contender.exited, [0, null]);
+				migrator.child.send("continue");
+				assert.deepEqual(await migrator.wait("written"), { type: "written", hash });
+				assert.deepEqual(await migrator.exited, [0, null]);
+				assert.deepEqual(await database.get("PRAGMA integrity_check"), { integrity_check: "ok" });
+				assert.deepEqual(await reader.getBlob("session", old.hash), old.data);
+				assert.deepEqual(await reader.getBlob("session", fresh.hash), fresh.data);
+				const reopened = await SqlSessionStore.open(database);
+				closers.push(() => reopened.close());
+				assert.equal(
+					createHash("sha256")
+						.update((await reopened.getBlob("session", hash))!)
+						.digest("hex"),
+					hash,
+				);
+			},
+			OPENER_FORKING_TEST_TIMEOUT_MS,
+		);
 
-		test("resumes after SIGKILL between chunk batches without discarding legacy bytes or duplicating chunks", async () => {
-			const database = await openDatabase();
-			const sessions = await SqlSessionStore.open(database);
-			closers.push(() => sessions.close());
-			await createSession(sessions, "session", []);
-			await database.exec(`DROP TABLE session_blobs; DROP TABLE session_blob_chunks;
+		test(
+			"resumes after SIGKILL between chunk batches without discarding legacy bytes or duplicating chunks",
+			async () => {
+				const database = await openDatabase();
+				const sessions = await SqlSessionStore.open(database);
+				closers.push(() => sessions.close());
+				await createSession(sessions, "session", []);
+				await database.exec(`DROP TABLE session_blobs; DROP TABLE session_blob_chunks;
 				CREATE TABLE session_blobs (session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL,
 				data BLOB NOT NULL, PRIMARY KEY (session_id, hash)) STRICT`);
-			const original = Buffer.alloc(32 * 1024 * 1024 + 17).fill(Buffer.from([0, 1, 127, 128, 255]));
-			const hash = createHash("sha256").update(original).digest("hex");
-			await database.run("INSERT INTO session_blobs VALUES ('session', ?, ?, ?)", hash, original.length, original);
-			const migrator = startOpener(adapter, hash, "pause-binary");
-			await migrator.wait("locked");
-			migrator.child.send("continue");
-			await migrator.wait("batch");
-			migrator.child.kill("SIGKILL");
-			await migrator.exited;
-			assert.deepEqual(await database.get("PRAGMA integrity_check"), { integrity_check: "ok" });
-			const pending = await database.get(
-				"SELECT chunks, length(data) AS bytes FROM session_blobs WHERE hash = ?",
-				hash,
-			);
-			assert.equal(Number(pending?.chunks), -1);
-			assert.equal(Number(pending?.bytes), original.length);
-			const progress = await database.get(
-				"SELECT count(*) AS chunks, sum(length(data)) AS bytes FROM session_blob_chunks",
-			);
-			assert.ok(Number(progress?.chunks) > 0);
-			assert.ok(Number(progress?.bytes) < original.length);
-			const resumed = startOpener(adapter, hash, "write-binary");
-			assert.deepEqual(await resumed.wait("written"), { type: "written", hash });
-			assert.deepEqual(await resumed.exited, [0, null]);
-			const upgraded = await SqlSessionStore.open(database);
-			closers.push(() => upgraded.close());
-			assert.deepEqual(await upgraded.getBlob("session", hash), new Uint8Array(original));
-			const complete = await database.get(
-				"SELECT chunks, length(data) AS bytes FROM session_blobs WHERE hash = ?",
-				hash,
-			);
-			assert.equal(Number(complete?.chunks), 33);
-			assert.equal(Number(complete?.bytes), 0);
-			assert.equal(Number((await database.get("SELECT count(*) AS chunks FROM session_blob_chunks"))?.chunks), 33);
-		});
+				const original = Buffer.alloc(32 * 1024 * 1024 + 17).fill(Buffer.from([0, 1, 127, 128, 255]));
+				const hash = createHash("sha256").update(original).digest("hex");
+				await database.run(
+					"INSERT INTO session_blobs VALUES ('session', ?, ?, ?)",
+					hash,
+					original.length,
+					original,
+				);
+				const migrator = startOpener(adapter, hash, "pause-binary");
+				await migrator.wait("locked");
+				migrator.child.send("continue");
+				await migrator.wait("batch");
+				migrator.child.kill("SIGKILL");
+				await migrator.exited;
+				assert.deepEqual(await database.get("PRAGMA integrity_check"), { integrity_check: "ok" });
+				const pending = await database.get(
+					"SELECT chunks, length(data) AS bytes FROM session_blobs WHERE hash = ?",
+					hash,
+				);
+				assert.equal(Number(pending?.chunks), -1);
+				assert.equal(Number(pending?.bytes), original.length);
+				const progress = await database.get(
+					"SELECT count(*) AS chunks, sum(length(data)) AS bytes FROM session_blob_chunks",
+				);
+				assert.ok(Number(progress?.chunks) > 0);
+				assert.ok(Number(progress?.bytes) < original.length);
+				const resumed = startOpener(adapter, hash, "write-binary");
+				assert.deepEqual(await resumed.wait("written"), { type: "written", hash });
+				assert.deepEqual(await resumed.exited, [0, null]);
+				const upgraded = await SqlSessionStore.open(database);
+				closers.push(() => upgraded.close());
+				assert.deepEqual(await upgraded.getBlob("session", hash), new Uint8Array(original));
+				const complete = await database.get(
+					"SELECT chunks, length(data) AS bytes FROM session_blobs WHERE hash = ?",
+					hash,
+				);
+				assert.equal(Number(complete?.chunks), 33);
+				assert.equal(Number(complete?.bytes), 0);
+				assert.equal(
+					Number((await database.get("SELECT count(*) AS chunks FROM session_blob_chunks"))?.chunks),
+					33,
+				);
+			},
+			OPENER_FORKING_TEST_TIMEOUT_MS,
+		);
 	});
 }

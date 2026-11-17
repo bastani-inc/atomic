@@ -66,12 +66,10 @@ interface ScheduledTimer extends CapturedTimer {
 export interface LifecycleFakeClock {
 	advanceBy(milliseconds: number): void;
 	animationTick(): void;
-	flushEventRender(): void;
 	intervalCount(): number;
 	activeIntervalDelays(): readonly number[];
 	timeoutCount(): number;
 	capturedAnimationCallbacks(): readonly (() => void)[];
-	capturedEventRenderCallbacks(): readonly (() => void)[];
 	intervalDelays(): readonly number[];
 	timeoutDelays(): readonly number[];
 	restore(): void;
@@ -141,16 +139,10 @@ export function installLifecycleFakeClock(): LifecycleFakeClock {
 				runTimer(timer);
 			}
 		},
-		flushEventRender: () => {
-			for (const timer of [...scheduled.values()].filter((candidate) => !candidate.repeat)) {
-				runTimer(timer);
-			}
-		},
 		intervalCount: () => [...scheduled.values()].filter((timer) => timer.repeat).length,
 		activeIntervalDelays: () => [...scheduled.values()].filter((timer) => timer.repeat).map(({ delay }) => delay),
 		timeoutCount: () => [...scheduled.values()].filter((timer) => !timer.repeat).length,
 		capturedAnimationCallbacks: () => capturedIntervals.map(({ callback }) => callback),
-		capturedEventRenderCallbacks: () => capturedTimeouts.map(({ callback }) => callback),
 		intervalDelays: () => capturedIntervals.map(({ delay }) => delay),
 		timeoutDelays: () => capturedTimeouts.map(({ delay }) => delay),
 		restore: () => {

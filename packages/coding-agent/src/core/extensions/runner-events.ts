@@ -404,9 +404,14 @@ export async function runContextHandlers(
 	messages: AgentMessage[],
 	emitError: EmitExtensionError,
 ): Promise<AgentMessage[]> {
+	const contextHandlers = snapshotEventHandlers(extensions, "context");
+	const systemContextHandlers = snapshotEventHandlers(extensions, "context_with_system");
+	// With nothing to edit it, the context goes on as a session without extensions sends it: cloning a long session's
+	// every message for each request held the event loop, and every key and frame with it, for no reader.
+	if ([...contextHandlers, ...systemContextHandlers].every(({ handlers }) => handlers.length === 0)) return messages;
 	let currentMessages = structuredClone(messages);
 
-	for (const { ext, handlers } of snapshotEventHandlers(extensions, "context")) {
+	for (const { ext, handlers } of contextHandlers) {
 		for (const handler of handlers) {
 			try {
 				const visibleMessages = currentMessages.filter((message) => message.role !== "system");
@@ -429,7 +434,7 @@ export async function runContextHandlers(
 		}
 	}
 
-	for (const { ext, handlers } of snapshotEventHandlers(extensions, "context_with_system")) {
+	for (const { ext, handlers } of systemContextHandlers) {
 		for (const handler of handlers) {
 			try {
 				const hadLeadingSystemMessage = currentMessages[0]?.role === "system";

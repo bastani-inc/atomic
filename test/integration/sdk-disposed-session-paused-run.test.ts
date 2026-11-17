@@ -13,6 +13,7 @@ import {
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
 import { linkSharedTranspileCache } from "../../packages/coding-agent/test/helpers/shared-transpile-cache.js";
+import { toJsLiteral } from "../helpers/js-literal.js";
 import { fileExists, makeTempDirectory, readText, removePath, writeFileEnsuringDir } from "../helpers/runtime.js";
 import { currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
 
@@ -37,20 +38,6 @@ interface Project {
 }
 
 const projects: string[] = [];
-
-type JsonValue = string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue };
-
-const UNSAFE_IN_JS_SOURCE: Readonly<Record<string, string>> = {
-	"<": "\\u003C",
-	">": "\\u003E",
-	"/": "\\u002F",
-	"\u2028": "\\u2028",
-	"\u2029": "\\u2029",
-};
-
-function toJsLiteral(value: JsonValue): string {
-	return JSON.stringify(value).replace(/[<>/\u2028\u2029]/g, (character) => UNSAFE_IN_JS_SOURCE[character]!);
-}
 
 type RejectedReload = "an extension factory that throws" | "a resource commit that throws";
 const REJECTED_RELOADS: readonly RejectedReload[] = [
