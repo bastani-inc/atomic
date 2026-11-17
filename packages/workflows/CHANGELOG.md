@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a session that ended for good, such as an SDK session that ran workflows and was disposed, staying in memory through the workflow hand-off kept for a session that might replace it.
+
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes

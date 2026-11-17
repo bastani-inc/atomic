@@ -428,6 +428,9 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 					lifetime.generations.clear();
 				},
 			]);
+			// The lifetime outlives this session for as long as anything holds its scope; an ended session hands
+			// nothing to a successor, so its handoff, and the session it closes over, go with it.
+			if (lifetime.pendingSwitchHandoff === handOffRunsToSuccessor) lifetime.pendingSwitchHandoff = undefined;
 			await lifetime.closing;
 		} else if (isSessionSwitch(reason)) {
 			await attemptAll([closeGeneration, handOffRunsToSuccessor]);
