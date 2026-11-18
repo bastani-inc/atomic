@@ -101,7 +101,7 @@ describe("the pace of a background collection (#4355)", () => {
 		assert.equal(timers.length, 2);
 	});
 
-	test("a background backfill and sweep wait on their pace between batches, and only between batches", async () => {
+	test("a background backfill waits on its pace after every batch, and a sweep between its batches only", async () => {
 		const other = await openSharedSnapshotDatabase(join(directory, "backfill.sqlite"));
 		const lease = await startRun(other.journal, "run");
 		await other.journal.append(lease, statusEvent("run", { status: "running" }, "RunStarted"));
@@ -124,8 +124,8 @@ describe("the pace of a background collection (#4355)", () => {
 			await store.completeIndex({ pace });
 			assert.deepEqual(
 				pace.waits,
-				[0, 0, 0],
-				"three backfill batches of the events and one of the runs, a wait between each two (#5530)",
+				[0, 0, 0, 0],
+				"three backfill batches of the events and one of the runs, a wait after each, before the sweep's first batch too (#5530)",
 			);
 			pace.waits.length = 0;
 			const deleted = await store.sweep({ graceSeconds: 0, pace });

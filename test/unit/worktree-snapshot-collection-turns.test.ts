@@ -6,17 +6,26 @@
  * between steps, and hold what it deletes to what a retention scan of the same store keeps.
  */
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers";
 import { afterEach, beforeEach, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
-import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteRow,
+	SqliteValue,
+} from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import {
+	SNAPSHOT_BLOB_CHUNK_BYTES,
 	SNAPSHOT_COLLECTION_BATCH,
+	SNAPSHOT_COLLECTION_DELETE_BATCH,
 	SNAPSHOT_COLLECTION_SESSION_REFS,
+	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import {
 	collectSnapshotGarbage,
@@ -27,6 +36,7 @@ import { assertLag, MAIN_THREAD_LAG_LIMIT_MS, measureLag } from "../helpers/even
 import {
 	ageBlobs,
 	createSession,
+	dropSnapshotIndex,
 	fullScanRetainedHashes,
 	messageEntry,
 	openSharedSnapshotDatabase,
@@ -254,6 +264,147 @@ test(
 			`SELECT count(*) AS blobs FROM ${shared.journal.snapshotBlobs.table}`,
 		))!;
 		assert.equal(blobs, RUN_RETAINED_BLOBS);
+	},
+	LARGE_STORE_TEST_TIMEOUT_MS,
+);
+
+/**
+ * `database`, recording from `arm()` on the statements of a collection that hold the event loop for as long as their
+ * batch or their blob is large, and the turns of the event loop between them. Such a statement is a write transaction
+ * (recorded when its callback ends), a statement that walks sessions, and a read of a blob's bytes. A turn counts while
+ * no transaction is open, or while the callback of the open one waits between its statements; not while a transaction
+ * waits for the write lock or commits.
+ */
+function heavyStatementTimeline(database: SqliteDatabase) {
+	const events: string[] = [];
+	let armed = false;
+	let transactions = 0;
+	let callbacks = 0;
+	const tick = () => {
+		if (!armed) return;
+		if (transactions === 0 || callbacks > 0) events.push("turn");
+		setImmediate(tick);
+	};
+	// The statement that walks sessions follows their open leaves, which no other statement names.
+	const heavy = (sql: string) =>
+		sql.includes("open_anchors(") ? "session walk" : /^\s*SELECT data FROM/u.test(sql) ? "blob read" : undefined;
+	const note = <T>(sql: string, result: T): T => {
+		const kind = heavy(sql);
+		if (armed && kind !== undefined) events.push(kind);
+		return result;
+	};
+	const wrap = (executor: SqliteExecutor): SqliteExecutor => ({
+		exec: async (sql) => note(sql, await executor.exec(sql)),
+		run: async (sql: string, ...params: readonly SqliteValue[]) => note(sql, await executor.run(sql, ...params)),
+		get: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+			note(sql, await executor.get<T>(sql, ...params)),
+		all: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+			note(sql, await executor.all<T>(sql, ...params)),
+	});
+	const wrapped: SqliteDatabase = {
+		...wrap(database),
+		descriptor: database.descriptor,
+		close: () => database.close(),
+		transaction: async (callback, options) => {
+			transactions++;
+			try {
+				return await database.transaction(async (transaction) => {
+					callbacks++;
+					try {
+						return await callback(wrap(transaction));
+					} finally {
+						callbacks--;
+						if (armed) events.push("write transaction");
+					}
+				}, options);
+			} finally {
+				transactions--;
+			}
+		},
+	};
+	return {
+		database: wrapped,
+		arm: () => {
+			armed = true;
+			setImmediate(tick);
+		},
+		/** The pairs of heavy statements that ran with no turn between them, each as `first -> second`, in order. */
+		stop: () => {
+			armed = false;
+			const stacked: string[] = [];
+			let previous: string | undefined;
+			for (const event of events) {
+				if (event === "turn") previous = undefined;
+				else {
+					if (previous !== undefined) stacked.push(`${previous} -> ${event}`);
+					previous = event;
+				}
+			}
+			return { stacked, kinds: new Set(events) };
+		},
+	};
+}
+
+test(
+	"a collection gives the event loop a turn between any two statements that hold it, from indexing through deleting to moving legacy blobs (#5530)",
+	async () => {
+		const store = await openSharedSnapshotDatabase(join(directory, "phases.sqlite"));
+		const lease = await startRun(store.journal, "run");
+		await store.journal.append(lease, statusEvent("run", { status: "running" }, "RunStarted"));
+		await store.database.run(
+			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1200)
+			INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) SELECT 'run', 1 + i, ?, NULL, 'CheckpointRecorded', json_object('kind', 'tool', 'checkpointId', 'c' || i), 0 FROM n`,
+			lease.epoch,
+		);
+		// Two sessions whose first snapshot records a blob that their latest one no longer retains: deleting it walks them.
+		const dropped = [textBlob("dropped by session 1"), textBlob("dropped by session 2")];
+		const orphans = Array.from({ length: SNAPSHOT_COLLECTION_DELETE_BATCH + 1 }, (_, index) =>
+			textBlob(`orphan ${index}`),
+		);
+		const legacy = [textBlob("legacy 1"), textBlob("legacy 2")];
+		await store.journal.snapshotBlobs.putBlobs([...dropped, ...orphans, ...legacy]);
+		for (const [index, blob] of dropped.entries()) {
+			const root = `/repo/${index}`;
+			await createSession(store.sessions, `session-${index}`, [
+				snapshotEntry(root, `first-${index}`, syntheticSnapshot(`first-${index}`, [blob.hash], { root })),
+				snapshotEntry(root, `latest-${index}`),
+			]);
+		}
+		await ageBlobs(store.database, "snapshot_blobs", 10_000);
+		// Blobs an older build stored: two of unknown age, and one held in its row, which collection moves to chunks.
+		await store.database.run(
+			`UPDATE snapshot_blobs SET created_at = 0 WHERE hash IN (?, ?)`,
+			legacy[0]!.hash,
+			legacy[1]!.hash,
+		);
+		const inRow = Buffer.alloc(SNAPSHOT_BLOB_CHUNK_BYTES + 1, 7);
+		await store.database.run(
+			"INSERT INTO snapshot_blobs (hash, bytes, data, created_at, chunks) VALUES (?, ?, ?, 0, 0)",
+			createHash("sha256").update(inRow).digest("hex"),
+			inRow.length,
+			inRow,
+		);
+		await store.journal.close();
+		await store.sessions.close();
+		// Without its index, the store is indexed again from its journal and sessions first, table by table.
+		await dropSnapshotIndex(store.database);
+		const timeline = heavyStatementTimeline(store.database);
+		try {
+			const blobs = await SqlSnapshotBlobStore.open(timeline.database);
+			timeline.arm();
+			const deleted = await blobs.collectGarbage({ graceSeconds: 0 });
+			const { stacked, kinds } = timeline.stop();
+
+			assert.deepEqual([...deleted].sort(), [...dropped, ...orphans].map((blob) => blob.hash).sort());
+			assert.deepEqual(
+				[...kinds].sort(),
+				["blob read", "session walk", "turn", "write transaction"],
+				"the collection indexed, walked sessions, deleted, stamped and moved",
+			);
+			assert.deepEqual(stacked, [], "statements that ran in one turn of the event loop");
+		} finally {
+			await store.database.close();
+		}
 	},
 	LARGE_STORE_TEST_TIMEOUT_MS,
 );

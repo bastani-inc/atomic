@@ -228,7 +228,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			},
 		);
 
-		test("a collection returns to the event loop after every legacy blob it set out to move, also ones another host moved first (#5530)", async () => {
+		test("a collection returns to the event loop after every statement of moving a legacy blob, also when another host moved it first (#5530)", async () => {
 			const { database, blobs } = await legacyDatabase([
 				SNAPSHOT_BLOB_CHUNK_BYTES + 1,
 				SNAPSHOT_BLOB_CHUNK_BYTES + 2,
@@ -270,9 +270,12 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			armed = false;
 
 			assert.ok(turns !== undefined, "the other host moved the blobs during this collection");
+			// From the other host's collection on, each of these ends with a turn: the read of the first blob's bytes, its
+			// chunk transaction, which finds it moved, and the reads of the other two, which find nothing to move.
+			const statements = blobs.length + 1;
 			assert.ok(
-				turns >= blobs.length,
-				`the event loop ran ${turns} times between the steps of the collection while it went through ${blobs.length} blobs another host had moved`,
+				turns >= statements,
+				`the event loop ran ${turns} times between the steps of the collection over its last ${statements} statements, which met blobs another host had moved`,
 			);
 			for (const blob of blobs) assert.ok(blob.data.equals((await store.getBlob(blob.hash))!));
 			assert.equal((await stateOf(database)).chunked, blobs.length);

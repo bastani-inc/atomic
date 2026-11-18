@@ -1318,17 +1318,17 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Indexes the rows that referencing tables held before their triggers were installed, in transactions of
 	 * {@link SNAPSHOT_INDEX_BACKFILL_BATCH} rows, so that the index covers every reference. A one-time cost in the number
 	 * of existing rows, paid in the background by the first collection; resumes where it stopped. Does nothing once the
-	 * index is complete. Yields to the event loop between every two batches, of one table or of two, and checks
-	 * `signal` before each batch and rejects with its reason.
+	 * index is complete. Yields to the event loop after every batch, so the next batch, of the same table or another,
+	 * or what follows the index, such as a sweep's first batch, starts on a turn of its own (#5530). Checks `signal`
+	 * before each batch and rejects with its reason.
 	 */
 	async completeIndex(options: SnapshotIndexOptions = {}): Promise<void> {
-		let batches = 0;
 		for (const { source, backfilled } of await this.installIndex(options.pace, true)) {
 			if (backfilled) continue;
-			for (let done = false; !done; batches++) {
-				if (batches > 0) await this.betweenBatches(options.pace);
+			for (let done = false; !done; ) {
 				options.signal?.throwIfAborted();
 				done = await this.backfillBatch(source, options);
+				await this.betweenBatches(options.pace);
 			}
 		}
 	}
@@ -1539,6 +1539,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					for (const hash of await this.retainedBySessions(transaction, group, hashes)) retained.add(hash);
 					turns.held();
 				}
+				// The delete starts on a turn of its own, not in the turn of the last walk (#5530).
+				await turns.next();
 			}
 			const unretained = batch.filter((hash) => !retained.has(hash));
 			if (unretained.length === 0) return [];
@@ -1613,8 +1615,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Stamps every blob of unknown age with the database clock, in hash order, in write transactions of at most
 	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} of blobs. Moves every in-row blob larger than
 	 * {@link SNAPSHOT_BLOB_CHUNK_BYTES} to chunks regardless of age. Chunk writes have the same byte bound;
-	 * publishing also frees the old in-row value, whose cost grows with its size. Every stamp and every move ends with a
-	 * turn of the event loop, whatever it found, so every page does too.
+	 * publishing also frees the old in-row value, whose cost grows with its size. Starts with a turn of the event loop
+	 * when there is anything to do, so its first write does not share the turn of the sweep's last batch, and every
+	 * stamp and every statement of a move ends with a turn, whatever it found, so every page does too (#5530).
 	 */
 	private async stampLegacyAges(options: SnapshotIndexOptions): Promise<void> {
 		const oversized = `chunks = 0 AND length(data) > ${SNAPSHOT_BLOB_CHUNK_BYTES}`;
@@ -1624,6 +1627,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			))
 		)
 			return;
+		await this.betweenBatches(options.pace);
 		let after = "";
 		for (;;) {
 			options.signal?.throwIfAborted();
@@ -1673,8 +1677,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} per transaction while readers retain the in-row value. Publishing stamps
 	 * only an unknown age and frees the old value under the writer, with time proportional to the freed size. It marks the
 	 * journal as requiring chunk support, as {@link putBlobs} does. A stopped move leaves chunks the next move reuses.
-	 * Gives the event loop a turn after every transaction and before it returns, also when another host moved or
-	 * deleted the blob first (#5530).
+	 * Gives the event loop a turn after reading the blob's bytes and after every transaction, also when another host
+	 * moved or deleted the blob first (#5530).
 	 */
 	private async moveLegacyBlobToChunks(hash: string, options: SnapshotIndexOptions): Promise<void> {
 		const t = this.tables;
@@ -1683,7 +1687,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			`SELECT data FROM ${t.blobs} WHERE ${unmoved}`,
 			hash,
 		);
-		if (legacy === undefined) return this.betweenBatches(options.pace);
+		await this.betweenBatches(options.pace);
+		if (legacy === undefined) return;
 		const { data } = legacy;
 		const chunks = Math.ceil(data.byteLength / SNAPSHOT_BLOB_CHUNK_BYTES);
 		const perTransaction = SNAPSHOT_LEGACY_STAMP_BYTES / SNAPSHOT_BLOB_CHUNK_BYTES;
