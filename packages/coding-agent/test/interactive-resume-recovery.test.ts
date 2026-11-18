@@ -165,6 +165,7 @@ describe("interactive resume recovery (#3760)", () => {
 			stopWorkingLoader() {},
 			showError: (message: string) => order.push(`error:${message}`),
 			showWarning: (message: string) => order.push(`warning:${message}`),
+			refreshProjectTrustWarning() {},
 			maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
 			startSessionRecovery: (reason: string) => order.push(`recover:${reason}`),
 		});

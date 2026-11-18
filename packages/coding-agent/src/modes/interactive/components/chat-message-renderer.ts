@@ -34,6 +34,7 @@ import {
 	ToolGroupTracker,
 	toolResultGroupState,
 } from "./tool-group-tracker.ts";
+import type { RowRange } from "./transcript-block-clicks.ts";
 import { UserMessageComponent } from "./user-message.ts";
 export interface PersistedMessageMeta {
 	id: string;
@@ -928,7 +929,29 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 			return new Text(theme.fg("dim", messageEntry.text), options.outputPad ?? 1, 0);
 	}
 }
+/** A skill block and the message typed with it: a click on the skill block's rows expands or collapses it. */
 class SkillMessageContainer extends Container {
+	readonly expandsOnClick = true;
+	private readonly skill: SkillInvocationMessageComponent;
+
+	constructor(skill: SkillInvocationMessageComponent) {
+		super();
+		this.skill = skill;
+		this.addChild(skill);
+	}
+
+	isExpanded(): boolean {
+		return this.skill.isExpanded();
+	}
+
+	setExpanded(expanded: boolean): void {
+		this.skill.setExpanded(expanded);
+	}
+
+	clickArea(width: number): RowRange | undefined {
+		return this.skill.clickArea(width);
+	}
+
 	setOutputPad(outputPad: number): void {
 		for (const child of this.children) {
 			if ("setOutputPad" in child && typeof child.setOutputPad === "function") child.setOutputPad(outputPad);
@@ -957,7 +980,6 @@ function userMessageComponent(
 			messageId,
 			timestamp,
 		);
-	const container = new SkillMessageContainer();
 	const skillComponent = new SkillInvocationMessageComponent(
 		skillBlock,
 		markdownTheme,
@@ -968,7 +990,7 @@ function userMessageComponent(
 		timestamp,
 	);
 	skillComponent.setExpanded(expanded);
-	container.addChild(skillComponent);
+	const container = new SkillMessageContainer(skillComponent);
 	if (skillBlock.userMessage) {
 		container.addChild(
 			new UserMessageComponent(

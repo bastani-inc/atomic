@@ -4,7 +4,12 @@ import type { ExtensionError } from "../extensions/runtime-types.ts";
 import { waitingReleasedTools, withoutSupersededAttempts } from "./completion.js";
 import type { TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.js";
-import { getOwnerTaskStore, isTaskTurnInterrupted, watchOwnerTaskStoreBinding } from "./owner-store.js";
+import {
+	getOwnerTaskStore,
+	isTaskTurnInterrupted,
+	taskResumedTurns,
+	watchOwnerTaskStoreBinding,
+} from "./owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "./task-view-source.js";
 
 export type AgentPanelState =
@@ -36,6 +41,12 @@ export interface AgentPanelItem {
 	readonly queued?: number;
 	readonly endedAt?: number;
 	readonly viewed?: boolean;
+	/**
+	 * An identity of the row's latest run: it changes whenever the row runs again (resumed, woken or sent a follow-up),
+	 * however briefly. A stopped or paused row that left the panel is listed again once it changes, even when the panel
+	 * never saw it running.
+	 */
+	readonly runGeneration?: string;
 }
 
 export interface AgentPanelOpenOptions {
@@ -264,6 +275,16 @@ export function taskPanelState(task: TaskRecord): AgentPanelState {
 	return "running";
 }
 
+/**
+ * The identity of a subagent task's latest run (`AgentPanelItem.runGeneration`): how many times its interrupted turn
+ * was resumed. A settled task never runs again (a resume or a wake starts a new task), so it keeps the count it
+ * settled with.
+ */
+export function taskRunGeneration(task: TaskRecord): string | undefined {
+	const resumed = taskResumedTurns(task);
+	return resumed === undefined ? undefined : `turn:${resumed}`;
+}
+
 const SHORT_TITLE_CHARS = 60;
 
 export function shortTaskTitle(title: string): string {
@@ -295,6 +316,7 @@ const lazyTaskItems = new WeakMap<
 		readonly state: AgentPanelState;
 		readonly clocks: TaskElapsedClocks | undefined;
 		readonly interrupted: boolean;
+		readonly runGeneration: string | undefined;
 		readonly item: AgentPanelItem;
 	}
 >();
@@ -345,6 +367,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 			? (task.execution.result.message.split("\n")[0] ?? "")
 			: undefined;
 	const waitingOn = waitingReleasedTools(task);
+	const runGeneration = taskRunGeneration(task);
 	if (
 		cached !== undefined &&
 		cached.clocks === clocks &&
@@ -358,7 +381,8 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		cached.item.tokens === task.metrics?.tokenCount &&
 		cached.item.question === question &&
 		cached.item.reason === reason &&
-		cached.item.waitingOn === waitingOn
+		cached.item.waitingOn === waitingOn &&
+		cached.item.runGeneration === runGeneration
 	)
 		return cached.item;
 	const item: AgentPanelItem = {
@@ -372,6 +396,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		...(question ? { question } : {}),
 		...(reason === undefined ? {} : { reason }),
 		...(waitingOn === undefined ? {} : { waitingOn }),
+		...(runGeneration === undefined ? {} : { runGeneration }),
 	};
 	if (interrupted) markInterruptedPanelTask(item);
 	if (clocks !== undefined) bindTaskClock(item, clocks);
@@ -382,12 +407,14 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
 	const state = taskPanelState(task);
 	const interrupted = task.execution.kind !== "settled" && state === "stopped";
+	const runGeneration = taskRunGeneration(task);
 	const cached = lazyTaskItems.get(task);
 	if (
 		cached !== undefined &&
 		cached.state === state &&
 		cached.clocks === sourceClocks &&
-		cached.interrupted === interrupted
+		cached.interrupted === interrupted &&
+		cached.runGeneration === runGeneration
 	) {
 		return cached.item;
 	}
@@ -395,6 +422,7 @@ export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedCl
 		id: `${taskPrefix}${task.ref.taskId}`,
 		kind: taskPanelRole(task),
 		state,
+		...(runGeneration === undefined ? {} : { runGeneration }),
 		get name() {
 			return taskPanelItem(task, sourceClocks).name;
 		},
@@ -406,7 +434,7 @@ export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedCl
 		},
 	};
 	if (interrupted) markInterruptedPanelTask(item);
-	lazyTaskItems.set(task, { state, clocks: sourceClocks, interrupted, item });
+	lazyTaskItems.set(task, { state, clocks: sourceClocks, interrupted, runGeneration, item });
 	lazyTaskRecords.set(item, { task, clocks: sourceClocks });
 	return item;
 }
@@ -796,6 +824,8 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	drainThenable(queued);
 	const endedAt = row.endedAt;
 	drainThenable(endedAt);
+	const runGeneration = row.runGeneration;
+	drainThenable(runGeneration);
 
 	if (
 		typeof id !== "string" ||
@@ -823,6 +853,7 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 		(reason !== undefined && typeof reason !== "string") ||
 		(waitingOn !== undefined && typeof waitingOn !== "string") ||
 		(viewed !== undefined && typeof viewed !== "boolean") ||
+		(runGeneration !== undefined && typeof runGeneration !== "string") ||
 		progress === false ||
 		choices === false
 	) {
@@ -847,6 +878,7 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	if (queued !== undefined) item.queued = queued;
 	if (endedAt !== undefined) item.endedAt = endedAt;
 	if (viewed !== undefined) item.viewed = viewed;
+	if (runGeneration !== undefined) item.runGeneration = runGeneration;
 	if (elapsedMs !== undefined && (state === "running" || state === "input" || state === "stopping")) {
 		itemSampleTimes.set(item, readAt);
 	}

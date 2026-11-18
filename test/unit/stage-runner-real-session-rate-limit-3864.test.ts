@@ -5,8 +5,10 @@ import { afterEach, beforeEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
+import { sessionLifetime } from "../../packages/coding-agent/src/core/session-lifecycle-work.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import { drainWindowsDirectorySecurityReads } from "../../packages/coding-agent/src/core/tools/windows-directory-security.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import {
@@ -114,6 +116,8 @@ function realSessionContext(
 				sessionManager: SessionManager.inMemory(),
 				resourceLoader: createTestResourceLoader(),
 			});
+			// These checks use real native/file I/O. Finish setup before fake cooldown time can expire a later shutdown.
+			await drainWindowsDirectorySecurityReads(sessionLifetime(session));
 			sessions.push(session as unknown as StageSessionRuntime);
 			return session as unknown as StageSessionRuntime;
 		},
@@ -156,7 +160,7 @@ async function settle<T>(pending: Promise<T>): Promise<{ value: T } | { error: u
 // Each provider wait is capped at 60 s, so a walk of N provider calls never waits longer than N minutes.
 const MAX_COOLDOWN_MS = 60_000;
 
-test("a real AgentSession's rate-limited candidates get maxRetries+1 provider calls per cooldown round, not one cycle per revisit (#3864, #3984)", async () => {
+test("a real AgentSession's rate-limited candidates get maxRetries+1 provider calls per cooldown round, not one cycle per revisit (#3864, #3984, #5547)", async () => {
 	const calls: Record<string, number> = {};
 	const { ctx, sessions } = realSessionContext(3, calls, true, true);
 	const started = Date.now();
@@ -173,7 +177,7 @@ test("a real AgentSession's rate-limited candidates get maxRetries+1 provider ca
 	}
 });
 
-test("a real AgentSession's fallback takes over after the primary spends maxRetries+1 calls (#3864)", async () => {
+test("a real AgentSession's fallback takes over after the primary spends maxRetries+1 calls (#3864, #5547)", async () => {
 	const calls: Record<string, number> = {};
 	const { ctx, sessions } = realSessionContext(3, calls, true);
 	try {
@@ -186,7 +190,7 @@ test("a real AgentSession's fallback takes over after the primary spends maxRetr
 	}
 });
 
-test("a real AgentSession without fallbacks stops after its cooldown rounds and surfaces the 429 (#3864, #3984)", async () => {
+test("a real AgentSession without fallbacks stops after its cooldown rounds and surfaces the 429 (#3864, #3984, #5547)", async () => {
 	const calls: Record<string, number> = {};
 	const { ctx, sessions } = realSessionContext(3, calls, false);
 	const started = Date.now();
