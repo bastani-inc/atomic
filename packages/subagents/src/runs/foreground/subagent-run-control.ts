@@ -517,12 +517,13 @@ async function resumeChild(
 	for (const reopening of reopenings) {
 		const settled = reopening();
 		if (settled === undefined) continue;
-		if ((await unlessInterrupted(settled, signal)) === INTERRUPTED)
+		// A sibling's save can still be pending after the relaunch. Esc ends only our wait, not that save.
+		const readable = settled.then(() => subagentChildRecordsAppended(ownerSessionId));
+		if ((await unlessInterrupted(readable, signal)) === INTERRUPTED)
 			return errorResult(
 				action,
 				`Interrupted while ${label(resolved)} was being reopened, before it could be resumed: nothing was sent to it.`,
 			);
-		await subagentChildRecordsAppended(ownerSessionId);
 		record = ownedRecords(ctx).get(resolved.childId) ?? resolved;
 	}
 	const terminalReason =
@@ -543,6 +544,7 @@ async function resumeChild(
 	// A wake that did not reopen the child may still be finishing: the resume is queued behind it, not dropped.
 	const waking = isReleasedChildWakeActive(wakeKey);
 	const message = request.message?.trim() ? request.message : undefined;
+	if (signal?.aborted) return interruptedResume(record, true, message);
 	const interrupted = record.state === "running" || INTERRUPTED_STATUSES.has(record.terminalStatus ?? "");
 	const resumeRequest =
 		message && interrupted

@@ -45,6 +45,7 @@ import {
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import {
 	bindResumeDispatcher,
+	releasedChildWakeDecided,
 	resumeReleasedChild,
 	resumeWaiterCount,
 	settleReleasedChildRelaunch,
@@ -4928,6 +4929,55 @@ test("resume while a wake waits for an earlier record of its owner to be saved i
 	);
 });
 
+test("Esc ends a resume of a woken child while its sibling's record is still being saved (#5560)", async () => {
+	const h = harness();
+	const childId = "woken:0";
+	const dispatcher = await releasedWithWakes(h, "woken");
+	const finish = Promise.withResolvers<void>();
+	const wake = wakeWithResult(h, dispatcher, childId, finish);
+	const save = Promise.withResolvers<void>();
+	const sink = createSubagentChildRecordSink(
+		{
+			async appendEntry(type, data) {
+				await save.promise;
+				await h.sessionManager.appendCustomEntry(type, data);
+			},
+		},
+		h.ctx,
+	);
+	try {
+		await h.waitForLatest(childId, (record) => record.state === "running" && record.taskId !== undefined);
+		await releasedChildWakeDecided(subagentWakeKey(h.sessionManager.getSessionId(), childId));
+		sink.record({ runId: "sibling", index: 0, agent: "worker", state: "running", cwd: h.cwd });
+		const turn = new AbortController();
+		const resume = h.call({ action: "resume", id: childId, message: "never sent" }, turn.signal);
+		// The wake has decided; let resume reach the pending save before interrupting it.
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		turn.abort();
+		const result = await answeredWithin(resume);
+		assert.ok(result, "resume answers before the sibling's save is released");
+		assert.equal(result.isError, true);
+		assert.match(text(result), /Interrupted.*nothing was sent/);
+		assert.equal(h.latest("sibling:0"), undefined);
+	} finally {
+		save.resolve();
+		finish.resolve();
+		await sink.flushed?.();
+		await wake;
+	}
+	assert.equal(
+		h.sessionManager
+			.getEntries()
+			.filter((entry) => isSubagentChildRecord(entry) && (entry.data as SubagentChildRecord).childId === "sibling:0")
+			.length,
+		1,
+		"the pending sibling record is saved exactly once",
+	);
+	assert.equal(await drained(dispatcher), 0);
+	assert.equal(h.runs.length, 2, "only the original run and its wake ran");
+	assert.doesNotMatch(JSON.stringify(h.runs.map((run) => [run.task, run.options.resumeFollowUps])), /never sent/);
+});
+
 test("a resume queued on a child's wake key is refused as soon as a wake relaunches the child, never left behind its run (#5485)", async () => {
 	const h = harness();
 	const dispatcher = await releasedWithWakes(h, "queued-behind");
@@ -5397,6 +5447,22 @@ test("a resume from a turn that was already interrupted sends nothing to a relea
 	assert.equal(resumeWaiterCount(), 0);
 	assert.equal(h.runs.filter((run) => run.task.includes("never sent")).length, 0, "the child never runs it");
 	assert.equal(h.latest("pre-aborted:0")?.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS, "the child stays released");
+});
+
+test("a resume from an already interrupted turn leaves a paused child untouched (#5560)", async () => {
+	const h = harness();
+	const { record } = await h.launch("pre-aborted-direct");
+	await h.call({ action: "pause", id: record.childId });
+	const request = { action: "resume", id: record.childId, message: "follow up" } as const;
+	const cancelled = await h.call(request, AbortSignal.abort());
+	assert.equal(cancelled.isError, true);
+	assert.match(text(cancelled), /withdrawn.*does not run it or get your message/);
+	assert.equal(h.latest(record.childId)?.terminalStatus, "paused");
+	await settled(h, resumedTaskId(await h.call(request)));
+	assert.deepEqual(
+		h.runs.map((run) => run.task),
+		[ORIGINAL_TASK, "follow up"],
+	);
 });
 
 test("a resume while a wake that did not reopen the child still finishes queues behind that wake, never running the child beside it (#5485)", async () => {
