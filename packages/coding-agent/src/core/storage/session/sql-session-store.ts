@@ -1132,7 +1132,7 @@ export class SqlSessionStore implements SessionStore {
 				const matched = await Promise.all(
 					distinct.slice(start, start + slice).map(async (cwd) => ((await matchesCwd(cwd)) ? cwd : undefined)),
 				);
-				projectCwds.push(...matched.filter((cwd): cwd is string => cwd !== undefined));
+				for (const cwd of matched) if (cwd !== undefined) projectCwds.push(cwd);
 				if (paced && start + slice < distinct.length) {
 					this.assertListing(query);
 					await yieldTurn();

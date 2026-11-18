@@ -96,6 +96,11 @@ const APPEND_SAVEPOINT = "journal_append";
 const SNAPSHOT_TAIL_WINDOW = JOURNAL_READ_PAGE_SIZE;
 /** Runs one statement of `runVersions` looks up, when the statements run on this process's thread (#5480). */
 const RUN_VERSIONS_PAGE = 128;
+/**
+ * Runs one statement of `runVersions` looks up over a database server, a network round trip each (#5480). A libSQL
+ * server refuses a response over 10 MB, which one statement for every run of a catalog of 150,000 runs came to.
+ */
+const RUN_VERSIONS_SERVER_PAGE = 4_096;
 
 /** The column a read selects the journal's schema version as, so that it checks the version in its own statement. */
 const META_VERSION = "meta_version";
@@ -645,36 +650,36 @@ export class SqlRunJournal implements RunJournal {
 	}
 
 	/**
-	 * Every run's latest event. Over this process's own SQLite connection the runs are read `RUN_VERSIONS_PAGE` at a time,
-	 * with a turn of the event loop between statements: a statement looks up each run's latest event, which on a journal
-	 * of thousands of runs held the event loop for over 100 ms when the pages were not cached (#5480).
+	 * Every run's latest event, read in statements of `RUN_VERSIONS_SERVER_PAGE` runs over a database server. Over this
+	 * process's own SQLite connection the runs are read `RUN_VERSIONS_PAGE` at a time, with a turn of the event loop
+	 * between statements: a statement looks up each run's latest event, which on a journal of thousands of runs held the
+	 * event loop for over 100 ms when the pages were not cached (#5480).
 	 */
 	async runVersions(): Promise<ReadonlyMap<string, RunVersion>> {
 		this.assertOpen();
 		return this.operation(async () => {
+			const local = this.database.descriptor.adapter === "node-sqlite";
+			const pageRuns = local ? RUN_VERSIONS_PAGE : RUN_VERSIONS_SERVER_PAGE;
 			const select = `SELECT runs.${c.runId}, ${latestEventColumns(this.tables.events, "runs")} FROM ${this.tables.runs} AS runs`;
-			const rows: RunVersionRow[] = [];
-			if (this.database.descriptor.adapter !== "node-sqlite")
-				rows.push(...(await this.database.all<RunVersionRow>(select)));
-			else
-				for (let after: string | undefined; ; ) {
-					const page = await this.database.all<RunVersionRow>(
-						`${select}${after === undefined ? "" : ` WHERE runs.${c.runId} > ?`} ORDER BY runs.${c.runId} LIMIT ?`,
-						...(after === undefined ? [] : [after]),
-						RUN_VERSIONS_PAGE,
-					);
-					rows.push(...page);
-					if (page.length < RUN_VERSIONS_PAGE) break;
-					after = page.at(-1)![c.runId];
-					await new Promise<void>((resolve) => setImmediate(resolve));
-				}
-			const legacy = (await this.legacy?.versions(this.database)) ?? [];
-			return new Map(
-				[...rows, ...legacy].map((row) => [
-					row[c.runId],
-					{ seq: journalCounter(row[c.runId], "seq", row[c.seq]), at: Number(row[c.at]) },
-				]),
-			);
+			const versions = new Map<string, RunVersion>();
+			const add = (row: RunVersionRow) =>
+				versions.set(row[c.runId], {
+					seq: journalCounter(row[c.runId], "seq", row[c.seq]),
+					at: Number(row[c.at]),
+				});
+			for (let after: string | undefined; ; ) {
+				const page = await this.database.all<RunVersionRow>(
+					`${select}${after === undefined ? "" : ` WHERE runs.${c.runId} > ?`} ORDER BY runs.${c.runId} LIMIT ?`,
+					...(after === undefined ? [] : [after]),
+					pageRuns,
+				);
+				for (const row of page) add(row);
+				if (page.length < pageRuns) break;
+				after = page.at(-1)![c.runId];
+				if (local) await new Promise<void>((resolve) => setImmediate(resolve));
+			}
+			for (const row of (await this.legacy?.versions(this.database)) ?? []) add(row);
+			return versions;
 		});
 	}
 
