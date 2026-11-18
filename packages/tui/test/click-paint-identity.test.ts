@@ -203,7 +203,8 @@ describe("a click acts on the frame painted at the press", () => {
 		tui.stop();
 	});
 
-	it("starts counting clicks again when another item is drawn under the pointer between them", async () => {
+	/** A renderer that copies what a double-click selects, and items that record which of them a single click reached. */
+	function clickCountFixture() {
 		const terminal = new VirtualTerminal(20, 4);
 		const copied: string[] = [];
 		const tui = new TuiAltScreen(terminal, undefined, undefined, {
@@ -223,11 +224,6 @@ describe("a click acts on the frame painted at the press", () => {
 				return { handled: true };
 			},
 		});
-		const list = new Container();
-		list.addChild(item("first"));
-		tui.addChild(list);
-		tui.start();
-		await terminal.waitForRender();
 		const doubleClick = async () => {
 			for (let click = 0; click < 2; click++) {
 				terminal.sendInput(press(1, 0));
@@ -235,6 +231,16 @@ describe("a click acts on the frame painted at the press", () => {
 			}
 			await terminal.waitForRender();
 		};
+		return { terminal, tui, copied, clicked, item, doubleClick };
+	}
+
+	it("starts counting clicks again when another item is drawn under the pointer between them", async () => {
+		const { terminal, tui, copied, clicked, item, doubleClick } = clickCountFixture();
+		const list = new Container();
+		list.addChild(item("first"));
+		tui.addChild(list);
+		tui.start();
+		await terminal.waitForRender();
 
 		await doubleClick();
 		// Another item that reads the same takes the row before the next two fast clicks.
@@ -246,6 +252,24 @@ describe("a click acts on the frame painted at the press", () => {
 
 		assert.deepStrictEqual(clicked, ["first", "second"], "each item's first click is a single click");
 		assert.deepStrictEqual(copied, ["same", "same"], "each item's second click is a double-click");
+		tui.stop();
+	});
+
+	it("starts counting clicks again when another item replaces the layout root between them", async () => {
+		const { terminal, tui, copied, clicked, item, doubleClick } = clickCountFixture();
+		tui.setLayoutRoot(item("first"));
+		tui.start();
+		await terminal.waitForRender();
+
+		await doubleClick();
+		// Another root that reads the same is laid out before the next two fast clicks.
+		tui.setLayoutRoot(item("second"));
+		tui.requestRender();
+		await terminal.waitForRender();
+		await doubleClick();
+
+		assert.deepStrictEqual(clicked, ["first", "second"], "each root's first click is a single click");
+		assert.deepStrictEqual(copied, ["same", "same"], "each root's second click is a double-click");
 		tui.stop();
 	});
 });

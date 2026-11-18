@@ -199,9 +199,12 @@ function stacksChildren(component: Component): component is ChildRows {
 	return typeof (component as Partial<ChildRows>).childAtRow === "function";
 }
 
-/** The components a frame drew at `row` of `component`, laid out `width` wide, then the innermost one's row key. */
+/**
+ * The components a frame drew at `row` of `component`, laid out `width` wide, from `component` itself inward, then
+ * the innermost one's row key. A root that draws the row itself is the only component named.
+ */
 function drawnAt(component: Component, width: number, row: number): unknown[] {
-	const drawn: unknown[] = [];
+	const drawn: unknown[] = [component];
 	let current: Component = component;
 	let at = row;
 	for (let depth = 0; depth < MAX_DRAWN_DEPTH && stacksChildren(current); depth++) {
