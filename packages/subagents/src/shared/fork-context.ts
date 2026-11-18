@@ -110,7 +110,11 @@ export function createForkContextResolver(
 			if (cached !== undefined) return cached;
 			const child = (async () => {
 				try {
-					const source = await SessionManager.open(store, parentSessionId, cwd);
+					// Only what the fork's context is built from is read: a resume of the parent at the fork point (#5500).
+					const source = await SessionManager.open(store, parentSessionId, cwd, {
+						history: "tail",
+						leafId: forkEntryId,
+					});
 					await createForkedSession(source, forkEntryId, forkedChildToolCallAnswer(childLaunch(index)));
 					return source;
 				} catch (cause) {

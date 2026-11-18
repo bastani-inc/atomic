@@ -5,6 +5,7 @@
 ### Added
 
 - SDK: `createForkedSession` forks a session at an entry append-only: the new session holds the source's branch unchanged, followed by one result for each tool call the source's last turn left open. `appendForkToolResults`, `unansweredToolCalls`, `forkToolResults` and `forkPointEntryId` expose its steps. Subagent forks and forked workflow stages use it ([#5481](https://github.com/bastani-inc/atomic/issues/5481))
+- SDK: `SessionManager.open(store, id, cwd, { history: "tail", leafId })` opens a session at an earlier entry of its branch, holding what a resume there loads; `createBranchedSession(leafId, { history: "tail" })` branches only what the branch's context is built from; `SessionManager.readForkedBranch(store, id, entryId?)` returns those entries re-chained into one branch. `createForkedSession` now copies only that ([#5500](https://github.com/bastani-inc/atomic/issues/5500))
 
 ### Changed
 

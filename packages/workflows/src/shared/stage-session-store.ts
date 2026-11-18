@@ -40,11 +40,13 @@ export const STAGE_FORK_TOOL_RESULT =
 	"This call ran in the session this stage was forked from. Its result went to that session and is not available here.";
 
 /**
- * A new session copied from `sessionId`: every entry, or with `entryId` the branch from the session's root to
- * that exact entry, with the tool-output blobs those entries reference. A missing entry throws
- * `ForkEntryNotFoundError`, and a destination that cannot hold the blobs `blobs-unsupported`, before anything is
- * written. The copy is append-only: its entries are the source's, unchanged, followed by one result for each tool
- * call the source's last turn left open (#5481).
+ * A new session copied from `sessionId` at its leaf, or with `entryId` at that exact entry, with the tool-output blobs
+ * the copied entries reference. It copies what the stage's context is built from: what a resume of the source at that
+ * entry loads, so the latest clear or compaction boundary on the branch, what it keeps, everything after it, and the
+ * settings kept from before it (#5500). A missing entry throws `ForkEntryNotFoundError`, and a destination that cannot
+ * hold the blobs `blobs-unsupported`, before anything is written. The copy is append-only: its entries are the
+ * source's, unchanged but for the links that chain them into one branch, followed by one result for each tool call the
+ * source's last turn left open (#5481).
  */
 export async function forkStageSession(
 	store: SessionStore,
@@ -54,11 +56,11 @@ export async function forkStageSession(
 	destination: SessionStore = store,
 	entryId?: string,
 ): Promise<SessionManager> {
-	const source = await store.load(sessionId);
-	const entries =
-		entryId === undefined
-			? source.entries
-			: sessionBranchTo(source.entries, entryId, { sessionId, stageName: options.workflow?.stageName });
+	// Only what the fork's context is built from is read and copied: a resume of the source at the fork point (#5500).
+	const branch = await SessionManager.readForkedBranch(store, sessionId, entryId);
+	if (branch === undefined && entryId !== undefined)
+		throw new ForkEntryNotFoundError({ sessionId, stageName: options.workflow?.stageName, entryId });
+	const entries = branch ?? [];
 	const id = randomUUID();
 	const hashes = sessionBlobHashes(store, entries);
 	assertSessionBlobStore(destination, id, hashes.length);

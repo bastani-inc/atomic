@@ -6,6 +6,7 @@
 
 - The bundled `tdd` skill now names tautological tests, whose expected value is recomputed the way the code computes it, as an anti-pattern, with a checklist item and an example, from its upstream skill. Its frontmatter and a new `LICENSE.txt` credit the two MIT-licensed skills it is adapted from.
 - The bundled `qlty` skill's references follow the current Qlty documentation (CLI v0.671.0): `--skip`, `plugin:rule` filters and `--trigger` for `check` and `fmt`, `--install-only` and `--skip-source-fetch`, `--sarif` for `smells`, and the integrity verification steps, which need `gh` 2.67.0 or later because older versions can report success when no matching attestation is found.
+- A subagent launched with `context: "fork"` gets a copy of only what its context is built from: the parent's latest context clear or compaction, what it kept, and everything after it up to the launch, with the model and thinking settings recorded before it. A fork of a long session no longer re-reads the parent's whole history, writes it into the child's session and holds it for the child's life: on a 73,000-entry main session one fork took 12 s, about 600 MB at its peak and 70 MB more storage. The child's own history now starts at that clear or compaction, whose message still names the history the earlier conversation is in ([#5500](https://github.com/bastani-inc/atomic/issues/5500))
 
 ### Fixed
 

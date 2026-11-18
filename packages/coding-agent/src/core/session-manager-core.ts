@@ -92,7 +92,7 @@ import {
 } from "./storage/session/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
-import { readSessionRange } from "./storage/session/session-resume.js";
+import { readSessionRange, sessionResumeOf } from "./storage/session/session-resume.js";
 import type {
 	SessionBlob,
 	SessionHistoryTotals,
@@ -124,7 +124,8 @@ async function readStoredSession(
 	sessionId: string,
 	options: SessionOpenOptions | undefined,
 ): Promise<OpenedSession> {
-	if (options?.history === "tail" && store.readResume) return { resume: await store.readResume(sessionId) };
+	if (options?.history === "tail" && store.readResume)
+		return { resume: await store.readResume(sessionId, options.leafId) };
 	return { snapshot: await store.load(sessionId) };
 }
 
@@ -1297,15 +1298,24 @@ export class SessionManager {
 		});
 	}
 
-	createBranchedSession(leafId: string): Promise<string | undefined> {
+	/**
+	 * Switch to a new session holding the branch from the root to `leafId`. With `history: "tail"` it holds only what a
+	 * resume of this session at `leafId` loads: the entries from the latest clear or compaction boundary on that branch
+	 * through `leafId`, with the settings kept from before the boundary, so its context is the branch's context (#5500).
+	 * A session opened at `leafId` with `history: "tail"` already holds exactly that, and nothing more is read.
+	 */
+	createBranchedSession(
+		leafId: string,
+		options?: { readonly history?: "full" | "tail" },
+	): Promise<string | undefined> {
 		return this.runMutation(async () => {
-			await this.loadFullHistory();
+			const path = options?.history === "tail" ? await this.contextBranch(leafId) : await this.fullBranch(leafId);
 			const result = createBranchedSessionState({
 				leafId,
 				cwd: this.cwd,
 				parentSessionId: this.sessionId,
 				workflow: classifiedWorkflowMetadata(this.getHeader()),
-				path: this.getBranch(leafId),
+				path,
 				labelsById: this.labelsById,
 				labelTimestampsById: this.labelTimestampsById,
 			});
@@ -1328,6 +1338,49 @@ export class SessionManager {
 			this.restore({ header: record, entries, lastSeq: created.lastSeq, epoch: created.epoch }, location);
 			return this.sessionFile;
 		});
+	}
+
+	/**
+	 * The entries a fork of session `sessionId` at `entryId`, or at its leaf, copies (#5500): what a resume of the session
+	 * at that entry loads, on the branch to it, as recorded and with their ids, linked into one branch. Labels set after
+	 * that entry are not added. Only those entries are read when the store resumes from a saved index. Undefined when the
+	 * session has no such entry.
+	 */
+	static async readForkedBranch(
+		store: SessionStore,
+		sessionId: string,
+		entryId?: string,
+	): Promise<SessionEntry[] | undefined> {
+		const source = await SessionManager.open(store, sessionId, undefined, {
+			history: "tail",
+			...(entryId === undefined ? {} : { leafId: entryId }),
+		});
+		const leafId = entryId ?? source.getLeafId();
+		if (leafId === null || source.getEntry(leafId) === undefined) return undefined;
+		let parentId: string | null = null;
+		return (await source.contextBranch(leafId)).map((entry) => {
+			const linked = entry.parentId === parentId ? entry : { ...entry, parentId };
+			parentId = entry.id;
+			return linked;
+		});
+	}
+
+	private async fullBranch(leafId: string): Promise<SessionEntry[]> {
+		await this.loadFullHistory();
+		return this.getBranch(leafId);
+	}
+
+	/** The entries a resume of this session at `leafId` loads, on the branch to `leafId`, in order. */
+	private async contextBranch(leafId: string): Promise<SessionEntry[]> {
+		if (!this.hasFullHistory() && this.leafId === leafId) return this.getBranch(leafId);
+		await this.loadFullHistory();
+		const header = this.getHeader();
+		if (header === null) return this.getBranch(leafId);
+		const resume = sessionResumeOf(this.recordHeader(header), this.getEntries(), leafId);
+		if (resume.leafId !== leafId) return this.getBranch(leafId);
+		return [...resume.state.filter((held) => held.onBranch), ...resume.branch]
+			.sort((left, right) => left.seq - right.seq)
+			.map((held) => held.entry);
 	}
 
 	async forkTo(cwd: string, sessionDir?: string | SessionStore, options?: NewSessionOptions): Promise<SessionManager> {

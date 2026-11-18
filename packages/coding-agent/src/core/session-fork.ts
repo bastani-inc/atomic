@@ -88,14 +88,18 @@ export async function appendForkToolResults(
 }
 
 /**
- * Fork `source` at `entryId`: `source` switches to a new session holding the branch from the root to that entry,
- * unchanged, followed by the results {@link appendForkToolResults} appends.
+ * Fork `source` at `entryId`: `source` switches to a new session holding the branch's context from the root to that
+ * entry, unchanged, followed by the results {@link appendForkToolResults} appends. The new session holds what a resume of
+ * `source` at that entry loads: the latest clear or compaction boundary on the branch, what it keeps, everything after
+ * it through `entryId`, and the settings kept from before it (#5500). Its context is the branch's context, and its
+ * boundary still names the history the earlier conversation is in. A `source` opened at `entryId` with
+ * `history: "tail"` is forked without reading more of its session.
  */
 export async function createForkedSession(
 	source: SessionManager,
 	entryId: string,
 	answer: ForkToolCallAnswer,
 ): Promise<ToolResultMessage[]> {
-	await source.createBranchedSession(entryId);
+	await source.createBranchedSession(entryId, { history: "tail" });
 	return appendForkToolResults(source, answer);
 }
