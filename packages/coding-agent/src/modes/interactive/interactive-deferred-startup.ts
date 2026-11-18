@@ -128,6 +128,10 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		}
 		this.deferredStartupPending = false;
 		this.showError(`Extension loading failed: ${error instanceof Error ? error.message : String(error)}`);
+		// Startup ended before or while deciding project trust, and the chat is not redrawn: a session left untrusted
+		// shows the warning now.
+		this.runtimeHost?.abandonStartupTrust?.();
+		this.refreshProjectTrustWarning();
 		checkFallbackModels();
 		// The RESOURCES disclosure will not render; surface the held warning.
 		void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
