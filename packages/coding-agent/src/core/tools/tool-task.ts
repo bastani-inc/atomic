@@ -18,8 +18,11 @@ import type {
 import type { FakeExecution, FakeRunnerContext } from "../tasks/supervisor.js";
 import { type SupervisedCommandOwner, type SupervisedCommandResult, validateBashWait } from "./bash-pty-native.js";
 
-/** The work of a tool call that runs as a task. It writes its output as it goes and resolves when it is done. */
-export type ToolTaskWork = (write: (text: string) => void, signal: AbortSignal) => Promise<void>;
+/**
+ * The work of a tool call that runs as a task. It writes its output as it goes, and resolves `finished` when it did
+ * all of it or `stopped` when its signal ended it first (it then writes where to continue from).
+ */
+export type ToolTaskWork = (write: (text: string) => void, signal: AbortSignal) => Promise<"finished" | "stopped">;
 
 export interface ToolTaskLaunch {
 	/** The tool whose call this is, for example `search`. */
@@ -72,6 +75,8 @@ function toolTaskRunner(launch: ToolTaskLaunch, timedOut: { value: boolean }) {
 			launch.timeoutMs === undefined
 				? undefined
 				: setTimeout(() => {
+						// A stop that came first keeps its own reason.
+						if (stop.signal.aborted) return;
 						timedOut.value = true;
 						stop.abort("execution-timeout");
 					}, launch.timeoutMs);
@@ -91,8 +96,9 @@ function toolTaskRunner(launch: ToolTaskLaunch, timedOut: { value: boolean }) {
 		});
 		const result: Promise<TaskResult> = (async () => {
 			try {
-				await launch.work(write, stop.signal);
-				if (stop.signal.aborted)
+				const ended = await launch.work(write, stop.signal);
+				// Work that finished before a late stop reached it completed: nothing of it was cut short.
+				if (ended === "stopped")
 					return { kind: "cancelled", cause: stopCause(stop.signal.reason), output: output() };
 				// A tool's work has no exit code; it finished, as a command that exits 0 does.
 				return { kind: "completed", output: output(), exitCode: 0 };

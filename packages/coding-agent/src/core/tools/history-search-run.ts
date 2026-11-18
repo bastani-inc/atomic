@@ -67,8 +67,25 @@ async function formatHistoryOutput(
 	return { text: `${head}\n\n${note}`, ...(fullOutputPath === undefined ? {} : { fullOutputPath }) };
 }
 
-function stillRunning(taskId: string, timeoutSeconds: number): string {
-	return `Search is still running (task ${taskId}). Its execution timeout stops it after ${formatTimeoutSeconds(timeoutSeconds * 1000)}; ${longerRunAdvice(timeoutSeconds * 1000, "launch")} Wait for it with search({ action: "wait", id: "${taskId}" }) or stop it with kill; do not start it again.`;
+/** Most background searches whose timeout and shown output this process remembers for their waits. */
+const REMEMBERED_SEARCHES = 256;
+
+/** Set `key` in `map`, forgetting the oldest entries past {@link REMEMBERED_SEARCHES}. */
+function remember<V>(map: Map<string, V>, key: string, value: V): void {
+	map.delete(key);
+	map.set(key, value);
+	while (map.size > REMEMBERED_SEARCHES) map.delete(map.keys().next().value!);
+}
+
+/** The execution timeout each background search launched in this process runs under, by task id. */
+const launchTimeouts = new Map<string, number>();
+
+function stillRunning(taskId: string, timeoutSeconds: number | undefined): string {
+	const timeout =
+		timeoutSeconds === undefined
+			? ""
+			: ` Its execution timeout stops it after ${formatTimeoutSeconds(timeoutSeconds * 1000)}; ${longerRunAdvice(timeoutSeconds * 1000, "launch")}`;
+	return `Search is still running (task ${taskId}).${timeout} Wait for it with search({ action: "wait", id: "${taskId}" }) or stop it with kill; do not start it again.`;
 }
 
 function settledResult(
@@ -86,7 +103,7 @@ function settledResult(
 			content: [
 				{
 					type: "text",
-					text: `${output.text ? `${output.text}\n\n` : ""}${stillRunning(observation.taskId, timeoutSeconds ?? 0)}`,
+					text: `${output.text ? `${output.text}\n\n` : ""}${stillRunning(observation.taskId, timeoutSeconds)}`,
 				},
 			],
 			details,
@@ -127,6 +144,7 @@ export async function runHistorySearch(call: HistorySearchCall): Promise<AgentTo
 			onData: collect,
 			work,
 		});
+		if (result.observation?.kind === "yielded") remember(launchTimeouts, result.taskId, call.timeoutSeconds);
 		const output = await formatHistoryOutput(Buffer.concat(chunks).toString("utf8"), call.tempDir);
 		return settledResult(result.observation!, output, call.timeoutSeconds);
 	}
@@ -137,19 +155,17 @@ export async function runHistorySearch(call: HistorySearchCall): Promise<AgentTo
 	if (call.signal?.aborted) forward();
 	const timer = setTimeout(() => stop.abort("execution-timeout"), call.timeoutSeconds * 1000);
 	const taskId = "foreground" as TaskId;
+	let ended: "finished" | "stopped";
 	try {
-		await work((text) => collect(Buffer.from(text, "utf8")), stop.signal);
+		ended = await work((text) => collect(Buffer.from(text, "utf8")), stop.signal);
 	} finally {
 		clearTimeout(timer);
 		call.signal?.removeEventListener("abort", forward);
 	}
-	if (call.signal?.aborted) throw new Error("aborted");
+	if (call.signal?.aborted && ended === "stopped") throw new Error("aborted");
 	const output = await formatHistoryOutput(Buffer.concat(chunks).toString("utf8"), call.tempDir);
-	const cause = stop.signal.aborted
-		? stop.signal.reason === "execution-timeout"
-			? "execution-timeout"
-			: "user"
-		: undefined;
+	const cause =
+		ended === "finished" ? undefined : stop.signal.reason === "execution-timeout" ? "execution-timeout" : "user";
 	const outputRef = { ownerId: "" as never, taskId, artifactId: "", byteCount: "0", omittedRanges: [] };
 	return settledResult(
 		{
@@ -220,10 +236,14 @@ export async function waitForHistorySearch(
 			}
 			offset = page.value.nextOffset;
 		}
-		if (observed.value.kind === "yielded") shownThrough.set(id, offset);
-		else shownThrough.delete(id);
+		const timeoutSeconds = launchTimeouts.get(id);
+		if (observed.value.kind === "yielded") remember(shownThrough, id, offset);
+		else {
+			shownThrough.delete(id);
+			launchTimeouts.delete(id);
+		}
 		const output = await formatHistoryOutput(pages.join(""), tempDir);
-		return settledResult(observed.value, output, undefined);
+		return settledResult(observed.value, output, timeoutSeconds);
 	} finally {
 		signal?.removeEventListener("abort", abort);
 	}
