@@ -95,7 +95,7 @@ test.each(terminalCases)(
 		try {
 			const deadline = Date.now() + STDIN_HANDOFF_TIMEOUT_MS / 2;
 			while (!(await fileExists(join(dir, "capture-ready")))) {
-				assert.ok(Date.now() < deadline, "the child never started capturing input");
+				assert.ok(Date.now() < deadline, `the child never started capturing input: ${JSON.stringify(screen)}`);
 				await sleep(10);
 			}
 			child.write(input);
