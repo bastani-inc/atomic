@@ -439,6 +439,27 @@ test("compaction boundaries, branch summaries and extension notices appear in a 
 	}
 });
 
+test("a reopened transcript shows requests that failed or were interrupted before any content, as the main chat does (#5529)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "Fix the picker", timestamp: 0 });
+	await session.appendMessage({
+		...assistant([], "error"),
+		errorMessage: "529 overloaded_error: Overloaded",
+	});
+	await session.appendMessage({ role: "user", content: "Try again", timestamp: 2 });
+	await session.appendMessage(assistant([], "aborted"));
+	const host = await openTranscript(session, { height: 40 });
+	try {
+		const text = host.text();
+		assert.match(
+			text,
+			/Fix the picker[\s\S]*Error: 529 overloaded_error: Overloaded[\s\S]*Try again[\s\S]*Interrupted/,
+		);
+	} finally {
+		await host.dispose();
+	}
+});
+
 test("a transcript opened mid-compaction shows the compaction status, and live events update it (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "Compact soon", timestamp: 0 });

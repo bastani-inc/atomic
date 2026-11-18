@@ -2280,7 +2280,8 @@ export class SubagentControlRuntime {
 			}
 			const transcriptSession = session;
 			const interruptTurn = async (): Promise<void> => {
-				if (!transcriptSession.isStreaming || termination !== undefined) return;
+				// A turn is interrupted while it streams, and between two attempts of a retry, where nothing streams.
+				if ((!transcriptSession.isStreaming && !transcriptSession.isRetrying) || termination !== undefined) return;
 				interruptedTurnSettlement = nextTurnSettled(
 					transcriptSession,
 					[signals.abort, signals.interrupt, executionEnded.signal],

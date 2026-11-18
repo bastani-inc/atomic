@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSession, DetachedToolCall, DetachedToolResult, ExtensionContext } from "@bastani/atomic";
+import { Agent } from "@bastani/atomic-agent-core";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import {
 	AgentWakeDispatcher,
@@ -42,14 +44,17 @@ import {
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import {
+	bindResumeDispatcher,
 	resumeReleasedChild,
 	resumeWaiterCount,
+	settleReleasedChildRelaunch,
 } from "../../packages/subagents/src/runs/foreground/released-child-resume.js";
 import {
 	bindReleasedChildWakes,
 	RELEASED_CHILD_WAKE_FAILURE_LABEL,
 } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
+	handleReleasedChildWakes,
 	interruptedStillRunningResult,
 	lateToolResultMessage,
 	SUBAGENT_OWNER_GENERATION,
@@ -220,7 +225,13 @@ interface Harness {
 	agents: AgentConfig[];
 	/** Runs whose prompt contains a key wait until its gate resolves, then complete; checked before the rules above. */
 	readonly finishOn: Map<string, PromiseWithResolvers<void>>;
-	call(params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1]): Promise<SubagentToolResult>;
+	/** Runs whose prompt contains a key ignore a stop until its gate resolves, as a child stuck in a tool call does. */
+	readonly stuckOn: Map<string, PromiseWithResolvers<void>>;
+	/** Call the subagent tool as the parent's model does, in a turn that `signal`, when given, interrupts. */
+	call(
+		params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1],
+		signal?: AbortSignal,
+	): Promise<SubagentToolResult>;
 	launch(runId: string): Promise<{ record: SubagentChildRecord; taskId: TaskId }>;
 	/** Admit a child through `schedule`, as a parallel launch does, without waiting for it to start. */
 	admit(
@@ -388,7 +399,9 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		agentDefined: true,
 		agents: [agent],
 		finishOn: new Map(),
-		call: (params) => executor.execute("run-control", params, new AbortController().signal, undefined, state.ctx),
+		stuckOn: new Map(),
+		call: (params, signal = new AbortController().signal) =>
+			executor.execute("run-control", params, signal, undefined, state.ctx),
 		async launch(runId) {
 			const taskId = await state.admit(runId);
 			const record = await state.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
@@ -438,6 +451,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 	const runtime = async (...args: Parameters<typeof runSync>): Promise<SingleResult> => {
 		const [parentCwd, agents, agentName, task, options] = args;
 		runs.push({ task, options, agent: agents.find((candidate) => candidate.name === agentName) });
+		await [...state.stuckOn].find(([marker]) => task.includes(marker))?.[1].promise;
 		const original = task === ORIGINAL_TASK;
 		if (options.redispatchDetachedCalls) {
 			state.redispatching.active += 1;
@@ -1544,6 +1558,30 @@ test("resume refuses a child that is still running", async () => {
 	const result = await h.call({ action: "resume", id: record.childId });
 	assert.equal(result.isError, true);
 	assert.match(text(result), /already running/);
+});
+
+test("two resumes of one paused child at once: one resumes it, the other is refused while that run goes on, never queued behind it (#5485)", async () => {
+	const h = harness();
+	const { record } = await h.launch("double1");
+	await h.call({ action: "pause", id: record.childId });
+	await h.waitForLatest(record.childId, (latest) => latest.state === "terminal" && latest.terminalStatus === "paused");
+	h.resumedRunsWait = true;
+	const answers = await Promise.all([
+		answeredWithin(h.call({ action: "resume", id: record.childId, message: "first note" })),
+		answeredWithin(h.call({ action: "resume", id: record.childId, message: "second note" })),
+	]);
+	assert.ok(
+		answers.every((answer) => answer !== undefined),
+		"both resumes answer while the resumed run goes on",
+	);
+	const refused = answers.filter((answer) => answer?.isError === true);
+	assert.equal(refused.length, 1, answers.map((answer) => (answer ? text(answer) : "none")).join("\n"));
+	assert.match(text(refused[0]!), /already running as task .*; pause or quit it first/);
+	assert.equal(
+		h.runs.filter((run) => run.task.includes("first note") || run.task.includes("second note")).length,
+		1,
+		"one resumed run",
+	);
 });
 
 test("resume reports an unknown child id as an error", async () => {
@@ -4745,7 +4783,25 @@ test("status reports a failed child-record append to its owner, not another owne
 	assert.deepEqual(subagentChildrenAwaitingResume(other.ctx), []);
 });
 
-test("a resume arriving during a released child's wake is queued and delivered after that wake (#4326)", async () => {
+/** How long a resume of a running child may take to answer; a resume queued behind that child's run never does. */
+const RESUME_ANSWER_MS = 5_000;
+
+/** `call`'s result, or undefined when it has not answered within {@link RESUME_ANSWER_MS}. */
+async function answeredWithin(call: Promise<SubagentToolResult>): Promise<SubagentToolResult | undefined> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			call,
+			new Promise<undefined>((resolve) => {
+				timer = setTimeout(() => resolve(undefined), RESUME_ANSWER_MS);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+test("resume of a child a wake is running is refused at once, not queued until that run ends (#5485)", async () => {
 	const h = harness();
 	const dispatcher = await releasedWithWakes(h, "race-resume");
 	const gate = Promise.withResolvers<void>();
@@ -4756,30 +4812,210 @@ test("a resume arriving during a released child's wake is queued and delivered a
 		kind: "tool-result",
 		toolResult: green,
 	});
-	await h.waitForLatest("race-resume:0", (record) => record.state === "running" && record.taskId !== undefined);
-	const resume = h.call({ action: "resume", id: "race-resume:0", message: "follow up after CI" });
-	gate.resolve();
+	try {
+		const woken = await h.waitForLatest(
+			"race-resume:0",
+			(record) => record.state === "running" && record.taskId !== undefined,
+		);
+		const refused = await answeredWithin(
+			h.call({ action: "resume", id: "race-resume:0", message: "follow up after CI" }),
+		);
+		assert.ok(refused, "resume answers while the woken run still runs");
+		assert.equal(refused.isError, true);
+		assert.match(text(refused), new RegExp(`already running as task ${woken.taskId}; pause or quit it first`));
+		assert.equal(resumeWaiterCount(), 0, "nothing waits behind the woken run");
+	} finally {
+		gate.resolve();
+	}
 	await wake;
-	const response = await resume;
-	assert.equal(response.isError, undefined);
-	assert.equal(resumeWaiterCount(), 0);
+	assert.equal(await drained(dispatcher), 0);
+	assert.equal(
+		h.runs.filter((run) => run.task.includes("follow up after CI")).length,
+		0,
+		"a refused resume never runs",
+	);
+	// Once its run has ended, resume continues it with the message, once.
+	const response = await h.call({ action: "resume", id: "race-resume:0", message: "follow up after CI" });
+	assert.equal(response.isError, undefined, text(response));
 	await settled(h, resumedTaskId(response));
 	assert.equal(h.runs.filter((run) => run.task.includes("CI green")).length, 1);
 	assert.equal(h.runs.filter((run) => run.task.includes("follow up after CI")).length, 1);
 });
 
-test("resume messages batched behind a wake are delivered once in arrival order (#4326)", async () => {
-	const h = harness();
-	const dispatcher = await releasedWithWakes(h, "batch-resume");
-	const owner = h.sessionManager.getSessionId();
-	const gate = Promise.withResolvers<void>();
+/** Deliver a result that wakes `childId`, whose woken run then waits for `gate`. */
+function wakeWithResult(
+	h: Harness,
+	dispatcher: AgentWakeDispatcher,
+	childId: string,
+	gate: PromiseWithResolvers<void>,
+) {
 	h.finishOn.set("CI green", gate);
-	const wake = dispatcher.deliver(subagentWakeKey(owner, "batch-resume:0"), {
+	return dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), childId), {
 		id: "tool-result:ci-1",
 		kind: "tool-result",
 		toolResult: waitResult("CI green"),
 	});
-	await h.waitForLatest("batch-resume:0", (record) => record.state === "running" && record.taskId !== undefined);
+}
+
+/** Assert `resume` answers with a refusal while the child's woken run goes on, and nothing waits behind that run. */
+async function refusedWhileWokenRunRuns(
+	h: Harness,
+	dispatcher: AgentWakeDispatcher,
+	childId: string,
+	resume: Promise<SubagentToolResult>,
+) {
+	const woken = await h.waitForLatest(childId, (record) => record.state === "running" && record.taskId !== undefined);
+	const answered = await answeredWithin(resume);
+	assert.ok(answered, "resume answers while the woken run still runs");
+	assert.equal(answered.isError, true);
+	assert.match(text(answered), new RegExp(`already running as task ${woken.taskId}; pause or quit it first`));
+	assert.equal(resumeWaiterCount(), 0, "nothing waits behind the woken run");
+	assert.equal(dispatcher.stats().queued, 0, "the resume was never queued behind the wake");
+}
+
+test("resume the moment a wake has taken its batch, before the wake reads the child's record, is refused while the woken run goes on (#5485)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "taken-batch");
+	const gate = Promise.withResolvers<void>();
+	// The dispatcher hands the wake its batch at once; the handler then reads the child's latest record.
+	const wake = wakeWithResult(h, dispatcher, "taken-batch:0", gate);
+	const resume = h.call({ action: "resume", id: "taken-batch:0", message: "right after the wake" });
+	try {
+		await refusedWhileWokenRunRuns(h, dispatcher, "taken-batch:0", resume);
+	} finally {
+		gate.resolve();
+	}
+	await wake;
+	assert.equal(
+		h.runs.filter((run) => run.task.includes("right after the wake")).length,
+		0,
+		"a refused resume never runs",
+	);
+});
+
+test("resume while a wake waits for an earlier record of its owner to be saved is refused while the woken run goes on (#5485)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "slow-append");
+	// Another child's record of the same owner is still being saved, so the wake waits before it reads the record.
+	const saved = Promise.withResolvers<void>();
+	const pi = h.deps.pi as unknown as { appendEntry(type: string, data?: unknown): Promise<void> };
+	createSubagentChildRecordSink(
+		{
+			appendEntry: async (type: string, data?: unknown) => {
+				await saved.promise;
+				await pi.appendEntry(type, data);
+			},
+		},
+		h.ctx,
+	).record({ runId: "slow-other", index: 0, agent: "worker", state: "running", cwd: h.cwd });
+	const gate = Promise.withResolvers<void>();
+	const wake = wakeWithResult(h, dispatcher, "slow-append:0", gate);
+	await sleep(50);
+	assert.equal(dispatcher.stats().running, 1, "the wake holds its batch");
+	const resume = h.call({ action: "resume", id: "slow-append:0", message: "while the record saves" });
+	await sleep(50);
+	saved.resolve();
+	try {
+		await refusedWhileWokenRunRuns(h, dispatcher, "slow-append:0", resume);
+	} finally {
+		gate.resolve();
+	}
+	await wake;
+	assert.equal(
+		h.runs.filter((run) => run.task.includes("while the record saves")).length,
+		0,
+		"a refused resume never runs",
+	);
+});
+
+test("a resume queued on a child's wake key is refused as soon as a wake relaunches the child, never left behind its run (#5485)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "queued-behind");
+	const gate = Promise.withResolvers<void>();
+	const wake = wakeWithResult(h, dispatcher, "queued-behind:0", gate);
+	// Queued straight onto the child's wake key, behind the batch the wake has already taken.
+	const queued = resumeReleasedChild(h.sessionManager.getSessionId(), "queued-behind:0", {
+		prompt: "queued note",
+		message: "queued note",
+	});
+	assert.ok(queued);
+	const answer = queued.then(
+		() => assert.fail("a resume queued behind a relaunch must not run"),
+		(error: unknown) => ({ content: [{ type: "text" as const, text: String(error) }] }) as SubagentToolResult,
+	);
+	try {
+		const woken = await h.waitForLatest(
+			"queued-behind:0",
+			(record) => record.state === "running" && record.taskId !== undefined,
+		);
+		const refusal = await answeredWithin(answer);
+		assert.ok(refusal, "the queued resume is answered while the woken run goes on");
+		assert.match(text(refusal), new RegExp(`already running as task ${woken.taskId}`));
+		assert.equal(resumeWaiterCount(), 0);
+	} finally {
+		gate.resolve();
+	}
+	await wake;
+	assert.equal(await drained(dispatcher), 0);
+	assert.equal(h.runs.filter((run) => run.task.includes("queued note")).length, 0, "the refused resume never runs");
+});
+
+test("resume during a wake that has not relaunched its child yet waits only for that relaunch, then refuses the running child (#5485)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "relaunching");
+	const wrapUp = Promise.withResolvers<void>();
+	h.finishOn.set("wrap up", wrapUp);
+	// The wake below reopens the child only once this run's session has closed.
+	h.disposeGate = Promise.withResolvers<void>();
+	const resumed = await h.call({ action: "resume", id: "relaunching:0", message: "wrap up" });
+	wrapUp.resolve();
+	await settled(h, resumedTaskId(resumed));
+	const green = Promise.withResolvers<void>();
+	h.finishOn.set("CI green", green);
+	const wake = dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "relaunching:0"), {
+		id: "tool-result:ci-1",
+		toolResult: waitResult("CI green"),
+		kind: "tool-result",
+	});
+	try {
+		await h.waitForLatest("relaunching:0", (record) =>
+			(record.heldToolResults ?? []).some((held) => held.toolCallId === "ci-1"),
+		);
+		let answered = false;
+		const resume = h.call({ action: "resume", id: "relaunching:0", message: "one more thing" }).finally(() => {
+			answered = true;
+		});
+		await sleep(100);
+		assert.equal(answered, false, "resume waits while the wake decides whether the child runs again");
+		h.disposeGate.resolve();
+		const refused = await answeredWithin(resume);
+		assert.ok(refused, "resume answers once the wake has relaunched the child, while that run goes on");
+		const woken = h.latest("relaunching:0");
+		assert.equal(woken?.state, "running");
+		assert.equal(refused.isError, true);
+		assert.match(text(refused), new RegExp(`already running as task ${woken?.taskId}; pause or quit it first`));
+		assert.equal(resumeWaiterCount(), 0);
+	} finally {
+		h.disposeGate.resolve();
+		green.resolve();
+	}
+	await waitForWakeCompletion(wake, "the wake's run");
+	assert.equal(h.runs.filter((run) => run.task.includes("one more thing")).length, 0, "a refused resume never runs");
+});
+
+test("resume messages batched behind a wake slot are delivered once in arrival order (#4326)", async () => {
+	const h = harness();
+	h.deps.config.parallel = { runningCapacity: 1 };
+	const dispatcher = agentWakeDispatcher();
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	h.wakeDispatcher = dispatcher;
+	await releasedChildren(h, ["batch-slot", "batch-resume"]);
+	const owner = h.sessionManager.getSessionId();
+	const gate = Promise.withResolvers<void>();
+	// Another child's woken run holds the only wake slot, so both resumes wait for it, in one batch.
+	const wake = wakeWithResult(h, dispatcher, "batch-slot:0", gate);
+	await h.waitForLatest("batch-slot:0", (record) => record.state === "running" && record.taskId !== undefined);
 	const first = resumeReleasedChild(owner, "batch-resume:0", { prompt: "first note", message: "first note" });
 	const second = resumeReleasedChild(owner, "batch-resume:0", { prompt: "second note", message: "second note" });
 	assert.ok(first && second);
@@ -4889,6 +5125,336 @@ test("a manual resume waits behind the wakes already using parallel.runningCapac
 	assert.equal(response.isError, undefined);
 	await settled(h, resumedTaskId(response));
 	assert.equal(await drained(dispatcher), 0);
+});
+
+/** A scripted model reply: `content` with `stopReason`. */
+function parentReply(content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"]) {
+	const stream = createAssistantMessageEventStream();
+	const message: AssistantMessage = {
+		role: "assistant",
+		content,
+		api: "openai-responses",
+		provider: "openai",
+		model: "mock",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason,
+		timestamp: Date.now(),
+	};
+	queueMicrotask(() => stream.push({ type: "done", reason: stopReason === "toolUse" ? "toolUse" : "stop", message }));
+	return stream;
+}
+
+/** The parent's turn: its model calls the subagent tool with `params` once, through the real turn loop, then stops. */
+function parentTurn(h: Harness, params: Parameters<Harness["call"]>[0]): Agent {
+	let replies = 0;
+	const agent = new Agent({
+		initialState: {
+			systemPrompt: "parent",
+			tools: [
+				{
+					name: "subagent",
+					label: "subagent",
+					description: "subagent",
+					parameters: { type: "object", additionalProperties: true } as never,
+					execute: (_id, args, signal) => h.call(args as typeof params, signal),
+				},
+			],
+		},
+		streamFn: () =>
+			replies++ === 0
+				? parentReply(
+						[
+							{
+								type: "toolCall",
+								id: "parent-call",
+								name: "subagent",
+								arguments: { ...params } as Record<string, never>,
+							},
+						],
+						"toolUse",
+					)
+				: parentReply([{ type: "text", text: "done" }], "stop"),
+	});
+	void agent.prompt("go").catch(() => {});
+	return agent;
+}
+
+function parentToolResultText(agent: Agent): string {
+	const result = agent.state.messages.find((message) => message.role === "toolResult");
+	assert.ok(result?.role === "toolResult", "the interrupted call has a result");
+	return result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+}
+
+/** Whether `promise` settles within {@link RESUME_ANSWER_MS}. */
+async function settlesWithin(promise: Promise<unknown>): Promise<boolean> {
+	return (await answeredWithin(promise.then(() => ({}) as SubagentToolResult))) !== undefined;
+}
+
+test("interrupting the parent's turn ends a resume still waiting for a wake slot, and withdraws it so the child never runs it (#5485)", async () => {
+	const h = harness();
+	h.deps.config.parallel = { runningCapacity: 1 };
+	const dispatcher = agentWakeDispatcher();
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	h.wakeDispatcher = dispatcher;
+	await releasedChildren(h, ["turn-a", "turn-b"]);
+	const owner = h.sessionManager.getSessionId();
+	const wakeGate = Promise.withResolvers<void>();
+	h.finishOn.set("CI green", wakeGate);
+	const wake = dispatcher.deliver(subagentWakeKey(owner, "turn-a:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: waitResult("CI green"),
+	});
+	try {
+		await h.waitForLatest("turn-a:0", (record) => record.state === "running" && record.launchLeafId !== undefined);
+		const turn = parentTurn(h, { action: "resume", id: "turn-b:0", message: "never sent" });
+		const deadline = Date.now() + RECORD_WAIT_MS;
+		while (dispatcher.stats().queued === 0 && Date.now() < deadline) await sleep(10);
+		assert.equal(dispatcher.stats().queued, 1, "the resume waits for the only wake slot");
+
+		turn.abort();
+		assert.ok(await settlesWithin(turn.waitForIdle()), "the interrupted turn ends while the resume still waits");
+		assert.match(parentToolResultText(turn), /Interrupted before .*turn-b:0.* took the resume: it was withdrawn/);
+		assert.equal(resumeWaiterCount(), 0);
+	} finally {
+		wakeGate.resolve();
+	}
+	await wake;
+	assert.equal(await drained(dispatcher), 0);
+	assert.equal(h.runs.filter((run) => run.task.includes("never sent")).length, 0, "the withdrawn resume never runs");
+	assert.equal(h.latest("turn-b:0")?.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS, "the child stays released");
+});
+
+function taskExecutionKind(h: Harness, taskId: string): string | undefined {
+	const watched = h.host.watchOwnerTasks();
+	assert.ok(watched.ok);
+	try {
+		return watched.value.snapshot.tasks.find((task) => task.ref.taskId === taskId)?.execution.kind;
+	} finally {
+		watched.value.dispose();
+	}
+}
+
+for (const action of ["pause", "quit"] as const) {
+	test(`interrupting the parent's turn ends a ${action} still waiting for a child that has not stopped yet, and the ${action} goes on (#5485)`, async () => {
+		const h = harness();
+		const stuck = Promise.withResolvers<void>();
+		h.stuckOn.set(ORIGINAL_TASK, stuck);
+		const childId = `stuck-${action}:0`;
+		const taskId = await h.admit(`stuck-${action}`);
+		try {
+			await h.waitForLatest(childId, (record) => record.taskId === taskId);
+			const turn = parentTurn(h, { action, id: childId });
+			const deadline = Date.now() + RECORD_WAIT_MS;
+			while (taskExecutionKind(h, taskId) !== "cancelling" && Date.now() < deadline) await sleep(10);
+			assert.equal(taskExecutionKind(h, taskId), "cancelling", `the ${action} waits for the child to stop`);
+
+			turn.abort();
+			assert.ok(
+				await settlesWithin(turn.waitForIdle()),
+				`the interrupted turn ends while the ${action} still waits`,
+			);
+			assert.match(
+				parentToolResultText(turn),
+				new RegExp(`Interrupted before ${action} finished: the stop was requested and goes on`),
+			);
+		} finally {
+			stuck.resolve();
+		}
+		const stopped = await h.waitForLatest(childId, (record) => record.state === "terminal");
+		assert.equal(stopped.terminalStatus, action === "pause" ? "paused" : "quit", `the ${action} took effect`);
+	});
+}
+
+test("interrupting the parent's turn while its resume waits for a wake to reopen the child answers at once and sends nothing (#5485)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "deciding");
+	const wrapUp = Promise.withResolvers<void>();
+	h.finishOn.set("wrap up", wrapUp);
+	// The wake below reopens the child only once this run's session has closed.
+	h.disposeGate = Promise.withResolvers<void>();
+	const resumed = await h.call({ action: "resume", id: "deciding:0", message: "wrap up" });
+	wrapUp.resolve();
+	await settled(h, resumedTaskId(resumed));
+	const green = Promise.withResolvers<void>();
+	const wake = wakeWithResult(h, dispatcher, "deciding:0", green);
+	try {
+		await h.waitForLatest("deciding:0", (record) =>
+			(record.heldToolResults ?? []).some((held) => held.toolCallId === "ci-1"),
+		);
+		const turn = parentTurn(h, { action: "resume", id: "deciding:0", message: "never sent while deciding" });
+		await sleep(100);
+		turn.abort();
+		assert.ok(await settlesWithin(turn.waitForIdle()), "the interrupted turn ends while the wake still decides");
+		assert.match(
+			parentToolResultText(turn),
+			/was being reopened, before it could be resumed: nothing was sent to it/,
+		);
+	} finally {
+		h.disposeGate.resolve();
+		green.resolve();
+	}
+	await waitForWakeCompletion(wake, "the wake's run");
+	assert.equal(h.runs.filter((run) => run.task.includes("never sent while deciding")).length, 0);
+});
+
+test("interrupting the parent's turn while its resume reopens a finished child says the resume goes on, and it does (#5485)", async () => {
+	const h = harness();
+	await releasedWithWakes(h, "direct");
+	const wrapUp = Promise.withResolvers<void>();
+	h.finishOn.set("wrap up", wrapUp);
+	// The next resume reopens the child only once this run's session has closed.
+	h.disposeGate = Promise.withResolvers<void>();
+	const resumed = await h.call({ action: "resume", id: "direct:0", message: "wrap up" });
+	wrapUp.resolve();
+	await settled(h, resumedTaskId(resumed));
+	const turn = parentTurn(h, { action: "resume", id: "direct:0", message: "goes on anyway" });
+	await sleep(300);
+	turn.abort();
+	try {
+		assert.ok(await settlesWithin(turn.waitForIdle()), "the interrupted turn ends while the child is reopened");
+		assert.match(parentToolResultText(turn), /was being resumed: the resume had begun and goes on with your message/);
+	} finally {
+		h.disposeGate.resolve();
+	}
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (h.runs.filter((run) => run.task.includes("goes on anyway")).length === 0 && Date.now() < deadline)
+		await sleep(20);
+	assert.equal(h.runs.filter((run) => run.task.includes("goes on anyway")).length, 1, "the begun resume runs once");
+});
+
+test("interrupting the parent's turn after a wake took its resume says the resume goes on, and it does (#5485)", async () => {
+	const h = harness();
+	h.deps.config.parallel = { runningCapacity: 1 };
+	const dispatcher = agentWakeDispatcher();
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	h.wakeDispatcher = dispatcher;
+	await releasedChildren(h, ["taken-a", "taken-b"]);
+	const owner = h.sessionManager.getSessionId();
+	const slotGate = Promise.withResolvers<void>();
+	// taken-a's woken run holds the only wake slot; taken-b's result and the resume wait for it in one batch.
+	const wakeA = wakeWithResult(h, dispatcher, "taken-a:0", slotGate);
+	await h.waitForLatest("taken-a:0", (record) => record.state === "running" && record.launchLeafId !== undefined);
+	const wakeB = dispatcher.deliver(subagentWakeKey(owner, "taken-b:0"), {
+		id: "tool-result:ci-b",
+		kind: "tool-result",
+		toolResult: waitResult("B result"),
+	});
+	// Hold the resume once its wake has taken it: saving the results it carries blocks.
+	const saved = Promise.withResolvers<void>();
+	const reached = Promise.withResolvers<void>();
+	const pi = h.deps.pi as unknown as { appendEntry(type: string, data?: SubagentChildRecord): Promise<void> };
+	const append = pi.appendEntry.bind(pi);
+	let armed = true;
+	pi.appendEntry = async (type, data) => {
+		if (armed && data?.childId === "taken-b:0" && (data.heldToolResults ?? []).length > 0) {
+			armed = false;
+			reached.resolve();
+			await saved.promise;
+		}
+		await append(type, data);
+	};
+	const turn = parentTurn(h, { action: "resume", id: "taken-b:0", message: "taken message" });
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (dispatcher.stats().queued < 2 && Date.now() < deadline) await sleep(10);
+	assert.equal(dispatcher.stats().queued, 2, "taken-b's result and the resume wait for the slot");
+	slotGate.resolve();
+	await reached.promise;
+	turn.abort();
+	try {
+		assert.ok(await settlesWithin(turn.waitForIdle()), "the interrupted turn ends");
+		assert.match(parentToolResultText(turn), /the resume had begun and goes on with your message/);
+	} finally {
+		saved.resolve();
+	}
+	await wakeA;
+	await wakeB;
+	const end = Date.now() + RECORD_WAIT_MS;
+	const ran = () =>
+		h.runs.filter((run) => JSON.stringify([run.task, run.options.resumeFollowUps]).includes("taken message")).length;
+	while (ran() === 0 && Date.now() < end) await sleep(20);
+	assert.equal(ran(), 1, "the taken resume runs once");
+});
+
+test("a resume from a turn that was already interrupted sends nothing to a released child (#5485)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "pre-aborted");
+	const interrupted = new AbortController();
+	interrupted.abort();
+	const result = await h.call({ action: "resume", id: "pre-aborted:0", message: "never sent" }, interrupted.signal);
+	assert.equal(result.isError, true);
+	assert.match(text(result), /took the resume: it was withdrawn/);
+	assert.equal(await drained(dispatcher), 0);
+	assert.equal(resumeWaiterCount(), 0);
+	assert.equal(h.runs.filter((run) => run.task.includes("never sent")).length, 0, "the child never runs it");
+	assert.equal(h.latest("pre-aborted:0")?.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS, "the child stays released");
+});
+
+test("a resume while a wake that did not reopen the child still finishes queues behind that wake, never running the child beside it (#5485)", async () => {
+	const h = harness();
+	// A child that finished: a result that reaches it later wakes it.
+	const { record } = await h.launch("finishing");
+	await h.call({ action: "pause", id: record.childId });
+	await h.waitForLatest(record.childId, (latest) => latest.terminalStatus === "paused");
+	await settled(h, resumedTaskId(await h.call({ action: "resume", id: record.childId, message: "finish up" })));
+	await h.waitForLatest(record.childId, (latest) => latest.state === "terminal" && latest.terminalStatus === "ok");
+	const owner = h.sessionManager.getSessionId();
+	const key = subagentWakeKey(owner, "finishing:0");
+	const dispatcher = new AgentWakeDispatcher();
+	const decided = Promise.withResolvers<void>();
+	const finishing = Promise.withResolvers<void>();
+	const resumes: string[] = [];
+	const stopHandling = handleReleasedChildWakes(
+		h.ctx,
+		{
+			// This wake decides not to reopen the child, then takes a while to finish.
+			wake: async () => {
+				settleReleasedChildRelaunch(key);
+				decided.resolve();
+				await finishing.promise;
+			},
+			hold: async () => {},
+			resume: async (record, request) => {
+				resumes.push(request.message ?? "");
+				return restoreSubagentChild(h.deps, h.ctx, record.childId, request);
+			},
+		},
+		dispatcher,
+	);
+	const unbind = bindResumeDispatcher(owner, dispatcher);
+	cleanups.push(async () => {
+		finishing.resolve();
+		stopHandling();
+		unbind();
+	});
+	const wake = dispatcher.deliver(key, {
+		id: "tool-result:late",
+		kind: "tool-result",
+		toolResult: waitResult("late result"),
+	});
+	await decided.promise;
+	const resume = h.call({ action: "resume", id: "finishing:0", message: "after the wake" });
+	await sleep(100);
+	assert.equal(
+		h.runs.filter((run) => run.task.includes("after the wake")).length,
+		0,
+		"the resume waits for the wake to finish instead of reopening the child beside it",
+	);
+	finishing.resolve();
+	const response = await resume;
+	assert.equal(response.isError, undefined, text(response));
+	assert.deepEqual(resumes, ["after the wake"], "the resume ran through the wake key, after the wake");
+	await settled(h, resumedTaskId(response));
+	await wake;
 });
 
 test("a wake saves the results it carries in the child's record before the child is restored, and the record no longer holds them once its run has them (#4326)", async () => {
