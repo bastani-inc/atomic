@@ -5,8 +5,9 @@
 ### Fixed
 
 - Starting or resuming a session in a trusted project no longer shows "This project is not trusted. Project .atomic resources and packages are ignored." The interface checked trust while the session was still deciding it, read that as untrusted, and kept the warning after the session had decided. The warning now waits for the decision and follows it, so a project trusted through `defaultProjectTrust: "always"` or a `project_trust` extension no longer shows it either
-- An answer for this session only ("Trust (this session only)" or "Do not trust (this session only)") now lasts for the whole session. After Atomic restarted its engine, for example because the engine stopped responding, it asked again about the current folder and about folders you switched back to with `/resume`. The answer is still never saved
-- The warning that an untrusted project's resources are ignored no longer disappears when the chat is redrawn: after the trust question at startup, on `/reload` and after compaction. A session that started in a project you declined, or saved "Do not trust" for, showed no warning at all
+- An answer for this session only ("Trust (this session only)" or "Do not trust (this session only)"), to the question about a project folder or about an `-e` extension source, now lasts for the whole session. After Atomic restarted its engine, for example because the engine stopped responding, it asked again about the current folder, the `-e` sources and folders you switched back to with `/resume`. The answer is still never saved
+- The warning that an untrusted project's resources are ignored no longer disappears when the chat is redrawn: after the trust question at startup, on `/reload` and after compaction. A session that started in a project you declined, or saved "Do not trust" for, showed no warning at all. After compaction the warning shows below the compaction marker
+- A trust answer that cannot be saved, for example because `trust.json` cannot be written, now leaves the session untrusted with the warning. The session stayed untrusted without saying so
 
 ## [0.9.89] - 2026-11-18
 

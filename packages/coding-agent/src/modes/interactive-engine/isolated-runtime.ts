@@ -15,7 +15,7 @@ import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ExtensionError, HostSessionPickerRow } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
-import { mergeProjectTrustDecisions } from "../../core/project-trust-state.ts";
+import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
 import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
@@ -156,7 +156,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** Whether the engine reported a trust decision for its current session; it reports none while still deciding. */
 	private engineProjectTrustReported = false;
 	/** The engine's trust decisions in this host session, handed to an engine started to replace it. */
-	private knownProjectTrust = new Map<string, boolean>();
+	private knownTrust: SessionTrustDecisions = { projects: {}, extensionSources: {} };
 	private readonly projectTrustListeners = new Set<() => void>();
 	private remoteSessionName: string | undefined;
 	private remoteSessionId: string | undefined;
@@ -220,7 +220,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					await this.client.restart(manager.isPersisted() ? manager.getSessionId() : undefined, {
 						cwd: manager.getCwd(),
 						sessionDirectory: manager.getSessionDir() || undefined,
-						projectTrustDecisions: Object.fromEntries(this.knownProjectTrust),
+						trustDecisions: this.knownTrust,
 					});
 					replacementReady();
 					await this.initializeFromEngine();
@@ -407,7 +407,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
 			this.engineProjectTrustReported = state.projectTrusted !== undefined;
-			this.knownProjectTrust = mergeProjectTrustDecisions(this.knownProjectTrust, state.projectTrustDecisions);
+			this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, state.trustDecisions);
 			if (
 				trustBefore[0] !== session.settingsManager.isProjectTrusted() ||
 				trustBefore[1] !== this.engineProjectTrustReported
@@ -554,8 +554,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return !this.engineProjectTrustReported;
 	}
 	/** The trust decisions the engine reported in this host session. */
-	override projectTrustDecisions(): ReadonlyMap<string, boolean> {
-		return this.knownProjectTrust;
+	override trustDecisions(): SessionTrustDecisions {
+		return this.knownTrust;
 	}
 	/** Called when this host's trust for its session, or whether the engine has decided it, changes. */
 	onProjectTrustChanged(listener: () => void): () => void {

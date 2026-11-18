@@ -2,6 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import type { ImageContent } from "@bastani/atomic-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
+import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import type { BashOutputChannel } from "../../core/tools/bash.js";
 import { removeOwnedInteractiveEngineBootstrapAsync } from "../../utils/interactive-engine-bootstrap.ts";
 import { sleep } from "../../utils/sleep.ts";
@@ -73,10 +74,10 @@ export interface RpcClientOptions {
 		 */
 		apiKey?: string;
 		/**
-		 * Project trust decisions the engine starts with, by session directory, delivered through the bootstrap file.
-		 * A restart replaces them with the decisions it is given.
+		 * Trust decisions the engine starts with, delivered through the bootstrap file. A restart replaces them with the
+		 * decisions it is given.
 		 */
-		projectTrust?: Readonly<Record<string, boolean>>;
+		trustDecisions?: SessionTrustDecisions;
 	};
 }
 
@@ -160,7 +161,7 @@ export class RpcClient extends RpcClientApi {
 			preparedBootstrap = this.options.interactiveEngine
 				? await prepareRpcClientBootstrap(
 						this.options.interactiveEngine.apiKey,
-						this.options.interactiveEngine.projectTrust,
+						this.options.interactiveEngine.trustDecisions,
 					)
 				: undefined;
 			if (this.stopPromise) {
@@ -477,8 +478,8 @@ export class RpcClient extends RpcClientApi {
 		options?: {
 			sessionDirectory?: string;
 			cwd?: string;
-			/** Project trust decisions of the host session, which the new engine starts with instead of asking again. */
-			projectTrustDecisions?: Readonly<Record<string, boolean>>;
+			/** Trust decisions of the host session, which the new engine starts with instead of asking again. */
+			trustDecisions?: SessionTrustDecisions;
 		},
 	): Promise<void> {
 		const permit = this.restartRevision;
@@ -492,8 +493,8 @@ export class RpcClient extends RpcClientApi {
 			...this.options,
 			cwd: options?.cwd ?? this.options.cwd,
 			args: restartCliArgs(this.options.args, sessionId, options?.sessionDirectory),
-			...(interactiveEngine && options?.projectTrustDecisions
-				? { interactiveEngine: { ...interactiveEngine, projectTrust: { ...options.projectTrustDecisions } } }
+			...(interactiveEngine && options?.trustDecisions
+				? { interactiveEngine: { ...interactiveEngine, trustDecisions: options.trustDecisions } }
 				: {}),
 		};
 		await this.start(permit);

@@ -784,8 +784,10 @@ export async function main(argv: string[], options?: MainOptions) {
 	const trustPromptMode: AppMode = appMode;
 	// Decisions made in this host session. An engine the host started to replace one that stopped is handed the
 	// decisions of the one it replaces, so nobody is asked twice.
-	const projectTrustByCwd = new Map<string, boolean>(Object.entries(engineEnv.projectTrust ?? {}));
-	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
+	const projectTrustByCwd = new Map<string, boolean>(Object.entries(engineEnv.trustDecisions?.projects ?? {}));
+	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>(
+		Object.entries(engineEnv.trustDecisions?.extensionSources ?? {}),
+	);
 	let deferredExtensionLoad = false;
 	let deferredStartupThinkingLevel: ThinkingLevel | undefined;
 	let deferredSavedThinkingLevel: ThinkingLevel | undefined;
@@ -1061,6 +1063,7 @@ export async function main(argv: string[], options?: MainOptions) {
 					return startupTrustPending;
 				},
 				decisions: projectTrustByCwd,
+				extensionSourceDecisions: borrowedExtensionSourceTrustByPath,
 			};
 			if (completeStartupReload) {
 				const completeReload = completeStartupReload;
@@ -1189,6 +1192,8 @@ export async function main(argv: string[], options?: MainOptions) {
 						}
 					})().catch((error) => {
 						completion = undefined;
+						// No decision is coming any more: the session stays as untrusted as its settings read.
+						startupTrustPending = false;
 						throw error;
 					}));
 			}

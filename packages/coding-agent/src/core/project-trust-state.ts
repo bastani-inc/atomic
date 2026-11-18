@@ -3,7 +3,7 @@
  * "project is not trusted" warning shows, and which decisions an interactive host carries into a restarted engine.
  */
 
-/** The trust decisions a process made in this session, by session directory, and whether one is still to be made. */
+/** The trust decisions a process made in this session, and whether one is still to be made. */
 export interface SessionProjectTrust {
 	/**
 	 * True while a deferred startup decision is still to be made. The settings read the project untrusted until then, so
@@ -11,10 +11,23 @@ export interface SessionProjectTrust {
 	 */
 	readonly pending: boolean;
 	/**
-	 * Decisions made in this session, by the prompt, an extension or a saved decision. They are never written to
-	 * trust.json.
+	 * Project decisions made in this session, by session directory: by the prompt, an extension or a saved decision.
+	 * They are never written to trust.json.
 	 */
 	readonly decisions: ReadonlyMap<string, boolean>;
+	/** Decisions about `-e` extension sources' own project resources, by source path. Never written to trust.json. */
+	readonly extensionSourceDecisions: ReadonlyMap<string, boolean>;
+}
+
+/**
+ * The trust decisions of a host session that an interactive host hands to an engine it starts to replace one that
+ * stopped, so the new engine does not ask again.
+ */
+export interface SessionTrustDecisions {
+	/** Project folders, by session directory. */
+	readonly projects: Readonly<Record<string, boolean>>;
+	/** `-e` extension sources, by source path. */
+	readonly extensionSources: Readonly<Record<string, boolean>>;
 }
 
 /** What a runtime starts a session with before, or instead of, deciding its project's trust. */
@@ -68,4 +81,23 @@ export function mergeProjectTrustDecisions(
 		if (typeof trusted === "boolean") merged.set(cwd, trusted);
 	}
 	return merged;
+}
+
+/** The session decisions an interactive host knows, updated with the ones its engine reports. */
+export function mergeSessionTrustDecisions(known: SessionTrustDecisions, reported: unknown): SessionTrustDecisions {
+	const report = (typeof reported === "object" && reported !== null ? reported : {}) as Record<string, unknown>;
+	const field = (name: string): Readonly<Record<string, unknown>> | undefined => {
+		const value = report[name];
+		return typeof value === "object" && value !== null && !Array.isArray(value)
+			? (value as Record<string, unknown>)
+			: undefined;
+	};
+	return {
+		projects: Object.fromEntries(
+			mergeProjectTrustDecisions(new Map(Object.entries(known.projects)), field("projects")),
+		),
+		extensionSources: Object.fromEntries(
+			mergeProjectTrustDecisions(new Map(Object.entries(known.extensionSources)), field("extensionSources")),
+		),
+	};
 }

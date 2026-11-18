@@ -671,15 +671,14 @@ describe("interactive engine resource readiness", () => {
 	});
 
 	it("restarts a dead engine with the trust decisions it made in this host session", async () => {
-		const probe = await createGenerationRuntime({ projectTrustDecisions: { "/work/feature": true } });
+		const trustDecisions = { projects: { "/work/feature": true }, extensionSources: { "/work/tools": false } };
+		const probe = await createGenerationRuntime({ trustDecisions });
 		try {
 			probe.initializations.get(1)!.resolve();
 			await probe.runtime.initializeFromEngine();
 			probe.retireGeneration(1, false);
 			await vi.waitFor(() => expect(probe.restart).toHaveBeenCalledTimes(1));
-			expect(probe.restart.mock.calls[0]?.[1]).toEqual(
-				expect.objectContaining({ projectTrustDecisions: { "/work/feature": true } }),
-			);
+			expect(probe.restart.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ trustDecisions }));
 		} finally {
 			probe.restartGate.resolve();
 			await probe.runtime.dispose();

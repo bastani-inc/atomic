@@ -18,6 +18,7 @@ import type {
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
+import type { SessionTrustDecisions } from "./project-trust-state.ts";
 import type { AuthStatus } from "./provider-composer.ts";
 import { blueprintBuildsRunning, stopBlueprintBuilds } from "./resume/blueprint/barrier.ts";
 import type { ResumeEntryPoint } from "./resume/errors.ts";
@@ -252,9 +253,13 @@ export class AgentSessionRuntime {
 		return this.services.projectTrust?.pending === true;
 	}
 
-	/** The project trust decisions made in this process, by session directory. They are never saved. */
-	projectTrustDecisions(): ReadonlyMap<string, boolean> {
-		return this.services.projectTrust?.decisions ?? new Map();
+	/** The trust decisions made in this process: projects and `-e` extension sources. They are never saved. */
+	trustDecisions(): SessionTrustDecisions {
+		const trust = this.services.projectTrust;
+		return {
+			projects: Object.fromEntries(trust?.decisions ?? []),
+			extensionSources: Object.fromEntries(trust?.extensionSourceDecisions ?? []),
+		};
 	}
 
 	private declare _session: AgentSession;

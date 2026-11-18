@@ -1047,6 +1047,10 @@ function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
 	void hasTrustRequiringProjectResourcesAsync(mode.sessionManager.getCwd()).then(settle, () => settle(false));
 }
 
+InteractiveModeBase.prototype.appendProjectTrustWarning = function (this: InteractiveModeBase): void {
+	renderProjectTrustWarningIfNeeded(this);
+};
+
 InteractiveModeBase.prototype.refreshProjectTrustWarning = function (this: InteractiveModeBase): void {
 	// Before the chat shows this session, its own drawing adds the warning.
 	if (renderedSessionIds.get(this) !== this.sessionManager.getSessionId()) return;
@@ -1123,7 +1127,8 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	this.attachStartupNoticesContainer();
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { suppressCompactionBoundary: options.suppressCompactionBoundary });
-	renderProjectTrustWarningIfNeeded(this);
+	// A caller that suppresses the persisted boundary appends the live one, then the warning (appendProjectTrustWarning).
+	if (!options.suppressCompactionBoundary) renderProjectTrustWarningIfNeeded(this);
 	renderer.newMessages?.replaced(countChatMessages(this.chatContainer));
 };
 
