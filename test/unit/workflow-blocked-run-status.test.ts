@@ -309,6 +309,48 @@ describe("a run blocked on a stage whose session store stays unreachable stays r
 	});
 });
 
+describe("a child workflow blocked on a stage whose session store stays unreachable", () => {
+	test("blocks its parent, and both read as blocked", async () => {
+		const service = new FakeCiService();
+		const store = createStore();
+		const parent = workflow({
+			name: "parent-of-reopen",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.workflow(definition);
+				return {};
+			},
+		});
+		const blocked = await run(
+			parent,
+			{},
+			{
+				store,
+				durableBackend: await createMemoryTestBackend(),
+				releaseWhenWaiting: { afterMs: 0 },
+				adapters: detachingAdapters(service, counters(), {
+					failCreationAfter: 1,
+					creationFailure: () => storeUnavailable(),
+					resumable: true,
+				}),
+				onStageLifecycleEvent: (_runId: string, event: StageLifecycleEvent) => {
+					if (event.type === "stage_waiting") service.finishAll();
+				},
+			},
+		);
+		assert.equal(blocked.status, "running", blocked.error);
+		assert.equal(blocked.failure?.disposition, "active_blocked");
+		const root = store.run(blocked.runId);
+		const child = store.runs().find((candidate) => candidate.parentRunId === blocked.runId);
+		assert.ok(root && child);
+		assert.equal(effectiveRunStatus(root), "blocked", "parent");
+		assert.equal(effectiveRunStatus(child), "blocked", "child");
+		assert.equal(runIndicatorStatus(root, store.runs()), "blocked");
+	});
+});
+
 describe("the effective status reads a live run as blocked exactly on the failures the engine blocks it on", () => {
 	const decisions: readonly WorkflowFailureDecision[] = [
 		authDecision("missing_api_key"),
