@@ -6,6 +6,10 @@
 
 - On Windows, installing a downloaded tool (such as `rg`, `fd` or Git) no longer fails when Atomic was started from PowerShell 7 and `tar.exe` cannot extract the zip archive: the Windows PowerShell fallback's `Expand-Archive` no longer inherits PowerShell 7's module path, which made it fail with `Cannot find an overload for "ExtractToDirectory"`. Every Windows PowerShell command Atomic runs for its own work now starts this way; the `powershell` tool and blueprint steps still run with your environment unchanged
 
+### Changed
+
+- A waiting subagent's launch card in the parent's chat shows the same still `◌` mark and `Waiting on <tool>` as `/tasks`, instead of `⏸ Released · waiting`, which read as paused, and it shows the subagent running or finished again once it wakes or ends. Alt+W (`app.tasks.openWaited`) opens the output of the shell a waiting subagent waits on, from its chat or its `/tasks` row, and ← goes back; the chat's note and the `/tasks` hint name the key. `ToolBlock` and `NoticeLine` take the new `waiting` status, so code that switches over `ToolBlockStatus` or `NoticeStatus` should handle `waiting`.
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 Compaction clears the context and lets the agent recover from history, `model: "auto"` runs your default model, and a new agent panel keeps subagents and workflows in view while the interface stays responsive under load.
@@ -135,7 +139,6 @@ Compaction clears the context and lets the agent recover from history, `model: "
 - A model request in a long session no longer holds the interactive engine, and every stage chat, subagent chat and `/tasks` keystroke with it, to copy the whole conversation when no extension handles `context` events.
 - The default model for the `openai`, `openai-api`, `azure` and `openai-codex` providers is now GPT-6.2 Sol (`gpt-6.2-sol`) instead of GPT-6.1 Sol, at the same price. GitHub Copilot keeps GPT-6.1 Sol as its default (upstream [e56d35c](https://github.com/earendil-works/pi/commit/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253), [cead615](https://github.com/earendil-works/pi/commit/cead615b48b80d1c61eecab2f0b576d16eeaf4c5))
 - A subagent released while it waits on a call is listed under a new **Waiting** group in `/tasks` and as `waiting on <tool>` in the agent panel, with a still mark, instead of looking like a working agent; a chat's task footer and the task detail show it waiting too. Opening it shows its saved conversation without waking it, what it waits on, and the shells it launched that still run; `x` twice stops it as `quit` does instead of dismissing it; and once it wakes, its new run replaces its waiting row. Its "released while waiting" notice no longer starts a turn in the parent's chat. Agent panel sources can report the new `waiting` state with a `waitingOn` text, so code that switches over `AgentPanelState` should handle `waiting`.
-- A waiting subagent's launch card in the parent's chat shows the same still `◌` mark and `Waiting on <tool>` as `/tasks`, instead of `⏸ Released · waiting`, which read as paused, and it shows the subagent running or finished again once it wakes or ends. Alt+W (`app.tasks.openWaited`) opens the output of the shell a waiting subagent waits on, from its chat or its `/tasks` row, and ← goes back; the chat's note and the `/tasks` hint name the key. `ToolBlock` and `NoticeLine` take the new `waiting` status, so code that switches over `ToolBlockStatus` or `NoticeStatus` should handle `waiting`.
 
 ### Fixed
 
