@@ -12,8 +12,8 @@ const REAL_ENGINE_TIMEOUT_MS = 120_000;
 const ENGINE_GRACE_MS = 300;
 /** The interrupt must end the engine's turn well within this, grace included. */
 const ABORT_BUDGET_MS = 10_000;
-/** How long the late result may take to be recorded once the call returns. */
-const LATE_RESULT_BUDGET_MS = 20_000;
+/** How long the released fixture may take to finish in the engine child. */
+const TOOL_FINISH_BUDGET_MS = 20_000;
 
 function textOf(content: unknown): string {
 	if (typeof content === "string") return content;
@@ -38,7 +38,7 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
 }
 
 test(
-	"Esc ends the isolated engine's turn while a tool call ignores the interrupt, and the late result joins the conversation without a turn (#5486)",
+	"Esc ends the isolated engine's turn while a tool call ignores the interrupt, and its late output does not enter the conversation (#5486)",
 	async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "atomic-tool-abort-grace-"));
 		const started = join(tempDir, "stuck.started");
@@ -86,17 +86,14 @@ test(
 			assert.match(textOf(result.content), /^Operation aborted: stuck did not stop within 0\.3 seconds/);
 
 			const requestsBefore = readFileSync(requests, "utf8");
+			const transcript = await client.getMessages();
 			writeFileSync(`${started}.release`, "");
-			const lateDeadline = Date.now() + LATE_RESULT_BUDGET_MS;
-			let late: string | undefined;
-			while (late === undefined) {
-				assert.ok(Date.now() < lateDeadline, "the late result was never recorded");
-				await sleep(50);
-				const custom = (await client.getMessages()).find((message) => message.role === "custom");
-				late = custom === undefined ? undefined : textOf((custom as { content: unknown }).content);
+			const finishDeadline = Date.now() + TOOL_FINISH_BUDGET_MS;
+			while (!existsSync(`${started}.returned`)) {
+				assert.ok(Date.now() < finishDeadline, "the tool never finished");
+				await sleep(20);
 			}
-			assert.equal(late, "The stuck call stuck-1 that was interrupted finished after its turn ended:\nreleased");
-			await sleep(100);
+			assert.deepEqual(await client.getMessages(), transcript, "the late result does not change the conversation");
 			assert.equal(readFileSync(requests, "utf8"), requestsBefore, "the late result starts no turn");
 		} finally {
 			writeFileSync(`${started}.release`, "");

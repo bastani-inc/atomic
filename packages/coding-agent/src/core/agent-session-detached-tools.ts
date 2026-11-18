@@ -7,7 +7,6 @@ import type {
 	AgentToolResult,
 } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@bastani/atomic-ai/compat";
-import { recordLateToolOutcome } from "./agent-session-late-tool-results.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
 import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
@@ -571,14 +570,9 @@ export function detachableTool(
 				}
 				if (opened === INLINE) return await settled;
 				if (opened === ABANDON) {
-					// The turn stops waiting: the call gives its scheduler place back, and what it returns later is recorded.
 					const permit = hold.permit;
 					hold.permit = undefined;
 					permit?.release();
-					void settled.then(
-						(result) => recordLateToolOutcome(session, toolCallId, tool.name, { kind: "result", result }),
-						(error: unknown) => recordLateToolOutcome(session, toolCallId, tool.name, { kind: "error", error }),
-					);
 					return abandonedToolResult(tool.name, graceMs ?? toolAbortGraceMs());
 				}
 			} finally {

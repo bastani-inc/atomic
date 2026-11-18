@@ -13,14 +13,6 @@ export function toolAbortGraceMs(env: NodeJS.ProcessEnv = process.env): number {
 		: DEFAULT_TOOL_ABORT_GRACE_MS;
 }
 
-/** What a call its interrupted turn stopped waiting for returned later: its result, or what it threw. */
-export type LateToolOutcome =
-	| { readonly kind: "result"; readonly result: AgentToolResult<unknown> }
-	| { readonly kind: "error"; readonly error: unknown };
-
-/** Receives the late outcome of a call its turn stopped waiting for. */
-export type LateToolOutcomeSink = (toolCallId: string, toolName: string, outcome: LateToolOutcome) => void;
-
 function seconds(ms: number): string {
 	const value = Number((ms / 1000).toFixed(3));
 	return `${value} second${value === 1 ? "" : "s"}`;
@@ -32,7 +24,7 @@ export function abandonedToolResult(toolName: string, graceMs: number): AgentToo
 		content: [
 			{
 				type: "text",
-				text: `Operation aborted: ${toolName} did not stop within ${seconds(graceMs)} after the turn was interrupted. It may still be running; if it finishes, its result is added to the conversation.`,
+				text: `Operation aborted: ${toolName} did not stop within ${seconds(graceMs)} after the turn was interrupted. It may still be running, but any later result is discarded.`,
 			},
 		],
 		details: undefined,
@@ -42,10 +34,9 @@ export function abandonedToolResult(toolName: string, graceMs: number): AgentToo
 
 /**
  * `tool`, whose calls answer at most a grace period after their turn is interrupted (#5486). A call still running then
- * gets {@link abandonedToolResult}, so the turn can end; the call goes on, and `onLate` receives what it returns. A call
- * that stops within the grace answers as it always does.
+ * gets {@link abandonedToolResult}, so the turn can end. A call that stops within the grace keeps its own result.
  */
-export function withToolAbortGrace(tool: AgentTool, onLate: LateToolOutcomeSink): AgentTool {
+export function withToolAbortGrace(tool: AgentTool): AgentTool {
 	return {
 		...tool,
 		execute: (toolCallId, params, signal, onUpdate, ...rest) => {
@@ -58,13 +49,9 @@ export function withToolAbortGrace(tool: AgentTool, onLate: LateToolOutcomeSink)
 			if (signal === undefined) return running;
 			return new Promise((resolve, reject) => {
 				let timer: ReturnType<typeof setTimeout> | undefined;
-				let abandoned = false;
 				const startGrace = () => {
 					const graceMs = toolAbortGraceMs();
-					timer = setTimeout(() => {
-						abandoned = true;
-						resolve(abandonedToolResult(tool.name, graceMs));
-					}, graceMs);
+					timer = setTimeout(() => resolve(abandonedToolResult(tool.name, graceMs)), graceMs);
 					timer.unref?.();
 				};
 				const settle = () => {
@@ -76,13 +63,11 @@ export function withToolAbortGrace(tool: AgentTool, onLate: LateToolOutcomeSink)
 				running.then(
 					(result) => {
 						settle();
-						if (abandoned) onLate(toolCallId, tool.name, { kind: "result", result });
-						else resolve(result);
+						resolve(result);
 					},
 					(error: unknown) => {
 						settle();
-						if (abandoned) onLate(toolCallId, tool.name, { kind: "error", error });
-						else reject(error);
+						reject(error);
 					},
 				);
 			});

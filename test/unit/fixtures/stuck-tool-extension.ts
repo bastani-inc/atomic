@@ -75,6 +75,7 @@ export default function stuckToolExtension(api: ExtensionAPI): void {
 			if (!started) throw new Error("ATOMIC_STUCK_TOOL_STARTED_FILE is required");
 			writeFileSync(started, String(process.pid), "utf8");
 			while (!existsSync(`${started}.release`)) await Bun.sleep(20);
+			writeFileSync(`${started}.returned`, "");
 			return { content: [{ type: "text", text: "released" }], details: {} };
 		},
 	});

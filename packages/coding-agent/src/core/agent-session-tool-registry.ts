@@ -1,7 +1,6 @@
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { shellCommandPrefixFor } from "./agent-session-blueprint-environment.ts";
 import { detachableTool, forgetDetachableTools } from "./agent-session-detached-tools.ts";
-import { recordLateToolOutcome } from "./agent-session-late-tool-results.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { isWorkflowStageTaskOwner } from "./agent-session-tasks.js";
 import type { ToolDefinitionEntry } from "./agent-session-types.js";
@@ -136,10 +135,7 @@ export function _refreshToolRegistry(
 		};
 		const guarded = rejectMalformedToolArguments(scoped, () => this.agent.state.messages);
 		// Inside the scheduler: a call its interrupted turn stopped waiting for no longer holds back later calls (#5486).
-		const graced = withToolAbortGrace(guarded, (toolCallId, toolName, outcome) =>
-			recordLateToolOutcome(this, toolCallId, toolName, outcome),
-		);
-		const scheduled = scheduleToolExecution(graced, this._toolExecutionScheduler, abortError);
+		const scheduled = scheduleToolExecution(withToolAbortGrace(guarded), this._toolExecutionScheduler, abortError);
 		const definition = definitionRegistry.get(tool.name)?.definition;
 		const detachable = builtInQuestion && !questionsDetach ? undefined : definition?.detachable;
 		return definition !== undefined && (detachable === true || typeof detachable === "function")
