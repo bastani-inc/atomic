@@ -77,6 +77,7 @@ function configureDeferredGateMode(mode: InteractiveMode): void {
 		},
 		showStartupNoticesIfNeeded() {},
 		maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
+		refreshProjectTrustWarning() {},
 	});
 }
 

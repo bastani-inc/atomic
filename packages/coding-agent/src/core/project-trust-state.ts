@@ -10,6 +10,8 @@ export interface SessionProjectTrust {
 	 * that only what the decision needs loads, which is not a decision.
 	 */
 	readonly pending: boolean;
+	/** Ends a decision that was still to be made but will not be: startup failed before it could make it. */
+	abandon(): void;
 	/**
 	 * Project decisions made in this session, by session directory: by the prompt, an extension or a saved decision.
 	 * They are never written to trust.json.

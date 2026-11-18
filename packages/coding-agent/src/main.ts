@@ -1062,6 +1062,10 @@ export async function main(argv: string[], options?: MainOptions) {
 				get pending() {
 					return startupTrustPending;
 				},
+				abandon() {
+					// No decision is coming any more: the session stays as untrusted as its settings read.
+					startupTrustPending = false;
+				},
 				decisions: projectTrustByCwd,
 				extensionSourceDecisions: borrowedExtensionSourceTrustByPath,
 			};
