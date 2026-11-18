@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- A background subagent released while it waits on a call shows `◌ Waiting on <tool>` on its launch card, the way `/tasks` and the agent panel show it, instead of `⏸ Released · waiting`, and its card follows it back to running or finished when it wakes or ends
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 ### Breaking Changes

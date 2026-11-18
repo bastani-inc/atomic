@@ -10,7 +10,7 @@ import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provi
 import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
-import { releasedWaitingOn, waitingReleasedTools } from "../../../core/tasks/completion.js";
+import { releasedWaitingOn, waitingReleasedShells, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
@@ -30,6 +30,7 @@ import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-h
 import { ScrollableComponentViewport } from "./chat-transcript.js";
 import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
+import { navActionText } from "./nav-keys.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
 import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
@@ -199,7 +200,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 	/**
 	 * What a subagent released while it waits waits on, that it wakes by itself, and the shells it launched that still
-	 * run, which `/tasks` opens. Its transcript is its saved session, read without waking it.
+	 * run, with the key that opens the newest one's output. Its transcript is its saved session, read without waking it.
 	 */
 	private releasedNote(): string | undefined {
 		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
@@ -207,17 +208,16 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			task?.execution.kind === "settled" && waitingReleasedTools(task) !== undefined
 				? releasedWaitingOn(task.execution.result)
 				: undefined;
-		if (waitingOn === undefined) return undefined;
-		const shells = (this.source.ownerTasks ?? this.source.tasks).filter(
-			(candidate) =>
-				candidate.parentTaskId === this.taskId &&
-				candidate.kind === "command" &&
-				candidate.execution.kind !== "settled",
-		);
+		if (task === undefined || waitingOn === undefined) return undefined;
+		const shells = waitingReleasedShells(task, this.source.ownerTasks ?? this.source.tasks);
+		const openKey = navActionText(getKeybindings(), "app.tasks.openWaited");
+		const opens = openKey ? `${openKey} opens` : "/tasks opens";
 		const shellNote =
 			shells.length === 0
 				? ""
-				: ` · ${shells.length === 1 ? `its shell ${taskDisplayText(shortTaskTitle(shells[0]!.title || "shell"))} is` : `${shells.length} of its shells are`} running · /tasks opens ${shells.length === 1 ? "it" : "them"}`;
+				: shells.length === 1
+					? ` · its shell ${taskDisplayText(shortTaskTitle(shells[0]!.title || "shell"))} is running · ${opens} it`
+					: ` · ${shells.length} of its shells are running · ${opens} ${openKey ? "the newest" : "them"}`;
 		return `Waiting on ${taskDisplayText(waitingOn)} · wakes by itself when it finishes${shellNote}`;
 	}
 	set status(value: string) {

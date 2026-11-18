@@ -8,6 +8,10 @@
 - `NO_COLOR` now turns off every theme color. Chat messages, tool blocks, the agent panel, `/tasks`, pickers, scrollbars, the OpenRouter row in `/login` and Mermaid diagrams used to keep their foreground and background colors while it was set. `FORCE_COLOR=0` turns colors off too, and `FORCE_COLOR=1` or `2` limits them to 256 colors.
 - `atomic storage migrate` on PostgreSQL now says when the `pg_trgm` extension is not installed and the role could not install it, as on Azure Database for PostgreSQL and Azure HorizonDB until `pg_trgm` is added to `azure.extensions`. Without it, searches of session history read each session a page at a time instead of using their index. The storage guide now covers Azure flexible servers (direct and through the built-in PgBouncer) and Azure HorizonDB
 
+### Changed
+
+- A waiting subagent's launch card in the parent's chat shows the same still `◌` mark and `Waiting on <tool>` as `/tasks`, instead of `⏸ Released · waiting`, which read as paused, and it shows the subagent running or finished again once it wakes or ends. Alt+W (`app.tasks.openWaited`) opens the output of the shell a waiting subagent waits on, from its chat or its `/tasks` row, and ← goes back; the chat's note and the `/tasks` hint name the key. `ToolBlock` and `NoticeLine` take the new `waiting` status, so code that switches over `ToolBlockStatus` or `NoticeStatus` should handle `waiting`.
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 Compaction clears the context and lets the agent recover from history, `model: "auto"` runs your default model, and a new agent panel keeps subagents and workflows in view while the interface stays responsive under load.
