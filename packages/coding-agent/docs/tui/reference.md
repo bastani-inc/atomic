@@ -8,7 +8,7 @@ description: Component and focusable interfaces, keyboard input, line width, inv
 
 ## Tool blocks
 
-Use `ToolBlock` from `@bastani/atomic` for a transcript item with a state glyph, one header row and connected result rows. It accepts `status`, `title`, optional `args`, `meta`, `details`, `body` and `outputPad` (default `1`). Supported states are `running`, `success`, `failure`, `stopped`, `warning`, `paused` and `info`.
+Use `ToolBlock` from `@bastani/atomic` for a transcript item with a state glyph, one header row and connected result rows. It accepts `status`, `title`, optional `args`, `meta`, `details`, `body` and `outputPad` (default `1`). Supported states are `running`, `success`, `failure`, `stopped`, `warning`, `paused`, `waiting` (a still, dim `◌`: not working, and wakes by itself when what it waits on finishes) and `info`. Code that switches over `ToolBlockStatus` or `NoticeStatus` should handle `waiting`.
 
 ```typescript
 import { ToolBlock, ToolBlockRecords } from "@bastani/atomic";

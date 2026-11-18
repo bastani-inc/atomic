@@ -6,10 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow heartbeats, answered-question notices and undelivered-message notices in the main chat use the same notice form as task heartbeats and run notices instead of bordered cards: `♥ Workflow heartbeat · <workflow> still running · <elapsed>` with the run and cadence under it, `● Workflow "<name>" received the user's response · <stage>`, and `! Stage "<name>" finished before this message was delivered · <workflow>`. Expanding a notice (Ctrl+O) shows its run, question and answer, or message. The text the model reads is unchanged
+
 ### Fixed
 
 - On libSQL storage, a workflow journal whose stored lease epoch or event sequence is corrupt (negative, fractional or past the largest safe integer) now refuses a lease renewal or an append without writing, as on local SQLite and PostgreSQL. Before, the renewal renewed the lease and the append wrote an event, and the error came only afterwards ([#5439](https://github.com/bastani-inc/atomic/pull/5439))
 - On a libSQL server, appending several workflow events at once now waits for a busy write lock as long as appending one event does. Before, it gave up after the server's 5-second busy timeout ([#5439](https://github.com/bastani-inc/atomic/pull/5439))
+- `NO_COLOR` and `FORCE_COLOR=0` now turn off colors in the workflow graph, stage chats, `/workflows` run details and workflow notices, which kept their own palette. `FORCE_COLOR=1` or `2` limits them to 256 colors; otherwise they are unchanged
 - A workflow stage that moves to its next fallback model after a context overflow now stops the session it replaces before the new one starts. Before, a turn the replaced session was still running, or one started by a message delivered to it, kept calling tools in the stage's worktree next to the new session until it went idle. Messages queued for the replaced session still reach the new one
 
 ## [0.9.89-alpha.1] - 2026-11-18
