@@ -243,6 +243,13 @@ export {
 	builtinToolBlockPresentation,
 } from "./modes/interactive/components/tool-block-families.ts";
 export { formatToolActionSummary } from "./modes/interactive/components/tool-block-summary.ts";
+// Internal host seam for bundled workflow stage chats' click-expandable blocks; not yet a stable extension API.
+export {
+	type ClickExpandableBlock,
+	type RowRange,
+	repaintAfterSingleClick,
+	rowsFrom,
+} from "./modes/interactive/components/transcript-block-clicks.ts";
 export {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,

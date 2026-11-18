@@ -26,6 +26,7 @@ import {
 } from "./components/atomic-banner.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { ThemedText } from "./components/themed-text.js";
+import { clickableBlocksView } from "./components/transcript-block-clicks.ts";
 import { bindInitialEagerSession } from "./interactive-initial-session-binding.ts";
 import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import {
@@ -234,11 +235,11 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		scrollbar: this.settingsManager.getFullscreenScrollbar(),
 		scrollbarThumbStyle: (text) => theme.bg("scrollbarThumb", text),
 	});
-	const pendingMessagesPreview = {
-		render: (width: number): string[] =>
-			this.navigationInlineCustomUiDepth > 0 ? [] : this.pendingMessagesContainer.render(width),
-		invalidate: (): void => this.pendingMessagesContainer.invalidate(),
-	};
+	// A shell command waiting for the turn to end expands on a click, as it will in the chat.
+	const pendingMessagesPreview = clickableBlocksView(
+		this.pendingMessagesContainer,
+		() => this.navigationInlineCustomUiDepth > 0,
+	);
 	const dock = new VStack([
 		{ component: pendingMessagesPreview, shrink: 1, minSize: 0 },
 		{ component: this.statusContainer, shrink: 1, minSize: 0 },
