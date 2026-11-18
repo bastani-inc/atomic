@@ -363,10 +363,92 @@ function Get-AtomicRedirectTag {
     return $null
 }
 
+# The HTTP response of a failed Invoke-WebRequest (WebException on Windows PowerShell,
+# HttpResponseException on PowerShell 7), or $null when no response arrived.
+function Get-AtomicErrorResponse {
+    param($ErrorRecord)
+
+    $exception = $ErrorRecord.Exception
+    while ($null -ne $exception) {
+        $responseProperty = $exception.PSObject.Properties["Response"]
+        if ($null -ne $responseProperty -and $null -ne $responseProperty.Value) {
+            return $responseProperty.Value
+        }
+        $exception = $exception.InnerException
+    }
+    return $null
+}
+
+function Get-AtomicErrorStatusCode {
+    param($ErrorRecord)
+
+    $response = Get-AtomicErrorResponse $ErrorRecord
+    if ($null -eq $response) {
+        return 0
+    }
+    $statusProperty = $response.PSObject.Properties["StatusCode"]
+    if ($null -eq $statusProperty -or $null -eq $statusProperty.Value) {
+        return 0
+    }
+    try {
+        return [int]$statusProperty.Value
+    }
+    catch {
+        return 0
+    }
+}
+
+# GitHub answers a rate-limited API request with 403 (or 429) and `X-RateLimit-Remaining: 0`
+# or a message that names the rate limit.
+function Test-AtomicRateLimitError {
+    param($ErrorRecord, [int]$StatusCode)
+
+    if ($StatusCode -eq 429) {
+        return $true
+    }
+    if ($StatusCode -ne 403) {
+        return $false
+    }
+
+    $remaining = $null
+    $response = Get-AtomicErrorResponse $ErrorRecord
+    if ($null -ne $response) {
+        $headersProperty = $response.PSObject.Properties["Headers"]
+        if ($null -ne $headersProperty -and $null -ne $headersProperty.Value) {
+            $headers = $headersProperty.Value
+            try {
+                if ($null -ne $headers.PSObject.Methods["TryGetValues"]) {
+                    $headerValues = $null
+                    if ($headers.TryGetValues("X-RateLimit-Remaining", [ref]$headerValues)) {
+                        $remaining = [string](@($headerValues)[0])
+                    }
+                }
+                else {
+                    $remaining = [string]$headers["X-RateLimit-Remaining"]
+                }
+            }
+            catch {
+                $remaining = $null
+            }
+        }
+    }
+    if ($remaining -eq "0") {
+        return $true
+    }
+
+    $text = [string]$ErrorRecord.Exception.Message
+    $detailsProperty = $ErrorRecord.PSObject.Properties["ErrorDetails"]
+    if ($null -ne $detailsProperty -and $null -ne $detailsProperty.Value) {
+        $text += " " + [string]$detailsProperty.Value.Message
+    }
+    return $text -match 'rate limit'
+}
+
 function Invoke-AtomicApiRequest {
     param(
         [string]$Uri,
-        [hashtable]$Headers
+        [hashtable]$Headers,
+        [string]$RequestedTag
     )
 
     try {
@@ -374,7 +456,39 @@ function Invoke-AtomicApiRequest {
         return ($response.Content | ConvertFrom-Json)
     }
     catch {
+        $statusCode = Get-AtomicErrorStatusCode $_
+        if ($statusCode -eq 404 -and -not [string]::IsNullOrWhiteSpace($RequestedTag)) {
+            throw "release $RequestedTag not found."
+        }
+        if (Test-AtomicRateLimitError $_ $statusCode) {
+            if ($Headers.ContainsKey("Authorization")) {
+                throw "Failed to query GitHub release API at ${Uri}: GitHub's API rate limit was reached for this token; try again later."
+            }
+            throw "Failed to query GitHub release API at ${Uri}: GitHub's API rate limit was reached for this network. Set GITHUB_TOKEN (for example `$env:GITHUB_TOKEN = gh auth token) or try again later."
+        }
         throw "Failed to query GitHub release API at ${Uri}: $_"
+    }
+}
+
+# Whether the release page of an encoded tag exists on github.com: "found", "missing",
+# or "unknown" when github.com gave no clear answer. github.com is not subject to the
+# REST API's 60-requests-an-hour limit for unauthenticated clients.
+function Get-AtomicReleasePageStatus {
+    param([string]$EncodedTag)
+
+    try {
+        $response = Invoke-WebRequest -Uri "https://github.com/bastani-inc/atomic/releases/tag/$EncodedTag" -UseBasicParsing -ErrorAction Stop
+        $statusProperty = $response.PSObject.Properties["StatusCode"]
+        if ($null -ne $statusProperty -and [int]$statusProperty.Value -eq 200) {
+            return "found"
+        }
+        return "unknown"
+    }
+    catch {
+        if ((Get-AtomicErrorStatusCode $_) -eq 404) {
+            return "missing"
+        }
+        return "unknown"
     }
 }
 
@@ -1329,7 +1443,18 @@ if ([string]::IsNullOrWhiteSpace($requestedRef)) {
 }
 else {
     $encodedRequestedRef = [Uri]::EscapeDataString($requestedRef)
-    $release = Invoke-AtomicApiRequest "$tagsApiBase/$encodedRequestedRef" $apiHeaders
+    # An exact tag is confirmed on github.com; the REST API, limited to 60 requests an
+    # hour per address without a token, is asked only when github.com cannot tell.
+    $releasePageStatus = Get-AtomicReleasePageStatus $encodedRequestedRef
+    if ($releasePageStatus -eq "found") {
+        $releaseTag = $requestedRef
+    }
+    elseif ($releasePageStatus -eq "missing") {
+        throw "release $requestedRef not found."
+    }
+    else {
+        $release = Invoke-AtomicApiRequest "$tagsApiBase/$encodedRequestedRef" $apiHeaders $requestedRef
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($releaseTag)) {
