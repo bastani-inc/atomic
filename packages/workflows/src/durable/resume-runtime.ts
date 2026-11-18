@@ -152,15 +152,15 @@ export async function resumeDurableWorkflow(
 	const target = resolveDurableEntry(workflowId, catalog ?? backend.listResumableWorkflows());
 	const id = target !== undefined && !("kind" in target) ? target.workflowId : workflowId;
 	let handle = backend.getWorkflow(id);
-	if (handle?.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, id))
-		return alreadyRunningResult(handle.name, id);
+	const live = deps.baseRunOpts.store?.run(id);
 	const finishing = deps.jobs?.get(id);
 	if (
 		finishing !== undefined &&
-		(handle?.status === "failed" || deps.baseRunOpts.store?.run(id)?.status === "failed")
+		(handle?.status === "failed" || live?.status === "failed" || live?.blockedAt !== undefined)
 	) {
-		// The terminal event can reach a caller before the old attempt finishes its persistence and releases its
-		// lease. Wait for that attempt before admitting a replacement, then discard its now-stale catalog version.
+		// The failure or block can reach a caller before the old attempt finishes its persistence and releases its
+		// lease: a blocked run's journal still says `running` until then. Wait for that attempt before admitting a
+		// replacement, then discard its now-stale catalog version.
 		await raceAbort(finishing.promise, deps.signal);
 		await raceAbort(backend.hydrateWorkflow(id), deps.signal);
 		handle = backend.getWorkflow(id);
@@ -169,6 +169,8 @@ export async function resumeDurableWorkflow(
 			catalog = catalog.map((entry) => (entry.workflowId === id ? refreshed : entry));
 		}
 	}
+	if (handle?.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, id))
+		return alreadyRunningResult(handle.name, id);
 	if (hasForkClaim(backend, id))
 		return {
 			ok: false,

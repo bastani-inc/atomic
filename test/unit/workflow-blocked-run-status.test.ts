@@ -309,6 +309,93 @@ describe("a run blocked on a stage whose session store stays unreachable stays r
 	});
 });
 
+describe("a resume pressed as soon as the run reads blocked", () => {
+	test("waits for the blocked attempt to finish recording the block, then resumes it", async () => {
+		const service = new FakeCiService();
+		const store = createStore();
+		const memory = await createMemoryTestBackend();
+		// The blocked attempt is held just before its journal records the block, as a slow store would hold it.
+		const recordBlock = Promise.withResolvers<void>();
+		let blockRecordsHeld = 0;
+		const backend = new Proxy(memory, {
+			get(target, key) {
+				const value = Reflect.get(target, key, target) as unknown;
+				if (typeof value !== "function") return value;
+				if (key !== "commitWorkflowStatus") return value.bind(target);
+				return async (...args: Parameters<typeof memory.commitWorkflowStatus>) => {
+					if (args[1] === "blocked") {
+						blockRecordsHeld++;
+						await recordBlock.promise;
+					}
+					return memory.commitWorkflowStatus(...args);
+				};
+			},
+		});
+		const first = detachingAdapters(service, counters(), {
+			failCreationAfter: 1,
+			creationFailure: () => storeUnavailable(),
+			resumable: true,
+		});
+		const runId = "5534a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5b";
+		const jobs = createJobTracker();
+		const attempt = run(
+			definition,
+			{},
+			{
+				runId,
+				store,
+				durableBackend: backend,
+				releaseWhenWaiting: { afterMs: 0 },
+				adapters: first,
+				onStageLifecycleEvent: (_runId: string, event: StageLifecycleEvent) => {
+					if (event.type === "stage_waiting") service.finishAll();
+				},
+			},
+		);
+		const job = {
+			runId,
+			controller: new AbortController(),
+			promise: attempt.then(
+				() => {
+					jobs.unregister(runId, job);
+				},
+				() => {
+					jobs.unregister(runId, job);
+				},
+			),
+		};
+		jobs.register(job);
+		const blocked = Promise.withResolvers<void>();
+		const unsubscribe = store.subscribe(() => {
+			if (store.run(runId)?.blockedAt !== undefined) blocked.resolve();
+		});
+		await blocked.promise;
+		unsubscribe();
+		assert.equal(effectiveRunStatus(store.run(runId)!), "blocked", "the graph already offers r");
+
+		const resumedCounters = counters();
+		const runtime = createExtensionRuntime({
+			registry: createRegistry([definition]),
+			store,
+			jobs,
+			adapters: {
+				...detachingAdapters(service, resumedCounters, { resumable: true }),
+				sessionStore: first.sessionStore,
+			},
+		});
+		const resuming = runtime.resumeFailedRun(runId);
+		// Let the resume run as far as it can while the attempt still holds the block's record.
+		for (let turn = 0; turn < 20; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(blockRecordsHeld, 1);
+		recordBlock.resolve();
+		const resumed = await resuming;
+		assert.ok(resumed.ok, resumed.ok ? undefined : resumed.message);
+		await jobs.get(runId)?.promise;
+		assert.equal(store.run(runId)?.status, "completed", store.run(runId)?.error);
+		assert.equal(service.dispatches, 1, "the tool did not run again");
+	});
+});
+
 describe("a child workflow blocked on a stage whose session store stays unreachable", () => {
 	test("blocks its parent, and both read as blocked", async () => {
 		const service = new FakeCiService();
