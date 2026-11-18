@@ -1,3 +1,4 @@
+import { convertToLlm } from "@bastani/atomic";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
@@ -144,9 +145,67 @@ function stripAssistantSubagentToolCallBlocks<T>(message: T): T | undefined {
 	return { ...m, content: filteredContent } as T;
 }
 
-/** Remove parent-only orchestration history while preserving it for an authorized fanout child. */
+function isAssistantMessage(message: unknown): boolean {
+	return (message as { role?: string })?.role === "assistant";
+}
+
+/**
+ * Whether the model sees `message` as something between two assistant turns: a tool result, or a message it reads as
+ * a user turn. A message the model never sees, or a system message, leaves the turns around it adjacent.
+ */
+function separatesAssistantTurns(message: unknown): boolean {
+	const role = (message as { role?: string })?.role;
+	if (role === "toolResult") return true;
+	if (role === "assistant" || role === "system") return false;
+	return convertToLlm([message as AgentMessage]).some((converted) => converted.role === "user");
+}
+
+function isReasoningBlock(block: unknown): boolean {
+	const type = (block as { type?: string })?.type;
+	return type === "thinking" || type === "redacted_thinking";
+}
+
+/** The assistant message without its reasoning blocks, or undefined when nothing else is left. */
+function withoutReasoning<T>(message: T): T | undefined {
+	const m = message as { content?: unknown };
+	if (!Array.isArray(m.content)) return message;
+	const content = m.content.filter((block) => !isReasoningBlock(block));
+	if (content.length === m.content.length) return message;
+	if (content.length === 0) return undefined;
+	return { ...m, content } as T;
+}
+
+/**
+ * Called when removed messages leave the last kept assistant message directly before the next one. Providers join
+ * back-to-back assistant messages into one turn, so if the earlier message carries thinking, that turn holds thinking
+ * from two separate responses, and Anthropic rejects it as modified thinking (#5481). The earlier message loses its
+ * thinking, or is dropped when nothing else is left, which repeats the check for the assistant message before it. The
+ * next turn is replayed exactly as returned.
+ */
+function dropReasoningJoinedToNextTurn<T>(kept: T[]): void {
+	for (let index = kept.length - 1; index >= 0; index--) {
+		const message = kept[index];
+		if (!isAssistantMessage(message)) {
+			if (separatesAssistantTurns(message)) return;
+			continue;
+		}
+		const replayed = withoutReasoning(message);
+		if (replayed !== undefined) {
+			kept[index] = replayed;
+			return;
+		}
+		kept.splice(index, 1);
+	}
+}
+
+/**
+ * Remove parent-only orchestration history while preserving it for an authorized fanout child. Where a removal leaves
+ * two assistant messages back to back, the earlier one is replayed without its thinking (#5481).
+ */
 export function stripParentOnlySubagentMessages<T>(messages: T[], preserveFanoutToolHistory = false): T[] {
 	let changed = false;
+	// Something that separated the last kept assistant message from the next one was removed.
+	let separatorRemoved = false;
 	const filtered: T[] = [];
 	for (const message of messages) {
 		if (
@@ -154,6 +213,7 @@ export function stripParentOnlySubagentMessages<T>(messages: T[], preserveFanout
 			(!preserveFanoutToolHistory && isSubagentToolResultMessage(message))
 		) {
 			changed = true;
+			if (!separatorRemoved && separatesAssistantTurns(message)) separatorRemoved = true;
 			continue;
 		}
 		const stripped = preserveFanoutToolHistory ? message : stripAssistantSubagentToolCallBlocks(message);
@@ -162,6 +222,12 @@ export function stripParentOnlySubagentMessages<T>(messages: T[], preserveFanout
 			continue;
 		}
 		if (stripped !== message) changed = true;
+		if (isAssistantMessage(stripped)) {
+			if (separatorRemoved) dropReasoningJoinedToNextTurn(filtered);
+			separatorRemoved = false;
+		} else if (separatorRemoved && separatesAssistantTurns(stripped)) {
+			separatorRemoved = false;
+		}
 		filtered.push(stripped);
 	}
 	return changed ? filtered : messages;

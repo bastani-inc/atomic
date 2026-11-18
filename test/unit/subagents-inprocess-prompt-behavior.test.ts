@@ -3,8 +3,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
+import {
+	type AssistantMessage,
+	type FetchFunction,
+	getModel,
+	type Message,
+	type Model,
+	streamSimple,
+} from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader.js";
+import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import type { ResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -17,6 +26,7 @@ import {
 	createInProcessChildPromptBehavior,
 	createInProcessChildSystemPromptTransform,
 } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
+import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 
 const tempDirs: string[] = [];
 
@@ -182,6 +192,234 @@ describe("in-process child prompt construction", () => {
 					(message: AgentMessage) => message.role === "user" && message.content === "keep this task",
 				),
 				true,
+			);
+		} finally {
+			session.dispose();
+		}
+	});
+});
+
+interface AnthropicPayloadBlock {
+	type: string;
+	thinking?: string;
+	signature?: string;
+	data?: string;
+}
+
+interface AnthropicPayloadMessage {
+	role: string;
+	content: string | AnthropicPayloadBlock[];
+}
+
+const copilotOpus = getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
+
+const zeroUsage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+/** A parent turn produced by the model the forked child runs on, so its signed thinking is replayed to the child. */
+function parentTurn(content: AssistantMessage["content"]): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: copilotOpus.api,
+		provider: copilotOpus.provider,
+		model: copilotOpus.id,
+		usage: zeroUsage,
+		stopReason: content.some((block) => block.type === "toolCall") ? "toolUse" : "stop",
+		timestamp: Date.now(),
+	};
+}
+
+function parentToolResult(toolCallId: string, toolName: string, text: string): Message {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName,
+		content: [{ type: "text", text }],
+		isError: false,
+		timestamp: Date.now(),
+	};
+}
+
+/** The Anthropic Messages payload the child's first request would send for its projected context. */
+async function childFirstRequest(messages: AgentMessage[]): Promise<AnthropicPayloadMessage[]> {
+	let payload: { messages: AnthropicPayloadMessage[] } | undefined;
+	await streamSimple(
+		{ ...copilotOpus, baseUrl: "http://127.0.0.1:9" },
+		{ messages: [...convertToLlm(messages), { role: "user", content: "The child's task.", timestamp: Date.now() }] },
+		{
+			apiKey: "credential-free-test-key",
+			reasoning: "xhigh",
+			fetch: (async () => {
+				throw new Error("payload captured");
+			}) as unknown as FetchFunction,
+			onPayload: (body) => {
+				payload = body as { messages: AnthropicPayloadMessage[] };
+			},
+		},
+	).result();
+	if (!payload) throw new Error("no Anthropic payload was built");
+	return payload.messages;
+}
+
+function reasoningBlocks(message: AnthropicPayloadMessage): AnthropicPayloadBlock[] {
+	return Array.isArray(message.content)
+		? message.content.filter((block) => block.type === "thinking" || block.type === "redacted_thinking")
+		: [];
+}
+
+/**
+ * The API joins back-to-back assistant messages into one turn. When the earlier one carries thinking,
+ * that turn holds thinking from two separate responses, which the API rejects as modified thinking.
+ */
+function assistantPairsJoinedWithThinking(messages: AnthropicPayloadMessage[]): number[] {
+	const pairs: number[] = [];
+	for (let index = 1; index < messages.length; index++) {
+		const earlier = messages[index - 1]!;
+		if (messages[index]!.role === "assistant" && earlier.role === "assistant" && reasoningBlocks(earlier).length > 0)
+			pairs.push(index);
+	}
+	return pairs;
+}
+
+async function forkChild(parent: SessionManager): Promise<Awaited<ReturnType<typeof createAgentSession>>["session"]> {
+	const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+	return createChildSession({}, child);
+}
+
+describe("forked child's first request replays the parent's thinking (#5481)", () => {
+	test("a parent turn of thinking plus a subagent call does not join its thinking to the next turn (#5481)", async () => {
+		const parent = SessionManager.inMemory(mkdtempSync(join(tmpdir(), "atomic-fork-thinking-")));
+		await parent.appendMessage({ role: "user", content: "Fix the failing test.", timestamp: Date.now() });
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Launch a reviewer first.", thinkingSignature: "sig-launch" },
+				{ type: "toolCall", id: "toolu_launch", name: "subagent", arguments: { agent: "reviewer" } },
+			]),
+		);
+		await parent.appendMessage(parentToolResult("toolu_launch", "subagent", "Launched reviewer."));
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Now list the files.", thinkingSignature: "sig-list" },
+				{ type: "toolCall", id: "toolu_ls", name: "bash", arguments: { command: "ls" } },
+			]),
+		);
+		await parent.appendMessage(parentToolResult("toolu_ls", "bash", "a.ts"));
+		// The turn that launches the forked child is still in flight.
+		await parent.appendMessage(
+			parentTurn([{ type: "toolCall", id: "toolu_fork", name: "subagent", arguments: { agent: "worker" } }]),
+		);
+
+		const session = await forkChild(parent);
+		try {
+			const request = await childFirstRequest(session.messages);
+
+			assert.deepEqual(assistantPairsJoinedWithThinking(request), []);
+			// The parent's settled bash turn is replayed exactly as the provider returned it.
+			assert.deepEqual(
+				request.filter((message) => message.role === "assistant").map((message) => message.content),
+				[
+					[
+						{ type: "thinking", thinking: "Now list the files.", signature: "sig-list" },
+						{ type: "tool_use", id: "toolu_ls", name: "bash", input: { command: "ls" } },
+					],
+				],
+			);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	test("a removed parent-only notice between two turns with thinking does not join their thinking (#5481)", async () => {
+		const parent = SessionManager.inMemory(mkdtempSync(join(tmpdir(), "atomic-fork-thinking-")));
+		await parent.appendMessage({ role: "user", content: "Report the status.", timestamp: Date.now() });
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Summarize the status.", thinkingSignature: "sig-status" },
+				{ type: "text", text: "Waiting on the reviewer." },
+			]),
+		);
+		await parent.appendCustomMessageEntry("subagent-notify", "The reviewer finished.", true);
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Read the review.", thinkingSignature: "sig-review" },
+				{ type: "toolCall", id: "toolu_cat", name: "bash", arguments: { command: "cat review.md" } },
+			]),
+		);
+		await parent.appendMessage(parentToolResult("toolu_cat", "bash", "Looks good."));
+		await parent.appendMessage(
+			parentTurn([{ type: "toolCall", id: "toolu_fork", name: "subagent", arguments: { agent: "worker" } }]),
+		);
+
+		const session = await forkChild(parent);
+		try {
+			const request = await childFirstRequest(session.messages);
+
+			assert.deepEqual(assistantPairsJoinedWithThinking(request), []);
+			// The earlier turn keeps its text; the later turn is replayed exactly as the provider returned it.
+			assert.deepEqual(
+				request.filter((message) => message.role === "assistant").map((message) => message.content),
+				[
+					[{ type: "text", text: "Waiting on the reviewer." }],
+					[
+						{ type: "thinking", thinking: "Read the review.", signature: "sig-review" },
+						{ type: "tool_use", id: "toolu_cat", name: "bash", input: { command: "cat review.md" } },
+					],
+				],
+			);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	test("a turn left with nothing but thinking goes, and the turn before it gives up its thinking too (#5481)", async () => {
+		const parent = SessionManager.inMemory(mkdtempSync(join(tmpdir(), "atomic-fork-thinking-")));
+		await parent.appendMessage({ role: "user", content: "Report, then delegate.", timestamp: Date.now() });
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Report first.", thinkingSignature: "sig-report" },
+				{ type: "text", text: "Two tests fail." },
+			]),
+		);
+		// Nothing the model reads separates these two turns in the parent either.
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Delegate the fix.", thinkingSignature: "sig-delegate" },
+				{ type: "toolCall", id: "toolu_launch", name: "subagent", arguments: { agent: "worker" } },
+			]),
+		);
+		await parent.appendMessage(parentToolResult("toolu_launch", "subagent", "Launched worker."));
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Check the log.", thinkingSignature: "sig-log" },
+				{ type: "toolCall", id: "toolu_log", name: "bash", arguments: { command: "git log -1" } },
+			]),
+		);
+		await parent.appendMessage(parentToolResult("toolu_log", "bash", "abc123"));
+		await parent.appendMessage(
+			parentTurn([{ type: "toolCall", id: "toolu_fork", name: "subagent", arguments: { agent: "worker" } }]),
+		);
+
+		const session = await forkChild(parent);
+		try {
+			const request = await childFirstRequest(session.messages);
+
+			assert.deepEqual(assistantPairsJoinedWithThinking(request), []);
+			assert.deepEqual(
+				request.filter((message) => message.role === "assistant").map((message) => message.content),
+				[
+					[{ type: "text", text: "Two tests fail." }],
+					[
+						{ type: "thinking", thinking: "Check the log.", signature: "sig-log" },
+						{ type: "tool_use", id: "toolu_log", name: "bash", input: { command: "git log -1" } },
+					],
+				],
 			);
 		} finally {
 			session.dispose();

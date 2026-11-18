@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a subagent launched with `context: "fork"` failing on its first request with a 400 that says `thinking` blocks in the latest assistant message cannot be modified. It happened when the child ran on the model that made the parent's recent turns, after the parent had made a turn with thinking and a `subagent` call. A forked child's context leaves out the parent's `subagent` calls and their results, so that turn's thinking ended up directly before the parent's next turn, and the API joins back-to-back assistant messages into one turn. Where leaving out the parent's orchestration puts two assistant messages back to back, the first one is now sent without its thinking. The rest of the inherited thinking is sent unchanged ([#5481](https://github.com/bastani-inc/atomic/issues/5481))
+
 ## [0.9.89] - 2026-11-18
 
 ### Breaking Changes
