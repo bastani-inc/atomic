@@ -516,6 +516,47 @@ test(
 	WIDE_LISTING_SEED_TIMEOUT_MS,
 );
 
+/** The sessions a light listing may scan in one turn of the event loop; an uncached store reads each in up to ~0.4 ms. */
+const LIGHT_LISTING_ROWS_PER_TURN = 256;
+
+test("SQL light listing of a project gives the event loop a turn every 256 sessions it scans (#5480)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		const store = await SqlSessionStore.open(database);
+		const sessions = 2 * LIGHT_LISTING_ROWS_PER_TURN + 100;
+		const expected = Array.from({ length: sessions }, (_, index) => `s-${String(index).padStart(4, "0")}`);
+		await database.exec("PRAGMA synchronous=OFF");
+		for (const id of expected) await store.create({ ...header, id }, []);
+		let turns = 0;
+		let ticking = true;
+		const tick = () => {
+			turns++;
+			if (ticking) setImmediate(tick);
+		};
+		setImmediate(tick);
+		const start = turns;
+		const listedPerTurn = new Map<number, number>();
+		const actual: string[] = [];
+		try {
+			for await (const summary of store.list({ cwd: header.cwd, withoutSearchText: true })) {
+				actual.push(summary.id);
+				listedPerTurn.set(turns, (listedPerTurn.get(turns) ?? 0) + 1);
+			}
+		} finally {
+			ticking = false;
+		}
+		assert.deepEqual(actual, expected);
+		const mostInOneTurn = Math.max(...listedPerTurn.values());
+		assert.ok(
+			mostInOneTurn <= LIGHT_LISTING_ROWS_PER_TURN,
+			`the listing handed over ${mostInOneTurn} sessions in one turn`,
+		);
+		// Finding the project's stored spellings scans every session too, and gets the same turns.
+		const scanTurns = 2 * Math.ceil(sessions / LIGHT_LISTING_ROWS_PER_TURN);
+		assert.ok(turns - start >= scanTurns, `the listing took ${turns - start} turns, expected ${scanTurns}`);
+		await store.close();
+	});
+});
+
 for (let seed = 1; seed <= 16; seed++) {
 	test(`SQL incremental summaries match full history after reopen for random sequence ${seed} (#3645)`, async () => {
 		const directory = makeTempDirectory("atomic-summary-property-");

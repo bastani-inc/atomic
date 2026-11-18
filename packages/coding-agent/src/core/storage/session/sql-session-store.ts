@@ -262,7 +262,12 @@ const LISTING_SIZE =
 	"length(id) + length(cwd) + length(header_json) + length(modified_at) + length(first_message) + COALESCE(length(name), 0) + COALESCE(length(summary), 0) + COALESCE(length(summarized_through_id), 0) + length(revision) + 256";
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
-const LISTING_CWD_PAGE = 2_000;
+/**
+ * Sessions a paced listing scans per statement, with a turn of the event loop after each (#5480): a statement reads
+ * every scanned row, and on a large store whose pages are not cached one row can cost a disk read, so a few thousand
+ * rows per statement held the event loop for seconds.
+ */
+const LISTING_SCAN_ROWS = 256;
 const STUB_ENTRY: SessionEntry = {
 	type: "custom",
 	id: "",
@@ -1009,7 +1014,7 @@ export class SqlSessionStore implements SessionStore {
 		);
 		const upper = Number(bound?.upper ?? 0);
 		const seen = new Set<string>();
-		for (let after = 0, limit: number = SESSION_READ_FETCH.first; after < upper; ) {
+		for (let after = 0, limit: number = LISTING_SCAN_ROWS; after < upper; ) {
 			this.assertListing(query);
 			const rows = await this.database.all<ListingWindowRow>(
 				`WITH keyed AS MATERIALIZED (
@@ -1059,7 +1064,7 @@ export class SqlSessionStore implements SessionStore {
 				: batchChars - pageChars <= SESSION_READ_PAGE_CHARS * 4
 					? limit
 					: Math.max(SESSION_READ_FETCH.min, Number(last.key_row) * 2);
-			limit = Math.min(SESSION_READ_FETCH.max, next);
+			limit = Math.min(LISTING_SCAN_ROWS, next);
 			await yieldTurn();
 		}
 		this.assertListing(query);
@@ -1077,12 +1082,12 @@ export class SqlSessionStore implements SessionStore {
 			const rows = await this.database.all<SqliteRow & { ord: number | bigint; cwd: string }>(
 				`SELECT ${order} AS ord, cwd FROM ${this.tables.sessions} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`,
 				after,
-				LISTING_CWD_PAGE,
+				LISTING_SCAN_ROWS,
 			);
 			for (const row of rows) cwds.add(row.cwd);
-			if (rows.length < LISTING_CWD_PAGE) return [...cwds];
-			after = Number(rows.at(-1)!.ord);
 			await yieldTurn();
+			if (rows.length < LISTING_SCAN_ROWS) return [...cwds];
+			after = Number(rows.at(-1)!.ord);
 		}
 	}
 
