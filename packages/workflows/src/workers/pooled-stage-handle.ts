@@ -155,6 +155,8 @@ export class PooledStageHandle implements StageControlHandle {
 	private streaming: StreamingMessage;
 	private currentStatus: StageControlStatus = "running";
 	private streamingNow = false;
+	/** Whether the stage's session waits out an automatic retry's backoff: its retry started, its next attempt has not. */
+	private waitingToRetry = false;
 	private seq = 0;
 	private attempt: { readonly workId: string; readonly generation: number };
 	private ended?: WatchEndReason;
@@ -234,6 +236,9 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	get isStreaming(): boolean {
 		return this.streamingNow;
+	}
+	get isWaitingToRetry(): boolean {
+		return this.waitingToRetry;
 	}
 	get isDisposed(): boolean {
 		return this.disposed;
@@ -791,6 +796,7 @@ export class PooledStageHandle implements StageControlHandle {
 		this.streaming = snapshot.streamingMessage;
 		this.currentStatus = snapshot.status;
 		this.streamingNow = snapshot.isStreaming;
+		this.waitingToRetry = snapshot.waitingToRetry === true;
 		this.seq = snapshot.seq;
 		this.toolExecutions = new StageToolExecutionBuffer();
 		for (const event of snapshot.pendingToolExecutionEvents) this.toolExecutions.record(event);
@@ -844,7 +850,14 @@ export class PooledStageHandle implements StageControlHandle {
 			case "agent_start":
 				// A turn only starts on a running stage, including one resumed after it paused.
 				this.streamingNow = true;
+				this.waitingToRetry = false;
 				this.currentStatus = "running";
+				return;
+			case "auto_retry_start":
+				this.waitingToRetry = true;
+				return;
+			case "auto_retry_end":
+				this.waitingToRetry = false;
 				return;
 			case "agent_end":
 				this.streamingNow = false;
