@@ -16,6 +16,7 @@ import type { PendingStageMessage, RunSnapshot } from "../shared/store-types.js"
 import { type RunsById, runsByIdOf } from "../shared/workflow-run-ownership.js";
 import type {
 	DistributiveOmit,
+	PooledRunBlock,
 	PooledRunResult,
 	StageReceipts,
 	WorkerDeliver,
@@ -253,10 +254,21 @@ function recordStageReceipts(
 /**
  * The result an attempt completes with (#4513): `result`, and the receipts the stages of the child's nested workflow runs
  * recorded in `store`, the attempt's own, in store order. A nested stage's publication that showed them may never have
- * reached the root, which records them as the child settles. An attempt whose nested stages took nothing completes with
- * `result` itself.
+ * reached the root, which records them as the child settles. A child blocked on a recoverable failure carries its block
+ * as `store` recorded it, which the root records too (#5534). An attempt whose nested stages took nothing and whose
+ * child did not block completes with `result` itself.
  */
-export function completedAttemptResult(result: RunResult, store: Pick<Store, "runs">): PooledRunResult {
+export function completedAttemptResult(result: RunResult, store: Pick<Store, "runs" | "run">): PooledRunResult {
+	const child = store.run(result.runId);
+	const block: PooledRunBlock | undefined =
+		child?.blockedAt === undefined
+			? undefined
+			: {
+					blockedAt: child.blockedAt,
+					...(child.failedStageId === undefined ? {} : { failedStageId: child.failedStageId }),
+					...(child.failureMessage === undefined ? {} : { failureMessage: child.failureMessage }),
+					...(child.endedAt === undefined ? {} : { endedAt: child.endedAt }),
+				};
 	const nestedStageReceipts = store.runs().flatMap((run) =>
 		run.id === result.runId
 			? []
@@ -274,7 +286,12 @@ export function completedAttemptResult(result: RunResult, store: Pick<Store, "ru
 							],
 				),
 	);
-	return nestedStageReceipts.length === 0 ? result : { ...result, nestedStageReceipts };
+	if (nestedStageReceipts.length === 0 && block === undefined) return result;
+	return {
+		...result,
+		...(nestedStageReceipts.length === 0 ? {} : { nestedStageReceipts }),
+		...(block === undefined ? {} : { block }),
+	};
 }
 
 /**
