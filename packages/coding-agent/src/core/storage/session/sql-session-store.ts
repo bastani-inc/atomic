@@ -117,7 +117,7 @@ export const SESSION_PRESENCE_DOMAIN = "session-presence";
 export const SESSION_PRESENCE_TABLES = Object.freeze({ open: "open" });
 
 type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
-type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
+type HeaderRow = SqliteRow & { header_json: string; last_seq: number; revision: string };
 type SummaryStateRow = HeaderRow & { summary_state: string };
 type ResumeRow = SummaryStateRow & { revision: string };
 
@@ -163,6 +163,12 @@ type FetchRow = {
 type PageRow = FetchRow & { ord: number | bigint };
 /** A row of a page of a session's entries, as `pageStatement` reads it. */
 type EntryPageRow = SqliteRow & FetchRow & { seq: number; entry_json: string; chunks: number };
+/** A session's first page as a snapshot read found it, with the revision and sequence the session was at. */
+interface FirstPage {
+	readonly revision: string;
+	readonly lastSeq: number;
+	readonly rows: readonly EntryPageRow[];
+}
 
 /**
  * The rows one statement of a paged read fetches, by key after the previous page, before it keeps those that fit in
@@ -681,20 +687,22 @@ export class SqlSessionStore implements SessionStore {
 			);
 			if (row) announceHistoryLoad(row.last_seq);
 		}
-		return (
-			(await this.loadInOneRequest(sessionId)) ??
-			this.transaction((tx) => this.read(tx, sessionId), SESSION_TRANSACTION)
-		);
+		const quick = await this.loadInOneRequest(sessionId);
+		if ("snapshot" in quick) return quick.snapshot;
+		return this.transaction((tx) => this.read(tx, sessionId, quick.first), SESSION_TRANSACTION);
 	}
 
 	/**
 	 * A session whose entries all fit the first page and none of which is stored in chunks, read in one request against
 	 * one snapshot without the write lock, where the database reads that way (#5376): the schema version, the header and
-	 * the page, as `read` reads them. Undefined when the database does not, or the session needs more reads.
+	 * the page, as `read` reads them. Otherwise the page it read, when the database reads that way, for `read` to go on
+	 * from.
 	 */
-	private async loadInOneRequest(sessionId: string): Promise<SessionSnapshot | undefined> {
+	private async loadInOneRequest(
+		sessionId: string,
+	): Promise<{ readonly snapshot: SessionSnapshot } | { readonly first?: FirstPage }> {
 		const { readStatements } = this.database;
-		if (readStatements === undefined) return undefined;
+		if (readStatements === undefined) return {};
 		const [versions, headers, rows] = (await readStatements.call(this.database, [
 			{ sql: `SELECT schema_version FROM ${this.tables.meta}`, params: [] },
 			{
@@ -712,11 +720,13 @@ export class SqlSessionStore implements SessionStore {
 		const row = headers[0];
 		if (!row) throw new SessionNotFoundError(sessionId);
 		if (nextFetch(SESSION_READ_FETCH.first, rows).more || rows.some((entry) => Number(entry.chunks) !== 0))
-			return undefined;
+			return { first: { revision: row.revision, lastSeq: row.last_seq, rows } };
 		return {
-			header: JSON.parse(row.header_json) as SessionRecordHeader,
-			entries: rows.map((entry) => JSON.parse(entry.entry_json) as SessionEntry),
-			lastSeq: row.last_seq,
+			snapshot: {
+				header: JSON.parse(row.header_json) as SessionRecordHeader,
+				entries: rows.map((entry) => JSON.parse(entry.entry_json) as SessionEntry),
+				lastSeq: row.last_seq,
+			},
 		};
 	}
 
@@ -1319,15 +1329,22 @@ export class SqlSessionStore implements SessionStore {
 		query.signal?.throwIfAborted();
 	}
 
-	private async read(tx: SqliteExecutor, sessionId: string): Promise<SessionSnapshot> {
+	/**
+	 * Reads a session in `tx`. `first` is its first page as a snapshot read found it: kept when the session is still at
+	 * the revision and sequence that read saw, since every write to a session gives it a new revision.
+	 */
+	private async read(tx: SqliteExecutor, sessionId: string, first?: FirstPage): Promise<SessionSnapshot> {
 		const row = await tx.get<HeaderRow>(
 			`SELECT header_json, last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
+		const unchanged = first?.revision === row.revision && Number(first.lastSeq) === Number(row.last_seq);
 		return {
 			header: JSON.parse(row.header_json) as SessionRecordHeader,
-			entries: (await this.readRows(tx, sessionId)).map(({ entry }) => entry),
+			entries: (await this.readRows(tx, sessionId, "", [], unchanged ? first.rows : undefined)).map(
+				({ entry }) => entry,
+			),
 			lastSeq: row.last_seq,
 		};
 	}
@@ -1382,11 +1399,12 @@ export class SqlSessionStore implements SessionStore {
 		sessionId: string,
 		filter = "",
 		params: readonly SqliteValue[] = [],
+		firstRows?: readonly EntryPageRow[],
 	): Promise<SessionStoredEntry[]> {
 		const entries: SessionStoredEntry[] = [];
-		for (let after = 0, limit: number = SESSION_READ_FETCH.first; ; ) {
+		for (let after = 0, limit: number = SESSION_READ_FETCH.first, read = firstRows; ; read = undefined) {
 			const page = this.pageStatement(sessionId, after, limit, filter, params);
-			const rows = await tx.all<EntryPageRow>(page.sql, ...page.params);
+			const rows = read ?? (await tx.all<EntryPageRow>(page.sql, ...page.params));
 			for (const entry of rows) {
 				const chunks = Number(entry.chunks);
 				const json = chunks === 0 ? entry.entry_json : await this.readEntryChunks(tx, sessionId, entry.seq, chunks);

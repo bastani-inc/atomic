@@ -100,6 +100,31 @@ test("a session larger than one page loads as it always did, every entry in orde
 	);
 });
 
+test("a session changed between the snapshot read of its first page and the rest of its load is read again from its first entry (#5376)", async () => {
+	const { store: sessions, path } = await store();
+	await create(sessions, "changing", 1_500);
+	const changed = { ...entries("changing", 1)[0]!, id: "changing-0", timestamp: "2026-11-18T01:00:00.000Z" };
+	const interception = interceptConnectionRequests(async (request, send) => {
+		const answer = await send(request);
+		if (request.kind === "read") {
+			// Another process rewrites the first entry, as a write does, with a new revision.
+			const other = new DatabaseSync(path);
+			try {
+				other.prepare("UPDATE session_entries SET entry_json = ? WHERE seq = 1").run(JSON.stringify(changed));
+				other.prepare("UPDATE session_sessions SET revision = 'rewritten' WHERE id = ?").run("changing");
+			} finally {
+				other.close();
+			}
+		}
+		return answer;
+	});
+	cleanups.push(interception.restore);
+	const loaded = await sessions.load("changing");
+	interception.restore();
+	assert.equal(loaded.entries.length, 1_500);
+	assert.equal(loaded.entries[0]!.timestamp, changed.timestamp, "the first entry as it is now, not as first read");
+});
+
 test("a snapshot read refuses a statement that would write, and writes nothing (#5376)", async () => {
 	const { database } = await store();
 	await database.exec("CREATE TABLE items (n INTEGER NOT NULL)");
