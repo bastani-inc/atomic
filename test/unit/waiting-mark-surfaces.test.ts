@@ -32,6 +32,7 @@ import {
 	workflowBlockTheme,
 } from "../../packages/workflows/src/extension/workflow-tool-block.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import savedNotices from "../fixtures/saved-subagent-notices.json" with { type: "json" };
 import { taskRecord } from "../helpers/task-record.js";
 
 beforeAll(() => {
@@ -154,18 +155,58 @@ test("a paused or quit subagent keeps the pause mark on its notice (#5489)", () 
 	}
 });
 
+// Golden notices from taskCompletionNotice in 0.9.86–0.9.89 and the first release-aware writer, d1f05495c6.
+// Read their saved fields, not copies produced by today's writer.
+test.each([
+	[savedNotices.release088, "◌ worker is waiting on bash (toolu_1)"],
+	[savedNotices.releaseBeforeKind, "◌ 审阅 é is waiting on bash (build:1), intercom (ask-2)"],
+	[savedNotices.recordless088, "◌ Task is waiting on a tool call"],
+] as const)(
+	"reopening the title-only notice '$title' shows what the child waits on (#5563)",
+	(notification, expected) => {
+		const saved = completionNoticeFromDetails({ notification });
+		assert.ok(saved);
+		for (const expanded of [false, true]) {
+			const line: string | undefined = new TaskCompletionMessage(saved, expanded).render(120)[0];
+			assert.ok(line);
+			assert.equal(stripVTControlCharacters(line).trim(), expected);
+			assert.ok(line.includes(theme.fg(STATUS_MARKERS.waiting.color, STATUS_MARKERS.waiting.glyph)));
+		}
+	},
+);
+
+test.each([
+	[savedNotices.pauseOrRelease086, "⏸ worker paused · awaiting resume"],
+	[savedNotices.quit087, "⏸ worker quit · awaiting resume"],
+	[savedNotices.pause088, "⏸ worker paused · awaiting resume"],
+	[savedNotices.quit088, "⏸ agent quit · awaiting resume"],
+	[savedNotices.pause089, "⏸ worker paused · awaiting resume · 16m 16s"],
+	[savedNotices.quit089, "⏸ worker quit · awaiting resume · 16m 16s"],
+	[savedNotices.stopped088, "◼ worker stopped"],
+] as const)("reopening '$title' preserves the recorded stop (#5563)", (notification, expected) => {
+	const saved = completionNoticeFromDetails({ notification });
+	assert.ok(saved);
+	const line = new TaskCompletionMessage(saved, false).render(120)[0];
+	assert.ok(line);
+	assert.equal(stripVTControlCharacters(line).trim(), expected);
+});
+
+test("the saved result distinguishes a release from punctuation and release wording in a name (#5563)", () => {
+	const released = completionNoticeFromDetails(savedNotices.punctuated088Details);
+	const stopped = completionNoticeFromDetails(savedNotices.killed088Details);
+	assert.ok(released && stopped);
+	assert.equal(
+		stripVTControlCharacters(new TaskCompletionMessage(released, false).render(120)[0]!).trim(),
+		"◌ docs: reviewer is waiting on bash (ci): part 2)",
+	);
+	assert.match(
+		stripVTControlCharacters(new TaskCompletionMessage(stopped, false).render(120)[0]!),
+		/^\s*◼ .* stopped$/,
+	);
+});
+
 test("a released subagent's notice saved by an earlier version shows the waiting mark too (#5489)", () => {
-	const saved = completionNoticeFromDetails({
-		notification: {
-			title: "Subagent worker released while waiting on bash (toolu_1): Update docs and changelog",
-			preview: "",
-			status: "cancelled",
-			taskId: "worker-1",
-			taskKind: "agent",
-			agentName: "worker",
-			line: { status: "paused", label: "Agent", outcome: "is waiting on bash (toolu_1)", elapsedMs: 976_000 },
-		},
-	});
+	const saved = completionNoticeFromDetails({ notification: savedNotices.release089 });
 	assert.ok(saved);
 	const row = markedRow("saved notice", new TaskCompletionMessage(saved, false).render(120), /worker/);
 	assert.equal(row.mark, STATUS_MARKERS.waiting.glyph, row.text);
