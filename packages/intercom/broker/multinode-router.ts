@@ -1928,6 +1928,9 @@ export class MultiNodeRouter {
 			if (existing === "expired") {
 				lookup.catch((error: Error) => this.report(error));
 				await this.adoptSharedRouteWithin(request, target);
+				// #4997: a reply whose ask's route may be on a broker that is down is refused as retryable here too, not by
+				// the local path's final refusal just because the outbox lookup was slow.
+				if (await this.routeUnreachable(request, target)) return;
 				request.notFound();
 				return;
 			}
