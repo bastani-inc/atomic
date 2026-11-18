@@ -105,28 +105,52 @@ const handlers = {
 	},
 	all: (request) => table(statement(request.sql).all(...bind(request.params))),
 	begin: () => { begin(); },
-	statements: (request) => {
-		const result = rows(request.statements);
-		if (request.commit === true) database.exec("COMMIT");
-		return result;
-	},
+	statements: (request) => rows(request.statements),
 	transaction: (request) => {
-		try {
-			begin();
-		} catch (error) {
-			if (((error?.errcode ?? 0) & 0xff) === 5) return { busy: failure(error) };
-			throw error;
+		if (request.begin) {
+			try {
+				begin();
+			} catch (error) {
+				if (((error?.errcode ?? 0) & 0xff) === 5) return { busy: failure(error) };
+				throw error;
+			}
+		}
+		const outcomes = [];
+		for (let index = 0; index < request.members.length; index++) {
+			const savepoint = "atomic_group_" + index;
+			try {
+				database.exec("SAVEPOINT " + savepoint);
+			} catch (error) {
+				// Nothing of the group can run: a lock this request took is let go, and the caller hears why.
+				if (request.begin) {
+					try {
+						database.exec("ROLLBACK");
+					} catch {}
+				}
+				throw error;
+			}
+			try {
+				outcomes.push({ rows: rows(request.members[index]) });
+				database.exec("RELEASE " + savepoint);
+			} catch (error) {
+				try {
+					database.exec("ROLLBACK TO " + savepoint);
+					database.exec("RELEASE " + savepoint);
+				} catch (rollbackError) {
+					return { outcomes, abandoned: { failure: failure(error), rollbackFailure: failure(rollbackError) } };
+				}
+				outcomes.push({ failure: failure(error) });
+			}
 		}
 		try {
-			const result = rows(request.statements);
 			database.exec("COMMIT");
-			return { rows: result };
 		} catch (error) {
 			try {
 				database.exec("ROLLBACK");
 			} catch {}
-			throw error;
+			return { outcomes, commitFailure: failure(error) };
 		}
+		return { outcomes };
 	},
 	dataVersion: () => Number(database.prepare("PRAGMA data_version").get()?.data_version ?? 0),
 	now: () => Number(database.prepare(workerData.nowSql).get().now),
@@ -155,16 +179,23 @@ parentPort.on("message", (request) => {
 `;
 
 /**
- * What a connection thread is asked to do. `statements` runs statements in order and answers each one's rows; with
- * `commit`, it then commits the transaction they ran in, and a statement that fails leaves it open and uncommitted.
- * `transaction` takes the write lock as `begin` does, runs its statements and commits, as one request; it answers
- * `busy` with nothing run when the lock was busy, and rolls back whatever ran when a statement or the commit fails.
+ * What a connection thread is asked to do. `statements` runs statements in order and answers each one's rows.
+ * `transaction` commits a group of members as one request: with `begin`, it first takes the write lock as `begin`
+ * does, and answers `busy` with nothing run when the lock was busy; without it, the caller holds the lock already.
+ * Each member runs in a savepoint of its own: a member whose statement fails is rolled back alone and answers its
+ * failure, and the others commit together. A failed commit is rolled back and answered with the members' outcomes, so
+ * every member fails with it. A savepoint that cannot be rolled back stops the group: the answer names the members
+ * that ran, and the caller rolls the transaction back.
  */
 export type ConnectionRequest =
 	| { readonly kind: "exec"; readonly sql: string }
 	| { readonly kind: "run" | "get" | "all"; readonly sql: string; readonly params: readonly SqliteValue[] }
-	| { readonly kind: "statements"; readonly statements: readonly ConnectionStatement[]; readonly commit?: boolean }
-	| { readonly kind: "transaction"; readonly statements: readonly ConnectionStatement[] }
+	| { readonly kind: "statements"; readonly statements: readonly ConnectionStatement[] }
+	| {
+			readonly kind: "transaction";
+			readonly members: readonly (readonly ConnectionStatement[])[];
+			readonly begin: boolean;
+	  }
 	| { readonly kind: "begin" | "dataVersion" | "now" | "close" };
 
 export interface ConnectionStatement {
@@ -172,8 +203,21 @@ export interface ConnectionStatement {
 	readonly params: readonly SqliteValue[];
 }
 
-/** A `transaction` request's answer: each statement's rows once committed, or the busy lock that ran nothing. */
-export type ConnectionTransactionValue = { readonly rows: SqliteRow[][] } | { readonly busy: ConnectionFailure };
+/** One member's outcome in a `transaction` request: each statement's rows, or the failure it was rolled back for. */
+export type ConnectionMemberOutcome = { readonly rows: SqliteRow[][] } | { readonly failure: ConnectionFailure };
+
+/**
+ * A `transaction` request's answer: the busy lock that ran nothing; or the outcome of each member that ran, with the
+ * commit's failure when the commit failed, or the failure whose savepoint could not be rolled back when the group
+ * stopped there (the members after it did not run).
+ */
+export type ConnectionTransactionValue =
+	| { readonly busy: ConnectionFailure }
+	| {
+			readonly outcomes: readonly ConnectionMemberOutcome[];
+			readonly commitFailure?: ConnectionFailure;
+			readonly abandoned?: { readonly failure: ConnectionFailure; readonly rollbackFailure: ConnectionFailure };
+	  };
 
 export type ConnectionValue =
 	| { readonly changes: number }
@@ -426,8 +470,22 @@ export class ThreadConnection {
 		if (request.kind === "statements") return answer.then((value) => (value as RowTable[]).map(rowsOf));
 		if (request.kind === "transaction")
 			return answer.then((value) => {
-				const answered = value as { readonly rows: RowTable[] } | { readonly busy: ConnectionFailure };
-				return "busy" in answered ? answered : { rows: answered.rows.map(rowsOf) };
+				type Answered =
+					| { readonly busy: ConnectionFailure }
+					| (Omit<Extract<ConnectionTransactionValue, { outcomes: unknown }>, "outcomes"> & {
+							readonly outcomes: readonly (
+								| { readonly rows: RowTable[] }
+								| { readonly failure: ConnectionFailure }
+							)[];
+					  });
+				const answered = value as Answered;
+				if ("busy" in answered) return answered;
+				return {
+					...answered,
+					outcomes: answered.outcomes.map((outcome) =>
+						"rows" in outcome ? { rows: outcome.rows.map(rowsOf) } : outcome,
+					),
+				};
 			});
 		return answer as Promise<ConnectionValue>;
 	}

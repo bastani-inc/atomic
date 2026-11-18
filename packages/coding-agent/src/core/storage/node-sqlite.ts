@@ -48,11 +48,14 @@ import {
 	StoreClosedError,
 } from "./errors.js";
 import {
+	type ConnectionFailure,
 	ConnectionLoadError,
+	type ConnectionMemberOutcome,
 	type ConnectionRequest,
 	type ConnectionStatement,
 	type ConnectionTransactionValue,
 	type ConnectionValue,
+	connectionFailure,
 	ThreadConnection,
 } from "./node-sqlite-thread.js";
 import { isSqliteBusy, switchToWriteAheadLog, switchToWriteAheadLogSync } from "./write-ahead-log.js";
@@ -1023,6 +1026,14 @@ export const DEFAULT_GROUP_COMMIT_HOLD_MS = 100;
 /** The span `getWriterQueueStats` reports on. */
 const WRITER_QUEUE_STATS_WINDOW_MS = 10_000;
 
+/**
+ * Whether every member of a batch is a `commitStatements` call, whose statements the connection's thread can run and
+ * commit as one request.
+ */
+function committable(members: readonly QueuedTransaction[]): boolean {
+	return members.length > 0 && members.every((queued) => queued.statements !== undefined);
+}
+
 /** A transaction's executor; `commitStatements` runs its statements through `statements`, as one request. */
 interface ConnectionExecutor extends SqliteExecutor {
 	statements(statements: readonly ConnectionStatement[]): Promise<SqliteRow[][]>;
@@ -1180,6 +1191,18 @@ interface ConnectionChannel {
 	close(): Promise<void>;
 }
 
+/** A driver error as a connection's thread reports it, with the fields callers read. */
+function failureOf(error: unknown): ConnectionFailure {
+	const fields = error as { name?: unknown; message?: unknown; code?: unknown; errcode?: unknown; errstr?: unknown };
+	return {
+		name: typeof fields.name === "string" ? fields.name : "Error",
+		message: String(fields.message ?? error),
+		...(typeof fields.code === "string" ? { code: fields.code } : {}),
+		...(typeof fields.errcode === "number" ? { errcode: fields.errcode } : {}),
+		...(typeof fields.errstr === "string" ? { errstr: fields.errstr } : {}),
+	};
+}
+
 /**
  * Statements that run on the calling thread: those of a connection a caller opened itself and passed to
  * `wrapNodeSqliteDatabase` (a `DatabaseSync` cannot move to another thread), and those of an in-memory database, which
@@ -1226,13 +1249,10 @@ class CallerThreadChannel implements ConnectionChannel {
 			case "begin":
 				this.begin();
 				return undefined;
-			case "statements": {
-				const rows = this.rows(request.statements);
-				if (request.commit === true) this.connection.exec("COMMIT");
-				return rows;
-			}
+			case "statements":
+				return this.rows(request.statements);
 			case "transaction":
-				return this.transaction(request.statements);
+				return this.transaction(request.members, request.begin);
 			case "dataVersion":
 				return Number(this.connection.prepare("PRAGMA data_version").get()?.data_version ?? 0);
 			case "now":
@@ -1251,27 +1271,57 @@ class CallerThreadChannel implements ConnectionChannel {
 		);
 	}
 
-	/** A `transaction` request, as a connection's thread runs it. */
-	private transaction(statements: readonly ConnectionStatement[]): ConnectionTransactionValue {
-		try {
-			this.begin();
-		} catch (error) {
-			if (!isSqliteBusy(error)) throw error;
-			const { name, message } = error as Error;
-			return { busy: { name, message, errcode: (error as { errcode?: number }).errcode } };
+	/** A `transaction` request, as a connection's thread runs it; see `ConnectionRequest`. */
+	private transaction(
+		members: readonly (readonly ConnectionStatement[])[],
+		begin: boolean,
+	): ConnectionTransactionValue {
+		if (begin)
+			try {
+				this.begin();
+			} catch (error) {
+				if (!isSqliteBusy(error)) throw error;
+				return { busy: failureOf(error) };
+			}
+		const outcomes: ConnectionMemberOutcome[] = [];
+		for (const [index, statements] of members.entries()) {
+			const savepoint = `atomic_group_${index}`;
+			try {
+				this.connection.exec(`SAVEPOINT ${savepoint}`);
+			} catch (error) {
+				// Nothing of the group can run: a lock this request took is let go, and the caller hears why.
+				if (begin)
+					try {
+						this.connection.exec("ROLLBACK");
+					} catch {
+						// SQLite already rolled the transaction back; there is nothing left to undo.
+					}
+				throw error;
+			}
+			try {
+				outcomes.push({ rows: this.rows(statements) });
+				this.connection.exec(`RELEASE ${savepoint}`);
+			} catch (error) {
+				try {
+					this.connection.exec(`ROLLBACK TO ${savepoint}`);
+					this.connection.exec(`RELEASE ${savepoint}`);
+				} catch (rollbackError) {
+					return { outcomes, abandoned: { failure: failureOf(error), rollbackFailure: failureOf(rollbackError) } };
+				}
+				outcomes.push({ failure: failureOf(error) });
+			}
 		}
 		try {
-			const rows = this.rows(statements);
 			this.connection.exec("COMMIT");
-			return { rows };
 		} catch (error) {
 			try {
 				this.connection.exec("ROLLBACK");
 			} catch {
 				// SQLite already rolled the transaction back; there is nothing left to undo.
 			}
-			throw error;
+			return { outcomes, commitFailure: failureOf(error) };
 		}
+		return { outcomes };
 	}
 
 	/** One non-blocking `BEGIN IMMEDIATE`; see `NodeSqliteDatabase.tryBegin`. */
@@ -1728,13 +1778,9 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * connections to the file wait for at most one batch of this one's.
 	 */
 	private async runBatch(batch: PendingBatch, firstAcquisition: boolean): Promise<void> {
-		const lone = firstAcquisition && batch.members.length === 1 ? batch.members[0] : undefined;
 		// Nothing queued directly behind it to take along once it holds the lock.
 		const followed = this.waitingBatches[0]?.position === batch.position + 1;
-		if (lone?.statements !== undefined && !followed && (await this.commitAtOnce(lone, lone.statements))) {
-			batch.members.length = 0;
-			return;
-		}
+		if (firstAcquisition && !followed && committable(batch.members) && (await this.commitAtOnce(batch))) return;
 		try {
 			await this.begin(this.lockWait(batch.members));
 		} catch (cause) {
@@ -1742,7 +1788,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			return;
 		}
 		if (firstAcquisition) this.absorbNext(batch);
-		await (batch.members.length === 1 ? this.commitAlone(batch.members.pop()!) : this.commitMembers(batch));
+		if (committable(batch.members)) await this.commitHeld(batch);
+		else await (batch.members.length === 1 ? this.commitAlone(batch.members.pop()!) : this.commitMembers(batch));
 	}
 
 	/**
@@ -1763,12 +1810,11 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	}
 
 	/**
-	 * A lone `commitStatements` call as one request to the connection's thread: the lock attempt, its statements and the
-	 * commit (#5376). False, with nothing run, when writers of other processes wait for the lock or it is busy: the call
-	 * then waits for it as a transaction does. A statement or commit that fails rolls back on the thread, and the call
-	 * rejects.
+	 * A batch of `commitStatements` calls as one request to the connection's thread: the lock attempt, each call's
+	 * statements in a savepoint of its own, and the commit (#5376). False, with nothing run, when writers of other
+	 * processes wait for the lock or it is busy: the batch then waits for it as a transaction does.
 	 */
-	private async commitAtOnce(queued: QueuedTransaction, statements: readonly ConnectionStatement[]): Promise<boolean> {
+	private async commitAtOnce(batch: PendingBatch): Promise<boolean> {
 		const queue = this.writeQueue;
 		queue?.observe();
 		// As a writer's first attempt does: only a live ticket of a writer already waiting sends it to the queue. A queue
@@ -1778,37 +1824,89 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			if (waiting === undefined || waiting.length > 0) return false;
 		}
 		const waitStarted = performance.now();
-		let outcome: ConnectionTransactionValue;
+		let answer: ConnectionTransactionValue;
 		try {
-			outcome = (await this.call({ kind: "transaction", statements })) as ConnectionTransactionValue;
+			answer = (await this.call({
+				kind: "transaction",
+				members: batch.members.map((queued) => queued.statements!),
+				begin: true,
+			})) as ConnectionTransactionValue;
 		} catch (cause) {
-			this.acquired(waitStarted);
-			await this.released(false);
-			queued.reject(cause);
+			// The lock attempt failed for another reason than a busy lock, or the thread is gone: nothing committed.
+			for (const queued of batch.members.splice(0)) queued.reject(cause);
 			return true;
 		}
-		// Nothing ran: the call queues for the lock as a transaction refused by it does.
-		if ("busy" in outcome) return false;
+		// Nothing ran: the batch queues for the lock as a transaction refused by it does.
+		if ("busy" in answer) return false;
 		this.acquired(waitStarted);
-		await this.released(true);
-		queued.resolve(outcome.rows);
+		await this.settleTransaction(batch, answer);
 		return true;
+	}
+
+	/** A batch of `commitStatements` calls whose write lock is held: their statements and the commit in one request. */
+	private async commitHeld(batch: PendingBatch): Promise<void> {
+		let answer: ConnectionTransactionValue;
+		try {
+			answer = (await this.call({
+				kind: "transaction",
+				members: batch.members.map((queued) => queued.statements!),
+				begin: false,
+			})) as ConnectionTransactionValue;
+		} catch (cause) {
+			// A savepoint could not be taken, or the thread is gone: nothing is committed.
+			await this.rollbackQuietly();
+			await this.released(false);
+			for (const queued of batch.members.splice(0)) queued.reject(cause);
+			return;
+		}
+		// A lock held already is never busy.
+		if ("busy" in answer) throw new Error("A transaction request without a lock attempt reported a busy lock");
+		await this.settleTransaction(batch, answer);
+	}
+
+	/**
+	 * Settles the members of a `transaction` request once it returned, so after its commit: each committed member with
+	 * its rows, each rolled-back member with its failure, and every member with the commit's failure when the commit
+	 * failed. A group stopped by a savepoint that could not be rolled back fails as `commitMembers` does: what ran is
+	 * lost, and the members after it run again in a transaction of their own.
+	 */
+	private async settleTransaction(
+		batch: PendingBatch,
+		answer: Exclude<ConnectionTransactionValue, { readonly busy: ConnectionFailure }>,
+	): Promise<void> {
+		const failed = (failure: ConnectionFailure) => unavailable(this.descriptor, connectionFailure(failure));
+		const { outcomes, abandoned, commitFailure } = answer;
+		if (abandoned !== undefined) {
+			await this.rollbackQuietly();
+			await this.released(false);
+			const rollbackCause = failed(abandoned.rollbackFailure);
+			const ran = batch.members.splice(0, outcomes.length + 1);
+			ran.slice(0, outcomes.length).forEach((queued, index) => {
+				const outcome = outcomes[index]!;
+				queued.reject("rows" in outcome ? rollbackCause : failed(outcome.failure));
+			});
+			ran[outcomes.length]!.reject(
+				new StorageRollbackError(failed(abandoned.failure), rollbackCause as StorageFailureCause),
+			);
+			if (batch.members.length > 0) await this.runBatch(batch, false);
+			return;
+		}
+		await this.released(commitFailure === undefined);
+		batch.members.splice(0, outcomes.length).forEach((queued, index) => {
+			const outcome = outcomes[index]!;
+			if (!("rows" in outcome)) queued.reject(failed(outcome.failure));
+			else if (commitFailure !== undefined) queued.reject(failed(commitFailure));
+			else queued.resolve(outcome.rows);
+		});
 	}
 
 	/** A transaction with nobody queued with it commits on its own, without savepoints. */
 	private async commitAlone(queued: QueuedTransaction): Promise<void> {
 		let active = true;
 		try {
-			let value: unknown;
-			// Committed statements run and commit in one request once the lock is held (#5376).
-			if (queued.statements !== undefined) {
-				active = false;
-				value = await this.call({ kind: "statements", statements: queued.statements, commit: true });
-			} else {
-				value = await queued.callback(this.createExecutor(() => active));
-				active = false;
-				await this.executor.exec("COMMIT");
-			}
+			const value = await queued.callback(this.createExecutor(() => active));
+			active = false;
+			await this.executor.exec("COMMIT");
 			await this.released(true);
 			queued.resolve(value);
 		} catch (cause) {

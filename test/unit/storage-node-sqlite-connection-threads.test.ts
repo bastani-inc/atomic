@@ -223,7 +223,7 @@ test("committed statements that waited for the lock run and commit in one reques
 	});
 	const tookLock = kinds.lastIndexOf("begin");
 	assert.ok(tookLock >= 0, `the call waited for the lock: ${kinds.join(", ")}`);
-	assert.deepEqual(kinds.slice(tookLock + 1), ["statements"], "then ran and committed in one request");
+	assert.deepEqual(kinds.slice(tookLock + 1), ["transaction"], "then ran and committed in one request");
 	assert.deepEqual(await rows(database), ["waited"]);
 });
 
@@ -238,4 +238,61 @@ test("committed statements are one request again once contention has left the wr
 	);
 	assert.deepEqual(kinds, ["transaction"]);
 	assert.deepEqual(await rows(database), ["after contention"]);
+});
+
+/** `commitStatements` inserting `value` into items. */
+function insert(database: SqliteDatabase, value: string | null) {
+	return database.commitStatements!([{ sql: "INSERT INTO items VALUES (?) RETURNING value", params: [value] }]);
+}
+
+test("a group of committed statements is one request: a failing member is rolled back alone and the others commit (#5376)", async () => {
+	const database = await open(databasePath());
+	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	const { value, kinds } = await requestKinds(() =>
+		// Requested together, they commit as one group.
+		Promise.allSettled([insert(database, "first"), insert(database, null), insert(database, "third")]),
+	);
+	assert.deepEqual(kinds, ["transaction"], "the group went as one request");
+	assert.equal(value[0].status, "fulfilled");
+	assert.deepEqual(value[0].status === "fulfilled" && value[0].value, [[{ value: "first" }]]);
+	assert.equal(value[1].status, "rejected");
+	assert.match(String((value[1] as PromiseRejectedResult).reason?.cause?.message), /NOT NULL constraint failed/);
+	assert.deepEqual(value[2].status === "fulfilled" && value[2].value, [[{ value: "third" }]]);
+	assert.deepEqual(await rows(database), ["first", "third"]);
+});
+
+test("a group of committed statements whose commit fails rejects every member and writes nothing (#5376)", async () => {
+	const database = await open(databasePath());
+	await database.exec(
+		"CREATE TABLE parents (id INTEGER PRIMARY KEY); CREATE TABLE items (value TEXT NOT NULL, parent INTEGER REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED)",
+	);
+	const { value, kinds } = await requestKinds(() =>
+		Promise.allSettled([
+			database.commitStatements!([{ sql: "INSERT INTO items VALUES (?, NULL)", params: ["kept"] }]),
+			// Checked only at the commit, which it fails for the whole group.
+			database.commitStatements!([{ sql: "INSERT INTO items VALUES (?, 42)", params: ["orphan"] }]),
+		]),
+	);
+	assert.deepEqual(kinds, ["transaction"]);
+	for (const outcome of value) {
+		assert.equal(outcome.status, "rejected");
+		assert.match(String((outcome as PromiseRejectedResult).reason?.cause?.message), /FOREIGN KEY constraint failed/);
+	}
+	assert.deepEqual(await rows(database), []);
+});
+
+test("groups of committed statements commit in the order they were requested, with the connection's other calls (#5376)", async () => {
+	const database = await open(databasePath());
+	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	const { kinds } = await requestKinds(() =>
+		Promise.all([
+			insert(database, "a1"),
+			insert(database, "a2"),
+			database.run("INSERT INTO items VALUES ('between')"),
+			insert(database, "b1"),
+			insert(database, "b2"),
+		]),
+	);
+	assert.deepEqual(kinds, ["transaction", "run", "transaction"]);
+	assert.deepEqual(await rows(database), ["a1", "a2", "between", "b1", "b2"]);
 });
