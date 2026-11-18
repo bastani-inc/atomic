@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
@@ -117,8 +118,11 @@ function harness(
 	});
 	return {
 		cwd,
-		call: (id: string, params: SubagentParamsLike): Promise<SubagentToolResult> =>
-			ready.then(() => executor.execute(id, params, new AbortController().signal, undefined, ctx)),
+		call: (
+			id: string,
+			params: SubagentParamsLike,
+			signal = new AbortController().signal,
+		): Promise<SubagentToolResult> => ready.then(() => executor.execute(id, params, signal, undefined, ctx)),
 	};
 }
 
@@ -472,11 +476,15 @@ test.each([false, true])(
 			typeof renderSubagentToolCall
 		>[2];
 		renderSubagentToolCall(args, theme as never, context);
-		const rendered = renderSubagentToolResult(bad, { expanded, isPartial: false }, theme as never, context)
-			.render(180)
-			.join("\n");
+		const card = renderSubagentToolResult(bad, { expanded, isPartial: false }, theme as never, context);
+		const rendered = card.render(180).join("\n");
 		assert.match(rendered, /Unknown agent: missing \(task 2\)/);
 		assert.doesNotMatch(rendered, /Stopped/);
+		for (const width of [12, 24, 40])
+			assert.ok(
+				card.render(width).every((line) => visibleWidth(line) <= width),
+				`the card fits ${width} columns`,
+			);
 	},
 );
 
@@ -529,3 +537,37 @@ test.each(["worktree", "share", "includeProgress"] as const)(
 		assert.deepEqual(launched.sort(), ["explicit", "omitted"]);
 	},
 );
+
+test("a sibling aborted while its message's failed merged run is checked never launches, and the next launch still runs (#3427)", async () => {
+	const launched: string[] = [];
+	const checking = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	const { call } = harness(
+		async (_cwd, _agents, _agent, task) => {
+			launched.push(task);
+			return childResult(task);
+		},
+		undefined,
+		4,
+		{
+			// Discovery 0 is the merged run's; the next ones check each launch on its own.
+			beforeDiscover: async (index) => {
+				if (index !== 1) return;
+				checking.resolve();
+				await resume.promise;
+			},
+		},
+	);
+	const esc = new AbortController();
+	const bad = call("aborted-check-bad", { agent: "missing", task: "bad" });
+	const good = assert.rejects(call("aborted-check-good", { agent: "echo", task: "good" }, esc.signal), /abort/i);
+	await checking.promise;
+	esc.abort();
+	resume.resolve();
+	assert.equal(text(await bad), "Unknown agent: missing");
+	await good;
+	assert.deepEqual(launched, []);
+	const later = await call("after-aborted-check", { agent: "echo", task: "later" });
+	assert.match(await settledOutput(call, single(later).observation.taskId), /output:later/);
+	assert.deepEqual(launched, ["later"]);
+});
