@@ -1,9 +1,7 @@
-import type { ChatMessageEntry } from "@bastani/atomic";
+import { type ChatMessageEntry, NoticeLine, type NoticeLineSpec } from "@bastani/atomic";
 import type { Component } from "@bastani/atomic-tui";
 import type { StageNotice } from "../shared/store-types.js";
-import type { GraphTheme } from "./graph-theme.js";
 import type { NoticeEntry, TranscriptDebugEntry, TranscriptEntry } from "./stage-chat-view-types.js";
-import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "./workflow-notice-card.js";
 
 export function noticeSummary(n: StageNotice): string {
 	if (n.kind === "decision" && n.meta !== undefined) return `~ ${n.meta}`;
@@ -27,15 +25,29 @@ export function stageNoticeCountsAsMessage(entry: NoticeEntry): boolean {
 	}
 }
 
-export function noticeRow(entry: NoticeEntry, theme: GraphTheme): Component {
+/** How a stage chat shows its notices: expanded with its other blocks (ctrl+o), at the chat's output pad. */
+export interface StageNoticeRenderSettings {
+	readonly expanded?: boolean;
+	readonly outputPad?: number;
+}
+
+/** A stage notice in the shared notice anatomy, read from `settings` on every render so ctrl+o and the pad apply. */
+export function noticeRow(
+	entry: NoticeEntry,
+	settings: () => StageNoticeRenderSettings | undefined = () => undefined,
+): Component {
+	const spec = stageNoticeLine(entry);
 	return {
 		render(width: number): string[] {
-			return renderWorkflowNoticeCard({
-				...stageNoticeCard(entry),
-				fallbackText: entry.text,
-				width,
-				theme,
-			});
+			const current = settings();
+			return new NoticeLine(
+				{
+					...spec,
+					countHiddenDetail: true,
+					...(current?.outputPad === undefined ? {} : { outputPad: current.outputPad }),
+				},
+				current?.expanded === true,
+			).render(width);
 		},
 		invalidate() {
 			/* notice entries are immutable */
@@ -163,111 +175,76 @@ function extractToolResultText(result: unknown): string {
 	return extractMessageText(content);
 }
 
-export function stageNoticeCard(entry: NoticeEntry): {
-	title: string;
-	glyph: string;
-	headline: string;
-	tone: WorkflowNoticeTone;
-	fields: Array<{
-		label: string;
-		value: string | undefined;
-		tone?: WorkflowNoticeTone | "text" | "muted";
-	}>;
-} {
+/** Facts after the outcome: what it was before, and any note the notice carries. */
+function changeMeta(entry: NoticeEntry): string[] {
+	return [entry.from === undefined ? "" : `was ${entry.from}`, entry.meta ?? ""].filter(Boolean);
+}
+
+function oneLineText(value: string): string {
+	return value.replace(/\s+/g, " ").trim();
+}
+
+/** Each stage notice as one notice line, with what expanding it (ctrl+o) shows under it. */
+export function stageNoticeLine(entry: NoticeEntry): NoticeLineSpec {
 	switch (entry.kind) {
-		case "abort":
-			return {
-				title: "STAGE ABORTED",
-				glyph: "✗",
-				headline: "Stage received an abort notice",
-				tone: "error",
-				fields: stageNoticeFields(entry, "error"),
-			};
-		case "compaction":
-			return {
-				title: "STAGE COMPACTION",
-				glyph: "✓",
-				headline: "Stage context was compacted",
-				tone: "success",
-				fields: stageNoticeFields(entry, "muted"),
-			};
 		case "model":
 			return {
-				title: "STAGE MODEL",
-				glyph: "→",
-				headline: "Stage model changed",
-				tone: "info",
-				fields: stageNoticeFields(entry),
+				status: "info",
+				label: "Model changed to",
+				subject: entry.value,
+				outcome: "",
+				meta: changeMeta(entry),
 			};
 		case "thinking":
 			return {
-				title: "STAGE THINKING",
-				glyph: "→",
-				headline: "Stage thinking level changed",
-				tone: "mauve",
-				fields: stageNoticeFields(entry),
+				status: "info",
+				label: "Thinking level changed to",
+				subject: entry.value,
+				outcome: "",
+				meta: changeMeta(entry),
 			};
-		case "cleanup":
+		case "compaction":
 			return {
-				title: "TASK CLEANUP",
-				glyph: "!",
-				headline: "Task finished; its process cleanup is still being confirmed",
-				tone: "warning",
-				fields: stageNoticeFields(entry, "warning"),
-			};
-		case "decision":
-			return {
-				title: "STAGE READINESS",
-				glyph: entry.value === "advanced" ? "✓" : entry.value === "stayed" ? "◆" : "?",
-				headline: entry.meta ?? "Decision model judged the stage's readiness",
-				tone: entry.value === "advanced" ? "success" : entry.value === "stayed" ? "info" : "warning",
-				fields: [
-					{ label: "outcome", value: entry.value, tone: "text" },
-					{ label: "model", value: entry.from, tone: "muted" },
-				],
-			};
-		case "undelivered":
-			return {
-				title: "MESSAGE NOT DELIVERED",
-				glyph: "✗",
-				headline: "The stage finished before this message was delivered",
-				tone: "warning",
-				fields: [
-					{ label: "message", value: entry.value, tone: "text" },
-					{ label: "next", value: "send it to another stage if it still matters", tone: "muted" },
-				],
+				status: "success",
+				label: "Context",
+				outcome: entry.value === "compacted" ? "compacted" : `compacted (${entry.value})`,
+				meta: entry.meta === undefined ? [] : [entry.meta],
 			};
 		case "tree":
 			return {
-				title: "STAGE TREE",
-				glyph: "◆",
-				headline: "Stage branch tree changed",
-				tone: "info",
-				fields: stageNoticeFields(entry, "muted"),
+				status: "info",
+				label: "Branch changed to",
+				subject: entry.value,
+				outcome: "",
+				meta: changeMeta(entry),
+			};
+		case "abort":
+			return { status: "stopped", label: "Stage", outcome: entry.value, meta: changeMeta(entry) };
+		case "cleanup":
+			return {
+				status: "warning",
+				label: "Task",
+				outcome: "finished; its process cleanup is still being confirmed",
+				meta: [entry.value],
+				...(entry.meta === undefined ? {} : { detail: entry.meta.split("; ").join("\n") }),
+			};
+		case "decision": {
+			const status = entry.value === "advanced" ? "success" : entry.value === "stayed" ? "info" : "warning";
+			return {
+				status,
+				label: entry.meta ?? "Decision model judged the stage's readiness",
+				outcome: "",
+				meta: [entry.meta === undefined ? entry.value : "", entry.from ?? ""].filter(Boolean),
+			};
+		}
+		case "undelivered":
+			return {
+				status: "warning",
+				label: "Stage",
+				outcome: "finished before this message was delivered",
+				detail: [`message ${oneLineText(entry.value)}`, "Send it to another stage if it still matters."].join("\n"),
 			};
 		default:
-			return {
-				title: "STAGE NOTICE",
-				glyph: "◆",
-				headline: "Workflow stage notice",
-				tone: "info",
-				fields: stageNoticeFields(entry, "muted"),
-			};
+			return { status: "info", label: entry.kind, outcome: entry.value, meta: changeMeta(entry) };
 	}
-}
-
-function stageNoticeFields(
-	entry: NoticeEntry,
-	valueTone: WorkflowNoticeTone | "text" | "muted" = "text",
-): Array<{
-	label: string;
-	value: string | undefined;
-	tone?: WorkflowNoticeTone | "text" | "muted";
-}> {
-	return [
-		{ label: "kind", value: entry.kind, tone: "muted" },
-		{ label: "value", value: entry.value, tone: valueTone },
-		{ label: "from", value: entry.from, tone: "muted" },
-		{ label: "meta", value: entry.meta, tone: "muted" },
-	];
 }

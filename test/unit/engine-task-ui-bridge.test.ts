@@ -38,21 +38,25 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 	const currentWidget = (): Component | undefined => widget;
 	let renders = 0;
 	let settledRenders = 0;
-	const settleWaiters = new Set<() => void>();
-	const waitForSettledRepaint = (): Promise<void> => {
-		if (settledRenders > 0) return Promise.resolve();
+	const repaintWaiters = new Set<() => void>();
+	/**
+	 * Resolves once `shown` holds: at once when the panel refreshes inside its refresh budget, otherwise on the repaint
+	 * it requests when its refresh window ends. A loaded machine spends the budget early, so either can happen.
+	 */
+	const waitForRepaint = (shown: () => boolean, what: string): Promise<void> => {
+		if (shown()) return Promise.resolve();
 		return new Promise<void>((resolve, reject) => {
 			const onRender = () => {
-				if (settledRenders === 0) return;
+				if (!shown()) return;
 				clearTimeout(timer);
-				settleWaiters.delete(onRender);
+				repaintWaiters.delete(onRender);
 				resolve();
 			};
 			const timer = setTimeout(() => {
-				settleWaiters.delete(onRender);
-				reject(new Error(`Agent panel did not request a settled repaint within ${PANEL_REPAINT_BOUND_MS}ms`));
+				repaintWaiters.delete(onRender);
+				reject(new Error(`Agent panel did not request a repaint ${what} within ${PANEL_REPAINT_BOUND_MS}ms`));
 			}, PANEL_REPAINT_BOUND_MS);
-			settleWaiters.add(onRender);
+			repaintWaiters.add(onRender);
 		});
 	};
 	const ui = {
@@ -65,10 +69,8 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 		},
 		requestRender() {
 			renders++;
-			if (fixture.store.tasks[0]?.execution.kind === "settled") {
-				settledRenders++;
-				for (const waiter of [...settleWaiters]) waiter();
-			}
+			if (fixture.store.tasks[0]?.execution.kind === "settled") settledRenders++;
+			for (const waiter of [...repaintWaiters]) waiter();
 		},
 		custom() {
 			throw new Error("Task updates must not open the inspector");
@@ -79,6 +81,7 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 		assert.equal(widget, undefined);
 		bindOwnerTaskStore(session, fixture.store);
 		await fixture.start("Visible background review");
+		await waitForRepaint(() => currentWidget() !== undefined, "with the started task");
 		const mounted = currentWidget();
 		assert.ok(mounted);
 		assert.equal(stripVTControlCharacters(mounted.render(80)[0] ?? "").trimEnd(), "  ● main");
@@ -92,11 +95,16 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 			change: { kind: "metrics", elapsedMs: 2_460_000, tokenCount: 96_100 },
 		});
 		fixture.store.drain();
-		assert.match(stripVTControlCharacters(mounted.render(100).join("\n")), /41m · ↓ 96\.1k tokens$/);
+		const metrics = /41m · ↓ 96\.1k tokens$/;
+		await waitForRepaint(
+			() => metrics.test(stripVTControlCharacters(mounted.render(100).join("\n"))),
+			"with the reported metrics",
+		);
+		assert.match(stripVTControlCharacters(mounted.render(100).join("\n")), metrics);
 		assert.match(stripVTControlCharacters(mounted.render(60).join("\n")), /41m$/, "narrow rows drop tokens");
 		assert.ok(renders > 0);
 		await fixture.settle();
-		await waitForSettledRepaint();
+		await waitForRepaint(() => settledRenders > 0, "once the task settled");
 		assert.equal(currentWidget(), mounted, "a finished task stays a while");
 		assert.match(stripVTControlCharacters(mounted.render(80).join("\n")), /^ {2}✓ worker .* done · 41m$/m);
 		assert.equal(fixture.store.backgroundTasks.length, 1, "history remains available in /tasks");

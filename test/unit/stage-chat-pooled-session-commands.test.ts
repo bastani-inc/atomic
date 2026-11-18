@@ -128,8 +128,8 @@ test("/tasks in the chat of a stage on a local worker lists that stage's tasks f
 	try {
 		assert.match(
 			stripAnsi(view.render(120).join("\n")),
-			/⧗ shell {2}npm run build/,
-			"the footer lists the worker's tasks",
+			/^ {2}1 shell · \/tasks to manage$/m,
+			"the footer counts the worker's running shell",
 		);
 		submitStageChatText(view, "/tasks");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /npm run build/));

@@ -17,6 +17,7 @@ import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowDefinition } from "../shared/types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import { recordedWorkflowDefinitionSource, workflowSource } from "../shared/workflow-source.js";
+import { colorsOff } from "../tui/color-utils.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
 import { definitionDigest } from "../workers/definitions.js";
@@ -194,7 +195,7 @@ function isResumePromptTheme(
 }
 
 function renderWorkflowDefinitionChangedPrompt(width: number, theme: object): string[] {
-	const fg = isResumePromptTheme(theme) && process.env.NO_COLOR === undefined ? theme.fg.bind(theme) : undefined;
+	const fg = isResumePromptTheme(theme) && !colorsOff() ? theme.fg.bind(theme) : undefined;
 	const pad = width > 4 ? "  " : "";
 	const inner = Math.max(1, width - pad.length);
 	const hint = ` · enter ${WORKFLOW_DEFINITION_CHANGED_CONFIRM_LABEL} · esc ${WORKFLOW_DEFINITION_CHANGED_CANCEL_LABEL}`;

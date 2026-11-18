@@ -22,7 +22,7 @@ afterEach(() => {
 
 function htmlText(html: string): string {
 	return html
-		.replace(/<[^>]+>/g, "")
+		.replace(/<[^>]*>?/g, "")
 		.replaceAll("&nbsp;", " ")
 		.replaceAll("&amp;", "&");
 }
