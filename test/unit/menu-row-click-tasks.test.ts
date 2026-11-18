@@ -14,6 +14,7 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { showTaskInspector } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
+import { leavePaneVisible } from "../helpers/engine-click-screen.js";
 import { type ClickScreen, flushClicks, makeClickScreen } from "../helpers/fullscreen-clicks.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
@@ -243,6 +244,33 @@ for (const binding of ["o", "alt+o", "ctrl+f1", ["alt+shift+f3", "ctrl+pageDown"
 			await flushClicks();
 			assert.deepEqual(board.opened, ["custom-task"], ui.screen().join("\n"));
 		} finally {
+			ui.tui.stop();
+			await board.dispose();
+		}
+	});
+}
+
+for (const host of ["local", "engine"] as const) {
+	test(`the first click from the composer opens the task and leaves the next key with the inspector (${host})`, async () => {
+		const ui = makeClickScreen();
+		let component!: Component;
+		const board = boardInspector((pane) => {
+			component = pane;
+		}, "Read the source");
+		const keys: string[] = [];
+		const handleInput = component.handleInput?.bind(component);
+		component.handleInput = (key) => {
+			keys.push(key);
+			return handleInput?.(key);
+		};
+		const mounted = await leavePaneVisible(ui, component, host, false);
+		try {
+			await ui.click("Read the source");
+			assert.deepEqual(board.opened, ["custom-task"]);
+			ui.terminal.input("?");
+			assert.ok(keys.includes("?"), "the inspector, not the composer, received the next key");
+		} finally {
+			mounted.dispose();
 			ui.tui.stop();
 			await board.dispose();
 		}

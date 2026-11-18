@@ -11,7 +11,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Changed
 
-- A focused dialog blocks clicks on rows, links and blocks behind it, even before its first paint. Opening and closing a dialog also cancels a press or deferred click that started before it. This applies to capturing overlays and to a dialog the host identifies with `getInlineDialog`. A drag outside still selects text; non-capturing overlays do not block the rest of the screen.
+- A focused dialog blocks clicks on rows, links and blocks behind it, even before its first paint. Opening and closing a dialog also cancels a press or deferred click that started before it. This applies to capturing overlays and to a dialog the host identifies with `getInlineDialog`. A navigation overlay can set `modal: false` to take keyboard focus without blocking other panes. A first click focuses a keyboard-driven pane and activates its row together. A drag outside still selects text; non-capturing overlays do not block the rest of the screen.
 
 ## [0.9.89] - 2026-11-18
 

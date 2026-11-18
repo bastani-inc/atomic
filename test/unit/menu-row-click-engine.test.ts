@@ -4,7 +4,7 @@
  * mirror of the engine component and the engine's custom-UI service joined by an in-process message pump.
  */
 import assert from "node:assert/strict";
-import { type Component, getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, type TuiMouseEvent } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type {
 	ExtensionCommandContext,
@@ -13,19 +13,11 @@ import type {
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { showLlamaUi } from "../../packages/coding-agent/src/extensions/llama/ui.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
-import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
-import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
-import {
-	type InteractiveEngineCommand,
-	type InteractiveEngineMessage,
-	parseInteractiveEngineMessage,
-	serializeInteractiveEngineFrame,
-} from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
-import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import type { SessionInfo } from "../../packages/intercom/types.js";
 import { SessionListOverlay } from "../../packages/intercom/ui/session-list.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { AgentBrowser } from "../../packages/subagents/src/tui/agent-browser.js";
+import { showFromEngine } from "../helpers/engine-click-screen.js";
 import { type ClickScreen, makeClickScreen } from "../helpers/fullscreen-clicks.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -36,49 +28,6 @@ beforeEach(() => {
 	setKeybindings(new KeybindingsManager());
 });
 afterEach(() => setKeybindings(previousKeys));
-
-/** Shows `factory`'s component from the engine on `ui`: in the prompt's place, or as an overlay. */
-async function showFromEngine(
-	ui: ClickScreen,
-	factory: Parameters<EngineCustomUiService["custom"]>[0],
-	overlay: boolean,
-): Promise<{ dispose(): void }> {
-	const listeners: Array<(message: InteractiveEngineMessage) => void> = [];
-	// The engine's messages reach the host a little later, as they do from the child process.
-	const engine = new EngineCustomUiService((line) => {
-		const message = parseInteractiveEngineMessage(line);
-		if (!message) return;
-		setTimeout(() => {
-			for (const listener of [...listeners]) listener(message);
-		}, 10);
-	}, new KeybindingsManager());
-	const runtime = {
-		onGenerationEnded: () => () => {},
-		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
-			listeners.push(listener);
-			return () => {};
-		},
-		sendEngineCommand: (command: InteractiveEngineCommand) =>
-			engine.handleLine(serializeInteractiveEngineFrame(command)),
-	} as unknown as IsolatedInteractiveRuntime;
-	let mounted = false;
-	const host = {
-		requestRender: () => ui.tui.requestRender(),
-		setWidget: () => {},
-		custom: (create: (tui: unknown, theme: unknown, keys: unknown, done: (result: unknown) => void) => Component) =>
-			new Promise(() => {
-				const component = create(ui.tui, {}, {}, () => {});
-				if (overlay) ui.mount(component);
-				else ui.dock(component);
-				mounted = true;
-			}),
-	} as unknown as ExtensionUIContext;
-	new RemoteComponentController(runtime, host, { isFullscreen: () => true, onRendererReplaced: () => () => {} });
-	void engine.custom(factory, overlay ? { overlay: true } : undefined);
-	for (let attempt = 0; attempt < 200 && !mounted; attempt++) await sleep(5);
-	await settle(ui);
-	return { dispose: () => engine.dispose() };
-}
 
 /** Lets the engine's frames reach the host and the paints they ask for run; nothing paints on the test's behalf. */
 async function settle(_ui: ClickScreen): Promise<void> {
@@ -116,6 +65,71 @@ test("a click on a row of a list shown from the engine runs it, and the host pai
 			ui.screen().some((line) => /╭─ charlie/.test(line)),
 			ui.screen().join("\n"),
 		);
+	} finally {
+		shown.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("a non-capturing engine pane leaves focus in the composer until its first click", async () => {
+	const ui = makeClickScreen();
+	const composer = ui.tui.getFocusedComponent();
+	const events: string[] = [];
+	const shown = await showFromEngine(
+		ui,
+		() => ({
+			render: () => ["Choose this pane"],
+			invalidate() {},
+			handleInput(data: string) {
+				events.push(data);
+				return true;
+			},
+			handleMouse(event: TuiMouseEvent) {
+				if (event.type === "click") {
+					events.push("clicked");
+					return { handled: true };
+				}
+				return undefined;
+			},
+		}),
+		true,
+		{ anchor: "top-right", width: 20, nonCapturing: true },
+	);
+	try {
+		assert.ok(ui.tui.getFocusedComponent() === composer, "the engine pane must not take focus on mount");
+		await ui.click("Choose this pane");
+		ui.terminal.input("a");
+		await settle(ui);
+		assert.deepEqual(events, ["clicked", "a"]);
+	} finally {
+		shown.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("a click-only engine component acts without taking the composer's keyboard", async () => {
+	const ui = makeClickScreen();
+	const composer = ui.tui.getFocusedComponent();
+	const clicked: string[] = [];
+	const shown = await showFromEngine(
+		ui,
+		() => ({
+			render: () => ["click-only card"],
+			invalidate() {},
+			handleMouse(event: TuiMouseEvent) {
+				if (event.type !== "click") return undefined;
+				clicked.push("card");
+				return { handled: true };
+			},
+		}),
+		false,
+	);
+	try {
+		ui.focusComposer();
+		await ui.click("click-only card");
+		await settle(ui);
+		assert.deepEqual(clicked, ["card"]);
+		assert.ok(ui.tui.getFocusedComponent() === composer, "a display-only component cannot accept the next key");
 	} finally {
 		shown.dispose();
 		ui.tui.stop();

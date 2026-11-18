@@ -420,6 +420,103 @@ describe("clickable list rows", () => {
 		view.tui.stop();
 	});
 
+	it("one click transfers focus between navigation panes, but a confirmation still blocks that transfer", async () => {
+		const terminal = new VirtualTerminal(40, 12);
+		const tui = new TuiAltScreen(terminal);
+		const base = letters();
+		const panel = letters();
+		const chosen: string[] = [];
+		base.onSelect = (item) => chosen.push(`base:${item.value}`);
+		panel.onSelect = (item) => chosen.push(`panel:${item.value}`);
+		tui.addChild(base);
+		tui.setFocus(base);
+		tui.start();
+		try {
+			tui.showOverlay(panel, { anchor: "bottom-right", width: 15, modal: false });
+			await terminal.waitForRender();
+			assert.strictEqual(tui.getFocusedComponent(), panel);
+			const click = (x: number, y: number) => {
+				terminal.sendInput(press(x, y));
+				terminal.sendInput(release(x, y));
+			};
+			click(3, 1);
+			assert.deepEqual(chosen, ["base:bravo"]);
+			assert.strictEqual(tui.getFocusedComponent(), base);
+			click(32, 9);
+			assert.deepEqual(chosen, ["base:bravo", "panel:charlie"]);
+			assert.strictEqual(tui.getFocusedComponent(), panel);
+			const confirm = new Text("Proceed?", 0, 0);
+			tui.showOverlay(confirm, { anchor: "bottom-left", width: 10 });
+			click(3, 2);
+			assert.deepEqual(chosen, ["base:bravo", "panel:charlie"]);
+			assert.strictEqual(tui.getFocusedComponent(), confirm);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("a second dialog opened and closed during the pane's focus transfer still cancels the first click", async () => {
+		const terminal = new VirtualTerminal(40, 12);
+		const tui = new TuiAltScreen(terminal);
+		const composer = new Text("compose", 0, 0);
+		const pane = letters();
+		let installed = false;
+		Object.defineProperty(pane, "focused", {
+			get: () => tui.getFocusedComponent() === pane,
+			set: (value: boolean) => {
+				if (value && !installed) {
+					installed = true;
+					tui.showOverlay(new Text("Confirm?", 0, 0)).hide();
+				}
+			},
+		});
+		const picked: string[] = [];
+		pane.onSelect = (item) => picked.push(item.value);
+		tui.addChild(composer);
+		tui.setFocus(composer);
+		tui.start();
+		try {
+			tui.showOverlay(pane, { anchor: "top-left", width: 20, nonCapturing: true });
+			await terminal.waitForRender();
+			terminal.sendInput(press(3, 1));
+			terminal.sendInput(release(3, 1));
+			assert.ok(installed);
+			assert.deepStrictEqual(picked, []);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("a picker taking focus on its own press also acts on the first release", async () => {
+		const terminal = new VirtualTerminal(40, 12);
+		const tui = new TuiAltScreen(terminal);
+		const composer = new Text("compose", 0, 0);
+		const received: string[] = [];
+		const pane: Component = {
+			render: () => ["pick"],
+			invalidate() {},
+			handleInput() {},
+			handleMouse(event) {
+				if (event.type === "press") return { handled: true, capture: true, focus: true };
+				if (event.type === "click" && tui.getFocusedComponent() === pane) received.push("picked");
+				return undefined;
+			},
+		};
+		tui.addChild(composer);
+		tui.setFocus(composer);
+		tui.start();
+		try {
+			const handle = tui.showOverlay(pane, { anchor: "bottom-right", width: 10 });
+			handle.unfocus({ target: composer });
+			await terminal.waitForRender();
+			terminal.sendInput(press(34, 11));
+			terminal.sendInput(release(34, 11));
+			assert.deepStrictEqual(received, ["picked"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("a component that took a press does not receive a release behind a new modal", async () => {
 		const terminal = new VirtualTerminal(40, 12);
 		const tui = new TuiAltScreen(terminal);

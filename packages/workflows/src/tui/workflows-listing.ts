@@ -450,7 +450,10 @@ function renderCompactListing(
 		if (selected && previewOpen && !state.getQuery()) {
 			const target = item.value;
 			const selectedRun = target.kind === "run" ? runs.find((run) => run.id === target.runId) : undefined;
-			lines.push(...renderRunPreview(item, selectedRun, style, width));
+			for (const line of renderRunPreview(item, selectedRun, style, width)) {
+				rows.add(lines.length, item, item.id);
+				lines.push(line);
+			}
 		}
 	}
 	const keybindings = getKeybindings();

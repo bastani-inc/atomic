@@ -39,6 +39,8 @@ export interface ClickScreen {
 	drag(from: { column: number; row: number }, to: { column: number; row: number }): Promise<void>;
 	/** One wheel step over a cell. */
 	wheel(direction: "up" | "down", column: number, row: number): Promise<void>;
+	/** Give the composer keyboard focus while leaving the pane visible for a first click. */
+	focusComposer(): void;
 	/** Mount `component` as a full-screen overlay and focus it, as full-screen views are shown. */
 	mount(component: Component): void;
 	/** Show `component` in place of the prompt and focus it, as pickers and dialogs are shown. */
@@ -140,6 +142,11 @@ export function makeClickScreen(columns = 100, rows = 30): ClickScreen {
 			terminal.input(sgr(direction === "up" ? 64 : 65, column, row, "M"));
 			await flushClicks();
 			tui.renderNow();
+		},
+		focusComposer: () => {
+			tui.setFocus(editor);
+			tui.renderNow();
+			assert.equal(tui.getFocusedComponent(), editor);
 		},
 		mount: (component) => {
 			tui.showOverlay(component, { anchor: "top-left", row: 0, col: 0, width: "100%", maxHeight: "100%" });

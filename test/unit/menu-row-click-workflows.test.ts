@@ -21,6 +21,7 @@ import {
 	openWorkflowsListing,
 	type WorkflowsListingTarget,
 } from "../../packages/workflows/src/tui/workflows-listing.js";
+import { leavePaneVisible } from "../helpers/engine-click-screen.js";
 import { type ClickScreen, flushClicks, makeClickScreen } from "../helpers/fullscreen-clicks.js";
 import { defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 import {
@@ -58,18 +59,20 @@ function runs(): RunSnapshot[] {
 }
 
 /** Opens `/workflows`; `picked()` is what it settled on, or `"open"` while it is still showing. */
-function listing(ui: ClickScreen): { picked(): WorkflowsListingTarget | undefined | "open" } {
+function listing(
+	ui: ClickScreen,
+	place = ui.dock,
+	source = runs,
+): { picked(): WorkflowsListingTarget | undefined | "open" } {
 	let result: WorkflowsListingTarget | undefined | "open" = "open";
 	void openWorkflowsListing(
 		{
 			custom: ((factory: (tui: unknown, theme: unknown, keys: unknown, done: () => void) => Component) =>
 				new Promise<void>((resolve) => {
-					ui.dock(
-						factory({ requestRender: () => ui.tui.requestRender(), terminal: ui.terminal }, {}, {}, resolve),
-					);
+					place(factory({ requestRender: () => ui.tui.requestRender(), terminal: ui.terminal }, {}, {}, resolve));
 				})) as never,
 		},
-		{ runs },
+		{ runs: source },
 	).then((target) => {
 		result = target;
 	});
@@ -88,6 +91,57 @@ for (const width of [80, 160]) {
 		assert.deepEqual(view.picked(), { kind: "run", runId: "run-2-0000" });
 		ui.tui.stop();
 	});
+}
+
+for (const host of ["local", "engine"] as const) {
+	test(`one click on the stage summary of an unfocused workflow run opens the run (${host})`, async () => {
+		const ui = makeClickScreen(100, 45);
+		let component!: Component;
+		const view = listing(
+			ui,
+			(pane) => {
+				component = pane;
+			},
+			() => runs().map((run) => ({ ...run, stages: [makeStage("assemble"), makeStage("verify")] })),
+		);
+		await flushClicks();
+		component.handleInput?.(" ");
+		const mounted = await leavePaneVisible(ui, component, host, false);
+		try {
+			await ui.click(/assemble \(.*verify \(/, "verify");
+			await flushClicks();
+			assert.deepEqual(view.picked(), { kind: "run", runId: "run-1-0000" });
+		} finally {
+			mounted.dispose();
+			ui.tui.stop();
+		}
+	});
+	for (const switcher of [false, true]) {
+		test(`one click from the composer opens a stage in the ${switcher ? "switcher" : "graph"} (${host})`, async () => {
+			const ui = makeClickScreen();
+			const opened: string[] = [];
+			const graph = new GraphView({
+				piKeybindings: makeFakeKeybindings(),
+				mode: "overlay",
+				runId: "run-1",
+				store: makeStore(makeSnap([makeStage("alpha"), makeStage("bravo", ["alpha"])])),
+				graphTheme: defaultTheme,
+				piTui: ui.tui,
+				onStageAttach: (_runId, id) => opened.push(id),
+			});
+			if (switcher) graph.handleInput("/");
+			const mounted = await leavePaneVisible(ui, graph, host, true);
+			try {
+				await ui.click(switcher ? /│.*bravo/ : /╭.*bravo/, "bravo");
+				assert.deepEqual(opened, ["bravo"]);
+				assert.ok(ui.tui.getFocusedComponent() === mounted.pane);
+			} finally {
+				mounted.dispose();
+				graph.dispose();
+				ui.tui.stop();
+			}
+		});
+	}
 }
 
 test("the mouse wheel over /workflows moves its selection", async () => {

@@ -176,8 +176,8 @@ function serializableOverlayOptions(
 ): SerializableOverlayOptions | undefined {
 	const value = typeof options === "function" ? options() : options;
 	if (!value) return undefined;
-	const { anchor, col, margin, maxHeight, minWidth, offsetX, offsetY, row, width } = value;
-	return { anchor, col, margin, maxHeight, minWidth, offsetX, offsetY, row, width };
+	const { anchor, col, margin, maxHeight, minWidth, modal, nonCapturing, offsetX, offsetY, row, width } = value;
+	return { anchor, col, margin, maxHeight, minWidth, modal, nonCapturing, offsetX, offsetY, row, width };
 }
 
 function sameFrame(
@@ -305,6 +305,7 @@ export class EngineCustomUiService {
 				this.send({
 					type: "engine_custom_open",
 					componentId,
+					...(!component.handleInput || component.acceptsClickFocus === false ? { acceptsClickFocus: false } : {}),
 					overlay: false,
 					widgetKey: key,
 					widgetPlacement: placement,
@@ -380,6 +381,7 @@ export class EngineCustomUiService {
 		this.send({
 			type: "engine_custom_open",
 			componentId,
+			...(!component.handleInput || component.acceptsClickFocus === false ? { acceptsClickFocus: false } : {}),
 			overlay: options?.overlay === true,
 			purpose: options?.purpose,
 			deferInlineCustomUiFocus: options?.deferInlineCustomUiFocus,

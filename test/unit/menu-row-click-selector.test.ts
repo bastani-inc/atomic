@@ -13,6 +13,7 @@ import {
 	type SelectorItem,
 } from "../../packages/coding-agent/src/modes/interactive/components/selector.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { leavePaneVisible } from "../helpers/engine-click-screen.js";
 import { makeClickScreen } from "../helpers/fullscreen-clicks.js";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
@@ -41,6 +42,28 @@ for (const width of [80, 160]) {
 			assert.deepEqual(chosen, ["production"]);
 			ui.tui.stop();
 		});
+	});
+}
+
+for (const host of ["local", "engine"] as const) {
+	test(`one click from the composer selects a row in an unfocused picker (${host})`, async () => {
+		const ui = makeClickScreen();
+		const picked: string[] = [];
+		const picker = new ExtensionSelectorComponent(
+			"Pick",
+			["red", "blue"],
+			(value) => picked.push(value),
+			() => {},
+		);
+		const mounted = await leavePaneVisible(ui, picker, host, false);
+		try {
+			await ui.click("blue");
+			assert.deepEqual(picked, ["blue"]);
+			assert.ok(ui.tui.getFocusedComponent() === mounted.pane);
+		} finally {
+			mounted.dispose();
+			ui.tui.stop();
+		}
 	});
 }
 
