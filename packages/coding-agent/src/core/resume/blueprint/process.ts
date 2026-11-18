@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { write } from "node:fs";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -72,9 +72,50 @@ export function copiesOutputToLog(platform: NodeJS.Platform): boolean {
 }
 
 /**
+ * How many times, and how far apart, a process Windows refuses to start for a moment is tried: about two seconds in
+ * all. Windows refuses with EPERM while no one may execute the file and with EBUSY while another program holds it open
+ * for writing, as an antivirus scan or the installer that just wrote it can. A refused process was never created, so
+ * trying again cannot run a step twice.
+ */
+const SPAWN_TRIES = 40;
+const SPAWN_RETRY_MS = 50;
+const PASSING_SPAWN_REFUSALS: ReadonlySet<string> = new Set(["EPERM", "EBUSY"]);
+
+/** Whether a start refused with `error` on try `tries`, `elapsedMs` into a step allowed `timeoutMs`, is tried again. */
+function triesStartAgain(error: unknown, tries: number, elapsedMs: number, timeoutMs: number): boolean {
+	return (
+		process.platform === "win32" &&
+		PASSING_SPAWN_REFUSALS.has((error as NodeJS.ErrnoException).code ?? "") &&
+		tries < SPAWN_TRIES &&
+		elapsedMs + SPAWN_RETRY_MS < timeoutMs
+	);
+}
+
+/** Waits `ms`, or rejects with the reason of `signal` as soon as it aborts. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(signal.reason);
+			return;
+		}
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(signal?.reason);
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+/**
  * Runs `run` with its output appended to `log`, in its own process group (POSIX) so stopping it stops everything it
  * started. Resolves how it ended: exited, stopped by a signal, timed out after `timeoutMs`, or could not be started
- * (`spawnError`). Rejects with `signal.reason` when `options.signal` aborts, since cancelling is not a failure.
+ * (`spawnError`), including when the system refuses to start it at once. On Windows a refusal that passes by itself
+ * (EPERM, EBUSY) is tried again for about two seconds first, within `timeoutMs`. Rejects with `signal.reason` when
+ * `options.signal` aborts, since cancelling is not a failure.
  */
 export async function runLoggedProcess(
 	run: LoggedProcess,
@@ -84,19 +125,33 @@ export async function runLoggedProcess(
 	options.signal?.throwIfAborted();
 	const startedAt = Date.now();
 	const copiesOutput = copiesOutputToLog(process.platform);
-	return new Promise<ProcessExit>((resolveExit, reject) => {
+	let started: ChildProcess;
+	for (let tries = 1; ; tries++) {
 		buildProcessStarting();
-		const child = spawn(run.command, [...run.args], {
-			cwd: run.cwd,
-			env: run.env,
-			detached: startsProcessGroup(process.platform),
-			windowsHide: true,
-			stdio: [
-				run.stdin === undefined ? "ignore" : "pipe",
-				copiesOutput ? "pipe" : log.fd,
-				copiesOutput ? "pipe" : log.fd,
-			],
-		});
+		try {
+			started = spawn(run.command, [...run.args], {
+				cwd: run.cwd,
+				env: run.env,
+				detached: startsProcessGroup(process.platform),
+				windowsHide: true,
+				stdio: [
+					run.stdin === undefined ? "ignore" : "pipe",
+					copiesOutput ? "pipe" : log.fd,
+					copiesOutput ? "pipe" : log.fd,
+				],
+			});
+			break;
+		} catch (error) {
+			// spawn throws, rather than emitting "error", when the system refuses at once (EPERM, EBUSY, ENOTDIR): nothing started.
+			const elapsedMs = Date.now() - startedAt;
+			if (!triesStartAgain(error, tries, elapsedMs, options.timeoutMs)) {
+				return { exitStatus: null, signal: null, timedOut: false, elapsedMs, spawnError: error as Error };
+			}
+			await pause(SPAWN_RETRY_MS, options.signal);
+		}
+	}
+	const child = started;
+	return new Promise<ProcessExit>((resolveExit, reject) => {
 		const tree = child.pid === undefined ? undefined : containProcessTree(child.pid);
 		const watch = stepProcessWatcher.getStore();
 		if (child.pid !== undefined) watch?.(child.pid, true);
@@ -109,10 +164,13 @@ export async function runLoggedProcess(
 			if (tree?.terminate()) return;
 			if (child.pid !== undefined) killProcessTree(child.pid);
 		};
-		const timer = setTimeout(() => {
-			timedOut = true;
-			stop();
-		}, options.timeoutMs);
+		const timer = setTimeout(
+			() => {
+				timedOut = true;
+				stop();
+			},
+			Math.max(0, options.timeoutMs - (Date.now() - startedAt)),
+		);
 		const onAbort = () => stop();
 		if (copiesOutput) {
 			const fail = (what: string, error: Error) => {

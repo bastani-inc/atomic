@@ -34,6 +34,7 @@
 - A subagent's chat opened while the subagent waits to retry now shows `retrying…` also when the subagent has a fallback model, as the builtin agents on `model: auto` do, instead of a running turn with a growing timer ([#5523](https://github.com/bastani-inc/atomic/issues/5523)).
 - A subagent's chat opened after one of its requests failed or was interrupted before any text arrived, for example during the retry wait or after the subagent finished, now shows the request's `Error: …` line or `Interrupted` block, as the main chat does. Before, the chat showed them only when it was open as the request ended ([#5529](https://github.com/bastani-inc/atomic/issues/5529)).
 - An engine restart while Atomic loads models or waits for another trust answer no longer repeats a session-only trust question you already answered for a project or `-e` extension source ([#5568](https://github.com/bastani-inc/atomic/issues/5568)).
+- A blueprint step whose program the system refuses to start right away, for example a working directory that is a file, now fails as that step with `could not be started: …` in its log, instead of ending the build with an unexpected error. On Windows, a program refused for a moment with `EPERM` or `EBUSY`, as when an antivirus scan or the installer that just wrote it still holds it, is tried again for about two seconds before the step fails ([#5608](https://github.com/bastani-inc/atomic/issues/5608)).
 
 ## [0.9.89] - 2026-11-18
 
