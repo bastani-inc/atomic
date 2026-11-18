@@ -23,7 +23,7 @@ Replace the placeholders with the actual task. A review-only request does not au
 
 ## When migrating effort
 
-Both models reject reasoning effort `none`. OpenAI's migration checklist recommends `medium` for a new integration and `low` in place of an existing `none` or `minimal`. OpenAI's Codex catalog lists `low`, `medium`, `high`, `xhigh`, and `max` for both. A prompt cannot enable an unsupported effort or replace the request configuration.
+Both models reject reasoning effort `none`. OpenAI's migration checklist recommends `medium` for a new integration and `low` in place of an existing `none` or `minimal`. OpenAI's Codex catalog lists `low`, `medium`, `high`, `xhigh`, and `max` for both. A prompt cannot enable an unsupported effort or replace the request configuration. Both models support Chat Completions, but tool calling requires the Responses API.
 
 Keep the prompt fixed while comparing efforts. Measure completion, correctness, tool behavior, latency, tokens, and cost. OpenAI notes that higher effort can help the model persist through final checks on long tasks; treat that as a hypothesis to test, not a default.
 
