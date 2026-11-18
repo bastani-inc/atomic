@@ -395,6 +395,19 @@ test("a child released while its pooled root's long history is folded stays rele
 	);
 });
 
+test("a checkpoint noted under a child its pooled root lets go of is counted once when it is recorded (#4768)", async () => {
+	const recording = await recorded();
+	const backend = await recording.narrowed();
+	const [scope] = scopes(backend.listCheckpoints(ROOT));
+	const noted = ownTool(`${scope}:noted`, 30_000_000);
+	backend.noteRecordedCheckpoint(noted);
+	assert.equal(backend.getToolOutput(ROOT, noted.argsHash), noted.output);
+	backend.releaseCheckpointScope(ROOT, scope!);
+	await backend.commitCheckpoint(noted);
+	const full = await recording.full();
+	assert.equal(backend.getWorkflow(ROOT)?.completedCheckpoints, full.getWorkflow(ROOT)?.completedCheckpoints);
+});
+
 test("a cached child of a pooled root replays the subtree a full backend rebuilds after other children left memory (#4318)", async () => {
 	const recording = await recorded();
 	const backend = await recording.narrowed();

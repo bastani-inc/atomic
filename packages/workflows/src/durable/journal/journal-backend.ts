@@ -1726,11 +1726,13 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	/**
 	 * Notes a checkpoint the run recorded through another journal that this backend's journal does not hold yet: a pooled
 	 * worker's checkpoint its host accepted and will ship to the root's journal (#4768). Reads find it from now on, as if
-	 * it were folded; the event, once shipped and folded, is the same checkpoint and changes nothing.
+	 * it were folded after every event the journal holds now: an earlier event a catch-up folds meanwhile, even between
+	 * the turns of one fold, does not replace it (#5480). Its own event, once shipped and folded, is the same checkpoint:
+	 * the run reads as the journal does from then on, and counts it once.
 	 */
 	noteRecordedCheckpoint(checkpoint: DurableCheckpoint): void {
 		validateCheckpointInvocationFingerprint(checkpoint);
-		if (this.keepsCheckpoint(checkpoint.workflowId, checkpoint)) this.projection.recordCheckpoint(checkpoint);
+		if (this.keepsCheckpoint(checkpoint.workflowId, checkpoint)) this.projection.noteCheckpoint(checkpoint);
 	}
 	async catchUpWorkflow(runId: string): Promise<void> {
 		await this.serialize(runId, () => this.extend(runId), false);
