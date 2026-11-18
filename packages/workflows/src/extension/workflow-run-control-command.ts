@@ -34,7 +34,7 @@ import {
 	type ResumePickerCatalogRows,
 	resumePickerLiveUpdateOptions,
 } from "./workflow-resume-picker-rows.js";
-import { classifyDurableResumeShadow, reconcileDurableResumeShadow } from "./workflow-resume-shadow.js";
+import { classifyDurableResumeShadow } from "./workflow-resume-shadow.js";
 import { injectWorkflowResumeSummary } from "./workflow-resume-summary.js";
 import { isResolvedRunId, overlaySurfaceFromContext, resolveRunId, resolveStageTarget } from "./workflow-targets.js";
 
@@ -356,14 +356,15 @@ export async function handleRunControlCommand(
 			const localResolution = resolveRunId(target, store);
 			const localBeforePreparation = isResolvedRunId(localResolution) ? store.run(localResolution.runId) : undefined;
 			const exactBeforePreparation = localBeforePreparation?.id === target ? localBeforePreparation : undefined;
+			// Only an exact target can be refused before checking the other stored roots for prefix collisions.
 			const shadow =
-				localBeforePreparation === undefined
+				exactBeforePreparation === undefined
 					? "not_shadow"
-					: classifyDurableResumeShadow(localBeforePreparation, store, { ...shadowDeps, backend });
+					: classifyDurableResumeShadow(exactBeforePreparation, store, { ...shadowDeps, backend });
 			if (shadow === "ineligible") {
 				fail(
 					"Workflow " +
-						localBeforePreparation!.id +
+						exactBeforePreparation!.id +
 						" has no durable checkpoint or pending prompt progress and is not resumable.",
 				);
 				return true;
@@ -434,7 +435,7 @@ export async function handleRunControlCommand(
 				const loadableRuns = topLevelWorkflowRuns(store.runs()).filter(
 					(run) =>
 						backend.isWorkflowLoadable(run.id) &&
-						!reconcileDurableResumeShadow(run, store, { ...shadowDeps, backend }),
+						classifyDurableResumeShadow(run, store, { ...shadowDeps, backend }) === "not_shadow",
 				);
 				await refreshWorkflowArtifactPresence(loadableRuns, store.runs());
 				const combined = resolveWorkflowResumeTarget(

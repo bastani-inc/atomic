@@ -1,3 +1,4 @@
+import { resumableEntryFromHandle } from "../durable/backend.js";
 import { durableForkTarget } from "../durable/fork-run.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { hasActiveLiveRun } from "../durable/run-claims.js";
@@ -173,11 +174,19 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 						(backend !== undefined &&
 							isWorkflowRunResumable(workflowRunResumeCandidate(run, owner.store.runs(), backend))));
 				if (isDurableAuthorExit) {
+					// Pin this attempt's saved version, even if it finishes saving while resources load.
+					const savedHandle = () => backend?.getWorkflow(runId);
+					const selection = owner.jobs.get(runId)?.promise.then(savedHandle) ?? savedHandle();
 					await ensureWorkflowResourcesVisible();
 					const runtime = deps.runtime();
 					if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 					const policy = workflowPolicyFromContext(deps.context());
-					const resumed = await runtime.resumeDurableWorkflow(runId, { policy, actor: "user" });
+					const handle = await selection;
+					const resumed = await runtime.resumeDurableWorkflow(runId, {
+						policy,
+						actor: "user",
+						...(handle === undefined ? {} : { selectedEntry: resumableEntryFromHandle(handle) }),
+					});
 					return resumed.ok
 						? { ok: true, message: resumed.message, runId: resumed.runId }
 						: { ok: false, message: resumed.message };

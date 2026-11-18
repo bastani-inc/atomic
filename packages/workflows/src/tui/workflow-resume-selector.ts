@@ -510,7 +510,7 @@ function liveRunSession(
 	};
 }
 
-function durableWorkflowSession(
+export function durableWorkflowSession(
 	entry: ResumableWorkflowEntry,
 	kind: "durable" | "completed",
 	now: number,

@@ -6,7 +6,12 @@ import {
 	requireStoreDurableBackend,
 } from "../durable/store-backend.js";
 import type { DurableCheckpoint, ResumableWorkflowEntry } from "../durable/types.js";
-import { toWorkflowPickerRow, workflowResumeSelectorItems } from "../tui/workflow-resume-selector.js";
+import { isResolvedRunId, resolveRunIdTarget } from "../shared/run-id.js";
+import {
+	durableWorkflowSession,
+	toWorkflowPickerRow,
+	workflowResumeSelectorItems,
+} from "../tui/workflow-resume-selector.js";
 import type { PiCommandContext, PiEventContext } from "./public-types.js";
 import type { PiHostSessionPickerRow } from "./wiring.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
@@ -194,15 +199,23 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 								: undefined,
 					},
 				);
-			const visible = formatItems();
-			if (visible.length === 0) return [];
-			const visibleIds = new Set(visible.map((item) => item.session.id));
+			const visibleIds = new Set(formatItems().map((item) => item.session.id));
+			// Direct /resume resolves across sessions and all stored roots, not just the rows offered in the picker.
+			const match = resolveRunIdTarget(cleanTarget ?? "", catalog.inspectableIds ?? []);
+			const matchedIds = match.kind === "ambiguous" ? match.matches : isResolvedRunId(match) ? [match.runId] : [];
+			const hidden = matchedIds.flatMap((id) => {
+				const handle = visibleIds.has(id) ? undefined : backend?.getWorkflow(id);
+				return handle === undefined
+					? []
+					: [durableWorkflowSession(handle, "durable", Date.now(), owner.store.run(id), backend)];
+			});
+			if (visibleIds.size === 0) return hidden.map(toWorkflowPickerRow);
 			const overviewCheckpoints = await savedRunOverviews(
 				backend,
 				[...resumable, ...catalog.completed].filter((entry) => visibleIds.has(entry.workflowId)),
 				cleanTarget,
 			);
-			return formatItems(overviewCheckpoints).map(toWorkflowPickerRow);
+			return [...formatItems(overviewCheckpoints), ...hidden].map(toWorkflowPickerRow);
 		},
 
 		async resumeFromPicker(target: string, rawCtx?: WorkflowResumeCommandContext): Promise<void> {

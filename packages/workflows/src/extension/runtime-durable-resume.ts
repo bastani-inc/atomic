@@ -96,6 +96,8 @@ export interface DurableResumeRuntime {
 			/** Run this definition instead of resolving the run's name: a fork's, found where its source ran. */
 			readonly definition?: WorkflowDefinition;
 			readonly durableBackend?: DurableWorkflowBackend;
+			/** The attempt selected before the caller loaded its workflow resources. */
+			readonly selectedEntry?: ResumableWorkflowEntry;
 		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
@@ -260,7 +262,12 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		async resumeDurableWorkflow(workflowId, options): Promise<ResumeDurableResult> {
 			options?.signal?.throwIfAborted();
 			const jobs = deps.jobs ?? currentJobTracker();
-			const selected = selectedResumeEntry(workflowId, preparedCatalog, deps.store, jobs);
+			const selected = selectedResumeEntry(
+				workflowId,
+				options?.selectedEntry === undefined ? preparedCatalog : [options.selectedEntry],
+				deps.store,
+				jobs,
+			);
 			return raceWorkflowRequestAbort(
 				withWorkflowResumeAdmission(deps.store, async (dormantWrites) => {
 					const { backend, catalog } = await withRecovery(async () => {
