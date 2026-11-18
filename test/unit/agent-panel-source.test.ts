@@ -1561,22 +1561,25 @@ test("dismissed native task ids are pruned when the task is seen in a non-finish
 	const fixture = taskFixture();
 	try {
 		await fixture.start("worker one");
+		// A second subagent keeps running, so the first stays listed while its turn is interrupted.
+		await fixture.start("worker two");
 		const session = {};
 		bindOwnerTaskStore(session, fixture.store);
 		const id = fixture.store.tasks[0]!.ref.taskId;
+		const rowsOf = () => agentPanelRows(session).filter((row) => row.id === `task:${id}`);
 		assert.deepEqual(
-			agentPanelRows(session).map((row) => [row.id, row.state]),
+			rowsOf().map((row) => [row.id, row.state]),
 			[[`task:${id}`, "running"]],
 		);
 		setTaskTurnInterrupted(fixture.store, id, true);
 		assert.deepEqual(
-			agentPanelRows(session).map((row) => [row.id, row.state]),
+			rowsOf().map((row) => [row.id, row.state]),
 			[[`task:${id}`, "stopped"]],
 		);
 		dismissedAgentPanelItems(session).add(`task:${id}`);
 		dismissedTasks(ownerTaskViewSource(fixture.store)).add(id);
 		assert.deepEqual(
-			agentPanelRows(session).map((row) => [row.id, row.state]),
+			rowsOf().map((row) => [row.id, row.state]),
 			[[`task:${id}`, "stopped"]],
 		);
 		assert.equal(dismissedAgentPanelItems(session).has(`task:${id}`), false);
@@ -1585,14 +1588,16 @@ test("dismissed native task ids are pruned when the task is seen in a non-finish
 		dismissedTasks(ownerTaskViewSource(fixture.store)).add(id);
 		setTaskTurnInterrupted(fixture.store, id, false);
 		assert.deepEqual(
-			agentPanelRows(session).map((row) => [row.id, row.state]),
+			rowsOf().map((row) => [row.id, row.state]),
 			[[`task:${id}`, "running"]],
 		);
-		assert.deepEqual(agentPanelCounts(session), { total: 1, needsInput: 0, shells: 0 });
+		assert.deepEqual(agentPanelCounts(session), { total: 2, agents: 2, needsInput: 0, shells: 0, subagents: 2 });
 		assert.equal(dismissedAgentPanelItems(session).has(`task:${id}`), false);
 		assert.equal(dismissedTasks(ownerTaskViewSource(fixture.store)).has(id), false);
 		assert.deepEqual(
-			agentPanelItems(session).map((item) => [item.id, item.state]),
+			agentPanelItems(session)
+				.filter((item) => item.id === `task:${id}`)
+				.map((item) => [item.id, item.state]),
 			[[`task:${id}`, "running"]],
 		);
 	} finally {

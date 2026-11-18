@@ -21,7 +21,7 @@ export type AgentPanelState =
 
 export interface AgentPanelItem {
 	readonly id: string;
-	readonly kind: "agent" | "shell" | "workflow";
+	readonly kind: "agent" | "shell" | "search" | "workflow";
 	readonly state: AgentPanelState;
 	readonly name: string;
 	readonly task: string;
@@ -314,16 +314,35 @@ export function isInterruptedPanelTask(item: object): boolean {
 	return interruptedTaskItems.has(item);
 }
 
+/**
+ * Which part of the agent panel a native task is: a subagent is a row and counts as an agent; a shell is never a row
+ * and is counted on the hint line; a tool call's background work (a `search`, the one tool that runs as a task) is
+ * never a row either. Every task kind must be routed here explicitly, so a new kind cannot become an agent row by
+ * default.
+ */
+export function taskPanelRole(task: Pick<TaskRecord, "kind">): "agent" | "shell" | "search" {
+	switch (task.kind) {
+		case "agent":
+			return "agent";
+		case "command":
+			return "shell";
+		case "tool":
+			return "search";
+		default: {
+			const unrouted: never = task.kind;
+			return unrouted;
+		}
+	}
+}
+
 export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
 	const clocks = sourceClocks ?? taskClockOf(task);
 	const cached = cachedTaskItems.get(task);
 	const state = taskPanelState(task);
 	const interrupted = task.execution.kind !== "settled" && state === "stopped";
 	const question = task.attention.kind === "input-needed" ? task.attention.prompt || undefined : undefined;
-	// Only a subagent is an agent row; a shell, and a tool call's background work, are counted beside them, never rows.
-	const kind = task.kind === "agent" ? "agent" : "shell";
-	const name =
-		task.kind === "agent" ? (task.agentName ?? "agent") : task.kind === "tool" ? toolTaskNoun(task) : "shell";
+	const kind = taskPanelRole(task);
+	const name = kind === "agent" ? (task.agentName ?? "agent") : kind === "search" ? toolTaskNoun(task) : "shell";
 	const title = shortTaskTitle(task.title || "");
 	const reason =
 		state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed"
@@ -378,7 +397,7 @@ export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedCl
 	}
 	const item: AgentPanelItem = {
 		id: `${taskPrefix}${task.ref.taskId}`,
-		kind: task.kind === "agent" ? "agent" : "shell",
+		kind: taskPanelRole(task),
 		state,
 		get name() {
 			return taskPanelItem(task, sourceClocks).name;

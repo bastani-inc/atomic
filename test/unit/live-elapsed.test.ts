@@ -103,10 +103,16 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 		now = 118_000;
 		record.execution = { kind: "settled", result: { kind: "cancelled", cause: "user" } };
 		observeTaskClocks([record], now);
-		assert.equal(panel.rows([bindTaskClock({ ...row, state: "stopped" as const }, clocks)])[0]?.elapsedMs, 123_000);
+		// Another subagent still runs, so the stopped one stays listed.
+		const live = { ...plainRow, id: "task:still-running" };
+		const stoppedRow = () =>
+			panel
+				.rows([bindTaskClock({ ...row, state: "stopped" as const }, clocks), live])
+				.find((candidate) => candidate.id === row.id);
+		assert.equal(stoppedRow()?.elapsedMs, 123_000);
 		assert.equal(taskMetricsText(record), "2m");
 		now += 100_000;
-		assert.equal(panel.rows([bindTaskClock({ ...row, state: "stopped" as const }, clocks)])[0]?.elapsedMs, 123_000);
+		assert.equal(stoppedRow()?.elapsedMs, 123_000);
 		assert.equal(taskMetricsText(record), "2m");
 	} finally {
 		transcript.dispose();
@@ -137,7 +143,8 @@ test("cached workflow rows advance between source changes and stop while paused 
 	assert.equal(panel.rows([resumed])[0]?.elapsedMs, 15_000);
 	now += 1000;
 	assert.equal(panel.rows([resumed])[0]?.elapsedMs, 16_000);
-	assert.equal(panel.rows([{ ...row, state: "done", elapsedMs: 16_000 }])[0]?.elapsedMs, 16_000);
+	// A finished run stays until it has been viewed.
+	assert.equal(panel.rows([{ ...row, state: "done", elapsedMs: 16_000 }], () => true)[0]?.elapsedMs, 16_000);
 });
 
 test("workflow and extension rows that finish or pause while the panel is hidden show their reported elapsed time (#5224, #5239)", () => {

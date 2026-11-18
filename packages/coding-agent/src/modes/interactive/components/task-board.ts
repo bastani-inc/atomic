@@ -104,7 +104,10 @@ export function taskBoardCounts(rows: readonly TaskBoardRow[]): string {
 
 type Glyph = { glyph: string; color: "accent" | "success" | "error" | "warning" | "muted" | "dim" };
 
-export function stateGlyph(state: TaskBoardState, kind?: "agent" | "workflow" | "shell" | "command" | "tool"): Glyph {
+export function stateGlyph(
+	state: TaskBoardState,
+	kind?: "agent" | "workflow" | "shell" | "search" | "command" | "tool",
+): Glyph {
 	switch (state) {
 		case "input":
 			return { glyph: "◆", color: "warning" };
@@ -124,7 +127,10 @@ export function stateGlyph(state: TaskBoardState, kind?: "agent" | "workflow" | 
 			return { glyph: "◼", color: "muted" };
 		default:
 			// Shells and a tool call's background work run without a model: the hourglass, not the agent's mark.
-			return { glyph: kind === "shell" || kind === "command" || kind === "tool" ? "⧗" : "∀", color: "accent" };
+			return {
+				glyph: kind === "shell" || kind === "search" || kind === "command" || kind === "tool" ? "⧗" : "∀",
+				color: "accent",
+			};
 	}
 }
 

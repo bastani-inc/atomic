@@ -237,12 +237,30 @@ const NONE_SUPERSEDED: ReadonlySet<TaskId> = new Set();
  * is the subagent now. Such an attempt waits on nothing any more, so views list the later attempt instead of it.
  */
 export function supersededReleasedAttempts(tasks: readonly TaskRecord[]): ReadonlySet<TaskId> {
-	const released: Array<TaskRecord> = [];
+	return supersededAttempts(
+		tasks,
+		(task) => task.execution.kind === "settled" && releasedWaitingOn(task.execution.result) !== undefined,
+	);
+}
+
+/**
+ * The settled attempts in `tasks` whose subagent has a later attempt there: a resumed or woken subagent is its latest
+ * attempt. The agent panel and a chat's task footer list only that one; /tasks keeps every attempt.
+ */
+export function supersededSettledAttempts(tasks: readonly TaskRecord[]): ReadonlySet<TaskId> {
+	return supersededAttempts(tasks, (task) => task.execution.kind === "settled");
+}
+
+/** The subagent attempts in `tasks` that match `candidate` and are not their subagent's latest attempt there. */
+function supersededAttempts(
+	tasks: readonly TaskRecord[],
+	candidate: (task: TaskRecord) => boolean,
+): ReadonlySet<TaskId> {
+	const candidates: Array<TaskRecord> = [];
 	for (const task of tasks) {
-		if (task.kind === "agent" && task.execution.kind === "settled" && releasedWaitingOn(task.execution.result))
-			released.push(task);
+		if (task.kind === "agent" && candidate(task)) candidates.push(task);
 	}
-	if (released.length === 0) return NONE_SUPERSEDED;
+	if (candidates.length === 0) return NONE_SUPERSEDED;
 	const latest = new Map<string, { readonly task: TaskRecord; readonly index: number }>();
 	for (const [index, task] of tasks.entries()) {
 		if (task.kind !== "agent") continue;
@@ -251,7 +269,7 @@ export function supersededReleasedAttempts(tasks: readonly TaskRecord[]): Readon
 		if (seen === undefined || laterAttempt(task, index, seen.task, seen.index)) latest.set(child, { task, index });
 	}
 	const superseded = new Set<TaskId>();
-	for (const task of released) {
+	for (const task of candidates) {
 		if (latest.get(childOfAttempt(task))?.task !== task) superseded.add(task.ref.taskId);
 	}
 	return superseded.size === 0 ? NONE_SUPERSEDED : superseded;
