@@ -101,6 +101,14 @@ function assertRowVersion(row: SqliteRow | undefined): void {
 	if (found !== JOURNAL_SCHEMA_VERSION) throw new JournalSchemaVersionError(found);
 }
 
+/**
+ * SQL that holds while `column` is a counter in range, as `journalCounter` accepts it: a whole number from 0 to the
+ * largest safe integer, the bound passed as the parameter it ends with.
+ */
+function counterInRange(column: string): string {
+	return `${column} >= 0 AND ${column} = ROUND(${column}) AND ${column} <= ?`;
+}
+
 function entryFromRow(row: EventRow): JournalEntry {
 	assertRowVersion(row);
 	const key = row[c.key];
@@ -858,8 +866,9 @@ export class SqlRunJournal implements RunJournal {
 					params: [owned.runId],
 				},
 				{
-					sql: `UPDATE ${t.leases} SET ${c.renewedAt} = ${this.dialect.nowMs} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ? AND EXISTS (SELECT 1 FROM ${t.meta} WHERE ${c.schemaVersion} = ?)`,
-					params: [owned.runId, owned.holderId, owned.epoch, JOURNAL_SCHEMA_VERSION],
+					// An epoch out of range writes nothing, as the transaction path refuses it; the read above reports it.
+					sql: `UPDATE ${t.leases} SET ${c.renewedAt} = ${this.dialect.nowMs} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ? AND ${counterInRange(c.epoch)} AND EXISTS (SELECT 1 FROM ${t.meta} WHERE ${c.schemaVersion} = ?)`,
+					params: [owned.runId, owned.holderId, owned.epoch, Number.MAX_SAFE_INTEGER, JOURNAL_SCHEMA_VERSION],
 				},
 			],
 			// A renewal keeps the root's lease alive, so it never waits behind this process's other writes to the server.
@@ -964,7 +973,10 @@ export class SqlRunJournal implements RunJournal {
 		});
 		const batch = this.database.batch?.bind(this.database);
 		if (batch && prepared.every((append) => append instanceof Error || this.inOneRequest(append)))
-			return this.operation(() => this.appendInOneRequest(batch, owned, prepared));
+			// Waits for the write lock as the transaction below and a single append do.
+			return this.operation(() =>
+				this.appendInOneRequest((statements) => batch(statements, JOURNAL_WRITE_TRANSACTION), owned, prepared),
+			);
 		return this.operation(() =>
 			this.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
@@ -999,8 +1011,10 @@ export class SqlRunJournal implements RunJournal {
 		prepared: readonly (ReturnType<SqlRunJournal["prepare"]> | Error)[],
 	): Promise<readonly PromiseSettledResult<AppendOutcome>[]> {
 		const t = this.tables;
-		const holds = `EXISTS (SELECT 1 FROM ${t.leases} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ?)`;
-		const held = [owned.runId, owned.holderId, owned.epoch] as const;
+		// A counter out of range writes nothing, as the transaction path refuses it before writing; the reads below report
+		// it. The lease's epoch is the caller's when it is held, so a caller's out-of-range epoch is refused here too.
+		const holds = `EXISTS (SELECT 1 FROM ${t.leases} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ? AND ${counterInRange(c.epoch)})`;
+		const held = [owned.runId, owned.holderId, owned.epoch, Number.MAX_SAFE_INTEGER] as const;
 		const latest = `SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.seq} = (SELECT MAX(${c.seq}) FROM ${t.events} WHERE ${c.runId} = ?)`;
 		const statements: SqliteStatement[] = [
 			{
@@ -1022,7 +1036,7 @@ export class SqlRunJournal implements RunJournal {
 			// The append is written when the run's last sequence is below the limit, the lease is still held and the key
 			// is new. The status update tests the same condition first, which it does not change, so the two agree.
 			const appends = `FROM (SELECT COALESCE(MAX(${c.seq}), 0) AS latest FROM ${t.events} WHERE ${c.runId} = ?) AS current
-					WHERE current.latest < ? AND ${holds} AND EXISTS (SELECT 1 FROM ${t.meta} WHERE ${c.schemaVersion} = ?)${
+					WHERE current.latest < ? AND current.latest >= 0 AND current.latest = ROUND(current.latest) AND ${holds} AND EXISTS (SELECT 1 FROM ${t.meta} WHERE ${c.schemaVersion} = ?)${
 						key === undefined
 							? ""
 							: ` AND NOT EXISTS (SELECT 1 FROM ${t.events} WHERE ${c.runId} = ? AND ${c.key} = ?)`
