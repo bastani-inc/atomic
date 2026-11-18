@@ -1,4 +1,4 @@
-import type { Component, Focusable } from "@bastani/atomic-tui";
+import type { Component, Focusable, TuiMouseEvent } from "@bastani/atomic-tui";
 import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-session.js";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
@@ -25,6 +25,7 @@ import {
 import { applyChatSessionAgentEvent, compactionStatusMessage } from "./chat-session-host-events.ts";
 import {
 	chatSessionWorkingMeta,
+	dropExpandedOverrides,
 	renderChatSessionBody,
 	renderChatSessionEditor,
 	renderChatSessionEntry,
@@ -32,7 +33,9 @@ import {
 	renderChatSessionPendingMessages,
 	renderChatSessionUsage,
 	renderChatSessionWorkingStatus,
+	setExpandedOverride,
 	transcriptCacheKey,
+	transcriptEntryName,
 } from "./chat-session-host-rendering.ts";
 import {
 	clearChatSessionBusyForTerminalWorkflowStage,
@@ -56,6 +59,7 @@ import type {
 } from "./chat-session-host-types.ts";
 import { firstRawUserExactText, syncFirstUserEntry } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
+import { isSingleLeftClick } from "./single-click.ts";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
@@ -84,6 +88,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	private taskSession?: object;
 	private unsubscribeTaskBinding?: () => void;
 	private taskInspector?: TaskInspector;
+	/** How the last `renderBody` laid out the body: a full-screen task view, or the transcript's rows above a picker. */
+	private bodyLayout: { readonly taskView: true } | { readonly taskView: false; readonly transcriptRows: number } = {
+		taskView: false,
+		transcriptRows: Number.POSITIVE_INFINITY,
+	};
 	private historyHydrated = false;
 	private readonly taskTranscriptEnvironment: () => TaskTranscriptEnvironment;
 
@@ -395,13 +404,19 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	renderBody(width: number, budget: number): string[] {
 		if (this.taskInspector) {
-			if (this.taskInspector.fullscreen) return this.taskInspector.renderViewport(width, budget);
+			if (this.taskInspector.fullscreen) {
+				this.bodyLayout = { taskView: true };
+				return this.taskInspector.renderViewport(width, budget);
+			}
 			const picker = this.taskInspector.renderPicker(width, budget);
 			const remaining = Math.max(0, budget - picker.length);
 			const body = remaining ? renderChatSessionBody(this.state, width, remaining) : [];
+			this.bodyLayout = { taskView: false, transcriptRows: body.length };
 			return [...body, ...Array.from({ length: Math.max(0, remaining - body.length) }, () => ""), ...picker];
 		}
-		return renderChatSessionBody(this.state, width, budget);
+		const body = renderChatSessionBody(this.state, width, budget);
+		this.bodyLayout = { taskView: false, transcriptRows: body.length };
+		return body;
 	}
 
 	/**
@@ -512,6 +527,60 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	bodyScrollFromBottom(): number {
 		return this.state.bodyViewport.getScrollFromBottom();
+	}
+
+	/**
+	 * A single click at row `event.y` of the body the last `renderBody` drew: on a block's header it expands or collapses
+	 * that block, or a group summary and its calls, and returns true. Expanding while the body follows its end holds
+	 * the view where it is, so the header stays under the pointer.
+	 */
+	handleBodyClick(event: TuiMouseEvent): boolean {
+		if (!isSingleLeftClick(event)) return false;
+		const layout = this.bodyLayout;
+		// A task's transcript the chat shows full-screen takes the click into its own transcript.
+		if (layout.taskView) return this.taskInspector?.handleMouse(event)?.handled === true;
+		// While the prompt search or a completion menu owns input, a click on the transcript does nothing.
+		if (event.y >= layout.transcriptRows || hasChatSessionTransientModal(this.state)) return false;
+		const state = this.state;
+		const hit = state.bodyViewport.componentAtRow(event.y);
+		if (hit === undefined || hit.component !== state.transcriptComponent) return false;
+		const clicked = state.transcriptComponent.clickedEntries(hit.width, hit.row);
+		if (clicked === undefined) return false;
+		for (const entry of clicked.entries) {
+			setExpandedOverride(state, entry, clicked.expand);
+			state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
+		}
+		const first = state.bodyViewport.firstVisibleRow();
+		if (clicked.expand && state.bodyViewport.getScrollFromBottom() === 0 && first !== undefined) {
+			state.bodyViewport.scrollTo(first);
+		}
+		state.requestRender?.();
+		return true;
+	}
+
+	/**
+	 * Ctrl+O was pressed: every block follows the tool-output setting again, including those a click set, in this
+	 * chat and in the task transcript it shows.
+	 */
+	toolOutputToggled(): void {
+		dropExpandedOverrides(this.state);
+		this.taskInspector?.toolOutputToggled();
+		this.invalidate();
+	}
+
+	/**
+	 * What the last `renderBody` drew on `row`: the transcript entry there and the row within it, or what the task
+	 * transcript the chat shows drew there. Undefined for rows outside a transcript.
+	 */
+	bodyRowKey(row: number): string | undefined {
+		const layout = this.bodyLayout;
+		if (layout.taskView) return this.taskInspector?.paintedRowKey(row);
+		if (row < 0 || row >= layout.transcriptRows) return undefined;
+		const state = this.state;
+		const hit = state.bodyViewport.componentAtRow(row);
+		if (hit === undefined || hit.component !== state.transcriptComponent) return undefined;
+		const drawn = state.transcriptComponent.paintedEntryAt(hit.width, hit.row);
+		return drawn === undefined ? undefined : `${transcriptEntryName(state, drawn.entry)}#${drawn.row}`;
 	}
 
 	bodyMaxScroll(): number {

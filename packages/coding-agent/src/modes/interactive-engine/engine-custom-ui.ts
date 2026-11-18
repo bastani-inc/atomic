@@ -482,8 +482,9 @@ export class EngineCustomUiService {
 				// A component that names its rows takes the click while the clicked row still shows the item the host
 				// showed there, through frames that only animate. Otherwise a newer frame than the one clicked may have
 				// moved what was under the pointer, and the click is dropped.
+				// A row the component left unnamed is sent as an empty name, and needs the frame itself unchanged.
 				const paintedRowKey = record.component.paintedRowKey;
-				if (paintedRowKey !== undefined && command.rowKey !== undefined) {
+				if (paintedRowKey !== undefined && command.rowKey) {
 					if (paintedRowKey.call(record.component, command.y) !== command.rowKey) break;
 				} else if (command.frame !== record.frame) break;
 				const { x, y, width, height } = command;
