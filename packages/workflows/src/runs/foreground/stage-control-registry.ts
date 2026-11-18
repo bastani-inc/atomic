@@ -284,8 +284,8 @@ export interface StageControlRegistry {
 	 * it through `claim()` / `getOrCreateDetached()`.
 	 */
 	acquireDetached(runId: string, stageId: string, create: () => StageControlHandle): DetachedStageHandleLease;
-	/** Observe a new handle replacing a mounted chat's handle at the same run and stage id. */
-	onStageReplaced?(listener: (previous: StageControlHandle, next?: StageControlHandle) => void): () => void;
+	/** Follow a replaced stage by identity: a pane can still hold an old worker view after its registration is gone. */
+	onStageReplaced?(listener: (stage: StageChatTarget, next?: StageControlHandle) => void): () => void;
 	/** A worker published a stage reserved for resume: its live view is served by the pool, not this registry. */
 	handoffToWorker?(runId: string, stageId: string, terminal: boolean): void;
 	/** Reserve the retained chats whose transcripts a same-id resume will reopen; release on startup failure or run end. */
@@ -406,15 +406,15 @@ export function createStageControlRegistry(): StageControlRegistry {
 
 	const _byRun = new Map<string, Map<string, RegistryEntry>>();
 	const pendingDisposals = new Set<Promise<void>>();
-	const chatReservations = new Map<string, AbortController>();
+	const chatReservations = new Map<string, { until: AbortController; workerPublished: boolean }>();
 	const chatKey = (runId: string, stageId: string) => JSON.stringify([runId, stageId]);
 	const sessionStores = new Map<string, Map<string, SessionStore>>();
 	const releaseListeners = new Set<(stage: ReleasedStage) => void>();
-	const replacementListeners = new Set<(previous: StageControlHandle, next?: StageControlHandle) => void>();
-	function notifyReplacement(previous: StageControlHandle, next?: StageControlHandle): void {
+	const replacementListeners = new Set<(stage: StageChatTarget, next?: StageControlHandle) => void>();
+	function notifyReplacement(stage: StageChatTarget): void {
 		for (const listener of [...replacementListeners]) {
 			try {
-				listener(previous, next);
+				listener(stage, _byRun.get(stage.runId)?.get(stage.stageId)?.handle);
 			} catch (error) {
 				console.warn("atomic-workflows: could not switch stage chat to its replacement", error);
 			}
@@ -463,7 +463,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 		const entry: RegistryEntry = { handle, ...fields, leases: new Set(), epoch: 0 };
 		if (fields.executionEnded === undefined && isTerminalStageStatus(handle.status)) {
 			const reserved = chatReservations.get(chatKey(runId, stageId));
-			if (reserved) handle.releaseGate?.chatHolds?.reserveForResume(reserved.signal);
+			if (reserved) handle.releaseGate?.chatHolds?.reserveForResume(reserved.until.signal);
 		}
 		entry.stopWatching = handle.releaseGate?.onHoldLifted(() => releaseWhenLetGo(runId, stageId, entry));
 		return entry;
@@ -665,7 +665,8 @@ export function createStageControlRegistry(): StageControlRegistry {
 				if (busy) throw new Error(busy);
 			}
 			rememberSessionStore(handle);
-			if (executionEnded !== undefined || handle.placement !== undefined)
+			const takeover =
+				(executionEnded !== undefined || handle.placement !== undefined) &&
 				chatReservations.delete(chatKey(handle.runId, handle.stageId));
 			runMap.set(
 				handle.stageId,
@@ -678,7 +679,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 			);
 			if (displaced !== undefined) stopWatching(displaced);
 			if (retiring) retire(displaced);
-			if (displaced !== undefined && displaced.handle !== handle) notifyReplacement(displaced.handle, handle);
+			if (takeover || (displaced !== undefined && displaced.handle !== handle)) notifyReplacement(handle);
 			return () => {
 				const existing = _byRun.get(handle.runId);
 				if (!existing) return;
@@ -851,14 +852,17 @@ export function createStageControlRegistry(): StageControlRegistry {
 			const entry = entries?.get(stageId);
 			if (terminal) {
 				chatReservations.delete(key);
-				reserved.abort();
+				reserved.until.abort();
 			}
-			if (!entries || !entry || !(entry.executionEnded?.() ?? isTerminalStageStatus(entry.handle.status))) return;
-			entries.delete(stageId);
-			if (entries.size === 0) _byRun.delete(runId);
-			stopWatching(entry);
-			retire(entry);
-			notifyReplacement(entry.handle);
+			if (entries && entry) {
+				if (!(entry.executionEnded?.() ?? isTerminalStageStatus(entry.handle.status))) return;
+				entries.delete(stageId);
+				if (entries.size === 0) _byRun.delete(runId);
+				stopWatching(entry);
+				retire(entry);
+			} else if (reserved.workerPublished) return;
+			reserved.workerPublished = true;
+			notifyReplacement({ runId, stageId });
 		},
 		reserveStageChats(stages) {
 			const reservations = new Map<string, AbortController>();
@@ -873,13 +877,13 @@ export function createStageControlRegistry(): StageControlRegistry {
 				const key = chatKey(runId, stageId);
 				const until = new AbortController();
 				reservations.set(key, until);
-				chatReservations.set(key, until);
+				chatReservations.set(key, { until, workerPublished: false });
 				_byRun.get(runId)?.get(stageId)?.handle.releaseGate?.chatHolds?.reserveForResume(until.signal);
 			}
 			return () => {
 				for (const [key, until] of reservations) {
 					until.abort();
-					if (chatReservations.get(key) === until) chatReservations.delete(key);
+					if (chatReservations.get(key)?.until === until) chatReservations.delete(key);
 				}
 			};
 		},

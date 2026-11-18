@@ -21,6 +21,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
+import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { testRunId } from "../helpers/run-id.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
@@ -302,6 +303,39 @@ describe("completed workflow inspection", () => {
 				{ timeout: INSPECTION_SETTLE_MS, interval: 5 },
 			);
 		}
+
+		test("an open pane still controls its attachment after inspection refreshes the same saved chat (#5559)", async () => {
+			const run = await inspected();
+			const pane = new WorkflowAttachPane({
+				store: run.store,
+				graphTheme: defaultTheme,
+				runId: run.runId,
+				initialAttachStageId: "final-source",
+				stageControlRegistry: run.registry,
+				onClose() {},
+			});
+			try {
+				pane.setVisible(false);
+				assert.equal(
+					(
+						await openCompletedDurableWorkflow(run.runId, {
+							durableBackend: run.backend,
+							store: run.store,
+							stageControlRegistry: run.registry,
+							adapters: run.adapters,
+							cwd: tempDir,
+						})
+					).ok,
+					true,
+				);
+				assert.equal(run.registry.peek(run.runId, "final-source"), run.handle);
+				pane.setVisible(true);
+				assert.equal(run.store.run(run.runId)?.stages[0]?.attached, true);
+			} finally {
+				pane.dispose();
+				await run.registry.clear();
+			}
+		});
 
 		test("a handle nobody opened holds no session", async () => {
 			const run = await inspected();

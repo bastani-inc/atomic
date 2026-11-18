@@ -10,6 +10,7 @@ import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { stageSessionStore } from "../shared/stage-session-store.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
+import { publishRunForOwner, runAttachmentOwner } from "../shared/workflow-run-ownership.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { completedWorkflowRunSnapshots, resolveCompletedWorkflow } from "./completed-catalog.js";
 import type { ResumableWorkflowEntry } from "./types.js";
@@ -87,7 +88,7 @@ export async function openCompletedDurableWorkflow(
 	for (const restored of snapshots) {
 		const previous = deps.store.run(restored.id);
 		if (previous !== undefined) deps.store.removeRun(previous.id);
-		deps.store.recordRunStart(restored);
+		deps.store.recordRunStart(previous ? publishRunForOwner(restored, runAttachmentOwner(previous)) : restored);
 		registerCompletedChatHandles(restored, deps, selectedStore);
 	}
 	const hasReopenableStage = snapshots.some((run) => run.stages.some((stage) => stage.sessionId !== undefined));

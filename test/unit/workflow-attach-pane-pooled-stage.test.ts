@@ -95,6 +95,9 @@ function fakeTransport(overrides: Partial<PooledStageChatSnapshot> = {}) {
 		transport,
 		unwatched,
 		deliveries,
+		end() {
+			listener?.({ kind: "ended", reason: "stage_finished" });
+		},
 		send(seq: number, event: AgentSessionEvent) {
 			listener?.({ kind: "events", events: [{ seq, event }] });
 		},
@@ -310,9 +313,9 @@ test("a stage registered in an SDK registry attaches with its transcript, reply 
 	}
 });
 
-test.each(["host", "SDK"])(
-	"a %s post-mortem pane follows the resumed worker's full live view, including its in-flight reply (#5559)",
-	async (host) => {
+test.each(["host", "SDK"].flatMap((host) => ["hide", "edit"].map((duringOpen) => ({ host, duringOpen }))))(
+	"a $host post-mortem pane follows the resumed worker after $duringOpen during attachment (#5559)",
+	async ({ host, duringOpen }) => {
 		const store = createStore();
 		const registry = createStageControlRegistry();
 		const stage = {
@@ -336,8 +339,12 @@ test.each(["host", "SDK"])(
 		const { handle } = makeHandle(undefined, [], "completed");
 		registry.register(handle);
 		const pool = fakeTransport();
+		const opening = Promise.withResolvers<void>();
+		const ready = Promise.withResolvers<void>();
 		const unregister = registerPooledStageSource(store, {
 			async acquire(runId, stageId) {
+				opening.resolve();
+				await ready.promise;
 				const opened = await openPooledStageHandle(pool.transport, { runId, stageId }, "review");
 				assert.ok(opened.ok);
 				return { handle: opened.handle, release: () => opened.handle.dispose() };
@@ -374,13 +381,96 @@ test.each(["host", "SDK"])(
 						),
 					);
 				} else registry.handoffToWorker?.("run-1", stage.id, false);
+				await opening.promise;
+				if (duringOpen === "hide") pane.setVisible(false);
+				else for (const c of "typed during reconnect") pane.handleInput(c);
+				ready.resolve();
 				await vi.waitFor(() => assert.match(visible(pane.render(100)), /Streaming from the worker/));
+				if (duringOpen === "hide") pane.setVisible(true);
+				else assert.equal(pane._chatInputBuffer, "typed during reconnect");
 			} finally {
+				ready.resolve();
 				finish?.();
 			}
 		} finally {
 			pane.dispose();
 			unregister();
+			await registry.clear();
+		}
+	},
+);
+
+test.each(["host", "SDK"])(
+	"a %s pane kept open after a worker stage fails follows its next pool (#5559)",
+	async (host) => {
+		const { store } = pooledChildStore();
+		const registry = createStageControlRegistry();
+		const runId = "child";
+		const stageId = "agent";
+		const oldStage = store.run(runId)!.stages[0]!;
+		const source = (pool: ReturnType<typeof fakeTransport>) =>
+			registerPooledStageSource(store, {
+				async acquire() {
+					const open = await openPooledStageHandle(pool.transport, { runId, stageId }, "agent");
+					assert.ok(open.ok);
+					return { handle: open.handle, release: () => open.handle.dispose() };
+				},
+			});
+		const oldPool = fakeTransport();
+		const removeOldSource = source(oldPool);
+		const oldProxy =
+			host === "SDK"
+				? new RegisteredPooledStageHandle(
+						runId,
+						oldStage,
+						{ kind: "local-worker", workId: "old", generation: 1 },
+						async () => undefined,
+					)
+				: undefined;
+		const removeProxy = oldProxy && registry.register(oldProxy);
+		const pane = new WorkflowAttachPane({
+			store,
+			runId,
+			graphTheme: deriveGraphTheme({}),
+			stageControlRegistry: registry,
+			initialAttachStageId: stageId,
+			onClose() {},
+		});
+		let removeNext: (() => void) | undefined, finish: (() => void) | undefined;
+		try {
+			await vi.waitFor(() => assert.match(visible(pane.render(100)), /Streaming from the worker/));
+			oldPool.end();
+			store.recordStageEnd(runId, { ...oldStage, status: "failed" });
+			store.recordRunEnd(runId, "failed");
+			removeProxy?.();
+			oldProxy?.dispose();
+			removeOldSource();
+			finish = registry.reserveStageChats?.([{ runId, stageId }]);
+			removeNext = source(fakeTransport({ streamingMessage: assistant("reply from resumed pool") as never }));
+			const stage = { ...oldStage, status: "running" as const };
+			store.recordRunStart({
+				...store.run(runId)!,
+				endedAt: undefined,
+				status: "running",
+				startedAt: 2,
+				stages: [stage],
+			});
+			if (host === "host") registry.handoffToWorker?.(runId, stageId, false);
+			else
+				registry.register(
+					new RegisteredPooledStageHandle(
+						runId,
+						stage,
+						{ kind: "local-worker", workId: "new", generation: 1 },
+						async () => undefined,
+					),
+				);
+			await vi.waitFor(() => assert.match(visible(pane.render(100)), /reply from resumed pool/));
+		} finally {
+			pane.dispose();
+			finish?.();
+			removeOldSource();
+			removeNext?.();
 			await registry.clear();
 		}
 	},
