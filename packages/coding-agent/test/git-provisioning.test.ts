@@ -53,7 +53,14 @@ const mocks = vi.hoisted(() => ({
 		| undefined,
 	writeFile: vi.fn(),
 	actualFs: undefined as typeof import("fs") | undefined,
+	/** Wraps the async file operations the code under test makes, to stall or stop them. */
+	fsGate: undefined as ((op: string, path: string, run: () => Promise<unknown>) => Promise<unknown>) | undefined,
 }));
+
+function gated<T>(op: string, path: string, run: () => T | Promise<T>): Promise<T> {
+	const go = async () => run();
+	return (mocks.fsGate === undefined ? go() : mocks.fsGate(op, path, go)) as Promise<T>;
+}
 
 vi.mock("os", async () => {
 	const actual = await vi.importActual<typeof import("os")>("os");
@@ -116,16 +123,20 @@ vi.mock("fs/promises", async () => {
 				throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: "ENOENT" });
 			}
 		},
-		stat: async (path: string, options?: object) => {
-			const stats = mocks.statSync(path, options);
-			if (stats === undefined) {
-				throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: "ENOENT" });
-			}
-			return stats;
-		},
-		readdir: async (path: string, options?: object) => mocks.readdirSync(path, options),
-		rm: async (path: string, options?: object) => mocks.rmSync(path, options),
-		rename: async (from: string, to: string) => mocks.renameSync(from, to),
+		stat: async (path: string, options?: object) =>
+			gated("stat", path, () => {
+				const stats = mocks.statSync(path, options);
+				if (stats === undefined) {
+					throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), {
+						code: "ENOENT",
+					});
+				}
+				return stats;
+			}),
+		readdir: async (path: string, options?: object) => gated("readdir", path, () => mocks.readdirSync(path, options)),
+		rm: async (path: string, options?: object) => gated("rm", path, () => mocks.rmSync(path, options)),
+		rename: async (from: string, to: string) => gated("rename", from, () => mocks.renameSync(from, to)),
+		mkdir: async (path: string, options?: object) => gated("mkdir", path, () => actual.mkdir(path, options)),
 		writeFile: async (path: string, data: unknown, ...rest: unknown[]) => {
 			if (typeof data === "string") {
 				return mocks.writeFileSync(path, data, ...rest);
@@ -386,6 +397,7 @@ beforeEach(async () => {
 	mocks.statSync.mockImplementation(actualFs.statSync);
 	mocks.spawnSyncOptions.length = 0;
 	mocks.lock = undefined;
+	mocks.fsGate = undefined;
 });
 
 afterEach(() => {
@@ -1316,10 +1328,11 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 		const lockPath = join(agentDir, "bin", "git.install.lock");
 		mkdirSync(lockPath, { recursive: true });
 		const actualRemove = mocks.actualFs!.rmSync as (path: string, options?: object) => void;
-		mocks.rmSync.mockImplementation((path: string, options?: object) => {
-			if (path === lockPath) actualRemove(path, { recursive: true, force: true });
-			actualRemove(path, options);
-		});
+		mocks.fsGate = async (op, path, run) => {
+			if ((op === "rm" || op === "rename") && path === lockPath)
+				actualRemove(path, { recursive: true, force: true });
+			return run();
+		};
 
 		const git = await tools.withGitProvisionSettingsForTest(
 			{ release: fake.release, lockPollMs: 20, lockStaleMs: 100 },
@@ -1329,6 +1342,118 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 		assert.equal(git.source, "provisioned");
 		assert.equal(fetchMock.mock.calls.length, 1);
 		assert.equal(existsSync(lockPath), false);
+	});
+
+	it("a waiter that pauses while taking over an abandoned lock costs neither a second download nor a failure (#4322)", async () => {
+		const fake = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
+		// The download outlasts the stale threshold plus the pause, so the holder is still installing when the paused
+		// waiter resumes and must keep refreshing its lock for that waiter to leave it alone.
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 4_500));
+			return new Response(new Uint8Array(fake.bytes));
+		});
+		const lockPath = join(agentDir, "bin", "git.install.lock");
+		mkdirSync(lockPath, { recursive: true });
+		vi.resetModules();
+		const otherProcess = await import("../src/utils/tools-manager.js");
+		// The first waiter to act on the abandoned lock pauses for longer than the stale threshold, as on a loaded
+		// machine, so the other waiter takes the lock over and is downloading when the paused one resumes.
+		let paused = false;
+		mocks.fsGate = async (op, path, run) => {
+			if ((op === "rm" || op === "rename") && path === lockPath && !paused) {
+				paused = true;
+				await new Promise((resolveDelay) => setTimeout(resolveDelay, 2_000));
+			}
+			return run();
+		};
+		// proper-lockfile refreshes a held lock at most once a second, so the stale threshold must be longer than that.
+		const settings = { release: fake.release, lockPollMs: 20, lockStaleMs: 1_500, lockUpdateMs: 1_000 };
+
+		const results = await Promise.allSettled(
+			[tools, otherProcess].map((installer) =>
+				installer.withGitProvisionSettingsForTest(settings, () => installer.resolveGit()),
+			),
+		);
+
+		assert.ok(paused);
+		for (const result of results) {
+			if (result.status === "rejected") assert.fail(String(result.reason));
+			assert.equal(result.value.path, provisionedExecutable());
+		}
+		assert.equal(fetchMock.mock.calls.length, 1, "exactly one installer downloads after the takeover");
+		// A holder that never saw its lock compromised releases it; a compromised one leaves it behind.
+		assert.equal(existsSync(lockPath), false, "the installer that took the lock over still held it at the end");
+	}, 20_000);
+
+	/**
+	 * Kill, in effect, the installer that next makes a file operation matching `step`: the operation takes effect,
+	 * and the installer never gets past it. Resolves once that has happened.
+	 */
+	function stopAfter(step: (op: string, path: string) => boolean): Promise<void> {
+		let armed = true;
+		return new Promise((stopped) => {
+			mocks.fsGate = async (op, path, run) => {
+				const result = await run();
+				if (armed && step(op, path)) {
+					armed = false;
+					stopped();
+					return new Promise(() => {});
+				}
+				return result;
+			};
+		});
+	}
+
+	/** A file operation that takes an abandoned lock over, on main and in every takeover design since. */
+	const takeoverStep = (lockPath: string) => (op: string, path: string) =>
+		((op === "rm" || op === "rename") && path === lockPath) ||
+		(op === "mkdir" && basename(path).startsWith(`${basename(lockPath)}.`));
+
+	it("installs after waiters die one after another while taking over an abandoned lock (#4322)", async () => {
+		const fake = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
+		const fetchMock = serveArchive(fake.bytes);
+		const binDir = join(agentDir, "bin");
+		const lockPath = join(binDir, "git.install.lock");
+		mkdirSync(lockPath, { recursive: true });
+		const settings = { release: fake.release, lockPollMs: 5, lockStaleMs: 30, lockUpdateMs: 10 };
+
+		let git: Awaited<ReturnType<ToolsManager["resolveGit"]>> | undefined;
+		let deaths = 0;
+		while (git === undefined && deaths < 20) {
+			const stopped = stopAfter(takeoverStep(lockPath));
+			vi.resetModules();
+			const installer: ToolsManager = await import("../src/utils/tools-manager.js");
+			const outcome = await Promise.race([
+				installer.withGitProvisionSettingsForTest(settings, () => installer.resolveGit()),
+				stopped.then(() => "stopped" as const),
+			]);
+			if (outcome === "stopped") deaths++;
+			else git = outcome;
+		}
+
+		assert.ok(deaths >= 1, "a waiter died mid-takeover");
+		assert.equal(git?.path, provisionedExecutable());
+		assert.equal(fetchMock.mock.calls.length, 1);
+		for (const name of readdirSync(binDir)) assert.ok(name.length <= 64, name);
+	});
+
+	it("later installs remove what a waiter killed mid-takeover left in the git directory (#4322)", async () => {
+		const fake = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
+		serveArchive(fake.bytes);
+		const lockPath = join(agentDir, "bin", "git.install.lock");
+		mkdirSync(lockPath, { recursive: true });
+		const settings = { release: fake.release, lockPollMs: 5, lockStaleMs: 30, lockUpdateMs: 10 };
+		const stopped = stopAfter(takeoverStep(lockPath));
+		vi.resetModules();
+		const killed: ToolsManager = await import("../src/utils/tools-manager.js");
+		void killed.withGitProvisionSettingsForTest(settings, () => killed.resolveGit());
+		await stopped;
+		mocks.fsGate = undefined;
+
+		const git = await tools.withGitProvisionSettingsForTest(settings, () => tools.resolveGit());
+
+		assert.equal(git.path, provisionedExecutable());
+		assert.deepEqual(leftovers(), []);
 	});
 
 	it("keeps a healthy install another process published first and publishes beside a broken one", async () => {

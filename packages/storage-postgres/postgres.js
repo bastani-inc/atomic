@@ -543,6 +543,9 @@ const TRANSIENT_SQLSTATES = new Map([
 	["08000", { code: "connection-lost", outcome: "unknown" }],
 	["08003", { code: "connection-lost", outcome: "unknown" }],
 	["08006", { code: "connection-lost", outcome: "unknown" }],
+	// read_only_sql_transaction: a write refused, nothing applied. A read replica refuses it every time; a primary does
+	// for a while during a failover, or when the service makes it read-only because its storage is nearly full.
+	["25006", { code: "read-only-server", outcome: "not-applied" }],
 ]);
 
 /**

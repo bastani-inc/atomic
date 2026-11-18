@@ -23,10 +23,27 @@ export const CANCEL_REQUEST_CODE = 80877102;
 
 const target = () => new URL(postgresTestUrl!);
 
-/** Whether the test server is reached over TLS: its URL asks for `require`, `verify-ca` or `verify-full`. */
+/**
+ * Whether the test server is reached over TLS: its URL asks for `require`, `verify-ca` or `verify-full`, or names no
+ * `sslmode` and a host other than this machine, which the adapter reaches with `verify-full`.
+ */
 export function postgresTestUsesTls(): boolean {
-	const mode = target().searchParams.get("sslmode");
+	const url = target();
+	const mode = url.searchParams.get("sslmode");
+	if (mode === null) return !isLocalTestHost(url.searchParams.get("host") ?? url.hostname);
 	return mode === "require" || mode === "verify-ca" || mode === "verify-full";
+}
+
+/** Whether `host` is a socket directory, a loopback name or a loopback address, as the adapter judges it. */
+function isLocalTestHost(host: string): boolean {
+	const name = host.replace(/^\[|\]$/g, "").toLowerCase();
+	return (
+		name === "" ||
+		name.startsWith("/") ||
+		name === "localhost" ||
+		name === "::1" ||
+		/^127(?:\.\d{1,3}){3}$/.test(name)
+	);
 }
 
 /** A plain TCP connection to the test server's address. */
