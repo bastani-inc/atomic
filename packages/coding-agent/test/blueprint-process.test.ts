@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { getEventListeners } from "node:events";
 import {
+	closeSync,
+	copyFileSync,
 	existsSync,
 	fstatSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readFileSync,
 	realpathSync,
 	renameSync,
@@ -25,6 +29,7 @@ import {
 	type ProcessExit,
 	runLoggedProcess,
 	startsProcessGroup,
+	stepStartingWatcher,
 } from "../src/core/resume/blueprint/process.ts";
 import { getShellConfig } from "../src/utils/shell.ts";
 
@@ -75,6 +80,21 @@ async function waitFor(done: () => boolean, what: string): Promise<void> {
 		assert.ok(Date.now() < deadline, `${what} never happened`);
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
+}
+
+/** Runs `start` and counts each try it makes to start a process: `onTry` is told the count before the try. */
+async function counting<T>(start: () => Promise<T>, onTry: (tries: number) => void = () => {}) {
+	let tries = 0;
+	const result = await stepStartingWatcher.run(() => onTry(++tries), start);
+	return { result, tries };
+}
+
+/** A fresh copy of Node that Windows refuses to start, with EPERM, until `allow` runs: no one may execute it. */
+function refusedNode(): { command: string; allow: () => void } {
+	const command = path("refused-node.exe");
+	copyFileSync(process.execPath, command);
+	execFileSync("icacls", [command, "/deny", "*S-1-1-0:(X)"], { stdio: "ignore" });
+	return { command, allow: () => execFileSync("icacls", [command, "/remove:d", "*S-1-1-0"], { stdio: "ignore" }) };
 }
 
 function isAlive(pid: number): boolean {
@@ -145,6 +165,140 @@ describe("running a logged process (#4588)", () => {
 		assert.equal(exit.timedOut, false);
 		assert.ok(exit.elapsedMs >= 0);
 	});
+
+	test("a process the system refuses to start at once resolves with the refusal after one try instead of rejecting (#5608)", async () => {
+		writeFileSync(path("not-a-directory"), "");
+		const { result, tries } = await counting(() =>
+			execute(nodeProcess('console.log("ran")', { cwd: path("not-a-directory") })),
+		);
+		assert.ok(result.exit.spawnError instanceof Error);
+		assert.equal(result.exit.exitStatus, null);
+		assert.equal(result.exit.signal, null);
+		assert.equal(result.exit.timedOut, false);
+		assert.equal(result.output, "");
+		assert.equal(tries, 1);
+	});
+
+	test.skipIf(process.platform !== "win32")(
+		"a process Windows refuses to start for a moment with EPERM is started when it tries again (#5608)",
+		async () => {
+			const refused = refusedNode();
+			try {
+				const { result, tries } = await counting(
+					() => execute(nodeProcess('console.log("started")', { command: refused.command })),
+					(tries) => {
+						if (tries === 2) refused.allow();
+					},
+				);
+				assert.equal(result.output, "started\n");
+				assert.equal(result.exit.exitStatus, 0);
+				assert.equal(result.exit.spawnError, undefined);
+				assert.equal(tries, 2);
+			} finally {
+				refused.allow();
+			}
+		},
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"a process Windows refuses to start with EBUSY while another program holds it open for writing is started once it lets go (#5608)",
+		async () => {
+			const command = path("held-node.exe");
+			copyFileSync(process.execPath, command);
+			const held = openSync(command, "r+");
+			let open = true;
+			const release = () => {
+				if (open) closeSync(held);
+				open = false;
+			};
+			try {
+				const { result, tries } = await counting(
+					() => execute(nodeProcess('console.log("started")', { command })),
+					(tries) => {
+						if (tries === 2) release();
+					},
+				);
+				assert.equal(result.output, "started\n");
+				assert.equal(result.exit.exitStatus, 0);
+				assert.equal(tries, 2);
+			} finally {
+				release();
+			}
+		},
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"a process Windows keeps refusing to start resolves with the refusal once the tries run out (#5608)",
+		async () => {
+			const refused = refusedNode();
+			try {
+				const controller = new AbortController();
+				const { result, tries } = await counting(() =>
+					execute(nodeProcess('console.log("started")', { command: refused.command }), {
+						timeoutMs: STEADY_TIMEOUT_MS,
+						signal: controller.signal,
+					}),
+				);
+				assert.equal((result.exit.spawnError as NodeJS.ErrnoException).code, "EPERM");
+				assert.equal(result.exit.exitStatus, null);
+				assert.equal(result.exit.timedOut, false);
+				assert.equal(result.output, "");
+				assert.ok(tries > 1, `tried ${tries} times`);
+				assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+			} finally {
+				refused.allow();
+			}
+		},
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"cancelling while a refused process waits to be tried again rejects with the reason and never starts it (#5608)",
+		async () => {
+			const refused = refusedNode();
+			const controller = new AbortController();
+			const reason = new Error("resume cancelled");
+			try {
+				const run = nodeProcess(
+					'require("node:fs").writeFileSync(process.argv[1], "")',
+					{ command: refused.command },
+					[path("started")],
+				);
+				const { result, tries } = await counting(
+					() =>
+						execute(run, { timeoutMs: STEADY_TIMEOUT_MS, signal: controller.signal }).then(
+							() => "resolved",
+							(error: unknown) => error,
+						),
+					(tries) => {
+						if (tries === 1) setTimeout(() => controller.abort(reason), 0);
+					},
+				);
+				assert.equal(result, reason);
+				assert.equal(tries, 1);
+				assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+			} finally {
+				refused.allow();
+			}
+			assert.equal(existsSync(path("started")), false);
+		},
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"a refused process is not tried again past the step's timeout, and resolves with the refusal (#5608)",
+		async () => {
+			const refused = refusedNode();
+			try {
+				const { result, tries } = await counting(() =>
+					execute(nodeProcess('console.log("started")', { command: refused.command }), { timeoutMs: 1 }),
+				);
+				assert.equal((result.exit.spawnError as NodeJS.ErrnoException).code, "EPERM");
+				assert.equal(result.exit.timedOut, false);
+				assert.equal(tries, 1);
+			} finally {
+				refused.allow();
+			}
+		},
+	);
 
 	test("an already aborted signal rejects with its reason before anything starts (#4588)", async () => {
 		const reason = new Error("cancelled early");
