@@ -5,7 +5,11 @@ import {
 	type SessionCommandCatalog,
 	type SessionEntry,
 } from "@bastani/atomic";
-import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import {
+	type StageControlHandle,
+	type StageControlRegistry,
+	stageWaitsToRetry,
+} from "../runs/foreground/stage-control-registry.js";
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
 import { rehydrateError, serializeError } from "../shared/error-codec.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -816,6 +820,7 @@ function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnaps
 		isStreaming: handle.isStreaming,
 		messages: [...handle.messages],
 		...(streamingMessage === undefined ? {} : { streamingMessage }),
+		...(stageWaitsToRetry(handle) ? { waitingToRetry: true } : {}),
 		pendingToolExecutionEvents: [...(handle.pendingToolExecutionEvents?.() ?? [])],
 		queued: handle.queuedUserMessages?.() ?? EMPTY_STAGE_QUEUED_USER_MESSAGES,
 		seq,

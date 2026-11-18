@@ -104,7 +104,8 @@ test("successful retry and fallback stay ordinary-inactive until a genuine lifec
 				host.applyAgentEvent(transition.start as never);
 				assert.equal(renderRequests, beforeFactualStart + 1, `${transition.start.type} repaints immediately`);
 				assert.equal(host.statusText(), transition.factual);
-				assert.deepEqual(host.renderWorkingStatus(64), []);
+				// The factual copy is the working line while the retry or switch waits; it does not animate.
+				assert.deepEqual(host.renderWorkingStatus(64).map(stripAnsi), ["", ` ∀ ${transition.factual}`.padEnd(64)]);
 				assert.equal(host.hasAnimationTick(), false);
 				assert.equal(timers.timeoutCount(), 0);
 				timers.advanceBy(80);
@@ -221,7 +222,12 @@ test("public interrupt stops the working lifecycle and fences its captured callb
 
 test("turn and terminal stops repaint immediately and leave no delayed repaint", () => {
 	const stopCases = [
-		{ name: "turn_end", stop: (host) => host.applyAgentEvent({ type: "turn_end" } as never), after: [] },
+		// The retry still waits after the turn ends, so its factual working line stays.
+		{
+			name: "turn_end",
+			stop: (host) => host.applyAgentEvent({ type: "turn_end" } as never),
+			after: ["", " ∀ retrying…".padEnd(64)],
+		},
 		{
 			name: "agent_end",
 			stop: (host) => host.applyAgentEvent({ type: "agent_end", messages: [] } as never),
