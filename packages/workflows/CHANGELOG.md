@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
 - The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+- A run blocked because a stage that waited between turns could not reopen its session store now reads as blocked everywhere, as a run blocked by a provider outage does: the `/workflows` graph shows `↑ blocked` and offers `r resume run`, the `/workflows` list and the workflow tool's `status` say `blocked`, `/tasks` and the agent panel show it paused, and the chat gets a blocked notice. Before, all of these showed it as still running ([#5534](https://github.com/bastani-inc/atomic/issues/5534))
 
 ## [0.9.89] - 2026-11-18
 
