@@ -12,6 +12,7 @@
 - The main chat no longer leaves a blank row between the working line and the usage meter above the prompt. Every chat now keeps exactly one row there: the usage meter, or a blank row in a subagent or stage chat with no usage to show, so a chat's last line never runs into its prompt.
 - A subagent or workflow stage chat waiting to retry a request, switch model or resume now shows `retrying…`, `switching model…` or `resuming…` as its working line above the prompt, instead of a line below its transcript.
 - A subagent or workflow stage chat opened while its agent already waits to retry a failed request now shows `retrying…` as its working line straight away, instead of looking idle until the next attempt. This includes a stage that runs on a local worker ([#5483](https://github.com/bastani-inc/atomic/issues/5483)).
+- On a busy Windows machine, a subagent's named-worktree checkout whose Git command ran to completion no longer fails with `Windows stdin worker stop was not confirmed`. The earlier fix did not cover commands that keep their background processes when they exit, and a named worktree's Git commands always do, so that the processes a hook starts survive the checkout ([#5512](https://github.com/bastani-inc/atomic/issues/5512))
 
 ## [0.9.89] - 2026-11-18
 
