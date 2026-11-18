@@ -1335,7 +1335,11 @@ async function executeRun(
 		},
 	});
 	const gatedTask: typeof durableTask = (...args) => whenRunning(() => durableTask(...args));
-	const chain = createChainPrimitive({ runtime, task: gatedTask });
+	const chain = createChainPrimitive({
+		runtime,
+		task: gatedTask,
+		nextReplayKey: (name) => stageReplayKeyGenerator(name),
+	});
 	const parallel = createParallelPrimitive({
 		runtime,
 		task: gatedTask,

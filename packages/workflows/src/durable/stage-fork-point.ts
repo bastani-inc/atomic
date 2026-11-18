@@ -167,8 +167,8 @@ export function withLaunchForkPoint<TOptions extends ForkableStageOptions>(input
 	const entryId = liveStageSessionLeaf(sessionId);
 	if (entryId === undefined) return options;
 	const record: ForkSourceRecord = { sessionId, entryId };
-	// A single stage has no sibling to agree with: once it has started it resumes its own session, and a stage that
-	// had not started when the run stopped is launched again, so the record need not be written before it starts.
+	// A single stage has no sibling to share its point with: once its session is recorded it resumes that session, and
+	// one whose session was not recorded when the run stopped is launched anew, so it need not wait for this record.
 	void input.backend
 		.commitAdditiveCheckpointBestEffort({
 			kind: "tool",

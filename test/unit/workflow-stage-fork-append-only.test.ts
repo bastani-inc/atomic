@@ -25,6 +25,7 @@ import {
 	createStageReplayKeyGenerator,
 } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { GraphFrontierTracker } from "../../packages/workflows/src/engine/graph-inference.js";
+import { createChainPrimitive } from "../../packages/workflows/src/engine/primitives/chain.js";
 import { createParallelPrimitive } from "../../packages/workflows/src/engine/primitives/parallel.js";
 import type { EngineRuntime } from "../../packages/workflows/src/engine/runtime.js";
 import { taskStageOptions } from "../../packages/workflows/src/runs/foreground/executor-task-prompts.js";
@@ -310,6 +311,41 @@ describe("a parallel's launch fixes its steps' identities and fork point (#5481)
 		]);
 	});
 
+	test("two chains with the same step names running at once each replay their own steps' results (#5481)", async () => {
+		const { chain } = await launchRun();
+		const first = [
+			{ name: "a", prompt: "first a" },
+			{ name: "b", prompt: "first b" },
+		];
+		const second = [
+			{ name: "a", prompt: "second a" },
+			{ name: "b", prompt: "second b" },
+		];
+		const firstStarted = Promise.withResolvers<void>();
+		const releaseFirst = Promise.withResolvers<void>();
+		const run = chain(async (name, options) => {
+			if (options.prompt === "first a") {
+				firstStarted.resolve();
+				await releaseFirst.promise;
+			}
+			return { stageName: name, text: String(options.prompt) };
+		});
+		const firstChain = run(first);
+		await firstStarted.promise;
+		// The second chain finishes both steps while the first chain's a still runs.
+		assert.deepEqual(texts(await run(second)), ["second a", "second b"]);
+		releaseFirst.resolve();
+		assert.deepEqual(texts(await firstChain), ["first a", "first b"]);
+
+		// Resumed, both chains replay their recorded results; their a steps now finish in launch order.
+		const resumed = chain(async () => assert.fail("every step of both chains has a recorded result"));
+		const replayed = await Promise.all([resumed(first), resumed(second)]);
+		assert.deepEqual(replayed.map(texts), [
+			["first a", "first b"],
+			["second a", "second b"],
+		]);
+	});
+
 	test("a workflow fork of a run starts its parallel's steps where their source was at launch, in the source's copy (#5481)", async () => {
 		const { backend, run, store, source, definition, parallel, forking } = await launchRun();
 		const sourceId = source.getSessionId();
@@ -531,8 +567,18 @@ async function launchRun(options: { readonly empty?: boolean } = {}) {
 		});
 		return createParallelPrimitive({ runtime, task, durable: { backend, workflowId, nextReplayKey } });
 	};
+	/** `ctx.chain` of the run, with `step` as each step's work; built again, it is the run resumed. */
+	const chain = (step: StepWork) => {
+		const nextReplayKey = createStageReplayKeyGenerator(run);
+		const runtime = {
+			runId: run,
+			exit: { throwIfWorkflowExitSelected: () => undefined, exitScope: undefined },
+		} as unknown as EngineRuntime;
+		const task = createDurableTaskPrimitive({ workflowId: run, backend, nextReplayKey, task: step });
+		return createChainPrimitive({ runtime, task, nextReplayKey });
+	};
 	const forking = { concurrency: 1, context: "fork" as const, forkFromSessionId: source.getSessionId() };
-	return { backend, run, store, source, definition, parallel, forking };
+	return { backend, run, store, source, definition, parallel, chain, forking };
 }
 
 /** The conversation a step's session starts with, opened from `store` the way the stage runner opens it. */
