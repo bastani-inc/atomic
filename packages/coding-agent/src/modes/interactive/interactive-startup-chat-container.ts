@@ -1,6 +1,7 @@
-import { WindowedContainer } from "@bastani/atomic-tui";
+import { type ScrollView, type TuiMouseEvent, WindowedContainer } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { disposeRemoteRenderers } from "../interactive-engine/remote-renderer.ts";
+import { type ContainerMouseResult, handleTranscriptBlockClick } from "./components/transcript-block-clicks.ts";
 import type { Component, Container } from "./interactive-mode-deps.ts";
 
 /**
@@ -12,10 +13,34 @@ export class StartupChatContainer extends WindowedContainer {
 	private startupOutputReleased = false;
 	private counted: { children: Component[]; length: number; count: number } | undefined;
 	private readonly isCounted: (child: Component) => boolean;
+	private readonly transcriptView: () => ScrollView | undefined;
 
-	constructor(isCounted: (child: Component) => boolean = () => false) {
+	constructor(
+		isCounted: (child: Component) => boolean = () => false,
+		transcriptView: () => ScrollView | undefined = () => undefined,
+	) {
 		super();
 		this.isCounted = isCounted;
+		this.transcriptView = transcriptView;
+	}
+
+	/** A click on the header of a tool block, grouped-call summary or agent card expands or collapses it. */
+	override handleMouse(event: TuiMouseEvent): ContainerMouseResult {
+		if (event.type === "click") {
+			const handled = handleTranscriptBlockClick(
+				this,
+				this.children,
+				(width, row) => this.childAtRow(width, row),
+				event,
+				(expanded) => {
+					// The reader opened the block to read it: hold the view instead of following the end past its header.
+					const view = this.transcriptView();
+					if (expanded && view?.isFollowingEnd) view.scrollTo(view.scrollTop, { disableFollow: true });
+				},
+			);
+			if (handled) return handled;
+		}
+		return super.handleMouse(event);
 	}
 
 	countedChildren(): number {
