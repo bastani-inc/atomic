@@ -1,7 +1,7 @@
 import { keyHint, keyText, rawKeyHint } from "@bastani/atomic";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { PendingPrompt } from "../shared/store-types.js";
-import { BOLD, hexBg, hexToAnsi, paint, RESET } from "./color-utils.js";
+import { boldOn, hexBg, hexToAnsi, paint, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { createPromptSelectList } from "./prompt-card-select.js";
 import type { PromptCardState } from "./prompt-card-state.js";
@@ -567,7 +567,7 @@ function drawCursor(text: string, caret: number, cursorOn: boolean, theme: Graph
 	if (!cursorOn) return beforeFx + paint(at, theme.text) + afterFx;
 	const cursorFg = hexToAnsi(theme.backgroundPanel);
 	const cursorBg = hexBg(theme.accent);
-	return beforeFx + cursorBg + cursorFg + BOLD + at + RESET + afterFx;
+	return beforeFx + cursorBg + cursorFg + boldOn() + at + RESET + afterFx;
 }
 
 function padToUsable(content: string, usable: number): string {
