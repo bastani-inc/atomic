@@ -1,5 +1,5 @@
 import { renderRoundedBoxLines } from "./chat-surface.js";
-import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, hexToAnsi, RESET } from "./color-utils.js";
 import { inertDisplayLine, inertDisplayText } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
@@ -179,7 +179,7 @@ function toneColor(theme: GraphTheme, tone: WorkflowNoticeTone): string {
 
 function style(text: string, theme: GraphTheme | undefined, color: string | undefined, bold = false): string {
 	if (!theme || !color || text.length === 0) return text;
-	return `${hexToAnsi(color)}${bold ? BOLD : ""}${text}${RESET}`;
+	return `${hexToAnsi(color)}${bold ? boldOn() : ""}${text}${RESET}`;
 }
 
 function fit(line: string, width: number): string {
