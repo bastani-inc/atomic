@@ -186,8 +186,14 @@ export async function resumeDurableWorkflow(
 	}
 	let handle = backend.getWorkflow(id);
 	if (handle === undefined) {
-		await raceAbort(backend.hydrateWorkflow(id), deps.signal);
-		handle = backend.getWorkflow(id);
+		// A cold backend may not have loaded this run. Check its journal row before reading any history for it.
+		const journal = backend.snapshotJournal;
+		if (journal === undefined || (await raceAbort(journal.getRun(id), deps.signal)) !== undefined) {
+			await raceAbort(backend.hydrateWorkflow(id), deps.signal);
+			handle = backend.getWorkflow(id);
+			if (journal !== undefined && handle === undefined)
+				return { ok: false, reason: "stale", message: `Workflow ${id} has no valid journal state.` };
+		}
 	}
 	if (handle?.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, id))
 		return alreadyRunningResult(handle.name, id);

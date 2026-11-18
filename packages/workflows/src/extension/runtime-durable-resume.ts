@@ -273,12 +273,12 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						// catalog read before that write would make the resume claim stale (#3760).
 						let catalog: readonly ResumableWorkflowEntry[] | undefined =
 							dormantWrites.size === 0 && selected !== undefined ? [selected] : undefined;
-						if (isFullRunId(workflowId)) {
+						if (isFullRunId(workflowId) && backend.getWorkflow(workflowId) !== undefined) {
 							if (catalog !== undefined) await backend.hydrateWorkflow(workflowId);
 							else catalog = await prepareTargetedDurableResumable(backend, [workflowId]);
 						}
 						options?.signal?.throwIfAborted();
-						return { backend, catalog };
+						return { backend, catalog: catalog ?? [] };
 					});
 					const adapterDeps: ResumeDurableDeps = {
 						registry: deps.registry,

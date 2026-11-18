@@ -616,8 +616,18 @@ async function resolveExplicitDurableTarget(
 		};
 	}
 	if (resolved.kind === "stored") target = resolved.workflowId;
-	const durableHandle = runtime.durableBackend().getWorkflow(target);
-	if (durableHandle !== undefined) await deps.authorize?.(target);
+	const backend = runtime.durableBackend();
+	const durableHandle = backend.getWorkflow(target);
+	let stored = durableHandle !== undefined;
+	if (!stored && isFullRunId(target)) {
+		try {
+			stored = (await backend.snapshotJournal?.getRun(target)) !== undefined;
+		} catch (error) {
+			return controlFailure("resume", target, error);
+		}
+		deps.signal?.throwIfAborted();
+	}
+	if (stored) await deps.authorize?.(target);
 	const isZeroProgressCandidate =
 		durableHandle !== undefined &&
 		(durableHandle.status === "paused" || durableHandle.status === "running") &&
@@ -632,12 +642,12 @@ async function resolveExplicitDurableTarget(
 			code: "not_resumable",
 		};
 	}
-	if (durableHandle !== undefined) {
+	if (stored) {
 		const refusal = refuseStageScopedDurableResume(target, args);
 		if (refusal !== undefined) return refusal;
 		return resumePreparedDurableTarget(target, deps, args.budget);
 	}
-	return runNotFoundResumeResult(runtime.durableBackend(), target);
+	return runNotFoundResumeResult(backend, target);
 }
 
 export async function workflowResumeAction(

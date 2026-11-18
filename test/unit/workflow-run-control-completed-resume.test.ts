@@ -343,6 +343,25 @@ describe("durable prefix resume namespace and stage scope", () => {
 		assert.equal(backend.getWorkflow(root)?.status, "failed");
 	});
 
+	test("workflow tool does not call an incomplete stored run missing (#5569)", async () => {
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		await backend.journal.createRun({
+			runId: root,
+			name: "incomplete",
+			cwd: tempDir,
+			createdAt: 1,
+			status: "failed",
+		});
+		const result = await workflowResumeAction(
+			{ action: "resume", runId: root },
+			toolResumeDeps(createExtensionRuntime({ store })),
+		);
+		assert.ok(result.action === "resume");
+		assert.equal(result.code, "not_resumable");
+		assert.match(result.message, /no valid journal state/);
+	});
+
 	test("workflow tool reports a missing exact id without loading the catalog", async () => {
 		const runtime = {
 			durableBackend: currentStoreBackend,
