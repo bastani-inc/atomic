@@ -12,6 +12,8 @@ interface SqlCatalogReadOptions {
 	readonly key: string;
 	readonly size: string;
 	readonly signal?: AbortSignal;
+	/** Checks the owner's lifetime before and after each request, including after a yielded page. */
+	readonly assertOpen?: () => void;
 	readonly pageRows?: number;
 }
 
@@ -29,6 +31,7 @@ export async function* readSqlCatalogPages<Row extends SqliteRow>(
 	let after: SqliteValue | undefined;
 	let limit = options.pageRows ?? CATALOG_PAGE_ROWS;
 	for (;;) {
+		options.assertOpen?.();
 		signal?.throwIfAborted();
 		let page: (Row & { catalog_chars: number | bigint; catalog_row: number | bigint })[];
 		try {
@@ -49,6 +52,7 @@ export async function* readSqlCatalogPages<Row extends SqliteRow>(
 			await nextTurn();
 			continue;
 		}
+		options.assertOpen?.();
 		signal?.throwIfAborted();
 		if (page.length === 0) return;
 		after = page.at(-1)![key];
