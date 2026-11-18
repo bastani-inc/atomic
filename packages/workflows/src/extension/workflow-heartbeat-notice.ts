@@ -1,13 +1,12 @@
+import { HeartbeatBlock } from "@bastani/atomic";
 import {
 	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
 	type WorkflowHeartbeatEventDetails,
 } from "../shared/workflow-heartbeat-contract.js";
-import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
-import { renderWorkflowNoticeCard } from "../tui/workflow-notice-card.js";
+import { inertDisplayLine } from "../tui/display-text.js";
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
 
-/** Card title and glyph, both distinct from every lifecycle notice kind. */
-const WORKFLOW_HEARTBEAT_TITLE = "WORKFLOW HEARTBEAT";
+/** The model-facing text's mark; the rendered notice takes it from the shared notice glyphs. */
 const WORKFLOW_HEARTBEAT_GLYPH = "♥";
 
 const rendererRegisteredHosts = new WeakSet<object>();
@@ -57,51 +56,47 @@ export function registerWorkflowHeartbeatRenderer(options: WorkflowHeartbeatRend
 	const host = options.rendererHost ?? register;
 	if (rendererRegisteredHosts.has(host)) return;
 
-	const renderer: PiMessageRenderer = (raw, _options, piTheme) => {
+	const renderer: PiMessageRenderer = (raw, renderOptions) => {
 		const message = raw as { details?: WorkflowHeartbeatEventDetails };
 		if (!message.details) return undefined;
-		return makeWorkflowHeartbeatComponent(message.details, themeFromRenderer(piTheme));
+		return makeWorkflowHeartbeatComponent(message.details, renderOptions?.outputPad);
 	};
 
 	register(WORKFLOW_HEARTBEAT_CUSTOM_TYPE, renderer);
 	rendererRegisteredHosts.add(host);
 }
 
+/**
+ * The heartbeat in the shared notice anatomy: `♥ Workflow heartbeat · <name> still running · <elapsed>`, the run and
+ * its cadence on the connector row, and where to inspect it.
+ */
+export function workflowHeartbeatBlock(details: WorkflowHeartbeatEventDetails, outputPad?: number): HeartbeatBlock {
+	const elapsed = formatWorkflowHeartbeatElapsed(details);
+	const runId = inertDisplayLine(details.runId);
+	return new HeartbeatBlock({
+		title: "Workflow heartbeat",
+		meta: [`${inertDisplayLine(details.workflowName)} still running`, ...(elapsed === undefined ? [] : [elapsed])],
+		records: [[`run ${runId} · ${formatWorkflowHeartbeatCadence(details.intervalMinutes)} cadence`]],
+		hint: `/workflows ${runId}`,
+		expandable: false,
+		expanded: false,
+		...(outputPad === undefined ? {} : { outputPad }),
+	});
+}
+
 function makeWorkflowHeartbeatComponent(
 	details: WorkflowHeartbeatEventDetails,
-	theme: GraphTheme | undefined,
+	outputPad: number | undefined,
 ): PiMessageRenderComponent {
-	const text = formatWorkflowHeartbeatNoticeText(details);
+	const block = workflowHeartbeatBlock(details, outputPad);
 	return {
 		render(width: number): string[] {
-			return renderWorkflowHeartbeatCard(details, { width, theme, fallbackText: text });
+			return block.render(width);
 		},
 		invalidate() {
 			/* delivered heartbeats are immutable */
 		},
 	};
-}
-
-function renderWorkflowHeartbeatCard(
-	details: WorkflowHeartbeatEventDetails,
-	opts: { width: number; theme?: GraphTheme; fallbackText: string },
-): string[] {
-	return renderWorkflowNoticeCard({
-		title: WORKFLOW_HEARTBEAT_TITLE,
-		glyph: WORKFLOW_HEARTBEAT_GLYPH,
-		headline: `Workflow "${details.workflowName}" is still running`,
-		tone: "mauve",
-		fields: [
-			{ label: "workflow", value: details.workflowName },
-			{ label: "run", value: details.runId },
-			{ label: "cadence", value: formatWorkflowHeartbeatCadence(details.intervalMinutes), tone: "muted" },
-			{ label: "elapsed", value: formatWorkflowHeartbeatElapsed(details), tone: "muted" },
-		],
-		hints: [`/workflows ${details.runId}`],
-		fallbackText: opts.fallbackText,
-		width: opts.width,
-		...(opts.theme ? { theme: opts.theme } : {}),
-	});
 }
 
 function formatWorkflowHeartbeatCadence(intervalMinutes: number): string {
@@ -122,8 +117,4 @@ function formatWorkflowHeartbeatElapsed(details: WorkflowHeartbeatEventDetails):
 
 function escapeQuotedText(value: string): string {
 	return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-function themeFromRenderer(piTheme: unknown): GraphTheme | undefined {
-	return piTheme === undefined ? undefined : deriveGraphThemeFromPiTheme(piTheme);
 }

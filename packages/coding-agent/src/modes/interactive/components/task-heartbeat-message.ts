@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import { Box, type Component, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import type { Component } from "@bastani/atomic-tui";
 import {
 	formatTaskHeartbeatDuration,
 	formatTaskHeartbeatStatus,
@@ -8,7 +8,7 @@ import {
 	taskHeartbeatKindLabel,
 } from "../../../core/tasks/heartbeat-notice.js";
 import { theme } from "../theme/theme.js";
-import { keyHintIfBound } from "./keybinding-hints.js";
+import { HeartbeatBlock, type HeartbeatRow } from "./heartbeat-block.ts";
 
 function isNamedTask(value: unknown): value is TaskHeartbeatDetails["more"][number] {
 	if (!value || typeof value !== "object") return false;
@@ -41,45 +41,48 @@ export function heartbeatDetailsFrom(details: unknown): TaskHeartbeatDetails | u
 
 const clean = (value: string) => stripVTControlCharacters(value).replace(/[\x00-\x1f\x7f-\x9f]+/g, " ");
 
-/** Compact heartbeat card in the owning chat: one row per task, status and output lines when expanded. */
+/** Tasks listed while a task heartbeat is collapsed; the rest are counted in one `… +N more` row. */
+export const TASK_HEARTBEAT_COLLAPSED_TASKS = 5;
+
+/**
+ * A task heartbeat in its chat, in the shared notice anatomy: `♥ Task heartbeat · N tasks still running`, one
+ * connector row per task, and each task's status and last output lines when expanded.
+ */
 export class TaskHeartbeatMessage implements Component {
 	private readonly details: TaskHeartbeatDetails;
 	private readonly expanded: boolean;
-	constructor(details: TaskHeartbeatDetails, expanded: boolean) {
+	private readonly outputPad: number | undefined;
+	constructor(details: TaskHeartbeatDetails, expanded: boolean, outputPad?: number) {
 		this.details = details;
 		this.expanded = expanded;
+		this.outputPad = outputPad;
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
 		if (width < 1) return [];
-		const card = new Box(width >= 3 ? 1 : 0, 1, (line) => theme.bg("customMessageBg", line));
-		card.addChild({
-			invalidate() {},
-			render: (innerWidth) => this.renderContent(innerWidth),
-		});
-		return card.render(width);
-	}
-	private renderContent(width: number): string[] {
 		const { tasks, moreCount } = this.details;
 		const total = tasks.length + moreCount;
-		const lines = [
-			theme.fg(
-				"accent",
-				theme.bold(`♥ Task heartbeat · ${total === 1 ? "1 task" : `${total} tasks`} still running`),
-			),
-		];
-		for (const task of tasks) {
-			lines.push(
-				`  ${theme.fg("accent", `${taskHeartbeatKindLabel(task.kind)} ${task.taskId}`)} ${theme.fg("text", clean(task.title))} ${theme.fg("dim", `· ${formatTaskHeartbeatDuration(task.elapsedMs)}`)}`,
-			);
-			if (!this.expanded) continue;
-			for (const row of wrapTextWithAnsi(clean(formatTaskHeartbeatStatus(task)), Math.max(1, width - 4)))
-				lines.push(theme.fg("muted", `    ${row}`));
-			for (const line of task.output?.tail ?? []) lines.push(theme.fg("dim", `    │ ${clean(line)}`));
-		}
-		if (moreCount > 0) lines.push(theme.fg("muted", `  and ${moreCount} more`));
-		const expand = this.expanded ? "" : keyHintIfBound("app.tools.expand", "Expand");
-		lines.push(theme.fg("dim", `${expand ? `(${expand}) · ` : ""}periodic check · /tasks to inspect`));
-		return lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+		const shown = this.expanded ? tasks : tasks.slice(0, TASK_HEARTBEAT_COLLAPSED_TASKS);
+		const records: HeartbeatRow[][] = shown.map((task) => {
+			const rows: HeartbeatRow[] = [
+				`${theme.fg("accent", `${taskHeartbeatKindLabel(task.kind)} ${clean(task.taskId)}`)} ${theme.fg("text", clean(task.title))}${theme.fg("dim", ` · ${formatTaskHeartbeatDuration(task.elapsedMs)}`)}`,
+			];
+			if (!this.expanded) return rows;
+			rows.push({ text: theme.fg("muted", clean(formatTaskHeartbeatStatus(task))), wrap: true });
+			for (const line of task.output?.tail ?? []) rows.push(theme.fg("dim", `│ ${clean(line)}`));
+			return rows;
+		});
+		const hidden = tasks.length - shown.length + moreCount;
+		if (hidden > 0) records.push([theme.fg("muted", `… +${hidden} more`)]);
+		return new HeartbeatBlock({
+			title: "Task heartbeat",
+			meta: [`${total === 1 ? "1 task" : `${total} tasks`} still running`],
+			records,
+			hint: "/tasks to inspect",
+			// Collapsed, each task hides its status and output lines.
+			expandable: tasks.length > 0,
+			expanded: this.expanded,
+			outputPad: this.outputPad,
+		}).render(width);
 	}
 }

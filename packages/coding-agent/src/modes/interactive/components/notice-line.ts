@@ -3,8 +3,11 @@ import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { type ThemeColor, theme } from "../theme/theme.js";
 import { ToolBlock } from "./tool-block.ts";
 
-/** How the subject of a notice ended or stands. A started subject reads as `success`. */
-export type NoticeStatus = "success" | "failure" | "stopped" | "warning" | "paused" | "running" | "info";
+/**
+ * How the subject of a notice ended or stands. A started subject reads as `success`; `heartbeat` marks a periodic
+ * check on work that is still running.
+ */
+export type NoticeStatus = "success" | "failure" | "stopped" | "warning" | "paused" | "running" | "info" | "heartbeat";
 
 /**
  * One notice line: what finished, how it ended, and a few dim facts. Background commands, subagents, workflow runs
@@ -33,6 +36,7 @@ export const STATUS_MARKERS: Readonly<Record<NoticeStatus, { readonly glyph: str
 	paused: { glyph: "⏸", color: "muted" },
 	running: { glyph: "∀", color: "accent" },
 	info: { glyph: "›", color: "muted" },
+	heartbeat: { glyph: "♥", color: "muted" },
 };
 
 export const DETAIL_FIRST_PREFIX = "  ⎿  ";

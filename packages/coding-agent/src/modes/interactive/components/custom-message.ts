@@ -165,7 +165,7 @@ export class CustomMessageComponent extends Container {
 			const details = heartbeatDetailsFrom(this.message.details);
 			if (details) {
 				this.spacer = new Spacer(1);
-				this.customComponent = new TaskHeartbeatMessage(details, this._expanded);
+				this.customComponent = new TaskHeartbeatMessage(details, this._expanded, this.outputPad);
 				this.addChild(this.spacer);
 				this.addChild(this.customComponent);
 				return;

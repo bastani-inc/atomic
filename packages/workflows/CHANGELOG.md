@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow heartbeats, answered-question notices and undelivered-message notices in the main chat use the same notice form as task heartbeats and run notices instead of bordered cards: `♥ Workflow heartbeat · <workflow> still running · <elapsed>` with the run and cadence under it, `● Workflow "<name>" received the user's response · <stage>`, and `! Stage "<name>" finished before this message was delivered · <workflow>`. Expanding a notice (Ctrl+O) shows its run, question and answer, or message. The text the model reads is unchanged
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 ### Breaking Changes
