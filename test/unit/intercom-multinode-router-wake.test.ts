@@ -289,6 +289,7 @@ async function startNode(
 				dispatched.push((clientMessage as unknown as HeldSendRequest).message.id);
 			},
 			revokeReleasedReservation: () => {},
+			holdsReservation: () => true,
 		},
 	});
 	cleanups.push(() => router.close());

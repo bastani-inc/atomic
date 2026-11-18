@@ -59,19 +59,31 @@ function withRegistrationGate(database: SqliteDatabase, gate: string): SqliteDat
 	};
 }
 
+/** A reservation gate naming `fail:<child>` fails that child's first reservation write in each process, then lets it go. */
+const FAIL_ONCE_PREFIX = "fail:";
+const failedReservations = new Set<string>();
+
 /**
  * Parks the shared-store write that records a restoring reservation for one child, inside its transaction, until the
  * file at `gate` is removed: the broker that reserves the child has not published the reservation to other brokers. The
  * file names the child; once the adapter has parked the write, it appends the name to `<gate>.parked`, the signal a test
- * waits for.
+ * waits for. A file naming `fail:<child>` fails the child's first write instead, and appends the name to `<gate>.failed`.
  */
 function withReservationGate(database: SqliteDatabase, gate: string): SqliteDatabase {
 	const parkIfNamed = async (sql: string, params: readonly SqliteValue[]): Promise<void> => {
 		if (!/^\s*INSERT INTO \w*intercom_restoring_reservations\(/u.test(sql)) return;
 		let parked = false;
 		for (;;) {
-			const name = await readFile(gate, "utf8").catch(() => "");
+			const content = await readFile(gate, "utf8").catch(() => "");
+			const failing = content.startsWith(FAIL_ONCE_PREFIX);
+			const name = failing ? content.slice(FAIL_ONCE_PREFIX.length) : content;
 			if (name === "" || params[4] !== JSON.stringify(name)) return;
+			if (failing) {
+				if (failedReservations.has(name)) return;
+				failedReservations.add(name);
+				await appendFile(`${gate}.failed`, `${name}\n`);
+				throw new Error(`injected reservation write failure for ${name}`);
+			}
 			if (!parked) {
 				parked = true;
 				await appendFile(`${gate}.parked`, `${name}\n`);

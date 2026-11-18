@@ -86,6 +86,8 @@ function fakeSocket(): FakeSocket {
 class Node {
 	readonly sessions = new Map<string, BrokerConnectedSession>();
 	readonly revoked: { readonly key: string; readonly ownerSessionId: string }[] = [];
+	/** Reservations this broker no longer holds (released, taken by their child, or replaced), by capability. */
+	readonly dropped = new Set<string>();
 	readonly supervisorCache = new SupervisorChannelCache();
 	readonly pendingQuestions = new PendingQuestionIndex();
 	readonly deliveredMessages: DeliveredMessageCache;
@@ -132,6 +134,7 @@ class Node {
 				deliveredMessages: node.deliveredMessages,
 				dispatch: (socket, clientMessage, senderId) => node.dispatch(socket, clientMessage, senderId),
 				revokeReleasedReservation: (key, ownerSessionId) => node.revoked.push({ key, ownerSessionId }),
+				holdsReservation: (capability) => !node.dropped.has(capability),
 			},
 		});
 		return node;
@@ -1167,6 +1170,81 @@ test("a restoring reservation whose shared reserve is still being written when i
 	);
 	assert.equal(lookup.status, "none");
 });
+
+test(
+	"a retried reservation write still running when its child takes the reservation does not leave it in the shared store (#5352)",
+	async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const [a, b] = await cluster();
+			const supervisor = await b!.connect("supervisor", { group: "crew" });
+			const sender = await a!.connect("sender", { group: "crew" });
+			const reservations = b!.opened.state.reservations;
+			const reserve = reservations.reserve.bind(reservations);
+			let attempts = 0;
+			let retrying: () => void = () => {};
+			const retryStarted = new Promise<void>((resolve) => {
+				retrying = resolve;
+			});
+			let written: () => void = () => {};
+			const writing = new Promise<void>((resolve) => {
+				written = resolve;
+			});
+			let retried: (status: string) => void = () => {};
+			const retryWritten = new Promise<string>((resolve) => {
+				retried = resolve;
+			});
+			Object.assign(reservations, {
+				reserve: async (...args: Parameters<typeof reserve>) => {
+					if (attempts++ === 0) throw new Error("reserve failed: shared database is busy");
+					retrying();
+					await writing;
+					const result = await reserve(...args);
+					retried(result.status);
+					return result;
+				},
+			});
+			const capability = `${randomUUID()}.capability`;
+			const key = createHash("sha256").update(capability).digest("hex");
+			const published = await b!.router.restoringReserved(
+				capability,
+				supervisor.info.id,
+				"restored-child",
+				normalizeGroup("crew"),
+				[],
+				false,
+			);
+			assert.equal(published, false);
+
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await retryStarted;
+			// The child takes its reservation, on its own registration's queue, while the retried write runs.
+			b!.dropped.add(capability);
+			await b!.connect("restored-child", { group: "crew", consumed: { capability } });
+			written();
+			assert.equal(await retryWritten, "reserved", "the retry wrote the reservation after the child took it");
+
+			await vi.waitFor(
+				async () => {
+					const read = await a!.opened.state.reservations.read(key);
+					assert.equal(read.status, "ended", JSON.stringify(read));
+				},
+				{ timeout: CROSS_NODE_WAIT_MS },
+			);
+			const lookup = await a!.opened.state.reservations.lookup(
+				"restored-child",
+				{ sessionId: sender.info.id, groups: [normalizeGroup("crew")] },
+				30_000,
+			);
+			assert.equal(lookup.status, "none");
+		} finally {
+			vi.useRealTimers();
+			reported.mockRestore();
+		}
+	},
+	2 * CROSS_NODE_WAIT_MS,
+);
 
 test("a child that turns terminal fails the asks delivered to it from another node with the terminal error", async () => {
 	const [a, b] = await cluster();
