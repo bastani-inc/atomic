@@ -130,7 +130,7 @@ export interface AttachedComposerStyle {
 	dim(text: string): string;
 }
 
-const HEAVY_RULE = "━";
+const RULE = "─";
 const PROMPT_GLYPH = "❯";
 
 function stripApc(text: string): string {
@@ -194,7 +194,6 @@ export function applyAttachedComposer(
 				? {}
 				: { label: { plain: cleanLabel, styled: emboldened(style.text(cleanLabel)) } }),
 			color: style.accent,
-			heavy: true,
 		});
 	} else if (isRule(top)) {
 		const overflow = overflowNote;
@@ -209,17 +208,17 @@ export function applyAttachedComposer(
 		const tail = shown === undefined ? "" : ` ${shown} `;
 		const fill = Math.max(0, width - visibleWidth(tail) - 1 - (overflow === undefined ? 0 : visibleWidth(overflow)));
 		lines[0] =
-			style.accent(HEAVY_RULE.repeat(fill)) +
+			style.accent(RULE.repeat(fill)) +
 			(overflow === undefined ? "" : style.dim(overflow)) +
 			(shown === undefined ? "" : emboldened(style.text(tail))) +
 			style.accent(
-				HEAVY_RULE.repeat(
+				RULE.repeat(
 					Math.max(0, width - fill - visibleWidth(tail) - (overflow === undefined ? 0 : visibleWidth(overflow))),
 				),
 			);
 	}
 	const bottom = lines[bottomIndex]!;
-	if (isRule(bottom)) lines[bottomIndex] = style.accent(stripAnsi(bottom).replace(/─/gu, HEAVY_RULE));
+	if (isRule(bottom)) lines[bottomIndex] = style.accent(stripAnsi(bottom));
 	if (cleanPlaceholder !== undefined && bottomIndex === 2) {
 		const line = lines[1]!;
 		const plain = stripAnsi(stripApc(line)).trimEnd();

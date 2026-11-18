@@ -26,6 +26,22 @@ import { keyText } from "./keybinding-hints.js";
 import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 import { WorkingRunMeter, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
+/** The chat's status while work it started is still under way; the chat shows it as its working line. */
+export const CHAT_SESSION_RESUMING_STATUS = "resuming…";
+export const CHAT_SESSION_RETRYING_STATUS = "retrying…";
+export const CHAT_SESSION_SWITCHING_MODEL_STATUS = "switching model…";
+export const CHAT_SESSION_RETRYING_SUMMARY_STATUS = "retrying summary…";
+const BUSY_STATUS_MESSAGES: ReadonlySet<string> = new Set([
+	CHAT_SESSION_RESUMING_STATUS,
+	CHAT_SESSION_RETRYING_STATUS,
+	CHAT_SESSION_SWITCHING_MODEL_STATUS,
+	CHAT_SESSION_RETRYING_SUMMARY_STATUS,
+]);
+
+/** Whether a status message stands for work under way rather than a notice or an error for the transcript. */
+export function isChatSessionBusyStatus(message: string): boolean {
+	return BUSY_STATUS_MESSAGES.has(message);
+}
 export interface ChatSessionHostStateCallbacks<TExtraEntry extends ChatTranscriptEntryLike> {
 	renderEntry: (state: ChatSessionHostState<TExtraEntry>, entry: ChatSessionHostEntry<TExtraEntry>) => Component;
 	transcriptCacheKey: (
@@ -58,7 +74,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getChatRenderSettings: ChatSessionHostOpts<TExtraEntry>["getChatRenderSettings"];
 	readonly getCwd: (() => string) | undefined;
 	readonly footerData: ReadonlyFooterDataProvider | undefined;
-	readonly renderExtraEntry: ((entry: TExtraEntry) => Component) | undefined;
+	readonly renderExtraEntry: ((entry: TExtraEntry, expanded?: boolean) => Component) | undefined;
 	readonly countsAsMessage: ((entry: TExtraEntry) => boolean) | undefined;
 	readonly tui: TUI | undefined;
 

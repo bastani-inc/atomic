@@ -52,6 +52,9 @@ describe("StageChatView", () => {
 				await flush();
 			}
 			view.render(96);
+			// Two pages up, so the chat stays scrolled once the hidden composer's rows go to the transcript.
+			assert.equal(view.handleInput(`${String.fromCharCode(27)}[5~`), true);
+			view.render(96);
 			assert.equal(view.handleInput(`${String.fromCharCode(27)}[5~`), true);
 			assert.ok(view._bodyScrollFromBottom > 0);
 

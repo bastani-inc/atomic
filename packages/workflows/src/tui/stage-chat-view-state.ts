@@ -6,6 +6,7 @@ import {
 	type ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@bastani/atomic-tui";
+import { stageWaitsToRetry } from "../runs/foreground/stage-control-registry.js";
 import { isPooledStageStarting, pooledStageStartingText } from "../shared/stage-display-status.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
@@ -368,11 +369,15 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 		editorTheme: editorThemeFromGraphTheme(ctx.theme),
 		getChatRenderSettings: () => stageChatRenderSettings(ctx, opts),
 		footerData: ctx.footerData,
-		renderExtraEntry: (entry) =>
-			noticeRow(entry, () => {
-				const settings = stageChatRenderSettings(ctx, opts);
-				return { expanded: settings?.toolOutputExpanded === true, outputPad: settings?.outputPad };
-			}),
+		renderExtraEntry: (entry, expanded) =>
+			noticeRow(
+				entry,
+				() => {
+					const settings = stageChatRenderSettings(ctx, opts);
+					return { expanded: settings?.toolOutputExpanded === true, outputPad: settings?.outputPad };
+				},
+				expanded,
+			),
 		countsAsMessage: stageNoticeCountsAsMessage,
 	});
 }
@@ -422,7 +427,8 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
  * delta, so a chat opened part-way through a stage's turn would otherwise show
  * nothing until that turn finished — a stage held mid-turn shows nothing at
  * all. The session's in-flight message closes that window, and the live
- * subscription installed after this continues it delta by delta.
+ * subscription installed after this continues it delta by delta. Between two
+ * attempts of a retry nothing streams, so the chat shows the retry's wait.
  */
 function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const handle = liveHandle(ctx);
@@ -431,6 +437,7 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const streaming = handle.agentSession?.agent?.state.streamingMessage ?? handle.streamingMessage?.();
 	ctx.chatHost.hydrateStreamingAssistantMessage(streaming);
 	if (isLiveHandleStreaming(ctx)) ctx.chatHost.hydrateRunningTurn(handle.messages, streaming);
+	else if (isLiveHandleWaitingToRetry(ctx)) ctx.chatHost.hydrateRetryWait();
 }
 
 /** The calls a stage with its session released waits on: their results arrive when it reopens, so none is interrupted. */
@@ -670,13 +677,23 @@ export function pooledStageWaitingNotice(
 	};
 }
 
-export function isLiveHandleStreaming(ctx: StageChatViewContext): boolean {
+/** The live handle, unless its run, its stage or the handle itself is in a state that runs no turn. */
+function activeLiveHandle(ctx: StageChatViewContext): ReturnType<typeof liveHandle> {
 	const handle = liveHandle(ctx);
-	if (!handle) return false;
-	if (isTerminalOrNonStreamingStageChatStatus(currentRun(ctx)?.status)) return false;
-	if (isTerminalOrNonStreamingStageChatStatus(currentStage(ctx)?.status)) return false;
-	if (isTerminalOrNonStreamingStageChatStatus(handle.status)) return false;
-	return handle.isStreaming === true;
+	if (!handle) return undefined;
+	if (isTerminalOrNonStreamingStageChatStatus(currentRun(ctx)?.status)) return undefined;
+	if (isTerminalOrNonStreamingStageChatStatus(currentStage(ctx)?.status)) return undefined;
+	if (isTerminalOrNonStreamingStageChatStatus(handle.status)) return undefined;
+	return handle;
+}
+
+export function isLiveHandleStreaming(ctx: StageChatViewContext): boolean {
+	return activeLiveHandle(ctx)?.isStreaming === true;
+}
+
+function isLiveHandleWaitingToRetry(ctx: StageChatViewContext): boolean {
+	const handle = activeLiveHandle(ctx);
+	return handle !== undefined && stageWaitsToRetry(handle);
 }
 
 export function isStreaming(ctx: StageChatViewContext): boolean {

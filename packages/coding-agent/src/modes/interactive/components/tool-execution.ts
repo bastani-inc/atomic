@@ -23,6 +23,7 @@ import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { CodeHighlighter, theme } from "../theme/theme.js";
 import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { keyHint, keyText } from "./keybinding-hints.js";
+import { STATUS_MARKERS } from "./notice-line.ts";
 import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
 import {
 	collapseToolBlockLines,
@@ -34,6 +35,7 @@ import {
 	type ToolGroupRole,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
+import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
@@ -61,6 +63,16 @@ interface RenderedImageSpec {
 }
 const SUBAGENT_RESULT_ANIMATION_TIMER_KEY = "subagentResultAnimationTimer";
 const SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY = "subagentResultAnimationCleanup";
+
+let statusMarkPrefix: RegExp | undefined;
+/** A block's header row opens with its status mark, any of the shared marks, then a space. */
+function blockStatusMarkPrefix(): RegExp {
+	if (statusMarkPrefix === undefined) {
+		const marks = [...new Set(Object.values(STATUS_MARKERS).map((marker) => marker.glyph))].join("");
+		statusMarkPrefix = new RegExp(`^ *[${marks.replace(/[\\\]^-]/g, "\\$&")}] `, "u");
+	}
+	return statusMarkPrefix;
+}
 
 export class ToolExecutionComponent extends Container {
 	readonly expandsOnClick = true;
@@ -279,9 +291,9 @@ export class ToolExecutionComponent extends Container {
 		return this.groupRole;
 	}
 
-	/** The block's title row, which `render` draws right after the blank row it leads with. */
-	headerRows(width: number): readonly number[] {
-		return this.render(width).length > 1 ? [1] : [];
+	/** Every row of the block, below the blank row it leads with. */
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(1, this.render(width).length);
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -459,7 +471,7 @@ export class ToolExecutionComponent extends Container {
 			render: (width) => {
 				const line = call.render(width).find((row) => stripTerminalSequences(row).trim().length > 0);
 				if (line === undefined) return [terminalDisplayText(this.toolDefinition?.label ?? this.toolName)];
-				const prefix = /^ *[∀●✗◼!⏸›] /u.exec(stripTerminalSequences(line))?.[0];
+				const prefix = blockStatusMarkPrefix().exec(stripTerminalSequences(line))?.[0];
 				return prefix
 					? [sliceByColumn(line, visibleWidth(prefix), width)]
 					: [terminalDisplayText(this.toolDefinition?.label ?? this.toolName)];

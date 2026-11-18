@@ -150,14 +150,19 @@ async function handleManagementRequest(input: {
 		};
 	}
 	if ((SUBAGENT_RUN_CONTROL_ACTIONS as readonly string[]).includes(action)) {
-		return controlSubagentChildren(deps, ctx, {
-			action: action as SubagentRunControlAction,
-			...((paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId)
-				? { id: paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId }
-				: {}),
-			...(params.message !== undefined ? { message: params.message } : {}),
-			...(params.all !== undefined ? { all: params.all } : {}),
-		});
+		return controlSubagentChildren(
+			deps,
+			ctx,
+			{
+				action: action as SubagentRunControlAction,
+				...((paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId)
+					? { id: paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId }
+					: {}),
+				...(params.message !== undefined ? { message: params.message } : {}),
+				...(params.all !== undefined ? { all: params.all } : {}),
+			},
+			signal,
+		);
 	}
 	const targetTaskId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
 	// A paused or quit child awaits resume, as a quit workflow run does; its records outlive its task and a restart.

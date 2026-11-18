@@ -63,6 +63,54 @@ test("a transient storage failure is a retryable StorageUnavailableError with it
 	assert.equal(unknown.cause, undefined);
 });
 
+test("a transient failure on the way to the database server names that hop, not the server (#5473)", () => {
+	const hop = {
+		name: "the proxy http://proxy.example:3128",
+		failure:
+			"the proxy http://proxy.example:3128 could not be reached for the tunnel to db.example.com:5432 (ECONNREFUSED)",
+	};
+	const notApplied = new StorageTransientError(descriptor, {
+		code: "connection-refused",
+		outcome: "not-applied",
+		attempts: 2,
+		hop,
+	});
+	assert.equal(
+		notApplied.message,
+		"Storage unavailable: libsql at http://127.0.0.1:8080: the proxy http://proxy.example:3128 could not be reached for the tunnel to db.example.com:5432 (ECONNREFUSED) on attempt 2 (connection-refused). Check that the proxy http://proxy.example:3128 is reachable and that this process is not stopped or starved of CPU, then retry; nothing was written",
+	);
+	assert.ok(notApplied.message.endsWith(notApplied.hint));
+	assert.equal(notApplied.hop, hop.name);
+	assert.equal(notApplied.hopFailure, hop.failure);
+
+	const unknown = new StorageTransientError(descriptor, {
+		code: "connection-lost",
+		outcome: "unknown",
+		attempts: 1,
+		hop,
+	});
+	assert.equal(
+		unknown.hint,
+		"Check that the proxy http://proxy.example:3128 is reachable; the write may have been applied, so read it back before retrying a write that is not idempotent",
+	);
+
+	// It crosses a process boundary with the same message.
+	const rehydrated = rehydrateStorageError(viaJson(serializeStorageError(notApplied)));
+	assert.ok(rehydrated instanceof StorageTransientError);
+	assert.equal(rehydrated.message, notApplied.message);
+	assert.equal(rehydrated.hint, notApplied.hint);
+	assert.deepEqual([rehydrated.hop, rehydrated.hopFailure], [hop.name, hop.failure]);
+
+	// A failure at the server itself keeps naming the server.
+	const server = new StorageTransientError(descriptor, {
+		code: "connection-refused",
+		outcome: "not-applied",
+		attempts: 1,
+	});
+	assert.equal(server.hop, undefined);
+	assert.ok(server.message.includes(": the database server call failed on attempt 1 (connection-refused)."));
+});
+
 test("the transient-failure guard matches instances and copies with a known code only (#4383)", () => {
 	for (const code of STORAGE_TRANSIENT_ERROR_CODES) {
 		const error = new StorageTransientError(descriptor, { code, outcome: "not-applied", attempts: 1 });

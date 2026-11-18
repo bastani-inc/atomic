@@ -58,6 +58,8 @@ export interface PooledStageChatSnapshot {
 	readonly messages: AgentSession["messages"];
 	/** The assistant message still streaming, if any. */
 	readonly streamingMessage?: AssistantMessage;
+	/** Whether the stage's session waits out an automatic retry's backoff. Absent from older workers. */
+	readonly waitingToRetry?: boolean;
 	readonly pendingToolExecutionEvents: readonly AgentSessionEvent[];
 	readonly queued: StageQueuedUserMessages;
 	/**

@@ -479,18 +479,35 @@ export type StorageTransientErrorCode = (typeof STORAGE_TRANSIENT_ERROR_CODES)[n
  */
 export type StorageTransientOutcome = "not-applied" | "unknown";
 
+/**
+ * Where on the way to the database server a call failed, when it failed before it reached the server, such as at a
+ * proxy. Neither text holds credentials.
+ */
+export interface StorageTransientHop {
+	/** The hop, as the hint asks to check it, such as `the proxy http://proxy.example:3128`. */
+	readonly name: string;
+	/**
+	 * What happened there, as the message says it in place of "the database server call failed", such as
+	 * `the proxy http://proxy.example:3128 could not be reached for the tunnel to db.example.com:5432 (ECONNREFUSED)`.
+	 */
+	readonly failure: string;
+}
+
 export interface StorageTransientErrorDetails {
 	readonly code: StorageTransientErrorCode;
 	readonly outcome: StorageTransientOutcome;
 	/** Which run of the call failed, counting from 1: a call that applied nothing runs again, up to a limit. */
 	readonly attempts: number;
+	/** Where on the way to the server the call failed, when it did not reach the server. */
+	readonly hop?: StorageTransientHop;
 }
 
-const TRANSIENT_HINTS: Readonly<Record<StorageTransientOutcome, string>> = {
-	"not-applied":
-		"Check that the database server is reachable and that this process is not stopped or starved of CPU, then retry; nothing was written",
-	unknown:
-		"Check that the database server is reachable; the write may have been applied, so read it back before retrying a write that is not idempotent",
+/** What a failure of this outcome asks of the reader, about `subject`: the database server, or the hop that failed. */
+const TRANSIENT_HINTS: Readonly<Record<StorageTransientOutcome, (subject: string) => string>> = {
+	"not-applied": (subject) =>
+		`Check that ${subject} is reachable and that this process is not stopped or starved of CPU, then retry; nothing was written`,
+	unknown: (subject) =>
+		`Check that ${subject} is reachable; the write may have been applied, so read it back before retrying a write that is not idempotent`,
 };
 
 /** What a failure of one of these codes asks of the reader, in place of the hint its outcome gives. */
@@ -503,7 +520,8 @@ const TRANSIENT_CODE_HINTS: Readonly<Partial<Record<StorageTransientErrorCode, s
  * A call to a database server failed for a reason that passes: the server ended an idle stream or a transaction that
  * kept the write lock, or the connection could not be made or broke. `outcome` says whether the call may have written
  * anything. A database from `createSqliteDatabase` runs a call that wrote nothing again before it fails with this
- * error. It is a `StorageUnavailableError`, and its message keeps that error's `Storage unavailable:` prefix.
+ * error. It is a `StorageUnavailableError`, and its message keeps that error's `Storage unavailable:` prefix. A call
+ * that failed on the way to the server, such as at a proxy, names that hop instead of the server.
  */
 export class StorageTransientError extends StorageUnavailableError {
 	override readonly name = "StorageTransientError" as const;
@@ -512,17 +530,27 @@ export class StorageTransientError extends StorageUnavailableError {
 	readonly attempts: number;
 	readonly retryable = true as const;
 	readonly hint: string;
+	/** The hop on the way to the server where the call failed (`StorageTransientHop.name`), when it did not reach it. */
+	declare readonly hop?: string;
+	/** What happened at `hop` (`StorageTransientHop.failure`). */
+	declare readonly hopFailure?: string;
 	constructor(descriptor: StorageDescriptor, details: StorageTransientErrorDetails, cause?: StorageFailureCause) {
-		const hint = TRANSIENT_CODE_HINTS[details.code] ?? TRANSIENT_HINTS[details.outcome];
+		const { hop } = details;
+		const hint =
+			TRANSIENT_CODE_HINTS[details.code] ?? TRANSIENT_HINTS[details.outcome](hop?.name ?? "the database server");
 		super(
 			descriptor,
 			cause,
-			`the database server call failed on attempt ${details.attempts} (${details.code}). ${hint}`,
+			`${hop?.failure ?? "the database server call failed"} on attempt ${details.attempts} (${details.code}). ${hint}`,
 		);
 		this.code = details.code;
 		this.outcome = details.outcome;
 		this.attempts = details.attempts;
 		this.hint = hint;
+		if (hop !== undefined) {
+			this.hop = hop.name;
+			this.hopFailure = hop.failure;
+		}
 	}
 }
 
@@ -1294,6 +1322,13 @@ function descriptorOf(serialized: SerializedStorageError): StorageDescriptor {
 	};
 }
 
+/** A `StorageTransientError`'s hop, when the serialized error carried both its name and its failure. */
+function transientHopOf(serialized: SerializedStorageError): { hop?: StorageTransientHop } {
+	const name = field<string>(serialized, "hop", "string");
+	const failure = field<string>(serialized, "hopFailure", "string");
+	return name === undefined || failure === undefined ? {} : { hop: { name, failure } };
+}
+
 function nestedFailure(serialized: SerializedStorageError | undefined, depth: number): Error | undefined {
 	return serialized === undefined || depth + 1 >= MAX_STORAGE_CAUSE_DEPTH
 		? undefined
@@ -1355,6 +1390,7 @@ function knownStorageError(
 					code,
 					outcome: field<string>(serialized, "outcome", "string") === "not-applied" ? "not-applied" : "unknown",
 					attempts: field<number>(serialized, "attempts", "number") ?? 1,
+					...transientHopOf(serialized),
 				},
 				cause,
 			);

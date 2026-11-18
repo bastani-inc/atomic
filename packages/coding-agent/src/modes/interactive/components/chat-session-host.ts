@@ -1,4 +1,4 @@
-import type { Component, Focusable, TuiMouseEvent } from "@bastani/atomic-tui";
+import type { Component, Focusable, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-session.js";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
@@ -22,10 +22,16 @@ import {
 	hasChatSessionTransientModal,
 	setChatSessionEditorText,
 } from "./chat-session-host-editor.ts";
-import { applyChatSessionAgentEvent, compactionStatusMessage } from "./chat-session-host-events.ts";
+import {
+	applyChatSessionAgentEvent,
+	compactionStatusMessage,
+	showChatSessionRetryWait,
+} from "./chat-session-host-events.ts";
 import {
 	chatSessionWorkingMeta,
 	dropExpandedOverrides,
+	entryExpands,
+	entryIsExpanded,
 	renderChatSessionBody,
 	renderChatSessionEditor,
 	renderChatSessionEntry,
@@ -63,6 +69,7 @@ import { isSingleLeftClick } from "./single-click.ts";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
+import { isClickedGroup } from "./transcript-block-clicks.ts";
 import { type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
 
 export type {
@@ -391,6 +398,18 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.requestRender?.();
 	}
 
+	/**
+	 * Show the retry wait of a session this host attached to after its `auto_retry_start`: a session between two
+	 * attempts streams nothing, so a running turn's hydration shows none of it. The wait reads as that event shows it
+	 * and ends as it does, with the next attempt's `agent_start` or the retry's `auto_retry_end`.
+	 */
+	hydrateRetryWait(): void {
+		if (this.state.disposed) return;
+		showChatSessionRetryWait(this.state);
+		this.syncAnimationTick();
+		this.state.requestRender?.();
+	}
+
 	render(width: number): string[] {
 		return this.renderBody(width, 1);
 	}
@@ -463,6 +482,15 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return renderChatSessionUsage(this.state, width);
 	}
 
+	/**
+	 * The one row between the chat's working status and its composer: the usage meter, or a blank row when the chat has
+	 * no usage to show, so the status never sits on the composer's top rule and the transcript never runs into it.
+	 */
+	renderUsageRow(width: number): string[] {
+		const usage = this.renderUsage(width);
+		return usage.length > 0 ? usage : [""];
+	}
+
 	renderEditor(width: number): string[] {
 		return renderChatSessionEditor(this.state, width, this.focused);
 	}
@@ -530,32 +558,46 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/**
-	 * A single click at row `event.y` of the body the last `renderBody` drew: on a block's header it expands or collapses
-	 * that block, or a group summary and its calls, and returns true. Expanding while the body follows its end holds
-	 * the view where it is, so the header stays under the pointer.
+	 * A single click at row `event.y` of the body the last `renderBody` drew: on any row of a block it expands or
+	 * collapses that block, or a group summary and its calls, once the click cannot become a double-click. Expanding
+	 * while the body follows its end holds the view where it is, so the block stays under the pointer.
 	 */
-	handleBodyClick(event: TuiMouseEvent): boolean {
-		if (!isSingleLeftClick(event)) return false;
+	handleBodyClick(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (!isSingleLeftClick(event)) return undefined;
 		const layout = this.bodyLayout;
 		// A task's transcript the chat shows full-screen takes the click into its own transcript.
-		if (layout.taskView) return this.taskInspector?.handleMouse(event)?.handled === true;
+		if (layout.taskView) return this.taskInspector?.handleMouse(event);
 		// While the prompt search or a completion menu owns input, a click on the transcript does nothing.
-		if (event.y >= layout.transcriptRows || hasChatSessionTransientModal(this.state)) return false;
+		if (event.y >= layout.transcriptRows || hasChatSessionTransientModal(this.state)) return undefined;
 		const state = this.state;
 		const hit = state.bodyViewport.componentAtRow(event.y);
-		if (hit === undefined || hit.component !== state.transcriptComponent) return false;
+		if (hit === undefined || hit.component !== state.transcriptComponent) return undefined;
 		const clicked = state.transcriptComponent.clickedEntries(hit.width, hit.row);
-		if (clicked === undefined) return false;
-		for (const entry of clicked.entries) {
-			setExpandedOverride(state, entry, clicked.expand);
-			state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
-		}
-		const first = state.bodyViewport.firstVisibleRow();
-		if (clicked.expand && state.bodyViewport.getScrollFromBottom() === 0 && first !== undefined) {
-			state.bodyViewport.scrollTo(first);
-		}
-		state.requestRender?.();
-		return true;
+		if (clicked === undefined) return undefined;
+		// The entries are drawn again with the click's expansion.
+		const expandEntries = (expand: boolean) => {
+			for (const entry of clicked.entries) {
+				setExpandedOverride(state, entry, expand);
+				state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
+			}
+			const first = state.bodyViewport.firstVisibleRow();
+			if (expand && state.bodyViewport.getScrollFromBottom() === 0 && first !== undefined) {
+				state.bodyViewport.scrollTo(first);
+			}
+			state.requestRender?.();
+		};
+		// The blocks as drawn may be redrawn by the time the click settles, by another click on them among others: the
+		// entries are asked then how they are drawn and whether they change, and a group always changes as its calls
+		// fold or show.
+		const [entry] = clicked.entries;
+		return {
+			handled: true,
+			whenSingleClick: () => {
+				if (entry === undefined) return;
+				const changes = isClickedGroup(clicked.blocks) || entryExpands(state, entry, hit.width);
+				if (changes) expandEntries(!entryIsExpanded(state, entry));
+			},
+		};
 	}
 
 	/**

@@ -23,13 +23,15 @@ import {
 	syncChatSessionPromptSearch,
 } from "./chat-session-host-editor.ts";
 import { isChatSessionStreaming } from "./chat-session-host-runtime.ts";
-import type { ChatSessionHostState } from "./chat-session-host-state.ts";
+import { type ChatSessionHostState, isChatSessionBusyStatus } from "./chat-session-host-state.ts";
 import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
+import { disposeRenderer } from "./renderer-disposal.js";
 import { taskDisplayText } from "./task-row.js";
 import { toolGroupRoleKey } from "./tool-group-tracker.ts";
+import { isClickExpandableBlock, sameRows } from "./transcript-block-clicks.ts";
 import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
@@ -54,7 +56,8 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	if (state.transcript.length > 0) {
 		components.push(state.transcriptComponent);
 	}
-	if (state.statusMessage && !state.compacting) {
+	// A notice or an error follows the transcript; work under way is the working line above the prompt instead.
+	if (state.statusMessage && !state.compacting && !isChatSessionBusyStatus(state.statusMessage)) {
 		components.push(new Spacer(1));
 		components.push(new Text(state.style.dim(state.statusMessage), 2, 0));
 	}
@@ -176,6 +179,20 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	state: ChatSessionHostState<TExtraEntry>,
 	width: number,
 ): string[] {
+	const palette = state.style.workingIndicatorPalette;
+	const useCallerStyling =
+		!palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
+	// A retry, a model switch or a resume waits between turns; it is the chat's working line until the work resumes.
+	if (!state.compacting && isChatSessionBusyStatus(state.statusMessage)) {
+		return new WorkingStatusComponent({
+			frame: state.workingFrame,
+			message: state.statusMessage,
+			palette,
+			spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
+			spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
+			messageColor: (text) => state.style.textMuted(text),
+		}).render(width);
+	}
 	if (!isChatSessionStreaming(state)) {
 		const worked = state.workedRun;
 		if (worked === undefined || state.workingLifecycleActive || state.compacting || state.statusMessage) return [];
@@ -186,9 +203,6 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 		}).render(width);
 	}
 	if (state.statusMessage && !state.compacting) return [];
-	const palette = state.style.workingIndicatorPalette;
-	const useCallerStyling =
-		!palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
 	if (state.compacting) {
 		const startedAt =
 			state.compactionStartedAt ??
@@ -378,16 +392,20 @@ export function setExpandedOverride<TExtraEntry extends ChatTranscriptEntryLike>
 	else state.expandedOverrides.set(key, expanded);
 }
 
+/**
+ * Draws `entry`. `expanded` is the expansion a click chose for it, which then differs from the chat's tool-output
+ * setting; it defaults to the one the chat keeps for the entry.
+ */
 export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	entry: ChatSessionHostEntry<TExtraEntry>,
+	expanded = expandedOverride(state, entry),
 ): Component {
 	if (state.extraEntries.includes(entry as TExtraEntry)) {
-		return state.renderExtraEntry?.(entry as TExtraEntry) ?? new Text("", 0, 0);
+		return state.renderExtraEntry?.(entry as TExtraEntry, expanded) ?? new Text("", 0, 0);
 	}
 	if (isChatMessageEntry(entry)) {
 		const isStreaming = isChatSessionStreaming(state) && state.liveChat.isStreamingAssistantEntry(entry);
-		const expanded = expandedOverride(state, entry);
 		const options =
 			expanded === undefined
 				? chatMessageRenderOptions(state, isStreaming)
@@ -410,7 +428,7 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 	if (!state.renderExtraEntry) {
 		return new Text("", 0, 0);
 	}
-	return state.renderExtraEntry(entry);
+	return state.renderExtraEntry(entry, expanded);
 }
 
 /**
@@ -616,4 +634,34 @@ function pendingMessageLine<TExtraEntry extends ChatTranscriptEntryLike>(
 ): string[] {
 	const text = `${label}: ${message}`;
 	return new Text(state.style.dim(truncateToWidth(text, Math.max(1, width - 2))), 1, 0).render(width);
+}
+
+/** Whether `entry` draws other rows at `width` expanded than collapsed: whether it has anything to expand. */
+export function entryExpands<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ChatSessionHostEntry<TExtraEntry>,
+	width: number,
+): boolean {
+	const rows = (expanded: boolean): string[] => {
+		const component = renderChatSessionEntry(state, entry, expanded);
+		try {
+			return component.render(width);
+		} finally {
+			disposeRenderer(component);
+		}
+	};
+	return !sameRows(rows(false), rows(true));
+}
+
+/** Whether `entry` is drawn expanded now: as a click last set it, or else as the chat's setting draws it. */
+export function entryIsExpanded<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ChatSessionHostEntry<TExtraEntry>,
+): boolean {
+	const component = renderChatSessionEntry(state, entry);
+	try {
+		return isClickExpandableBlock(component) && component.isExpanded();
+	} finally {
+		disposeRenderer(component);
+	}
 }

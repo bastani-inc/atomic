@@ -51,6 +51,34 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.session.isRetrying).toBe(false);
 	});
 
+	it("reads as retrying and not streaming while it waits between attempts, and as neither once the retry succeeds (#5483)", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 200 } } });
+		harnesses.push(harness);
+		const seen: string[] = [];
+		const read = (moment: string) =>
+			seen.push(`${moment}: retry ${harness.session.retryAttempt}, streaming ${harness.session.isStreaming}`);
+		harness.session.subscribe((event) => {
+			if (event.type === "agent_start") read("attempt");
+			// Due well before the backoff's own timer, which is set after this one.
+			if (event.type === "auto_retry_start") setTimeout(() => read("waiting"), 20);
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fauxAssistantMessage("recovered"),
+		]);
+
+		await harness.session.prompt("test");
+		read("done");
+
+		expect(seen).toEqual([
+			"attempt: retry 0, streaming true",
+			"waiting: retry 1, streaming false",
+			"attempt: retry 1, streaming true",
+			"done: retry 0, streaming false",
+		]);
+	});
+
 	it("retries multiple transient failures and succeeds on the final attempt", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
 		harnesses.push(harness);
@@ -196,6 +224,53 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.eventsOfType("auto_retry_end").map((event) => event.finalError)).toContain("Retry cancelled");
 		expect(harness.faux.state.callCount).toBe(1);
 	});
+
+	it.each([
+		{ failure: 1, expected: [] },
+		{ failure: 2, expected: ["start:1", "end:Retry cancelled"] },
+	])(
+		"cancels the retry when abortRetry is called after failure $failure, before its backoff starts (#5507)",
+		async ({ failure, expected }) => {
+			const endHandled = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			let failures = 0;
+			const harness = await createHarness({
+				settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
+				extensionFactories: [
+					(pi) => {
+						// Holds the failed attempt's `agent_end` where the session has not yet decided to retry it.
+						pi.on("agent_end", async () => {
+							if (++failures !== failure) return;
+							endHandled.resolve();
+							await release.promise;
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+			const retryEvents: string[] = [];
+			harness.session.subscribe((event) => {
+				if (event.type === "auto_retry_start") retryEvents.push(`start:${event.attempt}`);
+				if (event.type === "auto_retry_end") retryEvents.push(`end:${event.success || event.finalError}`);
+			});
+			harness.setResponses([
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+				fauxAssistantMessage("recovered"),
+			]);
+
+			const prompt = harness.session.prompt("test");
+			await endHandled.promise;
+			expect(harness.session.isRetrying).toBe(true);
+			harness.session.abortRetry();
+			release.resolve();
+			await prompt;
+
+			expect(retryEvents).toEqual(expected);
+			expect(harness.faux.state.callCount).toBe(failure);
+			expect(harness.session.isRetrying).toBe(false);
+		},
+	);
 
 	it("waits for the full loop when retry recovery produces tool calls", async () => {
 		const toolRuns: string[] = [];

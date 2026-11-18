@@ -12,6 +12,7 @@ import { shortenHomePath } from "../../utils/paths.ts";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
 import { renderDiagnosticStatus } from "../interactive-engine/engine-diagnostic-view.js";
 import {
+	onInteractiveEngineProjectTrustChanged,
 	onInteractiveEngineRemoteCommandsChanged,
 	onInteractiveEngineResourceExtensionsChanged,
 	onInteractiveEngineSessionStatsChanged,
@@ -25,6 +26,7 @@ import {
 } from "./components/atomic-banner.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { ThemedText } from "./components/themed-text.js";
+import { clickableBlocksView } from "./components/transcript-block-clicks.ts";
 import { bindInitialEagerSession } from "./interactive-initial-session-binding.ts";
 import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import {
@@ -225,7 +227,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// Keep the transcript in its own viewport and reserve the bottom chrome in a
 	// fixed dock for the fullscreen renderer. The same components also feed the
 	// internal main-screen fallback used for guarded terminal paths.
-	this.renderWidgets(); // Initialize with default spacer
+	this.renderWidgets(); // Initialize the widget containers
 	this.transcriptScrollView = new ScrollView(this.documentContainer, {
 		follow: "end",
 		primary: true,
@@ -233,11 +235,11 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		scrollbar: this.settingsManager.getFullscreenScrollbar(),
 		scrollbarThumbStyle: (text) => theme.bg("scrollbarThumb", text),
 	});
-	const pendingMessagesPreview = {
-		render: (width: number): string[] =>
-			this.navigationInlineCustomUiDepth > 0 ? [] : this.pendingMessagesContainer.render(width),
-		invalidate: (): void => this.pendingMessagesContainer.invalidate(),
-	};
+	// A shell command waiting for the turn to end expands on a click, as it will in the chat.
+	const pendingMessagesPreview = clickableBlocksView(
+		this.pendingMessagesContainer,
+		() => this.navigationInlineCustomUiDepth > 0,
+	);
 	const dock = new VStack([
 		{ component: pendingMessagesPreview, shrink: 1, minSize: 0 },
 		{ component: this.statusContainer, shrink: 1, minSize: 0 },
@@ -274,6 +276,8 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.setupAutocompleteProvider();
 	});
 	attachInteractiveEngineResourceExtensionRefresh(this);
+	// The engine decides project trust after this host drew the chat.
+	onInteractiveEngineProjectTrustChanged(this.runtimeHost, () => this.refreshProjectTrustWarning());
 	// Engine stats can land after the last event of a run; repaint so the idle footer shows them.
 	onInteractiveEngineSessionStatsChanged(this.runtimeHost, () => {
 		this.ui.requestRender();

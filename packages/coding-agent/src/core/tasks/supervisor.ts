@@ -43,6 +43,8 @@ export type ChatBoxSession = Pick<
 	| "isCompacting"
 	| "compactionStartedAt"
 	| "isRetrying"
+	| "isWaitingToRetry"
+	| "retryAttempt"
 	| "isBashRunning"
 > & {
 	readonly getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
