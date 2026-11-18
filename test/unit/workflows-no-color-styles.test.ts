@@ -13,7 +13,6 @@ import {
 	paintOnFill,
 	paint as paintStageChat,
 } from "../../packages/workflows/src/tui/stage-chat-view-render-helpers.js";
-import { renderWorkflowNoticeCard } from "../../packages/workflows/src/tui/workflow-notice-card.js";
 import { openWorkflowsListing } from "../../packages/workflows/src/tui/workflows-listing.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { makeTestTui as makeGraphTui, makeRun, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
@@ -89,54 +88,41 @@ function stageChatLines(): string[] {
 	}
 }
 
-function runSheetLines(): string[] {
-	const detail: RunDetail = {
-		runId: "abc123uuid",
-		name: "refactor-auth",
-		status: "failed",
-		mode: "chain",
-		startedAt: 1_000,
-		endedAt: 66_000,
-		durationMs: 65_000,
-		inputs: { task: "rename" },
-		stages: [
-			{
-				id: "s1",
-				name: "plan",
-				status: "completed",
-				parentIds: [],
-				toolEvents: [],
-				startedAt: 1_000,
-				endedAt: 9_000,
-			},
-			{
-				id: "s2",
-				name: "build",
-				status: "failed",
-				parentIds: ["s1"],
-				toolEvents: [],
-				startedAt: 9_000,
-				endedAt: 66_000,
-			},
-		],
-		tools: [],
-		error: "build failed",
-	};
-	return renderRunDetail(detail, { theme: deriveGraphTheme({}), now: 66_000, width: 100 }).split("\n");
-}
+const RUN_DETAIL: RunDetail = {
+	runId: "abc123uuid",
+	name: "refactor-auth",
+	status: "failed",
+	mode: "chain",
+	startedAt: 1_000,
+	endedAt: 66_000,
+	durationMs: 65_000,
+	inputs: { task: "rename" },
+	stages: [
+		{
+			id: "s1",
+			name: "plan",
+			status: "completed",
+			parentIds: [],
+			toolEvents: [],
+			startedAt: 1_000,
+			endedAt: 9_000,
+		},
+		{
+			id: "s2",
+			name: "build",
+			status: "failed",
+			parentIds: ["s1"],
+			toolEvents: [],
+			startedAt: 9_000,
+			endedAt: 66_000,
+		},
+	],
+	tools: [],
+	error: "build failed",
+};
 
-function noticeCardLines(): string[] {
-	return renderWorkflowNoticeCard({
-		title: "WORKFLOW FAILED",
-		glyph: "✗",
-		headline: 'Workflow "refactor-auth" failed',
-		tone: "error",
-		fields: [{ label: "run", value: "abc123uuid" }],
-		hints: ["/workflows abc123uuid"],
-		fallbackText: 'Workflow "refactor-auth" failed',
-		width: 80,
-		theme: deriveGraphTheme({}),
-	});
+function runSheetLines(): string[] {
+	return renderRunDetail(RUN_DETAIL, { theme: deriveGraphTheme({}), now: 66_000, width: 100 }).split("\n");
 }
 
 function listingLines(): string[] {
@@ -161,7 +147,6 @@ const SURFACES: ReadonlyArray<readonly [string, () => string[]]> = [
 	["graph view", graphLines],
 	["stage chat", stageChatLines],
 	["run sheet", runSheetLines],
-	["notice card", noticeCardLines],
 	["/workflows list", listingLines],
 ];
 
@@ -221,15 +206,7 @@ test("painting workflow text styles never reads NO_COLOR or FORCE_COLOR", () => 
 			paint("word", "#a6e3a1", { bold: true });
 			paintStageChat("word", "#a6e3a1", { bold: true, italic: true });
 			paintOnFill("word", "#a6e3a1", { bold: true, italic: true });
-			renderWorkflowNoticeCard({
-				title: "WORKFLOW FAILED",
-				glyph: "✗",
-				headline: "failed",
-				tone: "error",
-				fallbackText: "failed",
-				width: 80,
-				theme,
-			});
+			renderRunDetail(RUN_DETAIL, { theme, now: 66_000, width: 100 });
 		}
 	} finally {
 		process.env = original;
