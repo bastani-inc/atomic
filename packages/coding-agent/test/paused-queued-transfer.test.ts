@@ -212,6 +212,37 @@ describe("paused queue stage-session transfer", () => {
 		);
 	});
 
+	test("a replaced session whose stop never settles starts no turn, and its successor can be prompted at once", async () => {
+		const source = await createHarness();
+		const target = await createHarness();
+		harnesses.push(source, target);
+		shareAdmissionBoundary(source.session as TransferSession, target.session as TransferSession);
+		source.setResponses([fauxAssistantMessage("the replaced session must not answer")]);
+		target.setResponses([fauxAssistantMessage("fallback candidate answered"), fauxAssistantMessage("follow-up")]);
+		// A turn whose tools ignore the abort: the stop holds the session but never reports it idle.
+		const realAbort = source.session.abort.bind(source.session);
+		source.session.abort = (options) => {
+			void realAbort(options);
+			return new Promise<void>(() => {});
+		};
+
+		const replacement = new StageSessionReplacement();
+		replacement.retire(source.session);
+		expect(await replacement.stop(source.session, { timeoutMs: 20 })).toBe("timed-out");
+		await source.session.followUp("delivery after the stop");
+		expect(source.session.isStreaming).toBe(false);
+		expect(source.getPendingResponseCount()).toBe(1);
+
+		replacement.adopt(target.session);
+		await replacement.successorReady();
+		await target.session.prompt("fallback candidate prompt");
+		await target.session.agent.waitForIdle();
+		expect(source.getPendingResponseCount()).toBe(1);
+		expect(target.session.messages.filter((message) => message.role === "user").map(getMessageText)).toContain(
+			"delivery after the stop",
+		);
+	});
+
 	test("a stage that was already holding its deliveries keeps holding them after a stopped replacement", async () => {
 		const source = await createHarness();
 		const target = await createHarness();
