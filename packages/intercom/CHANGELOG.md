@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a message to a subagent that was still starting under a supervisor on another machine sometimes failing with `Session not found` instead of waiting for the subagent. With multi-node routing, the broker confirmed the subagent's reservation to its supervisor before other machines' brokers could see it, so a session that sent to the subagent right away, on another machine, found nothing to wait for. The broker now confirms the reservation, and that of a released subagent, once other machines can find it, waiting at most 2.5 s for a shared database that does not answer ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 ### Added
