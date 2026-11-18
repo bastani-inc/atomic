@@ -103,26 +103,35 @@ export function createForkContextResolver(
 	const childLaunch =
 		launch.childLaunch ??
 		((index: number): ForkedChildLaunch => ({ toolCallId: launch.toolCallIds?.[0], ordinal: index + 1, count: 1 }));
-	const children = new Map<number, Promise<SessionManager>>();
+	// Keep the identity needed to retry a child, not its resolved promise: that would retain its whole context
+	// until every sibling of this launch finished. Concurrent opens still share one operation and live manager.
+	const children = new Map<number, { id: string; manager: WeakRef<SessionManager> }>();
+	const opening = new Map<number, Promise<SessionManager>>();
 	return {
 		sessionManagerForIndex(index = 0): Promise<SessionManager> {
-			const cached = children.get(index);
-			if (cached !== undefined) return cached;
+			const pending = opening.get(index);
+			if (pending) return pending;
+			const saved = children.get(index);
+			const live = saved?.manager.deref();
+			if (live) return Promise.resolve(live);
 			const child = (async () => {
 				try {
-					// Only what the fork's context is built from is read: a resume of the parent at the fork point (#5500).
-					const source = await SessionManager.open(store, parentSessionId, cwd, {
-						history: "tail",
-						leafId: forkEntryId,
-					});
-					await createForkedSession(source, forkEntryId, forkedChildToolCallAnswer(childLaunch(index)));
+					const source = saved
+						? await SessionManager.open(store, saved.id, cwd, { history: "tail" })
+						: await SessionManager.open(store, parentSessionId, cwd, { history: "tail", leafId: forkEntryId });
+					if (!saved)
+						await createForkedSession(source, forkEntryId, forkedChildToolCallAnswer(childLaunch(index)));
+					children.set(index, { id: source.getSessionId(), manager: new WeakRef(source) });
 					return source;
 				} catch (cause) {
-					children.delete(index);
 					throw new SubagentForkContextError(parentSessionId, "fork_failed", { cause });
 				}
 			})();
-			children.set(index, child);
+			opening.set(index, child);
+			void child.then(
+				() => opening.delete(index),
+				() => opening.delete(index),
+			);
 			return child;
 		},
 	};

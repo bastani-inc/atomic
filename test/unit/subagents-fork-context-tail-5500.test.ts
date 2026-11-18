@@ -18,6 +18,7 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import { forkStageSession, STAGE_FORK_TOOL_RESULT } from "../../packages/workflows/src/shared/stage-session-store.js";
+import { collectGarbage } from "../helpers/collect-garbage.js";
 
 /** Turns of the parent before its context was cleared: its history, which no fork's context reads. */
 const TURNS_BEFORE_CLEAR = 1_500;
@@ -158,6 +159,26 @@ test("a forked subagent of a long session copies only the context it is built fr
 		`a fork of a ${parentEntries}-entry parent held ${held} and wrote ${written} entries (budget ${FORK_ENTRY_BUDGET})`,
 	);
 	assert.equal(parentLoads, 0, "building the fork read the parent's whole history");
+});
+
+test("a parallel launch does not keep a finished fork's manager alive to support later retries (#5594)", async () => {
+	const store = await sqlStore();
+	const parent = await longParent(store);
+	const launch = createForkContextResolver(parent, "fork", { toolCallIds: [FORK_CALL_ID] });
+	const previous = await (async () => {
+		const child = await launch.sessionManagerForIndex(0);
+		assert.ok(child);
+		const marker = await child.appendMessage({ role: "user", content: "already worked in this fork", timestamp: 1 });
+		return { id: child.getSessionId(), marker, ref: new WeakRef(child) };
+	})();
+	// Other children keep the launch alive after this one finished. Its own transcript is already in its store.
+	await collectGarbage();
+	assert.equal(previous.ref.deref() === undefined, true, "the launch still owns the finished child's context");
+	const [retry, same] = await Promise.all([launch.sessionManagerForIndex(0), launch.sessionManagerForIndex(0)]);
+	assert.ok(retry);
+	assert.equal(retry, same);
+	assert.equal(retry.getSessionId(), previous.id);
+	assert.equal(retry.getLeafId(), previous.marker);
 });
 
 test("a workflow stage forked from a long stage session copies only the context it is built from (#5500)", async () => {
