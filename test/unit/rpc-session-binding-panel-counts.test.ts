@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import type { AgentPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
 import type { TaskRecord } from "../../packages/coding-agent/src/core/tasks/contracts.ts";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.ts";
 import { mainComposerHintSegments } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
@@ -67,7 +68,7 @@ const settle = async () => {
 	for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 };
 
-test("the interactive engine sends the host the panel's agent and subagent counts", async () => {
+test("the interactive engine sends the host the panel's agent and subagent counts, apart from its other rows", async () => {
 	const harness = await createHarness();
 	const keybindings = new KeybindingsManager();
 	const lines: string[] = [];
@@ -117,6 +118,31 @@ test("the interactive engine sends the host the panel's agent and subagent count
 			subagents: 1,
 		});
 		assert.deepEqual(hostHint(), ["↓ 1 agent", "? keys"]);
+
+		// A running workflow run is a row of the panel but not an agent: the counts tell the two apart.
+		let workflowRows: AgentPanelItem[] = [];
+		let workflowsChanged = () => {};
+		harness.session.extensionRunner.getAgentPanelSourceHub().register({
+			items: () => workflowRows,
+			subscribe(listener) {
+				workflowsChanged = listener;
+				return () => {};
+			},
+		});
+		workflowRows = [{ id: "run:w", kind: "workflow", state: "running", name: "ralph", task: "stage review" }];
+		workflowsChanged();
+		await settle();
+		assert.deepEqual(lastPanelState(), {
+			type: "engine_agent_panel_state",
+			total: 2,
+			agents: 1,
+			needsInput: 0,
+			shells: 0,
+			subagents: 1,
+		});
+		assert.deepEqual(hostHint(), ["↓ 1 agent", "? keys"]);
+		workflowRows = [];
+		workflowsChanged();
 
 		replace([finishedAgent]);
 		await settle();
