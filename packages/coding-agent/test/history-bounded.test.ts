@@ -62,9 +62,33 @@ function cpuMs(): number {
 	return (used.user + used.system) / 1000;
 }
 
+const CPU_CLOCK_STEP_SAMPLES = 3;
+const CPU_CLOCK_STEP_SEARCH_MS = 200;
+
+function measureCpuClockStepMs(): number {
+	let step = Number.POSITIVE_INFINITY;
+	let last = cpuMs();
+	const searchUntil = performance.now() + CPU_CLOCK_STEP_SEARCH_MS;
+	for (let seen = 0; seen < CPU_CLOCK_STEP_SAMPLES && performance.now() < searchUntil; ) {
+		const now = cpuMs();
+		if (now === last) continue;
+		step = Math.min(step, now - last);
+		last = now;
+		seen++;
+	}
+	return Number.isFinite(step) ? step : 0;
+}
+
+/** The smallest change the thread CPU clock reports: a scheduler tick (15.6 ms) on Windows, far less elsewhere. */
+const CPU_CLOCK_STEP_MS = measureCpuClockStepMs();
+
 interface Interval {
 	readonly start: number;
 	readonly end: number;
+}
+
+interface WatchedTurn extends Interval {
+	readonly cpu: number;
 }
 
 function overlapMs(turn: Interval, pauses: readonly Interval[]): number {
@@ -72,6 +96,15 @@ function overlapMs(turn: Interval, pauses: readonly Interval[]): number {
 		(sum, pause) => sum + Math.max(0, Math.min(turn.end, pause.end) - Math.max(turn.start, pause.start)),
 		0,
 	);
+}
+
+/**
+ * How long a turn held the event loop: its CPU time, less the one clock step a coarse CPU clock may have added, and
+ * at most its wall time less its collections' pauses. A collection's pause includes any time the thread waited off
+ * the CPU, which CPU time never counted, so pauses come off wall time only.
+ */
+function turnBlockedMs(turn: WatchedTurn, collections: readonly Interval[], cpuClockStepMs: number): number {
+	return Math.max(0, Math.min(turn.cpu - cpuClockStepMs, turn.end - turn.start - overlapMs(turn, collections)));
 }
 
 function raiseProcessPriority(): () => void {
@@ -87,7 +120,7 @@ function raiseProcessPriority(): () => void {
 
 function watchEventLoopTurns(): () => Promise<number[]> {
 	const restorePriority = raiseProcessPriority();
-	const turns: (Interval & { readonly cpu: number })[] = [];
+	const turns: WatchedTurn[] = [];
 	const collections: Interval[] = [];
 	const collected = (entries: readonly PerformanceEntry[]) => {
 		for (const entry of entries) collections.push({ start: entry.startTime, end: entry.startTime + entry.duration });
@@ -113,9 +146,7 @@ function watchEventLoopTurns(): () => Promise<number[]> {
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			collected(observer.takeRecords());
 			observer.disconnect();
-			return turns.map((item) =>
-				Math.max(0, Math.min(item.end - item.start, item.cpu) - overlapMs(item, collections)),
-			);
+			return turns.map((item) => turnBlockedMs(item, collections, CPU_CLOCK_STEP_MS));
 		} finally {
 			restorePriority();
 		}
@@ -2400,6 +2431,29 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			() => assertFewStalls(turns, TURN_LIMIT_MS, "the blocking work"),
 			/the blocking work held the event loop for more than 10 ms ([4-9]|\d{2,}) times/,
 		);
+	});
+
+	it("counts a turn's blocking work when a collection inside it waited off the CPU (#5250)", () => {
+		const windowsTick = 15.625;
+		const turn = { start: 0, end: 52.6, cpu: 2 * windowsTick };
+		const preemptedCollection = { start: 10, end: 41.3 };
+		assert.ok(
+			turnBlockedMs(turn, [preemptedCollection], windowsTick) > TURN_LIMIT_MS,
+			"21.3 ms of work around a 31.3 ms collection pause still held the event loop",
+		);
+	});
+
+	it("does not count a collection's own CPU work as the turn's blocking (#5250)", () => {
+		const turn = { start: 0, end: 30, cpu: 30 };
+		assert.ok(turnBlockedMs(turn, [{ start: 5, end: 25 }], 0.001) <= TURN_LIMIT_MS);
+	});
+
+	it("does not count one tick of a coarse CPU clock as blocking (#5250)", () => {
+		const windowsTick = 15.625;
+		const descheduledTurn = { start: 0, end: 15.2, cpu: windowsTick };
+		assert.equal(turnBlockedMs(descheduledTurn, [], windowsTick), 0);
+		const longTurn = { start: 0, end: 30, cpu: 2 * windowsTick };
+		assert.ok(turnBlockedMs(longTurn, [], windowsTick) > TURN_LIMIT_MS);
 	});
 
 	it("spends the requested CPU time in a blocking busyFor burst even when wall time jumps (#5250)", () => {

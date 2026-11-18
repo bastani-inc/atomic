@@ -86,6 +86,11 @@ export type InteractiveEngineMessage =
 	/** Workflow activity the host reports as terminal program status. Roots carry no graph. */
 	| { type: "engine_workflow_activity"; frame: WorkflowActivityFrame }
 	| { type: "engine_agent_panel_state"; total: number; needsInput: number; shells?: number }
+	/**
+	 * A deprecation warning the engine raised, for the host to show as it shows its own: once per message, and with
+	 * `once`, the notice's identity, once across starts.
+	 */
+	| { type: "engine_deprecation_warning"; message: string; once?: string }
 	| { type: "engine_ui_prompt"; event: UIPromptStartEvent | UIPromptEndEvent }
 	/**
 	 * The child took ownership of a correlated RPC request: it has parsed the
@@ -117,6 +122,10 @@ export type InteractiveEngineMessage =
 			requestId: number;
 			lines: string[];
 			scrollRequest?: WidgetScrollRequest;
+			/** The frame's number, counting the component's frames from 1; a click names the frame it landed on. */
+			frame?: number;
+			/** What the component reports it drew on each row, for components that name their rows. */
+			rowKeys?: string[];
 	  }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
 	| { type: "engine_custom_invalidate"; componentId: string }
@@ -210,6 +219,21 @@ export type InteractiveEngineCommand =
 			hostMode?: TuiMode;
 	  }
 	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string }
+	/**
+	 * A single left click the host drew on the component, at the row and column within it and its drawn size, on the
+	 * frame numbered `frame`. A click on a frame the engine has since replaced is dropped.
+	 */
+	| {
+			type: "engine_custom_click";
+			componentId: string;
+			frame: number;
+			/** What the frame drew on the clicked row, for a component that names its rows. */
+			rowKey?: string;
+			x: number;
+			y: number;
+			width: number;
+			height: number;
+	  }
 	| { type: "engine_custom_copy_result"; componentId: string; requestId: number; error?: string }
 	| { type: "engine_custom_scroll"; componentId: string; state: WidgetScrollState }
 	| { type: "engine_custom_dispose"; componentId: string }
@@ -537,6 +561,10 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		}
 		case "engine_heartbeat":
 			return typeof value.at === "number" ? { type: value.type, at: value.at } : undefined;
+		case "engine_deprecation_warning":
+			return typeof value.message === "string" && (value.once === undefined || typeof value.once === "string")
+				? { type: value.type, message: value.message, ...(value.once === undefined ? {} : { once: value.once }) }
+				: undefined;
 		case "engine_activity_started":
 			return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;
 		case "engine_activity_finished":
@@ -638,6 +666,10 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						componentId: value.componentId,
 						requestId: value.requestId,
 						lines: value.lines,
+						...(isCellCount(value.frame) ? { frame: value.frame } : {}),
+						...(Array.isArray(value.rowKeys) && value.rowKeys.every((key) => typeof key === "string")
+							? { rowKeys: value.rowKeys as string[] }
+							: {}),
 						...(isJsonObject(value.scrollRequest) &&
 						typeof value.scrollRequest.version === "number" &&
 						typeof value.scrollRequest.scrollTop === "number"
@@ -745,6 +777,10 @@ export function parseEngineExplicitQuitCommand(line: string): EngineExplicitQuit
 	return parseJsonObject(line)?.type === "engine_explicit_quit" ? { type: "engine_explicit_quit" } : undefined;
 }
 
+function isCellCount(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 export function parseInteractiveEngineCommand(line: string): InteractiveEngineCommand | undefined {
 	const value = parseJsonObject(line);
 	if (!value || typeof value.type !== "string" || typeof value.componentId !== "string") return undefined;
@@ -793,6 +829,24 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 	}
 	if (value.type === "engine_custom_input" && typeof value.requestId === "number" && typeof value.data === "string")
 		return { type: value.type, componentId: value.componentId, requestId: value.requestId, data: value.data };
+	if (
+		value.type === "engine_custom_click" &&
+		isCellCount(value.frame) &&
+		isCellCount(value.x) &&
+		isCellCount(value.y) &&
+		isCellCount(value.width) &&
+		isCellCount(value.height)
+	)
+		return {
+			type: value.type,
+			componentId: value.componentId,
+			frame: value.frame,
+			...(typeof value.rowKey === "string" ? { rowKey: value.rowKey } : {}),
+			x: value.x,
+			y: value.y,
+			width: value.width,
+			height: value.height,
+		};
 	if (
 		value.type === "engine_custom_copy_result" &&
 		typeof value.requestId === "number" &&

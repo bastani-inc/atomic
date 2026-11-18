@@ -142,6 +142,18 @@ function parseOverrideStringArrayOrFalse(
 /** Override fields of the removed automatic model routing: ignored, and named once so a saved restriction is not lost unseen. */
 const REMOVED_ROUTING_OVERRIDE_FIELDS = ["modelConstraints", "taskNeeds"] as const;
 
+/** Name each removed routing field the file's overrides still save, once across starts while their values stay. */
+function warnRemovedRoutingOverrideFields(agentOverrides: Record<string, unknown>, filePath: string): void {
+	for (const field of REMOVED_ROUTING_OVERRIDE_FIELDS) {
+		const saved = Object.entries(agentOverrides).flatMap(([name, value]) =>
+			value && typeof value === "object" && !Array.isArray(value) && field in value
+				? [[name, (value as Record<string, unknown>)[field]]]
+				: [],
+		);
+		if (saved.length > 0) warnRemovedRoutingOption(field, `${path.resolve(filePath)}\0${JSON.stringify(saved)}`);
+	}
+}
+
 function parseBuiltinOverrideEntry(
 	name: string,
 	value: unknown,
@@ -153,7 +165,6 @@ function parseBuiltinOverrideEntry(
 
 	const input = value as Record<string, unknown>;
 	const override: BuiltinAgentOverrideConfig = {};
-	for (const field of REMOVED_ROUTING_OVERRIDE_FIELDS) if (field in input) warnRemovedRoutingOption(field);
 
 	if ("model" in input) {
 		if (typeof input.model === "string" || input.model === false) override.model = input.model;
@@ -269,6 +280,7 @@ async function readSubagentSettings(filePath: string | null): Promise<SubagentSe
 	if (!agentOverrides || typeof agentOverrides !== "object" || Array.isArray(agentOverrides)) {
 		return { overrides: parsed, disableBuiltins };
 	}
+	warnRemovedRoutingOverrideFields(agentOverrides as Record<string, unknown>, filePath);
 	for (const [name, value] of Object.entries(agentOverrides)) {
 		const override = parseBuiltinOverrideEntry(name, value, filePath);
 		if (override) parsed[name] = override;

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
+import { TASK_COMPLETION_MESSAGE_TYPE } from "../../core/tasks/completion.js";
 import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import { sameToolGroupRole, toolGroupRoleKey } from "../interactive/components/tool-group-tracker.ts";
@@ -185,6 +186,7 @@ export function disposeRemoteRenderers(components: readonly Component[]): void {
 }
 
 export class RemoteToolExecutionComponent extends RemoteRenderer {
+	readonly expandsOnClick = true;
 	private readonly toolName: string;
 	private readonly toolCallId: string;
 	private readonly rendererTaskId: string | undefined;
@@ -255,6 +257,16 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.expanded = expanded;
 		this.changed();
 	}
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+	getGroupRole(): ToolGroupRole {
+		return this.groupRole;
+	}
+	/** The block's title row: the engine draws the block as `ToolExecutionComponent` does, after a blank row. */
+	headerRows(width: number): readonly number[] {
+		return this.render(width).length > 1 ? [1] : [];
+	}
 	setShowImages(show: boolean): void {
 		this.showImages = show;
 		this.changed();
@@ -319,6 +331,17 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
 		this.changed();
+	}
+	/** A finished-task card expands on a click on its header, as a tool block does. */
+	get expandsOnClick(): boolean {
+		return this.message.customType === TASK_COMPLETION_MESSAGE_TYPE;
+	}
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+	/** The card's `● … finished` row: the engine draws the card after the blank row it leads with. */
+	headerRows(width: number): readonly number[] {
+		return this.expandsOnClick && this.render(width).length > 1 ? [1] : [];
 	}
 	setOutputPad(outputPad: number): void {
 		this.outputPad = outputPad;

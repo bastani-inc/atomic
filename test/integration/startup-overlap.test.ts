@@ -17,13 +17,21 @@ const cli = join(repoRoot, "packages/coding-agent/dist/cli.js");
 /**
  * The engine child is held until the host has painted (its first frame is in the startup trace), for at most this
  * long. A host that waited for its engine would deadlock until then, and its frame would come after the engine
- * started; the bound only has to outlast a host's own start on a loaded runner.
+ * started; the bound only has to outlast a host's own start on a loaded runner. On a Windows runner running three
+ * copies of this test beside twelve busy loops the host's first frame took up to 164 s.
  */
-const ENGINE_HOLD_MAX_MS = 45_000;
+const ENGINE_HOLD_MAX_MS = 240_000;
+/** The held engine's own start and a provider round trip once it is released: up to 92 s on that runner. */
+const ENGINE_START_MAX_MS = 150_000;
 /** A real interactive start, its held engine and a provider round trip, on a loaded runner. */
-const SAMPLE_TIMEOUT_MS = ENGINE_HOLD_MAX_MS + 30_000;
-/** Two real starts (interactive and RPC) plus their teardown. */
-const TEST_TIMEOUT_MS = 3 * SAMPLE_TIMEOUT_MS;
+const SAMPLE_TIMEOUT_MS = ENGINE_HOLD_MAX_MS + ENGINE_START_MAX_MS;
+/**
+ * The untimed start that fills a new agent directory's caches before the samples, as the benchmark's warm profile
+ * does. Its engine compiles the whole builtin extension graph: 11-15 s on an idle machine, up to 177 s on that runner.
+ */
+const WARM_UP_TIMEOUT_MS = 270_000;
+/** The warm-up, then two real starts (interactive and RPC) plus their teardown. */
+const TEST_TIMEOUT_MS = WARM_UP_TIMEOUT_MS + 3 * SAMPLE_TIMEOUT_MS;
 
 function freePort(): Promise<number> {
 	return new Promise((resolve, reject) => {
@@ -116,6 +124,10 @@ if (process.argv.some((arg) => arg === "--internal-engine-prewarm" || arg === "-
 				extraEnv: { NODE_OPTIONS: `--import=${pathToFileURL(engineHold).href}` },
 			};
 			await prepareBenchmarkState(options);
+			// The samples below use the warm profile, which the benchmark measures only after one untimed start has filled
+			// the caches. Without it the typed-ahead sample would wait for that one-time compile.
+			const warmUp = await runSample({ ...options, timeoutMs: WARM_UP_TIMEOUT_MS }, target, "rpc", "warm", 0, false);
+			assert.equal(warmUp.state, "success", warmUp.failures.join("; "));
 
 			const typeahead = await runSample(options, target, "typeahead", "warm", 1, true);
 			assert.equal(typeahead.state, "success", typeahead.failures.join("; "));

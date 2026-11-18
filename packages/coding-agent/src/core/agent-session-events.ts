@@ -6,7 +6,12 @@ import { releaseDetachedCallHolds, withoutDetachedPlaceholders } from "./agent-s
 import { heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
-import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
+import {
+	clearPersistenceFailure,
+	noteMessageSaved,
+	recordPersistenceFailure,
+	repeatsShownUnsavedInput,
+} from "./agent-session-persistence-failures.ts";
 import {
 	isProtectedStreamingCustomMessage,
 	markProtectedStreamingCustomMessageConsumed,
@@ -58,6 +63,7 @@ import {
 	ownedSessionPermits,
 	ownedSessionStores,
 	sessionLifetime,
+	shutdownDeadline,
 } from "./session-lifecycle-work.ts";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { observeToolExecutionTiming } from "./tool-execution-timing.ts";
@@ -122,11 +128,17 @@ function consumePersistenceStopReply(session: AgentSession, event: AgentEvent): 
 	return true;
 }
 
+/** #5135: a message event of input the session already shows as unsaved; the earlier display stands for it. */
+function repeatsShownInput(session: AgentSession, event: AgentEvent): boolean {
+	if (event.type !== "message_start" && event.type !== "message_update" && event.type !== "message_end") return false;
+	return repeatsShownUnsavedInput(session, event.message);
+}
+
 /** Internal handler for agent events - shared by subscribe and reconnect */
 
 export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Promise<void> | void {
 	// #4226: a session that could not save a message stops the run that hit it; the next run tries again.
-	if (received.type === "agent_start") this._persistenceFailure = undefined;
+	if (received.type === "agent_start") clearPersistenceFailure(this);
 	if (consumePersistenceStopReply(this, received)) return;
 	if (received.type === "message_end") {
 		// Before the turn's calls run: they run, detach and are recorded under the id stored here (#5056). Agent-core
@@ -297,7 +309,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	try {
 		await this._emitExtensionEvent(event);
 		if (event.type === "agent_start") this._undeliveredAgentStarts -= 1;
-		if (event.type !== "message_end") this._emit(event);
+		if (event.type !== "message_end" && !repeatsShownInput(this, event)) this._emit(event);
 	} finally {
 		// Agent-core has consumed this protected input already. Its durability
 		// boundary cannot be skipped by a fallible extension or session listener.
@@ -352,12 +364,15 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			// Context refreshes retain an admitted message until its append settles; an unsaved one then leaves.
 			this._messagesAwaitingPersistence.delete(event.message);
 		}
-		if (entryId) this._entryIdsByMessage.set(event.message, entryId);
+		if (entryId) {
+			this._entryIdsByMessage.set(event.message, entryId);
+			noteMessageSaved(this, event.message);
+		}
 		if (entryId && event.message.role === "custom") {
 			const pendingIndex = this._pendingNextTurnMessages.indexOf(event.message);
 			if (pendingIndex >= 0) this._pendingNextTurnMessages.splice(pendingIndex, 1);
 		}
-		this._emit(event);
+		if (!repeatsShownInput(this, event)) this._emit(event);
 		// Other message types (bashExecution, branchSummary) are persisted elsewhere
 
 		// Track assistant message for auto-compaction (checked on agent_end)
@@ -738,9 +753,12 @@ export function closeAgentSession(
 	sessionClosing(session);
 	const closing = Promise.resolve().then(async () => {
 		const errors: Error[] = [];
+		// Bounds the whole shutdown, its waits for the event queue and the aborted turn included.
+		const deadline = shutdownDeadline(session);
 		const attempt = async (component: string, cleanup: () => void | Promise<void>) => {
 			try {
-				await cleanup();
+				const unsettled = await deadline.run(component, cleanup);
+				if (unsettled) errors.push(new Error(component, { cause: unsettled }));
 			} catch (cause) {
 				if (cause instanceof AggregateError)
 					errors.push(...cause.errors.map((error) => new Error(component, { cause: error })));
@@ -814,6 +832,7 @@ export function closeAgentSession(
 		const permit = ownedSessionPermits.get(session);
 		ownedSessionPermits.delete(session);
 		if (!errors.length) await attempt("admission", () => permit?.());
+		deadline.clear();
 		if (errors.length)
 			throw Object.assign(new AggregateError(errors, "Session shutdown failed"), { code: "ShutdownFailed" });
 	});

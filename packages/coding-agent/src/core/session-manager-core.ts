@@ -150,6 +150,9 @@ export class SessionManager {
 	private readonly unconfirmed = new Set<string>();
 	/** The open session was deleted from the store; later entries stay in memory only (#4971). */
 	private deletedFromStore = false;
+	/** Another writer's entries stopped an append while `appendHaltPolicy` held: appends reject with it (#5135). */
+	private appendHalt: SessionConflictError | undefined;
+	private appendHaltPolicy: (() => boolean) | undefined;
 	/** How many live sessions run on this manager; while any do, its session is marked open (#4971). */
 	private openHolds = 0;
 	private openMarker:
@@ -183,6 +186,26 @@ export class SessionManager {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
 		this.start(options);
+	}
+
+	/**
+	 * #5135: while `policy` holds, the first append that another writer's entries stop halts every queued and later
+	 * append, which then rejects with that conflict, until {@link resumeAppends}. A run that such a conflict stopped
+	 * then writes nothing more after the other writer's entries, inside that writer's turn.
+	 */
+	haltAppendsOnConflictWhile(policy: () => boolean): void {
+		this.appendHalt = undefined;
+		this.appendHaltPolicy = policy;
+	}
+
+	/** The conflict that halted appends, if one did (#5135). */
+	getAppendHalt(): SessionConflictError | undefined {
+		return this.appendHalt;
+	}
+
+	/** Lets appends go on after the other writer's entries again (#5135). */
+	resumeAppends(): void {
+		this.appendHalt = undefined;
 	}
 
 	private runMutation<T>(operation: () => Promise<T>): Promise<T> {
@@ -247,6 +270,7 @@ export class SessionManager {
 		this.sessionId = header.id;
 		this.lastSeq = lastSeq;
 		this.deletedFromStore = false;
+		this.appendHalt = undefined;
 		this.historyStartSeq = partial?.fromSeq ?? 1;
 		this.entrySeqs = new Map(entries.map((entry, i) => [entry.id, i + 1]));
 		this.lastEntryId = entries.at(-1)?.id ?? null;
@@ -647,6 +671,7 @@ export class SessionManager {
 	}
 
 	private async _appendEntries(entries: readonly SessionEntry[]): Promise<void> {
+		if (this.appendHalt !== undefined) throw this.appendHalt;
 		// #4971: the session was deleted from its store; that was reported once, and nothing more is saved.
 		if (this.deletedFromStore) return this.applyAppended(entries);
 		for (let attempt = 1; ; attempt++) {
@@ -731,7 +756,9 @@ export class SessionManager {
 		if (saved) return true;
 		const conflict = error instanceof SessionConflictError;
 		if (foreign || (conflict && tail.length === 0)) {
-			throw conflict ? error : new SessionConflictError(this.sessionId, expectSeq, this.lastSeq);
+			const stop = conflict ? error : new SessionConflictError(this.sessionId, expectSeq, this.lastSeq);
+			if (this.appendHaltPolicy?.() === true) this.appendHalt ??= stop;
+			throw stop;
 		}
 		// Nothing of ours was written: a failure that passes is tried again, any other stands.
 		if (!unknown && !conflict) throw error;

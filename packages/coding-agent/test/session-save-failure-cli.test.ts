@@ -20,7 +20,7 @@ const REAL_CLI_PROCESS_TIMEOUT_MS = 120_000;
 
 const ANSWER = "final answer";
 const SAVE_ERROR =
-	/Extension error \(<session>\): could not persist the assistant message: Session conflict: \S+, expected \d+, actual \d+/;
+	/Error: Another process wrote to session \S+ while this one was writing to it \(expected \d+ entries, found \d+\), so this run stopped\./;
 
 let server: Server | undefined;
 let root: string;
@@ -159,7 +159,7 @@ describe("atomic -p when another writer changes its session file (#4226)", () =>
 			assert.equal(result.code, 1, result.stderr);
 			assert.equal(result.stdout, `${ANSWER}\n`);
 			assert.match(result.stderr, SAVE_ERROR);
-			assert.doesNotMatch(result.stderr, /turn_end could not resolve|Model \S+ failed/);
+			assert.doesNotMatch(result.stderr, /turn_end could not resolve|Model \S+ failed|Extension error/);
 			assert.equal(requests, 1);
 		},
 		REAL_CLI_PROCESS_TIMEOUT_MS,

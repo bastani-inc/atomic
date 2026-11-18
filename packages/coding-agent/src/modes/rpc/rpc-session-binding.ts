@@ -21,6 +21,7 @@ import {
 } from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
+import { engineTaskInspectorUi } from "./task-ui-bridge.js";
 
 interface RpcSessionBindingOptions {
 	runtimeHost: AgentSessionRuntime;
@@ -220,9 +221,21 @@ export class RpcSessionBinding {
 		}
 
 		if (this.customUi) {
-			this.unsubscribeTasks = bindAgentPanel(session, session.extensionRunner.getUIContext(), (counts) => {
-				this.writeEngineLine?.(serializeInteractiveEngineMessage({ type: "engine_agent_panel_state", ...counts }));
-			});
+			const customUi = this.customUi;
+			const ui = session.extensionRunner.getUIContext();
+			this.unsubscribeTasks = bindAgentPanel(
+				session,
+				ui,
+				(counts) => {
+					this.writeEngineLine?.(
+						serializeInteractiveEngineMessage({ type: "engine_agent_panel_state", ...counts }),
+					);
+				},
+				engineTaskInspectorUi(ui, {
+					custom: customUi.custom.bind(customUi),
+					getHostRenderSettings: () => customUi.getHostRenderSettings(),
+				}),
+			);
 		}
 		if (this.writeEngineLine) {
 			this.unsubscribeWorkflowActivity = forwardWorkflowActivity(session, this.writeEngineLine);

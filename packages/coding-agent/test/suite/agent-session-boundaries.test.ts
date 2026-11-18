@@ -857,12 +857,12 @@ describe("AgentSession actionable boundaries", () => {
 				assert.equal(saved.harness.faux.state.callCount, 1);
 				assert.equal(saved.saveAttempts(PROTECTED_RECONCILIATION_CUSTOM_TYPE), 1, "the run retries no write");
 
-				// #3105: disposal makes one final write of the hidden turn. The conflict was reported once, when the run
-				// stopped, and the session took the second writer's entry in, so that write is saved (#4970).
+				// #3105: disposal tries the hidden turn once more. The second writer's entry stopped this run, so the
+				// session refuses that write rather than saving it after that entry (#5135).
 				await settlesWithin(saved.harness.session.dispose());
 				assert.equal(saved.saveAttempts(PROTECTED_RECONCILIATION_CUSTOM_TYPE), 2);
 				assert.deepEqual(saved.unsavedRoles(), ["custom"], "disposal reports no second error");
-				// The saved card and its hidden turn are both saved, after the second writer's entry.
+				// The card was saved before the second writer's entry and stays pending for the session that reopens.
 				const reopened = await SessionManager.open(
 					saved.harness.sessionManager.getSessionFile()!,
 					saved.harness.sessionManager.getSessionDir(),
@@ -873,7 +873,7 @@ describe("AgentSession actionable boundaries", () => {
 						.flatMap((entry) =>
 							entry.type === "custom_message" || entry.type === "custom" ? [entry.customType] : [],
 						),
-					[NOTICE, "other-writer", PROTECTED_RECONCILIATION_CUSTOM_TYPE],
+					[NOTICE, "other-writer"],
 				);
 			} finally {
 				await saved.cleanup().catch(() => {});
