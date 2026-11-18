@@ -406,7 +406,10 @@ export function panelItemsFromSnapshot(
 		const graph = isLeaf ? undefined : expand(run.id);
 		const stages = graph?.stages ?? run.stages;
 		const settled = index?.settled ?? settledStageCount(stages);
-		const status = effectiveRunStatus(run);
+		const effective = effectiveRunStatus(run);
+		// A live run blocked on a failed stage keeps `running` with `blockedAt` set when its failure is not one the
+		// effective status reads as blocked, such as a stage whose session store stayed unreachable when it woke.
+		const status = effective === "running" && run.blockedAt !== undefined ? "blocked" : effective;
 		const quit = run.exitReason === "quit" || run.quitAt !== undefined;
 		const live = !quit && (run.endedAt === undefined || run.resumable === true || run.blockedAt !== undefined);
 		const state = quit ? "stopped" : panelState(status, indicator(run) === "awaiting_input", live);
