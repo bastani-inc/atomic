@@ -12,7 +12,7 @@ import { Text } from "../src/components/text.ts";
 import { keyInputData, matchesKey } from "../src/keys.ts";
 import { type Component, compositeTuiLine, type TuiMouseEvent, type TuiMouseEventResult } from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
-import { stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from "../src/utils.ts";
+import { sliceByColumn, stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from "../src/utils.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 /** A terminal that keeps every write, so a test can tell what reached it. */
@@ -169,7 +169,7 @@ function hintsOn(line: string): string[] {
 	const text = stripTerminalSequences(unmarked);
 	return spans.map(
 		(span) =>
-			`${span.action.kind === "key" ? span.action.key : span.action.command}: ${text.slice(span.start, span.end)}`,
+			`${span.action.kind === "key" ? span.action.key : span.action.command}: ${sliceByColumn(text, span.start, span.end - span.start)}`,
 	);
 }
 
@@ -196,23 +196,25 @@ describe("a hint keeps its action on every row it is drawn over, and no further"
 	});
 
 	it("marks each row of a hint wrapped at a space, broken inside a long word, or continued after a newline", () => {
-		assert.deepStrictEqual(wrapTextWithAnsi(`${notice} after`, 40).map(hintsOn), [
+		// A row is padded or bordered after it is wrapped, and the hint must end where its text does.
+		const bordered = (line: string) => hintsOn(`${line}   │`);
+		assert.deepStrictEqual(wrapTextWithAnsi(`${notice} after`, 40).map(bordered), [
 			["ctrl+o: ctrl+o for prompt, tool calls and full"],
 			["ctrl+o: result"],
 		]);
 		const long = wrapTextWithAnsi(`${clickableHint("x".repeat(25), keyHintAction("escape"))} after`, 10);
-		assert.deepStrictEqual(long.map(hintsOn), [
+		assert.deepStrictEqual(long.map(bordered), [
 			["escape: xxxxxxxxxx"],
 			["escape: xxxxxxxxxx"],
 			["escape: xxxxx"],
 			[],
 		]);
-		// A row is padded or bordered after it is wrapped, and the hint must end where its text does.
 		const lines = wrapTextWithAnsi(`${clickableHint("esc\ncancel", keyHintAction("escape"))} after`, 40);
-		assert.deepStrictEqual(
-			lines.map((line) => hintsOn(`${line}   │`)),
-			[["escape: esc"], ["escape: cancel"]],
-		);
+		assert.deepStrictEqual(lines.map(bordered), [["escape: esc"], ["escape: cancel"]]);
+		// Wide characters wrap by columns, two to a character.
+		const wide = wrapTextWithAnsi(`${clickableHint("确认取消对话框", keyHintAction("escape"))} 后`, 6);
+		assert.deepStrictEqual(wide.map(bordered), [["escape: 确认取"], ["escape: 消对话"], ["escape: 框"]]);
+		assert.strictEqual(stripTerminalSequences(readHintSpans(wide[2]!).line), "框 后");
 	});
 
 	it("ends a truncated hint where its kept text does, before the ellipsis and whatever follows", () => {
@@ -220,6 +222,8 @@ describe("a hint keeps its action on every row it is drawn over, and no further"
 		assert.deepStrictEqual(hintsOn(`${truncateToWidth(hint, 10, "…")} · more`), ["escape: esc cance"]);
 		// A row clipped to a narrower width, as a frame drawn for the previous width is until the next one arrives.
 		assert.deepStrictEqual(hintsOn(`${truncateToWidth(`${hint} after`, 12, "")}│`), ["escape: esc cancel t"]);
+		const wide = clickableHint("确认取消", keyHintAction("escape"));
+		assert.deepStrictEqual(hintsOn(`${truncateToWidth(wide, 6, "…", true)}│`), ["escape: 确认"]);
 	});
 
 	it("keeps a hint's action on the parts beside a box drawn over it, and not on the box", () => {

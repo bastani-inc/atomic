@@ -3,7 +3,7 @@
  * worker, as the chat of an in-process stage runs them on its own session (#3996).
  */
 import type { BashResult } from "@bastani/atomic";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, readHintSpans, setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -169,6 +169,14 @@ test("a stop of a worker stage's task that does not reach the worker says so in 
 		view.handleInput("x");
 		await vi.waitFor(() =>
 			assert.match(stripAnsi(view.render(120).join("\n")), /again within 3s to stop npm run build/),
+		);
+		const armed = view.render(120).find((row) => stripAnsi(row).includes("again within 3s to stop npm run build"));
+		assert.ok(armed !== undefined);
+		const armedText = stripAnsi(armed);
+		assert.deepEqual(
+			readHintSpans(armed).spans.map((span) => [armedText.slice(span.start, span.end), span.action]),
+			[["x again", { kind: "key", key: "x" }]],
+			"a click on x again confirms the stop, as pressing x does",
 		);
 		view.handleInput("x");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Could not stop the task: The connection/));
