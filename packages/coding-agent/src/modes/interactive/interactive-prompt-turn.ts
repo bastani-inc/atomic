@@ -36,8 +36,11 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	// whether the turn actually started before deciding to restore the draft.
 	let turnStarted = false;
 	let refused = false;
+	let started = false;
+	let showedUserMessage = false;
 	const unsubscribeTurnStart = this.session.subscribe((event) => {
 		if (event.type === "agent_start") turnStarted = true;
+		if (event.type === "message_start" && event.message.role === "user") showedUserMessage = true;
 	});
 	try {
 		if (deferredStartupNeedsPromptGate) {
@@ -61,12 +64,16 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 					// A queued message is listed as queued, and one an `input` hook handled is not sent at all (#4285).
 					if (success && (disposition === "queued" || disposition === "handled"))
 						this.discardDeferredRenderedUserInput(userInput);
-					if (success && disposition === "started") this.expectStartedUserInput(userInput, shownBefore);
+					if (success && disposition === "started") {
+						started = true;
+						this.expectStartedUserInput(userInput, shownBefore);
+					}
 					if (success) settleDispatch();
 				},
 			});
 			// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
-			if (this.startedDeferredUserInput === userInput) this.discardDeferredRenderedUserInput(userInput);
+			if (started && !showedUserMessage && this.deferredRenderedUserInputs?.includes(userInput) === true)
+				this.discardDeferredRenderedUserInput(userInput);
 		}
 	} catch (error) {
 		this.discardDeferredRenderedUserInput(userInput);

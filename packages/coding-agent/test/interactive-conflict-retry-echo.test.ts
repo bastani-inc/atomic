@@ -39,8 +39,11 @@ describe.each(["local", "isolated"] as const)(
 				const failuresBefore = conflicts;
 				await rig.host.defaultEditor.onSubmit?.(repeated);
 				await waitFor(
-					"the run to stop on the other writer's entries",
-					() => conflicts > failuresBefore && !session.isStreaming,
+					"the run to stop on the other writer's entries and the submission to settle",
+					() =>
+						conflicts > failuresBefore &&
+						!session.isStreaming &&
+						Reflect.get(rig.host, "promptTurn") === undefined,
 				);
 				assert.ok(session.getPersistenceFailure()?.conflict instanceof SessionConflictError);
 			}
