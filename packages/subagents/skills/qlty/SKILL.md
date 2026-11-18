@@ -21,7 +21,7 @@ Inspect the task, languages, existing config, scripts, lockfiles and baseline fi
 
 ## Installation when permitted
 
-The documented macOS/Linux installer is `curl https://qlty.sh | sh`. Inspect installer and platform support before executing downloaded code. The default binary location is `~/.qlty/bin`; check that location before reinstalling and add it to this shell's PATH if appropriate. `QLTY_NO_MODIFY_PATH=1` prevents shell-profile edits; `QLTY_INSTALL_BIN_PATH` chooses another installation directory. Windows support varies by release; verify current support rather than assuming POSIX commands work there.
+The documented macOS/Linux installer is `curl https://qlty.sh | sh`. Inspect installer and platform support before executing downloaded code. To verify a release before installing it, follow the integrity verification steps in the [quickstart](references/quickstart.md#integrity-verification): they need `gh` 2.67.0 or later, signed in, because older versions can report success for an archive that has no attestation. The default binary location is `~/.qlty/bin`; check that location before reinstalling and add it to this shell's PATH if appropriate. `QLTY_NO_MODIFY_PATH=1` prevents shell-profile edits; `QLTY_INSTALL_BIN_PATH` chooses another installation directory. Windows support varies by release; verify current support rather than assuming POSIX commands work there.
 
 Online, start with <https://docs.qlty.sh/llms.txt> and fetch relevant command/plugin documentation. Offline, use bundled references instead of attempting the network. Never invent plugin versions or flags.
 
@@ -36,7 +36,7 @@ qlty metrics --functions path/to/file.ts
 qlty smells path/to/file.ts
 ```
 
-Choose the relevant subset. For authorized formatting/fixes, use scoped `qlty fmt` or `qlty check --fix --level=low`, inspect the diff and rerun checks. Do not use `--all` formatting by habit or rewrite files during read-only review. Avoid unsafe auto-fixes and broad churn. `--level` controls displayed severity; `--fail-level` controls failure severity. Do not suppress errors to manufacture a green result.
+Choose the relevant subset. `--filter` and `--skip` on `check` and `fmt` take plugin names or, for `check`, `plugin:rule` entries to narrow a run. For authorized formatting/fixes, use scoped `qlty fmt` or `qlty check --fix --level=low`, inspect the diff and rerun checks. Do not use `--all` formatting by habit or rewrite files during read-only review. Avoid unsafe auto-fixes and broad churn. `--level` controls displayed severity; `--fail-level` controls failure severity. Do not suppress errors to manufacture a green result.
 
 Report four distinct facts: configuration prepared/changed, checks passed with command/output, failed checks, and checks not run with reasons. A parsed TOML file is not lint, security, metrics or full schema evidence. A clean run with no applicable plugins is not full quality coverage.
 

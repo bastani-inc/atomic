@@ -5,6 +5,7 @@
 ### Changed
 
 - The bundled `tdd` skill now names tautological tests, whose expected value is recomputed the way the code computes it, as an anti-pattern, with a checklist item and an example, from its upstream skill. Its frontmatter and a new `LICENSE.txt` credit the two MIT-licensed skills it is adapted from.
+- The bundled `qlty` skill's references follow the current Qlty documentation (CLI v0.671.0): `--skip`, `plugin:rule` filters and `--trigger` for `check` and `fmt`, `--install-only` and `--skip-source-fetch`, `--sarif` for `smells`, and the integrity verification steps, which need `gh` 2.67.0 or later because older versions can report success for an archive without an attestation.
 
 ### Fixed
 
