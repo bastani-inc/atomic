@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { SettingsSchema } from "../../packages/coding-agent/src/core/settings-schema.js";
 import { JournalCatalogError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
 	ForkJournalUnavailableError,
@@ -182,6 +183,7 @@ describe("workflow slash source-copy migration (#5224)", () => {
 		assertNoLegacyWorkflowSlash(hbText);
 		assert.match(hbText, new RegExp(`/workflows ${runId}`));
 
+		initTheme("dark");
 		let renderer: PiMessageRenderer | undefined;
 		registerWorkflowHeartbeatRenderer({
 			rendererHost: {},

@@ -474,6 +474,11 @@ export class MultiNodeRouter {
 			this.fail(request, "Pending question route does not authorize this public reply");
 			return;
 		}
+		this.refuseRouteUnavailable(request);
+	}
+
+	/** #4997: refuse a reply as retryable (`route_unavailable`): a route that would authorize it may be unreachable. */
+	private refuseRouteUnavailable(request: RemoteSendRequest): void {
 		this.host.write(request.socket, {
 			type: "delivery_failed",
 			messageId: request.message.id,
@@ -1646,8 +1651,21 @@ export class MultiNodeRouter {
 		if (this.host.deliveredMessages.lookupForTarget(request.message.id, request.signature, deliveryTargetIdentity(target)) !== "miss")
 			return false;
 		const asker = { sessionId: target.info.id, identity: deliveryTargetIdentity(target) };
-		if (!(await this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false))) return false;
-		await this.refuseUnauthorizedReply(request, asker);
+		const elsewhere = this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false);
+		// A shared database that stops answering leaves the reply undecided: it is refused as retryable, once, within the
+		// bound, so neither it nor the sender's later replies wait on that database for good. It authorizes nothing.
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		const expired = new Promise<"expired">((resolve) => {
+			bound = setTimeout(() => resolve("expired"), PRESENCE_REGISTRATION_BOUND_MS);
+			bound.unref?.();
+		});
+		try {
+			const decided = await Promise.race([elsewhere, expired]);
+			if (decided === false) return false;
+		} finally {
+			clearTimeout(bound);
+		}
+		this.refuseRouteUnavailable(request);
 		return true;
 	}
 
@@ -1928,6 +1946,9 @@ export class MultiNodeRouter {
 			if (existing === "expired") {
 				lookup.catch((error: Error) => this.report(error));
 				await this.adoptSharedRouteWithin(request, target);
+				// #4997: a reply whose ask's route may be on a broker that is down is refused as retryable here too, not by
+				// the local path's final refusal just because the outbox lookup was slow.
+				if (await this.routeUnreachable(request, target)) return;
 				request.notFound();
 				return;
 			}

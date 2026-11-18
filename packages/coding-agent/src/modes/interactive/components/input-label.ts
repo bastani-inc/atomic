@@ -1,5 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { singleLineDisplayText } from "../../../utils/terminal-text.ts";
+import { colorEnvironment } from "../theme/color-utils.ts";
 import { stripAnsi } from "./chat-session-host-utils.ts";
 import { renderComposerRule } from "./composer-rule.ts";
 
@@ -24,6 +25,11 @@ export interface InputLabel {
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
 const NORMAL_INTENSITY = "\x1b[22m";
+
+/** `text` in bold, unless NO_COLOR or FORCE_COLOR=0 turned styles off; reads the cached color environment only. */
+function emboldened(text: string): string {
+	return colorEnvironment().off ? text : `${BOLD}${text}${NORMAL_INTENSITY}`;
+}
 const EDITOR_SUFFIX = "] ";
 const EDITOR_OVERFLOW_RE = /^(─*)( [↑↓] \d+ more )(─*)$/u;
 
@@ -47,7 +53,7 @@ function inputLabel(
 	const shown = truncateToWidth(name, maxNameWidth, "…");
 	return {
 		plain: prefix + shown + suffix,
-		styled: style.textMuted(prefix) + BOLD + style.text(shown) + NORMAL_INTENSITY + style.textMuted(suffix),
+		styled: style.textMuted(prefix) + emboldened(style.text(shown)) + style.textMuted(suffix),
 	};
 }
 
@@ -186,7 +192,7 @@ export function applyAttachedComposer(
 		lines[0] = renderComposerRule(width, {
 			...(cleanLabel === undefined
 				? {}
-				: { label: { plain: cleanLabel, styled: `${BOLD}${style.text(cleanLabel)}${NORMAL_INTENSITY}` } }),
+				: { label: { plain: cleanLabel, styled: emboldened(style.text(cleanLabel)) } }),
 			color: style.accent,
 			heavy: true,
 		});
@@ -205,7 +211,7 @@ export function applyAttachedComposer(
 		lines[0] =
 			style.accent(HEAVY_RULE.repeat(fill)) +
 			(overflow === undefined ? "" : style.dim(overflow)) +
-			(shown === undefined ? "" : `${BOLD}${style.text(tail)}${NORMAL_INTENSITY}`) +
+			(shown === undefined ? "" : emboldened(style.text(tail))) +
 			style.accent(
 				HEAVY_RULE.repeat(
 					Math.max(0, width - fill - visibleWidth(tail) - (overflow === undefined ? 0 : visibleWidth(overflow))),

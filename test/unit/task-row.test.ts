@@ -256,13 +256,11 @@ test("task footer lists only active background tasks, newest first, not retained
 			.split("\n")
 			.map((line) => line.replace(/ {2,}/g, "  ").trimEnd());
 	assert.deepEqual(rows([agent], 100), ["  ∀ agent  Task agent  running"]);
-	assert.deepEqual(rows([agent, shell], 100), ["  ⧗ shell  Task shell  running", "  ∀ agent  Task agent  running"]);
+	// Shells are counted below the rows, as the main chat's hint counts them, not listed.
+	assert.deepEqual(rows([agent, shell], 100), ["  ∀ agent  Task agent  running", "  1 shell"]);
 	const failure = taskRecord("failure");
 	failure.execution = { kind: "settled", result: { kind: "failed", code: "fixture", message: "Failed" } };
-	assert.deepEqual(rows([agent, shell, failure], 60), [
-		"  ⧗ shell  Task shell  running",
-		"  ∀ agent  Task agent  running",
-	]);
+	assert.deepEqual(rows([agent, shell, failure], 60), ["  ∀ agent  Task agent  running", "  1 shell"]);
 	assert.deepEqual(renderTaskFooter([failure], 60), []);
 });
 

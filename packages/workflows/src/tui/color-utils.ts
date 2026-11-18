@@ -2,6 +2,7 @@
  * Color interpolation utilities.
  * cross-ref: spec §5.4.1, v0.x packages/atomic-sdk/src/components/color-utils.ts
  */
+import { hexColorAnsi } from "@bastani/atomic";
 import { Text, truncateToWidth } from "@bastani/atomic-tui";
 import { BoundedTextCache } from "./text-helpers.js";
 
@@ -33,23 +34,51 @@ export function lerpColor(a: string, b: string, t: number): string {
 	return toHex(r, g, bl);
 }
 
-/** Convert a hex color to an ANSI 24-bit foreground escape sequence. */
+/**
+ * The foreground escape sequence for a hex color, in the color level the host theme paints with: none under NO_COLOR or
+ * FORCE_COLOR=0, 256 colors under FORCE_COLOR=1 or 2, and true color otherwise.
+ */
 export function hexToAnsi(hex: string): string {
-	const [r, g, b] = parseHex(hex);
-	return `\x1b[38;2;${r};${g};${b}m`;
+	return hexColorAnsi(hex, "fg");
 }
 
-/** Convert a hex color to an ANSI 24-bit background escape sequence. */
+/** The background escape sequence for a hex color, in the same color level as {@link hexToAnsi}. */
 export function hexBg(hex: string): string {
-	const [r, g, b] = parseHex(hex);
-	return `\x1b[48;2;${r};${g};${b}m`;
+	return hexColorAnsi(hex, "bg");
+}
+
+/**
+ * Names the color level colors are painted in: it changes whenever NO_COLOR or FORCE_COLOR turn color off, limit it to
+ * 256 colors or restore true color. A cache of painted rows keys on it so it never serves rows painted at another level.
+ */
+export function colorLevelKey(): string {
+	return hexColorAnsi("#000000", "fg");
+}
+
+/** Whether NO_COLOR or FORCE_COLOR=0 turned color off, from the cached color level; it never reads the environment. */
+export function colorsOff(): boolean {
+	return colorLevelKey() === "";
 }
 
 /** Unpainted canvas, matching main chat and attached stage chat. */
 export const DEFAULT_BG = "\x1b[49m";
 
 export const RESET = "\x1b[0m";
-export const BOLD = "\x1b[1m";
+const BOLD = "\x1b[1m";
+
+/**
+ * A text style sequence (bold, italic, inverse, ...) in the style level the host theme paints with: none when NO_COLOR
+ * or FORCE_COLOR=0 turned colors and styles off, as the host theme drops them. It reads the cached level, never the
+ * environment.
+ */
+export function textStyle(sequence: string): string {
+	return colorsOff() ? "" : sequence;
+}
+
+/** The bold sequence in the host theme's style level; see {@link textStyle}. */
+export function boldOn(): string {
+	return textStyle(BOLD);
+}
 
 /** Keep a filled row intact across pi-tui truncation and nested style resets. */
 export function fillBackground(text: string, width: number, background: string): string {
@@ -71,6 +100,6 @@ export function fillBackground(text: string, width: number, background: string):
  */
 export function paint(text: string, fg: string, opts: { bg?: string; bold?: boolean } = {}): string {
 	const bgSeq = opts.bg ? hexBg(opts.bg) : "";
-	const boldSeq = opts.bold ? BOLD : "";
+	const boldSeq = opts.bold ? boldOn() : "";
 	return `${bgSeq}${hexToAnsi(fg)}${boldSeq}${text}${RESET}`;
 }

@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, onTestFinished, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import {
+	initTheme,
+	refreshColorEnvironment,
+	theme,
+} from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { PiCommandContext } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -676,8 +680,10 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 
 	test("the changed-definition prompt answers only the keys its line names, in the themed line and the confirm fallback (#5256)", async () => {
 		vi.stubEnv("NO_COLOR", undefined);
+		refreshColorEnvironment();
 		onTestFinished(() => {
 			vi.unstubAllEnvs();
+			refreshColorEnvironment();
 		});
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
@@ -788,6 +794,7 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		resumeSpy.mockClear();
 
 		vi.stubEnv("NO_COLOR", "1");
+		refreshColorEnvironment();
 		try {
 			let plainLines: string[] = [];
 			const noColorCtx: PiCommandContext = {
@@ -812,6 +819,7 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 			assert.deepEqual(plainLines, [`  ${WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT}`], "NO_COLOR prompt");
 		} finally {
 			vi.stubEnv("NO_COLOR", undefined);
+			refreshColorEnvironment();
 		}
 
 		const confirmCalls: string[][] = [];

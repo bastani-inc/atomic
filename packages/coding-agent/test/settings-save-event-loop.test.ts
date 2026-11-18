@@ -107,15 +107,20 @@ process.exit(0);`;
 it(
 	"writes a setting whose save holds the settings lock as the process exits",
 	() => {
-		const script = `import { watch } from "node:fs";
+		// The save serializes the settings it writes only after it took the lock and named this process its holder, so
+		// the first serialization while the holder record exists runs inside the save's hold of the lock. A watch event
+		// for the record can arrive after the whole save, which then never exits while holding it.
+		const script = `import { existsSync } from "node:fs";
 import { SettingsManager } from ${JSON.stringify(MANAGER_MODULE)};
-const watcher = watch(${JSON.stringify(agentDir)}, (_event, name) => {
-	if (name?.startsWith("settings.json.lock.holder.") && name.endsWith(".tmp")) process.exit(0);
-});
+const stringify = JSON.stringify;
+JSON.stringify = (...args) => {
+	if (!existsSync(${JSON.stringify(join(agentDir, "settings.json.lock.holder"))})) return stringify(...args);
+	JSON.stringify = stringify;
+	process.exit(0);
+};
 const manager = SettingsManager.create(${JSON.stringify(cwd)}, ${JSON.stringify(agentDir)}, { projectTrusted: false });
 manager.setTheme("dark");
 await manager.flush();
-watcher.close();
 process.exit(3);`;
 		const result = spawnSyncCollect([bunExecutable(), "-e", script]);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
@@ -127,15 +132,19 @@ process.exit(3);`;
 it(
 	"writes a setting whose save has just created the settings lock as the process exits",
 	() => {
-		const script = `import { watch } from "node:fs";
+		// The first serialization once the lock directory exists is the save naming itself the holder of the lock it has
+		// just taken. A watch event for the directory can arrive after the whole save, which then never exits holding it.
+		const script = `import { existsSync } from "node:fs";
 import { SettingsManager } from ${JSON.stringify(MANAGER_MODULE)};
-const watcher = watch(${JSON.stringify(agentDir)}, (_event, name) => {
-	if (name === "settings.json.lock") process.exit(0);
-});
+const stringify = JSON.stringify;
+JSON.stringify = (...args) => {
+	if (!existsSync(${JSON.stringify(join(agentDir, "settings.json.lock"))})) return stringify(...args);
+	JSON.stringify = stringify;
+	process.exit(0);
+};
 const manager = SettingsManager.create(${JSON.stringify(cwd)}, ${JSON.stringify(agentDir)}, { projectTrusted: false });
 manager.setTheme("dark");
 await manager.flush();
-watcher.close();
 process.exit(3);`;
 		const result = spawnSyncCollect([bunExecutable(), "-e", script]);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
