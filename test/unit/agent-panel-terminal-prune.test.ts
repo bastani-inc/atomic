@@ -14,13 +14,20 @@ import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interacti
 import { mainComposerHintSegments } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
-import { parseInteractiveEngineMessage } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
+import { engineAgentPanelCounts } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import {
+	parseInteractiveEngineMessage,
+	serializeInteractiveEngineMessage,
+} from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
+import {
+	type AgentPanelCounts,
 	agentPanelCounts,
 	agentPanelRows,
+	bindAgentPanel,
 	showAgentPanel,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
 import { taskFixture, taskValue } from "../helpers/task-projection.ts";
+import { taskRecord } from "../helpers/task-record.ts";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
 let keybindings: KeybindingsManager;
@@ -144,7 +151,7 @@ describe("the panel below the composer prunes subagents once they are terminal",
 		assert.equal(agentPanelCounts(panel.session).total, 0);
 	});
 
-	test("the in-process model keeps exactly the rows the panel bridge lists", () => {
+	test("the panel model keeps exactly the rows and counts the engine's ranking lists", () => {
 		const run: AgentPanelItem = { id: "run:w", kind: "workflow", state: "done", name: "ralph", task: "ship" };
 		const scenarios: AgentPanelItem[][] = [
 			[agent("a", "done"), agent("b", "running")],
@@ -396,5 +403,104 @@ describe("a resumed subagent", () => {
 		} finally {
 			await fixture.dispose();
 		}
+	});
+});
+
+describe("the isolated host's hint", () => {
+	test("matches the in-process hint while subagents run and once the panel empties", async () => {
+		const fixture = taskFixture();
+		try {
+			await fixture.start("one");
+			await fixture.start("two");
+			const hub = new AgentPanelSourceHub();
+			const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+			bindOwnerTaskStore(session, fixture.store);
+			let hostCounts: AgentPanelCounts | undefined;
+			// What the engine sends the host, as the host reads it.
+			const dispose = bindAgentPanel(session, { setWidget() {}, requestRender() {} } as never, (counts) => {
+				const message = parseInteractiveEngineMessage(
+					serializeInteractiveEngineMessage({ type: "engine_agent_panel_state", ...counts }).trim(),
+				);
+				assert.ok(message?.type === "engine_agent_panel_state");
+				hostCounts = engineAgentPanelCounts(message);
+			});
+			try {
+				const settle = async () => {
+					for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+					fixture.store.drain();
+					for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setTimeout(resolve, 20));
+				};
+				await settle();
+				const isolated = () => mainComposerHintSegments(keybindings, () => hostCounts!);
+				const inProcess = () => mainComposerHintSegments(keybindings, session);
+				assert.deepEqual(inProcess(), ["↓ 2 agents", "? keys"]);
+				assert.deepEqual(isolated(), inProcess());
+				await fixture.settle(0);
+				await fixture.settle(1);
+				await settle();
+				assert.deepEqual(inProcess(), ["/tasks to see subagents", "? keys"]);
+				assert.deepEqual(isolated(), inProcess());
+			} finally {
+				dispose();
+			}
+		} finally {
+			await fixture.dispose();
+		}
+	});
+});
+
+describe("a running shell counts as active work", () => {
+	const stoppedAgent = () => {
+		const task = { ...taskRecord("stopped-agent"), agentName: "worker", title: "stopped work" };
+		task.execution = { kind: "settled", result: { kind: "cancelled", cause: "user" } };
+		return task;
+	};
+	const runningShell = () => ({ ...taskRecord("running-shell", "command"), title: "sleep 300" });
+	const bindTasks = (session: object, tasks: readonly ReturnType<typeof taskRecord>[]) =>
+		bindOwnerTaskStore(session, {
+			tasks,
+			backgroundTasks: tasks,
+			ownerTasks: tasks,
+			ownerBackgroundTasks: tasks,
+			settlementOrder: new Map(),
+			panelRevision: 1,
+			taskRecord: (id: string) => tasks.find((task) => task.ref.taskId === id),
+			recentActivity: () => [],
+			activityOmitted: () => false,
+			subscribe: () => () => {},
+		} as never);
+
+	test("in the main panel: a stopped subagent stays listed while a background shell runs", () => {
+		const withShell = {};
+		bindTasks(withShell, [stoppedAgent(), runningShell()]);
+		assert.deepEqual(
+			agentPanelRows(withShell).map((row) => row.id),
+			["task:stopped-agent"],
+		);
+		const alone = {};
+		bindTasks(alone, [stoppedAgent()]);
+		assert.deepEqual(agentPanelRows(alone), []);
+	});
+
+	test("in a chat's task footer: a stopped subagent stays listed while a background shell runs", () => {
+		const plain = (lines: string[]) => lines.map((line) => line.replace(/\x1b\[[\d;:]*m/g, "").trimEnd());
+		const withShell = plain(renderTaskFooter([stoppedAgent(), runningShell()], 100));
+		assert.match(withShell[0] ?? "", /^ {2}◼ worker {2}stopped work/u);
+		assert.deepEqual(withShell.slice(1), ["  1 shell"]);
+		assert.deepEqual(renderTaskFooter([stoppedAgent()], 100), []);
+	});
+});
+
+describe("the /tasks pointer", () => {
+	test("does not show while the panel lists rows, even when no key focuses it", () => {
+		const unboundFocus = {
+			matches: () => false,
+			getKeys: (action: string) => (action === "app.keys.help" ? ["?"] : []),
+		};
+		assert.deepEqual(mainComposerHintSegments(unboundFocus, { agentRows: 1, subagents: 2 }), ["? keys"]);
+		assert.deepEqual(mainComposerHintSegments(unboundFocus, { agentRows: 0, subagents: 2 }), [
+			"/tasks to see subagents",
+			"? keys",
+		]);
 	});
 });
