@@ -1,4 +1,3 @@
-import { stripVTControlCharacters as stripAnsi } from "node:util";
 /**
  * The chat of a stage on a local worker runs its session commands on that stage's session in the
  * worker, as the chat of an in-process stage runs them on its own session (#3996).
@@ -10,6 +9,7 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
 import { taskRecord } from "../helpers/task-record.js";
+import { stripVTControlCharacters as stripAnsi } from "../helpers/visible-text.ts";
 import {
 	assert,
 	createStore,

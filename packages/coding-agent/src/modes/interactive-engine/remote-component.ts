@@ -1,11 +1,12 @@
-import type {
-	Component,
-	OverlayHandle,
-	OverlayOptions,
-	TUI,
-	TuiMode,
-	TuiMouseEvent,
-	TuiMouseEventResult,
+import {
+	type Component,
+	isHintActivation,
+	type OverlayHandle,
+	type OverlayOptions,
+	type TUI,
+	type TuiMode,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 } from "@bastani/atomic-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
@@ -182,6 +183,7 @@ class RemoteComponent implements Component {
 				componentId: this.componentId,
 				requestId,
 				data,
+				...(isHintActivation() ? { hint: true as const } : {}),
 			});
 		} catch {
 			this.resolveInput(requestId, false);

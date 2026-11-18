@@ -1,0 +1,308 @@
+/**
+ * Every key hint is clickable by construction: the shared hint builders mark each key they name with the key a click
+ * presses, and a hint written as text anywhere in the shipped sources must go through one of them. A new hint that
+ * skips the builders fails here, so it cannot ship without its click.
+ */
+import assert from "node:assert/strict";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
+import {
+	type HintAction,
+	readHintSpans,
+	setKeybindings,
+	stripHintMarkers,
+	stripTerminalSequences,
+} from "@bastani/atomic-tui";
+import { beforeAll, describe, test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import {
+	keyHint,
+	keyHintIfBound,
+	parenthesizedKeyHint,
+	rawKeyHint,
+} from "../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.js";
+import { mainComposerHints } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.js";
+import {
+	clickableHintText,
+	type NavKey,
+	type NavKeyStyle,
+	renderAutocompleteHintLine,
+	renderNavHintLine,
+	renderNavKeyOverlay,
+} from "../../packages/coding-agent/src/modes/interactive/components/nav-keys.js";
+import { taskChatKeys } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { moduleDir } from "../helpers/runtime.js";
+
+const plainStyle: NavKeyStyle = {
+	dim: (text) => text,
+	text: (text) => text,
+	muted: (text) => text,
+	border: (text) => text,
+	bold: (text) => text,
+};
+
+beforeAll(() => {
+	initTheme("dark", false);
+	setKeybindings(new KeybindingsManager());
+});
+
+/** What a click on each column of `line` runs, as `key`/`/command` names, and the line as the terminal shows it. */
+function clicksOf(line: string): { text: string; at: (column: number) => string | undefined } {
+	const { spans } = readHintSpans(line);
+	const name = (action: HintAction) => (action.kind === "key" ? action.key : action.command);
+	return {
+		text: stripTerminalSequences(line),
+		at: (column) => {
+			const span = spans.find((candidate) => column >= candidate.start && column < candidate.end);
+			return span === undefined ? undefined : name(span.action);
+		},
+	};
+}
+
+/** Every column of every ` · `-separated hint in `line` runs something, except the separators and the indent. */
+function assertEveryHintClickable(line: string, label: string): void {
+	const { text, at } = clicksOf(line);
+	let column = 0;
+	for (const segment of text.split(" · ")) {
+		const lead = segment.length - segment.trimStart().length;
+		const end = segment.trimEnd().length;
+		for (let index = lead; index < end; index++) {
+			assert.ok(at(column + index) !== undefined, `${label}: column ${column + index} of "${text}" runs nothing`);
+		}
+		column += segment.length + " · ".length;
+	}
+}
+
+describe("the shared hint builders mark every key they name", () => {
+	test("keyHint, keyHintIfBound, parenthesizedKeyHint and rawKeyHint press the keys they show", () => {
+		assertEveryHintClickable(keyHint("app.tools.expand", "expand"), "keyHint");
+		assertEveryHintClickable(keyHintIfBound("tui.select.cancel", "cancel"), "keyHintIfBound");
+		const raw = clicksOf(rawKeyHint("↑↓", "navigate"));
+		assert.deepEqual([raw.at(0), raw.at(1), raw.at(5)], ["up", "down", "down"]);
+		const parenthesized = clicksOf(parenthesizedKeyHint("app.tools.expand", "to expand", "20 more lines"));
+		assert.equal(parenthesized.at(parenthesized.text.indexOf("ctrl+o")), "ctrl+o");
+		assert.equal(parenthesized.at(parenthesized.text.indexOf("20")), undefined, "the count around it is not a key");
+	});
+
+	test("hint lines and the ? overlay press the key of the half clicked", () => {
+		const keys = new KeybindingsManager();
+		const entries: NavKey[] = [
+			{ keys: "pgup/pgdn", label: "scroll" },
+			{ keys: "esc/←", label: "close" },
+			{ keys: "↵", label: "open" },
+			{ action: "app.keys.help", label: "keys" },
+		];
+		const line = renderNavHintLine(entries, 120, plainStyle, keys);
+		assertEveryHintClickable(line, "renderNavHintLine");
+		const { text, at } = clicksOf(line);
+		assert.deepEqual(
+			[at(text.indexOf("pgup")), at(text.indexOf("pgdn")), at(text.indexOf("scroll"))],
+			["pageUp", "pageDown", "pageDown"],
+		);
+		assert.equal(at(text.indexOf("↵")), "enter");
+		for (const chat of [renderNavHintLine(taskChatKeys("main chat", true, true, true), 160, plainStyle, keys)])
+			assertEveryHintClickable(chat, "chat hint line");
+		const overlay = renderNavKeyOverlay("keys", entries, 60, plainStyle, keys);
+		const close = overlay.find((row) => stripHintMarkers(row).includes("close this help"));
+		assert.ok(close !== undefined);
+		const closeClicks = clicksOf(close);
+		assert.equal(closeClicks.at(closeClicks.text.indexOf("esc")), "escape");
+		const autocomplete = renderAutocompleteHintLine(
+			[
+				{ actions: ["tui.select.up", "tui.select.down"], label: "select" },
+				{ actions: ["tui.input.tab"], label: "complete" },
+			],
+			80,
+			keys,
+			plainStyle,
+		);
+		assertEveryHintClickable(autocomplete, "autocomplete hint line");
+	});
+
+	test("a hint written as text marks its keys and its slash command", () => {
+		assertEveryHintClickable(clickableHintText("↑↓ select · ↵ open stage chat · esc close"), "switcher hint");
+		assertEveryHintClickable(clickableHintText("Enter / Esc back"), "spaced alternatives");
+		const tasks = clicksOf(clickableHintText("2 shells · /tasks to manage"));
+		assert.equal(tasks.at(tasks.text.indexOf("/tasks")), "/tasks");
+		assert.equal(tasks.at(0), undefined, "a count is not a key");
+	});
+
+	test("the main chat's hints mark ↓ agents, /tasks and ? keys", () => {
+		const keys = new KeybindingsManager();
+		for (const segment of mainComposerHints(keys, { agentRows: 2 })) assertEveryHintClickable(segment, segment);
+		const tasks = mainComposerHints(keys, { agentRows: 0, shells: 2 }).find((segment) =>
+			stripHintMarkers(segment).startsWith("/tasks"),
+		);
+		assert.ok(tasks !== undefined);
+		assert.equal(clicksOf(tasks).at(0), "/tasks");
+	});
+});
+
+const repositoryRoot = join(moduleDir(import.meta.url), "../..");
+const SHIPPED_SOURCES = [
+	"coding-agent/src",
+	"workflows/src",
+	"subagents/src",
+	"tui/src",
+	"intercom",
+	"mcp",
+	"web-access",
+].map((path) => join(repositoryRoot, "packages", path));
+
+/** A key, or alternatives of keys, as hints name them. */
+const KEY = String.raw`(?:esc|enter|tab|space|pgup|pgdn|↵|↑↓|↑|↓|←|→|ctrl\+\S|alt\+\S|shift\+tab)`;
+/** Text that reads as a key hint: a key followed by what it does, or a slash command followed by `to ...`. */
+const HINT_TEXT = new RegExp(
+	String.raw`(?:^|·\s|\(|\s{2})(?:${KEY}(?:/${KEY})*\s+(?:to\s+)?[a-z]{3,}|/(?:tasks|agents|workflows)\s+to\s+[a-z])`,
+	"iu",
+);
+/** Calls that draw a hint with its click: a line holding one of these, or near one, draws through it. */
+const BUILDERS =
+	/\b(?:clickableHintText|clickableKeyTextHint|clickableKeysHint|clickableHint|slashCommandHint|rawKeyHint|keyHint|keyHintIfBound|parenthesizedKeyHint|renderNavHintLine|localKeyHint|graphRawKeyHint|graphKeyHint)\(/;
+/** A `NavKey` entry: hint lines and the `?` overlay draw these through the builders. */
+const NAV_KEY_ENTRY = /\b(?:keys|label|action)\s*:/;
+
+/**
+ * Text that reads like a hint but is not one a click can run, by file and the text it holds, with why.
+ */
+const NOT_HINTS: ReadonlyArray<{ readonly file: string; readonly text: RegExp; readonly why: string }> = [
+	{
+		file: "packages/coding-agent/src/modes/interactive/interactive-input-handling.ts",
+		text: /esc cancel first/,
+		why: "a warning sentence shown for a moment, not a hint row",
+	},
+	{
+		file: "packages/coding-agent/src/modes/interactive/components/chat-session-host-actions.ts",
+		text: /esc cancel first/,
+		why: "a warning sentence shown for a moment, not a hint row",
+	},
+	{
+		file: "packages/workflows/src/tui/node-card.ts",
+		text: /enter to respond/,
+		why: "drawn inside a stage's card in the graph: a click on the card selects and opens that card, as a row does",
+	},
+	{
+		file: "packages/coding-agent/src/core/tools/ask-user-question/view/dialog-builder.ts",
+		text: /^(?:↑↓ select|enter choose|enter\/space toggle|enter\/esc close notes|tab next question|tab questions|esc cancel)$/,
+		why: "parts the question dialog joins into its hint row, which it draws through clickableHintText",
+	},
+	{
+		file: "packages/workflows/src/tui/switcher.ts",
+		text: /(?:select|stage chat|tool detail|close)/,
+		why: "the switcher's hint rows, which it draws through clickableHintText",
+	},
+	{
+		file: "packages/workflows/src/tui/run-outcome.ts",
+		text: /^enter /,
+		why: "a blocker's action line, drawn through clickableHintText under the selected blocker",
+	},
+	{
+		file: "packages/workflows/src/extension/workflow-durable-resume-command.ts",
+		text: /enter resume with the new definition/,
+		why: "the changed-definition prompt's line, drawn through clickableHintText",
+	},
+	{
+		file: "packages/subagents/src/tui/agent-browser.ts",
+		text: /(?:scroll|select|details|close|back)/,
+		why: "the agent browser's hint row, drawn through clickableHintText",
+	},
+	{
+		file: "packages/coding-agent/src/main.ts",
+		text: /ctrl\+p cycle/,
+		why: "printed to the shell at startup, outside the fullscreen view",
+	},
+	{
+		file: "packages/coding-agent/src/core/slash-commands.ts",
+		text: /ctrl\+p cycling/,
+		why: "a command's description in the / menu, which is a menu row",
+	},
+	{
+		file: "packages/coding-agent/src/modes/interactive/components/settings-selector-items.ts",
+		text: /(?:enter while streaming|pressing esc twice)/,
+		why: "a setting's description, which is prose",
+	},
+	{
+		file: "packages/coding-agent/src/modes/interactive/components/trust-decision-selector.ts",
+		text: /with ↑↓ and Enter/,
+		why: "a sentence explaining how to answer, not a hint row",
+	},
+	{
+		file: "packages/coding-agent/src/core/provider-composer-internal.ts",
+		text: /^Enter API key/,
+		why: "a field's title asking for a key to be typed in",
+	},
+	{
+		file: "packages/coding-agent/src/modes/interactive/components/login-dialog.ts",
+		text: /^Enter code:/,
+		why: "an instruction to type a code in the browser",
+	},
+	{
+		file: "packages/coding-agent/src/core/tasks/agent-panel-rules.ts",
+		text: /^\/tasks to /,
+		why: "worded here; the chats' hint rows draw it through slashCommandHint",
+	},
+	{
+		file: "packages/coding-agent/src/modes/interactive/components/task-heartbeat-message.ts",
+		text: /^\/tasks to inspect$/,
+		why: "a heartbeat notice's inspect hint, which the heartbeat block draws through slashCommandHint",
+	},
+	{
+		file: "packages/coding-agent/src/modes/interactive/components/jump-to-latest.ts",
+		text: /jump to bottom/,
+		why: "the jump-to-latest pill, which the renderer already makes clickable: a click on it jumps to the latest",
+	},
+	{
+		file: "packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts",
+		text: /Esc interrupt · Ctrl\+C terminate/,
+		why: "part of a diagnostic message that is also written to the log, which must stay plain text",
+	},
+	{
+		file: "packages/workflows/src/tui/node-card.ts",
+		text: /^↑ blocked$/,
+		why: "↑ points at the stage that blocks this one; it is not a key",
+	},
+	{
+		file: "packages/workflows/src/tui/run-detail.ts",
+		text: /^↑ blocked$/,
+		why: "↑ points at the stage that blocks this one; it is not a key",
+	},
+];
+
+function sourceFiles(directory: string): string[] {
+	return readdirSync(directory).flatMap((entry) => {
+		const path = join(directory, entry);
+		if (statSync(path).isDirectory())
+			return ["node_modules", "dist", "test", "tests"].includes(entry) ? [] : sourceFiles(path);
+		return /\.ts$/.test(entry) && !/\.(?:test|d)\.ts$/.test(entry) ? [path] : [];
+	});
+}
+
+const STRING_LITERAL = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
+
+test("every hint written as text in the shipped sources is drawn through a hint builder", () => {
+	const unrouted: string[] = [];
+	for (const file of SHIPPED_SOURCES.flatMap(sourceFiles)) {
+		const path = relative(repositoryRoot, file).replaceAll("\\", "/");
+		const lines = readFileSync(file, "utf8").split("\n");
+		lines.forEach((line, index) => {
+			const trimmed = line.trim();
+			if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) return;
+			for (const literal of line.match(STRING_LITERAL) ?? []) {
+				const content = literal.slice(1, -1);
+				if (!HINT_TEXT.test(content)) continue;
+				const nearby = lines.slice(Math.max(0, index - 3), index + 1).join("\n");
+				if (BUILDERS.test(nearby) || NAV_KEY_ENTRY.test(line)) continue;
+				if (NOT_HINTS.some((entry) => entry.file === path && entry.text.test(content))) continue;
+				unrouted.push(`${path}:${index + 1}: ${content}`);
+			}
+		});
+	}
+	assert.deepEqual(
+		unrouted,
+		[],
+		"Draw these hints through clickableHintText, keyHint or another hint builder so a click runs them, or list " +
+			"them in NOT_HINTS with the reason they are not hints:\n" +
+			unrouted.join("\n"),
+	);
+});

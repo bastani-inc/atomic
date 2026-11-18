@@ -10,6 +10,7 @@ import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
+import { slashCommandHint } from "./nav-keys.ts";
 
 const EMOJI_OR_IGNORABLE_PATTERN = String.raw`(\p{RGI_Emoji}|\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*(?:\u200d\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*)+|[\p{Extended_Pictographic}\p{Emoji_Presentation}]\ufe0f)|\p{Default_Ignorable_Code_Point}`;
 const EMOJI_OR_IGNORABLE = new RegExp(EMOJI_OR_IGNORABLE_PATTERN, "gv");
@@ -244,7 +245,7 @@ export class TaskRow implements Component {
 							: "    No retained activity",
 					),
 				);
-			lines.push(theme.fg("dim", "  /tasks to inspect transcript and task details"));
+			lines.push(theme.fg("dim", `  ${slashCommandHint("/tasks to inspect transcript and task details")}`));
 			if (task.execution.kind === "settled" && task.execution.result.kind === "failed")
 				lines.push(truncateToWidth(`    ${taskDisplayText(task.execution.result.message)}`, width));
 		}

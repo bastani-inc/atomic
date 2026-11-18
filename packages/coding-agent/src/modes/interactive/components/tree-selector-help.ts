@@ -1,8 +1,10 @@
 import {
 	type Component,
 	CURSOR_MARKER,
+	clickableKeysHint,
 	type Focusable,
 	getKeybindings,
+	type HintKeyPart,
 	type Keybinding,
 	sliceByColumn,
 	truncateToWidth,
@@ -59,7 +61,16 @@ export class TreeHelp implements Component {
 	render(width: number): string[] {
 		const items = TREE_HELP_ITEMS.map(({ keys, label, labelFirst, drop }) => {
 			const text = formatHelpKeys(keys);
-			return { text: !text ? label : labelFirst ? `${label} ${text}` : `${text} ${label}`, drop };
+			const parts = helpKeyParts(keys, text);
+			return {
+				text: !text ? label : labelFirst ? `${label} ${text}` : `${text} ${label}`,
+				hint: !text
+					? label
+					: labelFirst
+						? `${label} ${clickableKeysHint(parts)}`
+						: clickableKeysHint(parts, ` ${label}`),
+				drop,
+			};
 		});
 		const room = Math.max(1, width - 2);
 		const kept = [...items];
@@ -69,7 +80,7 @@ export class TreeHelp implements Component {
 			if (visibleWidth(line()) <= room) break;
 			kept.splice(kept.indexOf(item), 1);
 		}
-		return [theme.fg("dim", truncateToWidth(`  ${line()}`, width, "…"))];
+		return [theme.fg("dim", truncateToWidth(`  ${kept.map((item) => item.hint).join(" · ")}`, width, "…"))];
 	}
 }
 
@@ -95,6 +106,24 @@ const TREE_HELP_ITEMS: Array<{ keys: Keybinding[]; label: string; labelFirst?: b
 	{ keys: ["app.tree.filter.cycleForward", "app.tree.filter.cycleBackward"], label: "filter", drop: 2 },
 	{ keys: ["tui.select.cancel"], label: "cancel" },
 ];
+
+/**
+ * The keys of `display`, the text {@link formatHelpKeys} shows for `keybindings`, each with the key a click on it
+ * presses: `ctrl+d/t/u` is three keys, each with the shared modifier, and `↑↓` is two.
+ */
+function helpKeyParts(keybindings: Keybinding[], display: string): HintKeyPart[] {
+	const keys = keybindings.flatMap((keybinding) => getKeybindings().getKeys(keybinding).slice(0, 1));
+	const parts: HintKeyPart[] = [];
+	const chunks = display.split("/");
+	chunks.forEach((chunk, chunkIndex) => {
+		const glyphs = chunk === "↑↓" || chunk === "←→" ? [chunk[0]!, chunk[1]!] : [chunk];
+		glyphs.forEach((glyph, glyphIndex) => {
+			const separator = glyphIndex === glyphs.length - 1 && chunkIndex < chunks.length - 1 ? "/" : "";
+			parts.push({ text: glyph + separator, key: keys[parts.length] });
+		});
+	});
+	return parts.length === keys.length ? parts : [{ text: display }];
+}
 
 function formatHelpKeys(keybindings: Keybinding[]): string {
 	const keys: string[] = [];

@@ -44,7 +44,7 @@ Press **↓** on an empty prompt to focus the panel. It then works like every li
 - **x** stops the selected item when pressed again within 3 seconds, and dismisses a finished row.
 - **Esc** or **←**, or ↑ past `● main` (past the first row when there is no main row), returns to the prompt. **?** shows the keys.
 
-In fullscreen mode you can also click a row, focused or not, to open it as Enter does. Clicking `● main` in the focused panel returns to the prompt.
+In fullscreen mode you can also click a row, focused or not, to open it as Enter does. Clicking `● main` in the focused panel returns to the prompt. The hints click too: `↓ N agents` focuses the panel, `/tasks to manage` and `/tasks to see subagents` open `/tasks`, and each key in a hint row does what pressing it does.
 
 Going back from what you opened returns to the main chat with the panel focused on the same row. The subagent chat's hint reads `← main chat`; press **←** on its empty prompt. A workflow graph uses **Esc** to return.
 

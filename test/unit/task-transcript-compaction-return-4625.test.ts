@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { test } from "vitest";
 import type { CompactionReason } from "../../packages/coding-agent/src/core/agent-session-types.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -11,6 +10,7 @@ import type {
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task-transcript-environment.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const taskId = "task-1" as TaskId;
 

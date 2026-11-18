@@ -3,7 +3,17 @@
  * line a screen shows, the `?` key overlay, and the two-press confirmation that `x` and Ctrl+X Ctrl+K use.
  */
 
-import { type EditorAutocompleteHintEntry, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import {
+	clickableKeysHint,
+	type EditorAutocompleteHintEntry,
+	type HintKeyPart,
+	hintKeyParts,
+	type KeyId,
+	truncateToWidth,
+	visibleWidth,
+} from "@bastani/atomic-tui";
+
+export { clickableHintText, clickableKeyTextHint, hintKeyParts, slashCommandHint } from "@bastani/atomic-tui";
 
 /** What a screen needs of the keybindings manager: matching, and the keys an action resolves to. */
 export interface NavKeybindings {
@@ -70,10 +80,24 @@ export function navActionText(keybindings: NavKeybindings | undefined, action: s
  * of the same screen, which handles them first, so they are left out; the entry's own keys are added to it.
  */
 export function navEntryKeys(keybindings: NavKeybindings | undefined, entry: NavKey, taken?: Set<string>): string {
-	if (entry.action === undefined) return entry.keys ?? "";
+	return navEntryKeyParts(keybindings, entry, taken)
+		.map((part) => part.text)
+		.join("");
+}
+
+/** {@link navEntryKeys} split by key, each part with the key a click on it presses. */
+export function navEntryKeyParts(
+	keybindings: NavKeybindings | undefined,
+	entry: NavKey,
+	taken?: Set<string>,
+): HintKeyPart[] {
+	if (entry.action === undefined) return hintKeyParts(entry.keys ?? "");
 	const keys = (keybindings?.getKeys?.(entry.action) ?? []).filter((key) => !taken?.has(key));
 	for (const key of keys) taken?.add(key);
-	return keys.map(navKeyText).join("/");
+	return keys.map((key, index) => ({
+		text: `${navKeyText(key)}${index < keys.length - 1 ? "/" : ""}`,
+		key: key as KeyId,
+	}));
 }
 
 const WAY_OUT_KEY_RE = /(?:^|\/)(?:esc|escape|←|left)(?:$|\/)/i;
@@ -102,11 +126,21 @@ export function renderNavHintLine(
 ): string {
 	const taken = new Set<string>();
 	const items = entries.flatMap((entry) => {
-		const keys = navEntryKeys(keybindings, entry, taken);
-		return keys ? [{ text: `${keys} ${entry.label}`, priority: navEntryPriority(entry, keys) }] : [];
+		const parts = navEntryKeyParts(keybindings, entry, taken);
+		const keys = parts.map((part) => part.text).join("");
+		return keys
+			? [
+					{
+						text: `${keys} ${entry.label}`,
+						hint: clickableKeysHint(parts, ` ${entry.label}`),
+						priority: navEntryPriority(entry, keys),
+					},
+				]
+			: [];
 	});
 	const separator = " · ";
 	const joined = () => items.map((item) => item.text).join(separator);
+	const joinedHints = () => items.map((item) => item.hint).join(separator);
 	let padding = indent;
 	if (options.compact && visibleWidth(joined()) > width - padding) {
 		padding = 0;
@@ -126,7 +160,7 @@ export function renderNavHintLine(
 		}
 		items.splice(dropIndex, 1);
 	}
-	const joinedText = joined();
+	const joinedText = joinedHints();
 	const line = visibleWidth(joinedText) <= room ? joinedText : truncateToWidth(joinedText, room);
 	const lead = options.compact && visibleWidth(line) <= width - indent ? indent : padding;
 	return style.dim(" ".repeat(Math.min(lead, Math.max(0, width - visibleWidth(line)))) + line);
@@ -146,7 +180,8 @@ export function renderNavKeyOverlay(
 	const taken = new Set<string>();
 	const rows = entries.flatMap((entry) => {
 		if (entry.action === "app.keys.help") return [];
-		const keys = navEntryKeys(keybindings, entry, taken);
+		const parts = navEntryKeyParts(keybindings, entry, taken);
+		const keys = parts.map((part) => part.text).join("");
 		return keys ? [{ keys, label: entry.label }] : [];
 	});
 	rows.push({ keys: `esc/${navActionText(keybindings, "app.keys.help") || "?"}`, label: "close this help" });
@@ -155,10 +190,12 @@ export function renderNavKeyOverlay(
 	const inner = Math.max(1, width - (framed ? 4 : 0));
 	const body = rows.map((row) => {
 		const keys = truncateToWidth(row.keys, keyWidth);
-		const line =
-			style.text(keys) +
+		const parts = hintKeyParts(keys).map((part) => ({ ...part, text: style.text(part.text) }));
+		const line = clickableKeysHint(
+			parts,
 			" ".repeat(Math.max(1, keyWidth - visibleWidth(keys) + 2)) +
-			style.muted(truncateToWidth(row.label, Math.max(1, inner - keyWidth - 2)));
+				style.muted(truncateToWidth(row.label, Math.max(1, inner - keyWidth - 2))),
+		);
 		return truncateToWidth(line, inner);
 	});
 	if (!framed) return [style.bold(truncateToWidth(title, width)), ...body];

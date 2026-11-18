@@ -16,6 +16,7 @@ import type { SessionInfo } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
 import {
+	clickableKeyTextHint,
 	type NavKey,
 	type NavKeybindings,
 	type NavKeyStyle,
@@ -581,14 +582,14 @@ export class SessionList implements Component, Focusable {
 	private emptyText(): string {
 		if (this.searchInput.getValue().trim()) return `No matches for "${this.searchInput.getValue().trim()}"`;
 		if (this.variant === "runs") return "No workflow runs to resume.";
-		const toggleKey = keyText("app.session.toggleNamedFilter");
-		const tabKey = keyText("tui.input.tab");
+		const showAll = clickableKeyTextHint(keyText("app.session.toggleNamedFilter"), " show all");
+		const allFolders = clickableKeyTextHint(keyText("tui.input.tab"), " all folders");
 		if (this.nameFilter === "named") {
 			return this.showCwd
-				? `No named sessions. ${toggleKey} show all.`
-				: `No named sessions in this folder. ${toggleKey} show all · ${tabKey} all folders.`;
+				? `No named sessions. ${showAll}.`
+				: `No named sessions in this folder. ${showAll} · ${allFolders}.`;
 		}
-		return this.showCwd ? "No sessions found." : `No sessions in this folder. ${tabKey} all folders.`;
+		return this.showCwd ? "No sessions found." : `No sessions in this folder. ${allFolders}.`;
 	}
 
 	private renderSearch(width: number): string[] {

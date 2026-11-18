@@ -1,6 +1,8 @@
 import {
 	type AgentSession,
 	applyAttachedComposer,
+	clickableHintText,
+	hintKeyParts,
 	type NavKeybindings,
 	type NavKeyStyle,
 	navEntryKeys,
@@ -9,7 +11,7 @@ import {
 	TASK_CHAT_OVERLAY_KEYS,
 	taskChatKeys,
 } from "@bastani/atomic";
-import { Box, getKeybindings, Text } from "@bastani/atomic-tui";
+import { Box, clickableKeysHint, getKeybindings, Text } from "@bastani/atomic-tui";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
@@ -22,6 +24,7 @@ import {
 	paint,
 	paintOnFill,
 	stripAnsi,
+	stripStyles,
 	trailingWidgetBorderChar,
 	widgetHintTargetLineIndex,
 } from "./stage-chat-view-render-helpers.js";
@@ -270,7 +273,10 @@ export function renderFooterWithOrchestratorReturnHint(
 	return [...footerLines, renderStageChatHintLine(ctx, width)];
 }
 export function renderReadOnlyArchiveFooter(ctx: StageChatViewContext, width: number): string[] {
-	const closeHint = paint("ctrl+c", ctx.theme.text, { bold: true }) + paint(" to close", ctx.theme.textMuted);
+	const closeHint = clickableKeysHint(
+		[{ text: paint("ctrl+c", ctx.theme.text, { bold: true }), key: "ctrl+c" }],
+		paint(" to close", ctx.theme.textMuted),
+	);
 	return [
 		mergeOrchestratorReturnHintIntoLine(ctx, closeHint, width, {
 			minimumPrefixWidth: visibleWidth(closeHint) + 1,
@@ -318,7 +324,9 @@ export function embedCustomUiBackHint(
 	if (hintPlain.length === 0 || hintPlain.includes(`${backKey} graph`)) return [...widgetLines];
 	const suffixPlain = ` · ${backKey} graph`;
 	const hostTheme = hostThemeOf(ctx.piTheme);
-	const suffixStyled = hostTheme ? hostTheme.fg("dim", suffixPlain) : paint(suffixPlain, ctx.theme.dim);
+	const suffixStyled = hostTheme
+		? hostTheme.fg("dim", clickableHintText(suffixPlain))
+		: paint(clickableHintText(suffixPlain), ctx.theme.dim);
 	const suffixWidth = visibleWidth(suffixPlain);
 	const trimmedLine = hintLine.trimEnd();
 	const nextHint =
@@ -371,14 +379,17 @@ function mergeOrchestratorReturnHintIntoLine(
 	const action = stackedDialog ? " cancel" : " close";
 	const full = cardOpen ? (backKey ? ` graph · esc${action}` : action) : " return to graph";
 	const compact = cardOpen ? full : " graph";
-	const fullHint = {
-		plain: `${key}${full}`,
-		styled: paint(key, ctx.theme.text, { bold: true }) + paint(full, ctx.theme.textMuted),
-	};
-	const compactHint = {
-		plain: `${key}${compact}`,
-		styled: paint(key, ctx.theme.text, { bold: true }) + paint(compact, ctx.theme.textMuted),
-	};
+	const keyHint = (keys: string, label: string) =>
+		clickableKeysHint(
+			hintKeyParts(keys).map((part) => ({ ...part, text: paint(part.text, ctx.theme.text, { bold: true }) })),
+			paint(label, ctx.theme.textMuted),
+		);
+	const styledHint = (label: string) =>
+		cardOpen && backKey
+			? keyHint(key, " graph") + paint(" · ", ctx.theme.textMuted) + keyHint("esc", action)
+			: keyHint(key, label);
+	const fullHint = { plain: `${key}${full}`, styled: styledHint(full) };
+	const compactHint = { plain: `${key}${compact}`, styled: styledHint(compact) };
 	const trailingBorder = options.preserveTrailingBorder === true ? trailingWidgetBorderChar(line) : "";
 	const suffixWidth = visibleWidth(trailingBorder);
 	const requestedRightMargin = Math.max(0, Math.floor(options.rightMargin ?? 0));
@@ -409,7 +420,7 @@ export function banner(
 		"  " +
 		paintOnFill(label, fg, { bold: true }) +
 		"  " +
-		paintOnFill(stripAnsi(meta), t.dim);
+		paintOnFill(stripStyles(meta), t.dim);
 	const box = new Box(2, 0, bgFn(bg));
 	box.addChild(new Text(head, 0, 0));
 	return box;

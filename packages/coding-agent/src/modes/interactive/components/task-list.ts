@@ -3,7 +3,7 @@ import {
 	isActivePanelState,
 	isRestingPanelRow,
 	panelHintParts,
-	panelHintText,
+	panelHintSegments,
 	panelRowListed,
 } from "../../../core/tasks/agent-panel-rules.ts";
 import {
@@ -17,6 +17,7 @@ import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_IDLE_ROWS, AgentPanelModel, renderAgentPanelRows } from "./agent-panel.ts";
+import { slashCommandHint } from "./nav-keys.ts";
 import { countTasksBy, TaskRow, taskLabel, taskSiblings, taskTitle } from "./task-row.js";
 
 const labelAndTitle = (task: TaskRecord): string => JSON.stringify([taskLabel(task), taskTitle(task)]);
@@ -134,7 +135,9 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 	const listed = [...input, ...running, ...other, ...finished];
 	const total = listed.length;
 	// The chat's own key hint already offers ↓ to its task list, so this line never adds the subagents pointer.
-	const hint = panelHintText(panelHintParts({ total, agents: 0, needsInput: 0 }, shells, 0, true), "");
+	const hint = panelHintSegments(panelHintParts({ total, agents: 0, needsInput: 0 }, shells, 0, true), "").map(
+		(segment) => (segment.kind === "tasks" ? slashCommandHint(segment.text) : segment.text),
+	);
 	const shellLine =
 		hint.length === 0
 			? []

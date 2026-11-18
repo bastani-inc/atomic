@@ -3,6 +3,7 @@
  */
 
 import { performance } from "node:perf_hooks";
+import { type HintAction, hintKeyInput, runAsHintActivation, stripHintMarkers } from "./clickable-hints.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import type { Terminal } from "./terminal.ts";
 import {
@@ -509,6 +510,8 @@ export interface TUI extends Component {
 	requestImmediateRender(): void;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
+	/** Run the slash command a clicked hint names, such as `/tasks` in `/tasks to manage`. */
+	setHintCommandHandler?(handler: ((command: string) => void) | undefined): void;
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
 	setTerminalColorSchemeNotifications(enabled: boolean): void;
 	queryTerminalColors(options: {
@@ -533,6 +536,7 @@ export abstract class TuiBase extends Container implements TUI {
 	public terminal: Terminal;
 	private focusedComponent: Component | null = null;
 	private inputListeners = new Set<TuiInputListener>();
+	private hintCommandHandler: ((command: string) => void) | undefined;
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
@@ -1015,6 +1019,41 @@ export abstract class TuiBase extends Container implements TUI {
 
 	removeInputListener(listener: TuiInputListener): void {
 		this.inputListeners.delete(listener);
+	}
+
+	setHintCommandHandler(handler: ((command: string) => void) | undefined): void {
+		this.hintCommandHandler = handler;
+	}
+
+	/**
+	 * Run what a clicked key hint names: its key goes through the input path as if it were pressed, so it acts exactly
+	 * as the key does, confirmations included; a slash command goes to the command handler.
+	 */
+	protected runHintAction(action: HintAction): void {
+		if (action.kind === "command") {
+			this.hintCommandHandler?.(action.command);
+			this.requestRender();
+			return;
+		}
+		const data = hintKeyInput(action);
+		if (data !== undefined) runAsHintActivation(() => this.handleTerminalInput(data));
+	}
+
+	/**
+	 * Whether keys reach what is drawn at screen cell `x`, `y`: the overlay that holds the keyboard when one does, and
+	 * otherwise what is drawn outside the overlays.
+	 */
+	protected takesKeysAt(x: number, y: number): boolean {
+		const focused = this.focusedComponent;
+		let keyOverlay = focused
+			? this.overlayStack.find((entry) => entry.component === focused && this.isOverlayVisible(entry))?.component
+			: undefined;
+		if (keyOverlay === undefined) {
+			const restore = this.getVisibleOverlayFocusRestore();
+			if (restore.status === "eligible") keyOverlay = restore.overlay.component;
+		}
+		const drawn = this.overlayAt(x, y);
+		return drawn === undefined ? keyOverlay === undefined : drawn.component === keyOverlay;
 	}
 
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void {
@@ -1520,8 +1559,8 @@ export abstract class TuiBase extends Container implements TUI {
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
 			if (!isImageLine(line)) {
-				// Cursor markers are internal render metadata and must never reach terminal output.
-				lines[i] = normalizeTerminalOutput(line.replaceAll(CURSOR_MARKER, "")) + reset;
+				// Cursor and hint markers are internal render metadata and must never reach terminal output.
+				lines[i] = normalizeTerminalOutput(stripHintMarkers(line.replaceAll(CURSOR_MARKER, ""))) + reset;
 			}
 		}
 		return lines;

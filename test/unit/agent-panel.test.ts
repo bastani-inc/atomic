@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { matchesKey, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -41,6 +40,7 @@ import {
 	themedAgentPanelStyle,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 import { makeTestTui } from "../support/fake-tui.js";
 
 const plain: AgentPanelStyle = {

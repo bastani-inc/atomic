@@ -3,6 +3,7 @@ import {
 	type Component,
 	getKeybindings,
 	Input,
+	isHintActivation,
 	matchesKey,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
@@ -982,7 +983,7 @@ export class TaskInspector implements Component {
 			// Shell input is a prompt: Esc cancels nothing and keeps the text; ← on an empty input returns to the list.
 			if (matchesKey(data, "escape")) return true;
 			// ← on an empty input, or at its start (the draft is kept for the return), goes back to the list.
-			if (getKeybindings().matches(data, "app.nav.back") && this.input.getCursor() === 0) {
+			if (getKeybindings().matches(data, "app.nav.back") && (this.input.getCursor() === 0 || isHintActivation())) {
 				this.navigation.focus = { kind: "tasks" };
 				this.status = "";
 				this.requestRender();
@@ -1055,7 +1056,11 @@ export class TaskInspector implements Component {
 		if (keys.matches(data, "app.tasks.openWaited") && this.waitedShell === undefined && this.openWaitedShell())
 			return true;
 		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
-		if (!matchesKey(data, "escape") && keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
+		if (
+			!matchesKey(data, "escape") &&
+			keys.matches(data, "app.nav.back") &&
+			(transcript.cursorAtStart() || isHintActivation())
+		) {
 			if (this.waitedShell !== undefined) {
 				this.leaveWaitedShell();
 				return true;
@@ -1073,7 +1078,7 @@ export class TaskInspector implements Component {
 			this.requestRender();
 			return true;
 		}
-		if (isNavHelpKey(keys, data) && !transcript.hasDraft()) {
+		if (isNavHelpKey(keys, data) && (!transcript.hasDraft() || isHintActivation())) {
 			this.helpOpen = true;
 			this.requestRender();
 			return true;
@@ -1120,7 +1125,7 @@ export class TaskInspector implements Component {
 				return true;
 			}
 			if (replying) {
-				if (keys.matches(data, "app.nav.back") && this.reply.getCursor() === 0) {
+				if (keys.matches(data, "app.nav.back") && (this.reply.getCursor() === 0 || isHintActivation())) {
 					this.closePeek();
 					return true;
 				}

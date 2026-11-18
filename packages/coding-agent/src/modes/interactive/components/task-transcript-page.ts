@@ -1,5 +1,6 @@
 import {
 	getKeybindings,
+	isHintActivation,
 	matchesKey,
 	Text,
 	type KeybindingsManager as TuiKeybindingsManager,
@@ -434,7 +435,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.requestRender();
 			return handled;
 		}
-		if (!this.chat.hasTaskInspector && keybindings.matches(data, "app.agents.focus") && !this.hasDraft()) {
+		if (
+			!this.chat.hasTaskInspector &&
+			keybindings.matches(data, "app.agents.focus") &&
+			(!this.hasDraft() || isHintActivation())
+		) {
 			return this.hasTasks() ? this.chat.openTasks() : true;
 		}
 		// The host owns thinking display; only its default physical key leaves the composer, as in a stage chat.

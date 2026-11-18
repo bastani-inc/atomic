@@ -1,4 +1,4 @@
-import { isKeyRelease, Text } from "@bastani/atomic-tui";
+import { isHintActivation, isKeyRelease, Text } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { parseSlashCommand } from "../../core/slash-commands.js";
 import { sourceError } from "../../core/tasks/agent-panel-source.ts";
@@ -79,6 +79,7 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 
 InteractiveModeBase.prototype.setupKeyHandlers = async function (this: InteractiveModeBase): Promise<void> {
 	registerStartupInputListeners(this);
+	registerHintCommandHandler(this);
 	const isolated = this.runtimeHost instanceof IsolatedInteractiveRuntime ? this.runtimeHost : undefined;
 	const notices = createStopAllNotices({
 		...(isolated === undefined
@@ -121,7 +122,9 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			return undefined;
 		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor)) return undefined;
 		if (this.editor.capturesViewportInput) return undefined;
-		if (this.editor !== this.defaultEditor || this.editor.getText() !== "" || this.isBashMode) return undefined;
+		// A click on the `↓ agents` hint focuses the panel whatever the prompt holds; a typed ↓ does only on an empty one.
+		if (this.editor !== this.defaultEditor || this.isBashMode) return undefined;
+		if (this.editor.getText() !== "" && !isHintActivation()) return undefined;
 		if (agentPanelRequested || this.blockingInlineCustomUiDepth > 0) return { consume: true };
 		if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
 			agentPanelRequested = true;
@@ -656,3 +659,18 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 		}
 	};
 };
+
+/**
+ * A click on a hint that names a slash command, such as `/tasks to manage`, runs it as if it were typed into an empty
+ * prompt. The prompt keeps what it held.
+ */
+function registerHintCommandHandler(mode: InteractiveModeBase): void {
+	mode.ui.setHintCommandHandler?.((command) => {
+		const submit = mode.defaultEditor.onSubmit;
+		if (!submit) return;
+		const draft = mode.editor.getText();
+		const run = submit(command);
+		if (draft !== "" && mode.editor.getText() === "") mode.editor.setText(draft);
+		void Promise.resolve(run).catch((error: unknown) => mode.showError(sourceError(error).message));
+	});
+}

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- In fullscreen mode, a click on a key hint runs it as pressing its key does: the chat footers (`← main chat`, `↓ agents`, `esc interrupt`, `ctrl+o expand`, `? keys`), the hint rows of `/tasks`, `/workflows`, the workflow graph, dialogs and pickers, and hints inside tool blocks and notices. In a hint that names two keys, such as `pgup/pgdn scroll`, the key you click is pressed. A hint that names a slash command, such as `/tasks to manage`, runs it and keeps what you typed in the prompt. A key that asks for confirmation asks after a click too, a drag across a hint still selects text, and a double-click runs a hint once. `?`, `↓` and a chat's `←`, which act only on an empty prompt when typed, act on a click whatever the prompt holds
+
 ### Changed
 
 - The agent panel below the prompt drops a subagent as soon as it finishes. Stopped, paused or interrupted subagents stay only while another subagent, workflow run or background shell is still running, then the whole panel closes, and a resumed subagent is listed once. `↓ N agents` counts only the subagents the panel lists, not workflow runs, so a running workflow alone no longer shows `↓ 1 agent`; `N needs input` still counts a workflow run's question. When the panel lists nothing but `/tasks` lists subagents, the hint shows `/tasks to see subagents`, or `N shells · /tasks to manage` while background shells run.
