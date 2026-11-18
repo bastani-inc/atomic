@@ -853,12 +853,19 @@ test("a child that finishes normally does not keep its worktree (#4326)", async 
 	h.originalGate?.resolve();
 	await settled(h, taskId);
 	await h.waitForLatest("wt-finished:0", (record) => record.terminalStatus === "ok");
-	const branchListed = () =>
-		execFileSync("git", ["branch", "--list", worktree.branch], { cwd: repo, encoding: "utf8" }).trim() !== "";
+	// The run forgets its worktrees only once its sweep removed every one of them, branch included. Git is not run here
+	// before then: on Windows a read of the repository's config while the sweep deletes the branch fails.
 	const deadline = Date.now() + RECORD_WAIT_MS;
-	while ((existsSync(worktree.path) || branchListed()) && Date.now() < deadline) await sleep(10);
+	while (runWorktreeRecord("wt-finished", 0) !== undefined && Date.now() < deadline) await sleep(10);
 
+	assert.equal(runWorktreeRecord("wt-finished", 0), undefined, "the run's sweep finished");
 	assert.equal(existsSync(draft), false, "a finished child's worktree goes with its run");
+	assert.equal(existsSync(worktree.path), false);
+	assert.equal(
+		execFileSync("git", ["branch", "--list", worktree.branch], { cwd: repo, encoding: "utf8" }).trim(),
+		"",
+		"its branch goes with it",
+	);
 });
 
 test("the worktree of a child its owner's session closed on keeps its unsaved work for its restoration (#4326)", async () => {
