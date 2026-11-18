@@ -197,17 +197,12 @@ export interface StageControlHandle {
 }
 
 /** Release a handle its execution and its registration have both let go of, but not underneath a chat. */
-export function disposeAfterStageHolds(handle: StageControlHandle): Promise<void> | void {
+export function disposeAfterStageHolds(
+	handle: StageControlHandle,
+	dispose = () => handle.dispose?.(),
+): Promise<void> | void {
 	const holds = handle.releaseGate?.chatHolds;
-	if (!holds) return handle.dispose?.();
-	let disposal: Promise<void> | undefined;
-	holds.afterLastHold(() => {
-		disposal = Promise.resolve(handle.dispose?.());
-		void disposal.catch((error: unknown) =>
-			console.warn("atomic-workflows: displaced stage session release failed", error),
-		);
-	});
-	return disposal;
+	return holds ? holds.afterLastHold(dispose) : dispose();
 }
 
 export interface StageSessionReleaseGate {
@@ -225,7 +220,6 @@ export interface StageSessionReleaseGate {
 	idle(): boolean;
 	/** Displacement does not require a saved transcript, but must wait for open views and operations. */
 	readonly chatHolds?: StageSessionHolds;
-	readonly chatTurnBusy?: boolean;
 	/** How many subscriptions and operations began on the handle so far. Never decreases. */
 	holdsTaken(): number;
 	/** Observe each moment something that kept the session may have let go of it. Returns the unsubscribe function. */
@@ -291,7 +285,9 @@ export interface StageControlRegistry {
 	 */
 	acquireDetached(runId: string, stageId: string, create: () => StageControlHandle): DetachedStageHandleLease;
 	/** Observe a new handle replacing a mounted chat's handle at the same run and stage id. */
-	onStageReplaced?(listener: (previous: StageControlHandle, next: StageControlHandle) => void): () => void;
+	onStageReplaced?(listener: (previous: StageControlHandle, next?: StageControlHandle) => void): () => void;
+	/** A worker published a stage reserved for resume: its live view is served by the pool, not this registry. */
+	handoffToWorker?(runId: string, stageId: string, terminal: boolean): void;
 	/** Reserve the retained chats whose transcripts a same-id resume will reopen; release on startup failure or run end. */
 	reserveStageChats?(stages: readonly StageChatTarget[]): () => void;
 	/** Inspect without claiming a provisional detached handle. */
@@ -353,7 +349,6 @@ export function busyStageChat(handle: StageControlHandle): string | undefined {
 	const session = handle.agentSession;
 	if (
 		handle.releaseGate?.chatHolds?.operating ||
-		handle.releaseGate?.chatTurnBusy ||
 		handle.isStreaming ||
 		handle.isTurnLoopBusy ||
 		session?.isRetrying ||
@@ -411,11 +406,25 @@ export function createStageControlRegistry(): StageControlRegistry {
 
 	const _byRun = new Map<string, Map<string, RegistryEntry>>();
 	const pendingDisposals = new Set<Promise<void>>();
-	const chatReservations = new Map<string, AbortSignal>();
+	const chatReservations = new Map<string, AbortController>();
 	const chatKey = (runId: string, stageId: string) => JSON.stringify([runId, stageId]);
 	const sessionStores = new Map<string, Map<string, SessionStore>>();
 	const releaseListeners = new Set<(stage: ReleasedStage) => void>();
-	const replacementListeners = new Set<(previous: StageControlHandle, next: StageControlHandle) => void>();
+	const replacementListeners = new Set<(previous: StageControlHandle, next?: StageControlHandle) => void>();
+	function notifyReplacement(previous: StageControlHandle, next?: StageControlHandle): void {
+		for (const listener of [...replacementListeners]) {
+			try {
+				listener(previous, next);
+			} catch (error) {
+				console.warn("atomic-workflows: could not switch stage chat to its replacement", error);
+			}
+		}
+	}
+	function retire(entry: RegistryEntry): void {
+		void Promise.resolve(disposeAfterStageHolds(entry.handle, () => disposeEntry(entry))).catch((error: unknown) =>
+			console.warn("atomic-workflows: displaced stage handle dispose failed", error),
+		);
+	}
 	let generation = 0;
 	function rememberSessionStore(
 		handle: StageControlHandle,
@@ -454,7 +463,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 		const entry: RegistryEntry = { handle, ...fields, leases: new Set(), epoch: 0 };
 		if (fields.executionEnded === undefined && isTerminalStageStatus(handle.status)) {
 			const reserved = chatReservations.get(chatKey(runId, stageId));
-			if (reserved) handle.releaseGate?.chatHolds?.reserveForResume(reserved);
+			if (reserved) handle.releaseGate?.chatHolds?.reserveForResume(reserved.signal);
 		}
 		entry.stopWatching = handle.releaseGate?.onHoldLifted(() => releaseWhenLetGo(runId, stageId, entry));
 		return entry;
@@ -645,7 +654,6 @@ export function createStageControlRegistry(): StageControlRegistry {
 			return generation;
 		},
 		register(handle: StageControlHandle, executionEnded?: () => boolean): () => void {
-			rememberSessionStore(handle);
 			const runMap = ensureRun(handle.runId);
 			const displaced = runMap.get(handle.stageId);
 			const retiring =
@@ -656,6 +664,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 				const busy = busyStageChat(displaced.handle);
 				if (busy) throw new Error(busy);
 			}
+			rememberSessionStore(handle);
 			if (executionEnded !== undefined || handle.placement !== undefined)
 				chatReservations.delete(chatKey(handle.runId, handle.stageId));
 			runMap.set(
@@ -668,22 +677,8 @@ export function createStageControlRegistry(): StageControlRegistry {
 				}),
 			);
 			if (displaced !== undefined) stopWatching(displaced);
-			if (displaced !== undefined && displaced.handle !== handle) {
-				for (const listener of [...replacementListeners]) {
-					try {
-						listener(displaced.handle, handle);
-					} catch (error) {
-						console.warn("atomic-workflows: could not switch stage chat to its replacement", error);
-					}
-				}
-			}
-			if (retiring) {
-				const dispose = () =>
-					disposeEntryInBackground(displaced, "atomic-workflows: displaced stage handle dispose failed");
-				const holds = displaced.handle.releaseGate?.chatHolds;
-				if (holds) holds.afterLastHold(dispose);
-				else dispose();
-			}
+			if (retiring) retire(displaced);
+			if (displaced !== undefined && displaced.handle !== handle) notifyReplacement(displaced.handle, handle);
 			return () => {
 				const existing = _byRun.get(handle.runId);
 				if (!existing) return;
@@ -848,8 +843,25 @@ export function createStageControlRegistry(): StageControlRegistry {
 			// A release a hold's end started may have unregistered its stage already: wait for its session to go too.
 			await Promise.allSettled([...pendingDisposals]);
 		},
+		handoffToWorker(runId, stageId, terminal) {
+			const key = chatKey(runId, stageId);
+			const reserved = chatReservations.get(key);
+			if (!reserved) return;
+			const entries = _byRun.get(runId);
+			const entry = entries?.get(stageId);
+			if (terminal) {
+				chatReservations.delete(key);
+				reserved.abort();
+			}
+			if (!entries || !entry || !(entry.executionEnded?.() ?? isTerminalStageStatus(entry.handle.status))) return;
+			entries.delete(stageId);
+			if (entries.size === 0) _byRun.delete(runId);
+			stopWatching(entry);
+			retire(entry);
+			notifyReplacement(entry.handle);
+		},
 		reserveStageChats(stages) {
-			const until = new AbortController();
+			const reservations = new Map<string, AbortController>();
 			for (const { runId, stageId } of stages) {
 				const current = _byRun.get(runId)?.get(stageId)?.handle;
 				const busy = current && busyStageChat(current);
@@ -858,14 +870,16 @@ export function createStageControlRegistry(): StageControlRegistry {
 					throw new Error(`Workflow ${runId} is already resuming.`);
 			}
 			for (const { runId, stageId } of stages) {
-				chatReservations.set(chatKey(runId, stageId), until.signal);
+				const key = chatKey(runId, stageId);
+				const until = new AbortController();
+				reservations.set(key, until);
+				chatReservations.set(key, until);
 				_byRun.get(runId)?.get(stageId)?.handle.releaseGate?.chatHolds?.reserveForResume(until.signal);
 			}
 			return () => {
-				until.abort();
-				for (const { runId, stageId } of stages) {
-					const key = chatKey(runId, stageId);
-					if (chatReservations.get(key) === until.signal) chatReservations.delete(key);
+				for (const [key, until] of reservations) {
+					until.abort();
+					if (chatReservations.get(key) === until) chatReservations.delete(key);
 				}
 			};
 		},

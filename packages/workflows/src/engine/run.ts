@@ -368,7 +368,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				opts.workers ||
 				backend.getWorkflow(opts.continuation?.source.id ?? runId)?.resources);
 		if (publicResources) opts = await restoreWorkerOptions(backend, { ...opts, runId });
-		const publicPool = publicResources ? await activatePublicPool(backend, opts) : undefined;
+		const publicPool = publicResources ? await activatePublicPool(backend, opts, resumingChats) : undefined;
 		try {
 			if (opts.effectiveResources)
 				opts = {
@@ -413,12 +413,11 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			}
 		}
 	};
-	const releaseChats =
+	const resumingChats =
 		opts.parentRun === undefined && opts.runId !== undefined && backend.getWorkflow(runId) !== undefined
-			? (opts.stageControlRegistry ?? defaultStageControlRegistry).reserveStageChats?.(
-					resumingStageChats(backend, runId),
-				)
+			? (opts.stageControlRegistry ?? defaultStageControlRegistry)
 			: undefined;
+	const releaseChats = resumingChats?.reserveStageChats?.(resumingStageChats(backend, runId));
 	try {
 		return opts.parentRun === undefined && backend instanceof JournalDurableBackend
 			? await backend.withWorkflowLease(runId, execute)

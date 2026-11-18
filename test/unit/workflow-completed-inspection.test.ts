@@ -440,6 +440,66 @@ describe("completed workflow inspection", () => {
 		assert.equal(store.runs()[0]?.status, "running");
 	});
 
+	test("an inspection waiting for the saved transcript leaves a newly active run alone (#5559)", async () => {
+		const backend = await createMemoryTestBackend();
+		const store = createStore();
+		const id = testRunId("inspection-handoff");
+		const sessionFile = retainedSession("inspection-handoff");
+		await backend.commitWorkflowRegistration({
+			workflowId: id,
+			name: "review",
+			inputs: {},
+			createdAt: 1,
+			status: "completed",
+		});
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: id,
+			checkpointId: "stage:review",
+			name: "review",
+			replayKey: "stage:review",
+			output: "done",
+			sessionFile,
+			sessionId: "inspection-handoff-session",
+			completedAt: 2,
+			topology: completedTopology("review"),
+		});
+		const entered = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		const load = sessionStore.load.bind(sessionStore);
+		vi.spyOn(sessionStore, "load")
+			.mockImplementationOnce(load)
+			.mockImplementationOnce(async (...args) => {
+				entered.resolve();
+				await finish.promise;
+				return load(...args);
+			});
+		const inspecting = openCompleted(
+			id,
+			{ durableBackend: backend, store, sessionStore },
+			backend.listCompletedWorkflows(),
+		);
+		try {
+			await entered.promise;
+			store.recordRunStart({
+				id,
+				name: "successor",
+				inputs: {},
+				status: "running",
+				stages: [],
+				toolNodes: [],
+				startedAt: 3,
+			});
+			finish.resolve();
+			const result = await inspecting;
+			assert.equal(result.ok, false);
+			assert.equal(store.run(id)?.name, "successor");
+		} finally {
+			finish.resolve();
+			await inspecting;
+		}
+	});
+
 	test("replaces a retained completed snapshot with authoritative durable detail", async () => {
 		const backend = await createMemoryTestBackend();
 		const store = createStore();

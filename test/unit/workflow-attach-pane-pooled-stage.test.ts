@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { type AgentSessionEvent, initTheme } from "@bastani/atomic";
-import { beforeAll, test } from "vitest";
+import { beforeAll, test, vi } from "vitest";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
@@ -26,6 +26,8 @@ import type {
 	PooledStageWatchMessage,
 	WatchId,
 } from "../../packages/workflows/src/workers/stage-watch-types.js";
+
+import { makeHandle } from "./stage-chat-view-helpers.js";
 
 beforeAll(() => {
 	initTheme("dark", false);
@@ -307,6 +309,82 @@ test("a stage registered in an SDK registry attaches with its transcript, reply 
 		unregister();
 	}
 });
+
+test.each(["host", "SDK"])(
+	"a %s post-mortem pane follows the resumed worker's full live view, including its in-flight reply (#5559)",
+	async (host) => {
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const stage = {
+			id: "stage-a",
+			name: "review",
+			status: "failed" as const,
+			parentIds: [],
+			toolEvents: [],
+			sessionId: "pooled-session",
+			workerExecution: { worker: "w", generation: 1, renewedAt: 1, expiresAt: 2 },
+		};
+		store.recordRunStart({
+			id: "run-1",
+			name: "workflow",
+			inputs: {},
+			status: "failed",
+			stages: [stage],
+			toolNodes: [],
+			startedAt: 1,
+		});
+		const { handle } = makeHandle(undefined, [], "completed");
+		registry.register(handle);
+		const pool = fakeTransport();
+		const unregister = registerPooledStageSource(store, {
+			async acquire(runId, stageId) {
+				const opened = await openPooledStageHandle(pool.transport, { runId, stageId }, "review");
+				assert.ok(opened.ok);
+				return { handle: opened.handle, release: () => opened.handle.dispose() };
+			},
+		});
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			initialAttachStageId: stage.id,
+			stageControlRegistry: registry,
+			onClose: () => {},
+		});
+		try {
+			const live = { ...stage, status: "running" as const };
+			store.recordRunStart({
+				id: "run-1",
+				name: "workflow",
+				inputs: {},
+				status: "running",
+				stages: [live],
+				toolNodes: [],
+				startedAt: 2,
+			});
+			const finish = registry.reserveStageChats?.([{ runId: "run-1", stageId: stage.id }]);
+			try {
+				if (host === "SDK") {
+					registry.register(
+						new RegisteredPooledStageHandle(
+							"run-1",
+							live,
+							{ kind: "local-worker", workId: "work", generation: 2 },
+							async () => undefined,
+						),
+					);
+				} else registry.handoffToWorker?.("run-1", stage.id, false);
+				await vi.waitFor(() => assert.match(visible(pane.render(100)), /Streaming from the worker/));
+			} finally {
+				finish?.();
+			}
+		} finally {
+			pane.dispose();
+			unregister();
+			await registry.clear();
+		}
+	},
+);
 
 test("after the pane is hidden and shown, a reconnect still remounts the chat on the replacement's transcript (#3996)", async () => {
 	const store = createStore();

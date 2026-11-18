@@ -30,7 +30,7 @@ import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
-import type { StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { findSnapshotRun, findSnapshotStage } from "../shared/workflow-run-ownership.js";
 import { acquirePooledStage, type PooledStageLease } from "../workers/pooled-stage-sources.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -83,6 +83,7 @@ export class WorkflowAttachPane implements Component {
 	private graphView: GraphView;
 	private chatView: StageChatView | null = null;
 	private mountedHandle?: StageControlHandle;
+	private mountedRun?: WeakRef<RunSnapshot>;
 	private stopWatchingReplacements?: () => void;
 	/** Where the attached pooled prompt stage sits in its run, and the attempt that published it. */
 	private attachedPromptPosition: { readonly index: number; readonly generation: number } | null = null;
@@ -132,8 +133,13 @@ export class WorkflowAttachPane implements Component {
 		this.now = opts.now ?? Date.now;
 		this.stopWatchingReplacements = this.registry?.onStageReplaced?.((previous, next) => {
 			if (!this.chatView || this.mountedHandle !== previous) return;
-			const { runId, stageId } = next;
+			const { runId, stageId } = previous;
 			this.composerDrafts.capture(runId, stageId, this.chatView._inputBuffer);
+			if (next === undefined || next.placement !== undefined) {
+				// A worker's registry proxy is not its transcript. Open the worker's live view or its saved chat.
+				void this._attachToStage(runId, stageId, { followReplacement: true });
+				return;
+			}
 			this._disposeChatView();
 			this._mountChatView(runId, stageId, next, undefined);
 		});
@@ -251,7 +257,9 @@ export class WorkflowAttachPane implements Component {
 	private async _attachToStage(
 		runId: string,
 		stageId: string,
-		options: { suppressInitialPromptSubmit?: boolean } = { suppressInitialPromptSubmit: true },
+		options: { suppressInitialPromptSubmit?: boolean; followReplacement?: boolean } = {
+			suppressInitialPromptSubmit: true,
+		},
 		pooledLease?: PooledStageLease,
 	): Promise<void> {
 		this._flushStoreUpdate();
@@ -283,7 +291,7 @@ export class WorkflowAttachPane implements Component {
 		);
 		const { handle, postMortemUnavailableReason, release, onReconnected } =
 			resolution instanceof Promise ? await resolution : resolution;
-		if (generation !== this.attachmentGeneration || !this.visible) {
+		if (generation !== this.attachmentGeneration || (!this.visible && !options.followReplacement)) {
 			release?.();
 			return;
 		}
@@ -390,9 +398,14 @@ export class WorkflowAttachPane implements Component {
 		});
 		this.chatView = chatView;
 		this.mountedHandle = handle;
+		const mountedRun = this.store.run(runId);
+		this.mountedRun = mountedRun === undefined ? undefined : new WeakRef(mountedRun);
 		this.mode = "stage-chat";
-		this.store.recordStageAttached(runId, stageId, this.visible);
+		this._markMountedStage(runId, stageId, this.visible);
 		this.hostRequestRender?.();
+	}
+	private _markMountedStage(runId: string, stageId: string, attached: boolean): void {
+		if (this.mountedRun?.deref() === this.store.run(runId)) this.store.recordStageAttached(runId, stageId, attached);
 	}
 	private _disposeChatView(): void {
 		this.mountedHandle = undefined;
@@ -408,7 +421,7 @@ export class WorkflowAttachPane implements Component {
 		this.attachmentGeneration += 1;
 		this.composerDrafts.capture(this.attachedRunId, this.lastAttachedStageId, this.chatView?._inputBuffer);
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
-			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
+			this._markMountedStage(this.attachedRunId, this.lastAttachedStageId, false);
 		}
 		this._disposeChatView();
 		this.chatView = null;
@@ -431,7 +444,7 @@ export class WorkflowAttachPane implements Component {
 		this._flushStoreUpdate();
 		this.attachmentGeneration += 1;
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
-			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
+			this._markMountedStage(this.attachedRunId, this.lastAttachedStageId, false);
 		}
 		this._disposeChatView();
 		this.chatView = null;
@@ -515,7 +528,7 @@ export class WorkflowAttachPane implements Component {
 			const stage =
 				attachedRun === undefined ? undefined : findSnapshotStage(attachedRun.stages, this.lastAttachedStageId);
 			if (this.chatView !== null && stage !== undefined && stage.attached !== true)
-				this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, true);
+				this._markMountedStage(this.attachedRunId, this.lastAttachedStageId, true);
 			this._followSupersedingPrompt(attachedRun, stage);
 			this._retryPooledStageView(stage);
 		}
@@ -572,7 +585,7 @@ export class WorkflowAttachPane implements Component {
 		this.visible = visible;
 		if (!visible) this.attachmentGeneration += 1;
 		if (this.mode === "stage-chat" && this.attachedRunId && this.lastAttachedStageId) {
-			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, visible);
+			this._markMountedStage(this.attachedRunId, this.lastAttachedStageId, visible);
 			// Updates while hidden only track input keys: a prompt a replacement attempt superseded
 			// meanwhile is followed now, or the chat would show the stage it removed (#4022).
 			if (visible) {
@@ -743,7 +756,7 @@ export class WorkflowAttachPane implements Component {
 		this.unsubscribeStore?.();
 		this.unsubscribeStore = null;
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
-			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
+			this._markMountedStage(this.attachedRunId, this.lastAttachedStageId, false);
 		}
 		this._disposeChatView();
 		this.chatView = null;

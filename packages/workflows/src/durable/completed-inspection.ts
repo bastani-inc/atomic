@@ -72,14 +72,16 @@ export async function openCompletedDurableWorkflow(
 		);
 	}
 
-	const existing = deps.store.run(resolved.snapshot.id);
-	if (existing !== undefined && existing.status !== "completed") {
+	const snapshots = await completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry, selectedStore);
+	const existing = [resolved.snapshot, ...snapshots]
+		.map((run) => deps.store.run(run.id))
+		.find((run) => run !== undefined && run.status !== "completed");
+	if (existing !== undefined) {
 		return failure(
 			"active",
-			`Workflow ${resolved.snapshot.id} is already active in this session; open it with /workflows ${resolved.snapshot.id} instead.`,
+			`Workflow ${existing.id} is already active in this session; open it with /workflows ${existing.id} instead.`,
 		);
 	}
-	const snapshots = await completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry, selectedStore);
 	const snapshot = snapshots.find((run) => run.id === resolved.snapshot.id) ?? resolved.snapshot;
 	deps.beforeRestore?.(snapshots);
 	for (const restored of snapshots) {

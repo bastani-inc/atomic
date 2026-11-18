@@ -10,7 +10,7 @@ export class StageSessionHolds {
 	private operations = 0;
 	private taken = 0;
 	private readonly listeners = new Set<() => void>();
-	private disposeWhenFree?: () => void;
+	private disposeWhenFree?: () => void | Promise<void>;
 	private displaced = false;
 	private resume?: AbortSignal;
 
@@ -78,10 +78,10 @@ export class StageSessionHolds {
 	}
 
 	/** A displaced session no longer has a registry owner. Its last view or operation closes it instead. */
-	afterLastHold(dispose: () => void): void {
+	afterLastHold(dispose: () => void | Promise<void>): void | Promise<void> {
 		this.displaced = true;
-		if (this.held) this.disposeWhenFree ??= dispose;
-		else dispose();
+		if (!this.held) return dispose();
+		this.disposeWhenFree ??= dispose;
 	}
 
 	clear(): void {
@@ -94,7 +94,9 @@ export class StageSessionHolds {
 		if (!this.held && this.disposeWhenFree !== undefined) {
 			const dispose = this.disposeWhenFree;
 			this.disposeWhenFree = undefined;
-			dispose();
+			void Promise.resolve(dispose()).catch((error: unknown) =>
+				console.warn("atomic-workflows: displaced stage session release failed", error),
+			);
 		}
 	}
 }

@@ -38,7 +38,7 @@ test("replacing a completed stage of a still-running workflow leaves its session
 	}
 });
 
-async function failThenResume(onPrompt?: (text: string) => Promise<void>) {
+async function failThenResume(onPrompt?: (text: string) => Promise<void>, beforeRetry?: () => Promise<void>) {
 	const registry = createStageControlRegistry();
 	const store = createStore();
 	let first = true;
@@ -58,6 +58,7 @@ async function failThenResume(onPrompt?: (text: string) => Promise<void>) {
 		inputs: {},
 		outputs: {},
 		async run(ctx) {
+			if (!first) await beforeRetry?.();
 			await ctx.task("review", { prompt: "review" });
 			return {};
 		},
@@ -117,6 +118,58 @@ test("resume refuses an active post-mortem chat turn and succeeds after it finis
 	}
 });
 
+test("the old chat cannot start a turn during resume admission or after displacement while a reader still holds it (#5559)", async () => {
+	const entered = Promise.withResolvers<void>();
+	const allowStage = Promise.withResolvers<void>();
+	const { registry, fixture, handle, resume } = await failThenResume(undefined, async () => {
+		entered.resolve();
+		await allowStage.promise;
+	});
+	const close = handle.subscribe(() => {});
+	const resumed = resume();
+	try {
+		await entered.promise;
+		await assert.rejects(() => handle.prompt("before replacement"), /resuming/);
+		allowStage.resolve();
+		assert.equal((await resumed).status, "completed");
+		assert.equal(fixture.sessions[0]!.disposals, 0, "an external reader still holds the old session");
+		await assert.rejects(() => handle.prompt("after replacement"), /replaced/);
+		close();
+		await vi.waitFor(() => assert.equal(fixture.sessions[0]!.disposals, 1));
+		assert.deepEqual(fixture.sessions[0]!.prompts, ["review"]);
+	} finally {
+		allowStage.resolve();
+		close();
+		await resumed;
+		await registry.clear();
+	}
+});
+
+test("closing a pane on a previous run cannot clear a successor's attachment in another registry (#5559)", async () => {
+	const { registry, store, handle } = await failThenResume();
+	const old = store.run(handle.runId)!;
+	const pane = new WorkflowAttachPane({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: handle.runId,
+		initialAttachStageId: handle.stageId,
+		stageControlRegistry: registry,
+		onClose: () => {},
+	});
+	try {
+		store.recordRunStart({
+			...old,
+			status: "running",
+			stages: old.stages.map((stage) => ({ ...stage, attached: true })),
+		});
+		pane.dispose();
+		assert.equal(store.run(handle.runId)?.stages[0]?.attached, true);
+	} finally {
+		pane.dispose();
+		await registry.clear();
+	}
+});
+
 test("two open stage panes follow a same-id resume and send to the resumed session (#5559)", async () => {
 	const { registry, store, fixture, handle, resume } = await failThenResume();
 	const openPane = () =>
@@ -132,14 +185,18 @@ test("two open stage panes follow a same-id resume and send to the resumed sessi
 	const second = openPane();
 	try {
 		assert.ok(first._hasChatView && second._hasChatView);
+		for (const character of "second ") second.handleInput(character);
+		second.setVisible(false);
 		assert.equal((await resume()).status, "completed");
+		second.setVisible(true);
+		assert.equal(second._chatInputBuffer, "second ");
 		assert.equal(fixture.sessions[0]!.disposals, 1, "both panes let go of the failed session");
 		assert.equal(fixture.sessions[1]!.disposals, 0, "the resumed session is mounted");
 		for (const [pane, text] of [
 			[first, "first pane"],
 			[second, "second pane"],
 		] as const) {
-			for (const character of text) pane.handleInput(character);
+			for (const character of text.slice(pane._chatInputBuffer?.length ?? 0)) pane.handleInput(character);
 			assert.equal(pane._chatInputBuffer, text);
 			pane.handleInput("\r");
 			await vi.waitFor(() => assert.ok(fixture.sessions[1]!.prompts.includes(text)));
