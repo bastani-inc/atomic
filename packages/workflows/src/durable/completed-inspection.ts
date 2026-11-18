@@ -11,6 +11,7 @@ import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { completedWorkflowRunSnapshots, resolveCompletedWorkflow } from "./completed-catalog.js";
+import { bindRunDurableBackend } from "./run-owner-backend.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 
 export type OpenCompletedDurableResult =
@@ -87,9 +88,11 @@ export async function openCompletedDurableWorkflow(
 	for (const restored of snapshots) {
 		const previous = deps.store.run(restored.id);
 		if (previous !== undefined) deps.store.removeRun(previous.id);
-		deps.store.recordRunStart(
-			restored.id === snapshot.id ? { ...restored, finishSequence: finishSequence ?? restored.endedAt } : restored,
-		);
+		if (restored.id === snapshot.id) {
+			const root = { ...restored, finishSequence: finishSequence ?? restored.endedAt };
+			bindRunDurableBackend(root, deps.durableBackend);
+			deps.store.recordRunStart(root);
+		} else deps.store.recordRunStart(restored);
 		registerCompletedChatHandles(restored, deps, selectedStore);
 	}
 	const hasReopenableStage = snapshots.some((run) => run.stages.some((stage) => stage.sessionId !== undefined));

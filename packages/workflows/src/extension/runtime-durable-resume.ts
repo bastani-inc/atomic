@@ -331,9 +331,10 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						catalog.inspectableIds ??
 							[...catalog.resumable, ...catalog.completed].map((entry) => entry.workflowId),
 					);
-					for (const run of deps.store.runs())
-						if (!known.has(run.id))
-							await (availableRunDurableBackend(deps.store, run.id) ?? backend).hydrateWorkflow(run.id);
+					for (const run of deps.store.runs()) {
+						const owner = availableRunDurableBackend(deps.store, run.id) ?? backend;
+						if (owner !== backend || !known.has(run.id)) await owner.hydrateWorkflow(run.id);
+					}
 					preparedCatalog = catalog.resumable;
 					return catalog;
 				} finally {

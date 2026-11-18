@@ -264,6 +264,11 @@ function createHost(connectTimeoutMs: (returnAddress: string) => number | undefi
 			assert.ok(payload.completion, "the Intercom relay must claim every route event");
 			return payload.completion;
 		},
+		retireRoute(runId: string, group: string) {
+			const event = { runId, group, completion: undefined as Promise<void> | undefined };
+			pi.events.emit("atomic:workflow-pending-stage-route-retired", event);
+			return event.completion;
+		},
 		execute(params: { action: string }): Promise<ToolResult> {
 			const execute = tools.get("intercom")?.execute;
 			assert.ok(execute, "the intercom tool must be registered");
@@ -397,6 +402,93 @@ test("a standalone owner registers the routes of every run in one invocation gro
 	} finally {
 		await owner.closeGroup(group);
 	}
+});
+
+test("a standalone owner retires one run on a shared broker connection (#5561)", async () => {
+	const { createWorkflowRouteOwner } = await import("../../packages/intercom/workflow-route-owner.js");
+	const owner = createWorkflowRouteOwner(repoRoot);
+	const root = runIdFor("55610001", 0),
+		child = runIdFor("55610001", 1),
+		group = runGroup(root);
+	const observer = await connectObserver([group]);
+	try {
+		for (const id of [root, child]) {
+			const route = routePayload(id, 1, undefined, group);
+			owner.events.emit("atomic:workflow-pending-stage-route", route);
+			await route.completion;
+		}
+		await waitForRoster(observer, [root, child]);
+		const retirement = { runId: child, group, completion: undefined as Promise<void> | undefined };
+		owner.events.emit("atomic:workflow-pending-stage-route-retired", retirement);
+		await retirement.completion;
+		const remaining = await rosterRunIds(observer);
+		assert.ok(remaining.has(root));
+		assert.ok(!remaining.has(child));
+		assert.equal(await owner.registered(child), false);
+	} finally {
+		await owner.closeGroup(group);
+	}
+});
+
+test("a delayed withdrawal removes neither a new generation nor a different socket's registration (#5561)", async () => {
+	const id = runIdFor("55610003", 0),
+		group = runGroup(id);
+	const owner = new IntercomClient("withdraw-owner");
+	const peer = new IntercomClient("withdraw-peer");
+	for (const client of [owner, peer]) {
+		client.on("error", () => {});
+		openClients.add(client);
+		await client.connect(registration("withdraw-peer", group));
+	}
+	const register = (generation: string) =>
+		owner.registerPendingStageRouteAcknowledged(
+			id,
+			group,
+			"capability",
+			routePayload(id, 1).stages,
+			undefined,
+			undefined,
+			false,
+			undefined,
+			generation,
+		);
+	await register("previous");
+	await register("current");
+	await owner.withdrawPendingStageRoute(id, "previous");
+	assert.ok((await rosterRunIds(peer)).has(id));
+	await peer.withdrawPendingStageRoute(id, "current");
+	assert.ok((await rosterRunIds(peer)).has(id));
+	await owner.withdrawPendingStageRoute(id, "current");
+	assert.ok(!(await rosterRunIds(peer)).has(id));
+});
+
+test("an older broker retires by connection and the host reports the fallback only once (#5561)", async () => {
+	proxy.transformBrokerFrames((frame) => {
+		if (frame.type !== "registered") return frame;
+		const { withdrawsPendingStageRoutes: _feature, ...legacy } = frame;
+		return legacy as WireFrame;
+	});
+	const root = runIdFor("55610002", 0),
+		child = runIdFor("55610002", 1),
+		group = runGroup(root);
+	const observer = await connectObserver([group]);
+	const host = createHost();
+	const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const framesBefore = proxy.toBroker.length;
+	await withHost(host, async () => {
+		for (const id of [root, child]) await host.publishRoute(id, 1, undefined, group);
+		await host.retireRoute(child, group);
+		assert.ok((await rosterRunIds(observer)).has(child), "the older broker still owns both routes on the socket");
+		await host.retireRoute(root, group);
+		await waitFor("connection-level retirement", async () =>
+			(await rosterRunIds(observer)).has(child) ? undefined : true,
+		);
+		assert.equal(
+			warnings.mock.calls.filter(([line]) => String(line).includes("individual route retirement")).length,
+			1,
+		);
+		assert.ok(!proxy.toBroker.slice(framesBefore).some(({ frame }) => frame.type === "withdraw_pending_stage_route"));
+	});
 });
 
 const HEALTHY_RUN_COUNT = 5;

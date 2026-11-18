@@ -186,6 +186,7 @@ export function registerPendingStageIntercomBridge(
 	// Keep rejected completions separate from the publication cache: failure is not
 	// an absent optional consumer, even if it settled before a stage began waiting.
 	const routeCompletions = new Map<string, Promise<void>>();
+	const pendingRetirements = new Set<Promise<void>>();
 	/**
 	 * Per claimed publication, settles once its consumer answered it, acknowledged or refused, and the event loop has
 	 * turned since it went out. The entry is removed when it settles.
@@ -267,7 +268,14 @@ export function registerPendingStageIntercomBridge(
 		if (rootRunId === undefined) return;
 		announcedRootOf.delete(runId);
 		const group = workflowInvocationIntercomGroup(rootRunId);
-		outsideWorkflowExecutions(() => pi.events?.emit?.(PENDING_STAGE_ROUTE_RETIRED_EVENT, { runId, group }));
+		const retirement = { runId, group, completion: undefined as Promise<void> | undefined };
+		outsideWorkflowExecutions(() => pi.events?.emit?.(PENDING_STAGE_ROUTE_RETIRED_EVENT, retirement));
+		const completion = retirement.completion;
+		if (completion !== undefined) {
+			pendingRetirements.add(completion);
+			const settled = () => pendingRetirements.delete(completion);
+			void completion.then(settled, settled);
+		}
 	};
 	const noteFinishedRoot = (root: RunSnapshot, owesNotice: boolean, owned = true): void => {
 		const wasCounted = retainedRoots.has(root.id) && !owingRoots.has(root.id);
@@ -794,6 +802,7 @@ export function registerPendingStageIntercomBridge(
 			announceIfPending();
 			await Promise.allSettled(routeCompletions.values());
 			await sweepPromise;
+			await Promise.allSettled(pendingRetirements);
 		},
 		/** Announces every route, as after a change of which runs the bridge owns. */
 		refresh: () => announceNow(true),
