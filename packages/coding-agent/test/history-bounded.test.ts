@@ -853,9 +853,11 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			Array.from({ length: 8 }, (_, index) =>
 				message(`${name}-${index + 1}`, "user", `pin needle ${name} ${index + 1}`, at + index * 1000),
 			);
-		await store.create(header("s-old"), entries("s-old", BASE));
-		await store.create(header("s-mid"), entries("s-mid", BASE + 100_000));
-		await store.create(header("s-new"), entries("s-new", BASE + 200_000));
+		// A search chain walks sessions newest-created first.
+		const created = (name: string, at: number) => ({ ...header(name), createdAt: new Date(at).toISOString() });
+		await store.create(created("s-old", BASE), entries("s-old", BASE));
+		await store.create(created("s-mid", BASE + 100_000), entries("s-mid", BASE + 100_000));
+		await store.create(created("s-new", BASE + 200_000), entries("s-new", BASE + 200_000));
 		const first = historyOver(store, { rows: 15 });
 		const stopped = (await first.router.search?.("history://sessions", first.request("pin needle"))) ?? "";
 		const url = /continue with (history:\/\/sessions\?\S+?)\]$/m.exec(stopped)?.[1];
@@ -2101,13 +2103,14 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			close: async () => {},
 		};
 		const { read } = historyOver(slowListStore, { timeMs: 35 });
+		const next = (text: string) => /continue with (history:\/\/sessions\?\S+?)\]/.exec(text)?.[1] ?? "";
 		const first = await read("history://sessions");
-		assert.match(first, /continue with history:\/\/sessions\?cursor=0\.0/);
+		assert.match(first, /continue with history:\/\/sessions\?cursor=0\.0&listing=\d+/);
 		await new Promise((r) => setTimeout(r, 100));
-		const second = await read("history://sessions?cursor=0.0");
-		assert.match(second, /continue with history:\/\/sessions\?cursor=0\.1/);
+		const second = await read(next(first));
+		assert.match(second, /continue with history:\/\/sessions\?cursor=0\.1&listing=\d+/);
 		await new Promise((r) => setTimeout(r, 120));
-		const third = await historyOver(slowListStore, { timeMs: 500 }).read("history://sessions?cursor=0.1");
+		const third = await historyOver(slowListStore, { timeMs: 500 }).read(next(second));
 		assert.match(third, /# sessions 1-3 of 3/);
 		assert.ok(third.includes("history://sessions/s1"));
 		assert.ok(third.includes("history://sessions/s2"));
