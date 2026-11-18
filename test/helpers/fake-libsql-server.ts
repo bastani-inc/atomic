@@ -138,6 +138,13 @@ export interface FakeLibsqlServer {
 	 * `undefined` removes it.
 	 */
 	onStreamClose(hook: (() => Promise<void> | void) | undefined): void;
+	/**
+	 * While `churning`, the server answers as sqld does while other connections keep changing the schema: every
+	 * statement outside a write transaction, other than `BEGIN`, `COMMIT`, `ROLLBACK` and a kept stream's read of
+	 * `sqlite_schema`, fails with `SQLITE_SCHEMA` without running, however often it is sent. A statement inside a write
+	 * transaction runs: the transaction holds the write lock, so no other connection changes the schema under it.
+	 */
+	churnSchema(churning: boolean): void;
 	/** Expires every open stream at once, rolling back the open transaction. */
 	expireStreams(): void;
 	close(): Promise<void>;
@@ -217,6 +224,7 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 
 	let busy = false;
 	let schemaChanged = false;
+	let churning = false;
 	const execute = (stream: Stream, stmt: HranaStmt): StmtResult => {
 		const sql = stmt.sql ?? stream.sqls.get(stmt.sql_id ?? -1);
 		// The read of `sqlite_schema` a kept stream sends before its statement takes no write lock, so the server never
@@ -229,6 +237,12 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 			schemaChanged = false;
 			throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
 		}
+		if (
+			churning &&
+			!database.isTransaction &&
+			!/^(?:BEGIN|COMMIT|ROLLBACK|SELECT 1 FROM sqlite_schema)\b/.test(sql ?? "")
+		)
+			throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
 		if (sql === undefined) throw Object.assign(new Error("SQL text not found"), { errstr: "error" });
 		const statement = database.prepare(sql);
 		statement.setReadBigInts(true);
@@ -479,6 +493,9 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		},
 		onOpenTransaction(next) {
 			hook = next;
+		},
+		churnSchema(next) {
+			churning = next;
 		},
 		onStreamClose(next) {
 			closeHook = next;

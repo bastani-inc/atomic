@@ -5,6 +5,7 @@
 ### Fixed
 
 - On a libSQL server (sqld) shared by stores that create and drop their tables, such as several sessions, workflows or teams using one server, a statement no longer fails with `SQLITE_SCHEMA: database schema has changed` when other connections change the schema while the server prepares it. The server ran nothing of such a statement, so it is sent again, as a statement the server answers busy is, for up to 5 seconds. A statement inside a transaction, and several statements sent in one `exec`, are not sent again
+- A write outside a transaction (`INSERT`, `UPDATE`, `DELETE`, `REPLACE`) on a shared libSQL server no longer fails with `SQLITE_SCHEMA` while other connections keep changing the schema for longer than the 5-second wait. Sent again as it was, such a write could meet a changed schema on every try, and on a loaded server only two or three tries fit in the wait. After the first `SQLITE_SCHEMA` answer the write is now sent again inside a write transaction of its own, in one request: while the transaction holds the write lock no other connection can change the schema, so the write runs, and it commits once or not at all. Reads are still sent again as they were
 
 ## [0.9.89-alpha.1] - 2026-11-18
 

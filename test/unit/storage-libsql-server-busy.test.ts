@@ -228,3 +228,16 @@ test("several statements in one exec that the server answered schema-changed are
 	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length, 1);
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
 });
+
+test("a write outside a transaction lands once while other connections keep changing the server's schema longer than the adapter waits", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	fake.churnSchema(true);
+	try {
+		await database.run("INSERT INTO events VALUES (?)", 1);
+	} finally {
+		fake.churnSchema(false);
+	}
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
+});
