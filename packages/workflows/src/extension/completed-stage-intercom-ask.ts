@@ -131,6 +131,7 @@ async function withReopenedStage<T>(
 	const letGo = handle.subscribe(() => {});
 	try {
 		await attachWithTimeout(handle);
+		assertActive();
 		return await use(handle);
 	} finally {
 		letGo();
@@ -198,26 +199,36 @@ export async function collectTurnReply(
  * with `content`, and returns the final assistant text. Turns for one stage run
  * in arrival order.
  */
-export type CompletedStageAnswerer = (runId: string, stageId: string, content: string) => Promise<string>;
+export type CompletedStageAnswerer = (
+	runId: string,
+	stageId: string,
+	content: string,
+	assertCurrent?: () => void,
+) => Promise<string>;
 
 export function createCompletedStageAnswerer(
 	resolveHandle: CompletedStageHandleResolver,
 	assertActive: () => void = () => {},
 ): CompletedStageAnswerer {
 	const queues = new Map<string, Promise<string>>();
-	return (runId, stageId, content) =>
-		enqueueTargetTurn(queues, `${runId}:${stageId}`, () =>
-			withReopenedStage(runId, stageId, resolveHandle, assertActive, async (handle) => {
+	return (runId, stageId, content, assertCurrent) => {
+		const check = () => {
+			assertActive();
+			assertCurrent?.();
+		};
+		return enqueueTargetTurn(queues, `${runId}:${stageId}`, () =>
+			withReopenedStage(runId, stageId, resolveHandle, check, async (handle) => {
 				if (handle.isStreaming) {
 					throw new Error(
 						`Completed workflow stage ${runId}/${stageId} is busy with another turn; ask again when it is idle.`,
 					);
 				}
 				const reply = await collectTurnReply(handle, content);
-				assertActive();
+				check();
 				return reply ?? `Completed workflow stage ${runId}/${stageId} reopened but produced no text answer.`;
 			}),
 		);
+	};
 }
 
 async function attachWithTimeout(handle: StageControlHandle): Promise<void> {

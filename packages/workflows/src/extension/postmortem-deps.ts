@@ -22,6 +22,7 @@ import {
 } from "../runs/foreground/postmortem-stage-chat.js";
 import { type StageControlRegistry, stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import { type Store, store } from "../shared/store.js";
 import { readGraphStoreRun, readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
@@ -33,6 +34,7 @@ export interface PostMortemResolverDeps {
 	readonly store?: Store;
 	/** The owning session's stage-control registry; defaults to the current one. */
 	readonly stageControlRegistry?: StageControlRegistry;
+	readonly stageUiBroker?: StageUiBroker;
 }
 
 /** Persisted original/resolved cwd for a durable run tree, when still available. */
@@ -62,6 +64,8 @@ function resolveRunWorktreeRootMappings(runId: string, runStore: Store): readonl
 export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps): PostMortemStageChatDeps {
 	return {
 		registry: deps.stageControlRegistry ?? stageControlRegistry,
+		store: deps.store ?? store,
+		stageUiBroker: deps.stageUiBroker ?? currentStageUiBroker(),
 		adapters: deps.adapters,
 		sessionStore: deps.adapters.sessionStore,
 		cwd: resolveStageCwd(runId, deps.store ?? store),
@@ -113,6 +117,7 @@ export function createPostMortemHandleResolver(
 			found.status !== "skipped";
 		// A fenced attempt's stage loses its live session id in the store; its last session is still
 		// recorded on the stage's session checkpoints in the journal.
+		const owningRun = (deps.store ?? store).run(runId);
 		const sessionId =
 			found.sessionId ??
 			(found.workerExecution === undefined
@@ -123,6 +128,7 @@ export function createPostMortemHandleResolver(
 			...(pooledEnded ? { status: "failed" as const } : {}),
 			...(sessionId === undefined ? {} : { sessionId }),
 		};
+		if ((deps.store ?? store).run(runId) !== owningRun) return { ok: false, reason: "closed" };
 		return ensurePostMortemStageHandle(runId, stage, postMortemDepsForRun(runId, deps));
 	};
 }

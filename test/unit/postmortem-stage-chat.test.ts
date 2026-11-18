@@ -27,6 +27,8 @@ import {
 } from "../../packages/workflows/src/runs/foreground/postmortem-stage-chat.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 
@@ -122,6 +124,45 @@ describe("ensurePostMortemStageHandle", () => {
 	});
 
 	for (const resolve of [ensurePostMortemStageHandle, acquirePostMortemStageHandle]) {
+		test(`${resolve.name} leaves a successor's stage alone when its saved transcript finishes loading (#5577)`, async () => {
+			const registry = createStageControlRegistry();
+			const store = createStore();
+			const stageUiBroker = new StageUiBroker(store);
+			const stage = completedStage(retainedSession("old-story"));
+			store.recordRunStart({
+				id: "run-1",
+				name: "reopen",
+				status: "completed",
+				inputs: {},
+				stages: [stage],
+				toolNodes: [],
+				startedAt: 1,
+			});
+			const saved = await sessionStore.load(stage.sessionId!);
+			const read = Promise.withResolvers<typeof saved>();
+			const started = Promise.withResolvers<void>();
+			vi.spyOn(sessionStore, "load").mockImplementationOnce(() => {
+				started.resolve();
+				return read.promise;
+			});
+			const opening = resolve("run-1", stage, {
+				registry,
+				adapters: adaptersRecording(mockSession(), { creates: 0 }),
+				store,
+				stageUiBroker,
+			});
+			await started.promise;
+			const successor = stageUiBroker.claimStage("run-1", stage.id);
+			try {
+				read.resolve(saved);
+				assert.deepEqual(await opening, { ok: false, reason: "closed" });
+				assert.equal(registry.peek("run-1", stage.id), undefined);
+				assert.equal(successor.signal.aborted, false);
+			} finally {
+				successor.release();
+				await registry.clear();
+			}
+		});
 		test(`${resolve.name} reopens the session of a restored run's stage in the run's restores (#4329)`, async () => {
 			const restore = {
 				from: "/node-a/repo",

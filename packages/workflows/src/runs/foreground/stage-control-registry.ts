@@ -34,6 +34,7 @@ import type {
 	TaskViewSource,
 } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
+import type { StageSnapshot } from "../../shared/store-types.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageQueuedTextOptions, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
@@ -72,6 +73,9 @@ export interface StagePlacement {
  * semantics that the raw SDK does not provide.
  */
 export interface StageControlHandle {
+	/** The stage record this registration can leave a released-session route for. */
+	readonly stageRecord?: StageSnapshot;
+	readonly stageUiSignal?: AbortSignal;
 	readonly runId: string;
 	readonly stageId: string;
 	readonly stageName: string;
@@ -322,6 +326,7 @@ export interface StageControlRegistry {
 
 /** What remains of a stage whose session was released: ids only, never a session or store. */
 export interface ReleasedStage {
+	readonly stageRecord?: WeakRef<StageSnapshot>;
 	readonly runId: string;
 	readonly stageId: string;
 	readonly stageName: string;
@@ -518,10 +523,16 @@ export function createStageControlRegistry(): StageControlRegistry {
 		runMap.delete(stageId);
 		if (runMap.size === 0) _byRun.delete(runId);
 		await disposeEntry(entry);
-		if (sessionId === undefined) return;
+		if (sessionId === undefined || _byRun.get(runId)?.has(stageId)) return;
 		for (const listener of [...releaseListeners]) {
 			try {
-				listener({ runId, stageId, stageName, sessionId });
+				listener({
+					runId,
+					stageId,
+					stageName,
+					sessionId,
+					...(entry.handle.stageRecord ? { stageRecord: new WeakRef(entry.handle.stageRecord) } : {}),
+				});
 			} catch (error) {
 				console.warn("atomic-workflows: released stage listener failed", error);
 			}

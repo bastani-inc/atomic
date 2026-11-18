@@ -96,6 +96,63 @@ describe("StageUiBroker", () => {
 			assert.equal(await broker.requestCustomUi("run-1", "stage-1", () => ({ render: () => [] })), "ordinary");
 		},
 	);
+	test("a replaced stage cannot publish, clear or answer the next stage's question, even with the same prompt ID (#5577)", async () => {
+		const { broker } = setupStage();
+		const run = "run-1";
+		const stage = "stage-1";
+		const old = broker.claimStage(run, stage);
+		const adapter = buildStagePromptAdapter("same", "ask_user_question", COLOR_ARGS, Date.now())!;
+		const factory = () => ({ render: () => [] });
+		broker.provideStagePrompt(run, stage, adapter, old.signal);
+		const oldAnswer = broker.requestCustomUi(run, stage, factory, undefined, old.signal);
+		const rejected = assert.rejects(oldAnswer, /replaced/);
+		const current = broker.claimStage(run, stage);
+		broker.provideStagePrompt(run, stage, adapter, current.signal);
+		const next = broker.requestCustomUi(run, stage, factory, undefined, current.signal);
+		try {
+			broker.clearStagePrompt(run, stage, old.signal);
+			broker.provideStagePrompt(
+				run,
+				stage,
+				{ ...adapter, prompt: { ...adapter.prompt, id: "obsolete" } },
+				old.signal,
+			);
+			broker.cancelStagePrompt(run, stage, new Error("obsolete"), old.signal);
+			old.release();
+			assert.equal(broker.peekStagePrompt(run, stage)?.id, "same");
+			assert.equal(broker.answerStagePrompt(run, stage, { optionLabels: ["Green"] }), true);
+			await Promise.all([next, rejected]);
+		} finally {
+			current.release();
+			await next.catch(() => {});
+		}
+	});
+
+	test("an old chat host cannot detach or redisplay a successor's form (#5577)", async () => {
+		const { broker } = setupStage();
+		const old = broker.claimStage("run-1", "stage-1");
+		const shown: string[] = [];
+		const host = {
+			showCustomUi: (request: StageCustomUiRequest) => {
+				shown.push(request.id);
+				broker.resolve(request, "here");
+			},
+		};
+		const leave = broker.registerHost("run-1", "stage-1", host, old.signal);
+		const next = broker.claimStage("run-1", "stage-1");
+		const request = broker.requestCustomUi("run-1", "stage-1", () => ({ render: () => [] }));
+		const answer = request.catch(() => "unanswered");
+		try {
+			assert.deepEqual(shown, [], "the old chat must not answer the successor");
+			broker.registerHost("run-1", "stage-1", host, next.signal);
+			leave();
+			assert.equal(await answer, "here");
+			assert.equal(await broker.requestCustomUi("run-1", "stage-1", () => ({ render: () => [] })), "here");
+		} finally {
+			next.release();
+		}
+	});
+
 	test("uses collision-resistant request ids", async () => {
 		const { broker } = setupStage();
 		let requestId = "";

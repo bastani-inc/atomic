@@ -31,6 +31,7 @@ export interface ReleasedStageAnnouncement {
 		readonly stageKeys: readonly string[];
 		readonly capability: string;
 	};
+	readonly isCurrent?: () => boolean;
 	readonly answer: (content: string) => Promise<string>;
 }
 
@@ -47,6 +48,7 @@ export function isReleasedStageAnnouncement(value: object): value is ReleasedSta
 		route.sessionId.length > 0 &&
 		typeof route.group === "string" &&
 		(route.model === undefined || typeof route.model === "string") &&
+		(route.isCurrent === undefined || typeof route.isCurrent === "function") &&
 		typeof route.answer === "function" &&
 		(live === undefined ||
 			(typeof live.capability === "string" &&
@@ -158,6 +160,7 @@ export class ReleasedStagePeers {
 	 * An announcement the broker would refuse is rejected alone with `HostedSessionRequestError`, before it is kept.
 	 */
 	async adopt(route: ReleasedStageAnnouncement): Promise<void> {
+		if (route.isCurrent?.() === false) return;
 		if (this.reconnectTimer === null) this.reconnectAttempt = 0;
 		const wire: JsonWireValue = JSON.parse(JSON.stringify([this.hostedSession(route)]));
 		const validation = validateHostSessionsFrame(wire);
@@ -205,7 +208,7 @@ export class ReleasedStagePeers {
 
 	/** Hosts every peer not yet hosted on `client`, in frames of at most 500; settles with the first failure. */
 	private async hostPending(client: IntercomClient): Promise<Error | undefined> {
-		const pending = [...this.peers.values()].filter((peer) => peer.hostedOn !== client);
+		const pending = [...this.peers.values()].filter((peer) => peer.hostedOn !== client && peer.route.isCurrent?.() !== false);
 		const requests: Promise<Error | undefined>[] = [];
 		for (let start = 0; start < pending.length; start += HOSTED_SESSION_FRAME_MAX) {
 			const chunk = pending.slice(start, start + HOSTED_SESSION_FRAME_MAX);

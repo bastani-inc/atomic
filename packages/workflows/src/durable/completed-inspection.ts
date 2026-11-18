@@ -7,6 +7,7 @@ import {
 } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { stageSessionStore } from "../shared/stage-session-store.js";
+import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
@@ -28,6 +29,7 @@ export interface OpenCompletedDurableDeps {
 	readonly store: Store;
 	readonly adapters?: StageAdapters;
 	readonly stageControlRegistry?: StageControlRegistry;
+	readonly stageUiBroker?: StageUiBroker;
 	readonly cwd?: string;
 	readonly defaultSessionDir?: string;
 	readonly sessionStore?: SessionStore;
@@ -139,6 +141,8 @@ function registerCompletedChatHandles(
 			deps.cwd,
 			deps.defaultSessionDir,
 			sessionStore,
+			deps.stageUiBroker ?? currentStageUiBroker(),
+			stage,
 		);
 		completedChatUnregisters.set(handle, registry.register(handle));
 		registrations.set(key, new WeakRef(handle));
