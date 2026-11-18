@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { recordProviderRateLimit } from "@bastani/atomic";
-import { getModel } from "@bastani/atomic-ai/compat";
+import { fauxProvider } from "@bastani/atomic-ai";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { AgentSessionAdapter, InternalStageContext, StageSessionRuntime } from "./stage-runner-helpers.js";
 import {
@@ -239,7 +239,7 @@ test("a pause as the provider cooldown expires wins before the stage sends its r
 	let waiting = false;
 	let pause: Promise<void> | undefined;
 	const { session } = makeMockSession({
-		model: { ...getModel("anthropic", "claude-sonnet-4-5")!, provider },
+		model: fauxProvider({ provider }).getModel(),
 		async prompt(text) {
 			calls.push(text);
 			return "done";

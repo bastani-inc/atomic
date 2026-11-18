@@ -701,9 +701,9 @@ export class StageSessionController {
 		// succeeds, instead of being cleared with the pending batch (issue #2812).
 		this.modelWarnings.push(...this.pendingFallbackWarnings);
 		this.pendingFallbackWarnings.length = 0;
-		await this.disposeCurrentSession(index + 1);
+		const advance = await this.disposeCurrentSession(index + 1);
 		this.notifyModelFallbackMetaChange();
-		return true;
+		return advance;
 	}
 	requireSession(property: string): StageSessionRuntime {
 		if (!this.session) unavailableSync(property);
@@ -1970,8 +1970,11 @@ export class StageSessionController {
 			this.pendingCreationResumeMessage = undefined;
 			const candidate = candidates[index]!;
 			try {
-				if (this.session !== undefined && this.activeCandidateIndex !== index)
-					await this.disposeCurrentSession(index);
+				if (this.session !== undefined && this.activeCandidateIndex !== index) {
+					if (!(await this.disposeCurrentSession(index))) return;
+					useResumeMessage(this.pendingCreationResumeMessage);
+					this.pendingCreationResumeMessage = undefined;
+				}
 				const created =
 					this.session && this.activeCandidateIndex === index
 						? this.session
@@ -3369,7 +3372,15 @@ export class StageSessionController {
 		return result.session;
 	}
 
-	private async disposeCurrentSession(nextCandidateIndex: number | undefined): Promise<void> {
+	/** Retire the failed session. Only an uncancelled objective or explicit replacement text advances the walk. */
+	private async disposeCurrentSession(nextCandidateIndex: number | undefined): Promise<boolean> {
+		const resumed = await this.pauseControl.whileRetiring(() => this.retireCurrentSession(nextCandidateIndex));
+		if (resumed === undefined) return true;
+		this.pendingCreationResumeMessage = resumed.message;
+		return resumed.message !== undefined;
+	}
+
+	private async retireCurrentSession(nextCandidateIndex: number | undefined): Promise<void> {
 		// A later prompt must not replace a rejected cleanup barrier with an empty shutdown.
 		if (this.sessionShutdownPromise !== undefined) await this.sessionShutdownPromise;
 		const startGeneration = this.abortGeneration;
@@ -3520,10 +3531,7 @@ export class StageSessionController {
 			const start = walk.rateLimitFailures.has(currentIndex) ? 0 : currentIndex;
 			const index = await this.selectReadyCandidate(candidates, walk, start);
 			if (index === undefined) return true;
-			if (index !== this.activeCandidateIndex) {
-				await this.disposeCurrentSession(index);
-				return false;
-			}
+			if (index !== this.activeCandidateIndex) return !(await this.disposeCurrentSession(index));
 			const resumedText = this.pendingCreationResumeMessage;
 			this.pendingCreationResumeMessage = undefined;
 			if (resumedText !== undefined) {
@@ -3618,8 +3626,7 @@ export class StageSessionController {
 					? `[fallback] resume on ${resumedLabel} failed: ${message}. Restarting fallback from ${candidateLabel(candidates[0]!)}.`
 					: `[fallback] resume on ${resumedLabel} failed: ${message}. Retrying with ${candidateLabel(candidates[resumedOverflowNextIndex]!)}.`,
 			);
-			await this.disposeCurrentSession(resumedOverflowNextIndex);
-			return false;
+			return !(await this.disposeCurrentSession(resumedOverflowNextIndex));
 		}
 	}
 
@@ -3700,8 +3707,7 @@ export class StageSessionController {
 		this.pendingFallbackWarnings.push(
 			`[fallback] ${candidateLabel(candidate)} failed: ${message}. Retrying with ${candidateLabel(nextCandidate)}.`,
 		);
-		await this.disposeCurrentSession(nextIndex);
-		return "retry";
+		return (await this.disposeCurrentSession(nextIndex)) ? "retry" : "handled";
 	}
 
 	private capturedStructuredOutputForAttempt(): boolean {
