@@ -3132,6 +3132,33 @@ test("resuming a completed worktree child starts from its saved edits, and no ex
 	assert.match(latest, /second pass by A/, "the resumed execution's patch has its own edits");
 });
 
+for (const action of ["completion", "pause", "quit", "pause after completion"] as const)
+	test(`${action} reports only after the child's worktree sweep (#5600)`, async () => {
+		const h = harness();
+		initGitRepository(h.cwd);
+		const finish = Promise.withResolvers<void>();
+		h.finishOn.set("last-worker", finish);
+		const [child] = await launchWorktreeRun(h, ["last-worker"]);
+		assert.ok(child?.taskId);
+		await h.waitForLatest(child.childId, (record) => !!record.childSessionId);
+		if (action === "completion") {
+			finish.resolve();
+			await settled(h, child.taskId);
+		} else if (action === "pause after completion") {
+			duringCancelOf(h, child.taskId, async () => {
+				finish.resolve();
+				await settled(h, child.taskId!);
+			});
+			assert.match(text(await h.call({ action: "pause", id: child.childId })), /completed \(ok\)/);
+		} else {
+			const reply = await h.call({ action, id: child.childId });
+			assert.notEqual(reply.isError, true, text(reply));
+		}
+		const existedAtReply = existsSync(child.cwd);
+		await waitForWorktreeCleanup(h, child);
+		assert.equal(existedAtReply, false, "the last child's clean worktree is gone at reply, not afterwards");
+	});
+
 test("pausing a worktree child that finished on its own as the pause reached it leaves no park or stop behind: its edits are saved and its worktree removed (#5172)", async () => {
 	const h = harness();
 	initGitRepository(h.cwd);
