@@ -678,21 +678,16 @@ async function advanceUntil<T>(
 	return undefined;
 }
 
-/** Bound on the real event-loop turns a fake-time step waits for the store's file I/O it started. */
-const FILE_IO_SETTLE_TURNS = 1_000;
-
 /**
  * Lets the store finish the file I/O a fake-time step started before time moves on: the store's transactions check
- * their writers' queue and records off the event loop, so a step's work can need several real turns.
+ * their writers' queue and records off the event loop, so a step's work can need several real turns. It waits for
+ * that I/O to finish, not for a number of turns: on a loaded machine a fixed count of turns can pass while the I/O is
+ * still running, and fake time would then run ahead of the work it is meant to time. Every file request completes,
+ * so the wait ends; the test's own timeout bounds a store that never does.
  */
 async function settleFileIo(): Promise<void> {
-	await new Promise((resolveTurn) => setImmediate(resolveTurn));
-	for (
-		let turn = 0;
-		turn < FILE_IO_SETTLE_TURNS && process.getActiveResourcesInfo().some((kind) => kind.startsWith("FSReq"));
-		turn++
-	)
-		await new Promise((resolveTurn) => setImmediate(resolveTurn));
+	do await new Promise((resolveTurn) => setImmediate(resolveTurn));
+	while (process.getActiveResourcesInfo().some((kind) => kind.startsWith("FSReq")));
 }
 
 test("a lost outcome hint for a held send is noticed by the outcome poll before the hold times out", async () => {
