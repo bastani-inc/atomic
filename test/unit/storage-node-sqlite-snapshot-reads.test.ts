@@ -72,6 +72,26 @@ test("loading a session whose entries fit one page is one snapshot read, with no
 	assert.equal(loaded.lastSeq, 40);
 });
 
+test("reading a range of a session's history is one snapshot read (#5376)", async () => {
+	const { store: sessions } = await store();
+	await create(sessions, "history", 40);
+	const kinds: string[] = [];
+	const interception = interceptConnectionRequests((request, send) => {
+		kinds.push(request.kind);
+		return send(request);
+	});
+	cleanups.push(interception.restore);
+	const page = await sessions.readEntryRange!("history", { fromSeq: 11, toSeq: 1_000 });
+	interception.restore();
+	assert.deepEqual(kinds, ["read"]);
+	assert.equal(page.lastSeq, 40);
+	assert.equal(page.throughSeq, 40, "bounded by the session's last sequence");
+	assert.deepEqual(
+		page.entries.map(({ seq }) => seq),
+		Array.from({ length: 30 }, (_, index) => index + 11),
+	);
+});
+
 test("a session loads while another connection holds the write lock (#5376)", async () => {
 	const { store: sessions, path } = await store();
 	await create(sessions, "held", 10);

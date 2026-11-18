@@ -163,6 +163,15 @@ type FetchRow = {
 type PageRow = FetchRow & { ord: number | bigint };
 /** A row of a page of a session's entries, as `pageStatement` reads it. */
 type EntryPageRow = SqliteRow & FetchRow & { seq: number; entry_json: string; chunks: number };
+/** A row of `readEntryRange`'s range. */
+type EntryRangeRow = SqliteRow & {
+	seq: number | bigint;
+	entry_json: string | null;
+	entry_head: string;
+	chunks: number | bigint;
+	remaining: number | bigint;
+	entry_type: string | null;
+};
 /** A session's first page as a snapshot read found it, with the revision and sequence the session was at. */
 interface FirstPage {
 	readonly revision: string;
@@ -734,34 +743,21 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		query.signal?.throwIfAborted();
-		const session = await this.database.get<SqliteRow & { last_seq: number | bigint }>(
-			`SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?`,
-			sessionId,
-		);
-		if (!session) throw new SessionNotFoundError(sessionId);
-		const lastSeq = Number(session.last_seq);
 		const fromSeq = Math.max(1, query.fromSeq);
-		const toSeq = Math.min(query.toSeq, lastSeq);
-		if (fromSeq > toSeq) return { lastSeq, entries: [], throughSeq: Math.max(toSeq, fromSeq - 1) };
-		if (query.maxChars !== undefined && query.maxChars <= 0) return { lastSeq, entries: [], throughSeq: fromSeq - 1 };
 		const skippedSet = query.skipTypes === undefined ? undefined : new Set(query.skipTypes);
 		const skippedPrefixes = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
 		const largeBytes = query.largeEntryBytes ?? 0x7fffffff;
-		const rows = await this.database.all<
-			SqliteRow & {
-				seq: number | bigint;
-				entry_json: string | null;
-				entry_head: string;
-				chunks: number | bigint;
-				remaining: number | bigint;
-				entry_type: string | null;
-			}
-		>(
-			`WITH sized AS (
+		const sessionStatement: SqliteStatement = {
+			sql: `SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?`,
+			params: [sessionId],
+		};
+		/** The range, at most through `toSeq`; `bounded` also bounds it by the session's last sequence, in SQL. */
+		const rangeStatement = (toSeq: number, bounded: boolean): SqliteStatement => ({
+			sql: `WITH sized AS (
 				SELECT seq, chunks, ${this.entryByteLength("entry_json")} AS raw_bytes,
 					${this.entryByteLength("entry_json")} + chunks * ? AS bytes
 				FROM ${this.tables.entries}
-				WHERE session_id = ? AND seq >= ? AND seq <= ?
+				WHERE session_id = ? AND seq >= ? AND seq <= ?${bounded ? ` AND seq <= (SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?)` : ""}
 			),
 			paged AS (
 				SELECT seq, chunks, raw_bytes, count(*) OVER () AS remaining,
@@ -776,15 +772,39 @@ export class SqlSessionStore implements SessionStore {
 			JOIN ${this.tables.entries} e ON e.session_id = ? AND e.seq = p.seq
 			WHERE p.before_chars < ?
 			ORDER BY p.seq`,
-			SESSION_ENTRY_CHUNK_BYTES,
-			sessionId,
-			fromSeq,
-			toSeq,
-			largeBytes,
-			largeBytes,
-			sessionId,
-			query.maxChars ?? Number.MAX_SAFE_INTEGER,
-		);
+			params: [
+				SESSION_ENTRY_CHUNK_BYTES,
+				sessionId,
+				fromSeq,
+				toSeq,
+				...(bounded ? [sessionId] : []),
+				largeBytes,
+				largeBytes,
+				sessionId,
+				query.maxChars ?? Number.MAX_SAFE_INTEGER,
+			],
+		});
+		// Where the database reads that way, the session's last sequence and the range in one snapshot read, one request
+		// (#5376); the range is then bounded by that sequence in SQL, as it is below.
+		const { readStatements } = this.database;
+		const together =
+			readStatements === undefined
+				? undefined
+				: ((await readStatements.call(this.database, [sessionStatement, rangeStatement(query.toSeq, true)])) as [
+						SqliteRow[],
+						EntryRangeRow[],
+					]);
+		const session = (together?.[0][0] ??
+			(together === undefined
+				? await this.database.get(sessionStatement.sql, ...sessionStatement.params)
+				: undefined)) as (SqliteRow & { last_seq: number | bigint }) | undefined;
+		if (!session) throw new SessionNotFoundError(sessionId);
+		const lastSeq = Number(session.last_seq);
+		const toSeq = Math.min(query.toSeq, lastSeq);
+		if (fromSeq > toSeq) return { lastSeq, entries: [], throughSeq: Math.max(toSeq, fromSeq - 1) };
+		if (query.maxChars !== undefined && query.maxChars <= 0) return { lastSeq, entries: [], throughSeq: fromSeq - 1 };
+		const range = rangeStatement(toSeq, false);
+		const rows = together?.[1] ?? (await this.database.all<EntryRangeRow>(range.sql, ...range.params));
 		const entries: SessionEntryAt[] = [];
 		for (const row of rows) {
 			query.signal?.throwIfAborted();
