@@ -536,6 +536,7 @@ async function inspectRestoredContent(
 	path: string,
 	store: string,
 	tree: string | undefined,
+	own = false,
 ): Promise<Map<string, RestoredEntry> | undefined> {
 	try {
 		if (!(await lstat(path)).isDirectory()) return undefined;
@@ -575,7 +576,7 @@ async function inspectRestoredContent(
 			return true;
 		};
 		if (!(await visit(path, ""))) return undefined;
-		const converted: { readonly name: string; readonly digest: string }[] = [];
+		const converted: { readonly name: string; readonly path: string; readonly digest: string }[] = [];
 		const blobs = await storeBlobs(
 			store,
 			unmatched.flatMap((file) => (entries.get(file.name) ?? []).map((candidate) => candidate.oid)),
@@ -604,7 +605,18 @@ async function inspectRestoredContent(
 				found.set(file.name, { kind: "file", algorithm: "sha256", digest, blob: false });
 				continue;
 			}
-			converted.push({ name: file.name, digest });
+			if (
+				own &&
+				(await beginsAny(
+					file.path,
+					file.size,
+					candidates.map((candidate) => candidate.blob),
+				))
+			) {
+				found.set(file.name, { kind: "file", algorithm: "sha256", digest, blob: false });
+				continue;
+			}
+			converted.push({ name: file.name, path: file.path, digest });
 		}
 		// A file the checkout converted, as for an end-of-line rule or a smudge filter, is the snapshot's only when its bytes
 		// are exactly what the checkout writes for that path: never because a clean filter, which may drop an edit, maps it
@@ -622,7 +634,11 @@ async function inspectRestoredContent(
 						allowExitCodes: [128],
 					},
 				);
-				if (checkout.exitCode === 0 && createHash("sha256").update(checkout.stdout).digest("hex") === file.digest) {
+				if (
+					checkout.exitCode === 0 &&
+					(createHash("sha256").update(checkout.stdout).digest("hex") === file.digest ||
+						(own && (await beginsAny(file.path, undefined, [checkout.stdout]))))
+				) {
 					written = true;
 					break;
 				}
@@ -634,6 +650,18 @@ async function inspectRestoredContent(
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Whether the bytes of the file at `path` are a beginning of one of `contents`, as a checkout stopped while it wrote the
+ * file leaves it: its whole content is then still in the store, so deleting it loses nothing.
+ */
+async function beginsAny(path: string, size: bigint | undefined, contents: readonly Buffer[]): Promise<boolean> {
+	const length = size === undefined ? (await lstat(path)).size : Number(size);
+	const longer = contents.filter((content) => content.length >= length);
+	if (longer.length === 0) return false;
+	const bytes = await readFile(path);
+	return longer.some((content) => bytes.length <= content.length && content.subarray(0, bytes.length).equals(bytes));
 }
 
 /** Whether the entry at `path` still holds what an inspection found there. */
@@ -698,8 +726,9 @@ interface SetAside {
 async function setRestoredAside(path: string, record: RestoreRecord): Promise<SetAside | undefined> {
 	const identity = await directoryIdentity(path);
 	if (identity === undefined) return undefined;
-	const found = await inspectRestoredContent(path, record.store, record.tree);
 	const created = record.identity !== undefined && sameIdentity(identity, record.identity);
+	// Only in the restore's own directory may a file be a checkout stopped while it wrote it.
+	const found = await inspectRestoredContent(path, record.store, record.tree, created);
 	if (!created && (record.identity !== undefined || found === undefined)) return undefined;
 	const aside = asidePath(record);
 	if ((await lstatIfPresent(aside)) !== undefined) return undefined;
@@ -734,7 +763,9 @@ async function cleanRestoreRecord(record: RestoreRecord, signal?: AbortSignal): 
 	const pending: SetAside[] = [];
 	const aside = asidePath(record);
 	if ((await lstatIfPresent(aside)) !== undefined) {
-		pending.push({ path: aside, found: await inspectRestoredContent(aside, record.store, record.tree) });
+		const identity = await directoryIdentity(aside);
+		const own = identity !== undefined && record.identity !== undefined && sameIdentity(identity, record.identity);
+		pending.push({ path: aside, found: await inspectRestoredContent(aside, record.store, record.tree, own) });
 	}
 	let entry: Stats | undefined;
 	let registeredPath = record.staging;

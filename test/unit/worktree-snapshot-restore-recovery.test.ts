@@ -168,6 +168,18 @@ describe("sweeping the records an interrupted restore left", () => {
 		assert.equal(readFileSync(join(staging, "src", "notes.txt"), "utf8"), "the user's notes\n");
 	});
 
+	test("without the directory's identity, a file that is only a beginning of the checkout's is kept (#4748)", async () => {
+		const host = await makeHost();
+		const id = randomUUID();
+		const staging = await stage(host.store, defaultStaging(host, id));
+		writeFileSync(join(staging, "README.md"), "hel");
+		const target = join(host.storeDir, "worktrees", "partial-final");
+		writeRecord(host, id, { staging, target, store: host.store, createdTarget: true });
+
+		assert.deepEqual(await sweep(host), [{ code: "stale-restore-retained", path: staging, kind: "worktree" }]);
+		assert.equal(readFileSync(join(staging, "README.md"), "utf8"), "hel");
+	});
+
 	test("so is the directory a cleanup set aside (#4748)", async () => {
 		const host = await makeHost();
 		const aside = await stage(

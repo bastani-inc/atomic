@@ -286,6 +286,70 @@ describe("a restore whose process lost its lock", () => {
 		assert.deepEqual(readdirSync(join(storeDir, "restores")), []);
 	});
 
+	for (const written of ["nothing", "the first bytes"] as const) {
+		test(`a stop while Git has written ${written} of a file into the checkout still removes the worktree (#4748)`, async () => {
+			const { snapshot, blobs } = await dirtyClone();
+			const storeDir = sandbox.path("host");
+			const reason = new Error("stop restoring");
+			const controller = new AbortController();
+			faults.spawnHook = (args, cwd) => {
+				if (is(args, "read-tree", "--reset", "-u")) {
+					// Git is killed after it created the file and before it finished writing it.
+					writeFileSync(join(cwd, "dirty.txt"), written === "nothing" ? "" : "reco");
+					queueMicrotask(() => controller.abort(reason));
+					return { command: process.execPath, args: ["-e", "setTimeout(() => {}, 30000)"] };
+				}
+				return undefined;
+			};
+
+			const { error, warnings } = await restoreInto(
+				snapshot,
+				blobs,
+				storeDir,
+				sandbox.path("final"),
+				controller.signal,
+			);
+
+			assert.equal(error, reason);
+			assert.equal((error as { cleanupCause?: unknown }).cleanupCause, undefined);
+			assert.deepEqual(retainedWarnings(warnings), []);
+			assert.deepEqual(readdirSync(join(storeDir, "restores")), []);
+			assert.deepEqual(
+				readdirSync(sandbox.root).filter((name) => /\.final\.[sd]-/.test(name)),
+				[],
+			);
+		});
+	}
+
+	test("a file in the restore's own worktree that is not a beginning of what checkout writes is kept (#4748)", async () => {
+		const { snapshot, blobs } = await dirtyClone();
+		const storeDir = sandbox.path("host");
+		const reason = new Error("stop restoring");
+		const controller = new AbortController();
+		let staging = "";
+		faults.spawnHook = (args, cwd) => {
+			if (is(args, "read-tree", "--reset", "-u")) {
+				staging = cwd;
+				writeFileSync(join(cwd, "dirty.txt"), "recX");
+				queueMicrotask(() => controller.abort(reason));
+				return { command: process.execPath, args: ["-e", "setTimeout(() => {}, 30000)"] };
+			}
+			return undefined;
+		};
+
+		const { error, warnings } = await restoreInto(
+			snapshot,
+			blobs,
+			storeDir,
+			sandbox.path("final"),
+			controller.signal,
+		);
+
+		assert.equal(error, reason);
+		assert.equal(readFileSync(join(asideOf(staging), "dirty.txt"), "utf8"), "recX");
+		assert.deepEqual(retainedWarnings(warnings), [warning(asideOf(staging))]);
+	});
+
 	test("also stops as soon as its signal is aborted, with the abort reason", async () => {
 		const { snapshot, blobs } = await dirtyClone();
 		const storeDir = sandbox.path("host");
