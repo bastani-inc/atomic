@@ -21,14 +21,22 @@ const CHALK_BY_LEVEL = [
 	new Chalk({ level: 3 }),
 ] as const;
 
+type ThemePalette = {
+	readonly fg: ReadonlyMap<ThemeColor, string>;
+	readonly bg: ReadonlyMap<ThemeBg, string>;
+	readonly workingIndicator: ReadonlyMap<WorkingIndicatorTone, string>;
+};
+
 export class Theme {
 	readonly name?: string;
 	readonly sourcePath?: string;
 	sourceInfo?: SourceInfo;
-	private fgColors: Map<ThemeColor, string>;
-	private bgColors: Map<ThemeBg, string>;
+	private readonly palettes = new Map<ColorMode, ThemePalette>();
+	private readonly foregrounds: ReadonlyMap<ThemeColor, string | number>;
+	private readonly backgrounds: ReadonlyMap<ThemeBg, string | number>;
+	private readonly workingIndicator: ReadonlyMap<WorkingIndicatorTone, string | number>;
+	private readonly dimmed: ReadonlySet<ThemeColor>;
 	private mode: ColorMode;
-	private workingIndicatorColors: Map<WorkingIndicatorTone, string>;
 
 	constructor(
 		fgColors: Pick<ThemeColorValues<string | number>, ThemeColor>,
@@ -49,32 +57,53 @@ export class Theme {
 		const { fgColors: foregrounds, bgColors: backgrounds } = splitThemeColors(
 			withThemeTokenFallbacks({ ...fgColors, ...bgColors }),
 		);
-		this.fgColors = new Map();
-		for (const [key, value] of Object.entries(foregrounds) as [ThemeColor, string | number][]) {
-			this.fgColors.set(key, `${options.dim?.includes(key) ? "\x1b[2m" : ""}${fgAnsi(value, mode)}`);
+		this.foregrounds = new Map(Object.entries(foregrounds) as [ThemeColor, string | number][]);
+		this.backgrounds = new Map(Object.entries(backgrounds) as [ThemeBg, string | number][]);
+		this.workingIndicator = new Map(
+			Object.entries(options.workingIndicator ?? {}) as [WorkingIndicatorTone, string | number][],
+		);
+		this.dimmed = new Set(options.dim ?? []);
+		this.palette(mode);
+	}
+
+	/** The escape sequences of every theme color in one color mode, built once per mode. */
+	private palette(mode: ColorMode): ThemePalette {
+		let palette = this.palettes.get(mode);
+		if (palette) return palette;
+		const fg = new Map<ThemeColor, string>();
+		for (const [key, value] of this.foregrounds) {
+			fg.set(key, `${this.dimmed.has(key) ? "\x1b[2m" : ""}${fgAnsi(value, mode)}`);
 		}
-		this.bgColors = new Map();
-		for (const [key, value] of Object.entries(backgrounds) as [ThemeBg, string | number][]) {
-			this.bgColors.set(key, bgAnsi(value, mode, isStatusToken(key) ? "preserve-hue" : "nearest"));
+		const bg = new Map<ThemeBg, string>();
+		for (const [key, value] of this.backgrounds) {
+			bg.set(key, bgAnsi(value, mode, isStatusToken(key) ? "preserve-hue" : "nearest"));
 		}
-		this.workingIndicatorColors = new Map();
-		for (const [key, value] of Object.entries(options.workingIndicator ?? {}) as [
-			WorkingIndicatorTone,
-			string | number,
-		][]) {
-			this.workingIndicatorColors.set(key, fgAnsi(value, mode));
-		}
+		const workingIndicator = new Map<WorkingIndicatorTone, string>();
+		for (const [key, value] of this.workingIndicator) workingIndicator.set(key, fgAnsi(value, mode));
+		palette = { fg, bg, workingIndicator };
+		this.palettes.set(mode, palette);
+		return palette;
+	}
+
+	/**
+	 * The palette colors are written with now, or none when NO_COLOR or FORCE_COLOR=0 turns color off. FORCE_COLOR=1
+	 * or 2 limits a true-color theme to 256 colors; the terminal's own color mode is never raised.
+	 */
+	private activePalette(): ThemePalette | undefined {
+		const level = this.getStyleLevel();
+		if (level === 0) return undefined;
+		return this.palette(level === 3 ? this.mode : "256color");
 	}
 
 	fg(color: ThemeColor, text: string): string {
-		const ansi = this.fgColors.get(color);
-		if (!ansi) throw new Error(`Unknown theme color: ${color}`);
+		const ansi = this.getFgAnsi(color);
+		if (ansi === "") return text;
 		return `${ansi}${text}${ansi.startsWith("\x1b[2m") ? "\x1b[22m" : ""}\x1b[39m`; // Reset foreground and optional faint styling
 	}
 
 	bg(color: ThemeBg, text: string): string {
-		const ansi = this.bgColors.get(color);
-		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
+		const ansi = this.getBgAnsi(color);
+		if (ansi === "") return text;
 		// Truncation and nested components may reset SGR inside a filled row.
 		// Restore the enclosing background before ellipses and trailing padding.
 		const filled = text.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + ansi);
@@ -113,20 +142,21 @@ export class Theme {
 		return this.style().strikethrough(text);
 	}
 
+	/** The sequence that starts `color`, or an empty string while color is turned off. */
 	getFgAnsi(color: ThemeColor): string {
-		const ansi = this.fgColors.get(color);
-		if (!ansi) throw new Error(`Unknown theme color: ${color}`);
-		return ansi;
+		if (!this.foregrounds.has(color)) throw new Error(`Unknown theme color: ${color}`);
+		return this.activePalette()?.fg.get(color) ?? "";
 	}
 
 	getWorkingIndicatorAnsi(tone: WorkingIndicatorTone): string | undefined {
-		return this.workingIndicatorColors.get(tone);
+		if (!this.workingIndicator.has(tone)) return undefined;
+		return this.activePalette()?.workingIndicator.get(tone) ?? "";
 	}
 
+	/** The sequence that starts background `color`, or an empty string while color is turned off. */
 	getBgAnsi(color: ThemeBg): string {
-		const ansi = this.bgColors.get(color);
-		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
-		return ansi;
+		if (!this.backgrounds.has(color)) throw new Error(`Unknown theme background color: ${color}`);
+		return this.activePalette()?.bg.get(color) ?? "";
 	}
 
 	getColorMode(): ColorMode {
