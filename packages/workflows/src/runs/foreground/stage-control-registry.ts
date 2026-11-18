@@ -98,11 +98,14 @@ export interface StageControlHandle {
 	 */
 	streamingMessage?(): NonNullable<NonNullable<AgentSession["agent"]>["state"]["streamingMessage"]> | undefined;
 	/**
-	 * Whether the stage's session waits out an automatic retry's backoff, for a handle without an `agentSession` (a
-	 * stage on a local worker). Handles with a session expose it through the session instead: see
-	 * {@link stageWaitsToRetry}.
+	 * A backoff outside the local SDK session: the stage is retrying a failed operation itself or its session
+	 * lives on a worker. See {@link stageWaitsToRetry} for either source.
 	 */
 	readonly isWaitingToRetry?: boolean;
+	/** A worker session has a cancellable retry, even before it announces the next attempt. */
+	readonly isRetrying?: boolean;
+	/** False for a status-only watch on another host, which refuses pause commands. */
+	readonly canPause?: boolean;
 	inFlightAttemptUsage?(): import("../../shared/types.js").WorkflowModelUsage | undefined;
 	/** Set when the stage's session runs in another process. */
 	readonly placement?: StagePlacement;
@@ -331,8 +334,9 @@ export interface ReleasedStage {
 /** Whether the stage's session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */
 export function stageWaitsToRetry(handle: Pick<StageControlHandle, "agentSession" | "isWaitingToRetry">): boolean {
 	const session = handle.agentSession;
-	if (session === undefined) return handle.isWaitingToRetry === true;
-	return session.retryAttempt > 0 && !session.isStreaming;
+	return (
+		handle.isWaitingToRetry === true || (session !== undefined && session.retryAttempt > 0 && !session.isStreaming)
+	);
 }
 
 /**

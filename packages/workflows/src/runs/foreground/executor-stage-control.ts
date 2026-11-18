@@ -111,6 +111,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		get isStreaming() {
 			return runtime.innerCtx.isStreaming;
 		},
+		get isWaitingToRetry() {
+			return runtime.innerCtx.__waitsToRetry?.() === true;
+		},
 		get isTurnLoopBusy() {
 			return runtime.innerCtx.__turnLoopBusy?.() === true;
 		},

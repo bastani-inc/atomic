@@ -1185,7 +1185,7 @@ Emitted when the agent begins processing a prompt.
 
 ### agent_end
 
-Emitted when the agent completes. Contains all messages generated during this run.
+Emitted when one agent run completes. Contains all messages generated during that run. If `retryPending` is `true`, the session is still handling a retry or fallback; `abort_retry` cancels it even before the next attempt is announced.
 
 ```json
 {

@@ -482,6 +482,7 @@ export class StageSessionController {
 	private sharedOrchestrationContext: CreateAgentSessionOptions["orchestrationContext"];
 	private resumeCurrentSession = false;
 	private readonly modelAttempts: WorkflowModelAttempt[] = [];
+	private backoff: Extract<StageSessionEvent, { type: "auto_retry_start" }> | undefined;
 	private readonly rateLimitProviders = new Set<string>();
 	private rateLimitWait: { provider: string; until: number } | undefined;
 	private readonly modelWarnings: string[] = [];
@@ -715,6 +716,10 @@ export class StageSessionController {
 			fallback,
 			this.residencyState?.terminatingToolCallIds ?? NO_TERMINATING_TOOL_CALLS,
 		);
+	}
+
+	waitsToRetry(): boolean {
+		return this.backoff !== undefined;
 	}
 
 	subscribe(listener: (event: StageSessionEvent) => void): () => void {
@@ -2477,7 +2482,11 @@ export class StageSessionController {
 		}
 	}
 
-	private async sleepForThrownErrorRetry(delayMs: number, state: ThrownErrorRetryState): Promise<void> {
+	private async sleepForThrownErrorRetry(
+		delayMs: number,
+		state: ThrownErrorRetryState,
+		event?: Extract<StageSessionEvent, { type: "auto_retry_start" }>,
+	): Promise<void> {
 		this.residency.thrownErrorRetryStates.add(state);
 		const currentResume = this.pauseControl.currentResume();
 		if (currentResume !== undefined) {
@@ -2485,9 +2494,18 @@ export class StageSessionController {
 			state.controller.abort(new ThrownErrorRetryPaused(currentResume));
 		}
 		try {
+			if (event && !state.controller.signal.aborted) {
+				this.backoff = event;
+				for (const listener of this.pendingListeners) listener(event);
+			}
 			await sleepOrAbort(delayMs, state.controller.signal);
 		} finally {
 			this.residency.thrownErrorRetryStates.delete(state);
+			if (event && this.backoff === event) {
+				this.backoff = undefined;
+				for (const listener of this.pendingListeners)
+					listener({ type: "auto_retry_end", success: !state.controller.signal.aborted, attempt: event.attempt });
+			}
 		}
 	}
 
@@ -2513,6 +2531,7 @@ export class StageSessionController {
 		this.residency.thrownErrorRetryStates.add(state);
 		try {
 			await this.waitForProvider(this.currentModelValue());
+			state.controller.signal.throwIfAborted();
 			await continuationSession._runAgentContinue();
 		} catch (error) {
 			const resume = state.pauseResume ?? this.pauseControl.currentResume();
@@ -2625,8 +2644,9 @@ export class StageSessionController {
 					this.restoreSessionMessages(activeSession, messagesBeforeAttempt, nextText, false, true);
 					throw error;
 				}
+				const settings = this.retrySettings();
 				const decision = nextRetryDecision(
-					this.retrySettings(),
+					settings,
 					retryAttempt,
 					sameCandidateRetryable,
 					workflowRetryHint(error),
@@ -2659,7 +2679,12 @@ export class StageSessionController {
 				const state: ThrownErrorRetryState = { controller: new AbortController() };
 				let pauseResume: RetryPauseResume | undefined;
 				try {
-					await this.sleepForThrownErrorRetry(decision.delayMs, state);
+					await this.sleepForThrownErrorRetry(decision.delayMs, state, {
+						type: "auto_retry_start",
+						...decision,
+						maxAttempts: settings!.maxRetries,
+						errorMessage: errorMessage(error),
+					});
 				} catch (sleepError) {
 					if (sleepError instanceof ThrownErrorRetryPaused) pauseResume = sleepError.resume;
 					else {
@@ -3023,10 +3048,11 @@ export class StageSessionController {
 				// A stage refused its queued Intercom instructions will be refused them
 				// by every retry, so the terminal delivery failure is never eligible —
 				// independent of what the shared model-failure classifier makes of it.
+				const settings = this.retrySettings();
 				const decision = isWorkflowPendingStageDeliveryFailure(error)
 					? undefined
 					: nextRetryDecision(
-							this.retrySettings(),
+							settings,
 							retryAttempt,
 							isRetryableSameCandidateFailure(error),
 							workflowRetryHint(error),
@@ -3046,7 +3072,12 @@ export class StageSessionController {
 				retryAttempt = decision.attempt;
 				const state: ThrownErrorRetryState = { controller: new AbortController() };
 				try {
-					await this.sleepForThrownErrorRetry(decision.delayMs, state);
+					await this.sleepForThrownErrorRetry(decision.delayMs, state, {
+						type: "auto_retry_start",
+						...decision,
+						maxAttempts: settings!.maxRetries,
+						errorMessage: errorMessage(error),
+					});
 				} catch (sleepError) {
 					if (sleepError instanceof ThrownErrorRetryPaused) {
 						const resumed = await sleepError.resume;
@@ -3411,16 +3442,20 @@ export class StageSessionController {
 			const promptStartEntries = storedEntryCount(activeSession);
 			this.lastPromptStartIndex = promptStartIndex;
 			this.unresolvedContextOverflowMessage = undefined;
+			const state: ThrownErrorRetryState = { controller: new AbortController() };
+			this.residency.thrownErrorRetryStates.add(state);
 			try {
 				this.reportStartupPhase("first-dispatch");
 				// A live resume loops here without returning through the outer retry guard.
 				await this.waitForProvider(this.currentModelValue());
+				state.controller.signal.throwIfAborted();
 				const detachedResults = this.pendingDetachedResults;
-				this.pendingDetachedResults = undefined;
 				if (detachedResults !== undefined && activeSession.resumeDetachedTurn !== undefined) {
 					// A resume message that replaced the continuation reaches the turn as steering, after the results.
 					if (nextText !== initialText)
 						await activeSession.steer(nextText, undefined, { expandPromptTemplates: false });
+					state.controller.signal.throwIfAborted();
+					this.pendingDetachedResults = undefined;
 					await this.continueFromResults(activeSession, activeSession.resumeDetachedTurn, detachedResults);
 				} else if (activeSession.isWaitingOnDetachedResults?.() === true) {
 					// A prompt now would move the transcript past a call whose result is still to come (#4580). Handing the
@@ -3431,7 +3466,7 @@ export class StageSessionController {
 						await activeSession.steer(nextText, undefined, { expandPromptTemplates: false });
 					return { terminalScanStartIndex: promptStartIndex };
 				} else await activeSession.prompt(nextText, nextOptions);
-				const pendingPauseAfterPrompt = this.pauseControl.currentResume();
+				const pendingPauseAfterPrompt = state.pauseResume ?? this.pauseControl.currentResume();
 				if (pendingPauseAfterPrompt) {
 					const resumed = await pendingPauseAfterPrompt;
 					await resumed.runnerOwnedDeliverySettlement;
@@ -3448,7 +3483,9 @@ export class StageSessionController {
 				// The results come back with the reopened session; a pause holds that reopening.
 				if (err instanceof DetachedResultsNotSaved) throw err;
 				const pendingPauseAfterThrow =
-					err instanceof ThrownErrorRetryPaused ? err.resume : this.pauseControl.currentResume();
+					err instanceof ThrownErrorRetryPaused
+						? err.resume
+						: (state.pauseResume ?? this.pauseControl.currentResume());
 				if (pendingPauseAfterThrow) {
 					const resumed = await pendingPauseAfterThrow;
 					await resumed.runnerOwnedDeliverySettlement;
@@ -3460,6 +3497,8 @@ export class StageSessionController {
 				}
 				this.throwUnresolvedContextOverflowIfPresent();
 				throw err;
+			} finally {
+				this.residency.thrownErrorRetryStates.delete(state);
 			}
 		}
 		return { terminalScanStartIndex: activeSession.messages.length };

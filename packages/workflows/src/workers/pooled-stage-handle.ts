@@ -157,6 +157,8 @@ export class PooledStageHandle implements StageControlHandle {
 	private streamingNow = false;
 	/** Whether the stage's session waits out an automatic retry's backoff: its retry started, its next attempt has not. */
 	private waitingToRetry = false;
+	private retryPending = false;
+	private pauseSupported = true;
 	private seq = 0;
 	private attempt: { readonly workId: string; readonly generation: number };
 	private ended?: WatchEndReason;
@@ -236,6 +238,12 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	get isStreaming(): boolean {
 		return this.streamingNow;
+	}
+	get canPause(): boolean {
+		return this.pauseSupported && !this.reconnecting && !this.disposed && this.ended === undefined;
+	}
+	get isRetrying(): boolean {
+		return this.retryPending;
 	}
 	get isWaitingToRetry(): boolean {
 		return this.waitingToRetry;
@@ -362,6 +370,8 @@ export class PooledStageHandle implements StageControlHandle {
 		if (message.kind === "ended") {
 			this.leaveWatch();
 			this.streamingNow = false;
+			this.retryPending = false;
+			this.waitingToRetry = false;
 			if (RECONNECTABLE.has(message.reason) && !this.disposed && this.ended === undefined) this.reconnecting = true;
 			else this.end(message.reason);
 			// A rebind cut short by this end leaves the rest for the next attempt.
@@ -433,6 +443,8 @@ export class PooledStageHandle implements StageControlHandle {
 		if (!result.ok) throw new PooledStageDeliveryError(result.refusal, this.stageName);
 		this.currentStatus = "paused";
 		this.streamingNow = false;
+		this.retryPending = false;
+		this.waitingToRetry = false;
 	}
 	async resume(message?: string, beforeResume?: () => void): Promise<StageUserMessageDeliveryAction | undefined> {
 		this.throwIfClosed();
@@ -569,6 +581,8 @@ export class PooledStageHandle implements StageControlHandle {
 		this.toolExecutions = new StageToolExecutionBuffer();
 		this.streaming = undefined;
 		this.streamingNow = false;
+		this.retryPending = false;
+		this.waitingToRetry = false;
 		if (undelivered > 0) this.undelivered = undelivered;
 		for (const entry of this.outbound) {
 			if (this.admitted(entry) || entry.waiter === undefined) continue;
@@ -797,6 +811,8 @@ export class PooledStageHandle implements StageControlHandle {
 		this.currentStatus = snapshot.status;
 		this.streamingNow = snapshot.isStreaming;
 		this.waitingToRetry = snapshot.waitingToRetry === true;
+		this.retryPending = snapshot.retryPending === true;
+		this.pauseSupported = snapshot.canPause !== false;
 		this.seq = snapshot.seq;
 		this.toolExecutions = new StageToolExecutionBuffer();
 		for (const event of snapshot.pendingToolExecutionEvents) this.toolExecutions.record(event);
@@ -859,7 +875,15 @@ export class PooledStageHandle implements StageControlHandle {
 			case "auto_retry_end":
 				this.waitingToRetry = false;
 				return;
+			case "model_fallback_start":
+				this.retryPending = true;
+				return;
+			case "model_fallback_end":
+			case "agent_settled":
+				this.retryPending = false;
+				return;
 			case "agent_end":
+				this.retryPending = event.retryPending === true;
 				this.streamingNow = false;
 				this.streaming = undefined;
 				return;

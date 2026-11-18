@@ -272,6 +272,60 @@ describe("AgentSession retry and event characterization", () => {
 		},
 	);
 
+	it("interrupting the switch after the last retry sends no fallback request (#5564)", async () => {
+		const failure = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" });
+		const harness = await createHarness({
+			provider: "switch-test",
+			models: [{ id: "primary" }, { id: "fallback" }],
+			settings: {
+				retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+				fallbackModels: ["switch-test/fallback"],
+			},
+		});
+		harnesses.push(harness);
+		let interrupt: Promise<void> | undefined;
+		harness.session.subscribe((event) => {
+			if (event.type === "model_fallback_start") interrupt = harness.session.interruptTurn();
+		});
+		harness.setResponses([failure(), failure(), fauxAssistantMessage("unexpected request")]);
+		await harness.session.prompt("first turn");
+		await interrupt;
+		// Run the queued next attempt, if the interrupt left one behind.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await harness.session.agent.waitForIdle();
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.eventsOfType("model_fallback_end").map((event) => event.success)).toEqual([false]);
+		expect(harness.eventsOfType("auto_retry_end").map((event) => event.success)).toEqual([true]);
+		expect(harness.session.isRetrying).toBe(false);
+
+		harness.setResponses([failure(), fauxAssistantMessage("new turn recovered")]);
+		await harness.session.prompt("second turn");
+		expect(harness.faux.state.callCount).toBe(4);
+	});
+
+	it("a failed retry reporting its error after the interrupt cannot reopen the sequence (#5564)", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 } } });
+		harnesses.push(harness);
+		const inRetry = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		harness.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			async () => {
+				inRetry.resolve();
+				await finish.promise;
+				throw new Error("503 service unavailable");
+			},
+			fauxAssistantMessage("unexpected retry"),
+		]);
+		const turn = harness.session.prompt("stop during the retry");
+		await inRetry.promise;
+		const stop = harness.session.interruptTurn();
+		finish.resolve();
+		await Promise.all([stop, turn]);
+		await harness.session.waitForRetry();
+		expect(harness.faux.state.callCount).toBe(2);
+	});
+
 	it("waits for the full loop when retry recovery produces tool calls", async () => {
 		const toolRuns: string[] = [];
 		const echoTool: AgentTool = {

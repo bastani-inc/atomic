@@ -702,9 +702,18 @@ export function isStreaming(ctx: StageChatViewContext): boolean {
 
 /** Whether Escape interrupts the stage's turn: it streams, or its session waits out a retry's backoff between attempts. */
 export function isAbortableStreamingSession(ctx: StageChatViewContext): boolean {
-	if (isPaused(ctx) || ctx.interruptedByEscape) return false;
+	if (isPaused(ctx) || ctx.interruptedByEscape || liveHandle(ctx)?.canPause === false) return false;
+	const handle = activeLiveHandle(ctx);
 	const agentSession = liveHandle(ctx)?.agentSession;
-	return isLiveHandleStreaming(ctx) || agentSession?.isStreaming === true || agentSession?.isRetrying === true;
+	return (
+		agentSession?.isStreaming === true ||
+		agentSession?.isRetrying === true ||
+		(handle !== undefined &&
+			(ctx.chatHost.isStreaming() ||
+				handle.isRetrying === true ||
+				stageWaitsToRetry(handle) ||
+				currentStage(ctx)?.rateLimits?.some((limit) => limit.waitingUntil !== undefined) === true))
+	);
 }
 
 export function isBlocked(ctx: StageChatViewContext): boolean {

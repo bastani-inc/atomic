@@ -193,7 +193,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_emitQueueUpdate(): void;
 	_createRetryPromiseForAgentEnd(event: AgentEvent): void;
 	_findLastAssistantInMessages(messages: AgentMessage[]): AssistantMessage | undefined;
-	_processAgentEvent(event: AgentEvent): Promise<void>;
+	_processAgentEvent(event: AgentEvent, retryGeneration?: number): Promise<void>;
 	_applyInterruptAbortMessage(event: AgentEvent): void;
 	_applyProviderErrorGuidance(event: AgentEvent): void;
 	_resolveRetry(): void;
@@ -245,6 +245,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		reportDispatch?: (disposition: PromptDisposition) => void,
 		prepared?: boolean,
 		customStarter?: CustomMessage,
+		fallbackGeneration?: number,
 	): Promise<void>;
 	_runAgentContinue(): Promise<void>;
 	_runAgentContinuation(beforeContinue: () => Promise<void>, mode?: "continue" | "recovery" | "settle"): Promise<void>;
@@ -645,7 +646,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_longStreamCutRetries: number;
 	_retryPromise: Promise<void> | undefined;
 	_retryResolve: (() => void) | undefined;
-	_retryCancelled: boolean;
+	_retryGeneration: number;
+	_agentRunRetryGeneration: number;
 	_bashAbortControllers: Map<string | symbol, Set<AbortController>>;
 	_pendingBashMessages: BashExecutionMessage[];
 	_extensionRunner: ExtensionRunner;

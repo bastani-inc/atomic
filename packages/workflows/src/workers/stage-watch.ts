@@ -821,6 +821,7 @@ function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnaps
 		messages: [...handle.messages],
 		...(streamingMessage === undefined ? {} : { streamingMessage }),
 		...(stageWaitsToRetry(handle) ? { waitingToRetry: true } : {}),
+		...(handle.agentSession?.isRetrying ? { retryPending: true } : {}),
 		pendingToolExecutionEvents: [...(handle.pendingToolExecutionEvents?.() ?? [])],
 		queued: handle.queuedUserMessages?.() ?? EMPTY_STAGE_QUEUED_USER_MESSAGES,
 		seq,

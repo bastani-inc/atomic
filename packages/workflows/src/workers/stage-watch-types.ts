@@ -60,6 +60,10 @@ export interface PooledStageChatSnapshot {
 	readonly streamingMessage?: AssistantMessage;
 	/** Whether the stage's session waits out an automatic retry's backoff. Absent from older workers. */
 	readonly waitingToRetry?: boolean;
+	/** Esc can cancel the current model recovery, whether or not its backoff has started. */
+	readonly retryPending?: true;
+	/** A status-only watch on another host cannot send a pause command. */
+	readonly canPause?: false;
 	readonly pendingToolExecutionEvents: readonly AgentSessionEvent[];
 	readonly queued: StageQueuedUserMessages;
 	/**
