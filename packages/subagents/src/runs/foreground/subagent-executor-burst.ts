@@ -384,15 +384,15 @@ export function createExecutionBurstDispatcher(input: {
 	isActive: () => boolean;
 	setActive: (active: boolean) => void;
 	duplicateResult: (params: SubagentParamsLike) => SubagentToolResult;
-	/** The error a launch fails with on its own, such as an unknown agent, if any. */
+	/** The error a launch fails with on its own before any child starts, from the checks its own run makes. */
 	ownError: (params: SubagentParamsLike, ctx: ExtensionContext) => Promise<SubagentToolResult | undefined>;
 }): ExecuteSubagent {
 	let queue: BurstItem[] = [];
 	let flushScheduled = false;
 
 	/**
-	 * Gives each launch that fails on its own, such as one naming an unknown agent, its own error, and returns the
-	 * others. A failure to check leaves the launch with the others.
+	 * Gives each launch that fails on its own its own error, and returns the others. A failure to check leaves the
+	 * launch with the others.
 	 */
 	const withoutOwnErrors = async (items: BurstItem[]): Promise<BurstItem[]> => {
 		const errors = await Promise.all(
@@ -402,7 +402,7 @@ export function createExecutionBurstDispatcher(input: {
 			const error = errors[index];
 			if (error) resolveItem(item, error);
 		});
-		return items.filter((_item, index) => errors[index] === undefined);
+		return items.filter((item, index) => errors[index] === undefined && !item.settled);
 	};
 
 	const run = async (items: BurstItem[], finish: () => void): Promise<void> => {
@@ -413,9 +413,9 @@ export function createExecutionBurstDispatcher(input: {
 		if (items.length === 1) {
 			const item = items[0]!;
 			try {
-				item.resolve(await input.execute(item.id, item.params, item.signal, item.onUpdate, item.ctx));
+				resolveItem(item, await input.execute(item.id, item.params, item.signal, item.onUpdate, item.ctx));
 			} catch (error) {
-				item.reject(error instanceof Error ? error : new Error(String(error)));
+				rejectItem(item, error instanceof Error ? error : new Error(String(error)));
 			} finally {
 				finish();
 			}
@@ -446,8 +446,9 @@ export function createExecutionBurstDispatcher(input: {
 				if (!item.settled) item.onUpdate?.(projectResult(update, merged.routes![index]!, true));
 			}
 		};
-		// A merged run fails as a whole before any child starts when one launch fails on its own. That launch gets
-		// its own error, and the others run again without it.
+		// A merged run fails as a whole, before any child starts, when one launch fails on its own. Each launch that does
+		// gets its own error, and the others, none of which started, run once without it. An error no launch has on its
+		// own, such as too many tasks altogether, stays the error of every launch.
 		let retry: BurstItem[] | undefined;
 		try {
 			const result = await input.execute(first.id, merged.params!, first.signal, onUpdate, first.ctx);

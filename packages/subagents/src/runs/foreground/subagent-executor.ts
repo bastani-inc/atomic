@@ -15,13 +15,10 @@ import { registerNamedRunWorktrees } from "./run-worktrees.js";
 import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
 import { subagentChildOwner } from "./subagent-child-records.js";
 import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
-import {
-	launchInputError,
-	prepareExecutionContext,
-	refuseSubagentChildDelegation,
-} from "./subagent-executor-context.js";
+import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
 import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.js";
+import { launchSetupError } from "./subagent-executor-launch-check.js";
 import { runParallelPath } from "./subagent-executor-parallel.js";
 import { resolveSubagentExecutorRuntimeDeps } from "./subagent-executor-runtime.js";
 import { runSinglePath } from "./subagent-executor-single.js";
@@ -367,7 +364,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			deps.state.subagentInProgress = active;
 		},
 		duplicateResult: duplicateSubagentCallResult,
-		ownError: (params, ctx) => launchInputError(params, ctx, deps),
+		ownError: (params, ctx) => launchSetupError(params, ctx, deps),
 	});
 
 	return {

@@ -10,7 +10,12 @@ import type {
 	ModelSingleResponse,
 } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import type { ExtensionContext } from "../../packages/coding-agent/src/index.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
+import {
+	renderSubagentToolCall,
+	renderSubagentToolResult,
+} from "../../packages/subagents/src/extension/tool-rendering.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import { getBurstDisplay } from "../../packages/subagents/src/runs/foreground/subagent-executor-burst-display.js";
 import type {
@@ -19,6 +24,7 @@ import type {
 	SubagentParamsLike,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type { SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
+import { theme } from "./subagents-render-stability-helpers.js";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
@@ -409,3 +415,67 @@ test("a launch naming an unknown agent fails alone: a sibling launch in the same
 	for (const id of ["bad", "good", "parallel-bad"])
 		assert.equal(getBurstDisplay(id), undefined, `${id} renders as its own call, not as part of the failed burst`);
 });
+
+test("a launch whose output setup fails on its own fails alone, and its sibling launches once (#3427)", async () => {
+	const launched: string[] = [];
+	const { call } = harness(async (_cwd, _agents, _agent, task) => {
+		launched.push(task);
+		return childResult(task);
+	});
+	const [bad, good] = await Promise.all([
+		call("output-bad", { agent: "echo", task: "bad", outputMode: "file-only" }),
+		call("output-good", { agent: "echo", task: "good" }),
+	]);
+	assert.equal(bad.isError, true);
+	assert.match(text(bad), /^Single run \(echo\) sets outputMode: "file-only" but does not configure an output file/);
+	assert.notEqual(good.isError, true, "the valid call does not inherit its sibling's setup error");
+	assert.match(await settledOutput(call, single(good).observation.taskId), /output:good/);
+	assert.deepEqual(launched, ["good"]);
+});
+
+test("when every launch in a message fails on its own, each gets its own error and the next launch still runs (#3427)", async () => {
+	const launched: string[] = [];
+	const { call } = harness(async (_cwd, _agents, _agent, task) => {
+		launched.push(task);
+		return childResult(task);
+	});
+	const [bad, invalidCount] = await Promise.all([
+		call("all-bad", { agent: "missing", task: "bad" }),
+		call("all-count", { tasks: [{ agent: "echo", task: "invalid", count: 0 }] }),
+	]);
+	assert.equal(text(bad), "Unknown agent: missing");
+	assert.equal(text(invalidCount), "tasks[0].count must be an integer >= 1");
+	assert.deepEqual(launched, []);
+	const later = await call("after-all-bad", { agent: "echo", task: "later" });
+	assert.match(await settledOutput(call, single(later).observation.taskId), /output:later/);
+	assert.deepEqual(launched, ["later"]);
+});
+
+test.each([false, true])(
+	"a parallel launch that fails on its own beside a valid sibling shows its own error on its card (expanded: %s) (#3427)",
+	async (expanded) => {
+		initTheme("dark", false);
+		const { call } = harness(async (_cwd, _agents, _agent, task) => childResult(task));
+		const args = {
+			tasks: [
+				{ agent: "echo", task: "fine" },
+				{ agent: "missing", task: "unknown" },
+			],
+		};
+		const [bad, good] = await Promise.all([
+			call("render-parallel-bad", args),
+			call("render-sibling-good", { agent: "echo", task: "good" }),
+		]);
+		assert.equal(text(bad), "Unknown agent: missing (task 2)");
+		assert.notEqual(good.isError, true);
+		const context = { toolCallId: "render-parallel-bad", state: {}, args, isError: true } as Parameters<
+			typeof renderSubagentToolCall
+		>[2];
+		renderSubagentToolCall(args, theme as never, context);
+		const rendered = renderSubagentToolResult(bad, { expanded, isPartial: false }, theme as never, context)
+			.render(180)
+			.join("\n");
+		assert.match(rendered, /Unknown agent: missing \(task 2\)/);
+		assert.doesNotMatch(rendered, /Stopped/);
+	},
+);

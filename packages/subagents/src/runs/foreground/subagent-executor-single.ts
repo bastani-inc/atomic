@@ -1,5 +1,6 @@
 import { rm } from "node:fs/promises";
 import * as path from "node:path";
+import type { AgentConfig } from "../../agents/agents.js";
 import { normalizeSkillInput } from "../../agents/skills.js";
 import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
 import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
@@ -46,7 +47,12 @@ import {
 	notifyDetachedForegroundChildExit,
 	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
-import type { ExecutionContextData, ForegroundControl, ResolvedExecutorDeps } from "./subagent-executor-types.js";
+import type {
+	ExecutionContextData,
+	ForegroundControl,
+	ResolvedExecutorDeps,
+	SubagentParamsLike,
+} from "./subagent-executor-types.js";
 import { runAgentTask, taskToolResultWithOutput } from "./task-execution.js";
 
 function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string): string {
@@ -95,6 +101,29 @@ export function createForwardSingleUpdate(
 		}
 		onUpdate(update);
 	};
+}
+
+/** The error a single run fails with for its output settings: a file-only output without a file. */
+export function singleOutputSetupError(
+	params: SubagentParamsLike,
+	agentConfig: AgentConfig,
+	ctxCwd: string,
+	effectiveCwd: string,
+): SubagentToolResult | undefined {
+	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
+	const outputPath = resolveSingleOutputPath(
+		normalizeSingleOutputOverride(rawOutput, agentConfig.output),
+		ctxCwd,
+		effectiveCwd,
+	);
+	const validationError = validateFileOnlyOutputMode(
+		params.outputMode ?? "inline",
+		outputPath,
+		`Single run (${params.agent})`,
+	);
+	return validationError === undefined
+		? undefined
+		: { content: [{ type: "text", text: validationError }], isError: true, details: { mode: "single", results: [] } };
 }
 
 export async function runSinglePath(
@@ -153,14 +182,8 @@ export async function runSinglePath(
 	}
 	const cleanTask = task;
 	const outputPath = resolveSingleOutputPath(effectiveOutput, ctx.cwd, effectiveCwd);
-	const validationError = validateFileOnlyOutputMode(effectiveOutputMode, outputPath, `Single run (${params.agent})`);
-	if (validationError) {
-		return {
-			content: [{ type: "text", text: validationError }],
-			isError: true,
-			details: { mode: "single", results: [] },
-		};
-	}
+	const outputError = singleOutputSetupError(params, agentConfig, ctx.cwd, effectiveCwd);
+	if (outputError) return outputError;
 	// Single-agent progress is isolated by run so the injected contract cannot
 	// overwrite a project's own progress.md or collide with another child.
 	const progressDir = progress ? path.join(artifactsDir, "progress", runId) : undefined;
