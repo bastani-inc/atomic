@@ -34,16 +34,75 @@ const LAUNCH_FORK_ENTRY = Symbol("launchForkEntry");
 type WithLaunchForkEntry = { readonly [LAUNCH_FORK_ENTRY]?: string };
 
 /**
- * The entry a step with `options` forks at when it is launched now: where its source is, when it forks a stage session
- * open in this process without naming an entry. Undefined otherwise.
+ * The session a step with `options` forks without naming an entry: the source whose entry at launch is its fork point.
+ * Undefined for a step that does not fork, or names its entry.
  */
-export function launchForkEntryOf(options: ForkableStageOptions | undefined): string | undefined {
-	if (options?.context !== "fork" || options.forkFromSessionId === undefined || options.forkFromEntryId !== undefined)
-		return undefined;
-	return liveStageSessionLeaf(options.forkFromSessionId);
+export function launchForkSourceOf(options: ForkableStageOptions | undefined): string | undefined {
+	if (options?.context !== "fork" || options.forkFromEntryId !== undefined) return undefined;
+	return options.forkFromSessionId;
 }
 
-/** `options` of a step of a fan-out, holding the entry `launchForkEntryOf` read when the fan-out was launched. */
+/**
+ * The suffix of the run-level record of where the sources of a fan-out's forked steps were when the fan-out was
+ * launched, under the fan-out's own replay key. It names no graph node of its own.
+ */
+export const FAN_OUT_FORK_SOURCES_SUFFIX = ":fork-source-entries";
+
+/**
+ * The entry each of `sessionIds` was at when a fan-out named `launchName` was launched, by session id. A source that is
+ * not open in this process has no entry; a step forking it copies it as stored when it starts.
+ */
+export type FanOutForkPoints = (
+	launchName: string,
+	sessionIds: readonly string[],
+) => Promise<ReadonlyMap<string, string>>;
+
+/**
+ * The fork points of the fan-outs of a run, recorded in the run before any step of a fan-out is scheduled (#5481). A
+ * step that waits for a slot, and every step of the fan-out after the run resumes, is retried or is forked into another
+ * run, forks where the first launch found its source, even when a step that ran earlier stopped the run. The record is
+ * keyed by the fan-out's replay key, which the run's replay keys give it in launch order, so a replayed fan-out reads
+ * the record of its first launch.
+ */
+export function createFanOutForkPoints(input: {
+	readonly backend: DurableWorkflowBackend;
+	readonly workflowId: string;
+	readonly nextReplayKey: (name: string) => string;
+}): FanOutForkPoints {
+	return async (launchName, sessionIds) => {
+		const key = `${input.nextReplayKey(launchName)}${FAN_OUT_FORK_SOURCES_SUFFIX}`;
+		const recorded = input.backend.getToolCheckpoint(input.workflowId, key)?.output as {
+			readonly entries?: readonly Partial<ForkSourceRecord>[];
+		} | null;
+		if (Array.isArray(recorded?.entries))
+			return new Map(
+				recorded.entries.flatMap((entry) =>
+					typeof entry.sessionId === "string" && typeof entry.entryId === "string"
+						? [[entry.sessionId, entry.entryId] as const]
+						: [],
+				),
+			);
+		const entries = [...new Set(sessionIds)].flatMap((sessionId): ForkSourceRecord[] => {
+			const entryId = liveStageSessionLeaf(sessionId);
+			return entryId === undefined ? [] : [{ sessionId, entryId }];
+		});
+		// Recorded before the fan-out schedules a step. A journal that cannot take it fails the steps' own records too.
+		await input.backend
+			.commitAdditiveCheckpointBestEffort({
+				kind: "tool",
+				workflowId: input.workflowId,
+				checkpointId: key,
+				name: key,
+				argsHash: key,
+				output: { entries } as unknown as WorkflowSerializableValue,
+				completedAt: Date.now(),
+			})
+			.catch(() => false);
+		return new Map(entries.map((entry) => [entry.sessionId, entry.entryId]));
+	};
+}
+
+/** `options` of a step of a fan-out, holding the entry its source was at when the fan-out was launched. */
 export function withLaunchForkEntry<TOptions extends object>(options: TOptions, entryId: string | undefined): TOptions {
 	return entryId === undefined ? options : { ...options, [LAUNCH_FORK_ENTRY]: entryId };
 }

@@ -11,8 +11,11 @@ import {
 import { afterEach, describe, test } from "vitest";
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import { withLaunchForkPoint } from "../../packages/workflows/src/durable/stage-fork-point.js";
-import { createDurableTaskPrimitive } from "../../packages/workflows/src/durable/stage-primitive.js";
+import { createFanOutForkPoints, withLaunchForkPoint } from "../../packages/workflows/src/durable/stage-fork-point.js";
+import {
+	createDurableTaskPrimitive,
+	createStageReplayKeyGenerator,
+} from "../../packages/workflows/src/durable/stage-primitive.js";
 import { createParallelPrimitive } from "../../packages/workflows/src/engine/primitives/parallel.js";
 import type { EngineRuntime } from "../../packages/workflows/src/engine/runtime.js";
 import { registerLiveStageSession } from "../../packages/workflows/src/shared/live-stage-sessions.js";
@@ -172,51 +175,116 @@ describe("forked workflow stages copy their source append-only (#5481)", () => {
 	});
 
 	test("parallel steps that wait for a concurrency slot fork where their source was when the parallel was launched (#5481)", async () => {
-		const backend = await createMemoryTestBackend();
-		const run = "parallel-fork-point-run";
-		await backend.commitWorkflowRegistration({
-			workflowId: run,
-			name: run,
-			inputs: {},
-			createdAt: 1,
-			status: "running",
-		});
-		const source = await sourceWithOpenCall();
-		registerLiveStageSession(source);
+		const { source, runner } = await durableParallelRun("parallel-fork-point-run");
 		const leafAtLaunch = source.getLeafId();
-		const forkedAt = new Map<string, string | undefined>();
-		let keys = 0;
-		const task = createDurableTaskPrimitive({
-			workflowId: run,
-			backend,
-			nextReplayKey: (name) => `${name}#${keys++}`,
-			task: async (name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
-				forkedAt.set(name, options.forkFromEntryId);
-				// The source keeps going while each step runs, before the next step gets the slot.
-				await source.appendMessage(sourceTurn([{ type: "text", text: `LATER_SOURCE_TURN after ${name}` }]));
-				return { stageName: name, text: `${name} done` };
-			},
-		});
-		const runtime = {
-			runId: run,
-			exit: { throwIfWorkflowExitSelected: () => undefined, exitScope: undefined },
-			tracker: { currentParents: () => [] },
-			activeStore: { run: () => undefined },
-		} as unknown as EngineRuntime;
-		const parallel = createParallelPrimitive({ runtime, task });
+		const { parallel, forkedAt } = runner();
 
-		await parallel(
-			[
-				{ name: "a", prompt: "A" },
-				{ name: "b", prompt: "B" },
-				{ name: "c", prompt: "C" },
-			],
-			{ concurrency: 1, context: "fork", forkFromSessionId: source.getSessionId() },
-		);
+		await parallel(STEPS, { concurrency: 1, context: "fork", forkFromSessionId: source.getSessionId() });
 
 		assert.deepEqual(
-			["a", "b", "c"].map((name) => forkedAt.get(name)),
-			[leafAtLaunch, leafAtLaunch, leafAtLaunch],
+			forkedAt.map(({ name, entry }) => [name, entry]),
+			[
+				["a", leafAtLaunch],
+				["b", leafAtLaunch],
+				["c", leafAtLaunch],
+			],
+		);
+	});
+
+	test("parallel steps still queued when the run stops fork at the parallel's launch point after a resume (#5481)", async () => {
+		const { source, backend, run, runner } = await durableParallelRun("parallel-fork-point-resume");
+		const leafAtLaunch = source.getLeafId();
+		const options = { concurrency: 1, context: "fork" as const, forkFromSessionId: source.getSessionId() };
+		const stopped = new Error("the run stops after the first step's result is recorded");
+		const first = runner({
+			afterLiveResult: async () => {
+				throw stopped;
+			},
+		});
+		await assert.rejects(first.parallel(STEPS, options), (error) => error === stopped);
+		assert.ok(backend.getStageOutput(run, "stage:task:a:1"), "the first step's result is recorded");
+
+		// The resumed run replays `a` from its record and starts the steps that were waiting for a slot.
+		const resumed = runner();
+		await resumed.parallel(STEPS, options);
+
+		assert.deepEqual(
+			[...first.forkedAt, ...resumed.forkedAt].map(({ name, entry }) => [name, entry]),
+			[
+				["a", leafAtLaunch],
+				["b", leafAtLaunch],
+				["c", leafAtLaunch],
+			],
+		);
+	});
+
+	test("a retried parallel forks its queued steps at the first launch's point, like the retried step (#5481)", async () => {
+		const { source, runner } = await durableParallelRun("parallel-fork-point-retry");
+		const leafAtLaunch = source.getLeafId();
+		const options = { concurrency: 1, context: "fork" as const, forkFromSessionId: source.getSessionId() };
+		const failed = new Error("the first step fails before it has a result");
+		const first = runner({ failWith: failed });
+		await assert.rejects(first.parallel(STEPS.slice(0, 2), options), (error) => error === failed);
+
+		const retried = runner();
+		await retried.parallel(STEPS.slice(0, 2), options);
+
+		assert.deepEqual(
+			[...first.forkedAt, ...retried.forkedAt].map(({ name, entry }) => [name, entry]),
+			[
+				["a", leafAtLaunch],
+				["a", leafAtLaunch],
+				["b", leafAtLaunch],
+			],
 		);
 	});
 });
+
+const STEPS = [
+	{ name: "a", prompt: "A" },
+	{ name: "b", prompt: "B" },
+	{ name: "c", prompt: "C" },
+];
+
+/**
+ * A run whose `ctx.parallel` steps fork a live stage session that makes a turn while each step runs. `runner()` builds
+ * the run's durable task and parallel primitives the way the engine does; calling it again is the run resumed in a new
+ * process, with the same journal.
+ */
+async function durableParallelRun(run: string) {
+	const backend = await createMemoryTestBackend();
+	await backend.commitWorkflowRegistration({
+		workflowId: run,
+		name: run,
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
+	const source = await sourceWithOpenCall();
+	registerLiveStageSession(source);
+	const runtime = {
+		runId: run,
+		exit: { throwIfWorkflowExitSelected: () => undefined, exitScope: undefined },
+		tracker: { currentParents: () => [] },
+		activeStore: { run: () => undefined },
+	} as unknown as EngineRuntime;
+	const runner = (hooks: { afterLiveResult?: () => Promise<void>; failWith?: Error } = {}) => {
+		const forkedAt: { name: string; entry: string | undefined }[] = [];
+		const nextReplayKey = createStageReplayKeyGenerator(run);
+		const task = createDurableTaskPrimitive({
+			workflowId: run,
+			backend,
+			nextReplayKey,
+			task: async (name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+				forkedAt.push({ name, entry: options.forkFromEntryId });
+				await source.appendMessage(sourceTurn([{ type: "text", text: `LATER_SOURCE_TURN after ${name}` }]));
+				if (hooks.failWith) throw hooks.failWith;
+				return { stageName: name, text: `${name} done` };
+			},
+			...(hooks.afterLiveResult ? { afterLiveResult: hooks.afterLiveResult } : {}),
+		});
+		const forkPoints = createFanOutForkPoints({ backend, workflowId: run, nextReplayKey });
+		return { forkedAt, parallel: createParallelPrimitive({ runtime, task, forkPoints }) };
+	};
+	return { backend, run, source, runner };
+}

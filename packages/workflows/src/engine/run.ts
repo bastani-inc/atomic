@@ -39,6 +39,7 @@ import {
 	recordRunTimingCheckpointAsync,
 } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
+import { createFanOutForkPoints } from "../durable/stage-fork-point.js";
 import {
 	createDurableStagePrimitive,
 	createDurableTaskPrimitive,
@@ -1336,7 +1337,15 @@ async function executeRun(
 	});
 	const gatedTask: typeof durableTask = (...args) => whenRunning(() => durableTask(...args));
 	const chain = createChainPrimitive({ runtime, task: gatedTask });
-	const parallel = createParallelPrimitive({ runtime, task: gatedTask });
+	const parallel = createParallelPrimitive({
+		runtime,
+		task: gatedTask,
+		forkPoints: createFanOutForkPoints({
+			backend: durableBackend,
+			workflowId: runId,
+			nextReplayKey: (name) => stageReplayKeyGenerator(name),
+		}),
+	});
 	const ui = buildExitGatedUiContext({
 		opts,
 		throwIfWorkflowExitSelected: exit.throwIfWorkflowExitSelected,
