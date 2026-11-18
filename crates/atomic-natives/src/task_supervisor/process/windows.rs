@@ -824,6 +824,45 @@ mod tests {
 		actor.shutdown();
 		std::fs::remove_file(identities).unwrap();
 	}
+	// A command that ran to completion while its stdin writer was held off past the stop grace and the late report still
+	// completes: its job has ended, so nothing reads the input the writer would send (#5202).
+	#[test]
+	fn command_whose_job_ended_completes_while_its_stdin_writer_is_held_off_5202() {
+		let actor = Actor::new();
+		let scope = OwnerScope::Session { session_id: "windows-held-writer".into() };
+		let owner = actor.open(&actor.bind(scope.clone()), scope).unwrap();
+		let task =
+			actor.start_command(&owner, intent("ping -n 2 127.0.0.1 >NUL"), "job".into()).unwrap();
+		let command = actor.command_resource(&task).unwrap();
+		// The writer takes the input queue's lock on every pass; holding it keeps the writer from reporting its stop
+		// until the command has ended and the grace and late report have passed.
+		let held = command.input.lock().unwrap();
+		std::thread::sleep(
+			Duration::from_secs(2) + PROCESS_DRAIN_GRACE + STDIN_WRITER_LATE_REPORT * 5,
+		);
+		drop(held);
+		let deadline =
+			Instant::now() + PROCESS_DRAIN_GRACE + PROCESS_SHUTDOWN_GRACE + STDIN_WRITER_TEST_WAIT;
+		let record = loop {
+			let record = actor.snapshot(&owner).unwrap().tasks[0].clone();
+			if matches!(record.execution, Execution::Settled { .. })
+				&& !matches!(record.cleanup, Cleanup::Active {} | Cleanup::Draining {})
+			{
+				break record;
+			}
+			assert!(Instant::now() < deadline, "the result never settled: {record:?}");
+			std::thread::sleep(PROCESS_POLL);
+		};
+		actor.shutdown();
+		assert!(
+			matches!(
+				&record.execution,
+				Execution::Settled { result: TaskResult::Completed { exit_code: Some(code), .. } } if *code == 0.0
+			),
+			"{record:?}"
+		);
+		assert_eq!(record.cleanup, Cleanup::Reaped {});
+	}
 	const STDIN_WRITER_TEST_WAIT: Duration = Duration::from_secs(10);
 	#[test]
 	fn stdin_writer_completion_notifies_without_poll_delay_and_bounds_blocked_worker_5202_5340() {
