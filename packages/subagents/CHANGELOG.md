@@ -10,6 +10,7 @@
 ### Fixed
 
 - The bundled tmux skill's helper scripts carry the upstream fixes since they were adopted. `find-sessions.sh` shows each session's attached state and start time (it printed a literal `\t`, an empty time and "detached" for every session), counts a session with several clients as attached, matches `-q` literally against session names, and scans hidden sockets with `-A`. `wait-for-text.sh` accepts a zero-padded timeout such as `-T 08`, no longer reports a match when the pane capture fails, rejects an invalid pattern at once instead of waiting out the timeout, and stops checking at the deadline. The skill also shows how to wait for a command's completion marker without matching the echoed command line, and its new `LICENSE.txt` credits OpenClaw's MIT-licensed tmux skill, which the scripts and parts of the skill come from.
+- A subagent released while it waits on a tool call shows how long it ran up to its release on its completion notice and launch card, as the agent panel and `/tasks` do. It read the time of its last progress report, often `0s` for a child that spent its time in that call ([#5496](https://github.com/bastani-inc/atomic/issues/5496))
 
 ## [0.9.89] - 2026-11-18
 
