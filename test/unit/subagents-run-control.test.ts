@@ -5048,6 +5048,18 @@ test("resume refuses an already live child before a sibling save finishes, witho
 	assert.equal(h.runs.length, 2, "only the original run and its wake ran");
 });
 
+let replacementControl:
+	| Promise<typeof import("../../packages/subagents/src/runs/foreground/subagent-run-control.js")>
+	| undefined;
+// Every harness launches with the original imports. One separate module evaluation models its replacement in all cases.
+function reloadedRunControl() {
+	if (!replacementControl) {
+		vi.resetModules();
+		replacementControl = import("../../packages/subagents/src/runs/foreground/subagent-run-control.js");
+	}
+	return replacementControl;
+}
+
 for (const ownerless of [false, true]) {
 	test(`a pending resume refuses a new ${ownerless ? "SDK" : "hosted"} task before its record save or registration finishes (#5560)`, async () => {
 		const h = harness({ ownerless });
@@ -5093,8 +5105,7 @@ for (const ownerless of [false, true]) {
 			assert.equal(text(byTask), text(result), "the task ID is addressable before its first durable record");
 			const foreign = harness({ ownerless });
 			assert.match(text(await foreign.call({ action: "resume", id: newTaskId })), /Unknown subagent/);
-			vi.resetModules();
-			const replacement = await import("../../packages/subagents/src/runs/foreground/subagent-run-control.js");
+			const replacement = await reloadedRunControl();
 			const generationResult = await replacement.controlSubagentChildren(
 				h.deps,
 				h.ctx,
@@ -5142,8 +5153,7 @@ for (const source of ["wake", "direct resume"] as const) {
 				: h.call({ action: "resume", id: childId, message: "previous caller" });
 		try {
 			await starting.reached;
-			vi.resetModules();
-			const replacement = await import("../../packages/subagents/src/runs/foreground/subagent-run-control.js");
+			const replacement = await reloadedRunControl();
 			const pending = replacement.controlSubagentChildren(h.deps, h.ctx, {
 				action: "resume",
 				id: childId,
