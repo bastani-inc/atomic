@@ -32,7 +32,7 @@ import {
 } from "./cli/credential-print.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext, ignoredProjectSettingsWarning } from "./cli/project-trust.ts";
-import { clearStartupStatus, showStartupStatus } from "./cli/startup-status.ts";
+import { clearStartupStatus, leaveStartupStatusLine, showStartupStatus } from "./cli/startup-status.ts";
 import {
 	ENV_DEBUG,
 	ENV_OFFLINE,
@@ -784,8 +784,11 @@ export async function main(argv: string[], options?: MainOptions) {
 		engineEnv.child !== "1" &&
 		!isPlainRuntimeMetadataCommand(parsed) &&
 		options?.internalInteractiveHarness?.terminal === undefined
-	)
+	) {
 		showStartupStatus();
+		// Extensions that run in this process can write to the terminal where Atomic cannot see it; the line then stays.
+		if (!isolateInteractiveHost) leaveStartupStatusLine();
+	}
 	startupEarlyInputCapture ??= beginStartupInputCapture(sessionCwd, true, deprecationWarnings.length);
 	const autoTrustOnReloadCwd =
 		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;

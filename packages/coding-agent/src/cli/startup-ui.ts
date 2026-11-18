@@ -36,6 +36,7 @@ import {
 	type TerminalTheme,
 	theme,
 } from "../modes/interactive/theme/theme.js";
+import { restoreStartupStatus } from "./startup-status.ts";
 
 export class StartupDialogInputGuard extends Container implements Focusable {
 	private enterArmed: boolean;
@@ -101,7 +102,8 @@ function createStartupTui(settingsManager: SettingsManager): TUI {
 
 async function clearStartupTui(ui: TUI): Promise<void> {
 	ui.clear();
-	ui.requestRender();
+	// A startup status line the dialog replaced comes back in the write that clears the dialog (#5546).
+	if (!restoreStartupStatus(() => ui.renderNow())) ui.requestRender();
 	await new Promise((resolve) => setTimeout(resolve, 25));
 }
 

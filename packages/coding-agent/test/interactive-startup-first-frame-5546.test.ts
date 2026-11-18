@@ -45,14 +45,27 @@ afterEach(() => {
 	rmSync(projectDir, { recursive: true, force: true });
 });
 
-/** A terminal that keeps what is written to it, so a test can replay any prefix of it. */
-class RecordingTerminal extends VirtualTerminal {
-	constructor(private readonly writes: string[]) {
+/** The process's terminal stream: what the renderer and the status line write goes through it, as on a real terminal. */
+function terminalStream(writes: string[]) {
+	return {
+		isTTY: true,
+		columns: COLUMNS,
+		rows: ROWS,
+		write: (data: string | Uint8Array) => {
+			writes.push(typeof data === "string" ? data : Buffer.from(data).toString());
+			return true;
+		},
+	};
+}
+
+/** A terminal that writes to `stream`, so a test can replay any prefix of what it wrote. */
+class StreamTerminal extends VirtualTerminal {
+	constructor(private readonly stream: { write(data: string): unknown }) {
 		super(COLUMNS, ROWS);
 	}
 
 	override write(data: string): void {
-		this.writes.push(data);
+		this.stream.write(data);
 	}
 }
 
@@ -122,25 +135,25 @@ function createMode(ui: TUI): InteractiveMode {
 	} as unknown as InteractiveMode;
 }
 
-test("the interface's first frame replaces the startup status line in the same turn, so the screen is never blank (#5546)", async () => {
+test("the interface's first frame replaces the startup status line in one write, so the screen is never blank (#5546)", async () => {
 	const writes: string[] = [];
-	showStartupStatus(
-		{ isTTY: true, columns: COLUMNS, write: (text: string) => writes.push(text) },
-		{ streams: [], console: {} },
-	);
-	const ui = new TuiAltScreen(new RecordingTerminal(writes));
+	const stream = terminalStream(writes);
+	showStartupStatus(stream, { streams: [], console: {} });
+	const ui = new TuiAltScreen(new StreamTerminal(stream));
 	try {
 		assert.deepEqual((await screenAfter(writes))[0], "Starting Atomic…");
 
 		const init = createMode(ui).init();
-		// What the terminal shows once the turn that took the status line away ends, for as long as the event loop is
-		// busy with something else: on a loaded machine that was a blank screen before the first frame (#5546).
-		const handedOver = await screenAfter([...writes]);
+		// Every write the terminal could show on its own: on a busy machine, or a runtime that writes each call at once,
+		// a write that erased the line or switched screens before the frame was drawn left the screen blank (#5546).
+		const handedOver = writes.slice(1);
+		assert.equal(handedOver.length, 1, JSON.stringify(handedOver.map((data) => data.slice(0, 60))));
+		const screen = await screenAfter(writes);
 		assert.ok(
-			handedOver.some((row) => row.includes(COMPOSER)),
-			`expected the first frame, the screen was:\n${handedOver.join("\n")}`,
+			screen.some((row) => row.includes(COMPOSER)),
+			`expected the first frame, the screen was:\n${screen.join("\n")}`,
 		);
-		assert.ok(!handedOver.some((row) => row.includes("Starting")), handedOver.join("\n"));
+		assert.ok(!screen.some((row) => row.includes("Starting")), screen.join("\n"));
 		await init;
 	} finally {
 		ui.stop();

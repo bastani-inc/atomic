@@ -15,10 +15,11 @@ type Write = (chunk: string | Uint8Array, ...rest: never[]) => unknown;
 export interface StartupStatusOutput {
 	readonly isTTY?: boolean;
 	readonly columns?: number;
+	readonly rows?: number;
 	readonly fd?: number;
 	write: Write;
-	cork?(): void;
-	uncork?(): void;
+	/** Node's and Bun's terminal streams read their size from the terminal again, at once, and report a change. */
+	_refreshSize?(): void;
 	on?(event: "resize", listener: () => void): unknown;
 	off?(event: "resize", listener: () => void): unknown;
 }
@@ -42,22 +43,23 @@ const CONSOLE_WRITERS = [
 	"groupCollapsed",
 ] as const;
 
-/** Whatever else writes to the terminal the status line is on; the line steps aside for what they write. */
+/** Whatever else writes to the terminal the status line is on. */
 export interface StartupStatusNeighbors {
 	/** Other streams, such as stderr; only those on a terminal are watched. */
 	readonly streams: readonly { readonly isTTY?: boolean; write: Write }[];
 	readonly console: Partial<Record<(typeof CONSOLE_WRITERS)[number], (...args: unknown[]) => unknown>>;
 }
 
-const SAVE_CURSOR = "\x1b7";
-const RESTORE_CURSOR = "\x1b8";
-const ERASE_ROW = "\x1b[2K";
-const NEXT_ROW = "\x1b[1B";
 const DIM = "\x1b[2m";
 const NORMAL_INTENSITY = "\x1b[22m";
+/** Starts every frame of Atomic's renderer. */
+const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
+/** From the start of the row below the line: up to the line's row, and erase that row. */
+const ERASE_LINE = "\r\x1b[1A\x1b[2K";
 /**
  * Sequences that neither draw nor move the cursor: string sequences (OSC, DCS, APC, PM, SOS), CSI with private
- * parameters (modes, keyboard protocols, synchronized output), colors and terminal queries.
+ * parameters (modes, keyboard protocols, synchronized output), colors and terminal queries. Only used to tell what a
+ * startup dialog writes before its first frame from what others write meanwhile.
  */
 const INERT_SEQUENCE = /\x1b(?:[\]P_^X][^\x07\x1b]*(?:\x07|\x1b\\)|\[[<=>?][0-?]*[ -/]*[@-~]|\[[0-9;:]*[ -/]*[mnctq])/g;
 
@@ -78,85 +80,117 @@ function fitToWidth(text: string, width: number): string {
 	return `${fitted}…`;
 }
 
-/**
- * Back to the first column, then erase the row the cursor is on and the rows below it that a terminal narrower than
- * `drawnWidth` wrapped the line onto; the cursor stays at the start of the line's first row. The rows are erased one by
- * one: erasing to the end of the screen from its top-left cell clears the whole screen, which some terminals (tmux)
- * first scroll into their history, where the line would stay.
- */
-function eraseSequence(drawnWidth: number, columns: number | undefined): string {
-	const rows = Math.max(1, Math.ceil(drawnWidth / Math.max(1, columns ?? 80)));
-	return `\r${SAVE_CURSOR}${ERASE_ROW}${`${NEXT_ROW}${ERASE_ROW}`.repeat(rows - 1)}${RESTORE_CURSOR}`;
+function bytesOf(chunk: string | Uint8Array, encoding?: BufferEncoding): Buffer {
+	return typeof chunk === "string"
+		? Buffer.from(chunk, encoding)
+		: Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+}
+
+function textOf(chunk: string | Uint8Array, encoding?: BufferEncoding): string {
+	return typeof chunk === "string" && (encoding === undefined || /^utf-?8$/i.test(encoding))
+		? chunk
+		: bytesOf(chunk, encoding).toString();
 }
 
 /** Whether a write draws or moves the cursor, rather than only switching modes or asking the terminal something. */
-function changesScreen(chunk: string | Uint8Array | undefined): boolean {
-	if (typeof chunk !== "string") return true;
-	return chunk.replace(INERT_SEQUENCE, "").length > 0;
-}
-
-/** Whether a write leaves the cursor at the start of a new row. A console call always ends its line. */
-function endsLine(chunk: string | Uint8Array | undefined): boolean {
-	if (chunk === undefined) return true;
-	return typeof chunk === "string" ? chunk.endsWith("\n") : chunk[chunk.length - 1] === 0x0a;
-}
-
-function isEmpty(chunk: string | Uint8Array | undefined): boolean {
-	return chunk !== undefined && chunk.length === 0;
+function draws(text: string): boolean {
+	return text.replace(INERT_SEQUENCE, "").length > 0;
 }
 
 interface ShownStatus {
 	readonly output: StartupStatusOutput;
-	/** Startup dialogs that took the terminal; the line comes back when the last one closes. */
-	suspended: number;
-	/** The line owns the row the cursor is at the start of; it shows nothing there when the terminal is too narrow. */
-	drawn: boolean;
-	/** Columns the text took when it was drawn, which a narrower terminal wraps onto more rows. */
-	drawnWidth: number;
+	/**
+	 * The line is on the row right above the cursor and nothing else has written to the terminal since Atomic drew it,
+	 * so erasing that row erases nothing but the line. Anything else on the terminal ends this: the line then stays as
+	 * it is, a finished line of its own that nothing is written over.
+	 */
+	owned: boolean;
+	/**
+	 * Something Atomic cannot watch may write to the terminal: a child process that inherits it, or extension code in
+	 * this process. Atomic then neither erases the line nor draws it again.
+	 */
+	shared: boolean;
+	/** Startup dialogs that have the terminal. */
+	dialogs: number;
+	/** The open dialog's first frame took the line's place, so the line comes back when the dialog clears its rows. */
+	replaced: boolean;
+	/** Another stream or the console wrote since the dialog's first frame took the line's place. */
+	othersWrote: boolean;
+	/** The terminal's size when the line was drawn; a terminal that changed size may have rewrapped the line. */
+	size: string;
 	/** Undoes the watch on the terminal's other writers and on its size. */
 	unwatch: () => void;
 	/** The output's own write, which the watch does not see. */
-	write: (text: string) => void;
+	write: (data: string | Uint8Array, done?: () => void) => void;
 }
 
 let shown: ShownStatus | undefined;
-/** A watched write is running; what it writes in turn (Node's console writes to the streams) is part of it. */
-let insideWatchedWrite = false;
 
-function draw(status: ShownStatus): void {
-	const columns = status.output.columns;
-	// The last column is left free: a character written there wraps the cursor on some terminals.
-	const text = fitToWidth(STARTUP_STATUS_TEXT, Math.max(0, (columns && columns > 0 ? columns : 80) - 1));
-	const clear = eraseSequence(status.drawn ? status.drawnWidth : 0, columns);
-	const styled = text.length === 0 || colorEnvironment().off ? text : `${DIM}${text}${NORMAL_INTENSITY}`;
-	// The cursor goes back to the start of the line, so whatever is written next starts on a row the line no longer
-	// shares, and a terminal that rewraps the line on resize keeps the cursor on its first row.
-	status.write(text.length > 0 ? `${clear}${styled}\r` : clear);
-	status.drawn = true;
-	status.drawnWidth = visibleWidth(text);
+/** The terminal's size as it is now, not as the stream last heard of it. */
+function sizeOf(output: StartupStatusOutput): string {
+	try {
+		output._refreshSize?.();
+	} catch {
+		// The size the stream last heard of is all there is.
+	}
+	return `${output.columns}x${output.rows}`;
 }
 
-function erase(status: ShownStatus): string {
-	status.drawn = false;
-	return eraseSequence(status.drawnWidth, status.output.columns);
+/** Whether erasing the row above the cursor erases the line and nothing else. */
+function erasable(status: ShownStatus): boolean {
+	return status.owned && sizeOf(status.output) === status.size;
 }
 
 /**
- * Around a write by anyone else: the line is erased right before a write that draws, so the two never share a row,
- * and drawn again on the next row once the write ended its line. While a startup dialog has the terminal, the line is
- * erased right before the dialog's first frame, so there is no blank screen between them (#5546).
+ * The line as a finished row of its own, starting at the cursor once `before` moved it: whatever anyone writes next,
+ * even where Atomic cannot see it, starts on the row below. Empty when the terminal is too narrow for any of it.
  */
-function aroundWrite<R>(status: ShownStatus, chunk: string | Uint8Array | undefined, forward: () => R): R {
-	if (insideWatchedWrite || shown !== status || isEmpty(chunk)) return forward();
-	insideWatchedWrite = true;
-	try {
-		if (status.drawn && changesScreen(chunk)) status.write(erase(status));
-		const result = forward();
-		if (status.suspended === 0 && !status.drawn && endsLine(chunk)) draw(status);
-		return result;
-	} finally {
-		insideWatchedWrite = false;
+function lineFor(status: ShownStatus, before: string): string {
+	status.size = sizeOf(status.output);
+	const columns = status.output.columns;
+	// The last column is left free: a character written there wraps the cursor on some terminals.
+	const text = fitToWidth(STARTUP_STATUS_TEXT, Math.max(0, (columns && columns > 0 ? columns : 80) - 1));
+	status.owned = text.length > 0 && !status.shared;
+	if (text.length === 0) return "";
+	return `${before}${colorEnvironment().off ? text : `${DIM}${text}${NORMAL_INTENSITY}`}\r\n`;
+}
+
+function othersWrote(status: ShownStatus): void {
+	status.owned = false;
+	if (status.replaced) status.othersWrote = true;
+}
+
+/**
+ * Before a write to a terminal stream. While a startup dialog has the terminal, what it writes to the output before its
+ * first frame only switches modes and asks the terminal things, and leaves the line alone; Atomic's renderer starts
+ * each frame with a synchronized update, and the first one erases the line inside it, so the screen is never without
+ * both (#5546). Anything else written means the line is no longer Atomic's alone: it stays as it is.
+ */
+function beforeWrite(
+	status: ShownStatus,
+	toOutput: boolean,
+	chunk: string | Uint8Array,
+	rest: never[],
+): [string | Uint8Array, never[]] {
+	if (toOutput && status.dialogs > 0) {
+		if (status.replaced) return [chunk, rest];
+		const encoding = typeof rest[0] === "string" ? (rest[0] as BufferEncoding) : undefined;
+		const text = textOf(chunk, encoding);
+		if (!draws(text)) return [chunk, rest];
+		if (text.startsWith(BEGIN_SYNCHRONIZED_OUTPUT)) {
+			if (!erasable(status)) {
+				status.owned = false;
+				return [chunk, rest];
+			}
+			status.owned = false;
+			status.replaced = true;
+			status.othersWrote = false;
+			const frame = `${BEGIN_SYNCHRONIZED_OUTPUT}${ERASE_LINE}${text.slice(BEGIN_SYNCHRONIZED_OUTPUT.length)}`;
+			return [frame, (encoding === undefined ? rest : rest.slice(1)) as never[]];
+		}
 	}
+	othersWrote(status);
+	return [chunk, rest];
 }
 
 function watch(status: ShownStatus, neighbors: StartupStatusNeighbors): () => void {
@@ -172,19 +206,23 @@ function watch(status: ShownStatus, neighbors: StartupStatusNeighbors): () => vo
 	for (const stream of [status.output, ...neighbors.streams.filter((stream) => stream.isTTY === true)]) {
 		const original = stream.write;
 		replace(stream, "write", function (this: unknown, chunk: string | Uint8Array, ...rest: never[]) {
-			return aroundWrite(status, chunk, () => original.call(this, chunk, ...rest));
+			if (shown !== status || chunk === undefined || chunk.length === 0) return original.call(this, chunk, ...rest);
+			const [data, remaining] = beforeWrite(status, stream === status.output, chunk, rest);
+			return original.call(this, data, ...remaining);
 		});
 	}
 	for (const name of CONSOLE_WRITERS) {
 		const original = neighbors.console[name];
 		if (typeof original !== "function") continue;
+		// What a console call writes is unknown: some runtimes write it past the streams, and some calls write nothing.
 		replace(neighbors.console, name, function (this: unknown, ...args: unknown[]) {
-			return aroundWrite(status, undefined, () => original.apply(this, args));
+			if (shown === status) othersWrote(status);
+			return original.apply(this, args);
 		});
 	}
-	// A narrower terminal wraps the line onto more rows; it is drawn again to fit one row.
+	// A terminal that changed size may have rewrapped the line over more rows, and moved some into its history.
 	const onResize = () => {
-		if (shown === status && status.drawn && !insideWatchedWrite) draw(status);
+		if (shown === status && `${status.output.columns}x${status.output.rows}` !== status.size) status.owned = false;
 	};
 	status.output.on?.("resize", onResize);
 	undo.push(() => status.output.off?.("resize", onResize));
@@ -193,13 +231,37 @@ function watch(status: ShownStatus, neighbors: StartupStatusNeighbors): () => vo
 	};
 }
 
+/** Run `render`, and send everything it writes to the output, after `before` and before `after`, in one write. */
+function inOneWrite(status: ShownStatus, before: string, render: () => void, after: () => string): void {
+	const output = status.output;
+	const chunks: Buffer[] = [Buffer.from(before)];
+	const done: Array<() => void> = [];
+	const forward = output.write;
+	const collect = (chunk: string | Uint8Array, ...rest: unknown[]) => {
+		chunks.push(bytesOf(chunk, typeof rest[0] === "string" ? (rest[0] as BufferEncoding) : undefined));
+		const callback = rest.find((argument) => typeof argument === "function");
+		if (callback) done.push(callback as () => void);
+		return true;
+	};
+	output.write = collect as Write;
+	try {
+		render();
+	} finally {
+		if (output.write === (collect as Write)) output.write = forward;
+		chunks.push(Buffer.from(after()));
+		status.write(Buffer.concat(chunks), () => {
+			for (const callback of done) callback();
+		});
+	}
+}
+
 function eraseOnExit(): void {
 	const status = shown;
-	if (!status?.drawn) return;
-	const sequence = erase(status);
+	if (status === undefined || !erasable(status)) return;
+	status.owned = false;
 	try {
-		if (status.output.fd !== undefined) writeSync(status.output.fd, sequence);
-		else status.write(sequence);
+		if (status.output.fd !== undefined) writeSync(status.output.fd, ERASE_LINE);
+		else status.write(ERASE_LINE);
 	} catch {
 		// The terminal is gone; there is nothing left to tidy.
 	}
@@ -220,11 +282,11 @@ function defaultNeighbors(): StartupStatusNeighbors {
 }
 
 /**
- * Show a one-line status while startup work runs before anything else is drawn, so the terminal is never blank.
- * The line stays until {@link replaceStartupStatus} or {@link clearStartupStatus}; a startup dialog takes its place while
- * it is open ({@link suspendStartupStatus}). Anything else written to the terminal meanwhile, by `output`, the
- * `neighbors` streams or the console, gets rows of its own above the line. Nothing is drawn when the output is not a
- * terminal.
+ * Show a one-line status while startup work runs before anything else is drawn, so the terminal is never blank. The
+ * line is a finished line of its own: whatever else is written to the terminal meanwhile goes below it. Atomic erases
+ * it only while nothing else has written since it was drawn, when the first screen or a startup dialog takes its place
+ * ({@link replaceStartupStatus}, {@link suspendStartupStatus}) or startup ends ({@link clearStartupStatus}); otherwise
+ * it stays, whole. Nothing is drawn when the output is not a terminal.
  */
 export function showStartupStatus(
 	output: StartupStatusOutput = process.stdout as unknown as StartupStatusOutput,
@@ -234,13 +296,16 @@ export function showStartupStatus(
 	const ownWrite = output.write;
 	const status: ShownStatus = {
 		output,
-		suspended: 0,
-		drawn: false,
-		drawnWidth: 0,
+		owned: false,
+		shared: false,
+		dialogs: 0,
+		replaced: false,
+		othersWrote: false,
+		size: "",
 		unwatch: () => {},
-		write: (text) => {
+		write: (data, done) => {
 			try {
-				ownWrite.call(output, text);
+				ownWrite.call(output, data, done as never);
 			} catch {
 				// A status line is a courtesy: a terminal that cannot be written to never stops startup.
 			}
@@ -249,80 +314,85 @@ export function showStartupStatus(
 	status.unwatch = watch(status, neighbors);
 	shown = status;
 	process.once("exit", eraseOnExit);
-	draw(status);
+	const line = lineFor(status, "");
+	if (line.length > 0) status.write(line);
 }
 
-/** Erase the status line for good: startup failed or ends, and what follows is written on its own. */
+/**
+ * Something Atomic cannot watch may write to the terminal from now on: a child process that inherits it, such as a
+ * package install, or extension code running in this process. The status line stays as it is, and what they write
+ * goes below it (#5546).
+ */
+export function leaveStartupStatusLine(): void {
+	const status = shown;
+	if (status === undefined) return;
+	status.shared = true;
+	status.owned = false;
+}
+
+/** Startup failed or ends, and what follows is written on its own: the line is erased if it is still Atomic's alone. */
 export function clearStartupStatus(): void {
 	const status = shown;
 	if (status === undefined) return;
+	const erase = erasable(status);
 	release(status);
-	if (status.drawn) status.write(erase(status));
+	if (erase) status.write(ERASE_LINE);
 }
 
 /**
- * Hand the terminal from the status line to the first screen: `start` takes the terminal and `paint` draws the first
- * frame at once, in the same write that erases the line, so the screen is never blank between them (#5546). Without
- * a status line on the screen, only `start` runs and the screen paints when it is ready.
+ * Hand the terminal from the status line to the first screen: everything `start` (which takes the terminal) and `paint`
+ * (which draws the first frame) write goes to the terminal in one write, which also erases the line while it is still
+ * Atomic's alone, so the screen is never without both (#5546). Without a status line, only `start` runs and the screen
+ * paints when it is ready.
  */
 export function replaceStartupStatus(start: () => void, paint: () => void): void {
 	const status = shown;
-	if (status !== undefined) release(status);
-	if (!status?.drawn) {
+	if (status === undefined) {
 		start();
 		return;
 	}
-	status.output.cork?.();
-	try {
-		status.write(erase(status));
-		start();
-		paint();
-	} finally {
-		status.output.uncork?.();
-	}
+	const erase = erasable(status);
+	release(status);
+	inOneWrite(
+		status,
+		erase ? ERASE_LINE : "",
+		() => {
+			start();
+			paint();
+		},
+		() => "",
+	);
 }
 
-/** A startup dialog takes the terminal; the status line stays until the dialog draws its first text. */
+/** A startup dialog takes the terminal; the line stays until the dialog draws its first frame. */
 export function suspendStartupStatus(): void {
 	const status = shown;
-	if (status !== undefined) status.suspended++;
-}
-
-/** Show the status line again once the startup dialog that hid it closed, unless startup cleared it meanwhile. */
-export function resumeStartupStatus(): void {
-	const status = shown;
-	if (status === undefined || status.suspended === 0) return;
-	status.suspended--;
-	// A dialog leaves the cursor at the start of the rows it used, which it cleared.
-	if (status.suspended === 0 && !status.drawn) draw(status);
+	if (status !== undefined) status.dialogs++;
 }
 
 /**
- * Start a child process that writes to the terminal itself, such as a package install: the status line is erased
- * before `spawn` runs, so the child's output never shares its row, and comes back below that output once the child
- * exited (#5546).
+ * The startup dialog that took the line's place clears its rows with what `clear` writes: the line comes back at the
+ * start of the first in the same write, so the screen is never without both while startup still runs (#5546). Returns
+ * whether it ran `clear`; when the line did not give way to the dialog, the caller clears as it would.
  */
-export function startupStatusAsideFor<T extends { once(event: "exit" | "error", listener: () => void): unknown }>(
-	spawn: () => T,
-): T {
+export function restoreStartupStatus(clear: () => void): boolean {
 	const status = shown;
-	if (status === undefined) return spawn();
-	if (status.drawn) status.write(erase(status));
-	status.suspended++;
-	let child: T;
-	try {
-		child = spawn();
-	} catch (error) {
-		resumeStartupStatus();
-		throw error;
-	}
-	let exited = false;
-	const resume = () => {
-		if (exited) return;
-		exited = true;
-		resumeStartupStatus();
-	};
-	child.once("exit", resume);
-	child.once("error", resume);
-	return child;
+	if (status === undefined || !status.replaced || status.shared) return false;
+	status.replaced = false;
+	inOneWrite(status, "", clear, () => lineFor(status, "\r"));
+	return true;
+}
+
+/** The startup dialog closed: the line comes back if the dialog took its place and did not bring it back itself. */
+export function resumeStartupStatus(): void {
+	const status = shown;
+	if (status === undefined || status.dialogs === 0) return;
+	status.dialogs--;
+	if (status.dialogs > 0 || !status.replaced) return;
+	status.replaced = false;
+	if (status.shared) return;
+	// The dialog left the cursor at the start of the rows it used, unless someone else wrote meanwhile: then the line
+	// starts on a row below whatever they wrote.
+	const line = lineFor(status, status.othersWrote ? "\r\n" : "\r");
+	if (line.length > 0) status.write(line);
 }
