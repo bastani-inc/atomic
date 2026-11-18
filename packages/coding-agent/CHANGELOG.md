@@ -6,6 +6,10 @@
 
 - The agent panel below the prompt drops a subagent as soon as it finishes. Stopped, paused or interrupted subagents stay only while another subagent, workflow run or background shell is still running, then the whole panel closes, and a resumed subagent is listed once. `↓ N agents` counts only the subagents the panel lists, not workflow runs, so a running workflow alone no longer shows `↓ 1 agent`; `N needs input` still counts a workflow run's question. When the panel lists nothing but `/tasks` lists subagents, the hint shows `/tasks to see subagents`, or `N shells · /tasks to manage` while background shells run.
 
+### Fixed
+
+- A paused workflow run, or one blocked on a failed stage, no longer keeps the agent panel open on its own. Like a paused subagent, it stays listed while another subagent, workflow run or background shell runs, and leaves once nothing does, until you resume it; `/tasks` and `/workflows` still list it. A run waiting for input still keeps the panel open ([#5490](https://github.com/bastani-inc/atomic/issues/5490))
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.

@@ -270,7 +270,8 @@ function rankPanelSession(
 	const tasks = source?.backgroundTasks ?? [];
 	// A resumed or woken subagent is listed as its latest attempt only.
 	const superseded = tasks.length === 0 ? new Set<TaskId>() : supersededSettledAttempts(tasks);
-	// Stopped subagents stay listed only while something is active: a row, or a running shell, which is not one.
+	// Resting rows, such as a stopped subagent or a paused workflow run, stay listed only while something is active: a
+	// row, or a running shell, which is not one.
 	let active = false;
 	for (const item of extItems) {
 		if (isActivePanelRow(item)) {

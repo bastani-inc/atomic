@@ -165,7 +165,7 @@ export function panelProgressBar(done: number, total: number, cells = 16): strin
 export class AgentPanelModel {
 	private readonly finishedAt = new Map<string, { since: number; pass: number }>();
 	private readonly finishedTaskAt = new Map<string, { since: number; pass: number }>();
-	/** Stopped subagent rows that left because nothing was active, by row id, with the pass that last saw them. */
+	/** Resting rows that left because nothing was active, by row id, with the pass that last saw them. */
 	private readonly retired = new Map<string, number>();
 	private readonly readAt = new WeakMap<AgentPanelRow, number>();
 	private readonly bases = new WeakMap<AgentPanelRow, AgentPanelRow>();
@@ -285,7 +285,7 @@ export class AgentPanelModel {
 			states.set(row, state);
 			if (isActivePanelState(state)) active = true;
 		}
-		/** Resting rows that left: their clocks still follow them, so a resumed one keeps its time. */
+		/** Resting subagent rows that left: their clocks still follow them, so a resumed one keeps its time. */
 		const hidden: AgentPanelRow[] = [];
 		for (const row of rows) {
 			const state = states.get(row)!;
@@ -293,7 +293,7 @@ export class AgentPanelModel {
 			const finished = FINISHED.has(state) && !isInterruptedPanelTask(row);
 			const retired = resting && this.retireResting(row.id, active, pass);
 			if (!panelRowListed(row.kind, state, finished, { active, retired, kept: finished && keep(row) })) {
-				if (retired) hidden.push(row);
+				if (retired && row.kind !== "workflow") hidden.push(row);
 				continue;
 			}
 			if (finished) {
