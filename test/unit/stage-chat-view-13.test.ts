@@ -300,13 +300,13 @@ describe("StageChatView", () => {
 		assert.equal(store.recordStagePaused("run-1", "stage-a"), true);
 		const control = view.render(96).map(stripTerminalSequences);
 		assert.equal(view.handleInput("\x1b[5~"), true);
-		rows = 9;
+		rows = 10;
 
 		const tight = view.render(96).map(stripTerminalSequences);
 		assert.doesNotMatch(tight.join("\n"), /Jump to latest/);
 		assert.match(tight.join("\n"), /PAUSED/);
 		assert.match(tight.join("\n"), /This workflow stage is paused\./);
-		assert.equal(tight.length, 9);
+		assert.equal(tight.length, 10);
 		for (const marker of ["PAUSED", "This workflow stage is paused."]) {
 			assert.equal(
 				tight.find((line) => line.includes(marker)),
@@ -512,7 +512,7 @@ describe("StageChatView", () => {
 	});
 
 	test("hides the follow indicator at the pristine live end without consuming a body row", async () => {
-		const view = await makeScrollableStageChat();
+		const view = await makeScrollableStageChat(13);
 		const bottom = view.render(96);
 		const visibleLines = bottom.map(stripTerminalSequences);
 
@@ -520,7 +520,7 @@ describe("StageChatView", () => {
 		assert.doesNotMatch(visibleLines.join("\n"), /Jump to latest/);
 		assert.match(visibleLines[2] ?? "", /follow-msg-16/);
 		assert.match(visibleLines[6] ?? "", /follow-msg-17/);
-		assert.equal(bottom.length, 12);
+		assert.equal(bottom.length, 13);
 		view.dispose();
 	});
 

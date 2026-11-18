@@ -23,7 +23,7 @@ import {
 	syncChatSessionPromptSearch,
 } from "./chat-session-host-editor.ts";
 import { isChatSessionStreaming } from "./chat-session-host-runtime.ts";
-import type { ChatSessionHostState } from "./chat-session-host-state.ts";
+import { type ChatSessionHostState, isChatSessionBusyStatus } from "./chat-session-host-state.ts";
 import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
@@ -54,7 +54,8 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	if (state.transcript.length > 0) {
 		components.push(state.transcriptComponent);
 	}
-	if (state.statusMessage && !state.compacting) {
+	// A notice or an error follows the transcript; work under way is the working line above the prompt instead.
+	if (state.statusMessage && !state.compacting && !isChatSessionBusyStatus(state.statusMessage)) {
 		components.push(new Spacer(1));
 		components.push(new Text(state.style.dim(state.statusMessage), 2, 0));
 	}
@@ -176,6 +177,20 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	state: ChatSessionHostState<TExtraEntry>,
 	width: number,
 ): string[] {
+	const palette = state.style.workingIndicatorPalette;
+	const useCallerStyling =
+		!palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
+	// A retry, a model switch or a resume waits between turns; it is the chat's working line until the work resumes.
+	if (!state.compacting && isChatSessionBusyStatus(state.statusMessage)) {
+		return new WorkingStatusComponent({
+			frame: state.workingFrame,
+			message: state.statusMessage,
+			palette,
+			spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
+			spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
+			messageColor: (text) => state.style.textMuted(text),
+		}).render(width);
+	}
 	if (!isChatSessionStreaming(state)) {
 		const worked = state.workedRun;
 		if (worked === undefined || state.workingLifecycleActive || state.compacting || state.statusMessage) return [];
@@ -186,9 +201,6 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 		}).render(width);
 	}
 	if (state.statusMessage && !state.compacting) return [];
-	const palette = state.style.workingIndicatorPalette;
-	const useCallerStyling =
-		!palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
 	if (state.compacting) {
 		const startedAt =
 			state.compactionStartedAt ??
