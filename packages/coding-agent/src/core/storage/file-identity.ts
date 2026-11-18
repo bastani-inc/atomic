@@ -495,17 +495,53 @@ export function readClaimFileAsync(file: string): Promise<string | undefined> {
 }
 
 function* readClaimFileSteps(file: string): StorageSteps<string | undefined> {
-	if (!(yield* io("exists", file))) return undefined;
-	try {
-		let raw = yield* io("readFile", file);
-		for (let attempt = 0; raw.length === 0 && attempt < 100; attempt++) {
-			yield* io("sleep", 10);
-			raw = yield* io("readFile", file);
+	const claim = yield* readPublishedClaimSteps(file);
+	return claim.state === "published" ? claim.contents : undefined;
+}
+
+/** How long a reader waits for a claim another process is still publishing before it reports the claim unreadable. */
+const CLAIM_PUBLICATION_WAIT_MS = 1_000;
+const CLAIM_PUBLICATION_POLL_MS = 10;
+
+type ClaimRead =
+	| { readonly state: "absent" }
+	| { readonly state: "published"; readonly contents: string }
+	| { readonly state: "unreadable" };
+
+/**
+ * Errors a reader can see while another process is creating or holding a claim file it will release shortly: a
+ * sharing violation, and on Windows the access errors reported for a file another process has open in a conflicting
+ * way.
+ */
+function isTransientClaimReadError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return (
+		code === "EBUSY" || code === "EAGAIN" || (process.platform === "win32" && (code === "EPERM" || code === "EACCES"))
+	);
+}
+
+/**
+ * Reads a claim another process may be publishing at this moment. A claim that does not exist when the reader looks is
+ * absent, even if it is published a moment later: the caller then publishes its own claim and reads whichever won. A
+ * file that is empty (the exclusive-create fallback creates it before writing it) or transiently busy is a publication
+ * in progress, and the reader polls for up to `CLAIM_PUBLICATION_WAIT_MS` before reporting it unreadable. Any other
+ * read error is reported at once.
+ */
+function* readPublishedClaimSteps(file: string): StorageSteps<ClaimRead> {
+	if (!(yield* io("exists", file))) return { state: "absent" };
+	for (let waitedMs = 0; ; ) {
+		try {
+			const raw = yield* io("readFile", file);
+			const contents = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+			if (contents.length > 0) return { state: "published", contents };
+		} catch (error) {
+			if (!(yield* io("exists", file))) return { state: "absent" };
+			// A file missing at the read that exists again now is being replaced: read it again.
+			if (!isMissingEntry(error) && !isTransientClaimReadError(error)) return { state: "unreadable" };
 		}
-		const line = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
-		return line.length > 0 ? line : undefined;
-	} catch {
-		return undefined;
+		if (waitedMs >= CLAIM_PUBLICATION_WAIT_MS) return { state: "unreadable" };
+		yield* io("sleep", CLAIM_PUBLICATION_POLL_MS);
+		waitedMs += CLAIM_PUBLICATION_POLL_MS;
 	}
 }
 
@@ -544,7 +580,10 @@ function* publishClaimFileSteps(file: string, contents: string): StorageSteps<Cl
 	} catch (error) {
 		return isReadOnlyStorageError(error as NodeJS.ErrnoException) ? "read-only" : "failed";
 	} finally {
-		yield* io("remove", staged);
+		// The claim is settled either way; a staged copy that cannot be removed yet must not undo the publication.
+		try {
+			yield* io("remove", staged);
+		} catch {}
 	}
 }
 
@@ -961,12 +1000,10 @@ function* defaultHomeForAgentSteps(agentPath: string, configuredHome: string): S
 }
 
 function* readStorageHomeDecisionSteps(file: string): StorageSteps<StorageHomeDecision | undefined> {
-	const raw = yield* readClaimFileSteps(file);
-	if (raw === undefined) {
-		if (yield* io("exists", file)) throw new Error(`Cannot read storage home decision at ${file}`);
-		return undefined;
-	}
-	let decision = JSON.parse(raw) as StorageHomeDecision;
+	const claim = yield* readPublishedClaimSteps(file);
+	if (claim.state === "absent") return undefined;
+	if (claim.state === "unreadable") throw new Error(`Cannot read storage home decision at ${file}`);
+	let decision = JSON.parse(claim.contents) as StorageHomeDecision;
 	if (
 		decision === null ||
 		typeof decision !== "object" ||
@@ -1126,11 +1163,10 @@ function* storageOwnerSteps(path: string, claimDirectory?: string): StorageSteps
 }
 
 function* readStorageOwnerSteps(file: string): StorageSteps<StorageOwner | undefined> {
-	const raw = yield* readClaimFileSteps(file);
-	if (raw === undefined) {
-		if (yield* io("exists", file)) throw new Error(`Cannot read storage owner at ${file}`);
-		return undefined;
-	}
+	const claim = yield* readPublishedClaimSteps(file);
+	if (claim.state === "absent") return undefined;
+	if (claim.state === "unreadable") throw new Error(`Cannot read storage owner at ${file}`);
+	const raw = claim.contents;
 	if (!raw.startsWith("{")) {
 		if (!isAbsolute(raw)) throw new Error(`Invalid storage owner at ${file}`);
 		return { path: raw };
