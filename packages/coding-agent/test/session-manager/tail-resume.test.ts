@@ -15,7 +15,12 @@ import {
 import { getBranchPath } from "../../src/core/session-manager-history.ts";
 import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../../src/core/storage/session/sql-session-store.js";
-import type { SessionResume, SessionStore } from "../../src/core/storage/session/types.js";
+import {
+	SESSION_HISTORY_CHUNK_BYTES,
+	SESSION_HISTORY_PAGE_BYTES,
+	type SessionResume,
+	type SessionStore,
+} from "../../src/core/storage/session/types.js";
 import { pendingTaskCompletionIntents } from "../../src/core/tasks/completion.ts";
 
 const details: VerbatimCompactionDetails = {
@@ -153,13 +158,40 @@ it("a reader can stop after its first page without hydrating older messages into
 	const manager = await SessionManager.open(store, id);
 	const held = manager.getEntryCount();
 	const seen: number[] = [];
-	for await (const { seq, entry } of manager.readHistory()) {
-		seen.push(seq);
-		if (entry.id === firstPreTail) break;
+	read: for await (const { items } of manager.readHistory()) {
+		for (const item of items) {
+			seen.push(item.seq);
+			if ("entry" in item && item.entry.id === firstPreTail) break read;
+		}
 	}
 	expect(seen).toEqual([1, 2, 3]);
 	expect(manager.getEntryCount()).toBe(held);
 	expect(manager.getEntry(firstPreTail)).toBeUndefined();
+});
+
+it("a giant historical entry is an exact byte stream, never one decoded entry (#5554)", async () => {
+	const store = await sqlStore();
+	const writer = await SessionManager.create(store, "/project");
+	const giant = "a".repeat(SESSION_HISTORY_PAGE_BYTES - 2) + "漢😀e\u0301".repeat(16);
+	const id = await writer.appendMessage({ role: "user", timestamp: 0, content: giant });
+	const expected = Buffer.from(JSON.stringify(writer.getEntry(id)));
+	await writer.appendCompaction("cleared", null, 1000, details);
+	const manager = await SessionManager.open(store, writer.getSessionId());
+	const first = await manager.readHistory({ toSeq: 1 }).next();
+	expect(first.done).toBe(false);
+	const reference = first.value?.items[0];
+	if (!reference || !("kind" in reference) || reference.kind !== "oversized")
+		throw new Error("a history page decoded the giant entry");
+	expect(reference.bytes).toBe(expected.length);
+	let offset = 0;
+	for await (const chunk of manager.readHistoryChunks(reference)) {
+		expect(chunk.length).toBeGreaterThan(0);
+		expect(chunk.length).toBeLessThanOrEqual(SESSION_HISTORY_CHUNK_BYTES);
+		expect(Buffer.from(chunk).equals(expected.subarray(offset, offset + chunk.length))).toBe(true);
+		offset += chunk.length;
+	}
+	expect(offset).toBe(expected.length);
+	expect(manager.getEntry(id)).toBeUndefined();
 });
 
 describe("SessionManager resume from the latest compaction (#5249)", () => {
@@ -220,7 +252,9 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 		const full = [...(await store.load(id)).entries];
 		const forTree = await SessionManager.open(store, id, undefined, { history: "tail" });
 		const read: SessionEntry[] = [];
-		for await (const { entry } of forTree.readHistory()) read.push(entry);
+		for await (const { items } of forTree.readHistory()) {
+			for (const item of items) if ("entry" in item) read.push(item.entry);
+		}
 		expect(read).toEqual(full);
 		expect(forTree.hasFullHistory()).toBe(false);
 		expect(forTree.getOmittedHistoryTotals()).toBeDefined();

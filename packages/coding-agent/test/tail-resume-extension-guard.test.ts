@@ -77,7 +77,7 @@ test("starting a user extension does not hydrate a compacted session (#5554)", a
 	expect(await startWith(manager, undefined)).toEqual([false]);
 	expect(manager.getEntries()).toEqual(held);
 	const first = await manager.readHistory({ toSeq: 1 }).next();
-	expect(first.value?.entry).toMatchObject({ type: "message", message: { content: "turn 0" } });
+	expect(first.value?.items[0]).toMatchObject({ entry: { type: "message", message: { content: "turn 0" } } });
 	expect(manager.hasFullHistory()).toBe(false);
 });
 

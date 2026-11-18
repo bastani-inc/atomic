@@ -541,7 +541,8 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `appendContextEdit(targetId, replacement)` - Append a branch-local context edit (`null` omits the target; `{ content }` replaces only its content)
 - `getEntries()` - Entries the manager currently holds, excluding the header
 - `hasFullHistory()` - Whether every stored entry is held
-- `readHistory({ fromSeq?, toSeq?, signal? }?)` - Iterate `{ seq, entry }` in store order without adding older entries to the manager. Bounds are inclusive. Break out of the loop to stop reading. A replaced or recreated store generation raises `SessionConflictError` rather than mixing entries from different generations
+- `readHistory({ fromSeq?, toSeq?, signal? }?)` - Iterate pages in append order, between the inclusive bounds. A page has `items` and, when there are more, `nextCursor`. To resume a stopped read, pass `{ cursor: nextCursor }` without new bounds. Items are `{ seq, entry }` except that an entry over 1 MiB is an oversized reference with `kind: "oversized"`, `seq` and `bytes`, not a truncated entry. A replaced or recreated session is rejected rather than mixing generations
+- `readHistoryChunks(reference, { offset?, signal? }?)` - Read an oversized entry’s original encoded bytes in chunks of at most 64 KiB. Track the number of bytes consumed to resume at a byte offset; use a streaming text decoder when decoding UTF-8
 - `readEntry(id)` - Read one entry by ID, including one outside the window, or return `undefined` if it is missing
 - `getOmittedHistoryTotals()` - Usage and message counts of the entries a `{ history: "tail" }` open left out, or `undefined` when every entry is held
 - `getLastSeq()` - The session's last stored sequence, including entries not in memory

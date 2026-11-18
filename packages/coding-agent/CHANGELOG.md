@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- Sessions and extensions start at the current context window. Replace `history: "full"` with `for await (const { seq, entry } of manager.readHistory())` to visit older entries, or use `await manager.readEntry(id)` to look up one entry. Starting an extension no longer loads the whole conversation ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- Sessions and extensions start at the current context window. Replace `history: "full"` with `for await (const page of manager.readHistory())` to visit older entries in `page.items`, or use `await manager.readEntry(id)` to look up one entry. Starting an extension no longer loads the whole conversation ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 
 ### Added
 

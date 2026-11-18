@@ -32,6 +32,7 @@ import {
 	summarizeSession,
 } from "./session-summary.js";
 import type {
+	OversizedSessionEntry,
 	SessionBlob,
 	SessionCompactionPoint,
 	SessionCwdMatcher,
@@ -39,6 +40,7 @@ import type {
 	SessionEntriesQuery,
 	SessionEntryAt,
 	SessionEntryRange,
+	SessionEntrySizes,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
@@ -51,7 +53,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix } from "./types.js";
+import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
@@ -381,9 +383,52 @@ export class MemorySessionStore implements SessionStore {
 		}
 	}
 
-	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
+		const record = await this.settledRecord(sessionId);
+		const held = this.held(record);
+		const start = Math.max(1, startSeq);
+		const seqs = seqRange(start, Math.min(endSeq, held.lastSeq, start + SESSION_HISTORY_PAGE_ENTRIES - 1));
+		return {
+			epoch: record.index.epoch,
+			lastSeq: held.lastSeq,
+			sizes: seqs.map((seq) => {
+				const [from, to] = this.spanOf(held, seq, seq);
+				return { seq, bytes: to - from };
+			}),
+		};
+	}
+
+	async readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
+		for (;;) {
+			const record = await this.settledRecord(reference.sessionId);
+			if (record.index.epoch !== reference.epoch)
+				throw new SessionConflictError(reference.sessionId, reference.seq, record.lastSeq);
+			const held = this.held(record);
+			const [start, end] = this.spanOf(held, reference.seq, reference.seq);
+			if (held.directory && start < held.spilledBytes && !held.directory.readRange)
+				throw new TypeError("Session spill storage must implement readRange to read historical bytes");
+			const result = await this.whileHeld(reference.sessionId, record, held, () =>
+				this.bytesOf(
+					reference.sessionId,
+					held,
+					start + offset,
+					Math.min(end, start + offset + SESSION_HISTORY_CHUNK_BYTES),
+				),
+			);
+			if (result) return Uint8Array.from(result);
+		}
+	}
+
+	async readRange(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		expectedEpoch?: string,
+	): Promise<SessionEntryRange> {
 		for (;;) {
 			const record = await this.settledRecord(sessionId);
+			if (expectedEpoch !== undefined && expectedEpoch !== record.index.epoch)
+				throw new SessionConflictError(sessionId, endSeq, record.lastSeq);
 			const index = await this.resumeIndex(sessionId, record);
 			if (index === undefined) continue;
 			const start = Math.max(1, startSeq);

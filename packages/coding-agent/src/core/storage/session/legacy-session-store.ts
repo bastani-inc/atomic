@@ -7,14 +7,16 @@ import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
 import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
-import { findSessionCompaction, readSessionRange, readSessionTail, sessionResumeOf } from "./session-resume.js";
+import { findSessionCompaction, readSessionTail, sessionResumeOf } from "./session-resume.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
+	OversizedSessionEntry,
 	SessionBlob,
 	SessionCompactionPoint,
 	SessionEntriesPage,
 	SessionEntriesQuery,
 	SessionEntryRange,
+	SessionEntrySizes,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
@@ -141,9 +143,30 @@ export class LegacySessionStore implements SessionStore {
 		return readSessionTail(this.inner, sessionId, fromSeq);
 	}
 
-	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+	async readRange(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		expectedEpoch?: string,
+	): Promise<SessionEntryRange> {
 		await this.convert(sessionId);
-		return readSessionRange(this.inner, sessionId, startSeq, endSeq);
+		if (!this.inner.readRange)
+			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement readRange`);
+		return this.inner.readRange(sessionId, startSeq, endSeq, expectedEpoch);
+	}
+
+	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
+		if (!this.inner.readEntrySizes)
+			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement readEntrySizes`);
+		await this.convert(sessionId);
+		return this.inner.readEntrySizes(sessionId, startSeq, endSeq);
+	}
+
+	async readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
+		if (!this.inner.readEntryChunk)
+			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement readEntryChunk`);
+		await this.convert(reference.sessionId);
+		return this.inner.readEntryChunk(reference, offset);
 	}
 
 	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {

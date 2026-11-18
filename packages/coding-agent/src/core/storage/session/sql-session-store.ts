@@ -15,6 +15,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { guardSessionDatabase } from "./format-fence.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import {
 	branchRanges,
@@ -37,6 +38,7 @@ import {
 	type SessionSummaryText,
 } from "./session-summary.js";
 import type {
+	OversizedSessionEntry,
 	SessionBlob,
 	SessionCompactionPoint,
 	SessionCwdMatcher,
@@ -44,6 +46,7 @@ import type {
 	SessionEntriesQuery,
 	SessionEntryAt,
 	SessionEntryRange,
+	SessionEntrySizes,
 	SessionListQuery,
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
@@ -59,6 +62,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
+import { SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 /**
@@ -518,6 +522,7 @@ export class SqlSessionStore implements SessionStore {
 				{ table: storageMigrationTable(options.prefix), acceptNewer: true },
 			);
 		}
+		database = guardSessionDatabase(database, tables.meta, SESSION_SCHEMA_VERSION_UNCHUNKED, SESSION_SCHEMA_VERSION);
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
 		const searchIndex = await SqlSessionSearchIndex.open(database, tables, options.prefix);
 		const store = new SqlSessionStore(
@@ -574,10 +579,7 @@ export class SqlSessionStore implements SessionStore {
 	 * since this store opened it, and what it writes then is not this build's to read or write (#5065).
 	 */
 	private transaction<T>(body: (tx: SqliteExecutor) => Promise<T>, options: SqliteTransactionOptions): Promise<T> {
-		return this.database.transaction(async (tx) => {
-			await this.assertReadableSchema(tx);
-			return body(tx);
-		}, options);
+		return this.database.transaction(body, options);
 	}
 
 	private assertReadableSchema(executor: SqliteExecutor): Promise<void> {
@@ -1647,26 +1649,99 @@ export class SqlSessionStore implements SessionStore {
 		return tail;
 	}
 
-	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+	async readRange(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		expectedEpoch?: string,
+	): Promise<SessionEntryRange> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		const start = Math.max(1, startSeq);
 		return this.transaction(async (tx) => {
-			const row = await tx.get<HeaderRow>(
-				`SELECT last_seq, summary_state, revision FROM ${this.tables.sessions} WHERE id = ?${this.dialect.lockClause("share")}`,
-				sessionId,
-			);
-			if (!row) throw new SessionNotFoundError(sessionId);
+			const head = await this.historyHead(tx, sessionId);
+			if (expectedEpoch !== undefined && expectedEpoch !== head.epoch)
+				throw new SessionConflictError(sessionId, endSeq, head.lastSeq);
 			const entries =
 				endSeq < start ? [] : await this.readRows(tx, sessionId, "seq >= ? AND seq <= ?", [start, endSeq]);
-			const meta = JSON.parse(String(row.summary_state)) as StoredSummaryState;
 			return {
 				startSeq: start,
 				entries: entries.map(({ entry }) => entry),
 				seqs: entries.map(({ seq }) => seq),
-				lastSeq: Number(row.last_seq),
-				epoch: meta.epoch ?? meta.resume?.epoch ?? String(row.revision),
+				...head,
 			};
+		}, SESSION_TRANSACTION);
+	}
+
+	private async historyHead(tx: SqliteExecutor, sessionId: string): Promise<{ lastSeq: number; epoch: string }> {
+		const epoch = this.dialect.jsonText("summary_state", "epoch");
+		const oldEpoch = this.dialect.jsonText("summary_state", "resume", "epoch");
+		const row = await tx.get<SqliteRow & { last_seq: number; epoch: string }>(
+			`SELECT last_seq, COALESCE(${epoch}, ${oldEpoch}, revision) AS epoch FROM ${this.tables.sessions} WHERE id = ?${this.dialect.lockClause("share")}`,
+			sessionId,
+		);
+		if (!row) throw new SessionNotFoundError(sessionId);
+		return { lastSeq: Number(row.last_seq), epoch: row.epoch };
+	}
+
+	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		return this.transaction(async (tx) => {
+			const head = await this.historyHead(tx, sessionId);
+			const lastChunk = `(SELECT length(data) FROM ${this.tables.entryChunks} c WHERE c.session_id = e.session_id AND c.seq = e.seq AND c.idx = e.chunks - 1)`;
+			const rows = await tx.all<SqliteRow & { seq: number; bytes: number | null }>(
+				`SELECT seq, CASE WHEN chunks = 0 THEN ${this.entryByteLength("entry_json")} ELSE (chunks - 1) * ? + ${lastChunk} END AS bytes FROM ${this.tables.entries} e WHERE session_id = ? AND seq BETWEEN ? AND ? ORDER BY seq LIMIT ?`,
+				SESSION_ENTRY_CHUNK_BYTES,
+				sessionId,
+				startSeq,
+				endSeq,
+				SESSION_HISTORY_PAGE_ENTRIES,
+			);
+			return {
+				...head,
+				sizes: rows.map((row) => {
+					if (row.bytes === null)
+						throw new StorageUnavailableError(
+							this.descriptor,
+							new Error(`Missing final chunk of session entry ${row.seq}`),
+						);
+					return { seq: Number(row.seq), bytes: Number(row.bytes) };
+				}),
+			};
+		}, SESSION_TRANSACTION);
+	}
+
+	async readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
+		this.assertOpen();
+		return this.transaction(async (tx) => {
+			const { sessionId, epoch, seq } = reference;
+			const head = await this.historyHead(tx, sessionId);
+			if (head.epoch !== epoch) throw new SessionConflictError(sessionId, seq, head.lastSeq);
+			const info = await tx.get<{ chunks: number }>(
+				`SELECT chunks FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+				sessionId,
+				seq,
+			);
+			if (!info) throw new StorageUnavailableError(this.descriptor, new Error(`Missing session entry ${seq}`));
+			const chunked = Number(info.chunks) > 0;
+			const start = chunked ? offset % SESSION_ENTRY_CHUNK_BYTES : offset;
+			const expression = chunked
+				? "data"
+				: this.dialect.name === "sqlite"
+					? "CAST(entry_json AS BLOB)"
+					: "convert_to(entry_json, 'UTF8')";
+			const row = await tx.get<{ data: Uint8Array }>(
+				`SELECT substr(${expression}, CAST(? AS INTEGER), CAST(? AS INTEGER)) AS data FROM ${chunked ? this.tables.entryChunks : this.tables.entries} WHERE session_id = ? AND seq = ?${chunked ? " AND idx = ?" : ""}`,
+				start + 1,
+				SESSION_HISTORY_CHUNK_BYTES,
+				sessionId,
+				seq,
+				...(chunked ? [Math.floor(offset / SESSION_ENTRY_CHUNK_BYTES)] : []),
+			);
+			if (!row)
+				throw new StorageUnavailableError(this.descriptor, new Error(`Missing chunk of session entry ${seq}`));
+			return row.data;
 		}, SESSION_TRANSACTION);
 	}
 

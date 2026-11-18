@@ -65,11 +65,13 @@ import {
 	summarizeSession,
 } from "./session-summary.js";
 import type {
+	OversizedSessionEntry,
 	SessionCompactionPoint,
 	SessionEntriesPage,
 	SessionEntriesQuery,
 	SessionEntryAt,
 	SessionEntryRange,
+	SessionEntrySizes,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
@@ -82,7 +84,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix } from "./types.js";
+import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 interface SessionFileState {
@@ -972,9 +974,34 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
-	readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+	readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
+		return this.run(async () => {
+			const { jsonl } = await this.indexed(sessionId);
+			const start = Math.max(1, startSeq);
+			const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq, start + SESSION_HISTORY_PAGE_ENTRIES - 1));
+			return {
+				epoch: jsonl.index.epoch,
+				lastSeq: jsonl.index.seq,
+				sizes: seqs.map((seq) => ({ seq, bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq) })),
+			};
+		});
+	}
+
+	readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
+		return this.run(async () => {
+			const { path, jsonl } = await this.indexed(reference.sessionId);
+			if (jsonl.index.epoch !== reference.epoch)
+				throw new SessionConflictError(reference.sessionId, reference.seq, jsonl.index.seq);
+			const start = spanStart(jsonl, reference.seq) + offset;
+			return readBytes(path, start, Math.min(SESSION_HISTORY_CHUNK_BYTES, spanEnd(jsonl, reference.seq) - start));
+		});
+	}
+
+	readRange(sessionId: string, startSeq: number, endSeq: number, expectedEpoch?: string): Promise<SessionEntryRange> {
 		return this.run(async () => {
 			const { path, jsonl } = await this.indexed(sessionId);
+			if (expectedEpoch !== undefined && expectedEpoch !== jsonl.index.epoch)
+				throw new SessionConflictError(sessionId, endSeq, jsonl.index.seq);
 			const start = Math.max(1, startSeq);
 			const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq));
 			const read = await this.entriesAt(path, jsonl, seqs);

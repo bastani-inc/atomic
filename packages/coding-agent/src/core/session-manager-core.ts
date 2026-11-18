@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
-import { yieldToEventLoop } from "../utils/event-loop.js";
+
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
@@ -91,6 +91,7 @@ import {
 	SessionNotFoundError,
 	StorageUnavailableError,
 } from "./storage/session/errors.js";
+import { historyChunks, historyPages } from "./storage/session/history-pages.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import {
@@ -100,14 +101,16 @@ import {
 	sessionResumeOf,
 } from "./storage/session/session-resume.js";
 import type {
+	OversizedSessionEntry,
 	SessionBlob,
+	SessionHistoryPage,
+	SessionHistoryReadOptions,
 	SessionHistoryTotals,
 	SessionRecordHeader,
 	SessionRecoveryState,
 	SessionResume,
 	SessionSnapshot,
 	SessionStore,
-	SessionStoredEntry,
 } from "./storage/session/types.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type {
@@ -119,9 +122,6 @@ import type {
 
 /** How many times one append reads the store's new tail and tries again before its failure stands (#4970). */
 const MAX_APPEND_RECONCILES = 3;
-
-/** Maximum number of historical entries decoded between event-loop turns for an on-demand reader. */
-const HISTORY_PAGE_ENTRIES = 64;
 
 async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	// Selection loads settings and tools, which depend on the completed session module.
@@ -344,26 +344,15 @@ export class SessionManager {
 
 	/** Iterate the stored history in append order up to the watermark at the start of the read. Stopping iteration
 	 * stops further reads; none of the historical payloads are added to the live manager. */
-	async *readHistory(
-		options: { readonly fromSeq?: number; readonly toSeq?: number; readonly signal?: AbortSignal } = {},
-	): AsyncGenerator<SessionStoredEntry> {
-		const { store, sessionId, historyEpoch, lastSeq } = this;
-		if (!store.readRange) throw new TypeError(`Session store ${store.descriptor.adapter} must implement readRange`);
-		const end = Math.min(lastSeq, options.toSeq ?? lastSeq);
-		for (let start = Math.max(1, options.fromSeq ?? 1); start <= end; ) {
-			options.signal?.throwIfAborted();
-			const through = Math.min(end, start + HISTORY_PAGE_ENTRIES - 1);
-			const page = await store.readRange(sessionId, start, through);
-			if ((historyEpoch !== undefined && page.epoch !== historyEpoch) || page.lastSeq < end) {
-				throw new SessionConflictError(sessionId, lastSeq, page.lastSeq);
-			}
-			for (const [i, entry] of page.entries.entries()) {
-				options.signal?.throwIfAborted();
-				yield { seq: page.seqs?.[i] ?? start + i, entry };
-			}
-			start = through + 1;
-			if (start <= end) await yieldToEventLoop();
-		}
+	readHistory(options: SessionHistoryReadOptions = {}): AsyncGenerator<SessionHistoryPage> {
+		return historyPages(this.store, this.sessionId, this.historyEpoch, this.lastSeq, options);
+	}
+
+	readHistoryChunks(
+		reference: OversizedSessionEntry,
+		options: { readonly offset?: number; readonly signal?: AbortSignal } = {},
+	): AsyncGenerator<Uint8Array> {
+		return historyChunks(this.store, this.sessionId, this.historyEpoch, reference, options);
 	}
 
 	private async hydrateHistory(): Promise<void> {
@@ -421,7 +410,15 @@ export class SessionManager {
 		const held = this.entrySeqs.get(id);
 		if (held !== undefined) return held;
 		if (this.store.findEntrySeq) return this.store.findEntrySeq(this.sessionId, id);
-		for await (const { seq, entry } of this.readHistory()) if (entry.id === id) return seq;
+		for await (const { items } of this.readHistory()) {
+			for (const item of items) {
+				if (!("entry" in item))
+					throw new TypeError(
+						`Session store ${this.store.descriptor.adapter} must implement findEntrySeq to locate an oversized entry`,
+					);
+				if (item.entry.id === id) return item.seq;
+			}
+		}
 		return undefined;
 	}
 
@@ -1222,8 +1219,16 @@ export class SessionManager {
 		if (held) return held;
 		const seq = await this.findEntrySeq(id);
 		if (seq !== undefined) {
-			for await (const { entry } of this.readHistory({ fromSeq: seq, toSeq: seq })) {
-				if (entry.id === id) return entry;
+			for await (const { items } of this.readHistory({ fromSeq: seq, toSeq: seq })) {
+				const item = items[0];
+				if (item && !("entry" in item))
+					throw Object.assign(
+						new Error(
+							`Session entry ${seq} is ${item.bytes} bytes. Use readHistoryChunks(reference) to read it.`,
+						),
+						{ name: "OversizedSessionEntryError", reference: item },
+					);
+				if (item?.entry.id === id) return item.entry;
 			}
 		}
 		return undefined;

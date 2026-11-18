@@ -15,7 +15,10 @@ import {
 } from "./errors.js";
 import { SESSION_SUMMARY_TEXT_CHARS } from "./session-summary.js";
 import {
+	type OversizedSessionEntry,
 	SESSION_FORMAT_VERSION,
+	SESSION_HISTORY_CHUNK_BYTES,
+	SESSION_HISTORY_PAGE_BYTES,
 	type SessionHistoryTotals,
 	type SessionRecordHeader,
 	type SessionStore,
@@ -335,6 +338,41 @@ export function registerSessionStoreConformance(
 					store = await reload(store);
 					assert.deepEqual((await store.load("session")).entries, entries);
 					assert.deepEqual(await store.readHeader("session"), updated);
+				},
+			);
+
+			check(
+				"streams exact bytes of an oversized historical entry and rejects its reference after replacement (#5554)",
+				async (store, reload) => {
+					const entry = message("u", "abc漢😀\u0301".repeat(Math.ceil(SESSION_HISTORY_PAGE_BYTES / 10)));
+					const bytes = Buffer.from(JSON.stringify(entry));
+					assert.ok(bytes.length > SESSION_HISTORY_PAGE_BYTES);
+					await store.create(header(), [entry]);
+					store = await reload(store);
+					assert.ok(store.readEntrySizes && store.readEntryChunk && store.readRange);
+					const meta = await store.readEntrySizes("session", 1, 1);
+					assert.deepEqual(meta.sizes, [{ seq: 1, bytes: bytes.length }]);
+					const ref: OversizedSessionEntry = {
+						kind: "oversized",
+						sessionId: "session",
+						epoch: meta.epoch,
+						seq: 1,
+						bytes: bytes.length,
+					};
+					const digest = createHash("sha256");
+					for (let offset = 0; offset < bytes.length; ) {
+						const part = await store.readEntryChunk(ref, offset);
+						assert.ok(part.byteLength > 0 && part.byteLength <= SESSION_HISTORY_CHUNK_BYTES);
+						digest.update(part);
+						offset += part.byteLength;
+					}
+					assert.equal(digest.digest("hex"), createHash("sha256").update(bytes).digest("hex"));
+					await store.replace("session", header(), [message("other", "replacement")], {
+						expectSeq: 1,
+						epoch: meta.epoch,
+					});
+					await assert.rejects(store.readEntryChunk(ref, 1), conflict("session", 1, 1));
+					await assert.rejects(store.readRange("session", 1, 1, meta.epoch), conflict("session", 1, 1));
 				},
 			);
 

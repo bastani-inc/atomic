@@ -775,7 +775,7 @@ await runtime.fork("entry-id");
 await runtime.fork("entry-id", { position: "at" });
 ```
 
-`runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` resume at the current context window. `getEntries()` and `getTree()` describe the entries held by that manager. Instead of opening with `history: "full"`, iterate older entries with `for await (const { seq, entry } of sessionManager.readHistory({ fromSeq, toSeq, signal }))`. Bounds are inclusive and optional. A read stops at the last stored sequence when iteration began; entries appended later are not mixed into it.
+`runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` resume at the current context window. `getEntries()` and `getTree()` describe the entries held by that manager. Instead of opening with `history: "full"`, iterate pages with `for await (const page of sessionManager.readHistory({ fromSeq, toSeq, signal }))`. Inspect `page.items` for entries or oversized references. For an oversized reference, `sessionManager.readHistoryChunks(reference)` yields the original bytes. Bounds are inclusive and optional. A read stops at the last stored sequence when iteration began; entries appended later are not mixed into it.
 
 `SessionManager.create()`, `open()`, `continueRecent()`, `forkFrom()`, and mutations are asynchronous. `SessionManager.inMemory()` returns an explicitly memory-backed manager synchronously. Await a mutation before reading its result or starting dependent work. A resolved write is committed; a failed write rejects with the store's typed error and leaves the failed entry unpublished. New persistent sessions store their header during creation and commit setup entries immediately. There is no `flush` method. Reads remain synchronous.
 

@@ -98,7 +98,9 @@ test("runtime.switchSession and rehydrate always keep the window, with history a
 	assert.equal(tailWoken.sessionManager.hasFullHistory(), false);
 	assert.throws(() => tailWoken.getUserMessagesForForking(), SessionHistoryNotLoadedError);
 	const stored: SessionEntry[] = [];
-	for await (const { entry } of tailWoken.sessionManager.readHistory({ toSeq: history.length })) stored.push(entry);
+	for await (const { items } of tailWoken.sessionManager.readHistory({ toSeq: history.length })) {
+		for (const item of items) if ("entry" in item) stored.push(item.entry);
+	}
 	assert.deepEqual(ids(stored), ids(history));
 	assert.equal(tailWoken.sessionManager.getEntry("early"), undefined);
 
