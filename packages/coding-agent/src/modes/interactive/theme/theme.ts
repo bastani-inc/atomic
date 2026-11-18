@@ -1,3 +1,4 @@
+export { refreshColorEnvironment } from "./color-utils.ts";
 export { getResolvedThemeColors, getThemeExportColors, isLightTheme } from "./export-colors.ts";
 export {
 	initTheme,

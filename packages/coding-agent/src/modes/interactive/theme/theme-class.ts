@@ -1,6 +1,15 @@
 import { Chalk } from "chalk";
 import type { SourceInfo } from "../../../core/source-info.ts";
-import { bgAnsi, type ColorMode, fgAnsi, resolveThemeStyleLevel, type ThemeStyleLevel } from "./color-utils.ts";
+import {
+	bgAnsi,
+	type ColorEnvironment,
+	type ColorMode,
+	colorEnvironment,
+	fgAnsi,
+	onColorEnvironmentChange,
+	type ThemeStyleLevel,
+	themeStyleLevel,
+} from "./color-utils.ts";
 import {
 	isStatusToken,
 	splitThemeColors,
@@ -31,12 +40,20 @@ export class Theme {
 	readonly name?: string;
 	readonly sourcePath?: string;
 	sourceInfo?: SourceInfo;
-	private readonly palettes = new Map<ColorMode, ThemePalette>();
+	private readonly palettes = new Map<ColorMode | "off", ThemePalette>();
 	private readonly foregrounds: ReadonlyMap<ThemeColor, string | number>;
 	private readonly backgrounds: ReadonlyMap<ThemeBg, string | number>;
 	private readonly workingIndicator: ReadonlyMap<WorkingIndicatorTone, string | number>;
 	private readonly dimmed: ReadonlySet<ThemeColor>;
 	private mode: ColorMode;
+	/**
+	 * The sequences and style level painting uses now. `applyColorEnvironment` sets them when the theme is created and
+	 * whenever `refreshColorEnvironment` reads NO_COLOR and FORCE_COLOR again, so painting never reads the environment.
+	 */
+	private fgColors!: ReadonlyMap<ThemeColor, string>;
+	private bgColors!: ReadonlyMap<ThemeBg, string>;
+	private workingIndicatorColors!: ReadonlyMap<WorkingIndicatorTone, string>;
+	private styleLevel!: ThemeStyleLevel;
 
 	constructor(
 		fgColors: Pick<ThemeColorValues<string | number>, ThemeColor>,
@@ -63,47 +80,59 @@ export class Theme {
 			Object.entries(options.workingIndicator ?? {}) as [WorkingIndicatorTone, string | number][],
 		);
 		this.dimmed = new Set(options.dim ?? []);
-		this.palette(mode);
+		this.applyColorEnvironment(colorEnvironment());
+		onColorEnvironmentChange(this);
 	}
 
-	/** The escape sequences of every theme color in one color mode, built once per mode. */
-	private palette(mode: ColorMode): ThemePalette {
+	/** The escape sequences of every theme color in one color mode, built once per mode; `off` maps each to "". */
+	private palette(mode: ColorMode | "off"): ThemePalette {
 		let palette = this.palettes.get(mode);
 		if (palette) return palette;
 		const fg = new Map<ThemeColor, string>();
-		for (const [key, value] of this.foregrounds) {
-			fg.set(key, `${this.dimmed.has(key) ? "\x1b[2m" : ""}${fgAnsi(value, mode)}`);
+		for (const [name, value] of this.foregrounds) {
+			fg.set(name, mode === "off" ? "" : `${this.dimmed.has(name) ? "\x1b[2m" : ""}${fgAnsi(value, mode)}`);
 		}
 		const bg = new Map<ThemeBg, string>();
-		for (const [key, value] of this.backgrounds) {
-			bg.set(key, bgAnsi(value, mode, isStatusToken(key) ? "preserve-hue" : "nearest"));
+		for (const [name, value] of this.backgrounds) {
+			bg.set(name, mode === "off" ? "" : bgAnsi(value, mode, isStatusToken(name) ? "preserve-hue" : "nearest"));
 		}
 		const workingIndicator = new Map<WorkingIndicatorTone, string>();
-		for (const [key, value] of this.workingIndicator) workingIndicator.set(key, fgAnsi(value, mode));
+		for (const [name, value] of this.workingIndicator)
+			workingIndicator.set(name, mode === "off" ? "" : fgAnsi(value, mode));
 		palette = { fg, bg, workingIndicator };
 		this.palettes.set(mode, palette);
 		return palette;
 	}
 
 	/**
-	 * The palette colors are written with now, or none when NO_COLOR or FORCE_COLOR=0 turns color off. FORCE_COLOR=1
-	 * or 2 limits a true-color theme to 256 colors; the terminal's own color mode is never raised.
+	 * Choose the palette and style level for a color environment. NO_COLOR or FORCE_COLOR=0 turns colors off;
+	 * FORCE_COLOR=1 or 2 limits a true-color theme to 256 colors; the terminal's own color mode is never raised.
 	 */
-	private activePalette(): ThemePalette | undefined {
-		const level = this.getStyleLevel();
-		if (level === 0) return undefined;
-		return this.palette(level === 3 ? this.mode : "256color");
+	applyColorEnvironment(environment: ColorEnvironment): void {
+		const level = themeStyleLevel(this.mode, environment);
+		const palette = this.palette(level === 0 ? "off" : level === 3 ? this.mode : "256color");
+		this.fgColors = palette.fg;
+		this.bgColors = palette.bg;
+		this.workingIndicatorColors = palette.workingIndicator;
+		this.styleLevel = level;
 	}
 
 	fg(color: ThemeColor, text: string): string {
-		const ansi = this.getFgAnsi(color);
-		if (ansi === "") return text;
+		const ansi = this.fgColors.get(color);
+		if (!ansi) {
+			// An empty sequence means color is turned off.
+			if (ansi === "") return text;
+			throw new Error(`Unknown theme color: ${color}`);
+		}
 		return `${ansi}${text}${ansi.startsWith("\x1b[2m") ? "\x1b[22m" : ""}\x1b[39m`; // Reset foreground and optional faint styling
 	}
 
 	bg(color: ThemeBg, text: string): string {
-		const ansi = this.getBgAnsi(color);
-		if (ansi === "") return text;
+		const ansi = this.bgColors.get(color);
+		if (!ansi) {
+			if (ansi === "") return text;
+			throw new Error(`Unknown theme background color: ${color}`);
+		}
 		// Truncation and nested components may reset SGR inside a filled row.
 		// Restore the enclosing background before ellipses and trailing padding.
 		const filled = text.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + ansi);
@@ -111,11 +140,12 @@ export class Theme {
 	}
 
 	private style() {
-		return CHALK_BY_LEVEL[this.getStyleLevel()];
+		return CHALK_BY_LEVEL[this.styleLevel];
 	}
 
+	/** The level colors and text styles share, so the two never disagree. */
 	getStyleLevel(): ThemeStyleLevel {
-		return resolveThemeStyleLevel(this.mode);
+		return this.styleLevel;
 	}
 
 	bold(text: string): string {
@@ -144,19 +174,20 @@ export class Theme {
 
 	/** The sequence that starts `color`, or an empty string while color is turned off. */
 	getFgAnsi(color: ThemeColor): string {
-		if (!this.foregrounds.has(color)) throw new Error(`Unknown theme color: ${color}`);
-		return this.activePalette()?.fg.get(color) ?? "";
+		const ansi = this.fgColors.get(color);
+		if (ansi === undefined) throw new Error(`Unknown theme color: ${color}`);
+		return ansi;
 	}
 
 	getWorkingIndicatorAnsi(tone: WorkingIndicatorTone): string | undefined {
-		if (!this.workingIndicator.has(tone)) return undefined;
-		return this.activePalette()?.workingIndicator.get(tone) ?? "";
+		return this.workingIndicatorColors.get(tone);
 	}
 
 	/** The sequence that starts background `color`, or an empty string while color is turned off. */
 	getBgAnsi(color: ThemeBg): string {
-		if (!this.backgrounds.has(color)) throw new Error(`Unknown theme background color: ${color}`);
-		return this.activePalette()?.bg.get(color) ?? "";
+		const ansi = this.bgColors.get(color);
+		if (ansi === undefined) throw new Error(`Unknown theme background color: ${color}`);
+		return ansi;
 	}
 
 	getColorMode(): ColorMode {
