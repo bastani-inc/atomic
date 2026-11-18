@@ -180,6 +180,81 @@ export async function drainSessionWork(
 	}
 }
 
+/**
+ * How long closing a session may take. Work that observes its cancellation settles at once, and a storage append that
+ * waits for a busy database's write lock settles within that lock wait (30 s by default); a shutdown still waiting after
+ * this is stuck, such as on a storage append that never settles, and stops waiting rather than hang.
+ */
+export const SESSION_WORK_DRAIN_MS = 60_000;
+
+/** Thrown, as a cause of `ShutdownFailed`, when shutdown stopped waiting at a step that did not finish. */
+export class SessionWorkUnsettledError extends Error {
+	readonly code = "SessionWorkUnsettled";
+	/** The shutdown step that was still running, such as "abort" or "active work". */
+	readonly step: string;
+	/** Session operations still running when shutdown stopped waiting. */
+	readonly pending: number;
+	readonly waitedMs: number;
+
+	constructor(step: string, pending: number, waitedMs: number) {
+		const running =
+			pending === 0 ? "" : `, with ${pending} session ${pending === 1 ? "operation" : "operations"} still running`;
+		super(
+			`Session shutdown stopped waiting after ${waitedMs / 1000} s at "${step}"${running}; the rest of the cleanup continues without waiting for it`,
+		);
+		this.name = "SessionWorkUnsettledError";
+		this.step = step;
+		this.pending = pending;
+		this.waitedMs = waitedMs;
+	}
+}
+
+/** How many of a session's operations are still running. */
+export function pendingSessionWork(session: object): number {
+	return work.get(session)?.size ?? 0;
+}
+
+/**
+ * A bound on a whole shutdown, started before its first step: `run` waits for each step only until the bound, and once
+ * it is reached returns `SessionWorkUnsettledError` for the step that was still running, once; every later step still
+ * starts, in order, and runs without being waited for.
+ */
+export function shutdownDeadline(
+	session: object,
+	limitMs = SESSION_WORK_DRAIN_MS,
+): {
+	run(step: string, operation: () => void | Promise<void>): Promise<SessionWorkUnsettledError | undefined>;
+	clear(): void;
+} {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const expired = new Promise<"expired">((resolve) => {
+		timer = setTimeout(() => resolve("expired"), limitMs);
+	});
+	let reported = false;
+	return {
+		async run(step, operation) {
+			const running = (async () => operation())();
+			if ((await Promise.race([running.then(() => "done" as const), expired])) === "done") return undefined;
+			void running.catch(() => {});
+			if (reported) return undefined;
+			reported = true;
+			return new SessionWorkUnsettledError(step, pendingSessionWork(session), limitMs);
+		},
+		clear: () => clearTimeout(timer),
+	};
+}
+
+/** `drainSessionWork` for disposal: waits at most `limitMs`, then throws `SessionWorkUnsettledError`. */
+export async function drainSessionWorkWithin(session: object, limitMs = SESSION_WORK_DRAIN_MS): Promise<void> {
+	const deadline = shutdownDeadline(session, limitMs);
+	try {
+		const unsettled = await deadline.run("active work", () => drainSessionWork(session));
+		if (unsettled) throw unsettled;
+	} finally {
+		deadline.clear();
+	}
+}
+
 export function renewSessionWork(session: object): void {
 	lifetimes.delete(session);
 	quitSignals.delete(session);

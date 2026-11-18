@@ -93,6 +93,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed follow-up agents failing to read workflow history with a retired-execution error after a workflow finished or its extensions reloaded ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed `/resume` silently continuing edited workflow definitions. It now asks for inline confirmation for changes to a workflow's own source, not just worker entry modules, without flagging unchanged definitions restored in another directory ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed saved workflow rows in `/resume` showing missing stage progress, elapsed time and cost after a restart. Browsing them reads recorded summaries without resuming the workflows ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `LocalWorkerPool.close()` stops the pool's coordinator even when a stage watcher's listener throws while the pool closes; it rejects with that error once everything is closed. Before, the coordinator kept running, with its journal open.
 
 ### Removed
 
