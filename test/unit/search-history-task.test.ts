@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "vitest";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { SettlementReceipt, TaskId, TaskRecord } from "../../packages/coding-agent/src/core/tasks/contracts.js";
@@ -192,13 +194,11 @@ test("kill stops a background history:// search", async () => {
 
 test("a history:// search shows the start of a long result and saves all of it to a file", async () => {
 	const owner = host(10_000);
-	const tempDir = (await import("node:fs/promises")).mkdtemp(
-		(await import("node:path")).join((await import("node:os")).tmpdir(), "search-full-"),
-	);
+	const tempDir = await mkdtemp(join(tmpdir(), "search-full-"));
 	try {
 		const big = "x".repeat(30_000);
 		const result = await run(
-			searchTool(owner, await tempDir).search,
+			searchTool(owner, tempDir).search,
 			{ pattern: "needle", paths: "history://sessions" },
 			pagedRouter(3, 0, (page) => `needle ${page} ${big}`).context,
 		);
@@ -211,6 +211,7 @@ test("a history:// search shows the start of a long result and saves all of it t
 		for (const page of [0, 1, 2]) assert.match(saved, new RegExp(`needle ${page}`));
 	} finally {
 		await owner.close("session-close");
+		await rm(tempDir, { recursive: true, force: true });
 	}
 });
 
@@ -370,13 +371,14 @@ for (const owned of [true, false]) {
 
 test("a history search's timeout stops it even when its source answers without waiting on anything", async () => {
 	const owner = host(10_000);
+	const tempDir = await mkdtemp(join(tmpdir(), "search-timeout-"));
 	let calls = 0;
 	// Far past the 0.2 s timeout: a search that never lets its timer run gets this long, then its source ends it.
 	const runawayMs = 5_000;
 	const started = Date.now();
 	try {
 		const result = await run(
-			searchTool(owner).search,
+			searchTool(owner, tempDir).search,
 			{ pattern: "needle", paths: "history://sessions", timeout: 0.2 },
 			{
 				internalResourceRouter: {
@@ -395,6 +397,7 @@ test("a history search's timeout stops it even when its source answers without w
 		assert.ok(calls > 1);
 	} finally {
 		await owner.close("session-close");
+		await rm(tempDir, { recursive: true, force: true });
 	}
 });
 
@@ -495,5 +498,43 @@ test("a history search keeps a match that quotes a stop note, and does not follo
 		assert.equal(text(result), quoted);
 	} finally {
 		await owner.close("session-close");
+	}
+});
+
+test("a history search that has printed as much as its task keeps stops there and ends with where to continue", async () => {
+	const owner = host(10_000);
+	const tempDir = await mkdtemp(join(tmpdir(), "search-cap-"));
+	// Each page prints one 64 KB match: past the 16 MB a task keeps from the start well before its last page.
+	const pages = Math.ceil(TOOL_TASK_OUTPUT_MAX_BYTES / (64 * 1024)) + 64;
+	const router = pagedRouter(pages, 0, (page) => `needle ${page} ${"x".repeat(64 * 1024)}`);
+	try {
+		const result = await run(
+			searchTool(owner, tempDir).search,
+			{ pattern: "needle", paths: "history://sessions", wait: { kind: "foreground", budgetMs: 20_000 } },
+			router.context,
+		);
+		const observation = (result.details as { observation?: { kind: string; taskId?: TaskId } }).observation;
+		assert.equal(observation?.kind, "settled");
+		const next = /continue with history:\/\/sessions\?offset=(\d+)\]$/.exec(text(result));
+		assert.ok(next, text(result).slice(-500));
+		assert.ok(Number(next[1]) < pages);
+		assert.equal(router.calls.length, Number(next[1]));
+		const taskId = observation?.taskId;
+		assert.ok(taskId);
+		const task = owner.resolveTask(taskId);
+		assert.ok(task.ok);
+		// Everything it printed is kept: nothing between its start and where it stopped is lost.
+		for (let offset: string | undefined = "0"; offset !== undefined; ) {
+			const page = await owner.ownerBinding.supervisor.readTaskOutput(task.value, {
+				start: offset,
+				maximumBytes: 64 * 1024,
+			});
+			assert.ok(page.ok);
+			assert.deepEqual(page.value.omittedRanges, []);
+			offset = page.value.nextOffset;
+		}
+	} finally {
+		await owner.close("session-close");
+		await rm(tempDir, { recursive: true, force: true });
 	}
 });

@@ -5,8 +5,10 @@
  */
 
 import { createHash } from "node:crypto";
+import { TOOL_TASK_OUTPUT_MAX_BYTES } from "../tasks/supervisor.js";
 import { type InternalResourceContext, searchInternalSelector } from "./resource-selectors.ts";
 import type { ToolTaskWork } from "./tool-task.ts";
+import { formatSize } from "./truncate.ts";
 
 /**
  * How long each step of the chain may search before it hands back a `continue with` URL. Each step lists the sessions
@@ -22,6 +24,13 @@ export const HISTORY_SEARCH_STEP_MS = 10_000;
  * prints.
  */
 const REMEMBERED_ANSWERS = 1_024;
+
+/**
+ * How much a search prints before it follows no more stops and ends with where to continue. A task keeps the first
+ * {@link TOOL_TASK_OUTPUT_MAX_BYTES} of its output whole; a step prints at most about its 40 KB byte budget, so stopping
+ * a megabyte short keeps every match the search printed instead of losing some in the middle of a very long result.
+ */
+export const HISTORY_SEARCH_OUTPUT_MAX_BYTES = TOOL_TASK_OUTPUT_MAX_BYTES - 1024 * 1024;
 
 const CONTINUATION = /continue with (history:\/\/\S+?)\]\s*$/;
 /** A stop a budget made (`the time budget ran out`, waiting for the store included), not the end of a page. */
@@ -86,11 +95,15 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 	return async (write, signal) => {
 		const pending = [...run.urls];
 		let printedAny = false;
+		let printedBytes = 0;
+		let full = false;
 		let failure: Error | undefined;
 		let succeeded = false;
 		const print = (text: string) => {
 			if (text.length === 0) return;
-			write(`${printedAny ? "\n" : ""}${text}`);
+			const chunk = `${printedAny ? "\n" : ""}${text}`;
+			write(chunk);
+			printedBytes += Buffer.byteLength(chunk, "utf8");
 			printedAny = true;
 		};
 		// What the latest steps answered, by digest: a step that answers exactly as one of them did made no progress, so
@@ -100,6 +113,10 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 			// A turn of the event loop before each step: a source that answers without waiting on anything would
 			// otherwise keep the loop in microtasks, where no timeout, stop or abort can ever run.
 			await new Promise<void>((resolve) => setImmediate(resolve));
+			if (printedBytes >= HISTORY_SEARCH_OUTPUT_MAX_BYTES) {
+				full = true;
+				break;
+			}
 			const url = pending.shift()!;
 			if (signal.aborted) {
 				pending.unshift(url);
@@ -151,6 +168,12 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 			if (shown.length > 0 && shown !== "No matches found") print(shown);
 			// What this step stopped at is searched before anything queued after it, so results stay in order.
 			pending.unshift(...next);
+		}
+		if (full) {
+			// It found as much as one result holds: it ends here, and a new search continues from where it stopped.
+			const printed = formatSize(printedBytes);
+			print(pending.map((url) => `[search stopped after printing ${printed}; continue with ${url}]`).join("\n"));
+			return "finished";
 		}
 		if (pending.length > 0) {
 			print(pending.map((url) => `[search stopped before it finished; continue with ${url}]`).join("\n"));
