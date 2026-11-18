@@ -309,6 +309,19 @@ test("a trigger whose name ends in a combining accent, a write and another trigg
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'trigger'"), 0);
 });
 
+test("a trigger with a byte-order mark inside a literal, a quoted name, a comment or a name lands once after the server answered it schema-changed (#5509)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec('CREATE TABLE events(n INTEGER NOT NULL, "n\uFEFF" TEXT)');
+	fake.fail(SCHEMA_CHANGED);
+	// SQLite skips a byte-order mark where a token starts and sqld reads it as part of a name, but inside a literal, a
+	// quoted name or a comment, or after a name's first character, both read it as part of that token: one trigger.
+	await database.exec(
+		"CREATE TRIGGER events_marked AFTER INSERT ON events BEGIN SELECT 'a\uFEFFb' AS \"a\uFEFFb\", [n\uFEFF], n\uFEFF /* \uFEFF */ FROM events; END;",
+	);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'events_marked'"), 1);
+});
+
 test("a read that starts with WITH or VALUES the server answered schema-changed is sent again as it was, while a WITH that writes lands once under churn", async () => {
 	const fake = await server();
 	const database = await open(fake.url);

@@ -843,14 +843,14 @@ function isWordCode(code) {
  * is not quoted, as its ASCII letters upper-cased or as "" when it has another character, and "" for any other token.
  * Whitespace and comments are left out. Undefined for text whose tokens this does not tell exactly, so that no
  * statement boundary can hide in it: an open literal, quoted name or block comment, a parameter (`?`, `:`, `@`, `#`, or
- * `$` where a token starts, which no trigger may hold), a NUL, at which SQLite stops reading, a byte-order mark, which
- * SQLite skips as whitespace where a token starts and sqld reads as part of a name, and any other character that is in
- * no token.
+ * `$` where a token starts, which no trigger may hold), a NUL, at which SQLite stops reading, a byte-order mark where a
+ * token starts, which SQLite skips as whitespace and sqld reads as part of a name (inside a token both read it as part
+ * of it), and any other character that is in no token.
  * @param {string} sql
  * @returns {string[] | undefined}
  */
 function statementTokens(sql) {
-	if (sql.includes("\0") || sql.includes("\uFEFF")) return undefined;
+	if (sql.includes("\0")) return undefined;
 	/** @type {string[]} */
 	const tokens = [];
 	let index = 0;
@@ -874,7 +874,7 @@ function statementTokens(sql) {
 		} else if (character === ";" || SQL_PUNCTUATION.includes(character)) {
 			tokens.push(character === ";" ? ";" : "");
 			index++;
-		} else if (character !== "$" && isWordCode(sql.charCodeAt(index))) {
+		} else if (character !== "$" && character !== "\uFEFF" && isWordCode(sql.charCodeAt(index))) {
 			// A number is read as a word: SQLite reads the letters and digits that follow a number's own as part of it.
 			let end = index + 1;
 			while (end < sql.length && isWordCode(sql.charCodeAt(end))) end++;
