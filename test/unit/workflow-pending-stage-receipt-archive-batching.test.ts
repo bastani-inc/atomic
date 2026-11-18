@@ -15,8 +15,10 @@ import {
 	JournalDurableBackend,
 	RECEIPT_CHAIN_BATCH_LIMIT,
 } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
+import { PENDING_STAGE_TURN_BUDGET_MS } from "../../packages/workflows/src/shared/event-loop-turns.js";
 import { PendingStageTransitionLedger } from "../../packages/workflows/src/shared/pending-stage-transition-ledger.js";
 import type {
 	PendingStageMessage,
@@ -267,4 +269,41 @@ test("a receipt that fails inside a chain's journal transaction stops the receip
 		receipts,
 		Array.from({ length: failedStage }, (_, index) => `child-${index}`),
 	);
+});
+
+test("compacting many broadcast entries whose stages ended lets the event loop turn while it runs (#3931)", async () => {
+	const ENTRIES = 400;
+	const journal = new MemoryRunJournal();
+	const backend = await JournalDurableBackend.open(journal);
+	cleanups.push(() => backend.close());
+	await backend.commitWorkflowRegistration({
+		workflowId: "run",
+		name: "test",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
+	const entries = Array.from({ length: ENTRIES }, (_, index) => ({ ...broadcast(), id: `broadcast-${index}` }));
+	// The first compaction archives every receipt; the second finds them all archived and writes nothing, so it runs
+	// entirely on in-memory reads.
+	await new PendingStageTransitionLedger().compact(backend, "run", entries, endedStage, undefined);
+	let turns = 0;
+	let ticker: NodeJS.Immediate | undefined;
+	const tick = () => {
+		turns++;
+		ticker = setImmediate(tick);
+	};
+	ticker = setImmediate(tick);
+	cleanups.push(() => clearImmediate(ticker));
+	const started = performance.now();
+	turns = 0;
+	await new PendingStageTransitionLedger().compact(backend, "run", entries, endedStage, undefined);
+	const elapsed = performance.now() - started;
+
+	assert.ok(elapsed > 2 * PENDING_STAGE_TURN_BUDGET_MS, `the compaction took only ${elapsed} ms`);
+	assert.ok(
+		turns >= Math.floor(elapsed / (4 * PENDING_STAGE_TURN_BUDGET_MS)),
+		`the event loop turned ${turns} times in a ${Math.round(elapsed)} ms compaction`,
+	);
+	assert.ok(turns > 0);
 });

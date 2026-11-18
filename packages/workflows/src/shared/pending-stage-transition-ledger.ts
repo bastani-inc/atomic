@@ -1,4 +1,5 @@
 import type { DurableWorkflowBackend, PendingStageReceiptChain } from "../durable/backend.js";
+import { yieldIfTurnSpent } from "./event-loop-turns.js";
 import {
 	isSettledPendingStageMessage,
 	PENDING_STAGE_SETTLED_MESSAGE_LIMIT,
@@ -101,10 +102,10 @@ export class PendingStageTransitionLedger {
 			}
 			if (entry === undefined) continue;
 			if (isSettledPendingStageMessage(entry)) settled++;
-			const next =
-				this.fixed.has(entry) && !dirty.has(entry)
-					? entry
-					: await compactEntryDeliveries(backend, runId, entry, stageStatus, archives);
+			const unchanged = this.fixed.has(entry) && !dirty.has(entry);
+			// Compacting a broadcast's entries runs in microtasks; the event loop turns once the turn's budget is spent.
+			if (!unchanged) await yieldIfTurnSpent();
+			const next = unchanged ? entry : await compactEntryDeliveries(backend, runId, entry, stageStatus, archives);
 			output.push(next);
 			added.push(next);
 		}

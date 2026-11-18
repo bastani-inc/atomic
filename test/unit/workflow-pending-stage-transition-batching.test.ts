@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { PENDING_STAGE_TURN_BUDGET_MS } from "../../packages/workflows/src/shared/event-loop-turns.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { PENDING_STAGE_TRANSITION_BATCH_LIMIT } from "../../packages/workflows/src/shared/store-pending-stage-delivery-methods.js";
 import type { PendingStageMessage, RunSnapshot, StageStatus } from "../../packages/workflows/src/shared/store-types.js";
@@ -170,6 +171,48 @@ describe("pending-stage transition batching", () => {
 			WAVE_STAGES,
 		);
 		assert.deepEqual(store.runs().find((run) => run.id === ROOT_RUN_ID)?.pendingStageMessages, persisted);
+	});
+
+	test("a batch of queued sends lets the event loop turn between its transitions (#3931)", async () => {
+		const { store, backend, holdNextPersist } = await fixture();
+		const firstWrite = holdNextPersist();
+		const send = (index: number) =>
+			store.queueStickyStageMessage(
+				{
+					runId: ROOT_RUN_ID,
+					stageKey: `workflow:${ROOT_RUN_ID}/child-c${index % WAVE_STAGES}/**`,
+					targetPath: `workflow:${ROOT_RUN_ID}/child-c${index % WAVE_STAGES}/**`,
+					from: { id: "planner-session", name: "planner", group: GROUP },
+					message: { id: `burst-${index}`, timestamp: 1_725_000_000_000, content: { text: `send ${index}` } },
+					queuedAt: "2026-09-01T00:00:01.000Z",
+				},
+				GROUP,
+				GROUP,
+				backend,
+			);
+		const first = send(0);
+		const releaseFirstWrite = await firstWrite;
+		// Three full batches queue behind the held write and run once it is released.
+		const burst = Array.from({ length: 3 * PENDING_STAGE_TRANSITION_BATCH_LIMIT }, (_, index) => send(index + 1));
+		let turns = 0;
+		let ticker: NodeJS.Immediate | undefined;
+		const tick = () => {
+			turns++;
+			ticker = setImmediate(tick);
+		};
+		ticker = setImmediate(tick);
+		try {
+			const released = performance.now();
+			turns = 0;
+			releaseFirstWrite();
+			await first;
+			await Promise.all(burst);
+			const elapsed = performance.now() - released;
+			assert.ok(elapsed > 2 * PENDING_STAGE_TURN_BUDGET_MS, `the batch took only ${elapsed} ms`);
+			assert.ok(turns > 1, `the event loop turned ${turns} times in a ${Math.round(elapsed)} ms batch`);
+		} finally {
+			clearImmediate(ticker);
+		}
 	});
 
 	test("a failed shared persist rejects every caller that depended on it and leaves the run as persisted", async () => {
