@@ -8,6 +8,14 @@ import { createStore, store as workflowStore } from "../../packages/workflows/sr
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 
+/**
+ * How long the run may take to reject the poisoned occurrence before the test stops it. A run that never rejects it
+ * waits on its prompt forever, and stopping it ends it `killed`, not `failed`. The run's journal reads and lease
+ * writes run on its connection's thread, so on a loaded host its start takes far longer than an idle one's; a passing
+ * run ends as soon as it rejects the occurrence and never waits this long.
+ */
+const POISON_REJECTION_BOUND_MS = 10_000;
+
 afterEach(() => {
 	setDurableBackend(undefined);
 	workflowStore.clear();
@@ -48,7 +56,7 @@ test("fresh journal active root rejects an occurrence bound to different replay 
 	await backend.hydrateWorkflow(rootId);
 	const store = createStore();
 	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(new Error("poison was not rejected")), 250);
+	const timeout = setTimeout(() => controller.abort(new Error("poison was not rejected")), POISON_REJECTION_BOUND_MS);
 	const root = workflow({
 		name: rootId,
 		description: "",
