@@ -156,7 +156,6 @@ export interface PooledStageTasks {
 
 /** What the stage chat does with one background task of a pooled stage. */
 export type PooledTaskAction =
-	| { readonly kind: "foreground" }
 	| { readonly kind: "cancel" }
 	| { readonly kind: "input"; readonly text: string }
 	| { readonly kind: "output"; readonly start: string; readonly maximumBytes: number }
@@ -167,7 +166,6 @@ export type PooledTaskAction =
 
 /** The answer to a {@link PooledTaskAction}. */
 export type PooledTaskReply =
-	| { readonly kind: "foreground"; readonly result: TaskViewResult<{ readonly kind: string }> }
 	| { readonly kind: "cancel"; readonly result?: TaskViewResult<undefined> }
 	| { readonly kind: "input"; readonly result: TaskViewResult<{ readonly acceptedBytes: number }> }
 	| { readonly kind: "output"; readonly result: TaskViewResult<TaskOutputView> }

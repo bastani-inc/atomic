@@ -284,7 +284,8 @@ export async function runSinglePath(
 			skills: effectiveSkills,
 		};
 		if (ctx.getAgentTaskHost) {
-			let settledChild: SingleResult | undefined;
+			// A task-hosted child runs in the background: the launch returns once it is admitted, and the child reports
+			// by its completion notice.
 			let progressCleanup: Promise<void> | undefined;
 			const response = await runAgentTask({
 				host: ctx.getAgentTaskHost(),
@@ -294,31 +295,18 @@ export async function runSinglePath(
 				task,
 				intentTask: handoffTaskContext,
 				options: runOptions,
-				wait: params.wait,
 				...(params.heartbeatMs === undefined ? {} : { heartbeatMs: params.heartbeatMs }),
 				schedule: params[BURST_EXECUTION_SCHEDULE],
 				runtime: deps.runtime,
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				onTerminal: (child) => {
-					settledChild = child;
 					startHold?.settle(child);
 					progressCleanup = cleanupTransientProgress(progressDir, artifactConfig.enabled);
 				},
-				outputText: (child) =>
-					parentAsk && child.interrupted
-						? formatParentAskHandoffOutput({
-								askingChildIndex: 0,
-								releasedChildIndices: [0],
-								unlaunchedChildIndices: [],
-								request: parentAsk,
-							})
-						: getSingleResultOutput(child),
 			});
 			if (response.kind === "unstarted") startHold?.settle();
 			await progressCleanup;
-			if (!parentAsk || !settledChild?.interrupted)
-				return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
-			r = settledChild;
+			return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
 		} else {
 			// #3981: a queued child starts after its launch; by then model fallback can have retired the launching session, whose
 			// context throws on every read. The working directory is fixed at launch.

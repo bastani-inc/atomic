@@ -80,7 +80,6 @@ interface ForegroundParallelRunInput {
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: SubagentToolResult) => void;
 	onDetachedExit?: (index: number, result: SingleResult) => void;
-	wait?: import("@bastani/atomic").WaitPolicy;
 	onExecution?: (index: number, runtimeCwd: string, options: RunSyncOptions) => void;
 	worktreeSetup?: WorktreeSetup;
 	runtime: Pick<SubagentExecutorRuntimeDeps, "runSync">;
@@ -335,10 +334,9 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		};
 		input.onExecution?.(index, input.ctx.cwd, runOptions);
 		if (host) {
-			if (input.wait?.kind !== "foreground") {
-				runOptions.intercomDetachSignal = undefined;
-				runOptions.onIntercomDetachCommit = undefined;
-			}
+			// A task-hosted child runs in the background: no launching call waits on it to release.
+			runOptions.intercomDetachSignal = undefined;
+			runOptions.onIntercomDetachCommit = undefined;
 			let terminalChild: SingleResult | undefined;
 			const response = await runAgentTask({
 				host,
@@ -349,7 +347,6 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				intentTask: task.task,
 				options: runOptions,
 				runtime: input.runtime,
-				wait: input.wait,
 				...((task.heartbeatMs ?? input.heartbeatMs) === undefined
 					? {}
 					: { heartbeatMs: task.heartbeatMs ?? input.heartbeatMs }),

@@ -411,7 +411,6 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 					orchestratorIntercomTarget: "parent",
 					...extra,
 				},
-				wait: { kind: "background" },
 				recordChild: createSubagentChildRecordSink(pi, state.ctx),
 				runtime: { runSync: runtime },
 				...(state.launchHeartbeatMs === undefined ? {} : { heartbeatMs: state.launchHeartbeatMs }),
@@ -2562,7 +2561,6 @@ test("a resumed worktree child keeps its worktree while a sibling finishes, and 
 			{ agent: "worker", task: "task-b-marker" },
 		],
 		worktree: true,
-		wait: { kind: "background" },
 	});
 	assert.notEqual(launched.isError, true, text(launched));
 	const runs = () => [...readSubagentChildRecords(h.sessionManager.getEntries()).values()];
@@ -2610,7 +2608,6 @@ test("a paused worktree child keeps its uncommitted work after every sibling fin
 			{ agent: "worker", task: "task-b-marker" },
 		],
 		worktree: true,
-		wait: { kind: "background" },
 	});
 	assert.notEqual(launched.isError, true, text(launched));
 	const runs = () => [...readSubagentChildRecords(h.sessionManager.getEntries()).values()];
@@ -2649,7 +2646,6 @@ async function launchWorktreeRun(
 	const launched = await h.call({
 		tasks: markers.map((marker) => ({ agent: "worker", task: marker })),
 		worktree: true,
-		wait: { kind: "background" },
 		...extra,
 	});
 	assert.notEqual(launched.isError, true, text(launched));

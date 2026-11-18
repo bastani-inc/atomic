@@ -47,7 +47,7 @@ export interface SubagentParamsLike {
 	[BURST_EXECUTION_SCHEDULE]?: import("../shared/parallel-utils.js").ExecutionScheduler;
 	action?: (typeof SUBAGENT_ACTIONS)[number];
 	id?: string;
-	wait?: import("@bastani/atomic").WaitPolicy;
+	/** `action: "wait"` only: how long to wait for the task. */
 	budgetMs?: number;
 	heartbeatMs?: number;
 	runId?: string;

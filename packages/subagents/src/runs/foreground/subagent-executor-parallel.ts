@@ -206,7 +206,6 @@ export async function runParallelPath(
 		// context then throws on every read. Its stage admission outlives that session, so read it now.
 		const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 		const results = await runForegroundParallelTasks({
-			wait: params.wait,
 			...(params.heartbeatMs === undefined ? {} : { heartbeatMs: params.heartbeatMs }),
 			schedule: params[BURST_EXECUTION_SCHEDULE],
 			onDetachedExit: (index, result) => {

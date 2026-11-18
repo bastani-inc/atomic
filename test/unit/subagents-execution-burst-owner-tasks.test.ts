@@ -133,25 +133,30 @@ function parallel(result: SubagentToolResult): ModelParallelResponse {
 	return response;
 }
 
-test("coalesced SINGLE foreground calls keep their wait policy and each caller gets only its own settled result (#3427)", async () => {
+/** What `subagent({ action: "wait", id })` returns once the launched child settled. */
+async function settledOutput(call: ReturnType<typeof harness>["call"], taskId: string): Promise<string> {
+	const waited = await call(`wait-${taskId}`, { action: "wait", id: taskId });
+	const observed = waited.details?.taskResponse;
+	assert.ok(observed?.kind === "admitted" && observed.observation.kind === "settled", text(waited));
+	return text(waited);
+}
+
+test("coalesced SINGLE calls each get only their own task, and waiting on it only its own result (#3427)", async () => {
 	const { call } = harness(async (_cwd, _agents, _agent, task) => childResult(task));
 	const tasks = ["A", "B", "C"];
 
-	const results = await Promise.all(
-		tasks.map((task, index) => call(`call-${index}`, { agent: "echo", task, wait: { kind: "foreground" } })),
-	);
+	const results = await Promise.all(tasks.map((task, index) => call(`call-${index}`, { agent: "echo", task })));
 
 	const taskIds = new Set<string>();
 	for (const [index, result] of results.entries()) {
 		const observation = single(result).observation;
-		assert.equal(observation.kind, "settled", "foreground wait must not yield as default-background");
 		taskIds.add(observation.taskId);
 		assert.deepEqual(
 			result.details?.taskRecords?.map((record) => record.ref.taskId),
 			[observation.taskId],
 			"a caller sees only its own task record",
 		);
-		const output = text(result);
+		const output = await settledOutput(call, observation.taskId);
 		assert.match(output, new RegExp(`output:${tasks[index]}\\b`));
 		for (const sibling of tasks.filter((task) => task !== tasks[index])) {
 			assert.doesNotMatch(output, new RegExp(`output:${sibling}\\b`));
@@ -181,37 +186,8 @@ test("coalesced SINGLE calls without a wait policy each receive their own backgr
 	assert.equal(new Set(taskIds).size, 3);
 });
 
-test("coalesced calls with different wait policies are not merged, so each keeps its own policy (#3427)", async () => {
-	const releaseForeground = Promise.withResolvers<void>();
-	const { call } = harness(async (_cwd, _agents, _agent, task) => {
-		if (task === "foreground") await releaseForeground.promise;
-		return childResult(task);
-	});
-	cleanups.push(() => releaseForeground.resolve());
-
-	const foreground = call("call-foreground", {
-		agent: "echo",
-		task: "foreground",
-		wait: { kind: "foreground", budgetMs: 60_000 },
-	});
-	const background = await Promise.all([
-		call("call-background", { agent: "echo", task: "background", wait: { kind: "background" } }),
-	]);
-
-	const yielded = single(background[0]!).observation;
-	assert.deepEqual(yielded.kind === "yielded" && yielded.reason, "explicit");
-	releaseForeground.resolve();
-	const settled = single(await foreground).observation;
-	assert.equal(settled.kind, "settled");
-	assert.equal(
-		(await call("call-after", { agent: "echo", task: "after", wait: { kind: "foreground" } })).isError,
-		undefined,
-	);
-});
-
 test("a coalesced PARALLEL call receives only its own slots next to a SINGLE call (#3427)", async () => {
 	const { call } = harness(async (_cwd, _agents, _agent, task) => childResult(task));
-	const wait = { kind: "foreground" } as const;
 
 	const [first, second] = await Promise.all([
 		call("call-parallel", {
@@ -219,9 +195,8 @@ test("a coalesced PARALLEL call receives only its own slots next to a SINGLE cal
 				{ agent: "echo", task: "P1" },
 				{ agent: "echo", task: "P2" },
 			],
-			wait,
 		}),
-		call("call-single", { agent: "echo", task: "S1", wait }),
+		call("call-single", { agent: "echo", task: "S1" }),
 	]);
 
 	const slots = parallel(first).slots;
@@ -230,94 +205,32 @@ test("a coalesced PARALLEL call receives only its own slots next to a SINGLE cal
 		[0, 1],
 	);
 	assert.equal(first.details?.taskRecords?.length, 2);
-	assert.match(text(first), /output:P1/);
-	assert.match(text(first), /output:P2/);
-	assert.doesNotMatch(text(first), /output:S1/);
-	assert.equal(single(second).observation.kind, "settled");
-	assert.match(text(second), /output:S1/);
-	assert.doesNotMatch(text(second), /output:P[12]/);
+	const outputs = await Promise.all(
+		slots.map((slot) => {
+			assert.equal(slot.outcome.kind, "admitted");
+			assert.ok(slot.outcome.kind === "admitted");
+			return settledOutput(call, slot.outcome.observation.taskId);
+		}),
+	);
+	assert.match(outputs[0]!, /output:P1/);
+	assert.match(outputs[1]!, /output:P2/);
+	const own = await settledOutput(call, single(second).observation.taskId);
+	assert.match(own, /output:S1/);
+	assert.doesNotMatch(own, /output:P[12]/);
 });
 
 test("coalesced caller receipts preserve inferred default-fork context (#3427)", async () => {
 	const { call } = harness(async (_cwd, _agents, _agent, task) => childResult(task), "fork");
-	const solo = await call("solo", { agent: "echo", task: "solo", wait: { kind: "foreground" } });
+	const solo = await call("solo", { agent: "echo", task: "solo" });
 	assert.equal(solo.details?.context, "fork");
-	const results = await Promise.all(
-		["A", "B"].map((task) => call(task, { agent: "echo", task, wait: { kind: "foreground" } })),
-	);
+	const results = await Promise.all(["A", "B"].map((task) => call(task, { agent: "echo", task })));
 	for (const result of results) {
-		assert.equal(single(result).observation.kind, "settled");
+		assert.equal(single(result).observation.kind, "yielded");
 		assert.equal(result.details?.context, "fork");
 	}
 });
 
-test("mixed-wait burst children share cap 2 even after background observations yield (#3427)", async () => {
-	const tasks = ["B1", "B2", "F1", "F2"];
-	const gates = new Map(tasks.map((task) => [task, Promise.withResolvers<void>()]));
-	const started = new Map(tasks.map((task) => [task, Promise.withResolvers<void>()]));
-	const finished = new Map(tasks.map((task) => [task, Promise.withResolvers<void>()]));
-	let active = 0;
-	let peak = 0;
-	const { call } = harness(async (_cwd, _agents, _agent, task) => {
-		active++;
-		peak = Math.max(peak, active);
-		started.get(task)!.resolve();
-		try {
-			await gates.get(task)!.promise;
-			return childResult(task);
-		} finally {
-			active--;
-			finished.get(task)!.resolve();
-		}
-	});
-	cleanups.push(() => {
-		for (const gate of gates.values()) gate.resolve();
-	});
-	const calls = tasks.map((task) =>
-		call(task, {
-			agent: "echo",
-			task,
-			concurrency: 2,
-			wait: task.startsWith("B") ? { kind: "background" } : { kind: "foreground" },
-		}),
-	);
-	let foregroundSettled = false;
-	void Promise.all(calls.slice(2)).then(() => {
-		foregroundSettled = true;
-	});
-	const background = await Promise.all(calls.slice(0, 2));
-	for (const result of background) {
-		const observation = single(result).observation;
-		assert.equal(observation.kind === "yielded" && observation.reason, "explicit");
-		assert.deepEqual(
-			result.details?.taskRecords?.map((record) => record.ref.taskId),
-			[observation.taskId],
-		);
-	}
-	await Promise.all([started.get("B1")!.promise, started.get("B2")!.promise]);
-	await new Promise<void>((resolve) => setImmediate(resolve));
-	assert.equal(peak, 2, "yielded background children must retain their execution slots across wait groups");
-	assert.equal(active, 2);
-	assert.equal(foregroundSettled, false, "background receipts do not wait for foreground completion");
-	gates.get("B1")!.resolve();
-	await started.get("F1")!.promise;
-	assert.equal(active, 2, "a queued foreground child starts only after an execution ends");
-	gates.get("B2")!.resolve();
-	await started.get("F2")!.promise;
-	gates.get("F1")!.resolve();
-	gates.get("F2")!.resolve();
-	const foreground = await Promise.all(calls.slice(2));
-	for (const [index, result] of foreground.entries()) {
-		assert.equal(single(result).observation.kind, "settled");
-		assert.match(text(result), new RegExp(`output:F${index + 1}\\b`));
-		assert.doesNotMatch(text(result), new RegExp(`output:F${2 - index}\\b|output:B[12]\\b`));
-	}
-	await Promise.all([...finished.values()].map((value) => value.promise));
-	assert.equal(peak, 2);
-	assert.equal(active, 0);
-});
-
-test("same-policy burst children keep cap 2 and caller-specific results (#3427)", async () => {
+test("coalesced burst children keep cap 2, return at once, and keep caller-specific results (#3427)", async () => {
 	const firstPairStarted = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
 	let active = 0;
@@ -332,48 +245,49 @@ test("same-policy burst children keep cap 2 and caller-specific results (#3427)"
 		return childResult(task);
 	});
 	cleanups.push(() => release.resolve());
-	const calls = ["A", "B", "C", "D"].map((task) =>
-		call(task, { agent: "echo", task, concurrency: 2, wait: { kind: "foreground" } }),
-	);
+	const tasks = ["A", "B", "C", "D"];
+	const receipts = await Promise.all(tasks.map((task) => call(task, { agent: "echo", task, concurrency: 2 })));
 	await firstPairStarted.promise;
 	assert.equal(active, 2);
 	release.resolve();
-	const results = await Promise.all(calls);
-	for (const [index, result] of results.entries()) {
-		assert.equal(single(result).observation.kind, "settled");
-		assert.match(text(result), new RegExp(`output:${["A", "B", "C", "D"][index]}\\b`));
-		assert.equal(result.details?.taskRecords?.length, 1);
+	for (const [index, receipt] of receipts.entries()) {
+		assert.equal(receipt.details?.taskRecords?.length, 1);
+		const output = await settledOutput(call, single(receipt).observation.taskId);
+		assert.match(output, new RegExp(`output:${tasks[index]}\\b`));
 	}
 	assert.equal(launches, 4);
 	assert.equal(peak, 2);
 	assert.equal(active, 0);
 });
 
-test("singleton wait groups share the settings cap while unbounded foreground waits do not block background admission (#3427)", async () => {
+test("coalesced calls share the settings cap: a later call is admitted at once but runs after the earlier exits (#3427)", async () => {
 	const release = Promise.withResolvers<void>();
 	const launched: string[] = [];
 	const { call } = harness(
 		async (_cwd, _agents, _agent, task) => {
 			launched.push(task);
-			if (task === "foreground") await release.promise;
+			if (task === "first") await release.promise;
 			return childResult(task);
 		},
 		undefined,
 		1,
 	);
 	cleanups.push(() => release.resolve());
-	const foreground = call("foreground", { agent: "echo", task: "foreground", wait: { kind: "foreground" } });
-	const background = await call("background", { agent: "echo", task: "background", wait: { kind: "background" } });
-	assert.equal(single(background).observation.kind, "yielded");
-	assert.deepEqual(launched, ["foreground"], "background is admitted but cannot execute before foreground exits");
+	const [first, later] = await Promise.all([
+		call("first", { agent: "echo", task: "first" }),
+		call("later", { agent: "echo", task: "later" }),
+	]);
+	assert.equal(single(later).observation.kind, "yielded");
+	assert.deepEqual(launched, ["first"], "the later call is admitted but cannot execute before the first exits");
 	release.resolve();
-	assert.equal(single(await foreground).observation.kind, "settled");
-	assert.deepEqual(launched, ["foreground", "background"]);
+	assert.match(await settledOutput(call, single(first).observation.taskId), /output:first/);
+	assert.match(await settledOutput(call, single(later).observation.taskId), /output:later/);
+	assert.deepEqual(launched, ["first", "later"]);
 });
 
-test("singleton mixed-wait SINGLE progress stays run-isolated without overwriting project progress (#3427)", async () => {
+test("each SINGLE call's progress stays run-isolated without overwriting project progress (#3427)", async () => {
 	const release = Promise.withResolvers<void>();
-	const started = Promise.withResolvers<void>();
+	const bothStarted = Promise.withResolvers<void>();
 	const progressPaths: string[] = [];
 	let active = 0;
 	let peak = 0;
@@ -384,10 +298,10 @@ test("singleton mixed-wait SINGLE progress stays run-isolated without overwritin
 			assert.ok(readFileSync(options.progressPath, "utf8").length > 0);
 			active++;
 			peak = Math.max(peak, active);
-			started.resolve();
+			if (active === 2) bothStarted.resolve();
 			await release.promise;
 			active--;
-			return childResult(task.startsWith("foreground") ? "foreground" : "background");
+			return childResult(task);
 		},
 		undefined,
 		2,
@@ -396,26 +310,15 @@ test("singleton mixed-wait SINGLE progress stays run-isolated without overwritin
 	const sentinel = "Project progress must survive.\n";
 	const projectProgress = join(cwd, "progress.md");
 	writeFileSync(projectProgress, sentinel);
-	const foreground = call("foreground", {
-		agent: "echo",
-		task: "foreground",
-		progress: true,
-		wait: { kind: "foreground" },
-	});
-	const background = await call("background", {
-		agent: "echo",
-		task: "background",
-		progress: true,
-		wait: { kind: "background" },
-	});
-	await started.promise;
+	const first = await call("first", { agent: "echo", task: "first", progress: true });
+	const second = await call("second", { agent: "echo", task: "second", progress: true });
+	await bothStarted.promise;
 	assert.equal(readFileSync(projectProgress, "utf8"), sentinel);
-	assert.equal(single(background).observation.kind, "yielded");
 	release.resolve();
-	const settled = await foreground;
-	assert.equal(single(settled).observation.kind, "settled");
-	assert.match(text(settled), /output:foreground/);
-	assert.doesNotMatch(text(settled), /output:background/);
+	const own = await settledOutput(call, single(first).observation.taskId);
+	assert.match(own, /output:first/);
+	assert.doesNotMatch(own, /output:second/);
+	assert.match(await settledOutput(call, single(second).observation.taskId), /output:second/);
 	assert.equal(progressPaths.length, 2);
 	assert.equal(new Set(progressPaths).size, 2);
 	for (const progressPath of progressPaths) {
@@ -428,17 +331,15 @@ test("singleton mixed-wait SINGLE progress stays run-isolated without overwritin
 
 test("subagent heartbeatMs reaches each child's task, per call and per parallel task, including coalesced calls", async () => {
 	const { call } = harness(async (_cwd, _agents, _agent, task) => childResult(task));
-	const wait = { kind: "foreground" } as const;
 	const [first, second, parallelCall] = await Promise.all([
-		call("call-a", { agent: "echo", task: "A", wait, heartbeatMs: 120_000 }),
-		call("call-b", { agent: "echo", task: "B", wait, heartbeatMs: 0 }),
+		call("call-a", { agent: "echo", task: "A", heartbeatMs: 120_000 }),
+		call("call-b", { agent: "echo", task: "B", heartbeatMs: 0 }),
 		call("call-p", {
 			tasks: [
 				{ agent: "echo", task: "P1", heartbeatMs: 600_000 },
 				{ agent: "echo", task: "P2" },
 			],
 			heartbeatMs: 300_000,
-			wait,
 		}),
 	]);
 	assert.deepEqual(
@@ -456,7 +357,7 @@ test("subagent heartbeatMs reaches each child's task, per call and per parallel 
 			["P2", 300_000],
 		],
 	);
-	const plain = await call("call-plain", { agent: "echo", task: "plain", wait });
+	const plain = await call("call-plain", { agent: "echo", task: "plain" });
 	assert.equal(plain.details?.taskRecords?.[0]?.heartbeatMs, undefined, "omitted uses the owner default");
 });
 
@@ -478,88 +379,4 @@ test("an out-of-range subagent heartbeatMs is refused before any child launches"
 	assert.equal(parallelCall.isError, true);
 	assert.match(text(parallelCall), /^Invalid tasks\[1\]\.heartbeatMs NaN/);
 	assert.equal(launches, 0);
-});
-
-test("burst admission grants concurrency slots in call order even when an earlier call's async setup finishes later, and releases tickets when setup fails (#3427)", async () => {
-	const release = Promise.withResolvers<void>();
-	const launched: string[] = [];
-	let authCalls = 0;
-	const { call } = harness(
-		async (_cwd, _agents, _agent, task) => {
-			launched.push(task);
-			if (task === "foreground") await release.promise;
-			return childResult(task);
-		},
-		undefined,
-		1,
-		{
-			beforeDiscover: async (callIndex) => {
-				if (callIndex === 0) await new Promise<void>((resolve) => setTimeout(resolve, 20));
-			},
-			onEventEmit: (eventName, payload) => {
-				if (eventName === "subagent:supervisor-authorization" && payload && typeof payload === "object") {
-					const index = authCalls++;
-					const req = payload as {
-						childName: string;
-						completion?: Promise<{ capability: string; supervisorSessionId: string; childName: string }>;
-					};
-					req.completion = (async () => {
-						if (index % 2 === 0 || req.childName.endsWith("-1")) {
-							await new Promise<void>((resolve) => setTimeout(resolve, 20));
-						}
-						return {
-							capability: `cap-${index}`,
-							supervisorSessionId: "parent",
-							childName: req.childName,
-						};
-					})();
-				}
-				if (eventName === "subagent:reserve-restoring-child" && payload && typeof payload === "object") {
-					const req = payload as { capability?: string; completion?: Promise<void> };
-					req.completion = (async () => {
-						if (req.capability === "cap-0") await new Promise<void>((resolve) => setTimeout(resolve, 20));
-					})();
-				}
-			},
-		},
-	);
-	cleanups.push(() => release.resolve());
-
-	const foreground = call("foreground", { agent: "echo", task: "foreground", wait: { kind: "foreground" } });
-	const background = await call("background", { agent: "echo", task: "background", wait: { kind: "background" } });
-	assert.equal(single(background).observation.kind, "yielded");
-	assert.deepEqual(launched, ["foreground"], "slower async setup on the first call still takes the first slot");
-	release.resolve();
-	assert.equal(single(await foreground).observation.kind, "settled");
-	assert.deepEqual(launched, ["foreground", "background"]);
-
-	const [parallelFirst, parallelSecond] = await Promise.all([
-		call("p1", { agent: "echo", task: "p1", wait: { kind: "foreground" } }),
-		call("p2", { agent: "echo", task: "p2", wait: { kind: "foreground" } }),
-	]);
-	assert.equal(single(parallelFirst).observation.kind, "settled");
-	assert.equal(single(parallelSecond).observation.kind, "settled");
-	assert.deepEqual(launched, ["foreground", "background", "p1", "p2"]);
-
-	const parallelCall = await call("parallel-ordered", {
-		tasks: [
-			{ agent: "echo", task: "t1" },
-			{ agent: "echo", task: "t2" },
-		],
-		concurrency: 1,
-		wait: { kind: "foreground" },
-	});
-	assert.deepEqual(
-		parallel(parallelCall).slots.map((slot) => slot.outcome.kind),
-		["admitted", "admitted"],
-	);
-	assert.deepEqual(launched, ["foreground", "background", "p1", "p2", "t1", "t2"]);
-
-	const [failedSetup, afterFailed] = await Promise.all([
-		call("bad", { agent: "nonexistent", task: "bad", wait: { kind: "background" } }),
-		call("good", { agent: "echo", task: "good", wait: { kind: "foreground" } }),
-	]);
-	assert.equal(failedSetup.isError, true);
-	assert.equal(single(afterFailed).observation.kind, "settled");
-	assert.deepEqual(launched, ["foreground", "background", "p1", "p2", "t1", "t2", "good"]);
 });

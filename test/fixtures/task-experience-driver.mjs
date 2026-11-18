@@ -70,7 +70,7 @@ if (positionals[0] === "wait") {
   const ready = await wait(directory, nonce, "ready", "boot", -1, live); assert.equal(ready.evidence.host, values.chat); assert.ok(ready.evidence.ownerId);
   await rendered("boot");
   send("intercom", "live"); const started = await wait(directory, nonce, "intercom-live", "live", -1, live);
-  assert.equal(started.evidence.startCount, 1); assert.equal(started.evidence.genuineMessageCount, 1); assert.equal(started.evidence.execution, "running"); assert.equal(started.evidence.observation.reason, "intercom-coordination"); assert.ok(BigInt(started.evidence.activityCursor.sequence) > BigInt(started.evidence.yieldCursor.sequence));
+  assert.equal(started.evidence.startCount, 1); assert.equal(started.evidence.genuineMessageCount, 1); assert.equal(started.evidence.execution, "running"); assert.equal(started.evidence.observation.reason, "default-background"); assert.ok(BigInt(started.evidence.activityCursor.sequence) > BigInt(started.evidence.yieldCursor.sequence));
   const liveRender = await rendered("live", (e) => { assert.equal(e.anchorCount, 0); assert.ok(e.taskIds.includes(started.taskId)); }); assert.equal(liveRender.cursor.generation, started.cursor.generation); assert.ok(BigInt(liveRender.cursor.sequence) >= BigInt(started.cursor.sequence)); capture("live.txt", /∀ worker {2}.*Inspect deterministic fixture/);
   await inspect("live-inspector.txt");
   tmux("send-keys", "-t", session, "C-o"); await rendered("expand", (e) => assert.equal(e.toolsExpanded, true)); capture("expanded.txt");
