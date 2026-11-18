@@ -29,6 +29,11 @@ export interface ClickableRowActions<T> {
 	scroll?(direction: -1 | 1): boolean;
 }
 
+/** The rows one render recorded; see {@link ClickableRows.snapshot}. */
+export interface ClickableRowsSnapshot<T> {
+	readonly rows: Map<number, RowTarget<T>[]>;
+}
+
 interface RowTarget<T> {
 	readonly target: T;
 	readonly key: string;
@@ -51,6 +56,8 @@ interface RowTarget<T> {
  */
 export class ClickableRows<T> {
 	private rows = new Map<number, RowTarget<T>[]>();
+	/** What the last press landed on. The click that follows it must land on the same item. */
+	private pressedKey: string | undefined;
 
 	/** Forget the rows of the previous render. */
 	clear(): void {
@@ -58,7 +65,20 @@ export class ClickableRows<T> {
 	}
 
 	/**
-	 * Record that the render drew `target` on `row`, named by `key` (stable for the same item across renders). Without
+	 * The rows recorded since the last {@link clear}, for a list that caches its render. The next render starts with
+	 * {@link clear}, which leaves the snapshot as it was.
+	 */
+	snapshot(): ClickableRowsSnapshot<T> {
+		return { rows: this.rows };
+	}
+
+	/** Bring back the rows of a cached render. */
+	restore(snapshot: ClickableRowsSnapshot<T>): void {
+		this.rows = snapshot.rows;
+	}
+
+	/**
+	 * Record, after {@link clear}, that the render drew `target` on `row`, named by `key` (stable for the same item across renders). Without
 	 * `columns` the target covers the whole row.
 	 */
 	add(row: number, target: T, key: string, columns?: ClickableColumns): void {
@@ -89,13 +109,7 @@ export class ClickableRows<T> {
 
 	/** The target drawn at column `x` of `row` in the last render. */
 	targetAt(x: number, row: number): T | undefined {
-		const targets = this.rows.get(Math.floor(row));
-		if (!targets) return undefined;
-		const column = Math.floor(x);
-		const hit = targets.find(
-			({ columns }) => columns === undefined || (column >= columns.start && column < columns.end),
-		);
-		return hit?.target;
+		return this.hitAt(x, row)?.target;
 	}
 
 	/** What the last render drew on `row`, for `Component.paintedRowKey`. */
@@ -105,16 +119,39 @@ export class ClickableRows<T> {
 		return targets.map(({ key }) => key).join("\u0000");
 	}
 
-	/** Run the clicked row, or move the selection on a wheel turn; anything else is left to the renderer. */
+	/**
+	 * Run the clicked row, or move the selection on a wheel turn. The press itself is not taken: the renderer keeps it
+	 * for text selection and sends the click only when the pointer was released where it was pressed. A click that
+	 * follows a press on another item, as when the rows moved under the pointer, runs nothing. A click with no press
+	 * before it, as one forwarded from another process, runs the item drawn under it.
+	 */
 	handleMouse(event: TuiMouseEvent, actions: ClickableRowActions<T>): TuiMouseEventResult | undefined {
 		if (event.type === "wheel") {
 			if (!actions.scroll || !event.wheelDelta) return undefined;
 			return { handled: true, render: actions.scroll(event.wheelDelta < 0 ? -1 : 1) };
 		}
+		if (event.type === "press") {
+			this.pressedKey = event.button === "left" ? this.keyAt(event.x, event.y) : undefined;
+			return undefined;
+		}
+		if (event.type !== "click") return undefined;
+		const pressed = this.pressedKey;
+		this.pressedKey = undefined;
 		if (!isSingleLeftClick(event)) return undefined;
-		const target = this.targetAt(event.x, event.y);
-		if (target === undefined) return undefined;
-		actions.activate(target);
+		const hit = this.hitAt(event.x, event.y);
+		if (hit === undefined || (pressed !== undefined && pressed !== hit.key)) return undefined;
+		actions.activate(hit.target);
 		return { handled: true };
+	}
+
+	private keyAt(x: number, row: number): string | undefined {
+		return this.hitAt(x, row)?.key;
+	}
+
+	private hitAt(x: number, row: number): RowTarget<T> | undefined {
+		const targets = this.rows.get(Math.floor(row));
+		if (!targets) return undefined;
+		const column = Math.floor(x);
+		return targets.find(({ columns }) => columns === undefined || (column >= columns.start && column < columns.end));
 	}
 }

@@ -1,11 +1,14 @@
 import { dirname } from "node:path";
 import {
+	ClickableRows,
 	type Component,
 	type Focusable,
 	getKeybindings,
 	Input,
 	type KeyId,
 	matchesKey,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -206,6 +209,8 @@ export class SessionList implements Component, Focusable {
 	private previewOpen = false;
 	private detailCache = new WeakMap<SessionInfo, { key: string; line: string }>();
 	private noticeProvider?: () => SessionListNotice | undefined;
+	/** The rows each session was drawn on in the last render. */
+	private readonly clickableRows = new ClickableRows<SessionInfo>();
 
 	// Focusable implementation - propagate to searchInput for IME cursor positioning
 	private _focused = false;
@@ -540,6 +545,7 @@ export class SessionList implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
+		this.clickableRows.clear();
 		if (this.showingHelp) {
 			const kb = this.activeKeybindings();
 			const helpKeys = this.availableHelpKeys().map(navKeyText);
@@ -564,7 +570,7 @@ export class SessionList implements Component, Focusable {
 		if (this.filteredSessions.length === 0) {
 			lines.push(`  ${theme.fg("muted", truncateToWidth(this.emptyText(), Math.max(1, width - 2), "…"))}`);
 		} else {
-			lines.push(...this.renderRows(width));
+			lines.push(...this.renderRows(width, lines.length));
 			if (this.previewOpen) lines.push(...this.renderPreview(width));
 		}
 
@@ -614,7 +620,7 @@ export class SessionList implements Component, Focusable {
 		return { start, end: Math.min(start + this.maxVisible, total) };
 	}
 
-	private renderRows(width: number): string[] {
+	private renderRows(width: number, firstLine: number): string[] {
 		const lines: string[] = [];
 		const { start, end } = this.visibleRange();
 		if (start > 0) lines.push(`  ${theme.fg("dim", `↑ ${start} more`)}`);
@@ -656,6 +662,9 @@ export class SessionList implements Component, Focusable {
 			else if (session.name) color = "warning";
 			let styledTitle = color ? theme.fg(color, title) : theme.fg("text", title);
 			if (isSelected) styledTitle = theme.bold(color ? styledTitle : theme.fg("accent", title));
+			const rowKey = `${this.isWorkflowSession(session) ? "run" : "session"}\u0000${session.id}\u0000${session.path}`;
+			this.clickableRows.add(firstLine + lines.length, session, rowKey);
+			this.clickableRows.add(firstLine + lines.length + 1, session, rowKey);
 			lines.push(lead + theme.fg("dim", prefix) + styledTitle);
 			const detailRoom = Math.max(1, width - indent - visibleWidth(continuation) - 1);
 			const detail = isDeleting ? "Deleting…" : this.rowDetail(session, detailRoom);
@@ -918,6 +927,45 @@ export class SessionList implements Component, Focusable {
 		return parts.join("") + (node.isLast ? "   " : "│  ");
 	}
 
+	/**
+	 * A click on a session resumes it, as moving there and pressing Enter does. While a delete waits for its
+	 * confirmation, rows take no clicks, as they take no keys but Enter and Esc. The wheel moves the selection.
+	 */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.showingHelp || this.confirmingDeleteSession !== null) return undefined;
+		return this.clickableRows.handleMouse(event, {
+			activate: (session) => {
+				const index = this.filteredSessions.findIndex((node) => node.session === session);
+				if (index < 0) return;
+				this.touchSelection();
+				this.selectedIndex = index;
+				this.selectSession();
+			},
+			scroll: (direction) => {
+				const before = this.selectedIndex;
+				this.touchSelection();
+				this.selectedIndex = Math.max(
+					0,
+					Math.min(this.filteredSessions.length - 1, this.selectedIndex + direction),
+				);
+				return this.selectedIndex !== before;
+			},
+		});
+	}
+
+	/** The session the last render drew on `row`. */
+	paintedRowKey(row: number): string | undefined {
+		return this.clickableRows.paintedRowKey(row);
+	}
+
+	/** The reader moved the selection, so a reload keeps it where it is rather than where it was. */
+	private touchSelection(): void {
+		this.selectionTouched = true;
+		this.pendingSelectedPath = undefined;
+		this.pendingSelectedId = undefined;
+		this.pendingSelectedWorkflow = undefined;
+	}
+
 	handleInput(keyData: string): boolean {
 		const kb = this.activeKeybindings();
 
@@ -1039,10 +1087,7 @@ export class SessionList implements Component, Focusable {
 			return true;
 		}
 
-		this.selectionTouched = true;
-		this.pendingSelectedPath = undefined;
-		this.pendingSelectedId = undefined;
-		this.pendingSelectedWorkflow = undefined;
+		this.touchSelection();
 		// Up arrow
 		if (kb.matches(keyData, "tui.select.up")) {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);

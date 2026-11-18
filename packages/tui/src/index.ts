@@ -13,6 +13,7 @@ export {
 	type ClickableColumns,
 	type ClickableRowActions,
 	ClickableRows,
+	type ClickableRowsSnapshot,
 	isSingleLeftClick,
 } from "./clickable-rows.ts";
 // Colors and styling

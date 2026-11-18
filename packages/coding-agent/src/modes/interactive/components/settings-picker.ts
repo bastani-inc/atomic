@@ -96,6 +96,11 @@ export class SettingsPicker implements Component, Focusable {
 		return this.selector.handleMouse(event);
 	}
 
+	/** The row the last render drew on `row`, the open submenu's while one is open. */
+	paintedRowKey(row: number): string | undefined {
+		return this.submenu ? this.submenu.paintedRowKey?.(row) : this.selector.paintedRowKey(row);
+	}
+
 	private selectorItems(): SelectorItem<SettingItem>[] {
 		return this.items.map((item) => ({
 			id: item.id,
