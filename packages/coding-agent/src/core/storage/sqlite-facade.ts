@@ -24,6 +24,7 @@ import {
 	StorageTransactionClosedError,
 	StorageTransientError,
 	type StorageTransientErrorCode,
+	type StorageTransientHop,
 	type StorageTransientOutcome,
 	StorageUnavailableError,
 	StoreClosedError,
@@ -64,6 +65,12 @@ export interface SqliteDriverTransientFailure {
 	 * after the server may have applied it.
 	 */
 	readonly outcome: StorageTransientOutcome;
+	/**
+	 * Optional. Where on the way to the server the call failed, when it did not reach the server, such as at a proxy:
+	 * `StorageTransientError` then names this hop where it would name the database server. The facade passes both texts
+	 * through `redact`.
+	 */
+	readonly hop?: StorageTransientHop;
 }
 
 /** How the facade asks a driver to begin a transaction. */
@@ -693,6 +700,14 @@ class DriverDatabase implements SqliteDatabase {
 							code: transient.code,
 							outcome: applies ? transient.outcome : "not-applied",
 							attempts: attempt.number,
+							...(transient.hop === undefined
+								? {}
+								: {
+										hop: {
+											name: this.redact(transient.hop.name),
+											failure: this.redact(transient.hop.failure),
+										},
+									}),
 						},
 						safe,
 					);

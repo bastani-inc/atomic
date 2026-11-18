@@ -198,6 +198,32 @@ test("ordinary custom results remain visible after a canonical pending call (#53
 	}
 });
 
+test("a call block marked waiting keeps its own title once its result arrives (#5489)", () => {
+	for (const status of ["waiting", "heartbeat"] as const) {
+		const component = new ToolExecutionComponent(
+			"sample",
+			`canonical-${status}-call`,
+			{},
+			{},
+			{
+				...definition,
+				renderCall: () => new ToolBlock({ status, title: "Deploy", args: "production", outputPad: 0 }),
+				renderResult: () => new Text("Deployed", 0, 0),
+			},
+			ui,
+			"/workspace",
+		);
+		try {
+			component.updateResult({ content: [{ type: "text", text: "deployed" }], isError: false });
+			const text = component.render(80).map(stripTerminalSequences).join("\n");
+			assert.match(text, /● Deploy\(production\)/, `${status}: ${text}`);
+			assert.match(text, /⎿ {2}Deployed/, `${status}: ${text}`);
+		} finally {
+			component.dispose();
+		}
+	}
+});
+
 test("closed tool rows release every renderer and ignore late updates even if a disposer fails (#5350)", () => {
 	vi.useFakeTimers();
 	const repaint = vi.fn();

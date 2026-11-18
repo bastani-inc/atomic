@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
+- The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - The `/workflows` graph marks a stage suspended with its session released with the dim `◌` waiting mark, the same mark a released subagent has in the chat, `/tasks` and the agent panel, in node cards, the stage switcher, the stage strip and the header's count. It used `◷`. A paused stage keeps `❚❚` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 
 ## [0.9.89] - 2026-11-18

@@ -45,3 +45,32 @@ test("task notice docs describe unshaded lines and quit notices without a model 
 	assert.ok(line);
 	assert.ok(backgroundTasks.includes(line), `missing rendered quit notice: ${line}`);
 });
+
+test("the completion docs show a released subagent's notice with the waiting mark it renders (#5489)", () => {
+	initTheme("dark");
+	const task = {
+		...taskRecord("released-docs"),
+		title: "Update docs and changelog",
+		agentName: "worker",
+		metrics: { elapsedMs: 976_000 },
+	};
+	const notice = taskCompletionNotice(
+		{
+			completionId: "released-docs",
+			ownerId: task.ref.ownerId,
+			taskId: task.ref.taskId,
+			terminalSequence: "1" as Sequence,
+			result: {
+				kind: "cancelled",
+				cause: "pause",
+				released: { waitingOn: [{ toolCallId: "toolu_01", toolName: "bash" }] },
+			},
+			display: false,
+		},
+		task,
+	);
+	const [line] = new TaskCompletionMessage(notice, false).render(160).map(stripVTControlCharacters);
+	assert.equal(line, " ◌ worker is waiting on bash (toolu_01) · 16m 16s");
+	assert.ok(backgroundTasks.includes(line), `missing rendered released notice: ${line}`);
+	assert.match(subagents, /`◌ <name> is waiting on <tool> \(<call id>\)`/);
+});
