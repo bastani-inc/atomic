@@ -402,7 +402,8 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			changed = true;
 			break;
 		case "model_fallback_start":
-			state.retryContinuesRun = true;
+			// A fallback after a failed answer continues that turn; one before a turn's first request starts it.
+			state.retryContinuesRun = state.retryContinuesRun || state.workingRunMeter.endedOnFailedAttempt();
 			state.sdkBusy = true;
 			state.workingMessage = undefined;
 			state.statusMessage = CHAT_SESSION_SWITCHING_MODEL_STATUS;
@@ -411,7 +412,8 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			break;
 		case "model_fallback_end": {
 			const fallback = event as Extract<AgentSessionEvent, { type: "model_fallback_end" }>;
-			state.statusMessage = fallback.success ? "" : (fallback.finalError ?? "model fallback failed");
+			// A fallback that ended without an error to report (the turn was stopped) leaves no notice.
+			state.statusMessage = fallback.success ? "" : (fallback.finalError ?? "");
 			state.workingMessage = undefined;
 			if (!fallback.success) {
 				endRetriedTurn(state);

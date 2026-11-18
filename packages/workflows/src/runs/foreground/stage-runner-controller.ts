@@ -81,6 +81,7 @@ import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./sta
 import { stageSessionQueueUpdateEvent } from "./stage-queued-user-messages.js";
 import { StageArtifactCapture } from "./stage-runner-artifact-capture.js";
 import { candidateLabel, modelAttemptReasoning } from "./stage-runner-candidate.js";
+import { StageFallbackTurn } from "./stage-runner-fallback-turn.js";
 import { StageMessageAdmission } from "./stage-runner-message-admission.js";
 import {
 	hasAssistantMessageSince,
@@ -451,6 +452,8 @@ export class StageSessionController {
 	/** Removes this stage's listener from the run's abort signal. */
 	private unbindAbortSignal: (() => void) | undefined;
 	private sessionInternalRetries = 0;
+	/** Requests (`agent_start`) the stage's sessions started, whichever session ran them. */
+	private agentRunsStarted = 0;
 	private unresolvedContextOverflowMessage: string | undefined;
 	private generationSealed = false;
 	private disposed = false;
@@ -1850,11 +1853,35 @@ export class StageSessionController {
 		if (wait === undefined && this.sessionReleased()) await this.ensureSession();
 	}
 
+	/**
+	 * Prompt the stage on its model candidates. The walk replaces a failed candidate's session, and the turn says that it
+	 * goes on in the next one ({@link StageFallbackTurn}), so the stage's chat keeps counting it.
+	 */
 	private async promptSegment(
 		text: string,
 		sdkOptions: PromptOptions | undefined,
 		consumer: AgentSessionConsumer = "prompt",
 		newSessionText?: string,
+	): Promise<void> {
+		const turn = new StageFallbackTurn(
+			() => this.agentRunsStarted,
+			(event) => {
+				for (const listener of this.pendingListeners) listener(event);
+			},
+		);
+		try {
+			await this.promptCandidates(text, sdkOptions, consumer, newSessionText, turn);
+		} finally {
+			turn.ended();
+		}
+	}
+
+	private async promptCandidates(
+		text: string,
+		sdkOptions: PromptOptions | undefined,
+		consumer: AgentSessionConsumer,
+		newSessionText: string | undefined,
+		turn: StageFallbackTurn,
 	): Promise<void> {
 		if (
 			this.session !== undefined &&
@@ -1967,6 +1994,8 @@ export class StageSessionController {
 			try {
 				if (this.session !== undefined && this.activeCandidateIndex !== index)
 					await this.disposeCurrentSession(index);
+				if (this.session === undefined || this.activeCandidateIndex !== index)
+					turn.switchTo(candidate, index, this.modelAttempts.at(-1));
 				const created =
 					this.session && this.activeCandidateIndex === index
 						? this.session
@@ -3311,6 +3340,7 @@ export class StageSessionController {
 				} catch {}
 			}
 			this.lastActivityAt = performance.now();
+			if (event.type === "agent_start") this.agentRunsStarted += 1;
 			if (event.type === "auto_retry_start") this.sessionInternalRetries += 1;
 			if (event.type === "model_fallback_start") applyingFallback = true;
 			// SDK effort-only fallbacks suppress model_changed, but emit thinking_level_changed

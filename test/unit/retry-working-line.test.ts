@@ -145,8 +145,26 @@ function attachedChat() {
 
 type Chat = ReturnType<typeof mainChat>;
 
+const RETRY_START = {
+	type: "auto_retry_start",
+	attempt: 1,
+	maxAttempts: 3,
+	delayMs: 4_800,
+	errorMessage: "529 overloaded_error: Overloaded",
+} as AgentSessionEvent;
+const RETRY_END = { type: "auto_retry_end", success: true, attempt: 1 } as AgentSessionEvent;
+const FALLBACK_START = {
+	type: "model_fallback_start",
+	from: "anthropic/claude-haiku-4-5",
+	to: "openai/gpt-5.4",
+	reason: "529 overloaded_error: Overloaded",
+	attempt: 1,
+} as AgentSessionEvent;
+// A session settles its fallback after the turn on the fallback model ends.
+const FALLBACK_END = { type: "model_fallback_end", success: true, from: "openai/gpt-5.4" } as AgentSessionEvent;
+
 /** A turn whose first request fails at once and is retried after a wait: its second attempt starts at 5 s. */
-async function failFirstAttempt(chat: Chat): Promise<void> {
+async function failFirstAttempt(chat: Chat, retry: AgentSessionEvent = RETRY_START): Promise<void> {
 	await chat.emit({ type: "agent_start" } as AgentSessionEvent);
 	await chat.emit({ type: "turn_start" } as AgentSessionEvent);
 	now = 200;
@@ -155,16 +173,13 @@ async function failFirstAttempt(chat: Chat): Promise<void> {
 	await chat.emit({ type: "message_end", message: failed } as AgentSessionEvent);
 	await chat.emit({ type: "turn_end", message: failed, toolResults: [] } as unknown as AgentSessionEvent);
 	await chat.emit({ type: "agent_end", messages: [failed] } as AgentSessionEvent);
-	await chat.emit({
-		type: "auto_retry_start",
-		attempt: 1,
-		maxAttempts: 3,
-		delayMs: 4_800,
-		errorMessage: "529 overloaded_error: Overloaded",
-	} as AgentSessionEvent);
+	await chat.emit(retry);
 }
 
-async function answerSecondAttempt(chat: Chat): Promise<{ working: string[]; worked: string[] }> {
+async function answerSecondAttempt(
+	chat: Chat,
+	end: AgentSessionEvent = RETRY_END,
+): Promise<{ working: string[]; worked: string[] }> {
 	now = 5_000;
 	await chat.emit({ type: "agent_start" } as AgentSessionEvent);
 	await chat.emit({ type: "turn_start" } as AgentSessionEvent);
@@ -181,7 +196,7 @@ async function answerSecondAttempt(chat: Chat): Promise<{ working: string[]; wor
 	await chat.emit({ type: "message_end", message: answer } as AgentSessionEvent);
 	await chat.emit({ type: "turn_end", message: answer, toolResults: [] } as unknown as AgentSessionEvent);
 	await chat.emit({ type: "agent_end", messages: [answer] } as AgentSessionEvent);
-	await chat.emit({ type: "auto_retry_end", success: true, attempt: 1 } as AgentSessionEvent);
+	await chat.emit(end);
 	return { working, worked: chat.status() };
 }
 
@@ -207,28 +222,78 @@ describe("the working line counts a turn from its start through its retries (#55
 				chat.dispose();
 			}
 		});
-	}
 
-	test("subagent or stage chat: a retry cancelled during its wait ends the turn's count at the cancellation (#5535)", async () => {
-		const chat = attachedChat();
-		try {
-			await failFirstAttempt(chat);
-			now = 12_000;
-			await chat.emit({
-				type: "auto_retry_end",
-				success: false,
-				attempt: 1,
-				finalError: "Retry cancelled",
-			} as AgentSessionEvent);
-			const worked = chat.status();
-			assert.ok(
-				worked.some((line) => / for 12s/.test(line)),
-				`the turn counts until its retry was cancelled: ${worked.join(" | ")}`,
-			);
-		} finally {
-			chat.dispose();
-		}
-	});
+		test(`${name}: a turn moved to a fallback model keeps its count, and its finished row stays (#5535)`, async () => {
+			const chat = open();
+			try {
+				await failFirstAttempt(chat, FALLBACK_START);
+				const { working, worked } = await answerSecondAttempt(chat, FALLBACK_END);
+				assert.ok(
+					working.some((line) => / \(7s · /.test(line)),
+					`the fallback model's attempt counts from the turn's start: ${working.join(" | ")}`,
+				);
+				assert.ok(
+					worked.some((line) => / for 8s/.test(line)),
+					`the finished turn counts from its start: ${worked.join(" | ")}`,
+				);
+			} finally {
+				chat.dispose();
+			}
+		});
+
+		test(`${name}: a retry cancelled during its wait ends the turn's count at the cancellation (#5535)`, async () => {
+			const chat = open();
+			try {
+				await failFirstAttempt(chat);
+				now = 12_000;
+				await chat.emit({
+					type: "auto_retry_end",
+					success: false,
+					attempt: 1,
+					finalError: "Retry cancelled",
+				} as AgentSessionEvent);
+				const worked = chat.status();
+				assert.ok(
+					worked.some((line) => / for 12s/.test(line)),
+					`the turn counts until its retry was cancelled: ${worked.join(" | ")}`,
+				);
+			} finally {
+				chat.dispose();
+			}
+		});
+
+		test(`${name}: a model switch before a turn's first request leaves the turn its own count (#5535)`, async () => {
+			const chat = open();
+			try {
+				// A turn that finished at 2 s.
+				await chat.emit({ type: "agent_start" } as AgentSessionEvent);
+				await chat.emit({ type: "turn_start" } as AgentSessionEvent);
+				now = 2_000;
+				const done = assistant("Done.", "stop");
+				await chat.emit({ type: "message_end", message: done } as AgentSessionEvent);
+				await chat.emit({ type: "agent_end", messages: [done] } as AgentSessionEvent);
+				// A minute later the next prompt finds no key for its model and starts on the fallback model.
+				now = 60_000;
+				await chat.emit({ ...FALLBACK_START, reason: "No API key found for anthropic" } as AgentSessionEvent);
+				await chat.emit({ type: "agent_start" } as AgentSessionEvent);
+				await chat.emit({ type: "turn_start" } as AgentSessionEvent);
+				await chat.emit({ type: "message_start", message: assistant("", "stop") } as AgentSessionEvent);
+				now = 63_000;
+				await chat.emit({
+					type: "message_update",
+					message: assistant("Next.", "stop"),
+					assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Next." },
+				} as unknown as AgentSessionEvent);
+				const working = chat.status();
+				assert.ok(
+					working.some((line) => / \(3s · /.test(line)),
+					`the new turn counts from its own start: ${working.join(" | ")}`,
+				);
+			} finally {
+				chat.dispose();
+			}
+		});
+	}
 
 	/** The next attempt of a turn whose first request, sent at 1 s, failed: the chat opened while it waited. */
 	async function nextAttempt(emit: (event: AgentSessionEvent) => void, status: () => string[]) {
@@ -273,6 +338,37 @@ describe("the working line counts a turn from its start through its retries (#55
 			assert.ok(
 				rows.some((row) => / \(7s · /.test(row)),
 				`the next attempt counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
+			);
+		} finally {
+			view.dispose();
+		}
+	});
+
+	test("stage chat opened during the attempt after a retry: it counts from the turn's start (#5535)", async () => {
+		now = 8_000;
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		const { handle, state } = makeHandle(undefined, waitingTurn(), "running", fakeFooterAgentSession(true));
+		state.isStreaming = true;
+		// The next attempt, sent at 6 s, streams its answer.
+		const streaming = { ...assistant("Fixed the picker.", "stop"), timestamp: 6_000 };
+		Object.assign(handle, { streamingMessage: () => streaming });
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui: makeTestTui(30),
+		});
+		try {
+			const rows = plain(view.render(100));
+			assert.ok(
+				rows.some((row) => / \(7s · /.test(row)),
+				`the attempt counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
 			);
 		} finally {
 			view.dispose();

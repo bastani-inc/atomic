@@ -67,7 +67,7 @@ import { isSingleLeftClick } from "./single-click.ts";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
-import { type MeteredRunMessage, retriedRunInProgress, runInProgress } from "./working-run-meter.ts";
+import { type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
 
 export type {
 	ChatSessionHostBashRequest,
@@ -404,7 +404,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 */
 	hydrateRetryWait(messages?: readonly MeteredRunMessage[]): void {
 		if (this.state.disposed) return;
-		const run = messages === undefined ? undefined : retriedRunInProgress(messages);
+		const run = messages === undefined ? undefined : runInProgress(messages);
 		if (run?.startedAt !== undefined) {
 			this.state.workingRunMeter.awaitRetry(run.startedAt, run.settledTokens);
 			this.state.retryContinuesRun = true;
