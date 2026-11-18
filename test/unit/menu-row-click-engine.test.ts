@@ -5,9 +5,13 @@
  */
 import assert from "node:assert/strict";
 import { type Component, getKeybindings, setKeybindings } from "@bastani/atomic-tui";
-import { afterEach, beforeEach, test } from "vitest";
-import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
+import { afterEach, beforeEach, test, vi } from "vitest";
+import type {
+	ExtensionCommandContext,
+	ExtensionUIContext,
+} from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { showLlamaUi } from "../../packages/coding-agent/src/extensions/llama/ui.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
@@ -139,6 +143,33 @@ test("the wheel over a list shown from the engine in the prompt's place moves it
 		assert.match(selected(), /bravo/, ui.screen().join("\n"));
 	} finally {
 		shown.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("the wheel reaches a search result inside the engine's bundled model manager", async () => {
+	const ui = makeClickScreen();
+	let mounted: ReturnType<typeof showFromEngine> | undefined;
+	const custom: ExtensionUIContext["custom"] = (factory) => {
+		mounted = showFromEngine(ui, factory, false);
+		return new Promise(() => {});
+	};
+	void showLlamaUi({ ui: { custom } } as ExtensionCommandContext, async (manager) => {
+		await manager.searchModels(async () => [
+			{ id: "alpha/first", downloads: 10 },
+			{ id: "alpha/second", downloads: 5 },
+		]);
+	});
+	const shown = await mounted;
+	try {
+		ui.terminal.input("a");
+		ui.terminal.input("l");
+		await vi.waitFor(() => assert.match(ui.screen().join("\n"), /❯ alpha\/first/), { timeout: 5000 });
+		await ui.wheel("down", 4, ui.rowOf("alpha/first"));
+		await settle(ui);
+		assert.match(ui.screen().join("\n"), /❯ alpha\/second/);
+	} finally {
+		shown?.dispose();
 		ui.tui.stop();
 	}
 });

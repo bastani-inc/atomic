@@ -52,7 +52,7 @@ interface RowTarget<T> {
  *   confirms it, so anything that asks for confirmation from the keyboard asks the same way after a click.
  * - The press is left to the renderer, so a drag across rows still selects their text, and the renderer turns a press
  *   and release into a click only when the screen under the pointer did not change between them.
- * - A double or triple click, or a click with a modifier held, is a text-selection gesture and runs nothing.
+ * - A double or triple click does not run the row again. A modified click is a selection gesture only.
  * - The wheel over the list moves its selection when the list gives a `scroll` action.
  *
  * A list calls {@link clear} when it starts rendering, {@link add} for each row it draws an item on, and forwards

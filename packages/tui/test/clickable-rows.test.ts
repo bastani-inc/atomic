@@ -4,7 +4,8 @@ import { Editor, type EditorTheme } from "../src/components/editor.ts";
 import { SelectList, type SelectListTheme } from "../src/components/select-list.ts";
 import { SettingsList, type SettingsListTheme } from "../src/components/settings-list.ts";
 import { Text } from "../src/components/text.ts";
-import type { Component } from "../src/tui.ts";
+import { VStack } from "../src/components/v-stack.ts";
+import { type Component, Container, CURSOR_MARKER } from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -300,6 +301,93 @@ describe("clickable list rows", () => {
 		tui.stop();
 	});
 
+	it("an inline picker focused on a nested list blocks the transcript but not its own rows", async () => {
+		const terminal = new VirtualTerminal(40, 12);
+		const dialog = new Container();
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { getInlineDialog: () => dialog });
+		const behind = letters();
+		const choices = letters();
+		const chosen: string[] = [];
+		behind.onSelect = (item) => chosen.push(`behind:${item.value}`);
+		choices.onSelect = (item) => chosen.push(`dialog:${item.value}`);
+		tui.addChild(behind);
+		dialog.addChild(choices);
+		tui.addChild(dialog);
+		tui.setFocus(choices);
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			const rows = terminal.getViewport().flatMap((line, row) => (line.includes("delta") ? [row] : []));
+			assert.strictEqual(rows.length, 2);
+			for (const row of rows) {
+				terminal.sendInput(press(2, row));
+				terminal.sendInput(release(2, row));
+			}
+			assert.deepStrictEqual(chosen, ["dialog:delta"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("a clipped inline picker clicks the painted row, not the row above the clip", async () => {
+		const terminal = new VirtualTerminal(30, 2);
+		const picker = new Container();
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { getInlineDialog: () => picker });
+		const choices = letters();
+		const chosen: string[] = [];
+		choices.onSelect = (item) => chosen.push(item.value);
+		picker.addChild(choices);
+		picker.addChild(new Text(`${CURSOR_MARKER}Search`, 0, 0));
+		tui.setLayoutRoot(new VStack([{ component: picker, basis: 2 }]));
+		tui.setFocus(choices);
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			assert.match(terminal.getViewport()[0]!, /echo/);
+			terminal.sendInput(press(3, 0));
+			terminal.sendInput(release(3, 0));
+			assert.deepStrictEqual(chosen, ["echo"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("a focused dialog blocks links behind it but lets a link in the dialog open", async () => {
+		const terminal = new VirtualTerminal(40, 12);
+		const opened: string[] = [];
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { openUrl: (url) => opened.push(url) });
+		const link = (name: string) =>
+			new Text(`\x1b]8;;https://example.invalid/${name}\x1b\\${name}\x1b]8;;\x1b\\`, 0, 0);
+		tui.addChild(link("background"));
+		tui.start();
+		try {
+			tui.showOverlay(link("dialog"), { anchor: "bottom-left", width: 10 });
+			await terminal.waitForRender();
+			for (const row of [0, 11]) {
+				terminal.sendInput(press(2, row));
+				terminal.sendInput(release(2, row));
+			}
+			assert.deepStrictEqual(opened, ["https://example.invalid/dialog"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("a dialog takes clicks away from a lower overlay before the dialog's first paint", async () => {
+		const list = letters();
+		const chosen: string[] = [];
+		list.onSelect = (item) => chosen.push(item.value);
+		const view = await mount(list);
+		try {
+			const row = view.rowOf("delta");
+			view.tui.showOverlay(new Text("Confirm?", 0, 0), { anchor: "bottom-right", width: 10 });
+			await view.click(row);
+			assert.deepStrictEqual(chosen, []);
+		} finally {
+			view.tui.stop();
+		}
+	});
+
 	it("a press outside a focused dialog that closes before the release runs nothing behind it", async () => {
 		const terminal = new VirtualTerminal(40, 12);
 		const tui = new TuiAltScreen(terminal);
@@ -330,6 +418,30 @@ describe("clickable list rows", () => {
 		await view.click(view.rowOf("delta"), 4);
 		assert.deepStrictEqual(view.chosen, ["delta"]);
 		view.tui.stop();
+	});
+
+	it("a component that took a press does not receive a release behind a new modal", async () => {
+		const terminal = new VirtualTerminal(40, 12);
+		const tui = new TuiAltScreen(terminal);
+		const received: string[] = [];
+		tui.addChild({
+			render: () => ["button"],
+			invalidate() {},
+			handleMouse(event) {
+				received.push(event.type);
+				return { handled: true, capture: event.type === "press" };
+			},
+		});
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput(press(2, 0));
+			tui.showOverlay(new Text("Confirm?", 0, 0));
+			terminal.sendInput(release(2, 0));
+			assert.deepStrictEqual(received, ["press"]);
+		} finally {
+			tui.stop();
+		}
 	});
 
 	it("a dialog shown between the press and the release takes the click away from what was pressed outside it", async () => {

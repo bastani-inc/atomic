@@ -8,6 +8,7 @@ import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { HuggingFaceModel } from "../../packages/coding-agent/src/extensions/llama/huggingface.js";
 import { HuggingFaceSearch } from "../../packages/coding-agent/src/extensions/llama/huggingface-ui.js";
+import { showLlamaUi } from "../../packages/coding-agent/src/extensions/llama/ui.js";
 import { McpManagerView } from "../../packages/coding-agent/src/extensions/mcp/ui.js";
 import { FirstTimeSetupComponent } from "../../packages/coding-agent/src/modes/interactive/components/first-time-setup.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -105,7 +106,29 @@ test("a click on a first-run setup option picks it when the confirm key is remap
 	}
 });
 
-test("a click on a Hugging Face search result picks that model, and the wheel moves the selection", async () => {
+test("a click on a choice in the bundled model manager reaches the mounted picker", async () => {
+	const ui = makeClickScreen();
+	const chosen: string[] = [];
+	const custom: Parameters<typeof showLlamaUi>[0]["ui"]["custom"] = (factory) =>
+		new Promise((done) => {
+			void Promise.resolve(factory(ui.tui, theme, new KeybindingsManager(), done)).then((component) =>
+				ui.dock(component),
+			);
+		});
+	try {
+		void showLlamaUi({ ui: { custom } } as Parameters<typeof showLlamaUi>[0], async (manager) => {
+			const answer = await manager.select("Choose a model", ["First", "Second"]);
+			if (answer) chosen.push(answer);
+		});
+		await flushClicks();
+		await ui.click("Second");
+		assert.deepEqual(chosen, ["Second"]);
+	} finally {
+		ui.tui.stop();
+	}
+});
+
+test("a click on a bundled model search result picks that model, and the wheel moves the selection", async () => {
 	const ui = makeClickScreen(100, 40);
 	const models: HuggingFaceModel[] = [
 		{ id: "acme/tiny-GGUF", downloads: 10 },

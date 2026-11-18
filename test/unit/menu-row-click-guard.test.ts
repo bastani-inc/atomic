@@ -3,8 +3,8 @@
  * the list's confirm or open key) takes a click on those rows through the shared clickable-row path, or is listed
  * here with how a click reaches its rows, so a new list cannot ship keyboard-only.
  *
- * The check reads the source structurally: it finds each call that matches input against a choosing key, whatever the
- * input and the key's constant are called, and the component (class or object literal) that call belongs to.
+ * Audit every component that renders and handles keyboard input, independent of how it recognizes keys. Also check
+ * standalone handlers for the choosing keys. Views without selectable rows need a reason in the inventory.
  */
 import assert from "node:assert/strict";
 import { type Dirent, readdirSync, readFileSync } from "node:fs";
@@ -38,7 +38,67 @@ const TEXT_FIELD = "a text field: Enter submits what was typed, and there is no 
  * clickable rows themselves, and how a click reaches their rows. A component that has `handleMouse` and draws its rows
  * through `ClickableRows` or `ClickableRow` needs no entry.
  */
+const interactive = "packages/coding-agent/src/modes/interactive/components/";
+const forwards = (to: string): Route => ({ route: "forwards", to });
+const noRows = (reason: string): Route => ({ route: "no-rows", reason });
+const selector = forwards("the mounted selector");
+const transcript = noRows("scrollable output, not a row picker");
 const ROUTES: Record<string, Route> = {
+	"packages/coding-agent/src/extensions/llama/ui.ts#LlamaView": selector,
+	"packages/coding-agent/src/extensions/mcp/ui.ts#McpManagerView": selector,
+	"packages/coding-agent/src/modes/interactive-engine/remote-component.ts#RemoteComponent":
+		forwards("the engine component"),
+	[`${interactive}bordered-loader.ts#BorderedLoader`]: noRows("a progress indicator with a cancel key"),
+	[`${interactive}chat-session-host.ts#ChatSessionHost`]: noRows(
+		"the chat's scroll and text input; task rows belong to TaskInspector",
+	),
+	[`${interactive}chat-transcript.ts#ScrollableChatTranscriptComponent`]: transcript,
+	[`${interactive}chat-transcript.ts#ScrollableComponentViewport`]: transcript,
+	[`${interactive}config-selector.ts#ConfigSelectorComponent`]: selector,
+	[`${interactive}extension-selector.ts#ExtensionSelectorComponent`]: selector,
+	[`${interactive}model-selector.ts#ModelSelectorComponent`]: selector,
+	[`${interactive}oauth-selector.ts#OAuthSelectorComponent`]: selector,
+	[`${interactive}prompt-history-selector.ts#PromptHistorySelectorComponent`]: selector,
+	[`${interactive}scoped-models-selector.ts#ScopedModelsSelectorComponent`]: selector,
+	[`${interactive}selector.ts#FramedSelector`]: selector,
+	[`${interactive}show-images-selector.ts#ShowImagesSelectorComponent`]: selector,
+	[`${interactive}theme-selector.ts#ThemeSelectorComponent`]: selector,
+	[`${interactive}thinking-selector.ts#ThinkingSelectorComponent`]: selector,
+	[`${interactive}trust-selector.ts#TrustSelectorComponent`]: selector,
+	[`${interactive}user-message-selector.ts#UserMessageSelectorComponent`]: selector,
+	"packages/coding-agent/src/core/tools/ask-user-question/state/questionnaire-session.ts#component": forwards(
+		"the session's recorded question rows",
+	),
+	"packages/workflows/src/tui/workflows-listing.ts#component": forwards("the listing's recorded run rows"),
+	"packages/workflows/src/tui/workflows-listing.ts": {
+		route: "drawn-by",
+		component: "packages/workflows/src/tui/workflows-listing.ts#component",
+	},
+	[`${interactive}custom-editor.ts#CustomEditor`]: forwards("the editor's completion list"),
+	[`${interactive}extension-editor.ts#ExtensionEditorComponent`]: noRows(TEXT_FIELD),
+	[`${interactive}main-composer-keys.ts#MainComposerKeyOverlay`]: noRows("key help, with no row selection"),
+	[`${interactive}reserved-bottom-overlay.ts#ReservedBottomOverlay`]: forwards("the component in the overlay"),
+	[`${interactive}session-selector.ts#SessionSelectorComponent`]: selector,
+	[`${interactive}settings-picker.ts#SettingsPicker`]: selector,
+	[`${interactive}settings-selector-submenus.ts#SelectSubmenu`]: selector,
+	[`${interactive}settings-selector-submenus.ts#ThemeSubmenu`]: selector,
+	[`${interactive}settings-selector-submenus.ts#WarningSettingsSubmenu`]: selector,
+	[`${interactive}task-transcript-page.ts#TaskAgentTranscriptPage`]: forwards(
+		"the held question under the transcript",
+	),
+	[`${interactive}task-transcript-page.ts#TaskCommandOutputPage`]: transcript,
+	[`${interactive}tree-selector-component.ts#TreeSelectorComponent`]: selector,
+	[`${interactive}tree-selector-help.ts#SearchLine`]: noRows(TEXT_FIELD),
+	"packages/coding-agent/src/modes/interactive/interactive-session-routing.ts#view": selector,
+	"packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts#<object in showAgentPanel>": forwards("the agent panel"),
+	"packages/coding-agent/src/modes/rpc/task-ui-bridge.ts#<object in showTaskInspector>":
+		forwards("the task inspector"),
+	"packages/tui/src/alt-screen-search.ts#AltScreenSearchComponent": noRows("a text search and two navigation buttons"),
+	"packages/tui/src/components/cancellable-loader.ts#CancellableLoader": noRows(
+		"a progress indicator with a cancel key",
+	),
+	"packages/tui/src/components/input.ts#Input": noRows(TEXT_FIELD),
+	"packages/workflows/src/tui/overlay-adapter.ts#<object in makeComponent>": forwards("the workflow view"),
 	"packages/coding-agent/src/cli/startup-ui.ts#StartupDialogInputGuard": {
 		route: "no-rows",
 		reason:
@@ -142,8 +202,9 @@ interface ParsedFile {
 	readonly shapes: Shape[];
 	/** Each imported name, by the local name the file gives it. */
 	readonly imports: ReadonlyMap<string, { readonly source: string; readonly imported: string }>;
-	/** Whether the file names the shared clickable-row path. */
-	readonly sharedRows: boolean;
+	/** Components that construct their own shared rows. */
+	readonly sharedRows: ReadonlySet<Shape>;
+	readonly dispatchesMouse: ReadonlySet<Shape>;
 	/** What handles a choosing key: a component, or `undefined` for the file's own functions. */
 	readonly choosers: ReadonlySet<Shape | undefined>;
 }
@@ -175,6 +236,7 @@ function classMembers(body: readonly Node[]): Set<string> {
 			continue;
 		if (member.static || member.computed) continue;
 		const name = keyName(member.key);
+		if (name === "handleInput" && member.type === "ClassMethod" && !member.body.body.length) continue;
 		if (name !== undefined) members.add(name);
 	}
 	return members;
@@ -186,6 +248,16 @@ function objectMembers(properties: readonly Node[]): Set<string> {
 	for (const property of properties) {
 		if ((property.type !== "ObjectProperty" && property.type !== "ObjectMethod") || property.computed) continue;
 		const name = keyName(property.key);
+		const handler = property.type === "ObjectProperty" ? property.value : property;
+		if (
+			name === "handleInput" &&
+			(handler.type === "ObjectMethod" ||
+				handler.type === "ArrowFunctionExpression" ||
+				handler.type === "FunctionExpression") &&
+			handler.body.type === "BlockStatement" &&
+			!handler.body.body.length
+		)
+			continue;
 		if (name !== undefined) members.add(name);
 	}
 	return members;
@@ -249,11 +321,12 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 	}
 	// Local names given to a choosing key, such as `const KEYBIND_CONFIRM = "tui.select.confirm"`.
 	const aliases = new Set<string>();
-	let sharedRows = false;
+	const sharedRows = new Set<Shape>();
+	const dispatchesMouse = new Set<Shape>();
 	traverse(program, (node) => {
 		if (node.type === "VariableDeclarator" && node.id.type === "Identifier" && node.init?.type === "StringLiteral") {
 			if (CHOOSE_KEYS.has(node.init.value)) aliases.add(node.id.name);
-		} else if (node.type === "Identifier" && SHARED_ROWS.has(node.name)) sharedRows = true;
+		}
 	});
 	const shapes: Shape[] = [];
 	const shapeOf = new Map<Node, Shape>();
@@ -290,18 +363,43 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 				shapes.push(shape);
 				shapeOf.set(node, shape);
 			}
-		} else if (node.type === "CallExpression" || node.type === "OptionalCallExpression") {
+		} else if (
+			node.type === "NewExpression" ||
+			node.type === "CallExpression" ||
+			node.type === "OptionalCallExpression"
+		) {
 			const name = calleeName(node.callee);
-			if (name === undefined || !MATCHING_CALL.test(name)) return;
-			if (!node.arguments.some((argument) => namesChoosingKey(argument, aliases))) return;
+			const draws = node.type === "NewExpression" && name !== undefined && SHARED_ROWS.has(name);
+			const dispatches =
+				(name === "handleMouse" || name === "dispatchMouseEvent") &&
+				ancestors.some(
+					({ node: parent }) =>
+						(parent.type === "ClassMethod" ||
+							parent.type === "ObjectMethod" ||
+							parent.type === "ObjectProperty" ||
+							parent.type === "ClassProperty") &&
+						keyName(parent.key) === "handleMouse",
+				);
+			if (
+				!dispatches &&
+				!draws &&
+				!(
+					name &&
+					MATCHING_CALL.test(name) &&
+					node.arguments.some((argument) => namesChoosingKey(argument, aliases))
+				)
+			)
+				return;
 			// The innermost class or component object literal around the call owns it.
 			let owner: Shape | undefined;
 			for (let index = ancestors.length - 1; index >= 0 && owner === undefined; index--)
 				owner = shapeOf.get(ancestors[index]!.node);
-			choosers.add(owner);
+			if (dispatches && owner) dispatchesMouse.add(owner);
+			else if (draws && owner) sharedRows.add(owner);
+			else if (!draws && !dispatches) choosers.add(owner);
 		}
 	});
-	return { shapes, imports, sharedRows, choosers };
+	return { shapes, imports, sharedRows, dispatchesMouse, choosers };
 }
 
 /** The file a relative import of `source` from `file` names, among `known` files. */
@@ -327,7 +425,7 @@ interface Inventory {
 function clickInventory(files: readonly SourceFile[], routes: Readonly<Record<string, Route>>): Inventory {
 	const parsed = new Map<string, ParsedFile>();
 	for (const file of files) {
-		if (file.text.includes("class") || file.text.includes("matches")) parsed.set(file.path, parseFile(file));
+		if (/class|matches|handleInput/.test(file.text)) parsed.set(file.path, parseFile(file));
 	}
 	const classesByName = new Map<string, Shape[]>();
 	for (const { shapes } of parsed.values()) {
@@ -359,19 +457,37 @@ function clickInventory(files: readonly SourceFile[], routes: Readonly<Record<st
 			.flatMap((base) => lineage(base, new Set([...seen, shape]))),
 	];
 	const handlesMouse = (shape: Shape) => lineage(shape).some((ancestor) => ancestor.members.has("handleMouse"));
-	const drawsSharedRows = (shape: Shape) =>
-		handlesMouse(shape) && lineage(shape).some((ancestor) => parsed.get(ancestor.file)?.sharedRows === true);
+	const drawsSharedRows = (shape: Shape) => {
+		const ancestors = lineage(shape);
+		const handler = ancestors.find((ancestor) => ancestor.members.has("handleMouse"));
+		return (
+			handler &&
+			parsed.get(handler.file)?.dispatchesMouse.has(handler) &&
+			ancestors.some((ancestor) => parsed.get(ancestor.file)?.sharedRows.has(ancestor))
+		);
+	};
 	const shapeNamed = (name: string): Shape | undefined => {
 		const [file, component] = name.split("#");
 		return parsed.get(file ?? "")?.shapes.find((shape) => shape.name === component);
 	};
 
 	const choosers: string[] = [];
+	const audited = new Set<string>();
 	const missing: string[] = [];
 	for (const [path, { choosers: owners, shapes }] of parsed) {
-		for (const owner of owners) {
+		// Audit every keyboard-driven view, even when it delegates its key handling to an opaque helper. Looking
+		// only for a spelling of Enter (or a recognized decoder) would miss ordinary keyboard-only lists.
+		const views = shapes.filter((shape) => {
+			const members = lineage(shape);
+			return (
+				members.some((base) => base.members.has("render")) &&
+				members.some((base) => base.members.has("handleInput"))
+			);
+		});
+		for (const owner of new Set([...owners, ...views])) {
 			const name = owner === undefined ? path : `${owner.file}#${owner.name}`;
-			choosers.push(name);
+			audited.add(name);
+			if (owners.has(owner)) choosers.push(name);
 			if (owner !== undefined && drawsSharedRows(owner)) continue;
 			// A function outside any component, such as a key handler a list in the same file calls.
 			if (owner === undefined && shapes.some(drawsSharedRows)) continue;
@@ -383,7 +499,7 @@ function clickInventory(files: readonly SourceFile[], routes: Readonly<Record<st
 	}
 	const broken: string[] = [];
 	for (const [name, route] of Object.entries(routes)) {
-		if (!choosers.includes(name)) {
+		if (!audited.has(name)) {
 			broken.push(`${name}: handles no choosing key; remove it`);
 			continue;
 		}
@@ -476,6 +592,18 @@ const CHOOSING_CHECKS: readonly { readonly form: string; readonly input: string;
 	},
 ];
 
+for (const [form, body] of [
+	["a switch on a decoded key", "switch (parseKey(input)) { case 'enter': this.choose('red'); }"],
+	["a raw carriage return", String.raw`if (input === '\r') this.choose('red');`],
+	["a delegated key check", "if (shouldSelect(input)) this.choose('red');"],
+]) {
+	test(`a keyboard-only list using ${form} is reported`, () => {
+		const text = KEYBOARD_ONLY_LIST.replaceAll("INPUT", "input").replace(/if \(CHECK\).*?;/, body!);
+		const { missing } = clickInventory([{ path: "pkg/color-list.ts", text }], {});
+		assert.deepEqual(missing, ["pkg/color-list.ts#ColorList: has no handleMouse"]);
+	});
+}
+
 for (const { form, input, check } of CHOOSING_CHECKS) {
 	test(`a keyboard-only list that chooses its row with ${form} is reported until it takes clicks`, () => {
 		const source = KEYBOARD_ONLY_LIST.replaceAll("INPUT", input).replace("CHECK", check);
@@ -506,6 +634,25 @@ export const keyboardOnly = {
 	const { choosers, missing } = clickInventory([{ path: "pkg/lists.ts", text: source }], {});
 	assert.deepEqual(choosers, ["pkg/lists.ts#ClickableList", "pkg/lists.ts#keyboardOnly"]);
 	assert.deepEqual(missing, ["pkg/lists.ts#keyboardOnly: has no handleMouse"]);
+});
+
+test("another component's shared rows do not cover a keyboard-only list with an unrelated mouse handler", () => {
+	const text = `${KEYBOARD_ONLY_LIST.replaceAll("INPUT", "input").replace("CHECK", "matchesKey(input, 'enter')").replace("invalidate():", "handleMouse(event: TuiMouseEvent) { if (event.type === 'wheel') this.selected = 0; } invalidate():")}\nclass Other { rows = new ClickableRows(); }`;
+	assert.deepEqual(clickInventory([{ path: "pkg/list.ts", text }], {}).missing, [
+		"pkg/list.ts#ColorList: takes clicks, but draws no ClickableRows",
+	]);
+});
+
+test("constructing shared rows without routing mouse input to them still reports a keyboard-only list", () => {
+	const text = KEYBOARD_ONLY_LIST.replaceAll("INPUT", "input")
+		.replace("CHECK", "matchesKey(input, 'enter')")
+		.replace(
+			"private selected",
+			"private rows = new ClickableRows(); handleMouse() { return undefined; } private selected",
+		);
+	assert.deepEqual(clickInventory([{ path: "pkg/list.ts", text }], {}).missing, [
+		"pkg/list.ts#ColorList: takes clicks, but draws no ClickableRows",
+	]);
 });
 
 test("a list that inherits its click handling and its clickable rows from a base class is not reported", () => {

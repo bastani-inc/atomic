@@ -733,6 +733,10 @@ export class InteractiveModeBase {
 			terminal: options.terminal,
 			copyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 			wheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
+			getInlineDialog: () => {
+				const mounted = this.editorContainer.children.at(-1);
+				return mounted === this.editor ? undefined : mounted;
+			},
 			onRightClickPaste: this.onRightClickPaste,
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,

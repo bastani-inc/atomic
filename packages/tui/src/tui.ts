@@ -43,6 +43,11 @@ export interface TuiMouseEvent {
 	clickCount?: number;
 }
 
+/** Identity changes whenever a dialog gains or loses pointer ownership. */
+export interface PointerFocus {
+	readonly owner?: Component;
+}
+
 export interface TuiMouseEventResult {
 	/** Stop propagation and suppress renderer-level fallback behavior. */
 	handled?: boolean;
@@ -538,6 +543,7 @@ export abstract class TuiBase extends Container implements TUI {
 	abstract readonly mode: TuiMode;
 	public terminal: Terminal;
 	private focusedComponent: Component | null = null;
+	private pointerFocus: PointerFocus = {};
 	private inputListeners = new Set<TuiInputListener>();
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
@@ -706,6 +712,7 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 
 		this.focusedComponent = nextFocus;
+		this.getPointerFocus();
 
 		if (isFocusable(nextFocus)) {
 			nextFocus.focused = true;
@@ -771,7 +778,7 @@ export abstract class TuiBase extends Container implements TUI {
 		return this.getMountedRoots().some((child) => this.containsComponent(child, component));
 	}
 
-	private containsComponent(root: Component, target: Component): boolean {
+	protected containsComponent(root: Component, target: Component): boolean {
 		if (root === target) return true;
 		if (!(root instanceof Container)) return false;
 		return root.children.some((child) => this.containsComponent(child, target));
@@ -940,11 +947,9 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	/**
-	 * The overlay that holds keyboard focus and was shown to take it, as a dialog is. While there is one, the pointer
-	 * reaches only it and what is drawn above it: a click elsewhere runs nothing behind it. An overlay shown with
-	 * `nonCapturing` never blocks what is under it.
+	 * The dialog that holds keyboard focus. Non-capturing overlays do not own clicks outside their bounds.
 	 */
-	protected getModalOverlay(): Component | undefined {
+	protected getModalOwner(): Component | undefined {
 		const focused = this.focusedComponent;
 		if (!focused) return undefined;
 		return this.overlayStack.find(
@@ -955,12 +960,24 @@ export abstract class TuiBase extends Container implements TUI {
 		)?.component;
 	}
 
+	/** A gesture must stay with one modal owner, even if a dialog opens and closes between two input reports. */
+	protected getPointerFocus(): PointerFocus {
+		const owner = this.getModalOwner();
+		if (this.pointerFocus.owner !== owner) this.pointerFocus = owner ? { owner } : {};
+		return this.pointerFocus;
+	}
+
+	protected modalContainsPoint(owner: Component, x: number, y: number): boolean {
+		return this.overlayAt(x, y)?.component === owner;
+	}
+
 	/**
 	 * Offer `event` to the topmost overlay drawn under the pointer. `hit` says an overlay owns the point, so nothing in
 	 * the layout behind it takes the event; while a dialog holds focus, it owns every point outside it as well.
 	 */
 	protected dispatchMouseToOverlay(event: TuiMouseEvent): { hit: boolean; result?: TuiMouseDispatchResult } {
-		const modal = this.getModalOverlay();
+		const modal = this.getPointerFocus().owner;
+		if (modal && !this.modalContainsPoint(modal, event.screenX, event.screenY)) return { hit: true };
 		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
 			const layout = this.renderedOverlayLayouts[index]!;
 			if (
@@ -969,9 +986,9 @@ export abstract class TuiBase extends Container implements TUI {
 				event.screenY < layout.row ||
 				event.screenY >= layout.row + layout.height
 			) {
-				if (layout.entry.component === modal) return { hit: true };
 				continue;
 			}
+			if (!this.overlayStack.includes(layout.entry) || !this.isOverlayVisible(layout.entry)) return { hit: true };
 			const result = dispatchMouseEvent(layout.entry.component, {
 				...event,
 				x: event.screenX - layout.col,
@@ -986,7 +1003,7 @@ export abstract class TuiBase extends Container implements TUI {
 					}
 				: { hit: true };
 		}
-		return { hit: modal !== undefined };
+		return { hit: false };
 	}
 
 	/** Check if an overlay entry is currently visible */

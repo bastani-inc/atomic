@@ -565,6 +565,55 @@ describe("pi 1.2.0 wheel input under a focused overlay", () => {
  * `false`, rather than consuming the key and freezing the transcript.
  */
 describe("an asynchronous overlay handler", () => {
+	test("a dialog that opens and closes before an asynchronous press is replayed takes the click away", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		const clicks: string[] = [];
+		try {
+			const overlay = Object.assign(new AsyncOverlay(), {
+				handleMouse(event: TuiMouseEvent) {
+					if (event.type === "click") clicks.push("row");
+					return undefined;
+				},
+			});
+			mountFocusedOverlay(fixture, overlay);
+			fixture.terminal.input("\x1b[<0;2;40M");
+			fixture.tui.showOverlay(new Text("Confirm?", 0, 0)).hide();
+			await settle(fixture);
+			fixture.terminal.input("\x1b[<0;2;40m");
+			await settle(fixture);
+			expect(clicks).toEqual([]);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("an asynchronous mouse press cannot select the different row painted before replay", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		const clicks: string[] = [];
+		let item = "first";
+		try {
+			mountFocusedOverlay(
+				fixture,
+				Object.assign(new AsyncOverlay(), {
+					render: () => [item],
+					handleMouse(event: TuiMouseEvent) {
+						if (event.type === "click") clicks.push(item);
+						return undefined;
+					},
+				}),
+			);
+			fixture.terminal.input("\x1b[<0;2;40M");
+			item = "second";
+			fixture.tui.renderNow();
+			await settle(fixture);
+			fixture.terminal.input("\x1b[<0;2;40m");
+			await settle(fixture);
+			expect(clicks).toEqual([]);
+		} finally {
+			fixture.stop();
+		}
+	});
+
 	test("a handler resolving undefined still pages the transcript", async () => {
 		const fixture = createFixture({ mountOverlay: false });
 		try {

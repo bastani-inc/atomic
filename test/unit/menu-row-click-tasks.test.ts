@@ -233,9 +233,9 @@ function boardInspector(place: (component: Component) => void, task: string) {
 	};
 }
 
-for (const key of ["o", "alt+o"] as const) {
-	test(`a click on a /tasks row opens it when the open key is ${key}, as that key does`, async () => {
-		setKeybindings(new KeybindingsManager({ "app.list.open": [key] }));
+for (const binding of ["o", "alt+o", "ctrl+f1", ["alt+shift+f3", "ctrl+pageDown"]] as const) {
+	test(`a click on a /tasks row opens it when the open binding is ${binding}`, async () => {
+		setKeybindings(new KeybindingsManager({ "app.list.open": typeof binding === "string" ? binding : [...binding] }));
 		const ui = makeClickScreen(100);
 		const board = boardInspector((component) => ui.dock(component), "Review indexed sources");
 		try {

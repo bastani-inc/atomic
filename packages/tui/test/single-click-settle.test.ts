@@ -133,6 +133,40 @@ describe("a single click's action waits until it cannot become a double-click", 
 		assert.deepStrictEqual(acted, []);
 	});
 
+	for (const capture of [false, true]) {
+		it(`a dialog opened and closed during a ${capture ? "captured" : "selection"} press takes the click away`, async () => {
+			const { terminal, tui, clicks } = settleFixture({ capture });
+			tui.start();
+			try {
+				await terminal.waitForRender();
+				terminal.sendInput(press(1, 0));
+				const dialog = tui.showOverlay(new Text("Confirm?", 0, 0), { anchor: "bottom-right", width: 10 });
+				dialog.hide();
+				terminal.sendInput(release(1, 0));
+				assert.deepStrictEqual(clicks, []);
+			} finally {
+				tui.stop();
+			}
+		});
+	}
+
+	it("a dialog that opens and closes before a waiting click settles invalidates only that click", async () => {
+		const { terminal, tui, acted, clicks, click } = settleFixture();
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			click(1, 0);
+			const dialog = tui.showOverlay(new Text("Confirm?", 0, 0), { anchor: "bottom-right", width: 10 });
+			dialog.hide();
+			click(1, 1);
+			assert.deepStrictEqual(clicks, ["first", "second"]);
+			await sleep(MULTI_CLICK_INTERVAL_MS + 100);
+			assert.deepStrictEqual(acted, ["second"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("never runs when a dialog takes focus before the click settles", async () => {
 		const { terminal, tui, acted, clicks, click } = settleFixture();
 		tui.start();

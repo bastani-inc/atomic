@@ -123,6 +123,7 @@ export {
 	Key,
 	type KeyEventType,
 	type KeyId,
+	keyInput,
 	matchesKey,
 	parseKey,
 	setKittyProtocolActive,

@@ -541,7 +541,11 @@ pi.registerCommand("pick", {
 
 ### Pattern 1c: Clickable rows in your own list
 
-`Selector`, `SelectList` and `SettingsList` run a row on one click already. A list you draw yourself gets the same behaviour from `ClickableRows` in `@bastani/atomic-tui`: a single left click runs the row as moving there and pressing Enter would, a press and drag still selects text, a double or triple click runs nothing, and the wheel moves the selection when you pass a `scroll` action.
+`Selector`, `SelectList` and `SettingsList` run a row on one click already. For a list you draw yourself, use `ClickableRows` from `@bastani/atomic-tui`. Record each row while rendering, and forward `handleMouse` and `paintedRowKey` to the recorded rows, including through any wrapper. A single left click runs the row, dragging selects text, and a double or triple click does not run the row again. Pass a `scroll` action to let the wheel move the selection.
+
+Call the same action from your click and keyboard handlers. If you forward terminal input instead, `keyInput(key)` encodes a key returned by `getKeybindings().getKeys(action)`, including modified function keys.
+
+If you host your own fullscreen renderer and mount a dialog directly in its layout, pass `getInlineDialog: () => currentDialog` to `TuiAltScreen`. Return `undefined` when it is closed. The dialog owns clicks while it or one of its children has focus; capturing overlays work automatically.
 
 ```typescript
 import { ClickableRows, type Component, type TuiMouseEvent } from "@bastani/atomic-tui";
