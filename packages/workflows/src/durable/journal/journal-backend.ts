@@ -979,7 +979,13 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			staging.unregisterExecutionStorages();
 		}
 	}
-	/** Replaces the run's state with `staging`'s, which folded the run's whole history. */
+	/**
+	 * Replaces the run's state with `staging`'s, which folded the run's whole history, as a direct rebuild run now would
+	 * leave it. Every other change to the run's state waits in the run's queue behind the rebuild, except
+	 * `releaseCheckpointScope` and `noteRecordedCheckpoint`, which may run between the staging's turns. A scope released
+	 * meanwhile stays released: what the staging kept of it is let go of here (#5480). A checkpoint noted meanwhile goes,
+	 * as a direct rebuild drops a noted checkpoint the journal does not hold yet.
+	 */
 	private adoptRun(runId: string, staging: JournalDurableBackend<Journal>): void {
 		this.projection.adoptWorkflow(runId, staging.projection);
 		const take = <Value>(into: Map<string, Value>, from: Map<string, Value>) => {
@@ -998,9 +1004,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const staged = staging.ownCheckpoints.get(runId);
 		if (own === undefined || staged === undefined) return;
 		for (const scope of staged.scopes) own.scopes.add(scope);
-		for (const [scope, keys] of own.retained) {
-			keys.length = 0;
-			for (const key of staged.retained.get(scope) ?? []) keys.push(key);
+		for (const [scope, keys] of staged.retained) {
+			const retained = own.retained.get(scope);
+			if (retained === undefined) {
+				this.projection.forgetCheckpoints(runId, keys);
+				continue;
+			}
+			retained.length = 0;
+			for (const key of keys) retained.push(key);
 		}
 	}
 	private *refresh(runId: string): Operation<void> {
