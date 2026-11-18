@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { SessionManager } from "@bastani/atomic";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { pendingStageMessagesForDurableRun } from "../../packages/workflows/src/durable/backend.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -21,6 +23,8 @@ import {
 	PENDING_STAGE_READY_STALL_MS,
 	WorkflowPendingStageDeliveryFailedError,
 } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
+import { ensurePostMortemStageHandle } from "../../packages/workflows/src/runs/foreground/postmortem-stage-chat.js";
+import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { rehydrateError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { PENDING_STAGE_SETTLED_MESSAGE_LIMIT } from "../../packages/workflows/src/shared/pending-stage-retention.js";
@@ -196,6 +200,42 @@ async function fixture() {
 		},
 	};
 }
+
+test("a full publication from the same worker does not invalidate a finished stage's transcript read (#5577)", async () => {
+	const f = await fixture();
+	const registry = createStageControlRegistry();
+	const sessions = new MemorySessionStore();
+	const finish = Promise.withResolvers<void>();
+	try {
+		const session = await SessionManager.create(sessions, process.cwd());
+		await session.appendMessage({ role: "user", content: "original", timestamp: 1 });
+		const finished = stage("finished", { status: "completed", sessionId: session.getSessionId() });
+		await f.handoff.publish(f.first, [childRun([finished])]);
+		const record = f.store.run(descriptor.childRunId)!.stages[0]!;
+		const started = Promise.withResolvers<void>();
+		const load = sessions.load.bind(sessions);
+		vi.spyOn(sessions, "load").mockImplementationOnce(async (id) => {
+			started.resolve();
+			await finish.promise;
+			return load(id);
+		});
+		const opening = ensurePostMortemStageHandle(descriptor.childRunId, record, {
+			store: f.store,
+			registry,
+			adapters: { sessionStore: sessions, agentSession: { create: async () => assert.fail("lazy session") } },
+		});
+		await started.promise;
+		await f.handoff.publish(f.first, [childRun([finished])]);
+		assert.notEqual(f.store.run(descriptor.childRunId)!.stages[0], record);
+		finish.resolve();
+		assert.equal((await opening).ok, true);
+	} finally {
+		finish.resolve();
+		await registry.clear();
+		await sessions.close();
+		await f.close();
+	}
+});
 
 test("a published child subtree appears once under the root and keeps root-owned queued messages (#3869)", async () => {
 	const f = await fixture();

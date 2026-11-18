@@ -26,6 +26,7 @@ import {
 	stageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import { ownsStageRecord, stageRecordOwner } from "../shared/stage-record-owner.js";
 import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import { type Store, store } from "../shared/store.js";
 import { readGraphStoreRun, readGraphStoreSnapshot } from "../shared/store-observation.js";
@@ -123,7 +124,9 @@ export function createPostMortemHandleResolver(
 		// A fenced attempt's stage loses its live session id in the store; its last session is still
 		// recorded on the stage's session checkpoints in the journal.
 		const runStore = deps.store ?? store;
-		const owningRecord = runStore.run(runId)?.stages.find((candidate) => candidate.id === stageId);
+		const currentRecord = () => runStore.run(runId)?.stages.find((candidate) => candidate.id === stageId);
+		const record = currentRecord();
+		const owner = record && stageRecordOwner(record);
 		let sessionId = found.sessionId;
 		if (sessionId === undefined && found.workerExecution !== undefined) {
 			const check = beginStageRegistrationCheck(deps.stageControlRegistry ?? stageControlRegistry, runId);
@@ -139,8 +142,7 @@ export function createPostMortemHandleResolver(
 			...(pooledEnded ? { status: "failed" as const } : {}),
 			...(sessionId === undefined ? {} : { sessionId }),
 		};
-		if (runStore.run(runId)?.stages.find((candidate) => candidate.id === stageId) !== owningRecord)
-			return { ok: false, reason: "closed" };
+		if (!ownsStageRecord(owner, currentRecord())) return { ok: false, reason: "closed" };
 		return ensurePostMortemStageHandle(runId, stage, postMortemDepsForRun(runId, deps));
 	};
 }

@@ -141,8 +141,7 @@ function registerCompletedChatHandles(
 			deps.cwd,
 			deps.defaultSessionDir,
 			sessionStore,
-			deps.stageUiBroker ?? currentStageUiBroker(),
-			stage,
+			{ store: deps.store, record: stage, stageUiBroker: deps.stageUiBroker ?? currentStageUiBroker() },
 		);
 		completedChatUnregisters.set(handle, registry.register(handle));
 		registrations.set(key, new WeakRef(handle));

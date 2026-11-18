@@ -303,6 +303,9 @@ describe("ensurePostMortemStageHandle", () => {
 		test(`${resolve.name} does not resurrect a disposed run's registration after clear(runId) (#5577)`, async () => {
 			const registry = createStageControlRegistry();
 			const stage = completedStage(retainedSession("clear-one"));
+			const missing = await JsonlSessionStore.open(join(tempDir, "host"), { exactDirectory: true });
+			const pooled = await JsonlSessionStore.open(tempDir, { exactDirectory: true });
+			const closed = vi.spyOn(pooled, "close");
 			const store = createStore();
 			const stageUiBroker = new StageUiBroker(store);
 			store.recordRunStart({
@@ -316,8 +319,8 @@ describe("ensurePostMortemStageHandle", () => {
 			});
 			const started = Promise.withResolvers<void>();
 			const finish = Promise.withResolvers<void>();
-			const load = sessionStore.load.bind(sessionStore);
-			vi.spyOn(sessionStore, "load").mockImplementationOnce(async (id) => {
+			const load = pooled.load.bind(pooled);
+			vi.spyOn(pooled, "load").mockImplementationOnce(async (id) => {
 				started.resolve();
 				await finish.promise;
 				return load(id);
@@ -328,14 +331,20 @@ describe("ensurePostMortemStageHandle", () => {
 					store,
 					stageUiBroker,
 					adapters: adaptersRecording(mockSession(), { creates: 0 }),
+					sessionStore: missing,
+					pooledSessionStore: async () => pooled,
 				});
 				await started.promise;
 				await registry.clear("run-1");
 				finish.resolve();
 				assert.deepEqual(await opening, { ok: false, reason: "closed" });
 				assert.equal(stageUiBroker.currentStageOwner("run-1", stage.id), undefined);
+				assert.equal(closed.mock.calls.length, 1, "no registered handle took ownership of the opened pooled store");
 			} finally {
 				finish.resolve();
+				if (closed.mock.calls.length === 0) await pooled.close();
+				closed.mockRestore();
+				await missing.close();
 				await registry.clear();
 			}
 		});

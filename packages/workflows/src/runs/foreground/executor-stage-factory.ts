@@ -481,7 +481,10 @@ export function createWorkflowStageFactory(input: {
 			}
 		});
 		const owningRun = input.activeStore.run(input.runId);
-		const uiOwner = input.stageUiBroker.claimStage(input.runId, stageId, stageSnapshot);
+		const uiOwner = input.stageUiBroker.claimStage(input.runId, stageId, {
+			store: input.activeStore,
+			record: stageSnapshot,
+		});
 		const innerCtx = createInnerStageContext({
 			stageId,
 			stageName: name,

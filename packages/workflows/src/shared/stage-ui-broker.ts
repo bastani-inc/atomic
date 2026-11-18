@@ -11,6 +11,7 @@ import type { StageQuestionnaireInput } from "../extension/workflow-human-input.
 import { type PrimitivePromptAnswer, type PrimitivePromptKind, requirePrimitivePromptAnswer } from "./prompt-answer.js";
 import { createSessionScopedSingleton } from "./session-scoped-singleton.js";
 import type { StageInputAnswer, StagePromptAdapter } from "./stage-prompt.js";
+import { ownsStageRecord, type StageRecordOwner, stageRecordOwner } from "./stage-record-owner.js";
 import type { StagePromptAnswerSource, Store } from "./store.js";
 import { currentWorkflowStore } from "./store-factory.js";
 import type { PendingPrompt, StageInputRequest, StageSnapshot } from "./store-types.js";
@@ -108,7 +109,7 @@ interface StageRegistration {
 const ownershipKey = Symbol.for("atomic-workflows/stage-ui-owners@1");
 interface RouteOrigin {
 	current: boolean;
-	readonly record?: WeakRef<StageSnapshot>;
+	readonly source?: { readonly store: WeakRef<Store>; readonly runId: string; readonly record: StageRecordOwner };
 }
 type Origins = Map<string, WeakRef<RouteOrigin>>;
 interface StageDirectory {
@@ -132,7 +133,15 @@ const retiredOrigins = new FinalizationRegistry<{
 	if (origins?.get(key) === ref) origins.delete(key);
 });
 export function stageRouteIsCurrent(producer: AbortSignal): boolean {
-	return ownership.producers.get(producer)?.current ?? !producer.aborted;
+	const origin = ownership.producers.get(producer);
+	if (!origin) return !producer.aborted;
+	const source = origin.source;
+	if (!origin.current || !source) return origin.current;
+	const record = source.store
+		.deref()
+		?.run(source.runId)
+		?.stages.find((stage) => stage.id === source.record.stageId);
+	return ownsStageRecord(source.record, record);
 }
 
 export class StageUiBroker {
@@ -205,17 +214,29 @@ export class StageUiBroker {
 		if (statusesChanged) this.notifyStatusesChanged();
 	}
 
-	claimStage(runId: string, stageId: string, record?: StageSnapshot, reopen = false): StageUiOwner {
-		record ??= this.store.run(runId)?.stages.find((stage) => stage.id === stageId);
+	claimStage(
+		runId: string,
+		stageId: string,
+		{
+			store = this.store,
+			record = store.run(runId)?.stages.find((stage) => stage.id === stageId),
+			reopen = false,
+		}: { store?: Store; record?: StageSnapshot; reopen?: boolean } = {},
+	): StageUiOwner {
 		const stageKey = key(runId, stageId);
 		const previous = this.owners.get(stageKey);
 		const controller = new AbortController();
 		const prior = this.origins.get(stageKey);
 		let origin = prior?.deref();
-		if (!reopen || origin === undefined || origin.record?.deref() !== record) {
+		if (!reopen || origin === undefined || !ownsStageRecord(origin.source?.record, record)) {
 			if (origin) origin.current = false;
 			if (prior) retiredOrigins.unregister(prior);
-			origin = { current: true, ...(record === undefined ? {} : { record: new WeakRef(record) }) };
+			origin = {
+				current: true,
+				...(record === undefined
+					? {}
+					: { source: { store: new WeakRef(store), runId, record: stageRecordOwner(record) } }),
+			};
 			const ref = new WeakRef(origin);
 			this.origins.set(stageKey, ref);
 			retiredOrigins.register(origin, { directory: new WeakRef(this.origins), key: stageKey, ref }, ref);

@@ -28,6 +28,7 @@
 
 import { type SessionStore, type WorktreeRootMapping, withWorktreeRootMappings } from "@bastani/atomic";
 import { isReopenableSession } from "../../shared/session-transcript.js";
+import { ownsStageRecord, type StageRecordOwner, stageRecordOwner } from "../../shared/stage-record-owner.js";
 import { stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
@@ -80,7 +81,7 @@ async function reopenableSessionStore(
 	stageId: string,
 	sessionId: string,
 	deps: PostMortemStageChatDeps,
-): Promise<SessionStore | undefined> {
+): Promise<{ store: SessionStore; openedHere?: true } | undefined> {
 	const sessionStore = await stageSessionStore(
 		{
 			sessionStore:
@@ -89,10 +90,10 @@ async function reopenableSessionStore(
 		},
 		deps.defaultSessionDir,
 	);
-	if (await isReopenableSession(sessionStore, sessionId)) return sessionStore;
+	if (await isReopenableSession(sessionStore, sessionId)) return { store: sessionStore };
 	const pooled = await deps.pooledSessionStore?.().catch(() => undefined);
 	if (pooled === undefined) return undefined;
-	if (await isReopenableSession(pooled, sessionId)) return pooled;
+	if (await isReopenableSession(pooled, sessionId)) return { store: pooled, openedHere: true };
 	await pooled.close();
 	return undefined;
 }
@@ -124,13 +125,7 @@ function stageRecord(runId: string, stageId: string, deps: PostMortemStageChatDe
 	return deps.store?.run(runId)?.stages.find((stage) => stage.id === stageId);
 }
 
-function mayReopen(
-	runId: string,
-	stageId: string,
-	deps: PostMortemStageChatDeps,
-	record: StageSnapshot | undefined,
-): boolean {
-	if (stageRecord(runId, stageId, deps) !== record) return false;
+function mayReopen(runId: string, stageId: string, deps: PostMortemStageChatDeps): boolean {
 	const owner = deps.stageUiBroker?.currentStageOwner(runId, stageId);
 	const registered = deps.registry.peek(runId, stageId)?.stageUiSignal;
 	return registered?.aborted !== true && (owner === undefined || registered === owner);
@@ -151,7 +146,7 @@ export async function ensurePostMortemStageHandle(
 ): Promise<EnsurePostMortemStageHandleResult> {
 	if (!reopensForPostMortem(stage)) return { ok: false, reason: "not_terminal" };
 	const record = stageRecord(runId, stage.id, deps);
-	if (!mayReopen(runId, stage.id, deps, record)) return { ok: false, reason: "closed" };
+	if (!mayReopen(runId, stage.id, deps)) return { ok: false, reason: "closed" };
 	const existing = deps.registry.claim(runId, stage.id);
 	if (existing !== undefined && existing.isDisposed !== true) {
 		return { ok: true, handle: existing };
@@ -170,7 +165,7 @@ export async function acquirePostMortemStageHandle(
 ): Promise<AcquirePostMortemStageHandleResult> {
 	if (!reopensForPostMortem(stage)) return { ok: false, reason: "not_terminal" };
 	const record = stageRecord(runId, stage.id, deps);
-	if (!mayReopen(runId, stage.id, deps, record)) return { ok: false, reason: "closed" };
+	if (!mayReopen(runId, stage.id, deps)) return { ok: false, reason: "closed" };
 	const existing = deps.registry.peek(runId, stage.id);
 	if (existing !== undefined && existing.isDisposed !== true) {
 		return {
@@ -196,12 +191,17 @@ async function withSavedStage<T extends { ok: true }>(
 	const sessionId = stage.sessionId;
 	if (sessionId === undefined) return { ok: false, reason: "no_session" };
 	const check = beginStageRegistrationCheck(deps.registry, runId);
+	const owner: StageRecordOwner | undefined = record && stageRecordOwner(record);
+	let unused: SessionStore | undefined;
 	try {
-		const sessionStore = await reopenableSessionStore(runId, stage.id, sessionId, deps);
-		if (!check.current() || !mayReopen(runId, stage.id, deps, record)) return { ok: false, reason: "closed" };
-		if (sessionStore === undefined) return { ok: false, reason: "invalid_session" };
-		return register(() =>
-			withWorktreeRootMappings(deps.worktreeRootMappings ?? [], () =>
+		const selected = await reopenableSessionStore(runId, stage.id, sessionId, deps);
+		if (selected?.openedHere) unused = selected.store;
+		const current = stageRecord(runId, stage.id, deps);
+		if (!check.current() || !ownsStageRecord(owner, current) || !mayReopen(runId, stage.id, deps))
+			return { ok: false, reason: "closed" };
+		if (selected === undefined) return { ok: false, reason: "invalid_session" };
+		return register(() => {
+			const handle = withWorktreeRootMappings(deps.worktreeRootMappings ?? [], () =>
 				createPostMortemStageHandle(
 					runId,
 					stage,
@@ -209,14 +209,16 @@ async function withSavedStage<T extends { ok: true }>(
 					adapters,
 					deps.cwd,
 					deps.defaultSessionDir,
-					sessionStore,
-					deps.stageUiBroker,
-					record,
+					selected.store,
+					{ stageUiBroker: deps.stageUiBroker, store: deps.store, record: current },
 				),
-			),
-		);
+			);
+			unused = undefined;
+			return handle;
+		});
 	} finally {
 		check.release();
+		if (unused) await unused.close();
 	}
 }
 
@@ -233,10 +235,13 @@ export function createPostMortemStageHandle(
 	cwd: string | undefined,
 	defaultSessionDir: string | undefined,
 	sessionStore?: SessionStore,
-	stageUiBroker?: StageUiBroker,
-	stageRecord?: StageSnapshot,
+	owner?: { stageUiBroker?: StageUiBroker; store?: Store; record?: StageSnapshot },
 ): StageControlHandle {
-	const uiOwner = stageUiBroker?.claimStage(runId, stage.id, stageRecord, true);
+	const uiOwner = owner?.stageUiBroker?.claimStage(runId, stage.id, {
+		store: owner.store,
+		record: owner.record,
+		reopen: true,
+	});
 	const context = createStageContext({
 		runId,
 		stageId: stage.id,
@@ -278,7 +283,7 @@ export function createPostMortemStageHandle(
 		stageId: stage.id,
 		stageName: stage.name,
 		status: "completed" as const,
-		stageRecord,
+		stageRecord: owner?.record,
 		stageUiSignal: uiOwner?.signal,
 		sessionStore,
 		get sessionId() {

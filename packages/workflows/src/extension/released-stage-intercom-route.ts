@@ -8,6 +8,7 @@ import {
 } from "../runs/foreground/stage-control-registry.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
+import { ownsStageRecord, stageRecordOwner } from "../shared/stage-record-owner.js";
 import type { Store } from "../shared/store.js";
 import { type CompletedStageHandleResolver, createCompletedStageAnswerer } from "./completed-stage-intercom-ask.js";
 
@@ -52,16 +53,12 @@ function announcementFor(
 	const stage = run?.stages.find((candidate) => candidate.id === released.stageId);
 	// Only a stage that connected to Intercom at startup was a peer before release.
 	if (run === undefined || stage?.pendingStageDeliveryAvailable !== true) return undefined;
-	const record = source?.record ?? new WeakRef(stage);
-	if (record.deref() !== stage || (stage.sessionId !== undefined && stage.sessionId !== released.sessionId))
+	const record = source?.record ?? stageRecordOwner(stage);
+	if (!ownsStageRecord(record, stage) || (stage.sessionId !== undefined && stage.sessionId !== released.sessionId))
 		return undefined;
 	const isCurrent = () => {
-		const held = record.deref();
-		return (
-			held !== undefined &&
-			(held.sessionId === undefined || held.sessionId === released.sessionId) &&
-			store.run(released.runId)?.stages.includes(held) === true
-		);
+		const held = store.run(released.runId)?.stages.find((candidate) => candidate.id === released.stageId);
+		return ownsStageRecord(record, held) && (held?.sessionId === undefined || held.sessionId === released.sessionId);
 	};
 	const rootRunId = durableRootRunIdForRun(store, run.id);
 	if (rootRunId === undefined) return undefined;

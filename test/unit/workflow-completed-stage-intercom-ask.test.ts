@@ -5,6 +5,7 @@ import { registerCompletedStageIntercomAskRouter } from "../../packages/workflow
 import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { sleep } from "../helpers/runtime.js";
 import { mockSession } from "./executor-shared.js";
 
@@ -104,62 +105,75 @@ test("completed-stage ask schedules one post-mortem turn with the exact inbound 
 	assert.deepEqual(prompts, ["**From B**\n\nReturn the exact summary"]);
 });
 
-test("a closed stage session’s late Intercom ask is not redirected to a successor (#5577)", async () => {
-	const harness = eventHarness();
-	const broker = new StageUiBroker();
-	const runId = "run-1",
-		stageId = "stage-a";
-	const original = broker.claimStage(runId, stageId);
-	let route: NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["lateMessageRouter"];
-	const adapters = buildRuntimeAdapters(
-		{ events: { emit: (_, event) => harness.emit(event as unknown as LateAskEvent) } },
-		{
-			stageUiBroker: broker,
-			createAgentSession: async (opts) => {
-				route = opts?.orchestrationContext?.lateMessageRouter;
-				return { session: mockSession() as never };
+test.each(["producer", "stored record"] as const)(
+	"a closed stage session’s late Intercom ask is not redirected after replacing its %s (#5577)",
+	async (replace) => {
+		const harness = eventHarness();
+		const store = createStore();
+		const broker = new StageUiBroker(store);
+		const runId = "run-1",
+			stageId = "stage-a";
+		store.recordRunStart({
+			id: runId,
+			name: "review",
+			inputs: {},
+			status: "completed",
+			stages: [{ id: stageId, name: "s", status: "completed", parentIds: [], toolEvents: [] }],
+			toolNodes: [],
+			startedAt: 1,
+		});
+		const original = broker.claimStage(runId, stageId);
+		let route: NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["lateMessageRouter"];
+		const adapters = buildRuntimeAdapters(
+			{ events: { emit: (_, event) => harness.emit(event as unknown as LateAskEvent) } },
+			{
+				stageUiBroker: broker,
+				createAgentSession: async (opts) => {
+					route = opts?.orchestrationContext?.lateMessageRouter;
+					return { session: mockSession() as never };
+				},
 			},
-		},
-	);
-	const prompts: string[] = [];
-	const started = Promise.withResolvers<void>(),
-		finish = Promise.withResolvers<void>();
-	let waitForAttach = false;
-	const stop = registerCompletedStageIntercomAskRouter(harness.pi, () => ({
-		ok: true,
-		handle: completedHandle(
-			async (text) => {
-				prompts.push(text);
-			},
-			async () => {
-				if (waitForAttach) {
-					started.resolve();
-					await finish.promise;
-				}
-			},
-		),
-	}));
-	try {
-		await adapters.agentSession!.create({}, { runId, stageId, stageName: "s", stageUiSignal: original.signal });
-		assert.ok(route);
-		const message = { ...askEvent().messages[0]!, display: true };
-		original.release();
-		await route.routeMessage({ ...message, content: "still the original conversation" });
-		waitForAttach = true;
-		const inFlight = Promise.resolve(route.routeMessage(message));
-		await started.promise;
-		const successor = broker.claimStage(runId, stageId);
-		successor.release();
-		finish.resolve();
-		await assert.rejects(inFlight, /replaced/);
-		await assert.rejects(async () => route!.routeMessages([message]), /replaced/);
-		assert.deepEqual(prompts, ["still the original conversation"]);
-	} finally {
-		finish.resolve();
-		stop();
-		original.release();
-	}
-});
+		);
+		const prompts: string[] = [];
+		const started = Promise.withResolvers<void>(),
+			finish = Promise.withResolvers<void>();
+		let waitForAttach = false;
+		const stop = registerCompletedStageIntercomAskRouter(harness.pi, () => ({
+			ok: true,
+			handle: completedHandle(
+				async (text) => {
+					prompts.push(text);
+				},
+				async () => {
+					if (waitForAttach) {
+						started.resolve();
+						await finish.promise;
+					}
+				},
+			),
+		}));
+		try {
+			await adapters.agentSession!.create({}, { runId, stageId, stageName: "s", stageUiSignal: original.signal });
+			assert.ok(route);
+			const message = { ...askEvent().messages[0]!, display: true };
+			original.release();
+			await route.routeMessage({ ...message, content: "still the original conversation" });
+			waitForAttach = true;
+			const inFlight = Promise.resolve(route.routeMessage(message));
+			await started.promise;
+			if (replace === "producer") broker.claimStage(runId, stageId).release();
+			else store.recordRunStart(structuredClone(store.run(runId)!));
+			finish.resolve();
+			await assert.rejects(inFlight, /replaced/);
+			await assert.rejects(async () => route!.routeMessages([message]), /replaced/);
+			assert.deepEqual(prompts, ["still the original conversation"]);
+		} finally {
+			finish.resolve();
+			stop();
+			original.release();
+		}
+	},
+);
 
 test("concurrent duplicate wakeups serialize onto the retained completed conversation", async () => {
 	const harness = eventHarness();

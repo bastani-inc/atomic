@@ -34,6 +34,7 @@ import type {
 	TaskViewSource,
 } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
+import { type StageRecordOwner, stageRecordOwner } from "../../shared/stage-record-owner.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
@@ -337,15 +338,15 @@ export interface ReleasedStage {
 /** The registration that released a stage, separate from the IDs used for the public notice. */
 export interface ReleasedStageSource {
 	readonly generation: number;
-	readonly record?: WeakRef<StageSnapshot>;
+	readonly record?: StageRecordOwner;
 }
 type ReleasedStageListener = (stage: ReleasedStage, source?: ReleasedStageSource) => void;
 
 // Release announcements from independently loaded registries reach the same host, sometimes out of order.
 const sourceKey = Symbol.for("atomic-workflows/stage-release-generations@1");
 const processState = globalThis as typeof globalThis &
-	Record<symbol, { next: number; readonly records: WeakMap<StageSnapshot, number> } | undefined>;
-const sources = processState[sourceKey] ?? { next: 0, records: new WeakMap<StageSnapshot, number>() };
+	Record<symbol, { next: number; readonly records: WeakMap<object, Map<string, number>> } | undefined>;
+const sources = processState[sourceKey] ?? { next: 0, records: new WeakMap<object, Map<string, number>>() };
 processState[sourceKey] = sources;
 
 export function beginStageRegistrationCheck(registry: StageControlRegistry, runId: string) {
@@ -357,14 +358,17 @@ export function beginStageRegistrationCheck(registry: StageControlRegistry, runI
 function releaseSource(record?: StageSnapshot): ReleasedStageSource {
 	const generation = ++sources.next;
 	if (!record) return { generation };
-	sources.records.set(record, generation);
-	return { generation, record: new WeakRef(record) };
+	const identity = record.workerExecution ?? record;
+	const stages = sources.records.get(identity) ?? new Map<string, number>();
+	sources.records.set(identity, stages);
+	stages.set(record.id, generation);
+	return { generation, record: stageRecordOwner(record) };
 }
 
 export function isLatestStageRelease(source?: ReleasedStageSource): boolean {
 	if (!source?.record) return true;
-	const record = source.record.deref();
-	return record !== undefined && sources.records.get(record) === source.generation;
+	const record = source.record.identity.deref();
+	return record !== undefined && sources.records.get(record)?.get(source.record.stageId) === source.generation;
 }
 
 /** Whether the stage's session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */
