@@ -77,6 +77,7 @@ import {
 	type TaskTranscriptPage,
 } from "./task-transcript-page.ts";
 import { formatToolActionSummary } from "./tool-block-summary.ts";
+import { repaintAfterSingleClick } from "./transcript-block-clicks.ts";
 
 const DETAIL_WHEEL_ROWS = 4;
 
@@ -878,9 +879,9 @@ export class TaskInspector implements Component {
 		if (current()) this.requestRender();
 	}
 	/**
-	 * A click on a block header in an open transcript expands or collapses that block. On the list, a click on a row
-	 * opens it as moving there and pressing Enter does; on a task's page, a click on its action runs it as Enter does,
-	 * and a click on a peeked choice picks it as its number does. The wheel moves the selection or the page.
+	 * A click on any row of a block in an open transcript expands or collapses that block. On the list, a click on a
+	 * row opens it as moving there and pressing Enter does; on a task's page, a click on its action runs it as Enter
+	 * does, and a click on a peeked choice picks it as its number does. The wheel moves the selection or the page.
 	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const transcript = this.transcript;
@@ -888,9 +889,10 @@ export class TaskInspector implements Component {
 		if (this.helpOpen) return undefined;
 		if (transcript !== undefined && this.navigation.focus.kind === "detail") {
 			if (transcript.handleMouse === undefined || top === undefined) return undefined;
-			if (!transcript.handleMouse({ ...event, y: event.y - top })) return undefined;
+			const result = transcript.handleMouse({ ...event, y: event.y - top });
+			if (result === undefined) return undefined;
 			this.requestRender();
-			return { handled: true };
+			return repaintAfterSingleClick(result, () => this.requestRender());
 		}
 		return this.clickableRows.handleMouse(event, {
 			activate: (target) => {
@@ -911,7 +913,7 @@ export class TaskInspector implements Component {
 		});
 	}
 
-	/** Enter, or whichever key opens the selected row, through the keyboard's own path. */
+	/** The key that opens the selected row, whichever key that is bound to, through the keyboard's own path. */
 	private pressOpenKey(): void {
 		const input = rowKeyInput("app.list.open");
 		if (input !== undefined) this.handleInput(input);

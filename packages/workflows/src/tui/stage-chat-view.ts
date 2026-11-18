@@ -18,6 +18,7 @@
  *  - packages/coding-agent/docs/tui.md (the @bastani/atomic-tui component contract)
  */
 
+import { repaintAfterSingleClick } from "@bastani/atomic";
 import {
 	ClickableRows,
 	type Component,
@@ -127,9 +128,9 @@ export class StageChatView implements Component, Focusable {
 	}
 
 	/**
-	 * A single click on a block header in the stage's transcript expands or collapses that block. A click in a dialog
-	 * the stage opened reaches that dialog, and a click on an answer of the stage's question chooses it, as moving
-	 * there and pressing Enter does.
+	 * A single click on any row of a block in the stage's transcript expands or collapses that block. A click in a
+	 * dialog the stage opened reaches that dialog, and a click on an answer of the stage's question chooses it, as
+	 * moving there and pressing Enter does.
 	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const dialog = this.customUiRows;
@@ -152,9 +153,8 @@ export class StageChatView implements Component, Focusable {
 		if (region === undefined || event.y < region.top || event.y >= region.top + region.rows) return undefined;
 		// While a dialog the stage opened, its question or the key help owns input, a click on the transcript does nothing.
 		if (this.mountedCustomUi !== null || promptCardShown(this._ctx()) || this.helpOpen) return undefined;
-		if (!this.chatHost.handleBodyClick({ ...event, y: event.y - region.top })) return undefined;
-		this.requestRender?.();
-		return { handled: true };
+		const result = this.chatHost.handleBodyClick({ ...event, y: event.y - region.top });
+		return repaintAfterSingleClick(result, () => this.requestRender?.());
 	}
 
 	/** What the last frame drew on `row`: the entry there and the row within it, a dialog's row, or a question's answer. */

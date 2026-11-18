@@ -280,3 +280,224 @@ for (const scenario of [
 		REAL_STARTUP_RPC_TIMEOUT_MS,
 	);
 }
+
+// The interactive host copies this report into its own settings and warns when it says untrusted, so a report made
+// while the engine is still deciding showed a trusted project as untrusted.
+test(
+	"isolated startup reports no project trust until the engine decides, then the saved decision",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-startup-rpc-pending-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(join(cwd, ".atomic"), { recursive: true });
+		writeFileSync(join(cwd, ".atomic", "settings.json"), "{}");
+		mkdirSync(join(agentDir, "extensions"), { recursive: true });
+		writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [realpathSync(cwd)]: true }));
+		// Holds the decision open until the test answers, then leaves it to the saved decision.
+		writeFileSync(
+			join(agentDir, "extensions", "hold-trust.ts"),
+			`
+			export default function(pi) {
+				pi.on('project_trust', async (_event, ctx) => {
+					await ctx.ui.confirm('Hold trust', 'Continue?');
+					return { trusted: 'undecided' };
+				});
+			}
+		`,
+		);
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			args: ["--no-session", "--offline", "--no-skills", "--no-themes", "--no-prompt-templates"],
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+			interactiveEngine: { onDiagnostic: () => {} },
+		});
+		let held!: (request: RpcExtensionUIRequest) => void;
+		const holding = new Promise<RpcExtensionUIRequest>((resolve) => {
+			held = resolve;
+		});
+		client.onExtensionUIRequest((request) => {
+			if (request.method === "confirm") held(request);
+		});
+		try {
+			await client.start();
+			const request = await holding;
+			assert.equal((await client.getState()).projectTrusted, undefined);
+			await client.respondExtensionUI({ type: "extension_ui_response", id: request.id, confirmed: true });
+			await client.waitForInteractiveEngineResources();
+			assert.equal((await client.getState()).projectTrusted, true);
+		} finally {
+			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
+
+// The interactive host restarts a dead engine for the same session; it must not ask again about a folder it was
+// answered for, and an answer for this session only must stay out of trust.json.
+test(
+	"a restarted engine keeps a session-only trust answer without asking again or saving it",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-startup-rpc-restart-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(join(cwd, ".atomic"), { recursive: true });
+		writeFileSync(join(cwd, ".atomic", "settings.json"), "{}");
+		mkdirSync(agentDir, { recursive: true });
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			args: ["--no-session", "--offline", "--no-skills", "--no-themes", "--no-prompt-templates"],
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+			interactiveEngine: { onDiagnostic: () => {} },
+		});
+		const asked = answerTrustQuestions(client, "Trust project folder?");
+		try {
+			await client.start();
+			await client.waitForInteractiveEngineResources();
+			const answered = await client.getState();
+			assert.equal(answered.projectTrusted, true);
+
+			await client.restart(undefined, { cwd, trustDecisions: answered.trustDecisions });
+			await client.waitForInteractiveEngineResources();
+
+			assert.equal(asked.length, 1, "asked again after the restart");
+			assert.equal((await client.getState()).projectTrusted, true);
+			assert.equal(existsSync(join(agentDir, "trust.json")), false);
+		} finally {
+			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
+
+// The same holds for the question about an -e extension source's own .atomic resources.
+test(
+	"a restarted engine keeps a session-only answer for an -e extension source",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-startup-rpc-restart-source-"));
+		const cwd = join(root, "project");
+		const source = join(root, "borrowed");
+		const agentDir = join(root, "agent");
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(join(source, ".atomic", "extensions"), { recursive: true });
+		mkdirSync(join(source, "extensions"), { recursive: true });
+		writeFileSync(join(source, "extensions", "authorized.ts"), "export default function() {}");
+		writeFileSync(join(source, ".atomic", "extensions", "borrowed.ts"), "export default function() {}");
+		mkdirSync(agentDir, { recursive: true });
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			args: ["--no-session", "--offline", "--no-skills", "--no-themes", "--no-prompt-templates", "-e", source],
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+			interactiveEngine: { onDiagnostic: () => {} },
+		});
+		const asked = answerTrustQuestions(client, "Trust extension source?");
+		try {
+			await client.start();
+			await client.waitForInteractiveEngineResources();
+			assert.equal(asked.length, 1);
+			const answered = await client.getState();
+
+			await client.restart(undefined, { cwd, trustDecisions: answered.trustDecisions });
+			await client.waitForInteractiveEngineResources();
+
+			assert.equal(asked.length, 1, "asked again after the restart");
+			assert.ok(
+				(await client.getState()).resourceExtensions?.some(
+					(extension) => extension.path === join(source, ".atomic", "extensions", "borrowed.ts"),
+				),
+			);
+			assert.equal(existsSync(join(agentDir, "trust.json")), false);
+		} finally {
+			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
+
+// A decision that cannot be saved still ends the deciding: the session runs untrusted and says so.
+test(
+	"a trust decision that cannot be saved leaves the engine reporting the project untrusted",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-startup-rpc-unsaved-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(join(cwd, ".atomic"), { recursive: true });
+		writeFileSync(join(cwd, ".atomic", "settings.json"), "{}");
+		// trust.json that cannot be written.
+		mkdirSync(join(agentDir, "trust.json"), { recursive: true });
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			args: ["--no-session", "--offline", "--no-skills", "--no-themes", "--no-prompt-templates"],
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+			interactiveEngine: { onDiagnostic: () => {} },
+		});
+		const asked = answerTrustQuestions(client, "Trust project folder?", "Trust");
+		try {
+			await client.start();
+			await client.waitForInteractiveEngineResources().catch(() => {});
+			assert.equal(asked.length, 1);
+			await vi.waitFor(async () => assert.equal((await client.getState()).projectTrusted, false), {
+				timeout: 10_000,
+			});
+		} finally {
+			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
+
+// The decisions are internal to the interactive engine child; a plain RPC client gets the trust of its session only.
+test(
+	"plain RPC get_state reports the project trust but not the session's trust decisions",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-startup-rpc-plain-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(join(cwd, ".atomic"), { recursive: true });
+		writeFileSync(join(cwd, ".atomic", "settings.json"), "{}");
+		mkdirSync(agentDir, { recursive: true });
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			args: ["--no-session", "--offline", "--no-skills", "--no-themes", "--no-prompt-templates"],
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+		});
+		try {
+			await client.start();
+			const state = await client.getState();
+			assert.equal(state.projectTrusted, false);
+			assert.equal(state.trustDecisions, undefined);
+		} finally {
+			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
+
+/** Answers each trust question whose title starts with `title`, and records it. */
+function answerTrustQuestions(
+	client: RpcClient,
+	title: string,
+	answer = "Trust (this session only)",
+): RpcExtensionUIRequest[] {
+	const asked: RpcExtensionUIRequest[] = [];
+	client.onExtensionUIRequest((request) => {
+		if (request.method !== "select" || !request.title.startsWith(title)) return;
+		asked.push(request);
+		void client.respondExtensionUI({ type: "extension_ui_response", id: request.id, value: answer });
+	});
+	return asked;
+}

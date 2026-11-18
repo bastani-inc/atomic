@@ -179,6 +179,8 @@ const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const ROUTE_RETRY_OUTCOME_EVENT = "atomic:intercom-route-retry-outcome";
 /** Intercom → workflows: another process resumed a dormant route's interrupted run (#3760). */
 const PENDING_STAGE_ROUTE_REVOKED_EVENT = "atomic:workflow-pending-stage-route-revoked";
+/** Workflows → Intercom: a finished run's route is withdrawn; its connection closes once no route uses it (#5492). */
+const PENDING_STAGE_ROUTE_RETIRED_EVENT = "atomic:workflow-pending-stage-route-retired";
 
 interface PendingStageRouteRegistrationEvent {
 	readonly runId: string;
@@ -263,6 +265,12 @@ function isPendingStageRouteRegistrationEvent(value: unknown): value is PendingS
     typeof event.capability === "string" &&
     event.capability.length > 0
   );
+}
+
+function isPendingStageRouteRetiredEvent(value: unknown): value is { readonly runId: string } {
+  if (typeof value !== "object" || value === null) return false;
+  const runId = (value as { readonly runId?: unknown }).runId;
+  return typeof runId === "string" && runId.length > 0;
 }
 function readIntercomPolicy(ctx: ExtensionContext): IntercomPolicyView | undefined {
   try {
@@ -1604,6 +1612,26 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }
     void nextClient.disconnect().catch(() => {});
   }
+  /**
+   * #5492: closes the route connection `key` names once nothing needs it: no run's route registers over it and no
+   * route that would connect through it is left. A connect still in flight is waited out first.
+   */
+  async function closeUnusedPendingStageRouteConnection(key: string): Promise<void> {
+    const connection = pendingStageRouteConnections.get(key);
+    if (connection === undefined) return;
+    try { await connection.promise; } catch {}
+    if (pendingStageRouteConnections.get(key) !== connection) return;
+    const connected = connection.client;
+    if (connected !== null && pendingStageRouteRunsOn(connected).length > 0) return;
+    for (const [runId, route] of pendingStageRoutes) {
+      if (registersOnMainClient(route)) continue;
+      const routeKey = pendingStageRouteClients.get(runId)?.isolated === true ? runId : normalizeGroup(route.group);
+      if (routeKey === key) return;
+    }
+    pendingStageRouteConnections.delete(key);
+    connection.client = null;
+    if (connected !== null) await connected.disconnect().catch(() => {});
+  }
   /** The route connection `key` names in `group`, opened through the connect gate when it is not up. */
   function connectPendingStageRouteConnection(key: string, group: string): Promise<IntercomClient> {
     let connection = pendingStageRouteConnections.get(key);
@@ -1797,6 +1825,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     runId: string,
     route: PendingStageRouteRegistration,
   ): Promise<void> {
+    // #5492: a route retired while the main client was connecting is not registered, and opens no connection.
+    if (!samePendingStageRoute(pendingStageRoutes.get(runId), route)) return;
     if (registersOnMainClient(route)) {
       await activeClient.registerPendingStageRouteAcknowledged(
         runId,
@@ -2081,6 +2111,30 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     );
     payload.completion = completion;
     void completion.catch(() => {});
+  });
+  // #5492: the workflows bridge withdrew a finished run's route. It is no longer registered again on a reconnect, and the
+  // connection that carried it closes once no other run's route uses it.
+  pi.events.on(PENDING_STAGE_ROUTE_RETIRED_EVENT, (payload) => {
+    if (!isPendingStageRouteRetiredEvent(payload)) return;
+    const { runId } = payload;
+    const route = pendingStageRoutes.get(runId);
+    if (route === undefined) return;
+    pendingStageRoutes.delete(runId);
+    const state = pendingStageRouteClients.get(runId);
+    if (state !== undefined) {
+      pendingStageRouteClients.delete(runId);
+      endPendingStageRouteBackoff(state, new IntercomClientDisconnectedError());
+    }
+    // A route on the main connection stays with the broker until that connection ends; only a route connection closes.
+    if (registersOnMainClient(route)) return;
+    launchedRunClaims.delete(runId);
+    launcherCapabilities.delete(runId);
+    const key = state?.isolated === true ? runId : normalizeGroup(route.group);
+    void (async () => {
+      try { await state?.promise; } catch {}
+      if (state !== undefined) state.client = null;
+      await closeUnusedPendingStageRouteConnection(key);
+    })().catch(() => {});
   });
   pi.events.on(RELEASED_STAGE_EVENT, (payload) => {
     // A released stage keeps a peer only while the host session that ran it is live.

@@ -82,7 +82,12 @@ interface ActiveComponent {
 	staleWhileHidden?: boolean;
 	handlingInput?: boolean;
 	paintAfterInput?: boolean;
+	/** What clicks the component took leave for when they turn out single, by the host's click number. */
+	singleClickActions?: Map<number, () => void>;
 }
+
+/** How many clicks may wait to be settled at once; the host settles or abandons each within the multi-click interval. */
+const WAITING_SINGLE_CLICKS = 16;
 
 /**
  * The engine-side TUI of one custom component. Its paced renders paint the component once and push the frame to the
@@ -520,7 +525,7 @@ export class EngineCustomUiService {
 				if (paintedRowKey !== undefined && command.rowKey) {
 					if (paintedRowKey.call(record.component, command.y) !== command.rowKey) break;
 				} else if (command.frame !== record.frame) break;
-				const { x, y, width, height } = command;
+				const { x, y, width, height, clickId } = command;
 				let clicked: TuiMouseEventResult | undefined;
 				record.handlingInput = true;
 				try {
@@ -542,6 +547,19 @@ export class EngineCustomUiService {
 							ctrl: false,
 							clickCount: 1,
 						});
+						// Resolved against the frame the host clicked, it acts once the host settles the click. A host from
+						// before clicks were settled numbers none and settles none: its click acts now, as it did there.
+						const action = clicked?.whenSingleClick;
+						if (action !== undefined && clickId === undefined) action();
+						else if (action !== undefined && clickId !== undefined) {
+							const waiting = record.singleClickActions ?? new Map<number, () => void>();
+							record.singleClickActions = waiting;
+							waiting.set(clickId, action);
+							for (const older of waiting.keys()) {
+								if (waiting.size <= WAITING_SINGLE_CLICKS) break;
+								waiting.delete(older);
+							}
+						}
 					});
 				} catch {
 					// A click a component fails to handle changes nothing; the host keeps its frame.
@@ -551,6 +569,24 @@ export class EngineCustomUiService {
 				// A click the component took repaints it, as a key it took does: a list that ran a row on the click
 				// shows what the row opened without asking for a render itself.
 				if (record.paintAfterInput === true || (clicked?.handled === true && clicked.render !== false)) {
+					record.paintAfterInput = false;
+					this.paintComponent(command.componentId);
+				}
+				break;
+			}
+			case "engine_custom_click_settle": {
+				const action = record.singleClickActions?.get(command.clickId);
+				if (action === undefined) break;
+				record.singleClickActions?.delete(command.clickId);
+				record.handlingInput = true;
+				try {
+					runSynchronousCallback({ kind: "renderer", name: command.componentId }, action);
+				} catch {
+					// A click a component fails to act on changes nothing; the host keeps its frame.
+				} finally {
+					record.handlingInput = false;
+				}
+				if (record.paintAfterInput === true) {
 					record.paintAfterInput = false;
 					this.paintComponent(command.componentId);
 				}

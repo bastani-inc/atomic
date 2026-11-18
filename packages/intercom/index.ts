@@ -179,6 +179,8 @@ interface SupervisorAuthorizationRequest {
 
 const WORKFLOW_STAGE_LATE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
+/** #5492: a finished run's route was withdrawn; only a loaded runtime holds routes, so nothing loads for it. */
+const PENDING_STAGE_ROUTE_RETIRED_EVENT = "atomic:workflow-pending-stage-route-retired";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 const ROUTE_RETRY_OUTCOME_EVENT = "atomic:intercom-route-retry-outcome";
 const RELEASED_STAGE_EVENT = "atomic:workflow-released-stage";
@@ -1044,6 +1046,40 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				return false;
 			});
 	});
+	/**
+	 * #5492: per run, the dispatch of its latest route or retirement event. Each dispatch is reserved when its event is
+	 * emitted and runs after the one before it, so a run's events reach the runtime in the order they were emitted however
+	 * long loading the runtime takes, and a retirement emitted while its route is still on its way waits for it.
+	 */
+	const runRouteDispatches = new Map<string, Promise<void>>();
+	function dispatchInRunOrder<T>(runId: string, dispatch: () => Promise<T>): Promise<T> {
+		const previous = runRouteDispatches.get(runId);
+		const next = previous === undefined ? dispatch() : previous.then(dispatch);
+		const settled = next.then(
+			() => {},
+			() => {},
+		);
+		runRouteDispatches.set(runId, settled);
+		void settled.then(() => {
+			if (runRouteDispatches.get(runId) === settled) runRouteDispatches.delete(runId);
+		});
+		return next;
+	}
+	const routeRunId = (payload: unknown): string | undefined => {
+		const runId = payload && typeof payload === "object" ? (payload as { runId?: unknown }).runId : undefined;
+		return typeof runId === "string" && runId.length > 0 ? runId : undefined;
+	};
+	pi.events.on(PENDING_STAGE_ROUTE_RETIRED_EVENT, (payload) => {
+		const runId = routeRunId(payload);
+		// Only a runtime that is loaded or loading holds routes, and a route on its way reserved its run's dispatch.
+		if (runId === undefined || (loadedHeavy === null && heavyAttempt === null && !runRouteDispatches.has(runId))) return;
+		void dispatchInRunOrder(runId, async () => {
+			const handle = loadedHeavy ?? (await heavyAttempt?.promise.catch(() => null)) ?? null;
+			if (handle === null) return;
+			handle.assertCurrent();
+			await dispatchEventHandlers(handle.heavy, PENDING_STAGE_ROUTE_RETIRED_EVENT, payload as object);
+		}).catch(() => {});
+	});
 	for (const eventName of [
 		SUBAGENT_CONTROL_INTERCOM_EVENT,
 		SUBAGENT_RESULT_INTERCOM_EVENT,
@@ -1053,10 +1089,17 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		pi.events.on(eventName, (payload) => {
 			const ctx = latestLifecycleContext();
 			const diagnosticRoute = ctx ? captureDiagnosticRoute(ctx) : shutdownDiagnosticRoute ?? "console";
-			const completion = loadHeavy(ctx).then(async (handle) => {
+			const loaded = loadHeavy(ctx);
+			void loaded.catch(() => {});
+			const dispatch = async (): Promise<void> => {
+				const handle = await loaded;
 				handle.assertCurrent();
 				await dispatchEventHandlers(handle.heavy, eventName, payload);
 				handle.assertCurrent();
+			};
+			const runId = eventName === PENDING_STAGE_ROUTE_EVENT ? routeRunId(payload) : undefined;
+			const dispatched = runId === undefined ? dispatch() : dispatchInRunOrder(runId, dispatch);
+			const completion = dispatched.then(async () => {
 				if (eventName === PENDING_STAGE_ROUTE_EVENT && payload && typeof payload === "object") {
 					const routeCompletion = (payload as { completion?: Promise<void> }).completion;
 					if (routeCompletion !== undefined && routeCompletion !== completion) await routeCompletion;

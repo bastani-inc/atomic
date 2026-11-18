@@ -4,6 +4,7 @@ import {
 	Text,
 	type KeybindingsManager as TuiKeybindingsManager,
 	type TuiMouseEvent,
+	type TuiMouseEventResult,
 } from "@bastani/atomic-tui";
 import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -33,6 +34,7 @@ import { applyAttachedComposer } from "./input-label.ts";
 import { navActionText } from "./nav-keys.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
 import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
+import { repaintAfterSingleClick } from "./transcript-block-clicks.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
 
 /** Where a task's transcript view is mounted: the chat host it builds on and the render settings it inherits. */
@@ -90,8 +92,8 @@ export interface TaskTranscriptPage {
 	/** Interrupts the task's current turn; the task keeps running and waits for its next message. */
 	interrupt(): Promise<TaskViewResult<undefined>>;
 	render(width: number, rows: number): string[];
-	/** A single click at row `event.y` of the last frame `render` drew; true when the page acted on it. */
-	handleMouse?(event: TuiMouseEvent): boolean;
+	/** A single click at row `event.y` of the last frame `render` drew; a result when the page takes it. */
+	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
 	/** What the last frame `render` drew on `row`, such as the transcript entry there; undefined when it cannot say. */
 	paintedRowKey?(row: number): string | undefined;
 	/** Ctrl+O was pressed where the page is shown: its blocks follow the tool-output setting again. */
@@ -474,22 +476,20 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	/**
-	 * A single click on a block header in the transcript expands or collapses that block. A click on an answer of the
-	 * task's held question below it chooses that answer, as moving there and pressing Enter does.
+	 * A single click on any row of a block in the transcript expands or collapses that block. A click on an answer of
+	 * the task's held question below it chooses that answer, as moving there and pressing Enter does.
 	 */
-	handleMouse(event: TuiMouseEvent): boolean {
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const form = this.formAt(event.y);
 		if (form !== undefined) {
-			const handled = form.form.handleMouse?.({ ...event, y: form.row, height: form.height }) !== undefined;
-			if (handled) this.requestRender();
-			return handled;
+			const result = form.form.handleMouse?.({ ...event, y: form.row, height: form.height });
+			if (result !== undefined) this.requestRender();
+			return result;
 		}
-		if (event.y < 0 || event.y >= this.bodyRows) return false;
+		if (event.y < 0 || event.y >= this.bodyRows) return undefined;
 		// While the task's held question owns input below the transcript, a click on the transcript does nothing.
-		if (!this.chat.hasTaskInspector && this.heldPrompt() !== undefined) return false;
-		const handled = this.chat.handleBodyClick(event);
-		if (handled) this.requestRender();
-		return handled;
+		if (!this.chat.hasTaskInspector && this.heldPrompt() !== undefined) return undefined;
+		return repaintAfterSingleClick(this.chat.handleBodyClick(event), () => this.requestRender());
 	}
 
 	paintedRowKey(row: number): string | undefined {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
-import { getKeybindings, setKeybindings, type TuiMouseEvent } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, type TuiMouseEvent, type TuiMouseEventResult } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { heldPrompts } from "../../packages/coding-agent/src/core/extensions/held-prompts.js";
@@ -17,6 +17,7 @@ import {
 	themedChatHostStyle,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { renderIntercomCustomMessage } from "../../packages/intercom/ui/inline-message.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 import {
@@ -72,6 +73,12 @@ function click(x: number, y: number, width: number, height: number): TuiMouseEve
 	};
 }
 
+/** The renderer's part after a click reached a view: once no second press made it a double-click, its action runs. */
+function settled(result: TuiMouseEventResult | undefined): TuiMouseEventResult | undefined {
+	result?.whenSingleClick?.();
+	return result;
+}
+
 /** A task's open transcript in the task inspector, over `session`, with live events from `emit`. */
 async function openTranscript(
 	session: SessionManager,
@@ -114,7 +121,7 @@ async function openTranscript(
 	};
 	const clickOn = (pattern: RegExp, text: string) => {
 		const row = rowOf(pattern);
-		return inspector.handleMouse(click(screen()[row]!.indexOf(text), row, width, height));
+		return settled(inspector.handleMouse(click(screen()[row]!.indexOf(text), row, width, height)));
 	};
 	const emit = (event: AgentSessionEvent) => {
 		for (const listener of listeners) listener(event);
@@ -156,7 +163,7 @@ test("a running tool block a click expanded stays expanded as its live output ar
 	}
 });
 
-test("a finished-agent card in a task transcript expands on a click on its header", async () => {
+test("a finished-agent card in a task transcript expands on a click on its header and collapses on a click on its result", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "Check the release", timestamp: 0 });
 	const envelope = {
@@ -182,12 +189,14 @@ test("a finished-agent card in a task transcript expands on a click on its heade
 		assert.ok(!shown(), chat.screen().join("\n"));
 		assert.equal(chat.clickOn(/worker finished/, "worker")?.handled, true);
 		assert.ok(shown(), chat.screen().join("\n"));
+		assert.equal(chat.clickOn(/worker result line 2$/, "result")?.handled, true);
+		assert.ok(!shown(), chat.screen().join("\n"));
 	} finally {
 		await chat.dispose();
 	}
 });
 
-test("a user shell block in an attached chat expands on a click on its command", () => {
+test("a user shell block in an attached chat expands on a click on its output", () => {
 	initTheme("dark");
 	const host = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
 	try {
@@ -205,9 +214,9 @@ test("a user shell block in an attached chat expands on a click on its command",
 		const screen = () => host.renderBody(100, 50).map((line) => stripVTControlCharacters(line));
 		const expanded = () => screen().some((line) => line.trimEnd().endsWith("shell line 1"));
 		assert.ok(!expanded(), screen().join("\n"));
-		const row = screen().findIndex((line) => line.includes("$ user-cmd"));
+		const row = screen().findIndex((line) => line.trimEnd().endsWith("shell line 28"));
 		assert.notEqual(row, -1, screen().join("\n"));
-		assert.equal(host.handleBodyClick(click(screen()[row]!.indexOf("user-cmd"), row, 100, 50)), true);
+		assert.equal(settled(host.handleBodyClick(click(screen()[row]!.indexOf("shell"), row, 100, 50)))?.handled, true);
 		assert.ok(expanded(), screen().join("\n"));
 	} finally {
 		host.dispose();
@@ -364,9 +373,12 @@ test("a click in a chat's open task transcript reaches the blocks of that transc
 		const screen = () => host.renderBody(100, 50).map((line) => stripVTControlCharacters(line));
 		const expanded = () => screen().some((line) => line.trimEnd().endsWith("child line 1"));
 		assert.ok(!expanded(), screen().join("\n"));
-		const header = screen().findIndex((line) => line.includes("child-cmd"));
-		assert.notEqual(header, -1, screen().join("\n"));
-		assert.equal(host.handleBodyClick(click(screen()[header]!.indexOf("child-cmd"), header, 100, 50)), true);
+		const shown = screen().findIndex((line) => line.trimEnd().endsWith("child line 19"));
+		assert.notEqual(shown, -1, screen().join("\n"));
+		assert.equal(
+			settled(host.handleBodyClick(click(screen()[shown]!.indexOf("child"), shown, 100, 50)))?.handled,
+			true,
+		);
 		assert.ok(expanded(), screen().join("\n"));
 	} finally {
 		host.dispose();
@@ -415,7 +427,10 @@ test("a click in a stage chat's open task transcript reaches the blocks of that 
 		const header = screen().findIndex((line) => line.includes("child-cmd"));
 		assert.notEqual(header, -1, screen().join("\n"));
 		assert.ok(!expanded(), screen().join("\n"));
-		assert.equal(view.handleMouse(click(screen()[header]!.indexOf("child-cmd"), header, 100, 50))?.handled, true);
+		assert.equal(
+			settled(view.handleMouse(click(screen()[header]!.indexOf("child-cmd"), header, 100, 50)))?.handled,
+			true,
+		);
 		assert.ok(expanded(), screen().join("\n"));
 
 		// Ctrl+O twice sets every block of the task's transcript again, the one the click expanded included.
@@ -426,5 +441,93 @@ test("a click in a stage chat's open task transcript reaches the blocks of that 
 		view.dispose();
 		await fixture.dispose();
 		setKeybindings(keys);
+	}
+});
+
+/** An Intercom message as a task's session records it, from a peer session. */
+async function appendIntercomMessage(session: SessionManager, text: string): Promise<void> {
+	const from = {
+		id: "peer-1",
+		name: "worker-2",
+		cwd: "/workspace",
+		model: "fixture/model",
+		pid: 1,
+		startedAt: 1,
+		lastActivity: 1,
+	};
+	await session.appendCustomMessageEntry("intercom_message", text, true, {
+		from,
+		message: { id: "intercom-1", timestamp: 1, content: { text } },
+		bodyText: text,
+	});
+}
+
+test("an Intercom message card in a task transcript expands on a click on its collapsed-lines row and collapses on a click on its body", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "Coordinate", timestamp: 0 });
+	await appendIntercomMessage(session, lines(12, "peer"));
+	const chat = await openTranscript(session, 100, 60, {
+		getChatRenderSettings: () => ({
+			getCustomMessageRenderer: (customType: string) =>
+				customType === "intercom_message" ? renderIntercomCustomMessage : undefined,
+		}),
+	});
+	try {
+		const shown = () => chat.screen().some((line) => line.trimEnd().endsWith("peer line 12"));
+		assert.ok(!shown(), chat.screen().join("\n"));
+		assert.equal(chat.clickOn(/… \+9 lines/, "+9")?.handled, true);
+		assert.ok(shown(), chat.screen().join("\n"));
+		assert.equal(chat.clickOn(/peer line 6$/, "peer")?.handled, true);
+		assert.ok(!shown(), chat.screen().join("\n"));
+		assert.equal(chat.clickOn(/Message from worker-2/, "worker-2")?.handled, true);
+		assert.ok(shown(), chat.screen().join("\n"));
+	} finally {
+		await chat.dispose();
+	}
+});
+
+test("an Intercom message card in a subagent's chat expands on a click on its body", () => {
+	initTheme("dark");
+	const host = new ChatSessionHost({
+		style: themedChatHostStyle(),
+		editorTheme: getEditorTheme(),
+		getChatRenderSettings: () => ({
+			getCustomMessageRenderer: (customType: string) =>
+				customType === "intercom_message" ? renderIntercomCustomMessage : undefined,
+		}),
+	});
+	try {
+		const text = lines(12, "peer");
+		host.replaceMessages([
+			{
+				role: "custom",
+				customType: "intercom_message",
+				content: text,
+				display: true,
+				details: {
+					from: {
+						id: "peer-1",
+						name: "worker-2",
+						cwd: "/workspace",
+						model: "m",
+						pid: 1,
+						startedAt: 1,
+						lastActivity: 1,
+					},
+					message: { id: "intercom-1", timestamp: 1, content: { text } },
+					bodyText: text,
+				},
+				timestamp: 1,
+			},
+		]);
+		const screen = () => host.renderBody(100, 50).map((line) => stripVTControlCharacters(line));
+		const shown = () => screen().some((line) => line.trimEnd().endsWith("peer line 12"));
+		assert.ok(!shown(), screen().join("\n"));
+		const row = screen().findIndex((line) => line.trimEnd().endsWith("peer line 2"));
+		assert.notEqual(row, -1, screen().join("\n"));
+		assert.equal(settled(host.handleBodyClick(click(screen()[row]!.indexOf("peer"), row, 100, 50)))?.handled, true);
+		assert.ok(shown(), screen().join("\n"));
+	} finally {
+		host.dispose();
 	}
 });

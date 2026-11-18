@@ -81,6 +81,8 @@ class RemoteComponent implements Component {
 	/** What the engine component drew on each row of `lines`, and of the frame the last `render` returned. */
 	private rowKeys: readonly string[] | undefined;
 	private paintedRowKeys: readonly string[] | undefined;
+	/** The number of the last click forwarded to the engine. */
+	private clickId = 0;
 	private dirty = true;
 	private disposed = false;
 	private readonly pendingInputs = new Map<number, PendingInput>();
@@ -144,30 +146,47 @@ class RemoteComponent implements Component {
 		return this.frameClamp.clamp(this.lines, width);
 	}
 
-	/**
-	 * Forward a single click to the engine component, at its row and column there. Presses, drags and multi-clicks stay
-	 * with the host's text selection.
-	 */
 	/** What the engine component drew on `row` of the frame this host painted, when it names its rows. */
 	paintedRowKey(row: number): string | undefined {
 		return this.paintedRowKeys?.[row];
 	}
 
+	/**
+	 * Forward a single click to the engine component, at its row and column there. Presses, drags and multi-clicks stay
+	 * with the host's text selection. The click is numbered: once it stays a single click, the host settles that number,
+	 * and what the component left for that moment runs.
+	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (event.type === "wheel") return this.forwardWheel(event);
 		if (this.disposed || !isSingleLeftClick(event) || this.paintedFrame === undefined) return undefined;
 		const rowKey = this.paintedRowKeys?.[Math.floor(event.y)];
+		const clickId = ++this.clickId;
 		this.runtime.sendEngineCommand({
 			type: "engine_custom_click",
 			componentId: this.componentId,
 			frame: this.paintedFrame,
 			...(rowKey === undefined ? {} : { rowKey }),
+			clickId,
 			x: Math.max(0, Math.floor(event.x)),
 			y: Math.max(0, Math.floor(event.y)),
 			width: Math.max(0, Math.floor(event.width)),
 			height: Math.max(0, Math.floor(event.height)),
 		});
-		return { handled: true };
+		return {
+			handled: true,
+			whenSingleClick: () => {
+				if (this.disposed) return;
+				try {
+					this.runtime.sendEngineCommand({
+						type: "engine_custom_click_settle",
+						componentId: this.componentId,
+						clickId,
+					});
+				} catch {
+					// An engine that went away takes no click; the host keeps its frame.
+				}
+			},
+		};
 	}
 
 	/**
