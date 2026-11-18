@@ -1,5 +1,5 @@
 import { type Component, truncateToWidth } from "@bastani/atomic-tui";
-import { agentPanelTaskId, taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
+import { agentPanelTaskId, taskPanelItems, taskPanelState } from "../../../core/tasks/agent-panel-source.ts";
 import { supersededReleasedAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
@@ -75,7 +75,8 @@ export function isActiveBackgroundTask(task: TaskRecord): boolean {
 
 /**
  * A chat's own active tasks below its prompt, as the main chat's agent panel shows them: subagents as rows, and running
- * shells, which are not rows, counted on a line of their own in the main chat's hint wording.
+ * shells, which are not rows, counted on a line of their own in the main chat's hint wording. A subagent whose turn was
+ * interrupted is listed only while other work is active.
  */
 export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
 	const input: TaskRecord[] = [];
@@ -83,14 +84,23 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 	const other: TaskRecord[] = [];
 	let total = 0;
 	let shells = 0;
+	let active = false;
+	const listed: TaskRecord[] = [];
 	const superseded = supersededReleasedAttempts(tasks);
 	for (let index = tasks.length - 1; index >= 0; index--) {
 		const task = tasks[index]!;
-		if (!isActiveBackgroundTask(task) || superseded.has(task.ref.taskId)) continue;
+		if (superseded.has(task.ref.taskId)) continue;
+		if (!isActiveBackgroundTask(task)) continue;
 		if (task.kind === "command") {
 			shells++;
+			active = true;
 			continue;
 		}
+		if (taskPanelState(task) !== "stopped") active = true;
+		listed.push(task);
+	}
+	for (const task of listed) {
+		if (!active && taskPanelState(task) === "stopped") continue;
 		total++;
 		if (task.execution.kind === "running") {
 			if (task.attention.kind === "none") {

@@ -9,14 +9,14 @@ Background subagents keep working after the launch call returns. You can continu
 
 ### The agent panel
 
-Below the main chat's prompt, the **agent panel** lists the session's running and recent background subagents and workflow runs, one row each. When it lists a subagent, a `● main` row comes first; it stands for the main chat. A panel of workflow runs only has no main row:
+Below the main chat's prompt, the **agent panel** lists the session's active background subagents and workflow runs, one row each. When it lists a subagent, a `● main` row comes first; it stands for the main chat. A panel of workflow runs only has no main row:
 
 ```text
   ● main
   ∀ worker    fix shipping batches                         41m · ↓ 96.1k tokens
   ∀ debugger  #5220 spawn lock                             18m · ↓ 87.4k tokens
   ∀ ralph     ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  3/5 stages         12m · ↓ 61.0k tokens
-  ✓ worker    picker clamp                                  done · 6m
+  ◼ worker    picker clamp                               stopped · 6m
 ```
 
 - **Each row shows** the status, the agent's name (a workflow's name for a run), what it works on, and how long it has run. Agents and workflow runs also show the tokens they have used. A workflow row shows stage progress; a waiting row shows its question instead.
@@ -28,12 +28,12 @@ Below the main chat's prompt, the **agent panel** lists the session's running an
   - `✓` done
   - `✗` failed, showing the reason
   - `◼` stopped
-- **Finished rows** read dim after 30 seconds and leave after three minutes. A finished workflow run stays until you have opened it. Narrow terminals drop the token count and the stage bar.
+- **Finished subagents** leave the panel as soon as they finish; `/tasks` still lists them. A stopped, paused or interrupted subagent stays while another subagent, workflow run or background shell is still running, reads dim after 30 seconds, and leaves once nothing is running. It does not come back when new work starts, unless you resume it. A finished workflow run stays until you have opened it. Narrow terminals drop the token count and the stage bar.
 - **Up to four rows** show while the prompt has focus, then `+N more`; the focused panel shows eight at a time. The main row does not count toward either.
 
-The main footer shows `↓ N agents` while the panel has rows, plus `N needs input` when any row waits for an answer. These counts include rows folded into `+N more` and use the current chat's tasks.
+The main footer shows `↓ N agents` for the subagent rows the panel lists. Workflow runs are not agents: a panel that lists only workflow runs shows no `↓` count, though **↓** still focuses it. `N needs input` counts every row that waits for an answer, workflow runs included. These counts include rows folded into `+N more` and use the current chat's tasks. When the panel lists nothing but the chat has subagents, the footer shows `/tasks to see subagents`.
 
-Background shells are not panel rows. The footer counts the running ones, for example `2 shells`; with no subagents or workflow runs it adds `/tasks to manage`. Open, read and stop shells in [`/tasks`](#open-the-task-inspector).
+Background shells are not panel rows. The footer counts the running ones, for example `2 shells`; with no rows in the panel it adds `/tasks to manage`. Open, read and stop shells in [`/tasks`](#open-the-task-inspector).
 
 Press **↓** on an empty prompt to focus the panel. It then works like every list:
 
