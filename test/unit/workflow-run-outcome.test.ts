@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, it, vi } from "vitest";
+import { refreshColorEnvironment } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import {
 	TOOL_PAYLOAD_MAX_KEYS,
@@ -258,6 +259,7 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 
 	it("renders run summaries and logs without ANSI when NO_COLOR is set even with a theme (#5255)", () => {
 		vi.stubEnv("NO_COLOR", "1");
+		refreshColorEnvironment();
 		try {
 			const outcome = buildRunOutcome(
 				run("failed", [stage("verify", "failed", { error: "boom" })], {
@@ -275,11 +277,13 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 			}
 		} finally {
 			vi.unstubAllEnvs();
+			refreshColorEnvironment();
 		}
 	});
 
 	it("failed and stopped runs read differently: ✗ red failed, ◼ muted stopped", () => {
 		vi.stubEnv("NO_COLOR", undefined);
+		refreshColorEnvironment();
 		try {
 			const failed = renderRunOutcomeLines(buildRunOutcome(run("failed", [], { error: "boom" }), 2_000), {
 				theme: defaultTheme,
@@ -300,6 +304,7 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 			assert.notEqual(failed[0]?.match(/\x1b\[[0-9;]*m/)?.[0], stopped[0]?.match(/\x1b\[[0-9;]*m/)?.[0]);
 		} finally {
 			vi.unstubAllEnvs();
+			refreshColorEnvironment();
 		}
 	});
 

@@ -1,10 +1,23 @@
 import { type Component, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { type ThemeColor, theme } from "../theme/theme.js";
-import { ToolBlock } from "./tool-block.ts";
+import { collapseToolBlockLines, ToolBlock } from "./tool-block.ts";
 
-/** How the subject of a notice ended or stands. A started subject reads as `success`. */
-export type NoticeStatus = "success" | "failure" | "stopped" | "warning" | "paused" | "running" | "info";
+/**
+ * How the subject of a notice ended or stands. A started subject reads as `success`; `waiting` is a subagent released
+ * while it waits on a call, which wakes by itself when that call finishes; `heartbeat` marks a periodic check on work
+ * that is still running.
+ */
+export type NoticeStatus =
+	| "success"
+	| "failure"
+	| "stopped"
+	| "warning"
+	| "paused"
+	| "waiting"
+	| "running"
+	| "info"
+	| "heartbeat";
 
 /**
  * One notice line: what finished, how it ended, and a few dim facts. Background commands, subagents, workflow runs
@@ -22,6 +35,10 @@ export interface NoticeLineSpec {
 	readonly meta?: readonly string[];
 	/** What expanding the line (ctrl+o) shows under it, one or more lines. */
 	readonly detail?: string;
+	/** Columns before the notice, from the outputPad setting; 1 when left out. */
+	readonly outputPad?: number;
+	/** While collapsed, count the hidden detail lines under the line with the expand key (`… +N lines (ctrl+o to expand)`). */
+	readonly countHiddenDetail?: boolean;
 }
 
 /** The marker and colour of each status, so a status reads without colour too. */
@@ -31,8 +48,10 @@ export const STATUS_MARKERS: Readonly<Record<NoticeStatus, { readonly glyph: str
 	stopped: { glyph: "◼", color: "muted" },
 	warning: { glyph: "!", color: "warning" },
 	paused: { glyph: "⏸", color: "muted" },
+	waiting: { glyph: "◌", color: "dim" },
 	running: { glyph: "∀", color: "accent" },
 	info: { glyph: "›", color: "muted" },
+	heartbeat: { glyph: "♥", color: "muted" },
 };
 
 export const DETAIL_FIRST_PREFIX = "  ⎿  ";
@@ -94,7 +113,8 @@ export class NoticeLine implements Component {
 
 	render(width: number): string[] {
 		if (width < 1) return [];
-		const subject = fittedSubject(this.spec, Math.max(1, width - 1));
+		const pad = Math.max(0, Math.min(Math.floor(this.spec.outputPad ?? 1), Math.floor(width) - 1));
+		const subject = fittedSubject(this.spec, Math.max(1, width - pad));
 		const title = `${oneLine(this.spec.label)}${quoted(subject)}${outcomeText(this.spec.outcome)}`;
 		const detail =
 			this.spec.detail === undefined ? "" : terminalDisplayText(this.spec.detail).replaceAll("\t", "    ").trimEnd();
@@ -103,7 +123,15 @@ export class NoticeLine implements Component {
 			status: this.spec.status,
 			title: new Text(title, 0, 0),
 			meta: this.spec.meta?.map(oneLine).filter(Boolean),
-			details: this.expanded && safeDetail !== "" ? new Text(theme.fg("muted", safeDetail), 0, 0) : undefined,
+			details:
+				safeDetail === ""
+					? undefined
+					: this.expanded
+						? new Text(theme.fg("muted", safeDetail), 0, 0)
+						: this.spec.countHiddenDetail
+							? new Text(collapseToolBlockLines(safeDetail.split("\n"), 0, false).join("\n"), 0, 0)
+							: undefined,
+			outputPad: this.spec.outputPad,
 		}).render(width);
 	}
 }

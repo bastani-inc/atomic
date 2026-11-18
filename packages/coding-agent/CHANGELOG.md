@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- `hexColorAnsi(hex, "fg" | "bg")` returns the escape sequence for a `#rrggbb` color that follows `NO_COLOR` and `FORCE_COLOR` the way theme colors do, for extensions that paint their own colors
+
+### Changed
+
+- A task heartbeat in chat is now a notice like the others instead of a shaded card: one `♥ Task heartbeat · N tasks still running` line, a `⎿` row per task (up to five, the rest counted in one row), and `/tasks to inspect` under them. Expanding it (Ctrl+O) adds each task's status and last output lines. The text the model reads is unchanged. For extensions, `NoticeStatus` gains `heartbeat` (the `♥` mark), and `HeartbeatBlock` draws a heartbeat in this form
+- A waiting subagent's launch card in the parent's chat shows the same still `◌` mark and `Waiting on <tool>` as `/tasks`, instead of `⏸ Released · waiting`, which read as paused, and it shows the subagent running or finished again once it wakes or ends. Alt+W (`app.tasks.openWaited`) opens the output of the shell a waiting subagent waits on, from its chat or its `/tasks` row, and ← goes back; the chat's note and the `/tasks` hint name the key. `ToolBlock` and `NoticeLine` take the new `waiting` status, so code that switches over `ToolBlockStatus` or `NoticeStatus` should handle `waiting`.
+- Workflow stage chats and subagent chats count their running background shells below their agent rows, for example `2 shells`, as the main chat's footer does, instead of listing each shell as a row. With no subagent rows the line adds `/tasks to manage`. `/tasks` still lists every shell
+
 ### Fixed
 
 - On Windows, installing a downloaded tool (such as `rg`, `fd` or Git) no longer fails when Atomic was started from PowerShell 7 and `tar.exe` cannot extract the zip archive: the Windows PowerShell fallback's `Expand-Archive` no longer inherits PowerShell 7's module path, which made it fail with `Cannot find an overload for "ExtractToDirectory"`. Every Windows PowerShell command Atomic runs for its own work now starts this way; the `powershell` tool and blueprint steps still run with your environment unchanged

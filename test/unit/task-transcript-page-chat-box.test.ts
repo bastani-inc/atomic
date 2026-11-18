@@ -46,8 +46,12 @@ const flush = async () => {
 };
 const plain = (rows: readonly string[]) => rows.map((row) => stripVTControlCharacters(row));
 const text = (rows: readonly string[]) => plain(rows).join("\n");
-/** A chat's own active tasks, listed below its footer as agent-panel rows (#5224). */
-const taskRows = (rows: readonly string[]) => plain(rows).filter((row) => /^ {2}[∀⧗] /.test(row));
+/**
+ * A chat's own active tasks below its footer: subagents as agent-panel rows (#5224), and its running shells counted on
+ * one line, as the main chat's hint counts them.
+ */
+const TASK_ROW = /^ {2}(?:∀ |\d+ shells?\b)/;
+const taskRows = (rows: readonly string[]) => plain(rows).filter((row) => TASK_ROW.test(row));
 
 /** The attached composer's top rule: heavy, ending in its label and one rule glyph (#5224). */
 const labelRows = (rows: readonly string[]) => plain(rows).filter((row) => /^━+ .+ ━$/.test(row));
@@ -326,13 +330,13 @@ describe("a subagent's chat box rows (#4640)", () => {
 		await page.load();
 		const rows = plain(page.render(80, 12));
 		assert.equal(taskRows(rows).length, 2);
-		assert.match(rows.at(-1) ?? "", /^ {2}[∀⧗] /, "the rows close the chat box");
+		assert.match(rows.at(-1) ?? "", TASK_ROW, "the rows close the chat box");
 		page.dispose();
 		const grandchild = subagentPage(treeSource(), "grandchild");
 		await grandchild.load();
 		assert.deepEqual(
 			taskRows(grandchild.render(80, 12)).map((row) => row.replace(/ {2,}/g, "  ").trimEnd()),
-			["  ⧗ shell  title-grandchild-shell  running"],
+			["  1 shell · /tasks to manage"],
 		);
 		grandchild.dispose();
 	});
@@ -359,7 +363,11 @@ test("repaints its footer as its parent's tasks change without rebuilding its tr
 			page.render(80, 12);
 		}
 		assert.equal(rebuilds.mock.calls.length, 0, "a task change rebuilds none of the transcript's rows");
-		assert.equal(plain(page.render(80, 12)).at(-1), "  +3 more", "seven rows: four shown, the rest folded");
+		assert.equal(
+			plain(page.render(80, 12)).at(-1),
+			"  6 shells",
+			"one subagent row, and the six running shells counted under it",
+		);
 	} finally {
 		rebuilds.mockRestore();
 		page.dispose();
