@@ -238,6 +238,22 @@ describe("forked workflow stages copy their source append-only (#5481)", () => {
 			],
 		);
 	});
+
+	test("a parallel launched later forks at its own launch point, also when it is replayed (#5481)", async () => {
+		const { source, runner } = await durableParallelRun("parallel-fork-point-per-launch");
+		const options = { concurrency: 1, context: "fork" as const, forkFromSessionId: source.getSessionId() };
+		const firstLaunch = source.getLeafId();
+		const first = runner();
+		await first.parallel(STEPS.slice(0, 1), options);
+		// The source moved on while the first parallel ran; the same parallel launched again forks where it is now.
+		const secondLaunch = source.getLeafId();
+		await first.parallel(STEPS.slice(0, 1), options);
+		assert.notEqual(secondLaunch, firstLaunch);
+		assert.deepEqual(
+			first.forkedAt.map(({ entry }) => entry),
+			[firstLaunch, secondLaunch],
+		);
+	});
 });
 
 const STEPS = [

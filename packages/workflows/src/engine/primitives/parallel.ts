@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { durableHash } from "../../durable/durable-hash.js";
 import { type FanOutForkPoints, launchForkSourceOf, withLaunchForkEntry } from "../../durable/stage-fork-point.js";
 import { findWorkflowExitSignal } from "../../runs/foreground/executor-abort.js";
 import { mapParallelSteps } from "../../runs/foreground/executor-direct-helpers.js";
@@ -62,7 +63,8 @@ export function createParallelPrimitive(input: {
 			sourceIds.length === 0
 				? new Map<string, string>()
 				: await (input.forkPoints ?? liveForkPoints)(
-						`parallel:${resolvedSteps.map((step) => step.name).join(",")}`,
+						// Named by its steps, hashed so a parallel of many or long step names gets a short record key.
+						`parallel:${durableHash(resolvedSteps.map((step) => step.name))}`,
 						sourceIds,
 					);
 		const failFastEnabled = resolvedOptions.failFast !== false;
