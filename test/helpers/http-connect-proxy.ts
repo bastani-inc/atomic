@@ -15,6 +15,8 @@ export interface ConnectProxyOptions {
 	readonly credentials?: { readonly user: string; readonly password: string };
 	/** How long the proxy waits before it answers a tunnel it opens, as a slow proxy or a long network path does. */
 	readonly answerDelayMs?: number;
+	/** Whether a tunnel to `target` is answered 200 and then gets nothing, as a server that stopped answering. */
+	readonly blackHole?: (target: string) => boolean;
 }
 
 export interface ConnectProxyTunnel {
@@ -23,6 +25,8 @@ export interface ConnectProxyTunnel {
 	clientBytes(): Buffer;
 	/** Every byte the target sent back through the tunnel so far. */
 	serverBytes(): Buffer;
+	/** Whether the client closed its end of the tunnel. */
+	clientClosed(): boolean;
 }
 
 export interface ConnectProxy {
@@ -73,6 +77,24 @@ export async function startConnectProxy(options: ConnectProxyOptions): Promise<C
 		}
 		const route = options.routes(target);
 		if (route === undefined) return answer(client, 403);
+		if (options.blackHole?.(target) === true) {
+			let closed = false;
+			client.on("end", () => {
+				closed = true;
+			});
+			client.on("close", () => {
+				closed = true;
+			});
+			tunnels.push({
+				target,
+				clientBytes: () => Buffer.alloc(0),
+				serverBytes: () => Buffer.alloc(0),
+				clientClosed: () => closed,
+			});
+			client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+			client.resume();
+			return;
+		}
 		const chunks: Buffer[] = [];
 		const answers: Buffer[] = [];
 		const record = (chunk: Buffer) => chunks.push(Buffer.from(chunk));
@@ -82,7 +104,12 @@ export async function startConnectProxy(options: ConnectProxyOptions): Promise<C
 		upstream.once("connect", () => {
 			upstream.removeAllListeners("error");
 			upstream.on("error", () => client.destroy());
-			tunnels.push({ target, clientBytes: () => Buffer.concat(chunks), serverBytes: () => Buffer.concat(answers) });
+			tunnels.push({
+				target,
+				clientBytes: () => Buffer.concat(chunks),
+				serverBytes: () => Buffer.concat(answers),
+				clientClosed: () => client.destroyed || client.readableEnded,
+			});
 			open.set(client, target);
 			client.on("close", () => {
 				open.delete(client);

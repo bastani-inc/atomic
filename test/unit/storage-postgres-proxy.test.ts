@@ -277,6 +277,17 @@ describe("PostgreSQL proxy tunnel (#5473)", () => {
 			silent.server.close();
 		}
 
+		// An address nothing answers at (TEST-NET-1): the proxy is not reached at all, which is not a proxy that is silent.
+		const dropped = await tunnelFailure(
+			openProxyTunnel(parseProxy("http://192.0.2.1:3128", "HTTPS_PROXY"), target, { timeoutMs: 300 }),
+		);
+		assert.equal(dropped.code, "proxy-unreachable", dropped.message);
+		assert.equal(dropped.permanent, false);
+		assert.match(
+			dropped.message,
+			/^the proxy http:\/\/192\.0\.2\.1:3128 could not be reached for the tunnel to db\.example\.com:5432 \(/,
+		);
+
 		const unreachable = await fakeProxy(() => {});
 		const port = unreachable.port;
 		await new Promise<void>((resolve) => unreachable.server.close(() => resolve()));

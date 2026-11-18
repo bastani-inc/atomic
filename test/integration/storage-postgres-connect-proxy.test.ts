@@ -563,11 +563,14 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 		});
 	});
 
-	test("a URL without a host is decided for PGHOST and PGPORT, the endpoint pg connects to (#5473)", async () => {
+	test("a URL without a host is decided, and encrypted, for PGHOST and PGPORT, the endpoint pg connects to (#5473)", async () => {
 		await withPostgresDatabase(async (scope) => {
 			const requestsBefore = proxy.requests.length;
+			const from = proxy.tunnels.length;
 			const url = new URL(urlFor(scope.name));
 			url.searchParams.set("user", url.username);
+			// No sslmode: PGHOST names a host other than this machine, so the default verify-full applies, as for a URL host.
+			url.searchParams.delete("sslmode");
 			const hostless = `postgresql:///${scope.name}${url.search}`;
 			await withEnvironment(
 				{ HTTPS_PROXY: proxy.url, PGHOST: DATABASE_HOST, PGPORT: String(OTHER_PORT) },
@@ -578,6 +581,12 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 					});
 					try {
 						assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+						// The same default as a URL that names the host: TLS, with the certificate checked against it.
+						assert.match(
+							database.descriptor.location,
+							/[?&]sslmode=verify-full(?:&|$)/,
+							database.descriptor.location,
+						);
 					} finally {
 						await database.close();
 					}
@@ -586,6 +595,7 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 			const requests = proxy.requests.slice(requestsBefore);
 			assert.ok(requests.length > 0, "the connection did not go through the proxy");
 			for (const request of requests) assert.equal(request.target, `${DATABASE_HOST}:${OTHER_PORT}`);
+			assertCiphertextOnly(from);
 		});
 	});
 
@@ -825,6 +835,48 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 					}
 				});
 			});
+		},
+		CANCEL_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a cancel request whose tunnel the server side never answers is closed when the client gives up on it (#5473)",
+		async () => {
+			let blackHole = false;
+			const holding = await startConnectProxy({
+				routes: (target) =>
+					target === `${DATABASE_HOST}:${PORT}` ? { host: "127.0.0.1", port: front.port } : undefined,
+				blackHole: () => blackHole,
+			});
+			try {
+				await withPostgresDatabase(async (scope) => {
+					const database = await open(scope.name, {
+						statementTimeoutMs: CANCEL_STATEMENT_TIMEOUT_MS,
+						proxy: holding.url,
+					});
+					stalling = true;
+					try {
+						assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+						// A hung server: the proxy still opens the cancel request's tunnel, and nothing answers there.
+						blackHole = true;
+						const from = holding.tunnels.length;
+						await failure(database.get(`SELECT pg_sleep(30) ${STALL_MARKER}`));
+						const cancels = holding.tunnels.slice(from);
+						assert.ok(cancels.length > 0, "no cancel request was sent");
+						await until(
+							() => cancels.every((tunnel) => tunnel.clientClosed()),
+							2_000,
+							"the cancel request's tunnel was left open after the client gave up on it",
+						);
+					} finally {
+						stalling = false;
+						blackHole = false;
+						await database.close();
+					}
+				});
+			} finally {
+				await holding.close();
+			}
 		},
 		CANCEL_TEST_TIMEOUT_MS,
 	);

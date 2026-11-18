@@ -35,12 +35,17 @@ export interface PostgresDatabaseOptions {
 	sdkSearchPaths?: readonly string[];
 	/**
 	 * The HTTP proxy connections tunnel through with `CONNECT` (#5473): an `http://` or `https://` URL, with credentials
-	 * sent as `Proxy-Authorization` when it has them, or `"none"` for direct connections. It overrides the environment:
-	 * without it, a connection to a host other than this machine tunnels through `HTTPS_PROXY` (or `ALL_PROXY`, then
-	 * `HTTP_PROXY`) unless `NO_PROXY` exempts the host. TLS still runs end to end with the server.
+	 * sent as `Proxy-Authorization` when it has them, or `"none"` for direct connections. It overrides the environment
+	 * and applies to this machine too: without it, a connection to a host other than this machine tunnels through
+	 * `HTTPS_PROXY` (or `ALL_PROXY`, then `HTTP_PROXY`) unless `NO_PROXY` exempts the host. A socket directory is always
+	 * reached directly. TLS still runs end to end with the server; with `sslmode` `prefer`, `allow` or `disable`, a
+	 * proxy can read the traffic.
 	 */
 	proxy?: string;
-	/** Opens each connection to the server for a custom transport, in place of a socket or a proxy tunnel. */
+	/**
+	 * Opens each connection to the server for a custom transport, in place of a socket or a proxy tunnel; passing it
+	 * with `proxy` is refused (`conflicting-transport`). A socket directory is always reached directly.
+	 */
 	socket?: PostgresSocketFactory;
 }
 

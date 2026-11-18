@@ -211,7 +211,7 @@ function isTlsParameter(/** @type {string} */ name) {
 
 /**
  * The URL pg connects with: a `postgres:` or `postgresql:` URL without a password, which gets `sslmode=verify-full`
- * when it names none and its host is not this machine. A TLS parameter whose name is not lowercase, or an `sslmode`
+ * when it names none and its host, or `PGHOST` for a URL that names no host, is not this machine. A TLS parameter whose name is not lowercase, or an `sslmode`
  * libpq does not know, is refused.
  * @param {unknown} url
  * @param {"url" | "listenUrl"} [field] The option that holds the URL, which a refusal names.
@@ -243,7 +243,8 @@ function connectionUrl(url, field = "url") {
 	if (mode !== null && !SSL_MODES.has(mode))
 		throw configError("url", "unsupported-sslmode", `Use an sslmode of ${[...SSL_MODES].join(", ")}`);
 	if (mode !== null) return /** @type {string} */ (url);
-	const host = parsed.searchParams.get("host") ?? parsed.hostname;
+	// The host pg connects to: a URL that names none falls back to PGHOST, as pg does (#5473).
+	const host = parsed.searchParams.get("host") ?? (parsed.hostname || process.env.PGHOST || "");
 	if (isLocalHost(host)) return /** @type {string} */ (url);
 	parsed.searchParams.set("sslmode", "verify-full");
 	return parsed.href;
@@ -901,7 +902,16 @@ export async function openPostgresDatabase(options) {
 						// connection's cancel key (#5473).
 						Promise.resolve()
 							.then(() => opener({ host, port }))
-							.then((raw) => (connection.ssl ? secureCancelStream(raw, host, connection.ssl) : raw));
+							.then((raw) => {
+								// Kept at once, so the bound closes the tunnel whatever stage the request reached: a hung
+								// server may never answer the SSLRequest or finish the handshake.
+								socket = raw;
+								if (done) {
+									raw.destroy();
+									return raw;
+								}
+								return connection.ssl ? secureCancelStream(raw, host, connection.ssl) : raw;
+							});
 			opened.then(
 				(opening) => {
 					socket = opening;

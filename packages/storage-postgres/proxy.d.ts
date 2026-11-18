@@ -1,6 +1,6 @@
 import type { Duplex } from "node:stream";
 
-/** A connection's target, as the URL names it: the database host and port. */
+/** A connection's target: the endpoint pg connects to, the URL's host and port, else `PGHOST` and `PGPORT`. */
 export interface ProxyTarget {
 	readonly host: string;
 	readonly port: number;

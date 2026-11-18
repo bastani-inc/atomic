@@ -328,11 +328,18 @@ export function openProxyTunnel(proxy, target, options = {}) {
 		};
 		const timer = setTimeout(
 			() =>
-				fail(
-					"proxy-timeout",
-					`the proxy ${proxy.label} did not answer the tunnel request to ${authority} within ${timeoutMs} ms`,
-					false,
-				),
+				connected
+					? fail(
+							"proxy-timeout",
+							`the proxy ${proxy.label} did not answer the tunnel request to ${authority} within ${timeoutMs} ms`,
+							false,
+						)
+					: // No connection to the proxy at all, as at an address that drops packets: nothing was asked yet.
+						fail(
+							"proxy-unreachable",
+							`the proxy ${proxy.label} could not be reached for the tunnel to ${authority} (no connection within ${timeoutMs} ms)`,
+							false,
+						),
 			timeoutMs,
 		);
 		socket.once(proxy.protocol === "https:" ? "secureConnect" : "connect", () => {
