@@ -254,59 +254,58 @@ export function registerPendingStageIntercomBridge(
 	const unpublishedRunIds = new Set<string>();
 	/** The invocation each announced run's route belongs to, by run id: what retiring an invocation withdraws. */
 	const announcedRootOf = new Map<string, string>();
-	/** Finished invocations whose routes stay announced, by root run id, oldest first (#5492). */
-	const finishedRoots = new Set<string>();
-	/** Finished invocations whose routes were retired. One that runs again leaves it and is announced again. */
-	const retiredRoots = new Set<string>();
-	const retireRoutes = (rootRunId: string): void => {
+	/** Only order and notice eligibility are needed to select the window; never reread unchanged snapshots for it. */
+	const finishedRoots = new Map<string, number>();
+	const owingRoots = new Set<string>();
+	let retainedRoots = new Set<string>();
+	let retentionChanged = false;
+	let needsBackfill = false;
+	const retireRoute = (runId: string, rootRunId: string): void => {
 		const group = workflowInvocationIntercomGroup(rootRunId);
-		for (const [runId, root] of announcedRootOf) {
-			if (root !== rootRunId) continue;
-			announcedRootOf.delete(runId);
-			unpublishedRunIds.delete(runId);
-			dropRoute(runId);
-			outsideWorkflowExecutions(() => pi.events?.emit?.(PENDING_STAGE_ROUTE_RETIRED_EVENT, { runId, group }));
-		}
+		announcedRootOf.delete(runId);
+		unpublishedRunIds.delete(runId);
+		dropRoute(runId);
+		outsideWorkflowExecutions(() => pi.events?.emit?.(PENDING_STAGE_ROUTE_RETIRED_EVENT, { runId, group }));
 	};
-	/**
-	 * Retires the oldest finished invocations past the retention. An invocation a sweep found owing a sender a notice keeps
-	 * its routes and does not count toward the retention, so the most recently finished ones that owe none keep theirs.
-	 */
-	const retireOldestFinished = (noted?: string): void => {
-		const owingNotice = new Set<string>();
-		for (const [runId, rootRunId] of announcedRootOf) if (unsettledRunIds.has(runId)) owingNotice.add(rootRunId);
-		let excess = -TERMINAL_INVOCATION_ROUTE_RETENTION;
-		for (const rootRunId of finishedRoots) if (!owingNotice.has(rootRunId)) excess += 1;
-		for (const rootRunId of finishedRoots) {
-			if (excess <= 0) return;
-			// The invocation just noted is the most recent; no sweep has looked at it yet.
-			if (rootRunId === noted || owingNotice.has(rootRunId)) continue;
-			finishedRoots.delete(rootRunId);
-			retiredRoots.add(rootRunId);
-			retireRoutes(rootRunId);
-			excess -= 1;
-		}
-	};
-	/**
-	 * Whether the routes of the invocation `root` heads are retired. A terminal root is noted as finished the first time
-	 * it is seen terminal, which retires the oldest finished invocation past the retention; one that runs again is not.
-	 */
-	const rootRoutesRetired = (root: RunSnapshot): boolean => {
+	const noteFinishedRoot = (root: RunSnapshot, owesNotice: boolean): void => {
+		const wasCounted = retainedRoots.has(root.id) && !owingRoots.has(root.id);
 		if (!isTerminalRunStatus(root.status)) {
-			finishedRoots.delete(root.id);
-			retiredRoots.delete(root.id);
-			return false;
+			if (wasCounted) needsBackfill = true;
+			if (finishedRoots.delete(root.id)) retentionChanged = true;
+			owingRoots.delete(root.id);
+			return;
 		}
-		if (retiredRoots.has(root.id)) return true;
-		if (!finishedRoots.has(root.id)) {
-			finishedRoots.add(root.id);
-			retireOldestFinished(root.id);
+		const sequence = root.finishSequence ?? root.endedAt ?? root.startedAt;
+		const previous = finishedRoots.get(root.id);
+		if (previous === sequence && owingRoots.has(root.id) === owesNotice) return;
+		if (wasCounted && (owesNotice || (previous !== undefined && sequence < previous))) needsBackfill = true;
+		finishedRoots.set(root.id, sequence);
+		if (owesNotice) owingRoots.add(root.id);
+		else owingRoots.delete(root.id);
+		retentionChanged = true;
+	};
+	/** Decide the whole batch before publishing any route. Owing a sender a notice exempts the invocation, but
+	 * neither discovering nor settling a notice changes when that invocation finished. */
+	const applyRetention = (changed?: Set<string>): void => {
+		if (!retentionChanged) return;
+		// A new finish competes only with the retained window. An older retired run can re-enter it only when a
+		// counted run leaves, becomes exempt or is replaced with an older snapshot.
+		const candidates =
+			changed === undefined || needsBackfill ? finishedRoots.keys() : new Set([...retainedRoots, ...changed]);
+		const recent = [...candidates].filter((id) => finishedRoots.has(id) && !owingRoots.has(id));
+		recent.sort((a, b) => finishedRoots.get(b)! - finishedRoots.get(a)! || (a < b ? -1 : a > b ? 1 : 0));
+		const keep = new Set([...owingRoots, ...recent.slice(0, TERMINAL_INVOCATION_ROUTE_RETENTION)]);
+		// Newly terminal invocations may have live routes even if they were never in the previous finished window.
+		for (const [id, root] of announcedRootOf) {
+			if (finishedRoots.has(root) && !keep.has(root)) retireRoute(id, root);
 		}
-		return retiredRoots.has(root.id);
+		for (const root of keep) if (!retainedRoots.has(root)) changed?.add(root);
+		retainedRoots = keep;
+		retentionChanged = false;
+		needsBackfill = false;
 	};
 	const announceRun = (run: RunSnapshot, rootRunId: string, lookups: RouteLookups): void => {
-		// A root is announced before the runs under it, so a run under a retired root reads nothing to know it.
-		if (run.id === rootRunId ? rootRoutesRetired(run) : retiredRoots.has(rootRunId)) return;
+		if (finishedRoots.has(rootRunId) && !retainedRoots.has(rootRunId)) return;
 		const parentRun = lookups.parentOf(run);
 		const boundary = parentRun?.stages.find((stage) => stage.id === run.parentStageId);
 		const parent =
@@ -452,13 +451,10 @@ export function registerPendingStageIntercomBridge(
 			rowRuns: () => runs,
 		};
 		const members = new Map<string, string[]>();
-		// #5492: finished invocations are noted oldest first before any route is announced, so one past the retention is
-		// never announced at all rather than announced and retired at once.
-		for (const run of runs) {
-			if (topology.rootOf(run.id) !== run.id) continue;
-			if (externalRunRouteOwner(activeStore, run.id) !== undefined || !ownsRun(run.id)) continue;
-			rootRoutesRetired(run);
-		}
+		const owing = new Set<string>();
+		finishedRoots.clear();
+		owingRoots.clear();
+		retentionChanged = true;
 		for (const run of runs) {
 			const rootRunId = topology.rootOf(run.id);
 			for (const root of new Set([rootRunId, run.rootRunId])) {
@@ -471,9 +467,14 @@ export function registerPendingStageIntercomBridge(
 			if (externalRunRouteOwner(activeStore, run.id) !== undefined || !ownsRun(run.id)) continue;
 			if (rootRunId === undefined) continue;
 			ownedRunIds.add(run.id);
-			announceRun(run, rootRunId, lookups);
+			if (hasSettlementWork(run)) owing.add(rootRunId);
 		}
 		rootRunMembers = members;
+		for (const run of runs) {
+			if (ownedRunIds.has(run.id) && topology.rootOf(run.id) === run.id) noteFinishedRoot(run, owing.has(run.id));
+		}
+		applyRetention();
+		for (const run of runs) if (ownedRunIds.has(run.id)) announceRun(run, topology.rootOf(run.id)!, lookups);
 		// Drop claims for runs with no currently resolvable durable owner, so a removed
 		// and re-added run re-announces instead of inheriting a stale claim.
 		for (const runId of announcedRoutes.keys()) {
@@ -485,9 +486,11 @@ export function registerPendingStageIntercomBridge(
 		for (const rootRunId of possibleStageRowIndexes.keys()) {
 			if (!ownedRunIds.has(rootRunId)) possibleStageRowIndexes.delete(rootRunId);
 		}
-		for (const runId of announcedRootOf.keys()) if (!runById.has(runId)) announcedRootOf.delete(runId);
-		for (const rootRunId of finishedRoots) if (!runById.has(rootRunId)) finishedRoots.delete(rootRunId);
-		for (const rootRunId of retiredRoots) if (!runById.has(rootRunId)) retiredRoots.delete(rootRunId);
+		for (const [id, root] of announcedRootOf) {
+			if (!runById.has(id) || !runById.has(root)) retireRoute(id, root);
+			// An existing run handed to another route owner is no longer ours to retire.
+			else if (!ownedRunIds.has(id)) announcedRootOf.delete(id);
+		}
 	};
 	/**
 	 * The routes a change to these runs can alter, found by id: every run of each invocation a changed run belongs to
@@ -511,6 +514,27 @@ export function registerPendingStageIntercomBridge(
 			},
 			rowRuns: membersOf,
 		};
+		for (const rootRunId of roots) {
+			const root = activeStore.run(rootRunId);
+			if (
+				root === undefined ||
+				topology.rootOf(rootRunId) !== rootRunId ||
+				!ownsRun(rootRunId) ||
+				externalRunRouteOwner(activeStore, rootRunId) !== undefined
+			)
+				continue;
+			const owes =
+				isTerminalRunStatus(root.status) &&
+				membersOf(rootRunId).some(
+					(run) =>
+						topology.rootOf(run.id) === rootRunId &&
+						hasSettlementWork(run) &&
+						ownsRun(run.id) &&
+						externalRunRouteOwner(activeStore, run.id) === undefined,
+				);
+			noteFinishedRoot(root, owes);
+		}
+		applyRetention(roots);
 		const position = (runId: string) => activeStore.runPosition(runId) ?? Number.MAX_SAFE_INTEGER;
 		for (const rootRunId of [...roots].sort((left, right) => position(left) - position(right))) {
 			for (const run of membersOf(rootRunId)) {
@@ -533,16 +557,9 @@ export function registerPendingStageIntercomBridge(
 			if (runIds === undefined) unsettledRunIds.clear();
 			else for (const runId of runIds) unsettledRunIds.delete(runId);
 			for (const runId of found) if (hasSettlementWork(activeStore.run(runId))) unsettledRunIds.add(runId);
-			// A retired invocation found owing a sender a notice, such as one that ran and finished again between two
-			// announcements, gets its routes back so the notice can go out over them (#5492).
-			let reopened = false;
-			for (const runId of unsettledRunIds) {
-				const rootRunId = topology.rootOf(runId);
-				if (rootRunId !== undefined && retiredRoots.delete(rootRunId)) reopened = true;
-			}
-			if (reopened) scheduleAnnouncement();
-			// Invocations kept past the retention while they owed notices give up their routes once they owe none.
-			retireOldestFinished();
+			// Settlement writes invalidate their runs. Publish the new window once notices went out, without waiting
+			// for another run to finish; recompute from current snapshots, not the state before the sweep awaited.
+			if (!disposed && found.size > 0) announceIfPending();
 		}
 	};
 	/**

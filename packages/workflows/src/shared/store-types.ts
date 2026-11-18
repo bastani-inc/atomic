@@ -625,6 +625,8 @@ export interface RunSnapshot extends RunExecutionState {
 	budgetState?: RunBudgetState;
 	startedAt: number;
 	endedAt?: number;
+	/** Order of this attempt's finish in its host session, including finishes in the same clock tick. */
+	finishSequence?: number;
 	durationMs?: number;
 	/**
 	 * Elapsed milliseconds inherited from prior sessions of this run. Seeded on

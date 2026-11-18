@@ -468,6 +468,7 @@ export interface DurableWorkflowBackend {
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
+		finishSequence?: number,
 	): Promise<void>;
 	/**
 	 * Atomically update status only when the authoritative status is expected.
@@ -747,6 +748,7 @@ class JournalProjection {
 			createdAt: handle.createdAt,
 			status: handle.status,
 			transitionClaimId: handle.transitionClaimId ?? existing?.handle.transitionClaimId,
+			...(handle.finishSequence === undefined ? {} : { finishSequence: handle.finishSequence }),
 			...((handle.definitionSource ?? existing?.handle.definitionSource) !== undefined
 				? { definitionSource: handle.definitionSource ?? existing?.handle.definitionSource }
 				: {}),
@@ -1158,6 +1160,7 @@ class JournalProjection {
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
+		finishSequence?: number,
 	): void {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return;
@@ -1173,6 +1176,7 @@ class JournalProjection {
 			failedToolNodeId: undefined,
 			failedToolUnrecorded: undefined,
 			status,
+			finishSequence: finishSequence ?? (status === rec.handle.status ? rec.handle.finishSequence : undefined),
 			transitionClaimId: status === rec.handle.status ? rec.handle.transitionClaimId : crypto.randomUUID(),
 			updatedAt: Math.max(Date.now(), rec.handle.updatedAt + 1),
 			...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
@@ -1211,6 +1215,7 @@ class JournalProjection {
 			inputs: h.inputs,
 			status: h.status,
 			...(h.transitionClaimId !== undefined ? { transitionClaimId: h.transitionClaimId } : {}),
+			...(h.finishSequence !== undefined ? { finishSequence: h.finishSequence } : {}),
 			createdAt: h.createdAt,
 			completedCheckpoints: h.completedCheckpoints,
 			pendingPrompts: h.pendingPrompts,

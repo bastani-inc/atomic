@@ -15,6 +15,7 @@ import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { purgeSuppressedWorkflowRuns } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import {
 	registerPendingStageIntercomBridge,
@@ -179,7 +180,7 @@ afterEach(async () => {
 	setDurableBackend(undefined);
 });
 
-test("a session that keeps running workflows keeps a bounded number of Intercom route connections (#5492)", async () => {
+test("a session bounds the routes of finished workflows and closes them when the runs are deleted (#5492, #5561)", async () => {
 	const observer = new IntercomClient("terminal-route-retention-observer");
 	observer.on("error", () => {});
 	await observer.connect({
@@ -251,6 +252,13 @@ test("a session that keeps running workflows keeps a bounded number of Intercom 
 	}).catch((error: Error) => {
 		throw new Error(`${error.message}; ${observed} connected after ${runCount} finished runs`);
 	});
+
+	for (const id of runIds) assert.ok((await backend.deleteWorkflowIfInactive(id)).ok);
+	assert.deepEqual(new Set(purgeSuppressedWorkflowRuns(backend, store)), new Set(runIds));
+	await bridge.flush();
+	await until("only the host and observer after deleting the finished runs", async () =>
+		(await connectedSessions()) === 2 ? true : undefined,
+	);
 });
 
 async function connectedObserver(name: string) {

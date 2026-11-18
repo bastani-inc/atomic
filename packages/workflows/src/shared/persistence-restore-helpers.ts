@@ -488,6 +488,19 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 		}
 	}
 
+	// Older transcripts have no sequence: order by recorded end time, with end-entry order breaking clock ties.
+	const sequences = new Map<string, number>();
+	const legacy: Array<[string, number]> = [];
+	for (const [id, end] of ended) {
+		const recorded = numericTimestamp(end.finishSequence);
+		if (recorded !== undefined) sequences.set(id, recorded);
+		else legacy.push([id, numericTimestamp(end.endedAt) ?? numericTimestamp(end.ts) ?? 0]);
+	}
+	let last = 0;
+	for (const [id, time] of legacy.sort((a, b) => a[1] - b[1])) {
+		last = Math.max(last + 1, time);
+		sequences.set(id, last);
+	}
 	for (const [runId, start] of started) {
 		if (store.run(runId) !== undefined) continue;
 		const end = ended.get(runId);
@@ -543,6 +556,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 		const restoredEndedAt = numericTimestamp(end.endedAt);
 		const restoredDurationMs = numericDuration(end.durationMs);
 		store.recordRunEnd(runId, status, result, typeof error === "string" ? error : undefined, {
+			finishSequence: sequences.get(runId),
 			...(typeof failureKind === "string" && isWorkflowFailureKind(failureKind) ? { failureKind } : {}),
 			...(typeof failureCode === "string" && isWorkflowFailureCode(failureCode) ? { failureCode } : {}),
 			...(typeof failureRecoverability === "string" && isWorkflowFailureRecoverability(failureRecoverability)

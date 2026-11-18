@@ -1832,9 +1832,16 @@ async function executeRun(
 			await recordRunResultCheckpointAsync(durableBackend, runSnapshot);
 			if (returned.status === "completed") await recordRunCompletedCheckpointAsync(durableBackend, runId);
 		}
-		await durableBackend.commitWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
+		await durableBackend.commitWorkflowStatus(
+			runId,
+			returned.status,
+			undefined,
+			returned.metadata?.resumable,
+			undefined,
+			runSnapshot.finishSequence,
+		);
 		terminalStatusCommitted = true;
-		await appendRunEndWhenRecorded(opts.persistence, recorded, {
+		await appendRunEndWhenRecorded(opts.persistence, recorded, runSnapshot, {
 			runId,
 			status: returned.status,
 			result,

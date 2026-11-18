@@ -742,7 +742,8 @@ export function purgeSuppressedWorkflowRuns(
 ): readonly string[] {
 	if (store === undefined) return [];
 	const removed: string[] = [];
-	for (const run of store.runs()) {
+	// removeRun splices the store's live list. Visit a snapshot so consecutive deletions do not skip a run.
+	for (const run of [...store.runs()]) {
 		if (controls.runControl(run.id) !== undefined || backend.isWorkflowLoadable(run.id)) continue;
 		if (store.removeRun(run.id)) removed.push(run.id);
 	}

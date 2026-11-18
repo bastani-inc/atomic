@@ -60,6 +60,19 @@ type RunStoreMethods = Pick<
 
 export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 	const { state } = context;
+	let lastFinish = 0;
+	const noteFinish = (run: RunSnapshot, previousStatus?: RunStatus, previousSequence?: number): void => {
+		if (!TERMINAL_STATUSES.has(run.status)) {
+			delete run.finishSequence;
+			return;
+		}
+		// Imported terminal snapshots keep their recorded order. A live transition advances the clock even if the
+		// wall clock stands still or moves backwards; endedAt remains the actual time used to measure duration.
+		const endedAt = run.endedAt ?? run.startedAt;
+		run.finishSequence ??=
+			previousStatus === undefined ? endedAt : (previousSequence ?? Math.max(endedAt, lastFinish + 1));
+		lastFinish = Math.max(lastFinish, run.finishSequence);
+	};
 
 	return {
 		runs(): readonly RunSnapshot[] {
@@ -102,6 +115,8 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 
 		recordRunStart(run: RunSnapshot): void {
 			// Resume replaces the snapshot, not the identity's prompt answers or notices.
+			const previous = context.findRun(run.id);
+			noteFinish(run, previous?.status, previous?.finishSequence);
 			context.placeRun(run);
 			context.bumpAndNotify({ runId: run.id });
 		},
@@ -110,8 +125,13 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			const run = context.findRun(runId);
 			if (run === undefined) return false;
 			context.batch(() => {
+				const previousStatus = run.status;
+				const previousSequence = run.finishSequence;
 				const edited = edit(run);
-				if (edited.run === true) context.bumpAndNotify({ runId });
+				if (edited.run === true) {
+					noteFinish(run, previousStatus, previousSequence);
+					context.bumpAndNotify({ runId });
+				}
 				for (const stageId of edited.stageIds ?? []) context.bumpAndNotify({ runId, stageId });
 				for (const toolNodeId of edited.toolNodeIds ?? []) context.bumpAndNotify({ runId, toolNodeId });
 			});
@@ -166,8 +186,11 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (!run) return false;
 			if (TERMINAL_STATUSES.has(run.status)) return false;
 			const endedAt = Date.now();
+			const previousStatus = run.status;
 			run.status = status;
 			run.endedAt = endedAt;
+			if (metadata?.finishSequence !== undefined) run.finishSequence = metadata.finishSequence;
+			noteFinish(run, previousStatus);
 			if (run.phase !== undefined) {
 				run.phase = "ended";
 				run.phaseStartedAt = endedAt;
@@ -250,6 +273,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 				stages: source.stages.map((stage) => ({ ...stage })),
 				toolNodes: source.toolNodes.map((node) => ({ ...node })),
 			};
+			delete restored.finishSequence;
 			delete restored.endedAt;
 			delete restored.durationMs;
 			restored.failureKind = metadata.failureKind;

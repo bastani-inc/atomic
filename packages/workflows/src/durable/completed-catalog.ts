@@ -172,6 +172,7 @@ export async function completedWorkflowRunSnapshots(
 			status: handle.status,
 			startedAt: handle.createdAt,
 			endedAt: handle.updatedAt,
+			finishSequence: handle.finishSequence,
 			durationMs: rootDuration,
 			...(handle.worktreeRootMappings !== undefined ? { worktreeRootMappings: handle.worktreeRootMappings } : {}),
 			...(handle.worktreeRestoreOutcomes !== undefined
@@ -241,6 +242,7 @@ function rootSnapshot(
 			? { worktreeRestoreOutcomes: handle.worktreeRestoreOutcomes }
 			: {}),
 		startedAt: handle.createdAt,
+		...(handle.finishSequence === undefined ? {} : { finishSequence: handle.finishSequence }),
 		...(terminal
 			? { endedAt: handle.updatedAt, durationMs: terminalDurationMs }
 			: priorDurationMs === undefined

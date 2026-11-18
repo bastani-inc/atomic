@@ -1151,8 +1151,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
+		finishSequence?: number,
 	): Promise<void> {
-		return this.serialize(runId, () => this.setStatus(runId, status, pendingPrompts, resumable, failure));
+		return this.serialize(runId, () =>
+			this.setStatus(runId, status, pendingPrompts, resumable, failure, finishSequence),
+		);
 	}
 	private *setStatus(
 		runId: string,
@@ -1160,9 +1163,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
+		finishSequence?: number,
 	): Operation<void> {
 		const draft = yield* this.draft(runId);
-		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable, failure);
+		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable, failure, finishSequence);
 		const handle = draft.getWorkflow(runId);
 		if (handle) yield* this.snapshot(handle);
 	}
