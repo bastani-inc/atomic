@@ -459,6 +459,7 @@ export const STORAGE_TRANSIENT_ERROR_CODES = [
 	"connection-refused",
 	"connection-lost",
 	"lock-conflict",
+	"read-only-server",
 ] as const;
 /**
  * Why a call to a database server failed for a while: `"stream-expired"`, the server ended a stream that stayed idle
@@ -466,7 +467,9 @@ export const STORAGE_TRANSIENT_ERROR_CODES = [
  * server rolled back a transaction that kept the write lock while another writer waited; `"connection-refused"`, no
  * connection to the server could be made; `"connection-lost"`, the connection broke while a request was on its way or
  * being answered; `"lock-conflict"`, the server aborted the transaction to resolve a lock conflict (a serialization
- * failure, a deadlock, or a lock wait that timed out).
+ * failure, a deadlock, or a lock wait that timed out); `"read-only-server"`, the server refused a write because it
+ * accepts reads only, as a read replica does, or a primary for a while during a failover or when its storage is
+ * nearly full.
  */
 export type StorageTransientErrorCode = (typeof STORAGE_TRANSIENT_ERROR_CODES)[number];
 /**
@@ -490,6 +493,12 @@ const TRANSIENT_HINTS: Readonly<Record<StorageTransientOutcome, string>> = {
 		"Check that the database server is reachable; the write may have been applied, so read it back before retrying a write that is not idempotent",
 };
 
+/** What a failure of one of these codes asks of the reader, in place of the hint its outcome gives. */
+const TRANSIENT_CODE_HINTS: Readonly<Partial<Record<StorageTransientErrorCode, string>>> = {
+	"read-only-server":
+		"The server accepts reads only (SQLSTATE 25006): either the URL names a read replica or read-only endpoint (use the primary or the read/write endpoint), or the server is read-only right now (storage nearly full, or a failover in progress); nothing was written",
+};
+
 /**
  * A call to a database server failed for a reason that passes: the server ended an idle stream or a transaction that
  * kept the write lock, or the connection could not be made or broke. `outcome` says whether the call may have written
@@ -504,7 +513,7 @@ export class StorageTransientError extends StorageUnavailableError {
 	readonly retryable = true as const;
 	readonly hint: string;
 	constructor(descriptor: StorageDescriptor, details: StorageTransientErrorDetails, cause?: StorageFailureCause) {
-		const hint = TRANSIENT_HINTS[details.outcome];
+		const hint = TRANSIENT_CODE_HINTS[details.code] ?? TRANSIENT_HINTS[details.outcome];
 		super(
 			descriptor,
 			cause,
