@@ -136,9 +136,11 @@ test("cached workflow rows advance between source changes and stop while paused 
 	now = 10_000;
 	assert.equal(panel.rows([row])[0]?.elapsedMs, 15_000);
 	const paused = { ...row, state: "paused" as const, elapsedMs: 15_000 };
-	assert.equal(panel.rows([paused])[0]?.elapsedMs, 15_000);
+	// A paused run is listed while other work is active (#5490): a running background shell, which is not a row.
+	const shell = { id: "ext:sh", kind: "shell" as const, state: "running" as const, name: "shell", task: "sleep 300" };
+	assert.equal(panel.rows([paused, shell])[0]?.elapsedMs, 15_000);
 	now += 60_000;
-	assert.equal(panel.rows([paused])[0]?.elapsedMs, 15_000);
+	assert.equal(panel.rows([paused, shell])[0]?.elapsedMs, 15_000);
 	const resumed = { ...row, state: "running" as const, elapsedMs: 15_000 };
 	assert.equal(panel.rows([resumed])[0]?.elapsedMs, 15_000);
 	now += 1000;
@@ -149,6 +151,7 @@ test("cached workflow rows advance between source changes and stop while paused 
 
 test("workflow and extension rows that finish or pause while the panel is hidden show their reported elapsed time (#5224, #5239)", () => {
 	let now = 100_000;
+	const shell: AgentPanelItem = { id: "ext:sh", kind: "shell", state: "running", name: "shell", task: "sleep 300" };
 	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const hub = new AgentPanelSourceHub();
 	let notifySource = () => {};
@@ -162,6 +165,8 @@ test("workflow and extension rows that finish or pause while the panel is hidden
 			elapsedMs: 0,
 		},
 		{ id: "run:hidden-pause", kind: "workflow", state: "running", name: "audit", task: "stage verify", elapsedMs: 0 },
+		// A paused run is listed while other work is active (#5490): a running background shell, which is not a row.
+		shell,
 	];
 	hub.register({
 		items: () => items,
@@ -206,6 +211,7 @@ test("workflow and extension rows that finish or pause while the panel is hidden
 				task: "stage verify",
 				elapsedMs: 20_000,
 			},
+			shell,
 		];
 		notifySource();
 		now = 180_000;
@@ -225,6 +231,7 @@ test("workflow and extension rows that finish or pause while the panel is hidden
 				task: "stage verify",
 				elapsedMs: 20_000,
 			},
+			shell,
 		];
 		notifySource();
 		assert.deepEqual(

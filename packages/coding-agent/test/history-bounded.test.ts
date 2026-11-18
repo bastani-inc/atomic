@@ -91,6 +91,11 @@ interface WatchedTurn extends Interval {
 	readonly cpu: number;
 }
 
+interface WatchedTurns {
+	readonly count: number;
+	readonly blockedMs: readonly number[];
+}
+
 function overlapMs(turn: Interval, pauses: readonly Interval[]): number {
 	return pauses.reduce(
 		(sum, pause) => sum + Math.max(0, Math.min(turn.end, pause.end) - Math.max(turn.start, pause.start)),
@@ -118,9 +123,11 @@ function raiseProcessPriority(): () => void {
 	return () => setPriority(before);
 }
 
-function watchEventLoopTurns(): () => Promise<number[]> {
+function watchEventLoopTurns(): () => Promise<WatchedTurns> {
 	const restorePriority = raiseProcessPriority();
 	const turns: WatchedTurn[] = [];
+	let count = 0;
+	const minimumLimitMs = Math.min(TURN_LIMIT_MS, PACED_TURN_LIMIT_MS);
 	const collections: Interval[] = [];
 	const collected = (entries: readonly PerformanceEntry[]) => {
 		for (const entry of entries) collections.push({ start: entry.startTime, end: entry.startTime + entry.duration });
@@ -133,10 +140,15 @@ function watchEventLoopTurns(): () => Promise<number[]> {
 	const turn = () => {
 		const now = performance.now();
 		const cpu = cpuMs();
-		turns.push({ start: last, end: now, cpu: cpu - lastCpu });
-		last = now;
-		lastCpu = cpu;
+		count++;
+		// Only retain a turn that could fail an assertion, even before subtracting collection pauses. A worker can
+		// leave millions of idle turns here; retaining each one makes the measurement itself allocate and stall.
+		if (Math.min(cpu - lastCpu - CPU_CLOCK_STEP_MS, now - last) > minimumLimitMs)
+			turns.push({ start: last, end: now, cpu: cpu - lastCpu });
 		if (watching) setImmediate(turn);
+		// The collector's own allocation and scheduling are not work done by history://.
+		last = performance.now();
+		lastCpu = cpuMs();
 	};
 	setImmediate(turn);
 	return async () => {
@@ -146,18 +158,18 @@ function watchEventLoopTurns(): () => Promise<number[]> {
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			collected(observer.takeRecords());
 			observer.disconnect();
-			return turns.map((item) => turnBlockedMs(item, collections, CPU_CLOCK_STEP_MS));
+			return { count, blockedMs: turns.map((item) => turnBlockedMs(item, collections, CPU_CLOCK_STEP_MS)) };
 		} finally {
 			restorePriority();
 		}
 	};
 }
 
-function assertFewStalls(turns: readonly number[], limitMs: number, what: string): void {
-	const stalls = turns.filter((ms) => ms > limitMs).sort((a, b) => b - a);
+function assertFewStalls(turns: WatchedTurns, limitMs: number, what: string): void {
+	const stalls = turns.blockedMs.filter((ms) => ms > limitMs).sort((a, b) => b - a);
 	assert.ok(
 		stalls.length <= STALLS_ALLOWED && (stalls[0] ?? 0) < STALL_CEILING_MS,
-		`${what} held the event loop for more than ${limitMs} ms ${stalls.length} times in ${turns.length} turns: ${stalls.slice(0, 8).map(Math.round).join(", ")} ms`,
+		`${what} held the event loop for more than ${limitMs} ms ${stalls.length} times in ${turns.count} turns: ${stalls.slice(0, 8).map(Math.round).join(", ")} ms`,
 	);
 }
 
@@ -1173,7 +1185,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				]);
 				const { router, read, request } = historyOver(store);
 				const stopWatching = watchEventLoopTurns();
-				let turns: number[];
+				let turns: WatchedTurns;
 				try {
 					const page = await read("history://sessions/big:1-1");
 					assert.ok(page.includes("row-0 "));
@@ -2398,7 +2410,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				const { router, request } = historyOver(store, { timeMs: 120_000, rows: 10_000_000 });
 				const stopWatching = watchEventLoopTurns();
 				let found: string;
-				let turns: number[];
+				let turns: WatchedTurns;
 				try {
 					found = (await router.search?.("history://sessions/long", request("no such needle"))) ?? "";
 				} finally {
@@ -2420,7 +2432,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		const blocked = new Set([100, 200, 300, 400]);
 		const before = getPriority();
 		const stopWatching = watchEventLoopTurns();
-		let turns: number[];
+		let turns: WatchedTurns;
 		try {
 			for (let index = 0; index < 500; index++) {
 				busyFor(blocked.has(index) ? 25 : 0.2, blocked.has(index) ? cpuMs : undefined);
@@ -2506,7 +2518,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			const { router, request } = historyOver(slow.store, { timeMs: 60_000 });
 			const stopWatching = watchEventLoopTurns();
 			let found: string;
-			let turns: number[];
+			let turns: WatchedTurns;
 			try {
 				found = (await router.search?.(url, request("text that no entry holds"))) ?? "";
 			} finally {
@@ -2529,7 +2541,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				await store.create(header("big"), entries);
 				const { router, request } = historyOver(store, { timeMs: 60_000, rows: 10_000_000 });
 				const stopWatching = watchEventLoopTurns();
-				let turns: number[];
+				let turns: WatchedTurns;
 				try {
 					for (const pattern of ["no such text anywhere", "(?:x|y)z+ no"])
 						await router.search?.("history://sessions/big", request(pattern));

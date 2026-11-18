@@ -22,10 +22,12 @@ export function isActivePanelState(state: PanelRowState): boolean {
 }
 
 /**
- * A subagent that stopped but can be resumed: stopped, paused, or its turn interrupted. It is listed while something
- * in the panel is active, and leaves for good once nothing is, until it runs again.
+ * Work that stopped but can be resumed: a subagent stopped, paused, or with its turn interrupted, or a workflow run
+ * paused or blocked on a failed stage. It is listed while something in the panel is active, and leaves for good once
+ * nothing is, until it runs again.
  */
 export function isRestingPanelRow(kind: PanelRowKind, state: PanelRowState): boolean {
+	if (kind === "workflow") return state === "paused";
 	return kind === "agent" && (state === "stopped" || state === "paused");
 }
 
@@ -44,8 +46,8 @@ export interface PanelRowContext {
 
 /**
  * Whether the panel lists a row. `finished` is true for a row that is done, failed or stopped, and not merely
- * interrupted. Shells are never rows; a resting subagent stays only while something is active and it has not left
- * yet; a finished subagent leaves at once; a finished workflow run stays while it is kept; everything else is listed.
+ * interrupted. Shells are never rows; a resting row stays only while something is active and it has not left yet; a
+ * finished subagent leaves at once; a finished workflow run stays while it is kept; everything else is listed.
  */
 export function panelRowListed(
 	kind: PanelRowKind,
