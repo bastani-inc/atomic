@@ -198,19 +198,22 @@ export function recordStageWaitToolResults(results: readonly DetachedToolResult[
 		try {
 			const { isError, result } = answer;
 			const { content, details, structuredContent } = result;
+			const parts = (content ?? []).map(recordedPart);
+			const keptDetails =
+				details === undefined
+					? undefined
+					: boundedRecordedToolPayload(details as WorkflowSerializableValue, "details");
+			const keptStructured =
+				structuredContent === undefined
+					? undefined
+					: boundedRecordedToolPayload(structuredContent as WorkflowSerializableValue, "structuredContent");
 			return {
 				toolCallId,
 				toolName,
 				isError,
-				content: (content ?? []).map(recordedPart),
-				...(details === undefined
-					? {}
-					: { details: boundedRecordedToolPayload(details as WorkflowSerializableValue) }),
-				...(structuredContent === undefined
-					? {}
-					: {
-							structuredContent: boundedRecordedToolPayload(structuredContent as WorkflowSerializableValue),
-						}),
+				content: parts,
+				...(keptDetails === undefined ? {} : { details: keptDetails }),
+				...(keptStructured === undefined ? {} : { structuredContent: keptStructured }),
 			};
 		} catch {
 			return {

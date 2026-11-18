@@ -26,6 +26,7 @@
  * `TOOL_PAYLOAD_UNREADABLE_PLACEHOLDER`. Nothing is silently dropped.
  */
 
+import { isBigIntObject, isBooleanObject, isNumberObject, isStringObject } from "node:util/types";
 import { sliceHead } from "@bastani/atomic";
 import { flattenTruncatedString } from "./flat-string.js";
 import type { WorkflowSerializableValue } from "./types.js";
@@ -192,25 +193,51 @@ function safeOwnKeys(
 
 function safeArrayLength(value: ToolPayloadArray, strict = false): number {
 	const result = readToolPayloadProperty(value, "length", strict);
-	if (!result.ok || typeof result.value !== "number") return 0;
-	return Number.isSafeInteger(result.value) && result.value > 0 ? result.value : 0;
+	if (!result.ok) return 0;
+	if (strict) {
+		// JSON uses ToLength, including coercion when an array proxy supplies the length.
+		const size = +(result.value as number);
+		return size > 0 ? Math.min(Math.floor(size), Number.MAX_SAFE_INTEGER) : 0;
+	}
+	return typeof result.value === "number" && Number.isSafeInteger(result.value) && result.value > 0 ? result.value : 0;
 }
 
 /**
  * Apply `toJSON` the way `JSON.stringify` would, containing a throwing accessor
  * or a throwing conversion instead of letting it escape.
  */
-function resolveJsonValue(value: ToolPayloadValue, strict = false): ToolPayloadValue {
+function resolveJsonValue(value: ToolPayloadValue): ToolPayloadValue {
 	if (!isToolPayloadObjectLike(value)) return value;
-	const toJson = readToolPayloadProperty(value, "toJSON", strict);
+	const toJson = readToolPayloadProperty(value, "toJSON");
 	if (!toJson.ok) return TOOL_PAYLOAD_UNREADABLE_PLACEHOLDER;
 	if (!isToolPayloadCallable(toJson.value)) return value;
 	try {
 		return toJson.value.call(value);
-	} catch (error) {
-		if (strict) throw error;
+	} catch {
 		return TOOL_PAYLOAD_UNSERIALIZABLE_PLACEHOLDER;
 	}
+}
+
+/** JSON calls a value's conversion once with its containing key, before deciding whether to omit it. */
+function recordedJsonValue(value: ToolPayloadValue, key: string): ToolPayloadValue {
+	if (value === null || (typeof value !== "object" && typeof value !== "function" && typeof value !== "bigint"))
+		return value;
+	const toJSON: unknown = Reflect.get(Object(value), "toJSON");
+	const resolved: ToolPayloadValue = typeof toJSON === "function" ? Reflect.apply(toJSON, value, [key]) : value;
+	if (isNumberObject(resolved)) return +resolved;
+	if (isStringObject(resolved)) return String(resolved);
+	if (isBooleanObject(resolved)) return Boolean.prototype.valueOf.call(resolved);
+	if (isBigIntObject(resolved)) throw new TypeError("BigInt cannot be stored in JSON");
+	return resolved;
+}
+
+function memberToClone(
+	state: CloneState,
+	container: ToolPayloadObject | ToolPayloadArray,
+	key: string | number,
+): ToolPayloadValue {
+	const value = safeProperty(container, key, state.strict);
+	return state.strict ? recordedJsonValue(value, String(key)) : value;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +280,10 @@ function addTruncationMarker(record: { [key: string]: ToolPayloadRetainedValue }
 	record[key] = TOOL_PAYLOAD_TRUNCATION_MARKER;
 }
 function cloneObjectLike(state: CloneState, value: ToolPayloadObject | ToolPayloadArray): ToolPayloadRetainedValue {
-	if (state.seen.has(value)) return TOOL_PAYLOAD_CYCLE_PLACEHOLDER;
+	if (state.seen.has(value)) {
+		if (state.strict) throw new TypeError("Cyclic tool metadata cannot be stored in JSON");
+		return TOOL_PAYLOAD_CYCLE_PLACEHOLDER;
+	}
 	if (state.depth >= TOOL_PAYLOAD_MAX_DEPTH) return TOOL_PAYLOAD_TRUNCATION_MARKER;
 	state.seen.add(value);
 	state.depth += 1;
@@ -269,7 +299,7 @@ function cloneObjectLike(state: CloneState, value: ToolPayloadObject | ToolPaylo
 					break;
 				}
 				state.remaining -= SEPARATOR_COST;
-				const item = safeProperty(value, index, state.strict);
+				const item = memberToClone(state, value, index);
 				// A hole, `undefined`, a function, or a symbol serializes as `null`
 				// and is charged as one: an array of them is not free to retain.
 				if (isOmittedJsonValue(item)) {
@@ -287,9 +317,12 @@ function cloneObjectLike(state: CloneState, value: ToolPayloadObject | ToolPaylo
 			// Charged before the omission check for the same reason: inspecting a
 			// key costs work whether or not JSON would emit it.
 			state.remaining -= key.length + SEPARATOR_COST;
-			const child = safeProperty(value, key, state.strict);
+			const child = memberToClone(state, value, key);
 			if (isOmittedJsonValue(child)) continue;
-			cloned[key] = cloneValue(state, child);
+			const copied = cloneValue(state, child);
+			if (state.strict && key === "__proto__")
+				Object.defineProperty(cloned, key, { value: copied, enumerable: true, writable: true, configurable: true });
+			else cloned[key] = copied;
 		}
 		if (scan.stoppedByLimit()) addTruncationMarker(cloned);
 		return cloned;
@@ -300,7 +333,7 @@ function cloneObjectLike(state: CloneState, value: ToolPayloadObject | ToolPaylo
 }
 
 function cloneValue(state: CloneState, value: ToolPayloadValue): ToolPayloadRetainedValue {
-	const resolved = resolveJsonValue(value, state.strict);
+	const resolved = state.strict ? value : resolveJsonValue(value);
 	if (resolved === null) {
 		state.remaining -= NULL_COST;
 		return null;
@@ -322,6 +355,7 @@ function cloneValue(state: CloneState, value: ToolPayloadValue): ToolPayloadReta
 			state.remaining -= NUMBER_COST;
 			return resolved;
 		default:
+			if (state.strict) throw new TypeError("Tool metadata has no JSON representation");
 			state.remaining -= TOOL_PAYLOAD_UNSERIALIZABLE_PLACEHOLDER.length;
 			return TOOL_PAYLOAD_UNSERIALIZABLE_PLACEHOLDER;
 	}
@@ -343,8 +377,14 @@ export function boundedToolPayload(
 }
 
 /** A durable result has the same size bounds as an inspection copy, but an unreadable field fails the result. */
-export function boundedRecordedToolPayload(value: WorkflowSerializableValue): WorkflowSerializableValue {
-	return cloneToolPayload(value, TOOL_PAYLOAD_VALUE_LIMIT, true) as WorkflowSerializableValue;
+export function boundedRecordedToolPayload(
+	value: WorkflowSerializableValue,
+	key: "details" | "structuredContent",
+): WorkflowSerializableValue | undefined {
+	const resolved = recordedJsonValue(value, key);
+	return isOmittedJsonValue(resolved)
+		? undefined
+		: (cloneToolPayload(resolved, TOOL_PAYLOAD_VALUE_LIMIT, true) as WorkflowSerializableValue);
 }
 
 function cloneToolPayload(value: ToolPayloadValue, limit: number, strict: boolean): ToolPayloadRetainedValue {

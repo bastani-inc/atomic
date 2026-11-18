@@ -331,7 +331,7 @@ function startOperation(
 			start.when === "now"
 				? new Promise<AgentToolResult>((resolve) => resolve(begin()))
 				: (start.when ?? Promise.resolve()).then(begin);
-		const outcome = observeWork(settled, hold);
+		const handOver = observeWork(toolName, facts.toolCallId, settled, hold);
 		const abort = abortWith(controller);
 		return {
 			settled,
@@ -340,7 +340,7 @@ function startOperation(
 			detach: () => ({
 				toolCallId: facts.toolCallId,
 				toolName,
-				result: detachedResult(toolName, facts.toolCallId, outcome),
+				result: handOver(),
 				abort,
 			}),
 		};
@@ -397,37 +397,43 @@ function callContext(inline: InlineSession, facts: DetachedCallFacts): Extension
 
 type ToolSettlement = { result: AgentToolResult } | { error: unknown };
 
-/** Release the permit and consume both promise outcomes without inspecting a value the turn may have discarded. */
-function observeWork(settled: Promise<AgentToolResult>, hold: CallHold): Promise<ToolSettlement> {
-	return settled.then(
-		(result) => {
-			letGo(hold);
-			return { result };
-		},
-		(error: unknown) => {
-			letGo(hold);
-			return { error };
-		},
-	);
-}
-
-/** Only handover creates a host result. Its reaction must not retain the run that handed the call over. */
-function detachedResult(
+/** The single settlement reaction both releases the permit and delivers to a host that took the call. */
+function observeWork(
 	toolName: string,
 	toolCallId: string,
-	outcome: Promise<ToolSettlement>,
-): Promise<DetachedToolResult> {
-	return outsideAnySession(() =>
-		outcome.then((value) => {
-			if ("error" in value) return { toolCallId, toolName, result: errorToolResult(value.error), isError: true };
-			try {
-				const result = readableDetachedOutput(value.result);
-				return { toolCallId, toolName, result, isError: result.isError === true };
-			} catch {
-				return { toolCallId, toolName, result: errorToolResult("Could not read this tool result"), isError: true };
-			}
-		}),
+	settled: Promise<AgentToolResult>,
+	hold: CallHold,
+): () => Promise<DetachedToolResult> {
+	let handedOver = false;
+	let finishedInline: ToolSettlement | undefined;
+	const finish = (value: ToolSettlement) => {
+		letGo(hold);
+		if (handedOver) return detachedResult(toolName, toolCallId, value);
+		finishedInline = value;
+		return undefined;
+	};
+	const delivery = settled.then(
+		(result) => finish({ result }),
+		(error: unknown) => finish({ error }),
 	);
+	return () => {
+		handedOver = true;
+		const early = finishedInline;
+		if (early !== undefined)
+			return outsideAnySession(() => Promise.resolve(detachedResult(toolName, toolCallId, early)));
+		// finish has not run, and now sees handedOver: delivery itself is the host's result, not a second .then().
+		return delivery as Promise<DetachedToolResult>;
+	};
+}
+
+function detachedResult(toolName: string, toolCallId: string, value: ToolSettlement): DetachedToolResult {
+	if ("error" in value) return { toolCallId, toolName, result: errorToolResult(value.error), isError: true };
+	try {
+		const result = readableDetachedOutput(value.result);
+		return { toolCallId, toolName, result, isError: result.isError === true };
+	} catch {
+		return { toolCallId, toolName, result: errorToolResult("Could not read this tool result"), isError: true };
+	}
 }
 
 function abortWith(controller: AbortController): DetachedToolCall["abort"] {

@@ -14,7 +14,7 @@ import {
 	isReleasedReplyHandoffResult,
 	releasedReplyHandoffResult,
 } from "../../packages/intercom/released-reply-wait.ts";
-import { recordStageWaitToolResults } from "../../packages/workflows/src/shared/stage-wait.ts";
+import { recordStageWaitToolResults, stageWaitToolResults } from "../../packages/workflows/src/shared/stage-wait.ts";
 
 const pool = harnessPool();
 afterEach(() => pool.cleanup());
@@ -103,6 +103,71 @@ for (const consumer of ["resume", "stage record"] as const) {
 		}
 	});
 }
+
+test("stage checkpoints preserve JSON conversions at the containing field, object key and array index (#5486)", () => {
+	const under = (expected: string, value: unknown) => ({
+		toJSON(key: string) {
+			assert.equal(key, expected);
+			return value;
+		},
+	});
+	const metadata = {
+		details: under("details", {
+			color: under("color", "blue"),
+			omit: under("omit", undefined),
+			list: [under("0", undefined), under("1", "one")],
+		}),
+		structuredContent: under("structuredContent", "done"),
+	};
+	const input = {
+		toolCallId: "ci-1",
+		toolName: "ci",
+		isError: false,
+		result: { content: [], ...metadata } as unknown as AgentToolResult,
+	};
+	const [record] = recordStageWaitToolResults([input]);
+	assert.equal(record?.isError, false);
+	assert.deepEqual(
+		{ details: record?.details, structuredContent: record?.structuredContent },
+		JSON.parse(JSON.stringify(metadata)),
+	);
+});
+
+test("stage recording keeps JSON wrapper values and own metadata keys, and rejects an unrepresentable boxed bigint (#5486)", () => {
+	const record = (details: unknown) =>
+		recordStageWaitToolResults([
+			{
+				toolCallId: "ci-1",
+				toolName: "ci",
+				isError: false,
+				result: { content: [], details: details as AgentToolResult["details"] },
+			},
+		])[0]!;
+	const list = new Proxy(["item"], {
+		get(target, key, receiver) {
+			return key === "length" ? "1" : Reflect.get(target, key, receiver);
+		},
+	});
+	const valid = { count: Object(3), enabled: Object(false), label: Object("CI"), list, ["__proto__"]: "metadata" };
+	assert.deepEqual(record(valid).details, JSON.parse(JSON.stringify(valid)));
+	assert.equal(record({ count: Object(3n) }).isError, true);
+});
+
+test("a cyclic result fails once after checkpointing and resuming its stage (#5486)", async () => {
+	const { owner, finish } = await detached(false);
+	const details: { self?: typeof details } = {};
+	details.self = details;
+	const answer = await finish({ content: [{ type: "text", text: "ok" }], details });
+	const records = recordStageWaitToolResults([answer]);
+	const restored = stageWaitToolResults(JSON.parse(JSON.stringify(records)));
+	owner.setResponses([fauxAssistantMessage("done")]);
+	await owner.session.resumeDetachedTurn(restored);
+	const saved = owner.sessionManager.buildSessionProjection().messages.filter((m) => m.role === "toolResult");
+	assert.deepEqual(
+		saved.map((m) => [m.toolCallId, m.isError]),
+		[["ci-1", true]],
+	);
+});
 
 test("detachment reads stateful content and its text only once before handing it to the host (#5486)", async () => {
 	const { owner, finish } = await detached(false);
