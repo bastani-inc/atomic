@@ -22,6 +22,24 @@ import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned
 import { runIndicatorStatus } from "../../packages/workflows/src/shared/run-indicator-status.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { workflowRunResumeCandidate } from "../../packages/workflows/src/shared/workflow-artifacts.js";
+import {
+	authDecision,
+	cancelledDecision,
+	classificationForDecision,
+	infrastructureFaultDecision,
+	isRecoverableActiveBlocked,
+	providerUnavailableDecision,
+	rateLimitDecision,
+	stageSessionUnavailableDecision,
+	strongDecisionFromNormalizedCode,
+	terminalProviderConfigDecision,
+	unknownDecision,
+} from "../../packages/workflows/src/shared/workflow-failures-decisions.js";
+import type { WorkflowFailureDecision } from "../../packages/workflows/src/shared/workflow-failures-signals.js";
+import {
+	WORKFLOW_INFRASTRUCTURE_FAULTS,
+	type WorkflowInfrastructureFault,
+} from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { renderHeader } from "../../packages/workflows/src/tui/header.js";
 import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
@@ -289,4 +307,47 @@ describe("a run blocked on a stage whose session store stays unreachable stays r
 			setDurableBackend(undefined);
 		}
 	});
+});
+
+describe("the effective status reads a live run as blocked exactly on the failures the engine blocks it on", () => {
+	const decisions: readonly WorkflowFailureDecision[] = [
+		authDecision("missing_api_key"),
+		authDecision("auth_timeout"),
+		authDecision("login_required"),
+		authDecision("invalid_api_key"),
+		rateLimitDecision("rate_limited"),
+		rateLimitDecision("quota_limited"),
+		providerUnavailableDecision(),
+		terminalProviderConfigDecision("unknown_model"),
+		terminalProviderConfigDecision("forbidden_config"),
+		cancelledDecision(),
+		stageSessionUnavailableDecision(),
+		strongDecisionFromNormalizedCode("pending_stage_delivery_failed")!,
+		...[...WORKFLOW_INFRASTRUCTURE_FAULTS].map((code) =>
+			infrastructureFaultDecision(code as WorkflowInfrastructureFault),
+		),
+		unknownDecision(),
+	];
+
+	test.each(decisions.map((decision) => [`${decision.kind}/${decision.code}`, decision] as const))(
+		"%s",
+		(_name, decision) => {
+			const run: RunSnapshot = {
+				id: "r1",
+				name: "wf",
+				inputs: {},
+				status: "running",
+				startedAt: 1,
+				stages: [],
+				toolNodes: [],
+				failureKind: decision.kind,
+				failureCode: decision.code,
+				failureRecoverability: decision.recoverability,
+				failureDisposition: decision.disposition,
+				error: "it failed",
+			};
+			const engineBlocks = isRecoverableActiveBlocked(classificationForDecision(decision, "top_level", undefined));
+			assert.equal(effectiveRunStatus(run), engineBlocks ? "blocked" : "running");
+		},
+	);
 });
