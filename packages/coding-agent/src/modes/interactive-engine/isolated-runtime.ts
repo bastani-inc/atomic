@@ -293,6 +293,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// session/model/bash behavior do not need to implement unrelated transport
 		// surfaces.
 		this.client.onInteractiveEngineMessage?.((message) => {
+			if (message.type === "engine_trust_decision") {
+				this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, {
+					[message.scope]: { [message.path]: message.trusted },
+				});
+				return;
+			}
 			if (message.type === "engine_deprecation_warning") {
 				warnDeprecation(message.message, message.once === undefined ? {} : { once: message.once });
 				return;
@@ -383,6 +389,16 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		await this.initializationTail;
 	}
 
+	/** Keep a live engine's report as soon as it arrives, before the caller waits on other engine or session work. */
+	private async getEngineState(): Promise<RpcSessionState> {
+		const generation = this.client.getGeneration?.();
+		const state = await this.client.getState();
+		if (state.trustDecisions && (generation === undefined || this.isCurrentResourceGeneration(generation))) {
+			this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, state.trustDecisions);
+		}
+		return state;
+	}
+
 	private async initializeFromEngineGeneration(generation: number | undefined): Promise<void> {
 		if (this.disposed || (generation !== undefined && !this.isCurrentResourceGeneration(generation))) return;
 		try {
@@ -391,7 +407,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			const modelEpoch = this.modelEpoch;
 			const thinkingEpoch = this.thinkingEpoch;
 			const scope = this.remoteModelCatalog.getScopeSnapshot();
-			const state = await this.client.getState();
+			const state = await this.getEngineState();
+			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			const catalog = await this.client.requestInternal<RpcModelCatalog>({
 				type: "get_available_models",
 				allowPartialResources: true,
@@ -422,7 +439,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
 			this.engineProjectTrustReported = state.projectTrusted !== undefined;
-			this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, state.trustDecisions);
 			if (
 				trustBefore[0] !== session.settingsManager.isProjectTrusted() ||
 				trustBefore[1] !== this.engineProjectTrustReported
@@ -705,7 +721,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 	async synchronize(): Promise<void> {
 		const generation = this.client.getGeneration();
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (!this.isCurrentResourceGeneration(generation)) return;
 		this.remoteSessionFile = state.sessionLocation;
 		this.remoteSessionName = state.sessionName;
@@ -785,7 +801,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override async newSession(options?: { parentSession?: string }): Promise<{ cancelled: boolean }> {
 		const result = await this.client.newSession(options?.parentSession);
 		if (result.cancelled) return result;
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
@@ -804,7 +820,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		if (result.cancelled) return { cancelled: true };
 		this.queueResumeNotices(result.notices ?? []);
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				cwdOverride,
@@ -829,7 +845,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			selectedText = result.text;
 		}
 		if (cancelled) return { cancelled: true };
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
@@ -1091,7 +1107,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						const state =
 							options?.persist === true
 								? await this.syncPersistedModelCatalog(session, nextModel, selected.persistedDefaults)
-								: await this.client.getState();
+								: await this.getEngineState();
 						this.applyThinkingAck(session, epoch, { level: state.thinkingLevel }, false);
 					});
 				},
@@ -1123,7 +1139,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						const state =
 							options?.persist === true
 								? await this.syncPersistedModelCatalog(session, model, result.persistedDefaults)
-								: await this.client.getState();
+								: await this.getEngineState();
 						this.applyThinkingAck(session, epoch, { level: state.thinkingLevel }, false);
 						return { model, thinkingLevel: result.thinkingLevel, isScoped: result.isScoped };
 					});
@@ -1342,7 +1358,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		} finally {
 			this.mirroringPersistedModelDefault = false;
 		}
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (persistedDefaults !== undefined) {
 			session.settingsManager.setModelThinkingLevel(
 				persistedDefaults.provider,
