@@ -661,8 +661,7 @@ InteractiveModeBase.prototype.getStartupIdentityText = function (
 	manifestoPhase = 4,
 ): string {
 	const appLabel = APP_NAME.length > 0 ? `${APP_NAME[0]!.toUpperCase()}${APP_NAME.slice(1)}` : "Atomic";
-	const noColor = process.env.NO_COLOR !== undefined;
-	const fg = (role: "text" | "muted" | "dim", text: string): string => (noColor ? text : theme.fg(role, text));
+	const fg = (role: "text" | "muted" | "dim", text: string): string => theme.fg(role, text);
 	const showMark = supportsAtomicBanner();
 	const wordmark = showMark ? "" : `${atomicWordmark()} `;
 	const title = `${wordmark}${theme.bold(fg("text", appLabel))} ${fg("muted", `v${this.version}`)}`;
