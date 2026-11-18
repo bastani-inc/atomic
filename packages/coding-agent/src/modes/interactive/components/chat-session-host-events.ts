@@ -68,6 +68,19 @@ export function showChatSessionRetryWait<TExtraEntry extends ChatTranscriptEntry
 	stopChatSessionWorkingLifecycle(state);
 }
 
+/**
+ * A move to a fallback model: `switching model…` is the working line until the next model's `agent_start`, or the
+ * switch's `model_fallback_end`, clears it.
+ */
+export function showChatSessionModelSwitch<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): void {
+	state.sdkBusy = true;
+	state.workingMessage = undefined;
+	state.statusMessage = CHAT_SESSION_SWITCHING_MODEL_STATUS;
+	stopChatSessionWorkingLifecycle(state);
+}
+
 export function compactionStatusMessage(reason: CompactionReason): string {
 	switch (reason) {
 		case "manual":
@@ -404,10 +417,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		case "model_fallback_start":
 			// A fallback after a failed answer continues that turn; one before a turn's first request starts it.
 			state.retryContinuesRun = state.retryContinuesRun || state.workingRunMeter.endedOnFailedAttempt();
-			state.sdkBusy = true;
-			state.workingMessage = undefined;
-			state.statusMessage = CHAT_SESSION_SWITCHING_MODEL_STATUS;
-			stopChatSessionWorkingLifecycle(state);
+			showChatSessionModelSwitch(state);
 			changed = true;
 			break;
 		case "model_fallback_end": {

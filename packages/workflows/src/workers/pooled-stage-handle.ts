@@ -15,6 +15,7 @@ import type {
 import { StageQueuedUserMessageBuffer } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { StageToolExecutionBuffer } from "../runs/foreground/stage-tool-execution-buffer.js";
+import { StageTurnStart } from "../runs/foreground/stage-turn-start.js";
 import type { StageSendUserMessageOptions } from "../shared/types.js";
 import { PooledStageTaskSource } from "./pooled-stage-task-source.js";
 import { tracePooledWatch } from "./pooled-watch-trace.js";
@@ -157,6 +158,8 @@ export class PooledStageHandle implements StageControlHandle {
 	private streamingNow = false;
 	/** Whether the stage's session waits out an automatic retry's backoff: its retry started, its next attempt has not. */
 	private waitingToRetry = false;
+	/** When the stage's turn started, read from the worker's snapshot and the events since. */
+	private turnStart = new StageTurnStart();
 	private seq = 0;
 	private attempt: { readonly workId: string; readonly generation: number };
 	private ended?: WatchEndReason;
@@ -239,6 +242,9 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	get isWaitingToRetry(): boolean {
 		return this.waitingToRetry;
+	}
+	get continuedTurnStartedAt(): number | undefined {
+		return this.turnStart.continuedTurnStartedAt();
 	}
 	get isDisposed(): boolean {
 		return this.disposed;
@@ -569,6 +575,7 @@ export class PooledStageHandle implements StageControlHandle {
 		this.toolExecutions = new StageToolExecutionBuffer();
 		this.streaming = undefined;
 		this.streamingNow = false;
+		this.turnStart = new StageTurnStart();
 		if (undelivered > 0) this.undelivered = undelivered;
 		for (const entry of this.outbound) {
 			if (this.admitted(entry) || entry.waiter === undefined) continue;
@@ -797,6 +804,7 @@ export class PooledStageHandle implements StageControlHandle {
 		this.currentStatus = snapshot.status;
 		this.streamingNow = snapshot.isStreaming;
 		this.waitingToRetry = snapshot.waitingToRetry === true;
+		this.turnStart = new StageTurnStart(snapshot.continuedTurnStartedAt, snapshot.isStreaming);
 		this.seq = snapshot.seq;
 		this.toolExecutions = new StageToolExecutionBuffer();
 		for (const event of snapshot.pendingToolExecutionEvents) this.toolExecutions.record(event);
@@ -846,6 +854,7 @@ export class PooledStageHandle implements StageControlHandle {
 	private applyEvent(event: AgentSessionEvent): void {
 		this.toolExecutions.record(event);
 		this.queued.record(event);
+		this.turnStart.record(event);
 		switch (event.type) {
 			case "agent_start":
 				// A turn only starts on a running stage, including one resumed after it paused.

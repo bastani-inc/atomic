@@ -4,6 +4,20 @@ import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { createStageControlHandle } from "../../packages/workflows/src/runs/foreground/executor-stage-control.js";
+import {
+	createStageControlRegistry,
+	type StageControlHandle,
+} from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import {
+	openPooledStageHandle,
+	type PooledStageTransport,
+} from "../../packages/workflows/src/workers/pooled-stage-handle.js";
+import type { WorkerRequest } from "../../packages/workflows/src/workers/protocol.js";
+import { WorkerStageWatches } from "../../packages/workflows/src/workers/stage-watch.js";
+import type { PooledStageWatchMessage, WatchId } from "../../packages/workflows/src/workers/stage-watch-types.js";
+import { sleep } from "../helpers/runtime.js";
+import { createStore, deriveGraphTheme, makeTestTui, StageChatView, setupRun } from "./stage-chat-view-helpers.js";
 import {
 	type AgentSession,
 	type AgentSessionAdapter,
@@ -35,21 +49,50 @@ function modelOf(options: { model?: unknown }): string {
 
 /**
  * A stage whose primary model answers its request with `404 model not found` after `primaryMs`, and whose fallback
- * model answers after `fallbackMs`. `fallbackUnavailable` fails the fallback's first session before any request.
+ * model answers after `fallbackMs`. `fallbackUnavailable` fails the fallback's first session before any request;
+ * `holdFallback` holds the fallback's request, streaming, until it settles.
  */
-function stageWithFallback(options: { primaryMs: number; fallbackMs: number; fallbackUnavailable?: boolean }) {
+function stageWithFallback(options: {
+	primaryMs: number;
+	fallbackMs: number;
+	fallbackUnavailable?: boolean;
+	holdFallback?: Promise<void>;
+	/** Real time each request waits after it starts, so a local worker's watch sends its start then. */
+	settleStartMs?: number;
+	/** Holds the creation of the fallback model's session until it settles. */
+	holdFallbackSession?: Promise<void>;
+}) {
+	const fallbackCreating = Promise.withResolvers<void>();
 	let fallbackSessions = 0;
+	const fallbackStreaming = Promise.withResolvers<void>();
 	const agentSession: AgentSessionAdapter = {
 		async create(createOptions) {
 			const model = modelOf(createOptions);
+			if (model === FALLBACK && options.holdFallbackSession !== undefined) {
+				fallbackCreating.resolve();
+				await options.holdFallbackSession;
+			}
 			if (model === FALLBACK && (fallbackSessions++ === 0 && options.fallbackUnavailable) === true)
 				throw new Error("Unknown model: openai/fallback is unavailable");
 			const messages: AgentSession["messages"] = [];
+			let streaming = false;
 			const { session, emit } = makeMockSession({
 				messages,
-				async prompt() {
+				async prompt(text) {
+					streaming = true;
 					emit({ type: "agent_start" });
+					messages.push({
+						role: "user",
+						content: String(text),
+						timestamp: now,
+					} as AgentSession["messages"][number]);
 					emit({ type: "turn_start" });
+					if (options.settleStartMs !== undefined) await sleep(options.settleStartMs);
+					if (model === FALLBACK && options.holdFallback !== undefined) {
+						emit({ type: "message_start", message: { role: "assistant", content: [], timestamp: now } });
+						fallbackStreaming.resolve();
+						await options.holdFallback;
+					}
 					if (model === PRIMARY) {
 						now += options.primaryMs;
 						messages.push({
@@ -76,23 +119,38 @@ function stageWithFallback(options: { primaryMs: number; fallbackMs: number; fal
 							timestamp: now,
 						} as unknown as AgentSession["messages"][number]);
 					}
+					streaming = false;
 					emit({ type: "agent_end", messages: [] });
 				},
 				getLastAssistantText() {
 					return model === FALLBACK ? "Fixed the picker." : undefined;
 				},
 			});
-			return session;
+			return Object.defineProperty(session, "isStreaming", { get: () => streaming, configurable: true });
 		},
 	};
 	const ctx = createStageContext(
 		makeOpts({ adapters: { agentSession }, stageOptions: { model: PRIMARY, fallbackModels: [FALLBACK] } }),
 	) as InternalStageContext;
+	// The stage's control handle, which the stage chat and a local worker's watches read.
+	const handle = createStageControlHandle({
+		runId: "run-1",
+		stageId: "stage-a",
+		name: "stage-a",
+		stageSnapshot: { status: "running" },
+		state: { liveHandleReleased: false, resumeContinuationPending: false },
+		innerCtx: ctx,
+		throwIfStageMutationBlocked() {},
+		captureStageSessionMeta() {},
+	} as never);
 	// The chat host a stage chat draws, fed by the stage's own subscription, as the stage chat feeds it.
 	const chat = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
 	const unsubscribe = ctx.subscribe((event) => chat.applyAgentEvent(event as AgentSessionEvent));
 	return {
 		ctx,
+		handle,
+		fallbackStreaming: fallbackStreaming.promise,
+		fallbackCreating: fallbackCreating.promise,
 		status: () =>
 			chat
 				.renderWorkingStatus(100)
@@ -138,6 +196,195 @@ describe("a stage chat's working line across the stage's own model fallback (#55
 				`the next prompt counts from its own start: ${next.join(" | ")}`,
 			);
 		} finally {
+			await stage.dispose();
+		}
+	});
+});
+
+const plain = (lines: readonly string[]): string[] => lines.map((line) => stripVTControlCharacters(line).trimEnd());
+
+/** The rows of a stage chat opened now on `handle`. */
+function openedStageChat(handle: StageControlHandle): string[] {
+	const view = openStageChat(handle);
+	try {
+		return view.rows();
+	} finally {
+		view.dispose();
+	}
+}
+
+function openStageChat(handle: StageControlHandle) {
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	const view = new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test-wf",
+		handle,
+		onDetach: () => {},
+		onClose: () => {},
+		piTui: makeTestTui(30),
+	});
+	return { rows: () => plain(view.render(100)), dispose: () => view.dispose() };
+}
+
+const ATTEMPT = { workId: "work", generation: 1 };
+
+/** The root's handle of the stage, run by a local worker that holds `handle`, over the worker's real watches. */
+async function workerStageHandle(handle: StageControlHandle) {
+	const registry = createStageControlRegistry();
+	registry.register(handle);
+	const replies = new Map<number, (snapshot: unknown) => void>();
+	let listener: ((message: PooledStageWatchMessage) => void) | undefined;
+	let commandIds = 0;
+	const watches = new WorkerStageWatches(
+		registry,
+		() => ATTEMPT,
+		(message) => {
+			const sent = message as WorkerRequest;
+			if (sent.kind === "stage-command-result") replies.get(sent.commandId)?.(sent.snapshot);
+			else if (sent.kind === "stage-events") listener?.({ kind: "events", events: sent.events });
+			else if (sent.kind === "stage-watch-ended") listener?.({ kind: "ended", reason: sent.reason });
+		},
+	);
+	const transport: PooledStageTransport = {
+		async watch(ref, onMessage) {
+			listener = onMessage;
+			const commandId = ++commandIds;
+			const opened = new Promise<unknown>((resolve) => replies.set(commandId, resolve));
+			watches.serve({
+				kind: "stage-command",
+				commandId,
+				attempt: ATTEMPT,
+				op: "watch",
+				watch: "watch-1" as WatchId,
+				runId: ref.runId,
+				stageId: ref.stageId,
+			});
+			const snapshot = (await opened) as Parameters<typeof assert.ok>[0];
+			assert.ok(snapshot, "the worker opens the watch");
+			return { ok: true, watch: { id: "watch-1" as WatchId, attempt: ATTEMPT, snapshot: snapshot as never } };
+		},
+		async unwatch(watch) {
+			watches.serve({ kind: "stage-command", commandId: ++commandIds, attempt: ATTEMPT, op: "unwatch", watch });
+		},
+		async deliver() {
+			return { ok: false, refusal: "StageNotLive" };
+		},
+		async pause() {
+			return { ok: true };
+		},
+		async resume() {
+			return { ok: true };
+		},
+	};
+	const opened = await openPooledStageHandle(transport, { runId: "run-1", stageId: "stage-a" }, "stage-a");
+	assert.ok(opened.ok);
+	return { handle: opened.handle, close: () => watches.clear() };
+}
+
+describe("a stage chat opened after the stage moved its turn to the fallback model (#5535)", () => {
+	const turnOnFallback = /\(8s[ )]/;
+
+	test("in this process, the chat counts from the turn's first request (#5535)", async () => {
+		const release = Promise.withResolvers<void>();
+		const stage = stageWithFallback({ primaryMs: 6_400, fallbackMs: 200, holdFallback: release.promise });
+		const turn = stage.ctx.prompt("Fix the picker");
+		try {
+			await stage.fallbackStreaming;
+			now += 2_000;
+			const rows = openedStageChat(stage.handle);
+			assert.ok(
+				rows.some((row) => turnOnFallback.test(row)),
+				`the fallback model's request counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
+			);
+		} finally {
+			release.resolve();
+			await turn;
+			await stage.dispose();
+		}
+	});
+
+	test("a chat opened while the stage switches models shows the switch, and the turn counts from its start (#5535)", async () => {
+		const release = Promise.withResolvers<void>();
+		const stage = stageWithFallback({ primaryMs: 6_400, fallbackMs: 200, holdFallbackSession: release.promise });
+		const turn = stage.ctx.prompt("Fix the picker");
+		let chat: ReturnType<typeof openStageChat> | undefined;
+		try {
+			await stage.fallbackCreating;
+			now += 1_000;
+			chat = openStageChat(stage.handle);
+			const switching = chat.rows();
+			assert.ok(
+				switching.some((row) => row.includes("switching model")),
+				`the chat shows the switch: ${switching.filter((row) => row.includes("∀") || row.includes("switching")).join(" | ")}`,
+			);
+			release.resolve();
+			assert.equal(await turn, "Fixed the picker.");
+			const done = chat.rows();
+			assert.ok(
+				done.some((row) => / for 7s/.test(row)),
+				`the finished turn counts from its start: ${done.filter((row) => row.includes("∀")).join(" | ")}`,
+			);
+		} finally {
+			release.resolve();
+			await turn.catch(() => undefined);
+			chat?.dispose();
+			await stage.dispose();
+		}
+	});
+
+	test("on a local worker, a watch opened after the switch carries the turn's start (#5535)", async () => {
+		const release = Promise.withResolvers<void>();
+		const stage = stageWithFallback({ primaryMs: 6_400, fallbackMs: 200, holdFallback: release.promise });
+		const turn = stage.ctx.prompt("Fix the picker");
+		try {
+			await stage.fallbackStreaming;
+			now += 2_000;
+			const worker = await workerStageHandle(stage.handle);
+			try {
+				const rows = openedStageChat(worker.handle);
+				assert.ok(
+					rows.some((row) => turnOnFallback.test(row)),
+					`the fallback model's request counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
+				);
+			} finally {
+				worker.handle.dispose();
+				worker.close();
+			}
+		} finally {
+			release.resolve();
+			await turn;
+			await stage.dispose();
+		}
+	});
+
+	test("on a local worker, a watch open since before the turn reads the turn's start from its events (#5535)", async () => {
+		const release = Promise.withResolvers<void>();
+		const stage = stageWithFallback({
+			primaryMs: 6_400,
+			fallbackMs: 200,
+			holdFallback: release.promise,
+			settleStartMs: 120,
+		});
+		const worker = await workerStageHandle(stage.handle);
+		const turn = stage.ctx.prompt("Fix the picker");
+		try {
+			await stage.fallbackStreaming;
+			await sleep(120);
+			now += 2_000;
+			const rows = openedStageChat(worker.handle);
+			assert.ok(
+				rows.some((row) => turnOnFallback.test(row)),
+				`the fallback model's request counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
+			);
+		} finally {
+			worker.handle.dispose();
+			worker.close();
+			release.resolve();
+			await turn;
 			await stage.dispose();
 		}
 	});
