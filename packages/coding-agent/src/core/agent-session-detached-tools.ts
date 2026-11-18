@@ -530,8 +530,9 @@ export function detachableTool(
 			const { call, settled, signal: operationSignal } = operation;
 			// The run waits on this gate alone: it settles at the threshold even while the call goes on, so no reaction
 			// created in the run's context stays on the call once it detaches.
-			const gate = Promise.withResolvers<symbol>();
-			hold.gate = gate.resolve;
+			let gate = Promise.withResolvers<symbol>();
+			const open = (value: symbol): void => gate.resolve(value);
+			hold.gate = open;
 			// An interrupted turn waits for the call only a grace period, as for any tool call (#5486). From the interrupt
 			// on the call no longer detaches: it answers within the grace, or ends aborted and gives its place back.
 			let interrupted = false;
@@ -541,7 +542,7 @@ export function detachableTool(
 				interrupted = true;
 				call.abort(signal?.reason);
 				graceMs = toolAbortGraceMs();
-				graceTimer = setTimeout(() => gate.resolve(ABANDON), graceMs);
+				graceTimer = setTimeout(() => open(ABANDON), graceMs);
 				graceTimer.unref?.();
 			};
 			if (signal?.aborted) forwardAbort();
@@ -551,14 +552,23 @@ export function detachableTool(
 			if (requiresReady)
 				readinessCallbacks.set(operationSignal, () => {
 					ready = true;
-					if (elapsed && !interrupted) gate.resolve(DETACH);
+					if (elapsed && !interrupted) open(DETACH);
 				});
 			const timer = setTimeout(() => {
 				elapsed = true;
-				if (ready && !interrupted) gate.resolve(DETACH);
+				if (ready && !interrupted) open(DETACH);
 			}, policy.afterMs);
 			try {
-				const opened = await gate.promise;
+				let opened = await gate.promise;
+				if (opened === DETACH && interrupted) {
+					// The gate opened to detach the call, but the turn was interrupted before this continuation ran, as when the
+					// call marks itself ready and the turn is aborted in the same tick. The call is handed over only here, in the
+					// same step that stops the interrupt from reaching it, so the interrupt wins: the call, which has received the
+					// abort, waits out its grace like any interrupted call (#5486). If its work already settled (letGo ran), it
+					// answers with its own result.
+					gate = Promise.withResolvers<symbol>();
+					opened = hold.gate === undefined ? INLINE : await gate.promise;
+				}
 				if (opened === INLINE) return await settled;
 				if (opened === ABANDON) {
 					// The turn stops waiting: the call gives its scheduler place back, and what it returns later is recorded.
