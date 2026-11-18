@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
+
 ## [0.9.89] - 2026-11-18
 
 ### Breaking Changes

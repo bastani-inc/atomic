@@ -510,7 +510,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const footer = reserve(this.chat.renderFooter(width));
 		const pending = reserve(this.chat.renderPendingMessages(width));
 		const working = reserve(this.chat.renderWorkingStatus(width), true);
-		const usage = reserve(this.chat.renderUsage(width));
+		const usage = reserve(this.chat.renderUsageRow(width));
 		const body = remaining > 0 ? this.chat.renderBody(width, remaining) : [];
 		this.bodyRows = body.length;
 		return [...body, ...pending, ...working, ...usage, ...editor, ...footer];

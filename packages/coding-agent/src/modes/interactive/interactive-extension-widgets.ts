@@ -16,7 +16,9 @@ InteractiveModeBase.prototype.renderWidgets = function (this: InteractiveModeBas
 	this.renderWidgetContainer(
 		this.widgetContainerAbove,
 		navigationMounted ? new Map() : this.extensionWidgetsAbove,
-		true,
+		// No blank row without widgets: the usage row is the one row between the status and the composer, as in every
+		// attached chat. Widgets keep a blank line above them that separates them from the status.
+		false,
 		true,
 	);
 	this.renderWidgetContainer(

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Subagent and workflow stage chats draw the rules above and below their prompt with the same light line as the main chat. They keep their accent colour and the label that names the agent or stage.
+
+### Fixed
+
+- The main chat no longer leaves a blank row between the working line and the usage meter above the prompt. Every chat now keeps exactly one row there: the usage meter, or a blank row in a subagent or stage chat with no usage to show, so a chat's last line never runs into its prompt.
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.

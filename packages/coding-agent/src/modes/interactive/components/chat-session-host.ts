@@ -463,6 +463,15 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return renderChatSessionUsage(this.state, width);
 	}
 
+	/**
+	 * The one row between the chat's working status and its composer: the usage meter, or a blank row when the chat has
+	 * no usage to show, so the status never sits on the composer's top rule and the transcript never runs into it.
+	 */
+	renderUsageRow(width: number): string[] {
+		const usage = this.renderUsage(width);
+		return usage.length > 0 ? usage : [""];
+	}
+
 	renderEditor(width: number): string[] {
 		return renderChatSessionEditor(this.state, width, this.focused);
 	}
