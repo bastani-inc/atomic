@@ -11,12 +11,18 @@ export function trackTerminalWorkflowSummary(
 	const signal = AbortSignal.any([requestSignal, controller.signal]);
 	const pending = terminalWork.get(session) ?? new Map<AbortController, Promise<string | undefined>>();
 	terminalWork.set(session, pending);
+	let abort!: () => void;
 	const result = new Promise<string | undefined>((resolve) => {
-		const abort = () => resolve(undefined);
+		abort = () => resolve(undefined);
 		signal.addEventListener("abort", abort, { once: true });
 		if (signal.aborted) abort();
 		else void generate(signal).then(resolve, () => resolve(undefined));
-	}).finally(() => pending.delete(controller));
+	}).finally(() => {
+		// Under Node a combined signal that still has an abort listener stays alive until it aborts, and a finished run's
+		// signal never does: without this, every finished summary would keep its session and its input forever.
+		signal.removeEventListener("abort", abort);
+		pending.delete(controller);
+	});
 	pending.set(controller, result);
 	return result;
 }

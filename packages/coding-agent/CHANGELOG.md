@@ -20,6 +20,10 @@
 - An extension tool whose call renders a `waiting` or `heartbeat` block keeps its own title once its result arrives, instead of falling back to the tool's label ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - Worktree snapshots on SQLite and libSQL no longer read several megabytes for every lookup in the snapshot chunk table. The table kept its 1 MiB rows inside its key's b-tree (`WITHOUT ROWID`), so each lookup read every chunk it passed. On a store with 1.8 GB of chunks, snapshot collection read about 10 MB to delete each 12 KB blob, restoring a 56 MB snapshot blob read 677 MB, and recording a snapshot read every chunk of its large blobs again to check that they were stored. New stores create the table as an ordinary table with the same name, columns and key. Snapshot collection moves an existing table to that layout in transactions of at most 4 MiB, and a stopped collection resumes the move. Afterwards the same operations read about 70 KB, 56 MB and 20 KB. Every blob keeps its exact bytes, and Atomic 0.9.88 and 0.9.89 processes sharing the store keep reading and writing it during and after the move. The database file grows once by the size of the chunk table while it is copied; SQLite reuses the freed pages for later writes. PostgreSQL stores are unchanged, because their tables already keep keys apart from rows ([#5541](https://github.com/bastani-inc/atomic/issues/5541))
 
+### Fixed
+
+- Under Node, each workflow run that finishes no longer keeps the session that wrote its summary, and the run text it summarized, in memory for the rest of the process. A long session that runs many workflows, and an SDK host that disposes such sessions, now release them ([#5487](https://github.com/bastani-inc/atomic/issues/5487))
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.
