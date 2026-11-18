@@ -13,7 +13,7 @@ import {
 	type ToolPayloadValue,
 } from "../shared/tool-payload-bounds.js";
 import type { RunsById } from "../shared/workflow-run-ownership.js";
-import { BOLD, colorsOff, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, colorsOff, hexToAnsi, RESET } from "./color-utils.js";
 import { inertDisplayLine, inertDisplayText, NO_FAILURE_REASON, summarizeFailureText } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import {
@@ -485,7 +485,7 @@ export function renderRunOutcome(
 	const width = Math.max(1, Math.floor(opts.width));
 	const t = colorsOff() ? undefined : opts.theme;
 	const paint = (color: string | undefined, text: string, bold = false): string =>
-		t === undefined || color === undefined ? text : `${hexToAnsi(color)}${bold ? BOLD : ""}${text}${RESET}`;
+		t === undefined || color === undefined ? text : `${hexToAnsi(color)}${bold ? boldOn() : ""}${text}${RESET}`;
 	const stateColor: Record<RunOutcomeState, string | undefined> = {
 		completed: t?.success,
 		failed: t?.error,

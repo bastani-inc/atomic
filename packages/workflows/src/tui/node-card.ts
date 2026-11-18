@@ -14,7 +14,7 @@
  *  - Single centred duration line in the body, coloured by status.
  *
  * Reuses the existing `paint(...)` color-utils helper (a thin wrapper
- * over `hexBg` + `hexToAnsi` + `BOLD` + `RESET`) so the tab matches
+ * over `hexBg` + `hexToAnsi` + `boldOn()` + `RESET`) so the tab matches
  * the same ANSI shape Pi's renderer uses for every other styled run.
  *
  * cross-ref:
@@ -35,7 +35,7 @@ import {
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
 import { boundedToolTitleText } from "../shared/tool-payload-bounds.js";
-import { BOLD, DEFAULT_BG, hexToAnsi, lerpColor, paint, RESET } from "./color-utils.js";
+import { boldOn, DEFAULT_BG, hexToAnsi, lerpColor, paint, RESET } from "./color-utils.js";
 import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { NODE_H, NODE_W } from "./layout.js";
@@ -264,7 +264,7 @@ function centreColored(content: string, width: number, fg: string, bg: string, o
 	const pad = Math.max(0, width - safeWidth);
 	const left = Math.max(0, Math.floor(pad / 2));
 	const right = Math.max(0, pad - left);
-	const bold = opts.bold ? BOLD : "";
+	const bold = opts.bold ? boldOn() : "";
 	return `${bg}${" ".repeat(left)}` + `${hexToAnsi(fg)}${bold}${safe}${RESET}` + `${bg}${" ".repeat(right)}`;
 }
 
@@ -308,7 +308,7 @@ function buildTitleSlot(
 		return { slot: styled, visibleWidth: visibleWidth(tabText) };
 	}
 	const titleRaw = compact ? safeName : ` ${safeName} `;
-	const styled = `${BOLD}${titleRaw}${RESET}${cardBg}`;
+	const styled = `${boldOn()}${titleRaw}${RESET}${cardBg}`;
 	return { slot: styled, visibleWidth: visibleWidth(titleRaw) };
 }
 
