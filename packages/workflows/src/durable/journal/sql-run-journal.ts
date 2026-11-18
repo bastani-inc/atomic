@@ -653,9 +653,10 @@ export class SqlRunJournal implements RunJournal {
 	 * Every run's latest event, read in statements of `RUN_VERSIONS_SERVER_PAGE` runs over a database server. Over this
 	 * process's own SQLite connection the runs are read `RUN_VERSIONS_PAGE` at a time, with a turn of the event loop
 	 * between statements: a statement looks up each run's latest event, which on a journal of thousands of runs held the
-	 * event loop for over 100 ms when the pages were not cached (#5480).
+	 * event loop for over 100 ms when the pages were not cached (#5480). Once `stop` aborts, the read ends at the next
+	 * statement with its reason.
 	 */
-	async runVersions(): Promise<ReadonlyMap<string, RunVersion>> {
+	async runVersions(stop?: AbortSignal): Promise<ReadonlyMap<string, RunVersion>> {
 		this.assertOpen();
 		return this.operation(async () => {
 			const local = this.database.descriptor.adapter === "node-sqlite";
@@ -677,6 +678,7 @@ export class SqlRunJournal implements RunJournal {
 				if (page.length < pageRuns) break;
 				after = page.at(-1)![c.runId];
 				if (local) await new Promise<void>((resolve) => setImmediate(resolve));
+				stop?.throwIfAborted();
 			}
 			for (const row of (await this.legacy?.versions(this.database)) ?? []) add(row);
 			return versions;
@@ -688,9 +690,10 @@ export class SqlRunJournal implements RunJournal {
 	 * only the events after it are visited and only its payload is read. A statement visits every event it walks past, so
 	 * on a journal read through a connection of this process, the statement looks for the snapshot only among the latest
 	 * `SNAPSHOT_TAIL_WINDOW` events, and a snapshot further back is found by `walkToSnapshot` in statements of that size:
-	 * one run with a hundred thousand checkpoints after its snapshot held the event loop for seconds (#5480).
+	 * one run with a hundred thousand checkpoints after its snapshot held the event loop for seconds (#5480). Once `stop`
+	 * aborts, the walk ends at its next statement with its reason.
 	 */
-	async snapshotTail(runId: string): Promise<RunSnapshotTail | undefined> {
+	async snapshotTail(runId: string, stop?: AbortSignal): Promise<RunSnapshotTail | undefined> {
 		this.assertOpen();
 		validateText("runId", runId);
 		return this.operation(async () => {
@@ -725,7 +728,7 @@ export class SqlRunJournal implements RunJournal {
 				assertRowVersion(row);
 				// The window held every event of the run: it has no snapshot.
 				if (Number(row.latest_seq) < SNAPSHOT_TAIL_WINDOW) return undefined;
-				return this.walkToSnapshot(runId, events, chunks);
+				return this.walkToSnapshot(runId, events, chunks, stop);
 			}
 			const [snapshot] = await withJournalPayloads(this.database, this.tables.eventChunks, [row]);
 			return {
@@ -741,9 +744,15 @@ export class SqlRunJournal implements RunJournal {
 	 * `snapshotTail` for a run whose latest snapshot is further back than one statement's window. The run's events are
 	 * walked back `SNAPSHOT_TAIL_WINDOW` at a time, counting the checkpoints passed, with a turn of the event loop between
 	 * statements. Every statement runs in one read transaction of the reader connection, so the walk reads one state of
-	 * the journal, as the single statement does, whatever is committed meanwhile.
+	 * the journal, as the single statement does, whatever is committed meanwhile. A walk `stop` ends lets go of that
+	 * transaction: it is rolled back.
 	 */
-	private walkToSnapshot(runId: string, events: string, chunks: string): Promise<RunSnapshotTail | undefined> {
+	private walkToSnapshot(
+		runId: string,
+		events: string,
+		chunks: string,
+		stop: AbortSignal | undefined,
+	): Promise<RunSnapshotTail | undefined> {
 		return this.readSnapshot(async (reader) => {
 			const latest = await reader.get<SqliteRow & { [c.seq]: number; [c.at]: number }>(
 				`SELECT ${c.seq}, ${c.at} FROM ${events} WHERE ${c.runId} = ? ORDER BY ${c.seq} DESC LIMIT 1`,
@@ -772,6 +781,7 @@ export class SqlRunJournal implements RunJournal {
 				if (snapshotSeq !== undefined || rows.length < SNAPSHOT_TAIL_WINDOW) break;
 				below = Number(rows.at(-1)![c.seq]);
 				await new Promise<void>((resolve) => setImmediate(resolve));
+				stop?.throwIfAborted();
 			}
 			if (latest === undefined || snapshotSeq === undefined) {
 				await this.assertVersion(reader);

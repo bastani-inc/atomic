@@ -391,7 +391,10 @@ class SharedCatalogCatchUp {
 	private held = false;
 	done: Promise<void> = Promise.resolve();
 
-	/** Aborts once no caller is waiting for the catch-up. */
+	/**
+	 * Aborts once no caller is waiting for the catch-up: the catch-up ends at its next turn, and a journal read it is
+	 * making in several statements at the read's next statement (`RunJournalVersions`).
+	 */
 	get stop(): AbortSignal {
 		return this.stopping.signal;
 	}
@@ -405,7 +408,7 @@ class SharedCatalogCatchUp {
 		return new Promise<void>((resolve, reject) => {
 			const leave = () => {
 				reject(signal.reason);
-				if (--this.waiting === 0 && !this.held) this.stopping.abort();
+				if (--this.waiting === 0 && !this.held) this.stopping.abort(new CatalogCatchUpStoppedError());
 			};
 			signal.addEventListener("abort", leave, { once: true });
 			this.done.then(resolve, reject).finally(() => signal.removeEventListener("abort", leave));
@@ -1968,9 +1971,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				return;
 			}
 			// Read the token first: a commit racing the version read moves it again before the next call.
-			const token = await journal.changeToken();
+			const token = await journal.changeToken(stop);
 			if (token !== undefined && token === this.catalogToken) return;
-			const versions = await journal.runVersions();
+			const versions = await journal.runVersions(stop);
 			for (const runId of new Set([...this.sequences.keys(), ...this.summarized.keys(), ...versions.keys()])) {
 				const boundary = turnBoundary(stop);
 				if (boundary !== undefined) await boundary;
@@ -1990,7 +1993,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (folded === 0 && version !== undefined) {
 			const summarized = this.summarized.get(runId);
 			if (summarized !== undefined && summarized.seq === version.seq && summarized.at === version.at) return;
-			const tail = yield* invoke(() => journal.snapshotTail(runId));
+			const tail = yield* invoke(() => journal.snapshotTail(runId, stop));
 			// A snapshot holding delivery changes needs the events before it, so the run is read in full.
 			if (tail !== undefined && !snapshotNeedsHistory(tail)) return this.summarize(runId, tail);
 			if (summarized === undefined && version.seq === 0) return;

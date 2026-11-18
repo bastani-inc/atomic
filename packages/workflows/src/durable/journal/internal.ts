@@ -75,23 +75,26 @@ export const NON_SNAPSHOT_EVENT_TYPES = [
 	RUN_EVENT_TYPES.messageDelivered,
 ] as const;
 
-/** Lets a durable backend re-read only the runs that changed. */
+/**
+ * Lets a durable backend re-read only the runs that changed. A read this package's journals make in several statements
+ * ends at the next one once `stop` aborts, rejecting with its reason (#5480); any other journal reads to the end.
+ */
 export interface RunJournalVersions {
 	/** Undefined when the journal cannot tell that nothing changed; every run's version is then compared. */
-	changeToken(): Promise<string | undefined>;
-	runVersions(): Promise<ReadonlyMap<string, RunVersion>>;
-	snapshotTail(runId: string): Promise<RunSnapshotTail | undefined>;
+	changeToken(stop?: AbortSignal): Promise<string | undefined>;
+	runVersions(stop?: AbortSignal): Promise<ReadonlyMap<string, RunVersion>>;
+	snapshotTail(runId: string, stop?: AbortSignal): Promise<RunSnapshotTail | undefined>;
 }
 
 /** Change tracking for a journal that implements all three members; other journals are re-read in full. */
 export function runJournalVersions(journal: RunJournal): RunJournalVersions | undefined {
-	const { changeToken, runVersions, snapshotTail } = journal;
+	const { changeToken, runVersions, snapshotTail }: Partial<RunJournalVersions> = journal;
 	if (typeof changeToken !== "function" || typeof runVersions !== "function" || typeof snapshotTail !== "function")
 		return undefined;
 	return {
-		changeToken: () => changeToken.call(journal),
-		runVersions: () => runVersions.call(journal),
-		snapshotTail: (runId) => snapshotTail.call(journal, runId),
+		changeToken: (stop) => changeToken.call(journal, stop),
+		runVersions: (stop) => runVersions.call(journal, stop),
+		snapshotTail: (runId, stop) => snapshotTail.call(journal, runId, stop),
 	};
 }
 
