@@ -342,6 +342,26 @@ function openWatch(watches: WorkerStageWatches): void {
 	});
 }
 
+test("a watch opened while its stage's session waits to retry says so in its snapshot, and not while it streams the next attempt (#5483)", () => {
+	const snapshotOf = (session: AgentSession, commandId: number) => {
+		const { registry, sent, watches } = airlock();
+		const stage = streamingStage("agent");
+		registry.register(
+			Object.defineProperty(stage.handle, "agentSession", { get: () => session, configurable: true }),
+		);
+		openWatch(watches);
+		const opened = sent[0];
+		assert.equal(opened?.kind, "stage-command-result", `watch ${commandId} opens`);
+		return opened.snapshot;
+	};
+	const waiting = Object.assign(startedSession(), { retryAttempt: 1, isStreaming: false });
+	assert.equal(snapshotOf(waiting, 1)?.waitingToRetry, true);
+	const nextAttempt = Object.assign(startedSession(), { retryAttempt: 1, isStreaming: true });
+	assert.notEqual(snapshotOf(nextAttempt, 2)?.waitingToRetry, true);
+	const idle = Object.assign(startedSession(), { retryAttempt: 0, isStreaming: false });
+	assert.notEqual(snapshotOf(idle, 3)?.waitingToRetry, true);
+});
+
 async function deliver(
 	sent: Sent[],
 	watches: WorkerStageWatches,

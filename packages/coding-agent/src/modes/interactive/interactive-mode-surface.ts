@@ -183,7 +183,6 @@ declare module "./interactive-mode-base.ts" {
 		renderWidgetContainer(
 			container: Container,
 			widgets: Map<string, Component & { dispose?(): void }>,
-			spacerWhenEmpty: boolean,
 			leadingSpacer: boolean,
 		): void;
 		setExtensionFooter(

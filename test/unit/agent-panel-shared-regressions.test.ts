@@ -284,7 +284,7 @@ test("opening a finished workflow run without custom UI returns false and does n
 	assert.equal(opened, false);
 });
 
-test("attached composer keeps heavy rules and label when the draft overflows below with ↓ N more (#5224)", () => {
+test("attached composer keeps its accent rules and label when the draft overflows below with ↓ N more (#5224)", () => {
 	const style = { accent: (t: string) => `<a>${t}</a>`, text: (t: string) => t, dim: (t: string) => t };
 	const plain = (line: string | undefined) => stripVTControlCharacters(line ?? "");
 	const editor = new CustomEditor(makeTestTui(24), getEditorTheme(), new KeybindingsManager());
@@ -294,8 +294,8 @@ test("attached composer keeps heavy rules and label when the draft overflows bel
 	assert.match(plain(source[source.length - 1]), /↓ \d+ more/);
 	const out = applyAttachedComposer(style, "debugger · fix · 2m", undefined, source);
 	assert.ok(plain(out[0]).includes("debugger"));
-	assert.ok(out[0]!.includes("━"));
-	assert.ok(out[out.length - 1]!.includes("━"));
+	assert.ok(out[0]!.startsWith("<a>─"), out[0]);
+	assert.ok(out[out.length - 1]!.startsWith("<a>─"), out[out.length - 1]);
 });
 
 test("attached composer strips control sequences from the label on a scrolled ↑ N more rule (#5224)", () => {

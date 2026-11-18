@@ -48,12 +48,26 @@ export interface WorkflowRunSource {
 	subscribeInvalidation(listener: StoreInvalidationListener): () => void;
 }
 
-export type WorkflowResultTone = "running" | "success" | "failure" | "warning" | "paused" | "stopped" | "info";
+export type WorkflowResultTone =
+	| "running"
+	| "success"
+	| "failure"
+	| "warning"
+	| "paused"
+	| "waiting"
+	| "stopped"
+	| "info";
 
 export interface WorkflowResultSummary {
 	readonly tone: WorkflowResultTone;
 	readonly text: string;
 }
+
+/**
+ * A stage released while it waits is not paused: it shows the still, dim mark a subagent released while it waits has
+ * in its notice, `/tasks` and the agent panel.
+ */
+const WAITING_MARKER = { glyph: "◌", color: "dim" } as const;
 
 const TONE_MARKERS: Readonly<Record<WorkflowResultTone, { readonly glyph: string; readonly color: ThemeColor }>> = {
 	running: { glyph: "", color: "accent" },
@@ -61,6 +75,7 @@ const TONE_MARKERS: Readonly<Record<WorkflowResultTone, { readonly glyph: string
 	failure: { glyph: "✗", color: "error" },
 	warning: { glyph: "!", color: "warning" },
 	paused: { glyph: "⏸", color: "muted" },
+	waiting: WAITING_MARKER,
 	stopped: { glyph: "◼", color: "muted" },
 	info: { glyph: "", color: "dim" },
 };
@@ -71,6 +86,7 @@ const STAGE_MARKERS: Readonly<Record<WorkflowResultTone, { readonly glyph: strin
 	failure: { glyph: "✗", color: "error" },
 	warning: { glyph: "!", color: "warning" },
 	paused: { glyph: "⏸", color: "muted" },
+	waiting: WAITING_MARKER,
 	stopped: { glyph: "◼", color: "muted" },
 	info: { glyph: "·", color: "dim" },
 };
@@ -81,7 +97,7 @@ const STAGE_TONES: Readonly<Record<StageStatus, WorkflowResultTone>> = {
 	awaiting_input: "warning",
 	paused: "paused",
 	blocked: "warning",
-	suspended: "paused",
+	suspended: "waiting",
 	completed: "success",
 	failed: "failure",
 	skipped: "stopped",

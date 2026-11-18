@@ -107,27 +107,41 @@ test("ChatSessionHost keeps the Atomic identity static without a workflow animat
 });
 
 test("ChatSessionHost gives factual retry, fallback, error, cancellation, and compaction copy precedence", () => {
+	// Work still under way is the chat's working line; an error or a cancellation follows its transcript.
 	const cases = [
-		[{ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 1, errorMessage: "network" }, "retrying…"],
-		[{ type: "model_fallback_start", from: "a", to: "b", reason: "quota", attempt: 1 }, "switching model…"],
-		[{ type: "agent_continue_error", source: "post_compaction", errorMessage: "provider failed" }, "provider failed"],
+		[
+			{ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 1, errorMessage: "network" },
+			"retrying…",
+			"working line",
+		],
+		[
+			{ type: "model_fallback_start", from: "a", to: "b", reason: "quota", attempt: 1 },
+			"switching model…",
+			"working line",
+		],
+		[
+			{ type: "agent_continue_error", source: "post_compaction", errorMessage: "provider failed" },
+			"provider failed",
+			"body",
+		],
 		[
 			{ type: "agent_continue_error", source: "post_compaction", errorMessage: "Operation cancelled" },
 			"Operation cancelled",
+			"body",
 		],
-	];
-	for (const [event, factual] of cases) {
+	] as const;
+	for (const [event, factual, place] of cases) {
 		const host = makeHost();
 		host.applyAgentEvent({ type: "agent_start" } as never);
 		host.applyAgentEvent({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: {} } as never);
 		host.applyAgentEvent(event as never);
 		const body = host.renderBody(80, 8).join("\n");
-		assert.equal(host.renderWorkingStatus(80).length, 0);
-		assert.equal(
-			(body.match(new RegExp(String(factual).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length,
-			1,
-		);
-		assert.doesNotMatch(body, /Working…|Schlepping…/);
+		const status = host.renderWorkingStatus(80).join("\n");
+		const count = (text: string) =>
+			(text.match(new RegExp(String(factual).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length;
+		assert.equal(count(status), place === "working line" ? 1 : 0, `${factual}: working line`);
+		assert.equal(count(body), place === "body" ? 1 : 0, `${factual}: body`);
+		assert.doesNotMatch(`${body}\n${status}`, /Working…|Schlepping…/);
 		host.dispose();
 	}
 
