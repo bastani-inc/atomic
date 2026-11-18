@@ -124,12 +124,14 @@ export function hintKeyParts(text: string): HintKeyPart[] {
 				index++;
 			}
 		}
-		// Consume one separator. A second slash can itself be the next key, as in `esc//`.
-		let separator = text[index] === "/" ? text[index++]! : "";
-		while (index < text.length && text[index] === " ") {
-			separator += text[index];
+		// A separator can have spaces on either side. Leave a second slash for the next key, as in `esc / /`.
+		const end = index;
+		while (text[index] === " ") index++;
+		if (token !== "" && text[index] === "/") {
 			index++;
+			while (text[index] === " ") index++;
 		}
+		const separator = text.slice(end, index);
 		if (token === "") {
 			if (parts.length > 0) {
 				const last = parts[parts.length - 1]!;

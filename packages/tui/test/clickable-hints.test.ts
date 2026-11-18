@@ -148,6 +148,20 @@ describe("a click on a key hint runs its key", () => {
 		}
 	});
 
+	it("a spaced slash separates alternatives without swallowing a literal slash key (#5528)", async () => {
+		const { view, click, tui } = await mount([
+			clickableKeyTextHint("esc / enter", " choose"),
+			clickableKeyTextHint("esc / /", " choose"),
+		]);
+		try {
+			await click(4, 0); // separator between esc and enter
+			await click(6, 1); // literal slash after the separator
+			assert.deepStrictEqual(keysOf(view, "escape", "/"), ["escape", "/"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("takes a press on a hint ahead of the view that drew it, and leaves every other cell to the view", async () => {
 		const { view, click, tui } = await mount(
 			["enter is plain text here", clickableHint("esc close", keyHintAction("escape"))],
