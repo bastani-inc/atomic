@@ -1096,12 +1096,20 @@ export class SqlSessionStore implements SessionStore {
 			this.assertListing(query);
 			if (projectCwds.length === 0) return undefined;
 		}
+		// The SQL prefilter is optional: too many spellings or too much directory text must not become one oversized
+		// parameter list. The inScope check still filters the size-bounded listing pages when the prefilter is omitted.
+		const boundedCwds =
+			projectCwds !== undefined &&
+			projectCwds.length <= LISTING_FETCH_BATCH &&
+			projectCwds.reduce((chars, cwd) => chars + cwd.length, 0) <= SESSION_READ_PAGE_CHARS
+				? projectCwds
+				: undefined;
 		const idPrefix = query.idPrefix?.toLowerCase();
 		return {
-			where: `(? = 1 OR internal = 0)${projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : ""}${idPrefix === undefined ? "" : " AND substr(lower(id), 1, ?) = ?"}`,
+			where: `(? = 1 OR internal = 0)${boundedCwds ? ` AND cwd IN (${boundedCwds.map(() => "?").join(", ")})` : ""}${idPrefix === undefined ? "" : " AND substr(lower(id), 1, ?) = ?"}`,
 			params: [
 				query.includeInternal ? 1 : 0,
-				...(projectCwds ?? []),
+				...(boundedCwds ?? []),
 				...(idPrefix === undefined ? [] : [idPrefix.length, idPrefix]),
 			],
 			inScope: (row: ListingRow) => !matchesCwd || matchesCwd(row.cwd),
