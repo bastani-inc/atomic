@@ -23,13 +23,23 @@ export interface TaskResumer {
 }
 
 const resumers = new WeakMap<object, TaskResumer>();
+/** Every bound resumer, so a task can be asked about without its owner. */
+const boundResumers = new Set<TaskResumer>();
 
 /** Registers how the tasks of `owner` (a task supervisor) resume; returns the unregister. */
 export function bindTaskResumer(owner: object, resumer: TaskResumer): () => void {
 	resumers.set(owner, resumer);
+	boundResumers.add(resumer);
 	return () => {
 		if (resumers.get(owner) === resumer) resumers.delete(owner);
+		boundResumers.delete(resumer);
 	};
+}
+
+/** Whether a bound resumer says the task was stopped and waits for a resume, as a released subagent you quit does. */
+export function taskStoppedForResume(taskId: TaskId): boolean {
+	for (const resumer of boundResumers) if (resumer.isStopped?.(taskId) === true) return true;
+	return false;
 }
 
 /** The resumer registered for `owner`, if any. */

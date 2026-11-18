@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { taskPanelState } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import type { TaskRecord } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { bindTaskResumer } from "../../packages/coding-agent/src/core/tasks/task-resumer.js";
+import { taskBoardState } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
 import { TaskNavigation } from "../../packages/coding-agent/src/modes/interactive/components/task-navigation.js";
 import { taskRecord } from "../helpers/task-record.js";
 
@@ -99,4 +102,55 @@ test("a pending stop confirmation cannot dismiss a different finished task (#522
 	assert.deepEqual(dismissed, []);
 	navigation.handleInput("x", "tasks");
 	assert.deepEqual(dismissed, [other.ref.taskId]);
+});
+
+test("x x on a subagent released while it waits stops it with confirmation, never dismisses it", () => {
+	const released = taskRecord("released-waiting");
+	released.execution = {
+		kind: "settled",
+		result: {
+			kind: "cancelled",
+			cause: "pause",
+			released: { waitingOn: [{ toolCallId: "toolu_1", toolName: "bash" }] },
+		},
+	};
+	const h = harness(released);
+	h.navigation.paint([released]);
+	h.navigation.handleInput("x", "tasks");
+	assert.deepEqual(h.cancelled, [], "the first press only arms the stop");
+	assert.deepEqual(h.dismissed, []);
+	h.navigation.handleInput("x", "tasks");
+	assert.deepEqual(h.cancelled, ["released-waiting"]);
+	assert.deepEqual(h.dismissed, []);
+});
+
+test("a released subagent that was stopped no longer waits: its row is stopped and x dismisses it", () => {
+	const released = taskRecord("released-stopped");
+	released.execution = {
+		kind: "settled",
+		result: {
+			kind: "cancelled",
+			cause: "pause",
+			released: { waitingOn: [{ toolCallId: "toolu_1", toolName: "bash" }] },
+		},
+	};
+	const unbind = bindTaskResumer(
+		{},
+		{
+			readOnlyReason: () => undefined,
+			resume: async () => ({ ok: true }),
+			isStopped: (taskId) => taskId === "released-stopped",
+		},
+	);
+	try {
+		assert.equal(taskBoardState(released), "stopped");
+		assert.equal(taskPanelState(released), "stopped");
+		const h = harness(released);
+		h.navigation.paint([released]);
+		h.navigation.handleInput("x", "tasks");
+		assert.deepEqual(h.cancelled, []);
+		assert.deepEqual(h.dismissed, ["released-stopped"]);
+	} finally {
+		unbind();
+	}
 });
