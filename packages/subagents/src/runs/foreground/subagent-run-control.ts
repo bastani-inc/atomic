@@ -13,6 +13,7 @@ import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { isLiveOwnerlessChild, isQueuedOwnerlessChild, stopOwnerlessChild } from "./ownerless-children.js";
 import { releasedChildReservation, reserveReleasedChildren } from "./released-child-reservations.js";
 import {
+	awaitResumeCheck,
 	beginReleasedChildStop,
 	isReleasedChildWakeActive,
 	ReleasedChildResumeInterruptedError,
@@ -22,7 +23,11 @@ import {
 } from "./released-child-resume.js";
 import { subagentWakeKey } from "./released-children.js";
 import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
-import { indexSubagentChildOwner, observedSubagentRunIds } from "./subagent-child-card-state.js";
+import {
+	indexSubagentChildOwner,
+	observedSubagentRunIds,
+	subagentChildIndexEntry,
+} from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
 import {
 	currentWakeFailure,
@@ -491,6 +496,19 @@ function interruptedResume(record: SubagentChildRecord, withdrawn: boolean, mess
 	);
 }
 
+function alreadyRunning(record: SubagentChildRecord, taskId: string): SubagentToolResult {
+	return errorResult("resume", `${label(record)} is already running as task ${taskId}; pause or quit it first.`);
+}
+
+function runningResumeRefusal(ctx: ExtensionContext, record: SubagentChildRecord): SubagentToolResult | undefined {
+	// The owner's new task may be live before the record carrying its id is durable.
+	const observed = subagentChildIndexEntry(record.childId);
+	const taskId = (observed?.ownerSessionId === record.owner.sessionId ? observed.taskId : undefined) ?? record.taskId;
+	return taskId !== undefined && (liveTaskIds(ctx.getAgentTaskHost?.()).has(taskId) || isLiveOwnerlessChild(taskId))
+		? alreadyRunning(record, taskId)
+		: undefined;
+}
+
 async function resumeChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
@@ -517,13 +535,17 @@ async function resumeChild(
 	for (const reopening of reopenings) {
 		const settled = reopening();
 		if (settled === undefined) continue;
+		const running = runningResumeRefusal(ctx, record);
+		if (running) return running;
 		// A sibling's save can still be pending after the relaunch. Esc ends only our wait, not that save.
 		const readable = settled.then(() => subagentChildRecordsAppended(ownerSessionId));
-		if ((await unlessInterrupted(readable, signal)) === INTERRUPTED)
+		const check = await awaitResumeCheck(wakeKey, readable, signal);
+		if (check === "interrupted")
 			return errorResult(
 				action,
 				`Interrupted while ${label(resolved)} was being reopened, before it could be resumed: nothing was sent to it.`,
 			);
+		if (check !== "readable") return alreadyRunning(record, check.taskId);
 		record = ownedRecords(ctx).get(resolved.childId) ?? resolved;
 	}
 	const terminalReason =
@@ -533,14 +555,8 @@ async function resumeChild(
 			action,
 			`${label(record)} is terminal and cannot be resumed: ${terminalReason}. Launch a fresh subagent if its work is still needed.`,
 		);
-	if (
-		record.taskId !== undefined &&
-		(liveTaskIds(ctx.getAgentTaskHost?.()).has(record.taskId) || isLiveOwnerlessChild(record.taskId))
-	)
-		return errorResult(
-			action,
-			`${label(record)} is already running as task ${record.taskId}; pause or quit it first.`,
-		);
+	const running = runningResumeRefusal(ctx, record);
+	if (running) return running;
 	// A wake that did not reopen the child may still be finishing: the resume is queued behind it, not dropped.
 	const waking = isReleasedChildWakeActive(wakeKey);
 	const message = request.message?.trim() ? request.message : undefined;
@@ -563,11 +579,7 @@ async function resumeChild(
 		if (error instanceof ReleasedChildResumeInterruptedError)
 			return interruptedResume(record, error.withdrawn, message);
 		// A wake relaunched the child before it took this resume: it runs, so resume refuses it.
-		if (error instanceof ReleasedChildResumeRunningError)
-			return errorResult(
-				action,
-				`${label(record)} is already running as task ${error.taskId}; pause or quit it first.`,
-			);
+		if (error instanceof ReleasedChildResumeRunningError) return alreadyRunning(record, error.taskId);
 		throw error;
 	}
 	if (outcome === INTERRUPTED) return interruptedResume(record, false, message);

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentSource } from "../../agents/agent-types.js";
 import type { RunSyncOptions, SingleResult } from "../../shared/types.js";
 import { isExecutionTicket } from "../shared/parallel-utils.js";
+import { refuseResumesAtAdmission } from "./released-child-resume.js";
 import {
 	claimRunWorktree,
 	holdRunWorktree,
@@ -17,6 +18,7 @@ import {
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
 	type SubagentChildStopStatus,
+	subagentChildId,
 	subagentChildInheritance,
 	subagentChildLaunch,
 	subagentChildModelChoice,
@@ -272,6 +274,8 @@ export function runOwnerlessChild(input: {
 		undefined,
 		schedule ? subagentChildLaunch(input.task, undefined, input.options) : undefined,
 	);
+	if (input.recordChild.ownerSessionId !== undefined)
+		refuseResumesAtAdmission(input.recordChild.ownerSessionId, subagentChildId(runId, index), launchId);
 	if (schedule) rememberSubagentChildSchedule(runId, index, schedule);
 	const result = (
 		schedule

@@ -38,6 +38,7 @@ import {
 } from "../shared/start-progress.js";
 import { scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
 import { endedChildMark, markEndedChildren, reserveReleasedChildTargets } from "./released-child-reservations.js";
+import { refuseResumesAtAdmission } from "./released-child-resume.js";
 import {
 	forwardDetachedResults,
 	routeReleasedChildShellCompletions,
@@ -957,6 +958,8 @@ export async function runAgentTask(input: {
 		// Nothing of a queued launch survives a restart but its records: they say how to start it fresh then.
 		queuedAtAdmission ? subagentChildLaunch(input.task, input.intentTask, input.options) : undefined,
 	);
+	if (input.recordChild?.ownerSessionId !== undefined)
+		refuseResumesAtAdmission(input.recordChild.ownerSessionId, subagentChildId(runId, index), started.value.taskId);
 	if (queuedAtAdmission) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
 	// A queued execution has no runSync listener yet. Release its observation too,
 	// without spending a concurrency slot or cancelling its owner-bound execution.

@@ -179,11 +179,36 @@ export function resumeReleasedChild(
 	return waiter.promise;
 }
 
-/**
- * A wake relaunched the child of `key` as task `taskId`: every resume still queued on that key would wait for the whole
- * run, so each is refused now, as resume refuses any running child, and never runs (#5485).
- */
-export function refuseQueuedResumes(key: string, childId: string, taskId: string): void {
+type ResumeCheck = "readable" | "interrupted" | { readonly taskId: string };
+const checking = new Map<string, Set<(taskId: string) => void>>();
+
+/** A pending resume can stop checking records as soon as the child has a live task, or its caller presses Esc. */
+export async function awaitResumeCheck(
+	key: string,
+	readable: Promise<void>,
+	signal?: AbortSignal,
+): Promise<ResumeCheck> {
+	const notice = Promise.withResolvers<ResumeCheck>();
+	const running = (taskId: string) => notice.resolve({ taskId });
+	const interrupt = () => notice.resolve("interrupted");
+	const checks = checking.get(key) ?? new Set<(taskId: string) => void>();
+	checking.set(key, checks);
+	checks.add(running);
+	if (signal?.aborted) interrupt();
+	else signal?.addEventListener("abort", interrupt, { once: true });
+	try {
+		return await Promise.race([readable.then(() => "readable" as const), notice.promise]);
+	} finally {
+		signal?.removeEventListener("abort", interrupt);
+		checks.delete(running);
+		if (checks.size === 0) checking.delete(key);
+	}
+}
+
+/** Admission makes a new task live, before its record save or Intercom registration. Pending resumes never run it again. */
+export function refuseResumesAtAdmission(owner: string, childId: string, taskId: string): void {
+	const key = subagentWakeKey(owner, childId);
+	for (const running of checking.get(key) ?? []) running(taskId);
 	for (const [id, queuedOn] of untaken) {
 		if (queuedOn !== key) continue;
 		untaken.delete(id);

@@ -4929,12 +4929,8 @@ test("resume while a wake waits for an earlier record of its owner to be saved i
 	);
 });
 
-test("Esc ends a resume of a woken child while its sibling's record is still being saved (#5560)", async () => {
-	const h = harness();
-	const childId = "woken:0";
-	const dispatcher = await releasedWithWakes(h, "woken");
-	const finish = Promise.withResolvers<void>();
-	const wake = wakeWithResult(h, dispatcher, childId, finish);
+/** Begin a real owner-ordered sibling save. Calling the returned function releases it and waits for persistence. */
+function blockSiblingSave(h: Harness): () => Promise<void> {
 	const save = Promise.withResolvers<void>();
 	const sink = createSubagentChildRecordSink(
 		{
@@ -4945,13 +4941,26 @@ test("Esc ends a resume of a woken child while its sibling's record is still bei
 		},
 		h.ctx,
 	);
+	sink.record({ runId: "sibling", index: 0, agent: "worker", state: "running", cwd: h.cwd });
+	return async () => {
+		save.resolve();
+		await sink.flushed?.();
+	};
+}
+
+test("Esc ends a pending resume while its sibling's record is still being saved (#5560)", async () => {
+	const h = harness();
+	const childId = "paused:0";
+	const dispatcher = await releasedWithWakes(h, "paused");
+	await h.call({ action: "pause", id: childId });
+	// The wake finds a paused child and decides not to run it. Resume must still check its latest state.
+	const key = subagentWakeKey(h.sessionManager.getSessionId(), childId);
+	const wake = dispatcher.deliver(key, { id: "message", kind: "intercom" });
+	const turn = new AbortController();
+	const resume = h.call({ action: "resume", id: childId, message: "never sent" }, turn.signal);
+	const finishSave = blockSiblingSave(h);
 	try {
-		await h.waitForLatest(childId, (record) => record.state === "running" && record.taskId !== undefined);
-		await releasedChildWakeDecided(subagentWakeKey(h.sessionManager.getSessionId(), childId));
-		sink.record({ runId: "sibling", index: 0, agent: "worker", state: "running", cwd: h.cwd });
-		const turn = new AbortController();
-		const resume = h.call({ action: "resume", id: childId, message: "never sent" }, turn.signal);
-		// The wake has decided; let resume reach the pending save before interrupting it.
+		await wake;
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		turn.abort();
 		const result = await answeredWithin(resume);
@@ -4960,10 +4969,7 @@ test("Esc ends a resume of a woken child while its sibling's record is still bei
 		assert.match(text(result), /Interrupted.*nothing was sent/);
 		assert.equal(h.latest("sibling:0"), undefined);
 	} finally {
-		save.resolve();
-		finish.resolve();
-		await sink.flushed?.();
-		await wake;
+		await finishSave();
 	}
 	assert.equal(
 		h.sessionManager
@@ -4974,9 +4980,92 @@ test("Esc ends a resume of a woken child while its sibling's record is still bei
 		"the pending sibling record is saved exactly once",
 	);
 	assert.equal(await drained(dispatcher), 0);
-	assert.equal(h.runs.length, 2, "only the original run and its wake ran");
-	assert.doesNotMatch(JSON.stringify(h.runs.map((run) => [run.task, run.options.resumeFollowUps])), /never sent/);
+	assert.equal(h.latest(childId)?.terminalStatus, "paused");
+	assert.equal(h.runs.length, 1, "the withdrawn resume never runs");
 });
+
+test("resume refuses an already live child before a sibling save finishes, without waiting for Esc (#5560)", async () => {
+	const h = harness();
+	const childId = "woken:0";
+	const dispatcher = await releasedWithWakes(h, "woken");
+	const finish = Promise.withResolvers<void>();
+	const wake = wakeWithResult(h, dispatcher, childId, finish);
+	try {
+		const woken = await h.waitForLatest(childId, (r) => r.state === "running" && r.taskId !== undefined);
+		await releasedChildWakeDecided(subagentWakeKey(h.sessionManager.getSessionId(), childId));
+		const finishSave = blockSiblingSave(h);
+		try {
+			const refusal = await answeredWithin(h.call({ action: "resume", id: childId, message: "never sent" }));
+			assert.ok(refusal, "the running child is refused without Esc or the sibling's save");
+			assert.match(text(refusal), new RegExp(`already running as task ${woken.taskId}; pause or quit it first`));
+			assert.equal(h.latest("sibling:0"), undefined);
+		} finally {
+			await finishSave();
+		}
+	} finally {
+		finish.resolve();
+		await wake;
+	}
+	assert.equal(h.runs.length, 2, "only the original run and its wake ran");
+});
+
+for (const ownerless of [false, true]) {
+	test(`a pending resume refuses a new ${ownerless ? "SDK" : "hosted"} task before its record save or registration finishes (#5560)`, async () => {
+		const h = harness({ ownerless });
+		const childId = "registering:0";
+		const dispatcher = await releasedWithWakes(h, "registering");
+		const starting = gateRestoreOf(h, "subagent-worker-registering");
+		const save = Promise.withResolvers<void>();
+		const saving = Promise.withResolvers<void>();
+		const append = h.deps.pi.appendEntry.bind(h.deps.pi);
+		h.deps.pi.appendEntry = async (type, data) => {
+			const row = data as SubagentChildRecord | undefined;
+			if (type === SUBAGENT_CHILD_RECORD_TYPE && row?.childId === childId && row.state === "running") {
+				saving.resolve();
+				await save.promise;
+			}
+			await append(type, data);
+		};
+		const peer = Promise.withResolvers<boolean>();
+		const registering = Promise.withResolvers<void>();
+		const emit = h.deps.pi.events.emit.bind(h.deps.pi.events);
+		h.deps.pi.events.emit = (channel, data) => {
+			emit(channel, data);
+			if (channel === SUBAGENT_AWAIT_INTERCOM_PEER_EVENT) {
+				(data as { completion?: Promise<boolean> }).completion = peer.promise;
+				registering.resolve();
+			}
+		};
+		const finish = Promise.withResolvers<void>();
+		const wake = wakeWithResult(h, dispatcher, childId, finish);
+		try {
+			await starting.reached;
+			const resume = h.call({ action: "resume", id: childId, message: "never sent" });
+			starting.gate.resolve();
+			await saving.promise;
+			const result = await answeredWithin(resume);
+			assert.ok(result, "resume refuses the running child before its record save or registration");
+			assert.equal(h.latest(childId)?.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS);
+			// The new task is already known, even to a caller that arrives before the record is durable.
+			const next = await h.call({ action: "resume", id: childId }, AbortSignal.abort());
+			assert.equal(text(next), text(result));
+			save.resolve();
+			await registering.promise;
+			assert.match(
+				text(result),
+				new RegExp(`already running as task ${h.latest(childId)?.taskId}; pause or quit it first`),
+			);
+		} finally {
+			starting.gate.resolve();
+			save.resolve();
+			peer.resolve(true);
+			finish.resolve();
+			await wake;
+		}
+		await h.waitForLatest(childId, (record) => record.terminalStatus === "ok");
+		assert.equal(h.runs.length, 2);
+	});
+}
 
 test("a resume queued on a child's wake key is refused as soon as a wake relaunches the child, never left behind its run (#5485)", async () => {
 	const h = harness();
