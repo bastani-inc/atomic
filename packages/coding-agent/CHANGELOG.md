@@ -4,6 +4,7 @@
 
 ### Added
 
+- A storage driver's `transientFailure` can return `hop: { name, failure }` for a call that failed before it reached the database server, such as at a proxy. `StorageTransientError`, and the warning printed while the call is retried, then say what happened at that hop instead of "the database server call failed", and the hint asks to check that hop; the error carries it as `hop` and `hopFailure`. The PostgreSQL adapter uses it to name the proxy ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
 - SDK: `createForkedSession` forks a session at an entry append-only: the new session holds the source's branch unchanged, followed by one result for each tool call the source's last turn left open. `appendForkToolResults`, `unansweredToolCalls`, `forkToolResults` and `forkPointEntryId` expose its steps. Subagent forks and forked workflow stages use it ([#5481](https://github.com/bastani-inc/atomic/issues/5481))
 - SDK: `SessionManager.open(store, id, cwd, { history: "tail", leafId })` opens a session at an earlier entry of its branch, holding what a resume there loads; `createBranchedSession(leafId, { history: "tail" })` branches only what the branch's context is built from; `SessionManager.readForkedBranch(store, id, entryId?)` returns those entries re-chained into one branch. `createForkedSession` now copies only that ([#5500](https://github.com/bastani-inc/atomic/issues/5500))
 
@@ -17,6 +18,8 @@
 - The main chat no longer leaves a blank row between the working line and the usage meter above the prompt. Every chat now keeps exactly one row there: the usage meter, or a blank row in a subagent or stage chat with no usage to show, so a chat's last line never runs into its prompt.
 - A subagent or workflow stage chat waiting to retry a request, switch model or resume now shows `retrying…`, `switching model…` or `resuming…` as its working line above the prompt, instead of a line below its transcript.
 - A subagent or workflow stage chat opened while its agent already waits to retry a failed request now shows `retrying…` as its working line straight away, instead of looking idle until the next attempt. This includes a stage that runs on a local worker ([#5483](https://github.com/bastani-inc/atomic/issues/5483)).
+- A subagent released while it waits on a tool call now shows the dim `◌` waiting mark on its completion notice, as `/tasks`, the agent panel, the task footer and its launch card already show it, instead of the pause mark `⏸`. Notices saved by earlier versions show the waiting mark too. A paused or quit subagent keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+- An extension tool whose call renders a `waiting` or `heartbeat` block keeps its own title once its result arrives, instead of falling back to the tool's label ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 
 ## [0.9.89] - 2026-11-18
 

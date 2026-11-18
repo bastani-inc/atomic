@@ -125,12 +125,17 @@ export function createPostgresListener(options) {
 		const nonce = randomBytes(8).toString("hex");
 		/** @type {NodeJS.Timeout | undefined} */
 		let timer;
+		/** @type {(arrived: boolean) => void} */
+		let settle = () => {};
 		const arrived = new Promise((resolve) => {
+			settle = resolve;
 			probes.set(nonce, () => resolve(true));
-			timer = setTimeout(() => resolve(false), probeTimeoutMs);
 		});
 		try {
 			await options.send(probeChannel, nonce);
+			// The wait starts once the notification was sent: opening a pool connection for it first, which through a
+			// proxy tunnel can take longer than the wait, says nothing of whether notifications arrive (#5473).
+			timer = setTimeout(() => settle(false), probeTimeoutMs);
 			return /** @type {boolean} */ (await arrived);
 		} finally {
 			clearTimeout(timer);
