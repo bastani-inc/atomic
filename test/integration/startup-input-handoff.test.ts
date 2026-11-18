@@ -64,54 +64,78 @@ test.each(cases)(
 	STDIN_HANDOFF_TIMEOUT_MS,
 );
 
-/** The PTY passes its command to the shell as one argument, whose quoting `cmd` does not undo: no part may need any. */
-function unquotedCommandLine(parts: readonly string[]): string {
-	for (const part of parts) assert.doesNotMatch(part, /["\s%^&|<>]/, `an argument that needs quoting: ${part}`);
-	return parts.join(" ");
-}
-
 /**
  * Under Node, whose terminal input waits in the terminal until its event loop reads it. Under Bun on a loaded Windows
  * runner the console never reported the typed input as waiting, so there the dialog relies on its grace.
  */
-const terminalCases = (["hello", "hello\r"] as const).map((input) => ({ runtime: "node" as const, input }));
+const terminalCases = (["hello", "hello\r"] as const).flatMap((input) =>
+	(["default", "containing a space"] as const).map((tempDirectory) => ({
+		runtime: "node" as const,
+		input,
+		tempDirectory,
+	})),
+);
+
+const TEMP_DIRECTORY_VARIABLES = ["TMPDIR", "TEMP", "TMP"] as const;
+
+/** Runs `body` with the system temporary directory moved under a new directory whose name contains a space. */
+async function withSpacedTempDirectory<T>(body: () => Promise<T>): Promise<T> {
+	const parent = makeTempDirectory("atomic tmp ");
+	const saved = TEMP_DIRECTORY_VARIABLES.map((name) => [name, process.env[name]] as const);
+	for (const name of TEMP_DIRECTORY_VARIABLES) process.env[name] = parent;
+	try {
+		return await body();
+	} finally {
+		for (const [name, value] of saved) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		removeTempDirectory(parent);
+	}
+}
 
 test.each(terminalCases)(
-	"keeps input $input the terminal already holds before a startup dialog takes stdin under $runtime (#5241)",
-	async ({ input }) => {
-		const dir = makeTempDirectory("atomic-startup-handoff-");
-		const command = [process.execPath, await bundledNodeFixture()];
-		let screen = "";
-		const child = startPty({
-			command: unquotedCommandLine([...command, dir, "terminal", String(input.length)]),
-			cwd: dir,
-			env: { ...process.env } as Record<string, string>,
-			timeoutMs: STDIN_HANDOFF_TIMEOUT_MS,
-			cols: 80,
-			rows: 24,
-			onChunk: (chunk) => {
-				screen += chunk;
-			},
-		});
-		try {
-			const deadline = Date.now() + STDIN_HANDOFF_TIMEOUT_MS / 2;
-			while (!(await fileExists(join(dir, "capture-ready")))) {
-				assert.ok(Date.now() < deadline, `the child never started capturing input: ${JSON.stringify(screen)}`);
-				await sleep(10);
-			}
-			child.write(input);
-			writeTextSync(join(dir, "input-written"), "ready");
-			assert.equal((await child.exited).exitCode, 0, screen);
-			assert.deepEqual(JSON.parse(readTextSync(join(dir, "snapshot.json"), "utf8")), {
-				text: "hello",
-				submissions: [],
-				heldForStartupDecision: true,
-			});
-		} finally {
-			if ((await Promise.race([child.exited.then(() => true), sleep(0).then(() => false)])) === false) child.kill();
-			await child.exited.catch(() => undefined);
-			removeTempDirectory(dir);
-		}
+	"keeps input $input the terminal already holds before a startup dialog takes stdin under $runtime, with a temporary directory $tempDirectory (#5241)",
+	async ({ input, tempDirectory }) => {
+		await (tempDirectory === "default"
+			? terminalHandoff(input)
+			: withSpacedTempDirectory(() => terminalHandoff(input)));
 	},
 	STDIN_HANDOFF_TIMEOUT_MS,
 );
+
+async function terminalHandoff(input: string): Promise<void> {
+	const dir = makeTempDirectory("atomic-startup-handoff-");
+	const fixture = await bundledNodeFixture();
+	let screen = "";
+	const child = startPty({
+		command: [process.execPath, fixture, dir, "terminal", String(input.length)],
+		cwd: dir,
+		env: { ...process.env } as Record<string, string>,
+		timeoutMs: STDIN_HANDOFF_TIMEOUT_MS,
+		cols: 80,
+		rows: 24,
+		onChunk: (chunk) => {
+			screen += chunk;
+		},
+	});
+	try {
+		const deadline = Date.now() + STDIN_HANDOFF_TIMEOUT_MS / 2;
+		while (!(await fileExists(join(dir, "capture-ready")))) {
+			assert.ok(Date.now() < deadline, `the child never started capturing input: ${JSON.stringify(screen)}`);
+			await sleep(10);
+		}
+		child.write(input);
+		writeTextSync(join(dir, "input-written"), "ready");
+		assert.equal((await child.exited).exitCode, 0, screen);
+		assert.deepEqual(JSON.parse(readTextSync(join(dir, "snapshot.json"), "utf8")), {
+			text: "hello",
+			submissions: [],
+			heldForStartupDecision: true,
+		});
+	} finally {
+		if ((await Promise.race([child.exited.then(() => true), sleep(0).then(() => false)])) === false) child.kill();
+		await child.exited.catch(() => undefined);
+		removeTempDirectory(dir);
+	}
+}
