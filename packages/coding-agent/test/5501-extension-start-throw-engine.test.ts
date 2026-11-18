@@ -36,8 +36,16 @@ afterEach(async () => {
 	root = undefined;
 });
 
-/** The engine side of an interactive session: an RPC binding with the engine's custom UI service. */
-function engineBinding(session: Harness["session"], output: (record: object) => void): RpcSessionBinding {
+/**
+ * The engine side of an interactive session: an RPC binding with the engine's custom UI service. With
+ * `settlesStartupTrust`, its deferred resource load finishes startup in place, as an engine whose startup settles
+ * project trust or loads `-e` extensions does.
+ */
+function engineBinding(
+	session: Harness["session"],
+	output: (record: object) => void,
+	options: { settlesStartupTrust?: boolean } = {},
+): RpcSessionBinding {
 	const runtime = new AgentSessionRuntime(
 		session,
 		{
@@ -47,6 +55,9 @@ function engineBinding(session: Harness["session"], output: (record: object) => 
 			settingsManager: harness!.settingsManager,
 			resourceLoader: session.resourceLoader,
 			diagnostics: [],
+			...(options.settlesStartupTrust && {
+				completeStartup: () => session.completeStartupResources(session.resourceLoader),
+			}),
 		},
 		async () => {
 			throw new Error("unused runtime factory");
@@ -141,6 +152,36 @@ test("the interactive engine's deferred resource load keeps the extensions whose
 	// The extension stays loaded and the session takes input: its command still runs.
 	await harness.session.prompt("/still-loaded");
 	assert.equal(readFileSync(ran, "utf8"), "ran");
+});
+
+test("an engine startup that settles project trust reports a resources_discover failure once (#5501)", async () => {
+	let discoveries = 0;
+	harness = await createHarness({
+		extensionFactories: [
+			(pi) => {
+				pi.on("resources_discover", () => {
+					discoveries++;
+					throw new Error("boom in resources_discover");
+				});
+			},
+		],
+	});
+	const output: object[] = [];
+	binding = engineBinding(harness.session, (record) => output.push(record), { settlesStartupTrust: true });
+	await binding.rebindSession();
+
+	await binding.loadDeferredResources();
+
+	// The isolated host shows every record it gets; the engine may finish startup after the host finished its own.
+	assert.equal(discoveries, 2, "settling trust discovered the resources again, as documented");
+	assert.deepEqual(extensionErrors(output), [
+		{
+			type: "extension_error",
+			extensionPath: "<inline:1>",
+			event: "resources_discover",
+			error: "boom in resources_discover",
+		},
+	]);
 });
 
 test("the isolated host shows an engine startup error that arrived before the host bound its session (#5501)", async () => {

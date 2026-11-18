@@ -57,8 +57,12 @@ afterEach(async () => {
 	while (cleanup.length > 0) await cleanup.pop()?.();
 });
 
-/** An interactive host over an unstarted session, as the CLI builds it: the host's bind starts the extensions. */
-async function createMode(extension: ExtensionFactory) {
+/**
+ * An interactive host over an unstarted session, as the CLI builds it: the host's bind starts the extensions. With
+ * `settlesStartupTrust`, the first session finishes startup in place once trust is settled, as a CLI startup that asks
+ * the project trust question or loads `-e` extensions does.
+ */
+async function createMode(extension: ExtensionFactory, options: { settlesStartupTrust?: boolean } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-5501-cwd-"));
 	const agentDir = mkdtempSync(join(tmpdir(), "atomic-5501-agent-"));
 	const faux = registerFauxProvider();
@@ -82,10 +86,10 @@ async function createMode(extension: ExtensionFactory) {
 			},
 		],
 	});
-	const createRuntime: CreateAgentSessionRuntimeFactory = async (options) => {
+	const createRuntime: CreateAgentSessionRuntimeFactory = async (runtimeOptions) => {
 		const services = await createAgentSessionServices({
-			cwd: options.cwd,
-			agentDir: options.agentDir,
+			cwd: runtimeOptions.cwd,
+			agentDir: runtimeOptions.agentDir,
 			modelRuntime,
 			resourceLoaderOptions: {
 				builtinPackagePaths: [],
@@ -96,17 +100,17 @@ async function createMode(extension: ExtensionFactory) {
 				noContextFiles: true,
 			},
 		});
-		return {
-			...(await createUnstartedAgentSessionFromServices({
-				services,
-				sessionManager: options.sessionManager,
-				sessionStartEvent: options.sessionStartEvent,
-				model: faux.getModel(),
-				builtins: NO_BUILTINS,
-			})),
+		const created = await createUnstartedAgentSessionFromServices({
 			services,
-			diagnostics: services.diagnostics,
-		};
+			sessionManager: runtimeOptions.sessionManager,
+			sessionStartEvent: runtimeOptions.sessionStartEvent,
+			model: faux.getModel(),
+			builtins: NO_BUILTINS,
+		});
+		if (options.settlesStartupTrust && runtimeOptions.sessionStartEvent === undefined) {
+			services.completeStartup = () => created.session.completeStartupResources(services.resourceLoader);
+		}
+		return { ...created, services, diagnostics: services.diagnostics };
 	};
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd,
@@ -170,6 +174,53 @@ test(
 		assert.equal(starts, 2, "the startup reload started the extension again");
 		assert.equal(occurrences(chat, 'Extension "<inline:1>" error: boom in session_start'), 1, chat);
 		assert.equal(occurrences(chat, "Extension loading failed"), 0, chat);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"one interactive startup shows a resources_discover failure once when startup discovers resources twice (#5501)",
+	async () => {
+		const { mode } = await createMode((pi) => {
+			pi.on("resources_discover", () => {
+				throw new Error("review discovery failure");
+			});
+		});
+		mode.deferredStartupPending = true;
+		await mode.completeDeferredStartup();
+		const chat = normalizeRenderedOutput(mode.chatContainer);
+		assert.equal(occurrences(chat, 'Extension "<inline:1>" error: review discovery failure'), 1, chat);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"a startup that settles project trust shows a resources_discover failure once, and /reload still shows it (#5501)",
+	async () => {
+		let discoveries = 0;
+		const { mode } = await createMode(
+			(pi) => {
+				pi.on("resources_discover", () => {
+					discoveries++;
+					throw new Error("discovery failure");
+				});
+			},
+			{ settlesStartupTrust: true },
+		);
+		mode.deferredStartupPending = true;
+
+		await mode.completeDeferredStartup();
+
+		const error = 'Extension "<inline:1>" error: discovery failure';
+		assert.equal(discoveries, 2, "settling trust discovered the resources again, as documented");
+		const startupChat = normalizeRenderedOutput(mode.chatContainer);
+		assert.equal(occurrences(startupChat, error), 1, startupChat);
+
+		await mode.handleReloadCommand();
+
+		const reloadChat = normalizeRenderedOutput(mode.chatContainer);
+		assert.equal(discoveries, 3);
+		assert.equal(occurrences(reloadChat, error), 2, reloadChat);
 	},
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );

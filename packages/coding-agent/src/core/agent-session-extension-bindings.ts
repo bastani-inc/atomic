@@ -22,7 +22,7 @@ import {
 	startupCleanupFailureMessage,
 } from "./extension-startup-failure.ts";
 import { hostInputError } from "./extensions/host-input.js";
-import { ExtensionRunner } from "./extensions/index.js";
+import { type ExtensionError, ExtensionRunner } from "./extensions/index.js";
 import {
 	factoryAcquisitions,
 	factoryRollbackError,
@@ -198,9 +198,14 @@ async function extendRunnerResources(
 	runner: ExtensionRunner,
 	loader: ResourceLoader,
 	reason: "startup" | "reload",
+	reportError?: (error: ExtensionError) => void,
 ): Promise<void> {
 	if (!runner.hasHandlers("resources_discover")) return;
-	const { skillPaths, promptPaths, themePaths } = await runner.emitResourcesDiscover(session._cwd, reason);
+	const { skillPaths, promptPaths, themePaths } = await runner.emitResourcesDiscover(
+		session._cwd,
+		reason,
+		reportError,
+	);
 	if (session._disposed) throw hostInputError("SessionClosed");
 	if (skillPaths.length === 0 && promptPaths.length === 0 && themePaths.length === 0) return;
 	const extensionPaths: ResourceExtensionPaths = {
@@ -220,6 +225,20 @@ const presentationOnlyBindings = new WeakMap<AgentSession, boolean>();
 const startupErrorReports = new WeakMap<AgentSession, boolean>();
 const statusSinks = new WeakMap<AgentSession, NonNullable<ExtensionBindings["onStatus"]>>();
 const sessionSummaryBackfills = new WeakSet<AgentSession>();
+// The `session_start` and `resources_discover` failures each session's startup reported. One startup can run a handler
+// twice: settling project trust discovers resources again for the completed extension set, and a startup that deferred
+// its extensions reloads them. Its host hears each failure once; a later `/reload` reports its failures again.
+const startupFailureReports = new WeakMap<AgentSession, Set<string>>();
+
+/** Records a startup failure; false when this session's startup already reported the same one. */
+function recordStartupFailure(session: AgentSession, error: ExtensionError): boolean {
+	const key = JSON.stringify([error.extensionPath, error.event, error.error]);
+	const reported = startupFailureReports.get(session) ?? new Set<string>();
+	startupFailureReports.set(session, reported);
+	if (reported.has(key)) return false;
+	reported.add(key);
+	return true;
+}
 
 function startExtensions(
 	session: AgentSession,
@@ -241,6 +260,7 @@ function startExtensions(
 			const unsubscribe = runner.onError((error) => {
 				if (error.event === "session_start" || error.event === "resources_discover") {
 					failures.push({ extensionPath: error.extensionPath, event: error.event, message: error.error });
+					if (event.reason !== "reload" && !recordStartupFailure(session, error)) return;
 					reportStartupError?.(error);
 				}
 			});
@@ -1155,7 +1175,14 @@ export async function completeStartupResources(this: AgentSession, resourceLoade
 		await this.refreshCurrentModelFromRegistry();
 		await startNewcomers();
 		assertSessionOpen(this);
-		await this.extendResourcesFromExtensions("startup");
+		// Discovery runs again for the completed extension set, so the extensions started before trust was settled run
+		// their handlers a second time. A failure they already reported during this startup is not reported again.
+		const runner = this._extensionRunner;
+		await extendRunnerResources(this, runner, this._resourceLoader, "startup", (error) => {
+			if (recordStartupFailure(this, error)) runner.emitError(error);
+		});
+		assertSessionOpen(this);
+		this._rebuildSystemPrompt(this.getActiveToolNames());
 		// Startup completes once the project's trust is settled and its extensions are loaded: a trusted project's
 		// selection and a model those extensions register are both known now.
 		migrateSavedCompactionModel(this);
