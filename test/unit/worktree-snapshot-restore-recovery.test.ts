@@ -386,7 +386,9 @@ describe("sweeping the records an interrupted restore left", () => {
 			emit.mockRestore();
 		}
 		assert.deepEqual(emitted, [
-			[`A restore interrupted earlier left ${restores}, which may hold your files; check them, then delete the directory yourself.`],
+			[
+				`A restore interrupted earlier left ${restores}, which may hold your files; check them, then delete the directory yourself.`,
+			],
 		]);
 	});
 
