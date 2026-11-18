@@ -47,6 +47,26 @@ Each process also keeps one connection outside the pool that `LISTEN`s for wake-
 
 A failure that passes, such as a refused or lost connection, a lock conflict (SQLSTATE `40001`, `40P01`, `55P03`) or a cancelled statement (`57014`), is reported as `StorageTransientError`, and a call that wrote nothing runs again. Refused credentials (`28P01`), a missing database (`3D000`) and a refused server certificate fail at once. A missing privilege (`42501`) fails at once with `StorageConfigError` reason `missing-privilege`, which names the privilege and the grant or `atomic storage migrate` that fixes it. The password is redacted from error messages and diagnostics. Add a `prefix` to the `storage` block to keep projects or teams apart in one database. See [Storage](../coding-agent/docs/storage.md) for selection precedence and the other storage options.
 
+## Azure
+
+**Azure Database for PostgreSQL (flexible server)**, PostgreSQL 16 or newer:
+
+- Use `<server>.postgres.database.azure.com`: port 5432 reaches the server directly. Port 6432 is the built-in PgBouncer, which General Purpose and Memory Optimized servers offer once the server parameter `pgbouncer.enabled` is on; Burstable servers have none. Through 6432, set `listenUrl` to the same URL on port 5432 so wake-ups still arrive.
+- Azure's certificates chain to CAs Node trusts, so the URL needs no TLS parameter.
+- The administrator is a member of `azure_pg_admin`, not a superuser; the owner and runtime role setup in [Storage](../coding-agent/docs/storage.md#set-up-the-database) works as written.
+- Add `PG_TRGM` to the server parameter `azure.extensions` before `atomic storage migrate`. Without it, searches of session history read each session a page at a time, and `atomic storage migrate` says so.
+- Mind the server's connection limit. A Burstable B1ms server allows 50 connections, 15 of them reserved for administrators, and each Atomic process opens up to `maxConnections` (8) plus one for wake-ups: lower `maxConnections`, connect through PgBouncer, or pick a larger server for more than a few processes.
+
+**Azure HorizonDB** (preview), PostgreSQL 17:
+
+- Use the cluster's read/write endpoint, `<cluster>.rw.<id>.<region>.horizondb.azure.com`, port 5432. The pool's read-only endpoint is for reads only, and Atomic writes on every connection. Wake-ups arrive on the read/write endpoint.
+- TLS is required, and its certificates chain to CAs Node trusts: the URL needs no TLS parameter.
+- The administrator is a member of `azure_pg_admin`, as on a flexible server, and the same role setup applies.
+- Add `pg_trgm` to `azure.extensions` in the parameter group assigned to the compute pool.
+- Allow each machine's address in the pool's firewall rules, or connect through a private endpoint.
+
+Both services take Microsoft Entra sign-in with `auth: "azure-entra"`; see below.
+
 ## Cloud IAM authentication
 
 On Azure, AWS and Google Cloud the adapter can sign in with the machine's cloud identity instead of a stored password. Set `auth` and leave out `secrets.password`:
@@ -99,6 +119,8 @@ GRANT CONNECT ON DATABASE atomic TO "atomic-hosts";
 ```
 
 The identity needs no Azure RBAC role; the URL's user is the role name.
+
+**Azure HorizonDB.** Enable Microsoft Entra authentication on the cluster and add a Microsoft Entra administrator. Then create the identity's role and grant it the database privileges exactly as on a flexible server, as that administrator. Tokens use the same scope.
 
 **Amazon RDS and Aurora PostgreSQL.** Enable IAM database authentication on the instance or cluster, create the user, and allow only `rds-db:connect` for that user:
 
