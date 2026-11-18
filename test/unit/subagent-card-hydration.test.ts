@@ -8,6 +8,7 @@ import type { ToolDefinition, ToolRenderers } from "../../packages/coding-agent/
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { ModelSingleResponse, TaskId, WaitId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { codemodeRenderers } from "../../packages/coding-agent/src/extensions/codemode/renderer.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import {
 	chatEntriesFromAgentMessages,
@@ -160,7 +161,11 @@ function child(childId: string, state: SubagentRunControlChild["state"], taskId:
 }
 
 /** Rebuild a saved session the way `/resume` and `atomic --session` do: one component per subagent card. */
-function buildCards(manager: SessionManager, expanded = false): ReturnType<typeof renderChatMessageEntry>[] {
+function buildCards(
+	manager: SessionManager,
+	expanded = false,
+	otherTools: (name: string) => ToolRenderers | undefined = () => undefined,
+): ReturnType<typeof renderChatMessageEntry>[] {
 	const entries = chatEntriesFromAgentMessages(manager.buildSessionContext().messages as AgentMessage[]);
 	return entries
 		.filter((entry) => entry.kind === "tool")
@@ -169,7 +174,7 @@ function buildCards(manager: SessionManager, expanded = false): ReturnType<typeo
 				ui: { requestRender() {} },
 				cwd: process.cwd(),
 				toolOutputExpanded: expanded,
-				getToolDefinition: (name) => (name === "subagent" ? definition : undefined),
+				getToolDefinition: (name) => (name === "subagent" ? definition : otherTools(name)),
 			}),
 		);
 }
@@ -379,6 +384,51 @@ test("an expanded launch card shows the child's own saved transcript (#3760)", a
 		expanded,
 		/⏸ Agent\(hytx · task for hytx\) ⎿ Paused · awaiting resume ⎿ Prompt Audit the parser ⎿ Tool calls \(none\) ⎿ Result Parser audit is half done/,
 	);
+	await store.close();
+});
+
+test("an expanded launch card draws the calls in the child's saved transcript expanded, a long codemode script whole (#5525)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const childSession = await SessionManager.create(store, process.cwd());
+	const code = Array.from({ length: 20 }, (_, i) => `const v${i} = ${i};`).join("\n");
+	await childSession.appendMessage({ role: "user", content: "Script the audit", timestamp: Date.now() });
+	await childSession.appendMessage({
+		role: "assistant",
+		content: [{ type: "toolCall", id: "script", name: "codemode", arguments: { code } }],
+		api: "test-api",
+		provider: "test-provider",
+		model: "test-model",
+		usage,
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	});
+	await childSession.appendMessage({
+		role: "toolResult",
+		toolCallId: "script",
+		toolName: "codemode",
+		content: [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" }],
+		details: { calls: [] },
+		isError: false,
+		timestamp: Date.now(),
+	});
+	const t = new TranscriptBuilder(manager, process.cwd());
+	await t.launch("hyscript", "task-hyscript");
+	await t.record({
+		childId: "hyscript:0",
+		runId: "hyscript",
+		state: "terminal",
+		terminalStatus: "ok",
+		taskId: "task-hyscript",
+		childSessionId: childSession.getSessionId(),
+	});
+
+	bindSubagentChildCards({ sessionManager: manager });
+	const cards = buildCards(manager, true, (name) => (name === "codemode" ? codemodeRenderers : undefined));
+	const expanded = await eventually(() => paint(cards)[0]!, /codemode\(/);
+	assert.match(expanded, /const v0 = 0; .* const v19 = 19; \)/);
+	assert.doesNotMatch(expanded, /\+\d+ lines/);
 	await store.close();
 });
 

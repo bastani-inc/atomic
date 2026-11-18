@@ -311,6 +311,10 @@ function formatUnavailableReason(reason: string): string {
 	return `Transcript unavailable · ${cleaned}`;
 }
 
+/**
+ * One of the child's tool calls in the notice's transcript. The transcript shows only while the notice is expanded,
+ * so the call is drawn expanded, as the main chat draws it after Ctrl+O.
+ */
 function renderInnerNoticeToolCall(input: {
 	readonly id: string;
 	readonly name: string;
@@ -327,6 +331,7 @@ function renderInnerNoticeToolCall(input: {
 	readonly cwd: string;
 }): Component {
 	const { id, name, args, matched, settledStatus, getToolDefinition, cwd } = input;
+	const expanded = true;
 	const isPartial = !matched && settledStatus === "running";
 	const isError = matched?.isError === true;
 	const status: ToolBlockStatus = matched
@@ -352,7 +357,7 @@ function renderInnerNoticeToolCall(input: {
 					durationMs: matched.durationMs,
 				}
 			: undefined,
-		expanded: false,
+		expanded,
 		isPartial,
 		cwd,
 		executionStarted: true,
@@ -384,7 +389,7 @@ function renderInnerNoticeToolCall(input: {
 			executionStarted: true,
 			argsComplete: true,
 			isPartial,
-			expanded: false,
+			expanded,
 			showImages: false,
 			isError,
 			durationMs: isPartial ? undefined : matched?.durationMs,
@@ -409,7 +414,7 @@ function renderInnerNoticeToolCall(input: {
 						content: matched.content as AgentToolResult<unknown>["content"],
 						details: matched.details,
 					},
-					{ expanded: false, isPartial },
+					{ expanded, isPartial },
 					theme,
 					innerContext,
 				);

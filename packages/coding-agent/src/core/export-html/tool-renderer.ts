@@ -97,6 +97,8 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 			isError,
 			durationMs: undefined,
 			outputPad: 1,
+			// A block that draws other tools' calls, such as a subagent card, draws them with their own renderers.
+			getToolDefinition: getToolRenderers,
 			keyText,
 			keyHint,
 		};

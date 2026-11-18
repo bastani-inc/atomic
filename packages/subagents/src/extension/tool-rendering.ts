@@ -308,9 +308,14 @@ class UnpaddedBlockComponent implements Component {
 	}
 }
 
+/**
+ * One of the child's tool calls inside the card. It is drawn expanded when the card is, as the main chat draws a call
+ * after Ctrl+O: the card's own expansion is the only one these calls have.
+ */
 function innerToolBlockFromEntry(
 	entry: SubagentChildToolCallEntry,
 	parentRunning: boolean,
+	parentExpanded: boolean,
 	theme: Theme,
 	context?: Pick<RenderContext, "cwd" | "getToolDefinition">,
 ): Component {
@@ -339,7 +344,7 @@ function innerToolBlockFromEntry(
 					durationMs: entry.durationMs,
 				}
 			: undefined,
-		expanded: false,
+		expanded: parentExpanded,
 		isPartial,
 		cwd,
 		executionStarted: true,
@@ -368,7 +373,7 @@ function innerToolBlockFromEntry(
 			executionStarted: true,
 			argsComplete: true,
 			isPartial,
-			expanded: false,
+			expanded: parentExpanded,
 			showImages: false,
 			isError,
 			durationMs: isPartial ? undefined : entry.durationMs,
@@ -393,7 +398,7 @@ function innerToolBlockFromEntry(
 						content: resultContent as AgentToolResult<unknown>["content"],
 						details: entry.resultDetails,
 					},
-					{ expanded: false, isPartial },
+					{ expanded: parentExpanded, isPartial },
 					theme,
 					innerContext,
 				);
@@ -957,7 +962,7 @@ function buildOutcomeToolBlock(input: {
 					promptText,
 					buildToolBlocks: () =>
 						(hydrated?.toolCalls ?? []).map((entry) =>
-							innerToolBlockFromEntry(entry, status === "running", theme, context),
+							innerToolBlockFromEntry(entry, status === "running", expanded, theme, context),
 						),
 					toolCallsUnavailable,
 					resultText,
@@ -1058,7 +1063,7 @@ function buildForegroundChildToolBlock(input: {
 	const messageEntries = toolEntriesFromMessages(child?.messages);
 	const toolBlocks: readonly Component[] =
 		messageEntries.length > 0
-			? messageEntries.map((entry) => innerToolBlockFromEntry(entry, status === "running", theme, context))
+			? messageEntries.map((entry) => innerToolBlockFromEntry(entry, status === "running", expanded, theme, context))
 			: toolBlocksFromSummaries(child?.toolCalls, activeProgress);
 
 	return new ToolBlock({
