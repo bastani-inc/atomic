@@ -212,6 +212,26 @@ describe("a single click's action waits until it cannot become a double-click", 
 		assert.deepStrictEqual(acted, ["second"]);
 	});
 
+	it("a double-click still selects a word after its first press clears a painted drag selection (#5562)", async (t) => {
+		const { terminal, tui, copied, acted, click } = settleFixture();
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+		terminal.sendInput(press(6, 0));
+		terminal.sendInput("\x1b[<32;9;1M");
+		terminal.sendInput(release(8, 0));
+		tui.renderNow();
+		assert.equal(copied.length, 1);
+		terminal.sendInput(press(8, 0));
+		tui.renderNow(); // The first press removed the drag highlight, not the word underneath it.
+		terminal.sendInput(release(8, 0));
+		click(8, 0);
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(copied.slice(1), ["words"]);
+		assert.deepStrictEqual(acted, []);
+	});
+
 	it("drops a waiting action when the renderer stops", async () => {
 		const { terminal, tui, acted, click } = settleFixture();
 		tui.start();

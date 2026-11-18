@@ -1621,14 +1621,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const releaseFrame = this.pointerFrame(event.x, event.y);
 			const samePaint = samePointerFrame(this.pressFrame, releaseFrame);
 			const click = this.lastClick;
-			// Word and line selection can highlight the row between press and release without changing the item there.
-			if (
-				click &&
-				(click.row !== event.y ||
-					click.col !== event.x ||
-					!(click.count === 1 ? samePaint : sameDrawnAtPointer(this.pressFrame, releaseFrame)))
-			)
-				this.lastClick = undefined;
+			// Drawing or clearing a selection changes the row's styling, not what the next press would select.
+			const sameSpot =
+				samePaint ||
+				(sameDrawnAtPointer(this.pressFrame, releaseFrame) &&
+					stripTerminalSequences(this.pressFrame?.line ?? "") ===
+						stripTerminalSequences(releaseFrame.line ?? "") &&
+					(!this.pressedUrl || this.pressedUrl === getOsc8LinkAtColumn(releaseFrame.line ?? "", event.x)));
+			if (click && (click.row !== event.y || click.col !== event.x || !sameSpot)) this.lastClick = undefined;
 			const isClick =
 				this.lastClick !== undefined &&
 				!this.selectionDragged &&

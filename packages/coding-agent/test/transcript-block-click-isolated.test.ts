@@ -51,6 +51,10 @@ const lines = (count: number, label: string) =>
  */
 function isolatedEngine() {
 	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
+	const ended = new Set<(event: { generation: number }) => void>();
+	let generation = 1;
+	let online = true;
+	let offlineRenders = 0;
 	let held: InteractiveEngineMessage[] | undefined;
 	const deliver = (message: InteractiveEngineMessage) => {
 		for (const listener of [...listeners]) listener(message);
@@ -62,7 +66,7 @@ function isolatedEngine() {
 		if (held) held.push(message);
 		else deliver(message);
 	});
-	service.bindSession({
+	const session = {
 		extensionRunner: {
 			resolveToolRenderers: () => undefined,
 			getMessageRenderer: (customType: string) =>
@@ -70,14 +74,21 @@ function isolatedEngine() {
 		},
 		getToolDefinition: () => undefined,
 		sessionManager: { getCwd: () => "/workspace" },
-	} as unknown as AgentSession);
+	} as unknown as AgentSession;
+	service.bindSession(session);
 	const runtime = {
+		getEngineGeneration: () => generation,
+		onGenerationEnded(listener: (event: { generation: number }) => void) {
+			ended.add(listener);
+			return () => ended.delete(listener);
+		},
 		onEngineMessage(listener: (message: InteractiveEngineMessage) => void) {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
 		sendEngineCommand(command: InteractiveEngineCommand) {
-			service.handleLine(serializeInteractiveEngineFrame(command).trim());
+			if (online) service.handleLine(serializeInteractiveEngineFrame(command).trim());
+			else if (command.type === "engine_tool_render" || command.type === "engine_message_render") offlineRenders++;
 		},
 	} as unknown as IsolatedInteractiveRuntime;
 	closers.push(() => {
@@ -85,6 +96,18 @@ function isolatedEngine() {
 		setCallbackActivityReporter(undefined);
 	});
 	const frames = {
+		offlineRenders: () => offlineRenders,
+		exit() {
+			online = false;
+			held = undefined; // The dead child cannot deliver its held replies.
+			for (const listener of ended) listener({ generation });
+		},
+		rebind() {
+			online = true;
+			generation++;
+			service.bindSession(session);
+			deliver({ type: "engine_bound" });
+		},
 		hold() {
 			held ??= [];
 		},
@@ -346,6 +369,24 @@ for (const length of [1, 20]) {
 		assert.ok(chat.shows(/more 1$/));
 	});
 }
+
+test("an isolated row keeps drawing after its engine exits with a click outstanding (#5562)", async () => {
+	const chat = await mountIsolatedChat();
+	const row = chat.bash("restart", "status", lines(20, "before"));
+	await chat.waitFor(/before 20$/);
+	chat.frames.hold();
+	await chat.click(/before 20$/, "before");
+	await vi.waitFor(() => assert.ok(chat.frames.hasClickComparison()), ENGINE_FRAME_WAIT);
+	chat.frames.exit();
+	row.updateResult({ content: [{ type: "text", text: lines(20, "after") }], isError: false, durationMs: 100 });
+	row.render(100); // A paint while the writer is gone must not use up the update.
+	assert.equal(chat.frames.offlineRenders(), 0);
+	chat.frames.rebind();
+	await chat.waitFor(/after 20$/);
+	assert.equal(chat.shows(/after 1$/), false, "the dead engine's click was canceled");
+	await chat.click(/after 20$/, "after");
+	await chat.waitFor(/after 1$/);
+});
 
 test("a click on a block the isolated engine draws with nothing to expand changes nothing and keeps following the end", async () => {
 	const chat = await mountIsolatedChat();

@@ -52,15 +52,24 @@ function rememberFrame(key: string, lines: string[]): void {
 	}
 }
 
-/** One engine-message subscription per runtime, routed by component id, however many rows the chat holds. */
-const routesByRuntime = new WeakMap<IsolatedInteractiveRuntime, Map<string, RemoteRenderer>>();
+interface RendererRoutes {
+	rows: Map<string, RemoteRenderer>;
+	clicks: AbortController;
+}
 
-function rendererRoutes(runtime: IsolatedInteractiveRuntime): Map<string, RemoteRenderer> {
+/** One subscription per runtime, routed by component id, however many rows the chat holds. */
+const routesByRuntime = new WeakMap<IsolatedInteractiveRuntime, RendererRoutes>();
+
+function rendererRoutes(runtime: IsolatedInteractiveRuntime): RendererRoutes {
 	let routes = routesByRuntime.get(runtime);
 	if (routes === undefined) {
-		const created = new Map<string, RemoteRenderer>();
+		const created: RendererRoutes = { rows: new Map(), clicks: new AbortController() };
+		runtime.onGenerationEnded?.(({ generation }) => {
+			if (generation === runtime.getEngineGeneration()) created.clicks.abort();
+		});
 		runtime.onEngineMessage((message) => {
-			if ("componentId" in message) created.get(message.componentId)?.receive(message);
+			if (message.type === "engine_bound" && created.clicks.signal.aborted) created.clicks = new AbortController();
+			if ("componentId" in message) created.rows.get(message.componentId)?.receive(message);
 		});
 		routesByRuntime.set(runtime, created);
 		routes = created;
@@ -83,7 +92,7 @@ abstract class RemoteRenderer implements Component {
 	private dirty = true;
 	private disposed = false;
 	private readonly frameClamp = new RemoteFrameWidthClamp();
-	private readonly routes: Map<string, RemoteRenderer>;
+	private readonly routes: RendererRoutes;
 	/**
 	 * What each unanswered request showed (its frame identity, expansion included), by request id. A frame is
 	 * remembered under the identity of the request it answers, not under the row's state when it arrives: a row
@@ -104,7 +113,7 @@ abstract class RemoteRenderer implements Component {
 		this.runtime = runtime;
 		this.requestRender = requestRender;
 		this.routes = rendererRoutes(runtime);
-		this.routes.set(this.componentId, this);
+		this.routes.rows.set(this.componentId, this);
 	}
 
 	/** An engine message addressed to this row. */
@@ -133,7 +142,10 @@ abstract class RemoteRenderer implements Component {
 					if (this.toggleAfterChecks) {
 						this.setExpanded(!this.expanded);
 						check.changed();
-					} else this.changed();
+					} else {
+						this.clearClickChecks();
+						this.changed();
+					}
 				}
 				return;
 			}
@@ -169,7 +181,7 @@ abstract class RemoteRenderer implements Component {
 			this.dirty = true;
 		}
 		// Render requests for the same row are coalesced in transit. Do not overwrite an outstanding click check.
-		if (!this.disposed && this.dirty && this.clickChecks.length === 0) {
+		if (!this.disposed && !this.routes.clicks.signal.aborted && this.dirty && this.clickChecks.length === 0) {
 			this.dirty = false;
 			// A row rebuilt for a row the engine already rendered paints its last frame until the fresh one arrives.
 			const identity = JSON.stringify([scope, this.frameIdentity()]);
@@ -192,7 +204,7 @@ abstract class RemoteRenderer implements Component {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		if (this.routes.get(this.componentId) === this) this.routes.delete(this.componentId);
+		if (this.routes.rows.get(this.componentId) === this) this.routes.rows.delete(this.componentId);
 		this.requestIdentities.clear();
 		this.requestScopes.clear();
 		this.clearClickChecks();
@@ -204,10 +216,12 @@ abstract class RemoteRenderer implements Component {
 		this.requestRender();
 	}
 
-	private clearClickChecks(): void {
+	private readonly clearClickChecks = (): void => {
+		this.routes.clicks.signal.removeEventListener("abort", this.clearClickChecks);
 		this.clickChecks.length = 0;
 		this.toggleAfterChecks = false;
-	}
+		this.markDirty();
+	};
 
 	isExpanded(): boolean {
 		return this.expanded;
@@ -220,10 +234,13 @@ abstract class RemoteRenderer implements Component {
 	}
 
 	expandByClick(expanded: boolean, changed: () => void): void {
-		if (this.disposed || expanded === this.expanded) return;
+		if (this.disposed || this.routes.clicks.signal.aborted || expanded === this.expanded) return;
 		const command = { ...this.command(++this.requestId, this.width), compareExpansion: true as const };
 		this.clickChecks.push({ command, changed });
-		if (this.clickChecks.length === 1) this.runtime.sendEngineCommand(command);
+		if (this.clickChecks.length === 1) {
+			this.routes.clicks.signal.addEventListener("abort", this.clearClickChecks, { once: true });
+			this.runtime.sendEngineCommand(command);
+		}
 	}
 
 	protected abstract command(requestId: number, width: number): RemoteRenderCommand;
