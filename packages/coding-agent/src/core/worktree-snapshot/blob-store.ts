@@ -1036,7 +1036,12 @@ async function readSourceStates(
 		...objects.params,
 	);
 	const present = new Set(objectRows.map((row) => row.name));
-	const unsigned = new Set(objectRows.filter((row) => Number(row.signed) === 0).map((row) => row.name));
+	// A signature trigger whose SQL lacks this build's text; every other object reads `signed` as null.
+	const unsigned = new Set(
+		objectRows
+			.filter((row) => row.signed !== null && row.signed !== undefined && Number(row.signed) === 0)
+			.map((row) => row.name),
+	);
 	const progress = new Map(
 		(
 			await executor.all<SqliteRow & { source: string; watermark: number; backfilled_through: number }>(
