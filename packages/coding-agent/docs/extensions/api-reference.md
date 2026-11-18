@@ -729,7 +729,7 @@ During a transactional reload's `session_start` handler, `pi.appendEntry`, `pi.s
 
 ### pi.registerEntryRenderer(customType, renderer)
 
-Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context.
+Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context. Ctrl+O, or a click on the entry in fullscreen mode, toggles `expanded`.
 
 SDK hosts can inspect the original callback with `session.extensionRunner.getEntryRenderer(customType)`. To render through the owning session, call `session.extensionRunner.renderEntry(customType, entry, { expanded }, theme)`; retired runners reject rendering.
 
@@ -848,7 +848,7 @@ mode and would not execute if sent via `prompt`.
 
 ### pi.registerMessageRenderer(customType, renderer)
 
-Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. See [Custom UI](/extensions/ui#custom-ui).
+Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. A click on the message in fullscreen mode toggles `expanded` for it, as Ctrl+O does, when that changes what the renderer draws. See [Custom UI](/extensions/ui#custom-ui).
 
 ### pi.registerMarkdownTransformer(transformer)
 
@@ -974,7 +974,8 @@ Return at most 10,000 rows per source. Atomic ignores additional rows and warns 
 | `waitingOn` | What a `waiting` item waits on, shown as `waiting on <waitingOn>`. |
 | `queued` | Messages typed to it that it has not taken yet. A non-negative safe integer. |
 | `endedAt` | When a finished item finished, in finite, non-negative epoch milliseconds. |
-| `viewed` | For a finished `workflow` item, whether the user has opened it. A finished workflow row stays in the panel until it is viewed: opening it from the panel or `/tasks` counts, and a source sets `viewed: true` when the user opens the item another way. A `done` or `failed` `agent` row leaves the panel as soon as it finishes. A `stopped` or `paused` `agent` row stays while another row is active or a background shell runs, and leaves once nothing is. |
+| `viewed` | For a finished `workflow` item, whether the user has opened it. A finished workflow row stays in the panel until it is viewed: opening it from the panel or `/tasks` counts, and a source sets `viewed: true` when the user opens the item another way. A `done` or `failed` `agent` row leaves the panel as soon as it finishes. A `stopped` or `paused` `agent` row, and a `paused` `workflow` row, stay while another row is active or a background shell runs, and leave once nothing is. |
+| `runGeneration` | Optional opaque identity of the item's latest run. Change it whenever the item runs again (resumed, woken or sent a follow-up). A `stopped` or `paused` row that left the panel is listed again while other work runs once this changes, even if it ran only briefly between two updates. Without it, such a row comes back only after the panel has seen it in another state. |
 
 Atomic strips terminal control sequences from the text fields before drawing them. An item with invalid fields is skipped, and `items()` or `subscribe` throwing is reported as an extension error. The source's other items, and the other sources, are still shown.
 

@@ -4,6 +4,7 @@ import type { EntryRenderer } from "../../../core/extensions/types.ts";
 import type { CustomEntry } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
+import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /** Renders an extension-owned persistent session entry. */
 export class CustomEntryComponent extends Container {
@@ -24,6 +25,22 @@ export class CustomEntryComponent extends Container {
 
 	hasContent(): boolean {
 		return this.customComponent !== undefined;
+	}
+
+	/** An entry that draws anything expands on a click, as Ctrl+O expands it; its renderer decides what that shows. */
+	get expandsOnClick(): boolean {
+		return this.customComponent !== undefined;
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	/** Every row of the entry, under the blank row it leads with. */
+	clickArea(width: number): RowRange | undefined {
+		const [spacer] = this.children;
+		if (this.customComponent === undefined || spacer === undefined) return undefined;
+		return rowsFrom(spacer.render(width).length, this.render(width).length);
 	}
 
 	setExpanded(expanded: boolean): void {
