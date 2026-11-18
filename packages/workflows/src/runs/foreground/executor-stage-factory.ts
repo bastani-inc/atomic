@@ -617,13 +617,13 @@ export function createWorkflowStageFactory(input: {
 		/**
 		 * A resume that took the run's id runs this stage again under the same stage id, with its own live handle. The
 		 * stage's shared state (awaiting input, its prompt, attachable) is then the resume's: this ended execution
-		 * releasing its own session must leave it alone (#5499).
+		 * releasing its own session must leave it alone (#5499). That holds for every handle registered under the id,
+		 * including one whose stage already completed and only serves its chat, which no longer controls the run.
 		 */
-		const supersededBySuccessor = (): boolean =>
-			input.stageRegistry
-				.run(input.runId)
-				.stages()
-				.some((other) => other.stageId === stageId && other !== stageHandle);
+		const supersededBySuccessor = (): boolean => {
+			const registered = input.stageRegistry.peek(input.runId, stageId);
+			return registered !== undefined && registered !== stageHandle;
+		};
 		const disposeInnerContext = async (): Promise<void> => {
 			idleReleaser.unwatch(stageId);
 			unsubscribeAskUserQuestionWatcher();

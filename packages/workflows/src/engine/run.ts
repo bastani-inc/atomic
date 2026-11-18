@@ -2057,7 +2057,7 @@ async function executeRun(
 						// A failed run is resumable too, but resume replays its completed
 						// stages from the snapshot and never reuses their live sessions.
 						// Paused and still-running runs are not terminal and keep theirs.
-						await stageRegistry.releaseIdle(runId);
+						await releaseOwnIdleStages(sharedStageRegistry, runId, ownStageHandles);
 					}
 				}
 			}
@@ -2091,8 +2091,8 @@ function recordStageRegistrations(registry: StageControlRegistry, own: Set<Stage
 /**
  * Release the stage handles an ended execution registered under `runId`: all of the run's when every registered one
  * is its own, otherwise only its own, so a resume that took the id meanwhile, or a chat opened on a stage, keeps its
- * handles. Its handles a resume displaced by registering the same stage are no longer registered; they are released
- * too, since nothing else will.
+ * handles. Its handles a resume displaced by registering the same stage are released too; see
+ * {@link disposeDisplacedStageHandles}.
  */
 async function releaseOwnStageHandles(
 	registry: StageControlRegistry,
@@ -2100,11 +2100,49 @@ async function releaseOwnStageHandles(
 	own: ReadonlySet<StageControlHandle>,
 ): Promise<void> {
 	const registered = registry.forRun(runId);
-	const displaced = [...own].filter((handle) => !registered.includes(handle));
-	const disposals: Promise<unknown>[] = [];
+	const disposals = disposeDisplacedStageHandles(registered, own);
 	if (registered.every((handle) => own.has(handle))) disposals.push(registry.clear(runId));
 	else for (const handle of registered) if (own.has(handle)) disposals.push(Promise.resolve(handle.dispose?.()));
-	for (const handle of displaced) disposals.push(Promise.resolve(handle.dispose?.()));
-	for (const result of await Promise.allSettled(disposals))
+	await settleStageReleases(disposals);
+}
+
+/**
+ * Release the idle saved stages an ended execution registered under `runId`, leaving out any stage a resume that took
+ * the id meanwhile registered: its workflow body can still reuse that stage after it completed (#5499). The resume can
+ * register a stage while this waits on another one's release, so each stage is checked to be this execution's just
+ * before it is released. The handles that resume displaced, before or during the release, are released too; see
+ * {@link disposeDisplacedStageHandles}.
+ */
+async function releaseOwnIdleStages(
+	registry: StageControlRegistry,
+	runId: string,
+	own: ReadonlySet<StageControlHandle>,
+): Promise<void> {
+	const registered = registry.forRun(runId);
+	// Releasing the whole run checks each stage's handle when it gets to it, so it never releases a resume's.
+	if (registered.every((handle) => own.has(handle))) await registry.releaseIdle(runId);
+	else
+		for (const handle of registered)
+			if (own.has(handle) && registry.peek(runId, handle.stageId) === handle)
+				await registry.releaseIdle(runId, handle.stageId);
+	await settleStageReleases(disposeDisplacedStageHandles(registry.forRun(runId), own));
+}
+
+/**
+ * Dispose an ended execution's handles that are no longer registered. A resume that registered the same stage
+ * displaced them, so neither the registry's owner nor anything else can release them any more (#5499); any other way
+ * a handle leaves the registry has disposed it already, and disposing it again does nothing.
+ */
+function disposeDisplacedStageHandles(
+	registered: readonly StageControlHandle[],
+	own: ReadonlySet<StageControlHandle>,
+): Promise<unknown>[] {
+	return [...own]
+		.filter((handle) => !registered.includes(handle))
+		.map((handle) => Promise.resolve(handle.dispose?.()));
+}
+
+async function settleStageReleases(releases: readonly Promise<unknown>[]): Promise<void> {
+	for (const result of await Promise.allSettled(releases))
 		if (result.status === "rejected") console.warn("atomic-workflows: stage session release failed", result.reason);
 }
