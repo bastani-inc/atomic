@@ -235,13 +235,15 @@ test("task footer rows color current work and hide settled results without delet
 		const glyph = (color: "accent" | "warning", text: string) =>
 			assert.ok((renderTaskFooter([task], 80)[0] ?? "").includes(theme.fg(color, text)));
 		assert.match(plain(renderTaskFooter([task], 80)), /^ {2}∀ agent/);
+		// A settled subagent is not a row; the footer points to /tasks, where it is kept.
+		const pointer = "  /tasks to see subagents";
 		task.execution = { kind: "settled", result: { kind: "completed", output: task.output } };
-		assert.deepEqual(renderTaskFooter([task], 80), []);
+		assert.equal(plain(renderTaskFooter([task], 80)), pointer);
 		task.execution = { kind: "settled", result: { kind: "failed", code: "Test", message: "Failure" } };
-		assert.deepEqual(renderTaskFooter([task], 80), []);
+		assert.equal(plain(renderTaskFooter([task], 80)), pointer);
 		assert.match(plain(new TaskRow(task).render(80)), /failed/);
 		task.execution = { kind: "settled", result: { kind: "cancelled", cause: "user" } };
-		assert.deepEqual(renderTaskFooter([task], 80), []);
+		assert.equal(plain(renderTaskFooter([task], 80)), pointer);
 		task.execution = { kind: "cancelling", cause: "user" };
 		glyph("warning", "◼");
 		assert.match(plain(renderTaskFooter([task], 80)), /stopping$/);
@@ -261,7 +263,7 @@ test("task footer lists only active background tasks, newest first, not retained
 	const failure = taskRecord("failure");
 	failure.execution = { kind: "settled", result: { kind: "failed", code: "fixture", message: "Failed" } };
 	assert.deepEqual(rows([agent, shell, failure], 60), ["  ∀ agent  Task agent  running", "  1 shell"]);
-	assert.deepEqual(renderTaskFooter([failure], 60), []);
+	assert.equal(plain(renderTaskFooter([failure], 60)), "  /tasks to see subagents");
 });
 
 test("taskDuration, taskMetricsText, taskDetailSummary and TaskRow use panel elapsed formatting (3m and 1h 6m, not 3m 12s or 66m 40s) (#5239)", () => {

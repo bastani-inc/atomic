@@ -1,11 +1,5 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
-import {
-	isActivePanelState,
-	isRestingPanelRow,
-	panelHintParts,
-	panelHintText,
-	panelRowListed,
-} from "../../../core/tasks/agent-panel-rules.ts";
+import { isActivePanelState, isRestingPanelRow, panelRowListed } from "../../../core/tasks/agent-panel-rules.ts";
 import {
 	type AgentPanelItem,
 	type AgentPanelState,
@@ -422,15 +416,6 @@ export interface AgentPanelRenderOptions {
 }
 
 /** The main-chat row leads the panel whenever it lists a subagent; a panel of workflow runs has none. */
-/**
- * How a chat's task footer names its running background shells, which are not rows: `2 shells`, plus where to manage
- * them when it lists no rows.
- */
-export function panelShellHintSegments(shells: number, panelHasRows: boolean): string[] {
-	const counts = { total: panelHasRows ? 1 : 0, agents: 0, needsInput: 0 };
-	return panelHintText(panelHintParts(counts, Number.isFinite(shells) ? Math.floor(shells) : 0, 0, true), "");
-}
-
 export function panelShowsMain(rows: readonly Pick<AgentPanelRow, "kind">[]): boolean {
 	return rows.some((row) => row.kind === "agent");
 }

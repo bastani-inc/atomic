@@ -929,7 +929,14 @@ export async function showAgentPanel(
 				const refreshRows = () => {
 					materializedScroll = focus.scroll;
 					currentRows = focusedRows(materializedScroll);
+					if (currentRows.length === 0 && materializedScroll > 0) {
+						materializedScroll = 0;
+						currentRows = focusedRows(0);
+					}
 					focus.update(currentRows);
+					// The last row left by itself (it finished, or nothing is active any more): the focus goes back
+					// to the prompt, as when the last row is cleared. Never from inside a paint.
+					if (currentRows.length === 0) queueMicrotask(finish);
 				};
 				const syncTick = () => {
 					const needed = focus.pendingStop() !== undefined || panelRowsNeedClock(currentRows, state);
@@ -1076,8 +1083,11 @@ export async function showAgentPanel(
 						try {
 							if (dirty) {
 								dirty = false;
-								currentRows = focusedRows(focus.scroll);
-								focus.update(currentRows);
+								refreshRows();
+							}
+							if (currentRows.length === 0) {
+								finish();
+								return true;
 							}
 							focus.handleInput(data, (input, key) =>
 								matchesKey(input, key as Parameters<typeof matchesKey>[1]),

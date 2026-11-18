@@ -7,13 +7,19 @@ import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
+import { taskClocksFor } from "../../packages/coding-agent/src/core/tasks/live-elapsed.ts";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.ts";
+import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.ts";
 import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.ts";
 import { mainComposerHintSegments } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.ts";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { parseInteractiveEngineMessage } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
-import { agentPanelCounts, agentPanelRows } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
+import {
+	agentPanelCounts,
+	agentPanelRows,
+	showAgentPanel,
+} from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
 import { taskFixture } from "../helpers/task-projection.ts";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
@@ -190,7 +196,7 @@ describe("native subagent tasks", () => {
 		}
 	});
 
-	test("an attached chat's footer drops an interrupted subagent once nothing else runs", async () => {
+	test("an attached chat's footer drops an interrupted subagent once nothing else runs and points to /tasks", async () => {
 		const fixture = taskFixture();
 		try {
 			await fixture.start("interrupted");
@@ -203,7 +209,10 @@ describe("native subagent tasks", () => {
 			fixture.runners[1]!.result.resolve({ kind: "completed", output: fixture.store.tasks[1]!.output });
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			fixture.store.drain();
-			assert.deepEqual(renderTaskFooter(fixture.store.backgroundTasks, 120), []);
+			const after = renderTaskFooter(fixture.store.backgroundTasks, 120).map((line) =>
+				line.replace(/\x1b\[[\d;:]*m/g, ""),
+			);
+			assert.deepEqual(after, ["  /tasks to see subagents"]);
 		} finally {
 			await fixture.dispose();
 		}
@@ -260,5 +269,83 @@ describe("only subagent rows count as agents", () => {
 	test("a workflow run waiting on an answer with no subagents shows only its question count", () => {
 		const panel = panelSession([{ ...run("input"), question: "Ship it?" }]);
 		assert.deepEqual(panel.hint(), ["1 needs input", "? keys"]);
+	});
+});
+
+describe("the focused panel", () => {
+	for (const [name, initial] of [
+		["its only subagent finishes", [agent("a", "running")]],
+		[
+			"the only active subagent finishes and the stopped one leaves with it",
+			[agent("a", "running"), agent("b", "stopped")],
+		],
+	] as const) {
+		test(`returns to the prompt when ${name}`, async () => {
+			const panel = panelSession([...initial]);
+			let closed = false;
+			const shown = showAgentPanel(
+				panel.session as never,
+				{
+					custom: (factory: (...args: never[]) => { render(width: number): string[]; dispose?(): void }) =>
+						new Promise<void>((resolve) => {
+							const component = factory(
+								{ requestRender() {} } as never,
+								theme as never,
+								keybindings as never,
+								(() => {
+									closed = true;
+									component.dispose?.();
+									resolve();
+								}) as never,
+							);
+							component.render(100);
+						}),
+				} as never,
+			);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(closed, false);
+			panel.set(initial.map((item) => (item.id === "ext:a" ? { ...item, state: "done" as const } : item)));
+			for (let i = 0; i < 5 && !closed; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(closed, true, "the focus went back to the prompt");
+			await shown;
+		});
+	}
+});
+
+describe("an attached chat's footer and the main panel agree", () => {
+	test("interrupted, then nothing active, then a new subagent: the same rows and the same /tasks pointer", async () => {
+		const fixture = taskFixture();
+		try {
+			await fixture.start("interrupted");
+			await fixture.start("running");
+			const hub = new AgentPanelSourceHub();
+			const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+			bindOwnerTaskStore(session, fixture.store);
+			const clocks = taskClocksFor(ownerTaskViewSource(fixture.store));
+			const footer = () =>
+				renderTaskFooter(fixture.store.backgroundTasks, 120, clocks).map((line) =>
+					line.replace(/\x1b\[[\d;:]*m/g, "").trimEnd(),
+				);
+			const titles = (lines: string[]) =>
+				lines.filter((line) => !line.includes("/tasks")).map((line) => /worker {2}(\S+)/.exec(line)?.[1]);
+			const mainTitles = () => agentPanelRows(session).map((row) => row.task);
+
+			fixture.store.setTurnInterrupted(fixture.store.tasks[0]!.ref.taskId, true);
+			assert.deepEqual(new Set(titles(footer())), new Set(mainTitles()));
+			assert.equal(mainTitles().length, 2);
+
+			fixture.runners[1]!.result.resolve({ kind: "completed", output: fixture.store.tasks[1]!.output });
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			fixture.store.drain();
+			assert.deepEqual(mainTitles(), []);
+			assert.deepEqual(footer(), ["  /tasks to see subagents"]);
+			assert.deepEqual(mainComposerHintSegments(keybindings, session), ["/tasks to see subagents", "? keys"]);
+
+			await fixture.start("new");
+			assert.deepEqual(mainTitles(), ["new"], "the interrupted subagent does not come back in the main panel");
+			assert.deepEqual(titles(footer()), ["new"], "nor in the chat's footer");
+		} finally {
+			await fixture.dispose();
+		}
 	});
 });
