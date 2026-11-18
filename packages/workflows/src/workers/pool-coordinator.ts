@@ -326,6 +326,7 @@ function remoteStageSnapshot(stage: StageSnapshot): PooledStageChatSnapshot {
 	return {
 		sessionId: stage.sessionId,
 		status: stage.status,
+		publishedActivity: stage.chatActivity ?? "idle",
 		isStreaming: false,
 		messages: [],
 		pendingToolExecutionEvents: [],

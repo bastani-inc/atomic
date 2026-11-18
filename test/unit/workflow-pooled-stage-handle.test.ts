@@ -589,6 +589,30 @@ test("the root handle reads as starting until the worker reports the stage's ses
 	handle.dispose();
 });
 
+test("a pooled stage exposes a pending switch from the watch and from later events, but not after the watch ends (#5572)", async () => {
+	const modelSwitch = {
+		type: "model_fallback_start",
+		from: "primary",
+		to: "fallback",
+		reason: "not found",
+		attempt: 1,
+	} as const;
+	const fake = singleWatch({ ...snapshot(), modelSwitch });
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	try {
+		assert.deepEqual(opened.handle.modelSwitch, modelSwitch);
+		fake.event(1, { type: "agent_start" });
+		assert.equal(opened.handle.modelSwitch, undefined);
+		fake.event(2, modelSwitch);
+		assert.deepEqual(opened.handle.modelSwitch, modelSwitch);
+		opened.handle.receive({ kind: "ended", reason: "worker_exited" });
+		assert.equal(opened.handle.modelSwitch, undefined);
+	} finally {
+		opened.handle.dispose();
+	}
+});
+
 test("the root handle says when its stage's session waits to retry, from its snapshot and then from the retry's events (#5483)", async () => {
 	const fake = singleWatch({ ...snapshot(), isStreaming: false, waitingToRetry: true });
 	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");

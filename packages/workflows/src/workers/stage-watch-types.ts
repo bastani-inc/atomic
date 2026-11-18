@@ -2,6 +2,7 @@ import type {
 	AgentSession,
 	AgentSessionEvent,
 	BashResult,
+	PublishedChatActivity,
 	QuestionParams,
 	SerializedTaskMessageError,
 	SessionCommandCatalog,
@@ -60,6 +61,8 @@ export interface PooledStageChatSnapshot {
 	readonly streamingMessage?: AssistantMessage;
 	/** Whether the stage's session waits out an automatic retry's backoff. Absent from older workers. */
 	readonly waitingToRetry?: boolean;
+	readonly modelSwitch?: Extract<AgentSessionEvent, { type: "model_fallback_start" }>;
+	readonly publishedActivity?: PublishedChatActivity;
 	readonly pendingToolExecutionEvents: readonly AgentSessionEvent[];
 	readonly queued: StageQueuedUserMessages;
 	/**
@@ -152,6 +155,8 @@ export interface PooledStageTasks {
 	}[];
 	/** Tasks that accept input now. */
 	readonly stdin: readonly TaskId[];
+	/** Active turns of subagents whose chats have no live tail on the root. */
+	readonly chatActivity?: readonly (readonly [TaskId, PublishedChatActivity])[];
 	/** Extension statuses of agent tasks, by status key. */
 	readonly statuses: readonly { readonly id: TaskId; readonly entries: readonly (readonly [string, string])[] }[];
 }

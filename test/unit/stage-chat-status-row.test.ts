@@ -141,6 +141,45 @@ test("a stage chat opened while its agent waits to retry stops showing it when t
 	}
 });
 
+test("a chat on another host updates the retry line from the stage publication without receiving session events (#5572)", () => {
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	const { handle } = makeHandle();
+	const publish = (chatActivity: "working" | "switching") =>
+		store.editRun("run-1", (run) => {
+			run.stages[0]!.chatActivity = chatActivity;
+			return { stageIds: ["stage-a"] };
+		});
+	const view = new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test",
+		handle: Object.assign(handle, { publishedActivity: "retrying" as const }),
+		onDetach() {},
+		onClose() {},
+		piTui: makeTestTui(30),
+	});
+	const line = () =>
+		view
+			.render(80)
+			.map(stripAnsi)
+			.find((row) => row.includes("∀"))
+			?.trim();
+	try {
+		assert.equal(line(), "∀ retrying…");
+		publish("switching");
+		assert.equal(line(), "∀ switching model…");
+		publish("working");
+		assert.equal(line(), "∀ Working…");
+		store.recordStagePaused("run-1", "stage-a");
+		assert.equal(line(), undefined);
+	} finally {
+		view.dispose();
+	}
+});
+
 test("a chat opened while a stage on a local worker waits to retry shows `retrying…` above the composer (#5483)", () => {
 	const store = createStore();
 	setupRun(store, "run-1", "stage-a");

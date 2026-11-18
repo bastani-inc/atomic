@@ -1,4 +1,5 @@
 import {
+	type PublishedChatActivity,
 	rehydrateTaskMessageError,
 	sessionTasks,
 	type TaskActivity,
@@ -32,6 +33,7 @@ export class PooledStageTaskSource implements TaskViewSource {
 	private backgroundRecords: TaskRecord[] = [];
 	private settlements: ReadonlyMap<TaskId, bigint> = new Map();
 	private activity = new Map<TaskId, { readonly entries: readonly TaskActivity[]; readonly omitted: boolean }>();
+	private chatActivity = new Map<TaskId, PublishedChatActivity>();
 	private statuses = new Map<TaskId, ReadonlyMap<string, string>>();
 	private stdin = new Set<TaskId>();
 	private readonly listeners = new Set<() => void>();
@@ -45,6 +47,7 @@ export class PooledStageTaskSource implements TaskViewSource {
 	/** Adopts the state the worker sent. */
 	apply(state: PooledStageTasks): void {
 		this.state = state;
+		this.chatActivity = new Map(state.chatActivity);
 		this.records = [...state.tasks];
 		const background = new Set(state.background);
 		this.backgroundRecords = this.records.filter((task) => background.has(task.ref.taskId));
@@ -121,9 +124,9 @@ export class PooledStageTaskSource implements TaskViewSource {
 	}
 	/** An agent task's transcript is read again from the worker whenever its tasks change. */
 	followTaskTranscript(id: TaskId): TaskTranscriptFollow | undefined {
-		return this.records.some((task) => task.ref.taskId === id && task.kind === "agent")
-			? { historyOnly: true }
-			: undefined;
+		if (!this.records.some((task) => task.ref.taskId === id && task.kind === "agent")) return undefined;
+		const publishedActivity = this.chatActivity.get(id);
+		return publishedActivity === undefined ? { historyOnly: true } : { historyOnly: true, publishedActivity };
 	}
 	/** A subagent's cwd and skills are on the worker, where its session runs. */
 	async taskCommands(id: TaskId): Promise<TaskCommandCatalog | undefined> {

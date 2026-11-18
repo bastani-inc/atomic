@@ -840,6 +840,11 @@ export {
 	workflowSessionMetadataFromEnv,
 } from "./core/session-manager-classification.ts";
 export {
+	type PublishedChatActivity,
+	type SessionRetryStatus,
+	sessionWaitsToRetry,
+} from "./core/session-retry-status.js";
+export {
 	findSessionStartError,
 	isRetryableSessionStartError,
 	isSessionStartConfigError,
