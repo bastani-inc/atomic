@@ -16,6 +16,12 @@ const STAGES = RUNS * STAGES_PER_RUN;
 const THOUSANDS_OF_STAGES_TIMEOUT_MS = 180_000;
 /** Collections, each followed by a macrotask: a WeakRef target survives the job that created or read it. */
 const COLLECTION_ROUNDS = 6;
+/**
+ * How long the evicted executions may take to become unreachable. Eviction indexes a run's entries and only then
+ * aborts its execution, which unwinds asynchronously, so the entries can be resident before the execution has let go of
+ * its stages. Collection is retried until everything is gathered; an execution something still holds fails after this.
+ */
+const EVICTED_EXECUTION_UNWIND_BUDGET_MS = 60_000;
 const ENTRY_KEYS = [
 	"reason",
 	"replayKey",
@@ -47,6 +53,14 @@ async function collectGarbage(): Promise<void> {
 		collect();
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
+}
+
+/** Collect until `collected` holds or `budgetMs` has passed, and return the milliseconds spent; the caller asserts. */
+async function collectGarbageUntil(collected: () => boolean, budgetMs: number): Promise<number> {
+	const started = performance.now();
+	do await collectGarbage();
+	while (!collected() && performance.now() - started < budgetMs);
+	return Math.round(performance.now() - started);
 }
 
 /** Agents that each finish a prompt and up to two more turns, then wait on the long tool; every stage context counted. */
@@ -126,7 +140,10 @@ describe("thousands of waiting stages hold only their index entries (#4373)", ()
 			const firstSignals = runs.map((started) => new WeakRef(started.seen.runSignal!));
 			for (const started of runs) started.seen.runSignal = undefined;
 			const releasesBeforeCollection = stageReleases;
-			await collectGarbage();
+			const collectionMs = await collectGarbageUntil(
+				() => contextsCollected === STAGES && firstSignals.every((signal) => signal.deref() === undefined),
+				EVICTED_EXECUTION_UNWIND_BUDGET_MS,
+			);
 
 			const entries = runs.flatMap((started) => entriesOf(started.runId));
 			assert.equal(entries.length, STAGES);
@@ -160,7 +177,11 @@ describe("thousands of waiting stages hold only their index entries (#4373)", ()
 				0,
 				"no stage keeps a session",
 			);
-			assert.equal(contextsCollected, STAGES, "every stage context of the evicted executions was collected");
+			assert.equal(
+				contextsCollected,
+				STAGES,
+				`every stage context of the evicted executions was collected (${contextsCollected} of ${STAGES} after ${collectionMs} ms, ${firstSignals.filter((signal) => signal.deref() !== undefined).length} of ${RUNS} executions still reachable)`,
+			);
 			assert.equal(
 				stageReleases,
 				releasesBeforeCollection,
