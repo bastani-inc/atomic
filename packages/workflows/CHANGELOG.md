@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- The first workflow-history read in a process no longer freezes Atomic for seconds on a large workflow journal. `history://workflows`, `search history://`, `/workflows` and `/resume` read the stored runs in short turns, so typing, rendering and streaming keep going, and the history tool's time budget ends its wait on time. A run with many thousands of checkpoints after its last status change is listed in small steps too. Callers that ask for the stored runs together share one read ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
+
 ## [0.9.89] - 2026-11-18
 
 ### Breaking Changes

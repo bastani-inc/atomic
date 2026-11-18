@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `session.workflows.listRuns()` and a run control's `listProjectRuns()` take `{ signal }` as their last argument. When it aborts, the listing stops waiting for stored runs and rejects with the signal's reason ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.
