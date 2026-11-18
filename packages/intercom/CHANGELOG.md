@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- The bundled intercom skill now teaches answering a sender outside your groups (up to 3 messages within 30 minutes of its latest message, and the refusal once that path closes), and no longer tells the model that Intercom works on one machine only: with multi-node routing, sessions on machines that share storage message each other, and ungrouped sessions join their project group.
+
 ## [0.9.89] - 2026-11-18
 
 ### Added

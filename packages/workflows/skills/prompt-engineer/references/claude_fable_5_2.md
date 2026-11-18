@@ -1,16 +1,16 @@
 # Claude Fable 5.2 prompting
 
-Distilled from [Anthropic's Fable 5.2 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-2), checked November 9, 2026. The guide also covers Claude Mythos 5.2, which Anthropic offers with the same capabilities only to organizations verified through its verification programs. For API changes, see [What's new](https://platform.claude.com/docs/en/models/fable-5-2/whats-new-fable-5-2) and the [migration guide](https://platform.claude.com/docs/en/models/fable-5-2/migration-guide). Blocks labeled **Anthropic template** are quoted verbatim from the guide; adapt them to the product and test them. Start with the section that matches the observed behavior.
+Distilled from [Anthropic's Fable 5.2 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-2), checked November 18, 2026. The guide also covers Claude Mythos 5.2, which Anthropic offers with the same capabilities only to organizations verified through its verification programs. For API changes, see [What's new](https://platform.claude.com/docs/en/models/fable-5-2/whats-new-fable-5-2) and the [Fable 5.2 and Mythos 5.2 migration guide](https://platform.claude.com/docs/en/models/fable-5-2/migration-guide). Blocks labeled **Anthropic template** are quoted verbatim from the guide; adapt them to the product and test them. Start with the section that matches the observed behavior.
 
-Anthropic's positioning: "For most workloads, start with the latest Claude Opus model … and move to Claude Fable 5.2 when your evals on a Claude Opus model at higher effort still don't meet your requirements."
+Anthropic's positioning, from What's new: "For most workloads, start with the latest Claude Opus model … and move to Claude Fable 5.2 when your evals on a Claude Opus model at higher effort still don't meet your requirements."
 
 Make system-prompt, notes, and tool-description changes in new conversations only. Fable 5.2 enforces the preserved-thinking prefix check for every account, so a stored conversation resumed with edited `system`, `tools`, or earlier messages can return a 400 error. To change instructions partway through, put them in the newest turn, or append a mid-conversation system message where the platform supports one.
 
 ## When effort is uncalibrated or easy requests take too long
 
-Observed behavior: at `high` and above the model "thinks before almost every reply, including a reply to a greeting." An instruction to answer directly without deliberating "didn't stop the model from thinking at `medium` and above." Effort "barely changes how long the model's replies are."
+Observed behavior: at `high` and above the model "thinks before almost every reply, including a reply to a greeting." An instruction to answer directly without deliberating "didn't stop the model from thinking at `medium` and above." "Effort has little effect on the length of assistant turn responses."
 
-Prompt adjustment: start at `high`, the API default, and rerun the effort sweep "instead of carrying over a setting you tuned on Claude Fable 5.1 or Claude Opus 5.5." Use `low` for well-specified, high-volume work such as fast subagents; `medium` for interactive coding, chat, and everyday knowledge work; `high` for hard coding, research, agentic work, and long unattended runs; `xhigh` only "where you've measured a gain"; `max` to measure the ceiling. Move down to `medium` wherever evals show quality holds. Lower effort for easy turns instead of adding "think less" text, and control reply length and tone with the prompt.
+Prompt adjustment: start at `high`, the API default, and rerun the effort sweep "rather than carrying over a setting you tuned on Claude Fable 5.1 or Claude Opus 5.5." Use `low` for quick back-and-forth, well-specified, high-volume work such as fast subagents (on coding evaluations Fable 5.2 does better at `low` than past models did); `medium` for interactive coding, chat, and everyday knowledge work; `high` for hard coding, research, agentic work, and long unattended runs; `xhigh` only "where you've measured a gain"; `max` to measure the ceiling. Move down to `medium` wherever evals show quality holds. Lower effort for easy turns instead of adding "think less" text, and control reply length and tone with the prompt.
 
 Caveats: Opus 5.5 defaults to `medium`, so a migrated request that omits `effort` runs one level higher; set it explicitly. Lower effort makes early stops more likely (see the next section). A per-message effort change (beta) keeps the prompt cache and holds until another change replaces it; a new top-level `effort` value starts the cache over.
 
@@ -39,7 +39,7 @@ Caveats: in Anthropic's replay at `medium`, about half as many sessions ended wi
 
 Observed behavior: the model applies approval rules as written. In a simulated test, a rule listing "sending messages to people outside this conversation" among steps needing approval made it hold back roughly half of its routine requests to colleagues and other teams.
 
-Prompt adjustment: when approving, say what you want ("Yes, run the migration on the staging database") instead of "go" or a thumbs-up. In the system prompt, "name the exact actions they cover." Write any exception into the rule itself: a rule that said to get a go-ahead first led the model to take an approved step in about nine tries in ten, while a separate line saying an approved step has its go-ahead barely moved a "never" rule's one in ten.
+Prompt adjustment: when approving, say what you want ("Yes, run the migration on the staging database") instead of "go" or a thumbs-up. In the system prompt, "be specific about the actions you want double-checked," and write any exception into the rule itself (see the caution section below).
 
 ## When a coding agent repeats code or reports nearby problems without fixing them
 
@@ -50,10 +50,10 @@ Prompt adjustment: only where the agent owns the code and should improve its str
 Anthropic template:
 
 ```text
-This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
+You are the owner and long-term maintainer of this codebase, and its design is up to you.
 ```
 
-Caveats: with this sentence, Anthropic saw repeated code merged in about half of tries versus under a tenth without it, about 1.5 times the output tokens, unrequested tests and documentation, and a changed existing behavior in one try in six to ten. The closing summary often omitted small changes, so "review the diff and not only the summary." Leave the sentence out where the user owns the code and wants minimal change; a "No drive-by refactors" rule elsewhere in the prompt does not cancel it.
+Caveats: the sentence makes the model much more likely to consolidate duplicated code into one shared function: Anthropic saw it in about 75 percent of runs with the sentence and under 10 percent without. Output tokens rose by about 70 to 80 percent, the model made unrequested changes (many of them new tests and documentation), and in some runs it changed how an existing feature behaves. The closing summary often omitted small changes, so "review the reported diff and the summary." Leave the sentence out where the user owns the code and wants minimal change. A scope rule does not cancel it: with "No drive-by refactors, renames or cleanups" earlier in the same prompt, the model still consolidated duplicated code in more than half of runs.
 
 ## When long agentic turns look silent
 
@@ -79,35 +79,35 @@ Prompt adjustment: first fix the client, not the prompt. Fable 5.2's between-cal
   Every few tool calls, give the user a one-line update on where things stand.
   ```
 
-Caveats: the reminder roughly halved the longest silent stretch with no noticeable token increase; leave each reminder in `messages` on later requests, because removing or rewording one invalidates the thinking blocks after it. The opening-and-recap text raised output tokens by roughly 20 percent; use it only where a human is in the loop. Expect several tool calls between updates even with all three. For asynchronous tasks where the user returns for the result, gaps matter less.
+Caveats: the reminder roughly halved the longest silent stretch with no noticeable token increase; leave each reminder in `messages` on later requests, because removing or rewording one invalidates the thinking blocks after it. The opening-and-recap text raised output tokens by roughly 20 percent; use it only where a human is in the loop. Expect several tool calls between updates even with all three. For asynchronous tasks where the user returns for the result, gaps matter less; Anthropic recommends the model for long-running work where nobody needs frequent updates.
 
 ## When the agent starts more subagents than the task needs
 
 Observed behavior: delegation depends on the harness. With a minimal spawn tool on short tasks the model rarely delegates; with prompts that invite delegation it delegates readily. At `xhigh` and `max` it may use subagents to review its own work.
 
-Prompt adjustment: review standing "delegate" lines in system prompts, skills, and agent files before changing anything else. Rewrite the spawn tool's description only if over-delegation persists: state what a subagent adds to session cost first, then when delegation is and is not worth it, then how to brief the subagent. Anthropic saw about a third less delegation than with a description that mostly listed reasons to delegate, with the same task success. Say less about cost if the model then delegates too little.
+Prompt adjustment: review standing "delegate" lines in system prompts, skills, and agent files before changing anything else. Rewrite the spawn tool's description only if over-delegation persists: state what a subagent adds to session cost first, then when delegation is and is not worth it, then how to brief the subagent. If the model still delegates too much, say more about what a subagent costs and test the change: at `high` effort, a longer description focused on this roughly halved the number of subagents compared to a shorter version. Adapt the description to your requirements and to when it tells the model to delegate.
 
-Caveats: subagents can be a large share of session cost, so "check which model your harness runs subagents on by default."
+Caveats: subagents can be a large share of session cost, so "check which model your subagents use by default." Early testers had good results with Fable 5.2 as the planner and orchestrator for other models.
 
 ## When the agent asks for approvals it does not need or holds back routine work
 
-Observed behavior: cautious instructions accumulate in memory, notes, instruction files, and messages between agents, and Fable 5.2 follows them closely, mostly where several agents work together.
+Observed behavior: cautious instructions build up from past sessions through memory, notes, and instruction files, and Fable 5.2 follows them closely and asks for approvals it does not need, mostly where several agents work together.
 
 Prompt adjustment:
 
-- Remove notes you no longer need. One stale "never retry" note among a dozen cut retries after a busy tool to about four in ten.
-- Name the steps that need no approval. Listing retries raised them from almost none to about half; "a general instruction to act more freely changed nothing." Name retries only for calls that are safe to repeat.
-- Check what reviewer agents attach. Even with retries named as needing no approval, a reviewer's "stop at the first error" in context left the model not retrying in about a third of tries.
-- Write the exception into the rule (see the approvals section above).
+- Remove notes you no longer need. Memory can hold old instructions such as "never retry" that the model keeps following.
+- Name the steps that need no approval. "Telling the model to act more freely is too vague," so list the routine steps it can take on its own.
+- Check your validation steps. A condition such as "stop and review at the first error" can block autonomous work; remove or narrow the stopping conditions you do not need.
+- Be explicit about exceptions. The model treats an instruction containing "never" as absolute: write "ask for approval before deleting files" instead of "never delete files" when the model should keep responsibility for the action.
 
 Caveats: keep your own confirmation step for risky or irreversible actions.
 
-## When carrying over prompts written for Fable 5.1 or Opus 5.5
+## When carrying over prompts and harnesses designed for Fable 5.1 or Opus 5.5
 
 Review and test these before migrating:
 
 - Standing delegation lines (see above).
-- A token budget the harness writes into the prompt. Removing a large budget lowered cost with equivalent performance at `high` and `xhigh`. This is prompt text, not the API's task budgets.
+- A token budget shown to the model. Removing a large budget lowered cost with equivalent performance at `high` and `xhigh`. This is prompt text, not the API's task budgets.
 - Harness code that edits earlier turns. Keep history append-only apart from compaction and context editing; edits invalidate later thinking blocks.
 - Opus 5.5's "treat that answer as done" chat lines. They reduced thinking on follow-ups, but the model "became far less likely to point out mistakes in its earlier answers." Leave them out where re-examination matters.
 - Instructions to think less. Remove them and lower effort instead.
@@ -129,11 +129,11 @@ Write for an intelligent but low-context reader. The person reading has not seen
 Use plain words, and write in clear, understandable full sentences. Do not use a term or abbreviation that you made up during the work. Say what the thing is in a way any reader would understand. Write mostly in the style of ASD-STE100 Simplified Technical English: short sentences, one idea per sentence, active voice, and consistently using the same word for the same thing. Use a paragraph of flowing prose where ideas connect, and keep bullets for lists of separate items. Leave out unnecessary details unless the reader asks and practice concision, but do ensure that your messages have the key context. Aim to make your user-facing text as human-readable and clear as possible.
 ```
 
-Caveats: Anthropic saw less dense reports with fewer semicolons. Remove old hard style rules before adding it. Add length or required-detail instructions separately.
+Caveats: early testers rated Fable 5.2's writing above Fable 5.1's and similar in clarity to Opus 5.5's. With this text Anthropic saw less dense reports with fewer semicolons, and shorter sentences on workflow automation tasks. Remove old hard style rules before adding it. Add length or required-detail instructions separately.
 
 ## When requests are refused
 
-Fable 5.2's classifiers return `stop_reason: "refusal"` with a category: `cyber`, `bio`, `frontier_llm`, `reasoning_extraction`, or `general_harms`. If prompts, skills, or tool descriptions ask the model to write its reasoning in the response, remove those instructions; read summarized thinking blocks instead. Server-side fallback does not retry `reasoning_extraction` refusals. For legitimate cybersecurity or life-sciences work that classifiers block, Anthropic points to its verification programs. Do not add prompt text to work around safeguards.
+Fable 5.2's classifiers return `stop_reason: "refusal"` with a category: `cyber`, `bio`, `frontier_llm`, `reasoning_extraction`, `general_harms`, or `null` when the refusal maps to no named category. If prompts, skills, or tool descriptions ask the model to write its reasoning in the response, remove those instructions; read summarized thinking blocks instead. Server-side fallback does not retry `reasoning_extraction` refusals. For legitimate cybersecurity or life-sciences work that classifiers block, Anthropic points to its verification programs. Do not add prompt text to work around safeguards.
 
 ## Validate in this order
 
