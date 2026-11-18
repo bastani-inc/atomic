@@ -122,7 +122,6 @@ describe("selector and composer rule regressions (#5224)", () => {
 		const styledText = `\x1b[1m${plainText}\x1b[22m`;
 		const rule = renderComposerRule(42, {
 			color: (text) => text,
-			heavy: true,
 			label: { plain: plainText, styled: styledText },
 		});
 		assert.equal(visibleWidth(rule), 42);

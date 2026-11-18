@@ -225,7 +225,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// Keep the transcript in its own viewport and reserve the bottom chrome in a
 	// fixed dock for the fullscreen renderer. The same components also feed the
 	// internal main-screen fallback used for guarded terminal paths.
-	this.renderWidgets(); // Initialize with default spacer
+	this.renderWidgets(); // Initialize the widget containers
 	this.transcriptScrollView = new ScrollView(this.documentContainer, {
 		follow: "end",
 		primary: true,

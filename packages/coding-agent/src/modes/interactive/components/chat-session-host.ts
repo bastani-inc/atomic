@@ -22,7 +22,11 @@ import {
 	hasChatSessionTransientModal,
 	setChatSessionEditorText,
 } from "./chat-session-host-editor.ts";
-import { applyChatSessionAgentEvent, compactionStatusMessage } from "./chat-session-host-events.ts";
+import {
+	applyChatSessionAgentEvent,
+	compactionStatusMessage,
+	showChatSessionRetryWait,
+} from "./chat-session-host-events.ts";
 import {
 	chatSessionWorkingMeta,
 	dropExpandedOverrides,
@@ -391,6 +395,18 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.requestRender?.();
 	}
 
+	/**
+	 * Show the retry wait of a session this host attached to after its `auto_retry_start`: a session between two
+	 * attempts streams nothing, so a running turn's hydration shows none of it. The wait reads as that event shows it
+	 * and ends as it does, with the next attempt's `agent_start` or the retry's `auto_retry_end`.
+	 */
+	hydrateRetryWait(): void {
+		if (this.state.disposed) return;
+		showChatSessionRetryWait(this.state);
+		this.syncAnimationTick();
+		this.state.requestRender?.();
+	}
+
 	render(width: number): string[] {
 		return this.renderBody(width, 1);
 	}
@@ -461,6 +477,15 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	renderUsage(width: number): string[] {
 		return renderChatSessionUsage(this.state, width);
+	}
+
+	/**
+	 * The one row between the chat's working status and its composer: the usage meter, or a blank row when the chat has
+	 * no usage to show, so the status never sits on the composer's top rule and the transcript never runs into it.
+	 */
+	renderUsageRow(width: number): string[] {
+		const usage = this.renderUsage(width);
+		return usage.length > 0 ? usage : [""];
 	}
 
 	renderEditor(width: number): string[] {
