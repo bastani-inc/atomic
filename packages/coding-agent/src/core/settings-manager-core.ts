@@ -73,6 +73,11 @@ interface UnsavedWrite {
 	/** The keys this write still has to save. */
 	readonly keys: Set<SettingsKey>;
 	/**
+	 * For a setting this write saves whole, the keys of it a newer write saved: this write leaves those as the file has
+	 * them.
+	 */
+	readonly kept: Map<string, Set<string>>;
+	/**
 	 * The write gave up because something kept saving the file without the lock, such as an editor. It stays unsaved:
 	 * the next `flush()` tries it again, and so does the save at exit, which reports it on stderr when it fails again.
 	 */
@@ -673,19 +678,24 @@ export class SettingsManager {
 		this.modifiedProjectNestedFields.clear();
 	}
 
-	/** Queue a write of `keys`; `makePersist` writes only the keys still held in the set it is given. */
+	/**
+	 * Queue a write of `keys`; `makePersist` writes only the keys still held in the set it is given, and of a setting it
+	 * saves whole, leaves the keys in `kept` as the file has them.
+	 */
 	private enqueueWrite(
 		scope: SettingsScope,
 		keys: Iterable<SettingsKey>,
-		makePersist: (keys: ReadonlySet<SettingsKey>) => PersistSettings,
+		makePersist: (keys: ReadonlySet<SettingsKey>, kept: ReadonlyMap<string, ReadonlySet<string>>) => PersistSettings,
 	): void {
 		const held = new Set(keys);
+		const kept = new Map<string, Set<string>>();
 		const unsaved: UnsavedWrite = {
 			manager: this,
 			scope,
-			persist: makePersist(held),
+			persist: makePersist(held, kept),
 			sequence: ++unsavedWriteSequence,
 			keys: held,
+			kept,
 		};
 		unsavedWrites.push(unsaved);
 		if (!exitSaveRegistered) {
@@ -717,7 +727,7 @@ export class SettingsManager {
 					(write) =>
 						write.manager === this && write.scope === scope && write.gaveUp && write.sequence < unsaved.sequence,
 				)) {
-					for (const key of [...earlier.keys]) if (savedBy(written, key)) earlier.keys.delete(key);
+					SettingsManager.yieldSavedKeys(earlier, written);
 					if (earlier.keys.size === 0) unsavedWrites.splice(unsavedWrites.indexOf(earlier), 1);
 				}
 			})
@@ -731,6 +741,27 @@ export class SettingsManager {
 				const index = unsavedWrites.indexOf(unsaved);
 				if (index >= 0) unsavedWrites.splice(index, 1);
 			});
+	}
+
+	/**
+	 * An older write gives up what a newer one saved: a key the newer write saved, or covered by a setting it saved
+	 * whole; and of a setting the older write saves whole, the keys of it the newer write saved, which it then leaves
+	 * as the file has them.
+	 */
+	private static yieldSavedKeys(earlier: UnsavedWrite, written: ReadonlySet<SettingsKey>): void {
+		for (const key of [...earlier.keys]) {
+			if (savedBy(written, key)) {
+				earlier.keys.delete(key);
+				continue;
+			}
+			if (key.includes("\0")) continue;
+			for (const savedKey of written) {
+				if (!savedKey.startsWith(`${key}\0`)) continue;
+				const kept = earlier.kept.get(key) ?? new Set<string>();
+				kept.add(savedKey.slice(key.length + 1));
+				earlier.kept.set(key, kept);
+			}
+		}
 	}
 
 	private static saveUnsavedWritesAtExit(): void {
@@ -779,74 +810,92 @@ export class SettingsManager {
 			if (nested === undefined) keys.push(field);
 			else for (const key of nested) if (!isPrototypeKey(key)) keys.push(nestedKey(field, key));
 		}
-		const makePersist = (held: ReadonlySet<SettingsKey>) => (currentPrimary: string | undefined) => {
-			const { saved, migrated: currentFileSettings } = SettingsManager.readSavedFile(currentPrimary);
-			const mergedSettings = { ...saved } as Settings;
-			const writtenFields = new Set<string>();
-			for (const field of modifiedFields) {
-				if (isPrototypeKey(field)) continue;
-				const value = snapshotSettings[field];
-				if (modifiedNestedFields.has(field)) {
-					const nestedModified = [...modifiedNestedFields.get(field)!].filter((key) =>
-						held.has(nestedKey(field, key)),
-					);
-					if (nestedModified.length === 0) continue;
-					writtenFields.add(field);
-					const inMemoryNested = nestedEntries(field, value);
-					const mergedNested = { ...nestedEntries(field, currentFileSettings[field]) };
-					for (const nestedKey of nestedModified) {
-						if (isPrototypeKey(nestedKey)) continue;
-						mergedNested[nestedKey] = Object.hasOwn(inMemoryNested, nestedKey)
-							? inMemoryNested[nestedKey]
-							: undefined;
-					}
-					const keys = Object.keys(mergedNested).filter((key) => mergedNested[key] !== undefined);
-					// Keep list-form workflow paths a list, and drop an object the setter removed once nothing is left in it.
-					(mergedSettings as Record<string, unknown>)[field] =
-						Array.isArray(value) && keys.length === 1 && keys[0] === "paths"
-							? mergedNested.paths
-							: value === undefined && keys.length === 0
+		const makePersist =
+			(held: ReadonlySet<SettingsKey>, kept: ReadonlyMap<string, ReadonlySet<string>>) =>
+			(currentPrimary: string | undefined) => {
+				const { raw, saved, migrated: currentFileSettings } = SettingsManager.readSavedFile(currentPrimary);
+				const mergedSettings = { ...saved } as Settings;
+				const writtenFields = new Set<string>();
+				for (const field of modifiedFields) {
+					if (isPrototypeKey(field)) continue;
+					const value = snapshotSettings[field];
+					if (modifiedNestedFields.has(field)) {
+						const nestedModified = [...modifiedNestedFields.get(field)!].filter((key) =>
+							held.has(nestedKey(field, key)),
+						);
+						if (nestedModified.length === 0) continue;
+						writtenFields.add(field);
+						const inMemoryNested = nestedEntries(field, value);
+						const mergedNested = { ...nestedEntries(field, currentFileSettings[field]) };
+						for (const nestedKey of nestedModified) {
+							if (isPrototypeKey(nestedKey)) continue;
+							mergedNested[nestedKey] = Object.hasOwn(inMemoryNested, nestedKey)
+								? inMemoryNested[nestedKey]
+								: undefined;
+						}
+						const keys = Object.keys(mergedNested).filter((key) => mergedNested[key] !== undefined);
+						// Keep list-form workflow paths a list, and drop an object the setter removed once nothing is left in it.
+						(mergedSettings as Record<string, unknown>)[field] =
+							Array.isArray(value) && keys.length === 1 && keys[0] === "paths"
+								? mergedNested.paths
+								: value === undefined && keys.length === 0
+									? undefined
+									: mergedNested;
+					} else {
+						if (!held.has(field)) continue;
+						writtenFields.add(field);
+						const keptKeys = kept.get(field);
+						if (keptKeys === undefined || keptKeys.size === 0) {
+							(mergedSettings as Record<string, unknown>)[field] = value;
+							continue;
+						}
+						// A newer write saved some keys of this setting: they stay as the file has them.
+						const fromFile = nestedEntries(field, currentFileSettings[field]);
+						const mergedNested = { ...nestedEntries(field, value) };
+						for (const key of keptKeys) mergedNested[key] = fromFile[key];
+						const present = Object.keys(mergedNested).filter((key) => mergedNested[key] !== undefined);
+						(mergedSettings as Record<string, unknown>)[field] =
+							present.length === 0
 								? undefined
-								: mergedNested;
-				} else {
-					if (!held.has(field)) continue;
-					writtenFields.add(field);
-					(mergedSettings as Record<string, unknown>)[field] = value;
+								: Object.fromEntries(present.map((key) => [key, mergedNested[key]]));
+					}
 				}
-			}
 
-			return JSON.stringify(
-				SettingsManager.keepDerivedSettings(
-					mergedSettings as Record<string, unknown>,
-					currentFileSettings,
-					writtenFields,
-				),
-				null,
-				2,
-			);
-		};
+				return JSON.stringify(
+					SettingsManager.keepDerivedSettings(mergedSettings as Record<string, unknown>, raw, writtenFields),
+					null,
+					2,
+				);
+			};
 
 		this.enqueueWrite(scope, keys, makePersist);
 	}
 
 	/**
-	 * Keep what loading derived from a legacy key that `next` no longer holds as it was: a save that replaces a legacy
-	 * form, such as the `skills` object that also carried `enableSkillCommands`, writes the migrated form of every other
-	 * value that legacy form held, so no setting the save did not change changes.
+	 * Keep every setting the save did not change: compared as loading reads them, with wrong-typed values dropped and
+	 * legacy forms migrated, any other setting whose value would change is written in its current form. A save that
+	 * replaces a legacy form, such as the `skills` object that also carried `enableSkillCommands`, so writes the other
+	 * values that form held. A key the save leaves on disk stays, even when loading ignores it.
 	 */
 	private static keepDerivedSettings(
 		next: Record<string, unknown>,
-		current: Settings,
+		currentRaw: Record<string, unknown>,
 		writtenFields: ReadonlySet<string>,
 	): Record<string, unknown> {
-		const loaded = SettingsManager.migrateSettings(structuredClone(next), { quiet: true }) as Record<string, unknown>;
-		const before = current as Record<string, unknown>;
+		const before = SettingsManager.effectiveFileSettings(currentRaw);
+		const after = SettingsManager.effectiveFileSettings(next);
 		for (const field of Object.keys(before)) {
-			// Only values loading derived are restored: a key the save left on disk stays, even when loading now ignores it.
 			if (writtenFields.has(field) || isPrototypeKey(field) || before[field] === undefined) continue;
-			if (!isDeepStrictEqual(loaded[field], before[field])) next[field] = structuredClone(before[field]);
+			if (!isDeepStrictEqual(after[field], before[field])) next[field] = structuredClone(before[field]);
 		}
 		return next;
+	}
+
+	/** A settings file's settings as loading reads them: wrong-typed values dropped, then legacy forms migrated. */
+	private static effectiveFileSettings(raw: Record<string, unknown>): Record<string, unknown> {
+		const settings = structuredClone(raw) as Parameters<typeof dropWrongTypedSettings>[0];
+		dropWrongTypedSettings(settings);
+		return SettingsManager.migrateSettings(settings, { quiet: true }) as Record<string, unknown>;
 	}
 
 	/**
@@ -855,13 +904,14 @@ export class SettingsManager {
 	 * save rewrites only the fields it changes, so it never drops a key the user saved.
 	 */
 	private static readSavedFile(currentPrimary: string | undefined): {
+		raw: Record<string, unknown>;
 		saved: Record<string, unknown>;
 		migrated: Settings;
 	} {
 		const raw = currentPrimary ? (parseJsonFileContent(currentPrimary) as Record<string, unknown>) : {};
 		const migrated = SettingsManager.migrateSettings(structuredClone(raw), { quiet: true });
 		const { modelRouting: _removed, ...saved } = raw;
-		return { saved, migrated };
+		return { raw, saved, migrated };
 	}
 
 	private static async writePrimary(
@@ -919,12 +969,12 @@ export class SettingsManager {
 
 		const makePersist = (held: ReadonlySet<SettingsKey>) => (currentPrimary: string | undefined) => {
 			if (!held.has("packages")) return undefined;
-			const { saved, migrated } = SettingsManager.readSavedFile(currentPrimary);
+			const { raw, saved, migrated } = SettingsManager.readSavedFile(currentPrimary);
 			const filePackages = update(migrated.packages ?? []);
 			if (filePackages === undefined) return undefined;
 			const next = SettingsManager.keepDerivedSettings(
 				{ ...saved, packages: filePackages },
-				migrated,
+				raw,
 				new Set(["packages"]),
 			);
 			return JSON.stringify(next, null, 2);

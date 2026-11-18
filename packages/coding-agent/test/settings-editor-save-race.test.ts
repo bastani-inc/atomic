@@ -274,6 +274,55 @@ describe("a save that gave up to an editor keeps the keys no later save saved", 
 		assert.deepEqual(saved.packages, ["npm:example"]);
 	});
 
+	it("keeps a newer sessions storage when an older save that removed the whole setting is retried", async () => {
+		writeFileSync(path(), JSON.stringify({ sessions: { storage: { path: "mine.sqlite" } } }));
+		const manager = SettingsManager.fromStorage(new EditorSavesDuringFirstWrite(join(root, "project"), agentDir));
+		manager.setStorageLayout({ sessionsStorage: undefined });
+		manager.updatePackages("global", () => ["npm:example"]);
+		manager.setStorageLayout({ sessionsStorage: { path: "restored.sqlite" } });
+		await manager.flush();
+		await manager.flush();
+		assert.deepEqual(readSaved().sessions, { storage: { path: "restored.sqlite" } }, "the restored setting stays");
+		assert.deepEqual(manager.getGlobalSettings().sessions, { storage: { path: "restored.sqlite" } });
+	});
+
+	it("keeps the rest of a whole setting an older save wrote when a newer save wrote one key of it", async () => {
+		writeFileSync(path(), JSON.stringify({ retry: { enabled: true } }));
+		const manager = SettingsManager.fromStorage(new EditorSavesDuringFirstWrite(join(root, "project"), agentDir));
+		const internals = manager as unknown as {
+			globalSettings: Record<string, unknown>;
+			markModified(field: string, key?: string): void;
+			save(): void;
+		};
+		internals.globalSettings.retry = { enabled: false, maxRetries: 7 };
+		internals.markModified("retry");
+		internals.save();
+		manager.updatePackages("global", () => ["npm:example"]);
+		internals.globalSettings.retry = { enabled: true, maxRetries: 7 };
+		internals.markModified("retry", "enabled");
+		internals.save();
+		await manager.flush();
+		assert.deepEqual(readSaved().retry, { enabled: true, maxRetries: 7 });
+	});
+
+	it("does not bring back a key a newer save of the whole setting removed", async () => {
+		writeFileSync(path(), JSON.stringify({ sessions: { storage: { path: "mine.sqlite" } } }));
+		const manager = SettingsManager.fromStorage(new EditorSavesDuringFirstWrite(join(root, "project"), agentDir));
+		const internals = manager as unknown as {
+			globalSettings: Record<string, unknown>;
+			markModified(field: string, key?: string): void;
+			save(): void;
+		};
+		internals.globalSettings.sessions = { storage: { path: "other.sqlite" } };
+		internals.markModified("sessions", "storage");
+		internals.save();
+		manager.updatePackages("global", () => ["npm:example"]);
+		manager.setStorageLayout({ sessionsStorage: undefined });
+		await manager.flush();
+		await manager.flush();
+		assert.equal(readSaved().sessions, undefined, "the newer removal stands");
+	});
+
 	it("does not save an older theme over a newer one a later save already saved", async () => {
 		const manager = SettingsManager.fromStorage(new EditorSavesDuringFirstWrite(join(root, "project"), agentDir));
 		manager.setTheme("solarized");
@@ -293,6 +342,32 @@ describe("a save keeps the keys it does not change exactly as they are on disk",
 			writeFileSync(path, JSON.stringify({ skills: { customDirectories: ["./old"], enableSkillCommands: false } }));
 			const manager = SettingsManager.create(join(root, "project"), agentDir);
 			assert.equal(manager.getEnableSkillCommands(), false);
+			manager.setSkillPaths(["./new"]);
+			await manager.flush();
+			const reloaded = SettingsManager.create(join(root, "project"), agentDir);
+			assert.equal(reloaded.getEnableSkillCommands(), false, "skill commands stay off");
+			assert.deepEqual(reloaded.getSkillPaths(), ["./new"]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps skill commands off when a legacy skills object said so and the top-level value has the wrong type", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-settings-legacy-skills-typed-"));
+		try {
+			const agentDir = join(root, "agent");
+			mkdirSync(agentDir, { recursive: true });
+			const path = join(agentDir, "settings.json");
+			writeFileSync(
+				path,
+				JSON.stringify({
+					enableSkillCommands: "no",
+					skills: { customDirectories: ["./old"], enableSkillCommands: false },
+				}),
+			);
+			const manager = SettingsManager.create(join(root, "project"), agentDir);
+			assert.equal(manager.getEnableSkillCommands(), false);
+			manager.drainErrors();
 			manager.setSkillPaths(["./new"]);
 			await manager.flush();
 			const reloaded = SettingsManager.create(join(root, "project"), agentDir);
