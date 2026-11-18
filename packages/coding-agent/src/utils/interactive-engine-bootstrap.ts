@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "no
 import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SessionTrustDecisions } from "../core/project-trust-state.ts";
 
 /**
  * Private startup channel for the isolated interactive engine.
@@ -37,6 +38,8 @@ export interface InteractiveEngineBootstrap {
 	hostPid: number;
 	guardFile: string;
 	apiKey?: string;
+	/** Trust decisions the host session already made; never saved to trust.json. */
+	trustDecisions?: SessionTrustDecisions;
 }
 
 /**
@@ -155,13 +158,37 @@ export function readInteractiveEngineBootstrap(path: string): InteractiveEngineB
 		const parsed = JSON.parse(raw) as Partial<InteractiveEngineBootstrap>;
 		if (parsed.version !== INTERACTIVE_ENGINE_BOOTSTRAP_VERSION) return undefined;
 		if (typeof parsed.hostPid !== "number" || typeof parsed.guardFile !== "string") return undefined;
+		const trustDecisions = readTrustDecisions(parsed.trustDecisions);
 		return {
 			version: parsed.version,
 			hostPid: parsed.hostPid,
 			guardFile: parsed.guardFile,
 			...(typeof parsed.apiKey === "string" ? { apiKey: parsed.apiKey } : {}),
+			...(trustDecisions ? { trustDecisions } : {}),
 		};
 	} catch {
 		return undefined;
 	}
+}
+
+/** The trust decisions of a bootstrap record: only true or false values by path; anything else is left out. */
+function readTrustDecisions(value: unknown): SessionTrustDecisions | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const record = value as Record<string, unknown>;
+	const decisions = {
+		projects: readDecisions(record.projects),
+		extensionSources: readDecisions(record.extensionSources),
+	};
+	return Object.keys(decisions.projects).length + Object.keys(decisions.extensionSources).length > 0
+		? decisions
+		: undefined;
+}
+
+function readDecisions(value: unknown): Record<string, boolean> {
+	const decisions: Record<string, boolean> = {};
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return decisions;
+	for (const [path, trusted] of Object.entries(value)) {
+		if (typeof trusted === "boolean") decisions[path] = trusted;
+	}
+	return decisions;
 }

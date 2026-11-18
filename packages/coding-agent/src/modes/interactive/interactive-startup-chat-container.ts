@@ -24,7 +24,10 @@ export class StartupChatContainer extends WindowedContainer {
 		this.transcriptView = transcriptView;
 	}
 
-	/** A click on the header of a tool block, grouped-call summary or agent card expands or collapses it. */
+	/**
+	 * A click anywhere on a block Ctrl+O expands, such as a tool call, a grouped-call summary or a message card, expands
+	 * or collapses it once the click cannot become a double-click.
+	 */
 	override handleMouse(event: TuiMouseEvent): ContainerMouseResult {
 		if (event.type === "click") {
 			const handled = handleTranscriptBlockClick(

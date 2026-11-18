@@ -999,6 +999,8 @@ test("warnings emitted during deferred startup survive rebuildChatFromMessages i
 			getLeafId: () => undefined,
 		},
 	});
+	// A redraw shows the untrusted-project warning when it applies; this session is trusted.
+	Object.defineProperty(fakeMode, "settingsManager", { value: { isProjectTrusted: () => true } });
 	fakeMode.renderSessionEntries = () => {};
 
 	fakeMode.showExtensionNotify("Agent panel: a source failed: boom", "warning");

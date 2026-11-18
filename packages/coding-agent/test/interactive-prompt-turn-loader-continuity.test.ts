@@ -47,6 +47,7 @@ type PromptTurnContext = {
 	rebuildChatFromMessages: () => void;
 	discardDeferredRenderedUserInput: (text: string) => void;
 	showError: (message: string) => void;
+	refreshProjectTrustWarning: () => void;
 	ui: { requestRender: () => void };
 	createWorkingLoader: () => WorkingLoader;
 	stopWorkingLoader: () => void;
@@ -120,6 +121,7 @@ function createContext(overrides: {
 		rebuildChatFromMessages: vi.fn(),
 		discardDeferredRenderedUserInput: vi.fn(),
 		showError: vi.fn(),
+		refreshProjectTrustWarning: vi.fn(),
 		startSessionRecovery: vi.fn(),
 		ui: { requestRender: vi.fn() },
 		createWorkingLoader: vi.fn(() => {

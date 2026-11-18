@@ -135,7 +135,11 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	onNearTop?: () => void;
 	getCwd?: () => string;
 	footerData?: ReadonlyFooterDataProvider;
-	renderExtraEntry?: (entry: TExtraEntry) => Component;
+	/**
+	 * Draws an entry the host does not know. `expanded` is set when a click expanded or collapsed this entry, which then
+	 * differs from the chat's tool-output setting.
+	 */
+	renderExtraEntry?: (entry: TExtraEntry, expanded?: boolean) => Component;
 	countsAsMessage?: (entry: TExtraEntry) => boolean;
 }
 
