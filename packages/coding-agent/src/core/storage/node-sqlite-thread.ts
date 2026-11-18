@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from "node:timers";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { SqliteRow, SqliteValue } from "./database.js";
@@ -522,7 +523,7 @@ function startSpare(): void {
 
 /** Stops the thread started ahead of the next open, if there is one; the next open starts its own. */
 export async function stopSpareConnectionThread(): Promise<void> {
-	clearTimeout(idleStop);
+	clearNodeTimeout(idleStop);
 	idleStop = undefined;
 	const stopping = spare;
 	spare = undefined;
@@ -586,9 +587,9 @@ export class ThreadConnection {
 				: connectionFailure(booted.failure);
 		}
 		const connection = new ThreadConnection(path, thread.worker);
-		thread.worker.postMessage({ kind: "open", path: options.openAs ?? path, readOnly: options.readOnly });
 		let location: string | null;
 		try {
+			thread.worker.postMessage({ kind: "open", path: options.openAs ?? path, readOnly: options.readOnly });
 			location = await connection.opened;
 		} catch (error) {
 			await thread.worker.terminate();
@@ -596,7 +597,7 @@ export class ThreadConnection {
 		}
 		connection.counted = true;
 		openConnections += 1;
-		clearTimeout(idleStop);
+		clearNodeTimeout(idleStop);
 		idleStop = undefined;
 		startSpare();
 		return { connection, location };
@@ -608,8 +609,9 @@ export class ThreadConnection {
 		this.counted = false;
 		openConnections -= 1;
 		if (openConnections > 0 || spare === undefined) return;
-		clearTimeout(idleStop);
-		idleStop = setTimeout(() => void stopSpareConnectionThread(), SPARE_THREAD_IDLE_MS);
+		clearNodeTimeout(idleStop);
+		// Housekeeping in real time: a caller's fake clock neither runs nor counts it.
+		idleStop = setNodeTimeout(() => void stopSpareConnectionThread(), SPARE_THREAD_IDLE_MS);
 		idleStop.unref();
 	}
 
