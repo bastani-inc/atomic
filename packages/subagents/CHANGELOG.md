@@ -2,8 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The bundled `tdd` skill now names tautological tests, whose expected value is recomputed the way the code computes it, as an anti-pattern, with a checklist item and an example, from its upstream skill. Its frontmatter and a new `LICENSE.txt` credit the two MIT-licensed skills it is adapted from.
+- The bundled `qlty` skill's references follow the current Qlty documentation (CLI v0.671.0): `--skip`, `plugin:rule` filters and `--trigger` for `check` and `fmt`, `--install-only` and `--skip-source-fetch`, `--sarif` for `smells`, and the integrity verification steps, which need `gh` 2.67.0 or later because older versions can report success when no matching attestation is found.
+
 ### Fixed
 
+- The bundled tmux skill's helper scripts carry the upstream fixes since they were adopted. `find-sessions.sh` shows each session's attached state and start time (it printed a literal `\t`, an empty time and "detached" for every session), counts a session with several clients as attached, matches `-q` literally against session names, and scans hidden sockets with `-A`. `wait-for-text.sh` accepts a zero-padded timeout such as `-T 08`, no longer reports a match when the pane capture fails, rejects an invalid pattern at once instead of waiting out the timeout, and stops checking at the deadline. The skill also shows how to wait for a command's completion marker without matching the echoed command line, and its new `LICENSE.txt` credits OpenClaw's MIT-licensed tmux skill, which the scripts and parts of the skill come from.
 - Fixed a subagent launched with `context: "fork"` failing on its first request with a 400 that says `thinking` blocks in the latest assistant message cannot be modified. The child's copy of the parent's conversation left out the parent's `subagent` calls and their results, which changed turns whose thinking the provider had signed. A forked child now starts from the parent's conversation exactly as the parent would send it, including the turn that launched the child, and only adds messages after it: one result for each tool call of that turn, where its own launching call says which child it is, and then its task. Every child launched from one turn shares that fork point: the tasks of a parallel launch, the children of several `subagent` calls in that turn, and a child that starts later because it waited for a slot or was retried. None of them sees a later turn of the parent ([#5481](https://github.com/bastani-inc/atomic/issues/5481))
 
 ## [0.9.89] - 2026-11-18
