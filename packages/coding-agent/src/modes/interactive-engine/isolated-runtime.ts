@@ -122,6 +122,20 @@ type PendingQueueClear = {
  * rendering, custom UI, and recovery lifecycle stay separate from pi-client's
  * protocol lease lifecycle.
  */
+/** The agent panel counts an engine's panel state carries, as the host's hint line reads them. */
+export function engineAgentPanelCounts(
+	message: Extract<InteractiveEngineMessage, { type: "engine_agent_panel_state" }>,
+): AgentPanelCounts {
+	return {
+		total: message.total,
+		// An engine that predates the agent count counted every row as an agent.
+		agents: message.agents ?? message.total,
+		needsInput: message.needsInput,
+		shells: message.shells ?? 0,
+		subagents: message.subagents ?? 0,
+	};
+}
+
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
 	/** The engine prepares every resume of this session and builds its blueprints; this mirror only restores the same state. */
@@ -276,14 +290,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				return;
 			}
 			if (message.type === "engine_agent_panel_state") {
-				this.panelCounts = {
-					total: message.total,
-					// An engine that predates the agent count counted every row as an agent.
-					agents: message.agents ?? message.total,
-					needsInput: message.needsInput,
-					shells: message.shells ?? 0,
-					subagents: message.subagents ?? 0,
-				};
+				this.panelCounts = engineAgentPanelCounts(message);
 				return;
 			}
 			if (message.type === "engine_extension_ui_reset") {

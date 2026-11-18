@@ -133,7 +133,7 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 	memory.endPass(pass);
 	const listed = [...input, ...running, ...other, ...finished];
 	const total = listed.length;
-	// The chat's own key hint already offers ↓ to its task list, so this line never adds a /tasks pointer.
+	// The chat's own key hint already offers ↓ to its task list, so this line never adds the subagents pointer.
 	const hint = panelHintText(panelHintParts({ total, agents: 0, needsInput: 0 }, shells, 0, true), "");
 	const shellLine =
 		hint.length === 0
