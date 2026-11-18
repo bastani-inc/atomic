@@ -1875,7 +1875,11 @@ PAYLOAD_ROOT=
 # shellcheck disable=SC3013 # -ef compares the physical directories
 if [ "$FORCE_INSTALL" -eq 0 ] && [ -d "$VERSION_PATH" ] && [ ! -L "$VERSION_PATH" ] && payload_is_complete "$VERSION_PATH" &&
     [ "$(sha256_of "$VERSION_PATH/atomic" 2>/dev/null)" = "$LAUNCHER_SHA256" ]; then
-    # A complete copy of this version is already installed: point `current` at it and keep it.
+    # A complete copy of this version, with the release's verified launcher, is already installed: point `current`
+    # at it and keep it. One installed before launcher hashes were recorded gets the record now.
+    if [ ! -f "$VERSION_PATH/$LAUNCHER_RECORD" ]; then
+        printf '%s\n' "$LAUNCHER_SHA256" > "$VERSION_PATH/$LAUNCHER_RECORD" || fail "failed to record the launcher hash"
+    fi
     rm -rf "$VERSION_STAGE"
     VERSION_STAGE=
 elif path_exists "$VERSION_PATH" && [ -n "$MV_NO_FOLLOW" ] && command -v cp >/dev/null 2>&1 &&

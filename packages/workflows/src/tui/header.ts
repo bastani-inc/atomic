@@ -23,7 +23,7 @@
  */
 import { stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { RunSnapshot } from "../shared/store-types.js";
-import { BOLD, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { type RunStateIndicator, runStateColor, runStateIndicator } from "./run-state-indicator.js";
@@ -116,7 +116,7 @@ export function renderOutlinePill(
 	const paddedWidth = visibleWidth(padded);
 	const inner = "─".repeat(paddedWidth);
 	const top = `${chromeBg}${bc}╭${inner}╮${RESET}`;
-	const mid = `${chromeBg}${bc}│${BOLD}${padded}${RESET}${chromeBg}${bc}│${RESET}`;
+	const mid = `${chromeBg}${bc}│${boldOn()}${padded}${RESET}${chromeBg}${bc}│${RESET}`;
 	const bot = `${chromeBg}${bc}╰${inner}╯${RESET}`;
 	return { top, mid, bot, visibleWidth: paddedWidth + 2 };
 }
@@ -148,7 +148,7 @@ export function renderCompactBandHeader(opts: CompactBandHeaderOpts): string[] {
 	const subtitleW = visibleWidth(subtitleVisible);
 	const filler = Math.max(0, width - labelW - subtitleW - rightW - rightEdgePad);
 
-	const labelStyled = `${chromeBg}${accent}${BOLD}${labelVisible}${RESET}${chromeBg}`;
+	const labelStyled = `${chromeBg}${accent}${boldOn()}${labelVisible}${RESET}${chromeBg}`;
 	const subtitleStyled =
 		subtitleText.length > 0 ? `${chromeBg}  ${muted}${subtitleText}${RESET}${chromeBg}` : `${chromeBg}`;
 	const line = `${labelStyled}${subtitleStyled}${" ".repeat(filler)}${rightStyled}${chromeBg}${" ".repeat(rightEdgePad)}${RESET}`;

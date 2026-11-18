@@ -29,7 +29,7 @@
  */
 
 import type { RunStatus, StageStatus } from "../shared/store-types.js";
-import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
@@ -214,7 +214,7 @@ function renderFlatBandThemed(
 	return (
 		`${fillBg}` +
 		" " +
-		`${accent}${BOLD}${labelText}${RESET}${fillBg}` +
+		`${accent}${boldOn()}${labelText}${RESET}${fillBg}` +
 		subtitleStyled +
 		" ".repeat(filler) +
 		badgeSeg +
@@ -306,7 +306,7 @@ function renderTaggedCardThemed(opts: RenderTaggedCardOpts, theme: GraphTheme, w
 	const text = hexToAnsi(theme.text);
 
 	// Row 1:   [tag]  title …            ● running
-	const tagSeg = `${tagBg}${tagFg}${BOLD} ${opts.tag} ${RESET}`;
+	const tagSeg = `${tagBg}${tagFg}${boldOn()} ${opts.tag} ${RESET}`;
 	const tagW = opts.tag.length + 2;
 	const tagSubtitleSeg = opts.tagSubtitle ? `  ${muted}${opts.tagSubtitle}${RESET}` : "";
 	const tagSubtitleW = opts.tagSubtitle ? visibleWidth(opts.tagSubtitle) + 2 : 0;
@@ -335,7 +335,7 @@ function renderTaggedCardThemed(opts: RenderTaggedCardOpts, theme: GraphTheme, w
 
 	const titleVisible = truncateToWidth(opts.title ?? "", titleBudget, ELLIPSIS);
 	const titleW = visibleWidth(titleVisible);
-	const titleSeg = titleVisible ? `  ${text}${BOLD}${titleVisible}${RESET}` : "";
+	const titleSeg = titleVisible ? `  ${text}${boldOn()}${titleVisible}${RESET}` : "";
 	const titleSegW = titleVisible ? titleW + 2 : 0;
 
 	// `titleSuffix` rides row 1 after the bold title. Caller pre-styles

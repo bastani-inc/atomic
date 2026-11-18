@@ -3170,3 +3170,22 @@ unixTest("an installed version whose launcher differs from the release is replac
 		fixture.cleanup();
 	}
 });
+
+unixTest("a reused version installed before launcher hashes were recorded gets its record", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		assertSuccess(fixture.run({ args: ["--ref", "2.0.0"] }));
+		const versionOne = join(fixture.installRoot, "versions", "1.0.0");
+		const record = join(versionOne, ".atomic-launcher.sha256");
+		const recorded = readFileSync(record, "utf8");
+		rmSync(record);
+		writeFileSync(join(versionOne, "kept.txt"), "kept");
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		assert.equal(currentVersion(fixture), "1.0.0");
+		assert.equal(readFileSync(join(versionOne, "kept.txt"), "utf8"), "kept", "the complete version was not reused");
+		assert.equal(readFileSync(record, "utf8"), recorded);
+	} finally {
+		fixture.cleanup();
+	}
+});

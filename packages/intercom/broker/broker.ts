@@ -2548,7 +2548,7 @@ class IntercomBroker {
           });
           break;
         }
-        this.reserveRestoringRecipient(
+        const published = this.reserveRestoringRecipient(
           clientMessage.capability,
           currentId,
           childName,
@@ -2560,7 +2560,9 @@ class IntercomBroker {
           },
         );
         this.dispatchHeldSends(this.departedChildren.supersede(currentId, childName));
-        writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
+        // #5352: acknowledged once senders on other brokers can find the reservation (bounded by the router).
+        const requestId = clientMessage.requestId;
+        void published.then(() => writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId }));
         break;
       }
 
@@ -2650,8 +2652,9 @@ class IntercomBroker {
           writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId, refusal });
           break;
         }
+        const published: Promise<void>[] = [];
         for (const child of validation.children) {
-          this.reserveReleasedChild(currentId, owner.registrationGroup, child);
+          published.push(this.reserveReleasedChild(currentId, owner.registrationGroup, child));
           this.releasedAskerReplies.attach(child.childName, currentId);
           // #4751: a failed ask kept for the child wakes it again, so it is delivered.
           if (
@@ -2662,7 +2665,11 @@ class IntercomBroker {
             this.wakeRestoringRecipientOwner({ ownerSessionId: currentId, childName: child.childName });
           this.dispatchHeldSends(this.departedChildren.supersede(currentId, child.childName));
         }
-        writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
+        // #5352: acknowledged once senders on other brokers can find the reservations (bounded by the router).
+        const requestId = clientMessage.requestId;
+        void Promise.all(published).then(() =>
+          writeMessageIfOpen(socket, { type: "released_children_ack", requestId }),
+        );
         break;
       }
 
@@ -3596,17 +3603,19 @@ class IntercomBroker {
     group: string,
     aliases: readonly string[],
     options: { readonly dormant: boolean; readonly wake?: boolean; readonly replaceAliases?: true; readonly holdMs?: number },
-  ): void {
+  ): Promise<void> {
     const wake = this.restoringRecipients.reserve(key, ownerSessionId, childName, group, aliases, options);
-    this.multiNode?.restoringReserved(key, ownerSessionId, childName, group, aliases, options.dormant, {
+    const published = this.multiNode?.restoringReserved(key, ownerSessionId, childName, group, aliases, options.dormant, {
       wake: options.wake === true,
       ...(options.replaceAliases === true ? { replaceAliases: true } : {}),
     });
     if (wake !== undefined) this.wakeRestoringRecipientOwner(wake);
+    return published ?? Promise.resolve();
   }
 
-  private reserveReleasedChild(ownerSessionId: string, ownerGroup: string, child: ParsedReleasedChild): void {
-    this.reserveRestoringRecipient(
+  /** Resolves once senders on other brokers can find the reservation (see `reserveRestoringRecipient`). */
+  private reserveReleasedChild(ownerSessionId: string, ownerGroup: string, child: ParsedReleasedChild): Promise<void> {
+    return this.reserveRestoringRecipient(
       releasedReservationKey(child.childName),
       ownerSessionId,
       child.childName,
