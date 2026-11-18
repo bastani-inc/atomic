@@ -22,6 +22,7 @@ import type { ToolStatusReport } from "../../core/tool-status.js";
 import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
+import { warnDeprecation } from "../../utils/deprecation.js";
 import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
@@ -270,6 +271,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// session/model/bash behavior do not need to implement unrelated transport
 		// surfaces.
 		this.client.onInteractiveEngineMessage?.((message) => {
+			if (message.type === "engine_deprecation_warning") {
+				warnDeprecation(message.message, message.once === undefined ? {} : { once: message.once });
+				return;
+			}
 			if (message.type === "engine_agent_panel_state") {
 				this.panelCounts = { total: message.total, needsInput: message.needsInput, shells: message.shells ?? 0 };
 				return;

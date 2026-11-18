@@ -86,6 +86,11 @@ export type InteractiveEngineMessage =
 	/** Workflow activity the host reports as terminal program status. Roots carry no graph. */
 	| { type: "engine_workflow_activity"; frame: WorkflowActivityFrame }
 	| { type: "engine_agent_panel_state"; total: number; needsInput: number; shells?: number }
+	/**
+	 * A deprecation warning the engine raised, for the host to show as it shows its own: once per message, and with
+	 * `once`, the notice's identity, once across starts.
+	 */
+	| { type: "engine_deprecation_warning"; message: string; once?: string }
 	| { type: "engine_ui_prompt"; event: UIPromptStartEvent | UIPromptEndEvent }
 	/**
 	 * The child took ownership of a correlated RPC request: it has parsed the
@@ -556,6 +561,10 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		}
 		case "engine_heartbeat":
 			return typeof value.at === "number" ? { type: value.type, at: value.at } : undefined;
+		case "engine_deprecation_warning":
+			return typeof value.message === "string" && (value.once === undefined || typeof value.once === "string")
+				? { type: value.type, message: value.message, ...(value.once === undefined ? {} : { once: value.once }) }
+				: undefined;
 		case "engine_activity_started":
 			return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;
 		case "engine_activity_finished":
