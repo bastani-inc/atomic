@@ -298,6 +298,10 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 					busy = false;
 					throw Object.assign(new Error("database is locked"), { errstr: "busy" });
 				}
+				if (schemaChanged) {
+					schemaChanged = false;
+					throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
+				}
 				database.exec(request.sql ?? stream.sqls.get(request.sql_id ?? -1) ?? "");
 				return { type: "sequence" };
 			case "store_sql":

@@ -733,9 +733,10 @@ function driverResult(result) {
 const FILE_BUSY_TIMEOUT_MS = 5000;
 
 /**
- * How long a call to a libSQL server runs again while the server answers it `SQLITE_BUSY`. sqld answers a writer that
- * meets its checkpoint `SQLITE_BUSY` at once, without waiting and without running any of the call, and leaves the
- * waiting to the client; its own checkpoint waits this long for the lock.
+ * How long a call to a libSQL server runs again while the server answers it `SQLITE_BUSY` or `SQLITE_SCHEMA`. sqld
+ * answers a writer that meets its checkpoint `SQLITE_BUSY` at once, without waiting and without running any of the
+ * call, and leaves the waiting to the client; its own checkpoint waits this long for the lock. It answers
+ * `SQLITE_SCHEMA`, also without running the call, while other connections keep changing the schema.
  */
 const SERVER_BUSY_TIMEOUT_MS = 5000;
 /** The first wait before a call a libSQL server answered busy runs again; each later wait doubles, up to the last. */
@@ -748,8 +749,8 @@ const SERVER_BUSY_LAST_WAIT_MS = 200;
  * failure. `prepare` runs before each run after the first.
  *
  * A server answers `SQLITE_SCHEMA` when other connections kept changing the database's schema while it prepared the
- * statement, as on a server shared by several stores that create and drop their tables: the statement never ran, and
- * a transaction it was part of stays as it was, so the statement runs again where it was sent.
+ * statement, as on a server shared by several stores that create and drop their tables: the statement never ran, so
+ * a statement or batch that commits on its own runs again. `rerunsAfterSchemaChange` says whether the run may.
  * @template T
  * @param {() => Promise<T>} operation
  * @param {() => boolean} ranNothing
@@ -1272,8 +1273,8 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			// again in a new transaction. A busy answer after the transaction began is not run again: a busy statement
 			// leaves the transaction open, and a busy answer that ends its stream also ends the statements it already ran.
 			// The transaction began once a statement in it settled and left it open: the server acknowledged its BEGIN.
-			// A statement the server answered `SQLITE_SCHEMA` ran nothing and left the transaction open, so it runs again in
-			// it; one that ended a transaction already under way is not run again.
+			// A statement in a transaction that the server answered `SQLITE_SCHEMA` is not run again here: the server may
+			// have ended the transaction, and the statement would then run, and commit, on its own.
 			let started = false;
 			/** @type {<T>(operation: () => Promise<T>) => Promise<T>} */
 			const inTransaction = async (operation) => {
@@ -1282,9 +1283,9 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 						() => watch(operation),
 						() => !started && transaction.closed,
 						async () => {
-							if (transaction.closed) transaction = await watch(begin);
+							transaction = await watch(begin);
 						},
-						() => !started || !transaction.closed,
+						() => false,
 					);
 				} finally {
 					if (!transaction.closed) started = true;

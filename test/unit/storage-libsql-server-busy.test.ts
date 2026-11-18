@@ -183,18 +183,48 @@ test("a statement outside a transaction that the server answered schema-changed 
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
 });
 
-test("a statement in a transaction that the server answered schema-changed runs again in that transaction, which commits once", async () => {
+test("a statement in a transaction that the server answered schema-changed is not run again in it, and the transaction writes nothing", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
 	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
 	let runs = 0;
-	await database.transaction(async (tx) => {
-		runs++;
-		await tx.run("INSERT INTO events VALUES (1)");
-		fake.fail(SCHEMA_CHANGED);
-		await tx.run("INSERT INTO events VALUES (2)");
-	});
+	await assert.rejects(
+		database.transaction(async (tx) => {
+			runs++;
+			await tx.run("INSERT INTO events VALUES (1)");
+			fake.fail(SCHEMA_CHANGED);
+			await tx.run("INSERT INTO events VALUES (2)");
+		}),
+	);
 	assert.equal(runs, 1);
-	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes("BEGIN IMMEDIATE")).length, 1);
-	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 2);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
+});
+
+test("a statement whose transaction the server ended with a schema-changed answer is not run again on its own", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	let runs = 0;
+	await assert.rejects(
+		database.transaction(async (tx) => {
+			runs++;
+			await tx.run("INSERT INTO events VALUES (1)");
+			// The server ends the transaction it already began, rolling back the first insert.
+			fake.fail({ kind: "result-error", code: "SQLITE_SCHEMA" });
+			await tx.run("INSERT INTO events VALUES (2)");
+		}),
+	);
+	assert.equal(runs, 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0, "neither insert committed");
+});
+
+test("several statements in one exec that the server answered schema-changed are not run again", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	fake.fail(SCHEMA_CHANGED);
+	const sql = "INSERT INTO events VALUES (1); INSERT INTO events VALUES (2)";
+	await assert.rejects(database.exec(sql));
+	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length, 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
 });
