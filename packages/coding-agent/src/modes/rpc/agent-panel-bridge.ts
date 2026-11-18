@@ -21,7 +21,7 @@ import {
 	taskPanelState,
 	viewedAgentPanelItems,
 } from "../../core/tasks/agent-panel-source.ts";
-import { supersededReleasedAttempts } from "../../core/tasks/completion.js";
+import { supersededSettledAttempts } from "../../core/tasks/completion.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { taskClockOf, taskClockRunning } from "../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
@@ -268,7 +268,8 @@ function rankPanelSession(
 
 	const source = store === undefined ? undefined : ownerTaskViewSource(store);
 	const tasks = source?.backgroundTasks ?? [];
-	const superseded = tasks.length === 0 ? new Set<TaskId>() : supersededReleasedAttempts(tasks);
+	// A resumed or woken subagent is listed as its latest attempt only.
+	const superseded = tasks.length === 0 ? new Set<TaskId>() : supersededSettledAttempts(tasks);
 	// Stopped subagents stay listed only while something is active: a row, or a running shell, which is not one.
 	let active = false;
 	for (const item of extItems) {

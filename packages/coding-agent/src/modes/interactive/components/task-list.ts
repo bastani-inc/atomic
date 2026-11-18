@@ -12,7 +12,7 @@ import {
 	taskPanelRole,
 	taskPanelState,
 } from "../../../core/tasks/agent-panel-source.ts";
-import { supersededReleasedAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
+import { supersededSettledAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { theme } from "../theme/theme.js";
@@ -92,12 +92,14 @@ const footerRetired = new WeakMap<TaskElapsedClocks, AgentPanelModel>();
  * A chat's own background tasks below its prompt, listed by the main chat's agent panel rules: subagents as rows, and
  * running shells, which are not rows, counted on a line of their own in the main chat's hint wording. A finished
  * subagent is not listed; a stopped or interrupted one only while other work is active, and not again once it left
- * until it runs again.
+ * until it runs again; a resumed one only as its latest attempt. Pass the task source's shared clocks
+ * (`taskClocksFor(source)`): they keep the elapsed times and remember across renders which stopped subagents left.
+ * Without them, each render decides on its own.
  */
 export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
 	let shells = 0;
 	const candidates: TaskRecord[] = [];
-	const superseded = supersededReleasedAttempts(tasks);
+	const superseded = supersededSettledAttempts(tasks);
 	for (let index = tasks.length - 1; index >= 0; index--) {
 		const task = tasks[index]!;
 		if (superseded.has(task.ref.taskId)) continue;

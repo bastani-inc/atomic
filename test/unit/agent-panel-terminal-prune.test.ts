@@ -20,7 +20,7 @@ import {
 	agentPanelRows,
 	showAgentPanel,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
-import { taskFixture } from "../helpers/task-projection.ts";
+import { taskFixture, taskValue } from "../helpers/task-projection.ts";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
 let keybindings: KeybindingsManager;
@@ -342,6 +342,57 @@ describe("an attached chat's footer and the main panel agree", () => {
 			await fixture.start("new");
 			assert.deepEqual(mainTitles(), ["new"], "the interrupted subagent does not come back in the main panel");
 			assert.deepEqual(titles(footer()), ["new"], "nor in the chat's footer");
+		} finally {
+			await fixture.dispose();
+		}
+	});
+});
+
+describe("a resumed subagent", () => {
+	test("is listed and counted once, as its latest attempt, in the panel and a chat's footer", async () => {
+		const fixture = taskFixture();
+		const launch = async (task: string, operation: string) => {
+			const lease = taskValue(
+				await fixture.supervisor.startAgentTask(
+					fixture.owner,
+					{ kind: "agent", agent: "worker", task },
+					operation as Parameters<typeof fixture.supervisor.startAgentTask>[2],
+				),
+			);
+			taskValue(await fixture.supervisor.initialObservation(lease, { kind: "background" }));
+			fixture.store.drain();
+		};
+		const settle = async (index: number, result: Parameters<(typeof fixture.runners)[0]["result"]["resolve"]>[0]) => {
+			fixture.runners[index]!.result.resolve(result);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			fixture.store.drain();
+		};
+		try {
+			await launch("x", "child-x");
+			await launch("y", "child-y");
+			const hub = new AgentPanelSourceHub();
+			const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+			bindOwnerTaskStore(session, fixture.store);
+			const clocks = taskClocksFor(ownerTaskViewSource(fixture.store));
+			const mainTitles = () => agentPanelRows(session).map((row) => row.task);
+			const footerTitles = () =>
+				renderTaskFooter(fixture.store.backgroundTasks, 120, clocks)
+					.map((line) => line.replace(/\x1b\[[\d;:]*m/g, ""))
+					.map((line) => /worker {2}(\S+)/.exec(line)?.[1]);
+
+			await settle(0, { kind: "cancelled", cause: "user" });
+			assert.deepEqual(new Set(mainTitles()), new Set(["x", "y"]), "stopped while another runs");
+
+			await launch("x", "child-x:resume:1");
+			assert.deepEqual(new Set(mainTitles()), new Set(["x", "y"]), "the resumed attempt replaces the stopped one");
+			assert.equal(mainTitles().length, 2);
+			assert.deepEqual(mainComposerHintSegments(keybindings, session), ["↓ 2 agents", "? keys"]);
+			assert.equal(footerTitles().length, 2);
+
+			await settle(1, { kind: "completed", output: fixture.store.tasks[1]!.output });
+			assert.deepEqual(mainTitles(), ["x"]);
+			assert.deepEqual(mainComposerHintSegments(keybindings, session), ["↓ 1 agent", "? keys"]);
+			assert.deepEqual(footerTitles(), ["x"]);
 		} finally {
 			await fixture.dispose();
 		}
