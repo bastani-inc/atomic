@@ -605,6 +605,10 @@ export type RunResumeSource = "run_control" | "prompt_answer" | "stage_control" 
 export type { WorkflowWorktreeRestoreOutcome } from "./worktree-restore-outcome.js";
 
 export interface RunSnapshot extends RunExecutionState {
+	/** A retained snapshot reopened for this session, not an executing attempt of this process. */
+	readonly restored?: true;
+	/** The journal attempt and status generation the restored session's block belongs to. */
+	readonly blockAttempt?: string;
 	readonly label?: string;
 	readonly summary?: string;
 	readonly summarizedThrough?: number;

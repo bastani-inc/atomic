@@ -243,11 +243,27 @@ function factory(pi: ExtensionAPI): void {
 	registerWorkflowTool(pi, executeWorkflowToolWithAutoAttach, runtimeState.runWithLifecycleSuppressedForPolicy, {
 		runs: owner.store,
 	});
+	let restoreGeneration = 0;
 	registerWorkflowSlashCommand(pi, workflowCommands, {
 		owner,
 		overlay,
 		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
 		discoveryDiagnostics: () => runtimeState.discoveryRef.current?.errors ?? [],
+		async restoreSessionRuns(ctx) {
+			const generation = ++restoreGeneration;
+			const session = sessionContext;
+			const manager = session?.sessionManager ?? pi.sessionManager;
+			const id = manager?.getSessionId?.();
+			if (!id) return;
+			const signal = ctx.getCurrentSessionSignal?.() ?? ctx.sessionSignal;
+			await runtimeState
+				.runtimeForContext(ctx)
+				.restoreSessionRuns?.(
+					id,
+					manager?.getEntries?.() ?? [],
+					() => !signal?.aborted && session === sessionContext && generation === restoreGeneration,
+				);
+		},
 	});
 	registerWorkflowMessageRenderers(pi);
 	registerWorkflowLifecycleHandlers(pi, {

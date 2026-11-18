@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import { describe } from "vitest";
+import { describe, vi } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
@@ -18,6 +18,7 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import { inspectRun, statusRuns } from "../../packages/workflows/src/runs/background/status.js";
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type { StageLifecycleEvent } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
+import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { runIndicatorStatus } from "../../packages/workflows/src/shared/run-indicator-status.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -76,10 +77,19 @@ const definition = workflow({
  * Runs the workflow until its released stage wakes and cannot reopen its session store: the engine blocks the run
  * resumably on that stage (#4309).
  */
-async function blockOnUnreachableSessionStore() {
+async function blockOnUnreachableSessionStore(crashBeforeBlockCommit = false) {
 	const service = new FakeCiService();
 	const store = createStore();
 	const backend = await createMemoryTestBackend();
+	const entries: SessionEntry[] = [];
+	if (crashBeforeBlockCommit) {
+		const commit = backend.commitWorkflowStatus.bind(backend);
+		vi.spyOn(backend, "commitWorkflowStatus").mockImplementation(async (...args) => {
+			if (args[1] !== "blocked") return commit(...args);
+			// Simulate process death at this write. A restarted reader sees only the earlier records.
+			assert.ok(entries.some((entry) => entry.customType === "workflow.run.blocked"));
+		});
+	}
 	const notices: WorkflowLifecycleNoticeDetails[] = [];
 	const stopNotices = installWorkflowLifecycleNotifications({
 		store,
@@ -101,7 +111,23 @@ async function blockOnUnreachableSessionStore() {
 	const blocked = await run(
 		definition,
 		{},
-		{ store, durableBackend: backend, releaseWhenWaiting: { afterMs: 0 }, adapters, onStageLifecycleEvent },
+		{
+			store,
+			durableBackend: backend,
+			releaseWhenWaiting: { afterMs: 0 },
+			adapters,
+			onStageLifecycleEvent,
+			persistence: {
+				appendEntry(customType, data) {
+					entries.push({
+						id: String(entries.length),
+						type: "custom",
+						customType,
+						data: data as SessionEntry["data"],
+					});
+				},
+			},
+		},
 	);
 	const source = store.run(blocked.runId);
 	assert.ok(source);
@@ -117,6 +143,7 @@ async function blockOnUnreachableSessionStore() {
 		backend,
 		service,
 		blocked,
+		entries,
 		source,
 		notices,
 		stopNotices,
@@ -279,6 +306,41 @@ describe("a run blocked on a stage whose session store stays unreachable stays r
 		assert.equal(service.dispatches, 1, "the tool did not run again");
 		assert.equal(resumedCounters.continued.get("implement"), 1);
 		assert.equal(resumedCounters.userPrompts.get("implement"), undefined);
+	});
+
+	test("a crash after the session records the block but before its journal write leaves a resumable run (#5591)", async () => {
+		const { backend, service, source, entries, reachableAdapters } = await blockOnUnreachableSessionStore(true);
+		assert.equal(backend.getWorkflow(source.id)?.status, "running");
+		setDurableBackend(backend);
+		try {
+			const restarted = createStore();
+			restoreOnSessionStart(
+				{ getEntries: () => entries },
+				{ resumeInFlight: "never", persistRuns: true },
+				restarted,
+			);
+			assert.equal(effectiveRunStatus(restarted.run(source.id)!), "blocked");
+			const jobs = createJobTracker();
+			const runtime = createExtensionRuntime({
+				registry: createRegistry([definition]),
+				store: restarted,
+				jobs,
+				adapters: reachableAdapters(counters()),
+			});
+			const lease = vi.spyOn(backend, "workflowOwnership").mockResolvedValue("foreign");
+			const fenced = await runtime.resumeFailedRun(source.id);
+			assert.equal(fenced.ok, false);
+			assert.match(fenced.ok ? "" : fenced.message, /may still own.*retry/i);
+			assert.equal(jobs.has(source.id), false);
+			lease.mockRestore();
+			const resumed = await runtime.resumeFailedRun(source.id);
+			assert.ok(resumed.ok, resumed.ok ? undefined : resumed.message);
+			await jobs.get(source.id)?.promise;
+			assert.equal(restarted.run(source.id)?.status, "completed");
+			assert.equal(service.dispatches, 1);
+		} finally {
+			setDurableBackend(undefined);
+		}
 	});
 
 	test("after a restart, resuming it from its journal continues the stage from its saved results", async () => {

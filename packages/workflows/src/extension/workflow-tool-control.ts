@@ -746,7 +746,7 @@ export async function workflowResumeAction(
 		!isPaused &&
 		run.exitReason !== "quit" &&
 		isWorkflowRunResumable(workflowRunResumeCandidate(run, store.runs(), backend));
-	if (isDurableAuthorExit) {
+	if (run?.restored || isDurableAuthorExit) {
 		const refusal = refuseStageScopedDurableResume(stageRunId, args);
 		if (refusal !== undefined) return refusal;
 		return resumeDurableShadow(stageRunId, deps, args.budget);

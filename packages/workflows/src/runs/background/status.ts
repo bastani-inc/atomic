@@ -200,7 +200,7 @@ export async function killAllRuns(opts?: {
 	context?: PiEventContext;
 }): Promise<KillResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
-	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((r) => r.endedAt === undefined);
+	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((r) => !r.restored && r.endedAt === undefined);
 	return Promise.all(inFlight.map((r) => killRun(r.id, { ...opts, store: activeStore })));
 }
 

@@ -584,6 +584,7 @@ export async function recordActiveBlockedFailure(
 	activeStore: Store,
 	persistence: WorkflowPersistencePort | undefined,
 	metadata: RunFailureMetadata & { readonly failureRecoverability: "recoverable" },
+	blockAttempt?: string,
 ): Promise<RunResult> {
 	const blockedAt = Date.now();
 	const endedAt = metadata.budgetState?.systemOwnedStop === true ? blockedAt : undefined;
@@ -604,6 +605,7 @@ export async function recordActiveBlockedFailure(
 	if (recorded && persistence !== undefined) {
 		await appendRunBlocked(persistence, {
 			runId,
+			blockAttempt,
 			...(metadata.failedStageId !== undefined ? { failedStageId: metadata.failedStageId } : {}),
 			error: metadata.errorMessage,
 			failureKind: metadata.failureKind,

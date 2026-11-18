@@ -30,7 +30,8 @@ import { type DurableWorkflowBackend, resumableEntryFromHandle } from "./backend
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 import { type ForkError, isForkError } from "./fork-errors.js";
 import { forkDurableRun } from "./fork-run.js";
-import { JournalDurableBackend } from "./journal/journal-backend.js";
+import { JournalDurableBackend, JournalOwnershipError } from "./journal/journal-backend.js";
+import { hasUncommittedSessionBlock } from "./restored-block.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { claimsOf, hasActiveLiveRun, hasForkClaim, pendingResumes, unsettledResumeClaims } from "./run-claims.js";
 import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
@@ -240,7 +241,16 @@ async function resumeDurableWorkflowClaimed(
 		workflowId = target.runId;
 	}
 	const resolvedCatalog = catalog ?? backend.listResumableWorkflows();
-	const resolved = resolveDurableEntry(workflowId, resolvedCatalog);
+	let resolved = resolveDurableEntry(workflowId, resolvedCatalog);
+	const restored = deps.baseRunOpts.store?.run(workflowId);
+	const directHandle = restored?.restored ? backend.getWorkflow(workflowId) : undefined;
+	if (directHandle !== undefined) {
+		if (directHandle.modelOwner !== restored?.modelOwner)
+			return { ok: false, reason: "owned_elsewhere", message: foreignInstanceMessage(backend, workflowId) };
+		if ((await backend.workflowOwnership(workflowId)) === "foreign") return retainedLeaseResult(workflowId);
+		if (resolved === undefined && hasUncommittedSessionBlock(backend, directHandle, restored))
+			resolved = resumableEntryFromHandle(directHandle);
+	}
 	if (resolved === undefined) {
 		const direct = backend.getWorkflow(workflowId);
 		if (direct !== undefined && direct.status === "running") {
@@ -293,10 +303,12 @@ async function resumeDurableWorkflowClaimed(
 			return alreadyRunningResult(handle.name, resolved.workflowId);
 		}
 		if ((await backend.workflowOwnership(handle.workflowId)) === "foreign") {
-			return foreignRunningResult(handle.name, resolved.workflowId);
+			return restored?.restored
+				? retainedLeaseResult(handle.workflowId)
+				: foreignRunningResult(handle.name, resolved.workflowId);
 		}
 	}
-	if (!isDurableWorkflowResumable(handle)) {
+	if (!isDurableWorkflowResumable(handle) && !hasUncommittedSessionBlock(backend, handle, restored)) {
 		return {
 			ok: false,
 			reason: "not_resumable",
@@ -478,6 +490,7 @@ async function resumeDurableWorkflowClaimed(
 		}
 	} catch (error) {
 		if (deps.signal?.aborted) throw deps.signal.reason ?? error;
+		if (restored?.restored && error instanceof JournalOwnershipError) return retainedLeaseResult(handle.workflowId);
 		return {
 			ok: false,
 			reason: "startup_failed",
@@ -716,6 +729,14 @@ async function refuseUnreopenableWaitingStages(
 			message: `Failed to resume durable workflow ${workflowId}: ${error instanceof Error ? error.message : String(error)}`,
 		};
 	}
+}
+
+function retainedLeaseResult(workflowId: string): ResumeDurableResult {
+	return {
+		ok: false,
+		reason: "owned_elsewhere",
+		message: `Another Atomic process may still own workflow ${workflowId}. Retry after its journal lease expires.`,
+	};
 }
 
 function foreignRunningResult(name: string, workflowId: string): ResumeDurableResult {

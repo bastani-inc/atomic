@@ -215,6 +215,8 @@ export function restoreOnSessionStart(
 
 		if (blockedMeta !== undefined) {
 			const runSnapshot: RunSnapshot = {
+				restored: true,
+				blockAttempt: blockedMeta.blockAttempt,
 				id: run.runId,
 				name: run.name,
 				inputs: run.inputs,

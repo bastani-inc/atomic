@@ -40,5 +40,5 @@ export function hasForkClaim(backend: DurableWorkflowBackend, runId: string): bo
 export function hasActiveLiveRun(store: Store | undefined, workflowId: string): boolean {
 	if (store === undefined) return false;
 	const run = store.run(workflowId);
-	return run !== undefined && run.endedAt === undefined && run.exitReason !== "quit";
+	return run !== undefined && !run.restored && run.endedAt === undefined && run.exitReason !== "quit";
 }

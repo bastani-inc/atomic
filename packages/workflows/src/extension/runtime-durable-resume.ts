@@ -28,6 +28,7 @@ import type { RunOpts } from "../runs/foreground/executor.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { WorkflowBudget } from "../shared/budget.js";
+import type { SessionEntry } from "../shared/persistence-restore.js";
 import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
@@ -36,6 +37,7 @@ import type { WorkflowDefinition, WorkflowExecutionPolicy, WorkflowInputValues }
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { discoverWorkflows } from "./discovery.js";
 import { withWorkflowResumeAdmission } from "./dormant-run-gate.js";
+import { restoreSessionRuns } from "./restore-session-runs.js";
 import { resumeFailureCode, type WorkflowControlFailureCode } from "./workflow-control-failure.js";
 import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 
@@ -97,6 +99,12 @@ export interface DurableResumeRuntime {
 			readonly durableBackend?: DurableWorkflowBackend;
 		},
 	): Promise<ResumeDurableResult>;
+	restoreSessionRuns?(
+		owner: string,
+		entries: readonly SessionEntry[],
+		current: () => boolean,
+		knownIds?: readonly string[],
+	): Promise<void>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
 	listDurableResumable(): readonly ResumableWorkflowEntry[];
 	prepareDurableResumable(workflowId?: string): Promise<readonly ResumableWorkflowEntry[]>;
@@ -249,6 +257,19 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				started: true,
 				message: `Forked workflow ${from} into ${fork.runId}. ${resumed.message}`,
 			};
+		},
+		async restoreSessionRuns(owner, entries, current, knownIds) {
+			await withRecovery(async () =>
+				restoreSessionRuns(
+					await ensureReady(),
+					deps.store,
+					owner,
+					entries,
+					current,
+					deps.beforeRestoreCompleted,
+					knownIds,
+				),
+			);
 		},
 		async inspectDurableWorkflow(workflowId) {
 			return withRecovery(async () => {

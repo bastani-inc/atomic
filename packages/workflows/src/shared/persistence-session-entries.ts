@@ -138,6 +138,7 @@ export interface RunEndPayload {
 
 export interface RunBlockedPayload {
 	readonly runId: string;
+	readonly blockAttempt?: string;
 	readonly failedStageId?: string;
 	readonly error: string;
 	readonly failureKind: WorkflowFailureKind;
@@ -308,6 +309,7 @@ export async function appendRunBlocked(api: PersistenceAPI, payload: RunBlockedP
 	if (typeof api.appendEntry !== "function") return;
 	await api.appendEntry("workflow.run.blocked", {
 		runId: payload.runId,
+		...(payload.blockAttempt !== undefined ? { blockAttempt: payload.blockAttempt } : {}),
 		...(payload.failedStageId !== undefined ? { failedStageId: payload.failedStageId } : {}),
 		error: payload.error,
 		failureKind: payload.failureKind,

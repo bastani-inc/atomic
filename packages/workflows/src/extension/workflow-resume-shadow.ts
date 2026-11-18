@@ -26,6 +26,9 @@ export function classifyDurableResumeShadow(
 	store: Store,
 	deps: DurableResumeShadowDeps = {},
 ): DurableResumeShadowClassification {
+	// A reopened graph is already projected from the journal. In particular a block whose status write was
+	// interrupted is not a quit: keep it visible as blocked while resume rechecks the journal and lease.
+	if (run.restored) return "not_shadow";
 	const backend =
 		availableRunDurableBackend(store, run.id) ?? deps.backend ?? requireStoreDurableBackend(store, run.id);
 	const toolControls = deps.toolControls ?? toolControlRegistry;

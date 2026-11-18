@@ -28,6 +28,7 @@ export interface WorkflowSlashCommandDeps {
 	owner?: WorkflowOwnerResources;
 	ensureWorkflowResourcesLoaded?: () => Promise<void>;
 	discoveryDiagnostics?: () => readonly DiscoveryDiagnostic[];
+	restoreSessionRuns?: (ctx: PiCommandContext) => Promise<void>;
 }
 
 function authoringHeaderTitle(): string {
@@ -134,6 +135,7 @@ export function registerWorkflowSlashCommand(
 					reporter.error(`Could not load workflow definitions: ${safeErrorReason(error)}`);
 					return;
 				}
+				await deps.restoreSessionRuns?.(ctx);
 				await handleWorkflowsCommand(args, ctx, reporter, {
 					overlay,
 					store: owner.store,

@@ -52,6 +52,16 @@ function session() {
 	return { entries, custom, card, resume };
 }
 
+test("a compacted session keeps the current workflow block, not one a later attempt ended (#5591)", () => {
+	const s = session();
+	const old = s.custom("workflow.run.blocked", { runId: "later" });
+	s.custom("workflow.run.start", { runId: "later" });
+	const active = s.custom("workflow.run.blocked", { runId: "blocked" });
+	const kept = s.resume().state.map(({ entry }) => entry.id);
+	assert.ok(kept.includes(active));
+	assert.ok(!kept.includes(old));
+});
+
 test("resume retains open deliveries and removes settled cards while preserving admission keys (#5249)", () => {
 	const s = session();
 	s.custom("task-completion-intent", { completionId: "closed" });

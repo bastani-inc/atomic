@@ -87,6 +87,20 @@ describe("installCompactionHook", () => {
 		assert.equal(appended.length, 0);
 	});
 
+	test("compacting a blocked run does not record a new attempt after the block (#5591)", async () => {
+		const st = createStore();
+		st.recordRunStart(makeRunSnapshot({ blockedAt: 1234 }));
+		const entries: string[] = [];
+		const api = Object.assign(makeCompactionApi(), {
+			appendEntry(type: string) {
+				entries.push(type);
+			},
+		});
+		installCompactionHook(api, st);
+		await api.trigger("session_before_compact");
+		assert.ok(!entries.includes("workflow.run.start"));
+	});
+
 	test("on compact with active run: re-appends workflow.run.start", async () => {
 		const api = makeCompactionApi();
 		const st = createStore();

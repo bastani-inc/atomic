@@ -466,7 +466,9 @@ export async function quitAllRuns(opts?: {
 	actor?: WorkflowActor;
 }): Promise<QuitAllRunResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
-	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((run) => run.endedAt === undefined);
+	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter(
+		(run) => !run.restored && run.endedAt === undefined,
+	);
 	const attempts = inFlight.map((run) =>
 		quitRun(run.id, {
 			store: activeStore,

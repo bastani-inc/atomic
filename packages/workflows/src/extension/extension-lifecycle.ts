@@ -8,6 +8,7 @@ import { settleEndedRuns } from "../runs/background/ended-run-settlement.js";
 import { quitAllRuns } from "../runs/background/quit.js";
 import { killAllRuns } from "../runs/background/status.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
+import { normalizeSessionEntries } from "../shared/persistence-restore.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import { currentWorkflowSessionRunState, type WorkflowSessionRunState } from "./adopt-session-run-state.js";
@@ -251,7 +252,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		ctx: PiCommandContext | undefined,
 	): Promise<{ cancel: true } | undefined> => {
 		const inFlightWorkflowCount = topLevelWorkflowRuns(store.runs()).filter(
-			(run) => run.endedAt === undefined,
+			(run) => !run.restored && run.endedAt === undefined,
 		).length;
 		if (inFlightWorkflowCount === 0) return undefined;
 		const confirm = ctx?.ui?.confirm;
@@ -301,6 +302,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				const handle = backend.getWorkflow(entry.workflowId) ?? entry;
 				return (
 					handle.status === "running" &&
+					store.run(entry.workflowId)?.blockedAt === undefined &&
 					(handle.pendingPrompts ?? entry.pendingPrompts) === 0 &&
 					(await backend.workflowOwnership(entry.workflowId)) === "available" &&
 					handle.invocationCwd !== undefined &&
@@ -511,6 +513,31 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				...(ctx ? { context: ctx } : {}),
 			});
 			store.clear();
+		}
+		if (isSessionSwitch(reason)) {
+			for (const run of [...store.runs()])
+				if (run.restored && run.modelOwner !== sessionCaller) store.removeRun(run.id);
+		}
+		const manager = ctx?.sessionManager ?? pi.sessionManager;
+		const owner = manager?.getSessionId?.();
+		if (owner && ctx?.isPresentationOnly !== true && (stopsWorkflows || reason === "resume")) {
+			const entries = manager?.getEntries?.() ?? [];
+			const ids = new Set(
+				normalizeSessionEntries(entries).flatMap(({ type, payload }) =>
+					type === "workflow.run.blocked" && typeof payload.runId === "string" ? [payload.runId] : [],
+				),
+			);
+			if (ids.size) {
+				try {
+					await runtimeState.runtimeForContext(ctx).restoreSessionRuns?.(owner, entries, isNewest, [...ids]);
+				} catch (error) {
+					if (isNewest())
+						ctx?.ui?.notify?.(
+							`Could not restore workflow runs: ${String(error)}. Open /workflows to retry.`,
+							"warning",
+						);
+				}
+			}
 		}
 		resetWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState);
 		resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);

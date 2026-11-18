@@ -25,6 +25,7 @@ import {
 } from "./workflow-failures.js";
 
 interface RestoredRunBlockedMetadata {
+	readonly blockAttempt?: string;
 	readonly failedStageId?: string;
 	readonly error: string;
 	readonly failureKind: WorkflowFailureKind;
@@ -440,6 +441,7 @@ export function findRunBlockedMetadata(
 		)
 			continue;
 		latest = {
+			...(typeof entry.payload.blockAttempt === "string" ? { blockAttempt: entry.payload.blockAttempt } : {}),
 			...(typeof failedStageId === "string" ? { failedStageId } : {}),
 			error,
 			failureKind,

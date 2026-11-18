@@ -22,7 +22,7 @@ const DELIVERY_OP_TYPE = "atomic-pooled-delivery-op";
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
 /** Version 5 added `acks`; an index saved by an earlier build fails `isSessionResumeIndex` and is rebuilt. */
-const RESUME_INDEX_VERSION = 5;
+const RESUME_INDEX_VERSION = 6;
 
 export interface SessionResumeIndex {
 	readonly version: typeof RESUME_INDEX_VERSION;
@@ -352,7 +352,12 @@ class ResumeProtocols {
 			const key = `run:${data.runId}`;
 			this.latest[key] = [...(this.latest[key] ?? []), seq];
 		}
-		if (kind === "workflow.run.end" && typeof data.runId === "string") delete this.latest[`run:${data.runId}`];
+		if (typeof data.runId === "string") {
+			const blocked = `run-blocked:${data.runId}`;
+			if (kind === "workflow.run.blocked") this.keepLatest(blocked, seq);
+			if (kind === "workflow.run.start" || kind === "workflow.run.end") delete this.latest[blocked];
+			if (kind === "workflow.run.end") delete this.latest[`run:${data.runId}`];
+		}
 		if (branchActive && kind === "intercom_reply_wait" && typeof data.toolCallId === "string")
 			this.keepPending(`wait:${data.toolCallId}`, seq);
 		if (kind === "workflow-stage-parked-tasks" && Array.isArray(data.tasks)) {

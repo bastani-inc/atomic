@@ -298,7 +298,7 @@ export async function handleRunControlCommand(
 					isWorkflowRunResumable(
 						workflowRunResumeCandidate(run, store.runs(), requireStoreDurableBackend(store, resolved.runId)),
 					);
-				if (isDurableAuthorExit) {
+				if (run?.restored || isDurableAuthorExit) {
 					return await durableResume(resolved.runId);
 				}
 				if (isResumableContinuation) {
@@ -509,7 +509,11 @@ export async function handleRunControlCommand(
 			undefined,
 			requireStoreDurableBackend(store, stageRunId),
 		);
-		if (isDurableAuthorExit) {
+		if (run?.restored || isDurableAuthorExit) {
+			if (run?.restored && stageId !== undefined) {
+				fail(stageScopedDurableResumeMessage(runId));
+				return true;
+			}
 			return await durableResume(stageRunId);
 		}
 		if (isResumableContinuation) {

@@ -407,6 +407,9 @@ export function createWorkflowExtensionRuntimeState(
 		forkDurableWorkflow(sourceRunId, options) {
 			return runtimeRef.current.forkDurableWorkflow(sourceRunId, options);
 		},
+		async restoreSessionRuns(owner, entries, current, knownIds) {
+			await runtimeRef.current.restoreSessionRuns?.(owner, entries, current, knownIds);
+		},
 		inspectDurableWorkflow(workflowId) {
 			return runtimeRef.current.inspectDurableWorkflow(workflowId);
 		},

@@ -22,6 +22,7 @@ import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { initializeDurableBackendReadingSettings } from "../durable/factory.js";
 import { JournalDurableBackend, JournalOwnershipError } from "../durable/journal/journal-backend.js";
+import { blockAttemptKey } from "../durable/restored-block.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
 import {
@@ -1908,18 +1909,25 @@ async function executeRun(
 				runSnapshot.stages.at(-1)?.id;
 			for (const stage of runSnapshot.stages) scheduler.blockKnownNonTerminalDescendants(stage.id);
 			const result: WorkflowOutputValues = { status: "budget_exceeded", ...report };
-			return recordActiveBlockedFailure(runId, runSnapshot, activeStore, opts.persistence, {
-				errorMessage: selectedBudgetError.message,
-				failureKind: "unknown",
-				failureCode: "unknown",
-				failureRecoverability: "recoverable",
-				failureDisposition: "active_blocked",
-				failureMessage: selectedBudgetError.message,
-				...(frontierStageId !== undefined ? { failedStageId: frontierStageId } : {}),
-				resumable: true,
-				result,
-				budgetState: runSnapshot.budgetState,
-			});
+			return recordActiveBlockedFailure(
+				runId,
+				runSnapshot,
+				activeStore,
+				opts.persistence,
+				{
+					errorMessage: selectedBudgetError.message,
+					failureKind: "unknown",
+					failureCode: "unknown",
+					failureRecoverability: "recoverable",
+					failureDisposition: "active_blocked",
+					failureMessage: selectedBudgetError.message,
+					...(frontierStageId !== undefined ? { failedStageId: frontierStageId } : {}),
+					resumable: true,
+					result,
+					budgetState: runSnapshot.budgetState,
+				},
+				blockAttemptKey(durableBackend, runId),
+			);
 		}
 		const observedAdmittedToolFailure = selectedAdmittedToolFailure ?? admittedTools.uniqueFailureFor(err);
 		const selectedExit =
@@ -1972,12 +1980,19 @@ async function executeRun(
 			metadata.failureRecoverability === "recoverable"
 		) {
 			for (const failedStageId of metadata.failedStageIds) scheduler.blockKnownNonTerminalDescendants(failedStageId);
-			return recordActiveBlockedFailure(runId, runSnapshot, activeStore, opts.persistence, {
-				...metadata,
-				failureRecoverability: "recoverable",
-				failedStageId: metadata.failedStageId,
-				resumable: true,
-			});
+			return recordActiveBlockedFailure(
+				runId,
+				runSnapshot,
+				activeStore,
+				opts.persistence,
+				{
+					...metadata,
+					failureRecoverability: "recoverable",
+					failedStageId: metadata.failedStageId,
+					resumable: true,
+				},
+				blockAttemptKey(durableBackend, runId),
+			);
 		}
 
 		const failed = finalizeTerminalFailure({

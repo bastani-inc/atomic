@@ -47,7 +47,7 @@ export function installCompactionHook(api: CompactionAPI & PersistenceAPI, store
 
 		for (const run of runs) {
 			// Only preserve runs that haven't ended
-			if (run.endedAt !== undefined) continue;
+			if (run.restored || run.blockedAt !== undefined || run.endedAt !== undefined) continue;
 
 			await appendRunStart(api, {
 				runId: run.id,

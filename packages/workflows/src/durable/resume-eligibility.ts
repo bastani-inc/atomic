@@ -17,6 +17,7 @@ export interface DurableResumeCandidate {
 /** Live snapshot fields used by every workflow resume surface. */
 export interface WorkflowRunResumeCandidate {
 	readonly status: RunStatus;
+	readonly restored?: true;
 	readonly endedAt?: number;
 	readonly resumable?: boolean;
 	readonly failureRecoverability?: WorkflowFailureRecoverability;
@@ -47,6 +48,7 @@ export function workflowRunHasPausedState(run: Pick<RunSnapshot, "status" | "exi
 export function isWorkflowRunResumable(candidate: WorkflowRunResumeCandidate): boolean {
 	if (candidate.status === "killed" || candidate.hasDurableCheckpoint === false || candidate.artifactsIntact === false)
 		return false;
+	if (candidate.restored && candidate.status === "blocked") return candidate.resumable === true;
 	if (candidate.hasPausedState === true || candidate.status === "paused" || candidate.exitReason === "quit") {
 		return candidate.resumable !== false;
 	}

@@ -1146,6 +1146,99 @@ export default workflow({
 		}
 	});
 
+	test("a block from before the journal write can resume even at the first checkpoint; a later journal claim wins (#5591)", async () => {
+		const backend = getDurableBackend();
+		const owner = "owner";
+		const runId = testRunId("first-block");
+		const stale = testRunId("later-attempt");
+		const entries: SessionEntry[] = [];
+		for (const id of [runId, stale]) {
+			await backend.commitWorkflowRegistration({
+				workflowId: id,
+				name: "blocked",
+				modelOwner: owner,
+				status: "running",
+				inputs: {},
+				createdAt: 1,
+			});
+			entries.push({
+				id: `block:${id}`,
+				type: "custom",
+				customType: "workflow.run.blocked",
+				data: {
+					runId: id,
+					failedStageId: "build",
+					error: "blocked",
+					failureKind: "provider",
+					failureRecoverability: "recoverable",
+					failureDisposition: "active_blocked",
+					resumable: true,
+					ts: 2,
+				},
+			});
+		}
+		await backend.commitWorkflowStatus(stale, "blocked", 0, true);
+		await backend.commitWorkflowStatus(stale, "running");
+		const runtime = createExtensionRuntime({
+			registry: createRegistry([
+				workflow({
+					name: "blocked",
+					description: "",
+					inputs: {},
+					outputs: {},
+					async run(ctx) {
+						await ctx.tool("finish", {}, async () => "done");
+						return {};
+					},
+				}),
+			]),
+			store,
+		});
+		await runtime.restoreSessionRuns?.(owner, entries, () => true);
+		assert.equal(store.run(runId)?.status, "blocked");
+		assert.equal(store.run(runId)?.resumable, true);
+		assert.equal(store.run(stale), undefined, "the old block is not the newer attempt");
+		const resumed = await runtime.resumeDurableWorkflow(runId);
+		assert.ok(resumed.ok, resumed.ok ? undefined : resumed.message);
+		await cleanupJobs();
+		assert.equal(backend.getWorkflow(runId)?.status, "completed");
+	});
+
+	for (const reason of ["startup", "resume"] as const) {
+		test(`/workflows on ${reason} lists the reopened session's blocked, failed and paused runs (#5591)`, async () => {
+			const backend = getDurableBackend();
+			for (const [name, status, modelOwner] of [
+				["ours-blocked", "blocked", "owner"],
+				["ours-paused", "paused", "owner"],
+				["ours-failed", "failed", "owner"],
+				["not-ours", "blocked", "other"],
+			] as const) {
+				await backend.commitWorkflowRegistration({
+					workflowId: testRunId(name),
+					name,
+					modelOwner,
+					status,
+					inputs: {},
+					createdAt: 1,
+					completedCheckpoints: 1,
+					resumable: true,
+				});
+			}
+			const { commands, handlers, sent } = registerFactory({ disableAsyncDiscovery: true });
+			const ctx = {
+				cwd: originalCwd,
+				hasUI: false,
+				sessionManager: { getSessionId: () => "owner", getEntries: () => [] },
+				ui: { notify() {} },
+			};
+			await startSession(handlers, { reason }, ctx);
+			await commands.find((command) => command.name === "workflows")!.options.handler("", ctx);
+			const output = sent.at(-1)?.content ?? "";
+			for (const name of ["ours-blocked", "ours-paused", "ours-failed"]) assert.ok(output.includes(name), output);
+			assert.doesNotMatch(output, /not-ours/);
+		});
+	}
+
 	test("/workflows autocomplete completes current-session runs without forcing workflow discovery (#5224)", async () => {
 		let refreshCalls = 0;
 		const { commands } = registerFactory({
