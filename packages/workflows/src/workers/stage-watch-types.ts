@@ -61,10 +61,10 @@ export interface PooledStageChatSnapshot {
 	/** Whether the stage's session waits out an automatic retry's backoff. Absent from older workers. */
 	readonly waitingToRetry?: boolean;
 	/**
-	 * When the stage's current turn sent its first request, while the turn goes on in another session after the stage
-	 * moved it to its next model (`StageControlHandle.continuedTurnStartedAt`). Absent from older workers.
+	 * When the stage's current turn sent its first request, while the turn is under way
+	 * (`StageControlHandle.turnStartedAt`). Absent between turns and from older workers.
 	 */
-	readonly continuedTurnStartedAt?: number;
+	readonly turnStartedAt?: number;
 	readonly pendingToolExecutionEvents: readonly AgentSessionEvent[];
 	readonly queued: StageQueuedUserMessages;
 	/**

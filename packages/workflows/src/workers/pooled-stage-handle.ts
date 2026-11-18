@@ -243,8 +243,8 @@ export class PooledStageHandle implements StageControlHandle {
 	get isWaitingToRetry(): boolean {
 		return this.waitingToRetry;
 	}
-	get continuedTurnStartedAt(): number | undefined {
-		return this.turnStart.continuedTurnStartedAt();
+	get turnStartedAt(): number | undefined {
+		return this.turnStart.turnStartedAt();
 	}
 	get isDisposed(): boolean {
 		return this.disposed;
@@ -804,7 +804,7 @@ export class PooledStageHandle implements StageControlHandle {
 		this.currentStatus = snapshot.status;
 		this.streamingNow = snapshot.isStreaming;
 		this.waitingToRetry = snapshot.waitingToRetry === true;
-		this.turnStart = new StageTurnStart(snapshot.continuedTurnStartedAt, snapshot.isStreaming);
+		this.turnStart = new StageTurnStart(snapshot.turnStartedAt, snapshot.isStreaming);
 		this.seq = snapshot.seq;
 		this.toolExecutions = new StageToolExecutionBuffer();
 		for (const event of snapshot.pendingToolExecutionEvents) this.toolExecutions.record(event);

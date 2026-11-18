@@ -61,7 +61,10 @@ function stageWithFallback(options: {
 	settleStartMs?: number;
 	/** Holds the creation of the fallback model's session until it settles. */
 	holdFallbackSession?: Promise<void>;
+	/** The primary's session retries its failed request once, after a wait that holds until this settles. */
+	primaryRetryWait?: Promise<void>;
 }) {
+	const primaryWaiting = Promise.withResolvers<void>();
 	const fallbackCreating = Promise.withResolvers<void>();
 	let fallbackSessions = 0;
 	const fallbackStreaming = Promise.withResolvers<void>();
@@ -81,17 +84,42 @@ function stageWithFallback(options: {
 				async prompt(text) {
 					streaming = true;
 					emit({ type: "agent_start" });
-					messages.push({
+					// A session saves the prompt's message and says so, as a real session does.
+					const prompt = {
 						role: "user",
 						content: String(text),
 						timestamp: now,
-					} as AgentSession["messages"][number]);
+					} as AgentSession["messages"][number];
+					messages.push(prompt);
+					emit({ type: "message_start", message: prompt });
+					emit({ type: "message_end", message: prompt });
 					emit({ type: "turn_start" });
 					if (options.settleStartMs !== undefined) await sleep(options.settleStartMs);
 					if (model === FALLBACK && options.holdFallback !== undefined) {
 						emit({ type: "message_start", message: { role: "assistant", content: [], timestamp: now } });
 						fallbackStreaming.resolve();
 						await options.holdFallback;
+					}
+					if (model === PRIMARY && options.primaryRetryWait !== undefined) {
+						// The session's own retry: the first request fails, and the turn waits to send it again.
+						now += options.primaryMs;
+						messages.push({
+							role: "assistant",
+							content: [],
+							stopReason: "error",
+							errorMessage: "529 overloaded_error: Overloaded",
+							timestamp: now,
+						} as unknown as AgentSession["messages"][number]);
+						streaming = false;
+						emit({ type: "agent_end", messages: [] });
+						emit({ type: "auto_retry_start", attempt: 1, maxAttempts: 1, delayMs: 1_000, errorMessage: "529" });
+						Object.assign(session, { retryAttempt: 1 });
+						primaryWaiting.resolve();
+						await options.primaryRetryWait;
+						Object.assign(session, { retryAttempt: 0 });
+						streaming = true;
+						emit({ type: "agent_start" });
+						emit({ type: "turn_start" });
 					}
 					if (model === PRIMARY) {
 						now += options.primaryMs;
@@ -151,6 +179,7 @@ function stageWithFallback(options: {
 		handle,
 		fallbackStreaming: fallbackStreaming.promise,
 		fallbackCreating: fallbackCreating.promise,
+		primaryWaiting: primaryWaiting.promise,
 		status: () =>
 			chat
 				.renderWorkingStatus(100)
@@ -390,6 +419,41 @@ describe("a stage chat opened after the stage moved its turn to the fallback mod
 		} finally {
 			release.resolve();
 			await turn;
+			await stage.dispose();
+		}
+	});
+
+	test("on a local worker, a watch opened while the turn waits to retry keeps the turn's start through the switch (#5535)", async () => {
+		const retry = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const stage = stageWithFallback({
+			primaryMs: 3_000,
+			fallbackMs: 200,
+			holdFallback: release.promise,
+			primaryRetryWait: retry.promise,
+		});
+		const turn = stage.ctx.prompt("Fix the picker");
+		let worker: Awaited<ReturnType<typeof workerStageHandle>> | undefined;
+		try {
+			await stage.primaryWaiting;
+			worker = await workerStageHandle(stage.handle);
+			now += 1_000;
+			retry.resolve();
+			await stage.fallbackStreaming;
+			await sleep(120);
+			now += 1_400;
+			// The turn started at 1 s: 3 s on the first request, 1 s of wait, 3 s on the retry, 1.4 s on the fallback.
+			const rows = openedStageChat(worker.handle);
+			assert.ok(
+				rows.some((row) => /\(8s[ )]/.test(row)),
+				`the fallback model's request counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
+			);
+		} finally {
+			worker?.handle.dispose();
+			worker?.close();
+			retry.resolve();
+			release.resolve();
+			await turn.catch(() => undefined);
 			await stage.dispose();
 		}
 	});

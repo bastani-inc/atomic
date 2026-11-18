@@ -104,11 +104,12 @@ export interface StageControlHandle {
 	 */
 	readonly isWaitingToRetry?: boolean;
 	/**
-	 * When the stage's current turn sent its first request, while the turn goes on in another session after the stage
-	 * moved it to its next model: that session holds only the requests since the switch, so a chat opened now counts
-	 * the turn from here. Undefined otherwise, and from a handle that does not know it (a stage on an older worker).
+	 * When the stage's current turn sent its first request, while the turn is under way (a request runs, or a retry or
+	 * a model switch announced the next one). A turn the stage moved to its next model goes on in a new session that
+	 * holds only the requests since the switch, so a chat opened then counts the turn from here. Undefined between
+	 * turns, and from a handle that does not know it (a stage on an older worker).
 	 */
-	readonly continuedTurnStartedAt?: number;
+	readonly turnStartedAt?: number;
 	inFlightAttemptUsage?(): import("../../shared/types.js").WorkflowModelUsage | undefined;
 	/** Set when the stage's session runs in another process. */
 	readonly placement?: StagePlacement;

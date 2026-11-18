@@ -426,15 +426,17 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/**
-	 * Show the move to a fallback model of a turn this host attached to while the move is under way: nothing streams
-	 * until the next model's request, which counts from the turn's start (`turnStartedAt`), as it does in a chat that
-	 * saw the turn. The move ends as `model_fallback_start` shows it does, with that request's `agent_start` or the
-	 * switch's `model_fallback_end`.
+	 * Show the move to a fallback model of a turn whose start (`turnStartedAt`) this host did not see: nothing streams
+	 * until the next model's request, which counts from the turn's start, as it does in a chat that saw the turn. A host
+	 * that saw the turn's failed request keeps its own count. The move ends as `model_fallback_start` shows it does,
+	 * with that request's `agent_start` or the switch's `model_fallback_end`.
 	 */
 	hydrateModelSwitch(turnStartedAt: number): void {
 		if (this.state.disposed) return;
-		this.state.workingRunMeter.awaitRetry(turnStartedAt, 0);
-		this.state.retryContinuesRun = true;
+		if (!this.state.retryContinuesRun) {
+			this.state.workingRunMeter.awaitRetry(turnStartedAt, 0);
+			this.state.retryContinuesRun = true;
+		}
 		showChatSessionModelSwitch(this.state);
 		this.syncAnimationTick();
 		this.state.requestRender?.();

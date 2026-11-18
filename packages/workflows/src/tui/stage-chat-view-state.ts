@@ -439,7 +439,7 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	ctx.chatHost.appendMessages(handle.messages);
 	const streaming = handle.agentSession?.agent?.state.streamingMessage ?? handle.streamingMessage?.();
 	ctx.chatHost.hydrateStreamingAssistantMessage(streaming);
-	const turnStartedAt = handle.continuedTurnStartedAt;
+	const turnStartedAt = handle.turnStartedAt;
 	if (isLiveHandleStreaming(ctx)) ctx.chatHost.hydrateRunningTurn(handle.messages, streaming, turnStartedAt);
 	else if (isLiveHandleWaitingToRetry(ctx)) ctx.chatHost.hydrateRetryWait(handle.messages, turnStartedAt);
 	else if (turnStartedAt !== undefined) ctx.chatHost.hydrateModelSwitch(turnStartedAt);

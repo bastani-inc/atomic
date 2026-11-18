@@ -241,6 +241,33 @@ describe("the working line counts a turn from its start through its retries (#55
 			}
 		});
 
+		test(`${name}: a turn that runs out of fallback models keeps its row (#5535)`, async () => {
+			const chat = open();
+			try {
+				await failFirstAttempt(chat, FALLBACK_START);
+				now = 5_000;
+				await chat.emit({ type: "agent_start" } as AgentSessionEvent);
+				await chat.emit({ type: "turn_start" } as AgentSessionEvent);
+				now = 8_000;
+				const failed = assistant("", "error", "529 overloaded_error: Overloaded");
+				await chat.emit({ type: "message_end", message: failed } as AgentSessionEvent);
+				await chat.emit({ type: "agent_end", messages: [failed] } as AgentSessionEvent);
+				await chat.emit({
+					type: "model_fallback_end",
+					success: false,
+					from: "openai/gpt-5.4",
+					finalError: "529 overloaded_error: Overloaded",
+				} as AgentSessionEvent);
+				const worked = chat.status();
+				assert.ok(
+					worked.some((line) => / for 8s/.test(line)),
+					`the turn counts from its start until its last model failed: ${worked.join(" | ")}`,
+				);
+			} finally {
+				chat.dispose();
+			}
+		});
+
 		test(`${name}: a retry cancelled during its wait ends the turn's count at the cancellation (#5535)`, async () => {
 			const chat = open();
 			try {
@@ -338,6 +365,43 @@ describe("the working line counts a turn from its start through its retries (#55
 			assert.ok(
 				rows.some((row) => / \(7s · /.test(row)),
 				`the next attempt counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
+			);
+		} finally {
+			view.dispose();
+		}
+	});
+
+	test("stage chat opened after a failed request, before the stage moves to its next model: the next model's request counts from the turn's start (#5535)", async () => {
+		now = 5_000;
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		const { handle, state, emit } = makeHandle(undefined, waitingTurn(), "running", fakeFooterAgentSession(false));
+		state.isStreaming = false;
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui: makeTestTui(30),
+		});
+		try {
+			// The stage announces the switch; its handle knows the turn started at 1 s.
+			Object.assign(handle, { turnStartedAt: 1_000 });
+			emit({
+				type: "model_fallback_start",
+				from: "anthropic/primary",
+				to: "openai/fallback",
+				reason: "404 model not found",
+				attempt: 1,
+			} as AgentSessionEvent);
+			const rows = await nextAttempt(emit as (event: AgentSessionEvent) => void, () => plain(view.render(100)));
+			assert.ok(
+				rows.some((row) => / \(7s · /.test(row)),
+				`the next model's request counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
 			);
 		} finally {
 			view.dispose();
