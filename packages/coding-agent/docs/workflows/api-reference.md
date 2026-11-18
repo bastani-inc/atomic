@@ -81,7 +81,7 @@ That example heartbeats every 30 minutes: a run started at 09:00 raises boundari
 
 #### Delivery and unread cards
 
-Each heartbeat arrives in main chat as a `workflows:workflow-heartbeat` notice, in the same form as a task heartbeat. It names the workflow, how long the run has been going, the run id and cadence, with `/workflows <runId>` as the inspection hint:
+Each heartbeat arrives in main chat as a `workflows:workflow-heartbeat` notice, in the same form as a task heartbeat. It names the workflow, how long the run has been going, the run id and cadence, with `/workflows <runId>` as the inspection hint. Expanding it (Ctrl+O) puts each of these on a row of its own, which keeps them visible in a narrow terminal:
 
 ```text
 ♥ Workflow heartbeat · release-check still running · 45m

@@ -136,7 +136,7 @@ export function registerHilAnswerNoticeRenderer(
 	const renderer: RawRenderer = (raw, renderOptions) => {
 		const details = readHilAnswerNoticeDetails(raw);
 		if (details === undefined) return undefined;
-		return makeNoticeComponent(details, renderOptions?.expanded === true);
+		return makeNoticeComponent(details, renderOptions?.expanded === true, renderOptions?.outputPad);
 	};
 
 	register(HIL_ANSWER_NOTICE_CUSTOM_TYPE, renderer);
@@ -347,8 +347,15 @@ export function hilAnswerNoticeLine(details: WorkflowHilAnswerNoticeDetails): No
 	};
 }
 
-function makeNoticeComponent(details: WorkflowHilAnswerNoticeDetails, expanded: boolean): PiMessageRenderComponent {
-	const line = new NoticeLine(hilAnswerNoticeLine(details), expanded);
+function makeNoticeComponent(
+	details: WorkflowHilAnswerNoticeDetails,
+	expanded: boolean,
+	outputPad?: number,
+): PiMessageRenderComponent {
+	const line = new NoticeLine(
+		{ ...hilAnswerNoticeLine(details), countHiddenDetail: true, ...(outputPad === undefined ? {} : { outputPad }) },
+		expanded,
+	);
 	return {
 		render(width: number): string[] {
 			return line.render(width);

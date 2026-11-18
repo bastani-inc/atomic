@@ -345,10 +345,13 @@ describe("installWorkflowHilAnswerNotifications", () => {
 
 test("the answered-question notice is one ● line in the shared notice anatomy, with its details when expanded", () => {
 	initTheme("dark");
-	let renderer: ((raw: unknown, options?: { expanded: boolean }) => unknown) | undefined;
+	let renderer: ((raw: unknown, options?: { expanded: boolean; outputPad?: number }) => unknown) | undefined;
 	registerHilAnswerNoticeRenderer({
 		rendererHost: {},
-		registerMessageRenderer(_type: string, value: (raw: unknown, options?: { expanded: boolean }) => unknown) {
+		registerMessageRenderer(
+			_type: string,
+			value: (raw: unknown, options?: { expanded: boolean; outputPad?: number }) => unknown,
+		) {
 			renderer = value;
 		},
 	} as never);
@@ -365,14 +368,25 @@ test("the answered-question notice is one ● line in the shared notice anatomy,
 		answerIncluded: true,
 		answerSummary: "swordfish",
 	};
-	const render = (expanded: boolean) =>
-		(renderer!({ details }, { expanded }) as { render(width: number): string[] })
-			.render(100)
+	const render = (expanded: boolean, outputPad = 1) =>
+		(renderer!({ details }, { expanded, outputPad }) as { render(width: number): string[] })
+			.render(99 + outputPad)
 			.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
-	assert.deepEqual(render(false), [` ● Workflow "release" received the user's response · review`]);
+	const collapsed = render(false);
+	assert.equal(collapsed[0], ` ● Workflow "release" received the user's response · review`);
+	assert.match(collapsed[1] ?? "", /^ {3}⎿ {2}… \+4 lines(?: \(.+ to expand\))?$/, "hidden details are counted");
+	assert.equal(collapsed.length, 2);
 	const expanded = render(true);
 	assert.equal(expanded[1], "   ⎿  run run-1");
 	assert.equal(expanded[2], "      prompt Secret passphrase?");
 	assert.equal(expanded[3], "      answer swordfish");
 	assert.doesNotMatch(expanded.join("\n"), /[╭╮╰╯]|HIL ANSWERED/);
+	for (const outputPad of [0, 4]) {
+		const padded = render(true, outputPad);
+		assert.match(padded[0] ?? "", new RegExp(`^ {${outputPad}}● Workflow`), "the notice starts at the output pad");
+		assert.deepEqual(
+			padded.map((line) => line.slice(outputPad)),
+			expanded.map((line) => line.slice(1)),
+		);
+	}
 });

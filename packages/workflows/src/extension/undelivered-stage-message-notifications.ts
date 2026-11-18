@@ -73,7 +73,7 @@ export function registerUndeliveredStageMessageRenderer(
 	const renderer: PiMessageRenderer = (raw, options) => {
 		const details = (raw as { readonly details?: UndeliveredStageMessageNoticeDetails }).details;
 		if (details === undefined) return undefined;
-		return noticeComponent(details, options?.expanded === true);
+		return noticeComponent(details, options?.expanded === true, options?.outputPad);
 	};
 	register(UNDELIVERED_STAGE_MESSAGE_CUSTOM_TYPE, renderer);
 	rendererRegisteredHosts.add(host);
@@ -127,8 +127,19 @@ export function undeliveredStageMessageNoticeLine(details: UndeliveredStageMessa
 	};
 }
 
-function noticeComponent(details: UndeliveredStageMessageNoticeDetails, expanded: boolean): PiMessageRenderComponent {
-	const line = new NoticeLine(undeliveredStageMessageNoticeLine(details), expanded);
+function noticeComponent(
+	details: UndeliveredStageMessageNoticeDetails,
+	expanded: boolean,
+	outputPad?: number,
+): PiMessageRenderComponent {
+	const line = new NoticeLine(
+		{
+			...undeliveredStageMessageNoticeLine(details),
+			countHiddenDetail: true,
+			...(outputPad === undefined ? {} : { outputPad }),
+		},
+		expanded,
+	);
 	return {
 		render(width: number): string[] {
 			return line.render(width);

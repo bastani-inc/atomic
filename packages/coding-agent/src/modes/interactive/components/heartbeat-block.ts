@@ -10,6 +10,8 @@ export type HeartbeatRow = string | { readonly text: string; readonly wrap: true
 export interface HeartbeatBlockSpec {
 	/** `Task heartbeat`, `Workflow heartbeat`. */
 	readonly title: string;
+	/** What is still running, after the title as ` · <subject>`; shortened with `…` only once every fact is dropped. */
+	readonly subject?: string;
 	/** Dim facts after the title, joined with ` · `: what is still running and for how long. */
 	readonly meta?: readonly string[];
 	/** Each record is its connector row and its continuation rows, already styled. */
@@ -50,14 +52,19 @@ export class HeartbeatBlock implements Component {
 		const hint = theme.fg("dim", [this.spec.hint, expand].filter(Boolean).join(" · "));
 		const records = this.spec.records.length === 0 ? [[hint]] : this.spec.records.map((rows) => [...rows]);
 		if (this.spec.records.length > 0) records[records.length - 1]?.push(hint);
-		// The title stays whole: facts are dropped from the right first, as a notice's are.
+		// The title and subject stay whole while they can: facts are dropped from the right first, as a notice's are,
+		// and only then is the subject shortened.
 		const pad = Math.max(0, Math.min(Math.floor(this.spec.outputPad ?? 1), Math.floor(width) - 1));
+		const subject = this.spec.subject;
+		const subjectWidth = subject === undefined ? 0 : 3 + visibleWidth(subject);
 		const room = Math.floor(width) - pad - 2 - visibleWidth(this.spec.title);
 		const meta = [...(this.spec.meta ?? [])];
-		while (meta.length > 0 && meta.reduce((sum, part) => sum + 3 + visibleWidth(part), 0) > room) meta.pop();
+		while (meta.length > 0 && subjectWidth + meta.reduce((sum, part) => sum + 3 + visibleWidth(part), 0) > room)
+			meta.pop();
+		const shown = subject === undefined ? "" : room - 3 >= 2 ? ` · ${truncateToWidth(subject, room - 3, "…")}` : "";
 		return new ToolBlock({
 			status: "heartbeat",
-			title: new Text(this.spec.title, 0, 0),
+			title: new Text(`${this.spec.title}${shown}`, 0, 0),
 			meta,
 			details: new ToolBlockRecords(records.map((rows) => new HeartbeatRecord(rows))),
 			outputPad: this.spec.outputPad,

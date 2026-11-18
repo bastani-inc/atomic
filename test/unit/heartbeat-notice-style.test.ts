@@ -75,7 +75,7 @@ const workflowDetails = {
 	intervalMinutes: 15,
 };
 
-function workflowHeartbeat(width: number, outputPad?: number): string[] {
+function workflowHeartbeat(width: number, outputPad?: number, expanded = false): string[] {
 	let renderer: PiMessageRenderer | undefined;
 	registerWorkflowHeartbeatRenderer({
 		rendererHost: {},
@@ -85,7 +85,7 @@ function workflowHeartbeat(width: number, outputPad?: number): string[] {
 	});
 	const rendered = renderer?.(
 		{ details: workflowDetails },
-		{ expanded: false, ...(outputPad === undefined ? {} : { outputPad }) },
+		{ expanded, ...(outputPad === undefined ? {} : { outputPad }) },
 	);
 	assert.ok(rendered && typeof rendered === "object");
 	return rendered.render(width);
@@ -159,6 +159,13 @@ test("a workflow heartbeat uses the same notice anatomy as a task heartbeat", ()
 		`   ⎿  run ${runId} · 15-minute cadence`,
 		`      /workflows ${runId}`,
 	]);
+	assert.deepEqual(plain(workflowHeartbeat(80, 1, true)), [
+		" ♥ Workflow heartbeat · release-check still running · 15m",
+		"   ⎿  workflow release-check",
+		`      run ${runId}`,
+		"      15-minute cadence · running for 15m",
+		`      /workflows ${runId}`,
+	]);
 	for (const width of WIDTHS) {
 		const lines = workflowHeartbeat(width);
 		for (const line of lines) {
@@ -169,6 +176,23 @@ test("a workflow heartbeat uses the same notice anatomy as a task heartbeat", ()
 	}
 });
 
+test("a narrow workflow heartbeat keeps the workflow's name, and shows every fact when expanded", () => {
+	initTheme("dark");
+	const collapsed = plain(workflowHeartbeat(40));
+	assert.equal(
+		collapsed[0],
+		" ♥ Workflow heartbeat · release-check s…",
+		"the elapsed time is dropped before the name",
+	);
+	const expanded = plain(workflowHeartbeat(40, 1, true))
+		.map((line) => line.trim())
+		.join(" ");
+	for (const fact of ["workflow release-check", "15-minute cadence · running for 15m"])
+		assert.ok(expanded.includes(fact), `${fact} in ${expanded}`);
+	assert.ok(expanded.replace(/\s+/g, "").includes(`run${runId}`), "the whole run id, wrapped");
+	for (const line of workflowHeartbeat(40, 1, true)) assert.ok(visibleWidth(line) <= 40);
+});
+
 test("a heartbeat renders the same rows in every chat; only the output pad differs", () => {
 	initTheme("dark");
 	const withPad = (lines: readonly string[], pad: number) => plain(lines).map((line) => line.slice(pad));
@@ -177,6 +201,8 @@ test("a heartbeat renders the same rows in every chat; only the output pad diffe
 		withPad(taskHeartbeat(details(2), true, 80, 0).slice(1), 0),
 	);
 	assert.deepEqual(withPad(workflowHeartbeat(81, 1), 1), withPad(workflowHeartbeat(80, 0), 0));
+	assert.deepEqual(withPad(workflowHeartbeat(84, 4), 4), withPad(workflowHeartbeat(80, 0), 0));
+	assert.match(plain(workflowHeartbeat(84, 4))[0] ?? "", /^ {4}♥ /);
 });
 
 test("the heartbeat text the model reads is unchanged by its rendering", () => {

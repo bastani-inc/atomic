@@ -106,7 +106,7 @@ test("the parent session's renderer is registered once per host and draws a card
 	assert.equal(registered[0]!.event, UNDELIVERED_STAGE_MESSAGE_CUSTOM_TYPE);
 	assert.equal(registered[0]!.renderer({}, {}, undefined), undefined);
 	initTheme("dark");
-	const render = (expanded: boolean, width: number) =>
+	const render = (expanded: boolean, width: number, outputPad?: number) =>
 		(
 			registered[0]!.renderer(
 				{
@@ -119,13 +119,16 @@ test("the parent session's renderer is registered once per host and draws a card
 						noticeId: "n",
 					},
 				},
-				{ expanded },
+				{ expanded, ...(outputPad === undefined ? {} : { outputPad }) },
 				undefined,
 			) as { render(width: number): string[] }
 		)
 			.render(width)
 			.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
-	assert.deepEqual(render(false, 100), [' ! Stage "agent" finished before this message was delivered · review']);
+	const collapsed = render(false, 100);
+	assert.equal(collapsed[0], ' ! Stage "agent" finished before this message was delivered · review');
+	assert.match(collapsed[1] ?? "", /^ {3}⎿ {2}… \+3 lines(?: \(.+ to expand\))?$/, "hidden details are counted");
+	assert.equal(collapsed.length, 2);
 	assert.deepEqual(render(true, 100), [
 		' ! Stage "agent" finished before this message was delivered · review',
 		"   ⎿  run run-1",
@@ -133,6 +136,14 @@ test("the parent session's renderer is registered once per host and draws a card
 		"      Send it to another stage if it still matters.",
 	]);
 	for (const line of render(true, 20)) assert.ok(line.length <= 20, "a narrow chat shortens the notice");
+	for (const outputPad of [0, 1, 4]) {
+		const lines = render(true, 100 + outputPad, outputPad);
+		assert.match(lines[0] ?? "", new RegExp(`^ {${outputPad}}! Stage`), "the notice starts at the output pad");
+		assert.deepEqual(
+			lines.map((line) => line.slice(outputPad)),
+			render(true, 100, 0),
+		);
+	}
 });
 
 test("the stage chat shows an undelivered message as a warning card naming it (#4884)", () => {
