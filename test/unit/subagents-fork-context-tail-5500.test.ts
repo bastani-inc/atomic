@@ -13,6 +13,7 @@ import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
@@ -77,22 +78,36 @@ const cleared: VerbatimCompactionDetails = {
 	},
 };
 
-/** A long-running main session: a long history, its model and thinking settings, a clear, then the latest turns. */
+/**
+ * A long-running main session: a long history with its model and thinking settings, stored as it was written, then a
+ * clear and the latest turns appended by the session itself. Returned as a live host holds it, opened as a resume does.
+ */
 async function longParent(store: SqlSessionStore): Promise<SessionManager> {
-	const parent = await SessionManager.create(store, process.cwd());
-	await parent.appendModelChange("anthropic", "claude-opus-4-5");
-	await parent.appendThinkingLevelChange("high");
+	const stamp = new Date().toISOString();
+	const history: SessionEntry[] = [];
+	const push = (entry: Record<string, unknown> & { readonly id: string }): void => {
+		history.push({ ...entry, parentId: history.at(-1)?.id ?? null, timestamp: stamp } as unknown as SessionEntry);
+	};
+	push({ type: "model_change", id: "model", provider: "anthropic", modelId: "claude-opus-4-5" });
+	push({ type: "thinking_level_change", id: "thinking", thinkingLevel: "high" });
 	for (let turn = 0; turn < TURNS_BEFORE_CLEAR; turn++) {
-		await parent.appendMessage({ role: "user", content: `earlier request ${turn}`, timestamp: Date.now() });
-		await parent.appendMessage(assistant(`earlier answer ${turn} ${"x".repeat(400)}`));
+		push({
+			type: "message",
+			id: `u${turn}`,
+			message: { role: "user", content: `earlier request ${turn}`, timestamp: 1 },
+		});
+		push({ type: "message", id: `a${turn}`, message: assistant(`earlier answer ${turn} ${"x".repeat(400)}`) });
 	}
-	await parent.appendCompaction("Context cleared.", null, 100_000, cleared);
+	const sessionId = "long-parent-5500";
+	await store.create({ id: sessionId, version: 4, createdAt: stamp, cwd: process.cwd() }, history);
+	const writer = await SessionManager.open(store, sessionId, process.cwd(), { history: "tail" });
+	await writer.appendCompaction("Context cleared.", null, 100_000, cleared);
 	for (let turn = 0; turn < TURNS_AFTER_CLEAR; turn++) {
-		await parent.appendMessage({ role: "user", content: `current request ${turn}`, timestamp: Date.now() });
+		await writer.appendMessage({ role: "user", content: `current request ${turn}`, timestamp: Date.now() });
 		const last = turn === TURNS_AFTER_CLEAR - 1;
-		await parent.appendMessage(assistant(`current answer ${turn}`, last ? FORK_CALL_ID : undefined));
+		await writer.appendMessage(assistant(`current answer ${turn}`, last ? FORK_CALL_ID : undefined));
 	}
-	return parent;
+	return SessionManager.open(store, sessionId, process.cwd(), { history: "tail" });
 }
 
 async function sqlStore(): Promise<SqlSessionStore> {
@@ -108,12 +123,15 @@ async function sqlStore(): Promise<SqlSessionStore> {
 test("a forked subagent of a long session copies only the context it is built from, and reads no more of the parent (#5500)", async () => {
 	const store = await sqlStore();
 	const parent = await longParent(store);
-	const parentContext = parent.buildSessionContext();
+	// The parent's context read from its whole history, as a fork that copied all of it saw it.
+	const parentContext = (await SessionManager.open(store, parent.getSessionId())).buildSessionContext();
 	const fullLoads = vi.spyOn(store, "load");
 
 	const child = await createForkContextResolver(parent, "fork", {
 		toolCallIds: [FORK_CALL_ID],
 	}).sessionManagerForIndex(0);
+	const parentLoads = fullLoads.mock.calls.filter(([sessionId]) => sessionId === parent.getSessionId()).length;
+	fullLoads.mockRestore();
 
 	assert.ok(child);
 	const childContext = child.buildSessionContext();
@@ -134,16 +152,12 @@ test("a forked subagent of a long session copies only the context it is built fr
 	);
 	const held = child.getEntries().length;
 	const written = (await store.load(child.getSessionId())).entries.length;
-	const parentEntries = parent.getEntries().length;
+	const parentEntries = (await store.load(parent.getSessionId())).entries.length;
 	assert.ok(
 		held <= FORK_ENTRY_BUDGET && written <= FORK_ENTRY_BUDGET,
 		`a fork of a ${parentEntries}-entry parent held ${held} and wrote ${written} entries (budget ${FORK_ENTRY_BUDGET})`,
 	);
-	assert.equal(
-		fullLoads.mock.calls.filter(([sessionId]) => sessionId === parent.getSessionId()).length,
-		0,
-		"building the fork read the parent's whole history",
-	);
+	assert.equal(parentLoads, 0, "building the fork read the parent's whole history");
 });
 
 test("a workflow stage forked from a long stage session copies only the context it is built from (#5500)", async () => {
@@ -151,7 +165,7 @@ test("a workflow stage forked from a long stage session copies only the context 
 	const source = await longParent(store);
 	const forkPoint = source.getLeafId();
 	assert.ok(forkPoint);
-	const sourceContext = source.buildSessionContext();
+	const sourceContext = (await SessionManager.open(store, source.getSessionId())).buildSessionContext();
 	const fullLoads = vi.spyOn(store, "load");
 
 	const stage = await forkStageSession(
@@ -162,6 +176,8 @@ test("a workflow stage forked from a long stage session copies only the context 
 		undefined,
 		forkPoint,
 	);
+	const sourceLoads = fullLoads.mock.calls.filter(([sessionId]) => sessionId === source.getSessionId()).length;
+	fullLoads.mockRestore();
 
 	const stageContext = stage.buildSessionContext();
 	assert.deepEqual(stageContext.messages.slice(0, sourceContext.messages.length), sourceContext.messages);
@@ -178,7 +194,7 @@ test("a workflow stage forked from a long stage session copies only the context 
 	const written = (await store.load(stage.getSessionId())).entries.length;
 	assert.ok(
 		written <= FORK_ENTRY_BUDGET,
-		`a fork of a ${source.getEntries().length}-entry stage session wrote ${written} entries (budget ${FORK_ENTRY_BUDGET})`,
+		`a fork of a ${(await store.load(source.getSessionId())).entries.length}-entry stage session wrote ${written} entries (budget ${FORK_ENTRY_BUDGET})`,
 	);
-	assert.equal(fullLoads.mock.calls.filter(([sessionId]) => sessionId === source.getSessionId()).length, 0);
+	assert.equal(sourceLoads, 0, "building the fork read the source's whole history");
 });

@@ -125,7 +125,11 @@ async function readStoredSession(
 	options: SessionOpenOptions | undefined,
 ): Promise<OpenedSession> {
 	if (options?.history === "tail" && store.readResume)
-		return { resume: await store.readResume(sessionId, options.leafId) };
+		return {
+			resume: await (options.leafId === undefined
+				? store.readResume(sessionId)
+				: store.readResume(sessionId, options.leafId)),
+		};
 	return { snapshot: await store.load(sessionId) };
 }
 
