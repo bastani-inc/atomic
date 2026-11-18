@@ -269,12 +269,13 @@ export function registerPendingStageIntercomBridge(
 		}
 	};
 	/** Retires the oldest finished invocations past the retention; one a sweep found owing a sender a notice waits. */
-	const retireOldestFinished = (): void => {
+	const retireOldestFinished = (noted: string): void => {
 		const owingNotice = new Set<string>();
 		for (const [runId, rootRunId] of announcedRootOf) if (unsettledRunIds.has(runId)) owingNotice.add(rootRunId);
 		for (const rootRunId of finishedRoots) {
 			if (finishedRoots.size <= TERMINAL_INVOCATION_ROUTE_RETENTION) return;
-			if (owingNotice.has(rootRunId)) continue;
+			// The invocation just noted is the most recent; no sweep has looked at it yet.
+			if (rootRunId === noted || owingNotice.has(rootRunId)) continue;
 			finishedRoots.delete(rootRunId);
 			retiredRoots.add(rootRunId);
 			retireRoutes(rootRunId);
@@ -293,7 +294,7 @@ export function registerPendingStageIntercomBridge(
 		if (retiredRoots.has(root.id)) return true;
 		if (!finishedRoots.has(root.id)) {
 			finishedRoots.add(root.id);
-			retireOldestFinished();
+			retireOldestFinished(root.id);
 		}
 		return retiredRoots.has(root.id);
 	};
@@ -526,6 +527,14 @@ export function registerPendingStageIntercomBridge(
 			if (runIds === undefined) unsettledRunIds.clear();
 			else for (const runId of runIds) unsettledRunIds.delete(runId);
 			for (const runId of found) if (hasSettlementWork(activeStore.run(runId))) unsettledRunIds.add(runId);
+			// A retired invocation found owing a sender a notice, such as one that ran and finished again between two
+			// announcements, gets its routes back so the notice can go out over them (#5492).
+			let reopened = false;
+			for (const runId of unsettledRunIds) {
+				const rootRunId = topology.rootOf(runId);
+				if (rootRunId !== undefined && retiredRoots.delete(rootRunId)) reopened = true;
+			}
+			if (reopened) scheduleAnnouncement();
 		}
 	};
 	/**
