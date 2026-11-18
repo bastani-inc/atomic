@@ -28,9 +28,8 @@ interface ActiveEarlyInputCapture {
 export type PendingInput = () => number | null;
 
 /**
- * Where the OS cannot say how much input it holds, how long a startup dialog waits for input already typed to arrive
- * before it takes stdin: long enough for the event loop to poll stdin and for a Windows read thread to hand over what
- * it read, short enough not to be seen.
+ * How long a startup dialog also waits for input already read to arrive before it takes stdin: long enough for the
+ * event loop to poll stdin and for a runtime's read thread to hand over what it read, short enough not to be seen.
  */
 const STARTUP_DIALOG_INPUT_GRACE_MS = 25;
 /**
@@ -61,17 +60,19 @@ export function osStdinPendingInput(): number | null {
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** Lets the capture receive what was typed before a dialog takes stdin: all the OS holds, when it can say how much. */
+/**
+ * Lets the capture receive what was typed before a dialog takes stdin: all the OS still holds, when it can say how
+ * much, then what a runtime's read thread may already have taken from it.
+ */
 async function receiveInputAlreadyTyped(capture: ActiveEarlyInputCapture): Promise<void> {
 	const pending = capture.pendingInput;
-	if (pending === undefined || pending() === null) {
-		// A timer that is not yet due makes the event loop wait in its I/O poll, so input the terminal or a Windows read
-		// thread already holds reaches the capture. A zero-delay timer and an immediate can both run before that poll.
-		await delay(STARTUP_DIALOG_INPUT_GRACE_MS);
-	} else {
+	if (pending !== undefined && pending() !== null) {
 		const deadline = performance.now() + STARTUP_DIALOG_INPUT_DRAIN_MAX_MS;
 		while ((pending() ?? 0) > 0 && performance.now() < deadline) await delay(STARTUP_DIALOG_INPUT_DRAIN_POLL_MS);
 	}
+	// A timer that is not yet due makes the event loop wait in its I/O poll, so input a read thread already holds
+	// reaches the capture. A zero-delay timer and an immediate can both run before that poll.
+	await delay(STARTUP_DIALOG_INPUT_GRACE_MS);
 	await new Promise<void>((resolve) => setImmediate(resolve));
 }
 

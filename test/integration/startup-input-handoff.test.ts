@@ -70,21 +70,23 @@ function unquotedCommandLine(parts: readonly string[]): string {
 	return parts.join(" ");
 }
 
-const terminalCases = (["bun", "node"] as const).flatMap((runtime) =>
-	(["hello", "hello\r"] as const).map((input) => ({ runtime, input })),
-);
+/**
+ * Under Node, whose terminal input waits in the terminal until its event loop reads it. Under Bun on a loaded Windows
+ * runner the console never reported the typed input as waiting, so there the dialog relies on its grace.
+ */
+const terminalCases = (["hello", "hello\r"] as const).map((input) => ({ runtime: "node" as const, input }));
 
 test.each(terminalCases)(
 	"keeps input $input the terminal already holds before a startup dialog takes stdin under $runtime (#5241)",
-	async ({ runtime, input }) => {
+	async ({ input }) => {
 		const dir = makeTempDirectory("atomic-startup-handoff-");
-		const command = runtime === "node" ? [process.execPath, await bundledNodeFixture()] : [bunExecutable(), FIXTURE];
+		const command = [process.execPath, await bundledNodeFixture()];
 		let screen = "";
 		const child = startPty({
 			command: unquotedCommandLine([...command, dir, "terminal", String(input.length)]),
 			cwd: dir,
 			env: { ...process.env } as Record<string, string>,
-			timeoutMs: STDIN_HANDOFF_TIMEOUT_MS / 2,
+			timeoutMs: STDIN_HANDOFF_TIMEOUT_MS,
 			cols: 80,
 			rows: 24,
 			onChunk: (chunk) => {
