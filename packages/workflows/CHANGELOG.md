@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A session that keeps running workflows no longer holds an Intercom connection for every run it has finished. Only the 32 most recently finished invocations keep their pending-stage routes, so a message to one of their stages still gets that run's own answer; an older finished invocation's routes are withdrawn and its connection closes, and an invocation that runs again is routed again ([#5492](https://github.com/bastani-inc/atomic/issues/5492))
+
 ## [0.9.89] - 2026-11-18
 
 ### Breaking Changes

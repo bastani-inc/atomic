@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- A finished workflow run's pending-stage route that the workflows extension withdraws is no longer registered again after a broker reconnect, and its route connection closes once no other run's route uses it, so a long session no longer keeps one connection per finished run ([#5492](https://github.com/bastani-inc/atomic/issues/5492))
+
 ## [0.9.89] - 2026-11-18
 
 ### Added

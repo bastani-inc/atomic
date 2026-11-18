@@ -179,6 +179,8 @@ interface SupervisorAuthorizationRequest {
 
 const WORKFLOW_STAGE_LATE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
+/** #5492: a finished run's route was withdrawn; only a loaded runtime holds routes, so nothing loads for it. */
+const PENDING_STAGE_ROUTE_RETIRED_EVENT = "atomic:workflow-pending-stage-route-retired";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 const ROUTE_RETRY_OUTCOME_EVENT = "atomic:intercom-route-retry-outcome";
 const RELEASED_STAGE_EVENT = "atomic:workflow-released-stage";
@@ -1043,6 +1045,11 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				reportBackgroundRelayFailure(diagnosticRoute, PENDING_STAGE_UNDELIVERABLE_EVENT, error);
 				return false;
 			});
+	});
+	pi.events.on(PENDING_STAGE_ROUTE_RETIRED_EVENT, (payload) => {
+		const handle = loadedHeavy;
+		if (handle === null || !payload || typeof payload !== "object") return;
+		void dispatchEventHandlers(handle.heavy, PENDING_STAGE_ROUTE_RETIRED_EVENT, payload).catch(() => {});
 	});
 	for (const eventName of [
 		SUBAGENT_CONTROL_INTERCOM_EVENT,
