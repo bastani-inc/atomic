@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { launchForkEntryOf, withLaunchForkEntry } from "../../durable/stage-fork-point.js";
 import { findWorkflowExitSignal } from "../../runs/foreground/executor-abort.js";
 import { mapParallelSteps } from "../../runs/foreground/executor-direct-helpers.js";
 import {
@@ -7,6 +8,7 @@ import {
 	taskOptionsFromStep,
 	taskPrevious,
 	taskWithSharedDefaults,
+	type WorkflowTaskExecutionOptions,
 } from "../../runs/foreground/executor-task-prompts.js";
 import type { ParallelFailFastScope, ParallelFailFastStage } from "../../runs/foreground/executor-types.js";
 import { normalizeAutoGroupSentinel } from "../../shared/intercom-group.js";
@@ -39,6 +41,18 @@ export function createParallelPrimitive(input: {
 		const resolvedOptions = resolveAutoGroup(normalizedOptions);
 		const resolvedSteps = normalizedSteps.map(resolveAutoGroup);
 		const fallback = parallelFallbackTask(resolvedSteps, resolvedOptions);
+		const stepOptions = (step: WorkflowTaskStep): WorkflowTaskExecutionOptions =>
+			taskWithSharedDefaults(
+				taskOptionsFromStep(
+					step,
+					replaceTaskPlaceholder(step.prompt ?? step.task ?? fallback, resolvedOptions.task ?? fallback),
+					taskPrevious(step),
+				),
+				resolvedOptions,
+			);
+		// One fork point for the whole parallel: a step that waits for a slot forks where its source was now (#5481).
+		const launchedSteps = resolvedSteps.map((step) => ({ ...step }));
+		const launchForkEntries = new Map(launchedSteps.map((step) => [step, launchForkEntryOf(stepOptions(step))]));
 		const failFastEnabled = resolvedOptions.failFast !== false;
 		const parallelParentIds = Object.freeze(input.runtime.tracker.currentParents());
 		const parallelScope: ParallelFailFastScope = {
@@ -68,18 +82,14 @@ export function createParallelPrimitive(input: {
 		};
 
 		return mapParallelSteps(
-			resolvedSteps,
+			launchedSteps,
 			resolvedOptions.concurrency,
 			resolvedOptions.failFast,
 			async (step) => {
 				input.runtime.exit.throwIfWorkflowExitSelected();
-				const prompt = replaceTaskPlaceholder(
-					step.prompt ?? step.task ?? fallback,
-					resolvedOptions.task ?? fallback,
-				);
 				return await input.task(
 					step.name,
-					taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), resolvedOptions),
+					withLaunchForkEntry(stepOptions(step), launchForkEntries.get(step)),
 					parallelScope,
 				);
 			},

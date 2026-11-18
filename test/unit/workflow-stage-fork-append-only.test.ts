@@ -12,9 +12,16 @@ import { afterEach, describe, test } from "vitest";
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { withLaunchForkPoint } from "../../packages/workflows/src/durable/stage-fork-point.js";
+import { createDurableTaskPrimitive } from "../../packages/workflows/src/durable/stage-primitive.js";
+import { createParallelPrimitive } from "../../packages/workflows/src/engine/primitives/parallel.js";
+import type { EngineRuntime } from "../../packages/workflows/src/engine/runtime.js";
 import { registerLiveStageSession } from "../../packages/workflows/src/shared/live-stage-sessions.js";
 import { forkStageSession, STAGE_FORK_TOOL_RESULT } from "../../packages/workflows/src/shared/stage-session-store.js";
-import type { StageOptions } from "../../packages/workflows/src/shared/types.js";
+import type {
+	StageOptions,
+	WorkflowTaskOptions,
+	WorkflowTaskResult,
+} from "../../packages/workflows/src/shared/types.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const model = getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
@@ -162,5 +169,54 @@ describe("forked workflow stages copy their source append-only (#5481)", () => {
 		// A resumed run launches the stage again; it forks where the first launch did, not where the source is now.
 		assert.equal(launch("stage:a")?.forkFromEntryId, launched[0]?.forkFromEntryId);
 		assert.notEqual(launched[0]?.forkFromEntryId, source.getLeafId());
+	});
+
+	test("parallel steps that wait for a concurrency slot fork where their source was when the parallel was launched (#5481)", async () => {
+		const backend = await createMemoryTestBackend();
+		const run = "parallel-fork-point-run";
+		await backend.commitWorkflowRegistration({
+			workflowId: run,
+			name: run,
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		const source = await sourceWithOpenCall();
+		registerLiveStageSession(source);
+		const leafAtLaunch = source.getLeafId();
+		const forkedAt = new Map<string, string | undefined>();
+		let keys = 0;
+		const task = createDurableTaskPrimitive({
+			workflowId: run,
+			backend,
+			nextReplayKey: (name) => `${name}#${keys++}`,
+			task: async (name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+				forkedAt.set(name, options.forkFromEntryId);
+				// The source keeps going while each step runs, before the next step gets the slot.
+				await source.appendMessage(sourceTurn([{ type: "text", text: `LATER_SOURCE_TURN after ${name}` }]));
+				return { stageName: name, text: `${name} done` };
+			},
+		});
+		const runtime = {
+			runId: run,
+			exit: { throwIfWorkflowExitSelected: () => undefined, exitScope: undefined },
+			tracker: { currentParents: () => [] },
+			activeStore: { run: () => undefined },
+		} as unknown as EngineRuntime;
+		const parallel = createParallelPrimitive({ runtime, task });
+
+		await parallel(
+			[
+				{ name: "a", prompt: "A" },
+				{ name: "b", prompt: "B" },
+				{ name: "c", prompt: "C" },
+			],
+			{ concurrency: 1, context: "fork", forkFromSessionId: source.getSessionId() },
+		);
+
+		assert.deepEqual(
+			["a", "b", "c"].map((name) => forkedAt.get(name)),
+			[leafAtLaunch, leafAtLaunch, leafAtLaunch],
+		);
 	});
 });
