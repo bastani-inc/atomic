@@ -11,6 +11,7 @@ import {
 	visibleWidth,
 	type WheelScrollLines,
 } from "@bastani/atomic-tui";
+import { colorEnvironment } from "../theme/color-utils.ts";
 import { isUserPromptRow } from "./jump-to-latest.ts";
 import { disposeRenderer as disposeComponent } from "./renderer-disposal.js";
 import { clickedBlocks } from "./transcript-block-clicks.ts";
@@ -952,8 +953,12 @@ export class ScrollableComponentViewport implements Component {
 		);
 		const thumbTop =
 			position.maxScroll === 0 ? 0 : Math.round((position.start / position.maxScroll) * (track - thumbHeight));
-		const thumbStyle = this.options.scrollbarThumbStyle ?? ((text: string) => `\x1b[37m${text}\x1b[39m`);
-		const trackStyle = this.options.scrollbarTrackStyle ?? ((text: string) => `\x1b[90m${text}\x1b[39m`);
+		// The default colors are off with NO_COLOR or FORCE_COLOR=0; the viewport may paint before any theme loads.
+		const plain = colorEnvironment().off;
+		const thumbStyle =
+			this.options.scrollbarThumbStyle ?? ((text: string) => (plain ? text : `\x1b[37m${text}\x1b[39m`));
+		const trackStyle =
+			this.options.scrollbarTrackStyle ?? ((text: string) => (plain ? text : `\x1b[90m${text}\x1b[39m`));
 		const cellWidth = width - 1;
 		return rows.map((row, index) => {
 			const cell = truncateToWidth(row, cellWidth, "");

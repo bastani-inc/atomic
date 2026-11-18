@@ -9,6 +9,7 @@
 ### Fixed
 
 - On Windows, installing a downloaded tool (such as `rg`, `fd` or Git) no longer fails when Atomic was started from PowerShell 7 and `tar.exe` cannot extract the zip archive: the Windows PowerShell fallback's `Expand-Archive` no longer inherits PowerShell 7's module path, which made it fail with `Cannot find an overload for "ExtractToDirectory"`. Every Windows PowerShell command Atomic runs for its own work now starts this way; the `powershell` tool and blueprint steps still run with your environment unchanged
+- `NO_COLOR` now turns off every theme color. Chat messages, tool blocks, the agent panel, `/tasks`, pickers, scrollbars, the OpenRouter row in `/login` and Mermaid diagrams used to keep their foreground and background colors while it was set. `FORCE_COLOR=0` turns colors off too, and `FORCE_COLOR=1` or `2` limits them to 256 colors.
 
 ## [0.9.89-alpha.1] - 2026-11-18
 

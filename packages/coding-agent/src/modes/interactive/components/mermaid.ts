@@ -40,16 +40,22 @@ function codeSpan(line: string): string {
 function themedLines(art: MermaidArt, theme: MermaidTheme): string[] {
 	const sgrParameters = (color: ThemeColor) =>
 		Array.from(theme.getFgAnsi(color).matchAll(/\x1b\[([0-9;]*)m/g), (match) => match[1]).join(";");
-	const ansiTheme: AnsiTheme = {
-		border: sgrParameters("borderMuted"),
-		text: sgrParameters("text"),
-		edge: sgrParameters("accent"),
-		edgeLabel: sgrParameters("text"),
-		title: `1;${sgrParameters("accent")}`,
-	};
+	// With color turned off (NO_COLOR, FORCE_COLOR=0) the theme has no sequences: the diagram, its author classes
+	// included, renders unstyled and keeps its links.
+	const colored = theme.getFgAnsi("text") !== "";
+	const ansiTheme: AnsiTheme = colored
+		? {
+				border: sgrParameters("borderMuted"),
+				text: sgrParameters("text"),
+				edge: sgrParameters("accent"),
+				edgeLabel: sgrParameters("text"),
+				title: `1;${sgrParameters("accent")}`,
+			}
+		: {};
 	const linkLabels = getCapabilities().hyperlinks;
 	const displayArt: MermaidArt = {
 		...art,
+		...(colored ? {} : { classDefs: {} }),
 		// Only OSC 8 the label text, not the whole box.
 		styled: art.styled.map((row) =>
 			row.map((span) => {
