@@ -167,18 +167,6 @@ function missingPrivilege(cause, role, schema, database, sql = "") {
 	);
 }
 
-/**
- * The failure of a write the server refused because it accepts reads only (SQLSTATE `25006`): a hot standby, a read
- * replica, or a read-only endpoint such as Azure HorizonDB's. It is a configuration error, never retried.
- */
-function readOnlyEndpoint() {
-	return configError(
-		"url",
-		"read-only-endpoint",
-		"The server accepts reads only (SQLSTATE 25006): the URL names a read replica or a read-only endpoint. Use the primary server, or the cluster's read/write endpoint, in the URL",
-	);
-}
-
 /** Whether `host` reaches this machine without a network: a socket directory, a loopback name or address. */
 function isLocalHost(/** @type {string} */ host) {
 	const name = host.replace(/^\[|\]$/g, "").toLowerCase();
@@ -555,6 +543,9 @@ const TRANSIENT_SQLSTATES = new Map([
 	["08000", { code: "connection-lost", outcome: "unknown" }],
 	["08003", { code: "connection-lost", outcome: "unknown" }],
 	["08006", { code: "connection-lost", outcome: "unknown" }],
+	// read_only_sql_transaction: a write refused, nothing applied. A read replica refuses it every time; a primary does
+	// for a while during a failover, or when the service makes it read-only because its storage is nearly full.
+	["25006", { code: "read-only-server", outcome: "not-applied" }],
 ]);
 
 /**
@@ -804,8 +795,6 @@ export async function openPostgresDatabase(options) {
 					"cause",
 					{ value: cause, configurable: true },
 				);
-			if (cause instanceof pg.DatabaseError && cause.code === "25006")
-				throw Object.defineProperty(readOnlyEndpoint(), "cause", { value: cause, configurable: true });
 			throw cause;
 		} finally {
 			clearTimeout(timer);
