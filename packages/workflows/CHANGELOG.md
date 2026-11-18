@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Large workflow catalogs and run inputs no longer make run listing fail with a storage response-size error. SQL journals read headers in size-bounded pages, preserving run order and yielding between pages ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
+- Cancelling a workflow fork while it resolves a run prefix stops catalog paging and preserves the caller's cancellation reason ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
 - The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
 - The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 

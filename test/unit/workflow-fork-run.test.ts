@@ -6,6 +6,7 @@ import { StorageRollbackError, StorageUnavailableError } from "@bastani/atomic/s
 import { Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
@@ -37,6 +38,7 @@ import {
 import { durableForkPoints, forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import {
 	type JournalEntry,
 	type RunJournal,
@@ -559,6 +561,55 @@ test("ForkSourceBusyError covers a pending fork, a pending resume, a live execut
 	assert.equal(held.holderId, "other-process");
 	assert.deepEqual(await backend.journal.listRuns(), runsBefore);
 });
+
+test.each([
+	["ordinary error", new Error("prefix fork cancelled")],
+	[
+		"storage error",
+		new StorageUnavailableError({ adapter: "node-sqlite", location: "catalog" }, new Error("caller cancelled")),
+	],
+] as const)(
+	"cancelling a prefix fork preserves its %s reason between catalog pages (#5537)",
+	async (_label, reason) => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-fork-catalog-cancel-"));
+		const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+		const journal = await SqlRunJournal.open(database);
+		const backend = await JournalDurableBackend.open(journal, { runs: [], ownsJournal: false });
+		try {
+			for (const suffix of ["1", "2"]) {
+				await journal.createRun({
+					runId: `aaaaaaaa-0000-4000-8000-00000000000${suffix}`,
+					name: "run",
+					cwd: "/project",
+					createdAt: 1,
+					status: "paused",
+				});
+			}
+			const controller = new AbortController();
+			const timer = setImmediate(() => controller.abort(reason));
+			try {
+				await assert.rejects(
+					forkDurableRun(backend, {
+						source: "sdk",
+						runId: "aaaaaaaa",
+						fromStage: "stage",
+						carryMessages: "before",
+						signal: controller.signal,
+					}),
+					(error) => error === reason,
+				);
+			} finally {
+				clearImmediate(timer);
+			}
+			assert.equal((await journal.listRuns()).length, 2);
+		} finally {
+			await backend.close();
+			await journal.close();
+			await database.close();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	},
+);
 
 test("an aborted fork rejects with the signal's reason and creates no run (#4321)", async () => {
 	const { backend, def, runId } = await linearSource("fork-abort-source");

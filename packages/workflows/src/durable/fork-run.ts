@@ -302,10 +302,12 @@ async function inJournal<T>(
 	journal: RunJournal,
 	context: { readonly runId: string; readonly phase: ForkJournalPhase; readonly forkRunId?: string },
 	operation: () => Promise<T>,
+	signal?: AbortSignal,
 ): Promise<T> {
 	try {
 		return await operation();
 	} catch (error) {
+		if (signal?.aborted === true && error === signal.reason) throw error;
 		if (!(error instanceof StorageError)) throw error;
 		throw new ForkJournalUnavailableError({ ...context, storage: journalStorage(journal) }, { cause: error });
 	}
@@ -315,29 +317,40 @@ async function readForkSource(
 	backend: JournalDurableBackend,
 	target: string,
 	rootRunOf: ForkSourceOptions["rootRunOf"],
+	signal?: AbortSignal,
 ): Promise<ForkSource> {
 	const journal = backend.journal;
 	if (!isFullRunId(target) && !isRunIdPrefix(target))
 		throw new ForkSourceNotFoundError({ runId: target, reason: "malformed" });
-	const { runId, entries } = await inJournal(journal, { runId: target, phase: "read" }, async () => {
-		const runIds = isFullRunId(target)
-			? (await journal.getRun(target)) === undefined
-				? []
-				: [target]
-			: (await journal.listRuns()).map((run) => run.runId);
-		const resolution = resolveRunIdTarget(target, runIds);
-		if (resolution.kind === "ambiguous")
-			throw new ForkSourceNotFoundError({ runId: target, reason: "ambiguous", matches: resolution.matches });
-		if (resolution.kind !== "exact" && resolution.kind !== "unique_prefix") {
-			const rootRunId = rootRunOf?.(target);
-			throw rootRunId === undefined || rootRunId === target
-				? new ForkSourceNotFoundError({ runId: target, reason: "not-found", storage: journalStorage(journal) })
-				: new ForkSourceNotFoundError({ runId: target, reason: "not-root", rootRunId });
-		}
-		const read: JournalEntry[] = [];
-		for await (const entry of journal.read(resolution.runId)) read.push(entry);
-		return { runId: resolution.runId, entries: read };
-	});
+	const { runId, entries } = await inJournal(
+		journal,
+		{ runId: target, phase: "read" },
+		async () => {
+			const runIds = isFullRunId(target)
+				? (await journal.getRun(target)) === undefined
+					? []
+					: [target]
+				: (await journal.listRuns(undefined, { signal })).map((run) => run.runId);
+			signal?.throwIfAborted();
+			const resolution = resolveRunIdTarget(target, runIds);
+			if (resolution.kind === "ambiguous")
+				throw new ForkSourceNotFoundError({ runId: target, reason: "ambiguous", matches: resolution.matches });
+			if (resolution.kind !== "exact" && resolution.kind !== "unique_prefix") {
+				const rootRunId = rootRunOf?.(target);
+				throw rootRunId === undefined || rootRunId === target
+					? new ForkSourceNotFoundError({ runId: target, reason: "not-found", storage: journalStorage(journal) })
+					: new ForkSourceNotFoundError({ runId: target, reason: "not-root", rootRunId });
+			}
+			const read: JournalEntry[] = [];
+			for await (const entry of journal.read(resolution.runId)) {
+				signal?.throwIfAborted();
+				read.push(entry);
+			}
+			signal?.throwIfAborted();
+			return { runId: resolution.runId, entries: read };
+		},
+		signal,
+	);
 	let handle: DurableWorkflowHandle | undefined;
 	const checkpoints: CheckpointEvent[] = [];
 	for (const entry of entries) {
@@ -1393,14 +1406,14 @@ export async function forkDurableRun<
 	let request = forkRequest as ResolvedForkRequest;
 	request.signal?.throwIfAborted();
 	const journalBackend = forkJournal(backend);
-	const preview = await readForkSource(journalBackend, request.runId, request.rootRunOf);
+	const preview = await readForkSource(journalBackend, request.runId, request.rootRunOf, request.signal);
 	request.signal?.throwIfAborted();
 	forkRequest.validateSource?.(preview.handle);
 	const claim = await claimSource(journalBackend, preview.runId, request);
 	const cleanup = new ForkCleanup(preview.runId);
 	let primary: unknown;
 	try {
-		const source = await readForkSource(journalBackend, preview.runId, request.rootRunOf);
+		const source = await readForkSource(journalBackend, preview.runId, request.rootRunOf, request.signal);
 		forkRequest.validateSource?.(source.handle);
 		request = { ...forkRequest, cwd: forkDestinationCwd(forkRequest.cwd, source.handle) };
 		request.signal?.throwIfAborted();
