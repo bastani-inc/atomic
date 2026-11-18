@@ -334,3 +334,50 @@ test(
 	},
 	REAL_STARTUP_RPC_TIMEOUT_MS,
 );
+
+// The interactive host restarts a dead engine for the same session; it must not ask again about a folder it was
+// answered for, and an answer for this session only must stay out of trust.json.
+test(
+	"a restarted engine keeps a session-only trust answer without asking again or saving it",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-startup-rpc-restart-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(join(cwd, ".atomic"), { recursive: true });
+		writeFileSync(join(cwd, ".atomic", "settings.json"), "{}");
+		mkdirSync(agentDir, { recursive: true });
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			args: ["--no-session", "--offline", "--no-skills", "--no-themes", "--no-prompt-templates"],
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+			interactiveEngine: { onDiagnostic: () => {} },
+		});
+		const asked: RpcExtensionUIRequest[] = [];
+		client.onExtensionUIRequest((request) => {
+			if (request.method !== "select") return;
+			asked.push(request);
+			const value = asked.length === 1 ? "Trust (this session only)" : "Do not trust (this session only)";
+			void client.respondExtensionUI({ type: "extension_ui_response", id: request.id, value });
+		});
+		try {
+			await client.start();
+			await client.waitForInteractiveEngineResources();
+			const answered = await client.getState();
+			assert.equal(answered.projectTrusted, true);
+			assert.deepEqual(Object.values(answered.projectTrustDecisions ?? {}), [true]);
+
+			await client.restart(undefined, { cwd, projectTrustDecisions: answered.projectTrustDecisions });
+			await client.waitForInteractiveEngineResources();
+
+			assert.equal((await client.getState()).projectTrusted, true);
+			assert.equal(asked.length, 1);
+			assert.equal(existsSync(join(agentDir, "trust.json")), false);
+		} finally {
+			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);

@@ -90,6 +90,13 @@ function compactOptions(instructions: string | undefined): { query?: string } {
 	return typeof instructions === "string" && instructions.trim() ? { query: instructions } : {};
 }
 
+/** The trust decisions this engine made, which its interactive host hands to an engine that replaces it. */
+function projectTrustDecisionsState(
+	decisions: ReadonlyMap<string, boolean> | undefined,
+): Pick<RpcSessionState, "projectTrustDecisions"> {
+	return decisions && decisions.size > 0 ? { projectTrustDecisions: Object.fromEntries(decisions) } : {};
+}
+
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 	switch (command.type) {
 		case "abort":
@@ -343,6 +350,7 @@ export function createRpcCommandHandler({
 					...(runtimeHost.isProjectTrustPending?.()
 						? {}
 						: { projectTrusted: session.settingsManager.isProjectTrusted?.() === true }),
+					...projectTrustDecisionsState(runtimeHost.projectTrustDecisions?.()),
 					resourceOverlaps: extensionResult.overlaps ?? [],
 					resourceErrors: extensionResult.errors,
 					resourceWarnings: extensionResult.warnings ?? [],

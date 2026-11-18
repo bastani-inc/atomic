@@ -4,6 +4,7 @@ import { CONFIG_DIR_NAME } from "../../config.js";
 import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
+import { projectTrustWarningVisible } from "../../core/project-trust-state.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
@@ -981,15 +982,15 @@ InteractiveModeBase.prototype.renderInitialMessages = function (this: Interactiv
 
 /**
  * Says that the session's project is untrusted, for as long as it is. It reads the trust when the chat paints: an
- * isolated interactive host learns its engine's decision only after the chat was rendered, and a decision that is still
- * to be made is neither trusted nor untrusted.
+ * isolated interactive host learns its engine's decision after the chat was drawn, and a decision that is still to be
+ * made is neither trusted nor untrusted.
  */
 class ProjectTrustWarning implements Component {
-	private readonly untrusted: () => boolean;
+	private readonly visible: () => boolean;
 	private readonly lines: Component[];
 
-	constructor(untrusted: () => boolean, separated: boolean) {
-		this.untrusted = untrusted;
+	constructor(visible: () => boolean, separated: boolean) {
+		this.visible = visible;
 		const text = new ThemedText(
 			() =>
 				theme.fg(
@@ -1003,7 +1004,7 @@ class ProjectTrustWarning implements Component {
 	}
 
 	render(width: number): string[] {
-		return this.untrusted() ? this.lines.flatMap((line) => line.render(width)) : [];
+		return this.visible() ? this.lines.flatMap((line) => line.render(width)) : [];
 	}
 
 	invalidate(): void {
@@ -1011,25 +1012,53 @@ class ProjectTrustWarning implements Component {
 	}
 }
 
+/** The chat slot of the warning a mode last drew, while the chat still holds it. */
+const projectTrustWarningSlots = new WeakMap<InteractiveModeBase, Container>();
+
+function projectTrustWarningShows(mode: InteractiveModeBase, requiresTrust: boolean): boolean {
+	return projectTrustWarningVisible({
+		trusted: mode.settingsManager.isProjectTrusted(),
+		pending: mode.runtimeHost?.isProjectTrustPending?.() === true,
+		requiresTrust,
+	});
+}
+
+/**
+ * Adds the warning at the end of the chat when the session's project is untrusted and has resources that need trust.
+ * A trusted session, or one whose decision is still to be made, gets none here: refreshProjectTrustWarning adds it if
+ * the decision turns out untrusted.
+ */
 function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
-	const settings = mode.settingsManager;
-	const runtime = mode.runtimeHost;
-	const untrusted = () => !settings.isProjectTrusted() && runtime?.isProjectTrustPending?.() !== true;
+	if (!projectTrustWarningShows(mode, true)) return;
 	const chat = mode.chatContainer;
 	const separated = chat.children.length > 0;
 	const slot = new Container();
 	chat.addChild(slot);
+	projectTrustWarningSlots.set(mode, slot);
 	const settle = (requiresTrust: boolean) => {
 		if (!chat.children.includes(slot)) return;
 		if (!requiresTrust) {
 			chat.removeChild(slot);
 			return;
 		}
-		slot.addChild(new ProjectTrustWarning(untrusted, separated));
+		slot.addChild(new ProjectTrustWarning(() => projectTrustWarningShows(mode, true), separated));
 		mode.ui.requestRender();
 	};
 	void hasTrustRequiringProjectResourcesAsync(mode.sessionManager.getCwd()).then(settle, () => settle(false));
 }
+
+InteractiveModeBase.prototype.refreshProjectTrustWarning = function (this: InteractiveModeBase): void {
+	// Before the chat shows this session, its own drawing adds the warning.
+	if (renderedSessionIds.get(this) !== this.sessionManager.getSessionId()) return;
+	const slot = projectTrustWarningSlots.get(this);
+	if (slot && this.chatContainer.children.includes(slot)) {
+		// The warning in the chat reads the trust when it paints.
+		this.chatContainer.invalidate();
+	} else {
+		renderProjectTrustWarningIfNeeded(this);
+	}
+	this.ui.requestRender();
+};
 
 InteractiveModeBase.prototype.getUserInput = async function (
 	this: InteractiveModeBase,
@@ -1094,6 +1123,7 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	this.attachStartupNoticesContainer();
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { suppressCompactionBoundary: options.suppressCompactionBoundary });
+	renderProjectTrustWarningIfNeeded(this);
 	renderer.newMessages?.replaced(countChatMessages(this.chatContainer));
 };
 

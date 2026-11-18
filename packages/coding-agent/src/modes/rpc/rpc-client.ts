@@ -72,6 +72,11 @@ export interface RpcClientOptions {
 		 * bootstrap file, never through the child's environment or argv.
 		 */
 		apiKey?: string;
+		/**
+		 * Project trust decisions the engine starts with, by session directory, delivered through the bootstrap file.
+		 * A restart replaces them with the decisions it is given.
+		 */
+		projectTrust?: Readonly<Record<string, boolean>>;
 	};
 }
 
@@ -153,7 +158,10 @@ export class RpcClient extends RpcClientApi {
 		let preparedBootstrap: Awaited<ReturnType<typeof prepareRpcClientBootstrap>> | undefined;
 		try {
 			preparedBootstrap = this.options.interactiveEngine
-				? await prepareRpcClientBootstrap(this.options.interactiveEngine.apiKey)
+				? await prepareRpcClientBootstrap(
+						this.options.interactiveEngine.apiKey,
+						this.options.interactiveEngine.projectTrust,
+					)
 				: undefined;
 			if (this.stopPromise) {
 				await this.stopPromise.catch(() => {});
@@ -464,17 +472,29 @@ export class RpcClient extends RpcClientApi {
 	 * window is always observed; cancellation throws rather than returning
 	 * quietly, because callers go on to initialize against the new child.
 	 */
-	async restart(sessionId: string | undefined, options?: { sessionDirectory?: string; cwd?: string }): Promise<void> {
+	async restart(
+		sessionId: string | undefined,
+		options?: {
+			sessionDirectory?: string;
+			cwd?: string;
+			/** Project trust decisions of the host session, which the new engine starts with instead of asking again. */
+			projectTrustDecisions?: Readonly<Record<string, boolean>>;
+		},
+	): Promise<void> {
 		const permit = this.restartRevision;
 		await this.stopCurrentGeneration();
 		// Join an in-flight stop before the permit check: waiting after it would
 		// reopen the window this fence exists to close.
 		if (this.stopPromise) await this.stopPromise;
 		if (permit !== this.restartRevision) throw rpcTransportError(RESTART_CANCELLED_MESSAGE);
+		const interactiveEngine = this.options.interactiveEngine;
 		this.options = {
 			...this.options,
 			cwd: options?.cwd ?? this.options.cwd,
 			args: restartCliArgs(this.options.args, sessionId, options?.sessionDirectory),
+			...(interactiveEngine && options?.projectTrustDecisions
+				? { interactiveEngine: { ...interactiveEngine, projectTrust: { ...options.projectTrustDecisions } } }
+				: {}),
 		};
 		await this.start(permit);
 		await this.waitForInteractiveEngineBound();

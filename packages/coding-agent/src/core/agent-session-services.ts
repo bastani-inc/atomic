@@ -7,6 +7,7 @@ import { getBuiltinPackagePaths } from "./builtin-packages.ts";
 import type { ProjectTrustContext, SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { ModelRuntime } from "./model-runtime.js";
+import type { SessionProjectTrust } from "./project-trust-state.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -102,11 +103,8 @@ export interface AgentSessionServices {
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 	/** Complete interactive trust after the safe session has a live UI binding. */
 	completeStartup?: (context: ProjectTrustContext) => Promise<void>;
-	/**
-	 * True while `completeStartup` has yet to decide whether the project is trusted. Until then the settings report the
-	 * project untrusted, which is not a decision.
-	 */
-	isProjectTrustPending?: () => boolean;
+	/** The project trust decisions of this process's sessions, and whether `completeStartup` is still to make one. */
+	projectTrust?: SessionProjectTrust;
 }
 
 function applyExtensionFlagValues(

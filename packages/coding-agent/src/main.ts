@@ -66,6 +66,7 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
+import { startupProjectTrust } from "./core/project-trust-state.ts";
 import { holdToolsUntilOwnerBuilt, shareBlueprintBuild } from "./core/resume/blueprint/barrier.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
 import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
@@ -781,7 +782,9 @@ export async function main(argv: string[], options?: MainOptions) {
 
 	const builtinPackagePaths = options?.builtinPackagePaths;
 	const trustPromptMode: AppMode = appMode;
-	const projectTrustByCwd = new Map<string, boolean>();
+	// Decisions made in this host session. An engine the host started to replace one that stopped is handed the
+	// decisions of the one it replaces, so nobody is asked twice.
+	const projectTrustByCwd = new Map<string, boolean>(Object.entries(engineEnv.projectTrust ?? {}));
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
 	let deferredExtensionLoad = false;
 	let deferredStartupThinkingLevel: ThinkingLevel | undefined;
@@ -799,13 +802,14 @@ export async function main(argv: string[], options?: MainOptions) {
 		const cachedProjectTrust = projectTrustByCwd.get(cwd);
 		const hasTrustInputs = await hasProjectTrustInputsAsync(cwd);
 		const storedProjectTrust = await projectTrustStore.getAsync(cwd);
-		const initialProjectTrusted =
-			parsed.projectTrustOverride ?? cachedProjectTrust ?? storedProjectTrust ?? !hasTrustInputs;
-		const shouldResolveProjectTrust =
-			!isolateInteractiveHost &&
-			parsed.projectTrustOverride === undefined &&
-			cachedProjectTrust === undefined &&
-			hasTrustInputs;
+		const startupTrust = startupProjectTrust({
+			override: parsed.projectTrustOverride,
+			sessionDecision: cachedProjectTrust,
+			saved: storedProjectTrust,
+			hasTrustInputs,
+		});
+		const initialProjectTrusted = startupTrust.trusted;
+		const shouldResolveProjectTrust = !isolateInteractiveHost && startupTrust.decide;
 		const runtimeSettingsManager = await SettingsManager.createAsync(cwd, agentDir, {
 			projectTrusted: initialProjectTrusted,
 		});
@@ -1052,7 +1056,12 @@ export async function main(argv: string[], options?: MainOptions) {
 				!isolateInteractiveHost && !deferStartupTrust,
 			);
 			startupSession = created.session;
-			services.isProjectTrustPending = () => startupTrustPending;
+			services.projectTrust = {
+				get pending() {
+					return startupTrustPending;
+				},
+				decisions: projectTrustByCwd,
+			};
 			if (completeStartupReload) {
 				const completeReload = completeStartupReload;
 				let completion: Promise<void> | undefined;

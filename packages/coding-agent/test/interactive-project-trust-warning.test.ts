@@ -28,8 +28,14 @@ async function renderInitialChat(projectTrusted: boolean): Promise<string> {
 	return (await renderLiveChat({ trusted: projectTrusted })).text();
 }
 
-/** Renders the initial messages, then repaints the chat on demand as the session's trust state changes. */
-async function renderLiveChat(state: { trusted: boolean; pending?: boolean }): Promise<{ text(): string }> {
+/**
+ * Renders the initial messages. `refresh` is what the interactive host does when it learns a new trust state for the
+ * session, and `rebuild` redraws the chat from its messages, as deferred startup and /reload do.
+ */
+async function renderLiveChat(state: {
+	trusted: boolean;
+	pending?: boolean;
+}): Promise<{ text(): string; refresh(): Promise<void>; rebuild(): Promise<void> }> {
 	const chatContainer = new Container();
 	const mode = {
 		chatContainer,
@@ -46,16 +52,26 @@ async function renderLiveChat(state: { trusted: boolean; pending?: boolean }): P
 		},
 		settingsManager: { isProjectTrusted: () => state.trusted },
 	};
+	const settled = () =>
+		vi.waitFor(() =>
+			expect(chatContainer.children.some((child) => child instanceof Container && child.children.length === 0)).toBe(
+				false,
+			),
+		);
 	InteractiveModeBase.prototype.renderInitialMessages.call(mode as never);
-	await vi.waitFor(() =>
-		expect(chatContainer.children.some((child) => child instanceof Container && child.children.length === 0)).toBe(
-			false,
-		),
-	);
+	await settled();
 	return {
 		text: () => {
 			chatContainer.invalidate();
 			return stripTerminalSequences(chatContainer.render(200).join("\n"));
+		},
+		refresh: async () => {
+			InteractiveModeBase.prototype.refreshProjectTrustWarning.call(mode as never);
+			await settled();
+		},
+		rebuild: async () => {
+			InteractiveModeBase.prototype.rebuildChatFromMessages.call(mode as never);
+			await settled();
 		},
 	};
 }
@@ -87,9 +103,11 @@ test("the warning follows the session's trust after the chat was rendered", asyn
 	expect(chat.text()).not.toContain(TRUST_WARNING);
 
 	state.trusted = false;
+	await chat.refresh();
 	expect(chat.text()).toContain(TRUST_WARNING);
 
 	state.trusted = true;
+	await chat.refresh();
 	expect(chat.text()).not.toContain(TRUST_WARNING);
 });
 
@@ -100,5 +118,16 @@ test("does not warn while the session's trust decision is still to be made", asy
 	expect(chat.text()).not.toContain(TRUST_WARNING);
 
 	state.pending = false;
+	await chat.refresh();
+	expect(chat.text()).toContain(TRUST_WARNING);
+});
+
+// Startup that asked whether to trust the project redraws the chat once it has the answer, and so does /reload.
+test("a chat redrawn from its messages keeps the warning", async () => {
+	writeProjectSettings();
+	const chat = await renderLiveChat({ trusted: false });
+
+	await chat.rebuild();
+
 	expect(chat.text()).toContain(TRUST_WARNING);
 });

@@ -159,6 +159,8 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages, showCache
 			modelRuntime: { getModel: () => undefined },
 		},
 		settingsManager: {
+			// A redraw shows the untrusted-project warning when it applies; this session is trusted.
+			isProjectTrusted: () => true,
 			getShowTerminalProgress: () => false,
 			getClearOnShrink: () => false,
 			getShowCacheMissNotices: () => showCacheMissNotices,

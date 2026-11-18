@@ -38,12 +38,16 @@ export interface RpcClientProcessOptions {
 const guardianFiles = new WeakMap<ChildProcess, string>();
 const bootstrapHandles = new WeakMap<ChildProcess, InteractiveEngineBootstrapHandle>();
 
-export async function prepareRpcClientBootstrap(interactiveEngineApiKey?: string): Promise<PreparedRpcClientBootstrap> {
+export async function prepareRpcClientBootstrap(
+	interactiveEngineApiKey?: string,
+	projectTrust?: Readonly<Record<string, boolean>>,
+): Promise<PreparedRpcClientBootstrap> {
 	const guardianFile = join(tmpdir(), `atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`);
 	const bootstrap = await writeInteractiveEngineBootstrapAsync({
 		hostPid: process.pid,
 		guardFile: guardianFile,
 		...(interactiveEngineApiKey ? { apiKey: interactiveEngineApiKey } : {}),
+		...(projectTrust && Object.keys(projectTrust).length > 0 ? { projectTrust: { ...projectTrust } } : {}),
 	});
 	return { guardianFile, bootstrap };
 }

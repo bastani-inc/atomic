@@ -271,6 +271,11 @@ export interface RpcSessionState {
 	queuedMessagesPaused: boolean;
 	/** Authoritative engine trust state; absent while the engine is still deciding, and on older RPC peers. */
 	projectTrusted?: boolean;
+	/**
+	 * Project trust decisions this engine made in its session, by session directory, including answers for this
+	 * session only. They are never saved; an interactive host hands them to an engine it starts to replace this one.
+	 */
+	projectTrustDecisions?: Record<string, boolean>;
 	resourceOverlaps?: ResourceOverlap[];
 	resourceExtensions?: RpcResourceExtension[];
 	/** Extensions that failed to load in the last (re)load; absent on older RPC peers. */

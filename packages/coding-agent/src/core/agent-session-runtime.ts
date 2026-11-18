@@ -249,7 +249,12 @@ export class AgentSessionRuntime {
 
 	/** Whether the current session's project trust decision is still to be made, so it is neither trusted nor untrusted yet. */
 	isProjectTrustPending(): boolean {
-		return this.services.isProjectTrustPending?.() === true;
+		return this.services.projectTrust?.pending === true;
+	}
+
+	/** The project trust decisions made in this process, by session directory. They are never saved. */
+	projectTrustDecisions(): ReadonlyMap<string, boolean> {
+		return this.services.projectTrust?.decisions ?? new Map();
 	}
 
 	private declare _session: AgentSession;

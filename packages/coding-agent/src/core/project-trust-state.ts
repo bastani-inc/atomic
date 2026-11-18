@@ -1,0 +1,71 @@
+/**
+ * Pure rules for a session's project trust while Atomic runs: what a runtime starts a session with, when the
+ * "project is not trusted" warning shows, and which decisions an interactive host carries into a restarted engine.
+ */
+
+/** The trust decisions a process made in this session, by session directory, and whether one is still to be made. */
+export interface SessionProjectTrust {
+	/**
+	 * True while a deferred startup decision is still to be made. The settings read the project untrusted until then, so
+	 * that only what the decision needs loads, which is not a decision.
+	 */
+	readonly pending: boolean;
+	/**
+	 * Decisions made in this session, by the prompt, an extension or a saved decision. They are never written to
+	 * trust.json.
+	 */
+	readonly decisions: ReadonlyMap<string, boolean>;
+}
+
+/** What a runtime starts a session with before, or instead of, deciding its project's trust. */
+export interface StartupProjectTrust {
+	/** Whether the session starts trusted. */
+	readonly trusted: boolean;
+	/** Whether the trust still has to be decided: by extensions, the saved decision, `defaultProjectTrust` or the prompt. */
+	readonly decide: boolean;
+}
+
+/**
+ * The trust a runtime starts a session in a project with. `--approve` or `--no-approve` decides. Otherwise a decision
+ * made earlier in this session stands, including one carried into an engine started to replace one that stopped, so the
+ * user is not asked twice. Otherwise the session starts with the saved decision, or trusted when the project has nothing
+ * that needs trust, and a project with trust inputs is decided.
+ */
+export function startupProjectTrust(input: {
+	readonly override: boolean | undefined;
+	readonly sessionDecision: boolean | undefined;
+	readonly saved: boolean | null;
+	readonly hasTrustInputs: boolean;
+}): StartupProjectTrust {
+	return {
+		trusted: input.override ?? input.sessionDecision ?? input.saved ?? !input.hasTrustInputs,
+		decide: input.override === undefined && input.sessionDecision === undefined && input.hasTrustInputs,
+	};
+}
+
+/**
+ * Whether to warn that the project's resources are ignored: the session's decision is made, it is untrusted, and the
+ * project has resources that need trust. A decision still to be made is neither trusted nor untrusted.
+ */
+export function projectTrustWarningVisible(state: {
+	readonly trusted: boolean;
+	readonly pending: boolean;
+	readonly requiresTrust: boolean;
+}): boolean {
+	return !state.trusted && !state.pending && state.requiresTrust;
+}
+
+/**
+ * The decisions an interactive host knows, updated with those its engine reports. Only boolean decisions are taken.
+ * An engine started by the host holds every decision the host carried into it, so its report is the newer one.
+ */
+export function mergeProjectTrustDecisions(
+	known: ReadonlyMap<string, boolean>,
+	reported: Readonly<Record<string, unknown>> | undefined,
+): Map<string, boolean> {
+	const merged = new Map(known);
+	for (const [cwd, trusted] of Object.entries(reported ?? {})) {
+		if (typeof trusted === "boolean") merged.set(cwd, trusted);
+	}
+	return merged;
+}
