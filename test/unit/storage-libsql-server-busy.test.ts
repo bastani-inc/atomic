@@ -293,6 +293,22 @@ test("a trigger followed by another statement in one exec that the server answer
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
 });
 
+test("a trigger whose name ends in a combining accent, a write and another trigger in one exec that the server answered schema-changed are not run again (#5509)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec('CREATE TABLE events(n INTEGER NOT NULL, "case\u0301" TEXT)');
+	await database.run("INSERT INTO events VALUES (0, 'ok')");
+	fake.fail(SCHEMA_CHANGED);
+	// SQLite reads `case` followed by a combining accent (U+0301) as one name, not as the keyword CASE: the first trigger
+	// ends at its own END, and the UPDATE and the second trigger are statements of their own.
+	const sql =
+		"CREATE TRIGGER events_first AFTER INSERT ON events BEGIN SELECT new.case\u0301; END; UPDATE events SET n = n + 1; CREATE TRIGGER events_last AFTER DELETE ON events BEGIN SELECT 1; END;";
+	await assert.rejects(database.exec(sql));
+	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length, 1);
+	assert.equal(countRows(fake, "SELECT n AS count FROM events"), 0);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'trigger'"), 0);
+});
+
 test("a read that starts with WITH or VALUES the server answered schema-changed is sent again as it was, while a WITH that writes lands once under churn", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
