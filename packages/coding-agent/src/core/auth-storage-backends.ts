@@ -225,6 +225,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend, AsyncAuthStor
 	): Promise<LockResult<Credential | undefined>> {
 		await this.ensureParentDirAsync();
 		await this.ensureFileExistsAsync();
+		// The provider id is not a credential: its digest only names the provider's lock file beside auth.json.
 		const providerPath = `${await resolveExistingAuthPathAsync(this.authPath)}.${createHash("sha256").update(provider).digest("hex")}`;
 		let compromised: Error | undefined;
 		const release = await this.acquireProviderLock(

@@ -368,7 +368,11 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 		editorTheme: editorThemeFromGraphTheme(ctx.theme),
 		getChatRenderSettings: () => stageChatRenderSettings(ctx, opts),
 		footerData: ctx.footerData,
-		renderExtraEntry: (entry) => noticeRow(entry, ctx.theme),
+		renderExtraEntry: (entry) =>
+			noticeRow(entry, () => {
+				const settings = stageChatRenderSettings(ctx, opts);
+				return { expanded: settings?.toolOutputExpanded === true, outputPad: settings?.outputPad };
+			}),
 		countsAsMessage: stageNoticeCountsAsMessage,
 	});
 }
