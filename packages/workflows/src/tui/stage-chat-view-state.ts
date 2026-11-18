@@ -369,11 +369,15 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 		editorTheme: editorThemeFromGraphTheme(ctx.theme),
 		getChatRenderSettings: () => stageChatRenderSettings(ctx, opts),
 		footerData: ctx.footerData,
-		renderExtraEntry: (entry) =>
-			noticeRow(entry, () => {
-				const settings = stageChatRenderSettings(ctx, opts);
-				return { expanded: settings?.toolOutputExpanded === true, outputPad: settings?.outputPad };
-			}),
+		renderExtraEntry: (entry, expanded) =>
+			noticeRow(
+				entry,
+				() => {
+					const settings = stageChatRenderSettings(ctx, opts);
+					return { expanded: settings?.toolOutputExpanded === true, outputPad: settings?.outputPad };
+				},
+				expanded,
+			),
 		countsAsMessage: stageNoticeCountsAsMessage,
 	});
 }

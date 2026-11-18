@@ -1,3 +1,4 @@
+import type { SessionTrustDecisions } from "../core/project-trust-state.ts";
 import type { InteractiveEngineBootstrap } from "./interactive-engine-bootstrap.ts";
 
 /**
@@ -22,6 +23,8 @@ export interface InteractiveEngineStartupEnv {
 	readonly hostPid: string | undefined;
 	readonly guardFile: string | undefined;
 	readonly apiKey: string | undefined;
+	/** Trust decisions of this host session, handed to an engine started to replace one that stopped. */
+	readonly trustDecisions?: SessionTrustDecisions;
 }
 
 let snapshot: InteractiveEngineStartupEnv | undefined;
@@ -59,6 +62,7 @@ export function captureInteractiveEngineStartupEnv(
 					hostPid: String(bootstrap.hostPid),
 					guardFile: bootstrap.guardFile,
 					apiKey: bootstrap.apiKey,
+					...(bootstrap.trustDecisions ? { trustDecisions: bootstrap.trustDecisions } : {}),
 				}
 			: {
 					child: process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD,

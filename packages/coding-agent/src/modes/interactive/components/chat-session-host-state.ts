@@ -74,7 +74,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getChatRenderSettings: ChatSessionHostOpts<TExtraEntry>["getChatRenderSettings"];
 	readonly getCwd: (() => string) | undefined;
 	readonly footerData: ReadonlyFooterDataProvider | undefined;
-	readonly renderExtraEntry: ((entry: TExtraEntry) => Component) | undefined;
+	readonly renderExtraEntry: ((entry: TExtraEntry, expanded?: boolean) => Component) | undefined;
 	readonly countsAsMessage: ((entry: TExtraEntry) => boolean) | undefined;
 	readonly tui: TUI | undefined;
 

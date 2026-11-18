@@ -181,11 +181,14 @@ export async function addAutoDiscoveredResources(
 			);
 		}
 	}
-	for (const agentsSkillsDir of projectAgentsSkillDirs) {
+	const projectAgentsSkills = await Promise.all(
+		projectAgentsSkillDirs.map((dir) => collectAutoSkillEntries(dir, "agents")),
+	);
+	for (const [index, agentsSkillsDir] of projectAgentsSkillDirs.entries()) {
 		const agentsBaseDir = dirname(agentsSkillsDir);
 		addResources(
 			"skills",
-			await collectAutoSkillEntries(agentsSkillsDir, "agents"),
+			projectAgentsSkills[index],
 			{ ...projectMetadata, baseDir: agentsBaseDir },
 			projectOverrides.skills,
 			agentsBaseDir,

@@ -77,6 +77,7 @@ function configureDeferredGateMode(mode: InteractiveMode): void {
 		},
 		showStartupNoticesIfNeeded() {},
 		maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
+		refreshProjectTrustWarning() {},
 	});
 }
 
@@ -251,6 +252,8 @@ test("rebuilds restored transcript through deferred Markdown transformers", asyn
 			getLeafId: () => entries.at(-1)?.id ?? null,
 		},
 		settingsManager: {
+			// A redraw shows the untrusted-project warning when it applies; this session is trusted.
+			isProjectTrusted: () => true,
 			getShowCacheMissNotices: () => false,
 			getShowImages: () => false,
 			getImageWidthCells: () => 80,
