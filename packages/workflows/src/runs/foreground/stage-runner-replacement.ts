@@ -2,10 +2,16 @@ import type { AgentSession } from "@bastani/atomic";
 import { asAgentSession, disposeStageSession } from "./stage-runner-session.js";
 import type { StageSessionRuntime } from "./stage-runner-types.js";
 
+function holdsDeliveries(session: StageSessionRuntime): boolean {
+	return session.queuedMessagesPaused === true;
+}
+
 /** Keeps detached completion ownership continuous while a fallback session is replaced. */
 export class StageSessionReplacement {
 	private previous: StageSessionRuntime | undefined;
 	private readonly cleanups = new Set<Promise<void>>();
+	/** Stopping the retiring session held its queued deliveries; the successor releases them once it owns them. */
+	private releaseSuccessorQueue = false;
 
 	/** Generation-owned work remains live while the replacement is being created. */
 	get retiringSession(): StageSessionRuntime | undefined {
@@ -14,6 +20,19 @@ export class StageSessionReplacement {
 
 	retire(session: StageSessionRuntime | undefined): void {
 		if (session) this.previous = session;
+	}
+
+	/**
+	 * Ends the retiring session's turn before its successor is created: a turn it was still running (a continuation, a
+	 * delivery's turn or a tool call) would otherwise keep working next to the successor until it went idle. Stopping a
+	 * stage session holds its queued deliveries, which move to the successor; a hold the stage did not already have is
+	 * released there.
+	 */
+	async stop(session: StageSessionRuntime | undefined): Promise<void> {
+		if (!session) return;
+		const alreadyHeld = holdsDeliveries(session);
+		await session.abort();
+		if (!alreadyHeld && holdsDeliveries(session)) this.releaseSuccessorQueue = true;
 	}
 
 	adopt(session: StageSessionRuntime): void {
@@ -27,6 +46,13 @@ export class StageSessionReplacement {
 			| undefined;
 		const target = asAgentSession(session);
 		if (source && target) source.transferWorkflowStageDeliveriesTo?.(target);
+		if (this.releaseSuccessorQueue) {
+			this.releaseSuccessorQueue = false;
+			// Releases the hold without starting a turn: the runner's prompt to the successor carries the deliveries.
+			void Promise.resolve(session.resumeQueuedMessages?.()).catch((error: unknown) => {
+				console.error("atomic-workflows: releasing a replacement stage session's deliveries failed", error);
+			});
+		}
 		const cleanup = this.disposeAfterIdle(previous);
 		this.cleanups.add(cleanup);
 		void cleanup.finally(() => this.cleanups.delete(cleanup)).catch(() => {});
@@ -42,6 +68,7 @@ export class StageSessionReplacement {
 	async disposeRetired(): Promise<void> {
 		const previous = this.previous;
 		this.previous = undefined;
+		this.releaseSuccessorQueue = false;
 		if (!previous) return;
 		await disposeStageSession(previous).catch((error: unknown) => {
 			console.error("atomic-workflows: retired stage session disposal failed", error);

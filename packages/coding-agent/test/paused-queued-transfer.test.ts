@@ -189,6 +189,45 @@ describe("paused queue stage-session transfer", () => {
 		]);
 	});
 
+	test("a fallback candidate stopped before its replacement hands its queued deliveries over unheld", async () => {
+		const source = await createHarness();
+		const target = await createHarness();
+		harnesses.push(source, target);
+		shareAdmissionBoundary(source.session as TransferSession, target.session as TransferSession);
+		target.setResponses([fauxAssistantMessage("fallback candidate answered"), fauxAssistantMessage("follow-up")]);
+		source.session.agent.followUp(rawUser("delivery queued on the replaced session"));
+
+		const replacement = new StageSessionReplacement();
+		replacement.retire(source.session);
+		await replacement.stop(source.session);
+		expect(source.session.queuedMessagesPaused).toBe(true);
+		replacement.adopt(target.session);
+		await replacement.dispose();
+
+		expect(target.session.queuedMessagesPaused).toBe(false);
+		await target.session.prompt("fallback candidate prompt");
+		await target.session.agent.waitForIdle();
+		expect(target.session.messages.filter((message) => message.role === "user").map(getMessageText)).toContain(
+			"delivery queued on the replaced session",
+		);
+	});
+
+	test("a stage that was already holding its deliveries keeps holding them after a stopped replacement", async () => {
+		const source = await createHarness();
+		const target = await createHarness();
+		harnesses.push(source, target);
+		shareAdmissionBoundary(source.session as TransferSession, target.session as TransferSession);
+		source.session.pauseQueuedMessages();
+
+		const replacement = new StageSessionReplacement();
+		replacement.retire(source.session);
+		await replacement.stop(source.session);
+		replacement.adopt(target.session);
+		await replacement.dispose();
+
+		expect(target.session.queuedMessagesPaused).toBe(true);
+	});
+
 	test("a rejecting transferred boundary waits for a newer target abort boundary before retry cleanup", async () => {
 		const source = await createHarness();
 		const target = await createHarness();

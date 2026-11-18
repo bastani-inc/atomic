@@ -3359,6 +3359,12 @@ export class StageSessionController {
 		this.unsubscribeTerminateWatcher?.();
 		this.unsubscribeTerminateWatcher = undefined;
 		this.residency.terminatingToolCallIds.clear();
+		// A replaced session must not keep working beside its successor: its turn ends before the successor exists.
+		try {
+			await this.residency.replacement.stop(current);
+		} catch (error) {
+			console.error("atomic-workflows: stopping a replaced stage session failed", error);
+		}
 		// #3020: every creator must wait for ownership release, not only the prompt
 		// advancing fallback. Keep a failed barrier: shutdown failure is not proof
 		// of release, so later attachment must fail rather than register a new owner.
