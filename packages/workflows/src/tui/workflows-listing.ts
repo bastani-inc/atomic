@@ -10,9 +10,12 @@ import {
 	themeSelectorStyle,
 } from "@bastani/atomic";
 import {
+	ClickableRows,
 	getKeybindings,
 	Input,
 	matchesKey,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -409,7 +412,9 @@ function renderCompactListing(
 	width: number,
 	previewOpen: boolean,
 	previewAvailable: boolean,
+	rows: ClickableRows<SelectorItem<WorkflowsListingTarget>>,
 ): string[] {
+	rows.clear();
 	const visible = state.getVisible();
 	const top = state.getTop();
 	const end = Math.min(visible.length, top + state.maxVisible);
@@ -439,7 +444,9 @@ function renderCompactListing(
 			line +=
 				" ".repeat(Math.max(2, width - 3 - visibleWidth(label) - visibleWidth(item.tag))) +
 				style.tone(item.tagTone ?? "muted", item.tag);
+		rows.add(lines.length, item, item.id);
 		lines.push(line);
+		rows.add(lines.length, item, item.id);
 		lines.push(`   ${style.muted(truncateToWidth(item.description ?? "", Math.max(1, width - 3)))}`);
 		if (selected && previewOpen && !state.getQuery()) {
 			const target = item.value;
@@ -521,6 +528,8 @@ export function openWorkflowsListing(
 			});
 			let baseTop = selector.getTop();
 			let previewOpen = false;
+			/** The rows each workflow and run was drawn on in the last render. */
+			const clickableRows = new ClickableRows<SelectorItem<WorkflowsListingTarget>>();
 			const canShowPreview = (): boolean =>
 				!selector.getQuery() &&
 				selector.getSelected() !== undefined &&
@@ -643,6 +652,7 @@ export function openWorkflowsListing(
 						width,
 						previewOpen,
 						previewAvailable,
+						clickableRows,
 					);
 					while (lines.length > availableRows && maxVisible > 1) {
 						selector.setMaxVisible(--maxVisible);
@@ -654,10 +664,20 @@ export function openWorkflowsListing(
 							width,
 							previewOpen,
 							previewAvailable,
+							clickableRows,
 						);
 					}
 					if (previewOpen && lines.length > availableRows) {
-						lines = renderCompactListing(selector, cachedRuns, search, style, width, false, previewAvailable);
+						lines = renderCompactListing(
+							selector,
+							cachedRuns,
+							search,
+							style,
+							width,
+							false,
+							previewAvailable,
+							clickableRows,
+						);
 					}
 					paintedSelectionId = selector.getSelected()?.id;
 					refreshedSincePaint = false;
@@ -681,6 +701,27 @@ export function openWorkflowsListing(
 					tui.requestRender?.();
 					return true;
 				},
+				// A click on a workflow or run opens it, as moving there and pressing Enter does.
+				handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined => {
+					const result = clickableRows.handleMouse(event, {
+						activate: (item) => {
+							const index = selector.getVisible().findIndex((candidate) => candidate.id === item.id);
+							if (index < 0) return;
+							selector.select(index);
+							finish(item.value);
+						},
+						scroll: (direction) => {
+							const before = selector.getSelected()?.id;
+							selector.move(direction, false);
+							baseTop = selector.getTop();
+							movedSincePaint = true;
+							return selector.getSelected()?.id !== before;
+						},
+					});
+					if (result) tui.requestRender?.();
+					return result;
+				},
+				paintedRowKey: (row: number): string | undefined => clickableRows.paintedRowKey(row),
 				invalidate: () => search.invalidate(),
 				dispose: () => finish(undefined),
 				get focused() {
