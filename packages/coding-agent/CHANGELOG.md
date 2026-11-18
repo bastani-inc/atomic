@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `hexColorAnsi(hex, "fg" | "bg")` returns the escape sequence for a `#rrggbb` color that follows `NO_COLOR` and `FORCE_COLOR` the way theme colors do, for extensions that paint their own colors
+
 ### Changed
 
 - A task heartbeat in chat is now a notice like the others instead of a shaded card: one `♥ Task heartbeat · N tasks still running` line, a `⎿` row per task (up to five, the rest counted in one row), and `/tasks to inspect` under them. Expanding it (Ctrl+O) adds each task's status and last output lines. The text the model reads is unchanged. For extensions, `NoticeStatus` gains `heartbeat` (the `♥` mark), and `HeartbeatBlock` draws a heartbeat in this form

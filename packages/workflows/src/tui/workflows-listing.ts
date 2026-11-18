@@ -1,7 +1,6 @@
 import {
 	type NavKey,
 	navEntryKeys,
-	PLAIN_SELECTOR_STYLE,
 	renderNavHintLine,
 	type SelectorItem,
 	SelectorState,
@@ -469,9 +468,9 @@ function renderCompactListing(
 	return lines.map((line) => truncateToWidth(line, width));
 }
 
+/** The theme's live styles: they follow the cached color level, so an open list repaints when it changes. */
 function listingStyle(): SelectorStyle {
-	const themed = themeSelectorStyle();
-	return process.env.NO_COLOR === undefined ? themed : { ...PLAIN_SELECTOR_STYLE, bold: themed.bold };
+	return themeSelectorStyle();
 }
 
 export function openWorkflowsListing(
