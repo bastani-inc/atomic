@@ -380,38 +380,49 @@ describe("a tool call that ignores the interrupt (#5486)", () => {
 		);
 	});
 
-	test("Esc in the same tick a call becomes ready to detach wins: a call that ignores it ends aborted after the grace, gives its place back, and its late result is recorded once (#5486)", async () => {
-		const { session, tool } = await sessionWithStuckTool("main", { detachable: true, requiresReady: true });
-		session.setToolDetachment({ afterMs: 0 });
-		const prompt = session.prompt("go");
-		await tool.started.promise;
-		// The deadline has passed, so the call detaches as soon as it is ready; the interrupt comes in the same tick.
-		await sleep(30);
-		assert.ok(tool.signal);
-		markToolCallReadyForDetachment(tool.signal);
-		const interrupted = session.abort();
+	for (const order of ["ready, then Esc", "Esc, then ready"] as const)
+		test(`Esc in the same tick a call becomes ready to detach wins (${order}): a call that ignores it ends aborted after the grace, gives its place back, and its late result is recorded once (#5486)`, async () => {
+			const { session, tool } = await sessionWithStuckTool("main", { detachable: true, requiresReady: true });
+			session.setToolDetachment({ afterMs: 0 });
+			const prompt = session.prompt("go");
+			await tool.started.promise;
+			// The deadline has passed, so the call detaches as soon as it is ready; the interrupt comes in the same tick.
+			await sleep(30);
+			const signal = tool.signal;
+			assert.ok(signal);
+			let interrupted: Promise<void>;
+			if (order === "ready, then Esc") {
+				markToolCallReadyForDetachment(signal);
+				interrupted = session.abort();
+			} else {
+				interrupted = session.abort();
+				markToolCallReadyForDetachment(signal);
+			}
 
-		assert.ok(await settlesWithin(interrupted, TURN_END_BUDGET_MS), "the interrupted turn ends");
-		await prompt.catch(() => {});
-		assert.deepEqual(session.takeDetachedToolCalls(), [], "the interrupted call is not handed over as detached");
-		const result = session.messages.find((message) => message.role === "toolResult");
-		assert.ok(result?.role === "toolResult", "the interrupted call has its own result, not a detached placeholder");
-		assert.equal(result.isError, true);
-		assert.match(textOf(result.content), /^Operation aborted: stuck did not stop within 0\.2 seconds/);
-		assert.ok(
-			await settlesWithin(session.prompt("next"), TURN_END_BUDGET_MS),
-			"the next turn's exclusive call runs while the stuck call still runs",
-		);
+			assert.ok(await settlesWithin(interrupted, TURN_END_BUDGET_MS), "the interrupted turn ends");
+			await prompt.catch(() => {});
+			assert.deepEqual(session.takeDetachedToolCalls(), [], "the interrupted call is not handed over as detached");
+			const result = session.messages.find((message) => message.role === "toolResult");
+			assert.ok(
+				result?.role === "toolResult",
+				"the interrupted call has its own result, not a detached placeholder",
+			);
+			assert.equal(result.isError, true);
+			assert.match(textOf(result.content), /^Operation aborted: stuck did not stop within 0\.2 seconds/);
+			assert.ok(
+				await settlesWithin(session.prompt("next"), TURN_END_BUDGET_MS),
+				"the next turn's exclusive call runs while the stuck call still runs",
+			);
 
-		tool.release.resolve("CI is green");
-		await until(() => session.messages.some((message) => message.role === "custom"), "the late result");
-		await sleep(50);
-		assert.deepEqual(
-			session.messages.filter((message) => message.role === "custom").map((message) => message.details),
-			[{ toolCallId: "stuck-1", toolName: "stuck", isError: false }],
-			"the call's late outcome is recorded once",
-		);
-	});
+			tool.release.resolve("CI is green");
+			await until(() => session.messages.some((message) => message.role === "custom"), "the late result");
+			await sleep(50);
+			assert.deepEqual(
+				session.messages.filter((message) => message.role === "custom").map((message) => message.details),
+				[{ toolCallId: "stuck-1", toolName: "stuck", isError: false }],
+				"the call's late outcome is recorded once",
+			);
+		});
 
 	test("Esc in the same tick a call becomes ready to detach wins: a call that stops on it keeps its own result and does not detach (#5486)", async () => {
 		const { session, tool } = await sessionWithStuckTool("main", { detachable: true, requiresReady: true });
