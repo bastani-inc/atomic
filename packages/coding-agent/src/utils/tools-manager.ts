@@ -1773,14 +1773,20 @@ async function retryTransient<T>(operation: () => Promise<T>): Promise<T> {
 async function lockIdentity(path: string): Promise<{ readonly id: string; readonly mtime: Date } | undefined> {
 	try {
 		const stats = await retryTransient(() => stat(path, { bigint: true }));
-		// The mtime as a plain stat reports it, rounded to the nearest millisecond: proper-lockfile compares its
-		// holder's stamp with that value, and a stamp of X ms is often stored as X ms less a few nanoseconds.
-		const mtimeMs = (stats.mtimeNs + 500_000n) / 1_000_000n;
-		return { id: `${stats.dev}:${stats.ino}:${stats.mtimeNs}`, mtime: new Date(Number(mtimeMs)) };
+		return { id: `${stats.dev}:${stats.ino}:${stats.mtimeNs}`, mtime: new Date(plainStatMtimeMs(stats.mtimeNs)) };
 	} catch (error) {
 		if (errnoCode(error) === "ENOENT") return undefined;
 		throw error;
 	}
+}
+
+/**
+ * The mtime a plain `stat` reports for `mtimeNs`, in whole milliseconds, computed as Node computes it (seconds and
+ * nanoseconds summed in floating point, then rounded). proper-lockfile compares its holder's stamp with that value,
+ * so a lock put back must carry exactly it.
+ */
+export function plainStatMtimeMs(mtimeNs: bigint): number {
+	return Math.round(Number(mtimeNs / 1_000_000_000n) * 1000 + Number(mtimeNs % 1_000_000_000n) / 1_000_000);
 }
 
 /** Move `from` to `to` atomically; false when `from` is gone. */
