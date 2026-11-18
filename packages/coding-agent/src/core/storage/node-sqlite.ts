@@ -10,7 +10,7 @@ import {
 	watch,
 	write,
 } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, realpath, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { platform } from "node:os";
 import { basename, dirname, join, resolve, win32 } from "node:path";
@@ -706,7 +706,7 @@ async function acquireOpenLock(
 			lock = locks.trySharedAdvisoryLock(sqliteFilePath(lockPath), 0);
 		} catch (error) {
 			if (readOnly) return undefined;
-			if (isPassingOpenLockRefusal(error)) refusal = error;
+			if (await isPassingOpenLockRefusal(error, lockPath)) refusal = error;
 			else if (!isMissingOpenLockDir(error)) throw error;
 		}
 		if (lock !== null) {
@@ -733,11 +733,16 @@ async function acquireOpenLock(
 /**
  * Windows refuses to create a file for a few milliseconds after another process removes one of the same name, with
  * `Access is denied` while nothing is at the path; an open waits that out like a held lock, within its busy timeout.
+ * A refusal while a file is at the path is a real permission error.
  */
-function isPassingOpenLockRefusal(error: unknown): boolean {
+async function isPassingOpenLockRefusal(error: unknown, lockPath: string): Promise<boolean> {
 	if (process.platform !== "win32") return false;
 	const message = error instanceof Error ? error.message : String(error);
-	return /\(os error 5\)/.test(message);
+	if (!/\(os error 5\)/.test(message)) return false;
+	return lstat(lockPath).then(
+		() => false,
+		(cause: unknown) => isMissingFile(cause),
+	);
 }
 
 function isOpenLockPermissionError(error: unknown): boolean {

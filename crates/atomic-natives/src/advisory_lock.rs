@@ -17,7 +17,12 @@ const RETRY_INTERVAL: Duration = Duration::from_millis(5);
 /// How many refusals in a row that a concurrent removal of the path explains are retried before a refusal counts as
 /// a real permission error. On Windows, opening a file while another process removes it is refused until the
 /// removal finishes, and the path may hold a new file or no file by the time the refusal is examined.
+#[cfg(windows)]
 const MAX_DELETE_RACE_RETRIES: u32 = 16;
+
+/// How long a taker waits before it retries a refusal that a concurrent removal explains.
+#[cfg(windows)]
+const DELETE_RACE_RETRY_INTERVAL: Duration = Duration::from_millis(2);
 
 #[cfg(unix)]
 fn lock_matches_path(file: &File, path: &Path) -> bool {
@@ -176,7 +181,10 @@ fn try_lock_with(
 					#[cfg(windows)]
 					OpenFailure::WaitDeletePending => {},
 					#[cfg(windows)]
-					OpenFailure::RetryChangedPath => continue,
+					OpenFailure::RetryChangedPath => {
+						thread::sleep(DELETE_RACE_RETRY_INTERVAL);
+						continue;
+					},
 					OpenFailure::Permanent => return Err(error),
 				},
 			}
@@ -193,6 +201,7 @@ fn try_lock_with(
 					continue;
 				},
 				Err(TryLockError::WouldBlock) => {},
+				#[cfg(windows)]
 				Err(TryLockError::Error(error))
 					if error.kind() == io::ErrorKind::PermissionDenied
 						&& delete_races < MAX_DELETE_RACE_RETRIES
@@ -200,6 +209,7 @@ fn try_lock_with(
 				{
 					delete_races += 1;
 					file = None;
+					thread::sleep(DELETE_RACE_RETRY_INTERVAL);
 					continue;
 				},
 				Err(TryLockError::Error(error)) => return Err(error),
@@ -412,5 +422,29 @@ mod tests {
 		});
 		std::fs::remove_dir_all(directory).unwrap();
 		assert!(acquired.unwrap().is_none(), "a repeatedly replaced path must exhaust its wait");
+	}
+
+	#[cfg(not(windows))]
+	#[test]
+	fn a_refused_lock_on_a_replaced_path_fails_at_once_off_windows_5317() {
+		let stamp =
+			std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+		let directory =
+			std::env::temp_dir().join(format!("atomic-refused-lock-{}-{stamp}", std::process::id()));
+		std::fs::create_dir_all(&directory).unwrap();
+		let path = directory.join("refused.lock");
+		let mut attempts = 0;
+		let acquired = try_lock_with(&path, Duration::ZERO, |_file| {
+			attempts += 1;
+			let _ = std::fs::remove_file(&path);
+			Err(TryLockError::Error(io::Error::from(io::ErrorKind::PermissionDenied)))
+		});
+		std::fs::remove_dir_all(directory).unwrap();
+		assert_eq!(
+			acquired.unwrap_err().kind(),
+			io::ErrorKind::PermissionDenied,
+			"the refusal is reported"
+		);
+		assert_eq!(attempts, 1, "a permission refusal is reported after one attempt");
 	}
 }
