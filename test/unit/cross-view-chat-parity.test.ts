@@ -60,6 +60,10 @@ const APPLICATION_COMMAND = /\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const plain = (lines: readonly string[]): string[] =>
 	lines.map((line) => stripVTControlCharacters(line.replace(APPLICATION_COMMAND, "")).trimEnd());
 
+/** The attached composer's top rule: the main composer's rule glyphs ending in its label (#5224). */
+const isComposerTopRule = (row: string): boolean =>
+	/^─+ .+ ─$/.test(stripVTControlCharacters(row.replace(APPLICATION_COMMAND, "")).trimEnd());
+
 const flush = async (): Promise<void> => {
 	for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 };
@@ -178,10 +182,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 						),
 					`width ${width}: ❯ prompt echo uses accent bold chevron and userMessageText token`,
 				);
-				const beforeComposer = rows.slice(
-					0,
-					rows.findIndex((row) => row.includes("━")),
-				);
+				const beforeComposer = rows.slice(0, rows.findIndex(isComposerTopRule));
 				assert.equal(
 					beforeComposer.filter((row) => row.includes("Fix #5220: make lock creation atomic")).length,
 					1,
@@ -255,10 +256,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 			);
 			assert.equal(renderedLines[0], " › from main");
 			assert.equal(renderedLines[1], " ❯ Subagent task");
-			const beforeComposer = renderedLines.slice(
-				0,
-				renderedLines.findIndex((row) => row.includes("━")),
-			);
+			const beforeComposer = renderedLines.slice(0, renderedLines.findIndex(isComposerTopRule));
 			assert.equal(
 				beforeComposer.filter((row) => row.includes("Subagent task")).length,
 				1,
@@ -336,12 +334,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 					false,
 					`width ${width}: clipped header alone cannot fit the tail sentinel`,
 				);
-				const bodyText = rows
-					.slice(
-						2,
-						rows.findIndex((row) => row.includes("━")),
-					)
-					.join("\n");
+				const bodyText = rows.slice(2, rows.findIndex(isComposerTopRule)).join("\n");
 				assert.match(
 					bodyText,
 					/TAIL-SENTINEL-BEYOND-160/,
@@ -360,31 +353,16 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 		try {
 			const wideRows = plain(resizeCase.inspector.renderViewport(160, 28));
 			assert.ok((wideRows[1] ?? "").includes("RESIZE-TAIL-SENTINEL"), "160 cols: header fits full medium prompt");
-			const wideBody = wideRows
-				.slice(
-					2,
-					wideRows.findIndex((row) => row.includes("━")),
-				)
-				.join("\n");
+			const wideBody = wideRows.slice(2, wideRows.findIndex(isComposerTopRule)).join("\n");
 			assert.doesNotMatch(wideBody, /RESIZE-TAIL-SENTINEL/, "160 cols: body does not duplicate fitting prompt");
 
 			const narrowRows = plain(resizeCase.inspector.renderViewport(80, 28));
 			assert.equal((narrowRows[1] ?? "").includes("RESIZE-TAIL-SENTINEL"), false, "80 cols: header clips");
-			const narrowBody = narrowRows
-				.slice(
-					2,
-					narrowRows.findIndex((row) => row.includes("━")),
-				)
-				.join("\n");
+			const narrowBody = narrowRows.slice(2, narrowRows.findIndex(isComposerTopRule)).join("\n");
 			assert.match(narrowBody, /RESIZE-TAIL-SENTINEL/, "80 cols: body renders full prompt on resize");
 
 			const wideAgainRows = plain(resizeCase.inspector.renderViewport(160, 28));
-			const wideAgainBody = wideAgainRows
-				.slice(
-					2,
-					wideAgainRows.findIndex((row) => row.includes("━")),
-				)
-				.join("\n");
+			const wideAgainBody = wideAgainRows.slice(2, wideAgainRows.findIndex(isComposerTopRule)).join("\n");
 			assert.doesNotMatch(wideAgainBody, /RESIZE-TAIL-SENTINEL/, "160 cols again: body hides duplicate on widen");
 		} finally {
 			await resizeCase.dispose();
@@ -397,12 +375,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 		]);
 		try {
 			const rows = plain(multilineCase.inspector.renderViewport(120, 28));
-			const bodyText = rows
-				.slice(
-					2,
-					rows.findIndex((row) => row.includes("━")),
-				)
-				.join("\n");
+			const bodyText = rows.slice(2, rows.findIndex(isComposerTopRule)).join("\n");
 			assert.match(bodyText, /First line summary/);
 			assert.match(bodyText, /Second line detail MULTILINE-TAIL-SENTINEL/);
 		} finally {
@@ -423,12 +396,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 		]);
 		try {
 			const rows = plain(imageCase.inspector.renderViewport(120, 28));
-			const bodyText = rows
-				.slice(
-					2,
-					rows.findIndex((row) => row.includes("━")),
-				)
-				.join("\n");
+			const bodyText = rows.slice(2, rows.findIndex(isComposerTopRule)).join("\n");
 			assert.match(bodyText, /Short prompt with image/);
 		} finally {
 			await imageCase.dispose();
@@ -441,12 +409,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 		]);
 		try {
 			const rows = plain(parentHistoryCase.inspector.renderViewport(120, 28));
-			const bodyText = rows
-				.slice(
-					2,
-					rows.findIndex((row) => row.includes("━")),
-				)
-				.join("\n");
+			const bodyText = rows.slice(2, rows.findIndex(isComposerTopRule)).join("\n");
 			assert.match(bodyText, /Parent context prompt/);
 			assert.match(bodyText, /Child task prompt/);
 		} finally {
@@ -470,10 +433,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 		try {
 			const wideRows = plain(prefacedCustomCase.inspector.renderViewport(120, 28));
 			assert.equal(wideRows[1], ` ❯ ${prefacedPrompt}`);
-			const wideBodyRows = wideRows.slice(
-				2,
-				wideRows.findIndex((row) => row.includes("━")),
-			);
+			const wideBodyRows = wideRows.slice(2, wideRows.findIndex(isComposerTopRule));
 			assert.ok(
 				wideBodyRows.some((row) => row.includes("Pre-start custom context")),
 				"pre-start custom message stays visible",
@@ -1364,8 +1324,9 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			await flush();
 
 			const runningRows = plain(inspector.renderViewport(80, 24));
-			const runningRule = runningRows.find((row) => row.includes("━") && row.includes("Inspect concurrent")) ?? "";
-			assert.match(runningRule, / · 14s ━$/, "running composer label shows live elapsed");
+			const runningRule =
+				runningRows.find((row) => isComposerTopRule(row) && row.includes("Inspect concurrent")) ?? "";
+			assert.match(runningRule, / · 14s ─$/, "running composer label shows live elapsed");
 
 			// Press Esc to interrupt the subagent turn while native task execution remains running.
 			assert.equal(inspector.handleInput(ESC), true);
@@ -1381,8 +1342,8 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			now += 10_000;
 			const interruptedRows = plain(inspector.renderViewport(80, 24));
 			const interruptedRule =
-				interruptedRows.find((row) => row.includes("━") && row.includes("Inspect concurrent")) ?? "";
-			assert.match(interruptedRule, / · stopped ━$/, "interrupted composer label shows stopped instead of ticking");
+				interruptedRows.find((row) => isComposerTopRule(row) && row.includes("Inspect concurrent")) ?? "";
+			assert.match(interruptedRule, / · stopped ─$/, "interrupted composer label shows stopped instead of ticking");
 			assert.ok(
 				interruptedRows.some((row) => row.includes("Stopped · send to resume")),
 				"interrupted composer placeholder shows Stopped · send to resume",
@@ -1443,8 +1404,9 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			assert.match(resumedBlock[0] ?? "", /^ ∀ Agent\(worker · Inspect concurrent spawn locks\.\)$/);
 			assert.match(resumedBlock[1] ?? "", /^ {3}⎿ {2}Running · 14s · ↓ 800 tokens/);
 			const resumedRows = plain(inspector.renderViewport(80, 24));
-			const resumedRule = resumedRows.find((row) => row.includes("━") && row.includes("Inspect concurrent")) ?? "";
-			assert.doesNotMatch(resumedRule, / · stopped ━$/, "composer label leaves stopped state once turn resumes");
+			const resumedRule =
+				resumedRows.find((row) => isComposerTopRule(row) && row.includes("Inspect concurrent")) ?? "";
+			assert.doesNotMatch(resumedRule, / · stopped ─$/, "composer label leaves stopped state once turn resumes");
 
 			// When the follow-up turn finishes and transitions from live followed session to settled history for the same sessionId, the past-tense end row stays visible.
 			for (const listener of listeners) {

@@ -18,7 +18,7 @@ import {
 	stopChatSessionWorkingLifecycle,
 	syncChatSessionAnimationTick,
 } from "./chat-session-host-runtime.ts";
-import type { ChatSessionHostState } from "./chat-session-host-state.ts";
+import { CHAT_SESSION_RESUMING_STATUS, type ChatSessionHostState } from "./chat-session-host-state.ts";
 import type { ChatSessionSubmitMode } from "./chat-session-host-types.ts";
 import { errorMessage, parseBashInput, userMessageSignature } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
@@ -79,14 +79,14 @@ async function submitAfterInterruptSettlement<TExtraEntry extends ChatTranscript
 	state.editor?.addToHistory?.(text);
 	try {
 		state.sdkBusy = true;
-		state.statusMessage = "resuming…";
+		state.statusMessage = CHAT_SESSION_RESUMING_STATUS;
 		syncChatSessionAnimationTick(state);
 		state.requestRender?.();
 		await settlement;
 		await requiredChatSessionCommand(state, "resume")(text, mode);
 		if (state.inputBuffer === editorText) setChatSessionEditorText(state, "");
 		state.sdkBusy = false;
-		if (state.statusMessage === "resuming…") state.statusMessage = "";
+		if (state.statusMessage === CHAT_SESSION_RESUMING_STATUS) state.statusMessage = "";
 	} catch (err) {
 		state.sdkBusy = false;
 		state.statusMessage = errorMessage(err);
@@ -204,25 +204,25 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 	try {
 		if (isPaused) {
 			state.sdkBusy = true;
-			state.statusMessage = "resuming…";
+			state.statusMessage = CHAT_SESSION_RESUMING_STATUS;
 			syncChatSessionAnimationTick(state);
 			state.requestRender?.();
 			await requiredChatSessionCommand(state, "resume")(submitText, submitMode);
 			state.sdkBusy = false;
-			if (state.statusMessage === "resuming…") state.statusMessage = "";
+			if (state.statusMessage === CHAT_SESSION_RESUMING_STATUS) state.statusMessage = "";
 			syncChatSessionAnimationTick(state);
 			return;
 		}
 		if (nativeQueuePaused) {
 			state.sdkBusy = true;
-			state.statusMessage = "resuming…";
+			state.statusMessage = CHAT_SESSION_RESUMING_STATUS;
 			syncChatSessionAnimationTick(state);
 			state.requestRender?.();
 			await agentSession.resumeQueuedMessages();
 			await state.commands.ensureAttached?.();
 			await requiredChatSessionPromptCommand(state)(submitText, submitMode);
 			state.sdkBusy = false;
-			if (state.statusMessage === "resuming…") state.statusMessage = "";
+			if (state.statusMessage === CHAT_SESSION_RESUMING_STATUS) state.statusMessage = "";
 			syncChatSessionAnimationTick(state);
 			return;
 		}
