@@ -6,6 +6,7 @@ import { BashExecutionComponent } from "../src/modes/interactive/components/bash
 import { BranchSummaryMessageComponent } from "../src/modes/interactive/components/branch-summary-message.ts";
 import { CompactionBoundaryMessageComponent } from "../src/modes/interactive/components/compaction-boundary-message.ts";
 import { SkillInvocationMessageComponent } from "../src/modes/interactive/components/skill-invocation-message.ts";
+import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -30,13 +31,19 @@ type CollapsibleSummary =
 	| BranchSummaryMessageComponent
 	| CompactionBoundaryMessageComponent;
 
+/**
+ * A click on `target` where the chat draws it, as the renderer delivers one: to the chat, then, once no second press
+ * made it a double-click, its single-click action.
+ */
 function clickCollapsible(
 	target: CollapsibleSummary,
 	button: TuiMouseEvent["button"] = "left",
-): ReturnType<CollapsibleSummary["handleMouse"]> {
+): ReturnType<StartupChatContainer["handleMouse"]> {
 	const width = 120;
-	const lines = target.render(width);
-	return target.handleMouse({
+	const chat = new StartupChatContainer();
+	chat.addChild(target);
+	const lines = chat.render(width);
+	const result = chat.handleMouse({
 		type: "click",
 		button,
 		x: 1,
@@ -50,6 +57,8 @@ function clickCollapsible(
 		ctrl: false,
 		clickCount: 1,
 	});
+	result?.whenSingleClick?.();
+	return result;
 }
 
 beforeAll(() => initTheme("dark"));

@@ -11,6 +11,7 @@ import {
 	taskPanelItems,
 	taskPanelRole,
 	taskPanelState,
+	taskRunGeneration,
 } from "../../../core/tasks/agent-panel-source.ts";
 import { supersededSettledAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
@@ -127,7 +128,8 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 		const settled =
 			task.execution.kind === "settled" && (state === "done" || state === "failed" || state === "stopped");
 		const retired =
-			isRestingPanelRow("agent", state) && memory.retireResting(`task:${task.ref.taskId}`, active, pass);
+			isRestingPanelRow("agent", state) &&
+			memory.retireResting(`task:${task.ref.taskId}`, active, pass, taskRunGeneration(task));
 		if (!panelRowListed("agent", state, settled, { active, retired, kept: false })) continue;
 		(settled ? finished : state === "input" ? input : state === "running" ? running : other).push(task);
 	}

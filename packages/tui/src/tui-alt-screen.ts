@@ -89,7 +89,8 @@ const MAX_CACHED_OFFSCREEN_KITTY_DECODED_BYTES = 64 * 1024 * 1024;
 const EXIT_WRITE_CHARACTERS = 16 * 1024;
 const EXIT_PREPARE_ROWS = 512;
 const EXIT_SLICE_BUDGET_MS = 8;
-const DOUBLE_CLICK_INTERVAL_MS = 500;
+/** How soon a second press on the same spot must follow the first to make a double- or triple-click. */
+export const MULTI_CLICK_INTERVAL_MS = 500;
 const COPY_ERROR_FLASH_DURATION_MS = 5000;
 // Regular mode delegates double-click selection to the terminal emulator. Fullscreen owns mouse selection,
 // so it uses iTerm2's default "characters considered part of a word" set:
@@ -364,6 +365,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		x: number;
 		y: number;
 	};
+	/**
+	 * Single clicks whose action waits until they cannot become a double-click, by the record of the press (or, for a
+	 * component that took its press, the click) a second one would continue.
+	 */
+	private readonly waitingSingleClicks: { readonly start: object; readonly timer: NodeJS.Timeout }[] = [];
 	private readonly wheelScroll: WheelScrollAccelerator;
 	private readonly mouseEnabled: boolean;
 	private readonly searchMatchStyle: (text: string) => string;
@@ -518,6 +524,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	protected override beforeTerminalStop(_options: TuiStopOptions): void {
 		this.closeSearch();
+		this.dropWaitingSingleClicks();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.stopScrollbarHover();
@@ -1098,14 +1105,60 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const previous = this.lastComponentClick;
 		const count =
 			previous &&
-			now - previous.timestamp <= DOUBLE_CLICK_INTERVAL_MS &&
+			now - previous.timestamp <= MULTI_CLICK_INTERVAL_MS &&
 			previous.component === target.component &&
 			previous.x === x &&
 			previous.y === y
 				? (previous.count % 3) + 1
 				: 1;
+		if (count > 1 && previous) this.cancelWaitingSingleClicks(previous);
 		this.lastComponentClick = { timestamp: now, count, component: target.component, x, y };
 		return count;
+	}
+
+	/**
+	 * Runs a single click's action once the click cannot become a double-click: `start` is the record a second click
+	 * would continue, and `startedAt` when the multi-click interval began.
+	 */
+	private waitForSingleClick(
+		result: TuiMouseDispatchResult,
+		clickCount: number,
+		start: object | undefined,
+		startedAt: number,
+	): void {
+		const action = result.whenSingleClick;
+		if (action === undefined || clickCount !== 1 || start === undefined) return;
+		const waiting = {
+			start,
+			timer: setTimeout(
+				() => {
+					const index = this.waitingSingleClicks.indexOf(waiting);
+					if (index === -1) return;
+					this.waitingSingleClicks.splice(index, 1);
+					action();
+					this.requestRender();
+				},
+				// One past the interval: a second press exactly at its end still counts, and must come first.
+				Math.max(0, startedAt + MULTI_CLICK_INTERVAL_MS + 1 - Date.now()),
+			),
+		};
+		waiting.timer.unref?.();
+		this.waitingSingleClicks.push(waiting);
+	}
+
+	/** A second click continued the clicks begun at `start`: they are a double- or triple-click, not single clicks. */
+	private cancelWaitingSingleClicks(start: object): void {
+		for (let index = this.waitingSingleClicks.length - 1; index >= 0; index--) {
+			const waiting = this.waitingSingleClicks[index]!;
+			if (waiting.start !== start) continue;
+			clearTimeout(waiting.timer);
+			this.waitingSingleClicks.splice(index, 1);
+		}
+	}
+
+	private dropWaitingSingleClicks(): void {
+		for (const waiting of this.waitingSingleClicks) clearTimeout(waiting.timer);
+		this.waitingSingleClicks.length = 0;
 	}
 
 	private clearTextSelection(): void {
@@ -1153,7 +1206,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 						clickCount: this.getComponentClickCount(target, raw.x, raw.y),
 					});
 					const clickResult = this.dispatchMouseToTarget(clickEvent, target);
-					if (clickResult) render = this.applyMouseDispatchResult(clickEvent, clickResult) || render;
+					if (clickResult) {
+						render = this.applyMouseDispatchResult(clickEvent, clickResult) || render;
+						const click = this.lastComponentClick;
+						this.waitForSingleClick(clickResult, clickEvent.clickCount ?? 1, click, click?.timestamp ?? 0);
+					}
 				}
 				this.clearComponentMouseGesture();
 			}
@@ -1493,7 +1550,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const end = (word?.end.col ?? point.col) + toScreen;
 		const count =
 			previous &&
-			now - previous.timestamp <= DOUBLE_CLICK_INTERVAL_MS &&
+			now - previous.timestamp <= MULTI_CLICK_INTERVAL_MS &&
 			previous.row === screenRow &&
 			previous.wordStart === start &&
 			previous.wordEnd === end &&
@@ -1501,6 +1558,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			previous.drawn.every((item, index) => item === drawn[index])
 				? (previous.count % 3) + 1
 				: 1;
+		if (count > 1 && previous) this.cancelWaitingSingleClicks(previous);
 		this.lastClick = {
 			timestamp: now,
 			count,
@@ -1647,7 +1705,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				if (result) {
 					const render = this.applyMouseDispatchResult(clickEvent, result);
 					this.clearTextSelection();
-					if (this.lastClick) this.lastClick.awaitingPaint = true;
+					const click = this.lastClick;
+					this.waitForSingleClick(result, clickEvent.clickCount ?? 1, click, click?.timestamp ?? 0);
+					if (click) click.awaitingPaint = true;
 					if (render) this.requestRender();
 					return;
 				}

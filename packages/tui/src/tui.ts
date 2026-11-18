@@ -64,6 +64,12 @@ export interface TuiMouseEventResult {
 	 * press, click, drag, and wheel default to true.
 	 */
 	render?: boolean;
+	/**
+	 * For a single click: what it does once it is known not to start a double- or triple-click. It runs when the
+	 * multi-click interval since the press passes with no second press on the same spot, then the screen repaints. A
+	 * second press there makes the click part of a double- or triple-click, which selects text, and cancels it.
+	 */
+	whenSingleClick?: () => void;
 }
 
 /** Internal target metadata used by containers and alternate-screen dispatch. */

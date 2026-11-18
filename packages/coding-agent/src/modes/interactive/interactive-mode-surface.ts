@@ -282,6 +282,10 @@ declare module "./interactive-mode-base.ts" {
 			},
 		): void;
 		renderInitialMessages(): void;
+		/** Shows, hides or adds the "project is not trusted" warning after the session's trust changed. */
+		refreshProjectTrustWarning(): void;
+		/** Adds the "project is not trusted" warning at the end of the chat when the session's project is untrusted. */
+		appendProjectTrustWarning(): void;
 		attachStartupNoticesContainer(options?: { resetDetached?: boolean }): void;
 		getUserInput(): Promise<InteractiveSubmission>;
 		runUserPromptTurn(submission: InteractiveSubmission | string): Promise<void>;

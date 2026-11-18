@@ -15,10 +15,11 @@
  *   - @bastani/atomic docs/tui.md (overlay primitives)
  */
 
-import type {
-	ChatMessageRenderOptions,
-	ChatSessionViewportSettings,
-	ReadonlyFooterDataProvider,
+import {
+	type ChatMessageRenderOptions,
+	type ChatSessionViewportSettings,
+	type ReadonlyFooterDataProvider,
+	repaintAfterSingleClick,
 } from "@bastani/atomic";
 import type { TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import type {
@@ -313,7 +314,7 @@ export function buildGraphOverlayAdapter(
 			handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined => {
 				const result = view.handleMouse(event);
 				if (result?.handled === true) tui.requestRender?.();
-				return result;
+				return repaintAfterSingleClick(result, () => tui.requestRender?.());
 			},
 			paintedRowKey: (row: number): string | undefined => view.paintedRowKey(row),
 			handleInput: (data: string): boolean => {

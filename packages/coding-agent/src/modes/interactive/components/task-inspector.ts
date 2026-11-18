@@ -77,6 +77,7 @@ import {
 	type TaskTranscriptPage,
 } from "./task-transcript-page.ts";
 import { formatToolActionSummary } from "./tool-block-summary.ts";
+import { repaintAfterSingleClick } from "./transcript-block-clicks.ts";
 
 const DETAIL_WHEEL_ROWS = 4;
 
@@ -866,15 +867,16 @@ export class TaskInspector implements Component {
 		}
 		if (current()) this.requestRender();
 	}
-	/** A click on a block header in an open transcript expands or collapses that block. */
+	/** A click on any row of a block in an open transcript expands or collapses that block. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const transcript = this.transcript;
 		const top = this.transcriptTop;
 		if (transcript?.handleMouse === undefined || top === undefined || this.helpOpen) return undefined;
 		if (this.navigation.focus.kind !== "detail") return undefined;
-		if (!transcript.handleMouse({ ...event, y: event.y - top })) return undefined;
+		const result = transcript.handleMouse({ ...event, y: event.y - top });
+		if (result === undefined) return undefined;
 		this.requestRender();
-		return { handled: true };
+		return repaintAfterSingleClick(result, () => this.requestRender());
 	}
 
 	/** Ctrl+O was pressed: the open transcript's blocks follow the tool-output setting again. */

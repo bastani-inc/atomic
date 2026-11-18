@@ -217,7 +217,12 @@ export {
 	type TuiStopOptions,
 	type ViewportTUI,
 } from "./tui.ts";
-export { TuiAltScreen, type TuiAltScreenOptions, turnPromptAbove } from "./tui-alt-screen.ts";
+export {
+	MULTI_CLICK_INTERVAL_MS,
+	TuiAltScreen,
+	type TuiAltScreenOptions,
+	turnPromptAbove,
+} from "./tui-alt-screen.ts";
 export { TuiMainScreen, type TuiMainScreenRenderState } from "./tui-main-screen.ts";
 // Utilities
 export {

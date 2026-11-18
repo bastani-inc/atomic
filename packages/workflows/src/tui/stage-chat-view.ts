@@ -18,7 +18,7 @@
  *  - packages/coding-agent/docs/tui.md (the @bastani/atomic-tui component contract)
  */
 
-import { clickableHintText } from "@bastani/atomic";
+import { clickableHintText, repaintAfterSingleClick } from "@bastani/atomic";
 import type { Component, Focusable, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
@@ -117,15 +117,14 @@ export class StageChatView implements Component, Focusable {
 		initializeStageChatView(this._ctx(), opts);
 	}
 
-	/** A single click on a block header in the stage's transcript expands or collapses that block. */
+	/** A single click on any row of a block in the stage's transcript expands or collapses that block. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const region = this.transcriptRows;
 		if (region === undefined || event.y < region.top || event.y >= region.top + region.rows) return undefined;
 		// While a dialog the stage opened, its question or the key help owns input, a click on the transcript does nothing.
 		if (this.mountedCustomUi !== null || promptCardShown(this._ctx()) || this.helpOpen) return undefined;
-		if (!this.chatHost.handleBodyClick({ ...event, y: event.y - region.top })) return undefined;
-		this.requestRender?.();
-		return { handled: true };
+		const result = this.chatHost.handleBodyClick({ ...event, y: event.y - region.top });
+		return repaintAfterSingleClick(result, () => this.requestRender?.());
 	}
 
 	/** What the last frame drew on `row` of the transcript: the entry there and the row within it. */

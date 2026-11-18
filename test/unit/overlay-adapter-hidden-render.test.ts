@@ -76,6 +76,10 @@ async function registerIsolatedTests(): Promise<void> {
 	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
 
 	const navKeys = await import("../../packages/coding-agent/src/modes/interactive/components/nav-keys.js");
+	// Stage chats hand a click on a block to the shared block-click helpers.
+	const { repaintAfterSingleClick, rowsFrom } = await import(
+		"../../packages/coding-agent/src/modes/interactive/components/transcript-block-clicks.js"
+	);
 	const { terminalDisplayText } = await import("../../packages/coding-agent/src/utils/terminal-text.ts");
 	// Workflow colors come from the host's color environment; these checks paint them in true color.
 	const hexColorAnsi = (hex: string, layer: "fg" | "bg") => {
@@ -84,6 +88,8 @@ async function registerIsolatedTests(): Promise<void> {
 	};
 	mock.module("@bastani/atomic", () => ({
 		...navKeys,
+		repaintAfterSingleClick,
+		rowsFrom,
 		sliceHead,
 		terminalDisplayText,
 		hexColorAnsi,

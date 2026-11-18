@@ -586,6 +586,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
 					this.addCompactionBoundaryToChat(event.result);
 					if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);
+					this.appendProjectTrustWarning();
 					this.footer.invalidate();
 				}
 				if (event.errorMessage && !manualTakeoverPending) {
