@@ -1579,10 +1579,11 @@ if (-not [string]::IsNullOrWhiteSpace($env:ATOMIC_INSTALL_LOCK_TIMEOUT)) {
         throw "ATOMIC_INSTALL_LOCK_TIMEOUT must be a whole number of seconds."
     }
 }
-$createdInstallRootForLock = $false
-if (-not (Test-Path -LiteralPath $installRoot -PathType Container)) {
+# The lock lives in the install root; directories created for it are removed again when nothing gets installed.
+$lockCreatedDirectories = New-Object System.Collections.ArrayList
+Add-AtomicMissingDirectoryPaths $lockCreatedDirectories $installRoot
+if ($lockCreatedDirectories.Count -gt 0) {
     New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
-    $createdInstallRootForLock = $true
 }
 $installLock = Enter-AtomicInstallLock $installRoot $installLockTimeout
 Clear-AtomicInstallLeftovers $installRoot $binDir
@@ -1901,8 +1902,15 @@ finally {
 finally {
     if ($null -ne (Get-Variable -Name installLock -ValueOnly -ErrorAction SilentlyContinue)) {
         $installLock.Dispose()
-        if ($createdInstallRootForLock) {
-            try { [IO.Directory]::Delete($installRoot) } catch { }
+        if (-not (Get-Variable -Name transactionCommitted -ValueOnly -ErrorAction SilentlyContinue)) {
+            $createdForThisRun = New-Object System.Collections.ArrayList
+            foreach ($createdList in @((Get-Variable -Name lockCreatedDirectories -ValueOnly -ErrorAction SilentlyContinue),
+                    (Get-Variable -Name transactionMissingDirectories -ValueOnly -ErrorAction SilentlyContinue))) {
+                if ($null -ne $createdList) {
+                    foreach ($createdPath in $createdList) { [void]$createdForThisRun.Add($createdPath) }
+                }
+            }
+            Remove-AtomicCreatedEmptyDirectories $createdForThisRun
         }
     }
     if ($null -ne (Get-Variable -Name savedTokenVariables -ValueOnly -ErrorAction SilentlyContinue)) {
