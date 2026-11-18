@@ -470,75 +470,38 @@ function Invoke-AtomicApiRequest {
     }
 }
 
-# The address that finally answered a request: HttpWebResponse.ResponseUri on Windows
-# PowerShell, HttpResponseMessage.RequestMessage.RequestUri on PowerShell 7.
-function Get-AtomicResponseUri {
-    param($Response)
+# Whether the requested release exists: github.com's own answer to a HEAD request for the
+# release's SHA256SUMS, without following its redirect to the file storage. A 2xx or 3xx
+# means "found", 404 "missing" (also for a tag with no published release), anything else
+# "unknown". github.com is not subject to the REST API's 60-requests-an-hour limit for
+# unauthenticated clients.
+function Get-AtomicReleasePageStatus {
+    param([string]$EncodedTag)
 
-    if ($null -eq $Response) {
-        return $null
-    }
-    $candidates = @($Response)
-    $baseProperty = $Response.PSObject.Properties["BaseResponse"]
-    if ($null -ne $baseProperty -and $null -ne $baseProperty.Value) {
-        $candidates = @($baseProperty.Value) + $candidates
-    }
-    foreach ($candidate in $candidates) {
-        $uriProperty = $candidate.PSObject.Properties["ResponseUri"]
-        if ($null -ne $uriProperty -and $null -ne $uriProperty.Value) {
-            return [string]$uriProperty.Value.AbsoluteUri
-        }
-        $requestProperty = $candidate.PSObject.Properties["RequestMessage"]
-        if ($null -ne $requestProperty -and $null -ne $requestProperty.Value) {
-            $requestUriProperty = $requestProperty.Value.PSObject.Properties["RequestUri"]
-            if ($null -ne $requestUriProperty -and $null -ne $requestUriProperty.Value) {
-                return [string]$requestUriProperty.Value.AbsoluteUri
+    $statusCode = 0
+    try {
+        $probeErrors = $null
+        $response = Invoke-WebRequest -Uri "https://github.com/bastani-inc/atomic/releases/download/$EncodedTag/SHA256SUMS" -Method Head -MaximumRedirection 0 -UseBasicParsing -ErrorAction SilentlyContinue -ErrorVariable probeErrors
+        if ($null -ne $response) {
+            $statusProperty = $response.PSObject.Properties["StatusCode"]
+            if ($null -ne $statusProperty -and $null -ne $statusProperty.Value) {
+                $statusCode = [int]$statusProperty.Value
             }
         }
-    }
-    return $null
-}
-
-# Whether an address is the release page of exactly the requested tag.
-function Test-AtomicReleasePageUri {
-    param([string]$Uri, [string]$Tag)
-
-    if ([string]::IsNullOrWhiteSpace($Uri)) {
-        return $false
-    }
-    $prefix = "https://github.com/bastani-inc/atomic/releases/tag/"
-    if (-not $Uri.StartsWith($prefix, [StringComparison]::Ordinal)) {
-        return $false
-    }
-    $pageTag = $Uri.Substring($prefix.Length) -replace '[?#].*$', ''
-    return ([Uri]::UnescapeDataString($pageTag) -ceq $Tag)
-}
-
-# Whether the release page of a requested tag exists on github.com: "found", "missing",
-# or "unknown" when github.com gave no clear answer. github.com is not subject to the
-# REST API's 60-requests-an-hour limit for unauthenticated clients. An answer counts only
-# when the page that answered is the requested tag's own release page, so a redirect to
-# another release or another page never confirms the tag.
-function Get-AtomicReleasePageStatus {
-    param([string]$EncodedTag, [string]$Tag)
-
-    try {
-        $response = Invoke-WebRequest -Uri "https://github.com/bastani-inc/atomic/releases/tag/$EncodedTag" -Method Head -UseBasicParsing -ErrorAction Stop
-        if (-not (Test-AtomicReleasePageUri (Get-AtomicResponseUri $response) $Tag)) {
-            return "unknown"
+        if ($statusCode -eq 0 -and $null -ne $probeErrors -and @($probeErrors).Count -gt 0) {
+            $statusCode = Get-AtomicErrorStatusCode @($probeErrors)[0]
         }
-        $statusProperty = $response.PSObject.Properties["StatusCode"]
-        if ($null -ne $statusProperty -and [int]$statusProperty.Value -eq 200) {
-            return "found"
-        }
-        return "unknown"
     }
     catch {
-        if ((Get-AtomicErrorStatusCode $_) -eq 404 -and (Test-AtomicReleasePageUri (Get-AtomicResponseUri (Get-AtomicErrorResponse $_)) $Tag)) {
-            return "missing"
-        }
-        return "unknown"
+        $statusCode = Get-AtomicErrorStatusCode $_
     }
+    if ($statusCode -ge 200 -and $statusCode -lt 400) {
+        return "found"
+    }
+    if ($statusCode -eq 404) {
+        return "missing"
+    }
+    return "unknown"
 }
 
 function Invoke-AtomicDownload {
@@ -1502,10 +1465,10 @@ else {
         # The pinned release is already installed and healthy: it needs no network request.
         $releasePageStatus = "installed"
     }
-    # An exact tag is confirmed on github.com; the REST API, limited to 60 requests an
+    # An exact tag is confirmed on github.com by its release's SHA256SUMS; the REST API, limited to 60 requests an
     # hour per address without a token, is asked only when github.com cannot tell.
     if ($null -eq $releasePageStatus) {
-        $releasePageStatus = Get-AtomicReleasePageStatus $encodedRequestedRef $requestedRef
+        $releasePageStatus = Get-AtomicReleasePageStatus $encodedRequestedRef
     }
     if ($releasePageStatus -eq "found" -or $releasePageStatus -eq "installed") {
         $releaseTag = $requestedRef

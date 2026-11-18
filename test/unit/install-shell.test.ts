@@ -385,10 +385,31 @@ function fixtureResponder(downloader: "curl" | "wget"): string[] {
 	];
 }
 
-/** The GitHub release page and REST API routes of the fixture downloaders. */
-function fixtureGithubRoutes(downloader: "curl" | "wget"): string[] {
+/**
+ * The release probe: a HEAD of a release's SHA256SUMS on github.com, which answers 302 to the file storage when the
+ * release exists and 404 when it does not. `ATOMIC_FIXTURE_WEB_FAIL=1` makes github.com give no answer.
+ */
+function fixtureReleaseProbe(downloader: "curl" | "wget"): string[] {
+	const probing = downloader === "curl" ? '[ "$head" = 1 ] && [ "$fail_mode" = 0 ]' : '[ "$spider" = 1 ]';
 	const networkFailure =
 		downloader === "curl" ? "case $write_out in *http_code*) printf 000 ;; esac; exit 6" : "exit 4";
+	const found =
+		downloader === "curl" ? "respond 302 ''" : "printf '  HTTP/1.1 302 Found\\n  HTTP/1.1 200 OK\\n' >&2; exit 0";
+	return [
+		"case $url in",
+		"    https://github.com/bastani-inc/atomic/releases/download/*/SHA256SUMS)",
+		`        if ${probing}; then`,
+		`            [ "${shellExpansion("ATOMIC_FIXTURE_WEB_FAIL:-0")}" = 1 ] && { ${networkFailure}; }`,
+		`            probe_rest=${shellExpansion("url%/*")}`,
+		`            if [ -f "$ATOMIC_FIXTURE_RELEASES/${shellExpansion("probe_rest##*/")}/SHA256SUMS" ]; then ${found}; else respond 404 'Not Found'; fi`,
+		"        fi",
+		"        ;;",
+		"esac",
+	];
+}
+
+/** The GitHub REST API routes of the fixture downloaders. */
+function fixtureGithubRoutes(downloader: "curl" | "wget"): string[] {
 	const apiFailure = downloader === "curl" ? "exit 22" : "exit 1";
 	const apiStatus = [
 		`        case "${shellExpansion("ATOMIC_FIXTURE_API_STATUS:-")}" in`,
@@ -397,19 +418,6 @@ function fixtureGithubRoutes(downloader: "curl" | "wget"): string[] {
 		"        esac",
 	];
 	return [
-		"    https://github.com/bastani-inc/atomic/releases/tag/*)",
-		`        [ "${shellExpansion("ATOMIC_FIXTURE_WEB_FAIL:-0")}" = 1 ] && { ${networkFailure}; }`,
-		`        tag=${shellExpansion("url##*/")}`,
-		`        if [ -n "${shellExpansion("ATOMIC_FIXTURE_TAG_REDIRECT:-")}" ]; then`,
-		...(downloader === "curl"
-			? ["            effective_url=$ATOMIC_FIXTURE_TAG_REDIRECT"]
-			: [
-					"            printf '  HTTP/1.1 302 Found\\n  Location: %s [following]\\n' \"$ATOMIC_FIXTURE_TAG_REDIRECT\" >&2",
-				]),
-		"            respond 200 '<html></html>'",
-		"        fi",
-		"        if [ -d \"$ATOMIC_FIXTURE_RELEASES/$tag\" ]; then respond 200 '<html></html>'; else respond 404 'Not Found'; fi",
-		"        ;;",
 		"    https://api.github.com/repos/bastani-inc/atomic/releases/latest)",
 		`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && ${apiFailure}`,
 		...apiStatus,
@@ -448,6 +456,7 @@ const curlWrapper = [
 	"    shift",
 	"done",
 	`if [ "$head" = 1 ]; then printf 'HEAD %s\\n' "$url" >> "$ATOMIC_FIXTURE_LOG"; else printf 'GET %s\\n' "$url" >> "$ATOMIC_FIXTURE_LOG"; fi`,
+	...fixtureReleaseProbe("curl"),
 	"case $url in",
 	"    https://github.com/bastani-inc/atomic/releases/latest)",
 	`        [ "${shellExpansion("ATOMIC_FIXTURE_REDIRECT_FAIL:-0")}" = 1 ] && exit 22`,
@@ -511,6 +520,7 @@ const wgetWrapper = [
 	"    shift",
 	"done",
 	`if [ "$spider" = 1 ]; then printf 'HEAD %s\\n' "$url" >> "$ATOMIC_FIXTURE_LOG"; else printf 'GET %s\\n' "$url" >> "$ATOMIC_FIXTURE_LOG"; fi`,
+	...fixtureReleaseProbe("wget"),
 	"case $url in",
 	"    https://github.com/bastani-inc/atomic/releases/latest)",
 	'        [ "$spider" = 1 ] || exit 1',
@@ -1439,7 +1449,10 @@ unixTest("ATOMIC_RELEASE_BASE_URL redirects only the asset and checksum download
 		assertSuccess(result);
 		assert.equal(currentVersion(fixture), "1.0.0");
 		const requests = readFileSync(fixture.requestLog, "utf8");
-		assert.match(requests, /HEAD https:\/\/github\.com\/bastani-inc\/atomic\/releases\/tag\/1\.0\.0\n/u);
+		assert.match(
+			requests,
+			/HEAD https:\/\/github\.com\/bastani-inc\/atomic\/releases\/download\/1\.0\.0\/SHA256SUMS\n/u,
+		);
 		assert.match(
 			requests,
 			new RegExp(`HEAD ${overrideReleaseBaseQuoted}\\/1\\.0\\.0\\/atomic-linux-x64\\.tar\\.gz\n`, "u"),
@@ -1449,7 +1462,7 @@ unixTest("ATOMIC_RELEASE_BASE_URL redirects only the asset and checksum download
 			new RegExp(`GET ${overrideReleaseBaseQuoted}\\/1\\.0\\.0\\/atomic-linux-x64\\.tar\\.gz\n`, "u"),
 		);
 		assert.match(requests, new RegExp(`GET ${overrideReleaseBaseQuoted}\\/1\\.0\\.0\\/SHA256SUMS\n`, "u"));
-		assert.doesNotMatch(requests, /releases\/download\//u);
+		assert.doesNotMatch(requests, /GET [^\n]*releases\/download\//u);
 
 		// The override never weakens verification: a bad checksum still refuses the archive.
 		const release = fixture.releases.get("2.0.0") as FixtureRelease;
@@ -1730,7 +1743,10 @@ unixTest("shell installer installs an exact tag through github.com while the Git
 				assertSuccess(result);
 				assert.equal(currentVersion(fixture), "1.0.0");
 				const requests = readFileSync(fixture.requestLog, "utf8");
-				assert.match(requests, /(GET|HEAD) https:\/\/github\.com\/bastani-inc\/atomic\/releases\/tag\/1\.0\.0/u);
+				assert.match(
+					requests,
+					/HEAD https:\/\/github\.com\/bastani-inc\/atomic\/releases\/download\/1\.0\.0\/SHA256SUMS\n/u,
+				);
 				assert.doesNotMatch(requests, /api\.github\.com|Authorization|AUTH_MODE/u);
 				assert.match(requests, /releases\/download\/1\.0\.0\/SHA256SUMS/u);
 				assertNoTemporaryState(fixture);
@@ -1741,34 +1757,9 @@ unixTest("shell installer installs an exact tag through github.com while the Git
 	}
 });
 
-unixTest("shell installer does not accept a redirect to another page as confirming an exact tag", () => {
-	for (const downloader of ["curl", "wget"] as const) {
-		for (const target of [
-			"https://github.com/bastani-inc/atomic/releases/tag/2.0.0",
-			"https://github.com/bastani-inc/atomic",
-		]) {
-			const fixture = createFixture();
-			try {
-				const result = fixture.run({
-					downloader,
-					args: ["--ref", "1.0.0"],
-					environment: { ATOMIC_FIXTURE_TAG_REDIRECT: target, ATOMIC_FIXTURE_TAGS_TAG: "2.0.0" },
-				});
-				assert.notEqual(result.exitCode, 0, `${downloader} accepted a redirect to ${target}`);
-				assert.match(output(result), /returned release 2\.0\.0 for requested tag 1\.0\.0/u);
-				const requests = readFileSync(fixture.requestLog, "utf8");
-				assert.match(requests, /releases\/tags\/1\.0\.0/u);
-				assert.doesNotMatch(requests, /releases\/download\//u);
-			} finally {
-				fixture.cleanup();
-			}
-		}
-	}
-});
-
 /**
  * A local HTTP server standing in for github.com (`/web`) and api.github.com (`/api`), so the real curl and wget
- * binaries parse real responses. The release page answers 503, so a pinned tag uses the API. Its `Server` header contains `HTTP/`, which a status parser must not mistake for a
+ * binaries parse real responses. The release probe gets 503, so a pinned tag uses the API. Its `Server` header contains `HTTP/`, which a status parser must not mistake for a
  * status line. `apiMode` "limited" answers the API with GitHub's rate-limit response.
  */
 const fakeGithubServer = String.raw`
@@ -1776,6 +1767,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 const [releasesRoot, apiMode] = process.argv.slice(2);
+const probed = new Set();
 const server = createServer((request, response) => {
 	const url = new URL(request.url, "http://localhost");
 	const send = (status, headers, body = "") => {
@@ -1793,6 +1785,12 @@ const server = createServer((request, response) => {
 	if (/^\/web\/bastani-inc\/atomic\/releases\/tag\/[^/]+$/.test(url.pathname)) return send(503, {}, "Unavailable");
 	match = url.pathname.match(/^\/web\/bastani-inc\/atomic\/releases\/download\/([^/]+)\/([^/]+)$/);
 	if (match) {
+		// The release probe, the first SHA256SUMS request (BusyBox wget's --spider sends a GET), gets no clear
+		// answer, so a pinned tag uses the API this server answers.
+		if (match[2] === "SHA256SUMS" && !probed.has(match[1])) {
+			probed.add(match[1]);
+			return send(503, {}, "Unavailable");
+		}
 		const path = join(releasesRoot, match[1], match[2]);
 		if (!existsSync(path)) return send(404, {}, "Not Found");
 		response.writeHead(200, { Server: "BaseHTTP/0.6 Python/3.12", "Content-Length": statSync(path).size });
@@ -1913,7 +1911,7 @@ unixTest("shell installer reports a missing exact tag as not found without askin
 			assert.notEqual(result.exitCode, 0);
 			assert.match(output(result), /release 9\.9\.9 not found/u);
 			const requests = readFileSync(fixture.requestLog, "utf8");
-			assert.doesNotMatch(requests, /api\.github\.com|releases\/download\//u);
+			assert.doesNotMatch(requests, /api\.github\.com|GET [^\n]*releases\/download\//u);
 			assert.ok(!existsSync(fixture.installRoot));
 			assertNoTemporaryState(fixture);
 		} finally {
@@ -2066,7 +2064,7 @@ unixTest("shell installer fails closed when the exact-tag API response names a d
 
 		const requests = readFileSync(fixture.requestLog, "utf8");
 		assert.match(requests, /GET https:\/\/api\.github\.com\/repos\/bastani-inc\/atomic\/releases\/tags\/1\.0\.0/u);
-		assert.doesNotMatch(requests, /releases\/download\//u);
+		assert.doesNotMatch(requests, /GET [^\n]*releases\/download\//u);
 		assert.ok(!existsSync(fixture.installRoot));
 		assert.ok(!existsSync(fixture.binDir));
 		assertNoTemporaryState(fixture);

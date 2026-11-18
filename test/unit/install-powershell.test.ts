@@ -1965,7 +1965,7 @@ $global:AtomicFixtureLatestApiTag = "2.0.0"
 # falls back to the REST API as when github.com gives no clear answer.
 $global:AtomicFixtureWebPages = $false
 $global:AtomicFixtureApiRateLimited = $false
-$global:AtomicFixtureTagRedirect = $null
+$global:AtomicFixtureProbes = New-Object System.Collections.ArrayList
 
 # An HTTP error shaped like Invoke-WebRequest's: the exception carries the response status and headers.
 function global:New-AtomicFixtureHttpError {
@@ -1986,6 +1986,18 @@ function global:Invoke-WebRequest {
         [string]$Method
     )
 
+    # The release probe (HEAD of a release's SHA256SUMS, no redirects) is recorded apart, so the
+    # request counts of the scenarios below stay those of resolution and downloads.
+    if ($Method -eq "Head" -and $Uri -match '^https://github\.com/bastani-inc/atomic/releases/download/([^/]+)/SHA256SUMS$') {
+        [void]$global:AtomicFixtureProbes.Add($Uri)
+        if (-not $global:AtomicFixtureWebPages) { throw "github.com gives no answer in this fixture scenario: $Uri" }
+        $probeTag = [Uri]::UnescapeDataString($Matches[1])
+        if (Test-Path -LiteralPath (Join-Path (Join-Path $global:AtomicFixtureAssetRoot $probeTag) "SHA256SUMS")) {
+            return [pscustomobject]@{ StatusCode = 302; Headers = @{} }
+        }
+        throw (New-AtomicFixtureHttpError 404 @{} $Uri)
+    }
+
     $authorization = $null
     if ($null -ne $Headers -and $Headers.ContainsKey("Authorization")) {
         $authorization = [string]$Headers["Authorization"]
@@ -2003,17 +2015,6 @@ function global:Invoke-WebRequest {
             Headers = @{ Location = "/bastani-inc/atomic/releases/tag/" + $global:AtomicFixtureRedirectTag }
             BaseResponse = [pscustomobject]@{ ResponseUri = [Uri]"https://github.com/bastani-inc/atomic/releases/latest" }
         }
-    }
-
-    if ($global:AtomicFixtureWebPages -and $Uri -match '^https://github\.com/bastani-inc/atomic/releases/tag/([^/]+)$') {
-        $pageTag = [Uri]::UnescapeDataString($Matches[1])
-        if (-not [string]::IsNullOrWhiteSpace($global:AtomicFixtureTagRedirect)) {
-            return [pscustomobject]@{ StatusCode = 200; Content = "<html></html>"; Headers = @{}; BaseResponse = [pscustomobject]@{ ResponseUri = [Uri]$global:AtomicFixtureTagRedirect } }
-        }
-        if (Test-Path -LiteralPath (Join-Path $global:AtomicFixtureAssetRoot $pageTag)) {
-            return [pscustomobject]@{ StatusCode = 200; Content = "<html></html>"; Headers = @{}; BaseResponse = [pscustomobject]@{ ResponseUri = [Uri]$Uri } }
-        }
-        throw (New-AtomicFixtureHttpError 404 @{} $Uri)
     }
 
     if ($Uri -match '^https://api\.github\.com/') {
@@ -3061,17 +3062,7 @@ try {
         & $InstallerPath -Ref "1.0.0" | Out-Null
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $installRoot "versions\1.0.0\atomic.exe")) "an exact tag did not install while the GitHub API was rate limited"
         Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '^https://api\.github\.com/' }).Count -eq 0) "an exact tag confirmed on github.com still queried the API"
-        Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -eq "https://github.com/bastani-inc/atomic/releases/tag/1.0.0" }).Count -eq 1) "the exact tag was not confirmed on github.com"
-
-        foreach ($redirectTarget in @("https://github.com/bastani-inc/atomic/releases/tag/2.0.0", "https://github.com/bastani-inc/atomic")) {
-            $global:AtomicFixtureTagRedirect = $redirectTarget
-            $redirected = $null
-            try { & $InstallerPath -Ref "1.0.0" -Force | Out-Null }
-            catch { $redirected = $_ }
-            $global:AtomicFixtureTagRedirect = $null
-            Assert-Fixture ($null -ne $redirected) "a redirect to $redirectTarget confirmed the requested tag"
-            Assert-Fixture ($redirected.Exception.Message -match "GitHub's API rate limit was reached") "a redirect to $redirectTarget did not fall back to the API: $($redirected.Exception.Message)"
-        }
+        Assert-Fixture (@($global:AtomicFixtureProbes | Where-Object { $_ -eq "https://github.com/bastani-inc/atomic/releases/download/1.0.0/SHA256SUMS" }).Count -eq 1) "the exact tag was not confirmed on github.com"
 
         $mark = $global:AtomicFixtureRequests.Count
         $missing = $null
@@ -3080,6 +3071,7 @@ try {
         Assert-Fixture ($null -ne $missing) "a missing exact tag did not fail"
         Assert-Fixture ($missing.Exception.Message -match 'release 9\.9\.9 not found') "a missing exact tag was not reported as not found: $($missing.Exception.Message)"
         Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark | Where-Object { $_.Uri -match '^https://api\.github\.com/|/releases/download/' }).Count -eq 0) "a missing exact tag queried the API or downloaded"
+        Assert-Fixture (@($global:AtomicFixtureProbes | Where-Object { $_ -match '/releases/download/9\.9\.9/SHA256SUMS$' }).Count -eq 1) "a missing exact tag was not probed on github.com"
 
         $global:AtomicFixtureWebPages = $false
         $limited = $null
@@ -3101,7 +3093,7 @@ try {
         $mark = $global:AtomicFixtureRequests.Count
         & $InstallerPath | Out-Null
         Assert-Fixture ((Get-Content -LiteralPath (Join-Path (Join-Path $installRoot "current") "version.txt") -Raw) -eq "2.0.0") "the latest release did not install through the redirect"
-        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark | Where-Object { $_.Uri -match '^https://api\.github\.com/|/releases/tag/' }).Count -eq 0) "the latest path changed: it queried the API or a release page"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark | Where-Object { $_.Uri -match '^https://api\.github\.com/' }).Count -eq 0) "the latest path changed: it queried the API"
         $global:AtomicFixtureApiRateLimited = $false
         Assert-NoTransactionResidue $installRoot $binDir
     }
