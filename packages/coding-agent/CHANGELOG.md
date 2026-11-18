@@ -6,6 +6,10 @@
 
 - A storage driver's `transientFailure` can return `hop: { name, failure }` for a call that failed before it reached the database server, such as at a proxy. `StorageTransientError`, and the warning printed while the call is retried, then say what happened at that hop instead of "the database server call failed", and the hint asks to check that hop; the error carries it as `hop` and `hopFailure`. The PostgreSQL adapter uses it to name the proxy ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
 
+### Changed
+
+- The agent panel below the prompt drops a subagent as soon as it finishes. Stopped, paused or interrupted subagents stay only while another subagent, workflow run or background shell is still running, then the whole panel closes, and a resumed subagent is listed once. `↓ N agents` counts only the subagents the panel lists, not workflow runs, so a running workflow alone no longer shows `↓ 1 agent`; `N needs input` still counts a workflow run's question. When the panel lists nothing but `/tasks` lists subagents, the hint shows `/tasks to see subagents`, or `N shells · /tasks to manage` while background shells run.
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.

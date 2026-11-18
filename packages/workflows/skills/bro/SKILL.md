@@ -7,7 +7,7 @@ metadata:
     github-repo: https://github.com/cursor/plugins
     github-path: pstack/skills/bro
     github-ref: refs/heads/main
-    github-tree-sha: 46125561306434d8a1d7745d540d8932ab0cd2a2
+    github-tree-sha: 35a90942a7f02e1ebbc2443643179815f2147954
 disable-model-invocation: true
 ---
 
