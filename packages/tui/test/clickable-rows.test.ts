@@ -278,6 +278,52 @@ describe("clickable list rows", () => {
 		view.tui.stop();
 	});
 
+	it("while a dialog over a full-screen overlay's list has focus, a click on a row outside the dialog runs nothing", async () => {
+		const terminal = new VirtualTerminal(40, 12);
+		const tui = new TuiAltScreen(terminal);
+		tui.addChild(new Text("background", 0, 0));
+		tui.start();
+		const list = letters();
+		const chosen: string[] = [];
+		list.onSelect = (item) => chosen.push(item.value);
+		tui.showOverlay(list, { anchor: "top-left", width: 40 });
+		tui.showOverlay(new Text("Stop everything?", 0, 0), { anchor: "bottom-right", width: 18 });
+		await terminal.waitForRender();
+		const row = terminal.getViewport().findIndex((line) => line.includes("delta"));
+		assert.notStrictEqual(row, -1, terminal.getViewport().join("\n"));
+
+		terminal.sendInput(press(4, row));
+		terminal.sendInput(release(4, row));
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(chosen, []);
+		tui.stop();
+	});
+
+	it("a press outside a focused dialog that closes before the release runs nothing behind it", async () => {
+		const terminal = new VirtualTerminal(40, 12);
+		const tui = new TuiAltScreen(terminal);
+		const list = letters();
+		const chosen: string[] = [];
+		list.onSelect = (item) => chosen.push(item.value);
+		tui.addChild(list);
+		tui.setFocus(list);
+		tui.start();
+		const dialog = tui.showOverlay(new Text("Stop everything?", 0, 0), { anchor: "bottom-right", width: 18 });
+		await terminal.waitForRender();
+		const row = terminal.getViewport().findIndex((line) => line.includes("delta"));
+		assert.notStrictEqual(row, -1, terminal.getViewport().join("\n"));
+
+		terminal.sendInput(press(4, row));
+		dialog.hide();
+		await terminal.waitForRender();
+		terminal.sendInput(release(4, row));
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(chosen, []);
+		tui.stop();
+	});
+
 	it("a list under an overlay shown without taking focus still runs a click on its rows", async () => {
 		const view = await listUnderDialog(true);
 

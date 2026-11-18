@@ -340,6 +340,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private pressedUrl?: string;
 	/** What the screen showed under the pointer when the left button went down. */
 	private pressFrame?: PointerFrame;
+	/** The dialog that held focus when the left button went down: one shown or closed before the release takes the click. */
+	private pressModal?: Component;
 	/** Rows of the primary transcript that a drawn-over row covers: the pinned prompt and the jump-to-latest row. */
 	private decoratedRows = new Map<number, { readonly x: number; readonly width: number }>();
 	private selectionDragged = false;
@@ -1660,8 +1662,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.selectionAnchor.col === point.col;
 			// A click acts on what the screen showed when it was pressed: a repaint that changed what is under the
 			// pointer before the release makes it no click at all.
-			const samePaint = samePointerFrame(this.pressFrame, releaseFrame);
+			const samePaint =
+				samePointerFrame(this.pressFrame, releaseFrame) && this.getModalOverlay() === this.pressModal;
 			this.pressFrame = undefined;
+			this.pressModal = undefined;
 			const clickedUrl = isClick ? this.pressedUrl : undefined;
 			this.pressedUrl = undefined;
 			if (clickedUrl && this.openUrl) {
@@ -1728,6 +1732,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionFocus = range?.end ?? anchor;
 		this.selectionDragged = false;
 		this.pressFrame = pressFrame;
+		this.pressModal = this.getModalOverlay();
 		this.pressedUrl = range
 			? undefined
 			: getOsc8LinkAtColumn(
