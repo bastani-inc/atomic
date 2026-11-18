@@ -124,6 +124,13 @@ export class LegacySessionStore implements SessionStore {
 		return this.inner.replace(sessionId, header, entries, options);
 	}
 
+	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
+		if (!this.inner.updateHeader)
+			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement updateHeader`);
+		await this.convert(header.id);
+		return this.inner.updateHeader(header, options);
+	}
+
 	async load(sessionId: string): Promise<SessionSnapshot> {
 		await this.convert(sessionId);
 		return this.inner.load(sessionId);

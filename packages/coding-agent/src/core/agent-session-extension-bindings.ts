@@ -238,12 +238,6 @@ function startExtensions(
 			});
 			try {
 				if (session._extensionProviderIds.size > 0) await session.refreshCurrentModelFromRegistry();
-				if (
-					loader
-						.getExtensions()
-						.extensions.some((extension) => extension.sourceInfo.configurationOrigin !== "bundled")
-				)
-					await session.sessionManager.loadFullHistory();
 				await runner.emit(event);
 				await extendRunnerResources(session, runner, loader, event.reason === "reload" ? "reload" : "startup");
 				if (failures.length) throw new ExtensionStartupError(failures);

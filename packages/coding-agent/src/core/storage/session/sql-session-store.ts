@@ -662,6 +662,23 @@ export class SqlSessionStore implements SessionStore {
 		}, SESSION_TRANSACTION);
 	}
 
+	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
+		this.assertOpen();
+		validateSessionHeader(header);
+		return this.transaction(async (tx) => {
+			const { row, state } = await this.forWrite(tx, header.id, options, true);
+			const epoch = newRevision();
+			await this.saveSummary(
+				tx,
+				header.id,
+				{ header, entries: [], lastSeq: row.last_seq },
+				{ ...state, epoch } as StoredSummaryState,
+				state.resume && { ...state.resume, epoch },
+			);
+			return { lastSeq: row.last_seq, epoch };
+		}, SESSION_TRANSACTION);
+	}
+
 	async load(sessionId: string): Promise<SessionSnapshot> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);

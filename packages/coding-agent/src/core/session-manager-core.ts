@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
+import { yieldToEventLoop } from "../utils/event-loop.js";
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
@@ -92,7 +93,12 @@ import {
 } from "./storage/session/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
-import { readSessionRange } from "./storage/session/session-resume.js";
+import {
+	addEntryToHistoryTotals,
+	EMPTY_SESSION_HISTORY_TOTALS,
+	readSessionRange,
+	sessionResumeOf,
+} from "./storage/session/session-resume.js";
 import type {
 	SessionBlob,
 	SessionHistoryTotals,
@@ -101,6 +107,7 @@ import type {
 	SessionResume,
 	SessionSnapshot,
 	SessionStore,
+	SessionStoredEntry,
 } from "./storage/session/types.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type {
@@ -113,23 +120,35 @@ import type {
 /** How many times one append reads the store's new tail and tries again before its failure stands (#4970). */
 const MAX_APPEND_RECONCILES = 3;
 
+/** Maximum number of historical entries decoded between event-loop turns for an on-demand reader. */
+const HISTORY_PAGE_ENTRIES = 64;
+
 async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	// Selection loads settings and tools, which depend on the completed session module.
 	return (await import("./session-storage.js")).resolveSessionStore(cwd);
 }
 
-type OpenedSession = { readonly snapshot: SessionSnapshot } | { readonly resume: SessionResume };
+type OpenedSession = { readonly resume: SessionResume };
 async function readStoredSession(
 	store: SessionStore,
 	sessionId: string,
 	options: SessionOpenOptions | undefined,
 ): Promise<OpenedSession> {
-	if (options?.history === "tail" && store.readResume) return { resume: await store.readResume(sessionId) };
-	return { snapshot: await store.load(sessionId) };
+	if (options?.history !== undefined && options.history !== "tail") {
+		throw new TypeError(
+			'Session history: "full" has been removed. Use sessionManager.readHistory() to iterate older entries.',
+		);
+	}
+	if (!store.readResume || !store.readRange) {
+		throw new TypeError(
+			`Session store ${store.descriptor.adapter} must implement readResume and readRange for bounded history`,
+		);
+	}
+	return { resume: await store.readResume(sessionId) };
 }
 
 function openedHeader(opened: OpenedSession): SessionRecordHeader {
-	return "snapshot" in opened ? opened.snapshot.header : opened.resume.header;
+	return opened.resume.header;
 }
 
 /** A custom entry written with a message, in the same store write (see `SessionManager.appendWithMessage`). */
@@ -166,7 +185,7 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
-	private readonly historyIndex = new SessionHistoryIndex();
+	private historyIndex = new SessionHistoryIndex();
 
 	private historyStartSeq = 1;
 
@@ -228,10 +247,6 @@ export class SessionManager {
 	}
 
 	private restoreOpened(opened: OpenedSession, location?: string): void {
-		if ("snapshot" in opened) {
-			this.restore(opened.snapshot, location);
-			return;
-		}
 		const resume = opened.resume;
 		const held = [...resume.state, ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.restoreHistory(
@@ -292,7 +307,7 @@ export class SessionManager {
 
 	loadFullHistory(): Promise<void> {
 		if (this.historyStartSeq <= 1) return Promise.resolve();
-		this.historyLoad ??= this.readHistory().finally(() => {
+		this.historyLoad ??= this.hydrateHistory().finally(() => {
 			this.historyLoad = undefined;
 		});
 		return this.historyLoad;
@@ -327,7 +342,31 @@ export class SessionManager {
 		return watermark;
 	}
 
-	private async readHistory(): Promise<void> {
+	/** Iterate the stored history in append order up to the watermark at the start of the read. Stopping iteration
+	 * stops further reads; none of the historical payloads are added to the live manager. */
+	async *readHistory(
+		options: { readonly fromSeq?: number; readonly toSeq?: number; readonly signal?: AbortSignal } = {},
+	): AsyncGenerator<SessionStoredEntry> {
+		const { store, sessionId, historyEpoch, lastSeq } = this;
+		if (!store.readRange) throw new TypeError(`Session store ${store.descriptor.adapter} must implement readRange`);
+		const end = Math.min(lastSeq, options.toSeq ?? lastSeq);
+		for (let start = Math.max(1, options.fromSeq ?? 1); start <= end; ) {
+			options.signal?.throwIfAborted();
+			const through = Math.min(end, start + HISTORY_PAGE_ENTRIES - 1);
+			const page = await store.readRange(sessionId, start, through);
+			if ((historyEpoch !== undefined && page.epoch !== historyEpoch) || page.lastSeq < end) {
+				throw new SessionConflictError(sessionId, lastSeq, page.lastSeq);
+			}
+			for (const [i, entry] of page.entries.entries()) {
+				options.signal?.throwIfAborted();
+				yield { seq: page.seqs?.[i] ?? start + i, entry };
+			}
+			start = through + 1;
+			if (start <= end) await yieldToEventLoop();
+		}
+	}
+
+	private async hydrateHistory(): Promise<void> {
 		const { store, sessionId, historyEpoch } = this;
 		const held = new Map<number, SessionEntry>();
 		await this.forEachStoredEntry(1, (entry, seq) => held.set(seq, entry));
@@ -382,8 +421,8 @@ export class SessionManager {
 		const held = this.entrySeqs.get(id);
 		if (held !== undefined) return held;
 		if (this.store.findEntrySeq) return this.store.findEntrySeq(this.sessionId, id);
-		await this.loadFullHistory();
-		return this.entrySeqs.get(id);
+		for await (const { seq, entry } of this.readHistory()) if (entry.id === id) return seq;
+		return undefined;
 	}
 
 	getHeldTail(): { readonly fromSeq: number; readonly entries: readonly SessionEntry[] } {
@@ -526,9 +565,10 @@ export class SessionManager {
 			if (classifiedWorkflowMetadata(previous)) return;
 			const validWorkflow = validSessionWorkflowMetadata(workflow);
 			if (!validWorkflow) return;
-			await this.loadFullHistory();
+			if (!this.store.updateHeader)
+				throw new TypeError(`Session store ${this.store.descriptor.adapter} must implement updateHeader`);
 			const header: SessionHeader = { ...previous, internal: true, workflow: validWorkflow };
-			const result = await this.store.replace(this.sessionId, this.recordHeader(header), this.getEntries(), {
+			const result = await this.store.updateHeader(this.recordHeader(header), {
 				expectSeq: this.lastSeq,
 				...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
 			});
@@ -539,6 +579,7 @@ export class SessionManager {
 	}
 
 	private _buildIndex(): void {
+		this.historyIndex = new SessionHistoryIndex();
 		validateSessionFileEntries(this.fileEntries, this.sessionFile ?? "in-memory session");
 		const index = buildSessionIndex(this.fileEntries);
 		this.byId = index.byId;
@@ -707,6 +748,51 @@ export class SessionManager {
 			this.historyIndex.appended(entry, this.byId);
 			this.leafId = entry.id;
 		}
+		if (entries.some((entry) => entry.type === "compaction")) this.releaseEarlierWindow();
+	}
+
+	/** Retire the old window in the same mutation as the boundary. Never reread after a committed append: a read
+	 * could fail or observe another writer, neither of which changes what this append committed. */
+	private releaseEarlierWindow(): void {
+		const entries = this.getEntries();
+		const linked = this.branchLinks
+			? entries.map((entry) => {
+					const parentId = this.branchLinks?.get(entry.id);
+					return parentId !== undefined && parentId !== entry.parentId ? { ...entry, parentId } : entry;
+				})
+			: entries;
+		const resume = sessionResumeOf(this.recordHeader(), linked, this.leafId ?? undefined);
+		if (!resume.compaction) return;
+		const keep = new Set([...resume.branch, ...resume.state].map(({ entry }) => entry.id));
+		const boundarySeq = this.entrySeqs.get(resume.compaction.entry.id)!;
+		const start = this.entrySeqs.get(resume.branch[0]!.entry.id)!;
+		const leaf = this.leafId;
+		const path = this.getBranch().filter((entry) => keep.has(entry.id));
+		const retained: FileEntry[] = [this.fileEntries[0]!];
+		let totals = this.omittedTotals ?? EMPTY_SESSION_HISTORY_TOTALS;
+		for (const entry of entries) {
+			if (keep.has(entry.id)) retained.push(entry);
+			else {
+				totals = addEntryToHistoryTotals(totals, entry);
+				const seq = this.entrySeqs.get(entry.id)!;
+				if (
+					entry.type === "message" &&
+					entry.message.role === "assistant" &&
+					seq > (totals.latestAssistantSeq ?? 0)
+				)
+					totals = { ...totals, latestAssistantUsage: entry.message.usage, latestAssistantSeq: seq };
+				this.entrySeqs.delete(entry.id);
+			}
+		}
+		this.compactionSeq = boundarySeq;
+		this.fileEntries = retained;
+		if (keep.size < this.lastSeq) {
+			this.historyStartSeq = Math.max(2, start);
+			this.omittedTotals = totals;
+		}
+		this.branchLinks = new Map(path.slice(1).map((entry, i) => [entry.id, path[i]!.id]));
+		this._buildIndex();
+		this.leafId = leaf;
 	}
 
 	/**
@@ -1131,9 +1217,20 @@ export class SessionManager {
 		});
 	}
 
+	async readEntry(id: string): Promise<SessionEntry | undefined> {
+		const held = this.byId.get(id);
+		if (held) return held;
+		const seq = await this.findEntrySeq(id);
+		if (seq !== undefined) {
+			for await (const { entry } of this.readHistory({ fromSeq: seq, toSeq: seq })) {
+				if (entry.id === id) return entry;
+			}
+		}
+		return undefined;
+	}
+
 	private async requireEntry(id: string): Promise<SessionEntry> {
-		if (!this.byId.has(id)) await this.loadFullHistory();
-		const entry = this.byId.get(id);
+		const entry = await this.readEntry(id);
 		if (entry === undefined) throw new SessionEntryError(id, "missing");
 		return entry;
 	}
@@ -1460,10 +1557,7 @@ export class SessionManager {
 		const store = await JsonlSessionStore.open(dirname(path), { exactDirectory: true, scanExisting: false });
 		let opened: OpenedSession;
 		try {
-			opened =
-				options?.history === "tail"
-					? await readStoredSession(store, (await store.readHeaderFile(path)).id, options)
-					: { snapshot: await store.loadFile(path) };
+			opened = await readStoredSession(store, (await store.readHeaderFile(path)).id, options);
 		} catch (error) {
 			if (!(error instanceof StorageUnavailableError) || (error.cause as NodeJS.ErrnoException).code !== "ENOENT")
 				throw error;

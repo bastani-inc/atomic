@@ -294,6 +294,8 @@ export interface SessionStore {
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
 	): Promise<SessionWriteResult>;
+	/** Change the header without materializing its existing entries. Existing readers see a new epoch. */
+	updateHeader?(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult>;
 	load(sessionId: string): Promise<SessionSnapshot>;
 	readEntryRange?(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage>;
 	readonly searchIndex?: SessionSearchIndex;

@@ -6,7 +6,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSession } from "../../src/core/agent-session.ts";
 import { getSessionStats } from "../../src/core/agent-session-export.ts";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/compaction-types.js";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import {
+	buildSessionProjection,
+	getSessionLeafId,
+	type SessionEntry,
+	SessionManager,
+} from "../../src/core/session-manager.ts";
+import { getBranchPath } from "../../src/core/session-manager-history.ts";
 import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../../src/core/storage/session/sql-session-store.js";
 import type { SessionResume, SessionStore } from "../../src/core/storage/session/types.js";
@@ -100,7 +106,7 @@ async function compactedSession(store: SessionStore, history = 4): Promise<{ id:
 	return { id: manager.getSessionId(), firstPreTail };
 }
 
-function stats(manager: SessionManager) {
+function stats(manager: Pick<SessionManager, "getEntries" | "getSessionId">) {
 	return getSessionStats.call({
 		sessionManager: manager,
 		sessionFile: undefined,
@@ -109,22 +115,72 @@ function stats(manager: SessionManager) {
 	} as unknown as AgentSession);
 }
 
+it("a live manager drops earlier windows after each compaction without deleting their history (#5554)", async () => {
+	const store = await sqlStore();
+	const manager = await SessionManager.create(store, "/project");
+	const windows = 3;
+	const messagesPerWindow = 20;
+	for (let window = 0; window < windows; window++) {
+		for (let turn = 0; turn < messagesPerWindow; turn++) {
+			await manager.appendMessage({ role: "user", content: `window ${window}, turn ${turn}`, timestamp: turn });
+		}
+		await manager.appendCompaction(`summary ${window}`, null, 1000, details);
+		const reopened = await SessionManager.open(store, manager.getSessionId(), undefined, { history: "tail" });
+		expect(manager.buildSessionContext()).toEqual(reopened.buildSessionContext());
+		expect(manager.getEntryCount()).toBe(reopened.getEntryCount());
+	}
+	const first = await store.readRange!(manager.getSessionId(), 1, 1);
+	expect(first.entries[0]).toMatchObject({ type: "message", message: { content: "window 0, turn 0" } });
+	expect(first.lastSeq).toBe(windows * (messagesPerWindow + 1));
+});
+
+it("a default open reads the same window as a tail open without reading the whole store (#5554)", async () => {
+	const store = await sqlStore();
+	const { id, firstPreTail } = await compactedSession(store);
+	const expected = await SessionManager.open(store, id, undefined, { history: "tail" });
+	const guarded: SessionStore = Object.assign(Object.create(store) as SessionStore, {
+		load: () => Promise.reject(new Error("opened the entire session")),
+	});
+	const manager = await SessionManager.open(guarded, id);
+	expect(manager.getEntry(firstPreTail)).toBeUndefined();
+	expect(manager.getEntries()).toEqual(expected.getEntries());
+	expect(manager.buildSessionContext()).toEqual(expected.buildSessionContext());
+});
+
+it("a reader can stop after its first page without hydrating older messages into the manager (#5554)", async () => {
+	const store = await sqlStore();
+	const { id, firstPreTail } = await compactedSession(store, 120);
+	const manager = await SessionManager.open(store, id);
+	const held = manager.getEntryCount();
+	const seen: number[] = [];
+	for await (const { seq, entry } of manager.readHistory()) {
+		seen.push(seq);
+		if (entry.id === firstPreTail) break;
+	}
+	expect(seen).toEqual([1, 2, 3]);
+	expect(manager.getEntryCount()).toBe(held);
+	expect(manager.getEntry(firstPreTail)).toBeUndefined();
+});
+
 describe("SessionManager resume from the latest compaction (#5249)", () => {
 	it("resumes with the same context, name, labels, model, thinking level and usage as a whole read (#5249)", async () => {
 		const store = await sqlStore();
 		const { id, firstPreTail } = await compactedSession(store);
-		const full = await SessionManager.open(store, id);
+		const snapshot = await store.load(id);
+		const entries = [...snapshot.entries];
+		const full = { getEntries: () => entries, getSessionId: () => id };
 		const tail = await SessionManager.open(store, id, undefined, { history: "tail" });
 
-		expect(full.hasFullHistory()).toBe(true);
 		expect(tail.hasFullHistory()).toBe(false);
-		expect(tail.getEntries().length).toBeLessThan(full.getEntries().length);
-		expect(tail.buildSessionContext()).toEqual(full.buildSessionContext());
+		expect(tail.getEntries().length).toBeLessThan(entries.length);
+		expect(tail.buildSessionProjection()).toEqual(
+			buildSessionProjection(entries, getSessionLeafId(entries), undefined, id),
+		);
 		expect(tail.buildSessionContext().thinkingLevel).toBe("high");
 		expect(tail.getSessionNameState()).toEqual({ hasName: true, name: "renamed" });
 		expect(tail.getLabel(firstPreTail)).toBe("start");
-		expect(tail.getLeafId()).toBe(full.getLeafId());
-		expect(tail.getHeader()).toEqual(full.getHeader());
+		expect(tail.getLeafId()).toBe(getSessionLeafId(entries));
+		expect(tail.getHeader()).toEqual({ type: "session", ...snapshot.header });
 		expect(tail.getBranch().some((entry) => entry.type === "thinking_level_change")).toBe(true);
 		expect(pendingTaskCompletionIntents(tail)).toEqual(pendingTaskCompletionIntents(full));
 		expect(pendingTaskCompletionIntents(tail).map((intent) => intent.completionId)).toEqual(["open"]);
@@ -161,14 +217,13 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 	it("reads older entries when the tree, a branch, a label or a fork needs them (#5249)", async () => {
 		const store = await sqlStore();
 		const { id, firstPreTail } = await compactedSession(store);
-		const full = await SessionManager.open(store, id);
-
+		const full = [...(await store.load(id)).entries];
 		const forTree = await SessionManager.open(store, id, undefined, { history: "tail" });
-		await forTree.loadFullHistory();
-		expect(forTree.hasFullHistory()).toBe(true);
-		expect(forTree.getEntries()).toEqual(full.getEntries());
-		expect(forTree.getTree()).toEqual(full.getTree());
-		expect(forTree.getOmittedHistoryTotals()).toBeUndefined();
+		const read: SessionEntry[] = [];
+		for await (const { entry } of forTree.readHistory()) read.push(entry);
+		expect(read).toEqual(full);
+		expect(forTree.hasFullHistory()).toBe(false);
+		expect(forTree.getOmittedHistoryTotals()).toBeDefined();
 
 		const forLabel = await SessionManager.open(store, id, undefined, { history: "tail" });
 		expect(forLabel.getEntry(firstPreTail)).toBeUndefined();
@@ -178,7 +233,7 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 		const forBranch = await SessionManager.open(store, id, undefined, { history: "tail" });
 		await forBranch.branch(firstPreTail);
 		expect(forBranch.getBranch().map((entry) => entry.id)).toEqual(
-			full.getBranch(firstPreTail).map((entry) => entry.id),
+			getBranchPath(firstPreTail, new Map(full.map((entry) => [entry.id, entry]))).map((entry) => entry.id),
 		);
 
 		const shape = (manager: SessionManager) =>
@@ -191,12 +246,14 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 		expect(shape(forFork)).toContainEqual([firstPreTail, "again"]);
 	});
 
-	it("never rewrites a session with only its tail (#5249)", async () => {
+	it("updates a session header without reading or rewriting its old entries (#5249, #5554)", async () => {
 		const store = await sqlStore();
 		const { id } = await compactedSession(store);
 		const before = (await store.load(id)).entries;
 		const tail = await SessionManager.open(store, id, undefined, { history: "tail" });
+		const held = tail.getEntryCount();
 		await tail.markSessionInternal({ runId: "run", stageId: "stage", stageName: "stage" });
+		expect(tail.getEntryCount()).toBe(held);
 		const after = await store.load(id);
 		expect(after.entries).toEqual(before);
 		expect(after.header.internal).toBe(true);
@@ -226,10 +283,12 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 		await manager.appendCompaction("compacted", kept, 10, details);
 		await manager.appendMessage({ role: "user", content: "after", timestamp: 1 });
 		const id = manager.getSessionId();
-		const full = await SessionManager.open(store, id);
+		const full = [...(await store.load(id)).entries];
 		const tail = await SessionManager.open(store, id, undefined, { history: "tail" });
 		expect(tail.hasFullHistory()).toBe(false);
-		expect(tail.buildSessionContext()).toEqual(full.buildSessionContext());
+		expect(tail.buildSessionProjection()).toEqual(
+			buildSessionProjection(full, getSessionLeafId(full), undefined, id),
+		);
 		expect(tail.buildSessionContext().thinkingLevel).toBe("high");
 		expect(tail.getBranch().filter((entry) => entry.type === "thinking_level_change")).toHaveLength(1);
 	});

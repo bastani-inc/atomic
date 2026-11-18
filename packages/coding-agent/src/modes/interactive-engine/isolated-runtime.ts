@@ -773,7 +773,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			await super.switchSession(sessionId, {
 				cwdOverride: options?.cwdOverride,
 				sessionDirectory: options?.sessionDirectory,
-				history: options?.history ?? "full",
+				history: options?.history,
 			});
 			await this.initializeFromEngine();
 			if (options?.withSession) await options.withSession(this.session.createReplacedSessionContext());

@@ -313,6 +313,31 @@ export function registerSessionStoreConformance(
 				assert.equal((await store.load("session")).lastSeq, 1);
 			});
 
+			check(
+				"a header-only change preserves every entry and fences earlier writers (#5554)",
+				async (store, reload) => {
+					const entries = [message("first", "一\u2028\u2029"), message("last", "e\u0301")];
+					const original = await store.create(header(), entries);
+					store = await reload(store);
+					assert.ok(store.updateHeader);
+					const updated = {
+						...header(),
+						internal: true,
+						workflow: { runId: "run", stageId: "stage", stageName: "Stage" },
+					} as const;
+					const result = await store.updateHeader(updated, { expectSeq: 2, epoch: original.epoch });
+					assert.equal(result.lastSeq, 2);
+					assert.notEqual(result.epoch, original.epoch);
+					await assert.rejects(
+						store.append("session", [message("stale", "no")], { expectSeq: 2, epoch: original.epoch }),
+						conflict("session", 2, 2),
+					);
+					store = await reload(store);
+					assert.deepEqual((await store.load("session")).entries, entries);
+					assert.deepEqual(await store.readHeader("session"), updated);
+				},
+			);
+
 			check("replaces header and entries including parent and workflow metadata", async (store, reload) => {
 				await store.create(header(), [message("old", "old")]);
 				store = await reload(store);

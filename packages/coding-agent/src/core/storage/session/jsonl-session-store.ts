@@ -674,6 +674,52 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
+	updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
+		return this.run(async () => {
+			validateSessionHeader(header);
+			const { path, state } = await this.forWrite(header.id, options);
+			const temporary = `${path}.${randomUUID()}.tmp`;
+			const output = await open(temporary, "wx+", 0o600);
+			try {
+				let witness: Buffer;
+				try {
+					await output.writeFile(this.encode(header, []));
+					let inHeader = true;
+					const source = createReadStream(path, { end: state.size - 1 });
+					for await (const chunk of source as AsyncIterable<Buffer>) {
+						if (!inHeader) await output.writeFile(chunk);
+						else {
+							const newline = chunk.indexOf(10);
+							if (newline >= 0) {
+								inHeader = false;
+								await output.writeFile(chunk.subarray(newline + 1));
+							}
+						}
+					}
+					witness = await witnessAt(output, (await output.stat()).size);
+					await output.chmod((await stat(path)).mode & 0o7777);
+				} finally {
+					await output.close();
+				}
+				await this.forgetIndex(path);
+				await rename(temporary, path);
+				const headerStamp = JSON.stringify(header);
+				const stats = await this.remember(path, {
+					...state,
+					headerStamp,
+					witness,
+					torn: false,
+					terminated: state.lastSeq === 0 || state.terminated,
+				});
+				return { lastSeq: state.lastSeq, epoch: epochOf(stats, headerStamp) };
+			} finally {
+				await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
+					if (cause.code !== "ENOENT") throw cause;
+				});
+			}
+		});
+	}
+
 	private async commit(path: string, header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<string> {
 		await this.forgetIndex(path);
 		const payload = this.encode(header, entries);

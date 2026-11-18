@@ -72,7 +72,7 @@ const STUB_ENTRY: SessionEntry = {
 };
 
 interface StoredSession {
-	readonly header: Uint8Array;
+	header: Uint8Array;
 	/** The entries held in memory: everything after the bytes its spill file holds. */
 	entries: Uint8Array[];
 	summaryState: SessionSummaryState;
@@ -348,6 +348,14 @@ export class MemorySessionStore implements SessionStore {
 		this.records.set(sessionId, record);
 		await this.removeSpillFile(sessionId, previous);
 		return { lastSeq: entries.length, epoch: record.index.epoch };
+	}
+
+	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
+		validateSessionHeader(header);
+		const record = this.forWrite(header.id, options);
+		record.header = this.encode(() => JSON.stringify(header));
+		record.index = { ...record.index, epoch: crypto.randomUUID() };
+		return { lastSeq: record.lastSeq, epoch: record.index.epoch };
 	}
 
 	async load(sessionId: string): Promise<SessionSnapshot> {
