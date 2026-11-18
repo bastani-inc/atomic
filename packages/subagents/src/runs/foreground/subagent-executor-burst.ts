@@ -15,6 +15,7 @@ import { withForkContext } from "./subagent-executor-input.js";
 import { getLiveResultIndices } from "./subagent-executor-live-update.js";
 import { getParentAskHandoff } from "./subagent-executor-parent-ask-projection.js";
 import {
+	BURST_PREPARED_TASKS,
 	BURST_TASK_DISCOVERY_CWD,
 	type BurstTaskParam,
 	type SubagentParamsLike,
@@ -391,7 +392,11 @@ export function createExecutionBurstDispatcher(input: {
 	setActive: (active: boolean) => void;
 	duplicateResult: (params: SubagentParamsLike) => SubagentToolResult;
 	/** The error a launch fails with on its own before any child starts, from the checks its own run makes. */
-	ownError: (params: SubagentParamsLike, ctx: ExtensionContext) => Promise<SubagentToolResult | undefined>;
+	ownError: (
+		params: SubagentParamsLike,
+		ctx: ExtensionContext,
+		preparedTasks?: TaskParam[],
+	) => Promise<SubagentToolResult | undefined>;
 }): ExecuteSubagent {
 	let queue: BurstItem[] = [];
 	let flushScheduled = false;
@@ -400,9 +405,18 @@ export function createExecutionBurstDispatcher(input: {
 	 * Gives each launch that fails on its own its own error, and returns the others. A failure to check leaves the
 	 * launch with the others.
 	 */
-	const withoutOwnErrors = async (items: BurstItem[]): Promise<BurstItem[]> => {
+	const withoutOwnErrors = async (
+		items: BurstItem[],
+		routes: ResultRoute[],
+		preparedTasks?: TaskParam[],
+	): Promise<BurstItem[]> => {
 		const errors = await Promise.all(
-			items.map((item) => input.ownError(item.params, item.ctx).catch(() => undefined)),
+			items.map((item, index) => {
+				const { start, length } = routes[index]!;
+				return input
+					.ownError(item.params, item.ctx, preparedTasks?.slice(start, start + length))
+					.catch(() => undefined);
+			}),
 		);
 		items.forEach((item, index) => {
 			const error = errors[index];
@@ -456,10 +470,14 @@ export function createExecutionBurstDispatcher(input: {
 		// gets its own error, and the others, none of which started, run once without it. An error no launch has on its
 		// own, such as too many tasks altogether, stays the error of every launch.
 		let retry: BurstItem[] | undefined;
+		let preparedTasks: TaskParam[] | undefined;
+		merged.params![BURST_PREPARED_TASKS] = (tasks) => {
+			preparedTasks = tasks;
+		};
 		try {
 			const result = await input.execute(first.id, merged.params!, first.signal, onUpdate, first.ctx);
 			if (failedBeforeStart(result)) {
-				const rest = await withoutOwnErrors(items);
+				const rest = await withoutOwnErrors(items, merged.routes!, preparedTasks);
 				if (rest.length < items.length) {
 					releaseBurstDisplay(display);
 					retry = rest;

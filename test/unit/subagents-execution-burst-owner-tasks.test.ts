@@ -25,6 +25,7 @@ import type {
 	SubagentParamsLike,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type { SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
+import { git } from "../helpers/workspace-repos.js";
 import { theme } from "./subagents-render-stability-helpers.js";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
@@ -488,30 +489,37 @@ test.each([false, true])(
 	},
 );
 
-test.each([undefined, false] as const)(
+test.each([undefined, false, "named on third task", "shared named"] as const)(
 	"duplicate outputs fail only their own call with worktree: %s, and a valid sibling launches once (#3427)",
-	async (worktree) => {
+	async (scenario) => {
 		const launched: string[] = [];
-		const { call } = harness(async (_cwd, _agents, _agent, task) => {
+		const { call, cwd } = harness(async (_cwd, _agents, _agent, task) => {
 			launched.push(task);
 			return childResult(task);
 		});
+		const named = { branch: "output-work" };
+		if (typeof scenario === "string") {
+			git(cwd, "init", "-q", "-b", "main");
+			git(cwd, "commit", "--allow-empty", "-qm", "init");
+		}
+		const worktree = typeof scenario === "string" ? false : scenario;
 		const badArgs: SubagentParamsLike = {
-			worktree,
+			worktree: scenario === "shared named" ? named : worktree,
 			tasks: [
 				{ agent: "echo", task: "bad-1", output: "same.md" },
 				{ agent: "echo", task: "bad-2", output: "same.md" },
+				...(scenario === "named on third task" ? [{ agent: "echo", task: "third", worktree: named }] : []),
 			],
 		};
-		const alone = await call(`duplicate-alone-${worktree}`, badArgs);
+		const alone = await call("duplicate-alone", badArgs);
 		assert.equal(alone.isError, true);
 		assert.match(text(alone), /resolve output to the same path/);
-		const [bad, good] = await Promise.all([
-			call(`duplicate-bad-${worktree}`, badArgs),
-			call(`duplicate-good-${worktree}`, { agent: "echo", task: "good", worktree }),
+		const [good, bad] = await Promise.all([
+			call("duplicate-good", { agent: "echo", task: "good", worktree }),
+			call("duplicate-bad", badArgs),
 		]);
 		assert.equal(bad.isError, true);
-		assert.match(text(bad), /resolve output to the same path/);
+		assert.equal(text(bad), text(alone), "the error names the call's own task numbers and actual output path");
 		assert.notEqual(good.isError, true, "a valid sibling does not inherit a call's own duplicate-output error");
 		assert.match(await settledOutput(call, single(good).observation.taskId), /output:good/);
 		assert.deepEqual(launched, ["good"]);

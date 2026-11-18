@@ -39,11 +39,12 @@ import {
 	notifyDetachedForegroundChildExit,
 	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
-import type {
-	ExecutionContextData,
-	ResolvedExecutorDeps,
-	SubagentParamsLike,
-	TaskParam,
+import {
+	BURST_PREPARED_TASKS,
+	type ExecutionContextData,
+	type ResolvedExecutorDeps,
+	type SubagentParamsLike,
+	type TaskParam,
 } from "./subagent-executor-types.js";
 import {
 	buildParallelModeError,
@@ -217,6 +218,10 @@ export async function runParallelPath(
 		: undefined;
 
 	try {
+		if (worktreeSetup)
+			params[BURST_PREPARED_TASKS]?.(
+				tasks.map((task, i) => ({ ...task, cwd: worktreeSetup.worktrees[i]!.agentCwd })),
+			);
 		const outputError = parallelOutputSetupError({
 			tasks,
 			behaviors,

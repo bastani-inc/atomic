@@ -12,7 +12,7 @@ import {
 	parallelWorktreeTaskError,
 } from "./subagent-executor-parallel.js";
 import { singleOutputSetupError } from "./subagent-executor-single.js";
-import type { ResolvedExecutorDeps, SubagentParamsLike } from "./subagent-executor-types.js";
+import type { ResolvedExecutorDeps, SubagentParamsLike, TaskParam } from "./subagent-executor-types.js";
 import { launchDirectoryError } from "./subagent-executor-worktree.js";
 
 /**
@@ -27,6 +27,7 @@ export async function launchSetupError(
 	params: SubagentParamsLike,
 	ctx: ExtensionContext,
 	deps: Pick<ResolvedExecutorDeps, "config" | "discoverAgents">,
+	preparedTasks?: TaskParam[],
 ): Promise<SubagentToolResult | undefined> {
 	const launchParams =
 		params.cwd === undefined ? params : { ...params, cwd: resolveRequestedCwd(ctx.cwd, params.cwd) };
@@ -51,16 +52,16 @@ export async function launchSetupError(
 	if (limitError) return limitError;
 	const worktreeTaskError = await parallelWorktreeTaskError(tasks, launch.worktree, effectiveCwd);
 	if (worktreeTaskError) return worktreeTaskError;
-	const agentConfigs = tasks.map((task) => agentNamed(task.agent));
-	const overrides = parallelTaskBehaviorOverrides(tasks, agentConfigs);
+	const outputTasks = preparedTasks ?? tasks;
+	const agentConfigs = outputTasks.map((task) => agentNamed(task.agent));
+	const overrides = parallelTaskBehaviorOverrides(outputTasks, agentConfigs);
 	return parallelOutputSetupError({
-		tasks,
+		tasks: outputTasks,
 		behaviors: agentConfigs.map((config, index) => resolveStepBehavior(config, overrides[index]!)),
 		paramsCwd: effectiveCwd,
 		ctxCwd: ctx.cwd,
 		worktreeSetup: undefined,
-		// A task in a worktree writes a relative output inside it, which only the run that makes the worktree knows.
-		// `worktree: false` asks for none, as leaving it out does.
-		checkDuplicates: !launch.worktree && tasks.every((task) => !task.worktree),
+		// Never guess a worktree's output path if the merged run failed before preparing it.
+		checkDuplicates: preparedTasks !== undefined || (!launch.worktree && tasks.every((task) => !task.worktree)),
 	});
 }

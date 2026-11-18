@@ -16,6 +16,8 @@ import type { NamedWorktree, NamedWorktreeRequest } from "../shared/named-worktr
 import type { runSync } from "./execution.js";
 
 export const BURST_TASK_DISCOVERY_CWD = Symbol("burstTaskDiscoveryCwd");
+/** Retain the expanded tasks' actual working directories for call-local output checks if a merged run fails. */
+export const BURST_PREPARED_TASKS = Symbol("burstPreparedTasks");
 /** The named worktree a launch's child runs in, once it exists (#5202). */
 export const NAMED_WORKTREE = Symbol("namedWorktree");
 
@@ -41,6 +43,7 @@ export type BurstTaskParam = TaskParam & {
 };
 
 export interface SubagentParamsLike {
+	[BURST_PREPARED_TASKS]?: (tasks: TaskParam[]) => void;
 	action?: (typeof SUBAGENT_ACTIONS)[number];
 	id?: string;
 	/** `action: "wait"` only: how long to wait for the task. */

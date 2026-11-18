@@ -364,7 +364,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			deps.state.subagentInProgress = active;
 		},
 		duplicateResult: duplicateSubagentCallResult,
-		ownError: (params, ctx) => launchSetupError(params, ctx, deps),
+		ownError: (params, ctx, preparedTasks) => launchSetupError(params, ctx, deps, preparedTasks),
 	});
 
 	return {
