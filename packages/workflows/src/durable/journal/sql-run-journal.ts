@@ -973,7 +973,10 @@ export class SqlRunJournal implements RunJournal {
 		});
 		const batch = this.oneRequestWrite();
 		if (batch && prepared.every((append) => append instanceof Error || this.inOneRequest(append)))
-			return this.operation(() => this.appendInOneRequest(batch, owned, prepared));
+			// Waits for the write lock as the transaction below and a single append do.
+			return this.operation(() =>
+				this.appendInOneRequest((statements) => batch(statements, JOURNAL_WRITE_TRANSACTION), owned, prepared),
+			);
 		return this.operation(() =>
 			this.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
