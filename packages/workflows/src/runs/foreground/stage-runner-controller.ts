@@ -454,6 +454,8 @@ export class StageSessionController {
 	private sessionInternalRetries = 0;
 	/** Requests (`agent_start`) the stage's sessions started, whichever session ran them. */
 	private agentRunsStarted = 0;
+	/** The prompt walking the model candidates now, whose turn may wait to switch models. */
+	private fallbackTurn: StageFallbackTurn | undefined;
 	private unresolvedContextOverflowMessage: string | undefined;
 	private generationSealed = false;
 	private disposed = false;
@@ -1869,10 +1871,13 @@ export class StageSessionController {
 				for (const listener of this.pendingListeners) listener(event);
 			},
 		);
+		const outerTurn = this.fallbackTurn;
+		this.fallbackTurn = turn;
 		try {
 			await this.promptCandidates(text, sdkOptions, consumer, newSessionText, turn);
 		} finally {
 			turn.ended();
+			this.fallbackTurn = outerTurn;
 		}
 	}
 
@@ -2122,6 +2127,8 @@ export class StageSessionController {
 		}
 	}
 	requestPause(): Promise<void> {
+		// A pause stops a turn that waits to switch models: the request after the pause starts a turn of its own.
+		this.fallbackTurn?.ended();
 		const pause = this.pauseControl.requestPause();
 		const resume = this.pauseControl.currentResume();
 		if (resume !== undefined) {

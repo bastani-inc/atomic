@@ -6,9 +6,9 @@ import type { StageSessionEvent } from "./stage-runner-types.js";
  * One prompt's turn while the stage moves it from model candidate to model candidate. The stage replaces the session a
  * failed candidate ran in, so nothing in the next session's events says that the turn goes on. The stage says so with
  * the events a session's own model fallback sends: `model_fallback_start` before the next candidate's request, once a
- * request of this prompt failed, and `model_fallback_end` (not successful) when the prompt ends before that request
- * starts. A stage chat then counts the turn's time and tokens from its start across the switch, and ends the count
- * when the switch never reaches a request; a later prompt starts its own count.
+ * request of this prompt failed, and `model_fallback_end` (not successful) when the prompt ends, or pauses, before
+ * that request starts. A stage chat then counts the turn's time and tokens from its start across the switch, and ends
+ * the count when the switch never reaches a request; a later prompt starts its own count.
  */
 export class StageFallbackTurn {
 	/** Requests started when the turn last announced a switch, or when it began. */
@@ -40,7 +40,7 @@ export class StageFallbackTurn {
 		});
 	}
 
-	/** The prompt is over: a switch whose request never started ends the turn here. */
+	/** The prompt is over, or paused: a switch whose request has not started ends the turn here. */
 	ended(): void {
 		if (!this.switching || this.runsStarted() > this.runsAnnounced) return;
 		this.switching = false;

@@ -336,6 +336,39 @@ describe("a stage chat opened after the stage moved its turn to the fallback mod
 		}
 	});
 
+	test("a pause while the stage switches models ends the turn's count there, and the resumed request counts on its own (#5535)", async () => {
+		const release = Promise.withResolvers<void>();
+		const stage = stageWithFallback({ primaryMs: 6_400, fallbackMs: 2_000, holdFallbackSession: release.promise });
+		const turn = stage.ctx.prompt("Fix the picker");
+		let chat: ReturnType<typeof openStageChat> | undefined;
+		try {
+			await stage.fallbackCreating;
+			chat = openStageChat(stage.handle);
+			now += 1_000;
+			const paused = stage.ctx.__requestPause();
+			const stopped = chat.rows();
+			assert.ok(
+				stopped.some((row) => / for 7s/.test(row)) && !stopped.some((row) => row.includes("switching model")),
+				`the turn ends at the pause: ${stopped.filter((row) => row.includes("∀")).join(" | ")}`,
+			);
+			release.resolve();
+			await paused;
+			now = 60_000;
+			await stage.ctx.__resume("Carry on");
+			assert.equal(await turn, "Fixed the picker.");
+			const resumed = chat.rows();
+			assert.ok(
+				resumed.some((row) => / for 2s/.test(row)),
+				`the resumed request counts on its own: ${resumed.filter((row) => row.includes("∀")).join(" | ")}`,
+			);
+		} finally {
+			release.resolve();
+			await turn.catch(() => undefined);
+			chat?.dispose();
+			await stage.dispose();
+		}
+	});
+
 	test("on a local worker, a watch opened after the switch carries the turn's start (#5535)", async () => {
 		const release = Promise.withResolvers<void>();
 		const stage = stageWithFallback({ primaryMs: 6_400, fallbackMs: 200, holdFallback: release.promise });

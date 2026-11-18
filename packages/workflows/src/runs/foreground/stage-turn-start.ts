@@ -24,7 +24,7 @@ function blockHasContent(block: ContentBlockLike): boolean {
 	);
 }
 
-/** An answer a turn goes on from with a retry or another model: a failed request, or a completion that came back empty. */
+/** An answer a turn goes on from with a retry or another model: a failed request, or an empty completion. */
 function isFailedAnswer(message: AnswerLike): boolean {
 	if (message.stopReason === "error") return true;
 	if (message.stopReason !== "stop" && message.stopReason !== "toolUse") return false;
