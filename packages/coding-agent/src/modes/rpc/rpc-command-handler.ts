@@ -8,6 +8,7 @@ import { THINKING_LEVELS } from "../../core/agent-session-types.js";
 import { runCallback } from "../../core/callback-activity.ts";
 import { setDebugSetting } from "../../core/debug-setting.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
+import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { settingsWriteOwner } from "../../core/settings-write-ownership.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
@@ -18,6 +19,7 @@ import {
 	listWorkflowResumeEntries,
 	resumeWorkflowFromPicker,
 } from "../../core/workflow-resume.ts";
+import { isInteractiveEngineChild } from "../../utils/interactive-engine-env.ts";
 import { STOP_ALL_STATUS_KEY } from "../interactive/interactive-stop-all.ts";
 import { showAgentPanel } from "./agent-panel-bridge.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
@@ -88,6 +90,13 @@ const REMOVED_NO_OP_COMMANDS: ReadonlySet<string> = new Set([
 
 function compactOptions(instructions: string | undefined): { query?: string } {
 	return typeof instructions === "string" && instructions.trim() ? { query: instructions } : {};
+}
+
+/** The trust decisions an interactive engine child made, which its host hands to an engine that replaces it. */
+function trustDecisionsState(decisions: SessionTrustDecisions | undefined): Pick<RpcSessionState, "trustDecisions"> {
+	if (!decisions || !isInteractiveEngineChild()) return {};
+	const count = Object.keys(decisions.projects).length + Object.keys(decisions.extensionSources).length;
+	return count > 0 ? { trustDecisions: decisions } : {};
 }
 
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
@@ -339,7 +348,11 @@ export function createRpcCommandHandler({
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					queuedMessagesPaused: session.queuedMessagesPaused,
-					projectTrusted: session.settingsManager.isProjectTrusted?.() === true,
+					// No report while startup is still deciding: the settings read untrusted until then (see isProjectTrustPending).
+					...(runtimeHost.isProjectTrustPending?.()
+						? {}
+						: { projectTrusted: session.settingsManager.isProjectTrusted?.() === true }),
+					...trustDecisionsState(runtimeHost.trustDecisions?.()),
 					resourceOverlaps: extensionResult.overlaps ?? [],
 					resourceErrors: extensionResult.errors,
 					resourceWarnings: extensionResult.warnings ?? [],

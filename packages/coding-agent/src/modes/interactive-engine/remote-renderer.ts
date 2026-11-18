@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
-import { TASK_COMPLETION_MESSAGE_TYPE } from "../../core/tasks/completion.js";
 import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import { sameToolGroupRole, toolGroupRoleKey } from "../interactive/components/tool-group-tracker.ts";
+import { type RowRange, rowsFrom } from "../interactive/components/transcript-block-clicks.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type { InteractiveEngineCommand, InteractiveEngineMessage, JsonObject, JsonValue } from "./protocol.ts";
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
@@ -68,6 +68,10 @@ function rendererRoutes(runtime: IsolatedInteractiveRuntime): Map<string, Remote
 	return routes;
 }
 
+function sameLines(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((line, index) => line === right[index]);
+}
+
 function jsonValue(value: unknown): JsonValue {
 	if (value === undefined) return null;
 	const encoded = JSON.stringify(value);
@@ -92,6 +96,20 @@ abstract class RemoteRenderer implements Component {
 	private readonly requestIdentities = new Map<number, string>();
 	private readonly requestScopes = new Map<number, string>();
 	private lastScope: string | undefined;
+	/**
+	 * Clicks' expansion waiting for the engine to draw it: the rows shown and the expansion before the first of them, the
+	 * last request sent before the latest of them, the expansion they asked for, and what to do once the first frame
+	 * drawn after that shows whether the rows changed.
+	 */
+	private clickFrame:
+		| {
+				readonly before: readonly string[];
+				readonly from: boolean;
+				readonly after: number;
+				readonly expanded: boolean;
+				changed(): void;
+		  }
+		| undefined;
 
 	protected readonly runtime: IsolatedInteractiveRuntime;
 	private readonly requestRender: () => void;
@@ -118,6 +136,16 @@ abstract class RemoteRenderer implements Component {
 			rememberFrame(identity, message.lines);
 			if (scope !== runtimeFrameScope(this.runtime)) return;
 			this.appliedRequestId = message.requestId;
+			const clicked = this.clickFrame;
+			if (clicked !== undefined && message.requestId > clicked.after) {
+				this.clickFrame = undefined;
+				// Decided before the new rows are painted, so a held view keeps the block where the reader clicked it. Clicks
+				// that toggled the row back to where it started changed nothing.
+				if (clicked.expanded !== clicked.from) {
+					if (sameLines(clicked.before, message.lines)) this.setExpanded(clicked.from);
+					else clicked.changed();
+				}
+			}
 			this.lines = message.lines;
 			this.requestRender();
 		} else if (message.type === "engine_custom_invalidate") {
@@ -165,6 +193,26 @@ abstract class RemoteRenderer implements Component {
 	protected changed(): void {
 		this.markDirty();
 		this.requestRender();
+	}
+
+	abstract isExpanded(): boolean;
+	abstract setExpanded(expanded: boolean): void;
+
+	/**
+	 * Sets the expansion a click asked for, and decides once the engine draws it: `changed` runs when the rows differ
+	 * from the ones shown before, and otherwise the row goes back to the expansion it had. A click that settles while an
+	 * earlier one still waits for its frame takes over from it, measured against the rows shown before the earlier one.
+	 */
+	expandByClick(expanded: boolean, changed: () => void): void {
+		const waiting = this.clickFrame;
+		this.clickFrame = {
+			before: waiting?.before ?? this.lines,
+			from: waiting?.from ?? this.isExpanded(),
+			after: this.requestId,
+			expanded,
+			changed,
+		};
+		this.setExpanded(expanded);
 	}
 
 	protected abstract command(requestId: number, width: number): RemoteRenderCommand;
@@ -263,9 +311,9 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	getGroupRole(): ToolGroupRole {
 		return this.groupRole;
 	}
-	/** The block's title row: the engine draws the block as `ToolExecutionComponent` does, after a blank row. */
-	headerRows(width: number): readonly number[] {
-		return this.render(width).length > 1 ? [1] : [];
+	/** Every row of the block: the engine draws it as `ToolExecutionComponent` does, after a blank row. */
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(1, this.render(width).length);
 	}
 	setShowImages(show: boolean): void {
 		this.showImages = show;
@@ -332,16 +380,17 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 		this.expanded = expanded;
 		this.changed();
 	}
-	/** A finished-task card expands on a click on its header, as a tool block does. */
-	get expandsOnClick(): boolean {
-		return this.message.customType === TASK_COMPLETION_MESSAGE_TYPE;
-	}
+	/**
+	 * A message expands on a click, as Ctrl+O expands it: the engine draws its card, and a card with nothing more to
+	 * show stays as it is.
+	 */
+	readonly expandsOnClick = true;
 	isExpanded(): boolean {
 		return this.expanded;
 	}
-	/** The card's `● … finished` row: the engine draws the card after the blank row it leads with. */
-	headerRows(width: number): readonly number[] {
-		return this.expandsOnClick && this.render(width).length > 1 ? [1] : [];
+	/** Every row of the card: the engine draws it after the blank row it leads with. */
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(1, this.render(width).length);
 	}
 	setOutputPad(outputPad: number): void {
 		this.outputPad = outputPad;

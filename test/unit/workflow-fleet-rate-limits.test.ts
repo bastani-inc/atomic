@@ -886,7 +886,11 @@ test("while metering locally a two-scope call gives the local token back, and th
 	assert.equal(calls.length, 2, "nothing asks the store within the retry wait");
 });
 
-test("polling repeats until the limiter closes, and applies nothing when no cooldown runs (#4768)", async () => {
+test("polling repeats until the limiter closes, and applies nothing when no cooldown runs (#4768, #5520)", async () => {
+	const pollMs = 5;
+	const requiredPolls = 3;
+	// Allow each round its store deadline and timer interval; completion, not a short sleep, ends the wait.
+	const progressDeadlineMs = requiredPolls * (FLEET_RATE_STORE_TIMEOUT_MS + pollMs);
 	let polls = 0;
 	const applied: unknown[] = [];
 	const { store } = fakeStore(
@@ -902,14 +906,19 @@ test("polling repeats until the limiter closes, and applies nothing when no cool
 		shareCooldowns: true,
 		slots: 1,
 		applyCooldowns: (observations) => applied.push(...observations),
-		pollMs: 5,
+		pollMs,
 	});
 	limiter.start();
-	await sleep(60);
-	await limiter.close();
+	try {
+		await vi.waitFor(() => assert.ok(polls >= requiredPolls, String(polls)), {
+			timeout: progressDeadlineMs,
+			interval: pollMs,
+		});
+	} finally {
+		await limiter.close();
+	}
 	const seen = polls;
-	assert.ok(seen >= 3, String(seen));
-	await sleep(30);
+	await sleep(2 * pollMs);
 	assert.equal(polls, seen, "no poll after close");
 	assert.deepEqual(applied, []);
 });
