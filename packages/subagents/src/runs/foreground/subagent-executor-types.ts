@@ -16,6 +16,8 @@ import type { NamedWorktree, NamedWorktreeRequest } from "../shared/named-worktr
 import type { runSync } from "./execution.js";
 
 export const BURST_TASK_DISCOVERY_CWD = Symbol("burstTaskDiscoveryCwd");
+/** The caller's tasks[] index before prepending a mixed call's top-level child, for input diagnostics. */
+export const BURST_TASK_INPUT_INDEX = Symbol("burstTaskInputIndex");
 /** Retain the expanded tasks' actual working directories for call-local output checks if a merged run fails. */
 export const BURST_PREPARED_TASKS = Symbol("burstPreparedTasks");
 /** The named worktree a launch's child runs in, once it exists (#5202). */
@@ -28,6 +30,7 @@ export interface TaskParam {
 	worktree?: NamedWorktreeRequest;
 	[NAMED_WORKTREE]?: NamedWorktree;
 	count?: number;
+	[BURST_TASK_INPUT_INDEX]?: number;
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
 	reads?: string[] | boolean;

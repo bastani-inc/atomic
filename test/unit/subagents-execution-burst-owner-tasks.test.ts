@@ -531,6 +531,7 @@ test.each([
 	["absolute", 1],
 	["absolute", 3],
 	["relative", 1],
+	["mixed absolute", 1],
 ] as const)(
 	"only eligible calls count toward the combined limit with %s outputs and %i valid siblings (#3427)",
 	async (pathKind, valid) => {
@@ -546,9 +547,14 @@ test.each([
 		);
 		git(cwd, "init", "-q", "-b", "main");
 		git(cwd, "commit", "--allow-empty", "-qm", "init");
-		const output = pathKind === "absolute" ? join(cwd, "same.md") : "same.md";
+		const output = pathKind === "relative" ? "same.md" : join(cwd, "same.md");
+		const arrayChild = { agent: "echo", task: "listed", output };
+		const conflicting: SubagentParamsLike =
+			pathKind === "mixed absolute"
+				? { agent: "echo", task: "top", output, tasks: [arrayChild] }
+				: { tasks: [{ ...arrayChild, count: 2 }] };
 		const [repeated, ...rest] = await Promise.all([
-			call("repeated", { worktree: true, tasks: [{ agent: "echo", task: "repeated", count: 2, output }] }),
+			call("repeated", { ...conflicting, worktree: true }),
 			...Array.from({ length: valid }, (_, i) =>
 				call(`good-${i}`, { worktree: true, agent: "echo", task: `good-${i}` }),
 			),
@@ -572,6 +578,49 @@ test.each([
 			}
 			assert.deepEqual(launched, []);
 		}
+	},
+);
+
+test.each([1, 2])(
+	"a mixed call keeps its top-level child and %i listed children after a sibling fails (#3427)",
+	async (count) => {
+		const launched: string[] = [];
+		const { call, cwd } = harness(
+			async (_cwd, _agents, _agent, task) => {
+				launched.push(task);
+				return childResult(task);
+			},
+			undefined,
+			4,
+			{ maxTasks: 2 },
+		);
+		git(cwd, "init", "-q", "-b", "main");
+		git(cwd, "commit", "--allow-empty", "-qm", "init");
+		const [bad, mixed] = await Promise.all([
+			call("named-duplicate", {
+				worktree: { branch: "output-work" },
+				tasks: [{ agent: "echo", task: "bad", count: 2, output: "same.md" }],
+			}),
+			call("mixed", { agent: "echo", task: "top", tasks: [{ agent: "echo", task: "listed", count }] }),
+		]);
+		assert.match(text(bad), /resolve output to the same path/);
+		if (count === 2) {
+			assert.equal(mixed.isError, true);
+			assert.match(text(mixed), /Too many parallel tasks \(3 after count expansion\)/);
+			assert.deepEqual(launched, []);
+			return;
+		}
+		const slots = parallel(mixed).slots;
+		assert.equal(slots.length, 2);
+		for (const [index, slot] of slots.entries()) {
+			assert.ok(slot.outcome.kind === "admitted");
+			assert.ok(
+				(await settledOutput(call, slot.outcome.observation.taskId)).includes(
+					`output:${index === 0 ? "top" : "listed"}`,
+				),
+			);
+		}
+		assert.deepEqual(launched.sort(), ["listed", "top"]);
 	},
 );
 

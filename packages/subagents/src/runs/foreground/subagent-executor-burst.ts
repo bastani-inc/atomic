@@ -17,6 +17,7 @@ import { getParentAskHandoff } from "./subagent-executor-parent-ask-projection.j
 import {
 	BURST_PREPARED_TASKS,
 	BURST_TASK_DISCOVERY_CWD,
+	BURST_TASK_INPUT_INDEX,
 	type BurstTaskParam,
 	type SubagentParamsLike,
 	type TaskParam,
@@ -169,6 +170,19 @@ function existingParallelTask(item: BurstItem, task: TaskParam): BurstTaskParam 
 			? { heartbeatMs: item.params.heartbeatMs }
 			: {}),
 	};
+}
+
+/** A mixed call in a burst contributes its top-level child first. Keep that same task list for checks and retries. */
+function collectMixedCall(item: BurstItem): BurstItem {
+	if (!item.params.agent || !item.params.tasks?.length) return item;
+	const tasks = [
+		topLevelSingleTask(item)!,
+		...item.params.tasks.map((task, index) => ({
+			...existingParallelTask(item, task),
+			[BURST_TASK_INPUT_INDEX]: index,
+		})),
+	];
+	return { ...item, params: { ...item.params, agent: undefined, task: undefined, tasks } };
 }
 
 function mergeBurst(items: BurstItem[]): {
@@ -506,7 +520,7 @@ export function createExecutionBurstDispatcher(input: {
 
 	const runBurst = (items: BurstItem[]): void => {
 		input.setActive(true);
-		void run(items, () => input.setActive(false));
+		void run(items.length > 1 ? items.map(collectMixedCall) : items, () => input.setActive(false));
 	};
 
 	const flush = (): void => {
