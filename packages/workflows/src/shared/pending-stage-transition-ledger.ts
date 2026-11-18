@@ -83,6 +83,10 @@ export class PendingStageTransitionLedger {
 		const removed: PendingStageMessage[] = [];
 		const added: PendingStageMessage[] = [];
 		let settled = this.settled;
+		// Every receipt archive of the transition is queued in order and awaited together, so the backend writes
+		// them as one batch instead of one commit each (#3931). Nothing is persisted or committed before they all
+		// settle, so a failed archive still leaves its delivery in the persisted list.
+		const archives = new ReceiptArchives();
 		const length = Math.max(base.length, messages.length);
 		for (let index = 0; index < length; index++) {
 			const previous = base[index];
@@ -100,10 +104,11 @@ export class PendingStageTransitionLedger {
 			const next =
 				this.fixed.has(entry) && !dirty.has(entry)
 					? entry
-					: await compactEntryDeliveries(backend, runId, entry, stageStatus);
+					: await compactEntryDeliveries(backend, runId, entry, stageStatus, archives);
 			output.push(next);
 			added.push(next);
 		}
+		await archives.settled();
 		let retained: readonly PendingStageMessage[] = output;
 		if (archiveSettled !== undefined && settled > PENDING_STAGE_SETTLED_MESSAGE_LIMIT) {
 			retained = await retainPendingStageMessages(output, archiveSettled);
@@ -195,6 +200,7 @@ async function compactEntryDeliveries(
 	runId: string,
 	entry: PendingStageMessage,
 	stageStatus: StageStatusLookup,
+	archives: ReceiptArchives,
 ): Promise<PendingStageMessage> {
 	if (entry.sticky !== true || entry.deliveries === undefined) return entry;
 	const latest = new Map<string, number>();
@@ -213,12 +219,19 @@ async function compactEntryDeliveries(
 			while (archivedThrough < index) {
 				const prefixIndex = archivedThrough + 1;
 				const receipt = entry.deliveries[prefixIndex]!;
-				if (!(await backend.hasPendingStageDeliveryReceipt(runId, entry.id, receipt, entry.runId)))
-					await backend.archivePendingStageDeliveryReceipt(runId, entry.id, receipt, {
-						messageRunId: entry.runId,
-						deliveryCount:
-							(entry.deliveryCount ?? entry.deliveries.length) - entry.deliveries.length + prefixIndex + 1,
-					});
+				if (
+					!archives.has(entry, receipt) &&
+					!(await backend.hasPendingStageDeliveryReceipt(runId, entry.id, receipt, entry.runId))
+				)
+					archives.add(
+						entry,
+						receipt,
+						backend.archivePendingStageDeliveryReceipt(runId, entry.id, receipt, {
+							messageRunId: entry.runId,
+							deliveryCount:
+								(entry.deliveryCount ?? entry.deliveries.length) - entry.deliveries.length + prefixIndex + 1,
+						}),
+					);
 				archivedThrough = prefixIndex;
 			}
 		} else {
@@ -226,6 +239,45 @@ async function compactEntryDeliveries(
 		}
 	}
 	return deliveries.length === entry.deliveries.length ? entry : { ...entry, deliveries };
+}
+
+/**
+ * The receipt archives one transition queued and has not awaited yet. A receipt queued here counts as archived for
+ * the rest of the transition, as it would once its write folded, so a receipt is never queued twice.
+ */
+class ReceiptArchives {
+	private readonly pending: Promise<void>[] = [];
+	private readonly queued = new Set<string>();
+
+	has(entry: PendingStageMessage, receipt: PendingStageMessageDelivery): boolean {
+		return this.queued.has(receiptKey(entry, receipt.runId, receipt.stageId, receipt.sessionId, receipt.admission));
+	}
+
+	add(entry: PendingStageMessage, receipt: PendingStageMessageDelivery, archive: Promise<void>): void {
+		// A failure surfaces when the transition settles its archives, never as an unhandled rejection.
+		archive.catch(() => {});
+		this.pending.push(archive);
+		// An archived receipt also answers for its stage with no session and no admission, as the backend's index does.
+		this.queued.add(receiptKey(entry, receipt.runId, receipt.stageId, receipt.sessionId, receipt.admission));
+		this.queued.add(receiptKey(entry, receipt.runId, receipt.stageId, undefined, undefined));
+	}
+
+	/** Wait for every queued archive, then fail with the first failure: no write is still in flight after it. */
+	async settled(): Promise<void> {
+		const results = await Promise.allSettled(this.pending);
+		const failure = results.find((result) => result.status === "rejected");
+		if (failure !== undefined) throw failure.reason;
+	}
+}
+
+function receiptKey(
+	entry: PendingStageMessage,
+	runId: string,
+	stageId: string,
+	sessionId: string | undefined,
+	admission: string | undefined,
+): string {
+	return JSON.stringify([entry.id, entry.runId, runId, stageId, sessionId ?? null, admission ?? null]);
 }
 
 /** One delivery slot per run, stage and admission; a later session's delivery replaces an earlier one. */
