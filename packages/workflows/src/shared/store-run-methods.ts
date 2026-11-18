@@ -62,7 +62,8 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 	const { state } = context;
 	let lastFinish = 0;
 	const noteFinish = (run: RunSnapshot, previousStatus?: RunStatus, previousSequence?: number): void => {
-		if (!TERMINAL_STATUSES.has(run.status)) {
+		// A nested run shares its invocation's route window; replaying it is not a new invocation finish.
+		if (!isTopLevelWorkflowRun(run) || !TERMINAL_STATUSES.has(run.status)) {
 			delete run.finishSequence;
 			return;
 		}
@@ -70,7 +71,9 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 		// wall clock stands still or moves backwards; endedAt remains the actual time used to measure duration.
 		const endedAt = run.endedAt ?? run.startedAt;
 		run.finishSequence ??=
-			previousStatus === undefined ? endedAt : (previousSequence ?? Math.max(endedAt, lastFinish + 1));
+			previousStatus === undefined
+				? (context.backend?.getWorkflow(run.id)?.finishSequence ?? endedAt)
+				: (previousSequence ?? Math.max(endedAt, lastFinish + 1));
 		lastFinish = Math.max(lastFinish, run.finishSequence);
 	};
 

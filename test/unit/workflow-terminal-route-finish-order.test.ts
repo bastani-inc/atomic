@@ -219,12 +219,14 @@ test("restoring finished runs keeps their original finish order, not journal arr
 	}
 	const reopened = await backend.reopen();
 	const fromJournal = createStore();
+	bindStoreDurableBackend(fromJournal, reopened);
 	for (const id of finishing.toReversed()) {
 		await reopened.hydrateWorkflow(id);
 		for (const snapshot of durableWorkflowRunSnapshots(reopened, reopened.getWorkflow(id)!))
 			fromJournal.recordRunStart(snapshot);
 	}
 	const fromSession = createStore();
+	bindStoreDurableBackend(fromSession, reopened);
 	restoreOnSessionStart(
 		{ getEntries: () => [...entries, ...lateEnds] },
 		{ persistRuns: true, resumeInFlight: "never" },
@@ -234,7 +236,6 @@ test("restoring finished runs keeps their original finish order, not journal arr
 		["journal", fromJournal],
 		["session", fromSession],
 	] as const) {
-		bindStoreDurableBackend(restored, reopened);
 		const { routed, bridge } = observeRoutes(restored);
 		assert.deepEqual(routed, new Set(finishing.slice(1)), source);
 		// The next finish must follow the restored window, even if the host's clock has moved backwards.

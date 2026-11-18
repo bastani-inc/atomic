@@ -514,23 +514,23 @@ export function registerPendingStageIntercomBridge(
 			},
 			rowRuns: membersOf,
 		};
+		// The retention decision and publication use the same ownership answer for this synchronous pass.
+		const ownership = new Map<string, boolean>();
+		const locallyOwned = (id: string): boolean => {
+			let owned = ownership.get(id);
+			if (owned === undefined) {
+				owned = externalRunRouteOwner(activeStore, id) === undefined && ownsRun(id);
+				ownership.set(id, owned);
+			}
+			return owned;
+		};
 		for (const rootRunId of roots) {
 			const root = activeStore.run(rootRunId);
-			if (
-				root === undefined ||
-				topology.rootOf(rootRunId) !== rootRunId ||
-				!ownsRun(rootRunId) ||
-				externalRunRouteOwner(activeStore, rootRunId) !== undefined
-			)
-				continue;
+			if (root === undefined || topology.rootOf(rootRunId) !== rootRunId || !locallyOwned(rootRunId)) continue;
 			const owes =
 				isTerminalRunStatus(root.status) &&
 				membersOf(rootRunId).some(
-					(run) =>
-						topology.rootOf(run.id) === rootRunId &&
-						hasSettlementWork(run) &&
-						ownsRun(run.id) &&
-						externalRunRouteOwner(activeStore, run.id) === undefined,
+					(run) => topology.rootOf(run.id) === rootRunId && hasSettlementWork(run) && locallyOwned(run.id),
 				);
 			noteFinishedRoot(root, owes);
 		}
@@ -539,7 +539,7 @@ export function registerPendingStageIntercomBridge(
 		for (const rootRunId of [...roots].sort((left, right) => position(left) - position(right))) {
 			for (const run of membersOf(rootRunId)) {
 				if (topology.rootOf(run.id) !== rootRunId) continue;
-				if (externalRunRouteOwner(activeStore, run.id) !== undefined || !ownsRun(run.id)) dropRoute(run.id);
+				if (!locallyOwned(run.id)) dropRoute(run.id);
 				else announceRun(run, rootRunId, lookups);
 			}
 		}
