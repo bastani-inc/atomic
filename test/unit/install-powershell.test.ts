@@ -3139,17 +3139,15 @@ try {
         Assert-Fixture (([IO.File]::ReadAllText($recordTwo)).Trim() -ceq (Get-FileHash -LiteralPath $launcherTwo -Algorithm SHA256).Hash.ToLowerInvariant()) "the install did not record the launcher hash"
         $appended = [IO.File]::Open($launcherTwo, [IO.FileMode]::Append)
         try { $appended.WriteByte(0) } finally { $appended.Dispose() }
-        $changedOutput = & $InstallerPath -Ref "2.0.0" | Out-String
-        Assert-Fixture ($changedOutput -notmatch 'skipping download') "a launcher that no longer matches its recorded hash was kept: $changedOutput"
+        $null = & $InstallerPath -Ref "2.0.0" | Out-String
         Assert-Fixture ((Get-FileHash -LiteralPath $launcherTwo -Algorithm SHA256).Hash.ToLowerInvariant() -ceq ([IO.File]::ReadAllText($recordTwo)).Trim()) "a changed launcher was not reinstalled"
         [IO.File]::WriteAllBytes($launcherTwo, [byte[]]@())
-        $emptyOutput = & $InstallerPath -Ref "2.0.0" | Out-String
-        Assert-Fixture ($emptyOutput -notmatch 'skipping download') "an empty atomic.exe was kept: $emptyOutput"
+        $null = & $InstallerPath -Ref "2.0.0" | Out-String
         Assert-Fixture ((Get-Item -LiteralPath $launcherTwo).Length -gt 0) "the reinstall did not restore atomic.exe"
         $mark = $global:AtomicFixtureRequests.Count
         $probeMark = $global:AtomicFixtureProbes.Count
         $verifiedOutput = & $InstallerPath -Ref "2.0.0" | Out-String
-        Assert-Fixture ($verifiedOutput -match 'skipping download') "a verified install was not kept"
+        Assert-Fixture ($verifiedOutput -match ('(?m)^Installed to ' + [regex]::Escape((Join-Path $binDir "atomic.cmd")) + '\s*$')) "a verified pinned rerun did not finish: $verifiedOutput"
         Assert-Fixture ((@($global:AtomicFixtureRequests).Count -eq $mark) -and (@($global:AtomicFixtureProbes).Count -eq $probeMark)) "a verified pinned install made a request"
 
         $global:AtomicFixtureApiRateLimited = $false
