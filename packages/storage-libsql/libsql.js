@@ -707,15 +707,38 @@ function statements(connection, watch, single = watch, shared = async () => unde
 				// A write that commits on its own and that the server answered `SQLITE_SCHEMA` runs again in a write
 				// transaction of its own: no other connection changes the schema while the transaction holds the write lock,
 				// so sent as it was it could keep meeting a changed schema for as long as other connections keep changing it.
-				locked !== undefined && reusable(sql) && !readsOnly(sql)
-					? async () => (await locked([{ sql, params }]))[0]
-					: undefined,
+				locked !== undefined && rerunsLocked(sql) ? async () => (await locked([{ sql, params }]))[0] : undefined,
 			),
 		// An `exec` of one statement wrote nothing when it fails, as one `execute` did; one of several statements may
 		// fail after the statements before it committed.
 		executeMultiple: (sql) =>
-			(isOneStatement(sql) ? single : watch)(async () => (await connection()).executeMultiple(sql)),
+			isOneStatement(sql)
+				? single(
+						async () => (await connection()).executeMultiple(sql),
+						locked !== undefined && rerunsLocked(sql)
+							? async () => {
+									await locked([{ sql, params: [] }]);
+								}
+							: undefined,
+					)
+				: watch(async () => (await connection()).executeMultiple(sql)),
 	};
+}
+
+/** The keyword of a statement that writes and runs the same inside a write transaction as on its own. */
+const LOCKED_RERUN_KEYWORD = /(?:INSERT|UPDATE|DELETE|REPLACE|WITH|VALUES|CREATE|DROP|ALTER)\b/iy;
+
+/**
+ * Whether `sql`, one statement the server answered `SQLITE_SCHEMA`, runs again in a write transaction of its own: a
+ * write or a schema change. Not a read, and not a statement that runs differently in a transaction or not at all, as
+ * `PRAGMA foreign_keys` and `VACUUM` do.
+ * @param {string} sql
+ */
+function rerunsLocked(sql) {
+	const start = firstTokenStart(sql);
+	if (start === -1 || readsOnly(sql)) return false;
+	LOCKED_RERUN_KEYWORD.lastIndex = start;
+	return LOCKED_RERUN_KEYWORD.test(sql) && isOneStatement(sql);
 }
 
 /**

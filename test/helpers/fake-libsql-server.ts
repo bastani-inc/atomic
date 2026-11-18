@@ -316,6 +316,8 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 					schemaChanged = false;
 					throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
 				}
+				if (churning && !database.isTransaction)
+					throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
 				database.exec(request.sql ?? stream.sqls.get(request.sql_id ?? -1) ?? "");
 				return { type: "sequence" };
 			case "store_sql":

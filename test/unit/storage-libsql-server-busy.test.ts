@@ -241,3 +241,15 @@ test("a write outside a transaction lands once while other connections keep chan
 	}
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
 });
+
+test("a schema change in one exec lands once while other connections keep changing the server's schema longer than the adapter waits", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	fake.churnSchema(true);
+	try {
+		await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	} finally {
+		fake.churnSchema(false);
+	}
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'events'"), 1);
+});
