@@ -164,3 +164,36 @@ test(
 	},
 	TEST_TIMEOUT_MS,
 );
+
+test(
+	"with multi-node routing, a released subagent's reservation whose shared write failed is not written back once its owner reserves the subagent again and releases it (#5352)",
+	async () => {
+		const shared = await harness.openSharedStorage("a");
+		const home = unique("supersede-home");
+		const sender = await harness.connect("a", unique("sender"), { group: home });
+		const owner = await harness.connect("b", unique("owner"), { group: home, supervisorOwnerToken: randomUUID() });
+		const childName = `subagent-worker-${unique("superseded")}-1`;
+		harness.failReservationOnce(childName);
+		try {
+			await owner.client.reserveReleasedChildren([{ childName, wake: false }]);
+			await harness.reservationFailed(childName);
+		} finally {
+			harness.releaseReservation();
+		}
+
+		// The owner restores the subagent: the newer reservation replaces the released one, which was never written.
+		const auth = await owner.client.authorizeSupervisorChild(childName);
+		const reserved = await owner.client.reserveRestoringRecipient(auth.capability, { group: home });
+		assert.deepEqual(reserved, { published: true });
+		await vi.waitFor(async () => assert.equal((await reservationRows(shared, childName)).active, 1), WAIT);
+		// Past the renewal that would write the replaced reservation again.
+		await sleep(BROKER_LEASE_RENEW_INTERVAL_MS * 2);
+
+		await owner.client.releaseRestoringRecipient(auth.capability);
+		await vi.waitFor(async () => assert.equal((await reservationRows(shared, childName)).active, 0), WAIT);
+		const refused = await sender.client.send(childName, { text: "after the release" });
+		assert.equal(refused.delivered, false, JSON.stringify(refused));
+		assert.match(refused.reason ?? "", /Session not found/);
+	},
+	TEST_TIMEOUT_MS,
+);

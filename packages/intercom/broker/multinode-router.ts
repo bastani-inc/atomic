@@ -231,6 +231,11 @@ export interface MultiNodeHost {
 	/** Route a held send again as its sender, exactly like a new send (local delivery or the outbox). */
 	dispatch(socket: BrokerConnectedSession["socket"], clientMessage: SendClientMessage, senderId: string): void;
 	revokeReleasedReservation(reservationKey: string, ownerSessionId: string): void;
+	/**
+	 * #5352: whether this broker still holds the reservation the owner made under `capability` (its capability or
+	 * released-child key): false once it was released, taken by its child, or replaced by a newer reservation of the child.
+	 */
+	holdsReservation(capability: string, ownerSessionId: string): boolean;
 }
 
 export interface MultiNodeRouterOptions {
@@ -370,6 +375,8 @@ interface MirroredReservation {
 	 * handed on when the child consumes it (#4488).
 	 */
 	readonly superseded?: readonly string[];
+	/** #5352: what was written, to write it again if a stale retry of an older reservation of the child ends it. */
+	readonly publication?: UnpublishedReservation;
 }
 
 /**
@@ -1359,11 +1366,17 @@ export class MultiNodeRouter {
 	/**
 	 * Write a reservation made here to the shared database. It stays unpublished, for the renewal to write again, only
 	 * while the write fails. The first write runs in its key's order, so a release or departure after it ends what it
-	 * wrote; a `retry` writes nothing once the reservation was released, consumed or made again, or its owner left.
+	 * wrote; a `retry` writes nothing once the reservation was released, consumed, replaced or made again, or its owner
+	 * left, and ends what it wrote when that happened while it was writing.
 	 */
 	private async publishReservation(reservationKey: string, pending: UnpublishedReservation, retry: boolean): Promise<void> {
 		const { capability, ownerSessionId, owner, childName, group, aliases, dormant, options } = pending;
-		if (retry && (this.unpublished.get(reservationKey) !== pending || this.host.sessions.get(ownerSessionId) !== owner)) {
+		if (
+			retry &&
+			(this.unpublished.get(reservationKey) !== pending ||
+				this.host.sessions.get(ownerSessionId) !== owner ||
+				!this.host.holdsReservation(capability, ownerSessionId))
+		) {
 			if (this.unpublished.get(reservationKey) === pending) this.unpublished.delete(reservationKey);
 			return;
 		}
@@ -1392,10 +1405,16 @@ export class MultiNodeRouter {
 		}
 		if (reserved.status !== "reserved") return;
 		// The owner left (or its id was taken over) while the reserve was being written: its departure scanned the
-		// mirrors before this one existed, so end the reservation here instead of renewing it for a gone owner.
-		if (this.host.sessions.get(ownerSessionId) !== owner) {
+		// mirrors before this one existed, so end the reservation here instead of renewing it for a gone owner. A retry
+		// likewise ends what it wrote for a reservation its child took, or a newer one replaced, meanwhile: those ran
+		// outside this key's order.
+		if (
+			this.host.sessions.get(ownerSessionId) !== owner ||
+			(retry && !this.host.holdsReservation(capability, ownerSessionId))
+		) {
 			await this.state.reservations.release(reserved.lease);
 			await this.wakeHeldOrigins(reservationKey);
+			if (retry) this.republishSuperseded(reserved.superseded);
 			return;
 		}
 		const woken =
@@ -1415,8 +1434,24 @@ export class MultiNodeRouter {
 			...(woken ? { woken } : {}),
 			...(superseded.size > 0 ? { superseded: [...superseded] } : {}),
 			...(isReleasedReservationKey(capability) ? {} : { capability }),
+			publication: pending,
 		});
 		await this.wakeWaitingChild(reservationKey);
+	}
+
+	/**
+	 * #5352: a stale retry ended the newer reservations of its child that it superseded as it wrote: the ones this broker
+	 * still holds are written again, in their keys' order.
+	 */
+	private republishSuperseded(keys: readonly string[]): void {
+		for (const key of keys) {
+			const publication = this.mirrored.get(key)?.publication;
+			if (publication === undefined || !this.host.holdsReservation(publication.capability, publication.ownerSessionId))
+				continue;
+			this.mirrored.delete(key);
+			this.unpublished.set(key, publication);
+			this.serial(`reservation:${key}`, () => this.publishReservation(key, publication, true));
+		}
 	}
 
 	/**

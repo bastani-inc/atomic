@@ -578,8 +578,8 @@ export type BrokerMessage =
 	 * #5352: `published: false` when the reservation holds sends on the owner's broker but did not reach the shared
 	 * database within the broker's bound; the broker keeps writing it there until it lands or the reservation ends.
 	 */
-	| { type: "restoring_recipient_ack"; requestId: string; error?: string; published?: false }
-	| { type: "released_children_ack"; requestId: string; refusal?: ReleasedChildRefusal; published?: false }
+	| { type: "restoring_recipient_ack"; requestId: string; error?: string; published?: boolean }
+	| { type: "released_children_ack"; requestId: string; refusal?: ReleasedChildRefusal; published?: boolean }
 	| { type: "hosted_sessions_ack"; requestId: string; sessions?: HostedSessionAssignment[]; refusal?: HostedSessionRefusal }
 	| {
 			type: "delivery_failed";

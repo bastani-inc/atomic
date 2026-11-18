@@ -3447,6 +3447,7 @@ class IntercomBroker {
                 },
                 dispatch: (socket, clientMessage, senderId) => this.dispatchSend(socket, clientMessage, senderId),
                 revokeReleasedReservation: (key, ownerSessionId) => this.revokeReleasedReservation(key, ownerSessionId),
+                holdsReservation: (key, ownerSessionId) => this.restoringRecipients.holds(key, ownerSessionId),
               },
             });
           } catch (error) {

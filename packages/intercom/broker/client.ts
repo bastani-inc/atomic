@@ -1325,7 +1325,7 @@ export class IntercomClient extends EventEmitter {
         if (
           typeof requestId !== "string" ||
           (refusal !== undefined && parsed === undefined) ||
-          (published !== undefined && published !== false)
+          (published !== undefined && typeof published !== "boolean")
         ) {
           throw new Error("Invalid released_children_ack message");
         }
@@ -1341,7 +1341,7 @@ export class IntercomClient extends EventEmitter {
         if (
           typeof requestId !== "string" ||
           (error !== undefined && typeof error !== "string") ||
-          (published !== undefined && published !== false)
+          (published !== undefined && typeof published !== "boolean")
         ) {
           throw new Error("Invalid restoring_recipient_ack message");
         }
