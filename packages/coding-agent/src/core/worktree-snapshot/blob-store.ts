@@ -355,10 +355,10 @@ interface IndexSource {
 	 * The row that says the source's triggers index what this build's do, and that no build before 0.9.88 writes.
 	 * Without it, triggers of the source's names are an older build's, which index less, and this build installs its own
 	 * and indexes the table again (#5065). Builds 0.9.88 to 0.9.90 write it as `(0, 0)` when they install the triggers
-	 * and read only that it exists. On SQLite, which builds before 0.9.88 also open, this build writes it as
-	 * {@link PUBLISHED_VERSION} only once its own backfill of the source is done, so that a build of 0.9.88 to 0.9.90
-	 * never trusts rows a build before 0.9.88 indexed during this build's backfill: it installs its own triggers and
-	 * indexes the table again instead (#5558).
+	 * and read only that it exists. This build writes it as {@link PUBLISHED_VERSION}, and on SQLite, which builds before
+	 * 0.9.88 also open, only once its own backfill of the source is done, so that a build of 0.9.88 to 0.9.90 never
+	 * trusts rows a build before 0.9.88 indexed during this build's backfill: it installs its own triggers and indexes
+	 * the table again instead (#5558).
 	 */
 	readonly version?: string;
 	/**
@@ -401,8 +401,9 @@ interface SourceState {
 }
 
 /**
- * The watermark and progress of a source's {@link IndexSource.version} row that this build writes on SQLite once its
- * own backfill of the source is done (#5558). Builds 0.9.88 to 0.9.90 write the row as `(0, 0)`.
+ * The watermark and progress of a source's {@link IndexSource.version} row as this build writes it: on SQLite once its
+ * own backfill of the source is done, on Postgres when it installs the source's triggers (#5558). Builds 0.9.88 to
+ * 0.9.90 write the row as `(0, 0)`.
  */
 const PUBLISHED_VERSION = 1;
 
@@ -951,10 +952,7 @@ async function installSource(
 		);
 	if (source.version === undefined) return true;
 	if (!withholdsVersion(dialect, source)) {
-		await transaction.run(
-			`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, 0, 0) ${REPLACE_PROGRESS}`,
-			source.version,
-		);
+		await publishVersion(transaction, t, source);
 		return true;
 	}
 	// A table with no row yet is backfilled as it is installed; any other is published once its backfill is done.
