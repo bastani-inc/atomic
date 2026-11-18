@@ -498,6 +498,35 @@ describe("synced upstream skill trees", () => {
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot), ["LICENSE.txt", "SKILL.md"]);
 	});
 
+	test("credits the tdd skill's MIT sources and carries mattpocock/skills v1.3.2's tautological-test example", () => {
+		const skillRoot = join(subagentSkills, "tdd");
+		const { frontmatter } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
+		assert.match(frontmatter, /^license: MIT\. LICENSE\.txt has complete terms$/mu);
+		for (const [key, value] of [
+			["github-repo", "https://github.com/mattpocock/skills"],
+			["github-path", "skills/engineering/tdd"],
+			["github-ref", "refs/tags/v1.3.2"],
+			["github-tree-sha", "667dbdd00c09d0e2189e082986e6a4d61a67c2a6"],
+		] as const) {
+			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`), key);
+		}
+		// test-audit.md is adapted from OpenClaw's test-audit skill, so both copyright notices ship.
+		const license = canonicalText(readFileSync(join(skillRoot, "LICENSE.txt")));
+		assert.match(license, /^Copyright \(c\) 2026 Matt Pocock$/mu);
+		assert.match(license, /^Copyright \(c\) 2026 OpenClaw Foundation$/mu);
+		assert.equal(license.match(/^Permission is hereby granted, free of charge/gmu)?.length, 2);
+		// From the tautological-tests heading to the end of upstream's tests.md at v1.3.2.
+		const tests = canonicalText(readFileSync(join(skillRoot, "tests.md")));
+		assert.equal(
+			sha256(tests.slice(tests.indexOf("**Tautological tests**"))),
+			"41fbaa3b2c1ebfaec8b951c27346f7c7281bc253189795cb9e77f80848bdce74",
+		);
+		assert.match(
+			readFileSync(join(skillRoot, "SKILL.md"), "utf8"),
+			/^\[ \] Expected values are independent literals, not recomputed from the code\r?$/mu,
+		);
+	});
+
 	test("tracks the skill-creator scripts with the modes of anthropics/skills tree 3cf9a8db", () => {
 		const skillCreatorRoot = "packages/workflows/skills/skill-creator/";
 		const executableScripts = new Set(

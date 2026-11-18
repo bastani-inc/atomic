@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The bundled `tdd` skill now names tautological tests, whose expected value is recomputed the way the code computes it, as an anti-pattern, with a checklist item and an example, from its upstream skill. Its frontmatter and a new `LICENSE.txt` credit the two MIT-licensed skills it is adapted from.
+
 ### Fixed
 
 - The bundled tmux skill's helper scripts carry the upstream fixes since they were adopted. `find-sessions.sh` shows each session's attached state and start time (it printed a literal `\t`, an empty time and "detached" for every session), counts a session with several clients as attached, matches `-q` literally against session names, and scans hidden sockets with `-A`. `wait-for-text.sh` accepts a zero-padded timeout such as `-T 08`, no longer reports a match when the pane capture fails, rejects an invalid pattern at once instead of waiting out the timeout, and stops checking at the deadline. The skill also shows how to wait for a command's completion marker without matching the echoed command line.
