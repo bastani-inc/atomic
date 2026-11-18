@@ -28,6 +28,8 @@ test("resume notices stay on screen after the chat rebuild that follows deferred
 		renderSessionEntries() {},
 	});
 	Object.defineProperty(mode, "sessionManager", { value: { getEntries: () => [], getLeafId: () => null } });
+	// A redraw shows the untrusted-project warning when it applies; this session is trusted.
+	Object.defineProperty(mode, "settingsManager", { value: { isProjectTrusted: () => true } });
 	mode.attachStartupNoticesContainer();
 	mode.showStatus("transient status written to the chat");
 	showResumeNotices(mode, [

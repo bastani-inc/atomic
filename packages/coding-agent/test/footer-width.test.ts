@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
-import { sep } from "node:path";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { tmpdir } from "node:os";
+import { join, sep } from "node:path";
 import { visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
+import { AuthStorage, FileAuthStorageBackend } from "../src/core/auth-storage.js";
 import { setDebugSetting } from "../src/core/debug-setting.js";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
 import {
 	FooterComponent,
 	formatCwdForFooter,
@@ -133,6 +138,42 @@ describe("formatCwdForFooter", () => {
 describe("UsageMeterComponent context color", () => {
 	beforeAll(() => {
 		initTheme(undefined, false);
+	});
+
+	it("renders subscription usage without synchronous credential file checks (#5516)", async () => {
+		const directory = fs.mkdtempSync(join(tmpdir(), "footer-auth-"));
+		try {
+			const credentials = AuthStorage.create(join(directory, "auth.json"));
+			await credentials.modify("anthropic", async () => ({
+				type: "oauth",
+				access: "fixture-access",
+				refresh: "fixture-refresh",
+				expires: Number.MAX_SAFE_INTEGER,
+			}));
+			const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
+			await runtime.getAvailable();
+			const session = createSession({ sessionName: "", provider: "anthropic" });
+			Object.assign(session, { modelRuntime: runtime });
+			const usageMeter = new UsageMeterComponent(session);
+			const version = vi.spyOn(FileAuthStorageBackend.prototype, "version");
+			const stat = vi.spyOn(fs, "statSync");
+			const read = vi.spyOn(fs, "readFileSync");
+			syncBuiltinESMExports();
+			try {
+				const rendered = usageMeter.render(120).map(stripAnsi).join("\n");
+				assert.match(rendered, /sub/);
+				assert.equal(version.mock.calls.length, 0, "drawing must not check credential files synchronously");
+				assert.equal(stat.mock.calls.length, 0, "drawing must not stat credential files");
+				assert.equal(read.mock.calls.length, 0, "drawing must not read credential files");
+			} finally {
+				version.mockRestore();
+				stat.mockRestore();
+				read.mockRestore();
+				syncBuiltinESMExports();
+			}
+		} finally {
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("renders over-limit auto-compacted context usage as a warning", () => {

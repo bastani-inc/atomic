@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- A mouse handler can return `whenSingleClick` for a single click. It runs once the click cannot become a double- or triple-click: `MULTI_CLICK_INTERVAL_MS` (500 ms, now exported) after the press with no second press on the same spot. A second press there cancels it, so text selection by double- and triple-click never triggers it.
+
 ## [0.9.89] - 2026-11-18
 
 ### Added

@@ -132,6 +132,9 @@ async function runOneChild(
 						.map((permit) => [permit.attempt, permit.state]);
 		return { root: result.status, outcome, items, permits };
 	} finally {
+		// Restoring alone keeps each spy, with its record of every call (`this`, arguments and result), for the rest of
+		// the file: about 10 MB a test. Resetting first drops those records.
+		vi.resetAllMocks();
 		vi.restoreAllMocks();
 		await pool.close().catch(() => {});
 		await backend.close();

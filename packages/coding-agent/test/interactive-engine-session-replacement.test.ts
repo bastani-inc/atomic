@@ -223,6 +223,41 @@ test("isolated host applies authoritative trust once per change", async () => {
 	}
 });
 
+test("isolated host keeps its trust and reports the decision pending until the engine decides", async () => {
+	const harness = await createHarness();
+	try {
+		harness.settingsManager.setProjectTrusted(true);
+		const probe = createUnresponsiveEngineClient();
+		let reported: boolean | undefined;
+		probe.client.getState = async () => ({
+			...createState(),
+			...(reported === undefined ? {} : { projectTrusted: reported }),
+		});
+		const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness) as never, async () => {
+			throw new Error("unused runtime factory");
+		});
+		const runtime = new IsolatedInteractiveRuntime(
+			localRuntime,
+			async () => {
+				throw new Error("unexpected replacement");
+			},
+			probe.client as never,
+		);
+		vi.spyOn(harness.session.resourceLoader, "reload").mockResolvedValue();
+
+		await runtime.initializeFromEngine();
+		expect(runtime.isProjectTrustPending()).toBe(true);
+		expect(harness.settingsManager.isProjectTrusted()).toBe(true);
+
+		reported = false;
+		await runtime.initializeFromEngine();
+		expect(runtime.isProjectTrustPending()).toBe(false);
+		expect(harness.settingsManager.isProjectTrusted()).toBe(false);
+	} finally {
+		harness.cleanup();
+	}
+});
+
 test("isolated host mirrors the child's startup trust decision before startup trust settles", async () => {
 	const harness = await createHarness();
 	try {
