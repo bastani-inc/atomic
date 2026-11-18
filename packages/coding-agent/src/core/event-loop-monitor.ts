@@ -2,7 +2,6 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import type { Profiler, Session } from "node:inspector";
 import { dirname, join, resolve } from "node:path";
 import { type IntervalHistogram, monitorEventLoopDelay } from "node:perf_hooks";
-import { Worker } from "node:worker_threads";
 import { getAgentDir, isBunRuntime } from "../config.js";
 import { createModuleRequire } from "../utils/module-require.js";
 import { DiagnosticWriter } from "./diagnostic-writer.ts";
@@ -60,13 +59,9 @@ export type EventLoopRecord =
 	| (RecordBase & { readonly type: "delay"; readonly phase: EventLoopPhase } & EventLoopDelaySummary);
 
 const HEARTBEAT_MS = 20;
-const WATCH_POLL_MS = 10;
-const STACK_SAMPLE_INTERVAL_MS = 20;
-const MAX_STACK_SAMPLES = 50;
 const STACK_END_FRAMES = 12;
 const MAX_BLOCK_STACKS = 3;
 const MAX_HOT_FRAMES = 10;
-const BLOCK_SAMPLES_GRACE_MS = 1_000;
 const PROFILE_SAMPLING_INTERVAL_US = 2_000;
 const PROFILE_WINDOW_MS = 5_000;
 const DELAY_RESOLUTION_MS = 10;
@@ -105,17 +100,13 @@ export function summarizeStacks(samples: readonly (readonly string[])[]): EventL
 	return [...counts.values()].sort((left, right) => right.count - left.count).slice(0, MAX_BLOCK_STACKS);
 }
 
-const nodeFunctionFrames = new WeakMap<readonly string[], readonly string[]>();
-
 export function hotFrames(samples: readonly (readonly string[])[]): EventLoopHotFrame[] {
 	const frames = new Map<string, { frame: string; count: number; depth: number }>();
 	for (const stack of samples) {
 		const counted = new Set<string>();
 		for (const [depth, frame] of stack.entries()) {
 			if (frame.startsWith("… ")) continue;
-			const key =
-				nodeFunctionFrames.get(stack)?.[depth] ??
-				(frame.startsWith("(anonymous)") ? frame : frame.replace(/:\d+:\d+\)$/, ")"));
+			const key = frame.startsWith("(anonymous)") ? frame : frame.replace(/:\d+:\d+\)$/, ")");
 			if (counted.has(key)) continue;
 			counted.add(key);
 			const seen = frames.get(key);
@@ -154,95 +145,6 @@ export function profileStacksBetween(profile: Profiler.Profile, fromUs: number, 
 	return stacks;
 }
 
-type WorkerFrame = readonly [string, string, number, number, number, number];
-
-interface WorkerBlockSamples {
-	readonly sinceUs: number;
-	readonly samples: readonly (readonly WorkerFrame[])[];
-}
-
-const WatchdogState = {
-	Exiting: 0,
-	Attached: 1,
-} as const;
-
-const DETACH_ON_EXIT_MS = 100;
-
-const WATCHDOG_SOURCE = `
-const { parentPort, workerData } = require("node:worker_threads");
-const { Session } = require("node:inspector");
-const { heartbeatMs, thresholdMs, pollMs, sampleIntervalMs, maxSamples } = workerData;
-const stamp = new BigInt64Array(workerData.stamp);
-const state = new Int32Array(workerData.state);
-const readStamp = () => Number(Atomics.load(stamp, 0));
-const nowUs = () => (performance.timeOrigin + performance.now()) * 1000;
-let block;
-let pauseRequest;
-let ready = false;
-const session = new Session();
-const urls = new Map();
-Atomics.store(state, ${WatchdogState.Attached}, 1);
-if (Atomics.load(state, ${WatchdogState.Exiting}) === 1) {
-	Atomics.store(state, ${WatchdogState.Attached}, 0);
-	process.exit(0);
-}
-session.connectToMainThread();
-session.on("Debugger.scriptParsed", ({ params }) => urls.set(params.scriptId, params.url));
-session.on("Debugger.paused", ({ params }) => {
-	const current = pauseRequest;
-	if (current === undefined) return;
-	pauseRequest = undefined;
-	session.post("Debugger.resume");
-	if (block === current && readStamp() === current.sinceUs) {
-		current.samples.push(params.callFrames.map((frame) => [
-			frame.functionName,
-			frame.url || urls.get(frame.location.scriptId) || "",
-			frame.location.lineNumber,
-			frame.location.columnNumber ?? 0,
-			frame.functionLocation?.lineNumber ?? frame.location.lineNumber,
-			frame.functionLocation?.columnNumber ?? frame.location.columnNumber ?? 0,
-		]));
-	}
-	current.pausing = false;
-	current.nextPauseUs = nowUs() + sampleIntervalMs * 1000;
-});
-// Enabling the debugger walks every loaded script and can itself hold the main thread. Do it once during
-// diagnostic startup, not in response to a stall. Do not retain source for scripts the runtime has collected.
-session.post("Debugger.enable", { maxScriptsCacheSize: 0 }, (error) => {
-	ready = !error;
-	parentPort.postMessage({ initialized: true });
-});
-setInterval(() => {
-	if (Atomics.load(state, ${WatchdogState.Exiting}) === 1) {
-		if (Atomics.load(state, ${WatchdogState.Attached}) === 1) session.disconnect();
-		Atomics.store(state, ${WatchdogState.Attached}, 0);
-		return;
-	}
-	if (!ready) return;
-	const sinceUs = readStamp();
-	if (block !== undefined && sinceUs !== block.sinceUs) {
-		const ended = block;
-		block = undefined;
-		parentPort.postMessage({ sinceUs: ended.sinceUs, samples: ended.samples });
-	}
-	if (block === undefined) {
-		if (sinceUs === 0 || (nowUs() - sinceUs) / 1000 - heartbeatMs < thresholdMs) return;
-		block = { sinceUs, samples: [], pausing: false, nextPauseUs: 0 };
-	}
-	if (pauseRequest === undefined && !block.pausing && block.samples.length < maxSamples && nowUs() >= block.nextPauseUs) {
-		const current = block;
-		current.pausing = true;
-		pauseRequest = current;
-		session.post("Debugger.pause", (error) => {
-			if (error && pauseRequest === current) {
-				pauseRequest = undefined;
-				current.pausing = false;
-			}
-		});
-	}
-}, pollMs);
-`;
-
 interface StackSampler {
 	readonly source: EventLoopStackSource;
 	readonly ready?: Promise<void>;
@@ -251,102 +153,18 @@ interface StackSampler {
 	exit(): void;
 }
 
-class DebuggerSampler implements StackSampler {
-	readonly source = "debugger";
-	readonly ready: Promise<void>;
-	private readonly stamp = new BigInt64Array(new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT));
-	private readonly state = new Int32Array(new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT));
-	private readonly arrived = new Map<number, readonly (readonly string[])[]>();
-	private readonly waiting = new Map<number, (stacks: readonly (readonly string[])[]) => void>();
-
-	constructor(thresholdMs: number) {
-		const initialized = Promise.withResolvers<void>();
-		this.ready = initialized.promise;
-		const worker = new Worker(WATCHDOG_SOURCE, {
-			eval: true,
-			workerData: {
-				stamp: this.stamp.buffer,
-				state: this.state.buffer,
-				heartbeatMs: HEARTBEAT_MS,
-				thresholdMs,
-				pollMs: WATCH_POLL_MS,
-				sampleIntervalMs: STACK_SAMPLE_INTERVAL_MS,
-				maxSamples: MAX_STACK_SAMPLES,
-			},
-		});
-		const finishInitialization = () => {
-			worker.unref();
-			initialized.resolve();
-		};
-		worker.on("message", (message: WorkerBlockSamples | { readonly initialized: true }) => {
-			if ("initialized" in message) {
-				finishInitialization();
-				return;
-			}
-			const { sinceUs, samples } = message;
-			const stacks = samples.map((frames) => {
-				const stack = trimStack(
-					frames.map(([name, url, line, column]) => formatStackFrame(name, url, line, column)),
-				);
-				nodeFunctionFrames.set(
-					stack,
-					trimStack(frames.map(([name, url, , , line, column]) => formatStackFrame(name, url, line, column))),
-				);
-				return stack;
-			});
-			const waiter = this.waiting.get(sinceUs);
-			if (waiter === undefined) this.arrived.set(sinceUs, stacks);
-			else waiter(stacks);
-		});
-		const ended = () => {
-			Atomics.store(this.state, WatchdogState.Attached, 0);
-			finishInitialization();
-		};
-		worker.on("error", ended);
-		worker.on("exit", ended);
-	}
-
-	beat(nowUs: number): void {
-		Atomics.store(this.stamp, 0, BigInt(nowUs));
-		for (const sinceUs of this.arrived.keys()) {
-			if (nowUs - sinceUs > BLOCK_SAMPLES_GRACE_MS * 1000) this.arrived.delete(sinceUs);
-		}
-	}
-
-	exit(): void {
-		Atomics.store(this.state, WatchdogState.Exiting, 1);
-		const deadline = performance.now() + DETACH_ON_EXIT_MS;
-		while (Atomics.load(this.state, WatchdogState.Attached) === 1 && performance.now() < deadline) {}
-	}
-
-	stacksOf(sinceUs: number): Promise<readonly (readonly string[])[]> {
-		const arrived = this.arrived.get(sinceUs);
-		if (arrived !== undefined) {
-			this.arrived.delete(sinceUs);
-			return Promise.resolve(arrived);
-		}
-		return new Promise((settle) => {
-			const timer = setTimeout(() => done([]), BLOCK_SAMPLES_GRACE_MS);
-			timer.unref();
-			const done = (stacks: readonly (readonly string[])[]) => {
-				clearTimeout(timer);
-				this.waiting.delete(sinceUs);
-				settle(stacks);
-			};
-			this.waiting.set(sinceUs, done);
-		});
-	}
-}
-
 class ProfileSampler implements StackSampler {
 	readonly source = "profiler";
 	private startedUs = 0;
 	private queue: Promise<unknown> = Promise.resolve();
 
 	private readonly session: Session;
+	private readonly profileTimeOffsetUs: number;
 
 	constructor(session: Session, nowUs: number) {
 		this.session = session;
+		// Node profiles use the monotonic process clock; Bun profiles already use epoch microseconds.
+		this.profileTimeOffsetUs = isBunRuntime ? 0 : epochUs() - Number(process.hrtime.bigint() / 1000n);
 		session.post("Profiler.enable");
 		session.post("Profiler.setSamplingInterval", { interval: PROFILE_SAMPLING_INTERVAL_US });
 		this.restart(nowUs);
@@ -363,9 +181,11 @@ class ProfileSampler implements StackSampler {
 			.then(() => this.stop())
 			.then((profile) => {
 				this.restart(untilUs);
-				return profile === undefined ? [] : profileStacksBetween(profile, sinceUs, untilUs);
+				return profile === undefined
+					? []
+					: profileStacksBetween(profile, sinceUs - this.profileTimeOffsetUs, untilUs - this.profileTimeOffsetUs);
 			});
-		this.queue = stacks;
+		this.queue = stacks.then(() => undefined);
 		return stacks;
 	}
 
@@ -392,9 +212,8 @@ const noStacks: StackSampler = {
 
 const delayOnly: StackSampler = { ...noStacks, source: "disabled" };
 
-function createSampler(thresholdMs: number, nowUs: number): StackSampler {
+function createSampler(nowUs: number): StackSampler {
 	try {
-		if (!isBunRuntime) return new DebuggerSampler(thresholdMs);
 		const { Session: InspectorSession } = createModuleRequire(import.meta.url)("node:inspector") as {
 			Session: typeof Session;
 		};
@@ -435,7 +254,7 @@ class EventLoopMonitor {
 		this.lastBeatUs = epochUs();
 		this.phaseStartedUs = this.lastBeatUs;
 		this.histogram = startDelayHistogram();
-		this.sampler = collectStacks ? createSampler(thresholdMs, this.lastBeatUs) : delayOnly;
+		this.sampler = collectStacks ? createSampler(this.lastBeatUs) : delayOnly;
 		this.sampler.beat(this.lastBeatUs);
 		setInterval(() => this.beat(), HEARTBEAT_MS).unref();
 		process.once("exit", () => {
@@ -478,7 +297,7 @@ class EventLoopMonitor {
 		const durationMs = (nowUs - sinceUs) / 1000 - HEARTBEAT_MS;
 		if (durationMs >= this.thresholdMs) {
 			void this.sampler
-				.stacksOf(sinceUs, nowUs)
+				.stacksOf(sinceUs + HEARTBEAT_MS * 1000, nowUs)
 				.then((samples) => this.write(this.blockRecord(sinceUs, durationMs, samples)));
 		}
 		this.sampler.beat(nowUs);
