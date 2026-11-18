@@ -683,8 +683,9 @@ export class ModelRuntime implements Models {
 		);
 	}
 
-	isUsingOAuth(providerId: string): boolean {
-		this.syncStoredCredentialChanges();
+	/** Drawing can use the published snapshot without checking credential files on its synchronous path. */
+	isUsingOAuth(providerId: string, options?: { readonly refresh?: boolean }): boolean {
+		if (options?.refresh !== false) this.syncStoredCredentialChanges();
 		return this.snapshot.auth.get(normalizeProviderId(providerId))?.type === "oauth";
 	}
 

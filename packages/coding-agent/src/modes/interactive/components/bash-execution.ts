@@ -13,6 +13,7 @@ import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyText, parenthesizedKeyHint } from "./keybinding-hints.js";
+import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 import { truncateToVisualLines } from "./visual-truncate.ts";
 
 // Preview line limit when not expanded (matches tool execution behavior)
@@ -74,11 +75,10 @@ export class BashExecutionComponent extends Container {
 		return this.expanded;
 	}
 
-	/** The `$ command` row, under the spacer and the top border the component starts with. */
-	headerRows(width: number): readonly number[] {
-		const [spacer, border] = this.children;
-		const above = (spacer?.render(width).length ?? 0) + (border?.render(width).length ?? 0);
-		return this.render(width).length > above ? [above] : [];
+	/** Every row of the block, its borders included, below the spacer it starts with. */
+	clickArea(width: number): RowRange | undefined {
+		const [spacer] = this.children;
+		return rowsFrom(spacer?.render(width).length ?? 0, this.render(width).length);
 	}
 
 	setOutputPad(outputPad: number): void {

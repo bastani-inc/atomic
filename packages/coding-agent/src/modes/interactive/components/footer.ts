@@ -190,7 +190,8 @@ function getUsageLine(session: ChatBoxSession, autoCompactEnabled: boolean, widt
 
 	// Kimi Coding is subscription-backed despite using API-key authentication.
 	const usingSubscription = state.model
-		? state.model.provider === "kimi-coding" || session.modelRuntime.isUsingOAuth(state.model.provider)
+		? state.model.provider === "kimi-coding" ||
+			session.modelRuntime.isUsingOAuth(state.model.provider, { refresh: false })
 		: false;
 	if (totals.cost || usingSubscription) {
 		usageParts.push(
