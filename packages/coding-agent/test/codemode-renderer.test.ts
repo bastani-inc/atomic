@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
-import type { Component, TUI } from "@bastani/atomic-tui";
+import { type Component, type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, test, vi } from "vitest";
 import type { ToolRenderContext } from "../src/core/extensions/types.js";
 import { codemodeRenderers } from "../src/extensions/codemode/renderer.js";
@@ -32,6 +32,35 @@ function context(expanded: boolean): ToolRenderContext {
 		keyHint,
 	};
 }
+const tui = { requestRender: () => {} } as unknown as TUI;
+const SCRIPT_COMPLETED = { type: "text" as const, text: "Script completed\nWall time 1.0 seconds\nOutput:\n" };
+
+interface BlockOptions {
+	readonly width?: number;
+	readonly expanded?: boolean;
+	/** The model is still writing the script: no execution, no result. */
+	readonly streaming?: boolean;
+	readonly output?: string;
+	readonly calls?: CodemodeToolDetails["calls"];
+}
+
+/** A codemode call as the chat draws it: raw rows with their colours, and the same rows as plain text. */
+function codemodeBlock(args: Record<string, unknown>, options: BlockOptions = {}): { raw: string[]; plain: string[] } {
+	const component = new ToolExecutionComponent("codemode", "call", args, {}, codemodeRenderers, tui, "/");
+	if (!options.streaming) {
+		component.setArgsComplete();
+		component.markExecutionStarted();
+		const content = [SCRIPT_COMPLETED, ...(options.output ? [{ type: "text" as const, text: options.output }] : [])];
+		component.updateResult({ content, details: { calls: options.calls ?? [] }, isError: false, durationMs: 1_000 });
+	}
+	component.setExpanded(options.expanded ?? false);
+	const raw = component.render(options.width ?? 120);
+	component.dispose();
+	return { raw, plain: raw.map((line) => stripVTControlCharacters(line).trimEnd()) };
+}
+
+const LONG_SCRIPT = Array.from({ length: 20 }, (_, index) => `const v${index} = ${index};`).join("\n");
+
 function render(result: AgentToolResult<CodemodeToolDetails | undefined>, expanded = true, width = 200): string {
 	const component = codemodeRenderers.renderResult?.(
 		result,
@@ -75,10 +104,8 @@ test("codemode renderer shows model call costs and their total", () => {
 		[
 			"⎿  ● models.classify(scorer/judge) · $0.000013",
 			"       ⎿  scorer/judge",
-			"",
 			"     ● models.classify(scorer/judge) · $0.02",
 			"       ⎿  scorer/judge",
-			"",
 			"     ● models.classify(scorer/judge)",
 			"       ⎿  scorer/judge",
 			"  ⎿  Model calls: $0.02",
@@ -117,6 +144,127 @@ test("codemode collapsed script call stays on one bounded header row (#5350)", (
 	const component = codemodeRenderers.renderCall?.({ code: "x".repeat(1000) }, theme, context(false)) as Component;
 	const lines = component.render(50).map(stripVTControlCharacters);
 	assert.deepEqual(lines, [`codemode(${"x".repeat(39)}…)`]);
+});
+
+test("codemode call shows a one-line script inline as highlighted code", () => {
+	const { raw, plain } = codemodeBlock({ code: "return 1 + 1;" }, { output: "2" });
+	assert.deepEqual(plain, ["", " ● codemode(return 1 + 1;) · 1s", "   ⎿  2"]);
+	assert.ok(raw[1]?.includes(theme.fg("syntaxKeyword", "return")), raw[1]);
+});
+
+test("codemode call shows a multi-line script indented under codemode( and closes it with ) and the time", () => {
+	const { raw, plain } = codemodeBlock({ code: "const a = 1;\nconst b = 2;\nreturn a + b;\n" }, { output: "3" });
+	assert.deepEqual(plain, [
+		"",
+		" ● codemode(",
+		"     const a = 1;",
+		"     const b = 2;",
+		"     return a + b;",
+		"   ) · 1s",
+		"   ⎿  3",
+	]);
+	assert.ok(raw[2]?.includes(theme.fg("syntaxKeyword", "const")), raw[2]);
+});
+
+test("codemode call collapses a long script to its first lines with the expand hint, and Ctrl+O shows all of it", () => {
+	const collapsed = codemodeBlock({ code: LONG_SCRIPT }, { output: "done" }).plain;
+	assert.deepEqual(collapsed.slice(0, 3), ["", " ● codemode(", "     const v0 = 0;"]);
+	assert.equal(collapsed[11], "     const v9 = 9;");
+	assert.match(collapsed[12] ?? "", /^ {5}… \+10 lines/);
+	assert.deepEqual(collapsed.slice(13), ["   ) · 1s", "   ⎿  done"]);
+
+	const expanded = codemodeBlock({ code: LONG_SCRIPT }, { output: "done", expanded: true }).plain;
+	assert.deepEqual(expanded.slice(0, 2), ["", " ● codemode("]);
+	assert.deepEqual(
+		expanded.slice(2, 22),
+		LONG_SCRIPT.split("\n").map((line) => `     ${line}`),
+	);
+	assert.deepEqual(expanded.slice(22), ["   ) · 1s", "   ⎿  done"]);
+});
+
+test("codemode expanded result does not repeat the script the call shows", () => {
+	const { plain } = codemodeBlock(
+		{ code: "const unique = await tools.read({ path: 'a' });\nreturn unique;" },
+		{ output: "text of a", expanded: true },
+	);
+	assert.equal(plain.filter((line) => line.includes("const unique")).length, 1, plain.join("\n"));
+});
+
+test("codemode call shows the script while the model is still writing it", () => {
+	const empty = codemodeBlock({}, { streaming: true }).plain;
+	assert.match(empty[1] ?? "", /^ \S codemode\(\)$/);
+
+	const partial = codemodeBlock({ code: "const a = 1;\nconst b = 'unfinished" }, { streaming: true }).plain;
+	assert.equal(partial.length, 5, partial.join("\n"));
+	assert.match(partial[1] ?? "", /^ \S codemode\($/);
+	assert.deepEqual(partial.slice(2), ["     const a = 1;", "     const b = 'unfinished", "   )"]);
+});
+
+test("codemode nested calls follow each other without blank rows", () => {
+	const calls: CodemodeToolDetails["calls"] = [
+		{ id: "1", name: "read", args: '{"path":"a"}', status: "ok", durationMs: 5 },
+		{ id: "2", name: "read", args: '{"path":"b"}', status: "ok", durationMs: 5 },
+		{ id: "3", name: "read", args: '{"path":"c"}', status: "ok", durationMs: 5 },
+	];
+	const code = "for (const path of ['a', 'b', 'c']) await tools.read({ path });";
+	assert.deepEqual(codemodeBlock({ code }, { calls, output: "ok" }).plain, [
+		"",
+		` ● codemode(${code}) · 1s`,
+		"   ⎿  ● Read(a)",
+		"      ● Read(b)",
+		"      ● Read(c)",
+		"   ⎿  ok",
+	]);
+	const expanded = codemodeBlock({ code }, { calls, output: "ok", expanded: true }).plain;
+	assert.ok(!expanded.slice(1).includes(""), expanded.join("\n"));
+});
+
+test("codemode script rows fit narrow terminals: collapsed lines are cut, expanded lines wrap", () => {
+	const code = `const first = 1;\nconst message = "${"m".repeat(60)}";\nreturn message;`;
+	for (const width of [12, 24, 40]) {
+		for (const expanded of [false, true]) {
+			const { raw } = codemodeBlock({ code }, { width, expanded });
+			for (const line of raw) assert.ok(visibleWidth(line) <= width, `${width}/${expanded}: ${line}`);
+		}
+	}
+	const collapsed = codemodeBlock({ code }, { width: 40 }).plain;
+	// 40 columns: a 1-column pad, the 2-column glyph, and the code's own 2-column indent leave 35 for the code.
+	assert.deepEqual(collapsed.slice(1, 4), [
+		" ● codemode(",
+		"     const first = 1;",
+		`     const message = "${"m".repeat(17)}…`,
+	]);
+	const expanded = codemodeBlock({ code }, { width: 40, expanded: true }).plain;
+	// Every m is still there: 60 in the string, one in each `message`, one in `codemode`.
+	assert.equal(expanded.join("").match(/m/g)?.length, 60 + 2 + 1);
+	assert.ok(expanded.includes("   ) · 1s"), expanded.join("\n"));
+});
+
+test("codemode expanded script indents a wrapped line's continuation rows under the line", () => {
+	const code =
+		"for (const path of paths) {\n  const total = files.map((file) => file.lines).reduce((sum, count) => sum + count, 0);\n}";
+	const { plain } = codemodeBlock({ code }, { width: 50, expanded: true });
+	// 50 columns leave 45 for the code; the line's 2-column indent plus 2 hang its continuation rows 4 columns in.
+	assert.deepEqual(plain.slice(1, 8), [
+		" ● codemode(",
+		"     for (const path of paths) {",
+		"       const total = files.map((file) =>",
+		"         file.lines).reduce((sum, count) => sum +",
+		"         count, 0);",
+		"     }",
+		"   ) · 1s",
+	]);
+});
+
+test("codemode one-line script too wide for the row wraps under codemode( when expanded", () => {
+	const code = `return "${"w".repeat(80)}";`;
+	const collapsed = codemodeBlock({ code }, { width: 50 }).plain;
+	assert.equal(collapsed.length, 2);
+	assert.match(collapsed[1] ?? "", /^ ● codemode\(return "w+…\) · 1s$/);
+	const expanded = codemodeBlock({ code }, { width: 50, expanded: true }).plain;
+	assert.equal(expanded[1], " ● codemode(");
+	assert.equal(expanded.join("").match(/w/g)?.length, 80);
+	assert.equal(expanded.at(-1), "   ) · 1s");
 });
 
 test("codemode shares the header elapsed time during execution and after completion (#5350)", () => {

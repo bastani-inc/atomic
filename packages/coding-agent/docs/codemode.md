@@ -22,6 +22,8 @@ A script may start with an options line. It must be the first line; an options l
 
 The result starts with `Script completed` or `Script failed`, the wall time, and the output. Text and image items appear in order. When output has multiple text items (from `text()` or `return`), each starts with a `==> text N/M <==` line. Console calls follow the other output in one `<console_output>` block, with one line per call. A failed script keeps its partial output, followed by `Script error:` and the error. Tool calls are real: calls made before a failure are not undone. Calls still running when the script ends are cancelled, and unawaited promises are discarded.
 
+In the chat, a `codemode` call shows the script it runs, highlighted as JavaScript, followed by the tool calls the script made and its output. A one-line script stays on the call's row, as `codemode(<script>)`. A longer script is shown indented under `codemode(` and closed by `)`. Scripts longer than 10 lines show their first 10 lines; press `Ctrl+O` to show the whole script and the arguments of each tool call. In an [HTML export](/usage#exporting-and-sharing-sessions), click the call to show the whole script.
+
 ## Globals
 
 | Global | Purpose |

@@ -18,6 +18,8 @@ import { SessionNotFoundError } from "../storage/session/errors.js";
 export interface ToolHtmlRenderer {
 	/** Render a tool call to HTML. Returns undefined if tool has no custom renderer. */
 	renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined;
+	/** Render a tool call as Ctrl+O shows it, such as a long script in full. Returns undefined if there is nothing more. */
+	renderCallExpanded?(toolCallId: string, toolName: string, args: unknown): string | undefined;
 	/** Render a tool result to HTML. Returns collapsed/expanded or undefined if tool has no custom renderer. */
 	renderResult(
 		toolCallId: string,
@@ -31,6 +33,8 @@ export interface ToolHtmlRenderer {
 /** Pre-rendered HTML for a custom tool call and result */
 interface RenderedToolHtml {
 	callHtml?: string;
+	/** The call as Ctrl+O shows it, when that shows more than `callHtml`: a click on the call switches between them. */
+	callHtmlExpanded?: string;
 	resultHtmlCollapsed?: string;
 	resultHtmlExpanded?: string;
 }
@@ -186,6 +190,19 @@ async function generateHtml(sessionData: SessionData, themeName?: string): Promi
 /** Tools rendered directly by the HTML template (not pre-rendered via TUI→ANSI→HTML pipeline) */
 const TEMPLATE_RENDERED_TOOLS = new Set(["bash", "read", "write", "edit", "ls"]);
 
+/** The call as Ctrl+O shows it, or undefined when that is what `callHtml` already shows. */
+function expandedCallHtml(
+	toolRenderer: ToolHtmlRenderer,
+	toolCallId: string,
+	toolName: string,
+	args: unknown,
+	callHtml: string,
+): string | undefined {
+	if (!callHtml) return undefined;
+	const expanded = toolRenderer.renderCallExpanded?.(toolCallId, toolName, args);
+	return expanded && expanded !== callHtml ? expanded : undefined;
+}
+
 /**
  * Pre-render custom tools to HTML using their TUI renderers.
  */
@@ -207,7 +224,10 @@ function preRenderCustomTools(
 					toolCalls.set(block.id, block);
 					const callHtml = toolRenderer.renderCall(block.id, block.name, block.arguments);
 					if (callHtml) {
-						renderedTools[block.id] = { callHtml };
+						renderedTools[block.id] = {
+							callHtml,
+							callHtmlExpanded: expandedCallHtml(toolRenderer, block.id, block.name, block.arguments, callHtml),
+						};
 					}
 				}
 			}
@@ -231,7 +251,18 @@ function preRenderCustomTools(
 					const callHtml = call ? toolRenderer.renderCall(msg.toolCallId, call.name, call.arguments) : undefined;
 					renderedTools[msg.toolCallId] = {
 						...existing,
-						...(callHtml !== undefined ? { callHtml } : {}),
+						...(call && callHtml !== undefined
+							? {
+									callHtml,
+									callHtmlExpanded: expandedCallHtml(
+										toolRenderer,
+										msg.toolCallId,
+										call.name,
+										call.arguments,
+										callHtml,
+									),
+								}
+							: {}),
 						resultHtmlCollapsed: rendered.collapsed,
 						resultHtmlExpanded: rendered.expanded,
 					};

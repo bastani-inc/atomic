@@ -1145,7 +1145,12 @@
             const hasCustomResult =
               rendered?.resultHtmlCollapsed !== undefined || rendered?.resultHtmlExpanded !== undefined;
             if (rendered?.callHtml !== undefined || hasCustomResult) {
-              if (rendered.callHtml) {
+              if (rendered.callHtml && rendered.callHtmlExpanded) {
+                html += `<div class="tool-header expandable ansi-rendered" onclick="if(window.getSelection().toString()||event.target.closest('a'))return;this.classList.toggle('expanded')">
+                  <div class="output-preview">${rendered.callHtml}</div>
+                  <div class="output-full">${rendered.callHtmlExpanded}</div>
+                </div>`;
+              } else if (rendered.callHtml) {
                 html += `<div class="tool-header ansi-rendered">${rendered.callHtml}</div>`;
               } else {
                 html += `<div class="tool-header"><span class="tool-name">${escapeHtml(name)}</span></div>`;

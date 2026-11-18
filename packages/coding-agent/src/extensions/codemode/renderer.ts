@@ -1,4 +1,12 @@
-import { type Component, Container, Text, truncateToWidth } from "@bastani/atomic-tui";
+import {
+	type Component,
+	Container,
+	stripTerminalSequences,
+	Text,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@bastani/atomic-tui";
 import type { ToolDefinition } from "../../core/extensions/types.ts";
 import { getTextOutput, replaceTabs, str } from "../../core/tools/render-utils.ts";
 import { keyHintIfBound } from "../../modes/interactive/components/keybinding-hints.js";
@@ -6,8 +14,8 @@ import {
 	collapseToolBlockLines,
 	TOOL_BLOCK_LIMITS,
 	ToolBlock,
-	ToolBlockGroup,
 	ToolBlockRecords,
+	type ToolBlockTitleRows,
 } from "../../modes/interactive/components/tool-block.ts";
 import {
 	builtinToolBlockPresentation,
@@ -24,20 +32,60 @@ interface CodemodeRenderState {
 const SCRIPT_HEADER = /^Script (completed|failed)\nWall time [\d.]+ seconds\nOutput:\n$/;
 const NESTED_CALL_LIMIT = 8;
 
-class CodemodeCall implements Component {
+/** The script without the blank lines around it, made inert for the terminal. */
+function scriptSource(code: string): string {
+	return terminalDisplayText(replaceTabs(code.replace(/\r\n?/g, "\n")))
+		.replace(/^(?:[ \t]*\n)+/, "")
+		.trimEnd();
+}
+
+/** A script line in rows of `width`: rows after the first hang under the line, two columns past its indent. */
+function wrapScriptLine(line: string, width: number): string[] {
+	if (visibleWidth(line) <= width) return [line];
+	const indent = /^ */.exec(stripTerminalSequences(line))?.[0].length ?? 0;
+	const hang = Math.min(indent + 2, Math.floor(width / 2));
+	return wrapTextWithAnsi(line, width - hang).map((row, index) => (index === 0 ? row : `${" ".repeat(hang)}${row}`));
+}
+
+/**
+ * The call with its script as the argument, highlighted as JavaScript. A one-line script stays on the title row:
+ * collapsed it is cut to fit, expanded it moves under `codemode(` when it does not fit. A longer script opens
+ * `codemode(`, shows its lines indented under it, and closes with `)`; collapsed shows the first lines, cut to the
+ * width, and expanded shows every line, wrapped under itself.
+ */
+class CodemodeCall implements ToolBlockTitleRows {
+	readonly toolBlockTitleRows = true;
 	private readonly code: string | null;
 	private readonly theme: Theme;
-	constructor(code: string | null, theme: Theme) {
+	private readonly expanded: boolean;
+	private readonly highlighter: CodeHighlighter;
+	constructor(code: string | null, theme: Theme, expanded: boolean, highlighter: CodeHighlighter) {
 		this.code = code;
 		this.theme = theme;
+		this.expanded = expanded;
+		this.highlighter = highlighter;
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
 		if (width < 1) return [];
-		const code = this.code === null ? "[invalid arg]" : singleLineDisplayText(this.code.split("\n")[0]);
-		const summary = `${code}${this.code?.includes("\n") ? "…" : ""}`;
 		const name = this.theme.fg("toolTitle", this.theme.bold("codemode"));
-		return [truncateToWidth(`${name}(${truncateToWidth(summary, Math.max(0, width - 10), "…")})`, width, "…")];
+		const open = `${name}${this.theme.fg("text", "(")}`;
+		const close = this.theme.fg("text", ")");
+		const inlineWidth = Math.max(0, width - visibleWidth("codemode()"));
+		if (this.code === null) return [truncateToWidth(`${open}[invalid arg]${close}`, width, "…")];
+		const source = scriptSource(this.code);
+		const lines = source ? this.highlighter.highlight(source, "javascript") : [];
+		if (lines.length <= 1 && (!this.expanded || visibleWidth(lines[0] ?? "") <= inlineWidth))
+			return [truncateToWidth(`${open}${truncateToWidth(lines[0] ?? "", inlineWidth, "…")}${close}`, width, "…")];
+		const codeWidth = Math.max(1, width - 2);
+		const rows = this.expanded
+			? lines.flatMap((line) => wrapScriptLine(line, codeWidth))
+			: collapseToolBlockLines(
+					lines.map((line) => truncateToWidth(line, codeWidth, "…")),
+					TOOL_BLOCK_LIMITS.script,
+					false,
+				);
+		return [open, ...rows.map((row) => `  ${row}`), close].map((row) => truncateToWidth(row, width, "…"));
 	}
 }
 
@@ -101,23 +149,13 @@ export const codemodeRenderers: Pick<
 	ToolDefinition<typeof codemodeSchema, CodemodeToolDetails>,
 	"renderCall" | "renderResult"
 > = {
-	renderCall(args, theme) {
-		return new CodemodeCall(str(args?.code), theme);
+	renderCall(args, theme, context) {
+		const state = context.state as CodemodeRenderState;
+		state.scriptHighlighter ??= new CodeHighlighter();
+		return new CodemodeCall(str(args?.code), theme, context.expanded, state.scriptHighlighter);
 	},
 	renderResult(result, options, theme, context) {
 		const records: Component[] = [];
-		const code = str(context.args?.code);
-		if (options.expanded && code) {
-			const state = context.state as CodemodeRenderState;
-			state.scriptHighlighter ??= new CodeHighlighter();
-			records.push(
-				new Text(
-					state.scriptHighlighter.highlight(terminalDisplayText(replaceTabs(code)), "javascript").join("\n"),
-					0,
-					0,
-				),
-			);
-		}
 		const calls = result.details?.calls ?? [];
 		if (calls.length) {
 			const shown = options.expanded ? calls : calls.slice(-NESTED_CALL_LIMIT);
@@ -132,9 +170,7 @@ export const codemodeRenderers: Pick<
 					),
 				);
 			}
-			nested.addChild(
-				new ToolBlockGroup(shown.map((call) => nestedCall(call, theme, options.expanded, context.cwd))),
-			);
+			for (const call of shown) nested.addChild(nestedCall(call, theme, options.expanded, context.cwd));
 			records.push(nested);
 			const priced = calls.filter((call) => call.cost !== undefined);
 			if (priced.length > 1)

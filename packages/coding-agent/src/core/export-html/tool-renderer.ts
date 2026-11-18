@@ -27,6 +27,8 @@ export interface ToolHtmlRendererDeps {
 export interface ToolHtmlRenderer {
 	/** Render a tool call to HTML. Returns undefined if tool has no custom renderer. */
 	renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined;
+	/** Render a tool call as Ctrl+O shows it. Returns undefined if the tool has no custom call renderer. */
+	renderCallExpanded(toolCallId: string, toolName: string, args: unknown): string | undefined;
 	/** Render a tool result to collapsed/expanded HTML. Returns undefined if tool has no custom renderer. */
 	renderResult(
 		toolCallId: string,
@@ -134,6 +136,23 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 						? theme.fg("toolTitle", theme.bold(toolName))
 						: toolName;
 				return ansiLinesToHtml(new Text(title, 0, 0).render(width));
+			}
+		},
+
+		renderCallExpanded(toolCallId: string, toolName: string, args: unknown): string | undefined {
+			if (canonicalResultCallHtml.has(toolCallId)) return undefined;
+			try {
+				const toolDef = getToolRenderers(toolName);
+				if (!toolDef?.renderCall) return undefined;
+				renderedArgs.set(toolCallId, args);
+				const component = toolDef.renderCall(
+					args,
+					theme,
+					createRenderContext(toolCallId, undefined, true, true, false),
+				);
+				return isToolBlock(component) ? undefined : ansiLinesToHtml(component.render(width));
+			} catch {
+				return undefined;
 			}
 		},
 

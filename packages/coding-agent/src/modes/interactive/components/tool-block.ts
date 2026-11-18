@@ -33,8 +33,21 @@ export interface ToolBlockSpec {
 	readonly outputPad?: number;
 }
 
+/**
+ * A call title that may span rows, such as a script shown as the call's argument. When it renders more than one row,
+ * the first row follows the status glyph, the other rows sit under the title, and the metadata ends the last row.
+ */
+export interface ToolBlockTitleRows extends Component {
+	readonly toolBlockTitleRows: true;
+}
+
+function keepsTitleRows(title: string | Component): title is ToolBlockTitleRows {
+	return typeof title !== "string" && "toolBlockTitleRows" in title && title.toolBlockTitleRows === true;
+}
+
 export const TOOL_BLOCK_LIMITS = {
 	bash: 5,
+	script: 10,
 	search: 8,
 	paths: 8,
 	diff: 12,
@@ -162,6 +175,26 @@ export class ToolBlock implements Component {
 			this.spec.status === "running" && !noColor() ? atomicWorkingGlyph() : theme.fg(marker.color, marker.glyph);
 		const titleWidth = Math.max(0, contentWidth - 2);
 		const meta = [...(this.spec.meta ?? [])].filter((part) => visibleWidth(part) > 0);
+		const metaText = () => meta.map((part) => ` · ${part}`).join("");
+		const titleRows = keepsTitleRows(this.spec.title)
+			? this.titleRows(this.spec.title, titleWidth, visibleWidth(metaText()))
+			: undefined;
+		if (titleRows) {
+			const last = titleRows.length - 1;
+			while (meta.length > 0 && visibleWidth(titleRows[last] ?? "") + visibleWidth(metaText()) > titleWidth)
+				meta.pop();
+			return this.withBody(
+				titleRows.map((row, index) =>
+					truncateToWidth(
+						`${index === 0 ? `${glyph} ` : "  "}${row}${index === last ? theme.fg("dim", metaText()) : ""}`,
+						contentWidth,
+						"…",
+					),
+				),
+				contentWidth,
+				pad,
+			);
+		}
 		const titleText =
 			typeof this.spec.title === "string" ? inlineText(this.spec.title) : renderedTitle(this.spec.title, titleWidth);
 		const args = this.spec.args === undefined ? undefined : inlineText(this.spec.args);
@@ -169,7 +202,6 @@ export class ToolBlock implements Component {
 			typeof this.spec.title === "string"
 				? visibleWidth(titleText) + (args === undefined ? 0 : 2 + (args.length > 0 ? 1 : 0))
 				: Math.min(visibleWidth(titleText), 8);
-		const metaText = () => meta.map((part) => ` · ${part}`).join("");
 		while (meta.length > 0 && minimumTitle + visibleWidth(metaText()) > titleWidth) meta.pop();
 		const availableTitle = Math.max(0, titleWidth - visibleWidth(metaText()));
 		let title: string;
@@ -187,7 +219,23 @@ export class ToolBlock implements Component {
 				availableTitle,
 			);
 		const header = truncateToWidth(`${glyph} ${title}${theme.fg("dim", metaText())}`, contentWidth, "…");
-		const rows = [header];
+		return this.withBody([header], contentWidth, pad);
+	}
+
+	/**
+	 * The title's rows when it spans several, or undefined when it fits one row, which the caller lays out as usual. A
+	 * title that fits alone but not beside its metadata is asked again with that room left over.
+	 */
+	private titleRows(title: ToolBlockTitleRows, width: number, metaWidth: number): string[] | undefined {
+		const rows = title.render(width);
+		if (rows.length > 1) return rows;
+		if (metaWidth === 0 || visibleWidth(rows[0] ?? "") + metaWidth <= width) return undefined;
+		const narrower = title.render(Math.max(1, width - metaWidth));
+		return narrower.length > 1 ? narrower : undefined;
+	}
+
+	private withBody(header: readonly string[], contentWidth: number, pad: number): string[] {
+		const rows = [...header];
 		if (this.spec.body) {
 			const bodyWidth = Math.max(1, contentWidth - 2);
 			for (const line of this.spec.body.render(bodyWidth)) {
