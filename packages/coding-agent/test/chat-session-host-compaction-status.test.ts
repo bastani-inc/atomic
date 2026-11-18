@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { EditorTheme } from "@bastani/atomic-tui";
 import { type Component, Text } from "@bastani/atomic-tui";
 import { describe, expect, it, test, vi } from "vitest";
+import { collectGarbage } from "../../../test/helpers/collect-garbage.js";
 import type { CompactionReason } from "../src/core/agent-session.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { ChatSessionHost } from "../src/modes/interactive/components/chat-session-host.ts";
@@ -102,6 +103,24 @@ test("preserves displayed messages when retained history loading is skipped (#36
 		assert.equal(await host.loadSession(store, "missing-session"), true);
 		assert.deepEqual(host.entries(), entries);
 		assert.match(host.renderBody(80, 20).join("\n"), /Already displayed/);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("a hidden chat drops the previous rendered page when its messages are replaced, without needing another paint (#5593)", async () => {
+	initTheme("dark");
+	const host = makeHost({ isStreaming: () => false });
+	try {
+		const old = (() => {
+			host.appendMessages([{ role: "user", content: "old window", timestamp: 1 }]);
+			assert.match(host.renderBody(80, 10).join("\n"), /old window/);
+			return new WeakRef(host.entries()[0]!);
+		})();
+		host.replaceMessages([{ role: "user", content: "new window", timestamp: 2 }]);
+		await collectGarbage();
+		assert.equal(old.deref() === undefined, true, "the hidden chat still retains the old painted entry");
+		assert.match(host.renderBody(80, 10).join("\n"), /new window/);
 	} finally {
 		host.dispose();
 	}

@@ -155,6 +155,21 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	 */
 	streamingTailWindowEnabled = true;
 
+	replaceTranscriptWindow(messages: Parameters<LiveChatEntriesController["replaceMessages"]>[0]): void {
+		this.liveChat.replaceMessages(messages, this.extraEntries);
+		this.bodyViewport.retainSegmentAnchors(this.transcriptComponent, new Set(this.transcript));
+		this.transcriptComponent.invalidate();
+		this.replacedEntryKeys.clear();
+		if (this.expandedOverrides.size) {
+			const tools = new Set(
+				this.transcript.flatMap((entry) =>
+					"kind" in entry && entry.kind === "tool" && "toolCallId" in entry ? [entry.toolCallId] : [],
+				),
+			);
+			for (const key of this.expandedOverrides.keys()) if (!tools.has(key)) this.expandedOverrides.delete(key);
+		}
+	}
+
 	constructor(opts: ChatSessionHostOpts<TExtraEntry>, callbacks: ChatSessionHostStateCallbacks<TExtraEntry>) {
 		this.style = opts.style;
 		this.commands = opts.commands ?? {};

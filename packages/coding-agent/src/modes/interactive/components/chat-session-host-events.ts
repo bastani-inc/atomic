@@ -153,7 +153,7 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 		const firstUser = firstRawUserExactText(compactedMessages);
 		state.seenFirstRawUser = firstUser.seenUser;
 		state.firstUserEntryExactText = firstUser.exactText;
-		state.liveChat.replaceMessages(compactedMessages, state.extraEntries);
+		state.replaceTranscriptWindow(compactedMessages);
 		syncFirstUserEntry(state);
 		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
 		return;
@@ -168,7 +168,7 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 		const firstUser = firstRawUserExactText(remoteMessages);
 		state.seenFirstRawUser = firstUser.seenUser;
 		state.firstUserEntryExactText = firstUser.exactText;
-		state.liveChat.replaceMessages(remoteMessages, state.extraEntries);
+		state.replaceTranscriptWindow(remoteMessages);
 		syncFirstUserEntry(state);
 		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
 		return;

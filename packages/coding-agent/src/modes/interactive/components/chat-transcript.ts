@@ -320,6 +320,12 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		for (const component of new Set(this.staticComponents)) disposeComponent(component);
 		this.blockCache = [];
 		this.staticComponents = [];
+		this.staticSegments = [];
+		this.staticSegmentsWidth = undefined;
+		this.layout.segments = [];
+		this.layout.starts.length = 0;
+		this.layout.prompts.length = 0;
+		this.layout.rowCount = 0;
 		this.dirtyEntries = new WeakSet<TEntry>();
 		this.measuredRows = undefined;
 		this.paintedLayout = undefined;
@@ -588,6 +594,27 @@ export class ScrollableComponentViewport implements Component {
 
 	setComponents(components: readonly Component[]): void {
 		this.components = components;
+	}
+
+	/** Keep offsets for surviving anchors, without owning entries a replacement removed. Runs of discarded
+	 * segments become one height, so even a hidden viewport releases the old page immediately. */
+	retainSegmentAnchors(component: Component, retained: ReadonlySet<unknown>): void {
+		const index = this.components.indexOf(component);
+		const before = this.lastComponentSegments[index];
+		if (!before) return;
+		const segments: RowWindowSegment[] = [];
+		let gap = 0;
+		for (const segment of before) {
+			if (!retained.has(segment.id)) {
+				gap += segment.rows;
+				continue;
+			}
+			if (gap) segments.push({ id: Symbol(), rows: gap });
+			gap = 0;
+			segments.push(segment);
+		}
+		if (gap) segments.push({ id: Symbol(), rows: gap });
+		this.lastComponentSegments = this.lastComponentSegments.map((original, i) => (i === index ? segments : original));
 	}
 
 	setVisibleRows(rows: number): void {

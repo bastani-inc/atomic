@@ -215,7 +215,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const firstUser = firstRawUserExactText(messages);
 		this.state.seenFirstRawUser = firstUser.seenUser;
 		this.state.firstUserEntryExactText = firstUser.exactText;
-		this.state.liveChat.replaceMessages(messages, this.state.extraEntries);
+		this.state.replaceTranscriptWindow(messages);
 		syncFirstUserEntry(this.state);
 		if (options.preserveUnread) this.state.newMessages.replaced(countableTranscriptLength(this.state));
 		else this.state.newMessages.reset();
