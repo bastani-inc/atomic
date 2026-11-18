@@ -12,7 +12,7 @@ export * from "./types-output.js";
 export * from "./types-results.js";
 export * from "./types-runtime.js";
 
-import type { ActivityReport, Cleanup } from "../../../coding-agent/src/core/tasks/contracts.js";
+import type { ActivityReport, Cleanup, TaskElapsedSpan } from "../../../coding-agent/src/core/tasks/contracts.js";
 import type { TaskTranscriptSource } from "../../../coding-agent/src/core/tasks/supervisor.js";
 import type { AttemptOutcome, TestSessionOptions } from "../runs/inprocess/runner.js";
 import type { RunSyncOptions as BaseRunSyncOptions } from "./types-config.js";
@@ -44,6 +44,8 @@ export interface TaskExecutionHooks {
 }
 
 export interface RunSyncOptions extends BaseRunSyncOptions {
+	/** The dispatcher starts this span; all attempts and results of that execution share it. */
+	readonly elapsedSpan?: TaskElapsedSpan;
 	taskExecution?: TaskExecutionHooks;
 	testSession?: false | TestSessionOptions;
 }

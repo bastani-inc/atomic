@@ -14,7 +14,7 @@ import {
 	taskRunGeneration,
 } from "../../../core/tasks/agent-panel-source.ts";
 import { supersededSettledAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
-import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import { spanElapsedMs, type TaskId, type TaskRecord } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_IDLE_ROWS, AgentPanelModel, renderAgentPanelRows } from "./agent-panel.ts";
@@ -151,6 +151,7 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 	const now = Date.now();
 	const items = taskPanelItems({ backgroundTasks: shownTasks }, new Set(), { topLevelOnly: false }).map((row) => {
 		if (row.state === "queued") return row;
+		if (row.elapsedSpan) return { ...row, elapsedMs: spanElapsedMs(row.elapsedSpan, now) };
 		const itemClocks = taskClockOf(row) ?? clocks;
 		if (itemClocks === undefined) return row;
 		const taskId = agentPanelTaskId(row.id) ?? row.id;

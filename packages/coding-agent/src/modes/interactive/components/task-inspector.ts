@@ -28,6 +28,7 @@ import {
 	taskClockOf,
 	taskClockRunning,
 	taskClocksFor,
+	taskElapsedMs,
 } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted, OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
@@ -605,7 +606,7 @@ export class TaskInspector implements Component {
 						sectionChanged = true;
 						anyChanged = true;
 						previous.set(task.ref.taskId, task);
-						if (!dismissed.has(task.ref.taskId))
+						if (task.elapsedSpan === undefined && !dismissed.has(task.ref.taskId))
 							this.elapsedClocks.elapsedMs(
 								task.ref.taskId,
 								task.metrics?.elapsedMs,
@@ -627,7 +628,7 @@ export class TaskInspector implements Component {
 			const tasks = this.store.backgroundTasks;
 			this.tasksById = new Map(tasks.map((task) => [task.ref.taskId, task]));
 			for (const task of tasks)
-				if (!dismissed.has(task.ref.taskId))
+				if (task.elapsedSpan === undefined && !dismissed.has(task.ref.taskId))
 					this.elapsedClocks.elapsedMs(
 						task.ref.taskId,
 						task.metrics?.elapsedMs,
@@ -1479,11 +1480,7 @@ export class TaskInspector implements Component {
 
 	private withLiveElapsed(task: TaskRecord): TaskRecord {
 		if (isTaskTurnInterrupted(task)) return task;
-		const elapsedMs = this.elapsedClocks.elapsedMs(
-			task.ref.taskId,
-			task.metrics?.elapsedMs,
-			taskClockRunning(task.execution.kind),
-		);
+		const elapsedMs = taskElapsedMs(task, taskClockRunning(task.execution.kind), this.elapsedClocks);
 		if (elapsedMs === undefined) return task;
 		return { ...task, metrics: { ...task.metrics, elapsedMs } };
 	}

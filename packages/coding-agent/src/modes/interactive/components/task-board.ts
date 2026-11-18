@@ -1,7 +1,7 @@
 import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentPanelItem } from "../../../core/tasks/agent-panel-source.ts";
 import { waitingReleasedTools } from "../../../core/tasks/completion.js";
-import type { TaskRecord } from "../../../core/tasks/contracts.js";
+import { spanElapsedMs, type TaskRecord } from "../../../core/tasks/contracts.js";
 import { taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import { theme } from "../theme/theme.js";
@@ -135,6 +135,8 @@ export function compactTokens(tokens: number): string {
 }
 
 function rowElapsed(row: TaskBoardRow): number | undefined {
+	const span = row.kind === "task" ? row.task.elapsedSpan : row.item.elapsedSpan;
+	if (span) return spanElapsedMs(span);
 	if (row.kind === "task") {
 		const reported = row.task.metrics?.elapsedMs;
 		if (!isTaskTurnInterrupted(row.task)) return reported;

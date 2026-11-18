@@ -8,6 +8,7 @@ import {
 	keyHintIfBound,
 	keyText,
 	navEntryKeys,
+	spanElapsedMs,
 	type TaskId,
 	type TaskRecord,
 	ToolBlock,
@@ -103,6 +104,8 @@ function resolveLiveTaskElapsedMs(
 	running: boolean,
 	fallbackElapsedMs?: number,
 ): number {
+	if (task?.elapsedSpan) return spanElapsedMs(task.elapsedSpan);
+	if (task?.execution.kind === "queued") return 0;
 	const reportedMs = task?.metrics?.elapsedMs;
 	if (!running) {
 		taskElapsedBaselines.get(state)?.delete(taskId);
@@ -793,13 +796,18 @@ function buildOutcomeToolBlock(input: {
 							task?.execution.kind === "running" ||
 							task?.execution.kind === "queued";
 
-		const elapsedMs = resolveLiveTaskElapsedMs(
-			context.state,
-			activeTaskId,
-			task,
-			isRunningNow,
-			context.getElapsedMs?.(),
-		);
+		const elapsedMs =
+			record?.state === "terminal" && record.elapsedMs !== undefined
+				? record.elapsedMs
+				: resolveLiveTaskElapsedMs(
+						context.state,
+						activeTaskId,
+						task?.ref.taskId === activeTaskId ? task : undefined,
+						isRunningNow,
+						record?.taskId !== observation.taskId && record !== undefined
+							? record.elapsedMs
+							: context.getElapsedMs?.(),
+					);
 		const tokens = task?.metrics?.tokenCount ?? 0;
 		const elapsedText = elapsedMs > 0 ? formatDuration(elapsedMs) : "";
 		const runningElapsedText = elapsedMs >= 1000 ? formatDuration(elapsedMs) : "";
@@ -994,7 +1002,11 @@ function buildForegroundChildToolBlock(input: {
 	const headerTask = taskRecord?.title || activeProgress?.task || child?.task || identity?.task || "";
 	const rawTask = identity?.task || child?.task || activeProgress?.task || taskRecord?.title || "";
 	const args = formatAgentBlockArgs(agentName, headerTask);
-	const elapsedMs = summary ? displayProgressDurationMs(summary, now) : (taskRecord?.metrics?.elapsedMs ?? 0);
+	const elapsedMs = taskRecord?.elapsedSpan
+		? spanElapsedMs(taskRecord.elapsedSpan, now)
+		: summary
+			? displayProgressDurationMs(summary, now)
+			: (taskRecord?.metrics?.elapsedMs ?? 0);
 	const tokens = summary?.tokens ?? taskRecord?.metrics?.tokenCount ?? 0;
 	const elapsedText = elapsedMs > 0 ? formatDuration(elapsedMs) : "";
 	const runningElapsedText = elapsedMs >= 1000 ? formatDuration(elapsedMs) : "";

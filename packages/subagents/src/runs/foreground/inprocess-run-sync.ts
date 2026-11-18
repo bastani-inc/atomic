@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import {
+	type Cleanup,
 	formatNoUsableModelMessage,
 	isSessionStartTimeoutError,
 	parseSessionStartTimeoutMs,
@@ -7,8 +8,9 @@ import {
 	type SkippedModel,
 	serializeSessionStartError,
 	sessionStartStepText,
+	spanElapsedMs,
+	type TaskElapsedSpan,
 } from "@bastani/atomic";
-import type { Cleanup } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
 import { checkLaunchCwd } from "../../shared/launch-cwd.js";
@@ -29,6 +31,7 @@ import { getOrCreateSubagentControl, unregisterSubagentControl } from "../inproc
 import type { AttemptOutcome, ChildSpec, ParentContext, SubagentControlRuntime } from "../inprocess/runner.js";
 import type { SessionStartProgress } from "../inprocess/session-start-budget.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
+import { finishElapsedSpan } from "../shared/elapsed.js";
 import { filterSpawnableModelCandidates, skippedModelAttempt } from "../shared/model-candidate-filter.js";
 import { buildModelCandidates, launchRequestedModel, resolveModelCandidate } from "../shared/model-fallback.js";
 import {
@@ -85,7 +88,7 @@ function workflowOrchestrationContext(options: RunSyncOptions): ParentContext["o
 		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
 	};
 }
-function progressFor(agent: AgentConfig, task: string, outcome: AttemptOutcome, startedAt: number): AgentProgress {
+function progressFor(agent: AgentConfig, task: string, outcome: AttemptOutcome, durationMs: number): AgentProgress {
 	const status =
 		outcome.status === "ok"
 			? "completed"
@@ -106,7 +109,7 @@ function progressFor(agent: AgentConfig, task: string, outcome: AttemptOutcome, 
 		toolCount: outcome.stats.toolCalls,
 		turnCount: outcome.stats.assistantMessages,
 		tokens: outcome.stats.tokens.total,
-		durationMs: Math.max(0, Date.now() - startedAt),
+		durationMs,
 		lastActivityAt: Date.now(),
 		...(outcome.status === "error" ? { error: outcome.cause } : {}),
 		...(outcome.status === "interrupted" && isParentCancellation(outcome.cause) ? { cause: outcome.cause } : {}),
@@ -117,7 +120,7 @@ function resultFromOutcome(
 	agent: AgentConfig,
 	task: string,
 	outcome: AttemptOutcome,
-	startedAt: number,
+	durationMs: number,
 	artifactPaths: ArtifactPaths | undefined,
 	requestedModel?: string,
 ): SingleResult {
@@ -166,11 +169,11 @@ function resultFromOutcome(
 		...(outcome.skillsWarning ? { skillsWarning: outcome.skillsWarning } : {}),
 		finalOutput: output,
 		sessionFile: outcome.sessionFile,
-		progress: progressFor(agent, task, outcome, startedAt),
+		progress: progressFor(agent, task, outcome, durationMs),
 		progressSummary: {
 			toolCount: outcome.stats.toolCalls,
 			tokens: outcome.stats.tokens.total,
-			durationMs: Math.max(0, Date.now() - startedAt),
+			durationMs,
 		},
 		...(artifactPaths ? { artifactPaths } : {}),
 	};
@@ -284,6 +287,7 @@ async function launchSingleInProcess(
 	options: RunSyncOptions,
 	turn: AdmissionTurn,
 ): Promise<SingleResult> {
+	const elapsedSpan: TaskElapsedSpan = options.elapsedSpan ?? { dispatchedAt: Date.now() };
 	const sessionStartTimeoutMs = parseSessionStartTimeoutMs(
 		options.sessionStartTimeoutMs,
 		"sdk",
@@ -418,7 +422,7 @@ async function launchSingleInProcess(
 	}
 	const testSession = options.testSession ?? defaultTestSession();
 	// Where the child is in its start, across its attempts, until its first turn starts: never merely "running".
-	const launchedAt = Date.now();
+	const launchedAt = elapsedSpan.dispatchedAt;
 	let startAttempt = 1;
 	let stalledStart: SubagentStartProgress["stalled"];
 	const reportStart = (progress: SessionStartProgress | undefined, awaitingRelease = false) =>
@@ -434,6 +438,7 @@ async function launchSingleInProcess(
 					},
 		);
 	const spec: ChildSpec = {
+		elapsedSpan,
 		taskName: agent.name,
 		childId: `${options.runId}:${options.index ?? 0}`,
 		task,
@@ -523,7 +528,6 @@ async function launchSingleInProcess(
 	const admission = control.admitCheckedChildSession(spec, cwdVerdict, parent);
 	turn.release();
 	if (!admission.admitted) return refusedResult(agent, task, admission.refusal?.reason ?? "child admission refused");
-	const startedAt = Date.now();
 	const neverAbort = new AbortController().signal;
 	const attemptCandidate = { model: resolvedCandidate?.model, modelId: candidate, thinkingLevel: spec.thinkingLevel };
 	const attemptSignals = {
@@ -582,7 +586,7 @@ async function launchSingleInProcess(
 		const cause =
 			`Subagent did not start: its start stalled ${sessionStartStepText(stall.step)} after ${Math.round(stall.elapsedMs / 1000)}s and was retried once; the retry stalled ${sessionStartStepText(retryStall.step)} after ${Math.round(retryStall.elapsedMs / 1000)}s. ${retryStall.hint ?? ""}`.trim();
 		return { ...second, cause, envelope: cause };
-	})();
+	})().finally(() => finishElapsedSpan(elapsedSpan, options.taskExecution));
 	if (options.onUpdate) {
 		const launchModel = running.currentModel ?? candidate;
 		spec.onProgress?.({
@@ -596,7 +600,7 @@ async function launchSingleInProcess(
 			recentOutput: [],
 			toolCount: 0,
 			tokens: 0,
-			durationMs: Math.max(0, Date.now() - startedAt),
+			durationMs: spanElapsedMs(elapsedSpan),
 			lastActivityAt: Date.now(),
 		});
 	}
@@ -635,7 +639,7 @@ async function launchSingleInProcess(
 					agent,
 					task,
 					continuedOutcome,
-					startedAt,
+					spanElapsedMs(elapsedSpan),
 					artifactPaths,
 					requestedModel,
 				);
@@ -649,6 +653,7 @@ async function launchSingleInProcess(
 							: {}),
 						stats: continuedOutcome.stats,
 						envelope: continuedOutcome.envelope,
+						durationMs: recovered.progressSummary?.durationMs,
 						...(recovered.model === undefined ? {} : { model: recovered.model }),
 						...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
 						...(requestedModel ? { requestedModel } : {}),
@@ -696,7 +701,7 @@ async function launchSingleInProcess(
 				recentOutput: [],
 				toolCount: 0,
 				tokens: 0,
-				durationMs: Math.max(0, Date.now() - startedAt),
+				durationMs: spanElapsedMs(elapsedSpan),
 				lastActivityAt: Date.now(),
 			},
 		};
@@ -709,7 +714,7 @@ async function launchSingleInProcess(
 	detachCleanup();
 	parentAskCleanup();
 	const outcome = winner.value;
-	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths, requestedModel);
+	const result = resultFromOutcome(agent, task, outcome, spanElapsedMs(elapsedSpan), artifactPaths, requestedModel);
 	if (filteredCandidates.skippedAttempts.length)
 		result.modelAttempts = [...filteredCandidates.skippedAttempts, ...(result.modelAttempts ?? [])];
 	const deliveredOutput = await control.deliverChildResult(
@@ -721,6 +726,7 @@ async function launchSingleInProcess(
 				: {}),
 			stats: outcome.stats,
 			envelope: outcome.envelope,
+			durationMs: result.progressSummary?.durationMs,
 			...(result.model === undefined ? {} : { model: result.model }),
 			...(result.thinking === undefined ? {} : { thinking: result.thinking }),
 			...(requestedModel ? { requestedModel } : {}),

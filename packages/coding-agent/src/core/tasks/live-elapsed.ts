@@ -1,5 +1,5 @@
 import type { AgentPanelState } from "./agent-panel-source.ts";
-import type { Execution, TaskRecord } from "./contracts.js";
+import { type Execution, spanElapsedMs, type TaskRecord } from "./contracts.js";
 
 export function taskClockRunning(state: Execution["kind"] | AgentPanelState): boolean {
 	return state === "running" || state === "cancelling" || state === "stopping" || state === "input";
@@ -62,6 +62,21 @@ export function liveElapsedMs(
 	ended = false,
 ): number | undefined {
 	return readClock(defaultTable, taskId, reportedMs, running, now, ended).elapsedMs;
+}
+
+/** A dispatched child carries its own clock, including over a late or remote observation. */
+export function taskElapsedMs(
+	task: TaskRecord,
+	running: boolean,
+	clocks = taskClockOf(task),
+	now = Date.now(),
+): number | undefined {
+	if (task.elapsedSpan) return spanElapsedMs(task.elapsedSpan, now);
+	const reported = task.metrics?.elapsedMs;
+	return (
+		clocks?.elapsedMs(task.ref.taskId, reported, running, now) ??
+		liveElapsedMs(task.ref.taskId, reported, running, now)
+	);
 }
 
 export class TaskElapsedClocks {

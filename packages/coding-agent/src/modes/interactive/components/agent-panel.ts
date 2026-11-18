@@ -8,7 +8,7 @@ import {
 	isInterruptedPanelTask,
 	markInterruptedPanelTask,
 } from "../../../core/tasks/agent-panel-source.ts";
-import type { TaskId } from "../../../core/tasks/contracts.js";
+import { spanElapsedMs, type TaskId } from "../../../core/tasks/contracts.js";
 import {
 	bindTaskClock,
 	liveElapsedFromRead,
@@ -244,6 +244,10 @@ export class AgentPanelModel {
 	withElapsed(row: AgentPanelRow, now = this.now(), state: AgentPanelState = row.state): AgentPanelRow {
 		row = this.baseOf(row);
 		if (state === "queued") return row;
+		if (row.elapsedSpan) {
+			const elapsedMs = spanElapsedMs(row.elapsedSpan, now);
+			return elapsedMs === row.elapsedMs ? row : this.copyOf(row, { ...row, elapsedMs });
+		}
 		const running = taskClockRunning(state);
 		if (row.kind === "workflow") {
 			if (!running || row.elapsedMs === undefined) return row;

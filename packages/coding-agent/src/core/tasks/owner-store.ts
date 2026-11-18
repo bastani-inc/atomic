@@ -205,6 +205,7 @@ export class OwnerTaskStore {
 				this.turnInterruptedIds.delete(task.ref.taskId);
 			}
 			if (
+				task.elapsedSpan === undefined &&
 				previous?.execution.kind !== "settled" &&
 				task.execution.kind !== "queued" &&
 				(previous?.execution.kind !== task.execution.kind ||

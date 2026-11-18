@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spanElapsedMs, type TaskElapsedSpan } from "@bastani/atomic";
 import type { AgentSource } from "../../agents/agent-types.js";
 import type { RunSyncOptions, SingleResult } from "../../shared/types.js";
 import { isExecutionTicket } from "../shared/parallel-utils.js";
@@ -121,6 +122,7 @@ export function runOwnerlessChild(input: {
 		SubagentChildRecordInput,
 		"launchModel" | "launchThinkingLevel" | "launchLeafId" | "launchLeafSeq"
 	> = {};
+	let elapsedSpan: TaskElapsedSpan | undefined;
 	let stoppedBeforeDispatch = false;
 	const forked = input.forked ?? (input.options.sessionManager !== undefined && input.options.resumeSession !== true);
 	const record = (
@@ -137,6 +139,7 @@ export function runOwnerlessChild(input: {
 			...(input.agentSource ? { agentSource: input.agentSource } : {}),
 			forked,
 			state,
+			elapsedMs: elapsedSpan ? spanElapsedMs(elapsedSpan) : 0,
 			cwd: input.cwd,
 			taskId: launchId,
 			...childSession,
@@ -210,11 +213,13 @@ export function runOwnerlessChild(input: {
 				messages: [],
 				usage: NO_USAGE,
 			};
+		elapsedSpan = { dispatchedAt: Date.now() };
 		// This execution owns the child's worktree now; a stopped child's worktree was kept for it until here.
 		claimRunWorktree(runId, index);
 		try {
 			const running = input.runSync(input.task, {
 				...options,
+				elapsedSpan,
 				signal,
 				onChildSession: (session) => {
 					childSession = {

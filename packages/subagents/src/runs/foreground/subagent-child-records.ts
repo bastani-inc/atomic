@@ -124,6 +124,8 @@ export interface SubagentChildRecord {
 	/** Whether the child was launched with `context: "fork"`, which shapes its Intercom bridge; absent means fresh. */
 	readonly forked?: boolean;
 	readonly state: "running" | "terminal";
+	/** Time of this execution at the record, retained for launch cards after the task host is gone. */
+	readonly elapsedMs?: number;
 	readonly cwd: string;
 	readonly owner: SubagentChildOwner;
 	readonly taskId?: string;
