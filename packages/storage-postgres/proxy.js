@@ -210,8 +210,11 @@ function canonicalHost(/** @type {string} */ host) {
 	}
 }
 
-/** Whether `host` is this machine: a socket directory, a loopback name or a loopback address. */
-function isLocalTarget(/** @type {string} */ host) {
+/**
+ * Whether `host` is this machine: a socket directory, a loopback name or a loopback address, in any spelling a URL or
+ * the resolver reads as one, such as `127.1`, `localhost.` or `::ffff:127.0.0.1`.
+ */
+export function isLocalTarget(/** @type {string} */ host) {
 	const name = normalizedHost(host);
 	if (name === "" || name.startsWith("/")) return true;
 	const canonical = canonicalHost(name);

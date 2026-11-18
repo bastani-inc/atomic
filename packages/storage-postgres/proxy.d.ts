@@ -50,6 +50,12 @@ export class ProxySettingError extends Error {
 export function parseProxy(value: string, subject: string): HttpProxy;
 
 /**
+ * Whether `host` is this machine: a socket directory, a loopback name or a loopback address, in any spelling a URL or
+ * the resolver reads as one, such as `127.1`, `localhost.` or `::ffff:127.0.0.1`.
+ */
+export function isLocalTarget(host: string): boolean;
+
+/**
  * How a connection to `target` is opened: through the proxy `option` names (`"none"`: directly), else through the
  * environment's proxy unless `NO_PROXY` exempts the target; a socket directory or loopback target is reached directly.
  */

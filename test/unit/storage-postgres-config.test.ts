@@ -221,6 +221,27 @@ test(
 	FAILED_OPEN_TIMEOUT_MS,
 );
 
+test(
+	"every spelling of this machine that is reached without a proxy also gets no default sslmode (#5473)",
+	async () => {
+		const local = [
+			"postgres://atomic@127.1:1/atomic",
+			"postgres://atomic@localhost.:1/atomic",
+			"postgres://atomic@[::ffff:127.0.0.1]:1/atomic",
+			"postgres://atomic@db.invalid:1/atomic?host=127.1",
+		];
+		const locations = await Promise.all(
+			local.map(async (url) => {
+				const error = await openPostgresDatabase({ url }).catch((caught) => caught);
+				assert.ok(error instanceof StorageUnavailableError, inspect(error));
+				return error.location;
+			}),
+		);
+		assert.deepEqual(locations, local);
+	},
+	FAILED_OPEN_TIMEOUT_MS,
+);
+
 test("numbers ? parameters only outside literals, quoted identifiers, dollar quotes and comments (#4793)", () => {
 	const cases: [string, string][] = [
 		["SELECT 1", "SELECT 1"],

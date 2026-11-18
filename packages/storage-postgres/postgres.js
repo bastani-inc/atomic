@@ -12,7 +12,14 @@ import {
 } from "@bastani/atomic/storage";
 import { createCloudPasswordProvider } from "./auth.js";
 import { createPostgresListener } from "./listen.js";
-import { OpenedSocket, ProxySettingError, ProxyTunnelError, postgresTransport, socketOpener } from "./proxy.js";
+import {
+	isLocalTarget,
+	OpenedSocket,
+	ProxySettingError,
+	ProxyTunnelError,
+	postgresTransport,
+	socketOpener,
+} from "./proxy.js";
 
 /**
  * @typedef {import("@bastani/atomic/storage").SqliteDriverResult} SqliteDriverResult
@@ -186,18 +193,6 @@ function missingPrivilege(cause, role, schema, database, sql = "") {
 	);
 }
 
-/** Whether `host` reaches this machine without a network: a socket directory, a loopback name or address. */
-function isLocalHost(/** @type {string} */ host) {
-	const name = host.replace(/^\[|\]$/g, "").toLowerCase();
-	return (
-		name === "" ||
-		name.startsWith("/") ||
-		name === "localhost" ||
-		name === "::1" ||
-		/^127(?:\.\d{1,3}){3}$/.test(name)
-	);
-}
-
 /**
  * The `sslmode` values libpq knows.
  * @type {ReadonlySet<string>}
@@ -243,9 +238,10 @@ function connectionUrl(url, field = "url") {
 	if (mode !== null && !SSL_MODES.has(mode))
 		throw configError("url", "unsupported-sslmode", `Use an sslmode of ${[...SSL_MODES].join(", ")}`);
 	if (mode !== null) return /** @type {string} */ (url);
-	// The host pg connects to: a URL that names none falls back to PGHOST, as pg does (#5473).
+	// The host pg connects to: a URL that names none falls back to PGHOST, as pg does. This machine is told by the rule
+	// that keeps it out of a proxy, so every spelling of it is treated alike (#5473).
 	const host = parsed.searchParams.get("host") ?? (parsed.hostname || process.env.PGHOST || "");
-	if (isLocalHost(host)) return /** @type {string} */ (url);
+	if (isLocalTarget(host)) return /** @type {string} */ (url);
 	parsed.searchParams.set("sslmode", "verify-full");
 	return parsed.href;
 }
