@@ -46,6 +46,7 @@ import {
 	restoreSubagentChild,
 	type SubagentChildRestoreDeps,
 	type SubagentChildRestoreOutcome,
+	subagentChildRestoring,
 } from "./subagent-child-restore.js";
 import { isQueuedSubagentChild, stopQueuedSubagentChild } from "./task-execution.js";
 
@@ -506,13 +507,19 @@ async function resumeChild(
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const wakeKey = subagentWakeKey(ownerSessionId, resolved.childId);
 	let record = resolved;
-	if (isReleasedChildWakeActive(wakeKey)) {
-		// A wake may be reopening the child right now. Wait only until it has, or has decided not to, never for the run
-		// it starts: a woken child is running, and resume refuses it as it refuses any running child (#5485).
-		if ((await unlessInterrupted(releasedChildWakeDecided(wakeKey), signal)) === INTERRUPTED)
+	// A wake or another resume may be reopening the child right now. Wait only until it has, or has given up, never for
+	// the run it starts: a reopened child is running, and resume refuses it as it refuses any running child (#5485).
+	const reopenings = [
+		() => (isReleasedChildWakeActive(wakeKey) ? releasedChildWakeDecided(wakeKey) : undefined),
+		() => subagentChildRestoring(ownerSessionId, resolved.childId),
+	];
+	for (const reopening of reopenings) {
+		const settled = reopening();
+		if (settled === undefined) continue;
+		if ((await unlessInterrupted(settled, signal)) === INTERRUPTED)
 			return errorResult(
 				action,
-				`Interrupted while a wake of ${label(resolved)} was reopening it, before it could be resumed: nothing was sent to it.`,
+				`Interrupted while ${label(resolved)} was being reopened, before it could be resumed: nothing was sent to it.`,
 			);
 		await subagentChildRecordsAppended(ownerSessionId);
 		record = ownedRecords(ctx).get(resolved.childId) ?? resolved;

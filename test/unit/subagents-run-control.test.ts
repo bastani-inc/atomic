@@ -1557,6 +1557,30 @@ test("resume refuses a child that is still running", async () => {
 	assert.match(text(result), /already running/);
 });
 
+test("two resumes of one paused child at once: one resumes it, the other is refused while that run goes on, never queued behind it (#5485)", async () => {
+	const h = harness();
+	const { record } = await h.launch("double1");
+	await h.call({ action: "pause", id: record.childId });
+	await h.waitForLatest(record.childId, (latest) => latest.state === "terminal" && latest.terminalStatus === "paused");
+	h.resumedRunsWait = true;
+	const answers = await Promise.all([
+		answeredWithin(h.call({ action: "resume", id: record.childId, message: "first note" })),
+		answeredWithin(h.call({ action: "resume", id: record.childId, message: "second note" })),
+	]);
+	assert.ok(
+		answers.every((answer) => answer !== undefined),
+		"both resumes answer while the resumed run goes on",
+	);
+	const refused = answers.filter((answer) => answer?.isError === true);
+	assert.equal(refused.length, 1, answers.map((answer) => (answer ? text(answer) : "none")).join("\n"));
+	assert.match(text(refused[0]!), /already running as task .*; pause or quit it first/);
+	assert.equal(
+		h.runs.filter((run) => run.task.includes("first note") || run.task.includes("second note")).length,
+		1,
+		"one resumed run",
+	);
+});
+
 test("resume reports an unknown child id as an error", async () => {
 	const h = harness();
 	const result = await h.call({ action: "resume", id: "no-such-child" });
