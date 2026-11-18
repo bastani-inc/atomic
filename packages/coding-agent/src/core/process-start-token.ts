@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createModuleRequire } from "../utils/module-require.js";
+import { windowsPowerShellEnvironment } from "../utils/windows-powershell.ts";
 
 /**
  * When process `pid` of this host started, as `sha12` of a start that no later process given the same id shares, so a
@@ -45,6 +46,7 @@ export function processStartTokenForSynchronousTakeover(pid: number): string | u
 		const output = execFileSync(fallbackQuery.file, fallbackQuery.args(pid), {
 			cwd: process.env.SystemRoot || process.env.windir || "C:\\Windows",
 			encoding: "utf8",
+			env: windowsPowerShellEnvironment(),
 			windowsHide: true,
 			timeout: FALLBACK_TIMEOUT_MS,
 			killSignal: "SIGKILL",
@@ -218,7 +220,12 @@ function queryCreationTime(pid: number): Promise<FallbackAnswer> {
 			child = execFile(
 				fallbackQuery.file,
 				fallbackQuery.args(pid),
-				{ cwd: process.env.SystemRoot || process.env.windir || "C:\\Windows", encoding: "utf8", windowsHide: true },
+				{
+					cwd: process.env.SystemRoot || process.env.windir || "C:\\Windows",
+					encoding: "utf8",
+					env: windowsPowerShellEnvironment(),
+					windowsHide: true,
+				},
 				(error, stdout) => {
 					runningQueries.delete(child);
 					const output = stdout.trim();

@@ -32,6 +32,7 @@ import { dirname, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { clearTimeout, setTimeout } from "node:timers";
 import { createModuleRequire } from "../../utils/module-require.js";
+import { windowsPowerShellEnvironment } from "../../utils/windows-powershell.ts";
 
 /** One DACL entry with its trustee resolved to a literal SID. */
 export interface WindowsAccessRule {
@@ -172,17 +173,9 @@ export function powershellCandidates(): string[] {
 	return candidates;
 }
 
-/**
- * The environment for a PowerShell read. A PowerShell 7 parent puts its own module directories in `PSModulePath`, and
- * Windows PowerShell started from it then fails to load `Get-Acl`'s module. Without the variable each host uses its
- * own default module path.
- */
+/** The environment for a PowerShell read: Windows PowerShell's, plus the path the read is for. */
 function powershellEnvironment(path: string): NodeJS.ProcessEnv {
-	const env: NodeJS.ProcessEnv = { ATOMIC_SECURITY_QUERY_PATH: path };
-	for (const [key, value] of Object.entries(process.env)) {
-		if (key.toLowerCase() !== "psmodulepath" && key !== "ATOMIC_SECURITY_QUERY_PATH") env[key] = value;
-	}
-	return env;
+	return { ...windowsPowerShellEnvironment(), ATOMIC_SECURITY_QUERY_PATH: path };
 }
 
 function windowsDirectory(): string {
