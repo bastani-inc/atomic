@@ -3136,11 +3136,11 @@ try {
         $global:AtomicFixtureWebPages = $true
         $launcherTwo = Join-Path $installRoot "versions\2.0.0\atomic.exe"
         $recordTwo = Join-Path $installRoot "versions\2.0.0\.atomic-launcher.sha256"
-        Assert-Fixture (([IO.File]::ReadAllText($recordTwo)).Trim() -ceq (Get-FileHash -LiteralPath $launcherTwo -Algorithm SHA256).Hash.ToLowerInvariant()) "the install did not record the launcher hash"
+        Assert-Fixture (([IO.File]::ReadAllText($recordTwo)).Trim() -ceq (Get-FixtureSha256 -Path $launcherTwo)) "the install did not record the launcher hash"
         $appended = [IO.File]::Open($launcherTwo, [IO.FileMode]::Append)
         try { $appended.WriteByte(0) } finally { $appended.Dispose() }
         $null = & $InstallerPath -Ref "2.0.0" | Out-String
-        Assert-Fixture ((Get-FileHash -LiteralPath $launcherTwo -Algorithm SHA256).Hash.ToLowerInvariant() -ceq ([IO.File]::ReadAllText($recordTwo)).Trim()) "a changed launcher was not reinstalled"
+        Assert-Fixture ((Get-FixtureSha256 -Path $launcherTwo) -ceq ([IO.File]::ReadAllText($recordTwo)).Trim()) "a changed launcher was not reinstalled"
         [IO.File]::WriteAllBytes($launcherTwo, [byte[]]@())
         $null = & $InstallerPath -Ref "2.0.0" | Out-String
         Assert-Fixture ((Get-Item -LiteralPath $launcherTwo).Length -gt 0) "the reinstall did not restore atomic.exe"
