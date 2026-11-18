@@ -51,6 +51,7 @@ vi.mock("@bastani/atomic", async (importOriginal) => {
 
 import { killTrackedDetachedChildren } from "../../packages/coding-agent/src/utils/shell.js";
 import { spawnCollect } from "../../packages/workflows/src/runs/shared/spawn-collect.js";
+import { toJsLiteral } from "../helpers/js-literal.js";
 
 const node = process.execPath;
 const GENEROUS_TIMEOUT_MS = 20_000;
@@ -95,7 +96,7 @@ test.skipIf(process.platform === "win32")(
 			node,
 			[
 				"-e",
-				`const { spawn } = require("node:child_process"); const g = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit", detached: true }); require("node:fs").writeFileSync(${JSON.stringify(pids)}, process.pid + " " + g.pid); process.exit(0);`,
+				`const { spawn } = require("node:child_process"); const g = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit", detached: true }); require("node:fs").writeFileSync(${toJsLiteral(pids)}, process.pid + " " + g.pid); process.exit(0);`,
 			],
 			{ cwd: process.cwd(), env: process.env, timeout: GENEROUS_TIMEOUT_MS, maxBuffer: 1024 },
 		);

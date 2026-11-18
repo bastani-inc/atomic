@@ -189,6 +189,76 @@ describe("paused queue stage-session transfer", () => {
 		]);
 	});
 
+	test("a fallback candidate stopped before its replacement hands its queued deliveries over unheld", async () => {
+		const source = await createHarness();
+		const target = await createHarness();
+		harnesses.push(source, target);
+		shareAdmissionBoundary(source.session as TransferSession, target.session as TransferSession);
+		target.setResponses([fauxAssistantMessage("fallback candidate answered"), fauxAssistantMessage("follow-up")]);
+		source.session.agent.followUp(rawUser("delivery queued on the replaced session"));
+
+		const replacement = new StageSessionReplacement();
+		replacement.retire(source.session);
+		await replacement.stop(source.session);
+		expect(source.session.queuedMessagesPaused).toBe(true);
+		replacement.adopt(target.session);
+		await replacement.dispose();
+
+		expect(target.session.queuedMessagesPaused).toBe(false);
+		await target.session.prompt("fallback candidate prompt");
+		await target.session.agent.waitForIdle();
+		expect(target.session.messages.filter((message) => message.role === "user").map(getMessageText)).toContain(
+			"delivery queued on the replaced session",
+		);
+	});
+
+	test("a replaced session whose stop never settles starts no turn, and its successor can be prompted at once", async () => {
+		const source = await createHarness();
+		const target = await createHarness();
+		harnesses.push(source, target);
+		shareAdmissionBoundary(source.session as TransferSession, target.session as TransferSession);
+		source.setResponses([fauxAssistantMessage("the replaced session must not answer")]);
+		target.setResponses([fauxAssistantMessage("fallback candidate answered"), fauxAssistantMessage("follow-up")]);
+		// A turn whose tools ignore the abort: the stop holds the session but never reports it idle.
+		const realAbort = source.session.abort.bind(source.session);
+		source.session.abort = (options) => {
+			void realAbort(options);
+			return new Promise<void>(() => {});
+		};
+
+		const replacement = new StageSessionReplacement();
+		replacement.retire(source.session);
+		expect(await replacement.stop(source.session, { timeoutMs: 20 })).toBe("timed-out");
+		await source.session.followUp("delivery after the stop");
+		expect(source.session.isStreaming).toBe(false);
+		expect(source.getPendingResponseCount()).toBe(1);
+
+		replacement.adopt(target.session);
+		await replacement.successorReady();
+		await target.session.prompt("fallback candidate prompt");
+		await target.session.agent.waitForIdle();
+		expect(source.getPendingResponseCount()).toBe(1);
+		expect(target.session.messages.filter((message) => message.role === "user").map(getMessageText)).toContain(
+			"delivery after the stop",
+		);
+	});
+
+	test("a stage that was already holding its deliveries keeps holding them after a stopped replacement", async () => {
+		const source = await createHarness();
+		const target = await createHarness();
+		harnesses.push(source, target);
+		shareAdmissionBoundary(source.session as TransferSession, target.session as TransferSession);
+		source.session.pauseQueuedMessages();
+
+		const replacement = new StageSessionReplacement();
+		replacement.retire(source.session);
+		await replacement.stop(source.session);
+		replacement.adopt(target.session);
+		await replacement.dispose();
+
+		expect(target.session.queuedMessagesPaused).toBe(true);
+	});
+
 	test("a rejecting transferred boundary waits for a newer target abort boundary before retry cleanup", async () => {
 		const source = await createHarness();
 		const target = await createHarness();

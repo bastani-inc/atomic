@@ -15,7 +15,7 @@
  */
 import { type StageDisplayStatus, stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { StageSnapshot } from "../shared/store-types.js";
-import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { type RunStateIndicator, runStateColor } from "./run-state-indicator.js";
@@ -129,7 +129,7 @@ export function renderSwitcher(stages: readonly StageSnapshot[], state: Switcher
 	const leftSegmentWidth = visibleWidth(`${leftLabelText}${queryDisplay}`);
 	const gap = Math.max(1, innerWidth - leftSegmentWidth - visibleWidth(hint) - 1);
 	const header =
-		`${panelBg}${muted}${BOLD}${leftLabelText}${RESET}${panelBg}` +
+		`${panelBg}${muted}${boldOn()}${leftLabelText}${RESET}${panelBg}` +
 		(queryDisplay ? `${text}${queryDisplay}${RESET}${panelBg}` : "") +
 		" ".repeat(gap) +
 		`${dim}${hint}${RESET}${panelBg}`;
@@ -168,7 +168,7 @@ export function renderSwitcher(stages: readonly StageSnapshot[], state: Switcher
 			const prefix = `  ${icon} ${selectedName}`;
 			const visibleRow = `${prefix}${" ".repeat(Math.max(1, innerWidth - visibleWidth(`${prefix}${label}`) - 1))}${label} `;
 			const padded = padVisible(visibleRow, innerWidth);
-			const styled = `${accent}${accentFg}${BOLD}${padded}${RESET}`;
+			const styled = `${accent}${accentFg}${boldOn()}${padded}${RESET}`;
 			lines.push(`${border}│${RESET}${styled}${border}│${RESET}`);
 		} else {
 			const iconColor = hexToAnsi(statusColor(displayStatus, theme));
