@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `hexColorAnsi(hex, "fg" | "bg")` returns the escape sequence for a `#rrggbb` color that follows `NO_COLOR` and `FORCE_COLOR` the way theme colors do, for extensions that paint their own colors
+
 ### Fixed
 
 - On Windows, installing a downloaded tool (such as `rg`, `fd` or Git) no longer fails when Atomic was started from PowerShell 7 and `tar.exe` cannot extract the zip archive: the Windows PowerShell fallback's `Expand-Archive` no longer inherits PowerShell 7's module path, which made it fail with `Cannot find an overload for "ExtractToDirectory"`. Every Windows PowerShell command Atomic runs for its own work now starts this way; the `powershell` tool and blueprint steps still run with your environment unchanged

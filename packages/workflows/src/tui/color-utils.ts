@@ -2,6 +2,7 @@
  * Color interpolation utilities.
  * cross-ref: spec §5.4.1, v0.x packages/atomic-sdk/src/components/color-utils.ts
  */
+import { hexColorAnsi } from "@bastani/atomic";
 import { Text, truncateToWidth } from "@bastani/atomic-tui";
 import { BoundedTextCache } from "./text-helpers.js";
 
@@ -33,16 +34,17 @@ export function lerpColor(a: string, b: string, t: number): string {
 	return toHex(r, g, bl);
 }
 
-/** Convert a hex color to an ANSI 24-bit foreground escape sequence. */
+/**
+ * The foreground escape sequence for a hex color, in the color level the host theme paints with: none under NO_COLOR or
+ * FORCE_COLOR=0, 256 colors under FORCE_COLOR=1 or 2, and true color otherwise.
+ */
 export function hexToAnsi(hex: string): string {
-	const [r, g, b] = parseHex(hex);
-	return `\x1b[38;2;${r};${g};${b}m`;
+	return hexColorAnsi(hex, "fg");
 }
 
-/** Convert a hex color to an ANSI 24-bit background escape sequence. */
+/** The background escape sequence for a hex color, in the same color level as {@link hexToAnsi}. */
 export function hexBg(hex: string): string {
-	const [r, g, b] = parseHex(hex);
-	return `\x1b[48;2;${r};${g};${b}m`;
+	return hexColorAnsi(hex, "bg");
 }
 
 /** Unpainted canvas, matching main chat and attached stage chat. */

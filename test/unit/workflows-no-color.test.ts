@@ -1,0 +1,190 @@
+import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import { afterEach, test, vi } from "vitest";
+import { refreshColorEnvironment } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import type { RunDetail } from "../../packages/workflows/src/runs/background/status.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { hexBg, hexToAnsi, paint } from "../../packages/workflows/src/tui/color-utils.js";
+import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
+import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
+import { makeFakeKeybindings } from "../support/fake-keybindings.js";
+import { makeTestTui as makeGraphTui, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
+import { makeHandle, makeTestTui as makeStageTui } from "./stage-chat-view-helpers.js";
+
+/** An SGR sequence that sets a color (not one that restores the default with 39 or 49). */
+const COLOR_SGR = /\x1b\[(?:[0-9;]*;)?(?:3[0-8]|4[0-8]|9[0-7]|10[0-7])(?:;[0-9;]*)?m/;
+const TRUECOLOR_SGR = /\x1b\[(?:[0-9;]*;)?[34]8;2;/;
+const COLOR_256_SGR = /\x1b\[(?:[0-9;]*;)?[34]8;5;/;
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+	refreshColorEnvironment();
+});
+
+function colorEnv(env: { NO_COLOR?: string; FORCE_COLOR?: string }): void {
+	vi.stubEnv("NO_COLOR", env.NO_COLOR);
+	vi.stubEnv("FORCE_COLOR", env.FORCE_COLOR);
+	refreshColorEnvironment();
+}
+
+function graphLines(): string[] {
+	const view = new GraphView({
+		piKeybindings: makeFakeKeybindings(),
+		mode: "overlay",
+		runId: "run-1",
+		store: makeStore(makeSnap([makeStage("first"), makeStage("second", ["first"])])),
+		graphTheme: deriveGraphTheme({}),
+		piTui: makeGraphTui(24),
+	});
+	try {
+		return view.render(100);
+	} finally {
+		view.dispose();
+	}
+}
+
+function stageChatLines(): string[] {
+	const store = createStore();
+	store.recordRunStart({
+		id: "run-1",
+		name: "publish-release",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: Date.now(),
+	});
+	store.recordStageStart("run-1", {
+		id: "stage-a",
+		name: "implement",
+		status: "running",
+		parentIds: [],
+		toolEvents: [],
+	});
+	const { handle } = makeHandle();
+	const view = new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "publish-release",
+		handle,
+		piTui: makeStageTui(12),
+		onDetach: () => {},
+		onClose: () => {},
+	});
+	try {
+		return view.render(100);
+	} finally {
+		view.dispose();
+	}
+}
+
+function runSheetLines(): string[] {
+	const detail: RunDetail = {
+		runId: "abc123uuid",
+		name: "refactor-auth",
+		status: "failed",
+		mode: "chain",
+		startedAt: 1_000,
+		endedAt: 66_000,
+		durationMs: 65_000,
+		inputs: { task: "rename" },
+		stages: [
+			{
+				id: "s1",
+				name: "plan",
+				status: "completed",
+				parentIds: [],
+				toolEvents: [],
+				startedAt: 1_000,
+				endedAt: 9_000,
+			},
+			{
+				id: "s2",
+				name: "build",
+				status: "failed",
+				parentIds: ["s1"],
+				toolEvents: [],
+				startedAt: 9_000,
+				endedAt: 66_000,
+			},
+		],
+		tools: [],
+		error: "build failed",
+	};
+	return renderRunDetail(detail, { theme: deriveGraphTheme({}), now: 66_000, width: 100 }).split("\n");
+}
+
+const SURFACES: ReadonlyArray<readonly [string, () => string[]]> = [
+	["graph view", graphLines],
+	["stage chat", stageChatLines],
+	["run sheet", runSheetLines],
+];
+
+test("NO_COLOR leaves no color in the workflow graph, a stage chat or a run sheet, and keeps their text", () => {
+	colorEnv({});
+	const colored = new Map(SURFACES.map(([name, render]) => [name, render()]));
+	colorEnv({ NO_COLOR: "1" });
+	for (const [name, render] of SURFACES) {
+		const lines = render();
+		const raw = lines.join("\n");
+		assert.doesNotMatch(raw, COLOR_SGR, `${name} paints a color under NO_COLOR`);
+		assert.deepEqual(
+			lines.map((line) => stripVTControlCharacters(line)),
+			colored.get(name)?.map((line) => stripVTControlCharacters(line)),
+			`${name} text and layout`,
+		);
+	}
+});
+
+test("FORCE_COLOR=0 turns workflow colors off like NO_COLOR", () => {
+	colorEnv({ FORCE_COLOR: "0" });
+	assert.equal(hexToAnsi("#89b4fa"), "");
+	assert.equal(hexBg("#313244"), "");
+	assert.equal(paint("word", "#89b4fa", { bg: "#313244" }).replace(/\x1b\[0m/g, ""), "word");
+	assert.doesNotMatch(graphLines().join("\n"), COLOR_SGR);
+});
+
+test("FORCE_COLOR=1 and 2 limit workflow colors to 256, and FORCE_COLOR=3 or no setting keeps true color", () => {
+	for (const forced of ["1", "2"]) {
+		colorEnv({ FORCE_COLOR: forced });
+		assert.match(hexToAnsi("#89b4fa"), /^\x1b\[38;5;\d+m$/, `FORCE_COLOR=${forced} foreground`);
+		assert.match(hexBg("#313244"), /^\x1b\[48;5;\d+m$/, `FORCE_COLOR=${forced} background`);
+		for (const [name, render] of SURFACES) {
+			const raw = render().join("\n");
+			assert.doesNotMatch(raw, TRUECOLOR_SGR, `${name} under FORCE_COLOR=${forced}`);
+			assert.match(raw, COLOR_256_SGR, `${name} under FORCE_COLOR=${forced} keeps colors`);
+		}
+	}
+	for (const env of [{ FORCE_COLOR: "3" }, {}]) {
+		colorEnv(env);
+		assert.equal(hexToAnsi("#89b4fa"), "\x1b[38;2;137;180;250m");
+		assert.equal(hexBg("#313244"), "\x1b[48;2;49;50;68m");
+		assert.match(graphLines().join("\n"), TRUECOLOR_SGR);
+	}
+});
+
+test("painting workflow colors never reads NO_COLOR or FORCE_COLOR", () => {
+	colorEnv({});
+	const original = process.env;
+	let reads = 0;
+	process.env = new Proxy(original, {
+		get(target, key, receiver) {
+			if (key === "NO_COLOR" || key === "FORCE_COLOR") reads++;
+			return Reflect.get(target, key, receiver);
+		},
+	});
+	try {
+		for (let i = 0; i < 1_000; i++) {
+			hexToAnsi("#89b4fa");
+			hexBg("#313244");
+			paint("word", "#a6e3a1", { bg: "#1e1e2e", bold: true });
+		}
+	} finally {
+		process.env = original;
+	}
+	assert.equal(reads, 0);
+});

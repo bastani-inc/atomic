@@ -1294,6 +1294,7 @@ export {
 	getMarkdownTheme,
 	getSelectListTheme,
 	getSettingsListTheme,
+	hexColorAnsi,
 	highlightCode,
 	initTheme,
 	Theme,

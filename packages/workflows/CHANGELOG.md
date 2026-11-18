@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- `NO_COLOR` and `FORCE_COLOR=0` now turn off colors in the workflow graph, stage chats, `/workflows` run details and workflow notices, which kept their own palette. `FORCE_COLOR=1` or `2` limits them to 256 colors; otherwise they are unchanged
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 ### Breaking Changes
