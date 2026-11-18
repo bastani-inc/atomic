@@ -597,6 +597,14 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this.switcherOpen = false;
 			return true;
 		}
+		// A press on a listed stage opens it, as moving there and pressing Enter does, the way a press on a node does.
+		const press = this._sgrLeftMousePress(data);
+		if (press) {
+			const index = this._switcherIndexAt(press);
+			if (index === undefined) return true;
+			this.switcherState = { ...this.switcherState, selectedIndex: index };
+			return this._handleSwitcherInput("\r");
+		}
 		if (matchesKey(data, Key.enter)) {
 			const filtered = filterStages(stages, this.switcherState.query);
 			const selected = filtered[this.switcherState.selectedIndex];
@@ -638,6 +646,16 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			return true;
 		}
 		return false;
+	}
+
+	/** The index, among the matching stages, of the stage the switcher drew at `press`. */
+	private _switcherIndexAt(press: { col: number; row: number }): number | undefined {
+		const rows = this.switcherRows;
+		if (this.mode !== "overlay" || rows === undefined) return undefined;
+		if (press.row < rows.top || press.row >= rows.bottom || press.col < rows.left || press.col >= rows.right) return;
+		const stages = this.cachedLayout.map((layoutNode) => layoutNode.stage);
+		const index = rows.start + press.row - rows.top;
+		return index < filterStages(stages, this.switcherState.query).length ? index : undefined;
 	}
 
 	private _moveSwitcherSelection(step: number): boolean {

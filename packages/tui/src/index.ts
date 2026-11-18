@@ -11,6 +11,7 @@ export {
 } from "./autocomplete.ts";
 export {
 	type ClickableColumns,
+	ClickableRow,
 	type ClickableRowActions,
 	ClickableRows,
 	type ClickableRowsSnapshot,

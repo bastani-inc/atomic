@@ -12,7 +12,7 @@ import { NODE_H } from "./layout.js";
 import { type RunOutcome, renderRunOutcome } from "./run-outcome.js";
 import { runStateColor, runStateIndicator } from "./run-state-indicator.js";
 import { renderStageFailureDetailLines } from "./stage-failure-detail.js";
-import { renderSwitcher } from "./switcher.js";
+import { renderSwitcher, SWITCHER_LIST_TOP, switcherWindowStart } from "./switcher.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 import { renderToolDetailLines } from "./tool-detail.js";
 
@@ -434,6 +434,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		bodyStart: number,
 		bodyRows: number,
 	): void {
+		this.switcherRows = undefined;
 		if (!this.switcherOpen) return;
 		const bodyEnd = bodyStart + bodyRows;
 		for (let row = bodyStart; row < bodyEnd; row++) lines[row] = this._blankRow(frameWidth);
@@ -446,6 +447,14 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		});
 		const insertAt = Math.max(bodyStart, bodyStart + Math.min(2, Math.floor((bodyRows - switcherLines.length) / 3)));
 		const switcherLeft = Math.max(2, Math.floor((frameWidth - switcherWidth) / 2));
+		// The stage rows run from below the header to above the bottom border, within the rows the body shows.
+		this.switcherRows = {
+			top: insertAt + SWITCHER_LIST_TOP,
+			bottom: Math.min(bodyEnd, insertAt + switcherLines.length - 1),
+			left: switcherLeft,
+			right: switcherLeft + switcherWidth,
+			start: switcherWindowStart(this.switcherState),
+		};
 		for (let index = 0; index < switcherLines.length; index++) {
 			const lineIndex = insertAt + index;
 			if (lineIndex >= bodyEnd) break;

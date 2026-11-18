@@ -178,6 +178,11 @@ export abstract class GraphViewState {
 	protected abstract _graphScrollTop(): number;
 	protected graphScrollColOffset = 0;
 	protected graphNodeHitRects: GraphNodeHitRect[] = [];
+	/**
+	 * Where the last render drew the switcher's stage rows: the frame row and columns of the first, and the index among
+	 * the matching stages it lists.
+	 */
+	protected switcherRows: { top: number; bottom: number; left: number; right: number; start: number } | undefined;
 	protected lastGraphViewport: GraphViewportGeometry | null = null;
 	protected lastGraphTopPad = 0;
 	protected lastGraphVisibleRows = 0;
