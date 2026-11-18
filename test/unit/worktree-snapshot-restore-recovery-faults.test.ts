@@ -1143,19 +1143,26 @@ describe("cleaning up after a failed restore", () => {
 	test("a file changed after the worktree was set aside is kept, and so is the directory holding it (#4748)", async () => {
 		const reason = new Error("stop");
 		let changed = "";
+		const seen: string[] = [];
 		const { error, warnings, staging } = await failedRestore(reason, (path) => {
 			const link = join(asideOf(path), ".git");
 			// Once the worktree is set aside, someone rewrites its .git file before the deletion reaches it.
 			faults.lstat = (inspected) => {
+				if (basename(inspected) === ".git") seen.push(inspected);
 				// The restore may spell the temporary directory differently on Windows (a short name, a drive letter's case).
-				if (changed !== "" || !inspected.endsWith(join(basename(asideOf(path)), ".git"))) return;
+				if (
+					changed !== "" ||
+					basename(inspected) !== ".git" ||
+					!/\.d-[0-9a-f]{12}$/.test(basename(dirname(inspected)))
+				)
+					return;
 				writeFileSync(inspected, "gitdir: changed after the check\n");
 				changed = link;
 			};
 		});
 
 		assert.equal(error, reason);
-		assert.notEqual(changed, "");
+		assert.notEqual(changed, "", `.git paths inspected: ${seen.join(", ")}; staging ${staging}`);
 		assert.equal(readFileSync(changed, "utf8"), "gitdir: changed after the check\n");
 		assert.deepEqual(retainedWarnings(warnings), [warning(asideOf(staging))]);
 	});
