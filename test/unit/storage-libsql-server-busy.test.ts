@@ -253,3 +253,26 @@ test("a schema change in one exec lands once while other connections keep changi
 	}
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'events'"), 1);
 });
+
+test("a read that starts with WITH or VALUES the server answered schema-changed is sent again as it was, while a WITH that writes lands once under churn", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	for (const sql of ["WITH x AS (SELECT 1 AS n) SELECT n FROM x", "VALUES (1)"]) {
+		fake.fail(SCHEMA_CHANGED);
+		await database.all(sql);
+		const sent = fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql));
+		assert.equal(sent.length, 2, sql);
+		assert.ok(
+			sent.every((pipeline) => !/BEGIN IMMEDIATE/i.test(pipeline.sql)),
+			`${sql} took the write lock`,
+		);
+	}
+	fake.churnSchema(true);
+	try {
+		await database.run("WITH v AS (SELECT 3 AS n) INSERT INTO events SELECT n FROM v");
+	} finally {
+		fake.churnSchema(false);
+	}
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
+});

@@ -726,19 +726,26 @@ function statements(connection, watch, single = watch, shared = async () => unde
 }
 
 /** The keyword of a statement that writes and runs the same inside a write transaction as on its own. */
-const LOCKED_RERUN_KEYWORD = /(?:INSERT|UPDATE|DELETE|REPLACE|WITH|VALUES|CREATE|DROP|ALTER)\b/iy;
+const LOCKED_RERUN_KEYWORD = /(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER)\b/iy;
+/** The keyword of a statement that starts with common table expressions, which may read or write. */
+const COMMON_TABLE_KEYWORD = /WITH\b/iy;
+/** A write inside a statement that starts with common table expressions. */
+const COMMON_TABLE_WRITE = /\b(?:INSERT|UPDATE|DELETE|REPLACE)\b/i;
 
 /**
  * Whether `sql`, one statement the server answered `SQLITE_SCHEMA`, runs again in a write transaction of its own: a
- * write or a schema change. Not a read, and not a statement that runs differently in a transaction or not at all, as
+ * write (also one that starts with common table expressions) or a schema change. Not a read, such as `SELECT`,
+ * `VALUES` or a `WITH` that only selects, and not a statement that runs differently in a transaction or not at all, as
  * `PRAGMA foreign_keys` and `VACUUM` do.
  * @param {string} sql
  */
 function rerunsLocked(sql) {
 	const start = firstTokenStart(sql);
-	if (start === -1 || readsOnly(sql)) return false;
+	if (start === -1 || readsOnly(sql) || !isOneStatement(sql)) return false;
 	LOCKED_RERUN_KEYWORD.lastIndex = start;
-	return LOCKED_RERUN_KEYWORD.test(sql) && isOneStatement(sql);
+	if (LOCKED_RERUN_KEYWORD.test(sql)) return true;
+	COMMON_TABLE_KEYWORD.lastIndex = start;
+	return COMMON_TABLE_KEYWORD.test(sql) && COMMON_TABLE_WRITE.test(sql.slice(start));
 }
 
 /**
