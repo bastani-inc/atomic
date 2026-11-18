@@ -102,11 +102,14 @@ export async function runLoggedProcess(
 		if (child.pid !== undefined) watch?.(child.pid, true);
 		let timedOut = false;
 		let stopped = false;
+		let treeTerminated = false;
 		let writeError: Error | undefined;
 		let copying = Promise.resolve();
 		const stop = () => {
 			stopped = true;
-			if (tree?.terminate()) return;
+			// Terminating the tree ends every process in it, and closing it ends any left: it is terminated at most once.
+			if (!treeTerminated) treeTerminated = tree?.terminate() === true;
+			if (treeTerminated) return;
 			if (child.pid !== undefined) killProcessTree(child.pid);
 		};
 		const timer = setTimeout(() => {

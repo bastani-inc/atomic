@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, an aborted or timed-out GitHub clone has its process tree terminated once. Atomic no longer terminates it again when the clone's exit arrives ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
+
 ## [0.9.89] - 2026-11-18
 
 ### Changed

@@ -68,6 +68,37 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 vi.mock("../../packages/web-access/config-paths.ts", () => ({ findReadableConfigPath: () => boundary.configPath }));
 
+/** When enabled, records what is done to each contained clone; terminating it kills the clone, as ending its job would. */
+const containment = vi.hoisted(() => ({ enabled: false, events: [] as string[] }));
+vi.mock("../../packages/coding-agent/src/core/process-tree-containment.ts", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../../packages/coding-agent/src/core/process-tree-containment.ts")>();
+	return {
+		...actual,
+		containProcessTree: (pid: number) => {
+			if (!containment.enabled) return actual.containProcessTree(pid);
+			containment.events.push("contain");
+			return {
+				terminate: () => {
+					containment.events.push("terminate");
+					try {
+						process.kill(pid, "SIGKILL");
+					} catch {}
+					return true;
+				},
+				activeProcesses: () => 0,
+				release: () => {
+					containment.events.push("release");
+					return true;
+				},
+				close: () => {
+					containment.events.push("close");
+				},
+			};
+		},
+	};
+});
+
 // The config path is read once at import, so it must point into a temp directory before the import.
 const suiteDirectory = makeTempDirectory("web-gh-confine-suite-");
 boundary.configPath = join(suiteDirectory, "web-search.json");
@@ -113,6 +144,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	containment.enabled = false;
+	containment.events = [];
 	await clearCloneCache();
 	removeTempDirectory(sandbox);
 });
@@ -600,4 +633,18 @@ test("aborting or clearing a clone with a background grandchild holding stdio se
 	await within(clearCloneCache(), 800);
 	assert.equal(await within(pendingClone, 800), null);
 	await waitForProcessExit(secondGrandchildPid);
+});
+
+test("aborting a clone terminates its process tree once, also when the clone's exit follows (#5601)", async () => {
+	boundary.cloneScript = "setTimeout(() => {}, 30000);";
+	containment.enabled = true;
+	const controller = new AbortController();
+	const clone = extractGitHub("https://github.com/octo/widgets", controller.signal, true);
+	for (let i = 0; i < 2000 && !containment.events.includes("contain"); i++) {
+		await new Promise<void>((resolve) => setTimeout(resolve, 10));
+	}
+	assert.deepEqual(containment.events, ["contain"], "the clone started in its own process tree");
+	controller.abort();
+	assert.equal(await clone, null);
+	assert.deepEqual(containment.events, ["contain", "terminate", "close"]);
 });
