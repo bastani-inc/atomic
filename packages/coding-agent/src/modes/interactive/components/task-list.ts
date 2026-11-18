@@ -92,11 +92,10 @@ const footerRetired = new WeakMap<TaskElapsedClocks, AgentPanelModel>();
  * A chat's own background tasks below its prompt, listed by the main chat's agent panel rules: subagents as rows, and
  * running shells, which are not rows, counted on a line of their own in the main chat's hint wording. A finished
  * subagent is not listed; a stopped or interrupted one only while other work is active, and not again once it left
- * until it runs again. With no rows, the line points to /tasks for the chat's subagents.
+ * until it runs again.
  */
 export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
 	let shells = 0;
-	let subagents = 0;
 	const candidates: TaskRecord[] = [];
 	const superseded = supersededReleasedAttempts(tasks);
 	for (let index = tasks.length - 1; index >= 0; index--) {
@@ -107,7 +106,6 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 			if (role === "shell" && isActiveBackgroundTask(task)) shells++;
 			continue;
 		}
-		subagents++;
 		if (task.observation.kind === "background" || task.wasBackground === true) candidates.push(task);
 	}
 	const active = shells > 0 || candidates.some((task) => isActivePanelState(taskPanelState(task)));
@@ -133,7 +131,8 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 	memory.endPass(pass);
 	const listed = [...input, ...running, ...other, ...finished];
 	const total = listed.length;
-	const hint = panelHintText(panelHintParts({ total, agents: 0, needsInput: 0 }, shells, subagents, true), "");
+	// The chat's own key hint already offers ↓ to its task list, so this line never adds a /tasks pointer.
+	const hint = panelHintText(panelHintParts({ total, agents: 0, needsInput: 0 }, shells, 0, true), "");
 	const shellLine =
 		hint.length === 0
 			? []

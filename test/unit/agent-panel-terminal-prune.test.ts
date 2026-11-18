@@ -196,7 +196,7 @@ describe("native subagent tasks", () => {
 		}
 	});
 
-	test("an attached chat's footer drops an interrupted subagent once nothing else runs and points to /tasks", async () => {
+	test("an attached chat's footer drops an interrupted subagent once nothing else runs", async () => {
 		const fixture = taskFixture();
 		try {
 			await fixture.start("interrupted");
@@ -209,10 +209,8 @@ describe("native subagent tasks", () => {
 			fixture.runners[1]!.result.resolve({ kind: "completed", output: fixture.store.tasks[1]!.output });
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			fixture.store.drain();
-			const after = renderTaskFooter(fixture.store.backgroundTasks, 120).map((line) =>
-				line.replace(/\x1b\[[\d;:]*m/g, ""),
-			);
-			assert.deepEqual(after, ["  /tasks to see subagents"]);
+			// The chat's own key hint offers ↓ to its task list, so the footer adds no /tasks pointer.
+			assert.deepEqual(renderTaskFooter(fixture.store.backgroundTasks, 120), []);
 		} finally {
 			await fixture.dispose();
 		}
@@ -313,7 +311,7 @@ describe("the focused panel", () => {
 });
 
 describe("an attached chat's footer and the main panel agree", () => {
-	test("interrupted, then nothing active, then a new subagent: the same rows and the same /tasks pointer", async () => {
+	test("interrupted, then nothing active, then a new subagent: the same rows", async () => {
 		const fixture = taskFixture();
 		try {
 			await fixture.start("interrupted");
@@ -338,7 +336,7 @@ describe("an attached chat's footer and the main panel agree", () => {
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			fixture.store.drain();
 			assert.deepEqual(mainTitles(), []);
-			assert.deepEqual(footer(), ["  /tasks to see subagents"]);
+			assert.deepEqual(footer(), []);
 			assert.deepEqual(mainComposerHintSegments(keybindings, session), ["/tasks to see subagents", "? keys"]);
 
 			await fixture.start("new");

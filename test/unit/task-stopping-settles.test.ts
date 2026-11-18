@@ -58,8 +58,7 @@ test("a stopped agent whose runner cannot confirm cleanup settles and leaves the
 		}
 		assert.deepEqual(store.tasks[0].execution, { kind: "settled", result: { kind: "cancelled", cause: "user" } });
 		assert.deepEqual(store.tasks[0].cleanup, failure);
-		// The stopped subagent left the footer, which now points to /tasks, where it is kept.
-		assert.equal(plain(renderTaskFooter(store.backgroundTasks, 80)), "  /tasks to see subagents");
+		assert.deepEqual(renderTaskFooter(store.backgroundTasks, 80), []);
 	} finally {
 		store.dispose();
 		await supervisor.closeTaskOwner(owner, "session-close");
