@@ -5,13 +5,21 @@
 ### Added
 
 - `session.workflows.listRuns()` and a run control's `listProjectRuns()` take `{ signal }` as their last argument. When it aborts, the listing stops waiting for stored runs and rejects with the signal's reason ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
+- A storage driver's `transientFailure` can return `hop: { name, failure }` for a call that failed before it reached the database server, such as at a proxy. `StorageTransientError`, and the warning printed while the call is retried, then say what happened at that hop instead of "the database server call failed", and the hint asks to check that hop; the error carries it as `hop` and `hopFailure`. The PostgreSQL adapter uses it to name the proxy ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
 
 ### Changed
 
 - The agent panel below the prompt drops a subagent as soon as it finishes. Stopped, paused or interrupted subagents stay only while another subagent, workflow run or background shell is still running, then the whole panel closes, and a resumed subagent is listed once. `↓ N agents` counts only the subagents the panel lists, not workflow runs, so a running workflow alone no longer shows `↓ 1 agent`; `N needs input` still counts a workflow run's question. When the panel lists nothing but `/tasks` lists subagents, the hint shows `/tasks to see subagents`, or `N shells · /tasks to manage` while background shells run.
+- Subagent and workflow stage chats draw the rules above and below their prompt with the same light line as the main chat. They keep their accent colour and the label that names the agent or stage. Extension chats built with `applyAttachedComposer()` get the same light rules.
 
 ### Fixed
 
+- The main chat no longer leaves a blank row between the working line and the usage meter above the prompt. Every chat now keeps exactly one row there: the usage meter, or a blank row in a subagent or stage chat with no usage to show, so a chat's last line never runs into its prompt.
+- A subagent or workflow stage chat waiting to retry a request, switch model or resume now shows `retrying…`, `switching model…` or `resuming…` as its working line above the prompt, instead of a line below its transcript.
+- A subagent or workflow stage chat opened while its agent already waits to retry a failed request now shows `retrying…` as its working line straight away, instead of looking idle until the next attempt. This includes a stage that runs on a local worker ([#5483](https://github.com/bastani-inc/atomic/issues/5483)).
+- A subagent released while it waits on a tool call now shows the dim `◌` waiting mark on its completion notice, as `/tasks`, the agent panel, the task footer and its launch card already show it, instead of the pause mark `⏸`. Notices saved by earlier versions show the waiting mark too. A paused or quit subagent keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+- An extension tool whose call renders a `waiting` or `heartbeat` block keeps its own title once its result arrives, instead of falling back to the tool's label ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+- Under Node, each workflow run that finishes no longer keeps the session that wrote its summary, and the run text it summarized, in memory for the rest of the process. A long session that runs many workflows, and an SDK host that disposes such sessions, now release them ([#5487](https://github.com/bastani-inc/atomic/issues/5487))
 - `history://sessions` no longer freezes Atomic for up to seconds at a time on a large SQLite session store. Listing one project's sessions read the first message and summary of every stored session, of every project, up to 8,192 sessions per step, which took seconds per step when the store's pages were not cached. The listing now reads other projects' sessions only far enough to skip them, reads at most 256 sessions per step, and lets the interface run between steps. On a store of 70,000 sessions it finishes in a third to a quarter of the time ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
 
 ## [0.9.89] - 2026-11-18

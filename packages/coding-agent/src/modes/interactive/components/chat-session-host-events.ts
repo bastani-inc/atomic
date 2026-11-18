@@ -21,7 +21,13 @@ import {
 	startChatSessionWorkingLifecycle,
 	stopChatSessionWorkingLifecycle,
 } from "./chat-session-host-runtime.ts";
-import { type ChatSessionHostState, countableTranscriptLength } from "./chat-session-host-state.ts";
+import {
+	CHAT_SESSION_RETRYING_STATUS,
+	CHAT_SESSION_RETRYING_SUMMARY_STATUS,
+	CHAT_SESSION_SWITCHING_MODEL_STATUS,
+	type ChatSessionHostState,
+	countableTranscriptLength,
+} from "./chat-session-host-state.ts";
 import {
 	exactTextOnlyUserPrompt,
 	extractMessageText,
@@ -35,6 +41,19 @@ import {
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 
 export type { CompactionReason } from "../../../core/agent-session-types.js";
+
+/**
+ * A retry waits out its backoff: `retrying…` is the working line until the next attempt's `agent_start`, or the
+ * retry's `auto_retry_end`, clears it.
+ */
+export function showChatSessionRetryWait<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): void {
+	state.sdkBusy = true;
+	state.workingMessage = undefined;
+	state.statusMessage = CHAT_SESSION_RETRYING_STATUS;
+	stopChatSessionWorkingLifecycle(state);
+}
 
 export function compactionStatusMessage(reason: CompactionReason): string {
 	switch (reason) {
@@ -345,7 +364,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		}
 		case "summarization_retry_scheduled":
 			state.sdkBusy = true;
-			state.statusMessage = "retrying summary…";
+			state.statusMessage = CHAT_SESSION_RETRYING_SUMMARY_STATUS;
 			changed = true;
 			break;
 		case "summarization_retry_attempt_start": {
@@ -362,16 +381,13 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			changed = true;
 			break;
 		case "auto_retry_start":
-			state.sdkBusy = true;
-			state.workingMessage = undefined;
-			state.statusMessage = "retrying…";
-			stopChatSessionWorkingLifecycle(state);
+			showChatSessionRetryWait(state);
 			changed = true;
 			break;
 		case "model_fallback_start":
 			state.sdkBusy = true;
 			state.workingMessage = undefined;
-			state.statusMessage = "switching model…";
+			state.statusMessage = CHAT_SESSION_SWITCHING_MODEL_STATUS;
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
 			break;

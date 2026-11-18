@@ -166,6 +166,43 @@ test("the backoff varies by up to a fifth either way (#4383)", async () => {
 	assert.equal(calls.length, 3);
 });
 
+test("a driver names the hop on the way to the server where a call failed, in the warning and the error, redacted (#5473)", async () => {
+	vi.spyOn(Math, "random").mockReturnValue(0.5);
+	const { driver, fail } = plannedDriver((text) => text.replaceAll("s3cret", "[redacted]"));
+	const hop = {
+		name: "the proxy http://proxy.example:3128",
+		failure:
+			"the proxy http://proxy.example:3128 could not be reached for the tunnel to db.example.com:5432 (s3cret)",
+	};
+	const unreachable = () =>
+		Object.assign(new Error("connect ECONNREFUSED"), {
+			transient: { code: "connection-refused", outcome: "not-applied", hop } satisfies SqliteDriverTransientFailure,
+		});
+	fail("execute", ...Array.from({ length: STORAGE_TRANSIENT_RETRY_ATTEMPTS }, unreachable));
+	const outcome = createSqliteDatabase(driver)
+		.get("SELECT 1")
+		.then(
+			() => assert.fail("the call should fail"),
+			(error: unknown) => error,
+		);
+	await vi.advanceTimersByTimeAsync(4_000);
+	const error = await outcome;
+	assert.ok(error instanceof StorageTransientError);
+	const named =
+		"the proxy http://proxy.example:3128 could not be reached for the tunnel to db.example.com:5432 ([redacted])";
+	assert.ok(error.message.includes(`${named} on attempt 5 (connection-refused).`), error.message);
+	assert.equal(
+		error.hint,
+		"Check that the proxy http://proxy.example:3128 is reachable and that this process is not stopped or starved of CPU, then retry; nothing was written",
+	);
+	assert.equal(warnings.length, 1);
+	assert.ok(warnings[0]!.message.includes(`${named} on attempt 1 (connection-refused).`), warnings[0]!.message);
+	for (const reported of [error.message, warnings[0]!.message]) {
+		assert.equal(reported.includes("the database server call failed"), false, reported);
+		assert.equal(reported.includes("s3cret"), false, reported);
+	}
+});
+
 test("a statement whose outcome is unknown fails typed at once and never runs again (#4383)", async () => {
 	const { driver, calls, fail } = plannedDriver();
 	fail("execute", transient("connection-lost", "unknown"));

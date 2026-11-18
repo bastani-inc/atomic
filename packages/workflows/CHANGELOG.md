@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The first workflow-history read in a process no longer freezes Atomic for seconds on a large workflow journal. `history://workflows`, `search history://`, `/workflows` and `/resume` read the stored runs in short turns, so typing, rendering and streaming keep going, and the history tool's time budget ends its wait on time. A run with many thousands of checkpoints after its last status change is listed in small steps too. Callers that ask for the stored runs together share one read ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
 - `/workflows`, `/resume` and workflow history no longer fail on a libSQL server whose workflow journal holds on the order of a hundred thousand runs. The server refused the one response that carried every run's latest version, which went over its 10 MB limit; the versions are now read 4,096 runs at a time ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
+- The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
+- The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 
 ## [0.9.89] - 2026-11-18
 

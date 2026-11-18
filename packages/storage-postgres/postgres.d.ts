@@ -1,4 +1,7 @@
 import type { AdapterOptions, SqliteDatabase, StorageOpenContext } from "@bastani/atomic/storage";
+import type { PostgresSocketFactory } from "./proxy.js";
+
+export type { PostgresSocketFactory, ProxyTarget } from "./proxy.js";
 
 export interface PostgresDatabaseOptions {
 	/** A `postgres://` or `postgresql://` URL without a password. */
@@ -30,6 +33,21 @@ export interface PostgresDatabaseOptions {
 	 * `openDatabase` passes `<agentDir>/npm`, where `atomic install npm:<package>` installs user packages.
 	 */
 	sdkSearchPaths?: readonly string[];
+	/**
+	 * The HTTP proxy connections tunnel through with `CONNECT` (#5473): an `http://` or `https://` URL, with credentials
+	 * sent as `Proxy-Authorization` when it has them, or `"none"` for direct connections. It overrides the environment
+	 * and applies to this machine too: without it, a connection to a host other than this machine tunnels through
+	 * `HTTPS_PROXY` (or `ALL_PROXY`, then `HTTP_PROXY`) unless `NO_PROXY` exempts the host. A socket directory is always
+	 * reached directly. TLS still runs end to end with the server. A proxy can read the traffic with `sslmode` `prefer`,
+	 * `allow` or `disable`, and with `verify-ca` when it holds a certificate from the CA the connection trusts, for any
+	 * host: `verify-full` (the default) checks the certificate's host name.
+	 */
+	proxy?: string;
+	/**
+	 * Opens each connection to the server for a custom transport, in place of a socket or a proxy tunnel; passing it
+	 * with `proxy` is refused (`conflicting-transport`). A socket directory is always reached directly.
+	 */
+	socket?: PostgresSocketFactory;
 }
 
 export const DEFAULT_MAX_CONNECTIONS: 8;
