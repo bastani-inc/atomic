@@ -2,6 +2,7 @@ import { test } from "vitest";
 import {
 	type AgentSession,
 	assert,
+	assistantTextMessage,
 	createStore,
 	deriveGraphTheme,
 	fakeFooterAgentSession,
@@ -15,10 +16,13 @@ import {
 type Emit = ReturnType<typeof makeHandle>["emit"];
 
 /** A running stage chat in a 30-row terminal; its session, when given, has usage to show. */
-function stageChat(agentSession?: AgentSession): { view: StageChatView; emit: Emit } {
+function stageChat(
+	agentSession?: AgentSession,
+	messages: AgentSession["messages"] = [],
+): { view: StageChatView; emit: Emit } {
 	const store = createStore();
 	setupRun(store, "run-1", "stage-a");
-	const { handle, state, emit } = makeHandle(undefined, [], "running", agentSession);
+	const { handle, state, emit } = makeHandle(undefined, messages, "running", agentSession);
 	state.isStreaming = agentSession !== undefined;
 	const view = new StageChatView({
 		store,
@@ -59,11 +63,14 @@ test("a working stage chat puts its working line directly on the usage row above
 });
 
 test("a stage chat without usage to show keeps one blank row on the composer's top rule", () => {
-	const { view } = stageChat();
+	// A transcript taller than the view, so the row above the rule is the layout's own blank row and not empty transcript.
+	const answer = Array.from({ length: 40 }, (_, index) => `answer line ${index + 1}`).join("\n\n");
+	const { view } = stageChat(undefined, [assistantTextMessage(answer)]);
 	try {
 		for (const width of [80, 160]) {
-			const rows = rowsAboveComposer(view, width);
-			assert.equal(rows[2], "", `${width} columns: a blank row in the usage row's place`);
+			const [, last, blank] = rowsAboveComposer(view, width);
+			assert.equal(blank, "", `${width} columns: a blank row in the usage row's place`);
+			assert.equal(last, " answer line 40", `${width} columns: the transcript ends right above that row`);
 		}
 	} finally {
 		view.dispose();
