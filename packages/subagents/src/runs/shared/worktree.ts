@@ -122,6 +122,8 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
 			...(options.env !== undefined ? { env: options.env } : {}),
 			...(options.shell !== undefined ? { shell: options.shell } : {}),
+			// Setup hooks keep their native timeout. A sweep's timeout below stops the entire git process tree.
+			...(options.timeout !== undefined && !sweepTimeout.getStore() ? { timeout: options.timeout } : {}),
 			stdio: [options.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
 			detached: process.platform !== "win32",
 			windowsHide: true,
