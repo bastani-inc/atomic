@@ -185,9 +185,14 @@ async function settled<T>(read: T | Promise<T>): Promise<T> {
 	return read instanceof Promise ? await read : read;
 }
 
-/** Whether the session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */
-function waitsToRetry(session: Pick<ChatBoxSession, "retryAttempt" | "isStreaming"> | undefined): boolean {
-	return session !== undefined && session.retryAttempt > 0 && !session.isStreaming;
+/**
+ * Whether the session waits out an automatic retry's backoff: its retry has started and its next attempt has not. A
+ * session with fallback models keeps its run open through the wait, so it reads as streaming then (#5523).
+ */
+function waitsToRetry(
+	session: Pick<ChatBoxSession, "retryAttempt" | "isStreaming" | "isWaitingToRetry"> | undefined,
+): boolean {
+	return session !== undefined && session.retryAttempt > 0 && (!session.isStreaming || session.isWaitingToRetry);
 }
 
 /**
@@ -660,7 +665,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	interruptible(): boolean {
-		return this.source.interruptTask !== undefined && this.followed?.isRunning?.() === true;
+		// Between two attempts of a retry nothing streams, and Esc cancels the retry, as it does in the main chat.
+		return (
+			this.source.interruptTask !== undefined &&
+			(this.followed?.isRunning?.() === true || this.followed?.chatSession?.isRetrying === true)
+		);
 	}
 
 	async interrupt(): Promise<TaskViewResult<undefined>> {
@@ -729,15 +738,17 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	/**
 	 * A page opened mid-turn missed `agent_start` and `queue_update`, so it reads the turn and the queue now. Between
-	 * two attempts of a retry the session streams nothing, so the page shows the retry's wait instead.
+	 * two attempts of a retry the page shows the retry's wait instead, also while a session with fallback models keeps
+	 * its run open through the wait.
 	 */
 	private hydrateRunningTurn(session: TaskTranscriptSource, messages: TaskTranscriptView["messages"]): void {
-		if (session.isRunning?.() === true) {
+		if (waitsToRetry(session.chatSession)) {
+			setTaskTurnInterrupted(this.source, this.taskId, false);
+			this.chat.hydrateRetryWait();
+		} else if (session.isRunning?.() === true) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.beginExternalPromptLifecycle();
 			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
-		} else if (waitsToRetry(session.chatSession)) {
-			this.chat.hydrateRetryWait();
 		} else if (session.isRunning?.() === false) {
 			const lastAssistant = [...messages]
 				.reverse()
