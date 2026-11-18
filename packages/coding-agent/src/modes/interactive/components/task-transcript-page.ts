@@ -92,6 +92,8 @@ export interface TaskTranscriptPage {
 	handleMouse?(event: TuiMouseEvent): boolean;
 	/** What the last frame `render` drew on `row`, such as the transcript entry there; undefined when it cannot say. */
 	paintedRowKey?(row: number): string | undefined;
+	/** Ctrl+O was pressed where the page is shown: its blocks follow the tool-output setting again. */
+	toolOutputToggled?(): void;
 	invalidate(): void;
 	dispose(): void;
 }
@@ -443,6 +445,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	/** A single click on a block header in the transcript expands or collapses that block. */
 	handleMouse(event: TuiMouseEvent): boolean {
 		if (event.y < 0 || event.y >= this.bodyRows) return false;
+		// While the task's held question owns input below the transcript, a click on the transcript does nothing.
+		if (!this.chat.hasTaskInspector && this.heldPrompt() !== undefined) return false;
 		const handled = this.chat.handleBodyClick(event);
 		if (handled) this.requestRender();
 		return handled;
@@ -450,6 +454,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	paintedRowKey(row: number): string | undefined {
 		return row < 0 || row >= this.bodyRows ? undefined : this.chat.bodyRowKey(row);
+	}
+
+	toolOutputToggled(): void {
+		this.chat.toolOutputToggled();
 	}
 
 	/** The chat box of a stage chat: the transcript, then pending, working, usage, the named editor and the footer. */

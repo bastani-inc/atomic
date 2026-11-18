@@ -792,6 +792,11 @@ export class TaskInspector implements Component {
 		return { handled: true };
 	}
 
+	/** Ctrl+O was pressed: the open transcript's blocks follow the tool-output setting again. */
+	toolOutputToggled(): void {
+		this.transcript?.toolOutputToggled?.();
+	}
+
 	/** What the last frame drew on `row` of the open transcript, named by the transcript; undefined elsewhere. */
 	paintedRowKey(row: number): string | undefined {
 		const transcript = this.transcript;

@@ -4,6 +4,7 @@ import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings, type TuiMouseEvent } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
+import { heldPrompts } from "../../packages/coding-agent/src/core/extensions/held-prompts.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { TaskCompletionEnvelope } from "../../packages/coding-agent/src/core/tasks/completion.js";
@@ -254,6 +255,36 @@ test("pressing Ctrl+O twice before the next paint collapses a block a click expa
 	}
 });
 
+test("a click on a block header in a task's transcript does nothing while the task's held question owns input", async () => {
+	const session = await childSession();
+	const chat = await openTranscript(session);
+	const controller = new AbortController();
+	const held = heldPrompts()
+		.hold(
+			{
+				sessionId: session.getSessionId(),
+				promptId: "confirm-1",
+				kind: "confirm",
+				question: "Ship it?",
+				title: "Ship it?",
+			},
+			controller.signal,
+			false,
+		)
+		.catch(() => undefined);
+	try {
+		await flush();
+		const expanded = () => chat.screen().some((line) => line.trimEnd().endsWith("child line 1"));
+		assert.match(chat.screen().join("\n"), /Ship it\?/, "the question is shown below the transcript");
+		assert.equal(chat.clickOn(/child-cmd/, "child-cmd"), undefined);
+		assert.ok(!expanded(), chat.screen().join("\n"));
+	} finally {
+		controller.abort();
+		await held;
+		await chat.dispose();
+	}
+});
+
 test("a click in a chat's open task transcript reaches the blocks of that transcript", async () => {
 	initTheme("dark");
 	const keys = getKeybindings();
@@ -288,7 +319,7 @@ test("a click in a chat's open task transcript reaches the blocks of that transc
 	}
 });
 
-test("a click in a stage chat's open task transcript reaches the blocks of that transcript", async () => {
+test("a click in a stage chat's open task transcript reaches the blocks of that transcript, and Ctrl+O resets them", async () => {
 	const keys = getKeybindings();
 	const keybindings = new KeybindingsManager();
 	setKeybindings(keybindings);
@@ -330,6 +361,11 @@ test("a click in a stage chat's open task transcript reaches the blocks of that 
 		assert.ok(!expanded(), screen().join("\n"));
 		assert.equal(view.handleMouse(click(screen()[header]!.indexOf("child-cmd"), header, 100, 50))?.handled, true);
 		assert.ok(expanded(), screen().join("\n"));
+
+		// Ctrl+O twice sets every block of the task's transcript again, the one the click expanded included.
+		view.handleInput("\x0f");
+		view.handleInput("\x0f");
+		assert.ok(!expanded(), screen().join("\n"));
 	} finally {
 		view.dispose();
 		await fixture.dispose();

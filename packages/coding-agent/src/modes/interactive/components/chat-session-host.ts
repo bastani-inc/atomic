@@ -558,9 +558,13 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return true;
 	}
 
-	/** Ctrl+O was pressed: every block follows the tool-output setting again, including those a click set. */
+	/**
+	 * Ctrl+O was pressed: every block follows the tool-output setting again, including those a click set, in this
+	 * chat and in the task transcript it shows.
+	 */
 	toolOutputToggled(): void {
 		dropExpandedOverrides(this.state);
+		this.taskInspector?.toolOutputToggled();
 		this.invalidate();
 	}
 
