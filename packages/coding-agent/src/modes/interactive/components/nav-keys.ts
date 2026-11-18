@@ -181,22 +181,23 @@ export function renderNavKeyOverlay(
 	const rows = entries.flatMap((entry) => {
 		if (entry.action === "app.keys.help") return [];
 		const parts = navEntryKeyParts(keybindings, entry, taken);
-		const keys = parts.map((part) => part.text).join("");
-		return keys ? [{ keys, label: entry.label }] : [];
+		return parts.length > 0 ? [{ parts, label: entry.label }] : [];
 	});
-	rows.push({ keys: `esc/${navActionText(keybindings, "app.keys.help") || "?"}`, label: "close this help" });
-	const keyWidth = Math.min(18, Math.max(...rows.map((row) => visibleWidth(row.keys))));
+	rows.push({
+		parts: hintKeyParts(`esc/${navActionText(keybindings, "app.keys.help") || "?"}`),
+		label: "close this help",
+	});
+	const hints = rows.map(({ parts, label }) => ({
+		keys: clickableKeysHint(parts.map((part) => ({ ...part, text: style.text(part.text) }))),
+		label: clickableKeysHint([{ ...parts.at(-1)!, text: style.muted(label) }]),
+	}));
+	const keyWidth = Math.min(18, Math.max(...hints.map(({ keys }) => visibleWidth(keys))));
 	const framed = width >= 24;
 	const inner = Math.max(1, width - (framed ? 4 : 0));
-	const body = rows.map((row) => {
-		const keys = truncateToWidth(row.keys, keyWidth);
-		const parts = hintKeyParts(keys).map((part) => ({ ...part, text: style.text(part.text) }));
-		const line = clickableKeysHint(
-			parts,
-			" ".repeat(Math.max(1, keyWidth - visibleWidth(keys) + 2)) +
-				style.muted(truncateToWidth(row.label, Math.max(1, inner - keyWidth - 2))),
-		);
-		return truncateToWidth(line, inner);
+	const body = hints.map((hint) => {
+		const keys = truncateToWidth(hint.keys, keyWidth);
+		const gap = " ".repeat(Math.max(1, keyWidth - visibleWidth(keys) + 2));
+		return truncateToWidth(keys + gap + truncateToWidth(hint.label, Math.max(1, inner - keyWidth - 2)), inner);
 	});
 	if (!framed) return [style.bold(truncateToWidth(title, width)), ...body];
 	const heading = ` ${truncateToWidth(title, Math.max(1, width - 6))} `;

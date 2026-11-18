@@ -97,10 +97,7 @@ const HINT_KEY_IDS: Record<string, string> = {
 export function hintKeyId(name: string): KeyId | undefined {
 	const id = name
 		.split("+")
-		.map((part, index, all) => {
-			if (part === "" && index === all.length - 1) return "+";
-			return HINT_KEY_IDS[part.toLowerCase()] ?? (part.length === 1 ? part : part.toLowerCase());
-		})
+		.map((part) => HINT_KEY_IDS[part.toLowerCase()] ?? (part.length === 1 ? part : part.toLowerCase()))
 		.join("+");
 	return keyInputData(id as KeyId) === undefined ? undefined : (id as KeyId);
 }
@@ -120,8 +117,9 @@ export function hintKeyParts(text: string): HintKeyPart[] {
 		} else {
 			while (index < text.length) {
 				const char = text[index]!;
-				if (char === " " || (ARROW_GLYPHS.has(char) && !token.endsWith("+"))) break;
-				if (char === "/" && token !== "" && !token.endsWith("+")) break;
+				const expectsKey = token.length > 1 && token.endsWith("+") && !token.endsWith("++");
+				if (char === " " || (ARROW_GLYPHS.has(char) && !expectsKey)) break;
+				if (char === "/" && token !== "" && !expectsKey) break;
 				token += char;
 				index++;
 			}
@@ -139,6 +137,11 @@ export function hintKeyParts(text: string): HintKeyPart[] {
 				parts.push({ text: separator });
 			}
 			continue;
+		}
+		// In a numbered picker, `1-4` shows two keys: the dash belongs to the first, the label to the last.
+		if (/^[1-9]-[1-9]$/.test(token)) {
+			parts.push({ text: token.slice(0, 2), key: token[0] as KeyId });
+			token = token[2]!;
 		}
 		const key = hintKeyId(token);
 		parts.push(key === undefined ? { text: token + separator } : { text: token + separator, key });

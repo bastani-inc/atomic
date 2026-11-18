@@ -124,6 +124,19 @@ describe("the shared hint builders mark every key they name", () => {
 		assertEveryHintClickable(autocomplete, "autocomplete hint line");
 	});
 
+	test("shortening a remapped key in help keeps the visible shortcut and its label clickable (#5528)", () => {
+		const key = "ctrl+shift+alt+super+o";
+		const row = renderNavKeyOverlay("keys", [{ action: "app.tools.expand", label: "expand" }], 80, plainStyle, {
+			matches: () => false,
+			getKeys: () => [key],
+		})[1]!;
+		const { text, at } = clicksOf(row);
+		assert.ok(text.includes("..."));
+		assert.equal(at(text.indexOf("ctrl")), key);
+		assert.equal(at(text.indexOf("expand")), key);
+		assert.equal(at(text.indexOf("...")), undefined);
+	});
+
 	test("a hint written as text marks its keys and its slash command", () => {
 		assertEveryHintClickable(clickableHintText("↑↓ select · ↵ open stage chat · esc close"), "switcher hint");
 		assertEveryHintClickable(clickableHintText("Enter / Esc back"), "spaced alternatives");

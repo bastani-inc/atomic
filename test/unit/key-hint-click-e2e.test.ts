@@ -24,6 +24,7 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { type SessionInfo, SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentPanelSourceHub } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
+import { ExtensionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.ts";
 import { mainComposerHints } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
 import { slashCommandHint } from "../../packages/coding-agent/src/modes/interactive/components/nav-keys.ts";
@@ -327,6 +328,37 @@ test("a dialog's hints run their keys: ↓ of ↑↓ select moves, enter choose 
 		ui.tui.stop();
 	}
 });
+
+test.each([
+	{ options: ["Yes", "No"], text: "2", digit: "2", chosen: "No" },
+	{ options: ["one", "two", "three", "four"], text: "-", digit: "1", chosen: "one" },
+	{ options: ["one", "two", "three", "four"], text: "pick", digit: "4", chosen: "four" },
+])(
+	"clicking $text of a numbered dialog hint chooses the same option as $digit (#5528)",
+	async ({ options, text, digit, chosen }) => {
+		const ui = makeScreen();
+		const results: string[] = [];
+		const picker = () =>
+			new ExtensionSelectorComponent(
+				"Choose",
+				options,
+				(value) => results.push(value),
+				() => {},
+				{ numbered: true },
+			);
+		try {
+			const first = ui.mount(picker());
+			await ui.click(new RegExp(`1-${options.length} pick`), text);
+			assert.deepEqual(results, [chosen]);
+			first.hide();
+			ui.mount(picker());
+			ui.terminal.input(digit);
+			assert.deepEqual(results, [chosen, chosen]);
+		} finally {
+			ui.tui.stop();
+		}
+	},
+);
 
 test("the /resume rename dialog's hints run their keys: esc of esc/ctrl+c Cancel closes it, enter Save renames", async () => {
 	const ui = makeScreen();

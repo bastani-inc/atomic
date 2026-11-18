@@ -141,6 +141,7 @@ interface ClickTarget {
 /** What the screen showed at a pointer position: the painted row and the components drawn there. */
 interface PointerFrame {
 	readonly line: string | undefined;
+	readonly hint: HintAction | undefined;
 	readonly boxes: readonly { readonly component: Component; readonly x: number; readonly y: number }[];
 	/** The overlay drawn at the pointer and the rectangle it was drawn in, or undefined. */
 	readonly overlay:
@@ -182,6 +183,9 @@ function samePointerGeometry(a: PointerFrame | undefined, b: PointerFrame): bool
 function sameDrawnAtPointer(a: PointerFrame | undefined, b: PointerFrame): boolean {
 	return (
 		a !== undefined &&
+		(a.hint === b.hint ||
+			(a.hint?.kind === "key" && b.hint?.kind === "key" && a.hint.key === b.hint.key) ||
+			(a.hint?.kind === "command" && b.hint?.kind === "command" && a.hint.command === b.hint.command)) &&
 		a.drawn.length === b.drawn.length &&
 		a.drawn.every((item, index) => item === b.drawn[index]) &&
 		samePointerGeometry(a, b)
@@ -1580,6 +1584,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const innermost = boxes[0];
 		return {
 			line: this.previousScreen[y],
+			hint: this.hintAt(x, y),
 			boxes: boxes.map((box) => ({ component: box.component, x: box.rect.x, y: box.rect.y })),
 			drawn: overlay
 				? drawnAt(overlay.component, overlay.width, y - overlay.row)
@@ -1756,8 +1761,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					this.previousScreen[Math.max(0, Math.min(this.terminal.rows - 1, event.y))] ?? "",
 					Math.max(0, Math.min(this.terminal.columns - 1, event.x)),
 				);
-		this.pressedHint =
-			range || (event.button & MODIFIER_BUTTON_BITS) !== 0 ? undefined : this.hintAt(event.x, event.y);
+		this.pressedHint = range || (event.button & MODIFIER_BUTTON_BITS) !== 0 ? undefined : pressFrame.hint;
 		this.requestRender();
 	}
 

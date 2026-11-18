@@ -1553,7 +1553,24 @@ const KITTY_KEY_CODEPOINTS: Record<string, number> = {
 	backspace: CODEPOINTS.backspace,
 };
 
-const CSI_TILDE_KEYS: Record<string, number> = { insert: 2, delete: 3, pageup: 5, pagedown: 6 };
+const CSI_TILDE_KEYS: Record<string, number> = {
+	insert: 2,
+	delete: 3,
+	pageup: 5,
+	pagedown: 6,
+	f1: 11,
+	f2: 12,
+	f3: 13,
+	f4: 14,
+	f5: 15,
+	f6: 17,
+	f7: 18,
+	f8: 19,
+	f9: 20,
+	f10: 21,
+	f11: 23,
+	f12: 24,
+};
 const CSI_LETTER_KEYS: Record<string, string> = { up: "A", down: "B", right: "C", left: "D", home: "H", end: "F" };
 
 /**
@@ -1579,6 +1596,10 @@ export function keyInputData(keyId: KeyId): string | undefined {
 		if (modifier === MODIFIERS.alt) candidates.push(`\x1b${key}`);
 		if (modifier === MODIFIERS.shift && key >= "a" && key <= "z") candidates.push(key.toUpperCase());
 		candidates.push(`\x1b[${key.charCodeAt(0)};${modifier + 1}u`);
+	}
+	if (key === "clear") {
+		if (modifier === MODIFIERS.shift) candidates.push(...LEGACY_SHIFT_SEQUENCES.clear);
+		if (modifier === MODIFIERS.ctrl) candidates.push(...LEGACY_CTRL_SEQUENCES.clear);
 	}
 	if (key === "tab" && modifier === MODIFIERS.shift) candidates.push("\x1b[Z");
 	if (key === "enter" && modifier === MODIFIERS.alt) candidates.push("\x1b\r");

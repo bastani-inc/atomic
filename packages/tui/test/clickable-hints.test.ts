@@ -124,6 +124,30 @@ describe("a click on a key hint runs its key", () => {
 		tui.stop();
 	});
 
+	it("runs remapped function keys when their hint labels are clicked (#5528)", async () => {
+		const keys = ["ctrl+f1", "alt+f3", "shift+f5", "ctrl+shift+f12"] as const;
+		const { view, click, tui } = await mount(keys.map((key) => clickableKeyTextHint(key, " select")));
+		try {
+			for (const [row, key] of keys.entries()) await click(key.length + 2, row);
+			assert.deepStrictEqual(keysOf(view, ...keys), [...keys]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps a literal plus key distinct from its modifier or alternative separator (#5528)", async () => {
+		const { view, click, tui } = await mount([clickableKeyTextHint("+/ctrl++/esc", " close")]);
+		try {
+			for (const x of [0, 3, 10]) {
+				await click(x, 0);
+				if (x !== 10) await new Promise((resolve) => setTimeout(resolve, DOUBLE_CLICK_GAP_MS));
+			}
+			assert.deepStrictEqual(keysOf(view, "+", "ctrl++", "escape"), ["+", "ctrl++", "escape"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("takes a press on a hint ahead of the view that drew it, and leaves every other cell to the view", async () => {
 		const { view, click, tui } = await mount(
 			["enter is plain text here", clickableHint("esc close", keyHintAction("escape"))],
@@ -151,6 +175,20 @@ describe("a click on a key hint runs its key", () => {
 		await click(1, 5);
 		assert.deepStrictEqual(keysOf(dialog, "enter"), ["enter"]);
 		tui.stop();
+	});
+
+	it("does not run a hint whose action changed between press and release (#5528)", async () => {
+		const label = "open";
+		const { terminal, view, tui } = await mount([clickableHint(label, keyHintAction("enter"))]);
+		try {
+			terminal.sendInput(press(1, 0));
+			view.lines = [clickableHint(label, keyHintAction("down"))];
+			tui.renderNow();
+			terminal.sendInput(release(1, 0));
+			assert.deepStrictEqual(view.keys, []);
+		} finally {
+			tui.stop();
+		}
 	});
 
 	it("hands a slash command to the command handler", async () => {
@@ -251,6 +289,8 @@ describe("keyInputData", () => {
 			"x",
 			"shift+tab",
 			"ctrl+x",
+			"ctrl+clear",
+			"shift+clear",
 		] as const) {
 			const data = keyInputData(key);
 			assert.ok(data !== undefined && matchesKey(data, key), key);
