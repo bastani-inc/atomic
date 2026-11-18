@@ -1791,7 +1791,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	/**
 	 * The next {@link SNAPSHOT_COLLECTION_BATCH} blobs whose `created_at` is at least `minimumAge` whole seconds behind
-	 * the database clock, oldest first, after `after`: a range of the age index, whatever references them.
+	 * the database clock, oldest first, after `after`: a range of the age index, whatever references them. A page after
+	 * `after` searches the index from `after`, which already excludes an unknown age (0): with `created_at > 0` as a
+	 * second lower bound, SQLite searched from the oldest blob instead, so each page cost more than the one before (#5530).
 	 */
 	private page(minimumAge: number, after: PageRow | undefined): Promise<PageRow[]> {
 		const t = this.tables;
@@ -1802,7 +1804,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					SNAPSHOT_COLLECTION_BATCH,
 				)
 			: this.database.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND (created_at, hash) > (?, ?) ORDER BY created_at, hash LIMIT ?`,
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at <= ${this.dialect.nowSeconds} - ? AND (created_at, hash) > (?, ?) ORDER BY created_at, hash LIMIT ?`,
 					minimumAge,
 					after.created_at,
 					after.hash,

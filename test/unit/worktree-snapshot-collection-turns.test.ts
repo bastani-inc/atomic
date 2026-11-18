@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type {
@@ -32,6 +33,7 @@ import {
 	resetSnapshotCollectionScheduleForTesting,
 	scheduleSnapshotCollection,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
+import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { assertLag, MAIN_THREAD_LAG_LIMIT_MS, measureLag } from "../helpers/event-loop-lag.js";
 import {
 	ageBlobs,
@@ -266,6 +268,82 @@ test(
 		assert.equal(blobs, RUN_RETAINED_BLOBS);
 	},
 	LARGE_STORE_TEST_TIMEOUT_MS,
+);
+
+test.each(["node-sqlite", "libsql"] as const)(
+	"on %s, each page of a collection reads the age index from where the page before ended, not from its start, and the pages hold every aged blob once, in age order (#5530)",
+	async (adapter) => {
+		const file = join(directory, `pages-${adapter}.sqlite`);
+		const database =
+			adapter === "node-sqlite"
+				? await openNodeSqliteDatabase(file)
+				: await openLibsqlDatabase({ url: pathToFileURL(file).href });
+		try {
+			// The statements that read a page of the age index, in order, with what each one read.
+			const pages: { sql: string; params: readonly SqliteValue[]; rows: readonly SqliteRow[] }[] = [];
+			const recorded: SqliteDatabase = {
+				descriptor: database.descriptor,
+				exec: (sql) => database.exec(sql),
+				run: (sql, ...params) => database.run(sql, ...params),
+				get: (sql, ...params) => database.get(sql, ...params),
+				all: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+					const rows = await database.all<T>(sql, ...params);
+					if (/ORDER BY created_at, hash LIMIT \?$/u.test(sql)) pages.push({ sql, params, rows });
+					return rows;
+				},
+				transaction: (callback, options) => database.transaction(callback, options),
+				close: () => database.close(),
+			};
+			const store = await SqlSnapshotBlobStore.open(recorded);
+			// Two and a half pages of aged blobs from two seconds, interleaved by hash, so page boundaries fall inside a
+			// second; all of them retained by a run. Then blobs of unknown age, and blobs too young to collect.
+			const aged = Math.floor(2.5 * SNAPSHOT_COLLECTION_BATCH);
+			await database.run(
+				`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+				INSERT INTO ${store.table} (hash, bytes, data, created_at, chunks) SELECT printf('%064x', i), 1, x'00', 5 + i % 2, 0 FROM n`,
+				aged,
+			);
+			await database.run(`INSERT INTO snapshot_run_refs (run_id, hash) SELECT 'run', hash FROM ${store.table}`);
+			for (const [index, createdAt] of [0, 0, 0, Date.now() / 1000, Date.now() / 1000].entries())
+				await database.run(
+					`INSERT INTO ${store.table} (hash, bytes, data, created_at, chunks) VALUES (?, 1, x'00', ?, 0)`,
+					`${index}`.padStart(64, "f"),
+					Math.floor(createdAt),
+				);
+
+			assert.deepEqual(
+				await collectSnapshotGarbage(store, { graceSeconds: 3_600 }).then((outcome) => outcome.deleted),
+				[],
+			);
+
+			const expected = Array.from({ length: aged }, (_, index) => ({
+				createdAt: 5 + ((index + 1) % 2),
+				hash: (index + 1).toString(16).padStart(64, "0"),
+			})).sort((a, b) => a.createdAt - b.createdAt || (a.hash < b.hash ? -1 : 1));
+			assert.deepEqual(
+				pages.flatMap((page) => page.rows.map((row) => `${row.created_at}:${row.hash}`)),
+				expected.map((blob) => `${blob.createdAt}:${blob.hash}`),
+				"the pages, in order",
+			);
+			const following = pages.slice(1);
+			assert.equal(following.length, 2);
+			for (const page of following) {
+				// What the page costs follows from where its search of the age index starts: the cursor, or the oldest blob.
+				const plan = (
+					await database.all<SqliteRow & { detail: string }>(`EXPLAIN QUERY PLAN ${page.sql}`, ...page.params)
+				)
+					.map((row) => row.detail)
+					.join("; ");
+				assert.match(
+					plan,
+					/INDEX \w+_age \(\(created_at,hash\)>\(\?,\?\)/u,
+					`the page after ${JSON.stringify(page.params.slice(1, 3))} searches the age index from ${plan}`,
+				);
+			}
+		} finally {
+			await database.close();
+		}
+	},
 );
 
 /**
