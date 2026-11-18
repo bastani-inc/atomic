@@ -39,9 +39,12 @@ test("the agent panel and a later view share one clock per task source (#5224)",
 	now += 4000;
 	clocks.settle("shared-clock", 2000, now);
 	const finished = bindTaskClock({ ...row, state: "stopped" as const, elapsedMs: 2000 }, clocks);
-	assert.equal(model.rows([finished])[0]?.elapsedMs, 12_000, "a finished row keeps the time it reached");
+	// Another subagent still runs, so the stopped one stays listed.
+	const live = { ...row, id: "task:still-running", state: "running" as const };
+	const stoppedRow = () => model.rows([finished, live]).find((candidate) => candidate.id === finished.id);
+	assert.equal(stoppedRow()?.elapsedMs, 12_000, "a finished row keeps the time it reached");
 	now += 60_000;
-	assert.equal(model.rows([finished])[0]?.elapsedMs, 12_000, "and stops counting");
+	assert.equal(stoppedRow()?.elapsedMs, 12_000, "and stops counting");
 	assert.equal(clocks.elapsedMs("shared-clock", 20_000, false, now), 20_000, "a larger reported time wins");
 	assert.equal(
 		clocks.elapsedMs("shared-clock", 1000, true, now),

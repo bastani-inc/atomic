@@ -85,7 +85,14 @@ export type InteractiveEngineMessage =
 	| { type: "engine_activity_finished"; activityId: string }
 	/** Workflow activity the host reports as terminal program status. Roots carry no graph. */
 	| { type: "engine_workflow_activity"; frame: WorkflowActivityFrame }
-	| { type: "engine_agent_panel_state"; total: number; needsInput: number; shells?: number }
+	| {
+			type: "engine_agent_panel_state";
+			total: number;
+			agents?: number;
+			needsInput: number;
+			shells?: number;
+			subagents?: number;
+	  }
 	/**
 	 * A deprecation warning the engine raised, for the host to show as it shows its own: once per message, and with
 	 * `once`, the notice's identity, once across starts.
@@ -602,12 +609,23 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				value.needsInput >= 0 &&
 				value.needsInput <= value.total &&
 				(value.shells === undefined ||
-					(typeof value.shells === "number" && Number.isSafeInteger(value.shells) && value.shells >= 0))
+					(typeof value.shells === "number" && Number.isSafeInteger(value.shells) && value.shells >= 0)) &&
+				(value.subagents === undefined ||
+					(typeof value.subagents === "number" &&
+						Number.isSafeInteger(value.subagents) &&
+						value.subagents >= 0)) &&
+				(value.agents === undefined ||
+					(typeof value.agents === "number" &&
+						Number.isSafeInteger(value.agents) &&
+						value.agents >= 0 &&
+						value.agents <= value.total))
 				? {
 						type: value.type,
 						total: value.total,
+						...(value.agents === undefined ? {} : { agents: value.agents }),
 						needsInput: value.needsInput,
 						...(value.shells === undefined ? {} : { shells: value.shells }),
+						...(value.subagents === undefined ? {} : { subagents: value.subagents }),
 					}
 				: undefined;
 		case "engine_workflow_activity": {
