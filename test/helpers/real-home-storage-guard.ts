@@ -192,7 +192,8 @@ function guardConstructor(sqlite: { DatabaseSync: GuardedDatabaseSync }): GuardS
 /**
  * The node-sqlite adapter and the checkpoint shard open file-backed connections on worker threads of their own, which
  * load `node:sqlite` there, out of reach of the constructor replaced above. A worker evaluating a SQLite connection's
- * source is refused the same way when its `workerData.path` is under a protected root, before the thread starts.
+ * source is refused the same way when its `workerData.path` is under a protected root, before the thread starts, or
+ * when the path it is sent to open is, before it opens it.
  */
 function guardConnectionThreads(
 	guard: GuardState,
@@ -204,12 +205,25 @@ function guardConnectionThreads(
 	threads.Worker = new Proxy(threads.Worker, {
 		construct(target, args: ConstructorParameters<typeof import("node:worker_threads").Worker>, newTarget) {
 			const [source, options] = args;
+			const sqlite = options?.eval === true && String(source).includes('require("node:sqlite")');
 			const path = (options?.workerData as { path?: unknown } | undefined)?.path;
-			if (options?.eval === true && typeof path === "string" && String(source).includes('require("node:sqlite")')) {
+			if (sqlite && typeof path === "string") {
 				const root = protectedRootOf(path, guard.roots);
 				if (root !== undefined) throw record(new RealHomeStorageOpenError(sqliteLocationPath(path)!, root));
 			}
-			return Reflect.construct(target, args, newTarget);
+			const worker = Reflect.construct(target, args, newTarget) as import("node:worker_threads").Worker;
+			if (!sqlite) return worker;
+			// A thread started ahead of its open is told the path to open in a message.
+			const post = worker.postMessage.bind(worker);
+			worker.postMessage = (message: unknown, transfer?: Parameters<typeof post>[1]) => {
+				const open = message as { kind?: unknown; path?: unknown } | undefined;
+				if (open?.kind === "open" && typeof open.path === "string") {
+					const root = protectedRootOf(open.path, guard.roots);
+					if (root !== undefined) throw record(new RealHomeStorageOpenError(sqliteLocationPath(open.path)!, root));
+				}
+				post(message, transfer);
+			};
+			return worker;
 		},
 	});
 }

@@ -120,10 +120,11 @@ test("a connection sends calls that are one request each without waiting for the
 		}
 	});
 	cleanups.push(interception.restore);
+	// Statements only: a batch's look at the writers' queue waits for the file system, which a loaded machine delays.
 	const calls = [
 		db.get("SELECT COUNT(*) AS count FROM items"),
 		db.run("INSERT INTO items VALUES (1)"),
-		insert(db, 2),
+		db.run("INSERT INTO items VALUES (2)"),
 		db.all("SELECT n FROM items"),
 	];
 	await Promise.all(calls);
