@@ -106,3 +106,18 @@ test("a process that closed its last connection exits without waiting for the th
 		`exited after ${Math.round(tookMs)} ms, without waiting for the spare thread`,
 	);
 });
+
+/** Opens a second database straight after the first, while the thread started ahead of it is still starting. */
+const OPEN_DURING_SPARE_START = fileURLToPath(
+	new URL("../fixtures/node-sqlite-open-during-spare-start.mjs", import.meta.url),
+);
+
+test("an open that takes the thread started ahead of it while that thread is still starting keeps its process alive until it opened (#5376)", () => {
+	const where = directory();
+	const child = spawnSyncCollect(
+		[process.execPath, OPEN_DURING_SPARE_START, join(where, "first.sqlite"), join(where, "second.sqlite")],
+		{ stdout: "pipe", stderr: "pipe" },
+	);
+	assert.equal(child.exitCode, 0, child.stderr.toString());
+	assert.equal(child.stdout.toString(), "opened\n");
+});

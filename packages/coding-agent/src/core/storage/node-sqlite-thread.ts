@@ -571,6 +571,8 @@ export class ThreadConnection {
 		options: ThreadConnectionOptions,
 	): Promise<{ connection: ThreadConnection; location: string | null }> {
 		let thread = takeThread();
+		// The spare does not keep the process alive; one being opened does, from before it finished starting.
+		thread.worker.ref();
 		let booted = await thread.booted;
 		// A spare lost before it was needed is replaced; a thread that cannot load node:sqlite fails as any would.
 		if (booted.failure !== undefined && booted.load !== true) {
@@ -584,7 +586,6 @@ export class ThreadConnection {
 				: connectionFailure(booted.failure);
 		}
 		const connection = new ThreadConnection(path, thread.worker);
-		thread.worker.ref();
 		thread.worker.postMessage({ kind: "open", path: options.openAs ?? path, readOnly: options.readOnly });
 		let location: string | null;
 		try {
