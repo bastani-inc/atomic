@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { runJournalTables } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import {
 	exportWorkflowRuns,
@@ -160,19 +161,113 @@ for (const backend of storageBackends) {
 			}
 		});
 
-		it("aborts a catalog listing between pages without returning a partial catalog (#5537)", async () => {
+		it("aborts a catalog listing between pages without returning a partial catalog or starting another read (#5537)", async () => {
 			const scope = await backend.openScope();
 			try {
-				const journal = await SqlRunJournal.open(await scope.connect(), { prefix: scope.prefix });
+				const database = await scope.connect();
+				const journal = await SqlRunJournal.open(database, { prefix: scope.prefix });
 				try {
-					await journal.createRun({ runId: "run", name: "run", cwd: "/project", createdAt: 1, status: "running" });
+					await database.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 512)
+						INSERT INTO ${runJournalTables(scope.prefix).runs}(run_id, name, cwd, created_at, status, header_json)
+						SELECT 'run-' || i, 'run', '/project', 1, 'running',
+						'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
 					const controller = new AbortController();
 					const reason = new Error("catalog cancelled");
+					const all = database.all.bind(database);
+					const get = database.get.bind(database);
+					let readsAfterAbort = 0;
+					database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+						if (controller.signal.aborted) readsAfterAbort++;
+						return all<Row>(sql, ...params);
+					};
+					database.get = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+						if (controller.signal.aborted) readsAfterAbort++;
+						return get<Row>(sql, ...params);
+					};
 					const timer = setImmediate(() => controller.abort(reason));
 					try {
 						await expect(journal.listRuns(undefined, { signal: controller.signal })).rejects.toBe(reason);
+						expect(readsAfterAbort).toBe(0);
 					} finally {
 						clearImmediate(timer);
+						database.all = all;
+						database.get = get;
+					}
+				} finally {
+					await journal.close();
+				}
+			} finally {
+				await scope.close();
+			}
+		});
+
+		it("lists empty, exact and adjacent row-page boundaries once in run-id order (#5537)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const database = await scope.connect();
+				const journal = await SqlRunJournal.open(database, { prefix: scope.prefix });
+				try {
+					const runs = runJournalTables(scope.prefix).runs;
+					for (const count of [0, 1, 127, 128, 129, 255, 256, 257, 4_095, 4_096, 4_097]) {
+						await database.run(`DELETE FROM ${runs}`);
+						if (count > 0) {
+							await database.run(
+								`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+								INSERT INTO ${runs}(run_id, name, cwd, created_at, status, header_json)
+								SELECT 'run-' || i, 'run', '/project', 1, 'running',
+								'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`,
+								count,
+							);
+						}
+						expect((await journal.listRuns()).map((run) => run.runId)).toEqual(
+							Array.from({ length: count }, (_, i) => `run-${i + 1}`).sort(),
+						);
+					}
+				} finally {
+					await journal.close();
+				}
+			} finally {
+				await scope.close();
+			}
+		});
+
+		it("keeps Unicode header pages response-safe and returns CJK and combining run IDs in the same order (#5537)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const database = await scope.connect();
+				const journal = await SqlRunJournal.open(database, { prefix: scope.prefix });
+				try {
+					const roots = ["a", "e\u0301", "é", "界", "\ue000", "🙂"];
+					const inputs = { text: '界🙂e\u0301"'.repeat(100_000) };
+					const headers = Array.from({ length: 12 }, (_, index) => ({
+						runId: `${roots[index % roots.length]}-${Math.floor(index / roots.length)}`,
+						name: "Unicode",
+						cwd: "/project",
+						createdAt: 1,
+						status: "running",
+						inputs,
+					}));
+					for (const header of headers) await journal.createRun(header);
+					const largestHeaderBytes = Math.max(
+						...headers.map((header) => Buffer.byteLength(JSON.stringify(header))),
+					);
+					const all = database.all.bind(database);
+					database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+						const rows = await all<Row>(sql, ...params);
+						const bytes = rows.reduce(
+							(total, row) =>
+								total + (typeof row.header_json === "string" ? Buffer.byteLength(row.header_json) : 0),
+							0,
+						);
+						expect(bytes).toBeLessThanOrEqual(4 * 1024 * 1024 + largestHeaderBytes);
+						return rows;
+					};
+					try {
+						expect(await journal.listRuns()).toEqual(
+							[...headers].sort((a, b) => (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0)),
+						);
+					} finally {
+						database.all = all;
 					}
 				} finally {
 					await journal.close();
