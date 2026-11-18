@@ -384,7 +384,7 @@ export function registerLifecycleNoticeRenderer(
 	const renderer: RawRenderer = (raw, options) => {
 		const message = raw as { details?: WorkflowLifecycleNoticeDetails };
 		if (!message.details) return undefined;
-		return makeNoticeComponent(message.details, options?.expanded === true);
+		return makeNoticeComponent(message.details, options?.expanded === true, options?.outputPad);
 	};
 
 	register(LIFECYCLE_NOTICE_CUSTOM_TYPE, renderer);
@@ -790,8 +790,15 @@ function formatLifecycleOutputs(outputs: WorkflowOutputValues | undefined): stri
 	}
 }
 
-function makeNoticeComponent(details: WorkflowLifecycleNoticeDetails, expanded: boolean): PiMessageRenderComponent {
-	const line = new NoticeLine(lifecycleNoticeLine(details), expanded);
+function makeNoticeComponent(
+	details: WorkflowLifecycleNoticeDetails,
+	expanded: boolean,
+	outputPad?: number,
+): PiMessageRenderComponent {
+	const line = new NoticeLine(
+		{ ...lifecycleNoticeLine(details), ...(outputPad === undefined ? {} : { outputPad }) },
+		expanded,
+	);
 	let cachedWidth: number | undefined;
 	let cachedLines: string[] | undefined;
 	return {

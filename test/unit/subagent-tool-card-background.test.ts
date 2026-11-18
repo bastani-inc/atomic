@@ -238,7 +238,7 @@ for (const themeName of ["dark", "light"] as const) {
 	});
 }
 
-test("a child released while it waits shows released on its launch card, not paused or stopped (#5031)", () => {
+test("a child released while it waits shows waiting on its launch card, not paused or stopped (#5031)", () => {
 	initTheme("dark");
 	const response = {
 		kind: "admitted" as const,
@@ -259,6 +259,7 @@ test("a child released while it waits shows released on its launch card, not pau
 		isError: false,
 	});
 	const text = stripVTControlCharacters(card.render(120).join("\n"));
-	assert.match(text, /Released · waiting/);
-	assert.doesNotMatch(text, /Paused|awaiting resume|Stopped/);
+	assert.match(text, /◌ Agent/);
+	assert.match(text, /Waiting on bash/);
+	assert.doesNotMatch(text, /⏸|Paused|awaiting resume|Stopped/);
 });
