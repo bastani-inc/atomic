@@ -91,7 +91,7 @@ function topBorder(
 }
 
 /** Stages the switcher lists at once, in a window around the selection. */
-const SWITCHER_MAX_VISIBLE = 8;
+export const SWITCHER_MAX_VISIBLE = 8;
 
 /** Rows {@link renderSwitcher} draws above the first listed stage: the top border, the header and its rule. */
 export const SWITCHER_LIST_TOP = 3;

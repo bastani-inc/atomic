@@ -918,7 +918,6 @@ export abstract class TuiBase extends Container implements TUI {
 		return component;
 	}
 
-	/** Dispatch to the visually topmost overlay under the pointer. */
 	/** The topmost overlay the last frame drew at screen cell `x`, `y`, and the rectangle it was drawn in. */
 	protected overlayAt(
 		x: number,
@@ -934,7 +933,28 @@ export abstract class TuiBase extends Container implements TUI {
 		return undefined;
 	}
 
+	/**
+	 * The overlay that holds keyboard focus and was shown to take it, as a dialog is. While there is one, the pointer
+	 * reaches only it and what is drawn above it: a click elsewhere runs nothing behind it. An overlay shown with
+	 * `nonCapturing` never blocks what is under it.
+	 */
+	protected getModalOverlay(): Component | undefined {
+		const focused = this.focusedComponent;
+		if (!focused) return undefined;
+		return this.overlayStack.find(
+			(entry) =>
+				!entry.options?.nonCapturing &&
+				this.isOverlayVisible(entry) &&
+				this.containsComponent(entry.component, focused),
+		)?.component;
+	}
+
+	/**
+	 * Offer `event` to the topmost overlay drawn under the pointer. `hit` says an overlay owns the point, so nothing in
+	 * the layout behind it takes the event; while a dialog holds focus, it owns every point outside it as well.
+	 */
 	protected dispatchMouseToOverlay(event: TuiMouseEvent): { hit: boolean; result?: TuiMouseDispatchResult } {
+		const modal = this.getModalOverlay();
 		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
 			const layout = this.renderedOverlayLayouts[index]!;
 			if (
@@ -943,6 +963,7 @@ export abstract class TuiBase extends Container implements TUI {
 				event.screenY < layout.row ||
 				event.screenY >= layout.row + layout.height
 			) {
+				if (layout.entry.component === modal) return { hit: true };
 				continue;
 			}
 			const result = dispatchMouseEvent(layout.entry.component, {
@@ -959,7 +980,7 @@ export abstract class TuiBase extends Container implements TUI {
 					}
 				: { hit: true };
 		}
-		return { hit: false };
+		return { hit: modal !== undefined };
 	}
 
 	/** Check if an overlay entry is currently visible */

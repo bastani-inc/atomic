@@ -347,6 +347,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private mousePressPoint?: { x: number; y: number };
 	/** What the screen showed at a press a component took: its click needs the same geometry at the release. */
 	private mousePressFrame?: PointerFrame;
+	/** The dialog that held focus at that press: a dialog shown before the release takes the click away. */
+	private mousePressModal?: Component;
 	private mousePressMoved = false;
 	private lastComponentClick?: {
 		timestamp: number;
@@ -870,6 +872,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.flashes.flash(message, durationMs);
 	}
 
+	/** The find bar holds focus while the transcript behind it is read and clicked: it is no dialog. */
+	protected override getModalOverlay(): Component | undefined {
+		if (this.activeSearch?.overlay?.isFocused()) return undefined;
+		return super.getModalOverlay();
+	}
+
 	/** Focused overlays and components that capture viewport input receive viewport keys instead of the transcript. */
 	private shouldDeferViewportInput(): boolean {
 		if (this.getFocusedComponent()?.capturesViewportInput) return true;
@@ -881,6 +889,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.mousePressTarget = undefined;
 		this.mousePressPoint = undefined;
 		this.mousePressFrame = undefined;
+		this.mousePressModal = undefined;
 		this.mousePressMoved = false;
 	}
 
@@ -1132,6 +1141,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					!this.mousePressMoved &&
 					this.mousePressPoint?.x === raw.x &&
 					this.mousePressPoint.y === raw.y &&
+					this.getModalOverlay() === this.mousePressModal &&
 					sameDrawnAtPointer(this.mousePressFrame, this.pointerFrame(raw.x, raw.y))
 				) {
 					const clickEvent = this.createMouseEvent("click", raw.button, raw.x, raw.y, {
@@ -1166,6 +1176,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.mousePressTarget = result.target;
 				this.mousePressPoint = { x: raw.x, y: raw.y };
 				this.mousePressFrame = this.pointerFrame(raw.x, raw.y);
+				this.mousePressModal = this.getModalOverlay();
 				this.mousePressMoved = false;
 			}
 			if (render) this.requestRender();

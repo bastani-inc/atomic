@@ -454,8 +454,8 @@ describe("GraphView keyboard navigation", () => {
 	});
 });
 
-describe("stage switcher clicks", () => {
-	it("a press on a stage in the switcher opens it, as moving there and pressing Enter does", () => {
+describe("stage switcher presses", () => {
+	it("a press on a stage in the switcher opens nothing by itself: the renderer keeps it for text selection", () => {
 		const stages = [makeStage("alpha"), makeStage("bravo"), makeStage("charlie")];
 		const view = new GraphView({
 			piKeybindings: s5aKeybindings(),
@@ -470,28 +470,10 @@ describe("stage switcher clicks", () => {
 		const row = lines.findIndex((line) => line.includes("charlie") && line.includes("│"));
 		assert.notEqual(row, -1, lines.join("\n"));
 		const column = lines[row]!.indexOf("charlie");
-		assert.equal(view.handleInput(`\x1b[<0;${column + 1};${row + 1}M`), true);
-		assert.equal(view._switcherOpen, false);
-		assert.equal(view._focusedIndex, 2);
-		view.dispose();
-	});
-
-	it("a press outside the switcher's stage rows leaves it open and the selection where it was", () => {
-		const stages = [makeStage("alpha"), makeStage("bravo")];
-		const view = new GraphView({
-			piKeybindings: s5aKeybindings(),
-			mode: "overlay",
-			runId: "run-1",
-			store: makeStore(makeSnap(stages)),
-			graphTheme: defaultTheme,
-			piTui: h.makeTestTui(30),
-		});
-		view.handleInput("/");
-		const lines = view.render(100).map((line) => stripVTControlCharacters(line));
-		const header = lines.findIndex((line) => line.includes("STAGES"));
-		assert.equal(view.handleInput(`\x1b[<0;${lines[header]!.indexOf("STAGES") + 1};${header + 1}M`), true);
+		assert.equal(view.handleInput(`\x1b[<0;${column + 1};${row + 1}M`), false);
 		assert.equal(view._switcherOpen, true);
 		assert.equal(view._focusedIndex, 0);
+		assert.equal(view.paintedRowKey(row), "charlie");
 		view.dispose();
 	});
 });

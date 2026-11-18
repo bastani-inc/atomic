@@ -152,3 +152,16 @@ test("on a terminal too short for the whole dialog, a click answers the option d
 	assert.deepEqual(answers(results), [{ cancelled: false, answers: ["option:Four"] }], ui.screen().join("\n"));
 	ui.tui.stop();
 });
+
+for (const key of ["o", "ctrl+y"] as const) {
+	test(`a click on an option answers it when the confirm key is ${key}, as that key does`, async () => {
+		setKeybindings(new KeybindingsManager({ "tui.select.confirm": [key] }));
+		const ui = makeClickScreen(100, 40);
+		const results = ask(ui, {
+			questions: [{ question: "Which one?", header: "Choice", options: [option("Alpha"), option("Beta")] }],
+		});
+		await ui.click(/\bBeta\b(?! details)/, "Beta");
+		assert.deepEqual(answers(results), [{ cancelled: false, answers: ["option:Beta"] }], ui.screen().join("\n"));
+		ui.tui.stop();
+	});
+}

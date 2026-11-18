@@ -8,6 +8,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 - `ClickableRows` and `ClickableRow` run a list row on one left click as Enter on it would. Presses and drags stay with text selection, a double or triple click runs nothing, and the wheel moves the selection when the list gives a `scroll` action. `SelectList`, `SettingsList` and the editor's autocomplete rows use them.
 
+### Changed
+
+- While an overlay that took focus is shown, such as a dialog, the fullscreen renderer gives a click outside it to nothing behind it: no row, hint or block under the pointer runs, and the wheel moves no list behind it. A press and drag there still selects text, and an overlay shown with `nonCapturing` blocks nothing.
+
 ## [0.9.89] - 2026-11-18
 
 ### Added

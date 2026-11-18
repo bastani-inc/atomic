@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
 - The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+- A graph node opens on a click, once the button is released where it was pressed, instead of on the press, so dragging across the run graph selects its text rather than opening the stage under the pointer.
 
 ## [0.9.89] - 2026-11-18
 

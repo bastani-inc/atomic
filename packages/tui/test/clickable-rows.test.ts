@@ -4,6 +4,7 @@ import { Editor, type EditorTheme } from "../src/components/editor.ts";
 import { SelectList, type SelectListTheme } from "../src/components/select-list.ts";
 import { SettingsList, type SettingsListTheme } from "../src/components/settings-list.ts";
 import { Text } from "../src/components/text.ts";
+import type { Component } from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -210,6 +211,109 @@ describe("clickable list rows", () => {
 		await terminal.waitForRender();
 
 		assert.deepStrictEqual(submitted, ["/resume"]);
+		tui.stop();
+	});
+
+	/** A list across the screen with a two-line dialog shown over its top-left corner, as `nonCapturing` says. */
+	async function listUnderDialog(nonCapturing: boolean) {
+		const terminal = new VirtualTerminal(40, 12);
+		const copied: string[] = [];
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			copySelection: async (text) => {
+				copied.push(text);
+				return true;
+			},
+		});
+		const list = letters();
+		const chosen: string[] = [];
+		list.onSelect = (item) => chosen.push(item.value);
+		tui.addChild(list);
+		tui.setFocus(list);
+		tui.start();
+		const dialog = new SelectList(
+			[
+				{ value: "yes", label: "Yes" },
+				{ value: "no", label: "No" },
+			],
+			2,
+			selectTheme,
+		);
+		dialog.onSelect = (item) => chosen.push(`dialog:${item.value}`);
+		tui.showOverlay(dialog, { anchor: "top-left", width: 12, nonCapturing });
+		await terminal.waitForRender();
+		const rowOf = (text: string): number => {
+			const row = terminal.getViewport().findIndex((line) => line.includes(text));
+			assert.notStrictEqual(row, -1, `no row shows ${text}:\n${terminal.getViewport().join("\n")}`);
+			return row;
+		};
+		const click = async (row: number, column: number) => {
+			terminal.sendInput(press(column, row));
+			terminal.sendInput(release(column, row));
+			await terminal.waitForRender();
+		};
+		return { terminal, tui, chosen, copied, rowOf, click };
+	}
+
+	it("while a dialog over a list has focus, a click on a row outside the dialog runs nothing", async () => {
+		const view = await listUnderDialog(false);
+
+		await view.click(view.rowOf("delta"), 4);
+		assert.deepStrictEqual(view.chosen, []);
+		await view.click(view.rowOf("No"), 4);
+		assert.deepStrictEqual(view.chosen, ["dialog:no"]);
+		view.tui.stop();
+	});
+
+	it("while a dialog over a list has focus, a drag outside the dialog still selects text", async () => {
+		const view = await listUnderDialog(false);
+
+		const row = view.rowOf("delta");
+		view.terminal.sendInput(press(2, row));
+		view.terminal.sendInput(drag(6, row));
+		view.terminal.sendInput(release(6, row));
+		await view.terminal.waitForRender();
+
+		assert.deepStrictEqual(view.chosen, []);
+		assert.deepStrictEqual(view.copied, ["delta"]);
+		view.tui.stop();
+	});
+
+	it("a list under an overlay shown without taking focus still runs a click on its rows", async () => {
+		const view = await listUnderDialog(true);
+
+		await view.click(view.rowOf("delta"), 4);
+		assert.deepStrictEqual(view.chosen, ["delta"]);
+		view.tui.stop();
+	});
+
+	it("a dialog shown between the press and the release takes the click away from what was pressed outside it", async () => {
+		const terminal = new VirtualTerminal(40, 12);
+		const tui = new TuiAltScreen(terminal);
+		const clicks: string[] = [];
+		const button: Component = {
+			render: () => ["[ run ]"],
+			invalidate: () => {},
+			handleMouse: (event) => {
+				if (event.type === "click") clicks.push("run");
+				return event.type === "press" || event.type === "click" ? { handled: true } : undefined;
+			},
+		};
+		tui.addChild(button);
+		tui.setFocus(button);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput(press(2, 0));
+		tui.showOverlay(new Text("Stop everything?", 0, 0), { anchor: "bottom-right", width: 20 });
+		await terminal.waitForRender();
+		terminal.sendInput(release(2, 0));
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(clicks, []);
+		terminal.sendInput(press(2, 0));
+		terminal.sendInput(release(2, 0));
+		await terminal.waitForRender();
+		assert.deepStrictEqual(clicks, []);
 		tui.stop();
 	});
 });

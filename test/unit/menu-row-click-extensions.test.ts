@@ -84,6 +84,27 @@ test("a click on a first-run setup option picks it and moves on, as moving there
 	ui.tui.stop();
 });
 
+test("a click on a first-run setup option picks it when the confirm key is remapped, as that key does", async () => {
+	setKeybindings(new KeybindingsManager({ "tui.select.confirm": ["o"] }));
+	const ui = makeClickScreen(100, 40);
+	const previews: string[] = [];
+	try {
+		ui.dock(
+			new FirstTimeSetupComponent({
+				detectedTheme: "dark",
+				onThemePreview: (name) => previews.push(name),
+				onSubmit: () => {},
+				onCancel: () => {},
+			}),
+		);
+		await ui.click(/Light/, "Light");
+		assert.deepEqual(previews, ["light"]);
+		assert.ok(ui.rowOf(/Opt in to anonymous usage analytics/) >= 0);
+	} finally {
+		ui.tui.stop();
+	}
+});
+
 test("a click on a Hugging Face search result picks that model, and the wheel moves the selection", async () => {
 	const ui = makeClickScreen(100, 40);
 	const models: HuggingFaceModel[] = [

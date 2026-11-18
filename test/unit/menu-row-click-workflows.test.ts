@@ -15,11 +15,14 @@ import type {
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import type { PiCustomComponent } from "../../packages/workflows/src/extension/ui-surface.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import {
 	openWorkflowsListing,
 	type WorkflowsListingTarget,
 } from "../../packages/workflows/src/tui/workflows-listing.js";
 import { type ClickScreen, flushClicks, makeClickScreen } from "../helpers/fullscreen-clicks.js";
+import { defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 import {
 	createStore,
 	deriveGraphTheme,
@@ -99,6 +102,158 @@ test("the mouse wheel over /workflows moves its selection", async () => {
 	await flushClicks();
 	assert.deepEqual(view.picked(), { kind: "run", runId: "run-3-0000" });
 	ui.tui.stop();
+});
+
+/** A run's graph full screen with its stage switcher open, as `/` opens it; `attached` lists the stages it opened. */
+function stageSwitcher(ui: ClickScreen) {
+	const attached: string[] = [];
+	const view = new GraphView({
+		piKeybindings: makeFakeKeybindings(),
+		mode: "overlay",
+		runId: "run-1",
+		store: makeStore(makeSnap([makeStage("alpha"), makeStage("bravo"), makeStage("charlie")])),
+		graphTheme: defaultTheme,
+		piTui: ui.tui,
+		onStageAttach: (_runId: string, stageId: string) => attached.push(stageId),
+	});
+	ui.mount(view);
+	ui.terminal.input("/");
+	ui.tui.renderNow();
+	assert.equal(view._switcherOpen, true, ui.screen().join("\n"));
+	return { view, attached };
+}
+
+test("a click on a stage in the stage switcher opens it, as moving there and pressing enter does", async () => {
+	const ui = makeClickScreen(100, 30);
+	const { view, attached } = stageSwitcher(ui);
+	try {
+		await ui.click(/│.*charlie/, "charlie");
+		assert.deepEqual(attached, ["charlie"], ui.screen().join("\n"));
+		assert.equal(view._switcherOpen, false);
+	} finally {
+		view.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("a drag across the stage switcher's stages selects their text and opens none", async () => {
+	const ui = makeClickScreen(100, 30);
+	const { view, attached } = stageSwitcher(ui);
+	try {
+		const from = ui.rowOf(/│.*bravo/);
+		const to = ui.rowOf(/│.*charlie/);
+		await ui.drag(
+			{ column: ui.columnOf(from, "bravo"), row: from },
+			{ column: ui.columnOf(to, "charlie") + 3, row: to },
+		);
+		assert.deepEqual(attached, [], ui.screen().join("\n"));
+		assert.equal(view._switcherOpen, true);
+	} finally {
+		view.dispose();
+		ui.tui.stop();
+	}
+});
+
+/** A run's graph full screen with two stages; `attached` lists the stages it opened. */
+function graph(ui: ClickScreen) {
+	const attached: string[] = [];
+	const view = new GraphView({
+		piKeybindings: makeFakeKeybindings(),
+		mode: "overlay",
+		runId: "run-1",
+		store: makeStore(makeSnap([makeStage("alpha"), makeStage("bravo", ["alpha"])])),
+		graphTheme: defaultTheme,
+		piTui: ui.tui,
+		onStageAttach: (_runId: string, stageId: string) => attached.push(stageId),
+	});
+	ui.mount(view);
+	return { view, attached };
+}
+
+test("a click on a graph node opens its stage, as moving there and pressing enter does", async () => {
+	const ui = makeClickScreen(100, 30);
+	const { view, attached } = graph(ui);
+	try {
+		await ui.click(/╭.*bravo/, "bravo");
+		assert.deepEqual(attached, ["bravo"], ui.screen().join("\n"));
+		assert.equal(view._focusedIndex, 1);
+	} finally {
+		view.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("a drag across graph nodes selects their text and opens no stage", async () => {
+	const ui = makeClickScreen(100, 30);
+	const { view, attached } = graph(ui);
+	try {
+		const from = ui.rowOf(/╭.*alpha/);
+		const to = ui.rowOf(/╭.*bravo/);
+		await ui.drag(
+			{ column: ui.columnOf(from, "alpha"), row: from },
+			{ column: ui.columnOf(to, "bravo") + 3, row: to },
+		);
+		assert.deepEqual(attached, [], ui.screen().join("\n"));
+		assert.equal(view._focusedIndex, 0);
+	} finally {
+		view.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("a click on a stage in the switcher of a run's full-screen view opens that stage's chat", async () => {
+	const ui = makeClickScreen(100, 30);
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	store.recordStageStart("run-1", {
+		id: "stage-b",
+		name: "review-b",
+		status: "running",
+		parentIds: [],
+		toolEvents: [],
+	});
+	const pane = new WorkflowAttachPane({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		onClose: () => {},
+		piTui: ui.tui,
+		piKeybindings: makeFakeKeybindings(),
+	});
+	try {
+		ui.mount(pane);
+		ui.terminal.input("/");
+		await ui.click(/│.*review-b/, "review-b");
+		await flushClicks();
+		ui.tui.renderNow();
+		assert.equal(
+			ui.screen().some((line) => line.includes("STAGES")),
+			false,
+			ui.screen().join("\n"),
+		);
+		assert.equal(
+			(pane as unknown as { lastAttachedStageId: string | null }).lastAttachedStageId,
+			"stage-b",
+			ui.screen().join("\n"),
+		);
+	} finally {
+		pane.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("a click on the stage switcher's heading leaves it open with the selection where it was", async () => {
+	const ui = makeClickScreen(100, 30);
+	const { view, attached } = stageSwitcher(ui);
+	try {
+		await ui.click("STAGES");
+		assert.deepEqual(attached, []);
+		assert.equal(view._switcherOpen, true);
+		assert.equal(view._switcherState.selectedIndex, 0);
+	} finally {
+		view.dispose();
+		ui.tui.stop();
+	}
 });
 
 /** A stage chat showing the stage's question, attached full screen as the graph attaches it. */

@@ -7,6 +7,7 @@ import { type Component, getKeybindings, setKeybindings } from "@bastani/atomic-
 import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { AgentPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import { ExtensionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/extension-selector.js";
 import {
 	type TaskBoardSource,
 	TaskInspector,
@@ -194,5 +195,104 @@ test("a click on a numbered choice of a peeked question fills it in, as its numb
 		inspector.dispose();
 		ui.tui.stop();
 		await fixture.dispose();
+	}
+});
+
+/** The task inspector listing one board row, drawn by `place` as the host draws it; `opened` lists what it opened. */
+function boardInspector(place: (component: Component) => void, task: string) {
+	const fixture = taskFixture();
+	const opened: string[] = [];
+	const inspector = new TaskInspector(
+		fixture.store,
+		() => {},
+		() => {},
+	);
+	inspector.setBoardSource({
+		items: () => [{ id: "custom-task", kind: "agent", state: "running", name: "worker", task, elapsedMs: 100 }],
+		subscribe: () => () => {},
+		open: (id: string) => {
+			opened.push(id);
+			return true;
+		},
+	});
+	place({
+		render: (width) => inspector.renderViewport(width, 10),
+		invalidate: () => inspector.invalidate(),
+		handleInput: (data) => {
+			inspector.handleInput(data);
+		},
+		handleMouse: (event) => inspector.handleMouse(event),
+		paintedRowKey: (row) => inspector.paintedRowKey(row),
+	});
+	return {
+		opened,
+		dispose: async () => {
+			inspector.dispose();
+			await fixture.dispose();
+		},
+	};
+}
+
+for (const key of ["o", "alt+o"] as const) {
+	test(`a click on a /tasks row opens it when the open key is ${key}, as that key does`, async () => {
+		setKeybindings(new KeybindingsManager({ "app.list.open": [key] }));
+		const ui = makeClickScreen(100);
+		const board = boardInspector((component) => ui.dock(component), "Review indexed sources");
+		try {
+			await ui.click(/Review indexed sources/, "Review");
+			await flushClicks();
+			assert.deepEqual(board.opened, ["custom-task"], ui.screen().join("\n"));
+		} finally {
+			ui.tui.stop();
+			await board.dispose();
+		}
+	});
+}
+
+test("a click on a /tasks task opens it when the open key is o, as o does", async () => {
+	setKeybindings(new KeybindingsManager({ "app.list.open": ["o"] }));
+	const ui = makeClickScreen(100);
+	const fixture = taskFixture();
+	try {
+		await fixture.start("Index the repository");
+		await fixture.start("Summarize the changelog");
+		void showTaskInspector(taskUi(ui) as never, fixture.store);
+		await flushClicks();
+		await ui.click(/Index the repository/, "Index");
+		await flushClicks();
+		ui.tui.renderNow();
+		assert.ok(
+			ui.screen().some((line) => line.includes("worker · Index the repository · running")),
+			ui.screen().join("\n"),
+		);
+	} finally {
+		ui.tui.stop();
+		await fixture.dispose();
+	}
+});
+
+test("while a dialog over /tasks has focus, a click on a row outside the dialog opens nothing", async () => {
+	const ui = makeClickScreen(100);
+	const board = boardInspector((component) => ui.dock(component), "Background task row");
+	try {
+		const dialog = new ExtensionSelectorComponent(
+			"Stop everything?",
+			["Yes", "No"],
+			() => {},
+			() => {},
+		);
+		ui.tui.showOverlay(dialog, { anchor: "top-left", row: 0, col: 0, width: 40, maxHeight: 12 });
+		ui.tui.renderNow();
+		assert.equal(ui.tui.getFocusedComponent(), dialog);
+		await ui.click(/Background task row/, "Background");
+		await flushClicks();
+		assert.deepEqual(board.opened, [], ui.screen().join("\n"));
+		assert.ok(
+			ui.screen().some((line) => line.includes("Stop everything?")),
+			ui.screen().join("\n"),
+		);
+	} finally {
+		ui.tui.stop();
+		await board.dispose();
 	}
 });
