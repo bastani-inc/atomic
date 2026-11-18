@@ -6,7 +6,7 @@ import {
 	type SqliteStatement,
 } from "@bastani/atomic/storage";
 import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
-import { poolWriteBatch } from "./pool-guarded-write.js";
+import { poolFenceSchema, poolWriteBatch } from "./pool-guarded-write.js";
 import { poolSchemaPresent } from "./pool-schema-probe.js";
 import type { SharedPoolRateLimit } from "./shared-pool-types.js";
 import { FLEET_HOST_LIVE_MS } from "./sql-fleet.js";
@@ -129,6 +129,8 @@ export class SqlRateBuckets {
 				PRIMARY KEY(scope, reporter)
 			)`;
 		const index = `CREATE INDEX IF NOT EXISTS ${store.waiting}_age ON ${store.waiting}(scope, updated_at, reporter)`;
+		// A batched write carries the journal's fences, whose table the pool queue creates too: buckets opened first need it.
+		const fence = poolFenceSchema(storage.tables.runs, storage.dialect);
 		const columns = [
 			[store.table, RATE_BUCKET_ACQUIRED, real],
 			[store.table, "waiting_ms", real],
@@ -140,7 +142,7 @@ export class SqlRateBuckets {
 		if (
 			await poolSchemaPresent(
 				storage,
-				[table, waitingTable, index],
+				[table, waitingTable, index, fence],
 				columns.map(([table, column]) => [table, column]),
 			)
 		)
@@ -155,6 +157,7 @@ export class SqlRateBuckets {
 						await tx.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type} NOT NULL DEFAULT 0`);
 				}
 				await tx.exec(index);
+				await tx.exec(fence);
 			}),
 		);
 		return store;
