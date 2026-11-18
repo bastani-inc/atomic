@@ -28,6 +28,8 @@ const GLOW_PERIOD_MS = 2400;
 
 /** Colors `text` in OpenRouter's brand color, slowly brightening and dimming. */
 export function openRouterGlow(text: string, elapsedMs: number): string {
+	// The theme's style level is 0 when NO_COLOR or FORCE_COLOR=0 turns color off.
+	if (theme.getStyleLevel() === 0) return text;
 	const { base, peak } = OPENROUTER_GLOW[isLightTheme(getCurrentThemeName()) ? "light" : "dark"];
 	const amount = (1 - Math.cos((2 * Math.PI * elapsedMs) / GLOW_PERIOD_MS)) / 2;
 	return `${foregroundAnsi(mixColors(base, peak, amount, "oklch"), theme.getColorMode())}${text}\x1b[39m`;

@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Fixed
+
+- `ScrollView`'s default scrollbar track and thumb are plain when `NO_COLOR` is set or `FORCE_COLOR=0`, read when the view is created. Styles passed in `scrollbarTrackStyle` and `scrollbarThumbStyle` are unchanged.
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 ### Added

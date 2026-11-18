@@ -1,12 +1,12 @@
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { resetCapabilitiesCache, setCapabilities } from "@bastani/atomic-tui";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MarkdownTransformContext } from "../src/core/extensions/types.ts";
 import type { MermaidRenderingMode } from "../src/core/settings-manager.ts";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { createMermaidMarkdownTransformer } from "../src/modes/interactive/components/mermaid.ts";
 import type { Theme } from "../src/modes/interactive/theme/theme.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { theme as globalTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 afterEach(() => resetCapabilitiesCache());
@@ -145,6 +145,25 @@ describe("Mermaid rendering", () => {
 		expect(rendered).toContain("\x1b[1;38;2;51;51;51;48;2;255;153;102m");
 		expect(rendered).toContain("\x1b[1;38;2;0;0;0;48;2;255;153;102m");
 		expect(rendered).not.toContain("```mermaid");
+	});
+
+	it("draws a diagram without color, author classes included, while NO_COLOR is set, and keeps its links", () => {
+		vi.stubEnv("NO_COLOR", "1");
+		try {
+			initTheme("dark");
+			setCapabilities({ images: null, trueColor: true, hyperlinks: true });
+			const rendered = transformMermaid(
+				'```mermaid\nflowchart LR\n  A[Hot]:::highlight --> B[Plain]\n  classDef highlight fill:#f96,stroke:#333,color:#000\n  click A "https://example.com/docs"\n```',
+				{ theme: globalTheme },
+			);
+			expect(rendered).not.toContain("```mermaid");
+			expect(rendered).toContain("Hot");
+			expect(rendered).toContain("\x1b]8;;https://example.com/docs\x1b\\");
+			expect(rendered).not.toMatch(/\x1b\[[\d;]*m/);
+		} finally {
+			vi.unstubAllEnvs();
+			initTheme("dark");
+		}
 	});
 
 	it("links only Mermaid labels and only when the terminal supports hyperlinks (pi #8158)", () => {
