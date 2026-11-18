@@ -183,6 +183,11 @@ async function settled<T>(read: T | Promise<T>): Promise<T> {
 	return read instanceof Promise ? await read : read;
 }
 
+/** Whether the session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */
+function waitsToRetry(session: Pick<ChatBoxSession, "retryAttempt" | "isStreaming"> | undefined): boolean {
+	return session !== undefined && session.retryAttempt > 0 && !session.isStreaming;
+}
+
 /**
  * An agent task's transcript on the shared chat host: it opens at the latest page, follows the task's live session
  * where it has one, loads earlier retained history as the reader nears the top, and sends what the reader types to
@@ -532,7 +537,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const footer = reserve(this.chat.renderFooter(width));
 		const pending = reserve(this.chat.renderPendingMessages(width));
 		const working = reserve(this.chat.renderWorkingStatus(width), true);
-		const usage = reserve(this.chat.renderUsage(width));
+		const usage = reserve(this.chat.renderUsageRow(width));
 		const body = remaining > 0 ? this.chat.renderBody(width, remaining) : [];
 		this.bodyRows = body.length;
 		if (form !== undefined) {
@@ -722,12 +727,17 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		});
 	}
 
-	/** A page opened mid-turn missed `agent_start` and `queue_update`, so it reads the turn and the queue now. */
+	/**
+	 * A page opened mid-turn missed `agent_start` and `queue_update`, so it reads the turn and the queue now. Between
+	 * two attempts of a retry the session streams nothing, so the page shows the retry's wait instead.
+	 */
 	private hydrateRunningTurn(session: TaskTranscriptSource, messages: TaskTranscriptView["messages"]): void {
 		if (session.isRunning?.() === true) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.beginExternalPromptLifecycle();
 			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
+		} else if (waitsToRetry(session.chatSession)) {
+			this.chat.hydrateRetryWait();
 		} else if (session.isRunning?.() === false) {
 			const lastAssistant = [...messages]
 				.reverse()

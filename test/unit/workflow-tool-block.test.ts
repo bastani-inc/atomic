@@ -480,6 +480,32 @@ describe("the workflow tool's result line (#5224)", () => {
 		assert.doesNotMatch(text, /\/workflow\s/);
 	});
 
+	test("a stage suspended while it waits shows the waiting mark on the expanded card, a paused stage the pause mark (#5489)", () => {
+		const store = createStore();
+		store.recordRunStart({
+			id: RUN_ID,
+			name: "ralph",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: START,
+		});
+		store.recordStageStart(RUN_ID, stage("plan", "completed", { startedAt: START, endedAt: START + 1000 }));
+		store.recordStageStart(
+			RUN_ID,
+			stage("implement", "suspended", {
+				startedAt: START + 1000,
+				wait: { kind: "tool", since: START + 2000, toolCalls: [{ toolCallId: "toolu_1", toolName: "bash" }] },
+			}),
+		);
+		store.recordStageStart(RUN_ID, stage("review", "paused", { startedAt: START + 1000 }));
+		const text = plain(block(store, () => {}, true).render(160)).join("\n");
+		assert.match(text, /Stages\n\s+✓ plan · 1s\n\s+◌ implement · suspended/);
+		assert.match(text, /\n\s+⏸ review · paused/);
+		assert.doesNotMatch(text, /⏸ implement/);
+	});
+
 	test("a definition error in a normal non-error tool envelope returns a failure ToolBlock with ✗ header and outputPad", () => {
 		const errorText = [
 			"Definition error: Unexpected token ')' (12:4)",
