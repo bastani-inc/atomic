@@ -1,6 +1,6 @@
 import { matchesKey } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
-import { waitingReleasedTools } from "../../../core/tasks/completion.js";
+import { childOfAttempt, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { TwoPressConfirm } from "./nav-keys.ts";
 import type { TaskDetailAction } from "./task-detail.js";
@@ -60,15 +60,21 @@ export class TaskNavigation {
 			...tasks.filter((task) => task.kind === "command"),
 		].map((task) => task.ref.taskId),
 	): void {
+		const before = this.tasks;
 		this.tasks = [...tasks];
 		const retained = new Set(tasks.map((task) => task.ref.taskId));
 		for (const id of this.paintedExecution.keys()) if (!retained.has(id)) this.paintedExecution.delete(id);
 		const previous = this.order;
 		this.order = [...order];
 		if (!this.order.includes(this.selectedTaskId ?? ""))
-			this.selectedTaskId = nearestSurvivor(previous, this.order, this.selectedTaskId) as TaskId | undefined;
+			this.selectedTaskId = (sameChildAttempt(before, this.tasks, this.order, this.selectedTaskId) ??
+				nearestSurvivor(previous, this.order, this.selectedTaskId)) as TaskId | undefined;
 		const armed = this.stopConfirm.pending();
-		const settled = this.tasks.find((task) => task.ref.taskId === armed && task.execution.kind === "settled");
+		// A subagent released while it waits is not finished: its stop stays armed.
+		const settled = this.tasks.find(
+			(task) =>
+				task.ref.taskId === armed && task.execution.kind === "settled" && waitingReleasedTools(task) === undefined,
+		);
 		if (settled !== undefined) {
 			this.stopConfirm.reset();
 			this.finishedWhileArmed = settled;
@@ -181,6 +187,28 @@ export class TaskNavigation {
 		this.selectedTaskId = this.order[Math.max(0, Math.min(this.order.length - 1, next))] as TaskId | undefined;
 		return true;
 	}
+}
+
+/**
+ * The listed attempt of the subagent `selected` was an attempt of, when `selected` left the list because that subagent
+ * woke or was resumed: the selection follows the subagent rather than moving to a neighbour.
+ */
+function sameChildAttempt(
+	before: readonly TaskRecord[],
+	tasks: readonly TaskRecord[],
+	order: readonly string[],
+	selected: string | undefined,
+): string | undefined {
+	const left = selected === undefined ? undefined : before.find((task) => task.ref.taskId === selected);
+	if (left?.kind !== "agent") return undefined;
+	const child = childOfAttempt(left);
+	const listed = new Set(order);
+	let latest: TaskRecord | undefined;
+	for (const task of tasks) {
+		if (task.kind !== "agent" || !listed.has(task.ref.taskId) || childOfAttempt(task) !== child) continue;
+		if (latest === undefined || task.launchOrdinal >= latest.launchOrdinal) latest = task;
+	}
+	return latest?.ref.taskId;
 }
 
 function nearestSurvivor(

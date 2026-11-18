@@ -5,6 +5,7 @@ import type { ExtensionContext } from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall, type Message } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { taskPanelItems } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
@@ -17,6 +18,8 @@ import type { OperationId, OwnerId, Sequence, TaskId } from "../../packages/codi
 import { loadTaskOwnTranscriptHistory } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { taskBoardGroups } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
+import { TaskNavigation } from "../../packages/coding-agent/src/modes/interactive/components/task-navigation.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -114,6 +117,7 @@ async function recordUntil(
 test(
 	"a background child released on a budgetless bash wait is reported as released, shows its saved transcript without waking, then wakes and completes without a resume (#5031)",
 	async () => {
+		initTheme("dark");
 		const env = await liveChildEnvironment(cleanups);
 		const owner = SessionManager.inMemory(env.root);
 		const host = new AgentTaskHost({
@@ -265,6 +269,45 @@ test(
 		const stillReleased = host.resolveTask(childTaskId);
 		assert.ok(stillReleased.ok);
 
+		// While it waits, a chat's task footer lists it, beside the shell it waits on.
+		const releasedRecord = host.taskRecords().find((record) => record.ref.taskId === childTaskId);
+		assert.ok(releasedRecord);
+		assert.equal(releasedRecord.wasBackground, true);
+		assert.notEqual(releasedRecord.observation.kind, "background", "a released run's observation has ended");
+		const footerWhileReleased = stripVTControlCharacters(renderTaskFooter(host.taskRecords(), 100).join("\n"));
+		assert.match(footerWhileReleased, /waiting on bash/);
+
+		// In /tasks, `x` arms its stop, an unrelated update leaves the stop armed, and the second `x` stops it.
+		const cancelled: string[] = [];
+		const dismissed: string[] = [];
+		const navigation = new TaskNavigation(new KeybindingsManager(), {
+			inspect() {},
+			openChat() {},
+			transcript() {},
+			armStop() {},
+			cancel: (task) => cancelled.push(task.ref.taskId),
+			dismiss: (task) => dismissed.push(task.ref.taskId),
+			input() {},
+			stdinAvailable: () => false,
+			openQuestion() {},
+		});
+		const listedOrder = () => {
+			const listed = withoutSupersededAttempts(host.taskRecords());
+			return [
+				...listed.filter((task) => task.kind === "agent"),
+				...listed.filter((task) => task.kind === "command"),
+			].map((task) => task.ref.taskId);
+		};
+		navigation.update(host.taskRecords(), listedOrder());
+		navigation.open(childTaskId);
+		navigation.paint(host.taskRecords());
+		navigation.handleInput("x", "tasks");
+		navigation.update([...host.taskRecords()], listedOrder());
+		navigation.handleInput("x", "tasks");
+		assert.deepEqual(cancelled, [childTaskId], "the second x stops the waiting child");
+		assert.deepEqual(dismissed, []);
+		assert.equal(navigation.finishedWhileArmed, undefined, "a waiting child is never reported finished");
+
 		// The build finishes; nobody resumes the child.
 		assert.deepEqual(released.waitingOn, [{ toolCallId: "wait-1", toolName: shellTool }]);
 		const shellTask = host.resolveTask(waitedOn as TaskId);
@@ -289,6 +332,10 @@ test(
 		assert.equal(woken.value.result.kind, "completed", JSON.stringify(woken.value.result));
 		assert.equal(finished.terminalStatus, "ok", "the wake ran the child again on its own, and it finished");
 		assert.equal(env.faux.getPendingResponseCount(), 0, "the woken child answered its wait's result");
+		// The selection follows the child to the attempt that woke, not to the shell beside it.
+		navigation.update(host.taskRecords(), listedOrder());
+		assert.equal(navigation.selectedId, finished.taskId);
+
 		// Its released attempt is superseded by the attempt that woke: nothing lists the child as waiting any more.
 		const records = host.taskRecords();
 		const agents = records.filter((record) => record.kind === "agent");

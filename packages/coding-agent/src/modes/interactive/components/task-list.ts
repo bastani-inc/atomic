@@ -65,9 +65,11 @@ export function taskListSections(
  * terminal: it wakes by itself, so it is listed, as waiting.
  */
 export function isActiveBackgroundTask(task: TaskRecord): boolean {
+	if (task.execution.kind !== "settled") return task.observation.kind === "background";
+	// A released subagent's observation already ended with its run; it was launched in the background.
 	return (
-		task.observation.kind === "background" &&
-		(task.execution.kind !== "settled" || waitingReleasedTools(task) !== undefined)
+		(task.wasBackground === true || task.observation.kind === "background") &&
+		waitingReleasedTools(task) !== undefined
 	);
 }
 

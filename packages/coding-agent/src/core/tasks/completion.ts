@@ -193,7 +193,7 @@ export function releasedWaitingOn(result: TaskResult): string | undefined {
 }
 
 /** The subagent a task is an attempt of: its launch operation without the `:resume:<id>` a woken or resumed attempt adds. */
-function childOfAttempt(task: Pick<TaskRecord, "launchOperationId">): string {
+export function childOfAttempt(task: Pick<TaskRecord, "launchOperationId">): string {
 	const operation = task.launchOperationId;
 	const suffix = operation.indexOf(":resume:");
 	return suffix > 0 ? operation.slice(0, suffix) : operation;
