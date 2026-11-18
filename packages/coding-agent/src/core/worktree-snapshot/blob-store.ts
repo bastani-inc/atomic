@@ -1453,10 +1453,11 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	/**
 	 * Moves a chunk table that an earlier release created `WITHOUT ROWID` to the row layout of
-	 * {@link chunkTableDefinition} (#5541), in write transactions of at most {@link SNAPSHOT_CHUNK_MOVE_ROWS} chunks. It
-	 * copies the rows, in key order, to a new table in that layout; one transaction then copies the rows written since
-	 * and drops the copies of rows deleted since, and gives the new table the chunk table's name, under which the old one
-	 * is kept until later transactions empty and drop it. The chunk table keeps its name, columns and key throughout, so
+	 * {@link chunkTableDefinition} (#5541), in write transactions that each copy or free at most
+	 * {@link SNAPSHOT_CHUNK_MOVE_ROWS} chunks in all. It copies the rows, in key order, to a new table in that layout;
+	 * later transactions copy the rows written since and drop the copies of rows deleted since, and the one that leaves
+	 * the new table holding exactly the chunk table's rows gives it the chunk table's name, under which the old one is
+	 * kept until later transactions empty and drop it. The chunk table keeps its name, columns and key throughout, so
 	 * a process of an earlier release reads and writes it unchanged, and a chunk is copied with its bytes: its key, a
 	 * blob's hash and an index, names them. A stopped move resumes from what the tables hold. Does nothing on a chunk
 	 * table in the row layout, which every Postgres table is.
@@ -1494,6 +1495,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			);
 			return changes;
 		};
+		// The rows the new table holds and the chunk table no longer does: copies of rows deleted since they were copied.
+		const stale = `SELECT hash, idx FROM ${next} EXCEPT SELECT hash, idx FROM ${t.blobChunks}`;
 		for (let copying = true; ; ) {
 			options.signal?.throwIfAborted();
 			const moved = await this.write(options.pace, async (transaction) => {
@@ -1504,10 +1507,16 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					copying = (await copyNext(transaction)) === rows;
 					return false;
 				}
-				if ((await copyMissing(transaction)) === rows) return false;
-				await transaction.run(
-					`DELETE FROM ${next} WHERE (hash, idx) IN (SELECT hash, idx FROM ${next} EXCEPT SELECT hash, idx FROM ${t.blobChunks})`,
+				// Rows copied and stale copies dropped share the transaction's rows. The tables are renamed only by a transaction
+				// that leaves the new table holding exactly the chunk table's rows; otherwise the next transaction continues.
+				const copied = await copyMissing(transaction);
+				if (copied === rows) return false;
+				const room = rows - copied;
+				const { changes: dropped } = await transaction.run(
+					`DELETE FROM ${next} WHERE (hash, idx) IN (${stale} LIMIT ?)`,
+					room,
 				);
+				if (dropped === room && (await transaction.get(`${stale} LIMIT 1`)) !== undefined) return false;
 				// Renaming the table would point a trigger that names it at the old table: both of the delete triggers releases
 				// installed are dropped, and the current one is installed again on the new table.
 				await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs));

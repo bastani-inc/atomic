@@ -9,6 +9,7 @@ import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import {
 	SNAPSHOT_BLOB_CHUNK_BYTES,
+	SNAPSHOT_CHUNK_MOVE_ROWS,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
@@ -261,6 +262,90 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				await assertEveryBlobReads(resumed, live, "this version");
 				await assertEveryBlobReads(older, live, "0.9.89");
 				assert.equal(await resumed.getBlob(gone.hash), undefined);
+			});
+
+			/** The keys of the chunk rows of each layout, whichever names their tables carry: the move renames them. */
+			async function keysByLayout(database: SqliteDatabase): Promise<Map<number, Set<string>>> {
+				const tables = await database.all<SqliteRow & { name: string; wr: number }>(
+					"SELECT name, wr FROM pragma_table_list WHERE schema = 'main' AND type = 'table' AND substr(name, 1, length(?)) = ?",
+					chunks,
+					chunks,
+				);
+				const keys = new Map<number, Set<string>>();
+				for (const { name, wr } of tables) {
+					const rows = await database.all<SqliteRow & { hash: string; idx: number }>(
+						`SELECT hash, idx FROM ${name}`,
+					);
+					keys.set(Number(wr), new Set(rows.map((row) => `${row.hash}/${row.idx}`)));
+				}
+				return keys;
+			}
+
+			/** How many chunk rows, of either layout, one transaction wrote or freed. */
+			function chunkWork(before: Map<number, Set<string>>, after: Map<number, Set<string>>): number {
+				let work = 0;
+				for (const layout of new Set([...before.keys(), ...after.keys()])) {
+					const was = before.get(layout) ?? new Set<string>();
+					const is = after.get(layout) ?? new Set<string>();
+					for (const key of was) if (!is.has(key)) work++;
+					for (const key of is) if (!was.has(key)) work++;
+				}
+				return work;
+			}
+
+			test("no move transaction copies and frees more than SNAPSHOT_CHUNK_MOVE_ROWS chunks, though 0.9.89 deleted a blob of many chunks the move copied (#5541)", async () => {
+				const database = await release0989Store();
+				const older = await release0989.SqlSnapshotBlobStore.open(database, prefix);
+				// More stale copies than three transactions free, and rows written behind the copy for the same transactions.
+				const large = blob(3 * SNAPSHOT_CHUNK_MOVE_ROWS * SNAPSHOT_BLOB_CHUNK_BYTES + 1, 400);
+				await older.putBlobs([large]);
+				const next = `${chunks}_next`;
+				let behind: Blob | undefined;
+				let expected: SqliteRow[] = [];
+				const work: number[] = [];
+				const measured: SqliteDatabase = {
+					descriptor: database.descriptor,
+					exec: database.exec.bind(database),
+					run: database.run.bind(database),
+					get: database.get.bind(database),
+					all: database.all.bind(database),
+					close: database.close.bind(database),
+					async transaction(callback, options) {
+						const before = await keysByLayout(database);
+						const result = await database.transaction(callback, options);
+						work.push(chunkWork(before, await keysByLayout(database)));
+						if (behind === undefined && (await chunkTables(database)).includes(next)) {
+							const copied = await database.all<SqliteRow & { hash: string }>(
+								`SELECT hash FROM ${next} ORDER BY hash`,
+							);
+							if (copied.length === (await chunkRows(database)).length) {
+								// The copy is complete: 0.9.89 stores a chunked blob behind it and collects the large blob it copied.
+								behind = blobSorting("before", copied.at(-1)!.hash, 500);
+								await older.putBlobs([behind]);
+								await database.run(`UPDATE ${blobs} SET created_at = 1 WHERE hash = ?`, large.hash);
+								assert.deepEqual(await older.collectGarbage({ graceSeconds: 3_600 }), [large.hash]);
+								expected = await chunkRows(database);
+							}
+						}
+						return result;
+					},
+				};
+
+				const store = await SqlSnapshotBlobStore.open(measured, prefix);
+				assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), []);
+
+				assert.ok(behind !== undefined, "0.9.89 wrote and collected while the move was copying");
+				assert.deepEqual(
+					work.filter((rows) => rows > SNAPSHOT_CHUNK_MOVE_ROWS),
+					[],
+					`chunks each transaction copied or freed: ${work.join(" ")}`,
+				);
+				assert.deepEqual(await chunkTables(database), [chunks]);
+				assert.equal(await layoutOf(database), "rowid");
+				assert.deepEqual(await chunkRows(database), expected);
+				await assertEveryBlobReads(store, [...STORED, behind], "this version");
+				await assertEveryBlobReads(older, [...STORED, behind], "0.9.89");
+				assert.equal(await store.getBlob(large.hash), undefined);
 			});
 
 			test("0.9.89 reads, writes and collects a moved chunk table without changing its layout (#5541)", async () => {
