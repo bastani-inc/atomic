@@ -184,6 +184,30 @@ test("an engine startup that settles project trust reports a resources_discover 
 	]);
 });
 
+test("an engine startup that settles project trust still reports a second discovery that fails differently (#5501)", async () => {
+	let discoveries = 0;
+	harness = await createHarness({
+		extensionFactories: [
+			(pi) => {
+				pi.on("resources_discover", () => {
+					discoveries++;
+					throw new Error(`boom in discovery ${discoveries}`);
+				});
+			},
+		],
+	});
+	const output: object[] = [];
+	binding = engineBinding(harness.session, (record) => output.push(record), { settlesStartupTrust: true });
+	await binding.rebindSession();
+
+	await binding.loadDeferredResources();
+
+	assert.deepEqual(
+		extensionErrors(output).map((record) => (record as { error: string }).error),
+		["boom in discovery 1", "boom in discovery 2"],
+	);
+});
+
 test("the isolated host shows an engine startup error that arrived before the host bound its session (#5501)", async () => {
 	// An engine that loads its resources eagerly starts its extensions while the host is still starting up.
 	pair = await createEngineHostPair({});
