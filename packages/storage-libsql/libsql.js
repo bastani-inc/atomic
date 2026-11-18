@@ -1203,18 +1203,25 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 	/** @type {<T>(operation: () => Promise<T>, afterSchemaChange?: () => Promise<T>) => Promise<T>} */
 	const waitForLock = async (operation, afterSchemaChange) => {
 		// A server answers busy before it runs anything of one statement or a batch, and `SQLITE_SCHEMA` before it runs
-		// anything of one statement. After `SQLITE_SCHEMA`, `afterSchemaChange`, when given, runs in its place.
+		// anything of one statement. After `SQLITE_SCHEMA`, `afterSchemaChange`, when given, runs in its place, with a
+		// wait of its own: the run the server answered `SQLITE_SCHEMA` may itself have taken the whole wait.
 		if (!local) {
-			let run = operation;
-			return whileServerBusy(
-				() => watch(run),
-				() => true,
-				undefined,
-				() => {
-					run = afterSchemaChange ?? operation;
-					return true;
-				},
-			);
+			if (afterSchemaChange === undefined) return whileServerBusy(() => watch(operation), () => true);
+			let schemaChanged = false;
+			try {
+				return await whileServerBusy(
+					() => watch(operation),
+					() => true,
+					undefined,
+					() => {
+						schemaChanged = true;
+						return false;
+					},
+				);
+			} catch (error) {
+				if (!schemaChanged) throw error;
+			}
+			return whileServerBusy(() => watch(afterSchemaChange), () => true);
 		}
 		/** @type {bigint | number | undefined} */
 		let version;
