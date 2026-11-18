@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { delimiter, join } from "node:path";
 import type { AgentSession, DetachedToolCall, DetachedToolResult, ExtensionContext } from "@bastani/atomic";
 import { Agent } from "@bastani/atomic-agent-core";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
@@ -63,7 +64,7 @@ import {
 	SUBAGENT_STILL_RUNNING_RESULT,
 	subagentWakeKey,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
-import { holdRunWorktree } from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
+import { holdRunWorktree, WORKTREE_REPLY_WAIT_MS } from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
 import {
 	observeSubagentChildRecord,
 	subagentChildRecordOf,
@@ -108,6 +109,7 @@ import {
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
 import { subagentStartHoldMs } from "../../packages/subagents/src/runs/shared/start-progress.js";
+import * as worktrees from "../../packages/subagents/src/runs/shared/worktree.js";
 import * as artifactStorage from "../../packages/subagents/src/shared/artifacts.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import {
@@ -3038,7 +3040,7 @@ const unrestartable = [
 ] as const;
 
 for (const { why, fail, reported } of unrestartable)
-	test(`a resume that cannot restart a paused worktree child because ${why} is done with its worktree when it reports: the clean worktree it recreated is already gone (#5589)`, async () => {
+	test(`a resume that cannot restart a paused worktree child because ${why} reports after cleanup when no sibling holds the clean worktree it recreated (#5589)`, async () => {
 		const h = harness();
 		initGitRepository(h.cwd);
 		const siblingDone = Promise.withResolvers<void>();
@@ -3066,6 +3068,156 @@ for (const { why, fail, reported } of unrestartable)
 		assert.equal(existsSync(childA.cwd), false, "the worktree resume recreated is removed before it reports");
 		assert.equal(gitOutput(h.cwd, ["branch", "--list", branch]), "", "so is the branch it recreated");
 	});
+
+test("a failed resume explains why a running sibling keeps the batch worktrees (#5589)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const sibling = Promise.withResolvers<void>();
+	h.finishOn.set("pause-this", Promise.withResolvers<void>());
+	h.finishOn.set("hold-batch", sibling);
+	const [a, b] = await launchWorktreeRun(h, ["pause-this", "hold-batch"]);
+	assert.ok(a && b?.taskId);
+	try {
+		await h.waitForLatest(a.childId, (record) => !!record.childSessionId);
+		await h.call({ action: "pause", id: a.childId });
+		h.agentDefined = false;
+		const failed = await h.call({ action: "resume", id: a.childId });
+		assert.equal(failed.isError, true);
+		assert.match(text(failed), /agent "worker" .*no longer defined/);
+		assert.match(text(failed), /worktree kept until the other children in this batch finish/i);
+		assert.equal(existsSync(a.cwd), true);
+	} finally {
+		sibling.resolve();
+		await settled(h, b.taskId);
+		await waitForWorktreeCleanup(h, a);
+	}
+});
+
+test("a failed resume waits for a sibling's sweep that started during its broker acknowledgement (#5589)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const sibling = Promise.withResolvers<void>();
+	h.finishOn.set("pause-this", Promise.withResolvers<void>());
+	h.finishOn.set("hold-batch", sibling);
+	const [a, b] = await launchWorktreeRun(h, ["pause-this", "hold-batch"]);
+	assert.ok(a && b?.taskId);
+	await h.waitForLatest(a.childId, (record) => !!record.childSessionId);
+	await h.call({ action: "pause", id: a.childId });
+	const ack = Promise.withResolvers<void>(),
+		notified = Promise.withResolvers<void>();
+	const events = h.deps.pi.events,
+		emit = events.emit.bind(events);
+	vi.spyOn(events, "emit").mockImplementation((channel, data) => {
+		emit(channel, data);
+		if (channel !== SUBAGENT_RELEASE_RESTORING_CHILD_EVENT) return;
+		const request = data as SubagentReleaseRestoringChildRequest;
+		if (request.gone) {
+			request.completion = ack.promise;
+			notified.resolve();
+		}
+	});
+	h.agentDefined = false;
+	const failed = h.call({ action: "resume", id: a.childId });
+	await notified.promise;
+	const check = worktrees.worktreeHasUnsavedWork;
+	const started = Promise.withResolvers<void>();
+	const held = Promise.withResolvers<void>();
+	const spy = vi.spyOn(worktrees, "worktreeHasUnsavedWork").mockImplementation(async (...args) => {
+		started.resolve();
+		await held.promise;
+		return check(...args);
+	});
+	try {
+		sibling.resolve();
+		await started.promise;
+		ack.resolve();
+		setImmediate(held.resolve);
+		assert.match(text(await failed), /no longer defined/);
+		assert.equal(existsSync(a.cwd), false, "the already-running sweep is finished at reply");
+	} finally {
+		ack.resolve();
+		held.resolve();
+		spy.mockRestore();
+		await settled(h, b.taskId);
+		await waitForWorktreeCleanup(h, a);
+	}
+});
+
+test(
+	"a failed resume bounds a stalled git status, stops its helper, and keeps the worktree (#5589)",
+	async () => {
+		const h = harness();
+		initGitRepository(h.cwd);
+		const finish = Promise.withResolvers<void>();
+		h.finishOn.set("pause-this", finish);
+		const [a] = await launchWorktreeRun(h, ["pause-this"]);
+		assert.ok(a);
+		await h.waitForLatest(a.childId, (record) => !!record.childSessionId);
+		const draft = join(a.cwd, "draft.md");
+		writeFileSync(draft, "keep this");
+		await h.call({ action: "pause", id: a.childId });
+		const tools = join(h.cwd, ".git", "monitor-test");
+		mkdirSync(tools);
+		const marker = join(tools, "port"),
+			stop = join(tools, "stop");
+		const helper = join(tools, "monitor.cjs");
+		writeFileSync(
+			helper,
+			`const fs = require('node:fs'); const s = require('node:net').createServer(); s.listen(0, '127.0.0.1', () => fs.writeFileSync(${JSON.stringify(marker)}, String(s.address().port))); setInterval(() => { if (fs.existsSync(${JSON.stringify(stop)})) process.exit(1); }, 40);`,
+		);
+		const monitor = join(tools, "monitor");
+		writeFileSync(
+			monitor,
+			`#!/bin/sh\nexec '${process.execPath.replaceAll("\\", "/")}' '${helper.replaceAll("\\", "/")}'\n`,
+		);
+		chmodSync(monitor, 0o755);
+		const savedPath = process.env.PATH;
+		if (process.platform !== "win32") {
+			const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+			const fake = join(tools, "git");
+			writeFileSync(
+				fake,
+				`#!/bin/sh\nif [ "$3" = status ]; then exec '${realGit}' -c core.fsmonitor='${monitor}' "$@"; fi\nexec '${realGit}' "$@"\n`,
+			);
+			chmodSync(fake, 0o755);
+		}
+		// Arm only after the worktree is prepared: the blocked command belongs to the failed resume's sweep.
+		Object.defineProperty(h, "agentDefined", {
+			get() {
+				if (process.platform === "win32")
+					gitOutput(h.cwd, ["config", "core.fsmonitor", monitor.replaceAll("\\", "/")]);
+				else process.env.PATH = `${tools}${delimiter}${savedPath}`;
+				return false;
+			},
+		});
+		// A healthy helper never exits on its own. Release it even on the pre-fix failure, so no child is leaked.
+		let release: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const failed = h.call({ action: "resume", id: a.childId });
+			await vi.waitFor(() => assert.ok(existsSync(marker)), { timeout: RECORD_WAIT_MS });
+			release = setTimeout(() => writeFileSync(stop, "release"), 2 * WORKTREE_REPLY_WAIT_MS);
+			const reply = await failed;
+			assert.equal(reply.isError, true);
+			assert.match(text(reply), /worktree cleanup .*?(timed out|continues in the background)/i);
+			const port = Number(readFileSync(marker, "utf8"));
+			await vi.waitFor(
+				() =>
+					new Promise<void>((resolve, reject) => {
+						const server = createServer().once("error", reject);
+						server.listen(port, "127.0.0.1", () => server.close(() => resolve()));
+					}),
+				{ timeout: WORKTREE_REPLY_WAIT_MS },
+			);
+			assert.equal(existsSync(stop), false, "Atomic ended the helper; the test never released it");
+			assert.equal(readFileSync(draft, "utf8"), "keep this");
+		} finally {
+			clearTimeout(release);
+			writeFileSync(stop, "release");
+			process.env.PATH = savedPath;
+		}
+	},
+	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
+);
 
 function savedPatches(record: SubagentChildRecord): string[] {
 	const diffsDir = record.worktree?.diffsDir;

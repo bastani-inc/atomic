@@ -487,7 +487,7 @@ function interruptedResume(record: SubagentChildRecord, withdrawn: boolean, mess
 		"resume",
 		withdrawn
 			? `Interrupted before ${label(record)} took the resume: it was withdrawn, and the child does not run it${message ? " or get your message" : ""}. Resume it again when you are ready.`
-			: `Interrupted while ${label(record)} was being resumed: the resume had begun and goes on${message ? " with your message" : ""}. subagent({ action: "status", id: "${record.childId}" }) shows how it went.`,
+			: `Interrupted while ${label(record)} was being resumed: the resume had begun and goes on${message ? " with your message" : ""}.${record.worktree && !record.worktree.named ? " Any worktree cleanup continues in the background." : ""} subagent({ action: "status", id: "${record.childId}" }) shows how it went.`,
 	);
 }
 

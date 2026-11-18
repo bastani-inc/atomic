@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
@@ -121,7 +122,6 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
 			...(options.env !== undefined ? { env: options.env } : {}),
 			...(options.shell !== undefined ? { shell: options.shell } : {}),
-			...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
 			stdio: [options.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
 			detached: process.platform !== "win32",
 			windowsHide: true,
@@ -229,11 +229,31 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 	});
 }
 
+/** Only cleanup commands get this deadline, not initial checkouts, setup hooks or a user's fetch. */
+const SWEEP_GIT_TIMEOUT_MS = 10_000;
+const sweepTimeout = new AsyncLocalStorage<() => void>();
+class SweepGitTimedOut extends Error {}
+
+export async function withWorktreeSweepTimeout(onTimeout: () => void, sweep: () => Promise<void>): Promise<void> {
+	try {
+		await sweepTimeout.run(onTimeout, sweep);
+	} catch (error) {
+		// An incomplete safety check or removal leaves the worktree tracked for the next sweep.
+		if (!(error instanceof SweepGitTimedOut)) throw error;
+	}
+}
+
 export async function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<GitResult> {
+	const onTimeout = sweepTimeout.getStore();
 	const result = await spawnCollect("git", ["-C", cwd, ...args], {
 		env: createGitEnvironment(env, createChildProcessEnvironment()),
 		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
+		...(onTimeout && { timeout: SWEEP_GIT_TIMEOUT_MS }),
 	});
+	if (onTimeout && result.error?.code === "ETIMEDOUT") {
+		onTimeout();
+		throw new SweepGitTimedOut(`Worktree cleanup timed out running git ${args[0]}.`);
+	}
 	return {
 		stdout: result.stdout,
 		stderr: result.stderr,
@@ -537,7 +557,8 @@ async function cleanupSingleWorktree(
 	await waitForGitLockRelease();
 	try {
 		await runGitChecked(repoCwd, ["branch", "-D", worktree.branch]);
-	} catch {
+	} catch (error) {
+		if (error instanceof SweepGitTimedOut) throw error;
 		/* idempotent */
 	}
 }
