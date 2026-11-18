@@ -24,6 +24,8 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** Stages a broadcast reached, as in the 150-child pattern fan-out. */
 const DELIVERED_STAGES = 150;
+/** Receipts on one chain that need two journal transactions: more than one batch holds. */
+const RECEIPTS_ACROSS_BATCHES = 300;
 /** One batch of queued appends, the one it may queue behind, and slack: never one transaction per receipt. */
 const ARCHIVE_TRANSACTION_BOUND = 4;
 
@@ -33,7 +35,7 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function countingBackend() {
+async function countingBackend(options: { failTransaction?: () => boolean } = {}) {
 	const directory = makeTempDirectory("receipt-archive-batching-");
 	cleanups.push(() => removeTempDirectory(directory));
 	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
@@ -48,6 +50,7 @@ async function countingBackend() {
 		all: (sql, ...params) => database.all(sql, ...params),
 		transaction: (body) => {
 			transactions++;
+			if (options.failTransaction?.() === true) throw new Error("injected storage failure");
 			return database.transaction(body);
 		},
 		close: () => database.close(),
@@ -127,4 +130,41 @@ test("a transition archives a broadcast's receipts for 150 ended stages in a few
 	);
 	for (let index = 0; index < DELIVERED_STAGES; index++)
 		assert.equal(await backend.hasPendingStageDeliveryReceipt("run", "broadcast", delivery(index)), true);
+});
+
+test("a receipt chain whose first batch fails writes none of the receipts queued after it, leaving no gap (#3931)", async () => {
+	let failNext = false;
+	const { backend, journal } = await countingBackend({
+		failTransaction: () => {
+			const fail = failNext;
+			failNext = false;
+			return fail;
+		},
+	});
+	const entry = broadcast();
+	assert.equal(await backend.persistPendingStageMessages("run", [entry]), true);
+	failNext = true;
+	const chain = { queued: 0 };
+	const results = await Promise.allSettled(
+		Array.from({ length: RECEIPTS_ACROSS_BATCHES }, (_, index) =>
+			backend.archivePendingStageDeliveryReceipt(
+				"run",
+				"broadcast",
+				delivery(index),
+				{ messageRunId: "run", deliveryCount: index + 1 },
+				chain,
+			),
+		),
+	);
+
+	assert.equal(chain.queued, RECEIPTS_ACROSS_BATCHES);
+	assert.ok(results.every((result) => result.status === "rejected"));
+	const receipts = [];
+	for await (const written of journal.read("run"))
+		if (written.event.type === RUN_EVENT_TYPES.messageDelivered) receipts.push(written.event.payload);
+	assert.deepEqual(receipts, []);
+	assert.equal(
+		await backend.hasPendingStageDeliveryReceipt("run", "broadcast", delivery(RECEIPTS_ACROSS_BATCHES - 1)),
+		false,
+	);
 });

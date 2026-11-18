@@ -25,6 +25,7 @@ import type {
 	DurableInactiveDeleteResult,
 	DurableWorkflowBackend,
 	DurableWorkflowCatalogEntries,
+	PendingStageReceiptChain,
 	PendingStageReceiptChanges,
 	PendingStageReceiptCursor,
 	WorkflowRegistrationInput,
@@ -118,8 +119,15 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		messageId: string,
 		delivery: PendingStageMessageDelivery,
 		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
+		chain?: PendingStageReceiptChain,
 	): Promise<void> {
-		await this.inner.archivePendingStageDeliveryReceipt?.(this.scope.rootWorkflowId, messageId, delivery, accounting);
+		await this.inner.archivePendingStageDeliveryReceipt?.(
+			this.scope.rootWorkflowId,
+			messageId,
+			delivery,
+			accounting,
+			chain,
+		);
 	}
 
 	hasCachedPendingStageDeliveryReceipt(

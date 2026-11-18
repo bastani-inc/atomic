@@ -1,4 +1,4 @@
-import type { DurableWorkflowBackend } from "../durable/backend.js";
+import type { DurableWorkflowBackend, PendingStageReceiptChain } from "../durable/backend.js";
 import {
 	isSettledPendingStageMessage,
 	PENDING_STAGE_SETTLED_MESSAGE_LIMIT,
@@ -83,9 +83,9 @@ export class PendingStageTransitionLedger {
 		const removed: PendingStageMessage[] = [];
 		const added: PendingStageMessage[] = [];
 		let settled = this.settled;
-		// Every receipt archive of the transition is queued in order and awaited together, so the backend writes
-		// them as one batch instead of one commit each (#3931). Nothing is persisted or committed before they all
-		// settle, so a failed archive still leaves its delivery in the persisted list.
+		// The transition's receipt archives are queued in order and awaited together, so the backend writes them as one
+		// batch instead of one commit each (#3931). Nothing is persisted or committed before they all settle, so a failed
+		// archive still leaves its delivery in the persisted list.
 		const archives = new ReceiptArchives();
 		const length = Math.max(base.length, messages.length);
 		for (let index = 0; index < length; index++) {
@@ -223,15 +223,11 @@ async function compactEntryDeliveries(
 					!archives.has(entry, receipt) &&
 					!(await backend.hasPendingStageDeliveryReceipt(runId, entry.id, receipt, entry.runId))
 				)
-					archives.add(
-						entry,
-						receipt,
-						backend.archivePendingStageDeliveryReceipt(runId, entry.id, receipt, {
-							messageRunId: entry.runId,
-							deliveryCount:
-								(entry.deliveryCount ?? entry.deliveries.length) - entry.deliveries.length + prefixIndex + 1,
-						}),
-					);
+					await archives.archive(backend, runId, entry, receipt, {
+						messageRunId: entry.runId,
+						deliveryCount:
+							(entry.deliveryCount ?? entry.deliveries.length) - entry.deliveries.length + prefixIndex + 1,
+					});
 				archivedThrough = prefixIndex;
 			}
 		} else {
@@ -242,29 +238,52 @@ async function compactEntryDeliveries(
 }
 
 /**
- * The receipt archives one transition queued and has not awaited yet. A receipt queued here counts as archived for
- * the rest of the transition, as it would once its write folded, so a receipt is never queued twice.
+ * The receipt archives of one transition, on one chain in the order the transition archives them (#3931). A backend that
+ * queues a receipt for a shared write lets the next one be queued at once, so the transition's receipts commit together
+ * rather than one commit each; the backend writes a chained receipt only if the one before it was written. A receipt the
+ * backend did not queue is awaited before the next is archived, as every receipt was, and its failure stops the
+ * transition there. A receipt archived here counts as archived for the rest of the transition, as it would once its
+ * write folded, so it is never archived twice.
  */
 class ReceiptArchives {
+	private readonly chain: PendingStageReceiptChain = { queued: 0 };
 	private readonly pending: Promise<void>[] = [];
-	private readonly queued = new Set<string>();
+	private readonly archived = new Set<string>();
 
 	has(entry: PendingStageMessage, receipt: PendingStageMessageDelivery): boolean {
-		return this.queued.has(receiptKey(entry, receipt.runId, receipt.stageId, receipt.sessionId, receipt.admission));
+		return this.archived.has(receiptKey(entry, receipt.runId, receipt.stageId, receipt.sessionId, receipt.admission));
 	}
 
-	add(entry: PendingStageMessage, receipt: PendingStageMessageDelivery, archive: Promise<void>): void {
-		// A failure surfaces when the transition settles its archives, never as an unhandled rejection.
-		archive.catch(() => {});
-		this.pending.push(archive);
+	async archive(
+		backend: CompactingBackend,
+		runId: string,
+		entry: PendingStageMessage,
+		receipt: PendingStageMessageDelivery,
+		accounting: { readonly messageRunId: string; readonly deliveryCount: number },
+	): Promise<void> {
+		const queuedBefore = this.chain.queued;
+		const archive = backend.archivePendingStageDeliveryReceipt(runId, entry.id, receipt, accounting, this.chain);
+		if (this.chain.queued === queuedBefore) {
+			try {
+				await archive;
+			} catch (error) {
+				// Nothing after a failed receipt is archived; the receipts before it settle first, and an earlier failure wins.
+				await this.settled();
+				throw error;
+			}
+		} else {
+			// A failure surfaces when the transition settles its archives, never as an unhandled rejection.
+			archive.catch(() => {});
+			this.pending.push(archive);
+		}
 		// An archived receipt also answers for its stage with no session and no admission, as the backend's index does.
-		this.queued.add(receiptKey(entry, receipt.runId, receipt.stageId, receipt.sessionId, receipt.admission));
-		this.queued.add(receiptKey(entry, receipt.runId, receipt.stageId, undefined, undefined));
+		this.archived.add(receiptKey(entry, receipt.runId, receipt.stageId, receipt.sessionId, receipt.admission));
+		this.archived.add(receiptKey(entry, receipt.runId, receipt.stageId, undefined, undefined));
 	}
 
-	/** Wait for every queued archive, then fail with the first failure: no write is still in flight after it. */
+	/** Wait for every queued archive, then fail with the first failure in order: no write is in flight after it. */
 	async settled(): Promise<void> {
-		const results = await Promise.allSettled(this.pending);
+		const results = await Promise.allSettled(this.pending.splice(0));
 		const failure = results.find((result) => result.status === "rejected");
 		if (failure !== undefined) throw failure.reason;
 	}

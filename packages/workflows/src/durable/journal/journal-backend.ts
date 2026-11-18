@@ -12,6 +12,7 @@ import {
 	type DurableWorkflowBackend,
 	migrateStageSessionCheckpoint,
 	normalizedCheckpoint,
+	type PendingStageReceiptChain,
 	replacePendingStageMessagesForRun,
 	type WorkflowRegistrationInput,
 } from "../backend.js";
@@ -367,6 +368,10 @@ interface QueuedAppend {
 	readonly requiresRegisteredRun?: boolean;
 	/** Runs a function in the async context the append was issued from, which carries its pool append guard. */
 	readonly context: <R>(action: () => R) => R;
+	/** The receipt queued before this one on its chain: this one is written only if that one was. */
+	readonly after?: QueuedAppend;
+	/** Set once the append is settled without being written. */
+	failure?: Error;
 	resolve(): void;
 	reject(error: Error): void;
 }
@@ -562,6 +567,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		{ readonly list: readonly PendingStageMessage[]; positions: Map<string, number[]> | undefined }
 	>();
 	private readonly appendBatches = new Map<string, QueuedAppend[]>();
+	/** The last receipt queued on each receipt chain. */
+	private readonly chainTails = new WeakMap<PendingStageReceiptChain, QueuedAppend>();
 	private readonly catalogQueue = Symbol("catalog");
 	private readonly lost = new Map<string, Error>();
 	private readonly prompts = new Map<string, PromptReservationState>();
@@ -1359,11 +1366,18 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		messageId: string,
 		delivery: PendingStageMessageDelivery,
 		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
+		chain?: PendingStageReceiptChain,
 	): Promise<void> {
-		await this.queueAppend(runId, {
-			type: E.messageDelivered,
-			payload: { messageId, delivery, ...(accounting === undefined ? {} : { accounting }) },
-		});
+		await this.queueAppend(
+			runId,
+			{
+				type: E.messageDelivered,
+				payload: { messageId, delivery, ...(accounting === undefined ? {} : { accounting }) },
+			},
+			undefined,
+			false,
+			chain,
+		);
 	}
 	/**
 	 * Queue a receipt, settlement or checkpoint on the run, as `serialize` would. While the run is busy, the ones
@@ -1372,7 +1386,13 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	 * message or a workflow's next step, waits for that one commit. Their order, and their order against every other
 	 * operation of the run, is the order they were queued in.
 	 */
-	private queueAppend(runId: string, event: BackendEvent, key?: string, requiresRegisteredRun = false): Promise<void> {
+	private queueAppend(
+		runId: string,
+		event: BackendEvent,
+		key?: string,
+		requiresRegisteredRun = false,
+		chain?: PendingStageReceiptChain,
+	): Promise<void> {
 		try {
 			this.ensureOpen();
 			this.assertExecutionActive();
@@ -1381,15 +1401,25 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		}
 		const open = this.appendBatches.get(runId);
 		const batch = open !== undefined && open.length < APPEND_BATCH_LIMIT ? open : [];
+		const after = chain === undefined ? undefined : this.chainTails.get(chain);
 		const queued = new Promise<void>((resolve, reject) => {
-			batch.push({
+			const append: QueuedAppend = {
 				event,
 				...(key === undefined ? {} : { key }),
 				...(requiresRegisteredRun ? { requiresRegisteredRun } : {}),
 				context: AsyncLocalStorage.snapshot(),
+				...(after === undefined ? {} : { after }),
 				resolve,
-				reject,
-			});
+				reject: (error) => {
+					append.failure = error;
+					reject(error);
+				},
+			};
+			batch.push(append);
+			if (chain !== undefined) {
+				this.chainTails.set(chain, append);
+				chain.queued++;
+			}
 		});
 		if (batch !== open) {
 			this.serialize(runId, () => this.appendBatch(runId, batch)).catch((error: Error) => {
@@ -1401,11 +1431,25 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private *appendBatch(runId: string, queued: QueuedAppend[]): Operation<void> {
 		if (this.appendBatches.get(runId) === queued) this.appendBatches.delete(runId);
-		const batch = yield* this.registeredAppends(runId, queued);
+		// A chained receipt whose predecessor was not written is not written either, so a chain never leaves a gap.
+		// Batches run in queue order, so a predecessor in an earlier batch has settled by now. One in this batch is
+		// written in the same journal transaction, whose lease or storage failure writes neither; a chain's receipts
+		// carry one caller's append guard and payloads the run's pending list already holds.
+		const unbroken = queued.filter((append) => {
+			const failure = append.after?.failure;
+			if (failure === undefined) return true;
+			append.reject(failure);
+			return false;
+		});
+		const batch = yield* this.registeredAppends(runId, unbroken);
 		if (batch.length === 0) return;
 		const appendMany = runJournalAppendMany(this.journal);
 		if (appendMany === undefined || batch.length === 1) {
 			for (const append of batch) {
+				if (append.after?.failure !== undefined) {
+					append.reject(append.after.failure);
+					continue;
+				}
 				try {
 					const lease = yield* this.ownership(runId);
 					yield* this.write(

@@ -119,6 +119,16 @@ export async function readDurableCheckpoints(
 }
 
 /** A position in one workflow's receipt change log; a reset workflow starts a new log. */
+/**
+ * The receipts one pending-stage transition archives, in order (#3931). A backend that queues a receipt for a later,
+ * shared write instead of writing it before it returns counts it in `queued`, so the caller can queue the next one
+ * without waiting. A queued receipt is written only if every receipt queued before it on the chain was: the receipts
+ * a chain leaves durable are always the ones queued before its first failure.
+ */
+export interface PendingStageReceiptChain {
+	queued: number;
+}
+
 export interface PendingStageReceiptCursor {
 	readonly log: object;
 	readonly length: number;
@@ -355,6 +365,7 @@ export interface DurableWorkflowBackend {
 		messageId: string,
 		delivery: PendingStageMessageDelivery,
 		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
+		chain?: PendingStageReceiptChain,
 	): Promise<void>;
 	hasCachedPendingStageDeliveryReceipt?(
 		workflowId: string,
