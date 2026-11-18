@@ -81,6 +81,7 @@ import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./sta
 import { stageSessionQueueUpdateEvent } from "./stage-queued-user-messages.js";
 import { StageArtifactCapture } from "./stage-runner-artifact-capture.js";
 import { candidateLabel, modelAttemptReasoning } from "./stage-runner-candidate.js";
+import { StageFallbackTurn } from "./stage-runner-fallback-turn.js";
 import { StageMessageAdmission } from "./stage-runner-message-admission.js";
 import {
 	hasAssistantMessageSince,
@@ -160,6 +161,8 @@ export const WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE = "atomic:workflow-stage-close
 export const WORKFLOW_STAGE_END_CHILDREN_STATE = "atomic:workflow-stage-end-children";
 
 interface CandidateWalk {
+	/** Only a walk serving an existing prompt can announce that turn's switch. */
+	readonly turn?: StageFallbackTurn;
 	readonly remaining: Set<number>;
 	readonly rateLimitFailures: Map<number, number>;
 	/** Candidates dropped only because their rate-limit budget ran out. */
@@ -451,6 +454,10 @@ export class StageSessionController {
 	/** Removes this stage's listener from the run's abort signal. */
 	private unbindAbortSignal: (() => void) | undefined;
 	private sessionInternalRetries = 0;
+	/** Requests (`agent_start`) the stage's sessions started, whichever session ran them. */
+	private agentRunsStarted = 0;
+	/** The prompt walking the model candidates now, whose turn may wait to switch models. */
+	private fallbackTurn: StageFallbackTurn | undefined;
 	private unresolvedContextOverflowMessage: string | undefined;
 	private generationSealed = false;
 	private disposed = false;
@@ -1855,11 +1862,38 @@ export class StageSessionController {
 		if (wait === undefined && this.sessionReleased()) await this.ensureSession();
 	}
 
+	/**
+	 * Prompt the stage on its model candidates. The walk replaces a failed candidate's session, and the turn says that it
+	 * goes on in the next one ({@link StageFallbackTurn}), so the stage's chat keeps counting it.
+	 */
 	private async promptSegment(
 		text: string,
 		sdkOptions: PromptOptions | undefined,
 		consumer: AgentSessionConsumer = "prompt",
 		newSessionText?: string,
+	): Promise<void> {
+		const turn = new StageFallbackTurn(
+			() => this.agentRunsStarted,
+			(event) => {
+				for (const listener of this.pendingListeners) listener(event);
+			},
+		);
+		const outerTurn = this.fallbackTurn;
+		this.fallbackTurn = turn;
+		try {
+			await this.promptCandidates(text, sdkOptions, consumer, newSessionText, turn);
+		} finally {
+			turn.ended();
+			this.fallbackTurn = outerTurn;
+		}
+	}
+
+	private async promptCandidates(
+		text: string,
+		sdkOptions: PromptOptions | undefined,
+		consumer: AgentSessionConsumer,
+		newSessionText: string | undefined,
+		turn: StageFallbackTurn,
 	): Promise<void> {
 		if (
 			this.session !== undefined &&
@@ -1940,7 +1974,7 @@ export class StageSessionController {
 			promptText = message;
 			promptOptions = resumeMessageOptions(sdkOptions);
 		};
-		const walk = this.candidateWalk(candidates, this.activeCandidateIndex ?? 0);
+		const walk = this.candidateWalk(candidates, this.activeCandidateIndex ?? 0, turn);
 		if (await this.tryResumeCurrentSession(promptText, promptOptions, candidates, walk)) return;
 		// A follow-up written for the conversation it continues (a structured-output
 		// correction) cannot stand alone in a session that never saw the stage
@@ -1971,7 +2005,7 @@ export class StageSessionController {
 			const candidate = candidates[index]!;
 			try {
 				if (this.session !== undefined && this.activeCandidateIndex !== index) {
-					if (!(await this.disposeCurrentSession(index))) return;
+					if (!(await this.disposeCurrentSession(index, candidate, turn))) return;
 					useResumeMessage(this.pendingCreationResumeMessage);
 					this.pendingCreationResumeMessage = undefined;
 				}
@@ -2101,6 +2135,8 @@ export class StageSessionController {
 		}
 	}
 	requestPause(): Promise<void> {
+		// A pause stops a turn that waits to switch models: the request after the pause starts a turn of its own.
+		this.fallbackTurn?.ended();
 		const pause = this.pauseControl.requestPause();
 		const resume = this.pauseControl.currentResume();
 		if (resume !== undefined) {
@@ -2304,12 +2340,17 @@ export class StageSessionController {
 		const index = session.messages.indexOf(retained);
 		if (index >= 0) session.messages.splice(index, 1);
 	}
-	private candidateWalk(candidates: readonly WorkflowResolvedModelCandidate[], start: number): CandidateWalk {
+	private candidateWalk(
+		candidates: readonly WorkflowResolvedModelCandidate[],
+		start: number,
+		turn?: StageFallbackTurn,
+	): CandidateWalk {
 		for (const candidate of candidates) {
 			const provider = workflowProviderId(candidate.value);
 			if (provider !== undefined) this.rateLimitProviders.add(provider);
 		}
 		return {
+			turn,
 			remaining: new Set(candidates.map((_, index) => index).filter((index) => index >= start)),
 			rateLimitFailures: new Map(),
 			rateLimited: new Set(),
@@ -3345,6 +3386,7 @@ export class StageSessionController {
 				} catch {}
 			}
 			this.lastActivityAt = performance.now();
+			if (event.type === "agent_start") this.agentRunsStarted += 1;
 			if (event.type === "auto_retry_start") this.sessionInternalRetries += 1;
 			if (event.type === "model_fallback_start") applyingFallback = true;
 			// SDK effort-only fallbacks suppress model_changed, but emit thinking_level_changed
@@ -3373,8 +3415,16 @@ export class StageSessionController {
 	}
 
 	/** Retire the failed session. Only an uncancelled objective or explicit replacement text advances the walk. */
-	private async disposeCurrentSession(nextCandidateIndex: number | undefined): Promise<boolean> {
-		const resumed = await this.pauseControl.whileRetiring(() => this.retireCurrentSession(nextCandidateIndex));
+	private async disposeCurrentSession(
+		nextCandidateIndex: number | undefined,
+		candidate?: WorkflowResolvedModelCandidate,
+		turn?: StageFallbackTurn,
+	): Promise<boolean> {
+		const resumed = await this.pauseControl.whileRetiring(() => {
+			// The switch is interruptible before shutdown yields, including from the announcement itself.
+			if (candidate !== undefined) turn?.switchTo(candidate, nextCandidateIndex ?? 0, this.modelAttempts.at(-1));
+			return this.retireCurrentSession(nextCandidateIndex);
+		});
 		if (resumed === undefined) return true;
 		this.pendingCreationResumeMessage = resumed.message;
 		return resumed.message !== undefined;
@@ -3531,7 +3581,8 @@ export class StageSessionController {
 			const start = walk.rateLimitFailures.has(currentIndex) ? 0 : currentIndex;
 			const index = await this.selectReadyCandidate(candidates, walk, start);
 			if (index === undefined) return true;
-			if (index !== this.activeCandidateIndex) return !(await this.disposeCurrentSession(index));
+			if (index !== this.activeCandidateIndex)
+				return !(await this.disposeCurrentSession(index, candidates[index], walk.turn));
 			const resumedText = this.pendingCreationResumeMessage;
 			this.pendingCreationResumeMessage = undefined;
 			if (resumedText !== undefined) {
@@ -3626,7 +3677,11 @@ export class StageSessionController {
 					? `[fallback] resume on ${resumedLabel} failed: ${message}. Restarting fallback from ${candidateLabel(candidates[0]!)}.`
 					: `[fallback] resume on ${resumedLabel} failed: ${message}. Retrying with ${candidateLabel(candidates[resumedOverflowNextIndex]!)}.`,
 			);
-			return !(await this.disposeCurrentSession(resumedOverflowNextIndex));
+			return !(await this.disposeCurrentSession(
+				resumedOverflowNextIndex,
+				candidates[resumedOverflowNextIndex ?? 0],
+				walk.turn,
+			));
 		}
 	}
 
@@ -3707,7 +3762,7 @@ export class StageSessionController {
 		this.pendingFallbackWarnings.push(
 			`[fallback] ${candidateLabel(candidate)} failed: ${message}. Retrying with ${candidateLabel(nextCandidate)}.`,
 		);
-		return (await this.disposeCurrentSession(nextIndex)) ? "retry" : "handled";
+		return (await this.disposeCurrentSession(nextIndex, nextCandidate, walk?.turn)) ? "retry" : "handled";
 	}
 
 	private capturedStructuredOutputForAttempt(): boolean {

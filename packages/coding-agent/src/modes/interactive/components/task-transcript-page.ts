@@ -719,7 +719,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private hydrateRunningTurn(session: TaskTranscriptSource, messages: TaskTranscriptView["messages"]): void {
 		if (waitsToRetry(session.chatSession)) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
-			this.chat.hydrateRetryWait();
+			this.chat.hydrateRetryWait(messages);
 		} else if (session.isRunning?.() === true) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.beginExternalPromptLifecycle();

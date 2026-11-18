@@ -428,7 +428,10 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
  * nothing until that turn finished — a stage held mid-turn shows nothing at
  * all. The session's in-flight message closes that window, and the live
  * subscription installed after this continues it delta by delta. Between two
- * attempts of a retry nothing streams, so the chat shows the retry's wait.
+ * attempts of a retry nothing streams, so the chat shows the retry's wait, and
+ * while the stage moves its turn to its next model, the move. A turn that went on
+ * in a new session after such a move counts from its first request, which that
+ * session's messages do not hold.
  */
 function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const handle = liveHandle(ctx);
@@ -436,8 +439,10 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	ctx.chatHost.appendMessages(handle.messages);
 	const streaming = handle.agentSession?.agent?.state.streamingMessage ?? handle.streamingMessage?.();
 	ctx.chatHost.hydrateStreamingAssistantMessage(streaming);
-	if (isLiveHandleStreaming(ctx)) ctx.chatHost.hydrateRunningTurn(handle.messages, streaming);
-	else if (isLiveHandleWaitingToRetry(ctx)) ctx.chatHost.hydrateRetryWait();
+	const turnStartedAt = handle.turnStartedAt;
+	if (isLiveHandleStreaming(ctx)) ctx.chatHost.hydrateRunningTurn(handle.messages, streaming, turnStartedAt);
+	else if (isLiveHandleWaitingToRetry(ctx)) ctx.chatHost.hydrateRetryWait(handle.messages, turnStartedAt);
+	else if (turnStartedAt !== undefined) ctx.chatHost.hydrateModelSwitch(turnStartedAt);
 }
 
 /** The calls a stage with its session released waits on: their results arrive when it reopens, so none is interrupted. */

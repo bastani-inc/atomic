@@ -37,6 +37,7 @@ import { createSessionScopedSingleton } from "../../shared/session-scoped-single
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageQueuedTextOptions, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
+import type { StageTurnState } from "./stage-turn-start.js";
 
 export type StageControlStatus =
 	| "pending"
@@ -106,6 +107,15 @@ export interface StageControlHandle {
 	readonly isRetrying?: boolean;
 	/** False for a status-only watch on another host, which refuses pause commands. */
 	readonly canPause?: boolean;
+	/**
+	 * When the stage's current turn sent its first request, while the turn is under way (a request runs, or a retry or
+	 * a model switch announced the next one). A turn the stage moved to its next model goes on in a new session that
+	 * holds only the requests since the switch, so a chat opened then counts the turn from here. Undefined between
+	 * turns, and from a handle that does not know it (a stage on an older worker).
+	 */
+	readonly turnStartedAt?: number;
+	/** The stage's turn while it may still go on, for a local worker's watch to hand to the root. */
+	turnState?(): StageTurnState | undefined;
 	inFlightAttemptUsage?(): import("../../shared/types.js").WorkflowModelUsage | undefined;
 	/** Set when the stage's session runs in another process. */
 	readonly placement?: StagePlacement;
