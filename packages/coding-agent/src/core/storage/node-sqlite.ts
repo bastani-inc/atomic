@@ -678,7 +678,7 @@ export function sqliteOpenLockPath(databasePath: string): string {
 }
 
 type NativeOpenLocks = Pick<typeof native, "tryAdvisoryLock" | "trySharedAdvisoryLock" | "trySharedAdvisoryLockAsync"> &
-	Partial<Pick<typeof native, "tryAdvisoryLockAsync">>;
+	Partial<Pick<typeof native, "tryAdvisoryLockAsync" | "raiseCurrentThreadPriority">>;
 
 interface HeldOpenLock {
 	readonly lock: { release(): void };
@@ -710,6 +710,21 @@ function openLocks(): NativeOpenLocks | null {
 		}
 	}
 	return nativeOpenLocks;
+}
+
+let waitingThreadRaised = false;
+
+/**
+ * On Windows, raises the thread that opens connections on threads of their own to above-normal priority, once
+ * (#5376). That thread waits for their answers, and for its own file operations, between short bursts of work. At
+ * normal priority, on a machine whose CPUs are all busy, each wake-up could wait behind the busy threads for whole
+ * scheduler time slices, so a fresh process's first transactions took seconds where the same work done without
+ * waiting took milliseconds. Other platforms are unchanged.
+ */
+function raiseWaitingThread(): void {
+	if (waitingThreadRaised || process.platform !== "win32") return;
+	waitingThreadRaised = true;
+	openLocks()?.raiseCurrentThreadPriority?.();
 }
 
 function sqliteTargetFilePath(spec: string): string | undefined {
@@ -2464,6 +2479,7 @@ export async function openNodeSqliteDatabase(
 		// form when it needs it (#5139), and reports its location as the ordinary path, so every reader of it sees the
 		// path it was given.
 		let opened: { readonly connection: ConnectionChannel; readonly location: string | null };
+		if (processRole !== "background") raiseWaitingThread();
 		try {
 			opened =
 				processRole === "background"
