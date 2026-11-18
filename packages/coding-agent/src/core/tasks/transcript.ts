@@ -102,6 +102,12 @@ export function taskTranscriptPage(
 		} else if (message.role === "toolResult") {
 			add({ id: entry.id, kind: "tool-result", source, toolCallId: message.toolCallId });
 		} else if (message.role === "assistant") {
+			// A request that failed, was interrupted or was cut before any content still shows, as its notice.
+			if (
+				message.content.length === 0 &&
+				(message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length")
+			)
+				add({ id: entry.id, kind: "assistant", source });
 			for (const [contentIndex, block] of message.content.entries()) {
 				const identity = { id: `${entry.id}:${contentIndex}`, source: { ...source, contentIndex } };
 				if (block.type === "toolCall") {

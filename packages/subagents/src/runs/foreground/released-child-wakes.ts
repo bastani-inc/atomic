@@ -28,6 +28,7 @@ import {
 	bindResumeDispatcher,
 	isReleasedChildStopPending,
 	openReleasedChildRelaunch,
+	refuseQueuedResumes,
 	settleReleasedChildRelaunch,
 } from "./released-child-resume.js";
 import {
@@ -182,6 +183,8 @@ export function bindReleasedChildWakes(
 			throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
 		// Relaunched with its new run's record written, or not relaunched: what the wake carried stays held for resume.
 		settleReleasedChildRelaunch(key);
+		// A resume queued behind this wake would wait for the run it just started: the child runs, so it is refused.
+		if (outcome.kind === "restored") refuseQueuedResumes(key, record.childId, outcome.taskId);
 		const host = ctx.getAgentTaskHost?.();
 		if (outcome.kind !== "restored" || host === undefined) return;
 		await awaitTaskSettlement(host, outcome.taskId);
@@ -218,7 +221,9 @@ export function bindReleasedChildWakes(
 				if (outcome.kind === "unrestorable")
 					throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
 				// A pause or quit waiting on this wake now finds the run the resume started, and stops it.
-				settleReleasedChildRelaunch(subagentWakeKey(ownerSessionId, record.childId));
+				const key = subagentWakeKey(ownerSessionId, record.childId);
+				settleReleasedChildRelaunch(key);
+				if (outcome.kind === "restored") refuseQueuedResumes(key, record.childId, outcome.taskId);
 				return outcome;
 			},
 			redispatch: (record, slot) =>

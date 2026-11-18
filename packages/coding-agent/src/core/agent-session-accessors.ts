@@ -134,6 +134,11 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				return this._retryPromise !== undefined;
 			},
 		},
+		isWaitingToRetry: {
+			get() {
+				return this._retryAbortController !== undefined;
+			},
+		},
 		autoRetryEnabled: {
 			get() {
 				return this.settingsManager.getRetryEnabled();
