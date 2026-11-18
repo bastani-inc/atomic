@@ -17,6 +17,7 @@ import {
 } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 import { ToolBlock } from "./tool-block.ts";
+import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /**
  * Type guard ensuring a value returned by an extension's custom renderer is a
@@ -80,21 +81,22 @@ export class CustomMessageComponent extends Container {
 		this.rebuild();
 	}
 
-	/** A finished-task card in this message expands on a click on its header, as a tool block does. */
+	/**
+	 * A message that draws anything expands on a click, as Ctrl+O expands it: its card or renderer decides what that
+	 * shows, and a card with nothing more to show stays as it is.
+	 */
 	get expandsOnClick(): boolean {
-		return this.customComponent instanceof TaskCompletionMessage;
+		return this.spacer !== undefined;
 	}
 
 	isExpanded(): boolean {
 		return this._expanded;
 	}
 
-	/** The card's header rows, under the blank row this message leads with. */
-	headerRows(width: number): readonly number[] {
-		const card = this.customComponent;
-		if (!(card instanceof TaskCompletionMessage)) return [];
-		const above = this.spacer?.render(width).length ?? 0;
-		return card.headerRows(width).map((row) => row + above);
+	/** Every row of the card, under the blank row this message leads with. */
+	clickArea(width: number): RowRange | undefined {
+		if (this.spacer === undefined) return undefined;
+		return rowsFrom(this.spacer.render(width).length, this.render(width).length);
 	}
 
 	setExpanded(expanded: boolean): void {

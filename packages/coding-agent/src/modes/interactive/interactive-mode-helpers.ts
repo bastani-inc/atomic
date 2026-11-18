@@ -2,6 +2,7 @@ import { builtinProviders } from "@bastani/atomic-ai/providers/all";
 import { sqliteSessionResumeArgs } from "../../core/session-resume-args.js";
 import { pathExists } from "../../core/tools/path-utils.ts";
 import { quoteForShell } from "./chat-input-actions.ts";
+import { type RowRange, rowsFrom } from "./components/transcript-block-clicks.ts";
 import {
 	APP_NAME,
 	type Api,
@@ -17,7 +18,9 @@ export function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
+/** Text that Ctrl+O, or a click anywhere on it, switches between a collapsed and an expanded form. */
 export class ExpandableText extends Text implements Expandable {
+	readonly expandsOnClick = true;
 	private expanded: boolean;
 	private contentWidth: number | undefined;
 	private readonly textPaddingX: number;
@@ -37,6 +40,14 @@ export class ExpandableText extends Text implements Expandable {
 		this.getExpandedText = getExpandedText;
 		this.expanded = expanded;
 		this.textPaddingX = paddingX;
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(0, this.render(width).length);
 	}
 
 	setExpanded(expanded: boolean): void {

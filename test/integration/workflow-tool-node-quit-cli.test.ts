@@ -312,7 +312,9 @@ class RpcCli {
 	/** Poll until `ready`; a miss is a broken harness step, so it throws. */
 	async waitUntil(ready: () => boolean, label: string, timeoutMs = STEP_TIMEOUT_MS): Promise<void> {
 		if (await this.settle(ready, timeoutMs)) return;
-		throw new Error(`timed out after ${timeoutMs}ms waiting for ${label}.\nCLI stderr:\n${this.stderr}`);
+		throw new Error(
+			`timed out after ${timeoutMs}ms waiting for ${label}.\nCLI stderr:\n${this.stderr}\nRecent RPC events:\n${JSON.stringify(this.lines.slice(-80), null, 2)}`,
+		);
 	}
 
 	async prompt(id: string, message: string, timeoutMs = STEP_TIMEOUT_MS): Promise<void> {

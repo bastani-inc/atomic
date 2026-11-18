@@ -18,6 +18,7 @@ import {
 	type ToolBlockStatus,
 } from "./tool-block.ts";
 import { type BuiltinToolBlockContentPart, builtinToolBlockPresentation } from "./tool-block-families.ts";
+import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 function previewRow(row: string): string {
 	return process.env.NO_COLOR === undefined ? row : stripTerminalSequences(row);
@@ -585,18 +586,9 @@ export class TaskCompletionMessage implements Component {
 		return this.expanded;
 	}
 
-	/** Each notice's first row, its `● … finished` line; notices after the first follow a blank row. */
-	headerRows(width: number): readonly number[] {
-		if (width < 1) return [];
-		const rows: number[] = [];
-		let row = 0;
-		for (const [index, notice] of this.notices.entries()) {
-			if (index > 0) row += 1;
-			const lines = this.renderNotice(notice, width);
-			if (lines.length > 0) rows.push(row);
-			row += lines.length;
-		}
-		return rows;
+	/** Every row of the card, each notice's `● … finished` line and what it shows under it. */
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(0, this.render(width).length);
 	}
 
 	setExpanded(expanded: boolean): void {

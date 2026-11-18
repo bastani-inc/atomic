@@ -110,6 +110,7 @@ function makeHarness(): Harness {
 		showWorkingLoaderNow: InteractiveModeBase.prototype.showWorkingLoaderNow,
 		setWorkingVisible: InteractiveModeBase.prototype.setWorkingVisible,
 		rebuildChatFromMessages: () => {},
+		appendProjectTrustWarning: () => {},
 		addCompactionBoundaryToChat: () => {},
 		flushCompactionQueue: () => Promise.resolve(),
 		checkShutdownRequested: () => Promise.resolve(),
