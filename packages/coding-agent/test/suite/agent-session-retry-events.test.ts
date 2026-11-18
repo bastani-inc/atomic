@@ -51,6 +51,34 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.session.isRetrying).toBe(false);
 	});
 
+	it("reads as retrying and not streaming while it waits between attempts, and as neither once the retry succeeds (#5483)", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 200 } } });
+		harnesses.push(harness);
+		const seen: string[] = [];
+		const read = (moment: string) =>
+			seen.push(`${moment}: retry ${harness.session.retryAttempt}, streaming ${harness.session.isStreaming}`);
+		harness.session.subscribe((event) => {
+			if (event.type === "agent_start") read("attempt");
+			// Due well before the backoff's own timer, which is set after this one.
+			if (event.type === "auto_retry_start") setTimeout(() => read("waiting"), 20);
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fauxAssistantMessage("recovered"),
+		]);
+
+		await harness.session.prompt("test");
+		read("done");
+
+		expect(seen).toEqual([
+			"attempt: retry 0, streaming true",
+			"waiting: retry 1, streaming false",
+			"attempt: retry 1, streaming true",
+			"done: retry 0, streaming false",
+		]);
+	});
+
 	it("retries multiple transient failures and succeeds on the final attempt", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
 		harnesses.push(harness);

@@ -105,8 +105,7 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 		assert.ok(renders > 0);
 		await fixture.settle();
 		await waitForRepaint(() => settledRenders > 0, "once the task settled");
-		assert.equal(currentWidget(), mounted, "a finished task stays a while");
-		assert.match(stripVTControlCharacters(mounted.render(80).join("\n")), /^ {2}✓ worker .* done · 41m$/m);
+		assert.equal(currentWidget(), undefined, "a finished subagent leaves the panel at once");
 		assert.equal(fixture.store.backgroundTasks.length, 1, "history remains available in /tasks");
 		dispose();
 		await fixture.start("Should not mount after disposal");
@@ -167,7 +166,7 @@ test("a final task settlement deferred by the 8ms/50ms refresh budget schedules 
 		now += PANEL_REFRESH_WINDOW_MS;
 		vi.advanceTimersByTime(PANEL_REFRESH_WINDOW_MS);
 		assert.equal(settledRenders, 1, "deferred refresh calls requestRender when the 50ms budget window expires");
-		assert.match(stripVTControlCharacters(widget.render(80).join("\n")), /^ {2}✓ worker .* done · 41m$/m);
+		assert.equal(widget, undefined, "the finished subagent left the panel");
 	} finally {
 		dispose();
 		perfSpy.mockRestore();

@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { test, vi } from "vitest";
+import { test } from "vitest";
 import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
-import { AGENT_PANEL_DROP_MS } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	agentPanelHasRows,
@@ -15,19 +14,18 @@ import {
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
 
 test.each(["running", "missing"])(
-	"a focused pass that observes a finished extension row %s invalidates the has-rows cache (#5233)",
+	"a focused pass that observes a retired stopped extension row %s invalidates the has-rows cache (#5233)",
 	(change) => {
-		let now = 10_000;
-		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 		const hub = new AgentPanelSourceHub();
-		const finished: AgentPanelItem = {
+		const stopped: AgentPanelItem = {
 			id: "ext:helper",
 			kind: "agent",
 			name: "helper",
 			task: "check",
-			state: "done",
+			state: "stopped",
 		};
-		let items = [finished];
+		const other: AgentPanelItem = { id: "ext:other", kind: "agent", name: "other", task: "build", state: "running" };
+		let items = [stopped, other];
 		let notify = () => {};
 		hub.register({
 			items: () => items,
@@ -37,27 +35,18 @@ test.each(["running", "missing"])(
 			},
 		});
 		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-		try {
-			assert.equal(agentPanelHasRows(session), true);
-			now += AGENT_PANEL_DROP_MS + 1;
-			assert.equal(agentPanelHasRows(session), false);
-			items = change === "running" ? [{ ...finished, state: "running" }] : [];
-			notify();
-			agentPanelRows(session);
-			items = [finished];
-			notify();
-			assert.deepEqual(
-				agentPanelRows(session).map((row) => row.id),
-				[finished.id],
-			);
-			assert.equal(
-				agentPanelHasRows(session),
-				true,
-				"the idle panel and its focus key agree with the focused panel",
-			);
-		} finally {
-			clock.mockRestore();
-		}
+		assert.equal(agentPanelHasRows(session), true);
+		// Nothing is active any more: the stopped row leaves with the finished one.
+		items = [stopped, { ...other, state: "done" }];
+		notify();
+		assert.equal(agentPanelHasRows(session), false);
+		items = change === "running" ? [{ ...stopped, state: "running" }] : [];
+		notify();
+		agentPanelRows(session);
+		items = [stopped, { ...other, id: "ext:other-2" }];
+		notify();
+		assert.deepEqual(new Set(agentPanelRows(session).map((row) => row.id)), new Set([stopped.id, "ext:other-2"]));
+		assert.equal(agentPanelHasRows(session), true, "the idle panel and its focus key agree with the focused panel");
 	},
 );
 
