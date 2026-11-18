@@ -180,6 +180,22 @@ exec "$REAL_TMUX" -S "$SOCKET" "$@"
 		}
 	});
 
+	test("wait-for-text refuses to poll without a fractional sleep timer (#5566)", () => {
+		const sleepPath = join(stubBin, "sleep");
+		writeFileSync(sleepPath, '#!/bin/sh\ncase "$1" in *.*) exit 1 ;; esac\nexec /bin/sleep "$@"\n');
+		chmodSync(sleepPath, 0o755);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready"], { STUB_PANE: "ready" });
+		assert.notEqual(result.exitCode, 0);
+		assert.match(result.stderr, /sleep.*fractional seconds/u);
+	});
+
+	test("wait-for-text does not wrap a long decimal timeout into an expired deadline (#5566)", () => {
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "18446744073709551616"], {
+			STUB_PANE: "ready",
+		});
+		assert.equal(result.exitCode, 0, result.stderr);
+	});
+
 	test("wait-for-text does not capture even a matching pane with a zero timeout (#5566)", () => {
 		writeFileSync(join(stubBin, "tmux"), '#!/usr/bin/env bash\ntouch "$HOME/probed"\necho ready\n');
 		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "0"]);

@@ -76,22 +76,31 @@ fi
 monotonic_cs() {
   if [[ -r /proc/uptime ]]; then
     local seconds fraction rest
-    IFS='. ' read -r seconds fraction rest </proc/uptime
+    IFS='. ' read -r seconds fraction rest </proc/uptime || return 1
+    fraction=${fraction}00
     printf '%s%s\n' "$seconds" "${fraction:0:2}"
   else
     perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%.0f\n", int(100 * clock_gettime(CLOCK_MONOTONIC))'
   fi
 }
 
+if ! LC_NUMERIC=C sleep 0.0 2>/dev/null; then
+  echo 'The wait timer requires a sleep command that accepts fractional seconds.' >&2
+  exit 1
+fi
 if ! start=$(monotonic_cs); then
   echo 'A monotonic clock is required: enable /proc/uptime or install Perl with Time::HiRes.' >&2
   exit 1
 fi
-deadline=$((10#$start + 100 * 10#$timeout))
-before_deadline() {
+# Bound each timer sleep to a day, not the overall wait. Large decimal budgets
+# must not overflow shell arithmetic or the platform's sleep primitive.
+remaining_cs() {
   local now
-  now=$(monotonic_cs) && (( 10#$now < deadline ))
+  now=$(monotonic_cs) || return 1
+  awk -v elapsed="$((10#$now - 10#$start))" -v timeout="$timeout" '
+    BEGIN { left = timeout * 100 - elapsed; if (left <= 0) exit 1; printf "%.0f\n", (left > 8640000 ? 8640000 : left) }'
 }
+before_deadline() { remaining_cs >/dev/null; }
 
 scratch=$(mktemp -d)
 worker=""
@@ -119,27 +128,33 @@ poll() {
   return 124
 }
 
-# Keep the entire poll (including stuck captures and long sleeps) in its own
-# process group. Only the parent waits on the deadline; it never waits on tmux.
-exec 3< <(
-  set -m
-  (set +m; poll) &
-  pid=$!
-  echo "$pid"
-  status=0
-  wait "$pid" 2>/dev/null || status=$?
-  echo "$status"
-)
-IFS= read -r worker <&3
-now=$(monotonic_cs)
-remaining=$((deadline - 10#$now))
-printf -v wait_time '%d.%02d' "$((remaining / 100))" "$((remaining % 100))"
-if (( remaining > 0 )) && IFS= read -r -t "$wait_time" status <&3 && [[ "$status" != 124 ]]; then
-  worker=""
-  exit "$status"
-fi
+watch_deadline() {
+  local remaining duration
+  while remaining=$(remaining_cs); do
+    printf -v duration '%d.%02d' "$((remaining / 100))" "$((remaining % 100))"
+    LC_NUMERIC=C sleep "$duration" || { echo 1; return; }
+  done
+  echo 124
+}
 
+# The poll and its timer share a private process group. The first status on the
+# pipe wins. Stopping the group cancels the other, even inside tmux or sleep.
+set -m
+(
+  set +m
+  IFS= read -r result < <(
+    (status=0; poll || status=$?; echo "$status") &
+    watch_deadline &
+    wait
+  )
+  exit "$result"
+) &
+worker=$!
+status=0
+wait "$worker" 2>/dev/null || status=$?
 stop_worker
+if [[ "$status" != 124 ]]; then exit "$status"; fi
+
 echo "Timed out after ${timeout}s waiting for pattern: $pattern" >&2
 echo "Last ${lines} lines from $target:" >&2
 cat "$scratch/pane" >&2
