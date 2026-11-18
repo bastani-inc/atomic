@@ -1964,12 +1964,13 @@ $global:AtomicFixtureLatestApiTag = "2.0.0"
 # falls back to the REST API as when github.com gives no clear answer.
 $global:AtomicFixtureWebPages = $false
 $global:AtomicFixtureApiRateLimited = $false
+$global:AtomicFixtureTagRedirect = $null
 
 # An HTTP error shaped like Invoke-WebRequest's: the exception carries the response status and headers.
 function global:New-AtomicFixtureHttpError {
-    param([int]$StatusCode, [hashtable]$ResponseHeaders)
+    param([int]$StatusCode, [hashtable]$ResponseHeaders, [string]$ResponseUri = "https://api.github.com/")
     $exception = New-Object System.Exception ("The remote server returned an error: (" + $StatusCode + ").")
-    Add-Member -InputObject $exception -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = $StatusCode; Headers = $ResponseHeaders })
+    Add-Member -InputObject $exception -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = $StatusCode; Headers = $ResponseHeaders; ResponseUri = [Uri]$ResponseUri })
     return $exception
 }
 
@@ -1980,7 +1981,8 @@ function global:Invoke-WebRequest {
         [string]$OutFile,
         [hashtable]$Headers,
         [switch]$UseBasicParsing,
-        [int]$MaximumRedirection
+        [int]$MaximumRedirection,
+        [string]$Method
     )
 
     $authorization = $null
@@ -2004,10 +2006,13 @@ function global:Invoke-WebRequest {
 
     if ($global:AtomicFixtureWebPages -and $Uri -match '^https://github\.com/bastani-inc/atomic/releases/tag/([^/]+)$') {
         $pageTag = [Uri]::UnescapeDataString($Matches[1])
-        if (Test-Path -LiteralPath (Join-Path $global:AtomicFixtureAssetRoot $pageTag)) {
-            return [pscustomobject]@{ StatusCode = 200; Content = "<html></html>"; Headers = @{} }
+        if (-not [string]::IsNullOrWhiteSpace($global:AtomicFixtureTagRedirect)) {
+            return [pscustomobject]@{ StatusCode = 200; Content = "<html></html>"; Headers = @{}; BaseResponse = [pscustomobject]@{ ResponseUri = [Uri]$global:AtomicFixtureTagRedirect } }
         }
-        throw (New-AtomicFixtureHttpError 404 @{})
+        if (Test-Path -LiteralPath (Join-Path $global:AtomicFixtureAssetRoot $pageTag)) {
+            return [pscustomobject]@{ StatusCode = 200; Content = "<html></html>"; Headers = @{}; BaseResponse = [pscustomobject]@{ ResponseUri = [Uri]$Uri } }
+        }
+        throw (New-AtomicFixtureHttpError 404 @{} $Uri)
     }
 
     if ($Uri -match '^https://api\.github\.com/') {
@@ -3055,6 +3060,16 @@ try {
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $installRoot "versions\1.0.0\atomic.exe")) "an exact tag did not install while the GitHub API was rate limited"
         Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '^https://api\.github\.com/' }).Count -eq 0) "an exact tag confirmed on github.com still queried the API"
         Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -eq "https://github.com/bastani-inc/atomic/releases/tag/1.0.0" }).Count -eq 1) "the exact tag was not confirmed on github.com"
+
+        foreach ($redirectTarget in @("https://github.com/bastani-inc/atomic/releases/tag/2.0.0", "https://github.com/bastani-inc/atomic")) {
+            $global:AtomicFixtureTagRedirect = $redirectTarget
+            $redirected = $null
+            try { & $InstallerPath -Ref "1.0.0" -Force | Out-Null }
+            catch { $redirected = $_ }
+            $global:AtomicFixtureTagRedirect = $null
+            Assert-Fixture ($null -ne $redirected) "a redirect to $redirectTarget confirmed the requested tag"
+            Assert-Fixture ($redirected.Exception.Message -match "GitHub's API rate limit was reached") "a redirect to $redirectTarget did not fall back to the API: $($redirected.Exception.Message)"
+        }
 
         $mark = $global:AtomicFixtureRequests.Count
         $missing = $null
@@ -4315,9 +4330,12 @@ powershellTest("PowerShell 5.1 fixture fails closed when an exact-tag response n
 	runPowerShellFixture("ref-identity");
 });
 
-powershellTest("PowerShell 5.1 fixture installs an exact tag while the GitHub API is rate limited and explains API failures", () => {
-	runPowerShellFixture("api-rate-limit");
-});
+powershellTest(
+	"PowerShell 5.1 fixture installs an exact tag while the GitHub API is rate limited and explains API failures",
+	() => {
+		runPowerShellFixture("api-rate-limit");
+	},
+);
 powershellTest("PowerShell 5.1 fixture never appends a semicolon-containing bin directory to PATH", () => {
 	runPowerShellFixture("semicolon-bin");
 });

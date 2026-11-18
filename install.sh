@@ -671,24 +671,27 @@ clear_api_auth() {
     unset TOKEN
 }
 
-# The status code of the last HTTP response line in a header dump (curl -D, wget -S);
-# BusyBox wget reports errors as "server returned error: HTTP/1.1 404 Not Found".
+# The status code of the last HTTP status line in a header dump (curl -D, wget -S): a
+# line that starts with HTTP/ after its indentation, or BusyBox wget's
+# "server returned error: HTTP/1.1 404 Not Found". Header values that merely contain
+# HTTP/ (such as `Server: BaseHTTP/0.6`) are not status lines.
 last_http_status() {
     last_status=
     while IFS= read -r status_line || [ -n "$status_line" ]; do
+        status_line=${status_line#"${status_line%%[! ]*}"}
         case $status_line in
-            *HTTP/*)
-                status_rest=${status_line##*HTTP/}
-                status_rest=${status_rest#* }
-                last_status=${status_rest%% *}
-                last_status=${last_status%"$CARRIAGE_RETURN"}
-                ;;
+            HTTP/*) status_rest=$status_line ;;
+            *'server returned error: HTTP/'*) status_rest=HTTP/${status_line##*'server returned error: HTTP/'} ;;
+            *) continue ;;
+        esac
+        status_rest=${status_rest#* }
+        status_word=${status_rest%% *}
+        status_word=${status_word%"$CARRIAGE_RETURN"}
+        case $status_word in
+            [123456789][0123456789][0123456789]) last_status=$status_word ;;
         esac
     done < "$1"
-    case $last_status in
-        [123456789][0123456789][0123456789]) printf '%s' "$last_status" ;;
-        *) printf '000' ;;
-    esac
+    printf '%s' "${last_status:-000}"
 }
 
 file_text() {
@@ -757,13 +760,22 @@ api_request() {
     fi
 }
 
-# Whether the release page for an encoded tag exists on github.com: prints found,
-# missing, or unknown when github.com gave no clear answer. github.com is not subject
-# to the REST API's 60-requests-an-hour limit for unauthenticated clients.
+# Whether the release page of a requested tag exists on github.com, asked with a HEAD
+# request so no page body is downloaded: prints found, missing, or unknown when
+# github.com gave no clear answer. github.com is not subject
+# to the REST API's 60-requests-an-hour limit for unauthenticated clients. An answer
+# counts only when the page that answered is the requested tag's own release page,
+# so a redirect to another release or another page never confirms the tag.
 release_page_status() {
     release_page_url=$GITHUB_WEB/$REPOSITORY/releases/tag/$1
+    release_page_effective=$release_page_url
     if [ "$DOWNLOADER" = curl ]; then
-        release_page_code=$(curl -sL -o /dev/null -w '%{http_code}' "$release_page_url" 2>/dev/null) || :
+        release_page_answer=$(curl -sIL -o /dev/null -w '%{http_code} %{url_effective}' "$release_page_url" 2>/dev/null) || :
+        release_page_code=${release_page_answer%% *}
+        case $release_page_answer in
+            *' '*) release_page_effective=${release_page_answer#* } ;;
+            *) release_page_effective= ;;
+        esac
     else
         release_page_headers=$TEMP_DIR/release-page-headers
         if wget -S --spider "$release_page_url" > /dev/null 2>"$release_page_headers"; then
@@ -771,7 +783,26 @@ release_page_status() {
         else
             release_page_code=$(last_http_status "$release_page_headers")
         fi
+        while IFS= read -r header_line || [ -n "$header_line" ]; do
+            case $header_line in
+                *Location:*|*location:*)
+                    header_value=${header_line#*:}
+                    for header_word in $header_value; do
+                        release_page_effective=$header_word
+                        break
+                    done
+                    ;;
+            esac
+        done < "$release_page_headers"
         rm -f "$release_page_headers"
+    fi
+    case $release_page_effective in
+        "$GITHUB_WEB/$REPOSITORY/releases/tag/"*|"/$REPOSITORY/releases/tag/"*) ;;
+        *) printf 'unknown'; return 0 ;;
+    esac
+    if ! release_page_tag=$(tag_from_release_url "$release_page_effective") || [ "$release_page_tag" != "$2" ]; then
+        printf 'unknown'
+        return 0
     fi
     case $release_page_code in
         200) printf 'found' ;;
@@ -976,7 +1007,7 @@ tag_from_release_url() {
 resolve_redirect_tag() {
     latest_url=$GITHUB_WEB/$REPOSITORY/releases/latest
     if [ "$DOWNLOADER" = curl ]; then
-        if latest_effective_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$latest_url" 2>/dev/null); then
+        if latest_effective_url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$latest_url" 2>/dev/null); then
             tag_from_release_url "$latest_effective_url"
             return
         fi
@@ -1219,7 +1250,7 @@ if [ -n "$REQUESTED_REF" ]; then
     REQUESTED_REF_ENCODED=$(percent_encode "$REQUESTED_REF")
     # An exact tag is confirmed on github.com; the REST API, limited to 60 requests an
     # hour per address without a token, is asked only when github.com cannot tell.
-    case $(release_page_status "$REQUESTED_REF_ENCODED") in
+    case $(release_page_status "$REQUESTED_REF_ENCODED" "$REQUESTED_REF") in
         found) RELEASE_TAG=$REQUESTED_REF ;;
         missing) fail "release $REQUESTED_REF not found" ;;
         *) API_URL=$TAGS_API/$REQUESTED_REF_ENCODED ;;
@@ -1255,6 +1286,9 @@ if [ -z "$RELEASE_TAG" ]; then
             fi
             if [ "$API_STATUS" = 000 ]; then
                 fail "failed to resolve the GitHub release: no response from the GitHub API"
+            fi
+            if [ "$API_STATUS" = 403 ]; then
+                fail "failed to resolve the GitHub release: GitHub refused the API request (HTTP 403), usually its API rate limit for this network. Set GITHUB_TOKEN (for example GITHUB_TOKEN=\$(gh auth token)) or try again later"
             fi
             fail "failed to resolve the GitHub release (HTTP $API_STATUS)"
             ;;

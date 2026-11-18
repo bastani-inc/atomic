@@ -470,14 +470,63 @@ function Invoke-AtomicApiRequest {
     }
 }
 
-# Whether the release page of an encoded tag exists on github.com: "found", "missing",
+# The address that finally answered a request: HttpWebResponse.ResponseUri on Windows
+# PowerShell, HttpResponseMessage.RequestMessage.RequestUri on PowerShell 7.
+function Get-AtomicResponseUri {
+    param($Response)
+
+    if ($null -eq $Response) {
+        return $null
+    }
+    $candidates = @($Response)
+    $baseProperty = $Response.PSObject.Properties["BaseResponse"]
+    if ($null -ne $baseProperty -and $null -ne $baseProperty.Value) {
+        $candidates = @($baseProperty.Value) + $candidates
+    }
+    foreach ($candidate in $candidates) {
+        $uriProperty = $candidate.PSObject.Properties["ResponseUri"]
+        if ($null -ne $uriProperty -and $null -ne $uriProperty.Value) {
+            return [string]$uriProperty.Value.AbsoluteUri
+        }
+        $requestProperty = $candidate.PSObject.Properties["RequestMessage"]
+        if ($null -ne $requestProperty -and $null -ne $requestProperty.Value) {
+            $requestUriProperty = $requestProperty.Value.PSObject.Properties["RequestUri"]
+            if ($null -ne $requestUriProperty -and $null -ne $requestUriProperty.Value) {
+                return [string]$requestUriProperty.Value.AbsoluteUri
+            }
+        }
+    }
+    return $null
+}
+
+# Whether an address is the release page of exactly the requested tag.
+function Test-AtomicReleasePageUri {
+    param([string]$Uri, [string]$Tag)
+
+    if ([string]::IsNullOrWhiteSpace($Uri)) {
+        return $false
+    }
+    $prefix = "https://github.com/bastani-inc/atomic/releases/tag/"
+    if (-not $Uri.StartsWith($prefix, [StringComparison]::Ordinal)) {
+        return $false
+    }
+    $pageTag = $Uri.Substring($prefix.Length) -replace '[?#].*$', ''
+    return ([Uri]::UnescapeDataString($pageTag) -ceq $Tag)
+}
+
+# Whether the release page of a requested tag exists on github.com: "found", "missing",
 # or "unknown" when github.com gave no clear answer. github.com is not subject to the
-# REST API's 60-requests-an-hour limit for unauthenticated clients.
+# REST API's 60-requests-an-hour limit for unauthenticated clients. An answer counts only
+# when the page that answered is the requested tag's own release page, so a redirect to
+# another release or another page never confirms the tag.
 function Get-AtomicReleasePageStatus {
-    param([string]$EncodedTag)
+    param([string]$EncodedTag, [string]$Tag)
 
     try {
-        $response = Invoke-WebRequest -Uri "https://github.com/bastani-inc/atomic/releases/tag/$EncodedTag" -UseBasicParsing -ErrorAction Stop
+        $response = Invoke-WebRequest -Uri "https://github.com/bastani-inc/atomic/releases/tag/$EncodedTag" -Method Head -UseBasicParsing -ErrorAction Stop
+        if (-not (Test-AtomicReleasePageUri (Get-AtomicResponseUri $response) $Tag)) {
+            return "unknown"
+        }
         $statusProperty = $response.PSObject.Properties["StatusCode"]
         if ($null -ne $statusProperty -and [int]$statusProperty.Value -eq 200) {
             return "found"
@@ -485,7 +534,7 @@ function Get-AtomicReleasePageStatus {
         return "unknown"
     }
     catch {
-        if ((Get-AtomicErrorStatusCode $_) -eq 404) {
+        if ((Get-AtomicErrorStatusCode $_) -eq 404 -and (Test-AtomicReleasePageUri (Get-AtomicResponseUri (Get-AtomicErrorResponse $_)) $Tag)) {
             return "missing"
         }
         return "unknown"
@@ -1445,7 +1494,7 @@ else {
     $encodedRequestedRef = [Uri]::EscapeDataString($requestedRef)
     # An exact tag is confirmed on github.com; the REST API, limited to 60 requests an
     # hour per address without a token, is asked only when github.com cannot tell.
-    $releasePageStatus = Get-AtomicReleasePageStatus $encodedRequestedRef
+    $releasePageStatus = Get-AtomicReleasePageStatus $encodedRequestedRef $requestedRef
     if ($releasePageStatus -eq "found") {
         $releaseTag = $requestedRef
     }

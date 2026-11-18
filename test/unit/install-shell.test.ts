@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
@@ -353,17 +354,29 @@ function fixtureResponder(downloader: "curl" | "wget"): string[] {
 	];
 	if (downloader === "curl")
 		return [
+			"write_status() {",
+			"    case $write_out in",
+			`        *http_code*url_effective*) printf '%s %s' "$1" "${shellExpansion("effective_url:-$url")}" ;;`,
+			"        *http_code*) printf '%s' \"$1\" ;;",
+			"    esac",
+			"}",
 			"respond() {",
-			'    if [ -n "$header_out" ]; then { printf \'HTTP/2 %s\\r\\n\' "$1"; ' + headers[0] + '; } > "$header_out"; fi',
-			'    case $1 in 2*) ;; *) if [ "$fail_mode" = 1 ]; then case $write_out in *http_code*) printf \'%s\' "$1" ;; esac; exit 22; fi ;; esac',
+			'    if [ -n "$header_out" ]; then { printf \'HTTP/2 %s\\r\\n\' "$1"; ' +
+				headers[0] +
+				'; } > "$header_out"; fi',
+			'    case $1 in 2*) ;; *) if [ "$fail_mode" = 1 ]; then write_status "$1"; exit 22; fi ;; esac',
 			'    if [ -n "$output" ]; then printf \'%s\' "$2" > "$output"; else printf \'%s\' "$2"; fi',
-			'    case $write_out in *http_code*) printf \'%s\' "$1" ;; esac',
+			'    write_status "$1"',
 			"    exit 0",
 			"}",
 		];
 	return [
 		"respond() {",
-		'    if [ "$server_response" = 1 ] || [ "$spider" = 1 ]; then { printf \'  HTTP/1.1 %s\\n\' "$1"; ' + headers[0] + '; } >&2; fi',
+		// BusyBox wget reports a failed request only as `server returned error`, without its headers or body.
+		`    if [ "${shellExpansion("ATOMIC_FIXTURE_WGET_KIND:-gnu")}" = busybox ]; then case $1 in 2*) ;; *) printf 'wget: server returned error: HTTP/1.1 %s Error\\n' "$1" >&2; exit 1 ;; esac; fi`,
+		'    if [ "$server_response" = 1 ] || [ "$spider" = 1 ]; then { printf \'  HTTP/1.1 %s\\n\' "$1"; ' +
+			headers[0] +
+			"; } >&2; fi",
 		"    case $1 in 2*) ;; *) exit 8 ;; esac",
 		'    [ "$spider" = 1 ] && exit 0',
 		'    if [ -n "$output" ] && [ "$output" != - ]; then printf \'%s\' "$2" > "$output"; else printf \'%s\' "$2"; fi',
@@ -374,19 +387,28 @@ function fixtureResponder(downloader: "curl" | "wget"): string[] {
 
 /** The GitHub release page and REST API routes of the fixture downloaders. */
 function fixtureGithubRoutes(downloader: "curl" | "wget"): string[] {
-	const networkFailure = downloader === "curl" ? 'case $write_out in *http_code*) printf 000 ;; esac; exit 6' : "exit 4";
+	const networkFailure =
+		downloader === "curl" ? "case $write_out in *http_code*) printf 000 ;; esac; exit 6" : "exit 4";
 	const apiFailure = downloader === "curl" ? "exit 22" : "exit 1";
 	const apiStatus = [
 		`        case "${shellExpansion("ATOMIC_FIXTURE_API_STATUS:-")}" in`,
-		"            403) respond 403 '{\"message\":\"API rate limit exceeded for 203.0.113.7. (But here\\u0027s the good news: Authenticated requests get a higher rate limit.)\"}' ;;",
-		"            404) respond 404 '{\"message\":\"Not Found\"}' ;;",
+		'            403) respond 403 \'{"message":"API rate limit exceeded for 203.0.113.7. (But here\\u0027s the good news: Authenticated requests get a higher rate limit.)"}\' ;;',
+		'            404) respond 404 \'{"message":"Not Found"}\' ;;',
 		"        esac",
 	];
 	return [
 		"    https://github.com/bastani-inc/atomic/releases/tag/*)",
 		`        [ "${shellExpansion("ATOMIC_FIXTURE_WEB_FAIL:-0")}" = 1 ] && { ${networkFailure}; }`,
 		`        tag=${shellExpansion("url##*/")}`,
-		'        if [ -d "$ATOMIC_FIXTURE_RELEASES/$tag" ]; then respond 200 \'<html></html>\'; else respond 404 \'Not Found\'; fi',
+		`        if [ -n "${shellExpansion("ATOMIC_FIXTURE_TAG_REDIRECT:-")}" ]; then`,
+		...(downloader === "curl"
+			? ["            effective_url=$ATOMIC_FIXTURE_TAG_REDIRECT"]
+			: [
+					"            printf '  HTTP/1.1 302 Found\\n  Location: %s [following]\\n' \"$ATOMIC_FIXTURE_TAG_REDIRECT\" >&2",
+				]),
+		"            respond 200 '<html></html>'",
+		"        fi",
+		"        if [ -d \"$ATOMIC_FIXTURE_RELEASES/$tag\" ]; then respond 200 '<html></html>'; else respond 404 'Not Found'; fi",
 		"        ;;",
 		"    https://api.github.com/repos/bastani-inc/atomic/releases/latest)",
 		`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && ${apiFailure}`,
@@ -815,7 +837,7 @@ unixTest("shell installer follows the stable redirect, installs the full tar pay
 		);
 		assert.equal(pathExportCommand(result, fixture.binDir), `export PATH='${fixture.binDir}':"$PATH"`);
 		const requests = readFileSync(fixture.requestLog, "utf8");
-		assert.match(requests, /GET https:\/\/github\.com\/bastani-inc\/atomic\/releases\/latest/u);
+		assert.match(requests, /HEAD https:\/\/github\.com\/bastani-inc\/atomic\/releases\/latest/u);
 		assert.doesNotMatch(requests, /api\.github\.com/u);
 		assert.match(
 			requests,
@@ -1417,7 +1439,7 @@ unixTest("ATOMIC_RELEASE_BASE_URL redirects only the asset and checksum download
 		assertSuccess(result);
 		assert.equal(currentVersion(fixture), "1.0.0");
 		const requests = readFileSync(fixture.requestLog, "utf8");
-		assert.match(requests, /GET https:\/\/github\.com\/bastani-inc\/atomic\/releases\/tag\/1\.0\.0\n/u);
+		assert.match(requests, /HEAD https:\/\/github\.com\/bastani-inc\/atomic\/releases\/tag\/1\.0\.0\n/u);
 		assert.match(
 			requests,
 			new RegExp(`HEAD ${overrideReleaseBaseQuoted}\\/1\\.0\\.0\\/atomic-linux-x64\\.tar\\.gz\n`, "u"),
@@ -1719,6 +1741,170 @@ unixTest("shell installer installs an exact tag through github.com while the Git
 	}
 });
 
+unixTest("shell installer does not accept a redirect to another page as confirming an exact tag", () => {
+	for (const downloader of ["curl", "wget"] as const) {
+		for (const target of [
+			"https://github.com/bastani-inc/atomic/releases/tag/2.0.0",
+			"https://github.com/bastani-inc/atomic",
+		]) {
+			const fixture = createFixture();
+			try {
+				const result = fixture.run({
+					downloader,
+					args: ["--ref", "1.0.0"],
+					environment: { ATOMIC_FIXTURE_TAG_REDIRECT: target, ATOMIC_FIXTURE_TAGS_TAG: "2.0.0" },
+				});
+				assert.notEqual(result.exitCode, 0, `${downloader} accepted a redirect to ${target}`);
+				assert.match(output(result), /returned release 2\.0\.0 for requested tag 1\.0\.0/u);
+				const requests = readFileSync(fixture.requestLog, "utf8");
+				assert.match(requests, /releases\/tags\/1\.0\.0/u);
+				assert.doesNotMatch(requests, /releases\/download\//u);
+			} finally {
+				fixture.cleanup();
+			}
+		}
+	}
+});
+
+/**
+ * A local HTTP server standing in for github.com (`/web`) and api.github.com (`/api`), so the real curl and wget
+ * binaries parse real responses. The release page answers 503, so a pinned tag uses the API. Its `Server` header contains `HTTP/`, which a status parser must not mistake for a
+ * status line. `apiMode` "limited" answers the API with GitHub's rate-limit response.
+ */
+const fakeGithubServer = String.raw`
+import { createReadStream, existsSync, statSync } from "node:fs";
+import { createServer } from "node:http";
+import { join } from "node:path";
+const [releasesRoot, apiMode] = process.argv.slice(2);
+const server = createServer((request, response) => {
+	const url = new URL(request.url, "http://localhost");
+	const send = (status, headers, body = "") => {
+		response.writeHead(status, { Server: "BaseHTTP/0.6 Python/3.12", ...headers });
+		response.end(request.method === "HEAD" ? "" : body);
+	};
+	let match = url.pathname.match(/^\/api\/repos\/bastani-inc\/atomic\/releases\/tags\/([^/]+)$/);
+	if (match) {
+		if (apiMode === "limited")
+			return send(403, { "Content-Type": "application/json", "X-RateLimit-Remaining": "0" }, JSON.stringify({ message: "API rate limit exceeded for 203.0.113.7." }));
+		return send(200, { "Content-Type": "application/json", "X-RateLimit-Remaining": "59" }, JSON.stringify({ tag_name: decodeURIComponent(match[1]) }));
+	}
+	if (url.pathname === "/web/bastani-inc/atomic/releases/latest") return send(302, { Location: "/web/bastani-inc/atomic/releases/tag/2.0.0" });
+	// The release page is unavailable, so a pinned tag falls back to the API this server answers.
+	if (/^\/web\/bastani-inc\/atomic\/releases\/tag\/[^/]+$/.test(url.pathname)) return send(503, {}, "Unavailable");
+	match = url.pathname.match(/^\/web\/bastani-inc\/atomic\/releases\/download\/([^/]+)\/([^/]+)$/);
+	if (match) {
+		const path = join(releasesRoot, match[1], match[2]);
+		if (!existsSync(path)) return send(404, {}, "Not Found");
+		response.writeHead(200, { Server: "BaseHTTP/0.6 Python/3.12", "Content-Length": statSync(path).size });
+		if (request.method === "HEAD") return response.end();
+		return createReadStream(path).pipe(response);
+	}
+	send(404, {}, "Not Found");
+});
+server.listen(0, "127.0.0.1", () => process.stdout.write(server.address().port + "\n"));
+`;
+
+async function withFakeGithub<T>(
+	releasesRoot: string,
+	apiMode: "ok" | "limited",
+	use: (origin: string) => T,
+): Promise<T> {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-fake-github-"));
+	const script = join(directory, "server.mjs");
+	writeFileSync(script, fakeGithubServer);
+	const child = spawn(process.execPath, [script, releasesRoot, apiMode], { stdio: ["ignore", "pipe", "inherit"] });
+	try {
+		const port = await new Promise<string>((resolve, reject) => {
+			let buffered = "";
+			child.stdout.on("data", (chunk: Buffer) => {
+				buffered += chunk.toString();
+				if (buffered.includes("\n")) resolve(buffered.trim());
+			});
+			child.once("exit", (code) => reject(new Error(`fake GitHub server exited with ${code}`)));
+		});
+		return use(`http://127.0.0.1:${port}`);
+	} finally {
+		child.kill();
+		rmSync(directory, { recursive: true, force: true });
+	}
+}
+
+/** A downloader that runs the real binary with GitHub's addresses pointed at the local server. */
+function realDownloaderWrapper(binary: readonly string[], origin: string): string {
+	return [
+		"#!/bin/sh",
+		'for argument in "$@"; do',
+		"    shift",
+		"    case $argument in",
+		`        https://api.github.com/*) argument=${origin}/api/${shellExpansion("argument#https://api.github.com/")} ;;`,
+		`        https://github.com/*) argument=${origin}/web/${shellExpansion("argument#https://github.com/")} ;;`,
+		"    esac",
+		'    set -- "$@" "$argument"',
+		"done",
+		`exec ${binary.map(shellQuote).join(" ")} "$@"`,
+	].join("\n");
+}
+
+const realDownloaders = [
+	{ name: "curl", downloader: "curl" as const, binary: ["curl"] },
+	{ name: "GNU Wget", downloader: "wget" as const, binary: ["wget"] },
+	{ name: "BusyBox wget", downloader: "wget" as const, binary: ["busybox", "wget"] },
+].flatMap((entry) => {
+	try {
+		const executable = resolveExecutable(entry.binary[0] ?? "");
+		if (entry.name === "GNU Wget" && !/GNU Wget/u.test(spawnSyncCollect([executable, "--version"]).stdout.toString()))
+			return [];
+		if (entry.name === "BusyBox wget") {
+			const help = spawnSyncCollect([executable, "wget", "--help"]);
+			if (!/Usage: wget/u.test(help.stdout.toString() + help.stderr.toString())) return [];
+		}
+		return [{ ...entry, binary: [executable, ...entry.binary.slice(1)] }];
+	} catch {
+		return [];
+	}
+});
+
+for (const { name, downloader, binary } of realDownloaders) {
+	unixTest(`shell installer reads real ${name} responses from the GitHub API fallback`, async () => {
+		for (const apiMode of ["ok", "limited"] as const) {
+			const fixture = createFixture();
+			try {
+				await withFakeGithub(join(fixture.workspace, "releases"), apiMode, (origin) => {
+					const realBin = join(fixture.workspace, `real-${apiMode}`);
+					mkdirSync(realBin);
+					writeExecutable(join(realBin, downloader), realDownloaderWrapper(binary, origin));
+					const result = fixture.run({
+						downloader,
+						pathEntries: [realBin],
+						args: ["--ref", "1.0.0"],
+						environment: {
+							http_proxy: undefined,
+							https_proxy: undefined,
+							HTTP_PROXY: undefined,
+							HTTPS_PROXY: undefined,
+							no_proxy: "*",
+						},
+					});
+					if (apiMode === "ok") {
+						assertSuccess(result);
+						assert.equal(currentVersion(fixture), "1.0.0");
+					} else {
+						assert.notEqual(result.exitCode, 0);
+						// BusyBox wget keeps neither the body nor the headers of a 403, so it gets the hedged wording.
+						assert.match(
+							output(result),
+							/GitHub's API rate limit was reached for this network|usually its API rate limit for this network/u,
+						);
+						assert.match(output(result), /GITHUB_TOKEN=\$\(gh auth token\)/u);
+					}
+				});
+			} finally {
+				fixture.cleanup();
+			}
+		}
+	});
+}
+
 unixTest("shell installer reports a missing exact tag as not found without asking the API", () => {
 	for (const downloader of ["curl", "wget"] as const) {
 		const fixture = createFixture();
@@ -1788,13 +1974,32 @@ unixTest("shell installer explains a GitHub API rate limit and names GITHUB_TOKE
 	}
 });
 
+unixTest("shell installer gives GITHUB_TOKEN advice for a BusyBox wget 403 that carries no rate-limit details", () => {
+	const fixture = createFixture();
+	try {
+		const result = fixture.run({
+			downloader: "wget",
+			wgetKind: "busybox",
+			environment: { ATOMIC_FIXTURE_REDIRECT_FAIL: "1", ATOMIC_FIXTURE_API_STATUS: "403" },
+		});
+		assert.notEqual(result.exitCode, 0);
+		assert.match(
+			output(result),
+			/GitHub refused the API request \(HTTP 403\), usually its API rate limit for this network/u,
+		);
+		assert.match(output(result), /GITHUB_TOKEN=\$\(gh auth token\)/u);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
 unixTest("shell installer still resolves the latest release through the github.com redirect", () => {
 	const fixture = createFixture();
 	try {
 		assertSuccess(fixture.run({ environment: { ATOMIC_FIXTURE_API_STATUS: "403" } }));
 		assert.equal(currentVersion(fixture), "2.0.0");
 		const requests = readFileSync(fixture.requestLog, "utf8");
-		assert.match(requests, /GET https:\/\/github\.com\/bastani-inc\/atomic\/releases\/latest/u);
+		assert.match(requests, /HEAD https:\/\/github\.com\/bastani-inc\/atomic\/releases\/latest/u);
 		assert.doesNotMatch(requests, /api\.github\.com|releases\/tag\//u);
 	} finally {
 		fixture.cleanup();
