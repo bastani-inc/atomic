@@ -15,6 +15,10 @@ import {
 	releasedReplyHandoffResult,
 } from "../../packages/intercom/released-reply-wait.ts";
 import { recordStageWaitToolResults, stageWaitToolResults } from "../../packages/workflows/src/shared/stage-wait.ts";
+import {
+	TOOL_PAYLOAD_TRUNCATION_MARKER,
+	TOOL_PAYLOAD_VALUE_LIMIT,
+} from "../../packages/workflows/src/shared/tool-payload-bounds.ts";
 
 const pool = harnessPool();
 afterEach(() => pool.cleanup());
@@ -103,6 +107,174 @@ for (const consumer of ["resume", "stage record"] as const) {
 		}
 	});
 }
+
+function changingSibling() {
+	const skip = Object.assign(() => {}, {
+		toJSON() {
+			Object.defineProperty(details, "status", { enumerable: false });
+			return undefined;
+		},
+	});
+	const details = { skip, status: "green" };
+	return details;
+}
+
+const raw = (text: string) => (JSON as typeof JSON & { rawJSON: (json: string) => object }).rawJSON(text);
+const wireCases: [string, () => unknown][] = [
+	["an omitted conversion changing a selected sibling", changingSibling],
+	["a raw JSON scalar", () => ({ n: raw("12") })],
+	[
+		"a getter and a keyed conversion",
+		() => ({
+			get color() {
+				return {
+					toJSON(key: string) {
+						return key;
+					},
+				};
+			},
+		}),
+	],
+	["an omitted function and symbol", () => ({ fn: () => 1, s: Symbol("not on wire"), kept: true })],
+	["undefined", () => undefined],
+	["a bigint", () => ({ bad: 2n })],
+	[
+		"a sparse array",
+		() => {
+			const array: unknown[] = [];
+			array.length = 1;
+			array.push(undefined, Symbol("missing"), () => {}, raw("false"));
+			return array;
+		},
+	],
+	[
+		"a cycle",
+		() => {
+			const list: unknown[] = [];
+			list.push(list);
+			return list;
+		},
+	],
+];
+for (const [label, make] of wireCases) {
+	test(`stage checkpoint and SDK resume agree with native JSON for ${label} (#5486)`, async () => {
+		let expected: { isError: boolean; details: unknown };
+		try {
+			expected = { isError: false, details: JSON.parse(JSON.stringify({ details: make() })).details };
+		} catch {
+			expected = { isError: true, details: undefined };
+		}
+		for (const stage of [false, true]) {
+			const { owner, finish } = await detached(false);
+			const answer = await finish({
+				content: [{ type: "text", text: "ok" }],
+				details: make() as AgentToolResult["details"],
+			});
+			const results = stage
+				? stageWaitToolResults(JSON.parse(JSON.stringify(recordStageWaitToolResults([answer]))))
+				: [answer];
+			owner.setResponses([fauxAssistantMessage("done")]);
+			await owner.session.resumeDetachedTurn(results);
+			const saved = owner.sessionManager.buildSessionProjection().messages.filter((m) => m.role === "toolResult");
+			assert.deepEqual(
+				saved.map((m) => ({ isError: m.isError, details: m.details })),
+				[expected],
+				stage ? "stage checkpoint" : "SDK resume",
+			);
+		}
+	});
+}
+
+function stageMetadata(details: unknown) {
+	return recordStageWaitToolResults([
+		{
+			toolCallId: "ci-1",
+			toolName: "ci",
+			isError: false,
+			result: { content: [], details: details as AgentToolResult["details"] },
+		},
+	])[0]!;
+}
+
+test("stage checkpoints reject object proxies before enumerating any of their keys (#5486)", () => {
+	let enumerations = 0;
+	const proxy = new Proxy(
+		{},
+		{
+			ownKeys() {
+				enumerations++;
+				return Array.from({ length: 100_000 }, (_, i) => String(i));
+			},
+		},
+	);
+	assert.equal(stageMetadata(proxy).isError, true);
+	assert.equal(stageMetadata({ nested: proxy }).isError, true);
+	let reads = 0;
+	const converted = new Proxy(
+		{ toJSON: () => "plain" },
+		{
+			ownKeys() {
+				enumerations++;
+				return [];
+			},
+		},
+	);
+	assert.equal(stageMetadata({ nested: converted }).isError, true); // Visible without a getter.
+	const viaGetter = stageMetadata({
+		get nested() {
+			assert.equal(++reads, 1);
+			return converted;
+		},
+	});
+	assert.deepEqual([viaGetter.isError, viaGetter.details, reads], [false, { nested: "plain" }, 1]);
+	assert.equal(enumerations, 0);
+});
+
+test("a 100,000-key plain object is truncated as a leaf without reading its values or losing its sibling (#5486)", () => {
+	const wide: Record<string, unknown> = {};
+	let reads = 0;
+	Object.defineProperty(wide, "first", {
+		enumerable: true,
+		get() {
+			reads++;
+			throw new Error("past width cutoff");
+		},
+	});
+	for (let i = 1; i < 100_000; i++) wide[`k${i}`] = i;
+	const record = stageMetadata({ wide, after: "still here" });
+	assert.deepEqual(
+		[record.isError, record.details, reads],
+		[false, { wide: TOOL_PAYLOAD_TRUNCATION_MARKER, after: "still here" }, 0],
+	);
+});
+
+test("the checkpoint byte cutoff keeps a bounded string prefix and never repeats a getter or conversion (#5486)", () => {
+	let conversions = 0;
+	const huge = "🍀\n".repeat(TOOL_PAYLOAD_VALUE_LIMIT);
+	const record = stageMetadata({
+		toJSON(key: string) {
+			assert.equal(key, "details");
+			conversions++;
+			return huge;
+		},
+	});
+	assert.equal(conversions, 1);
+	assert.equal(record.isError, false);
+	assert.equal(typeof record.details, "string");
+	assert.ok(String(record.details).startsWith("🍀\n"));
+	assert.ok(String(record.details).endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER));
+	assert.ok(Buffer.byteLength(JSON.stringify(record.details)) <= TOOL_PAYLOAD_VALUE_LIMIT);
+	let reads = 0;
+	const nested = stageMetadata({
+		get large() {
+			assert.equal(++reads, 1);
+			return huge;
+		},
+	});
+	assert.deepEqual([nested.isError, nested.details, reads], [false, TOOL_PAYLOAD_TRUNCATION_MARKER, 1]);
+	const exact = "x".repeat(TOOL_PAYLOAD_VALUE_LIMIT - 2);
+	assert.equal(stageMetadata(exact).details, exact);
+});
 
 test("stage checkpoints preserve JSON conversions at the containing field, object key and array index (#5486)", () => {
 	const under = (expected: string, value: unknown) => ({

@@ -5,8 +5,8 @@ import type {
 	WorkflowSerializableObject,
 	WorkflowSerializableValue,
 } from "./authoring-contract-stage.js";
+import { boundedRecordedToolPayload } from "./recorded-tool-payload.js";
 import { StageWaitConfigError } from "./stage-wait-errors.js";
-import { boundedRecordedToolPayload } from "./tool-payload-bounds.js";
 import { isRetryableWorkflowError } from "./workflow-infrastructure-error.js";
 
 /** How long a stage waits on a tool call inline before it releases its session, unless configured otherwise. */
