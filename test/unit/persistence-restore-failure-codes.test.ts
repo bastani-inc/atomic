@@ -26,7 +26,54 @@ const stageStart: SessionEntry = {
 	payload: { runId: "r1", stageId: "s1", name: "build", parentIds: [], ts: 2 },
 };
 
+/** Every failure code a run can record: the type requires each one here. */
+const EVERY_FAILURE_CODE: Readonly<Record<WorkflowFailureCode, true>> = {
+	login_required: true,
+	auth_timeout: true,
+	missing_api_key: true,
+	invalid_api_key: true,
+	forbidden_config: true,
+	unknown_model: true,
+	rate_limited: true,
+	quota_limited: true,
+	provider_unavailable: true,
+	pending_stage_delivery_failed: true,
+	session_unavailable: true,
+	worker_lost: true,
+	worker_cleanup_unconfirmed: true,
+	worker_retry_limit: true,
+	worker_startup_failed: true,
+	stale_work_lease: true,
+	intercom_unavailable: true,
+	storage_unavailable: true,
+	process_cleanup_unconfirmed: true,
+	cancelled: true,
+	unknown: true,
+};
+
 describe("a restored session keeps every recorded failure code", () => {
+	test.each(Object.keys(EVERY_FAILURE_CODE) as WorkflowFailureCode[])(
+		"a run that ended on %s keeps the code",
+		(code) => {
+			const run = restore([
+				start,
+				{
+					id: "e2",
+					type: "workflow.run.end",
+					payload: {
+						runId: "r1",
+						status: "failed",
+						error: "it failed",
+						failureKind: "unknown",
+						failureCode: code,
+						ts: 2,
+					},
+				},
+			]);
+			assert.equal(run.failureCode, code);
+		},
+	);
+
 	test.each([...WORKFLOW_INFRASTRUCTURE_FAULTS])("a stage and a run that failed on %s keep the code", (code) => {
 		const run = restore([
 			start,
