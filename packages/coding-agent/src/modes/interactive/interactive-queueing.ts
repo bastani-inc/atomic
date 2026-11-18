@@ -447,6 +447,13 @@ async function sendHeldInput(mode: InteractiveModeBase): Promise<void> {
 			returnCompactionMessage(mode, message, refused.error);
 			return;
 		}
+		// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
+		if (
+			echoed &&
+			mode.startedDeferredUserInput === message.text &&
+			mode.deferredRenderedUserInputs?.includes(message.text) === true
+		)
+			mode.discardDeferredRenderedUserInput(message.text);
 	}
 }
 

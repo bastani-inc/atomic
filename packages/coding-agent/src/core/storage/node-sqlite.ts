@@ -10,7 +10,7 @@ import {
 	watch,
 	write,
 } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, realpath, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { platform } from "node:os";
 import { basename, dirname, join, resolve, win32 } from "node:path";
@@ -782,11 +782,13 @@ async function acquireOpenLock(
 		)
 			return undefined;
 		let lock: { release(): void } | null = null;
+		let refusal: unknown;
 		try {
 			lock = await locks.trySharedAdvisoryLockAsync(sqliteFilePath(lockPath), 0);
 		} catch (error) {
 			if (readOnly) return undefined;
-			if (!isMissingOpenLockDir(error)) throw error;
+			if (await isPassingOpenLockRefusal(error, lockPath)) refusal = error;
+			else if (!isMissingOpenLockDir(error)) throw error;
 		}
 		if (lock !== null) {
 			const held: HeldOpenLock = { lock, path: sqliteFilePath(lockPath), target };
@@ -797,6 +799,7 @@ async function acquireOpenLock(
 			return held;
 		}
 		const remaining = started + busyTimeoutMs - performance.now();
+		if (remaining <= 0 && refusal !== undefined) throw refusal;
 		if (remaining <= 0)
 			throw Object.assign(new Error("database is locked"), {
 				code: "ERR_SQLITE_ERROR",
@@ -806,6 +809,21 @@ async function acquireOpenLock(
 		await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
 		delay = Math.min(delay * 2, 50);
 	}
+}
+
+/**
+ * Windows refuses to create a file for a few milliseconds after another process removes one of the same name, with
+ * `Access is denied` while nothing is at the path; an open waits that out like a held lock, within its busy timeout.
+ * A refusal while a file is at the path is a real permission error.
+ */
+async function isPassingOpenLockRefusal(error: unknown, lockPath: string): Promise<boolean> {
+	if (process.platform !== "win32") return false;
+	const message = error instanceof Error ? error.message : String(error);
+	if (!/\(os error 5\)/.test(message)) return false;
+	return lstat(lockPath).then(
+		() => false,
+		(cause: unknown) => isMissingFile(cause),
+	);
 }
 
 function isOpenLockPermissionError(error: unknown): boolean {

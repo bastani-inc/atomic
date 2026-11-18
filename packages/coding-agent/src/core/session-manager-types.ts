@@ -398,6 +398,7 @@ export type ReadonlySessionManager = Pick<
 	| "getSessionName"
 	| "getSessionNameState"
 	| "getWorktreeRootMappings"
+	| "getWorktreePathContinuations"
 	| "hasFullHistory"
 	| "loadFullHistory"
 	| "getOmittedHistoryTotals"

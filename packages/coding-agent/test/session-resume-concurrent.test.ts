@@ -39,17 +39,20 @@ let requests: number;
 let holdAnswers: Promise<void>;
 let releaseAnswers: () => void;
 let requestArrived: PromiseWithResolvers<void>;
+let secondRequestArrived: PromiseWithResolvers<void>;
 
 beforeEach(async () => {
 	root = mkdtempSync(join(tmpdir(), "atomic-resume-concurrent-"));
 	requests = 0;
 	({ promise: holdAnswers, resolve: releaseAnswers } = Promise.withResolvers<void>());
 	requestArrived = Promise.withResolvers<void>();
+	secondRequestArrived = Promise.withResolvers<void>();
 	server = createServer((request, response) => {
 		request.resume();
 		request.on("end", async () => {
 			requests++;
 			requestArrived.resolve();
+			if (requests === 2) secondRequestArrived.resolve();
 			await holdAnswers;
 			const chunk = (delta: object, finishReason: string | null = null) =>
 				`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 0, model: "local-model", choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`;
@@ -258,7 +261,11 @@ describe("concurrent resumes of one session (#5135)", () => {
 			const result = await run.result;
 			assert.equal(result.hung, false, result.stderr);
 			assert.equal(result.code, 1, result.stderr);
-			assert.match(result.stderr, /could not persist the assistant message: Session conflict/);
+			assert.ok(
+				result.stderr.includes(`Error: Another process wrote to session ${sessionId}`),
+				`the conflict is reported as such:\n${result.stderr}`,
+			);
+			assert.doesNotMatch(result.stderr, /Extension error/, "the conflict is reported once");
 			assert.doesNotMatch(result.stderr, /\n\s+at |\^/, `no uncaught error:\n${result.stderr}`);
 		},
 		TEST_TIMEOUT_MS,
@@ -307,7 +314,7 @@ describe("concurrent resumes of one session (#5135)", () => {
 				writeFileSync(join(otherAgentDir, file), readFileSync(join(agentDir, file)));
 			}
 			const runs = [resume(sessionId), resume(sessionId, otherAgentDir)];
-			void Promise.race(runs.map((run) => run.result)).then(releaseAnswers);
+			void Promise.race([...runs.map((run) => run.result), secondRequestArrived.promise]).then(releaseAnswers);
 			const results = await Promise.all(runs.map((run) => run.result));
 			const describeRuns = results
 				.map((result) => `pid ${result.pid} exit ${result.code}: ${result.stderr}`)
@@ -320,6 +327,38 @@ describe("concurrent resumes of one session (#5135)", () => {
 				`the conflict is reported as such:\n${describeRuns}`,
 			);
 			assert.doesNotMatch(failed[0]!.stderr, /\n\s+at |\^/, `no uncaught error:\n${describeRuns}`);
+		},
+		TEST_TIMEOUT_MS,
+	);
+});
+
+describe("a resume with its own claims that opens a session another process is answering in (#5135)", () => {
+	test(
+		"leaves exactly one run to save its answer and the other to report the conflict (#5135)",
+		async () => {
+			const sessionId = await recordedSession();
+			const otherAgentDir = join(root, "other-agent");
+			mkdirSync(otherAgentDir);
+			for (const file of ["models.json", "settings.json"]) {
+				writeFileSync(join(otherAgentDir, file), readFileSync(join(agentDir, file)));
+			}
+			const first = resume(sessionId);
+			await requestArrived.promise;
+			const second = resume(sessionId, otherAgentDir);
+			void Promise.race([first.result, second.result, secondRequestArrived.promise]).then(releaseAnswers);
+			const [earlier, later] = await Promise.all([first.result, second.result]);
+			const describeRuns = [earlier, later]
+				.map((result) => `pid ${result.pid} exit ${result.code}: ${result.stderr}`)
+				.join("\n");
+			assert.equal(later.code, 0, describeRuns);
+			assert.match(later.stdout, /answered/);
+			assert.equal(earlier.code, 1, describeRuns);
+			assert.ok(
+				earlier.stderr.includes(`Error: Another process wrote to session ${sessionId}`),
+				`the conflict is reported as such:\n${describeRuns}`,
+			);
+			assert.doesNotMatch(earlier.stderr, /\n\s+at |\^/, `no uncaught error:\n${describeRuns}`);
+			assert.equal(requests, 2);
 		},
 		TEST_TIMEOUT_MS,
 	);

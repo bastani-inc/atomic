@@ -7,6 +7,7 @@ import { join } from "path";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { clipboard } from "./clipboard-native.ts";
 import { loadPhoton } from "./photon.ts";
+import { windowsPowerShellEnvironment } from "./windows-powershell.ts";
 import { isWSL } from "./wsl.ts";
 
 export type ClipboardImage = {
@@ -178,6 +179,7 @@ async function readClipboardImageViaPowerShell(): Promise<ClipboardImage | null>
 
 		const result = await runCommand("powershell.exe", ["-NoProfile", "-Command", psScript], {
 			timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS,
+			env: windowsPowerShellEnvironment(),
 		});
 		if (!result.ok) {
 			return null;

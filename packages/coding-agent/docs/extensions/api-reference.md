@@ -964,13 +964,14 @@ Return at most 10,000 rows per source. Atomic ignores additional rows and warns 
 | --- | --- |
 | `id` | Unique in the session. Prefix it with your source's name, for example `deploys:42`; `main` and the `task:` prefix are reserved. |
 | `kind` | `"agent"`, `"shell"` or `"workflow"`. It decides the row's layout. A `"shell"` item is listed in `/tasks` only; the main chat's footer counts it while it is not finished. |
-| `state` | `running`, `queued`, `input` (waits for an answer), `paused`, `stopping`, `done`, `failed` or `stopped`. It decides the glyph, the state word, the `/tasks` group and whether `x` stops or dismisses. |
+| `state` | `running`, `queued`, `input` (waits for an answer), `paused`, `stopping`, `waiting` (not working, and wakes by itself when what it waits on finishes), `done`, `failed` or `stopped`. It decides the glyph, the state word, the `/tasks` group and whether `x` stops or dismisses. |
 | `name`, `task` | The name and what it works on, for example `stage build`. |
 | `elapsedMs`, `tokens` | Shown on the right. `elapsedMs` is finite, non-negative milliseconds. `tokens` is a non-negative safe integer, at most `Number.MAX_SAFE_INTEGER`. Between your updates, the panel and `/tasks` share the advancing time of running, waiting and stopping items. Paused and finished items keep their last elapsed time. |
 | `progress` | Finite, non-negative `{ done, total }` stages, drawn as a bar. |
 | `question`, `choices` | What an `input` item asks, and its numbered choices. |
 | `promptId` | Optional opaque identity of that pending question. Change it for each new question, even when its text and choices repeat. |
 | `reason` | A failed item's one-line reason. |
+| `waitingOn` | What a `waiting` item waits on, shown as `waiting on <waitingOn>`. |
 | `queued` | Messages typed to it that it has not taken yet. A non-negative safe integer. |
 | `endedAt` | When a finished item finished, in finite, non-negative epoch milliseconds. |
 | `viewed` | For a finished `workflow` item, whether the user has opened it. A finished workflow row stays in the panel until it is viewed: opening it from the panel or `/tasks` counts, and a source sets `viewed: true` when the user opens the item another way. Finished `agent` and `shell` rows always fade and leave after three minutes. |

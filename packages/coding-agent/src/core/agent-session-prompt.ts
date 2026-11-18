@@ -13,6 +13,7 @@ import {
 	stopWaiting,
 } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { clearPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
 	isProtectedStreamingCustomMessage,
 	queueHeldCustomMessages,
@@ -249,14 +250,15 @@ async function waitForHeldTurn(session: AgentSession, held: HeldInput, lifetime:
 }
 
 async function admittedPrompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
-	if (this._activePromptCount === 0 && !this.isStreaming) {
+	const fresh = this._activePromptCount === 0 && !this.isStreaming;
+	if (fresh) {
 		this._agentRunAbortRequested = false;
-		// #4226: a new prompt saves again after an earlier run stopped on a message it could not save.
-		this._persistenceFailure = undefined;
+		// #5135: a command may save again, but what the stopped run could not save stays reported until a run starts.
+		this.sessionManager.resumeAppends();
 	}
 	this._activePromptCount += 1;
 	try {
-		await promptInternal.call(this, text, options);
+		await promptInternal.call(this, text, options, fresh);
 		const boundary = this._subagentMessageAdmission ?? this._workflowStageAdmission;
 		if (
 			!this._disposed &&
@@ -303,7 +305,7 @@ function reserveAdmissionForQueuedPrompt(
 	return reserveQueuedInputAdmission(session, lane, sessionLifetime(session));
 }
 
-async function promptInternal(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
+async function promptInternal(this: AgentSession, text: string, options?: PromptOptions, fresh = false): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	const assertCurrent = () => {
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
@@ -508,6 +510,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			return;
 		}
 		admission.release();
+		// #4226: a new prompt saves again after an earlier run stopped on a message it could not save.
+		if (fresh) clearPersistenceFailure(this);
 
 		// Close the completed fallback lifecycle before validating credentials for
 		// the next idle prompt. The selected fallback remains the session model.
@@ -681,7 +685,7 @@ export async function _runAgentPrompt(
 	this._workflowStageAwaitingFirstPrompt = false;
 	if (this._activePromptCount === 0 && !this.isStreaming) {
 		this._agentRunAbortRequested = false;
-		this._persistenceFailure = undefined;
+		clearPersistenceFailure(this);
 	}
 	const startingMessages = Array.isArray(messages) ? messages : [messages];
 	const customMessage = !prepared
@@ -1006,7 +1010,7 @@ export async function _runAgentContinuation(
 		if (mode !== "settle") {
 			this._workflowStageAwaitingFirstPrompt = false;
 			this._agentRunAbortRequested = false;
-			this._persistenceFailure = undefined;
+			clearPersistenceFailure(this);
 			this._stopAfterTurnBlockedContinuation = false;
 		}
 		this._activePromptCount += 1;

@@ -14,6 +14,11 @@ const PROCESS_IO: StartupFailureIo = {
 	exit: (code) => process.exit(code),
 };
 
+/** What a run ended by another process's write to its session reports (#5135). */
+export function sessionConflictMessage(error: SessionConflictError): string {
+	return `Error: Another process wrote to session ${error.sessionId} while this one was writing to it (expected ${error.expectedSeq} entries, found ${error.actualSeq}), so this run stopped. Resume the session again to continue from what was saved.`;
+}
+
 /**
  * Handles a failed CLI startup. Invalid `decisionModel` settings and a failed isolated engine print their
  * diagnostic once without a host stack and exit with status 1. Migrated legacy settings do not reach this path.
@@ -26,11 +31,7 @@ export function exitOnDecisionConfigError(error: unknown, io: StartupFailureIo =
 		return io.exit(SESSION_ALREADY_OPEN_EXIT_CODE);
 	}
 	if (error instanceof SessionConflictError) {
-		io.error(
-			chalk.red(
-				`Error: Another process wrote to session ${error.sessionId} while this one was writing to it (expected ${error.expectedSeq} entries, found ${error.actualSeq}), so this run stopped. Resume the session again to continue from what was saved.`,
-			),
-		);
+		io.error(chalk.red(sessionConflictMessage(error)));
 		return io.exit(1);
 	}
 	if (!isDecisionConfigError(error) && !isRpcTransportFailure(error)) throw error;

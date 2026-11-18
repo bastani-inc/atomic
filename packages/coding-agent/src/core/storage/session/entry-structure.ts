@@ -95,6 +95,7 @@ function validPayload(entry: SessionEntry): boolean {
 						entry.unrestored.snapshotId === entry.snapshotId &&
 						typeof entry.unrestored.continuedIn === "string" &&
 						(entry.unrestored.place === "recorded" || entry.unrestored.place === "launch") &&
+						(entry.unrestored.from === undefined || typeof entry.unrestored.from === "string") &&
 						typeof entry.unrestored.cause === "string" &&
 						typeof entry.unrestored.detail === "string" &&
 						typeof entry.unrestored.hint === "string" &&

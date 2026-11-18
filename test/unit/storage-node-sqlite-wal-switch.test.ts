@@ -444,6 +444,96 @@ test.skipIf(process.platform !== "win32" && process.getuid?.() === 0).each(["ope
 	},
 );
 
+const REFUSAL_CLEARS_AFTER_MS = 200;
+const REFUSING_BUSY_TIMEOUT_MS = 300;
+const PERMANENT_DENIAL_BUSY_TIMEOUT_MS = 10_000;
+const PROMPT_FAILURE_MS = 2_000;
+
+function refuseNewFiles(directory: string): () => void {
+	const denied = spawnSyncCollect(["icacls", directory, "/deny", "*S-1-1-0:(WD,AD)"]);
+	assert.equal(denied.exitCode, 0, denied.stderr.toString());
+	return () => {
+		spawnSyncCollect(["icacls", directory, "/remove:d", "*S-1-1-0"]);
+	};
+}
+
+test.skipIf(process.platform !== "win32")(
+	"a writable open waits out a refusal to create its open lock that clears, as while another process removes the lock (#5317)",
+	async () => {
+		const directory = makeTempDirectory("atomic-open-lock-refused-");
+		directories.push(directory);
+		const path = join(directory, "store.sqlite");
+		const allow = refuseNewFiles(directory);
+		const cleared = sleep(REFUSAL_CLEARS_AFTER_MS).then(allow);
+		try {
+			const database = await openNodeSqliteDatabase(path, { busyTimeoutMs: 5_000 });
+			try {
+				await database.exec("CREATE TABLE items(v INTEGER); INSERT INTO items VALUES (7)");
+				assert.deepEqual(await database.all("SELECT v FROM items"), [{ v: 7 }]);
+			} finally {
+				await database.close();
+			}
+		} finally {
+			await cleared;
+		}
+	},
+);
+
+test.skipIf(process.platform !== "win32")(
+	"a writable open whose open lock stays refused reports the refusal once its busy timeout has passed (#5317)",
+	async () => {
+		const directory = makeTempDirectory("atomic-open-lock-refused-");
+		directories.push(directory);
+		const allow = refuseNewFiles(directory);
+		try {
+			const started = performance.now();
+			const failure = await openNodeSqliteDatabase(join(directory, "store.sqlite"), {
+				busyTimeoutMs: REFUSING_BUSY_TIMEOUT_MS,
+			}).then(
+				async (database) => {
+					await database.close();
+					assert.fail("the open succeeded in a directory that refuses new files");
+				},
+				(error: unknown) => error,
+			);
+			assert.ok(failure instanceof StorageUnavailableError, String(failure));
+			assert.match(String(failure.cause), /Access is denied/);
+			assert.ok(performance.now() - started >= REFUSING_BUSY_TIMEOUT_MS, "the open waited its busy timeout");
+		} finally {
+			allow();
+		}
+	},
+);
+
+test.skipIf(process.platform !== "win32")(
+	"a writable open whose existing open lock refuses it fails at once instead of waiting its busy timeout (#5317)",
+	async () => {
+		const directory = makeTempDirectory("atomic-open-lock-refused-");
+		directories.push(directory);
+		const path = join(directory, "store.sqlite");
+		const lockPath = sqliteOpenLockPath(path);
+		writeFileSync(lockPath, "");
+		const denied = spawnSyncCollect(["icacls", lockPath, "/deny", "*S-1-1-0:(R,W)"]);
+		assert.equal(denied.exitCode, 0, denied.stderr.toString());
+		try {
+			const started = performance.now();
+			const failure = await openNodeSqliteDatabase(path, { busyTimeoutMs: PERMANENT_DENIAL_BUSY_TIMEOUT_MS }).then(
+				async (database) => {
+					await database.close();
+					assert.fail("the open succeeded although its open lock refuses it");
+				},
+				(error: unknown) => error,
+			);
+			const elapsed = performance.now() - started;
+			assert.ok(failure instanceof StorageUnavailableError, String(failure));
+			assert.match(String(failure.cause), /Access is denied/);
+			assert.ok(elapsed < PROMPT_FAILURE_MS, `the open failed after ${Math.round(elapsed)} ms`);
+		} finally {
+			spawnSyncCollect(["icacls", lockPath, "/remove:d", "*S-1-1-0"]);
+		}
+	},
+);
+
 test("connections hold a shared open lock while open, release it on close or kill, and create none for untouched read-only files (#5317)", async () => {
 	const directory = makeTempDirectory("atomic-open-lock-");
 	directories.push(directory);

@@ -17,6 +17,7 @@ import { access, mkdir, readFile, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { killProcessTree } from "../../../utils/shell.ts";
+import { windowsPowerShellEnvironment } from "../../../utils/windows-powershell.ts";
 import { type AsyncTakeoverMutex, takeTakeoverMutexAsync } from "../../lock-takeover.js";
 import { processStartTokenAsync } from "../../process-start-token.js";
 import { readLedger, rootKey } from "./ledger.ts";
@@ -200,7 +201,7 @@ function powershellOutput(script: string): Promise<string | undefined> {
 		execFile(
 			shell,
 			["-NoProfile", "-NonInteractive", "-Command", script],
-			{ cwd: systemRoot, encoding: "utf8", timeout: 30_000, windowsHide: true },
+			{ cwd: systemRoot, encoding: "utf8", env: windowsPowerShellEnvironment(), timeout: 30_000, windowsHide: true },
 			(error, stdout) => resolve(error === null ? stdout : undefined),
 		);
 	});

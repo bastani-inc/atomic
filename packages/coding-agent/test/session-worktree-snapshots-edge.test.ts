@@ -480,6 +480,7 @@ describe("choosing the checkout a resumed session belongs to", () => {
 				snapshotId: unreachable.id,
 				continuedIn: sandbox.root,
 				place: "launch",
+				from: sandbox.path("gone"),
 				cause: "commits-unavailable",
 				causeReason: "not-fetched",
 				detail: `its commit ${"5".repeat(12)} and the commits around it are not on its recorded remotes`,
@@ -522,6 +523,41 @@ describe("opening a session where it continues", () => {
 		assert.notEqual(verifiedElsewhere.sessionManager, original);
 		assert.equal(verifiedElsewhere.sessionManager.getCwd(), mapping.to);
 		assert.deepEqual(verifiedElsewhere.notices, []);
+	});
+
+	test("file tools follow a checkout left unrestored to the directory the session continues in, not its old worktree (#5379)", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const store = await sqlStore();
+		mkdirSync(join(clone, "sub"));
+		sandbox.write(join(clone, "sub", "x.txt"), "recorded\n");
+		const capture = (await captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs })) as {
+			snapshot: WorktreeSnapshot;
+		};
+		const manager = await SessionManager.create(store, join(clone, "sub"));
+		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+		writeFileSync(join(clone, "sub", "x.txt"), "drift\n");
+		const storeDir = sandbox.path("host");
+		const first = await resumeSessionWorktree(manager, { settings, storeDir });
+		assert.equal(first.status, "restored");
+		const [mapping] = manager.getWorktreeRootMappings();
+		assert.ok(mapping);
+		rmSync(mapping.to, { recursive: true, force: true });
+		const launch = sandbox.path("launch");
+		mkdirSync(launch);
+		writeFileSync(join(launch, "x.txt"), "where the session continues\n");
+
+		const second = await resumeSessionWorktree(manager, {
+			settings,
+			storeDir,
+			fallbackCwd: launch,
+			cannotRestore: new Map([[mapping.to, new Error("this host cannot restore it")]]),
+		});
+		assert.equal(second.cwd, launch);
+		const harness = await harnessFor(manager);
+		await toolTurn(harness, "read", { path: join(clone, "sub", "x.txt") });
+		const [ended] = harness.eventsOfType("tool_execution_end");
+		assert.equal(ended?.isError, false, JSON.stringify(ended?.result));
+		assert.match(JSON.stringify(ended?.result), /where the session continues/);
 	});
 
 	test("a stale-restore warning appears once when a session resumes without duplicating snapshot warnings (#4245)", async () => {
@@ -678,7 +714,7 @@ describe("restore notices", () => {
 		);
 		assert.equal(
 			formatWorktreeRestoreWarning({ code: "stale-restore-retained", path: "/work/unfinished", kind: "worktree" }),
-			"A restore interrupted earlier left /work/unfinished; remove it with removeRestoredWorktree or delete the directory",
+			"A restore interrupted earlier left /work/unfinished, which may hold your files; check them, then delete the directory yourself",
 		);
 		assert.equal(
 			formatWorktreeRestoreWarning({

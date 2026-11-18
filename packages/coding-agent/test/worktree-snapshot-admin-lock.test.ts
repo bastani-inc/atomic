@@ -106,5 +106,7 @@ test("failed checkout cleanup also excludes competing shared-repository administ
 			return true;
 		},
 	);
-	for (const command of ["add", "list", "remove", "prune"]) assert.ok(administration.commands.has(command), command);
+	for (const command of ["add", "list", "unlock", "prune"]) assert.ok(administration.commands.has(command), command);
+	// Git never deletes a restore's worktree: cleanup sets it aside and deletes only what it checked (#4748).
+	assert.equal(administration.commands.has("remove"), false);
 });

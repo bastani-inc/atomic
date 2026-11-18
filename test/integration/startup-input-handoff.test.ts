@@ -19,13 +19,15 @@ const STDIN_HANDOFF_TIMEOUT_MS = 60_000;
 const FIXTURE = join(moduleDir(import.meta.url), "fixtures/startup-input-handoff-child.ts");
 const bundledNodeFixture = useBundledNodeFixture(FIXTURE);
 
+const nativePendingInputSupportsPipes = process.platform !== "win32";
+
 const cases = (["bun", "node"] as const).flatMap((runtime) =>
 	(["top-level", "after-read"] as const).flatMap((scenario) =>
 		(["hello", "hello\r"] as const).map((input) => ({ runtime, scenario, input })),
 	),
 );
 
-test.each(cases)(
+test.runIf(nativePendingInputSupportsPipes).each(cases)(
 	"keeps unread OS input $input before a startup dialog takes stdin under $runtime ($scenario) (#5241)",
 	async ({ runtime, scenario, input }) => {
 		const dir = makeTempDirectory("atomic-startup-handoff-");
@@ -64,16 +66,10 @@ test.each(cases)(
 	STDIN_HANDOFF_TIMEOUT_MS,
 );
 
-/**
- * Under Node, whose terminal input waits in the terminal until its event loop reads it. Under Bun on a loaded Windows
- * runner the console never reported the typed input as waiting, so there the dialog relies on its grace.
- */
-const terminalCases = (["hello", "hello\r"] as const).flatMap((input) =>
-	(["default", "containing a space"] as const).map((tempDirectory) => ({
-		runtime: "node" as const,
-		input,
-		tempDirectory,
-	})),
+const terminalCases = (["bun", "node"] as const).flatMap((runtime) =>
+	(["hello", "hello\r"] as const).flatMap((input) =>
+		(["default", "containing a space"] as const).map((tempDirectory) => ({ runtime, input, tempDirectory })),
+	),
 );
 
 const TEMP_DIRECTORY_VARIABLES = ["TMPDIR", "TEMP", "TMP"] as const;
@@ -96,20 +92,21 @@ async function withSpacedTempDirectory<T>(body: () => Promise<T>): Promise<T> {
 
 test.each(terminalCases)(
 	"keeps input $input the terminal already holds before a startup dialog takes stdin under $runtime, with a temporary directory $tempDirectory (#5241)",
-	async ({ input, tempDirectory }) => {
+	async ({ runtime, input, tempDirectory }) => {
 		await (tempDirectory === "default"
-			? terminalHandoff(input)
-			: withSpacedTempDirectory(() => terminalHandoff(input)));
+			? terminalHandoff(runtime, input)
+			: withSpacedTempDirectory(() => terminalHandoff(runtime, input)));
 	},
 	STDIN_HANDOFF_TIMEOUT_MS,
 );
 
-async function terminalHandoff(input: string): Promise<void> {
+async function terminalHandoff(runtime: "bun" | "node", input: string): Promise<void> {
 	const dir = makeTempDirectory("atomic-startup-handoff-");
-	const fixture = await bundledNodeFixture();
+	const [program, script] =
+		runtime === "node" ? [process.execPath, await bundledNodeFixture()] : [bunExecutable(), FIXTURE];
 	let screen = "";
 	const child = startPty({
-		command: [process.execPath, fixture, dir, "terminal", String(input.length)],
+		command: [program, script, dir, "terminal", String(input.length)],
 		cwd: dir,
 		env: { ...process.env } as Record<string, string>,
 		timeoutMs: STDIN_HANDOFF_TIMEOUT_MS,

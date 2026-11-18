@@ -32,6 +32,7 @@ import { dirname, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { clearTimeout, setTimeout } from "node:timers";
 import { createModuleRequire } from "../../utils/module-require.js";
+import { windowsPowerShellEnvironment } from "../../utils/windows-powershell.ts";
 
 /** One DACL entry with its trustee resolved to a literal SID. */
 export interface WindowsAccessRule {
@@ -170,6 +171,11 @@ export function powershellCandidates(): string[] {
 	candidates.push(`${windowsDirectory()}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`);
 	candidates.push("powershell.exe", "pwsh.exe");
 	return candidates;
+}
+
+/** The environment for a PowerShell read: Windows PowerShell's, plus the path the read is for. */
+function powershellEnvironment(path: string): NodeJS.ProcessEnv {
+	return { ...windowsPowerShellEnvironment(), ATOMIC_SECURITY_QUERY_PATH: path };
 }
 
 function windowsDirectory(): string {
@@ -359,7 +365,7 @@ class SharedSecurityRead {
 			try {
 				child = spawn(executable, ["-NoProfile", "-NonInteractive", "-Command", READ_SECURITY_SCRIPT], {
 					cwd,
-					env: { ...process.env, ATOMIC_SECURITY_QUERY_PATH: this.path },
+					env: powershellEnvironment(this.path),
 					stdio: ["ignore", "pipe", "pipe"],
 					windowsHide: true,
 				});

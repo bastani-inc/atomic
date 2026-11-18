@@ -19,6 +19,7 @@ import {
 	taskPanelState,
 	viewedAgentPanelItems,
 } from "../../core/tasks/agent-panel-source.ts";
+import { supersededReleasedAttempts } from "../../core/tasks/completion.js";
 import { taskClockOf, taskClockRunning } from "../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
@@ -302,8 +303,10 @@ function rankPanelSession(
 		const storeDismissed = dismissedTasks(store);
 		const sourceClocks = taskClockOf(source);
 		const tasks = source.backgroundTasks;
+		const superseded = supersededReleasedAttempts(tasks);
 		for (let i = tasks.length - 1; i >= 0; i--) {
 			const task = tasks[i]!;
+			if (superseded.size > 0 && superseded.has(task.ref.taskId)) continue;
 			if (task.parentTaskId !== undefined) continue;
 			if (task.kind === "command") {
 				if (task.execution.kind !== "settled") shells++;

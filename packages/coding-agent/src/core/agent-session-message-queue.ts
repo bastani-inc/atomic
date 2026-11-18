@@ -6,7 +6,7 @@ import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts"
 import { wakeIdleSessionForHeartbeat } from "./agent-session-heartbeat-wake.ts";
 import { cancelHeldInput, heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
+import { noteMessageSaved, recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
 	confirmCustomMessageWrite,
 	hasUncertainCustomMessageWrite,
@@ -347,6 +347,7 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 	}
 	confirmCustomMessageWrite(manager, key);
 	this._entryIdsByMessage.set(message, entryId);
+	noteMessageSaved(this, message);
 	pendingCustomMessageSaves.get(message)?.resolve();
 	this._refreshFinalizedContext();
 	markCustomMessageDisplayed(this, entryId);

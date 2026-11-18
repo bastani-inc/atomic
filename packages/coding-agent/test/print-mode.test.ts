@@ -40,6 +40,7 @@ type FakeSession = {
 	emitEvent: (event: AgentSessionEvent) => void;
 	getToolDefinition: ReturnType<typeof vi.fn<(name: string) => { structuredOutput?: true } | undefined>>;
 	prompt: ReturnType<typeof vi.fn<(text: string, options?: { images?: ImageContent[] }) => Promise<void>>>;
+	getPersistenceFailure: () => undefined;
 	reload: ReturnType<typeof vi.fn<() => Promise<void>>>;
 };
 
@@ -183,6 +184,7 @@ function createRuntimeHost(
 			structuredOutputTools.has(name) ? { structuredOutput: true } : undefined,
 		),
 		prompt: vi.fn(async (_text: string, _options?: { images?: ImageContent[] }) => {}),
+		getPersistenceFailure: () => undefined,
 		reload: vi.fn(async () => {}),
 	};
 

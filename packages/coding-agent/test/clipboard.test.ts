@@ -438,6 +438,30 @@ describe("copyToClipboard", () => {
 		assert.equal(osc52Writes().length, 0);
 	});
 
+	test("WSL clipboard write starts Windows PowerShell without the parent's PSModulePath", async () => {
+		mockedPlatform.mockReturnValue("linux");
+		vi.stubEnv("WSL_DISTRO_NAME", "Ubuntu");
+		vi.stubEnv("PSModulePath", "C:\\Program Files\\PowerShell\\7\\Modules");
+		mockedExecFile.mockImplementation(((
+			file: string,
+			_args: string[],
+			_options: object,
+			callback: (error: Error | null, stdout: string) => void,
+		) => {
+			callback(null, file === "wslpath" ? "\\\\wsl.localhost\\Ubuntu\\tmp\\clip.txt\n" : "");
+		}) as unknown as typeof execFile);
+
+		await copyToClipboard("hello");
+
+		assert.deepEqual(execFileFiles(), ["wslpath", "powershell.exe"]);
+		const env = (mockedExecFile.mock.calls[1]![2] as { env: NodeJS.ProcessEnv }).env;
+		assert.deepEqual(
+			Object.keys(env).filter((key) => key.toLowerCase() === "psmodulepath"),
+			[],
+		);
+		assert.equal(env.WSL_DISTRO_NAME, "Ubuntu");
+	});
+
 	test("WSL falls back to OSC 52 when Windows interop is unavailable", async () => {
 		mockedPlatform.mockReturnValue("linux");
 		vi.stubEnv("WSL_DISTRO_NAME", "Ubuntu");

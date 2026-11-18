@@ -99,6 +99,38 @@ describe("readClipboardImage", () => {
 		expect(Array.from(result?.bytes ?? [])).toEqual([9, 8]);
 	});
 
+	test("WSL: starts Windows PowerShell without the parent's PSModulePath", async () => {
+		const saved = process.env.PSModulePath;
+		process.env.PSModulePath = "C:\\Program Files\\PowerShell\\7\\Modules";
+		try {
+			let powershellEnv: NodeJS.ProcessEnv | undefined;
+			mocks.execFile.mockImplementation((command, args, options, callback) => {
+				if (command === "wl-paste" || command === "xclip") {
+					execOk(callback, Buffer.alloc(0));
+					return;
+				}
+				if (command === "wslpath") {
+					execOk(callback, Buffer.from("C:\\clip.png\n", "utf-8"));
+					return;
+				}
+				if (command === "powershell.exe") {
+					powershellEnv = (options as { env?: NodeJS.ProcessEnv }).env;
+					execOk(callback, Buffer.from("empty\n", "utf-8"));
+					return;
+				}
+				throw new Error(`Unexpected execFile call: ${command} ${args.join(" ")}`);
+			});
+
+			const { readClipboardImage } = await import("../src/utils/clipboard-image.ts");
+			await readClipboardImage({ platform: "linux", env: { WSL_DISTRO_NAME: "Ubuntu" } });
+			expect(powershellEnv).toBeDefined();
+			expect(Object.keys(powershellEnv ?? {}).filter((key) => key.toLowerCase() === "psmodulepath")).toEqual([]);
+		} finally {
+			if (saved === undefined) delete process.env.PSModulePath;
+			else process.env.PSModulePath = saved;
+		}
+	});
+
 	test("WSL: passes PowerShell path directly instead of through a custom env var", async () => {
 		mocks.clipboard.hasImage.mockImplementation(() => {
 			throw new Error("clipboard.hasImage should not be called before PowerShell on WSL");

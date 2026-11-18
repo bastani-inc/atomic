@@ -334,6 +334,9 @@ class AgentSessionBase {
 		registerSessionWorkOwner(this);
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
+		this.sessionManager.haltAppendsOnConflictWhile(
+			() => this._activePromptCount > 0 || this.agent.state.isStreaming || this._isPreparingRun !== false,
+		);
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
 		this._configuredFallbackModels = config.fallbackModels;

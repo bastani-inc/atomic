@@ -1,7 +1,8 @@
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { getLatestSessionName } from "./session-manager-entries.ts";
 import { getBranchPath } from "./session-manager-history.ts";
 import type { FileEntry, SessionEntry, SessionNameState } from "./session-manager-types.ts";
-import type { WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
+import type { PathContinuation, WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
 
 interface BranchView {
 	readonly byId: ReadonlyMap<string, SessionEntry>;
@@ -9,7 +10,14 @@ interface BranchView {
 	leafId: string | null;
 	readonly path: SessionEntry[];
 	mappings: WorktreeRootMapping[] | undefined;
+	continuations: PathContinuation[] | undefined;
 	snapshots: RecordedSnapshot[] | undefined;
+}
+
+/** Whether `child` is `parent` or a path below it. */
+function within(parent: string, child: string): boolean {
+	const path = relative(resolve(parent), resolve(child));
+	return !path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path);
 }
 
 interface EntryScan {
@@ -54,6 +62,7 @@ export class SessionHistoryIndex {
 		view.leafId = entry.id;
 		if (entry.type !== "worktree_snapshot") return;
 		if (entry.restore) view.mappings?.push(entry.restore);
+		view.continuations = undefined;
 		view.snapshots?.push({ root: entry.root, snapshotId: entry.snapshotId });
 	}
 
@@ -68,6 +77,34 @@ export class SessionHistoryIndex {
 			entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [],
 		);
 		return [...view.mappings];
+	}
+
+	/**
+	 * Where the session continued instead of a checkout it worked in, on the branch to `leafId`: paths under the working
+	 * directory it left there continue under the directory it went on in, until a later restore of that checkout.
+	 */
+	worktreePathContinuations(
+		leafId: string | null,
+		byId: ReadonlyMap<string, SessionEntry>,
+		links?: ReadonlyMap<string, string>,
+	): PathContinuation[] {
+		const view = this.viewOf(leafId, byId, links);
+		if (view.continuations === undefined) {
+			let continuations: PathContinuation[] = [];
+			for (const entry of view.path) {
+				if (entry.type !== "worktree_snapshot") continue;
+				const restored = entry.restore?.from;
+				if (restored !== undefined)
+					continuations = continuations.filter((continuation) => !within(restored, continuation.from));
+				const from = entry.unrestored?.from;
+				if (from !== undefined) {
+					continuations = continuations.filter((continuation) => continuation.from !== from);
+					continuations.push({ from, to: entry.unrestored!.continuedIn });
+				}
+			}
+			view.continuations = continuations;
+		}
+		return [...view.continuations];
 	}
 
 	/** The snapshot entries on the branch to `leafId`, oldest first, which the caller must not change. */
@@ -105,6 +142,7 @@ export class SessionHistoryIndex {
 				leafId,
 				path: getBranchPath(leafId, byId, links),
 				mappings: undefined,
+				continuations: undefined,
 				snapshots: undefined,
 			};
 		}

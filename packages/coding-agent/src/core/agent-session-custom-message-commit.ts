@@ -1,6 +1,7 @@
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { keepRefusedInput } from "./agent-session-persistence-failures.ts";
 import {
 	admitProtectedStreamingCustomMessage,
 	customMessageOccurrences,
@@ -16,8 +17,26 @@ import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "./tasks/completion.js";
 
+/**
+ * Saves messages that nothing else holds. #5135: those that the halt after another writer's entries refuses stay
+ * shown and recoverable in the session, not only with their sender.
+ */
+async function appendSentCustomMessages(session: AgentSession, messages: readonly CustomMessage[]): Promise<void> {
+	for (const [index, message] of messages.entries()) {
+		try {
+			await session._appendCustomMessage(message);
+		} catch (error) {
+			const halt = session.sessionManager.getAppendHalt();
+			if (halt !== undefined && error === halt) {
+				for (const refused of messages.slice(index)) keepRefusedInput(session, refused, halt);
+			}
+			throw error;
+		}
+	}
+}
+
 async function appendDurableStageAdmission<T>(session: AgentSession, message: CustomMessage<T>): Promise<void> {
-	await session._appendCustomMessage(message);
+	await appendSentCustomMessages(session, [message]);
 }
 
 const pendingCustomMessageRetries = new WeakMap<AgentSession["sessionManager"], Map<string, Promise<void>>>();
@@ -393,7 +412,7 @@ async function commitCustomMessages<T>(
 		} else if (self.isStreaming || self._isPreparingRun) {
 			self._pendingCustomMessages.push(...appMessages);
 		} else {
-			for (const item of appMessages) await self._appendCustomMessage(item);
+			await appendSentCustomMessages(self, appMessages);
 		}
 	} else if (
 		(self.isStreaming || self._isPreparingRun) &&
@@ -401,7 +420,7 @@ async function commitCustomMessages<T>(
 		options.triggerTurn !== true &&
 		options.deliverAs === undefined
 	) {
-		for (const item of appMessages) await self._appendCustomMessage(item);
+		await appendSentCustomMessages(self, appMessages);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn === false) {
 		self._pendingCustomMessages.push(...appMessages);
 	} else if ((self.isStreaming || self._isPreparingRun) && useProtectedReconciliation) {
@@ -411,7 +430,7 @@ async function commitCustomMessages<T>(
 			},
 		});
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.persistWhenStreaming === true) {
-		for (const item of appMessages) await self._appendCustomMessage(item);
+		await appendSentCustomMessages(self, appMessages);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn !== false) {
 		for (const item of appMessages) self._queueAgentMessage(item, delivery);
 	} else if (options?.triggerTurn) {
@@ -426,7 +445,7 @@ async function commitCustomMessages<T>(
 			else void turn.catch(() => {});
 		}
 	} else {
-		for (const item of appMessages) await self._appendCustomMessage(item);
+		await appendSentCustomMessages(self, appMessages);
 	}
 }
 
