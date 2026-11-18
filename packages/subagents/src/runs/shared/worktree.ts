@@ -230,15 +230,10 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 }
 
 export async function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<GitResult> {
-	// DIAGNOSTIC (temporary): trace each git process Atomic runs, to locate the Windows EBUSY.
-	const trace = (globalThis as { __diagGitTrace?: string[] }).__diagGitTrace;
-	const startedAt = Date.now();
-	trace?.push(`${startedAt} git start -C ${cwd} ${args.join(" ")}`);
 	const result = await spawnCollect("git", ["-C", cwd, ...args], {
 		env: createGitEnvironment(env, createChildProcessEnvironment()),
 		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
 	});
-	trace?.push(`${Date.now()} git end   -C ${cwd} ${args[0]} (${Date.now() - startedAt} ms)`);
 	return {
 		stdout: result.stdout,
 		stderr: result.stderr,

@@ -530,14 +530,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 	cleanups.push(async () => {
 		neverReleased.resolve();
 		await host.close("session-close");
-		const trace = (globalThis as { __diagGitTrace?: string[] }).__diagGitTrace;
-		trace?.push(`${Date.now()} test removing the temporary directory`);
-		try {
-			removeTempDirectory(cwd);
-		} catch (error) {
-			await sleep(2000);
-			throw new Error(`${(error as Error).message}\nDIAG TRACE:\n${trace?.join("\n")}`);
-		}
+		removeTempDirectory(cwd);
 	});
 	return state;
 }
@@ -2990,7 +2983,6 @@ test("a dirty paused worktree child's worktree is kept when its session closes, 
 });
 
 test("a resume that cannot restart a paused worktree child keeps its dirty worktree, edits, draft and branch (#3784)", async () => {
-	if (process.env.ATOMIC_DIAG_GIT_TRACE === "1") (globalThis as { __diagGitTrace?: string[] }).__diagGitTrace = [];
 	const h = harness();
 	initGitRepository(h.cwd);
 	const siblingDone = Promise.withResolvers<void>();
@@ -3014,13 +3006,10 @@ test("a resume that cannot restart a paused worktree child keeps its dirty workt
 	assert.equal(existsSync(childB.cwd), false, "the run returned and removed its clean worktree");
 
 	h.agentDefined = false;
-	const trace = (globalThis as { __diagGitTrace?: string[] }).__diagGitTrace;
-	trace?.push(`${Date.now()} test resume call starts`);
 	const resumed = await h.call({ action: "resume", id: childA.childId });
-	trace?.push(`${Date.now()} test resume call returned`);
 	assert.equal(resumed.isError, true, text(resumed));
 	assert.match(text(resumed), /agent "worker" \(project\) is no longer defined/);
-	if (process.env.ATOMIC_DIAG_NO_SLEEP !== "1") await sleep(100);
+	await sleep(100);
 	assert.equal(readFileSync(trackedEdit, "utf8"), "edited by A\n", "the tracked edit survives the failed resume");
 	assert.equal(readFileSync(untrackedDraft, "utf8"), "draft by A\n", "the untracked draft survives the failed resume");
 	assert.equal(gitOutput(h.cwd, ["branch", "--list", branch]).replace(/^[*+ ]+/, ""), branch, "its branch survives");
