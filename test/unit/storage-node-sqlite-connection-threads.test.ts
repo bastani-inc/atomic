@@ -7,7 +7,7 @@ import { afterEach, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
-import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep, spawnSyncCollect } from "../helpers/runtime.js";
 import { interceptConnectionRequests } from "../helpers/sqlite-connection-requests.js";
 import { holdSqliteWriteLock } from "../helpers/sqlite-lock-holder.js";
 
@@ -145,6 +145,23 @@ test("on Windows, the thread that opens a connection on a thread of its own wait
 	await database.transaction((transaction) => transaction.run("CREATE TABLE t(v)"));
 	// 1 is above normal; elsewhere the priority is not changed, and reads 0.
 	assert.equal(currentThreadPriority(), process.platform === "win32" ? 1 : 0);
+});
+
+test("a process started after a connection raised its opening thread runs at normal priority (#5376)", async () => {
+	const natives = createRequire(import.meta.url).resolve("@bastani/atomic-natives");
+	const database = await open(databasePath());
+	await database.run("CREATE TABLE t(v)");
+	const child = spawnSyncCollect(
+		[
+			process.execPath,
+			"-e",
+			"process.stdout.write(String(require(process.argv[1]).currentThreadPriority()))",
+			natives,
+		],
+		{ stdout: "pipe", stderr: "pipe" },
+	);
+	assert.equal(child.exitCode, 0, child.stderr.toString());
+	assert.equal(child.stdout.toString(), "0", "a child process's thread starts at normal priority");
 });
 
 /** The kinds of the requests every adapter connection sends its thread while `work` runs. */

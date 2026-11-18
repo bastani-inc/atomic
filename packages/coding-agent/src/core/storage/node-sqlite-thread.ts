@@ -17,6 +17,7 @@ const STATEMENT_CACHE_SIZE = 128;
 
 const CONNECTION_SOURCE = `
 const { parentPort, workerData } = require("node:worker_threads");
+const BOOTED = -1;
 process.emitWarning = () => {};
 if (workerData.nativeBinding !== undefined) {
 	try {
@@ -26,8 +27,9 @@ if (workerData.nativeBinding !== undefined) {
 let DatabaseSync;
 try {
 	({ DatabaseSync } = require("node:sqlite"));
+	parentPort.postMessage({ id: BOOTED });
 } catch (error) {
-	parentPort.postMessage({ id: 0, failure: failure(error), load: true });
+	parentPort.postMessage({ id: BOOTED, failure: failure(error), load: true });
 }
 const STATEMENT_CACHE_SIZE = workerData.statementCacheSize;
 let database;
@@ -180,15 +182,22 @@ const handlers = {
 	},
 };
 
-if (DatabaseSync !== undefined) try {
-	database = new DatabaseSync(workerData.path, { readOnly: workerData.readOnly });
-	parentPort.postMessage({ id: 0, value: { location: database.location() } });
-} catch (error) {
-	try { database?.close(); } catch {}
-	parentPort.postMessage({ id: 0, failure: failure(error) });
+// Started ahead of need, the thread opens its database when asked; nothing else comes before that.
+function open(request) {
+	try {
+		database = new DatabaseSync(request.path, { readOnly: request.readOnly });
+		parentPort.postMessage({ id: 0, value: { location: database.location() } });
+	} catch (error) {
+		try { database?.close(); } catch {}
+		parentPort.postMessage({ id: 0, failure: failure(error) });
+	}
 }
 
 parentPort.on("message", (request) => {
+	if (request.kind === "open") {
+		open(request);
+		return;
+	}
 	if (request.epoch !== undefined && request.epoch <= refusedEpoch) {
 		parentPort.postMessage({ id: request.id, refused: true });
 		return;
@@ -418,6 +427,75 @@ function rowsOf(table: RowTable): SqliteRow[] {
 	});
 }
 
+/** The id of the message a connection thread sends once it loaded node:sqlite, or failed to. */
+const BOOTED = -1;
+
+/** A connection thread started before it opened a database, and how its start ends. */
+interface StartedThread {
+	readonly worker: Worker;
+	/** The thread's boot message; a failure when it could not load node:sqlite or was lost before it booted. */
+	readonly booted: Promise<ConnectionReply>;
+}
+
+function startThread(): StartedThread {
+	const worker = new Worker(CONNECTION_SOURCE, {
+		eval: true,
+		execArgv: [],
+		workerData: {
+			nowSql: `SELECT ${sqliteDialect.nowMs} AS now`,
+			statementCacheSize: STATEMENT_CACHE_SIZE,
+			nativeBinding: threadPriorityBinding(),
+		},
+	});
+	const booted = new Promise<ConnectionReply>((resolve) => {
+		const settle = (reply: ConnectionReply) => {
+			worker.off("message", onMessage);
+			worker.off("error", onError);
+			worker.off("exit", onExit);
+			resolve(reply);
+		};
+		const onMessage = (reply: ConnectionReply) => {
+			if (reply.id === BOOTED) settle(reply);
+		};
+		const onError = (error: Error) => settle({ id: BOOTED, failure: { name: error.name, message: error.message } });
+		const onExit = (code: number) =>
+			settle({
+				id: BOOTED,
+				failure: { name: "Error", message: `SQLite connection thread exited with code ${code}` },
+			});
+		worker.on("message", onMessage);
+		worker.on("error", onError);
+		worker.on("exit", onExit);
+	});
+	return { worker, booted };
+}
+
+/**
+ * A thread started ahead of the next open, so that open does not wait for a thread to start (#5376): starting one
+ * takes about 20 ms on an idle machine and several times that on a busy one. There is at most one, it is started once a
+ * connection opened, it does not keep the process alive, and it is stopped once no connection is open.
+ */
+let spare: StartedThread | undefined;
+let openConnections = 0;
+
+function takeThread(): StartedThread {
+	const taken = spare;
+	spare = undefined;
+	return taken ?? startThread();
+}
+
+function startSpare(): void {
+	if (spare !== undefined || openConnections === 0) return;
+	spare = startThread();
+	spare.worker.unref();
+}
+
+async function stopSpare(): Promise<void> {
+	const stopping = spare;
+	spare = undefined;
+	await stopping?.worker.terminate();
+}
+
 /** A connection running on its own worker thread. */
 export class ThreadConnection {
 	/** The path the connection was opened with, as its caller gave it. */
@@ -428,8 +506,11 @@ export class ThreadConnection {
 	private settleOpen?: (outcome: ConnectionReply) => void;
 	private closing?: Promise<void>;
 	private lost?: Error;
+	/** Counted among the open connections, which keep the spare thread. */
+	private counted = false;
+	private released?: Promise<void>;
 
-	private constructor(path: string, options: ThreadConnectionOptions) {
+	private constructor(path: string, worker: Worker) {
 		this.path = path;
 		this.opened = new Promise((resolve, reject) => {
 			this.settleOpen = (reply) => {
@@ -440,17 +521,7 @@ export class ThreadConnection {
 				else reject(connectionFailure(reply.failure));
 			};
 		});
-		this.worker = new Worker(CONNECTION_SOURCE, {
-			eval: true,
-			execArgv: [],
-			workerData: {
-				path: options.openAs ?? path,
-				readOnly: options.readOnly,
-				nowSql: `SELECT ${sqliteDialect.nowMs} AS now`,
-				statementCacheSize: STATEMENT_CACHE_SIZE,
-				nativeBinding: threadPriorityBinding(),
-			},
-		});
+		this.worker = worker;
 		this.worker.on("message", (reply: ConnectionReply) => this.receive(reply));
 		this.worker.on("error", (error: Error) => this.lose(error));
 		this.worker.on("exit", (code: number) =>
@@ -459,21 +530,51 @@ export class ThreadConnection {
 	}
 
 	/**
-	 * Opens `path` on a new thread and resolves with the location the connection reports. Rejects with
-	 * `ConnectionLoadError` when node:sqlite is unavailable there, and with the driver's error when opening fails; the
-	 * thread is gone either way.
+	 * Opens `path` on a thread of its own, the spare one when it is ready, and resolves with the location the connection
+	 * reports. Rejects with `ConnectionLoadError` when node:sqlite is unavailable there, and with the driver's error when
+	 * opening fails; the thread is gone either way.
 	 */
 	static async open(
 		path: string,
 		options: ThreadConnectionOptions,
 	): Promise<{ connection: ThreadConnection; location: string | null }> {
-		const connection = new ThreadConnection(path, options);
+		let thread = takeThread();
+		let booted = await thread.booted;
+		// A spare lost before it was needed is replaced; a thread that cannot load node:sqlite fails as any would.
+		if (booted.failure !== undefined && booted.load !== true) {
+			thread = startThread();
+			booted = await thread.booted;
+		}
+		if (booted.failure !== undefined) {
+			await thread.worker.terminate();
+			throw booted.load === true
+				? new ConnectionLoadError(connectionFailure(booted.failure))
+				: connectionFailure(booted.failure);
+		}
+		const connection = new ThreadConnection(path, thread.worker);
+		thread.worker.ref();
+		thread.worker.postMessage({ kind: "open", path: options.openAs ?? path, readOnly: options.readOnly });
+		let location: string | null;
 		try {
-			return { connection, location: await connection.opened };
+			location = await connection.opened;
 		} catch (error) {
-			await connection.worker.terminate();
+			await thread.worker.terminate();
 			throw error;
 		}
+		connection.counted = true;
+		openConnections += 1;
+		startSpare();
+		return { connection, location };
+	}
+
+	/** No longer counted among the open connections; the last one to go stops the spare thread. Once. */
+	private release(): Promise<void> {
+		if (!this.counted) return Promise.resolve();
+		this.released ??= (() => {
+			openConnections -= 1;
+			return openConnections === 0 ? stopSpare() : Promise.resolve();
+		})();
+		return this.released;
 	}
 
 	private receive(reply: ConnectionReply): void {
@@ -497,6 +598,7 @@ export class ThreadConnection {
 	private lose(cause: Error): void {
 		if (this.lost !== undefined) return;
 		this.lost = cause;
+		void this.release();
 		this.settleOpen?.({ id: 0, failure: { name: cause.name, message: cause.message } });
 		this.ledger.end(cause);
 		this.worker.unref();
@@ -557,6 +659,7 @@ export class ThreadConnection {
 			} finally {
 				this.ledger.end(new Error("SQLite connection closed"));
 				await this.worker.terminate();
+				await this.release();
 			}
 		})();
 		return this.closing;
