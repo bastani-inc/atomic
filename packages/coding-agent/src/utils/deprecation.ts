@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
+import lockfile from "proper-lockfile";
 import { normalizePath } from "./paths.ts";
 
 /**
@@ -23,6 +24,16 @@ const SHOWN_NOTICES_FILE = "shown-notices.json";
 const SHOWN_NOTICES_LIMIT = 500;
 /** The record names which settings files Atomic read: readable by its owner only. */
 const SHOWN_NOTICES_MODE = 0o600;
+/**
+ * How long a process waits, as it exits, for another one to finish saving the record, 10 ms apart. Each holds the lock
+ * for one small read and rename; a process that cannot have it in time leaves the record as it is, and its notices are
+ * shown once more on the next start.
+ */
+const SHOWN_NOTICES_LOCK_WAIT_MS = 2000;
+const SHOWN_NOTICES_LOCK_POLL_MS = 10;
+/** How old a record lock must be to be judged left by a process that died while saving. */
+const SHOWN_NOTICES_LOCK_STALE_MS = 10_000;
+const lockPoll = new Int32Array(new SharedArrayBuffer(4));
 
 export interface DeprecationOptions {
 	showInUi?: boolean;
@@ -239,12 +250,15 @@ export function saveShownDeprecationNotices(): void {
 	// Written to stderr by a process no UI took over (print, JSON or RPC mode): the user saw them there.
 	for (const { message, once, printed } of state[UI_PENDING_KEY] ?? []) if (printed) recordShown(once, message);
 	if (store.added.length === 0) return;
-	const added = new Set(store.added);
-	const shown = [...readShownNotices(store.path).filter((hash) => !added.has(hash)), ...store.added].slice(
-		-SHOWN_NOTICES_LIMIT,
-	);
+	// Other Atomic processes save the record too: read, merge and replace it under its lock, so none loses another's.
+	const release = lockShownNotices(store.path);
+	if (release === undefined) return;
 	const temporary = `${store.path}.${process.pid}.tmp`;
 	try {
+		const added = new Set(store.added);
+		const shown = [...readShownNotices(store.path).filter((hash) => !added.has(hash)), ...store.added].slice(
+			-SHOWN_NOTICES_LIMIT,
+		);
 		writeFileSync(temporary, `${JSON.stringify({ shown }, null, 2)}\n`, {
 			encoding: "utf-8",
 			mode: SHOWN_NOTICES_MODE,
@@ -254,5 +268,23 @@ export function saveShownDeprecationNotices(): void {
 		store.added = [];
 	} catch {
 		if (existsSync(temporary)) rmSync(temporary, { force: true });
+	} finally {
+		try {
+			release();
+		} catch {}
+	}
+}
+
+/** Take the record's lock, waiting {@link SHOWN_NOTICES_LOCK_WAIT_MS} for another process to finish with it. */
+function lockShownNotices(path: string): (() => void) | undefined {
+	const deadline = Date.now() + SHOWN_NOTICES_LOCK_WAIT_MS;
+	for (;;) {
+		try {
+			return lockfile.lockSync(path, { realpath: false, stale: SHOWN_NOTICES_LOCK_STALE_MS });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ELOCKED" || Date.now() >= deadline) return undefined;
+			// The process is exiting and nothing else runs on its event loop: wait without spinning the CPU.
+			Atomics.wait(lockPoll, 0, 0, SHOWN_NOTICES_LOCK_POLL_MS);
+		}
 	}
 }

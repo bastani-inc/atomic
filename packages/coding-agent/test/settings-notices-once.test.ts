@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +20,8 @@ import {
 const ROUTING = { allowedProviders: ["anthropic"] };
 /** A child Node process loads the deprecation module from source: structural, not a slow test. */
 const CHILD_PROCESS_TIMEOUT_MS = 60_000;
+/** How long each process of the concurrent-save test stays between reading the record and replacing it. */
+const INSIDE_SAVE_MS = 800;
 // Atomic's sources import `.js` specifiers that name `.ts` files; this hook resolves them for Node.
 const RESOLVE_TS_SOURCES = `import { registerHooks } from "node:module";
 registerHooks({ resolve(specifier, context, nextResolve) {
@@ -159,6 +161,47 @@ describe("settings notices are shown once", () => {
 			assert.match(exitingStart(), /Ignored removed setting/);
 			assert.ok(existsSync(join(agentDir, "shown-notices.json")), "the record names the warning the exit showed");
 			assert.doesNotMatch(exitingStart(), /Ignored removed setting/, "the next start says nothing");
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
+	it(
+		"keeps the notices of every process that saves the record at the same time",
+		async () => {
+			const deprecation = pathToFileURL(fileURLToPath(new URL("../src/utils/deprecation.ts", import.meta.url))).href;
+			// Each process stays inside its save, between reading the record and replacing it, long enough for the other to
+			// read it too: without a lock the second rename replaces the first process's record.
+			const script = (notice: string) => `
+				import fs from "node:fs";
+				import { syncBuiltinESMExports } from "node:module";
+				const rename = fs.renameSync;
+				fs.renameSync = (from, to) => {
+					Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${INSIDE_SAVE_MS});
+					rename(from, to);
+				};
+				syncBuiltinESMExports();
+				const { loadShownDeprecationNotices, warnDeprecation } = await import(${JSON.stringify(deprecation)});
+				loadShownDeprecationNotices(${JSON.stringify(agentDir)});
+				warnDeprecation(${JSON.stringify(notice)}, { once: ${JSON.stringify(`${notice} file`)} });
+			`;
+			const run = (notice: string) =>
+				new Promise<number | null>((resolveExit) => {
+					const child = spawn(
+						process.execPath,
+						[
+							"--import",
+							`data:text/javascript,${encodeURIComponent(RESOLVE_TS_SOURCES)}`,
+							"--input-type=module",
+							"--eval",
+							script(notice),
+						],
+						{ cwd: root, stdio: "ignore", env: { ...process.env, NO_COLOR: "1" } },
+					);
+					child.on("close", resolveExit);
+				});
+			assert.deepEqual(await Promise.all([run("first notice"), run("second notice")]), [0, 0]);
+			const record = JSON.parse(readFileSync(join(agentDir, "shown-notices.json"), "utf-8")) as { shown: string[] };
+			assert.equal(record.shown.length, 2, "both processes' notices are in the record");
 		},
 		CHILD_PROCESS_TIMEOUT_MS,
 	);

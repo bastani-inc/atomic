@@ -230,7 +230,141 @@ describe("a settings save keeps what an editor saved while it was writing", () =
 	});
 });
 
+describe("a save that gave up to an editor keeps the keys no later save saved", () => {
+	let root: string;
+	let agentDir: string;
+	const path = () => join(agentDir, "settings.json");
+	const readSaved = (): Record<string, unknown> => JSON.parse(readFileSync(path(), "utf-8"));
+
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "atomic-settings-pending-keys-"));
+		agentDir = join(root, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(path(), JSON.stringify({ theme: "dark" }));
+	});
+
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	/** An editor saves the file on every attempt of the first write only. */
+	class EditorSavesDuringFirstWrite extends FileSettingsStorage {
+		private writes = 0;
+		override async withPrimaryWriteLockAsync(
+			scope: SettingsScope,
+			fn: (currentPrimary: string | undefined) => string | undefined,
+		): Promise<void> {
+			const editing = ++this.writes === 1;
+			let save = 0;
+			await super.withPrimaryWriteLockAsync(scope, (current) => {
+				if (editing) writeFileSync(path(), JSON.stringify({ ...JSON.parse(current ?? "{}"), editorSave: ++save }));
+				return fn(current);
+			});
+		}
+	}
+
+	it("still saves a theme that gave up when a later save of other settings succeeds", async () => {
+		const manager = SettingsManager.fromStorage(new EditorSavesDuringFirstWrite(join(root, "project"), agentDir));
+		manager.setTheme("solarized");
+		manager.updatePackages("global", () => ["npm:example"]);
+		await manager.flush();
+		await manager.flush();
+		const saved = readSaved();
+		assert.equal(saved.theme, "solarized", "the theme was saved");
+		assert.deepEqual(saved.packages, ["npm:example"]);
+	});
+
+	it("does not save an older theme over a newer one a later save already saved", async () => {
+		const manager = SettingsManager.fromStorage(new EditorSavesDuringFirstWrite(join(root, "project"), agentDir));
+		manager.setTheme("solarized");
+		manager.setTheme("light");
+		await manager.flush();
+		assert.equal(readSaved().theme, "light");
+	});
+});
+
 describe("a save keeps the keys it does not change exactly as they are on disk", () => {
+	it("keeps what a legacy skills object said about skill commands when the skill paths are saved", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-settings-legacy-skills-"));
+		try {
+			const agentDir = join(root, "agent");
+			mkdirSync(agentDir, { recursive: true });
+			const path = join(agentDir, "settings.json");
+			writeFileSync(path, JSON.stringify({ skills: { customDirectories: ["./old"], enableSkillCommands: false } }));
+			const manager = SettingsManager.create(join(root, "project"), agentDir);
+			assert.equal(manager.getEnableSkillCommands(), false);
+			manager.setSkillPaths(["./new"]);
+			await manager.flush();
+			const reloaded = SettingsManager.create(join(root, "project"), agentDir);
+			assert.equal(reloaded.getEnableSkillCommands(), false, "skill commands stay off");
+			assert.deepEqual(reloaded.getSkillPaths(), ["./new"]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps what a legacy skills object said when packages are saved", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-settings-legacy-skills-packages-"));
+		try {
+			const agentDir = join(root, "agent");
+			mkdirSync(agentDir, { recursive: true });
+			const path = join(agentDir, "settings.json");
+			writeFileSync(path, JSON.stringify({ skills: { customDirectories: ["./old"], enableSkillCommands: false } }));
+			const manager = SettingsManager.create(join(root, "project"), agentDir);
+			manager.updatePackages("global", () => ["npm:example"]);
+			await manager.flush();
+			const reloaded = SettingsManager.create(join(root, "project"), agentDir);
+			assert.equal(reloaded.getEnableSkillCommands(), false);
+			assert.deepEqual(reloaded.getSkillPaths(), ["./old"]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps every migrated value when each legacy setting's replacement is saved", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-settings-legacy-all-"));
+		try {
+			const agentDir = join(root, "agent");
+			mkdirSync(agentDir, { recursive: true });
+			const path = join(agentDir, "settings.json");
+			const legacy = {
+				routerModel: "openai/gpt-6.1-sol",
+				queueMode: "all",
+				websockets: true,
+				skills: { customDirectories: ["./old"], enableSkillCommands: false },
+				retry: { maxDelayMs: 5000 },
+			};
+			const read = () => SettingsManager.create(join(root, "project"), agentDir).getGlobalSettings();
+			const migrated = [
+				"decisionModel",
+				"steeringMode",
+				"transport",
+				"retry",
+				"skills",
+				"enableSkillCommands",
+			] as const;
+			const saves: [changes: string, save: (manager: SettingsManager) => void][] = [
+				["theme", (manager) => manager.setTheme("light")],
+				["skills", (manager) => manager.setSkillPaths(["./new"])],
+				["enableSkillCommands", (manager) => manager.setEnableSkillCommands(true)],
+				["steeringMode", (manager) => manager.setSteeringMode("one-at-a-time")],
+				["packages", (manager) => manager.updatePackages("global", () => ["npm:example"])],
+			];
+			for (const [changes, save] of saves) {
+				writeFileSync(path, JSON.stringify(legacy));
+				const before = read();
+				const manager = SettingsManager.create(join(root, "project"), agentDir);
+				save(manager);
+				await manager.flush();
+				const after = read();
+				for (const field of migrated)
+					if (field !== changes) assert.deepEqual(after[field], before[field], `${field} after saving ${changes}`);
+			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps an ignored legacy routerModel and keys Atomic does not know when it saves another setting", async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-settings-raw-keys-"));
 		try {

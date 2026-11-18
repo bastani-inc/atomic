@@ -1,4 +1,5 @@
 import { writeSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { join } from "path";
 import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../config.js";
 import { settingsFileNoticeKey, warnDeprecation } from "../utils/deprecation.js";
@@ -47,10 +48,30 @@ function nestedEntries(field: keyof Settings, value: unknown): Record<string, un
 
 type PersistSettings = (currentPrimary: string | undefined) => string | undefined;
 
+/**
+ * What a write saves: a top-level setting (`theme`), or one key of a nested setting (`retry\0provider`). A write saves
+ * only the keys it still holds, so a newer write that saved a key takes it from an older one that gave up.
+ */
+type SettingsKey = string;
+
+function nestedKey(field: string, key: string): SettingsKey {
+	return `${field}\0${key}`;
+}
+
+/** Whether a write that saved `written` saved `key`: the key itself, or the whole setting a nested key belongs to. */
+function savedBy(written: ReadonlySet<SettingsKey>, key: SettingsKey): boolean {
+	const nested = key.indexOf("\0");
+	return written.has(key) || (nested >= 0 && written.has(key.slice(0, nested)));
+}
+
 interface UnsavedWrite {
 	readonly manager: SettingsManager;
 	readonly scope: SettingsScope;
 	readonly persist: PersistSettings;
+	/** Enqueue order: a write takes keys only from older writes. */
+	readonly sequence: number;
+	/** The keys this write still has to save. */
+	readonly keys: Set<SettingsKey>;
 	/**
 	 * The write gave up because something kept saving the file without the lock, such as an editor. It stays unsaved:
 	 * the next `flush()` tries it again, and so does the save at exit, which reports it on stderr when it fails again.
@@ -59,6 +80,7 @@ interface UnsavedWrite {
 }
 
 const unsavedWrites: UnsavedWrite[] = [];
+let unsavedWriteSequence = 0;
 let exitSaveRegistered = false;
 
 export class SettingsManager {
@@ -651,8 +673,20 @@ export class SettingsManager {
 		this.modifiedProjectNestedFields.clear();
 	}
 
-	private enqueueWrite(scope: SettingsScope, persist: PersistSettings): void {
-		const unsaved: UnsavedWrite = { manager: this, scope, persist };
+	/** Queue a write of `keys`; `makePersist` writes only the keys still held in the set it is given. */
+	private enqueueWrite(
+		scope: SettingsScope,
+		keys: Iterable<SettingsKey>,
+		makePersist: (keys: ReadonlySet<SettingsKey>) => PersistSettings,
+	): void {
+		const held = new Set(keys);
+		const unsaved: UnsavedWrite = {
+			manager: this,
+			scope,
+			persist: makePersist(held),
+			sequence: ++unsavedWriteSequence,
+			keys: held,
+		};
 		unsavedWrites.push(unsaved);
 		if (!exitSaveRegistered) {
 			exitSaveRegistered = true;
@@ -674,14 +708,18 @@ export class SettingsManager {
 				if (scope === "project") {
 					this.assertProjectTrustedForWrite();
 				}
+				const written = new Set(unsaved.keys);
 				await SettingsManager.writePrimary(this.asyncStorage, scope, persist);
 				this.clearModifiedScope(scope);
 				recordSettingsWrite(owner, scope);
-				// This write saved every field still modified in the scope, so an earlier one that gave up is done too.
+				// An older write that gave up no longer saves the keys this one saved; it is done once it holds none.
 				for (const earlier of unsavedWrites.filter(
-					(write) => write.manager === this && write.scope === scope && write.gaveUp,
-				))
-					unsavedWrites.splice(unsavedWrites.indexOf(earlier), 1);
+					(write) =>
+						write.manager === this && write.scope === scope && write.gaveUp && write.sequence < unsaved.sequence,
+				)) {
+					for (const key of [...earlier.keys]) if (savedBy(written, key)) earlier.keys.delete(key);
+					if (earlier.keys.size === 0) unsavedWrites.splice(unsavedWrites.indexOf(earlier), 1);
+				}
 			})
 			.catch((error) => {
 				this.recordError(scope, error);
@@ -734,14 +772,26 @@ export class SettingsManager {
 		modifiedFields: Set<keyof Settings>,
 		modifiedNestedFields: Map<keyof Settings, Set<string>>,
 	): void {
-		const persist = (currentPrimary: string | undefined): string => {
+		const keys: SettingsKey[] = [];
+		for (const field of modifiedFields) {
+			if (isPrototypeKey(field)) continue;
+			const nested = modifiedNestedFields.get(field);
+			if (nested === undefined) keys.push(field);
+			else for (const key of nested) if (!isPrototypeKey(key)) keys.push(nestedKey(field, key));
+		}
+		const makePersist = (held: ReadonlySet<SettingsKey>) => (currentPrimary: string | undefined) => {
 			const { saved, migrated: currentFileSettings } = SettingsManager.readSavedFile(currentPrimary);
 			const mergedSettings = { ...saved } as Settings;
+			const writtenFields = new Set<string>();
 			for (const field of modifiedFields) {
 				if (isPrototypeKey(field)) continue;
 				const value = snapshotSettings[field];
 				if (modifiedNestedFields.has(field)) {
-					const nestedModified = modifiedNestedFields.get(field)!;
+					const nestedModified = [...modifiedNestedFields.get(field)!].filter((key) =>
+						held.has(nestedKey(field, key)),
+					);
+					if (nestedModified.length === 0) continue;
+					writtenFields.add(field);
 					const inMemoryNested = nestedEntries(field, value);
 					const mergedNested = { ...nestedEntries(field, currentFileSettings[field]) };
 					for (const nestedKey of nestedModified) {
@@ -759,14 +809,44 @@ export class SettingsManager {
 								? undefined
 								: mergedNested;
 				} else {
+					if (!held.has(field)) continue;
+					writtenFields.add(field);
 					(mergedSettings as Record<string, unknown>)[field] = value;
 				}
 			}
 
-			return JSON.stringify(mergedSettings, null, 2);
+			return JSON.stringify(
+				SettingsManager.keepDerivedSettings(
+					mergedSettings as Record<string, unknown>,
+					currentFileSettings,
+					writtenFields,
+				),
+				null,
+				2,
+			);
 		};
 
-		this.enqueueWrite(scope, persist);
+		this.enqueueWrite(scope, keys, makePersist);
+	}
+
+	/**
+	 * Keep what loading derived from a legacy key that `next` no longer holds as it was: a save that replaces a legacy
+	 * form, such as the `skills` object that also carried `enableSkillCommands`, writes the migrated form of every other
+	 * value that legacy form held, so no setting the save did not change changes.
+	 */
+	private static keepDerivedSettings(
+		next: Record<string, unknown>,
+		current: Settings,
+		writtenFields: ReadonlySet<string>,
+	): Record<string, unknown> {
+		const loaded = SettingsManager.migrateSettings(structuredClone(next), { quiet: true }) as Record<string, unknown>;
+		const before = current as Record<string, unknown>;
+		for (const field of Object.keys(before)) {
+			// Only values loading derived are restored: a key the save left on disk stays, even when loading now ignores it.
+			if (writtenFields.has(field) || isPrototypeKey(field) || before[field] === undefined) continue;
+			if (!isDeepStrictEqual(loaded[field], before[field])) next[field] = structuredClone(before[field]);
+		}
+		return next;
 	}
 
 	/**
@@ -837,12 +917,19 @@ export class SettingsManager {
 		this.settings = this.mergeEffectiveSettings();
 		if (scope === "project" ? this.projectSettingsLoadError : this.globalSettingsLoadError) return true;
 
-		const persist = (currentPrimary: string | undefined): string | undefined => {
+		const makePersist = (held: ReadonlySet<SettingsKey>) => (currentPrimary: string | undefined) => {
+			if (!held.has("packages")) return undefined;
 			const { saved, migrated } = SettingsManager.readSavedFile(currentPrimary);
 			const filePackages = update(migrated.packages ?? []);
-			return filePackages === undefined ? undefined : JSON.stringify({ ...saved, packages: filePackages }, null, 2);
+			if (filePackages === undefined) return undefined;
+			const next = SettingsManager.keepDerivedSettings(
+				{ ...saved, packages: filePackages },
+				migrated,
+				new Set(["packages"]),
+			);
+			return JSON.stringify(next, null, 2);
 		};
-		this.enqueueWrite(scope, persist);
+		this.enqueueWrite(scope, ["packages"], makePersist);
 		return true;
 	}
 
