@@ -99,7 +99,7 @@ export async function withEarlyInputHeldForStartupDialog<T>(
 		}
 		capture = activeCapture;
 		const hasUnfinishedInput = capture?.pause() ?? startupDialogDrafts.length > 0;
-		// The dialog draws where the startup status line is; the line returns if startup still runs after it.
+		// The dialog's first frame replaces the startup status line; the line returns if startup still runs after it.
 		suspendStartupStatus();
 		try {
 			return await run({ hasUnfinishedInput });

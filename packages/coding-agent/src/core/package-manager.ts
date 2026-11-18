@@ -1,5 +1,6 @@
 import type { ChildProcess, ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
+import { startupStatusAsideFor } from "../cli/startup-status.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import type { GitSource } from "../utils/git.ts";
 import { resolvePath as resolveAbsolutePath } from "../utils/paths.ts";
@@ -203,11 +204,14 @@ export class DefaultPackageManager implements PackageManager {
 		args: string[],
 		options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 	): ChildProcess {
-		return spawnProcess(command, args, {
-			cwd: options?.cwd,
-			stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
-			env: getCommandEnv(command, options?.env),
-		});
+		// The command writes to the terminal itself, so a startup status line steps aside for it (#5546).
+		return startupStatusAsideFor(() =>
+			spawnProcess(command, args, {
+				cwd: options?.cwd,
+				stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
+				env: getCommandEnv(command, options?.env),
+			}),
+		);
 	}
 
 	private spawnCaptureCommand(
