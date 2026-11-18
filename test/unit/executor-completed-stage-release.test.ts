@@ -592,13 +592,15 @@ describe("completed stage session release", () => {
 			}
 		});
 
-		for (const owner of ["a caller-owned stage registry", "an interactive session"] as const) {
-			test(`with ${owner}, a resume that takes the failed run's id before its cleanup can still reuse a stage it completed, and the failed run's session it displaced is released (#5499)`, async () => {
+		for (const owner of ["a caller-owned stage registry", "an interactive session", "no stage registry"] as const) {
+			test(`with ${owner}, a resume can reuse its stage after the failed run releases its session and its old stage context is collected (#5499)`, async () => {
 				const backend = await createMemoryTestBackend();
 				const store = createStore();
 				const registry = createStageControlRegistry();
 				const stageCompleted = Promise.withResolvers<void>();
 				const reuseStage = Promise.withResolvers<void>();
+				const collected = trackCollection();
+				let oldContext: object | undefined;
 				let prompts = 0;
 				const fixture = createPersistedStageFixture({
 					reply: () => "done",
@@ -614,6 +616,10 @@ describe("completed stage session release", () => {
 					outputs: {},
 					async run(ctx) {
 						const stage = ctx.stage("last");
+						if (prompts === 0) {
+							oldContext = stage;
+							collected.track(stage);
+						}
 						await stage.prompt("try");
 						stageCompleted.resolve();
 						await reuseStage.promise;
@@ -624,7 +630,9 @@ describe("completed stage session release", () => {
 				const ownerOptions =
 					owner === "an interactive session"
 						? { executionMode: "interactive" as const }
-						: { stageControlRegistry: registry };
+						: owner === "a caller-owned stage registry"
+							? { stageControlRegistry: registry }
+							: {};
 				// The failed run's end is recorded before its cleanup runs. Resume it with the same id right then, and let the
 				// cleanup go on once the resumed stage has completed its first prompt.
 				const commitStatus = backend.commitWorkflowStatus.bind(backend);
@@ -662,6 +670,10 @@ describe("completed stage session release", () => {
 					// reach the failed stage's session: the failed run's end releases it.
 					assert.equal(fixture.sessions[0]!.disposals, 1, "the failed run's displaced session is released");
 
+					assert.ok(oldContext);
+					oldContext = undefined;
+					await collectEverythingTracked(collected);
+					assert.equal(collected.collected(), 1, "the failed run's stage context was collected");
 					reuseStage.resolve();
 					const result = await resumed;
 					assert.equal(result.status, "completed", result.error);
