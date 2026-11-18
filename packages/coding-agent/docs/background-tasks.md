@@ -44,6 +44,8 @@ Press **↓** on an empty prompt to focus the panel. It then works like every li
 - **x** stops the selected item when pressed again within 3 seconds, and dismisses a finished row.
 - **Esc** or **←**, or ↑ past `● main` (past the first row when there is no main row), returns to the prompt. **?** shows the keys.
 
+In fullscreen mode you can also click a row, focused or not, to open it as Enter does. Clicking `● main` in the focused panel returns to the prompt.
+
 Going back from what you opened returns to the main chat with the panel focused on the same row. The subagent chat's hint reads `← main chat`; press **←** on its empty prompt. A workflow graph uses **Esc** to return.
 
 A workflow stage chat or a subagent's chat lists its own active agents and shells below its prompt in the same row format. Attached subagent chats identify the sender with `› from main` and echo the initial prompt. Their heavy composer rules name the recipient, task and state. Stage chats use `stage · <name>` labels. **?** on an empty prompt shows the chat's live keys. **Esc** interrupts without navigating away.

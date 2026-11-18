@@ -129,6 +129,13 @@ export interface Component {
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
 
 	/**
+	 * An identity for what the last render drew on `row`, such as the id of the item shown there. The fullscreen
+	 * renderer turns a press and release into a click only when it is the same at both, so a repaint that swaps in
+	 * another item with the same text is not clicked by mistake.
+	 */
+	paintedRowKey?(row: number): string | undefined;
+
+	/**
 	 * If true, component receives key release events (Kitty protocol).
 	 * Default is false - release events are filtered out.
 	 */
@@ -386,26 +393,31 @@ export class Container implements Component {
 		}
 	}
 
-	handleMouse(event: TuiMouseEvent): TuiMouseDispatchResult | undefined {
-		if (event.y < 0 || event.y >= event.height) return undefined;
+	/**
+	 * The child drawn at `row` of this container at `width`, with the row inside that child and the child's height.
+	 * Reads the row heights of the last render at `width`; another width renders the children to measure them.
+	 */
+	childAtRow(width: number, row: number): { component: Component; row: number; height: number } | undefined {
+		if (row < 0) return undefined;
 		const mouseChildren =
-			this.mouseLayout?.width === event.width
+			this.mouseLayout?.width === width
 				? this.mouseLayout.children
-				: this.children.map((component) => ({ component, height: component.render(event.width).length }));
+				: this.children.map((component) => ({ component, height: component.render(width).length }));
 		let childY = 0;
-		for (const { component: child, height: childHeight } of mouseChildren) {
-			if (event.y >= childY && event.y < childY + childHeight) {
-				const result = dispatchMouseEvent(child, {
-					...event,
-					y: event.y - childY,
-					height: childHeight,
-				});
-				if (result?.focus && (this as Component).handleInput) return { ...result, focusTarget: this };
-				return result;
-			}
-			childY += childHeight;
+		for (const { component, height } of mouseChildren) {
+			if (row >= childY && row < childY + height) return { component, row: row - childY, height };
+			childY += height;
 		}
 		return undefined;
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseDispatchResult | undefined {
+		if (event.y < 0 || event.y >= event.height) return undefined;
+		const hit = this.childAtRow(event.width, event.y);
+		if (!hit) return undefined;
+		const result = dispatchMouseEvent(hit.component, { ...event, y: hit.row, height: hit.height });
+		if (result?.focus && (this as Component).handleInput) return { ...result, focusTarget: this };
+		return result;
 	}
 
 	render(width: number): string[] {
@@ -907,6 +919,21 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	/** Dispatch to the visually topmost overlay under the pointer. */
+	/** The topmost overlay the last frame drew at screen cell `x`, `y`, and the rectangle it was drawn in. */
+	protected overlayAt(
+		x: number,
+		y: number,
+	): { component: Component; row: number; col: number; width: number; height: number } | undefined {
+		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
+			const layout = this.renderedOverlayLayouts[index]!;
+			if (x >= layout.col && x < layout.col + layout.width && y >= layout.row && y < layout.row + layout.height) {
+				const { row, col, width, height } = layout;
+				return { component: layout.entry.component, row, col, width, height };
+			}
+		}
+		return undefined;
+	}
+
 	protected dispatchMouseToOverlay(event: TuiMouseEvent): { hit: boolean; result?: TuiMouseDispatchResult } {
 		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
 			const layout = this.renderedOverlayLayouts[index]!;
