@@ -365,6 +365,28 @@ else
     fail "sha256sum, shasum, or openssl is required"
 fi
 
+LAUNCHER_RECORD=.atomic-launcher.sha256
+# How long BusyBox wget may take to bring github.com's answer to the release probe.
+RELEASE_PROBE_TIMEOUT_SECONDS=10
+
+# The SHA-256 of a file, as lowercase hex.
+sha256_of() {
+    case $CHECKSUM_TOOL in
+        sha256sum) sha256_output=$(sha256sum "$1") || return 1 ;;
+        shasum) sha256_output=$(shasum -a 256 "$1") || return 1 ;;
+        openssl) sha256_output=$(openssl dgst -sha256 "$1") || return 1 ;;
+    esac
+    set -- $sha256_output
+    if [ "$CHECKSUM_TOOL" = openssl ]; then
+        for sha256_word in "$@"; do
+            sha256_value=$sha256_word
+        done
+    else
+        sha256_value=$1
+    fi
+    printf '%s' "$sha256_value"
+}
+
 HOST_OS=$(uname -s 2>/dev/null) || fail "unable to determine the host operating system"
 HOST_MACHINE=$(uname -m 2>/dev/null) || fail "unable to determine the host architecture"
 
@@ -786,7 +808,33 @@ release_page_status() {
         release_probe_code=$(curl -sI -o /dev/null -w '%{http_code}' "$release_probe_url" 2>/dev/null) || :
     else
         release_probe_headers=$TEMP_DIR/release-probe-headers
-        wget -S --spider "$release_probe_url" > /dev/null 2>"$release_probe_headers" || :
+        : > "$release_probe_headers"
+        case $(wget --version 2>/dev/null || :) in
+            *'GNU Wget'*)
+                wget -S --spider --max-redirect=0 "$release_probe_url" > /dev/null 2>"$release_probe_headers" || :
+                ;;
+            *)
+                # BusyBox wget always follows redirects: read only github.com's own first
+                # answer, then stop it, so the file storage it redirects to is never awaited.
+                wget -S --spider "$release_probe_url" > /dev/null 2>"$release_probe_headers" &
+                release_probe_pid=$!
+                if sleep 0.1 2>/dev/null; then
+                    release_probe_step=0.1
+                    release_probe_steps=$((RELEASE_PROBE_TIMEOUT_SECONDS * 10))
+                else
+                    release_probe_step=1
+                    release_probe_steps=$RELEASE_PROBE_TIMEOUT_SECONDS
+                fi
+                while kill -0 "$release_probe_pid" 2>/dev/null &&
+                    [ "$(first_http_status "$release_probe_headers")" = 000 ] &&
+                    [ "$release_probe_steps" -gt 0 ]; do
+                    sleep "$release_probe_step"
+                    release_probe_steps=$((release_probe_steps - 1))
+                done
+                kill "$release_probe_pid" 2>/dev/null || :
+                wait "$release_probe_pid" 2>/dev/null || :
+                ;;
+        esac
         release_probe_code=$(first_http_status "$release_probe_headers")
         rm -f "$release_probe_headers"
     fi
@@ -1258,14 +1306,53 @@ installed_payload_is_complete() {
     done
 }
 
+# Whether the installed launcher matches the hash recorded at install time. Fails when the
+# record is missing (an install from an older installer) or the launcher changed since.
+installed_launcher_matches_record() {
+    [ -f "$INSTALL_ROOT/current/$LAUNCHER_RECORD" ] || return 1
+    recorded_sha256=
+    IFS= read -r recorded_sha256 < "$INSTALL_ROOT/current/$LAUNCHER_RECORD" || [ -n "$recorded_sha256" ] || return 1
+    case $recorded_sha256 in
+        *[!0123456789abcdef]*|'') return 1 ;;
+    esac
+    [ "${#recorded_sha256}" -eq 64 ] || return 1
+    installed_sha256=$(sha256_of "$INSTALL_ROOT/current/atomic") || return 1
+    [ "$installed_sha256" = "$recorded_sha256" ]
+}
+
+# A healthy install: a non-empty launcher that the bin link and `current` reach, the
+# complete payload, and, when the install recorded the launcher's hash, a launcher that
+# still matches it.
 installed_launcher_is_healthy() {
+    # One answer per run and release: the launcher hash is read once, not again for the skip.
+    if [ "${INSTALLED_HEALTH_TAG-}" = "$RELEASE_TAG_ENCODED" ] && [ -n "${INSTALLED_HEALTH:-}" ]; then
+        [ "$INSTALLED_HEALTH" = healthy ]
+        return
+    fi
+    INSTALLED_HEALTH_TAG=$RELEASE_TAG_ENCODED
+    INSTALLED_HEALTH=unhealthy
+    installed_launcher_check_health || return 1
+    INSTALLED_HEALTH=healthy
+}
+
+installed_launcher_check_health() {
     [ -f "$INSTALL_ROOT/current/atomic" ] && [ -x "$INSTALL_ROOT/current/atomic" ] || return 1
+    [ -s "$INSTALL_ROOT/current/atomic" ] || return 1
     [ -L "$BIN_PATH" ] || return 1
     # shellcheck disable=SC3013 # -ef is the only way to compare symlink targets without readlink
     [ "$BIN_PATH" -ef "$INSTALL_ROOT/current/atomic" ] || return 1
     # shellcheck disable=SC3013 # -ef compares the physical directories, so a symlinked install root still matches
     [ "$INSTALL_ROOT/current" -ef "$INSTALL_ROOT/versions/$RELEASE_TAG_ENCODED" ] || return 1
-    installed_payload_is_complete
+    installed_payload_is_complete || return 1
+    if [ -f "$INSTALL_ROOT/current/$LAUNCHER_RECORD" ]; then
+        installed_launcher_matches_record || return 1
+    fi
+}
+
+# A healthy install whose launcher hash was recorded and still matches: it can be kept
+# without asking GitHub anything. An install without the record resolves over the network.
+installed_launcher_is_verified() {
+    [ -f "$INSTALL_ROOT/current/$LAUNCHER_RECORD" ] && installed_launcher_is_healthy
 }
 
 TAGS_API=$GITHUB_API/repos/$REPOSITORY/releases/tags
@@ -1279,7 +1366,7 @@ if [ -n "$REQUESTED_REF" ]; then
     RELEASE_TAG_ENCODED=$REQUESTED_REF_ENCODED
 fi
 if [ -n "$REQUESTED_REF" ] && [ "$FORCE_INSTALL" -eq 0 ] && [ "$INSTALLED_VERSION" = "$REQUESTED_REF" ] &&
-    installed_launcher_is_healthy; then
+    installed_launcher_is_verified; then
     # The pinned release is already installed and healthy: it needs no network request.
     RELEASE_TAG=$REQUESTED_REF
 elif [ -n "$REQUESTED_REF" ]; then
@@ -1392,20 +1479,7 @@ while IFS= read -r checksum_line || [ -n "$checksum_line" ]; do
 done < "$CHECKSUM_PATH"
 [ "$CHECKSUM_MATCHES" -eq 1 ] || fail "$CHECKSUM_FILE must contain exactly one row for $ASSET_NAME"
 
-case $CHECKSUM_TOOL in
-    sha256sum) checksum_output=$(sha256sum "$ARCHIVE_PATH") || fail "failed to hash $ASSET_NAME" ;;
-    shasum) checksum_output=$(shasum -a 256 "$ARCHIVE_PATH") || fail "failed to hash $ASSET_NAME" ;;
-    openssl) checksum_output=$(openssl dgst -sha256 "$ARCHIVE_PATH") || fail "failed to hash $ASSET_NAME" ;;
-esac
-set -- $checksum_output
-if [ "$CHECKSUM_TOOL" = openssl ]; then
-    ACTUAL_CHECKSUM=
-    for checksum_word in "$@"; do
-        ACTUAL_CHECKSUM=$checksum_word
-    done
-else
-    ACTUAL_CHECKSUM=$1
-fi
+ACTUAL_CHECKSUM=$(sha256_of "$ARCHIVE_PATH") || fail "failed to hash $ASSET_NAME"
 [ "$ACTUAL_CHECKSUM" = "$EXPECTED_CHECKSUM" ] || fail "checksum verification failed for $ASSET_NAME"
 
 umask "$ORIGINAL_UMASK"
@@ -1420,6 +1494,10 @@ chmod +x "$PAYLOAD_ROOT/atomic"
 if ! "$PAYLOAD_ROOT/atomic" --version >/dev/null; then
     fail "staged atomic --version check failed"
 fi
+# The launcher's hash, recorded beside it, lets a later run confirm the installed payload
+# without the network (see installed_launcher_is_verified).
+LAUNCHER_SHA256=$(sha256_of "$PAYLOAD_ROOT/atomic") || fail "failed to hash the staged atomic launcher"
+printf '%s\n' "$LAUNCHER_SHA256" > "$PAYLOAD_ROOT/$LAUNCHER_RECORD" || fail "failed to record the launcher hash"
 printf '%sVerified SHA256, extracted, and checked atomic --version%s\n' "$MUTED" "$RESET"
 
 VERSIONS_DIR=$INSTALL_ROOT/versions

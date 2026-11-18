@@ -197,6 +197,46 @@ function Test-AtomicInstalledPayloadComplete {
     return $true
 }
 
+# Whether the installed atomic.exe matches the hash recorded at install time. False when the
+# record is missing (an install from an older installer) or the launcher changed since.
+function Test-AtomicLauncherMatchesRecord {
+    param([string]$CurrentPath)
+
+    $recordPath = Join-Path $CurrentPath ".atomic-launcher.sha256"
+    if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) {
+        return $false
+    }
+    $recorded = ([IO.File]::ReadAllText($recordPath)).Trim()
+    if ($recorded -cnotmatch '^[0-9a-f]{64}\z') {
+        return $false
+    }
+    $launcherPath = Join-Path $CurrentPath "atomic.exe"
+    try {
+        return ((Get-AtomicFileSha256 $launcherPath).ToLowerInvariant() -ceq $recorded)
+    }
+    catch {
+        return $false
+    }
+}
+
+# A healthy install whose launcher hash was recorded and still matches: it can be kept without
+# asking GitHub anything. An install without the record resolves over the network.
+function Test-AtomicInstallVerified {
+    param(
+        [AllowNull()][string]$InstalledVersion,
+        [string]$ReleaseTag,
+        [string]$InstallRoot,
+        [string]$BinDir,
+        [string]$ExpectedShimContent
+    )
+
+    $recordPath = Join-Path (Join-Path $InstallRoot "current") ".atomic-launcher.sha256"
+    if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) {
+        return $false
+    }
+    return (Test-AtomicInstallIntact $InstalledVersion $ReleaseTag $InstallRoot $BinDir $ExpectedShimContent)
+}
+
 function Test-AtomicInstallIntact {
     param(
         [AllowNull()][string]$InstalledVersion,
@@ -222,6 +262,15 @@ function Test-AtomicInstallIntact {
         return $false
     }
     if (-not (Test-AtomicInstalledPayloadComplete (Join-Path $InstallRoot "current"))) {
+        return $false
+    }
+    $currentRoot = Join-Path $InstallRoot "current"
+    $launcherItem = Get-Item -LiteralPath (Join-Path $currentRoot "atomic.exe") -Force -ErrorAction SilentlyContinue
+    if ($null -eq $launcherItem -or $launcherItem.PSIsContainer -or $launcherItem.Length -eq 0) {
+        return $false
+    }
+    if ((Test-Path -LiteralPath (Join-Path $currentRoot ".atomic-launcher.sha256") -PathType Leaf) -and
+        -not (Test-AtomicLauncherMatchesRecord $currentRoot)) {
         return $false
     }
     $shimItem = Get-AtomicDirectoryEntry (Join-Path $BinDir "atomic.cmd")
@@ -1461,7 +1510,7 @@ else {
     }
     $releasePageStatus = $null
     if (-not [string]::IsNullOrWhiteSpace($pinnedInstalledVersion) -and
-        (Test-AtomicInstallIntact $pinnedInstalledVersion $requestedRef $installRoot $binDir $shimContent)) {
+        (Test-AtomicInstallVerified $pinnedInstalledVersion $requestedRef $installRoot $binDir $shimContent)) {
         # The pinned release is already installed and healthy: it needs no network request.
         $releasePageStatus = "installed"
     }
@@ -1571,6 +1620,10 @@ try {
     if ($stagedExitCode -ne 0) {
         throw "Staged atomic.exe --version failed with exit code $stagedExitCode."
     }
+    # The launcher's hash, recorded beside it, lets a later run confirm the installed payload
+    # without the network (see Test-AtomicInstallVerified).
+    $launcherSha256 = (Get-AtomicFileSha256 $stagedAtomic).ToLowerInvariant()
+    [IO.File]::WriteAllText((Join-Path $payloadPath ".atomic-launcher.sha256"), $launcherSha256 + "`n")
     Write-AtomicMuted "Verified SHA256, extracted, and checked atomic --version"
 
     $versionsDir = Join-Path $installRoot "versions"

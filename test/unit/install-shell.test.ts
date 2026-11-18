@@ -1014,6 +1014,12 @@ unixTest("shell installer skips without touching the release base override or ex
 			join(versionDirectory(fixture, "1.0.0"), "atomic"),
 			`#!/bin/sh\n: > '${executionMarker}'\nprintf '%s\\n' 1.0.0\n`,
 		);
+		// The probe launcher is the installed launcher now: record its hash as an install would.
+		const probeLauncher = readFileSync(join(versionDirectory(fixture, "1.0.0"), "atomic"));
+		writeFileSync(
+			join(versionDirectory(fixture, "1.0.0"), ".atomic-launcher.sha256"),
+			`${createHash("sha256").update(probeLauncher).digest("hex")}\n`,
+		);
 		const offset = requestLogLength(fixture);
 
 		const rerun = fixture.run({
@@ -1763,13 +1769,16 @@ unixTest("shell installer installs an exact tag through github.com while the Git
  * status line. `apiMode` "limited" answers the API with GitHub's rate-limit response.
  */
 const fakeGithubServer = String.raw`
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { appendFileSync, createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-const [releasesRoot, apiMode] = process.argv.slice(2);
+const [releasesRoot, apiMode, requestLog] = process.argv.slice(2);
 const probed = new Set();
 const server = createServer((request, response) => {
 	const url = new URL(request.url, "http://localhost");
+	appendFileSync(requestLog, request.method + " " + url.pathname + "\n");
+	// The file storage a release download redirects to, stalled: it never answers.
+	if (url.pathname.startsWith("/stall/")) return;
 	const send = (status, headers, body = "") => {
 		response.writeHead(status, { Server: "BaseHTTP/0.6 Python/3.12", ...headers });
 		response.end(request.method === "HEAD" ? "" : body);
@@ -1789,6 +1798,8 @@ const server = createServer((request, response) => {
 		// answer, so a pinned tag uses the API this server answers.
 		if (match[2] === "SHA256SUMS" && !probed.has(match[1])) {
 			probed.add(match[1]);
+			// "redirect" answers the probe as github.com does, with a 302 to the (stalled) file storage.
+			if (apiMode === "redirect") return send(302, { Location: "/stall/" + match[1] + "/SHA256SUMS" });
 			return send(503, {}, "Unavailable");
 		}
 		const path = join(releasesRoot, match[1], match[2]);
@@ -1804,13 +1815,17 @@ server.listen(0, "127.0.0.1", () => process.stdout.write(server.address().port +
 
 async function withFakeGithub<T>(
 	releasesRoot: string,
-	apiMode: "ok" | "limited",
-	use: (origin: string) => T,
+	apiMode: "ok" | "limited" | "redirect",
+	use: (origin: string, requests: () => string[]) => T,
 ): Promise<T> {
 	const directory = mkdtempSync(join(tmpdir(), "atomic-fake-github-"));
 	const script = join(directory, "server.mjs");
+	const requestLog = join(directory, "requests.log");
 	writeFileSync(script, fakeGithubServer);
-	const child = spawn(process.execPath, [script, releasesRoot, apiMode], { stdio: ["ignore", "pipe", "inherit"] });
+	writeFileSync(requestLog, "");
+	const child = spawn(process.execPath, [script, releasesRoot, apiMode, requestLog], {
+		stdio: ["ignore", "pipe", "inherit"],
+	});
 	try {
 		const port = await new Promise<string>((resolve, reject) => {
 			let buffered = "";
@@ -1820,7 +1835,7 @@ async function withFakeGithub<T>(
 			});
 			child.once("exit", (code) => reject(new Error(`fake GitHub server exited with ${code}`)));
 		});
-		return use(`http://127.0.0.1:${port}`);
+		return use(`http://127.0.0.1:${port}`, () => readFileSync(requestLog, "utf8").split("\n").filter(Boolean));
 	} finally {
 		child.kill();
 		rmSync(directory, { recursive: true, force: true });
@@ -1861,6 +1876,54 @@ const realDownloaders = [
 		return [];
 	}
 });
+
+/** A stalled file storage would hold a probe that follows the release download's redirect for this long. */
+const RELEASE_PROBE_DECISION_BOUND_MS = 15_000;
+
+for (const { name, downloader, binary } of realDownloaders.filter((entry) => entry.downloader === "wget")) {
+	unixTest(`shell installer decides the release probe from github.com's own answer with real ${name}`, async () => {
+		const fixture = createFixture();
+		try {
+			await withFakeGithub(join(fixture.workspace, "releases"), "redirect", (origin, requests) => {
+				const realBin = join(fixture.workspace, "real-redirect");
+				mkdirSync(realBin);
+				writeExecutable(join(realBin, downloader), realDownloaderWrapper(binary, origin));
+				const started = Date.now();
+				const result = fixture.run({
+					downloader,
+					pathEntries: [realBin],
+					args: ["--ref", "1.0.0"],
+					environment: {
+						http_proxy: undefined,
+						https_proxy: undefined,
+						HTTP_PROXY: undefined,
+						HTTPS_PROXY: undefined,
+						no_proxy: "*",
+					},
+				});
+				assertSuccess(result);
+				assert.ok(
+					Date.now() - started < RELEASE_PROBE_DECISION_BOUND_MS,
+					"the probe waited on the stalled storage",
+				);
+				assert.equal(currentVersion(fixture), "1.0.0");
+				const seen = requests();
+				assert.equal(
+					seen.filter((line) => /\/releases\/download\/1\.0\.0\/SHA256SUMS$/u.test(line)).length,
+					2,
+					seen.join("\n"),
+				);
+				assert.equal(
+					seen.filter((line) => line.includes("/api/")).length,
+					0,
+					"a 302 from github.com still asked the API",
+				);
+			});
+		} finally {
+			fixture.cleanup();
+		}
+	});
+}
 
 for (const { name, downloader, binary } of realDownloaders) {
 	unixTest(`shell installer reads real ${name} responses from the GitHub API fallback`, async () => {
@@ -2037,6 +2100,51 @@ for value in "$@"; do if decoded=$(percent_decode "$value"); then printf 'ok[%s]
 		"1%00",
 	]);
 	assert.equal(result.stdout.toString(), "ok[1.2.3-alpha.1]\nok[1.2.3]\nfail\nfail\nfail\n");
+});
+
+unixTest(
+	"shell installer reinstalls a pinned release whose launcher is empty or no longer matches its recorded hash",
+	() => {
+		const fixture = createFixture();
+		try {
+			assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+			const launcher = join(versionDirectory(fixture, "1.0.0"), "atomic");
+			const record = join(versionDirectory(fixture, "1.0.0"), ".atomic-launcher.sha256");
+			writeFileSync(launcher, "");
+			chmodSync(launcher, 0o755);
+			assertReinstalled(fixture, fixture.run({ args: ["--ref", "1.0.0"] }), "1.0.0");
+			assert.equal(
+				readFileSync(record, "utf8"),
+				`${createHash("sha256").update(readFileSync(launcher)).digest("hex")}\n`,
+			);
+			assert.ok(statSync(launcher).size > 0, "the reinstall did not restore the launcher");
+
+			writeFileSync(launcher, `${readFileSync(launcher, "utf8")}\n# changed\n`);
+			assertReinstalled(fixture, fixture.run({ args: ["--ref", "1.0.0"] }), "1.0.0");
+
+			const offset = requestLogLength(fixture);
+			assertSkipped(fixture, fixture.run({ args: ["--ref", "1.0.0"] }), "1.0.0");
+			assert.equal(requestsSince(fixture, offset), "", "a verified pinned install needs no request");
+		} finally {
+			fixture.cleanup();
+		}
+	},
+);
+
+unixTest("shell installer resolves over the network for an install without a recorded launcher hash", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		rmSync(join(versionDirectory(fixture, "1.0.0"), ".atomic-launcher.sha256"));
+		const offset = requestLogLength(fixture);
+		assertSkipped(fixture, fixture.run({ args: ["--ref", "1.0.0"] }), "1.0.0");
+		assert.match(
+			requestsSince(fixture, offset),
+			/HEAD https:\/\/github\.com\/bastani-inc\/atomic\/releases\/download\/1\.0\.0\/SHA256SUMS\n/u,
+		);
+	} finally {
+		fixture.cleanup();
+	}
 });
 
 unixTest("shell installer still resolves the latest release through the github.com redirect", () => {

@@ -144,6 +144,9 @@ test("Windows installer skips a healthy install before any download and keeps th
 	for (const required of ["builtin", "node_modules"]) {
 		assert.ok(health.includes(`"${required}"`), `the Windows health check must require the ${required} directory`);
 	}
+	assert.match(health, /\$launcherItem\.Length -eq 0/u, "an empty atomic.exe must not count as healthy");
+	assert.match(health, /Test-AtomicLauncherMatchesRecord \$currentRoot/u, "a recorded launcher hash must still match");
+	assert.match(health, /function Test-AtomicInstallVerified/u);
 	assert.match(health, /Join-Path \$BinDir "atomic\.cmd"/u);
 	assert.match(health, /ReadAllText\(\$shimItem\.FullName\) -ceq \$ExpectedShimContent/u);
 	assert.doesNotMatch(health, /&\s+\$|Invoke-WebRequest|Move-Item|Remove-Item/u, "the health check must be read-only");
@@ -3094,6 +3097,26 @@ try {
         & $InstallerPath | Out-Null
         Assert-Fixture ((Get-Content -LiteralPath (Join-Path (Join-Path $installRoot "current") "version.txt") -Raw) -eq "2.0.0") "the latest release did not install through the redirect"
         Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark | Where-Object { $_.Uri -match '^https://api\.github\.com/' }).Count -eq 0) "the latest path changed: it queried the API"
+        # A launcher that no longer matches its recorded hash, or is empty, is reinstalled.
+        $global:AtomicFixtureWebPages = $true
+        $launcherTwo = Join-Path $installRoot "versions\2.0.0\atomic.exe"
+        $recordTwo = Join-Path $installRoot "versions\2.0.0\.atomic-launcher.sha256"
+        Assert-Fixture (([IO.File]::ReadAllText($recordTwo)).Trim() -ceq (Get-FileHash -LiteralPath $launcherTwo -Algorithm SHA256).Hash.ToLowerInvariant()) "the install did not record the launcher hash"
+        $appended = [IO.File]::Open($launcherTwo, [IO.FileMode]::Append)
+        try { $appended.WriteByte(0) } finally { $appended.Dispose() }
+        $changedOutput = & $InstallerPath -Ref "2.0.0" | Out-String
+        Assert-Fixture ($changedOutput -notmatch 'skipping download') "a launcher that no longer matches its recorded hash was kept: $changedOutput"
+        Assert-Fixture ($changedOutput -match 'Verified SHA256') "a changed launcher was not reinstalled: $changedOutput"
+        [IO.File]::WriteAllBytes($launcherTwo, [byte[]]@())
+        $emptyOutput = & $InstallerPath -Ref "2.0.0" | Out-String
+        Assert-Fixture ($emptyOutput -match 'Verified SHA256') "an empty atomic.exe was not reinstalled: $emptyOutput"
+        Assert-Fixture ((Get-Item -LiteralPath $launcherTwo).Length -gt 0) "the reinstall did not restore atomic.exe"
+        $mark = $global:AtomicFixtureRequests.Count
+        $probeMark = $global:AtomicFixtureProbes.Count
+        $verifiedOutput = & $InstallerPath -Ref "2.0.0" | Out-String
+        Assert-Fixture ($verifiedOutput -match 'skipping download') "a verified install was not kept"
+        Assert-Fixture ((@($global:AtomicFixtureRequests).Count -eq $mark) -and (@($global:AtomicFixtureProbes).Count -eq $probeMark)) "a verified pinned install made a request"
+
         $global:AtomicFixtureApiRateLimited = $false
         Assert-NoTransactionResidue $installRoot $binDir
     }
