@@ -229,6 +229,11 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	/** Internal durable resume hook: transcript of a stage checkpointed before #3700, imported when the ID is missing. */
 	resumeFromLegacySessionFile?: string;
 	/**
+	 * Internal: with `context: "fork"` and no `forkFromEntryId`, the source had no entries yet when the stage was
+	 * launched, so the stage's session copies none, whatever the source holds when the stage starts (#5481).
+	 */
+	forkFromEmptySource?: boolean;
+	/**
 	 * Internal durable resume hook: the stage's previous process stopped inside the call its first call replays. A
 	 * transcript that already ends on the model's final answer to that call finishes it without another model call.
 	 */

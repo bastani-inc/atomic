@@ -16,7 +16,11 @@ export function registerLiveStageSession(manager: Pick<SessionManager, "getSessi
 	released.register(manager, sessionId);
 }
 
-/** The entry a live stage session continues from, or undefined when no session with that id is open here. */
-export function liveStageSessionLeaf(sessionId: string): string | undefined {
-	return liveSessions.get(sessionId)?.deref()?.getLeafId() ?? undefined;
+/**
+ * The entry a live stage session continues from, `null` when it has no entries yet, or undefined when no session with
+ * that id is open here.
+ */
+export function liveStageSessionLeaf(sessionId: string): string | null | undefined {
+	const manager = liveSessions.get(sessionId)?.deref();
+	return manager === undefined ? undefined : manager.getLeafId();
 }

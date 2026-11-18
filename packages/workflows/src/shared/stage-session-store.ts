@@ -41,7 +41,8 @@ export const STAGE_FORK_TOOL_RESULT =
 
 /**
  * A new session copied from `sessionId`: every entry, or with `entryId` the branch from the session's root to
- * that exact entry, with the tool-output blobs those entries reference. A missing entry throws
+ * that exact entry, or with `null` no entry (the source had none at the fork point), with the tool-output blobs
+ * those entries reference. A missing entry throws
  * `ForkEntryNotFoundError`, and a destination that cannot hold the blobs `blobs-unsupported`, before anything is
  * written. The copy is append-only: its entries are the source's, unchanged, followed by one result for each tool
  * call the source's last turn left open (#5481).
@@ -52,13 +53,15 @@ export async function forkStageSession(
 	cwd: string,
 	options: NewSessionOptions,
 	destination: SessionStore = store,
-	entryId?: string,
+	entryId?: string | null,
 ): Promise<SessionManager> {
 	const source = await store.load(sessionId);
 	const entries =
 		entryId === undefined
 			? source.entries
-			: sessionBranchTo(source.entries, entryId, { sessionId, stageName: options.workflow?.stageName });
+			: entryId === null
+				? []
+				: sessionBranchTo(source.entries, entryId, { sessionId, stageName: options.workflow?.stageName });
 	const id = randomUUID();
 	const hashes = sessionBlobHashes(store, entries);
 	assertSessionBlobStore(destination, id, hashes.length);

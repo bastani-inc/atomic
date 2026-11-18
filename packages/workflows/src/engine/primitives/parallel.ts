@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { durableHash } from "../../durable/durable-hash.js";
-import { type FanOutForkPoints, launchForkSourceOf, withLaunchForkEntry } from "../../durable/stage-fork-point.js";
+import {
+	type DurableLaunchRun,
+	type ForkPoint,
+	launchForkSourceOf,
+	recordFanOutForkPoints,
+	withForkPoint,
+} from "../../durable/stage-fork-point.js";
+import { reserveTaskReplayKey } from "../../durable/stage-primitive.js";
 import { findWorkflowExitSignal } from "../../runs/foreground/executor-abort.js";
 import { mapParallelSteps } from "../../runs/foreground/executor-direct-helpers.js";
 import {
@@ -23,8 +30,11 @@ import type { WorkflowTaskPrimitive } from "./task.js";
 export function createParallelPrimitive(input: {
 	readonly runtime: EngineRuntime;
 	readonly task: WorkflowTaskPrimitive;
-	/** Records where the sources of a parallel's forked steps were at launch, before any step is scheduled. */
-	readonly forkPoints?: FanOutForkPoints;
+	/**
+	 * The run's journal. A parallel launched in it reserves its steps' replay keys, and records where the sources of its
+	 * forked steps are, before it starts any step (#5481).
+	 */
+	readonly durable?: DurableLaunchRun;
 }): (steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions) => Promise<WorkflowTaskResult[]> {
 	return async (
 		steps: readonly WorkflowTaskStep[],
@@ -54,29 +64,43 @@ export function createParallelPrimitive(input: {
 				),
 				resolvedOptions,
 			);
-		// One fork point for the whole parallel: a step that waits for a slot, or starts after the run resumed, forks
-		// where its source was now (#5481).
+		// What names this launch is fixed now, before its fork points are recorded: its graph parents and the stages
+		// before it, each step's replay key and the key of its fork point record. A stage that settles while the record
+		// is written, a step that waits for a slot, and another parallel launched meanwhile cannot change them, so each
+		// step replays its own result and forks at this launch's point after the run resumes (#5481).
+		const parallelParentIds = Object.freeze(input.runtime.tracker.currentParents());
+		const stageIdsBeforeParallel = new Set(
+			input.runtime.activeStore.run(input.runtime.runId)?.stages.map((stage) => stage.id) ?? [],
+		);
 		const launchedSteps = resolvedSteps.map((step) => ({ ...step }));
+		const durable = input.durable;
+		const replayKeys = new Map(
+			launchedSteps.map((step) => [
+				step,
+				durable === undefined ? undefined : reserveTaskReplayKey(durable.nextReplayKey, step.name),
+			]),
+		);
+		// One fork point for the whole parallel: a step that waits for a slot, or starts after the run resumed, forks
+		// where its source was now. No step starts before the point is recorded.
 		const forkSources = new Map(launchedSteps.map((step) => [step, launchForkSourceOf(stepOptions(step))]));
 		const sourceIds = [...new Set([...forkSources.values()].filter((id): id is string => id !== undefined))];
-		const launchEntries =
+		const forkPoints =
 			sourceIds.length === 0
-				? new Map<string, string>()
-				: await (input.forkPoints ?? liveForkPoints)(
-						// Named by its steps, hashed so a parallel of many or long step names gets a short record key.
-						`parallel:${durableHash(resolvedSteps.map((step) => step.name))}`,
-						sourceIds,
-					);
+				? new Map<string, ForkPoint>()
+				: durable === undefined
+					? liveForkPoints(sourceIds)
+					: await recordFanOutForkPoints(
+							durable,
+							// Named by its steps, hashed so a parallel of many or long step names gets a short record key.
+							`parallel:${durableHash(resolvedSteps.map((step) => step.name))}`,
+							sourceIds,
+						);
 		const failFastEnabled = resolvedOptions.failFast !== false;
-		const parallelParentIds = Object.freeze(input.runtime.tracker.currentParents());
 		const parallelScope: ParallelFailFastScope = {
 			failed: false,
 			activeStages: new Map<string, ParallelFailFastStage>(),
 			parentIds: parallelParentIds,
 		};
-		const stageIdsBeforeParallel = new Set(
-			input.runtime.activeStore.run(input.runtime.runId)?.stages.map((stage) => stage.id) ?? [],
-		);
 		const everyStepCompleted = (): boolean => {
 			const run = input.runtime.activeStore.run(input.runtime.runId);
 			if (run === undefined) return false;
@@ -101,10 +125,12 @@ export function createParallelPrimitive(input: {
 			resolvedOptions.failFast,
 			async (step) => {
 				input.runtime.exit.throwIfWorkflowExitSelected();
+				const source = forkSources.get(step);
 				return await input.task(
 					step.name,
-					withLaunchForkEntry(stepOptions(step), launchEntries.get(forkSources.get(step) ?? "")),
+					withForkPoint(stepOptions(step), source === undefined ? undefined : forkPoints.get(source)),
 					parallelScope,
+					replayKeys.get(step),
 				);
 			},
 			async (error) => {
@@ -132,10 +158,7 @@ export function createParallelPrimitive(input: {
 }
 
 /** Fork points read from the sources open in this process, for a parallel outside a durable run. */
-async function liveForkPoints(
-	_launchName: string,
-	sessionIds: readonly string[],
-): Promise<ReadonlyMap<string, string>> {
+function liveForkPoints(sessionIds: readonly string[]): ReadonlyMap<string, ForkPoint> {
 	return new Map(
 		sessionIds.flatMap((sessionId) => {
 			const entryId = liveStageSessionLeaf(sessionId);

@@ -13,33 +13,48 @@ export function forkSourceCheckpointKey(replayKey: string): string {
 	return `${replayKey}${FORK_SOURCE_CHECKPOINT_SUFFIX}`;
 }
 
+/**
+ * Where a forked stage's source was when the stage was launched: the entry the source continued from, or `null` when
+ * it had no entries yet, so the stage copies none of it. Where a fork point is looked up, undefined means the source
+ * was not open in this process at launch: the stage copies the source as it is stored when the stage starts.
+ */
+export type ForkPoint = string | null;
+
 interface ForkSourceRecord {
 	readonly sessionId: string;
-	readonly entryId: string;
+	readonly entryId: ForkPoint;
+}
+
+function isForkSourceRecord(value: unknown): value is ForkSourceRecord {
+	if (typeof value !== "object" || value === null) return false;
+	const { sessionId, entryId } = value as { readonly sessionId?: unknown; readonly entryId?: unknown };
+	return typeof sessionId === "string" && (typeof entryId === "string" || entryId === null);
 }
 
 interface ForkableStageOptions {
 	readonly context?: "fresh" | "fork";
 	readonly forkFromSessionId?: string;
 	readonly forkFromEntryId?: string;
+	readonly forkFromEmptySource?: boolean;
 }
 
 /**
- * Set by a fan-out on the options of each of its steps: the entry the step's source was at when the fan-out was
- * launched. A step that waits for a slot of the fan-out starts after its source may have moved on, so it forks at this
- * entry rather than where its source is when the step starts (#5481).
- */
-const LAUNCH_FORK_ENTRY = Symbol("launchForkEntry");
-
-type WithLaunchForkEntry = { readonly [LAUNCH_FORK_ENTRY]?: string };
-
-/**
- * The session a step with `options` forks without naming an entry: the source whose entry at launch is its fork point.
- * Undefined for a step that does not fork, or names its entry.
+ * The session a step with `options` forks without a fork point of its own: the source whose state at launch is its
+ * fork point. Undefined for a step that does not fork, names its entry, or already has its launch's fork point.
  */
 export function launchForkSourceOf(options: ForkableStageOptions | undefined): string | undefined {
-	if (options?.context !== "fork" || options.forkFromEntryId !== undefined) return undefined;
+	if (options?.context !== "fork" || options.forkFromEntryId !== undefined || options.forkFromEmptySource === true)
+		return undefined;
 	return options.forkFromSessionId;
+}
+
+/** `options` forking its source at `point`; unchanged for a source that was not open at launch. */
+export function withForkPoint<TOptions extends ForkableStageOptions>(
+	options: TOptions,
+	point: ForkPoint | undefined,
+): TOptions {
+	if (point === undefined) return options;
+	return point === null ? { ...options, forkFromEmptySource: true } : { ...options, forkFromEntryId: point };
 }
 
 /**
@@ -48,73 +63,92 @@ export function launchForkSourceOf(options: ForkableStageOptions | undefined): s
  */
 export const FAN_OUT_FORK_SOURCES_SUFFIX = ":fork-source-entries";
 
-/**
- * The entry each of `sessionIds` was at when a fan-out named `launchName` was launched, by session id. A source that is
- * not open in this process has no entry; a step forking it copies it as stored when it starts.
- */
-export type FanOutForkPoints = (
-	launchName: string,
-	sessionIds: readonly string[],
-) => Promise<ReadonlyMap<string, string>>;
-
-/**
- * The fork points of the fan-outs of a run, recorded in the run before any step of a fan-out is scheduled (#5481). A
- * step that waits for a slot, and every step of the fan-out after the run resumes, is retried or is forked into another
- * run, forks where the first launch found its source, even when a step that ran earlier stopped the run. The record is
- * keyed by the fan-out's replay key, which the run's replay keys give it in launch order, so a replayed fan-out reads
- * the record of its first launch.
- */
-export function createFanOutForkPoints(input: {
+/** The journal of a run, and the run's replay keys, which name its launches in launch order. */
+export interface DurableLaunchRun {
 	readonly backend: DurableWorkflowBackend;
 	readonly workflowId: string;
 	readonly nextReplayKey: (name: string) => string;
-}): FanOutForkPoints {
-	return async (launchName, sessionIds) => {
-		const key = `${input.nextReplayKey(launchName)}${FAN_OUT_FORK_SOURCES_SUFFIX}`;
-		const recorded = input.backend.getToolCheckpoint(input.workflowId, key)?.output as {
-			readonly entries?: readonly Partial<ForkSourceRecord>[];
-		} | null;
-		if (Array.isArray(recorded?.entries))
-			return new Map(
-				recorded.entries.flatMap((entry) =>
-					typeof entry.sessionId === "string" && typeof entry.entryId === "string"
-						? [[entry.sessionId, entry.entryId] as const]
-						: [],
-				),
-			);
-		const entries = [...new Set(sessionIds)].flatMap((sessionId): ForkSourceRecord[] => {
-			const entryId = liveStageSessionLeaf(sessionId);
-			return entryId === undefined ? [] : [{ sessionId, entryId }];
-		});
-		// Recorded before the fan-out schedules a step. A journal that cannot take it fails the steps' own records too.
-		await input.backend
-			.commitAdditiveCheckpointBestEffort({
-				kind: "tool",
-				workflowId: input.workflowId,
-				checkpointId: key,
-				name: key,
-				argsHash: key,
-				output: { entries } as unknown as WorkflowSerializableValue,
-				completedAt: Date.now(),
-			})
-			.catch(() => false);
-		return new Map(entries.map((entry) => [entry.sessionId, entry.entryId]));
-	};
 }
 
-/** `options` of a step of a fan-out, holding the entry its source was at when the fan-out was launched. */
-export function withLaunchForkEntry<TOptions extends object>(options: TOptions, entryId: string | undefined): TOptions {
-	return entryId === undefined ? options : { ...options, [LAUNCH_FORK_ENTRY]: entryId };
+/** The fork points a fan-out's record holds, by source session id; undefined when there is no such record. */
+function fanOutRecord(run: DurableLaunchRun, key: string): ReadonlyMap<string, ForkPoint> | undefined {
+	const entries = fanOutEntries(run.backend.getToolCheckpoint(run.workflowId, key)?.output);
+	return entries === undefined ? undefined : new Map(entries.map((entry) => [entry.sessionId, entry.entryId]));
+}
+
+function fanOutEntries(output: unknown): readonly ForkSourceRecord[] | undefined {
+	const entries = (output as { readonly entries?: unknown } | null | undefined)?.entries;
+	return Array.isArray(entries) ? entries.filter(isForkSourceRecord) : undefined;
+}
+
+/**
+ * Where each of `sessionIds` was when a fan-out named `launchName` was launched, by session id: its entry then, or
+ * `null` when it had no entries. A source that is not open in this process has no point; a step forking it copies it
+ * as stored when it starts (#5481).
+ *
+ * The fan-out's record key is taken from the run's replay keys when this is called, at the fan-out's launch, so a
+ * replayed fan-out reads the record of its first launch. The returned points are those of the record: an earlier
+ * launch's when it has one, or the sources' points now, written to the run before the promise settles. It rejects
+ * when the journal cannot take the record; no step of the fan-out may start then, so no two of them can start from
+ * different points.
+ */
+export function recordFanOutForkPoints(
+	run: DurableLaunchRun,
+	launchName: string,
+	sessionIds: readonly string[],
+): Promise<ReadonlyMap<string, ForkPoint>> {
+	const key = `${run.nextReplayKey(launchName)}${FAN_OUT_FORK_SOURCES_SUFFIX}`;
+	const recorded = fanOutRecord(run, key);
+	if (recorded !== undefined) return Promise.resolve(recorded);
+	const entries = [...new Set(sessionIds)].flatMap((sessionId): ForkSourceRecord[] => {
+		const entryId = liveStageSessionLeaf(sessionId);
+		return entryId === undefined ? [] : [{ sessionId, entryId }];
+	});
+	return (async () => {
+		await run.backend.commitCheckpoint({
+			kind: "tool",
+			workflowId: run.workflowId,
+			checkpointId: key,
+			name: key,
+			argsHash: key,
+			output: { entries } as unknown as WorkflowSerializableValue,
+			completedAt: Date.now(),
+		});
+		// The journal keeps the first record written under a key: a record of this launch that an earlier attempt wrote,
+		// though that attempt failed before it learned so, is the launch's point.
+		return fanOutRecord(run, key) ?? new Map(entries.map((entry) => [entry.sessionId, entry.entryId]));
+	})();
+}
+
+/**
+ * `output` of the fork source record `argsHash` with each source session id passed through `session`, for a
+ * `workflow fork` that copies the run's stage sessions under new ids; the copies keep the entries' ids (#5481).
+ * Undefined for any other record.
+ */
+export function forkSourceRecordWithSessions(
+	argsHash: string,
+	output: WorkflowSerializableValue,
+	session: (sessionId: string) => string,
+): WorkflowSerializableValue | undefined {
+	const copied = (record: ForkSourceRecord): ForkSourceRecord => ({ ...record, sessionId: session(record.sessionId) });
+	const recorded: unknown = output;
+	if (argsHash.endsWith(FORK_SOURCE_CHECKPOINT_SUFFIX))
+		return isForkSourceRecord(recorded) ? (copied(recorded) as unknown as WorkflowSerializableValue) : undefined;
+	if (!argsHash.endsWith(FAN_OUT_FORK_SOURCES_SUFFIX)) return undefined;
+	const entries = fanOutEntries(recorded);
+	return entries === undefined
+		? undefined
+		: ({ entries: entries.map(copied) } as unknown as WorkflowSerializableValue);
 }
 
 /**
  * `options` with the fork point of a stage that forks a session without naming an entry: the entry its source was at
- * when the stage was launched, so every stage launched from that point gets the same copy, and a stage that starts
- * later, because it waited for a slot, was retried, or resumed after a restart, never sees a later turn of its source
- * (#5481). The point is read from the run's record when an earlier launch of the stage recorded one, and otherwise from
- * the entry its fan-out read at launch ({@link withLaunchForkEntry}) or the source's session when it is open in this
- * process, and then recorded. Unchanged for a stage that resumes its own
- * session, names its entry, or forks a session that is not open here, whose stored conversation it copies at start.
+ * when the stage was launched, or its empty start, so every stage launched from that point gets the same copy, and a
+ * stage that starts later, because it was retried or resumed after a restart, never sees a later turn of its source
+ * (#5481). The point is read from the run's record when an earlier launch of the stage recorded one, and otherwise
+ * from the source's session when it is open in this process, and then recorded. Unchanged for a stage that resumes
+ * its own session, has its fork point already (it names its entry, or its parallel set its launch's point), or forks a
+ * session that is not open here, whose stored conversation it copies at start.
  */
 export function withLaunchForkPoint<TOptions extends ForkableStageOptions>(input: {
 	readonly backend: DurableWorkflowBackend;
@@ -124,21 +158,17 @@ export function withLaunchForkPoint<TOptions extends ForkableStageOptions>(input
 	readonly resuming: boolean;
 }): TOptions | undefined {
 	const { options } = input;
-	const sessionId = options?.forkFromSessionId;
-	if (
-		input.resuming ||
-		options?.context !== "fork" ||
-		sessionId === undefined ||
-		options.forkFromEntryId !== undefined
-	)
-		return options;
+	const sessionId = launchForkSourceOf(options);
+	if (input.resuming || options === undefined || sessionId === undefined) return options;
 	const key = forkSourceCheckpointKey(input.replayKey);
-	const recorded = input.backend.getToolCheckpoint(input.workflowId, key)?.output as Partial<ForkSourceRecord> | null;
-	if (recorded?.sessionId === sessionId && typeof recorded.entryId === "string")
-		return { ...options, forkFromEntryId: recorded.entryId };
-	const entryId = (options as WithLaunchForkEntry)[LAUNCH_FORK_ENTRY] ?? liveStageSessionLeaf(sessionId);
+	const recorded = input.backend.getToolCheckpoint(input.workflowId, key)?.output;
+	if (isForkSourceRecord(recorded) && recorded.sessionId === sessionId)
+		return withForkPoint(options, recorded.entryId);
+	const entryId = liveStageSessionLeaf(sessionId);
 	if (entryId === undefined) return options;
 	const record: ForkSourceRecord = { sessionId, entryId };
+	// A single stage has no sibling to agree with: once it has started it resumes its own session, and a stage that
+	// had not started when the run stopped is launched again, so the record need not be written before it starts.
 	void input.backend
 		.commitAdditiveCheckpointBestEffort({
 			kind: "tool",
@@ -150,5 +180,5 @@ export function withLaunchForkPoint<TOptions extends ForkableStageOptions>(input
 			completedAt: Date.now(),
 		})
 		.catch(() => false);
-	return { ...options, forkFromEntryId: entryId };
+	return withForkPoint(options, entryId);
 }

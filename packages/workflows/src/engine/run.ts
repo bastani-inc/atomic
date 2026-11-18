@@ -39,7 +39,6 @@ import {
 	recordRunTimingCheckpointAsync,
 } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
-import { createFanOutForkPoints } from "../durable/stage-fork-point.js";
 import {
 	createDurableStagePrimitive,
 	createDurableTaskPrimitive,
@@ -1340,11 +1339,11 @@ async function executeRun(
 	const parallel = createParallelPrimitive({
 		runtime,
 		task: gatedTask,
-		forkPoints: createFanOutForkPoints({
+		durable: {
 			backend: durableBackend,
 			workflowId: runId,
 			nextReplayKey: (name) => stageReplayKeyGenerator(name),
-		}),
+		},
 	});
 	const ui = buildExitGatedUiContext({
 		opts,

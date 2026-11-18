@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { StorageUnavailableError } from "@bastani/atomic/storage";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import {
 	type AssistantMessage,
@@ -8,16 +10,26 @@ import {
 	type Model,
 	streamSimple,
 } from "@bastani/atomic-ai/compat";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import { createFanOutForkPoints, withLaunchForkPoint } from "../../packages/workflows/src/durable/stage-fork-point.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
+import {
+	FAN_OUT_FORK_SOURCES_SUFFIX,
+	withLaunchForkPoint,
+} from "../../packages/workflows/src/durable/stage-fork-point.js";
 import {
 	createDurableTaskPrimitive,
 	createStageReplayKeyGenerator,
 } from "../../packages/workflows/src/durable/stage-primitive.js";
+import { GraphFrontierTracker } from "../../packages/workflows/src/engine/graph-inference.js";
 import { createParallelPrimitive } from "../../packages/workflows/src/engine/primitives/parallel.js";
 import type { EngineRuntime } from "../../packages/workflows/src/engine/runtime.js";
+import { taskStageOptions } from "../../packages/workflows/src/runs/foreground/executor-task-prompts.js";
+import type { ParallelFailFastScope } from "../../packages/workflows/src/runs/foreground/executor-types.js";
+import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
 import { registerLiveStageSession } from "../../packages/workflows/src/shared/live-stage-sessions.js";
 import { forkStageSession, STAGE_FORK_TOOL_RESULT } from "../../packages/workflows/src/shared/stage-session-store.js";
 import type {
@@ -25,12 +37,20 @@ import type {
 	WorkflowTaskOptions,
 	WorkflowTaskResult,
 } from "../../packages/workflows/src/shared/types.js";
-import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+import {
+	closeMemoryTestBackends,
+	createMemoryTestBackend,
+	type MemoryJournalBackend,
+} from "../helpers/workflow-journal.js";
 
 const model = getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
 const RUN = "fork-point-run";
 
+useTemporaryAgentDir();
+
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await closeMemoryTestBackends();
 });
 
@@ -256,6 +276,319 @@ describe("forked workflow stages copy their source append-only (#5481)", () => {
 	});
 });
 
+describe("a parallel's launch fixes its steps' identities and fork point (#5481)", () => {
+	test("two parallels with the same step names, launched at different points, each replay their own steps' results and fork points (#5481)", async () => {
+		const { source, parallel, forking } = await launchRun();
+		const firstPoint = source.getLeafId();
+		const firstStarted = Promise.withResolvers<void>();
+		const releaseFirst = Promise.withResolvers<void>();
+		const failed = new Error("the first parallel's b fails after the second parallel finished");
+		const run = parallel(async (name, options) => {
+			if (options.forkFromEntryId === firstPoint && name === "a") {
+				firstStarted.resolve();
+				await releaseFirst.promise;
+			}
+			if (options.forkFromEntryId === firstPoint && name === "b") throw failed;
+			return { stageName: name, text: String(options.forkFromEntryId) };
+		});
+		const first = run(STEP_PAIR, forking);
+		await firstStarted.promise;
+		await source.appendMessage(userMessage("before the second launch"));
+		const secondPoint = source.getLeafId();
+		// The second parallel finishes both of its steps while the first still waits for its slot for b.
+		assert.deepEqual(texts(await run(STEP_PAIR, forking)), [secondPoint, secondPoint]);
+		releaseFirst.resolve();
+		await assert.rejects(first, (error) => error === failed);
+		await source.appendMessage(userMessage("after both launches"));
+
+		// The resumed run launches both again in the same order; their steps now start in another order.
+		const resumed = parallel(async (name, options) => ({ stageName: name, text: String(options.forkFromEntryId) }));
+		const replayed = await Promise.all([resumed(STEP_PAIR, forking), resumed(STEP_PAIR, forking)]);
+		assert.deepEqual(replayed.map(texts), [
+			[firstPoint, firstPoint],
+			[secondPoint, secondPoint],
+		]);
+	});
+
+	test("a workflow fork of a run starts its parallel's steps where their source was at launch, in the source's copy (#5481)", async () => {
+		const { backend, run, store, source, definition, parallel, forking } = await launchRun();
+		const sourceId = source.getSessionId();
+		// The source is the session of a task of the run, whose result the fork replays with the session's copy.
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: run,
+			name: "source",
+			replayKey: "stage:task:source:1",
+			checkpointId: "task:stage:task:source:1",
+			sessionId: sourceId,
+			output: { text: "source", stageName: "source", sessionId: sourceId },
+			completedAt: 1,
+		});
+		const launchPoint = source.getLeafId();
+		await parallel(async (name, options) => {
+			assert.equal(options.forkFromEntryId, launchPoint);
+			await source.appendMessage(userMessage(`after launch, during ${name}`));
+			return { stageName: name, text: name };
+		})(STEP_PAIR, forking);
+		await backend.commitWorkflowStatus(run, "completed");
+		await backend.releaseWorkflow(run);
+
+		const copies = new MemorySessionStore();
+		const fork = await forkDurableRun(backend, {
+			source: "sdk",
+			runId: run,
+			fromStage: "a",
+			cwd: process.cwd(),
+			carryMessages: "before",
+			definition,
+			sourceSessionStore: store,
+			sessionStore: copies,
+		});
+		const copiedSource = (backend.getStageOutput(fork.runId, "stage:task:source:1") as { sessionId: string })
+			.sessionId;
+		assert.notEqual(copiedSource, sourceId);
+		const inherited: unknown[][] = [];
+		await parallel(
+			async (name, options) => {
+				inherited.push(await stepConversation(copies, options));
+				return { stageName: name, text: name };
+			},
+			{ runId: fork.runId },
+		)(STEP_PAIR, { ...forking, forkFromSessionId: copiedSource });
+		assert.deepEqual(inherited, [["before launch"], ["before launch"]]);
+	});
+
+	test("a parallel launched while its live source is still empty starts every step empty, also after a resume (#5481)", async () => {
+		const { store, source, parallel, forking } = await launchRun({ empty: true });
+		assert.equal(source.getLeafId(), null);
+		const inherited: unknown[][] = [];
+		const step = async (name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+			inherited.push(await stepConversation(store, options));
+			await source.appendMessage(userMessage(`after ${name} started`));
+			return { stageName: name, text: name };
+		};
+		const stopped = new Error("the run stops after a's result is recorded");
+		const first = parallel(step, {
+			afterLiveResult: async () => {
+				throw stopped;
+			},
+		});
+		await assert.rejects(first(STEP_PAIR, forking), (error) => error === stopped);
+		await parallel(step)(STEP_PAIR, forking);
+		assert.deepEqual(inherited, [[], []]);
+	});
+
+	test("a stage launched while its live source is still empty starts empty, also when launched again (#5481)", async () => {
+		const { backend, run, store, source } = await launchRun({ empty: true });
+		const launch = () =>
+			withLaunchForkPoint({
+				backend,
+				workflowId: run,
+				replayKey: "stage:task:alone:1",
+				options: { context: "fork" as const, forkFromSessionId: source.getSessionId() },
+				resuming: false,
+			})!;
+		const launched = launch();
+		await source.appendMessage(userMessage("after the launch"));
+		assert.deepEqual(await stepConversation(store, launched), []);
+		// The record's write is queued behind nothing: once it is in, a stage launched again reads the empty point.
+		await vi.waitFor(() => assert.deepEqual(launch(), launched));
+	});
+
+	test("a parallel whose fork point record cannot be written starts none of its steps and is launched again whole (#5481)", async () => {
+		const { backend, source, parallel, forking } = await launchRun();
+		const unavailable = failForkRecordOnce(backend, { written: false });
+		const startedAt: (string | undefined)[] = [];
+		const step = async (name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+			startedAt.push(options.forkFromEntryId);
+			await source.appendMessage(userMessage(`after ${name} started`));
+			return { stageName: name, text: name };
+		};
+		await assert.rejects(parallel(step)(STEP_PAIR, forking), (error) => error === unavailable);
+		assert.deepEqual(startedAt, []);
+
+		await source.appendMessage(userMessage("before the run resumes"));
+		const relaunchPoint = source.getLeafId();
+		await parallel(step)(STEP_PAIR, forking);
+		assert.deepEqual(startedAt, [relaunchPoint, relaunchPoint]);
+	});
+
+	test("a parallel whose fork point record was written though the write failed forks every step at the recorded point (#5481)", async () => {
+		const { backend, source, parallel, forking } = await launchRun();
+		const launchPoint = source.getLeafId();
+		const unavailable = failForkRecordOnce(backend, { written: true });
+		const startedAt: (string | undefined)[] = [];
+		const step = async (name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+			startedAt.push(options.forkFromEntryId);
+			await source.appendMessage(userMessage(`after ${name} started`));
+			return { stageName: name, text: name };
+		};
+		await assert.rejects(parallel(step)(STEP_PAIR, forking), (error) => error === unavailable);
+		await source.appendMessage(userMessage("before the run resumes"));
+		const stopped = new Error("the run stops after a's result is recorded");
+		const resumed = parallel(step, {
+			afterLiveResult: async () => {
+				throw stopped;
+			},
+		});
+		await assert.rejects(resumed(STEP_PAIR, forking), (error) => error === stopped);
+		await parallel(step)(STEP_PAIR, forking);
+		assert.deepEqual(startedAt, [launchPoint, launchPoint]);
+	});
+
+	test("a parallel's steps keep its launch's graph parents when another stage settles while its fork point is recorded (#5481)", async () => {
+		const { backend, parallel, forking } = await launchRun();
+		const tracker = new GraphFrontierTracker();
+		tracker.onSpawn("root", "root");
+		tracker.onSettle("root");
+		tracker.onSpawn("beside", "beside");
+		const record = holdForkRecord(backend);
+		const parents: (readonly string[] | undefined)[] = [];
+		const launched = parallel(
+			async (name, _options, scope) => {
+				parents.push(scope?.parentIds);
+				return { stageName: name, text: name };
+			},
+			{ tracker },
+		)(STEP_PAIR, forking);
+		await record.writing;
+		tracker.onSettle("beside");
+		assert.deepEqual(parents, [], "no step starts before the fork point is recorded");
+		record.release();
+		await launched;
+		assert.deepEqual(parents, [["root"], ["root"]]);
+	});
+});
+
+const STEP_PAIR = [
+	{ name: "a", prompt: "A" },
+	{ name: "b", prompt: "B" },
+];
+
+function userMessage(content: string): Message {
+	return { role: "user", content, timestamp: Date.now() };
+}
+
+function texts(results: readonly WorkflowTaskResult[]): string[] {
+	return results.map((result) => result.text);
+}
+
+type StepWork = (
+	name: string,
+	options: WorkflowTaskOptions,
+	scope?: ParallelFailFastScope,
+) => Promise<WorkflowTaskResult>;
+
+/**
+ * A registered run whose parallels fork `source`, a live stage session in `store`. `parallel(step)` builds the run's
+ * durable task and parallel primitives the way the engine does, with `step` as each step's work; building them again
+ * is the run resumed in a new process, with the same journal.
+ */
+async function launchRun(options: { readonly empty?: boolean } = {}) {
+	const backend = await createMemoryTestBackend();
+	const run = randomUUID();
+	const store = new MemorySessionStore();
+	const source = await SessionManager.create(store, process.cwd());
+	if (options.empty !== true) await source.appendMessage(userMessage("before launch"));
+	registerLiveStageSession(source);
+	const definition = workflow({
+		name: "fork-point-launch",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async () => ({}),
+	});
+	await backend.commitWorkflowRegistration({
+		workflowId: run,
+		name: definition.name,
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+		invocationCwd: process.cwd(),
+	});
+	const parallel = (
+		step: StepWork,
+		hooks: {
+			readonly runId?: string;
+			readonly tracker?: GraphFrontierTracker;
+			readonly afterLiveResult?: () => Promise<void>;
+		} = {},
+	) => {
+		const workflowId = hooks.runId ?? run;
+		const nextReplayKey = createStageReplayKeyGenerator(workflowId);
+		const runtime = {
+			runId: workflowId,
+			exit: { throwIfWorkflowExitSelected: () => undefined, exitScope: undefined },
+			tracker: hooks.tracker ?? new GraphFrontierTracker(),
+			activeStore: { run: () => undefined },
+		} as unknown as EngineRuntime;
+		const task = createDurableTaskPrimitive({
+			workflowId,
+			backend,
+			nextReplayKey,
+			task: step,
+			...(hooks.afterLiveResult ? { afterLiveResult: hooks.afterLiveResult } : {}),
+		});
+		return createParallelPrimitive({ runtime, task, durable: { backend, workflowId, nextReplayKey } });
+	};
+	const forking = { concurrency: 1, context: "fork" as const, forkFromSessionId: source.getSessionId() };
+	return { backend, run, store, source, definition, parallel, forking };
+}
+
+/** The conversation a step's session starts with, opened from `store` the way the stage runner opens it. */
+async function stepConversation(store: MemorySessionStore, options: WorkflowTaskOptions): Promise<unknown[]> {
+	const created = await stripWorkflowOnlyOptions({ ...taskStageOptions(options), sessionStore: store }, undefined, {
+		runId: "run",
+		stageId: "step",
+		stageName: "step",
+	});
+	assert.ok(created.sessionManager);
+	return created.sessionManager
+		.buildSessionContext()
+		.messages.map((message) => ("content" in message ? message.content : message.role));
+}
+
+function isForkRecordAppend(event: { readonly type: string; readonly payload?: unknown }): boolean {
+	const argsHash = (event.payload as { readonly argsHash?: unknown } | undefined)?.argsHash;
+	return event.type === "CheckpointRecorded" && String(argsHash).endsWith(FAN_OUT_FORK_SOURCES_SUFFIX);
+}
+
+/**
+ * Fails the next write of a parallel's fork point record with a storage error, as a briefly unavailable journal does;
+ * later writes go through. With `written`, the record is stored before the write fails, as when only its
+ * acknowledgement is lost.
+ */
+function failForkRecordOnce(backend: MemoryJournalBackend, options: { readonly written: boolean }): Error {
+	const unavailable = new StorageUnavailableError(
+		{ adapter: "memory", location: "test" },
+		new Error("the journal is briefly unavailable"),
+	);
+	const append = backend.journal.append.bind(backend.journal);
+	let failed = false;
+	vi.spyOn(backend.journal, "append").mockImplementation(async (lease, event, appendOptions) => {
+		if (failed || !isForkRecordAppend(event)) return append(lease, event, appendOptions);
+		failed = true;
+		if (options.written) await append(lease, event, appendOptions);
+		throw unavailable;
+	});
+	return unavailable;
+}
+
+/** Holds the write of a parallel's fork point record until `release()`. */
+function holdForkRecord(backend: MemoryJournalBackend) {
+	const writing = Promise.withResolvers<void>();
+	const released = Promise.withResolvers<void>();
+	const append = backend.journal.append.bind(backend.journal);
+	vi.spyOn(backend.journal, "append").mockImplementation(async (lease, event, appendOptions) => {
+		if (isForkRecordAppend(event)) {
+			writing.resolve();
+			await released.promise;
+		}
+		return append(lease, event, appendOptions);
+	});
+	return { writing: writing.promise, release: () => released.resolve() };
+}
+
 const STEPS = [
 	{ name: "a", prompt: "A" },
 	{ name: "b", prompt: "B" },
@@ -299,8 +632,10 @@ async function durableParallelRun(run: string) {
 			},
 			...(hooks.afterLiveResult ? { afterLiveResult: hooks.afterLiveResult } : {}),
 		});
-		const forkPoints = createFanOutForkPoints({ backend, workflowId: run, nextReplayKey });
-		return { forkedAt, parallel: createParallelPrimitive({ runtime, task, forkPoints }) };
+		return {
+			forkedAt,
+			parallel: createParallelPrimitive({ runtime, task, durable: { backend, workflowId: run, nextReplayKey } }),
+		};
 	};
 	return { backend, run, source, runner };
 }
