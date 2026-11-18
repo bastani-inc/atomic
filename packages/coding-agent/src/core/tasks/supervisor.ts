@@ -272,29 +272,97 @@ type WaitState = {
 	launches: LaunchMetadata;
 };
 
-/** The most output a `tool` task keeps; later output is reported as omitted, as a command's spool cap does. */
+/**
+ * The most of the start of a `tool` task's output it keeps; output past it is reported as omitted, as a command's
+ * spool cap does, except its last {@link TOOL_TASK_OUTPUT_TAIL_BYTES}.
+ */
 export const TOOL_TASK_OUTPUT_MAX_BYTES = 16 * 1024 * 1024;
+/**
+ * The most of the end of a `tool` task's output it keeps past {@link TOOL_TASK_OUTPUT_MAX_BYTES}: how its work ended,
+ * for example where a search that stopped continues from, is printed last and must not be lost with the middle.
+ */
+export const TOOL_TASK_OUTPUT_TAIL_BYTES = 64 * 1024;
 /** Most bytes one page of a `tool` task's output returns, matching a command's live page. */
 const TOOL_TASK_OUTPUT_PAGE_BYTES = 64 * 1024;
 
+type OutputChunk = { readonly start: number; readonly bytes: Uint8Array };
+
+/** The chunks of `chunks` from index `first` on (in offset order) that overlap `[start, end)`, cut to it. */
+function chunksWithin(
+	chunks: readonly OutputChunk[],
+	first: number,
+	start: number,
+	end: number,
+): C.OutputPage["chunks"] {
+	let low = first;
+	let high = chunks.length;
+	while (low < high) {
+		const middle = (low + high) >>> 1;
+		const chunk = chunks[middle]!;
+		if (chunk.start + chunk.bytes.length <= start) low = middle + 1;
+		else high = middle;
+	}
+	const within: C.OutputPage["chunks"] = [];
+	for (let index = low; index < chunks.length && chunks[index]!.start < end; index++) {
+		const chunk = chunks[index]!;
+		const from = Math.max(start, chunk.start);
+		const to = Math.min(end, chunk.start + chunk.bytes.length);
+		within.push({
+			offsets: { start: String(from), end: String(to) },
+			bytes: chunk.bytes.subarray(from - chunk.start, to - chunk.start),
+		});
+	}
+	return within;
+}
+
 /**
- * What a `tool` task printed, in order. Offsets are byte offsets into everything it printed; bytes past
- * {@link TOOL_TASK_OUTPUT_MAX_BYTES} are not kept and read back as one omitted range.
+ * What a `tool` task printed, in order. Offsets are byte offsets into everything it printed. It keeps the first
+ * {@link TOOL_TASK_OUTPUT_MAX_BYTES} and the last {@link TOOL_TASK_OUTPUT_TAIL_BYTES}; what lies between reads back as
+ * one omitted range. Once sealed, at its task's settlement, it refuses further writes.
  */
 export class ToolTaskOutput {
-	readonly #chunks: Array<{ readonly start: number; readonly bytes: Uint8Array }> = [];
-	#kept = 0;
+	readonly #head: OutputChunk[] = [];
+	#tail: OutputChunk[] = [];
+	/** Index of the first tail chunk still kept; the ones before it were dropped and are compacted away in batches. */
+	#tailFirst = 0;
+	#headBytes = 0;
+	#tailBytes = 0;
 	#total = 0;
+	#sealed = false;
 	get byteCount(): number {
 		return this.#total;
 	}
+	/** The task ended: its output is final, and later writes are refused. */
+	seal(): void {
+		this.#sealed = true;
+	}
 	append(bytes: Uint8Array): void {
-		if (bytes.length === 0) return;
-		const room = Math.max(0, TOOL_TASK_OUTPUT_MAX_BYTES - this.#kept);
-		if (room > 0) {
-			const kept = bytes.length <= room ? bytes : bytes.subarray(0, room);
-			this.#chunks.push({ start: this.#total, bytes: kept.slice() });
-			this.#kept += kept.length;
+		if (this.#sealed || bytes.length === 0) return;
+		const room = Math.max(0, TOOL_TASK_OUTPUT_MAX_BYTES - this.#headBytes);
+		const headPart = Math.min(room, bytes.length);
+		if (headPart > 0) {
+			this.#head.push({ start: this.#total, bytes: bytes.slice(0, headPart) });
+			this.#headBytes += headPart;
+		}
+		if (headPart < bytes.length) {
+			// Only the last tail's worth of what does not fit the head is kept: the rest is cut before it is copied.
+			const from = Math.max(headPart, bytes.length - TOOL_TASK_OUTPUT_TAIL_BYTES);
+			this.#tail.push({ start: this.#total + from, bytes: bytes.slice(from) });
+			this.#tailBytes += bytes.length - from;
+			while (this.#tailBytes - this.#tail[this.#tailFirst]!.bytes.length >= TOOL_TASK_OUTPUT_TAIL_BYTES) {
+				this.#tailBytes -= this.#tail[this.#tailFirst]!.bytes.length;
+				this.#tailFirst++;
+			}
+			if (this.#tailFirst > 1024 && this.#tailFirst * 2 > this.#tail.length) {
+				this.#tail = this.#tail.slice(this.#tailFirst);
+				this.#tailFirst = 0;
+			}
+			const excess = this.#tailBytes - TOOL_TASK_OUTPUT_TAIL_BYTES;
+			if (excess > 0) {
+				const first = this.#tail[this.#tailFirst]!;
+				this.#tail[this.#tailFirst] = { start: first.start + excess, bytes: first.bytes.slice(excess) };
+				this.#tailBytes -= excess;
+			}
 		}
 		this.#total += bytes.length;
 	}
@@ -302,21 +370,20 @@ export class ToolTaskOutput {
 		if (!/^\d+$/.test(range.start)) return { ok: false, error: { code: "OutputUnavailable", message: "bad offset" } };
 		const start = Number(range.start);
 		const limit = Math.max(0, Math.min(TOOL_TASK_OUTPUT_PAGE_BYTES, Math.floor(range.maximumBytes)));
-		const end = Math.min(this.#total, start + limit);
-		const chunks: C.OutputPage["chunks"] = [];
+		// What is not kept lies between the head and the tail; a page that reaches it reports all of it at once and ends
+		// there, so a reader steps over it in one page whatever its size.
+		const gapStart = this.#headBytes;
+		const gapEnd = this.#tail[this.#tailFirst]?.start ?? gapStart;
+		let end = Math.min(this.#total, start + limit);
 		const omittedRanges: C.OutputPage["omittedRanges"] = [];
-		for (const chunk of this.#chunks) {
-			const chunkEnd = chunk.start + chunk.bytes.length;
-			if (chunkEnd <= start || chunk.start >= end) continue;
-			const from = Math.max(start, chunk.start);
-			const to = Math.min(end, chunkEnd);
-			chunks.push({
-				offsets: { start: String(from), end: String(to) },
-				bytes: chunk.bytes.subarray(from - chunk.start, to - chunk.start),
-			});
+		if (start < gapEnd && end > gapStart) {
+			omittedRanges.push({ start: String(Math.max(start, gapStart)), end: String(gapEnd) });
+			end = gapEnd;
 		}
-		if (end > this.#kept && start < end)
-			omittedRanges.push({ start: String(Math.max(start, this.#kept)), end: String(end) });
+		const chunks = [
+			...chunksWithin(this.#head, 0, start, end),
+			...chunksWithin(this.#tail, this.#tailFirst, start, end),
+		];
 		return {
 			ok: true,
 			value: {
@@ -1635,6 +1702,8 @@ export class TaskSupervisor {
 			const outcome = execution.result
 				.catch((error) => ({ kind: "failed" as const, code: "RunnerFailed", message: rejectionMessage(error) }))
 				.then((result) => {
+					// The outcome settles the task: what it printed is what its notice and reads report, whatever writes later.
+					taskState.toolOutput?.seal();
 					// The native outcome has no release: the host keeps it, and reads it back with the result (#5031).
 					if (result.kind === "cancelled" && result.released !== undefined) {
 						const { released, ...native } = result;
@@ -1668,6 +1737,8 @@ export class TaskSupervisor {
 				});
 				// The task ended: nothing of its session's presentation outlives it.
 				clearTaskStatuses(taskState);
+				// A stop settles it at this acknowledgement, without an outcome: its output is final from here too.
+				taskState.toolOutput?.seal();
 				const acknowledged = mapped(
 					this.#native.acknowledgeTaskCleanup(runner.value, evidence),
 					(cleanup) => cleanup,

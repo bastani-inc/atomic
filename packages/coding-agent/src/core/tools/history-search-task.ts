@@ -4,6 +4,7 @@
  * the matches and the notes that are not stops. Its execution timeout or a stop ends it with the URL to continue from.
  */
 
+import { createHash } from "node:crypto";
 import { type InternalResourceContext, searchInternalSelector } from "./resource-selectors.ts";
 import type { ToolTaskWork } from "./tool-task.ts";
 
@@ -15,17 +16,32 @@ import type { ToolTaskWork } from "./tool-task.ts";
  */
 export const HISTORY_SEARCH_STEP_MS = 10_000;
 
+/**
+ * How many of its latest steps' answers a search compares each answer with to find one that made no progress. Its
+ * execution timeout still ends a source that repeats itself over a longer cycle, and its output store bounds what that
+ * prints.
+ */
+const REMEMBERED_ANSWERS = 1_024;
+
 const CONTINUATION = /continue with (history:\/\/\S+?)\]\s*$/;
 /** A stop a budget made (`the time budget ran out`, waiting for the store included), not the end of a page. */
 const BUDGET_STOP = /\bthe (?:byte|row|time) budget ran out\b/;
+/**
+ * A note of the search itself: its first word is the location it is about at line 0 (`<url>:0: [...]`). A match or
+ * context line (`<url>:N: …`, `<url>-N- …`) that quotes a note from history is not one, whatever it quotes.
+ */
+const NOTE = /^(\S+?(?::0: |-0- ))\[(.*)\]\s*$/;
 
 /**
  * The URL a step's budget stop hands the search on to, or undefined for any other line. A page's end (`searched
  * sessions 1-25 of 230; continue with …?offset=25`) is not a stop: the search covers the page its URL names, as a
- * single call does, and that note stays in its output.
+ * single call does, and that note stays in its output. Only a note of the search can be a stop: a match that quotes
+ * one is kept as a match and never followed.
  */
 export function historyContinuation(line: string): string | undefined {
-	return BUDGET_STOP.test(line) ? CONTINUATION.exec(line)?.[1] : undefined;
+	const note = NOTE.exec(line);
+	if (note === null || !BUDGET_STOP.test(note[2]!)) return undefined;
+	return CONTINUATION.exec(`[${note[2]}]`)?.[1];
 }
 
 export interface HistorySearchRun {
@@ -40,8 +56,6 @@ export interface HistorySearchRun {
 	/** Step budget override, for tests; omitted, {@link HISTORY_SEARCH_STEP_MS}. */
 	readonly stepMs?: number;
 }
-
-const NOTE = /^(.*?(?::0: |-0- ))\[(.*)\]\s*$/;
 
 /**
  * What a followed stop line reports besides the stop itself, as a note of its own, or undefined when it reports
@@ -79,7 +93,13 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 			write(`${printedAny ? "\n" : ""}${text}`);
 			printedAny = true;
 		};
+		// What the latest steps answered, by digest: a step that answers exactly as one of them did made no progress, so
+		// the chain does not follow it again (a source that hands back the page it was asked for must not loop forever).
+		const answered = new Set<string>();
 		while (pending.length > 0) {
+			// A turn of the event loop before each step: a source that answers without waiting on anything would
+			// otherwise keep the loop in microtasks, where no timeout, stop or abort can ever run.
+			await new Promise<void>((resolve) => setImmediate(resolve));
 			const url = pending.shift()!;
 			if (signal.aborted) {
 				pending.unshift(url);
@@ -110,6 +130,15 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 				continue;
 			}
 			succeeded = true;
+			const digest = createHash("sha256").update(text).digest("hex");
+			if (answered.has(digest)) {
+				// No progress: keep where it stopped, so the caller can continue from there, and follow nothing more of it.
+				const stops = text.split("\n").filter((line) => historyContinuation(line) !== undefined);
+				if (stops.length > 0) print(stops.join("\n"));
+				continue;
+			}
+			answered.add(digest);
+			if (answered.size > REMEMBERED_ANSWERS) answered.delete(answered.values().next().value!);
 			const next: string[] = [];
 			const kept = text.split("\n").flatMap((line) => {
 				const continuation = historyContinuation(line);

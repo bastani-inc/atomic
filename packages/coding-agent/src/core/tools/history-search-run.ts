@@ -13,6 +13,7 @@ import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { formatTimeoutSeconds, longerRunAdvice } from "../tasks/cancel-reason.js";
 import { taskOutputText } from "../tasks/command-output.js";
 import type { TaskId, WaitOutcome, WaitPolicy } from "../tasks/contracts.js";
+import { ToolTaskOutput } from "../tasks/supervisor.js";
 import { lookupOwnedTask, type SupervisedCommandOwner } from "./bash-pty-native.js";
 import { type HistorySearchRun, historySearchWork } from "./history-search-task.ts";
 import { PersistedOutputFile, truncateBufferAtUtf8Boundary } from "./persisted-output-file.ts";
@@ -23,6 +24,24 @@ import { formatSize } from "./truncate.ts";
 
 /** Most of a history:// search's output its result shows; the rest is saved to a file, as a shell's is. */
 export const HISTORY_SEARCH_INLINE_BYTES = 40_000;
+/** How often a search observed in the foreground reports its progress. */
+const UPDATE_INTERVAL_MS = 250;
+
+/** What `output` holds, up to `maxBytes` from its start, with a note for any bytes it no longer keeps. */
+function outputText(output: ToolTaskOutput, maxBytes = Number.MAX_SAFE_INTEGER): string {
+	const pages: string[] = [];
+	let offset = "0";
+	let read = 0;
+	while (read < maxBytes) {
+		const page = output.page({ start: offset, maximumBytes: Math.min(64 * 1024, maxBytes - read) });
+		if (!page.ok) break;
+		pages.push(taskOutputText(page.value));
+		read += Number(page.value.requested.end) - Number(offset);
+		if (page.value.nextOffset === undefined) break;
+		offset = page.value.nextOffset;
+	}
+	return pages.join("");
+}
 
 export type HistorySearchDetails = SearchToolDetails & {
 	/** How the call observed the search: settled, or yielded while it goes on as a task. */
@@ -41,16 +60,50 @@ export interface HistorySearchCall extends HistorySearchRun {
 	readonly onUpdate?: (text: string) => void;
 }
 
-/** What a search printed, as its result shows it: the start, and all of it in a file when there is more. */
+/**
+ * Most bytes of the notes that end a search's output a result whose output is cut still shows after its start: where
+ * the search stopped, and where to continue from, are printed last and must not be only in the saved file.
+ */
+const HISTORY_SEARCH_END_NOTE_BYTES = 4_000;
+/**
+ * A note that names where to continue, a stop or a page's end: the search's own (`<url>:0: [...]`, or `[...]` where it
+ * stopped), not a match that quotes one.
+ */
+const CONTINUE_NOTE = /^(?:\S+?(?::0: |-0- ))?\[.*\bcontinue with history:\/\/\S+?\]\s*$/;
+
+/** The notes `rest` ends with that name where to continue, in order, within {@link HISTORY_SEARCH_END_NOTE_BYTES}. */
+function endNotes(rest: string): string[] {
+	const notes: string[] = [];
+	let bytes = 0;
+	const lines = rest.split("\n");
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const line = lines[index]!;
+		if (line.trim().length === 0) continue;
+		if (!CONTINUE_NOTE.test(line)) break;
+		const size = Buffer.byteLength(line, "utf8") + 1;
+		if (bytes + size > HISTORY_SEARCH_END_NOTE_BYTES) break;
+		notes.unshift(line);
+		bytes += size;
+	}
+	return notes;
+}
+
+/**
+ * What a search printed, as its result shows it: the start, and all of it in a file when there is more. A result cut
+ * short still shows the notes its output ends with, so where to continue from is always in the result.
+ */
 async function formatHistoryOutput(
 	text: string,
 	tempDir: string | undefined,
 ): Promise<{ readonly text: string; readonly fullOutputPath?: string }> {
 	const bytes = Buffer.from(text, "utf8");
 	if (bytes.length <= HISTORY_SEARCH_INLINE_BYTES) return { text };
-	let head = truncateBufferAtUtf8Boundary(bytes, HISTORY_SEARCH_INLINE_BYTES).toString("utf8");
+	let head = truncateBufferAtUtf8Boundary(bytes, HISTORY_SEARCH_INLINE_BYTES - HISTORY_SEARCH_END_NOTE_BYTES).toString(
+		"utf8",
+	);
 	const lastNewline = head.lastIndexOf("\n");
 	if (lastNewline > 0) head = head.slice(0, lastNewline);
+	const notes = endNotes(text.slice(head.length));
 	let fullOutputPath: string | undefined;
 	try {
 		const directory = tempDir ?? tmpdir();
@@ -63,8 +116,12 @@ async function formatHistoryOutput(
 	} catch {
 		// The file could not be written: the result still shows the start, and names no path.
 	}
-	const note = `[Showing the first ${formatSize(Buffer.byteLength(head, "utf8"))} of ${formatSize(bytes.length)}.${fullOutputPath ? ` Full output: ${fullOutputPath}` : ""}]`;
-	return { text: `${head}\n\n${note}`, ...(fullOutputPath === undefined ? {} : { fullOutputPath }) };
+	const shown = `the first ${formatSize(Buffer.byteLength(head, "utf8"))} of ${formatSize(bytes.length)}${notes.length > 0 ? " and the notes it ends with" : ""}`;
+	const note = `[Showing ${shown}.${fullOutputPath ? ` Full output: ${fullOutputPath}` : ""}]`;
+	return {
+		text: [head, "", note, ...notes].join("\n"),
+		...(fullOutputPath === undefined ? {} : { fullOutputPath }),
+	};
 }
 
 /** Most background searches whose timeout and shown output this process remembers for their waits. */
@@ -126,10 +183,16 @@ function settledResult(
 
 /** Run a history:// search: as a task of `call.owner` when it can run one, else in the foreground. */
 export async function runHistorySearch(call: HistorySearchCall): Promise<AgentToolResult<HistorySearchDetails>> {
-	const chunks: Buffer[] = [];
+	// What the call observed, kept to the same bound as a tool task's output; the rest is counted, not kept.
+	const output = new ToolTaskOutput();
+	let lastUpdate = 0;
 	const collect = (bytes: Buffer) => {
-		chunks.push(bytes);
-		call.onUpdate?.(Buffer.concat(chunks).toString("utf8"));
+		output.append(bytes);
+		// Progress shows the start of what was found, at most every quarter second.
+		const now = Date.now();
+		if (call.onUpdate === undefined || now - lastUpdate < UPDATE_INTERVAL_MS) return;
+		lastUpdate = now;
+		call.onUpdate(outputText(output, HISTORY_SEARCH_INLINE_BYTES));
 	};
 	const work = historySearchWork(call);
 	if (call.owner?.startToolTask !== undefined) {
@@ -145,8 +208,8 @@ export async function runHistorySearch(call: HistorySearchCall): Promise<AgentTo
 			work,
 		});
 		if (result.observation?.kind === "yielded") remember(launchTimeouts, result.taskId, call.timeoutSeconds);
-		const output = await formatHistoryOutput(Buffer.concat(chunks).toString("utf8"), call.tempDir);
-		return settledResult(result.observation!, output, call.timeoutSeconds);
+		const formatted = await formatHistoryOutput(outputText(output), call.tempDir);
+		return settledResult(result.observation!, formatted, call.timeoutSeconds);
 	}
 	// No owner runs it as a task: it runs here until it ends, as an unbound bash command waits until it completes.
 	const stop = new AbortController();
@@ -163,7 +226,7 @@ export async function runHistorySearch(call: HistorySearchCall): Promise<AgentTo
 		call.signal?.removeEventListener("abort", forward);
 	}
 	if (call.signal?.aborted && ended === "stopped") throw new Error("aborted");
-	const output = await formatHistoryOutput(Buffer.concat(chunks).toString("utf8"), call.tempDir);
+	const formatted = await formatHistoryOutput(outputText(output), call.tempDir);
 	const cause =
 		ended === "finished" ? undefined : stop.signal.reason === "execution-timeout" ? "execution-timeout" : "user";
 	const outputRef = { ownerId: "" as never, taskId, artifactId: "", byteCount: "0", omittedRanges: [] };
@@ -176,7 +239,7 @@ export async function runHistorySearch(call: HistorySearchCall): Promise<AgentTo
 					? { kind: "completed", output: outputRef }
 					: { kind: "cancelled", cause, output: outputRef },
 		},
-		output,
+		formatted,
 		call.timeoutSeconds,
 	);
 }

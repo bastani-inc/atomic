@@ -4,7 +4,7 @@
 
 ### Changed
 
-- A `search` of `history://` now runs like a shell command. It follows every `continue with` its steps stop at, so one call covers what a chain of calls did. It is watched for your session's automatic budget (normally 10 seconds) and then goes on as a background task: `/tasks` lists it under Searches, heartbeats report it, `search({ action: "wait", id })` reads it, `kill` stops it, and one notice reports its results. `timeout` (300 seconds by default) and `wait` work as they do for `bash`, and the result shows the first 40 KB with the rest saved to a file. Searches of files and other resources are unchanged ([#5479](https://github.com/bastani-inc/atomic/pull/5479))
+- A `search` of `history://` now runs like a shell command. It follows every `continue with` its steps stop at, so one call covers what a chain of calls did. It is watched for your session's automatic budget (normally 10 seconds) and then goes on as a background task: `/tasks` lists it under Searches, heartbeats report it, `search({ action: "wait", id })` reads it, `kill` stops it, and one notice reports its results. `timeout` (300 seconds by default) and `wait` work as they do for `bash`, and the result shows the first 40 KB and where the search stopped, with the rest saved to a file. Searches of files and other resources are unchanged ([#5479](https://github.com/bastani-inc/atomic/pull/5479))
 - Extensions and SDK callers see a third task kind, `tool`, beside agents and commands: a tool call's in-process work running as a task. `SearchToolInput` also accepts the `{ action: "wait", id, budgetMs }` form ([#5479](https://github.com/bastani-inc/atomic/pull/5479))
 
 ### Fixed

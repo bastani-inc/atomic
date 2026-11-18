@@ -205,12 +205,12 @@ Every `read` of `history://`, and each step of a `search`, uses an output budget
 
 ### Searching history in the background
 
-A `search` whose paths are all `history://` URLs runs to its end like a shell command: it follows every `continue with` URL a step's budget stops at, so one call covers what a chain of calls would, and prints only the matches and the notes that are not stops (an entry it could not search, sessions it could not read, a source that failed). A page's end is not a stop: a search covers the page its URL names, as before, and ends with the URL of the next page.
+A `search` whose paths are all `history://` URLs runs to its end like a shell command: it follows every `continue with` URL a step's budget stops at, so one call covers what a chain of calls would, and prints only the matches and the notes that are not stops (an entry it could not search, sessions it could not read, a source that failed). A page's end is not a stop: a search covers the page its URL names, as before, and ends with the URL of the next page. A match whose text quotes a note from an earlier search stays a match; the search never follows a URL it quotes. A source that keeps answering exactly as it did before is not followed again.
 
 - **Observation.** It is observed exactly like a `bash` command. Omit `wait` to watch it for the automatic budget your session uses for shell commands (normally 10 seconds); a search still running then goes on as a background task, and the call returns what it found so far with the task's id. `wait: { kind: "foreground", budgetMs }` sets that budget, and `wait: { kind: "background" }` returns at once.
 - **Background task.** `/tasks` lists it under **Searches**, heartbeats report it like a background shell, `search({ action: "wait", id })` reads what it found, and `kill({ id })` or `/tasks` stops it. When it ends, one notice reports it with the start of its results.
 - **Timeout.** `timeout` (seconds, 300 by default, at most 3600) stops it, like a shell's execution timeout; the result then ends with the URL to continue from.
-- **Output.** The result shows the first 40 KB of what it found and saves all of it to a file it names.
+- **Output.** The result shows the first 40 KB of what it found and saves all of it to a file it names. When it is cut short, the result still ends with the notes its output ends with, such as where a stopped search continues from.
 - **Without a task owner.** Where nothing can run it as a task (some SDK hosts), it runs in the foreground until it ends or its timeout stops it.
 
 Searches of files, archives and other resources finish in the foreground as before: they are bounded by file and match limits rather than by time.
