@@ -1188,8 +1188,8 @@ async function searchRunLinesBounded(
 
 export function createHistoryRouter(sources: HistorySources): InternalResourceRouter {
 	const limits: HistoryBudget = { ...DEFAULT_HISTORY_BUDGET, ...sources.budget };
-	const newBudget = (signal: AbortSignal | undefined, noteBytes?: number) =>
-		new HistoryCallBudget(limits, signal, noteBytes);
+	const newBudget = (signal: AbortSignal | undefined, noteBytes?: number, timeMs?: number) =>
+		new HistoryCallBudget(timeMs === undefined ? limits : { ...limits, timeMs }, signal, noteBytes);
 	const noteBytes = (
 		url: string,
 		target: HistoryTarget,
@@ -2255,9 +2255,15 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const { url, request } = normalizeInlineSearchRequest(rawUrl, rawRequest);
 			const target = parseTarget(url);
 			const multiline = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal);
+			const timeMs =
+				request.timeBudgetMs !== undefined && Number.isFinite(request.timeBudgetMs) && request.timeBudgetMs > 0
+					? request.timeBudgetMs
+					: undefined;
+			const callLimits: HistoryBudget = timeMs === undefined ? limits : { ...limits, timeMs };
 			const budget = newBudget(
 				request.signal,
 				noteBytes(url, target, request.ranges, target.id === undefined ? 2 : 1, multiline),
+				timeMs,
 			);
 			selectRegexEngine(normalizeSearchPattern(request.pattern, request.ignoreCase), request.literal, multiline);
 			const prefilter = multiline ? undefined : indexLiterals(request.pattern, request.ignoreCase, request.literal);
@@ -2290,7 +2296,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							request,
 							prefilter,
 							new HistoryCallBudget(
-								{ ...limits, bytes: limits.bytes - workflowBytes, rows: sessionRows },
+								{ ...callLimits, bytes: limits.bytes - workflowBytes, rows: sessionRows },
 								request.signal,
 								domainNoteBytes,
 							),
@@ -2302,7 +2308,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							request,
 							prefilter,
 							new HistoryCallBudget(
-								{ ...limits, bytes: workflowBytes, rows: workflowRows },
+								{ ...callLimits, bytes: workflowBytes, rows: workflowRows },
 								request.signal,
 								domainNoteBytes,
 							),

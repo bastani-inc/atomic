@@ -324,6 +324,9 @@ export function _buildRuntime(
 					search: {
 						contextBefore: this.settingsManager.getSearchContextBefore(),
 						contextAfter: this.settingsManager.getSearchContextAfter(),
+						// A history:// search runs as a background task of the session's owner, like a shell.
+						taskOwner: getTaskOwner,
+						sessionTempDir: () => resolveSessionTempDirPath(this.sessionManager.getSessionId()),
 					},
 				},
 				options.powerShellAvailable,

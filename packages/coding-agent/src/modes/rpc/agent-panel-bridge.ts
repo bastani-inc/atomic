@@ -312,6 +312,8 @@ function rankPanelSession(
 				if (task.execution.kind !== "settled") shells++;
 				continue;
 			}
+			// A tool call's background work (a search) is never an agent row; /tasks lists it beside the shells.
+			if (task.kind === "tool") continue;
 			const id = task.ref.taskId;
 			const rowState = taskPanelState(task);
 			const finishedState =

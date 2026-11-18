@@ -6,9 +6,13 @@ import { type Static, Type } from "typebox";
 import { isPathInside } from "../../utils/path-inside.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { MAX_COMMAND_TIMEOUT_SECONDS } from "../tasks/cancel-reason.js";
+import type { WaitPolicy } from "../tasks/contracts.js";
+import { type SupervisedCommandOwner, validateBashWait } from "./bash-pty-native.js";
 import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
+import { runHistorySearch, waitForHistorySearch } from "./history-search-run.ts";
 import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
 import {
@@ -31,7 +35,10 @@ import { DEFAULT_MAX_BYTES, formatSize, truncateHead } from "./truncate.ts";
 
 export type { SearchToolDetails } from "./search-details.ts";
 
-const searchSchema = Type.Object(
+/** A history:// search runs at most this long by default, as a bash command does. */
+export const DEFAULT_HISTORY_SEARCH_TIMEOUT_SECONDS = 300;
+
+const searchBaseSchema = Type.Object(
 	{
 		pattern: Type.String({
 			description:
@@ -64,18 +71,99 @@ const searchSchema = Type.Object(
 				Type.Null(),
 			]),
 		),
+		timeout: Type.Optional(
+			Type.Number({
+				description: `history:// only: execution timeout in seconds (default ${DEFAULT_HISTORY_SEARCH_TIMEOUT_SECONDS}, at most ${MAX_COMMAND_TIMEOUT_SECONDS}). It stops the search, which ends with the URL to continue from.`,
+			}),
+		),
+		wait: Type.Optional(
+			Type.Unsafe<WaitPolicy>({
+				type: "object",
+				properties: {
+					kind: { type: "string", enum: ["background", "foreground"] },
+					budgetMs: {
+						type: "number",
+						minimum: 0,
+						description: "Foreground observation budget in milliseconds; only valid with foreground.",
+					},
+				},
+				required: ["kind"],
+				additionalProperties: false,
+				description:
+					"history:// only: observation policy, independent of the execution timeout. Omit for the owner-configured automatic yield (default 10s), after which the search goes on as a background task.",
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
+type SearchCallInput = Static<typeof searchBaseSchema> & { action?: never; id?: never; budgetMs?: never };
+type SearchWaitInput = { action: "wait"; id: string; budgetMs?: number } & Partial<
+	Record<keyof Static<typeof searchBaseSchema>, never>
+>;
+const searchSchema = Type.Unsafe<SearchCallInput | SearchWaitInput>({
+	...searchBaseSchema,
+	properties: {
+		...searchBaseSchema.properties,
+		action: {
+			type: "string",
+			enum: ["wait"],
+			description: "Observe a background history:// search by its task ID instead of starting a search.",
+		},
+		id: { type: "string", description: "Task ID of a background search owned by this session." },
+		budgetMs: {
+			type: "number",
+			minimum: 0,
+			description: "Observation budget in milliseconds; omitted uses the owner policy.",
+		},
+	},
+	required: [],
+});
+const searchCallKeys = Object.keys(searchBaseSchema.properties);
 export const searchToolSystemPromptContribution = Object.freeze({
 	snippet: "Search file contents with regex patterns.",
-	guidelines: Object.freeze([] as const),
+	guidelines: Object.freeze([
+		'A history:// search runs to its end like a shell command: omit wait to use the owner\'s automatic yield (normally 10s), after which it goes on as a background task that reports when it finishes. Observe it with { action: "wait", id } and stop it with kill; do not start the same search again while it runs. timeout bounds how long it runs.',
+	] as const),
 } as const);
 export type SearchToolInput = Static<typeof searchSchema>;
 export type SearchToolOptions = GrepToolOptions & {
 	contextBefore?: number;
 	contextAfter?: number;
+	/**
+	 * The live task owner a history:// search runs in as a background task, resolved per call. Absent, a history://
+	 * search runs in the foreground until it ends or its timeout stops it.
+	 */
+	taskOwner?: SupervisedCommandOwner | (() => SupervisedCommandOwner | undefined);
+	/** Session-scoped directory for a history:// search's full-output file, resolved per call. */
+	sessionTempDir?: string | (() => string | undefined);
 };
+
+function validateSearchInput(params: SearchToolInput): void {
+	const has = (key: string) => Object.hasOwn(params, key) && (params as Record<string, unknown>)[key] !== undefined;
+	if (has("action")) {
+		if (
+			params.action !== "wait" ||
+			typeof params.id !== "string" ||
+			searchCallKeys.some(has) ||
+			(params.budgetMs !== undefined &&
+				(typeof params.budgetMs !== "number" || !Number.isFinite(params.budgetMs) || params.budgetMs < 0))
+		)
+			throw new Error("Invalid search wait: expected action wait, id, and optional finite non-negative budgetMs");
+		return;
+	}
+	if (has("id") || has("budgetMs"))
+		throw new Error("Invalid search: a pattern is required; id and budgetMs require action wait");
+	if (typeof params.pattern !== "string") throw new Error("Invalid search: a pattern is required");
+}
+
+function historySearchTimeoutSeconds(timeout: number | undefined): number {
+	if (timeout === undefined) return DEFAULT_HISTORY_SEARCH_TIMEOUT_SECONDS;
+	if (!Number.isFinite(timeout) || timeout <= 0 || timeout > MAX_COMMAND_TIMEOUT_SECONDS)
+		throw new Error(
+			`Invalid timeout ${String(timeout)}: timeout must be a finite number greater than 0 and no more than ${MAX_COMMAND_TIMEOUT_SECONDS} seconds`,
+		);
+	return Math.max(1, Math.round(timeout * 1000)) / 1000;
+}
 /** An existing path is used exactly, so `app/[id]/page.tsx` is that file, not the pattern `app/[id]` (#5177). */
 async function splitSearchPath(value: string, cwd: string): Promise<ReturnType<typeof splitPathLikeGlob>> {
 	return (await pathExists(await resolveToCwdAsync(normalizePathLikeInput(value), cwd)))
@@ -557,15 +645,46 @@ export function createSearchToolDefinition(
 		promptSnippet: searchToolSystemPromptContribution.snippet,
 		...experimentalToolSamplingProperty(),
 		parameters: searchSchema,
-		async execute(toolCallId, params, signal, onUpdate, ctx?: ExtensionContext) {
+		async execute(toolCallId, input, signal, onUpdate, ctx?: ExtensionContext) {
 			const resourceCtx = ctx as InternalResourceContext | undefined;
 			const executionCwd = ctx?.cwd || cwd;
+			validateSearchInput(input);
+			const owner = typeof options?.taskOwner === "function" ? options.taskOwner() : options?.taskOwner;
+			const tempDir =
+				typeof options?.sessionTempDir === "function" ? options.sessionTempDir() : options?.sessionTempDir;
+			if (input.action === "wait")
+				return waitForHistorySearch(owner, input.id, input.budgetMs, signal, tempDir) as never;
+			const params = input as Static<typeof searchBaseSchema>;
 			if (params.pattern.trim() === "") throw new Error("Pattern must not be empty");
-			const targets = await normalizeSearchTargets(params.paths, executionCwd);
 			const ignoreCase = params.i === true || params.case === false;
 			const contextBefore = options?.contextBefore ?? 1,
 				contextAfter = options?.contextAfter ?? 3,
 				searchContext = Math.max(contextBefore, contextAfter);
+			// A search of history:// alone runs to its end, observed like a shell command; other targets search here.
+			const rawPaths = await normalizePaths(params.paths, executionCwd);
+			if (rawPaths.length > 0 && rawPaths.every((path) => path.startsWith("history://"))) {
+				validateBashWait(params.wait, owner?.startToolTask !== undefined);
+				return runHistorySearch({
+					urls: rawPaths,
+					pattern: params.pattern,
+					ignoreCase,
+					contextBefore,
+					contextAfter,
+					cwd: executionCwd,
+					resources: resourceCtx,
+					timeoutSeconds: historySearchTimeoutSeconds(params.timeout),
+					...(params.wait === undefined ? {} : { wait: params.wait }),
+					...(signal === undefined ? {} : { signal }),
+					owner,
+					tempDir,
+					...(onUpdate === undefined
+						? {}
+						: {
+								onUpdate: (text: string) => onUpdate({ content: [{ type: "text", text }], details: undefined }),
+							}),
+				}) as never;
+			}
+			const targets = await normalizeSearchTargets(params.paths, executionCwd);
 			const isSingleFileSearch =
 				targets.length === 1 &&
 				(await fsStat(await resolveToCwdAsync(targets[0]!.path, executionCwd))
@@ -930,11 +1049,22 @@ export function createSearchToolDefinition(
 		},
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatSearchCall(args, theme));
+			text.setText(
+				args?.action === "wait"
+					? `${theme.fg("toolTitle", theme.bold("search"))} ${theme.fg("toolOutput", `wait ${str(args.id) ?? "..."}`)}`
+					: formatSearchCall(args as SearchCallInput | undefined, theme),
+			);
 			return text;
 		},
 		renderResult(result, options: ToolRenderResultOptions, theme, context) {
-			return grepDefinition.renderResult?.(result, options, theme, context) ?? new Text("", 0, 0);
+			return (
+				grepDefinition.renderResult?.(
+					result,
+					options,
+					theme,
+					context as Parameters<NonNullable<typeof grepDefinition.renderResult>>[3],
+				) ?? new Text("", 0, 0)
+			);
 		},
 	});
 }

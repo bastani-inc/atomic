@@ -1,4 +1,4 @@
-import type { OutputPage, TaskResult } from "./contracts.js";
+import type { OutputPage, TaskKind, TaskResult } from "./contracts.js";
 
 /** Raw command output limits from RFC #2884; session history has separate retention. */
 export const COMMAND_LIVE_PREVIEW_BYTES = 1048576;
@@ -14,7 +14,7 @@ export function commandSpoolExceedsCap(fileBytes: bigint, capBytes = BigInt(COMM
 }
 
 /** Native completion means the process exited; nonzero shell exits are UI failures. */
-export function taskOutcomeStatus(result: TaskResult, kind?: "agent" | "command"): TaskResult["kind"] {
+export function taskOutcomeStatus(result: TaskResult, kind?: TaskKind): TaskResult["kind"] {
 	return kind === "command" && result.kind === "completed" && result.exitCode !== undefined && result.exitCode !== 0
 		? "failed"
 		: result.kind;

@@ -5,6 +5,7 @@ import { waitingReleasedTools, withoutSupersededAttempts } from "./completion.js
 import type { TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.js";
 import { getOwnerTaskStore, isTaskTurnInterrupted, watchOwnerTaskStoreBinding } from "./owner-store.js";
+import { toolTaskNoun } from "./task-kind.js";
 import { ownerTaskViewSource, type TaskViewSource } from "./task-view-source.js";
 
 export type AgentPanelState =
@@ -319,8 +320,10 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 	const state = taskPanelState(task);
 	const interrupted = task.execution.kind !== "settled" && state === "stopped";
 	const question = task.attention.kind === "input-needed" ? task.attention.prompt || undefined : undefined;
+	// Only a subagent is an agent row; a shell, and a tool call's background work, are counted beside them, never rows.
 	const kind = task.kind === "agent" ? "agent" : "shell";
-	const name = task.kind === "agent" ? (task.agentName ?? "agent") : "shell";
+	const name =
+		task.kind === "agent" ? (task.agentName ?? "agent") : task.kind === "tool" ? toolTaskNoun(task) : "shell";
 	const title = shortTaskTitle(task.title || "");
 	const reason =
 		state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed"
