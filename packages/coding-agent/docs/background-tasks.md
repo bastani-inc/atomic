@@ -311,7 +311,7 @@ Completed, failed, and stopped tasks retain inspection but do not offer executio
 
 ## Background searches
 
-A `search` of `history://` runs like a shell command: after the automatic observation budget it goes on as a background task, listed under **Searches** in `/tasks` and counted in the footer as `1 search`, with heartbeats, one completion notice, `search({ action: "wait", id })` and `kill({ id })`. It runs in Atomic's own process, so it has no process ID, input or terminal. See [Searching history in the background](sessions.md#searching-history-in-the-background).
+A `search` of `history://` runs like a shell command: after the automatic observation budget it goes on as a background task, listed under **Searches** in `/tasks` and counted in the footer as `1 search`, with heartbeats, one completion notice, `search({ action: "wait", id })` and `kill({ id })`. It runs in Atomic's own process, so it has no process ID, input or terminal. See [Searching history in the background](/sessions#searching-history-in-the-background).
 
 ## Background shells
 

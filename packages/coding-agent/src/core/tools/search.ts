@@ -643,6 +643,7 @@ export function createSearchToolDefinition(
 		description:
 			"Search file contents with a regex across files, directories, globs, and internal URLs, including history:// for past sessions and workflow runs.",
 		promptSnippet: searchToolSystemPromptContribution.snippet,
+		promptGuidelines: [...searchToolSystemPromptContribution.guidelines],
 		...experimentalToolSamplingProperty(),
 		parameters: searchSchema,
 		async execute(toolCallId, input, signal, onUpdate, ctx?: ExtensionContext) {
