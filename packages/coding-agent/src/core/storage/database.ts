@@ -156,5 +156,12 @@ export interface SqliteDatabase extends SqliteExecutor {
 		statements: readonly SqliteStatement[],
 		options?: SqliteTransactionOptions,
 	): Promise<SqliteRow[][]>;
+	/**
+	 * Runs read-only statements in order against one snapshot of the database, without taking the write lock, and
+	 * resolves with each statement's rows. A driver offers it when it can send them as one request; a statement that
+	 * would write fails. Optional: stores read as they otherwise would when it is unset, as on the libSQL and PostgreSQL
+	 * adapters.
+	 */
+	readStatements?(statements: readonly SqliteStatement[]): Promise<SqliteRow[][]>;
 	close(): Promise<void>;
 }

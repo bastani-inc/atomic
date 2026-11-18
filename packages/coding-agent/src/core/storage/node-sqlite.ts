@@ -1337,6 +1337,8 @@ class CallerThreadChannel implements ConnectionChannel {
 				return undefined;
 			case "statements":
 				return this.rows(request.statements);
+			case "read":
+				return this.read(request.statements);
 			case "transaction":
 				return this.transaction(request.members, request.begin);
 			case "dataVersion":
@@ -1346,6 +1348,28 @@ class CallerThreadChannel implements ConnectionChannel {
 			case "close":
 				finalizeReleasedStatements();
 				return undefined;
+		}
+	}
+
+	/** A `read` request, as a connection's thread runs it; see `ConnectionRequest`. */
+	private read(statements: readonly ConnectionStatement[]): SqliteRow[][] {
+		this.connection.exec("PRAGMA query_only=1");
+		try {
+			this.connection.exec("BEGIN");
+			try {
+				const result = this.rows(statements);
+				this.connection.exec("COMMIT");
+				return result;
+			} catch (error) {
+				try {
+					this.connection.exec("ROLLBACK");
+				} catch {
+					// SQLite already rolled the transaction back; there is nothing left to undo.
+				}
+				throw error;
+			}
+		} finally {
+			this.connection.exec("PRAGMA query_only=0");
 		}
 	}
 
@@ -1850,6 +1874,20 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			{ callback: (transaction) => transaction.statements(bound), statements: bound },
 			options?.lockWaitMs,
 		) as Promise<SqliteRow[][]>;
+	}
+
+	/**
+	 * Runs read-only statements against one snapshot, as one request in this connection's line: a deferred transaction
+	 * that may not write, so it never takes the write lock (#5376). See `SqliteDatabase.readStatements`.
+	 */
+	readStatements(statements: readonly SqliteStatement[]): Promise<SqliteRow[][]> {
+		const bound: ConnectionStatement[] = [];
+		for (const statement of statements) {
+			const invalidIndex = statement.params.findIndex((value) => typeof value === "string" && value.includes("\0"));
+			if (invalidIndex !== -1) return Promise.reject(new StorageInvalidTextError(invalidIndex));
+			bound.push({ sql: statement.sql, params: snapshotParams(statement.params) });
+		}
+		return this.enqueueRequest({ kind: "read", statements: bound }) as Promise<SqliteRow[][]>;
 	}
 
 	/**

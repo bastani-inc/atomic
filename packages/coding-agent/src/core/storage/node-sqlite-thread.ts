@@ -115,6 +115,23 @@ const handlers = {
 	all: (request) => table(statement(request.sql).all(...bind(request.params))),
 	begin: () => { begin(); },
 	statements: (request) => rows(request.statements),
+	read: (request) => {
+		// One snapshot, and no write: a deferred transaction that is only allowed to read never takes the write lock.
+		database.exec("PRAGMA query_only=1");
+		try {
+			database.exec("BEGIN");
+			try {
+				const result = rows(request.statements);
+				database.exec("COMMIT");
+				return result;
+			} catch (error) {
+				try { database.exec("ROLLBACK"); } catch {}
+				throw error;
+			}
+		} finally {
+			database.exec("PRAGMA query_only=0");
+		}
+	},
 	transaction: (request) => {
 		if (request.begin) {
 			try {
@@ -211,7 +228,8 @@ parentPort.on("message", (request) => {
 `;
 
 /**
- * What a connection thread is asked to do. `statements` runs statements in order and answers each one's rows.
+ * What a connection thread is asked to do. `statements` runs statements in order and answers each one's rows; `read`
+ * does so for read-only statements against one snapshot, in a deferred transaction that may not write.
  * `transaction` commits a group of members as one request: with `begin`, it first takes the write lock as `begin`
  * does, and answers `busy` with nothing run when the lock was busy; without it, the caller holds the lock already.
  * Each member runs in a savepoint of its own: a member whose statement fails is rolled back alone and answers its
@@ -229,7 +247,7 @@ export type ConnectionRequest = ConnectionCall & { readonly epoch?: number };
 type ConnectionCall =
 	| { readonly kind: "exec"; readonly sql: string }
 	| { readonly kind: "run" | "get" | "all"; readonly sql: string; readonly params: readonly SqliteValue[] }
-	| { readonly kind: "statements"; readonly statements: readonly ConnectionStatement[] }
+	| { readonly kind: "statements" | "read"; readonly statements: readonly ConnectionStatement[] }
 	| {
 			readonly kind: "transaction";
 			readonly members: readonly (readonly ConnectionStatement[])[];
@@ -610,7 +628,8 @@ export class ThreadConnection {
 		if (request.kind === "all") return answer.then((value) => rowsOf(value as RowTable));
 		if (request.kind === "get")
 			return answer.then((value) => (value === undefined ? undefined : rowsOf(value as RowTable)[0]));
-		if (request.kind === "statements") return answer.then((value) => (value as RowTable[]).map(rowsOf));
+		if (request.kind === "statements" || request.kind === "read")
+			return answer.then((value) => (value as RowTable[]).map(rowsOf));
 		if (request.kind === "transaction")
 			return answer.then((value) => {
 				type Answered =

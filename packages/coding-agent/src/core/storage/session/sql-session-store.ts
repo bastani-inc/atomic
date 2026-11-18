@@ -1,6 +1,13 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteRow,
+	SqliteStatement,
+	SqliteTransactionOptions,
+	SqliteValue,
+} from "../database.js";
 import { dialectOf, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
@@ -154,6 +161,8 @@ type FetchRow = {
 	page_chars: number | bigint;
 };
 type PageRow = FetchRow & { ord: number | bigint };
+/** A row of a page of a session's entries, as `pageStatement` reads it. */
+type EntryPageRow = SqliteRow & FetchRow & { seq: number; entry_json: string; chunks: number };
 
 /**
  * The rows one statement of a paged read fetches, by key after the previous page, before it keeps those that fit in
@@ -672,7 +681,43 @@ export class SqlSessionStore implements SessionStore {
 			);
 			if (row) announceHistoryLoad(row.last_seq);
 		}
-		return this.transaction((tx) => this.read(tx, sessionId), SESSION_TRANSACTION);
+		return (
+			(await this.loadInOneRequest(sessionId)) ??
+			this.transaction((tx) => this.read(tx, sessionId), SESSION_TRANSACTION)
+		);
+	}
+
+	/**
+	 * A session whose entries all fit the first page and none of which is stored in chunks, read in one request against
+	 * one snapshot without the write lock, where the database reads that way (#5376): the schema version, the header and
+	 * the page, as `read` reads them. Undefined when the database does not, or the session needs more reads.
+	 */
+	private async loadInOneRequest(sessionId: string): Promise<SessionSnapshot | undefined> {
+		const { readStatements } = this.database;
+		if (readStatements === undefined) return undefined;
+		const [versions, headers, rows] = (await readStatements.call(this.database, [
+			{ sql: `SELECT schema_version FROM ${this.tables.meta}`, params: [] },
+			{
+				sql: `SELECT header_json, last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
+				params: [sessionId],
+			},
+			this.pageStatement(sessionId, 0, SESSION_READ_FETCH.first, "", []),
+		])) as [SqliteRow[], HeaderRow[], EntryPageRow[]];
+		assertStorageSchemaVersion(
+			"sessions",
+			versions[0]?.schema_version ?? null,
+			SESSION_SCHEMA_VERSION,
+			SESSION_SCHEMA_VERSION_UNCHUNKED,
+		);
+		const row = headers[0];
+		if (!row) throw new SessionNotFoundError(sessionId);
+		if (nextFetch(SESSION_READ_FETCH.first, rows).more || rows.some((entry) => Number(entry.chunks) !== 0))
+			return undefined;
+		return {
+			header: JSON.parse(row.header_json) as SessionRecordHeader,
+			entries: rows.map((entry) => JSON.parse(entry.entry_json) as SessionEntry),
+			lastSeq: row.last_seq,
+		};
 	}
 
 	async readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
@@ -1287,16 +1332,16 @@ export class SqlSessionStore implements SessionStore {
 		};
 	}
 
-	private async readRows(
-		tx: SqliteExecutor,
+	/** The statement reading the page of `sessionId`'s entries after `after`, at most `limit` of them; see `readRows`. */
+	private pageStatement(
 		sessionId: string,
-		filter = "",
-		params: readonly SqliteValue[] = [],
-	): Promise<SessionStoredEntry[]> {
-		const entries: SessionStoredEntry[] = [];
-		for (let after = 0, limit: number = SESSION_READ_FETCH.first; ; ) {
-			const rows = await tx.all<SqliteRow & FetchRow & { seq: number; entry_json: string; chunks: number }>(
-				`WITH sized AS MATERIALIZED (
+		after: number,
+		limit: number,
+		filter: string,
+		params: readonly SqliteValue[],
+	): SqliteStatement {
+		return {
+			sql: `WITH sized AS MATERIALIZED (
 					SELECT seq, chunks, length(entry_json) AS size,
 						CASE WHEN ${this.dialect.textByteLength("entry_json")} <= ? THEN entry_json END AS inline_json
 					FROM ${this.tables.entries} WHERE session_id = ? AND seq > ?${filter === "" ? "" : ` AND ${filter}`} ORDER BY seq LIMIT ?
@@ -1316,6 +1361,7 @@ export class SqlSessionStore implements SessionStore {
 				) SELECT seq, COALESCE(inline_json, (
 					SELECT e.entry_json FROM ${this.tables.entries} AS e WHERE e.session_id = ? AND e.seq = page.seq
 				)) AS entry_json, chunks, fetched, batch_chars, page_chars FROM page ORDER BY seq`,
+			params: [
 				SESSION_READ_INLINE_BYTES,
 				sessionId,
 				after,
@@ -1327,7 +1373,20 @@ export class SqlSessionStore implements SessionStore {
 				SESSION_READ_PAGE_CHARS,
 				limit,
 				sessionId,
-			);
+			],
+		};
+	}
+
+	private async readRows(
+		tx: SqliteExecutor,
+		sessionId: string,
+		filter = "",
+		params: readonly SqliteValue[] = [],
+	): Promise<SessionStoredEntry[]> {
+		const entries: SessionStoredEntry[] = [];
+		for (let after = 0, limit: number = SESSION_READ_FETCH.first; ; ) {
+			const page = this.pageStatement(sessionId, after, limit, filter, params);
+			const rows = await tx.all<EntryPageRow>(page.sql, ...page.params);
 			for (const entry of rows) {
 				const chunks = Number(entry.chunks);
 				const json = chunks === 0 ? entry.entry_json : await this.readEntryChunks(tx, sessionId, entry.seq, chunks);
