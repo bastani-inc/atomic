@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Under Node, each workflow run that finishes no longer keeps the session that wrote its summary, and the run text it summarized, in memory for the rest of the process. A long session that runs many workflows, and an SDK host that disposes such sessions, now release them ([#5487](https://github.com/bastani-inc/atomic/issues/5487))
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.
