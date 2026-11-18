@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- `ClickableRows` and `ClickableRow` run a list row on one left click as Enter on it would. Presses and drags stay with text selection, a double or triple click runs nothing, and the wheel moves the selection when the list gives a `scroll` action. `SelectList`, `SettingsList` and the editor's autocomplete rows use them.
+
 ## [0.9.89] - 2026-11-18
 
 ### Added

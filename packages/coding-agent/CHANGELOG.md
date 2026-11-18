@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- In fullscreen mode, one click on a row of a menu or list runs it as moving there and pressing Enter does: the slash-command and file completions, every picker (`/model`, `/resume`, `/settings`, themes, `/login`, scoped models, `/tree`, `/config`), extension select and confirm dialogs and input forms, `/tasks` rows and a task page's actions, `ask_user_question` options, its question tabs and its Submit answers and Cancel choices, a task's held question, `/mcp`, first-run setup and the Hugging Face model search. A row whose Enter asks for a second step still asks, a checkbox row toggles, a drag still selects text, and a double or triple click never runs a row twice. The wheel over a list moves its selection.
+
 ### Changed
 
 - The agent panel below the prompt drops a subagent as soon as it finishes. Stopped, paused or interrupted subagents stay only while another subagent, workflow run or background shell is still running, then the whole panel closes, and a resumed subagent is listed once. `↓ N agents` counts only the subagents the panel lists, not workflow runs, so a running workflow alone no longer shows `↓ 1 agent`; `N needs input` still counts a workflow run's question. When the panel lists nothing but `/tasks` lists subagents, the hint shows `/tasks to see subagents`, or `N shells · /tasks to manage` while background shells run.

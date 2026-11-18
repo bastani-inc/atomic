@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- In fullscreen mode, a click on a run in `/workflows` opens it, a click on a stage in the graph's stage switcher opens it, and a click on an answer of a stage's choice or yes/no question, or on an option of a question a stage asked in its chat, answers it as Enter on it does.
+
 ### Changed
 
 - Updated the bundled `unslop` and `teach` skills to the current cursor/plugins pstack text. `unslop` keeps the same rule numbers but states each rule in one line, and `teach` drops repeated wording from its steps while still asking `why` to stay narrow. `unslop` stays available to the model.

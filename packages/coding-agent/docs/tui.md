@@ -525,6 +525,8 @@ pi.registerCommand("pick", {
           tui.requestRender();
           return true;
         },
+        // A click on a row chooses it, as Enter does; the container passes it to the list drawn there.
+        handleMouse: (event) => container.handleMouse(event),
       };
     });
 
@@ -536,6 +538,61 @@ pi.registerCommand("pick", {
 ```
 
 **Examples:** [preset.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts), [tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts)
+
+### Pattern 1c: Clickable rows in your own list
+
+`Selector`, `SelectList` and `SettingsList` run a row on one click already. A list you draw yourself gets the same behaviour from `ClickableRows` in `@bastani/atomic-tui`: a single left click runs the row as moving there and pressing Enter would, a press and drag still selects text, a double or triple click runs nothing, and the wheel moves the selection when you pass a `scroll` action.
+
+```typescript
+import { ClickableRows, type Component, type TuiMouseEvent } from "@bastani/atomic-tui";
+
+class FruitList implements Component {
+  private selected = 0;
+  private readonly rows = new ClickableRows<number>();
+  private readonly fruits: string[];
+  private readonly choose: (fruit: string) => void;
+
+  constructor(fruits: string[], choose: (fruit: string) => void) {
+    this.fruits = fruits;
+    this.choose = choose;
+  }
+
+  render(width: number): string[] {
+    this.rows.clear();
+    return this.fruits.map((fruit, index) => {
+      this.rows.add(index, index, fruit); // row drawn, item on it, a key that names the item
+      return `${index === this.selected ? "❯" : " "} ${fruit}`.slice(0, width);
+    });
+  }
+
+  handleInput(data: string): void {
+    if (data === "\r") this.choose(this.fruits[this.selected]!);
+  }
+
+  handleMouse(event: TuiMouseEvent) {
+    return this.rows.handleMouse(event, {
+      activate: (index) => {
+        this.selected = index; // move there, then do what Enter does
+        this.handleInput("\r");
+      },
+      scroll: (direction) => {
+        const next = Math.max(0, Math.min(this.fruits.length - 1, this.selected + direction));
+        const moved = next !== this.selected;
+        this.selected = next;
+        return moved;
+      },
+    });
+  }
+
+  paintedRowKey(row: number) {
+    return this.rows.paintedRowKey(row);
+  }
+
+  invalidate(): void {}
+}
+```
+
+Forward `handleMouse`, and `paintedRowKey` when you have it, from the component you return to `ctx.ui.custom()`; a `Container` passes a click to the child drawn on the clicked row. For a list built from one component per row, such as a `Text` per option in a `Container`, wrap each row in `ClickableRow(content, key, { activate })` instead. Clicks reach a list only in fullscreen mode, where the terminal reports the mouse; keep every action on a key as well.
 
 ### Pattern 2: Async Operation with Cancel (BorderedLoader)
 
@@ -608,6 +665,8 @@ pi.registerCommand("settings", {
           settingsList.handleInput?.(data);
           return true;
         },
+        // A click on a setting changes it, as Enter does.
+        handleMouse: (event) => container.handleMouse(event),
       };
     });
   },

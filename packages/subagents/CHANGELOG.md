@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- In fullscreen mode, a click on an agent in `/agents` opens its details, and the wheel moves the selection.
+
 ### Changed
 
 - The bundled `tdd` skill now names tautological tests, whose expected value is recomputed the way the code computes it, as an anti-pattern, with a checklist item and an example, from its upstream skill. Its frontmatter and a new `LICENSE.txt` credit the two MIT-licensed skills it is adapted from.
