@@ -1,23 +1,6 @@
 import { OFFLINE_SESSION_TARGET } from "./held-reply-targets.js";
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { appendFileSync as diagAppend } from "node:fs";
-const DIAG_FILE = process.env.DIAG_ROUTER_TRACE;
-if (DIAG_FILE) {
-	let last = Date.now();
-	const lagTimer = setInterval(() => {
-		const now = Date.now();
-		if (now - last > 600) diag("LAG", now - last);
-		last = now;
-	}, 100);
-	lagTimer.unref?.();
-}
-function diag(...parts: unknown[]): void {
-	if (!DIAG_FILE) return;
-	try {
-		diagAppend(DIAG_FILE, `${new Date().toISOString()} pid=${process.pid} ${parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" ")}\n`);
-	} catch {}
-}
 import { normalizeGroup } from "../group.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import {
@@ -474,7 +457,6 @@ export class MultiNodeRouter {
 			this.state.leases.listLive("broker", ROUTE_HOLDER_DOWN_WINDOW_MS),
 			this.state.leases.listLive("broker", BROKER_UNRESPONSIVE_AFTER_MS),
 		]);
-		diag("holderDown leases", { recent: recent.map((l) => [l.holderId, (l.subject as { home?: string }).home]), responsive: responsive.map((l) => [l.holderId, (l.subject as { home?: string }).home]) });
 		const homeOf = (lease: LeaseState) => (lease.subject.kind === "broker" ? lease.subject.home : undefined);
 		const answering = new Set(responsive.map((lease) => lease.holderId));
 		const homesBack = new Set(responsive.map(homeOf));
@@ -500,7 +482,7 @@ export class MultiNodeRouter {
 		const replyTo = request.message.replyTo;
 		if (replyTo === undefined) return false;
 		const route = { replySenderSessionId: request.from.info.id, replyTargetSessionId: askerSessionId, replyTo };
-		if (await this.state.pendingAsks.isSettled(route)) { diag("elsewhere settled", replyTo); return false; }
+		if (await this.state.pendingAsks.isSettled(route)) return false;
 		const holderOf = async (targetIdentity: string) => {
 			const read = await this.state.leases.read({ kind: "presence", targetIdentity });
 			return read.status === "found" ? read.lease.holderId : undefined;
@@ -509,17 +491,15 @@ export class MultiNodeRouter {
 			holderOf(askerIdentity),
 			holderOf(deliveryTargetIdentity(request.from)),
 		]);
-		if (askerHolder !== undefined && askerHolder !== this.brokerId && askerHolder === replierHolder) { diag("elsewhere same-holder", replyTo, askerHolder); return true; }
-		const down = await this.routeHolderDown();
-		diag("elsewhere", replyTo, { me: this.brokerId, askerHolder, replierHolder, down });
-		return down;
+		if (askerHolder !== undefined && askerHolder !== this.brokerId && askerHolder === replierHolder) return true;
+		return this.routeHolderDown();
 	}
 
 	private async refuseUnauthorizedReply(
 		request: RemoteSendRequest,
 		asker: { readonly sessionId: string; readonly identity: string },
 	): Promise<void> {
-		if (!(await this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch((e) => { diag("elsewhere error", String(e)); return false; }))) {
+		if (!(await this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false))) {
 			this.fail(request, "Pending question route does not authorize this public reply");
 			return;
 		}
@@ -624,14 +604,13 @@ export class MultiNodeRouter {
 	async claimSessionId(sessionId: string, returnAddress: string): Promise<boolean> {
 		if (this.closed) return false;
 		let bound: ReturnType<typeof setTimeout> | undefined;
-		const t0 = Date.now();
 		try {
 			return await Promise.race([
 				this.state.knownSessions
 					.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS)
-					.then((result) => { diag("claim bind", sessionId, result.status, Date.now() - t0); return result.status === "bound"; }),
+					.then((result) => result.status === "bound"),
 				new Promise<boolean>((resolve) => {
-					bound = setTimeout(() => { diag("claim TIMEOUT", sessionId, Date.now() - t0); resolve(false); }, SESSION_ID_CLAIM_BOUND_MS);
+					bound = setTimeout(() => resolve(false), SESSION_ID_CLAIM_BOUND_MS);
 					bound.unref?.();
 				}),
 			]);
@@ -681,7 +660,6 @@ export class MultiNodeRouter {
 					await this.recordKnown(session, entry);
 					for (let attempt = 0; ; attempt++) {
 						await this.acquirePresence(session, entry);
-						diag("presence", session.info.name, session.info.id, attempt, entry.lease !== undefined);
 						if (entry.lease !== undefined || attempt >= PRESENCE_HANDOVER_ATTEMPTS || this.presence.get(session) !== entry)
 							break;
 						await new Promise<void>((wait) => setTimeout(wait, PRESENCE_HANDOVER_RETRY_MS * 2 ** attempt).unref());
@@ -1781,7 +1759,7 @@ export class MultiNodeRouter {
 		if (this.host.deliveredMessages.lookupForTarget(request.message.id, request.signature, deliveryTargetIdentity(target)) !== "miss")
 			return false;
 		const asker = { sessionId: target.info.id, identity: deliveryTargetIdentity(target) };
-		const elsewhere = this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch((e) => { diag("elsewhere error", String(e)); return false; });
+		const elsewhere = this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false);
 		// A shared database that stops answering leaves the reply undecided: it is refused as retryable, once, within the
 		// bound, so neither it nor the sender's later replies wait on that database for good. It authorizes nothing.
 		let bound: ReturnType<typeof setTimeout> | undefined;
@@ -1791,7 +1769,6 @@ export class MultiNodeRouter {
 		});
 		try {
 			const decided = await Promise.race([elsewhere, expired]);
-			diag("routeUnreachable", replyTo, decided);
 			if (decided === false) return false;
 		} finally {
 			clearTimeout(bound);
@@ -1813,7 +1790,6 @@ export class MultiNodeRouter {
 		});
 		try {
 			if ((await Promise.race([adopted, expired])) === "expired") {
-				diag("adopt EXPIRED", request.message.replyTo);
 				// The send takes the local path now: a route found later is left where it is, for a retry to find.
 				late.abandoned = true;
 				adopted.catch((error: Error) => this.report(error));
@@ -1838,9 +1814,7 @@ export class MultiNodeRouter {
 		await Promise.all([...this.settling]);
 		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
 		const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
-		const matched = await this.state.pendingAsks.matchesReply(route);
-		diag("adopt", replyTo, matched.status, late.abandoned);
-		if (matched.status !== "match" || late.abandoned) return;
+		if ((await this.state.pendingAsks.matchesReply(route)).status !== "match" || late.abandoned) return;
 		this.host.pendingQuestions.record(target.info.id, replySenderSessionId, replyTo);
 		await this.settleSharedRoute({ senderSessionId: target.info.id, targetSessionId: replySenderSessionId, messageId: replyTo });
 	}
@@ -1867,7 +1841,6 @@ export class MultiNodeRouter {
 	 * here) is this broker's alone, and its shared route is settled. One whose write fails stays here, to move later.
 	 */
 	publishAwayRoutes(questions: readonly PendingQuestion[]): Promise<void> {
-		diag("publishAwayRoutes", questions.map((q) => q.messageId));
 		if (questions.length === 0) return Promise.resolve();
 		let finished!: () => void;
 		const publishing = new Promise<void>((resolve) => {
@@ -1886,7 +1859,6 @@ export class MultiNodeRouter {
 						messageId: question.messageId,
 					};
 					const recorded = await this.state.pendingAsks.record(ask);
-					diag("publish", ask.messageId, recorded.status);
 					if (recorded.status === "invalid") continue;
 					// #4997: answered or failed on another broker while this one kept its copy: the copy goes.
 					if (recorded.status === "settled") {
@@ -3087,7 +3059,6 @@ export class MultiNodeRouter {
 			await this.state.knownSessions.markLost(
 				present.map((presence) => (presence.subject as RecipientPresenceSubject).targetIdentity),
 			);
-			diag("retire", lease.holderId, present.length);
 			await this.state.leases.retireHolder(lease.holderId);
 			await this.state.outbox.releaseClaimsOf(lease.holderId);
 		}
@@ -3270,7 +3241,6 @@ export class MultiNodeRouter {
 
 	private report(error: unknown): void {
 		const text = error instanceof Error ? error.message : String(error);
-		diag("report", text);
 		if (text === this.lastError) return;
 		this.lastError = text;
 		console.error(`Intercom multi-node routing: ${text}`);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
@@ -44,13 +44,7 @@ async function startBroker(): Promise<{ root: string }> {
 	const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
 		...options,
 		detached: false,
-		stdio: process.env.DIAG_BROKER_LOG_DIR
-			? [
-					"ignore",
-					openSync(join(process.env.DIAG_BROKER_LOG_DIR, `ps-${process.pid}-${Date.now()}.out`), "a"),
-					openSync(join(process.env.DIAG_BROKER_LOG_DIR, `ps-${process.pid}-${Date.now()}.err`), "a"),
-				]
-			: "ignore",
+		stdio: "ignore",
 		env: { ...options.env, ATOMIC_CODING_AGENT_DIR: agentDir },
 	});
 	fixture.trackBroker(broker);
