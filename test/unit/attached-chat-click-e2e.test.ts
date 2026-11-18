@@ -409,6 +409,9 @@ async function engineStageChat(
 	return {
 		sent,
 		shows,
+		engineShows: (pattern: RegExp) =>
+			pane!.render(ui.terminal.columns).some((line) => pattern.test(stripVTControlCharacters(line))),
+		deliver: (command: InteractiveEngineCommand) => child.handleLine(serializeInteractiveEngineFrame(command)),
 		/** How many frames the engine has sent the host. */
 		frames: () => frames,
 		dispose: () => {
@@ -474,6 +477,7 @@ for (const noCancel of [false, true]) {
 				}
 				await ui.settle();
 				assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 17);
+				assert.equal(engine.engineShows(/engine line 1\s*$/), !noCancel);
 				await vi.waitFor(() => assert.equal(engine.shows(/engine line 1\s*$/), !noCancel), ENGINE_FRAME_WAIT);
 			} finally {
 				engine.dispose();
@@ -509,7 +513,13 @@ test("a double-click in an isolated stage chat cancels the forwarded action, sel
 			"only the first click of the double-click reaches the engine",
 		);
 		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 0);
-		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_cancel").length, 1);
+		const cancellations = engine.sent.filter((command) => command.type === "engine_custom_click_cancel");
+		assert.equal(cancellations.length, 1);
+		// The engine released this callback: even a stale settlement cannot run it now.
+		const canceled = cancellations[0]!;
+		if (canceled.type !== "engine_custom_click_cancel") assert.fail("missing cancellation");
+		engine.deliver({ ...canceled, type: "engine_custom_click_settle" });
+		assert.ok(!engine.engineShows(/engine line 1\s*$/));
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
 	} finally {

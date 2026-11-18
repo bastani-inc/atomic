@@ -331,19 +331,21 @@ test("a running tool's elapsed time changing during a click does not count as ex
 	}
 });
 
-test("a delayed click decision cannot undo a later global expansion (#5562)", async () => {
-	const chat = await mountIsolatedChat();
-	const row = chat.bash("progress", "status", "only line");
-	await chat.waitFor(/only line$/);
-	chat.frames.hold();
-	await chat.click(/only line$/, "only");
-	await vi.waitFor(() => assert.ok(chat.frames.held() > 0), ENGINE_FRAME_WAIT);
-	row.setExpanded(true); // Ctrl+O sets this on every row.
-	chat.frames.release();
-	row.updateResult({ content: [{ type: "text", text: lines(20, "more") }], isError: false, durationMs: 100 });
-	await chat.waitFor(/more 20$/);
-	assert.ok(chat.shows(/more 1$/));
-});
+for (const length of [1, 20]) {
+	test(`a delayed click decision on ${length} output rows cannot undo a later global expansion (#5562)`, async () => {
+		const chat = await mountIsolatedChat();
+		const row = chat.bash("progress", "status", lines(length, "output"));
+		await chat.waitFor(/Bash\(status\)/);
+		chat.frames.hold();
+		await chat.click(/Bash\(status\)/, "status");
+		await vi.waitFor(() => assert.ok(chat.frames.held() > 0), ENGINE_FRAME_WAIT);
+		row.setExpanded(true); // Ctrl+O sets this on every row.
+		chat.frames.release();
+		row.updateResult({ content: [{ type: "text", text: lines(20, "more") }], isError: false, durationMs: 100 });
+		await chat.waitFor(/more 20$/);
+		assert.ok(chat.shows(/more 1$/));
+	});
+}
 
 test("a click on a block the isolated engine draws with nothing to expand changes nothing and keeps following the end", async () => {
 	const chat = await mountIsolatedChat();
