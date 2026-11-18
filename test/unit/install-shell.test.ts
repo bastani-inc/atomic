@@ -75,7 +75,9 @@ test("POSIX installer has valid sh syntax and declares the archive install contr
 	assert.match(source, /CHECKSUM_MATCHES.*-eq 1/u);
 	assert.match(source, /staged atomic --version check failed/u);
 	assert.match(source, /installed atomic --version check failed/u);
-	assert.ok(source.indexOf("checksum verification failed") < source.indexOf('mkdir -p "$INSTALL_ROOT"'));
+	// Nothing under the install root changes before the archive is verified; only the lock is taken before that.
+	assert.ok(source.indexOf("checksum verification failed") < source.indexOf('mv "$PAYLOAD_ROOT" "$VERSION_STAGE"'));
+	assert.ok(source.indexOf("\nacquire_install_lock\n") < source.indexOf("\nINSTALLED_VERSION=\n"));
 	assert.equal(source.match(/pwd -P/gu)?.length, 1);
 	assert.match(source, /INSTALL_ROOT=\$\(normalize_absolute_path "\$INSTALL_ROOT" && printf '_'\)/u);
 	assert.match(source, /BIN_DIR=\$\(normalize_absolute_path "\$BIN_DIR" && printf '_'\)/u);
@@ -88,7 +90,8 @@ test("POSIX installer has valid sh syntax and declares the archive install contr
 	assert.match(source, /RELEASE_TAG_ENCODED=\$\(percent_encode "\$RELEASE_TAG"\)/u);
 	assert.match(source, /percent_decode "\$resolved_url_tag"/u);
 	assert.match(source, /VERSION_PATH=\$VERSIONS_DIR\/\$RELEASE_TAG_ENCODED/u);
-	assert.match(source, /ln -s "versions\/\$RELEASE_TAG_ENCODED"/u);
+	assert.match(source, /switch_current "versions\/\$RELEASE_TAG_ENCODED"/u);
+	assert.match(source, /ln -s "\$1" "\$CURRENT_NEXT"/u);
 	const containment = source.indexOf("ATOMIC_INSTALL_DIR cannot equal ATOMIC_BIN_DIR/atomic");
 	const unexpectedLauncher = source.indexOf("ATOMIC_BIN_DIR/atomic is an unexpected directory");
 	assert.ok(containment >= 0 && containment < source.indexOf("for required_command"));
@@ -567,7 +570,20 @@ function createFixture(): InstallerFixture {
 	mkdirSync(releasesRoot);
 	writeFileSync(requestLog, "");
 
-	for (const command of ["tar", "mkdir", "chmod", "ln", "rm", "rmdir", "cat", "gzip", "wc", "sleep"]) {
+	for (const command of [
+		"tar",
+		"mkdir",
+		"chmod",
+		"ln",
+		"rm",
+		"rmdir",
+		"cat",
+		"cp",
+		"readlink",
+		"gzip",
+		"wc",
+		"sleep",
+	]) {
 		const source = resolveExecutable(command);
 		symlinkSync(source, join(tools, command));
 	}
@@ -575,13 +591,16 @@ function createFixture(): InstallerFixture {
 		join(tools, "mv"),
 		[
 			"#!/bin/sh",
+			// mv -T (GNU, BusyBox) and mv -h (BSD) rename a link over a link to a directory; match the operands after it.
+			"mv_flag=",
+			`case "$1" in -T|-h) [ -z "${shellExpansion("ATOMIC_FIXTURE_MV_PLAIN:-")}" ] || { printf 'mv: illegal option -- %s\\n' "$1" >&2; exit 64; }; mv_flag=$1; shift ;; esac`,
 			`case "${shellExpansion("ATOMIC_FIXTURE_FAIL_RESTORE:-")}:$1:$2" in`,
 			"    bin-always:*/.atomic-backup-*:*/atomic) printf '%s\\n' 'fixture restore failure' >&2; exit 71 ;;",
 			"    bin-once:*/.atomic-backup-*:*/atomic)",
 			"        if [ ! -e \"$ATOMIC_FIXTURE_RESTORE_MARKER\" ]; then : > \"$ATOMIC_FIXTURE_RESTORE_MARKER\"; printf '%s\\n' 'fixture one-shot restore failure' >&2; exit 71; fi",
 			"        ;;",
 			"esac",
-			'"$ATOMIC_FIXTURE_REAL_MV" "$@" || exit $?',
+			'if [ -n "$mv_flag" ]; then "$ATOMIC_FIXTURE_REAL_MV" "$mv_flag" "$@" || exit $?; else "$ATOMIC_FIXTURE_REAL_MV" "$@" || exit $?; fi',
 			`case "${shellExpansion("ATOMIC_FIXTURE_SIGNAL_AFTER_MOVE:-")}:$2" in`,
 			"    version-backup:*/versions/.backup-*|version-install:*/versions/[!.]*|current-backup:*/.current-backup-*|current-install:*/current|bin-backup:*/.atomic-backup-*|bin-install:*/atomic)",
 			'        if [ ! -e "$ATOMIC_FIXTURE_SIGNAL_MARKER" ]; then',
@@ -2651,10 +2670,19 @@ unixTest("shell installer does not run 'intercom upgrade' when nothing is instal
 	}
 });
 
+function pointLauncherAtVersion(fixture: InstallerFixture, version: string): void {
+	const launcher = join(fixture.binDir, "atomic");
+	rmSync(launcher);
+	symlinkSync(join(fixture.installRoot, "versions", version, "atomic"), launcher);
+}
+
 unixTest("POSIX rollback retries launcher restores and reports retained recovery backups", () => {
 	const retryFixture = createFixture();
 	try {
 		assertSuccess(retryFixture.run({ args: ["--ref", "1.0.0"] }));
+		// A launcher that points straight at a version, as older installers left it, is replaced (and backed up);
+		// one that already points through `current` is left alone.
+		pointLauncherAtVersion(retryFixture, "1.0.0");
 		const failed = retryFixture.run({
 			args: ["--ref", "2.0.0"],
 			environment: {
@@ -2678,6 +2706,9 @@ unixTest("POSIX rollback retries launcher restores and reports retained recovery
 	const retainedFixture = createFixture();
 	try {
 		assertSuccess(retainedFixture.run({ args: ["--ref", "1.0.0"] }));
+		// A launcher that points straight at a version, as older installers left it, is replaced (and backed up);
+		// one that already points through `current` is left alone.
+		pointLauncherAtVersion(retainedFixture, "1.0.0");
 		const failed = retainedFixture.run({
 			args: ["--ref", "2.0.0"],
 			environment: {
@@ -2724,13 +2755,13 @@ unixTest("failed POSIX installs remove every empty parent directory they created
 });
 
 unixTest("catchable signals after transaction moves restore the complete previous install", () => {
+	// A forced reinstall of the active version points `current` at the staged copy, moves the old version aside, puts
+	// a copy in place and points `current` back, each with one rename; the launcher already points through `current`.
 	const cases = [
 		["version-backup", "TERM"],
 		["version-install", "INT"],
-		["current-backup", "TERM"],
 		["current-install", "INT"],
-		["bin-backup", "TERM"],
-		["bin-install", "INT"],
+		["current-install", "TERM"],
 	] as const;
 	for (const [move, signal] of cases) {
 		const fixture = createFixture();
@@ -2922,5 +2953,239 @@ unixTest("shell installer restricts owner-only modes to temporary state and inst
 		assert.equal((statSync(tokenFixture.binDir).mode & 0o777).toString(8), "755");
 	} finally {
 		tokenFixture.cleanup();
+	}
+});
+
+/** The lock line a running installer writes: its pid, its start time from /proc (when readable) and a transaction id. */
+function installLockLine(pid: number, start?: string): string {
+	let started = start;
+	if (started === undefined) {
+		try {
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+			started = stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19] ?? "";
+		} catch {
+			started = "";
+		}
+	}
+	return `${pid} ${started} ${pid}.0\n`;
+}
+
+unixTest("a second installer waits for the one holding the install lock and never touches its install", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		const lockPath = join(fixture.installRoot, ".install.lock");
+		// This test process stands in for a live installer that holds the lock.
+		writeFileSync(lockPath, installLockLine(process.pid));
+		const blocked = fixture.run({ args: ["--ref", "2.0.0"], environment: { ATOMIC_INSTALL_LOCK_TIMEOUT: "1" } });
+		assert.notEqual(blocked.exitCode, 0);
+		assert.match(output(blocked), /Waiting for another atomic installer \(process \d+\) to finish/u);
+		assert.match(output(blocked), /another atomic installer \(process \d+\) is still running/u);
+		assert.equal(currentVersion(fixture), "1.0.0");
+		assert.ok(!existsSync(join(fixture.installRoot, "versions", "2.0.0")));
+		assert.equal(readFileSync(lockPath, "utf8"), installLockLine(process.pid));
+		rmSync(lockPath);
+		assertSuccess(fixture.run({ args: ["--ref", "2.0.0"] }));
+		assert.equal(currentVersion(fixture), "2.0.0");
+		assert.ok(!existsSync(lockPath));
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("an install lock left by an installer that is gone is taken over", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		const lockPath = join(fixture.installRoot, ".install.lock");
+		const exited = spawnSyncCollect(["/bin/sh", "-c", "echo $$"], {});
+		const exitedPid = Number(exited.stdout.toString().trim());
+		for (const line of [
+			installLockLine(exitedPid, "1"),
+			// A running process with the recorded pid but another start time is not the installer that took the lock.
+			installLockLine(process.pid, "1"),
+			"",
+		]) {
+			writeFileSync(lockPath, line);
+			// A waiter that was killed while it took over the lock left its takeover directory behind.
+			mkdirSync(`${lockPath}.takeover`);
+			writeFileSync(join(`${lockPath}.takeover`, "owner"), installLockLine(exitedPid, "1"));
+			const result = fixture.run({
+				args: ["--ref", "2.0.0", "--force"],
+				environment: { ATOMIC_INSTALL_LOCK_TIMEOUT: "30" },
+			});
+			assertSuccess(result);
+			assert.equal(currentVersion(fixture), "2.0.0");
+			assert.ok(!existsSync(lockPath), `the lock ${JSON.stringify(line)} was left behind`);
+			assert.ok(!existsSync(`${lockPath}.takeover`));
+			assertNoTemporaryState(fixture);
+		}
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("an installer removes what a killed earlier installer left in the install root", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		const versions = join(fixture.installRoot, "versions");
+		mkdirSync(join(versions, ".stage-77.0", "node_modules"), { recursive: true });
+		mkdirSync(join(versions, ".backup-77.0"));
+		mkdirSync(join(versions, ".tmp-77.0"));
+		symlinkSync("versions/1.0.0", join(fixture.installRoot, ".current-77.0"));
+		symlinkSync("versions/1.0.0", join(fixture.installRoot, ".current-backup-77.0"));
+		symlinkSync(join(fixture.installRoot, "current", "atomic"), join(fixture.binDir, ".atomic-77.0"));
+		symlinkSync(join(fixture.installRoot, "current", "atomic"), join(fixture.binDir, ".atomic-backup-77.0"));
+		assertSuccess(fixture.run({ args: ["--ref", "2.0.0"] }));
+		assert.equal(currentVersion(fixture), "2.0.0");
+		assertNoTemporaryState(fixture);
+		assert.ok(!existsSync(join(versions, ".tmp-77.0")));
+		assert.deepEqual(readdirSync(versions).sort(), ["1.0.0", "2.0.0"]);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest(
+	"an installer killed while it replaces the active version leaves `current` pointing at a complete version",
+	() => {
+		for (const move of ["version-backup", "version-install", "current-install"] as const) {
+			const fixture = createFixture();
+			try {
+				assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+				const killed = fixture.run({
+					args: ["--ref", "1.0.0", "--force"],
+					environment: { ATOMIC_FIXTURE_SIGNAL: "KILL", ATOMIC_FIXTURE_SIGNAL_AFTER_MOVE: move },
+				});
+				assert.notEqual(killed.exitCode, 0, `${move}: the installer was not killed`);
+				const launcher = spawnSyncCollect([join(fixture.binDir, "atomic"), "--version"], {
+					env: { PATH: fixture.tools },
+				});
+				assert.equal(launcher.exitCode, 0, `${move}: ${launcher.stderr.toString()}`);
+				assert.equal(launcher.stdout.toString().trim(), "1.0.0");
+				// A killed installer cannot remove its own scratch directory under TMPDIR; the system's temp cleanup does.
+				for (const scratch of readdirSync(fixture.tempRoot))
+					rmSync(join(fixture.tempRoot, scratch), { recursive: true });
+				// The next run takes over the killed installer's lock and clears what it left in the install root.
+				assertSuccess(fixture.run({ args: ["--ref", "1.0.0", "--force"] }));
+				assert.equal(currentVersion(fixture), "1.0.0");
+				assert.ok(!existsSync(join(fixture.installRoot, ".install.lock")));
+				assertNoTemporaryState(fixture);
+			} finally {
+				fixture.cleanup();
+			}
+		}
+	},
+);
+
+unixTest("an installer leaves another install root's launcher leftovers in a shared bin directory alone", () => {
+	const fixture = createFixture();
+	try {
+		const otherRoot = join(fixture.workspace, "other root");
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		// Another install root's installer, sharing this bin directory, is mid-transaction: its launcher backup and
+		// its next launcher point into that root, which this installer's lock does not cover.
+		const otherBackup = join(fixture.binDir, ".atomic-backup-55.0");
+		const otherNext = join(fixture.binDir, ".atomic-55.0");
+		symlinkSync(join(otherRoot, "current", "atomic"), otherBackup);
+		symlinkSync(join(otherRoot, "current", "atomic"), otherNext);
+		// This root's own leftovers still go.
+		symlinkSync(join(fixture.installRoot, "current", "atomic"), join(fixture.binDir, ".atomic-backup-77.0"));
+		assertSuccess(fixture.run({ args: ["--ref", "2.0.0"] }));
+		assert.equal(currentVersion(fixture), "2.0.0");
+		assert.equal(readlinkSync(otherBackup), join(otherRoot, "current", "atomic"));
+		assert.equal(readlinkSync(otherNext), join(otherRoot, "current", "atomic"));
+		assert.ok(!lstatSync(join(fixture.binDir, ".atomic-backup-77.0"), { throwIfNoEntry: false }));
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("installers read a lock owner's start time the same way whatever their time zone and locale", () => {
+	const source = readFileSync(installerPath, "utf8");
+	const start = source.indexOf("process_start_of() {");
+	const body = source.slice(start, source.indexOf("\n}\n", start) + 3);
+	const workspace = mkdtempSync(join(tmpdir(), "atomic-sh-lstart-"));
+	try {
+		const bin = join(workspace, "bin");
+		mkdirSync(bin);
+		symlinkSync(resolveExecutable("tr"), join(bin, "tr"));
+		// Like macOS ps: lstart is formatted with strftime(%c) in the caller's time zone and locale.
+		writeExecutable(
+			join(bin, "ps"),
+			[
+				"#!/bin/sh",
+				`printf "%s %s\\n" "${shellExpansion("TZ:-local")}" "${shellExpansion("LC_ALL:-default")}"`,
+			].join("\n"),
+		);
+		// A pid with no /proc entry reaches the ps branch, as on macOS.
+		const script = `${body}\nprocess_start_of 2147483646\n`;
+		const read = (tz: string, locale: string) =>
+			spawnSyncCollect(["/bin/sh", "-c", script], { env: { PATH: bin, TZ: tz, LC_ALL: locale } }).stdout.toString();
+		assert.equal(read("America/New_York", "de_DE.UTF-8"), read("Asia/Tokyo", "fr_FR.UTF-8"));
+	} finally {
+		rmSync(workspace, { recursive: true, force: true });
+	}
+});
+
+unixTest("without mv -T or -h, installs, upgrades, forced reinstalls and rollbacks still work", () => {
+	const fixture = createFixture();
+	try {
+		const plain = { ATOMIC_FIXTURE_MV_PLAIN: "1" };
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"], environment: plain }));
+		assertSuccess(fixture.run({ args: ["--ref", "2.0.0"], environment: plain }));
+		assert.equal(currentVersion(fixture), "2.0.0");
+		assertSuccess(fixture.run({ args: ["--ref", "2.0.0", "--force"], environment: plain }));
+		assert.equal(currentVersion(fixture), "2.0.0");
+		const interrupted = fixture.run({
+			args: ["--ref", "1.0.0"],
+			environment: { ...plain, ATOMIC_FIXTURE_SIGNAL: "TERM", ATOMIC_FIXTURE_SIGNAL_AFTER_MOVE: "current-backup" },
+		});
+		assert.notEqual(interrupted.exitCode, 0);
+		assert.equal(currentVersion(fixture), "2.0.0");
+		const launcher = spawnSyncCollect([join(fixture.binDir, "atomic"), "--version"], {
+			env: { PATH: fixture.tools },
+		});
+		assert.equal(launcher.stdout.toString().trim(), "2.0.0");
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("an installed version whose launcher differs from the release is replaced, not reused", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		assertSuccess(fixture.run({ args: ["--ref", "2.0.0"] }));
+		const oldLauncher = join(fixture.installRoot, "versions", "1.0.0", "atomic");
+		const original = readFileSync(oldLauncher);
+		writeFileSync(oldLauncher, Buffer.concat([original, Buffer.from("\n# changed\n")]));
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		assert.equal(currentVersion(fixture), "1.0.0");
+		assert.deepEqual(readFileSync(oldLauncher), original);
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("a reused version installed before launcher hashes were recorded gets its record", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		assertSuccess(fixture.run({ args: ["--ref", "2.0.0"] }));
+		const versionOne = join(fixture.installRoot, "versions", "1.0.0");
+		const record = join(versionOne, ".atomic-launcher.sha256");
+		const recorded = readFileSync(record, "utf8");
+		rmSync(record);
+		writeFileSync(join(versionOne, "kept.txt"), "kept");
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		assert.equal(currentVersion(fixture), "1.0.0");
+		assert.equal(readFileSync(join(versionOne, "kept.txt"), "utf8"), "kept", "the complete version was not reused");
+		assert.equal(readFileSync(record, "utf8"), recorded);
+	} finally {
+		fixture.cleanup();
 	}
 });
