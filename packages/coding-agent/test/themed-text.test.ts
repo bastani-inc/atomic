@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { Markdown } from "@bastani/atomic-tui";
 import { afterEach, test, vi } from "vitest";
 import { ThemedText } from "../src/modes/interactive/components/themed-text.js";
-import { getMarkdownTheme, getThemeByName, initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import {
+	getMarkdownTheme,
+	getThemeByName,
+	initTheme,
+	refreshColorEnvironment,
+	theme,
+} from "../src/modes/interactive/theme/theme.js";
 
 afterEach(() => {
 	vi.unstubAllEnvs();
@@ -36,6 +42,7 @@ test("Theme style helpers emit SGR escapes without stdout TTY and honor NO_COLOR
 	assert.match(md, /\x1b\[9mstruck\x1b\[29m/);
 
 	vi.stubEnv("NO_COLOR", "1");
+	refreshColorEnvironment();
 	assert.equal(theme.bold("word"), "word");
 	assert.equal(theme.italic("word"), "word");
 	assert.equal(theme.underline("word"), "word");
@@ -50,12 +57,15 @@ test("Theme style helpers emit SGR escapes without stdout TTY and honor NO_COLOR
 
 	vi.stubEnv("NO_COLOR", undefined);
 	vi.stubEnv("FORCE_COLOR", "0");
+	refreshColorEnvironment();
 	assert.equal(theme.bold("word"), "word");
 
 	vi.stubEnv("FORCE_COLOR", "1");
+	refreshColorEnvironment();
 	assert.equal(theme.bold("word"), "\x1b[1mword\x1b[22m");
 
 	vi.stubEnv("FORCE_COLOR", undefined);
+	refreshColorEnvironment();
 	const systemTheme = getThemeByName("system");
 	assert.ok(systemTheme);
 	assert.match(systemTheme.fg("muted", "x"), /^\x1b\[2m.*\x1b\[22m\x1b\[39m$/);

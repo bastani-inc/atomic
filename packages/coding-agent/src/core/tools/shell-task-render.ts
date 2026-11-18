@@ -3,8 +3,7 @@
  * line, with the task's output (when it has any) below it. Raw observation envelopes and internal ids never appear.
  *
  * Roles follow DESIGN.md: success, error, warning and dim carry the state, `·` separates facts, and only the glyphs
- * `✓ ✗ ● ○` are used. The status reads the same without color; with `NO_COLOR` set it drops foreground color and
- * keeps the weight.
+ * `✓ ✗ ● ○` are used. The status reads the same without color, which the theme drops when `NO_COLOR` is set.
  */
 import { type Container, Spacer, Text } from "@bastani/atomic-tui";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
@@ -29,19 +28,16 @@ export const SHELL_OUTPUT_PREVIEW_LINES = 5;
 
 type ResultContent = Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 
-const noColor = (): boolean => process.env.NO_COLOR !== undefined;
-
 function statusLine(status: TaskStatus): string {
 	const head = `${status.glyph} ${status.label}`;
-	if (noColor()) return theme.bold(head) + (status.detail ? ` · ${status.detail}` : "");
 	const detail = status.detail ? theme.fg("dim", " · ") + theme.fg("muted", status.detail) : "";
 	return theme.fg(status.tone, head) + detail;
 }
 
 function addErrorLines(component: Container, headline: string, hint: string | undefined): void {
 	const heading = `✗ ${headline}`;
-	component.addChild(new Text(noColor() ? theme.bold(heading) : theme.fg("error", heading), 0, 0));
-	if (hint) component.addChild(new Text(noColor() ? hint : theme.fg("dim", hint), 0, 0));
+	component.addChild(new Text(theme.fg("error", heading), 0, 0));
+	if (hint) component.addChild(new Text(theme.fg("dim", hint), 0, 0));
 }
 
 /** The output block of a shell result: everything when expanded, otherwise the last few lines and an expand hint. */

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getCustomThemesDir } from "../../../config.js";
 import { closeWatcher, isSafeFsWatchPathError, watchWithErrorHandlerAsync } from "../../../utils/fs-watch.ts";
+import { refreshColorEnvironment } from "./color-utils.ts";
 import { getDefaultTheme } from "./terminal-detection.ts";
 import type { Theme } from "./theme-class.ts";
 import {
@@ -32,6 +33,8 @@ export function getGlobalTheme(): Theme | undefined {
 }
 
 function setGlobalTheme(t: Theme): void {
+	// Loading or switching a theme is when NO_COLOR and FORCE_COLOR are read; painting never reads them.
+	refreshColorEnvironment();
 	(globalThis as Record<symbol, Theme>)[THEME_KEY] = t;
 	(globalThis as Record<symbol, Theme>)[THEME_KEY_OLD] = t;
 }
