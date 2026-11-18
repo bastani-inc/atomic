@@ -3,8 +3,11 @@ import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { type ThemeColor, theme } from "../theme/theme.js";
 import { ToolBlock } from "./tool-block.ts";
 
-/** How the subject of a notice ended or stands. A started subject reads as `success`. */
-export type NoticeStatus = "success" | "failure" | "stopped" | "warning" | "paused" | "running" | "info";
+/**
+ * How the subject of a notice ended or stands. A started subject reads as `success`; `waiting` is a subagent released
+ * while it waits on a call, which wakes by itself when that call finishes.
+ */
+export type NoticeStatus = "success" | "failure" | "stopped" | "warning" | "paused" | "waiting" | "running" | "info";
 
 /**
  * One notice line: what finished, how it ended, and a few dim facts. Background commands, subagents, workflow runs
@@ -31,6 +34,7 @@ export const STATUS_MARKERS: Readonly<Record<NoticeStatus, { readonly glyph: str
 	stopped: { glyph: "◼", color: "muted" },
 	warning: { glyph: "!", color: "warning" },
 	paused: { glyph: "⏸", color: "muted" },
+	waiting: { glyph: "◌", color: "dim" },
 	running: { glyph: "∀", color: "accent" },
 	info: { glyph: "›", color: "muted" },
 };
