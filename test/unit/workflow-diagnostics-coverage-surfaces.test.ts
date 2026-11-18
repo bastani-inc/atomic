@@ -32,7 +32,6 @@ import { inertDisplayLine, inertDisplayText } from "../../packages/workflows/src
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 import { stageFailureLogLines } from "../../packages/workflows/src/tui/stage-failure-detail.js";
 import { renderSwitcher } from "../../packages/workflows/src/tui/switcher.js";
-import { renderWorkflowNoticeCard } from "../../packages/workflows/src/tui/workflow-notice-card.js";
 import {
 	invalidDefinitionsFromDiagnostics,
 	workflowsListingItems,
@@ -103,41 +102,6 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 		const secondRow = plainRows.find((row) => row.includes("second-"));
 		assert.ok(firstRow?.includes("…"));
 		assert.ok(secondRow?.includes("…"));
-	});
-
-	it("renders notice card hints, footers, and field values inert while skipping undefined fields (#5224)", () => {
-		const rows = renderWorkflowNoticeCard({
-			title: `Title ${EVIL}`,
-			glyph: "!",
-			headline: `Headline ${EVIL}`,
-			tone: "info",
-			fields: [
-				{ label: "omitted", value: undefined },
-				{ label: "present", value: `field ${EVIL}` },
-			],
-			hints: [`hint ${EVIL}`],
-			footer: `footer ${EVIL}`,
-			fallbackText: `fallback ${EVIL}`,
-			width: 90,
-		});
-		const joined = rows.join("\n");
-		assert.doesNotMatch(joined, RAW_UNSAFE);
-		const plain = stripAnsi(joined);
-		assert.match(plain, /present/);
-		assert.doesNotMatch(plain, /omitted/);
-		assert.match(plain, /▸ hint/);
-		assert.match(plain, /footer/);
-		assert.match(plain, /<U\+202E>/);
-
-		const minimalRows = renderWorkflowNoticeCard({
-			title: "Title",
-			glyph: "!",
-			headline: "Headline",
-			tone: "info",
-			fallbackText: "fallback",
-			width: 80,
-		});
-		assert.doesNotMatch(stripAnsi(minimalRows.join("\n")), /▸/);
 	});
 
 	it("renders tool error cards inert, formats singular and plural hidden stack frame counts, and handles missing options (#5224)", () => {

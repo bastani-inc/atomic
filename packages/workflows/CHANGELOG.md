@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Workflow heartbeats, answered-question notices and undelivered-message notices in the main chat use the same notice form as task heartbeats and run notices instead of bordered cards: `♥ Workflow heartbeat · <workflow> still running · <elapsed>` with the run and cadence under it, `● Workflow "<name>" received the user's response · <stage>`, and `! Stage "<name>" finished before this message was delivered · <workflow>`. Expanding a notice (Ctrl+O) shows its run, question and answer, or message. The text the model reads is unchanged
+- A workflow stage chat's own notices (model and thinking-level changes, compaction, branch changes, interrupts, task cleanup, readiness decisions and undelivered messages) use the main chat's notice form instead of bordered cards, at the chat's output pad: for example `› Model changed to "<model>" · was <previous>`, `● Context compacted · 120.4k → 31.2k`, `◼ Stage interrupted` and `! Stage finished before this message was delivered`. Cleanup and undelivered notices count their hidden lines while collapsed, and Ctrl+O shows the resources still being confirmed or the message
 
 ### Fixed
 
