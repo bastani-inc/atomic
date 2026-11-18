@@ -1,7 +1,6 @@
 import {
 	type NavKey,
 	navEntryKeys,
-	PLAIN_SELECTOR_STYLE,
 	renderNavHintLine,
 	type SelectorItem,
 	SelectorState,
@@ -24,7 +23,6 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
-import { colorsOff } from "./color-utils.js";
 import { inertDisplayLine, summarizeFailureText } from "./display-text.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
 import { type RunFailureSource, runFailureText } from "./run-display-state.js";
@@ -470,9 +468,9 @@ function renderCompactListing(
 	return lines.map((line) => truncateToWidth(line, width));
 }
 
+/** The theme's live styles: they follow the cached color level, so an open list repaints when it changes. */
 function listingStyle(): SelectorStyle {
-	const themed = themeSelectorStyle();
-	return colorsOff() ? { ...PLAIN_SELECTOR_STYLE, bold: themed.bold } : themed;
+	return themeSelectorStyle();
 }
 
 export function openWorkflowsListing(

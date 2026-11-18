@@ -12,6 +12,7 @@ import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
 import { type RunOutcome, renderRunOutcome } from "../../packages/workflows/src/tui/run-outcome.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
+import { openWorkflowsListing } from "../../packages/workflows/src/tui/workflows-listing.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { makeTestTui as makeGraphTui, makeRun, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 import { makeHandle, makeTestTui as makeStageTui } from "./stage-chat-view-helpers.js";
@@ -265,4 +266,43 @@ test("no workflows or subagents source reads NO_COLOR or FORCE_COLOR itself: col
 		}
 	}
 	assert.deepEqual(readers, []);
+});
+
+test("an open /workflows list follows the color environment after a refresh, like a newly opened one", async () => {
+	const runs = makeSnap([makeStage("first")]).runs;
+	const mount = () => {
+		let component: { render(width: number): string[]; invalidate?(): void; dispose?(): void } | undefined;
+		const closed = openWorkflowsListing(
+			{
+				custom(factory) {
+					const mounted = factory({ terminal: { rows: 30 }, requestRender() {} }, undefined, undefined, () => {});
+					assert.ok(!(mounted instanceof Promise), "the listing mounts synchronously");
+					component = mounted;
+					return Promise.resolve(undefined);
+				},
+			},
+			{ runs: () => runs },
+		);
+		assert.ok(component);
+		return { component, closed };
+	};
+	for (const [from, to] of [
+		[{ NO_COLOR: "1" }, {}],
+		[{}, { NO_COLOR: "1" }],
+	] as const) {
+		colorEnv(from);
+		const open = mount();
+		const before = open.component.render(100).join("\n");
+		assert.equal(COLOR_SGR.test(before), from.NO_COLOR === undefined, "painted in the starting environment");
+		colorEnv(to);
+		open.component.invalidate?.();
+		const after = open.component.render(100).join("\n");
+		const fresh = mount();
+		const expected = fresh.component.render(100).join("\n");
+		assert.equal(COLOR_SGR.test(after), to.NO_COLOR === undefined, "the open list follows the refreshed environment");
+		assert.equal(after, expected, "the open list paints like a newly opened one");
+		open.component.dispose?.();
+		fresh.component.dispose?.();
+		await Promise.all([open.closed, fresh.closed]);
+	}
 });
