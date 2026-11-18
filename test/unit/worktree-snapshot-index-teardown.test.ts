@@ -401,6 +401,38 @@ describe("an old session index is removed in bounded batches before it is rebuil
 		assert.deepEqual(await indexContents(database), await rebuiltFromNothing(database));
 	});
 
+	test("a backfill that finds the session index marked for a rebuild meanwhile leaves the mark for every build to read (#5553)", async () => {
+		const { database, stores } = await indexedStore();
+		await installedByAnOlderBuild(database);
+		const other = await openDatabase("shared.sqlite");
+		const upgraded = await SqlSnapshotBlobStore.open(database);
+		let marked = false;
+		class MarkingPace extends BackgroundCollectionPace {
+			override async wait(milliseconds: number): Promise<void> {
+				const progress = await entriesProgress(database);
+				if (!marked && progress !== undefined && progress.watermark > 0 && progress.backfilled > 0) {
+					marked = true;
+					// Between two backfill batches the index loses a trigger, and another process opens the store.
+					await other.exec("DROP TRIGGER session_entries_snapshot_refs");
+					await SqlSnapshotBlobStore.open(other);
+				}
+				return super.wait(milliseconds);
+			}
+		}
+
+		await upgraded.completeIndex({ pace: new MarkingPace() });
+
+		assert.ok(marked, "the index was marked during the backfill");
+		const progress = await entriesProgress(database);
+		assert.ok(
+			progress !== undefined && progress.backfilled < progress.watermark && progress.watermark < 0,
+			`the index awaits its rebuild, which no build reads as complete: ${JSON.stringify(progress)}`,
+		);
+		await upgraded.completeIndex();
+		assert.deepEqual(await indexContents(database), await rebuiltFromNothing(database));
+		await assertCollectsExactlyTheUnretained(database, stores, upgraded);
+	});
+
 	test("a session appended to while its old index is half removed still resolves the entries it names (#5553)", async () => {
 		const { database, stores } = await indexedStore();
 		await installedByAnOlderBuild(database);

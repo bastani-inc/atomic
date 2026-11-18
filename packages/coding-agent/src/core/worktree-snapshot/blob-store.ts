@@ -1432,7 +1432,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				`SELECT watermark, backfilled_through FROM ${t.sources} WHERE source = ?`,
 				source.name,
 			);
-			if (progress === undefined) return true;
+			// A source marked for a rebuild meanwhile keeps its mark, which no build reads as complete: its rows are removed
+			// and indexed again by the next collection (#5553).
+			if (progress === undefined || progress.watermark < 0) return true;
 			// This build's own progress (#5558): rows an older build indexed past it are indexed again. A source a build
 			// before it installed has none: its backfill, which indexes what this one does, is trusted as far as it got.
 			let own =
