@@ -47,6 +47,7 @@ type ManagedToolsThis = {
 		getEntries: ReturnType<typeof vi.fn>;
 		getLeafId: ReturnType<typeof vi.fn>;
 	};
+	settingsManager: { isProjectTrusted: () => boolean };
 };
 
 const prototype = InteractiveMode.prototype as unknown as {
@@ -83,6 +84,8 @@ function createMode(): ManagedToolsThis {
 			getEntries: vi.fn(() => []),
 			getLeafId: vi.fn(() => null),
 		},
+		// A redraw shows the untrusted-project warning when it applies; these sessions are trusted.
+		settingsManager: { isProjectTrusted: () => true },
 	};
 	mode.showManagedToolStatus = (status) => prototype.showManagedToolStatus.call(mode, status);
 	return mode;

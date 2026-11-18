@@ -82,6 +82,7 @@ async function completeDeferredStartup(mode: { options: InteractiveMode["options
 			updateAvailableProviderCount: async () => {},
 			updateEditorBorderColor() {},
 			startSessionRecovery() {},
+			refreshProjectTrustWarning() {},
 			showError(message: string) {
 				assert.fail(message);
 			},

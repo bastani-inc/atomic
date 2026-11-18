@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { AgentSessionEvent } from "@bastani/atomic";
-import type { TuiMouseEvent } from "@bastani/atomic-tui";
+import type { TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -31,8 +31,15 @@ function click(x: number, y: number, width: number): TuiMouseEvent {
 	};
 }
 
+/** Delivers a click as the renderer does: to the view, then, once no second press made it a double-click, its action. */
+function singleClick(view: StageChatView, event: TuiMouseEvent): TuiMouseEventResult | undefined {
+	const result = view.handleMouse(event);
+	result?.whenSingleClick?.();
+	return result;
+}
+
 for (const width of [80, 160]) {
-	test(`in a stage chat a click on a block header expands it, a second click collapses it, and its output does not toggle, at ${width} columns`, () => {
+	test(`in a stage chat a click on any row of a block expands it once the click settles, and a second click collapses it, at ${width} columns`, () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const { handle, emit } = makeHandle();
@@ -70,15 +77,14 @@ for (const width of [80, 160]) {
 			assert.ok(!expanded(), screen().join("\n"));
 
 			const shown = rowOf(/stage line 18$/);
-			assert.equal(view.handleMouse(click(8, shown, width)), undefined);
-			assert.ok(!expanded(), "a click in a block's output selects, it does not toggle");
+			const result = view.handleMouse(click(screen()[shown]!.indexOf("stage"), shown, width));
+			assert.equal(result?.handled, true);
+			assert.ok(!expanded(), "a click waits until it cannot become a double-click");
+			result?.whenSingleClick?.();
+			assert.ok(expanded(), `a click in a block's output expands it:\n${screen().join("\n")}`);
 
 			const header = rowOf(/Bash\(stage-cmd\)/);
-			assert.equal(view.handleMouse(click(screen()[header]!.indexOf("stage-cmd"), header, width))?.handled, true);
-			assert.ok(expanded(), screen().join("\n"));
-
-			const again = rowOf(/Bash\(stage-cmd\)/);
-			view.handleMouse(click(screen()[again]!.indexOf("Bash"), again, width));
+			singleClick(view, click(screen()[header]!.indexOf("Bash"), header, width));
 			assert.ok(!expanded(), screen().join("\n"));
 		} finally {
 			view.dispose();
@@ -121,7 +127,7 @@ test("a click on a block header in a paused stage's transcript expands it", () =
 		assert.ok(!expanded(), screen().join("\n"));
 		const header = screen().findIndex((line) => /Bash\(stage-cmd\)/.test(line));
 		assert.notEqual(header, -1, screen().join("\n"));
-		assert.equal(view.handleMouse(click(screen()[header]!.indexOf("stage-cmd"), header, width))?.handled, true);
+		assert.equal(singleClick(view, click(screen()[header]!.indexOf("stage-cmd"), header, width))?.handled, true);
 		assert.ok(expanded(), screen().join("\n"));
 	} finally {
 		view.dispose();
@@ -166,7 +172,7 @@ function stageWithBlock(store = createStore(), broker?: StageUiBroker) {
 	const clickHeader = () => {
 		const header = screen().findIndex((line) => /Bash\(stage-cmd\)/.test(line));
 		assert.notEqual(header, -1, screen().join("\n"));
-		return view.handleMouse(click(screen()[header]!.indexOf("stage-cmd"), header, width));
+		return singleClick(view, click(screen()[header]!.indexOf("stage-cmd"), header, width));
 	};
 	return { view, store, screen, expanded, clickHeader };
 }
@@ -220,5 +226,74 @@ test("pressing Ctrl+O twice before the next paint collapses a block a click expa
 	} finally {
 		chat.view.dispose();
 		setKeybindings(previous);
+	}
+});
+
+test("a click anywhere on a stage notice with detail shows the detail, and a second click hides it", () => {
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	store.recordStageNotice("run-1", "stage-a", {
+		id: "notice-1",
+		ts: 1,
+		kind: "cleanup",
+		to: "quarantined",
+		meta: "task-1 process-group:42: Output reader drain was not confirmed",
+	});
+	const { handle } = makeHandle();
+	const view = new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test-wf",
+		handle,
+		onDetach: () => {},
+		onClose: () => {},
+		getToolsExpanded: () => false,
+	});
+	const width = 100;
+	const screen = () => view.render(width).map(stripAnsi);
+	const detailShown = () => screen().some((line) => line.includes("Output reader drain was not confirmed"));
+	try {
+		assert.ok(!detailShown(), screen().join("\n"));
+		const notice = screen().findIndex((line) => line.includes("process cleanup is still being confirmed"));
+		assert.notEqual(notice, -1, screen().join("\n"));
+		assert.equal(singleClick(view, click(screen()[notice]!.indexOf("Task"), notice, width))?.handled, true);
+		assert.ok(detailShown(), screen().join("\n"));
+
+		const detail = screen().findIndex((line) => line.includes("Output reader drain was not confirmed"));
+		singleClick(view, click(screen()[detail]!.indexOf("task-1"), detail, width));
+		assert.ok(!detailShown(), screen().join("\n"));
+	} finally {
+		view.dispose();
+	}
+});
+
+test("a click on a stage notice with no detail changes nothing", () => {
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	store.recordStageNotice("run-1", "stage-a", { id: "notice-1", ts: 1, kind: "thinking", from: "medium", to: "high" });
+	const { handle } = makeHandle();
+	const view = new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test-wf",
+		handle,
+		onDetach: () => {},
+		onClose: () => {},
+		getToolsExpanded: () => false,
+	});
+	const width = 100;
+	const screen = () => view.render(width).map(stripAnsi);
+	try {
+		const before = screen();
+		const notice = before.findIndex((line) => line.includes("Thinking level changed"));
+		assert.notEqual(notice, -1, before.join("\n"));
+		singleClick(view, click(before[notice]!.indexOf("Thinking"), notice, width));
+		assert.deepEqual(screen(), before);
+	} finally {
+		view.dispose();
 	}
 });
