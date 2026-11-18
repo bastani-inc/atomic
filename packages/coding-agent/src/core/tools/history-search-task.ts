@@ -5,6 +5,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { TOOL_TASK_OUTPUT_MAX_BYTES } from "../tasks/supervisor.js";
 import { type InternalResourceContext, searchInternalSelector } from "./resource-selectors.ts";
 import type { ToolTaskWork } from "./tool-task.ts";
@@ -19,9 +20,8 @@ import { formatSize } from "./truncate.ts";
 export const HISTORY_SEARCH_STEP_MS = 10_000;
 
 /**
- * How many of its latest steps' answers a search compares each answer with to find one that made no progress. Its
- * execution timeout still ends a source that repeats itself over a longer cycle, and its output store bounds what that
- * prints.
+ * How many of its latest steps' answers a search compares each answer with to find one it already had. Its execution
+ * timeout still ends a source that repeats itself over a longer cycle, and its output store bounds what that prints.
  */
 const REMEMBERED_ANSWERS = 1_024;
 
@@ -35,6 +35,8 @@ export const HISTORY_SEARCH_OUTPUT_MAX_BYTES = TOOL_TASK_OUTPUT_MAX_BYTES - 1024
 const CONTINUATION = /continue with (history:\/\/\S+?)\]\s*$/;
 /** A stop a budget made (`the time budget ran out`, waiting for the store included), not the end of a page. */
 const BUDGET_STOP = /\bthe (?:byte|row|time) budget ran out\b/;
+/** A stop its time budget made: the step spent all of its time, for example waiting for the store to answer. */
+const TIME_STOP = /\bthe time budget ran out\b/;
 /**
  * A note of the search itself: its first word is the location it is about at line 0 (`<url>:0: [...]`). A match or
  * context line (`<url>:N: …`, `<url>-N- …`) that quotes a note from history is not one, whatever it quotes.
@@ -106,8 +108,11 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 			printedBytes += Buffer.byteLength(chunk, "utf8");
 			printedAny = true;
 		};
-		// What the latest steps answered, by digest: a step that answers exactly as one of them did made no progress, so
-		// the chain does not follow it again (a source that hands back the page it was asked for must not loop forever).
+		// What the latest steps answered, by digest: an answer the search already had prints nothing again. Its stops at
+		// the byte or row budget made no progress, so the chain does not follow them again (a source that hands back the
+		// page it was asked for must not loop forever). Its stops at the time budget are still waiting, for a store that
+		// has not answered yet: the chain follows them again, at most once a step, until the store answers or the
+		// search's timeout or a stop ends it.
 		const answered = new Set<string>();
 		while (pending.length > 0) {
 			// A turn of the event loop before each step: a source that answers without waiting on anything would
@@ -122,6 +127,8 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 				pending.unshift(url);
 				break;
 			}
+			const stepMs = run.stepMs ?? HISTORY_SEARCH_STEP_MS;
+			const startedAt = performance.now();
 			let text: string;
 			try {
 				text = await searchInternalSelector(
@@ -133,7 +140,7 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 					run.resources,
 					run.contextBefore,
 					run.contextAfter,
-					{ signal, timeBudgetMs: run.stepMs ?? HISTORY_SEARCH_STEP_MS },
+					{ signal, timeBudgetMs: stepMs },
 				);
 			} catch (error) {
 				if (signal.aborted) {
@@ -149,9 +156,22 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 			succeeded = true;
 			const digest = createHash("sha256").update(text).digest("hex");
 			if (answered.has(digest)) {
-				// No progress: keep where it stopped, so the caller can continue from there, and follow nothing more of it.
-				const stops = text.split("\n").filter((line) => historyContinuation(line) !== undefined);
-				if (stops.length > 0) print(stops.join("\n"));
+				const stuck: string[] = [];
+				const waiting: string[] = [];
+				for (const line of text.split("\n")) {
+					const continuation = historyContinuation(line);
+					if (continuation === undefined) continue;
+					if (TIME_STOP.test(line)) waiting.push(continuation);
+					else stuck.push(line);
+				}
+				// No progress: keep where it stopped, so the caller can continue from there, and follow it no more.
+				if (stuck.length > 0) print(stuck.join("\n"));
+				if (waiting.length > 0) {
+					pending.unshift(...waiting);
+					// A source that answers at once still gets asked only once a step.
+					const rest = stepMs - (performance.now() - startedAt);
+					if (rest > 0) await delay(rest, undefined, { signal }).catch(() => undefined);
+				}
 				continue;
 			}
 			answered.add(digest);

@@ -1,6 +1,6 @@
 import type { AgentTaskHost } from "./agent-adapter.js";
 import type { TaskCompletionMessage } from "./child-command-owner.js";
-import { COMMAND_DETAIL_TAIL_BYTES, taskOutputText } from "./command-output.js";
+import { COMMAND_DETAIL_TAIL_BYTES, taskOutputHeadText, taskOutputText } from "./command-output.js";
 import {
 	formatTaskCompletion,
 	TASK_COMPLETION_MESSAGE_TYPE,
@@ -43,7 +43,7 @@ export async function toolOutputExcerpt(host: AgentTaskHost, lease: TaskLease): 
 			maximumBytes: TOOL_NOTICE_HEAD_BYTES,
 		});
 		if (!page.ok) return COMMAND_OUTPUT_UNAVAILABLE;
-		const text = taskOutputText(page.value);
+		const text = taskOutputHeadText(page.value);
 		return page.value.nextOffset === undefined ? text : `${text}\n[Later output omitted]`;
 	} catch {
 		return COMMAND_OUTPUT_UNAVAILABLE;

@@ -495,7 +495,10 @@ function parseSearchRows(rawText: string): { rows: string[]; matchCount: number;
 
 function presentSearch(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation {
 	const argsRecord = asRecord(input.args);
-	const display = formatSearchArgs(argsRecord, input.cwd);
+	const display =
+		argsRecord?.action === "wait"
+			? `wait ${singleLineDisplayText(asString(argsRecord.id) ?? "")}`
+			: formatSearchArgs(argsRecord, input.cwd);
 	const isRunning = !input.result || input.isPartial;
 	const elapsed = formatToolBlockElapsed(resolveDurationMs(input), { isRunning, subTenDecimal: false });
 
@@ -536,6 +539,28 @@ function presentSearch(input: BuiltinToolBlockInput): BuiltinToolBlockPresentati
 	}
 
 	const details = asRecord(input.result?.details);
+	// A history:// search observed like a shell: one that goes on as a task has no result yet, only what it found so far.
+	const observation = details?.observation as WaitOutcome | undefined;
+	if (observation?.kind === "yielded") {
+		const manage = input.canManageTask?.(observation.taskId) === true;
+		const line = `${theme.fg("text", "Running in background")}${manage ? theme.fg("dim", " · /tasks to manage") : ""}`;
+		const found = rawText.replace(/(?:\n\n|^)Search is still running \(task [^)]+\)\.[\s\S]*$/, "").trimEnd();
+		const foundRows =
+			found === ""
+				? []
+				: collapseToolBlockLines(
+						found.split("\n").map((row) => theme.fg("toolOutput", replaceTabs(row))),
+						TOOL_BLOCK_LIMITS.search,
+						input.expanded,
+					);
+		return {
+			title: "Search",
+			args: display,
+			status: "success",
+			meta: ["background"],
+			details: new ToolBlockLines([line, ...foundRows], input.expanded),
+		};
+	}
 	const parsed = parseSearchRows(rawText);
 	const matchCount = asNumber(details?.matchCount) ?? parsed.matchCount;
 	const fileCount =
@@ -550,6 +575,23 @@ function presentSearch(input: BuiltinToolBlockInput): BuiltinToolBlockPresentati
 			status: "success",
 			meta: elapsed ? [elapsed] : undefined,
 			details: new ToolBlockLines([theme.fg("muted", "No matches")]),
+		};
+	}
+	// A finished history:// search counts its own matches: the notes it shows with them are not matches.
+	if (observation !== undefined && matchCount === 0) {
+		const noteRows = parsed.rows.map((row) => theme.fg("toolOutput", replaceTabs(row)));
+		return {
+			title: "Search",
+			args: display,
+			status: "success",
+			meta: elapsed ? [elapsed] : undefined,
+			details: new ToolBlockLines(
+				[
+					theme.fg("muted", "No matches"),
+					...collapseToolBlockLines(noteRows, TOOL_BLOCK_LIMITS.search, input.expanded),
+				],
+				input.expanded,
+			),
 		};
 	}
 

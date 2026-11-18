@@ -4,7 +4,7 @@ import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
-import { taskOutputText } from "./command-output.js";
+import { taskOutputHeadText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
@@ -283,7 +283,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				? {
 						ok: true,
 						value: {
-							text: taskOutputText(page.value),
+							text: taskOutputHeadText(page.value),
 							omitted: page.value.omittedRanges.length > 0,
 							...(page.value.nextOffset === undefined ? {} : { more: true }),
 						},

@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { formatTimeoutSeconds, longerRunAdvice } from "../tasks/cancel-reason.js";
-import { taskOutputText } from "../tasks/command-output.js";
+import { TaskOutputDecoder } from "../tasks/command-output.js";
 import type { TaskId, WaitOutcome, WaitPolicy } from "../tasks/contracts.js";
 import { ToolTaskOutput } from "../tasks/supervisor.js";
 import { lookupOwnedTask, type SupervisedCommandOwner } from "./bash-pty-native.js";
@@ -27,17 +27,24 @@ export const HISTORY_SEARCH_INLINE_BYTES = 40_000;
 /** How often a search observed in the foreground reports its progress. */
 const UPDATE_INTERVAL_MS = 250;
 
-/** What `output` holds, up to `maxBytes` from its start, with a note for any bytes it no longer keeps. */
+/**
+ * What `output` holds, up to `maxBytes` from its start, with a note for any bytes it no longer keeps. A character its
+ * pages split stays whole, and one that `maxBytes` cuts is left out.
+ */
 function outputText(output: ToolTaskOutput, maxBytes = Number.MAX_SAFE_INTEGER): string {
+	const decoder = new TaskOutputDecoder();
 	const pages: string[] = [];
 	let offset = "0";
 	let read = 0;
 	while (read < maxBytes) {
 		const page = output.page({ start: offset, maximumBytes: Math.min(64 * 1024, maxBytes - read) });
 		if (!page.ok) break;
-		pages.push(taskOutputText(page.value));
+		pages.push(decoder.decode(page.value));
 		read += Number(page.value.requested.end) - Number(offset);
-		if (page.value.nextOffset === undefined) break;
+		if (page.value.nextOffset === undefined) {
+			pages.push(decoder.end());
+			break;
+		}
 		offset = page.value.nextOffset;
 	}
 	return pages.join("");
@@ -115,17 +122,39 @@ function hiddenNotes(rest: string): string[] {
 	return [...kept, ...more, ...[...ending].sort((a, b) => a - b).map((index) => lines[index]!)];
 }
 
+/** A match row of a search (`<url>:<line>: …`, line 1 or later): not a note at line 0, nor a context row. */
+const MATCH_ROW = /^(history:\/\/\S+?):([1-9]\d*): /;
+
+/** How many matches `text`, all a search printed, holds, and in how many sessions, runs or entries. */
+function matchCounts(text: string): { readonly matchCount: number; readonly fileCount: number } {
+	const files = new Set<string>();
+	let matchCount = 0;
+	for (const line of text.split("\n")) {
+		const row = MATCH_ROW.exec(line);
+		if (row === null) continue;
+		matchCount++;
+		files.add(row[1]!);
+	}
+	return { matchCount, fileCount: files.size };
+}
+
+interface HistoryOutput {
+	readonly text: string;
+	readonly fullOutputPath?: string;
+	/** How many matches all of the output holds: its notes and context rows are not matches. */
+	readonly matchCount: number;
+	readonly fileCount: number;
+}
+
 /**
  * What a search printed, as its result shows it: the start, and all of it in a file when there is more. A result cut
  * short still shows what the search could not read or search and the notes its output ends with, so what it missed and
  * where to continue from are always in the result.
  */
-async function formatHistoryOutput(
-	text: string,
-	tempDir: string | undefined,
-): Promise<{ readonly text: string; readonly fullOutputPath?: string }> {
+async function formatHistoryOutput(text: string, tempDir: string | undefined): Promise<HistoryOutput> {
+	const counts = matchCounts(text);
 	const bytes = Buffer.from(text, "utf8");
-	if (bytes.length <= HISTORY_SEARCH_INLINE_BYTES) return { text };
+	if (bytes.length <= HISTORY_SEARCH_INLINE_BYTES) return { text, ...counts };
 	let head = truncateBufferAtUtf8Boundary(bytes, HISTORY_SEARCH_INLINE_BYTES - HISTORY_SEARCH_END_NOTE_BYTES).toString(
 		"utf8",
 	);
@@ -149,6 +178,7 @@ async function formatHistoryOutput(
 	return {
 		text: [head, "", note, ...notes].join("\n"),
 		...(fullOutputPath === undefined ? {} : { fullOutputPath }),
+		...counts,
 	};
 }
 
@@ -175,13 +205,15 @@ function stillRunning(taskId: string, timeoutSeconds: number | undefined): strin
 
 function settledResult(
 	observation: WaitOutcome,
-	output: { readonly text: string; readonly fullOutputPath?: string },
+	output: HistoryOutput,
 	timeoutSeconds: number | undefined,
 ): AgentToolResult<HistorySearchDetails> {
 	const details: HistorySearchDetails = {
 		observation,
 		...(output.fullOutputPath === undefined ? {} : { fullOutputPath: output.fullOutputPath }),
 		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+		// What it found once it ended; a search still running has no count yet.
+		...(observation.kind === "settled" ? { matchCount: output.matchCount, fileCount: output.fileCount } : {}),
 	};
 	if (observation.kind === "yielded")
 		return {
@@ -315,13 +347,15 @@ export async function waitForHistorySearch(
 		if (!observed.ok) throw new TaskToolError(observed.error, id);
 		// A wait that yields shows what followed the last one; the wait that sees it settle shows all of it.
 		let offset = observed.value.kind === "yielded" ? (shownThrough.get(id) ?? "0") : "0";
+		const decoder = new TaskOutputDecoder();
 		const pages: string[] = [];
 		for (;;) {
 			const page = await owner.supervisor.readTaskOutput(task, { start: offset, maximumBytes: 64 * 1024 });
 			if (!page.ok) throw new TaskToolError(page.error, id);
-			pages.push(taskOutputText(page.value));
+			pages.push(decoder.decode(page.value));
 			const end = page.value.chunks.at(-1)?.offsets.end ?? page.value.omittedRanges.at(-1)?.end ?? offset;
 			if (page.value.nextOffset === undefined) {
+				pages.push(decoder.end());
 				offset = end;
 				break;
 			}
