@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { setTimeout as realSleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { afterEach, test, vi } from "vitest";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
 /**
  * While a connection is open, one thread is started ahead of the next open, so that open does not wait for a thread to
@@ -85,4 +86,23 @@ test("an open soon after the last close takes the thread started ahead of it, an
 	await again.close();
 	await realSleep(SPARE_THREAD_IDLE_MS);
 	await until(() => threads.live.size === 0, "no thread is left once the thread started ahead waited its time");
+});
+
+/** Opens a connection in a process of its own, closes it, and returns; the process exits once nothing keeps it alive. */
+const OPEN_CLOSE_EXIT = fileURLToPath(new URL("../fixtures/node-sqlite-open-close-exit.mjs", import.meta.url));
+
+test("a process that closed its last connection exits without waiting for the thread started ahead of the next open (#5376)", async () => {
+	const { SPARE_THREAD_IDLE_MS } = await adapter();
+	const started = performance.now();
+	const child = spawnSyncCollect([process.execPath, OPEN_CLOSE_EXIT, join(directory(), "exit.sqlite")], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const tookMs = performance.now() - started;
+	assert.equal(child.exitCode, 0, child.stderr.toString());
+	assert.match(child.stdout.toString(), /^closed after \d+ ms/);
+	assert.ok(
+		tookMs < SPARE_THREAD_IDLE_MS,
+		`exited after ${Math.round(tookMs)} ms, without waiting for the spare thread`,
+	);
 });
