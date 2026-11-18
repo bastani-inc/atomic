@@ -375,7 +375,9 @@ Each workflow invocation automatically receives one stable, non-`"default"` Inte
 Subagents can run with fresh or forked context:
 
 - `context: "fresh"` starts a separate in-process child session with only the task and selected agent context.
-- `context: "fork"` creates a real branched child session from the parent session leaf. It fails fast if the parent session cannot be forked; it does not silently downgrade to fresh context.
+- `context: "fork"` creates a real branched child session from the parent's conversation. It fails fast if the parent session cannot be forked; it does not silently downgrade to fresh context.
+
+A forked child starts from the parent's conversation exactly as the parent would send it to the model, up to and including the turn that called `subagent`, and only adds messages after it. It first answers each tool call of that turn: its own launching call says which child it is, such as child 2 of 3, and the turn's other calls say their results go to the parent. Then it gets its task. Nothing in the copied conversation is removed or rewritten, so a provider that signs its reasoning accepts the copy. Every child launched from one turn shares this fork point: the tasks of a parallel launch, the children of several `subagent` calls in that turn, and a child that starts later because it waited for a slot or was retried. None of them sees what the parent does after the launch.
 
 For adversarial review or research, prefer fresh context so the specialist inspects the repository directly. Use forked context when a writer needs the parent conversation history in a separate branch.
 

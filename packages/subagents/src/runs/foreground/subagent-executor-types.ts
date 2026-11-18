@@ -16,6 +16,8 @@ import type { NamedWorktree, NamedWorktreeRequest } from "../shared/named-worktr
 import type { runSync } from "./execution.js";
 
 export const BURST_TASK_DISCOVERY_CWD = Symbol("burstTaskDiscoveryCwd");
+/** The `subagent` tool call a task of a merged burst came from, so its forked children answer that call as theirs. */
+export const BURST_TASK_LAUNCH_CALL_ID = Symbol("burstTaskLaunchCallId");
 export const BURST_EXECUTION_SCHEDULE = Symbol("burstExecutionSchedule");
 export const TASK_EXECUTION_TICKETS = Symbol("taskExecutionTickets");
 /** The named worktree a launch's child runs in, once it exists (#5202). */
@@ -41,6 +43,7 @@ export interface TaskParam {
 
 export type BurstTaskParam = TaskParam & {
 	[BURST_TASK_DISCOVERY_CWD]?: string;
+	[BURST_TASK_LAUNCH_CALL_ID]?: string;
 };
 
 export interface SubagentParamsLike {

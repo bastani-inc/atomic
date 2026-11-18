@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- SDK: `createForkedSession` forks a session at an entry append-only: the new session holds the source's branch unchanged, followed by one result for each tool call the source's last turn left open. `appendForkToolResults`, `unansweredToolCalls`, `forkToolResults` and `forkPointEntryId` expose its steps. Subagent forks and forked workflow stages use it ([#5481](https://github.com/bastani-inc/atomic/issues/5481))
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.

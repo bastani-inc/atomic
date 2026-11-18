@@ -22,6 +22,7 @@ import { getParentAskHandoff } from "./subagent-executor-parent-ask-projection.j
 import {
 	BURST_EXECUTION_SCHEDULE,
 	BURST_TASK_DISCOVERY_CWD,
+	BURST_TASK_LAUNCH_CALL_ID,
 	type BurstTaskParam,
 	type SubagentParamsLike,
 	TASK_EXECUTION_TICKETS,
@@ -147,6 +148,7 @@ function topLevelSingleTask(item: BurstItem): BurstTaskParam | undefined {
 		task: item.params.task ?? "",
 		cwd: originatingTaskCwd(callCwd, undefined),
 		[BURST_TASK_DISCOVERY_CWD]: callCwd,
+		[BURST_TASK_LAUNCH_CALL_ID]: item.id,
 		...(item.singleTicket ? { [TASK_EXECUTION_TICKETS]: [item.singleTicket] } : {}),
 		...(namedWorktree(item.params) ? { worktree: namedWorktree(item.params) } : {}),
 		...(item.params.output !== undefined ? { output: item.params.output } : {}),
@@ -166,6 +168,7 @@ function existingParallelTask(item: BurstItem, task: TaskParam, taskIndex: numbe
 		...task,
 		cwd: originatingTaskCwd(callCwd, task.cwd),
 		[BURST_TASK_DISCOVERY_CWD]: callCwd,
+		[BURST_TASK_LAUNCH_CALL_ID]: item.id,
 		...(item.taskTickets?.[taskIndex] ? { [TASK_EXECUTION_TICKETS]: item.taskTickets[taskIndex] } : {}),
 		...(task.worktree === undefined && namedWorktree(item.params) ? { worktree: namedWorktree(item.params) } : {}),
 		...(task.group === undefined && item.params.group !== undefined ? { group: item.params.group } : {}),

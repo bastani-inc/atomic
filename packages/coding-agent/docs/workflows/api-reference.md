@@ -728,6 +728,10 @@ Select a clean session or a forked context, with `forkFromSessionId` naming an e
 
 `forkFromEntryId` forks at an exact entry instead of the session's latest one. With `context: "fork"` and `forkFromSessionId`, the new session holds the entries on the path from the source session's root to that entry, with their ids, so a stage can retry from just before a bad turn. The path is copied as recorded: unlike `/fork` in chat, labels set with `/tree` after that entry are not carried over. It applies to `ctx.stage`, `ctx.task`, `ctx.chain` and `ctx.parallel` steps alike, and is ignored without `forkFromSessionId`. Stage setup fails with `ForkEntryNotFoundError` when the entry is not in the source session; nothing is created. The source session is never changed.
 
+Without `forkFromEntryId`, a stage that forks a stage session open in the run forks at the entry that session was at when the stage was launched. The run records that entry, so a stage that starts later, because it waited for a concurrency slot or the run resumed, copies the same conversation and none of the source's later turns. Stages launched from the same point get identical copies. A source that is not open in the run is copied as stored when the stage starts.
+
+A forked stage's session holds the copied entries unchanged, then one result for each tool call the source's last turn left open, then the stage's own prompt. The copied conversation is what the source itself would send for its next request, so a provider that signs its reasoning accepts it.
+
 ```typescript
 await ctx.task("retry-impl", {
   prompt: delta,

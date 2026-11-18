@@ -21,6 +21,7 @@ import type {
 import { durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
+import { withLaunchForkPoint } from "./stage-fork-point.js";
 import { activeStageTopology, durableStageCheckpointMetadata, forkPointStageTopology } from "./stage-topology.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
 import type { DurableReleasedStageResume, DurableStageCheckpoint, DurableStageRunTopology } from "./types.js";
@@ -342,8 +343,15 @@ export function createDurableStagePrimitive(input: {
 		const durableStageId =
 			topology?.stageId ?? pendingStageIdForReplay(input.backend, input.workflowId, replayKey, name);
 		const durableIntercomGroup = topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, durableStageId);
+		const launchOptions = withLaunchForkPoint({
+			backend: input.backend,
+			workflowId: input.workflowId,
+			replayKey,
+			options,
+			resuming: resumeSessionId !== undefined,
+		});
 		const liveOptions: StageOptions = {
-			...(options ?? {}),
+			...(launchOptions ?? {}),
 			durableReplayKey: replayKey,
 			...(durableStageId !== undefined ? { durableStageId } : {}),
 			...(topology !== undefined ? { durableParentIds: [...topology.parentIds] } : {}),
@@ -523,7 +531,13 @@ export function createDurableTaskPrimitive(input: {
 		const durableIntercomGroup =
 			topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, topology?.stageId);
 		const taskOptions: WorkflowTaskOptions = {
-			...options,
+			...withLaunchForkPoint({
+				backend: input.backend,
+				workflowId: input.workflowId,
+				replayKey,
+				options,
+				resuming: session?.sessionId !== undefined,
+			})!,
 			durableReplayKey: replayKey,
 			...(topology !== undefined
 				? {

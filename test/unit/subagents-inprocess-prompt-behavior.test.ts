@@ -26,7 +26,7 @@ import {
 	createInProcessChildPromptBehavior,
 	createInProcessChildSystemPromptTransform,
 } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
-import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
+import { createForkContextResolver, forkLaunchOfTasks } from "../../packages/subagents/src/shared/fork-context.js";
 
 const tempDirs: string[] = [];
 
@@ -79,7 +79,6 @@ async function createChildSession(
 	const cwd = sessionManager.getCwd();
 	const settingsManager = SettingsManager.create(cwd, cwd);
 	const childPolicy = policy(overrides);
-	const behavior = createInProcessChildPromptBehavior(childPolicy);
 	const { session } = await createAgentSession({
 		cwd,
 		agentDir: cwd,
@@ -88,8 +87,7 @@ async function createChildSession(
 		sessionManager,
 		resourceLoader: resourceLoader(),
 		subagentPolicy: childPolicy,
-		systemPromptTransform: behavior.systemPromptTransform,
-		initialContextTransform: behavior.initialContextTransform,
+		...createInProcessChildPromptBehavior(childPolicy),
 	});
 	return session;
 }
@@ -173,28 +171,24 @@ describe("in-process child prompt construction", () => {
 		}
 	});
 
-	test("filters parent-only orchestration messages from inherited child context at construction", async () => {
+	test("keeps the inherited context exactly as it was, parent-only orchestration included (#5481)", async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-child-context-"));
 		tempDirs.push(root);
 		const manager = SessionManager.inMemory(root);
 		await manager.appendMessage({ role: "user", content: "keep this task", timestamp: Date.now() });
+		await manager.appendMessage(
+			parentTurn([{ type: "toolCall", id: "toolu_earlier", name: "subagent", arguments: { agent: "reviewer" } }]),
+		);
+		await manager.appendMessage(parentToolResult("toolu_earlier", "subagent", "Launched reviewer."));
 		await manager.appendCustomMessageEntry("subagent-control-notice", "parent-only message", false);
-		const session = await createChildSession({}, manager);
-		try {
-			assert.equal(
-				session.messages.some(
-					(message: AgentMessage) => message.role === "custom" && message.customType === "subagent-control-notice",
-				),
-				false,
-			);
-			assert.equal(
-				session.messages.some(
-					(message: AgentMessage) => message.role === "user" && message.content === "keep this task",
-				),
-				true,
-			);
-		} finally {
-			session.dispose();
+		const inherited = manager.buildSessionContext().messages;
+		for (const fanoutAuthorized of [false, true]) {
+			const session = await createChildSession({ fanoutAuthorized }, manager);
+			try {
+				assert.deepEqual(session.messages.slice(0, inherited.length), inherited);
+			} finally {
+				session.dispose();
+			}
 		}
 	});
 });
@@ -203,7 +197,9 @@ interface AnthropicPayloadBlock {
 	type: string;
 	thinking?: string;
 	signature?: string;
-	data?: string;
+	tool_use_id?: string;
+	content?: unknown;
+	text?: string;
 }
 
 interface AnthropicPayloadMessage {
@@ -212,6 +208,7 @@ interface AnthropicPayloadMessage {
 }
 
 const copilotOpus = getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
+const anthropicOpus = getModel("anthropic", "claude-opus-5-5") as Model<"anthropic-messages">;
 
 const zeroUsage = {
 	input: 0,
@@ -222,7 +219,7 @@ const zeroUsage = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-/** A parent turn produced by the model the forked child runs on, so its signed thinking is replayed to the child. */
+/** A parent turn made on github-copilot/claude-opus-5.5: a child on that model is sent its signed thinking as is. */
 function parentTurn(content: AssistantMessage["content"]): AssistantMessage {
 	return {
 		role: "assistant",
@@ -247,182 +244,198 @@ function parentToolResult(toolCallId: string, toolName: string, text: string): M
 	};
 }
 
-/** The Anthropic Messages payload the child's first request would send for its projected context. */
-async function childFirstRequest(messages: AgentMessage[]): Promise<AnthropicPayloadMessage[]> {
+/** The Anthropic Messages payload of a request that sends `messages` to `model`, built without a network call. */
+async function requestMessages(
+	model: Model<"anthropic-messages">,
+	messages: AgentMessage[],
+): Promise<AnthropicPayloadMessage[]> {
 	let payload: { messages: AnthropicPayloadMessage[] } | undefined;
-	await streamSimple(
-		{ ...copilotOpus, baseUrl: "http://127.0.0.1:9" },
-		{ messages: [...convertToLlm(messages), { role: "user", content: "The child's task.", timestamp: Date.now() }] },
-		{
-			apiKey: "credential-free-test-key",
-			reasoning: "xhigh",
-			fetch: (async () => {
-				throw new Error("payload captured");
-			}) as unknown as FetchFunction,
-			onPayload: (body) => {
-				payload = body as { messages: AnthropicPayloadMessage[] };
-			},
+	await streamSimple({ ...model, baseUrl: "http://127.0.0.1:9" }, convertToLlmContext(messages), {
+		apiKey: "credential-free-test-key",
+		reasoning: "xhigh",
+		fetch: (async () => {
+			throw new Error("payload captured");
+		}) as unknown as FetchFunction,
+		onPayload: (body) => {
+			payload = body as { messages: AnthropicPayloadMessage[] };
 		},
-	).result();
+	}).result();
 	if (!payload) throw new Error("no Anthropic payload was built");
 	return payload.messages;
 }
 
-function reasoningBlocks(message: AnthropicPayloadMessage): AnthropicPayloadBlock[] {
-	return Array.isArray(message.content)
-		? message.content.filter((block) => block.type === "thinking" || block.type === "redacted_thinking")
-		: [];
+function convertToLlmContext(messages: AgentMessage[]): { messages: Message[] } {
+	return { messages: convertToLlm(messages) };
+}
+
+const childTask = (session: { messages: AgentMessage[] }): AgentMessage[] => [
+	...session.messages,
+	{ role: "user", content: "The child's task.", timestamp: Date.now() },
+];
+
+/** Index of the child's task in a payload: the last user message, which a system message update may follow. */
+function taskIndex(messages: AnthropicPayloadMessage[]): number {
+	return messages.findLastIndex(
+		(message) =>
+			message.role === "user" &&
+			Array.isArray(message.content) &&
+			message.content.some((block) => block.type === "text" && block.text === "The child's task."),
+	);
+}
+
+/** Index of the assistant message holding `toolCallId` in a payload. */
+function launchingTurnIndex(messages: AnthropicPayloadMessage[], toolCallId: string): number {
+	return messages.findIndex(
+		(message) =>
+			message.role === "assistant" &&
+			Array.isArray(message.content) &&
+			message.content.some((block) => block.type === "tool_use" && (block as { id?: string }).id === toolCallId),
+	);
+}
+
+/** The tool results of the user message right after `index`, by the tool call they answer. */
+function toolResultsAfter(messages: AnthropicPayloadMessage[], index: number): Map<string, string> {
+	const next = messages[index + 1];
+	const results = new Map<string, string>();
+	if (next?.role !== "user" || !Array.isArray(next.content)) return results;
+	for (const block of next.content) {
+		if (block.type !== "tool_result" || block.tool_use_id === undefined) continue;
+		const content = block.content as { type: string; text?: string }[] | string;
+		const text = typeof content === "string" ? content : content.map((part) => part.text ?? "").join("");
+		assert.equal(results.has(block.tool_use_id), false, `tool call ${block.tool_use_id} answered twice`);
+		results.set(block.tool_use_id, text);
+	}
+	return results;
 }
 
 /**
- * The API joins back-to-back assistant messages into one turn. When the earlier one carries thinking,
- * that turn holds thinking from two separate responses, which the API rejects as modified thinking.
+ * A parent whose newest turn has signed thinking and launches forked children with `toolu_fork`, beside a bash call
+ * of its own. `toolu_status`'s result is already saved when the children are forked.
  */
-function assistantPairsJoinedWithThinking(messages: AnthropicPayloadMessage[]): number[] {
-	const pairs: number[] = [];
-	for (let index = 1; index < messages.length; index++) {
-		const earlier = messages[index - 1]!;
-		if (messages[index]!.role === "assistant" && earlier.role === "assistant" && reasoningBlocks(earlier).length > 0)
-			pairs.push(index);
+async function parentLaunchingForks(): Promise<SessionManager> {
+	const parent = SessionManager.inMemory();
+	await parent.appendMessage({ role: "user", content: "Fix the failing test.", timestamp: Date.now() });
+	await parent.appendMessage(
+		parentTurn([
+			{ type: "thinking", thinking: "List the files first.", thinkingSignature: "sig-list" },
+			{ type: "toolCall", id: "toolu_ls", name: "bash", arguments: { command: "ls" } },
+		]),
+	);
+	await parent.appendMessage(parentToolResult("toolu_ls", "bash", "a.ts"));
+	await parent.appendMessage(
+		parentTurn([
+			{ type: "thinking", thinking: "Fork workers for the fix.", thinkingSignature: "sig-launch" },
+			{ type: "toolCall", id: "toolu_fork", name: "subagent", arguments: { agent: "worker", context: "fork" } },
+			{ type: "toolCall", id: "toolu_status", name: "bash", arguments: { command: "git status" } },
+		]),
+	);
+	await parent.appendMessage(parentToolResult("toolu_status", "bash", "clean"));
+	return parent;
+}
+
+/** The parent's own next request after its launching turn's real results, for the same `model`. */
+async function parentContinuation(
+	parent: SessionManager,
+	model: Model<"anthropic-messages">,
+): Promise<AnthropicPayloadMessage[]> {
+	await parent.appendMessage(parentToolResult("toolu_fork", "subagent", "Launched forked workers."));
+	return requestMessages(model, parent.buildSessionContext().messages);
+}
+
+describe("forked child's first request is the parent's conversation plus appended messages (#5481)", () => {
+	for (const model of [copilotOpus, anthropicOpus]) {
+		const pair = model === copilotOpus ? "same model" : "another provider";
+		test(`a child on ${pair} replays the launching turn unchanged and answers each of its calls once (#5481)`, async () => {
+			const parent = await parentLaunchingForks();
+			const resolver = createForkContextResolver(parent, "fork", { toolCallIds: ["toolu_fork"] });
+			const session = await createChildSession({}, await resolver.sessionManagerForIndex(0));
+			try {
+				const child = await requestMessages(model, childTask(session));
+				const continuation = await parentContinuation(parent, model);
+
+				const launching = launchingTurnIndex(continuation, "toolu_fork");
+				assert.notEqual(launching, -1);
+				assert.deepEqual(child.slice(0, launching + 1), continuation.slice(0, launching + 1));
+				const answers = toolResultsAfter(child, launching);
+				assert.deepEqual([...answers.keys()], ["toolu_fork", "toolu_status"]);
+				assert.match(answers.get("toolu_fork")!, /forked child 1 of 1/);
+				assert.match(answers.get("toolu_status")!, /not available here/);
+				assert.equal(taskIndex(child), child.length - (child.at(-1)?.role === "system" ? 2 : 1));
+			} finally {
+				session.dispose();
+			}
+		});
 	}
-	return pairs;
-}
 
-async function forkChild(parent: SessionManager): Promise<Awaited<ReturnType<typeof createAgentSession>>["session"]> {
-	const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
-	return createChildSession({}, child);
-}
-
-describe("forked child's first request replays the parent's thinking (#5481)", () => {
-	test("a parent turn of thinking plus a subagent call does not join its thinking to the next turn (#5481)", async () => {
-		const parent = SessionManager.inMemory(mkdtempSync(join(tmpdir(), "atomic-fork-thinking-")));
-		await parent.appendMessage({ role: "user", content: "Fix the failing test.", timestamp: Date.now() });
-		await parent.appendMessage(
-			parentTurn([
-				{ type: "thinking", thinking: "Launch a reviewer first.", thinkingSignature: "sig-launch" },
-				{ type: "toolCall", id: "toolu_launch", name: "subagent", arguments: { agent: "reviewer" } },
-			]),
+	test("children of one launch share one fork point, including a child started after the parent moved on (#5481)", async () => {
+		const parent = await parentLaunchingForks();
+		const resolver = createForkContextResolver(
+			parent,
+			"fork",
+			forkLaunchOfTasks(["toolu_fork", "toolu_fork", "toolu_fork"], "toolu_fork"),
 		);
-		await parent.appendMessage(parentToolResult("toolu_launch", "subagent", "Launched reviewer."));
-		await parent.appendMessage(
-			parentTurn([
-				{ type: "thinking", thinking: "Now list the files.", thinkingSignature: "sig-list" },
-				{ type: "toolCall", id: "toolu_ls", name: "bash", arguments: { command: "ls" } },
-			]),
-		);
-		await parent.appendMessage(parentToolResult("toolu_ls", "bash", "a.ts"));
-		// The turn that launches the forked child is still in flight.
-		await parent.appendMessage(
-			parentTurn([{ type: "toolCall", id: "toolu_fork", name: "subagent", arguments: { agent: "worker" } }]),
-		);
-
-		const session = await forkChild(parent);
+		const first = await createChildSession({}, await resolver.sessionManagerForIndex(0));
+		// The parent keeps going before the other children get a slot.
+		await parent.appendMessage(parentToolResult("toolu_fork", "subagent", "Launched forked workers."));
+		await parent.appendMessage(parentTurn([{ type: "text", text: "LATER_PARENT_TURN" }]));
+		const later = [
+			await createChildSession({}, await resolver.sessionManagerForIndex(2)),
+			await createChildSession({}, await resolver.sessionManagerForIndex(1)),
+		];
+		const sessions = [first, later[1]!, later[0]!];
 		try {
-			const request = await childFirstRequest(session.messages);
-
-			assert.deepEqual(assistantPairsJoinedWithThinking(request), []);
-			// The parent's settled bash turn is replayed exactly as the provider returned it.
-			assert.deepEqual(
-				request.filter((message) => message.role === "assistant").map((message) => message.content),
-				[
-					[
-						{ type: "thinking", thinking: "Now list the files.", signature: "sig-list" },
-						{ type: "tool_use", id: "toolu_ls", name: "bash", input: { command: "ls" } },
-					],
-				],
+			const requests = await Promise.all(
+				sessions.map((session) => requestMessages(copilotOpus, childTask(session))),
 			);
+			const launching = launchingTurnIndex(requests[0]!, "toolu_fork");
+			assert.notEqual(launching, -1);
+			for (const [index, request] of requests.entries()) {
+				assert.deepEqual(request.slice(0, launching + 1), requests[0]!.slice(0, launching + 1));
+				assert.doesNotMatch(JSON.stringify(request), /LATER_PARENT_TURN/);
+				const answers = toolResultsAfter(request, launching);
+				assert.deepEqual([...answers.keys()], ["toolu_fork", "toolu_status"]);
+				assert.match(answers.get("toolu_fork")!, new RegExp(`forked child ${index + 1} of 3`));
+			}
 		} finally {
-			session.dispose();
+			for (const session of sessions) session.dispose();
 		}
 	});
 
-	test("a removed parent-only notice between two turns with thinking does not join their thinking (#5481)", async () => {
-		const parent = SessionManager.inMemory(mkdtempSync(join(tmpdir(), "atomic-fork-thinking-")));
-		await parent.appendMessage({ role: "user", content: "Report the status.", timestamp: Date.now() });
+	test("a child of one of several subagent calls in a message answers its own call and its siblings' (#5481)", async () => {
+		const parent = SessionManager.inMemory();
+		await parent.appendMessage({ role: "user", content: "Review and fix.", timestamp: Date.now() });
 		await parent.appendMessage(
 			parentTurn([
-				{ type: "thinking", thinking: "Summarize the status.", thinkingSignature: "sig-status" },
-				{ type: "text", text: "Waiting on the reviewer." },
+				{ type: "thinking", thinking: "Two reviewers and one fixer.", thinkingSignature: "sig-burst" },
+				{ type: "toolCall", id: "toolu_review", name: "subagent", arguments: { tasks: [] } },
+				{ type: "toolCall", id: "toolu_fix", name: "subagent", arguments: { agent: "worker" } },
 			]),
 		);
-		await parent.appendCustomMessageEntry("subagent-notify", "The reviewer finished.", true);
-		await parent.appendMessage(
-			parentTurn([
-				{ type: "thinking", thinking: "Read the review.", thinkingSignature: "sig-review" },
-				{ type: "toolCall", id: "toolu_cat", name: "bash", arguments: { command: "cat review.md" } },
-			]),
+		// A merged burst: two tasks came from the first call, one from the second.
+		const resolver = createForkContextResolver(
+			parent,
+			"fork",
+			forkLaunchOfTasks(["toolu_review", "toolu_review", "toolu_fix"], "toolu_review"),
 		);
-		await parent.appendMessage(parentToolResult("toolu_cat", "bash", "Looks good."));
-		await parent.appendMessage(
-			parentTurn([{ type: "toolCall", id: "toolu_fork", name: "subagent", arguments: { agent: "worker" } }]),
+		const sessions = await Promise.all(
+			[0, 1, 2].map(async (index) => createChildSession({}, await resolver.sessionManagerForIndex(index))),
 		);
-
-		const session = await forkChild(parent);
 		try {
-			const request = await childFirstRequest(session.messages);
-
-			assert.deepEqual(assistantPairsJoinedWithThinking(request), []);
-			// The earlier turn keeps its text; the later turn is replayed exactly as the provider returned it.
-			assert.deepEqual(
-				request.filter((message) => message.role === "assistant").map((message) => message.content),
-				[
-					[{ type: "text", text: "Waiting on the reviewer." }],
-					[
-						{ type: "thinking", thinking: "Read the review.", signature: "sig-review" },
-						{ type: "tool_use", id: "toolu_cat", name: "bash", input: { command: "cat review.md" } },
-					],
-				],
+			const requests = await Promise.all(
+				sessions.map((session) => requestMessages(copilotOpus, childTask(session))),
 			);
+			const launching = launchingTurnIndex(requests[0]!, "toolu_review");
+			const answers = requests.map((request) => toolResultsAfter(request, launching));
+			for (const request of requests)
+				assert.deepEqual(request.slice(0, launching + 1), requests[0]!.slice(0, launching + 1));
+			for (const answer of answers) assert.deepEqual([...answer.keys()], ["toolu_review", "toolu_fix"]);
+			assert.match(answers[0]!.get("toolu_review")!, /forked child 1 of 2/);
+			assert.match(answers[1]!.get("toolu_review")!, /forked child 2 of 2/);
+			assert.match(answers[2]!.get("toolu_fix")!, /forked child 1 of 1/);
+			for (const answer of [answers[0]!.get("toolu_fix")!, answers[2]!.get("toolu_review")!])
+				assert.match(answer, /other subagents of the parent session/);
 		} finally {
-			session.dispose();
-		}
-	});
-
-	test("a turn left with nothing but thinking goes, and the turn before it gives up its thinking too (#5481)", async () => {
-		const parent = SessionManager.inMemory(mkdtempSync(join(tmpdir(), "atomic-fork-thinking-")));
-		await parent.appendMessage({ role: "user", content: "Report, then delegate.", timestamp: Date.now() });
-		await parent.appendMessage(
-			parentTurn([
-				{ type: "thinking", thinking: "Report first.", thinkingSignature: "sig-report" },
-				{ type: "text", text: "Two tests fail." },
-			]),
-		);
-		// Nothing the model reads separates these two turns in the parent either.
-		await parent.appendMessage(
-			parentTurn([
-				{ type: "thinking", thinking: "Delegate the fix.", thinkingSignature: "sig-delegate" },
-				{ type: "toolCall", id: "toolu_launch", name: "subagent", arguments: { agent: "worker" } },
-			]),
-		);
-		await parent.appendMessage(parentToolResult("toolu_launch", "subagent", "Launched worker."));
-		await parent.appendMessage(
-			parentTurn([
-				{ type: "thinking", thinking: "Check the log.", thinkingSignature: "sig-log" },
-				{ type: "toolCall", id: "toolu_log", name: "bash", arguments: { command: "git log -1" } },
-			]),
-		);
-		await parent.appendMessage(parentToolResult("toolu_log", "bash", "abc123"));
-		await parent.appendMessage(
-			parentTurn([{ type: "toolCall", id: "toolu_fork", name: "subagent", arguments: { agent: "worker" } }]),
-		);
-
-		const session = await forkChild(parent);
-		try {
-			const request = await childFirstRequest(session.messages);
-
-			assert.deepEqual(assistantPairsJoinedWithThinking(request), []);
-			assert.deepEqual(
-				request.filter((message) => message.role === "assistant").map((message) => message.content),
-				[
-					[{ type: "text", text: "Two tests fail." }],
-					[
-						{ type: "thinking", thinking: "Check the log.", signature: "sig-log" },
-						{ type: "tool_use", id: "toolu_log", name: "bash", input: { command: "git log -1" } },
-					],
-				],
-			);
-		} finally {
-			session.dispose();
+			for (const session of sessions) session.dispose();
 		}
 	});
 });

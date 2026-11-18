@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import {
+	appendForkToolResults,
 	assertSessionBlobStore,
 	type CreateAgentSessionOptions,
 	copySessionBlobs,
@@ -32,10 +33,18 @@ export async function stageSessionStore(
 }
 
 /**
+ * The result a forked stage's copy of its source holds for a tool call the source had not answered at the fork point,
+ * so the stage's first request answers every tool call of the copied conversation (#5481).
+ */
+export const STAGE_FORK_TOOL_RESULT =
+	"This call ran in the session this stage was forked from. Its result went to that session and is not available here.";
+
+/**
  * A new session copied from `sessionId`: every entry, or with `entryId` the branch from the session's root to
  * that exact entry, with the tool-output blobs those entries reference. A missing entry throws
  * `ForkEntryNotFoundError`, and a destination that cannot hold the blobs `blobs-unsupported`, before anything is
- * written.
+ * written. The copy is append-only: its entries are the source's, unchanged, followed by one result for each tool
+ * call the source's last turn left open (#5481).
  */
 export async function forkStageSession(
 	store: SessionStore,
@@ -66,7 +75,9 @@ export async function forkStageSession(
 		entries,
 	);
 	await copySessionBlobs(store, sessionId, destination, id, hashes);
-	return SessionManager.open(destination, id, cwd, { history: "tail" });
+	const forked = await SessionManager.open(destination, id, cwd, { history: "tail" });
+	await appendForkToolResults(forked, () => STAGE_FORK_TOOL_RESULT);
+	return forked;
 }
 
 /**

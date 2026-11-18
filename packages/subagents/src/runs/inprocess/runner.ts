@@ -91,7 +91,7 @@ import {
 	recoverCancelledChildOutput,
 } from "../shared/cancellation-recovery.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
-import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
+import { createInProcessChildPromptBehavior } from "./prompt-behavior.js";
 import {
 	SessionStartBudget,
 	type SessionStartProgress,
@@ -2224,8 +2224,6 @@ export class SubagentControlRuntime {
 					throw new Error("Skills not found: subagent");
 				}
 				const skillInjection = buildSkillInjection(selectedSkills.resolved);
-				const promptBehavior = createInProcessChildPromptBehavior(admitted.policy);
-				const systemPromptTransform = createInProcessChildSystemPromptTransform(admitted.policy, skillInjection);
 				startBudget.enter("creating-session");
 				created = await beforeStartDeadline(
 					createAgentSession({
@@ -2254,8 +2252,7 @@ export class SubagentControlRuntime {
 						settingsManager,
 						orchestrationContext: admitted.spec.parent?.orchestrationContext,
 						sessionManager,
-						systemPromptTransform,
-						initialContextTransform: promptBehavior.initialContextTransform,
+						...createInProcessChildPromptBehavior(admitted.policy, skillInjection),
 					}),
 					// The attempt already failed; a session that comes up after its deadline is never used.
 					(late) => late.session.dispose().catch(() => undefined),
