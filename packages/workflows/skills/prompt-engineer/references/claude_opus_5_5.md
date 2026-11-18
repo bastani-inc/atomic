@@ -1,6 +1,6 @@
 # Claude Opus 5.5 prompting
 
-Distilled from [Anthropic's Opus 5.5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5-5) and [migration guide](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide), checked November 9, 2026. Existing Opus 5 prompts are a useful baseline, but its thinking-disabled advice and default effort do not carry over. The snippets below are adaptations, not verbatim source quotations. Use the section matching the observed behavior, not every snippet at once.
+Distilled from [Anthropic's Opus 5.5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5-5) and [migration guide](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide), checked November 18, 2026. Existing Opus 5 prompts are a useful baseline, but its thinking-disabled advice and default effort do not carry over. The snippets below are adaptations, not verbatim source quotations. Use the section matching the observed behavior, not every snippet at once.
 
 ## When an unattended run stops after reporting progress
 
@@ -22,7 +22,7 @@ Bound automatic continuations to two or three before review. Observe already-run
 
 ## When tool loops are silent or updates are vague
 
-If the client hides progress output, a prompt cannot fix that. Otherwise ask for a sparse, concrete cadence:
+First check that the client receives the updates. On Opus 5.5 the notes the model writes between tool calls arrive as progress-update `thinking` blocks, not `text` blocks, and their text is empty at the default `thinking.display`. A client that renders only `text` blocks looks silent during a long agentic turn. Anthropic's guide sets `display: "updates"` (beta) to receive a short summary of each note; this is request configuration, not prompt wording. If the client still hides progress output, a prompt cannot fix that. Otherwise ask for a sparse, concrete cadence:
 
 ```text
 Before the first tool call, briefly state what you are checking. During long work, report material findings and what you will do next. End with the result of the whole task, its validation, and any unresolved limitation. Keep updates factual and short.
@@ -108,7 +108,7 @@ These exclusions are examples, not universal taste rules. Select only those that
 
 ## Thinking, history, tool, and refusal notes
 
-- Thinking is always on. To reduce it, lower effort before adding "don't think" instructions. Remove prompts that ask the model to reproduce its reasoning in the response; a short explanation of the answer or a summary of the actions taken is still fine. At `xhigh` or `max`, the migration guide suggests a `max_tokens` of at least 64k as a starting point.
+- Thinking is always on. To reduce it, lower effort before adding "don't think" instructions. Remove prompts that ask the model to reproduce its reasoning in the response; a short explanation of the answer or a summary of the actions taken is still fine. At `xhigh` or `max`, the migration guide suggests a `max_tokens` of at least 64k as a starting point; for long agentic coding turns, the prompting guide reports that 128,000, the model's maximum, worked well in Anthropic's testing. Thinking counts toward `max_tokens` even when it is not returned.
 - Keep history append-only and put stable instructions first. Append turn-scoped reminders instead of rewriting earlier copies. Changing the top-level `effort` between requests invalidates the prompt cache; a per-message effort change (beta) keeps it, and "holds for every later turn until another one replaces it."
 - The model decides whether to call a tool, so state clearly in the prompt when each tool applies. A strict argument schema constrains the arguments, not whether a call happens.
 - Requests to reproduce reasoning in the response can be declined with the `reasoning_extraction` category, which server-side fallback returns instead of retrying. Do not reword requests to get around safeguards.
