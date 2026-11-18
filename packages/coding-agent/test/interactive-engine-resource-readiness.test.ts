@@ -13,6 +13,7 @@ import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js
 import { RpcResourceReadiness } from "../src/modes/rpc/rpc-resource-readiness.js";
 import { RpcSessionBinding } from "../src/modes/rpc/rpc-session-binding.js";
 import { isRpcTransportFailure, rpcTransportError } from "../src/modes/rpc/rpc-transport-error.js";
+import type { RpcSessionState } from "../src/modes/rpc/rpc-types.js";
 import { createHarness } from "./suite/harness.js";
 
 function frame(message: Parameters<typeof serializeInteractiveEngineMessage>[0]): string {
@@ -39,7 +40,7 @@ function observedRejectionDeferred<T>(): Deferred<T> {
 	return result;
 }
 
-async function createGenerationRuntime() {
+async function createGenerationRuntime(engineState: Partial<RpcSessionState> = {}) {
 	const harness = await createHarness();
 	let generation = 1;
 	const resources = new Map<number, Deferred<void>>([[1, observedRejectionDeferred<void>()]]);
@@ -83,6 +84,7 @@ async function createGenerationRuntime() {
 				pendingMessageCount: 0,
 				queuedMessagesPaused: false,
 				resourceExtensions: [{ path: extensionPaths.get(requestedGeneration)!, hidden: false }],
+				...engineState,
 			};
 		},
 		requestInternal: async () => ({ models: [], scopedModels: [] }),
@@ -135,6 +137,7 @@ async function createGenerationRuntime() {
 			});
 		},
 		restartGate,
+		restart: client.restart,
 		emitResourceFailure(message: string) {
 			engineMessageListener?.({ type: "engine_resources_failed", message });
 			resources.get(generation)!.reject(new Error(`Interactive engine resource loading failed: ${message}`));
@@ -660,6 +663,22 @@ describe("interactive engine resource readiness", () => {
 					diagnostic.message === "Interactive engine resource loading failed: replacement workflow load failed",
 			);
 			expect(matchingFailures).toHaveLength(1);
+		} finally {
+			probe.restartGate.resolve();
+			await probe.runtime.dispose();
+			probe.harness.cleanup();
+		}
+	});
+
+	it("restarts a dead engine with the trust decisions it made in this host session", async () => {
+		const trustDecisions = { projects: { "/work/feature": true }, extensionSources: { "/work/tools": false } };
+		const probe = await createGenerationRuntime({ trustDecisions });
+		try {
+			probe.initializations.get(1)!.resolve();
+			await probe.runtime.initializeFromEngine();
+			probe.retireGeneration(1, false);
+			await vi.waitFor(() => expect(probe.restart).toHaveBeenCalledTimes(1));
+			expect(probe.restart.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ trustDecisions }));
 		} finally {
 			probe.restartGate.resolve();
 			await probe.runtime.dispose();
