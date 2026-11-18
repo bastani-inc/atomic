@@ -21,11 +21,13 @@ import {
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/waiting-stage-restart.ts");
 export const STAGES = 20;
-const WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS = 60_000;
-// The two real process starts share the scenario's existing budget. Cold source loading can spend more than one
-// third of it on a busy host; it is not a per-process recovery deadline. Keep time for the broker and directory cleanup.
-const PROCESS_RESTART_TIMEOUT_MS = 3 * WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS;
+// A cold Node source load takes about 80 s under process contention, before any stage runs. Each of the two starts
+// gets load headroom, plus one second per stage for checkpoint/recovery work and time to stop the broker/remove its root.
+const WORKFLOW_MODULE_LOAD_TIMEOUT_MS = 120_000;
+const WORKFLOW_CHECKPOINT_TIMEOUT_MS = STAGES * 1_000;
 const RESTART_CLEANUP_HEADROOM_MS = 20_000;
+const PROCESS_RESTART_TIMEOUT_MS =
+	2 * WORKFLOW_MODULE_LOAD_TIMEOUT_MS + WORKFLOW_CHECKPOINT_TIMEOUT_MS + RESTART_CLEANUP_HEADROOM_MS;
 const STAGE_NAMES = Array.from({ length: STAGES }, (_, index) => `stage-${index}`);
 
 /** How often each stage logged `<entry> <stage> [<detail>]`, in stage order; `detail` narrows to one kind of entry. */
