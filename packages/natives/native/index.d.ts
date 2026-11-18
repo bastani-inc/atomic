@@ -720,6 +720,13 @@ export interface OwnerSnapshot {
 }
 
 /**
+ * How much input waits unread on this process's standard input: bytes on Unix, input events for a Windows console.
+ * `null` where the OS cannot say without waiting: for a Windows pipe, whose peek waits behind a read already pending
+ * on it, and for a closed handle.
+ */
+export declare function pendingStdinInput(): number | null
+
+/**
  * When running process `pid` was created, as the decimal count of 100-nanosecond intervals since 1601-01-01 UTC (the
  * Windows process creation time), or `null` where that cannot be read: on other platforms, for a process that is gone
  * or has exited, and for one this process may not query.
