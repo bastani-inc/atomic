@@ -76,6 +76,8 @@ afterEach(() => {
 interface StuckTool {
 	/** Model requests so far. */
 	calls: number;
+	/** The ids of the tool calls that started running, in order. */
+	readonly ran: string[];
 	/** Settles once the stuck call has started. */
 	readonly started: PromiseWithResolvers<void>;
 	/** The stuck call returns this text once resolved; it never looks at its abort signal. */
@@ -85,16 +87,18 @@ interface StuckTool {
 }
 
 type SessionKind = "main" | "subagent" | "workflow stage";
+type ToolName = "stuck" | "quick";
 
 /**
- * A session of `kind` whose model calls `stuck` for the prompt "go" and `quick` for any other prompt, then answers.
- * `stuck` ignores the turn's abort until released; both are exclusive, so a later call waits for every earlier one.
+ * A session of `kind` whose model calls `stuck` for the prompt "go" (or the calls of `options.go`, in one assistant
+ * message) and `quick` for any other prompt, then answers. `stuck` ignores the turn's abort until released; both are
+ * exclusive, so a later call waits for every earlier one. Call ids are the tool's name and the call's place, `stuck-1`.
  */
 async function sessionWithStuckTool(
 	kind: SessionKind = "main",
-	options: { detachable?: true } = {},
+	options: { detachable?: true; go?: readonly ToolName[] } = {},
 ): Promise<{ session: AgentSession; tool: StuckTool }> {
-	const tool: StuckTool = { calls: 0, started: Promise.withResolvers(), release: Promise.withResolvers() };
+	const tool: StuckTool = { calls: 0, ran: [], started: Promise.withResolvers(), release: Promise.withResolvers() };
 	const modelRuntime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory({ p: { type: "api_key", key: "x" } }),
 		modelsPath: null,
@@ -111,8 +115,12 @@ async function sessionWithStuckTool(
 			if (context.messages.slice(lastUser).some((message) => message.role === "toolResult"))
 				return reply(model, [{ type: "text", text: "done" }], "stop");
 			const prompt = textOf(context.messages[lastUser]?.content ?? "");
-			const name = prompt === "go" ? "stuck" : "quick";
-			return reply(model, [{ type: "toolCall", id: `${name}-1`, name, arguments: {} }], "toolUse");
+			const names: readonly ToolName[] = prompt === "go" ? (options.go ?? ["stuck"]) : ["quick"];
+			return reply(
+				model,
+				names.map((name, index) => ({ type: "toolCall", id: `${name}-${index + 1}`, name, arguments: {} })),
+				"toolUse",
+			);
 		},
 	});
 	const stuck: ToolDefinition = {
@@ -122,7 +130,8 @@ async function sessionWithStuckTool(
 		parameters: Type.Object({}),
 		concurrency: "exclusive",
 		...(options.detachable ? { detachable: true } : {}),
-		async execute(_toolCallId, _params, signal) {
+		async execute(toolCallId, _params, signal) {
+			tool.ran.push(toolCallId);
 			tool.started.resolve();
 			const stopped = new Promise<string>((resolve) => {
 				const { stopsWith } = tool;
@@ -138,7 +147,8 @@ async function sessionWithStuckTool(
 		description: "A call that answers at once",
 		parameters: Type.Object({}),
 		concurrency: "exclusive",
-		async execute() {
+		async execute(toolCallId) {
+			tool.ran.push(toolCallId);
 			return { content: [{ type: "text", text: "quick answer" }], details: undefined };
 		},
 	};
@@ -331,6 +341,128 @@ describe("a tool call that ignores the interrupt (#5486)", () => {
 		assert.equal(
 			textOf(late.content),
 			"The stuck call stuck-1 that was interrupted finished after its turn ended:\nCI is green",
+		);
+	});
+
+	test("Esc wins over a detachment deadline that falls within the grace: the call ends aborted and gives its place back (#5486)", async () => {
+		const { session, tool } = await sessionWithStuckTool("main", { detachable: true });
+		// The call would detach 100 ms after it starts, inside the 200 ms the interrupted turn waits for it.
+		session.setToolDetachment({ afterMs: TEST_GRACE_MS / 2 });
+		const prompt = session.prompt("go");
+		await tool.started.promise;
+
+		assert.ok(await settlesWithin(session.abort(), TURN_END_BUDGET_MS), "the interrupted turn ends");
+		await prompt.catch(() => {});
+		const result = session.messages.find((message) => message.role === "toolResult");
+		assert.ok(result?.role === "toolResult", "the interrupted call has its own result, not a detached placeholder");
+		assert.equal(result.isError, true);
+		assert.match(textOf(result.content), /^Operation aborted: stuck did not stop within 0\.2 seconds/);
+		assert.deepEqual(session.takeDetachedToolCalls(), [], "the interrupted call did not detach");
+		assert.ok(
+			await settlesWithin(session.prompt("next"), TURN_END_BUDGET_MS),
+			"the next turn's exclusive call runs while the stuck call still runs",
+		);
+
+		tool.release.resolve("CI is green");
+		await until(() => session.messages.some((message) => message.role === "custom"), "the late result");
+		await sleep(50);
+		const late = session.messages.filter((message) => message.role === "custom");
+		assert.equal(late.length, 1, "the call's late outcome is recorded once");
+		assert.ok(late[0]?.role === "custom");
+		assert.equal(
+			textOf(late[0].content),
+			"The stuck call stuck-1 that was interrupted finished after its turn ended:\nCI is green",
+		);
+	});
+
+	test("Esc ends a turn whose later call waits for its place behind a call that already detached (#5486)", async () => {
+		const { session, tool } = await sessionWithStuckTool("main", { detachable: true, go: ["stuck", "stuck"] });
+		session.setToolDetachment({ afterMs: 50 });
+		const prompt = session.prompt("go");
+		await tool.started.promise;
+		// The first call's 50 ms deadline was set before it started, so it passes before this wait ends: the call detaches
+		// and keeps its exclusive place while it runs on, and the second call waits for that place.
+		await sleep(100);
+
+		assert.ok(await settlesWithin(session.abort(), TURN_END_BUDGET_MS), "the interrupted turn ends");
+		await prompt.catch(() => {});
+		const results = session.messages.filter((message) => message.role === "toolResult");
+		assert.deepEqual(
+			results.map((result) => [result.toolCallId, textOf(result.content), result.isError]),
+			[["stuck-2", "Operation aborted", true]],
+		);
+		const detached = session.takeDetachedToolCalls();
+		assert.deepEqual(
+			detached.map((call) => call.toolCallId),
+			["stuck-1"],
+			"the call that detached before the interrupt is still the host's",
+		);
+
+		tool.release.resolve("CI is green");
+		await detached[0]?.result;
+		await sleep(50);
+		assert.deepEqual(
+			tool.ran,
+			["stuck-1"],
+			"the interrupted call never runs, also once the place it waited for frees",
+		);
+	});
+
+	test("Esc ends a turn whose later call of a tool that never detaches waits behind a call that already detached (#5486)", async () => {
+		const { session, tool } = await sessionWithStuckTool("main", { detachable: true, go: ["stuck", "quick"] });
+		session.setToolDetachment({ afterMs: 50 });
+		const prompt = session.prompt("go");
+		await tool.started.promise;
+		// As above: the first call detaches before this wait ends, and the quick call waits for its exclusive place.
+		await sleep(100);
+
+		assert.ok(await settlesWithin(session.abort(), TURN_END_BUDGET_MS), "the interrupted turn ends");
+		await prompt.catch(() => {});
+		const results = session.messages.filter((message) => message.role === "toolResult");
+		assert.deepEqual(
+			results.map((result) => [result.toolCallId, textOf(result.content), result.isError]),
+			[["quick-2", "Operation aborted", true]],
+		);
+		const detached = session.takeDetachedToolCalls();
+		tool.release.resolve("CI is green");
+		await detached[0]?.result;
+		await sleep(50);
+		assert.deepEqual(
+			tool.ran,
+			["stuck-1"],
+			"the interrupted call never runs, also once the place it waited for frees",
+		);
+	});
+
+	test("a detachable call still waiting for its place when Esc is pressed ends aborted at once and never runs (#5486)", async () => {
+		const { session, tool } = await sessionWithStuckTool("main", { detachable: true, go: ["stuck", "stuck"] });
+		session.setToolDetachment({ afterMs: 60_000 });
+		const prompt = session.prompt("go");
+		await tool.started.promise;
+
+		assert.ok(await settlesWithin(session.abort(), TURN_END_BUDGET_MS), "the interrupted turn ends");
+		await prompt.catch(() => {});
+		const [first, second, ...rest] = session.messages.filter((message) => message.role === "toolResult");
+		assert.ok(first?.role === "toolResult" && second?.role === "toolResult");
+		assert.equal(rest.length, 0);
+		assert.equal(first.toolCallId, "stuck-1");
+		assert.match(textOf(first.content), /^Operation aborted: stuck did not stop within 0\.2 seconds/);
+		assert.equal(second.toolCallId, "stuck-2");
+		assert.equal(textOf(second.content), "Operation aborted");
+		assert.equal(second.isError, true);
+		assert.ok(
+			await settlesWithin(session.prompt("next"), TURN_END_BUDGET_MS),
+			"the next turn's exclusive call runs while the stuck call still runs",
+		);
+
+		tool.release.resolve("CI is green");
+		await until(() => session.messages.some((message) => message.role === "custom"), "the late result");
+		await sleep(50);
+		assert.deepEqual(tool.ran, ["stuck-1", "quick-1"], "the call aborted while it waited never runs");
+		assert.deepEqual(
+			session.messages.filter((message) => message.role === "custom").map((message) => message.details),
+			[{ toolCallId: "stuck-1", toolName: "stuck", isError: false }],
+			"only the call that ran has a late outcome",
 		);
 	});
 });

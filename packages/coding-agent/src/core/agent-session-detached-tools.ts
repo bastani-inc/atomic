@@ -439,6 +439,29 @@ function takeSchedulerPermit(scheduler: ToolExecutionScheduler, mode: ToolConcur
 	});
 }
 
+/**
+ * Settles once the call has its place in the scheduler or its turn is interrupted, whichever comes first (#5486). The
+ * wait is set up outside every session, and the reaction an interrupt leaves on `granted` keeps nothing of the turn.
+ */
+function placeOrInterrupt(granted: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+	if (signal === undefined) return granted;
+	if (signal.aborted) return Promise.resolve();
+	return outsideAnySession(() => grantedOrInterrupted(granted, signal));
+}
+
+function grantedOrInterrupted(granted: Promise<void>, signal: AbortSignal): Promise<void> {
+	const settled = Promise.withResolvers<void>();
+	let watched: AbortSignal | undefined = signal;
+	const settle = (): void => {
+		watched?.removeEventListener("abort", settle);
+		watched = undefined;
+		settled.resolve();
+	};
+	signal.addEventListener("abort", settle, { once: true });
+	void granted.then(settle);
+	return settled.promise;
+}
+
 /** Forget the session's detachable tools before its tools are registered again, so a removed tool is not one. */
 export function forgetDetachableTools(session: AgentSession): void {
 	const state = states.get(session);
@@ -454,7 +477,8 @@ export function forgetDetachableTools(session: AgentSession): void {
  *
  * The call keeps its declared concurrency: it starts once the calls before it in the session's scheduler allow, and
  * it holds its place there until its work settles, also after it detaches, so an exclusive call never overlaps another
- * call of the session. Closing the session gives the place back.
+ * call of the session. Closing the session gives the place back. A call whose turn is interrupted before it gets its
+ * place throws `abortError` (by default "Operation aborted") at once and never runs.
  */
 export function detachableTool(
 	session: AgentSession,
@@ -463,6 +487,7 @@ export function detachableTool(
 	createContext: DetachableContext,
 	detachesCall?: DetachesCall,
 	requiresReady = false,
+	abortError?: () => Error,
 ): AgentTool {
 	const state = detachmentState(session);
 	state.executes.set(tool.name, { execute, context: createContext });
@@ -478,7 +503,13 @@ export function detachableTool(
 				session._toolExecutionScheduler,
 				resolveToolConcurrency(tool.concurrency, params as Record<string, unknown>),
 			);
-			if (permit.grantedLater !== undefined) await permit.grantedLater;
+			if (permit.grantedLater !== undefined) await placeOrInterrupt(permit.grantedLater, signal);
+			if (signal?.aborted) {
+				// Interrupted before it got its place: the call gives the place back and never runs, so it holds back neither
+				// its turn nor any later call (#5486).
+				permit.release();
+				throw abortError?.() ?? new Error("Operation aborted");
+			}
 			const hold = holdCall(state.holds, permit);
 			const inline: InlineSession = { onUpdate, context: undefined };
 			let operation: ReturnType<typeof startOperation>;
@@ -501,10 +532,13 @@ export function detachableTool(
 			// created in the run's context stays on the call once it detaches.
 			const gate = Promise.withResolvers<symbol>();
 			hold.gate = gate.resolve;
-			// An interrupted turn waits for the call only a grace period, as for any tool call (#5486).
+			// An interrupted turn waits for the call only a grace period, as for any tool call (#5486). From the interrupt
+			// on the call no longer detaches: it answers within the grace, or ends aborted and gives its place back.
+			let interrupted = false;
 			let graceMs: number | undefined;
 			let graceTimer: ReturnType<typeof setTimeout> | undefined;
 			const forwardAbort = (): void => {
+				interrupted = true;
 				call.abort(signal?.reason);
 				graceMs = toolAbortGraceMs();
 				graceTimer = setTimeout(() => gate.resolve(ABANDON), graceMs);
@@ -517,11 +551,11 @@ export function detachableTool(
 			if (requiresReady)
 				readinessCallbacks.set(operationSignal, () => {
 					ready = true;
-					if (elapsed) gate.resolve(DETACH);
+					if (elapsed && !interrupted) gate.resolve(DETACH);
 				});
 			const timer = setTimeout(() => {
 				elapsed = true;
-				if (ready) gate.resolve(DETACH);
+				if (ready && !interrupted) gate.resolve(DETACH);
 			}, policy.afterMs);
 			try {
 				const opened = await gate.promise;

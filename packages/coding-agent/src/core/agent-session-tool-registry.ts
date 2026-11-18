@@ -150,6 +150,7 @@ export function _refreshToolRegistry(
 					(id, signal) => runner.createToolContext(id, signal),
 					typeof detachable === "function" ? (params) => detachable(params) : undefined,
 					definition.detachmentRequiresReady === true,
+					abortError,
 				)
 			: scheduled;
 	};
