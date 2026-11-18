@@ -6,8 +6,8 @@ import { sqliteDialect } from "./dialect.js";
 
 /**
  * A node:sqlite connection that runs on a worker thread of its own (#5376). The thread owns the `DatabaseSync`; the
- * calling thread sends it one request at a time and receives each answer as a message, so no statement, lock wait or
- * synced commit ever runs on the caller's event loop. SQLite's busy handler waits on the connection's own thread, so
+ * calling thread sends it requests, which it runs one at a time in the order they arrived, and receives each answer as
+ * a message, so no statement, lock wait or synced commit ever runs on the caller's event loop. SQLite's busy handler waits on the connection's own thread, so
  * a statement waiting for a lock another connection of the same process holds never stops that connection from
  * finishing: each connection gets a thread, and no two connections share one.
  */
@@ -31,6 +31,9 @@ try {
 }
 const STATEMENT_CACHE_SIZE = workerData.statementCacheSize;
 let database;
+// Requests sent in this epoch or an earlier one are refused, running nothing: a transaction sent before them found
+// the write lock busy, and they must not run ahead of it.
+let refusedEpoch = 0;
 
 function failure(error) {
 	return {
@@ -96,6 +99,10 @@ function begin() {
 	}
 }
 
+function refuseAfter(request) {
+	if (request.epoch !== undefined) refusedEpoch = Math.max(refusedEpoch, request.epoch);
+}
+
 const handlers = {
 	exec: (request) => { database.exec(request.sql); },
 	run: (request) => ({ changes: Number(statement(request.sql).run(...bind(request.params)).changes) }),
@@ -111,7 +118,10 @@ const handlers = {
 			try {
 				begin();
 			} catch (error) {
-				if (((error?.errcode ?? 0) & 0xff) === 5) return { busy: failure(error) };
+				if (((error?.errcode ?? 0) & 0xff) === 5) {
+					refuseAfter(request);
+					return { busy: failure(error) };
+				}
 				throw error;
 			}
 		}
@@ -137,6 +147,13 @@ const handlers = {
 					database.exec("ROLLBACK TO " + savepoint);
 					database.exec("RELEASE " + savepoint);
 				} catch (rollbackError) {
+					// A lock this request took is let go, and nothing sent behind it runs before its other members ran again.
+					if (request.begin) {
+						try {
+							database.exec("ROLLBACK");
+						} catch {}
+						refuseAfter(request);
+					}
 					return { outcomes, abandoned: { failure: failure(error), rollbackFailure: failure(rollbackError) } };
 				}
 				outcomes.push({ failure: failure(error) });
@@ -170,6 +187,10 @@ if (DatabaseSync !== undefined) try {
 }
 
 parentPort.on("message", (request) => {
+	if (request.epoch !== undefined && request.epoch <= refusedEpoch) {
+		parentPort.postMessage({ id: request.id, refused: true });
+		return;
+	}
 	try {
 		parentPort.postMessage({ id: request.id, value: handlers[request.kind](request) });
 	} catch (error) {
@@ -186,8 +207,15 @@ parentPort.on("message", (request) => {
  * failure, and the others commit together. A failed commit is rolled back and answered with the members' outcomes, so
  * every member fails with it. A savepoint that cannot be rolled back stops the group: the answer names the members
  * that ran, and the caller rolls the transaction back.
+ *
+ * `epoch` lets a caller send requests without waiting for the answers before them: once a `transaction` with `begin`
+ * is answered `busy`, or stopped by a savepoint that could not be rolled back (it then rolls back itself), the thread
+ * refuses every request of its epoch or an earlier one, running nothing, and the caller sends them again in a later
+ * epoch, once the transaction committed. A request without an epoch is never refused.
  */
-export type ConnectionRequest =
+export type ConnectionRequest = ConnectionCall & { readonly epoch?: number };
+
+type ConnectionCall =
 	| { readonly kind: "exec"; readonly sql: string }
 	| { readonly kind: "run" | "get" | "all"; readonly sql: string; readonly params: readonly SqliteValue[] }
 	| { readonly kind: "statements"; readonly statements: readonly ConnectionStatement[] }
@@ -242,6 +270,15 @@ interface ConnectionReply {
 	readonly value?: ConnectionValue | { readonly location: string | null };
 	readonly failure?: ConnectionFailure;
 	readonly load?: boolean;
+	readonly refused?: boolean;
+}
+
+/** A request the thread refused, running nothing, because one sent before it in its epoch found the lock busy. */
+export class ConnectionRefusedError extends Error {
+	constructor() {
+		super("The SQLite connection refused a request sent behind a transaction that found the write lock busy");
+		this.name = "ConnectionRefusedError";
+	}
 }
 
 /** The driver's error, rebuilt with the fields callers read (`errcode` for SQLITE_BUSY, `code`, `errstr`). */
@@ -445,9 +482,11 @@ export class ThreadConnection {
 		}
 		this.ledger.answer(
 			reply.id,
-			reply.failure === undefined
-				? { ok: true, value: reply.value as ConnectionValue }
-				: { ok: false, error: connectionFailure(reply.failure) },
+			reply.refused === true
+				? { ok: false, error: new ConnectionRefusedError() }
+				: reply.failure === undefined
+					? { ok: true, value: reply.value as ConnectionValue }
+					: { ok: false, error: connectionFailure(reply.failure) },
 		);
 		// An idle connection does not keep the process alive, as a connection on the calling thread would not.
 		if (this.ledger.size === 0) this.worker.unref();
