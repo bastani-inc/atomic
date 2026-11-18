@@ -682,14 +682,14 @@ test("an attached composer has accent rules naming its target and a placeholder 
 	const lines = raw.map((line) => stripTerminalSequences(line));
 	assert.equal(
 		lines[0],
-		`${"━".repeat(80 - " debugger · #5220 spawn lock · 18m ".length - 1)} debugger · #5220 spawn lock · 18m ━`,
+		`${"─".repeat(80 - " debugger · #5220 spawn lock · 18m ".length - 1)} debugger · #5220 spawn lock · 18m ─`,
 	);
 	assert.equal(lines[1], "❯  Message debugger…");
-	assert.equal(lines[2], "━".repeat(80));
+	assert.equal(lines[2], "─".repeat(80));
 	const typed = applyAttachedComposer(style, "x", "Message debugger…", ["─".repeat(80), "❯ hi", "─".repeat(80)]);
 	assert.equal(typed[1], "❯ hi", "typed text replaces the placeholder");
 	const narrow = applyAttachedComposer(style, "debugger", undefined, ["─".repeat(30), "❯", "─".repeat(30)]);
-	assert.equal(narrow[0], "━".repeat(30), "narrow terminals keep the rule without the label");
+	assert.equal(narrow[0], "─".repeat(30), "narrow terminals keep the rule without the label");
 });
 
 test("an attached composer preserves cursor markers and terminal styling around its placeholder (#5245)", () => {
