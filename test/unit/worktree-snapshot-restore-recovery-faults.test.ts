@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+	appendFileSync,
 	copyFileSync,
 	existsSync,
 	lstatSync,
@@ -157,8 +158,10 @@ function command(args: readonly string[]): string[] {
 const is = (args: readonly string[], ...prefix: string[]) =>
 	prefix.every((word, index) => command(args)[index] === word);
 
-async function dirtyClone(): Promise<{ readonly snapshot: WorktreeSnapshot; readonly blobs: MemorySnapshotBlobStore }> {
-	const { clone } = await sandbox.remoteWithClone("work");
+async function dirtyClone(
+	files?: Record<string, string>,
+): Promise<{ readonly snapshot: WorktreeSnapshot; readonly blobs: MemorySnapshotBlobStore }> {
+	const { clone } = await sandbox.remoteWithClone("work", files);
 	sandbox.write(join(clone, "dirty.txt"), "recorded\n");
 	const blobs = new MemorySnapshotBlobStore();
 	const captured = await captureWorktreeSnapshot(clone, { blobs });
@@ -420,8 +423,8 @@ describe("sweeping a record left by a stopped restore", () => {
 	 * A restore stopped at its checkout whose cleanup could not finish: its staging worktree, Git's entry for it and its
 	 * crash record stay behind for the next sweep.
 	 */
-	async function leftBehind() {
-		const { snapshot, blobs } = await dirtyClone();
+	async function leftBehind(files?: Record<string, string>) {
+		const { snapshot, blobs } = await dirtyClone(files);
 		const storeDir = sandbox.path("host");
 		const into = sandbox.path("final");
 		const id = uuid();
@@ -519,6 +522,36 @@ describe("sweeping a record left by a stopped restore", () => {
 		);
 	});
 
+	test("an edit a clean filter would drop is kept: a file counts as the snapshot's only with the bytes checkout writes (#4748)", async () => {
+		appendFileSync(sandbox.globalConfig, '[filter "redact"]\n\tclean = sed s/secret=.*/secret=X/\n');
+		const { snapshot, blobs, storeDir, staging } = await leftBehind({
+			".gitattributes": "*.cfg filter=redact\n",
+			"app.cfg": "secret=X\n",
+		});
+		writeFileSync(join(staging, "app.cfg"), "secret=hunter2\n");
+
+		const next = await restoreInto(snapshot, blobs, storeDir, sandbox.path("other"));
+
+		assert.equal(next.error, undefined);
+		assert.equal(readFileSync(join(asideOf(staging), "app.cfg"), "utf8"), "secret=hunter2\n");
+		assert.deepEqual(retainedWarnings(next.warnings), [warning(asideOf(staging))]);
+	});
+
+	test("a file an end-of-line rule converted at checkout is still the snapshot's, and is swept (#4748)", async () => {
+		const { snapshot, blobs, storeDir, staging } = await leftBehind({
+			".gitattributes": "*.txt text eol=crlf\n",
+			"notes.txt": "one\ntwo\n",
+		});
+		assert.equal(readFileSync(join(staging, "notes.txt"), "utf8"), "one\r\ntwo\r\n");
+
+		const next = await restoreInto(snapshot, blobs, storeDir, sandbox.path("other"));
+
+		assert.equal(next.error, undefined);
+		assert.deepEqual(retainedWarnings(next.warnings), []);
+		assert.equal(existsSync(staging), false);
+		assert.equal(existsSync(asideOf(staging)), false);
+	});
+
 	test("a file the user put into the restore's own staging worktree is kept, moved aside with the worktree (#4748)", async () => {
 		const { snapshot, blobs, storeDir, staging } = await leftBehind();
 		writeFileSync(join(staging, "keep.txt"), "user data\n");
@@ -608,26 +641,62 @@ describe("publishing the verified worktree", () => {
 		assert.deepEqual(readdirSync(join(storeDir, "restores")), []);
 	});
 
-	test("when the nested worktree cannot be removed, the refusal carries that failure and names the leftover", async () => {
+	test("when the nested worktree's files cannot be deleted, the refusal carries that failure and names where they are kept", async () => {
 		const { snapshot, blobs, storeDir } = await warmHost();
 		const into = sandbox.path("final");
 		const id = uuid();
 		faults.uuids.push(id);
-		const nested = join(into, basename(siblingStaging(into, id)));
+		const aside = asideOf(siblingStaging(into, id));
 		faults.spawnHook = (args) => {
 			if (is(args, "worktree", "move")) raceInto(into);
-			if (is(args, "worktree", "remove", "--force", "--force", nested)) return { command: "false", args: [] };
 			return undefined;
+		};
+		faults.rm = (path) => {
+			if (path === join(aside, "dirty.txt")) {
+				throw Object.assign(new Error(`EBUSY: resource busy, rm '${path}'`), {
+					code: "EBUSY",
+					syscall: "rm",
+					path,
+				});
+			}
 		};
 
 		const { error, warnings } = await restoreInto(snapshot, blobs, storeDir, into);
 
 		assert.ok(isWorkspaceRestoreError(error), String(error));
 		assert.equal(error.code, "unsafe-target");
-		assert.ok(isWorkspaceGitError(error.cleanupCause), String(error.cleanupCause));
-		assert.equal(error.cleanupCause.exitCode, 1);
-		assert.deepEqual(retainedWarnings(warnings), [warning(nested)]);
-		assert.equal(readFileSync(join(into, "keep.txt"), "utf8"), "user data\n");
+		assert.equal((error.cleanupCause as { code?: string } | undefined)?.code, "unwritable-path");
+		assert.deepEqual(retainedWarnings(warnings), [warning(aside)]);
+		assert.equal(readFileSync(join(aside, "dirty.txt"), "utf8"), "recorded\n");
+		assert.deepEqual(readdirSync(into), ["keep.txt"]);
+	});
+
+	test("a file written into the nested worktree before its cleanup is kept, with the worktree set aside (#4748)", async () => {
+		const { snapshot, blobs, storeDir } = await warmHost();
+		const into = sandbox.path("final");
+		const id = uuid();
+		faults.uuids.push(id);
+		const nested = join(into, basename(siblingStaging(into, id)));
+		let moved = false;
+		faults.spawnHook = (args) => {
+			if (is(args, "worktree", "move")) {
+				moved = true;
+				raceInto(into);
+			} else if (moved && is(args, "worktree", "list")) {
+				moved = false;
+				// Git has moved the worktree inside the directory that appeared; the user writes into it right away.
+				queueMicrotask(() => writeFileSync(join(nested, "user.txt"), "user data\n"));
+			}
+			return undefined;
+		};
+
+		const { error, warnings } = await restoreInto(snapshot, blobs, storeDir, into);
+
+		assert.ok(isWorkspaceRestoreError(error), String(error));
+		const aside = asideOf(siblingStaging(into, id));
+		assert.equal(readFileSync(join(aside, "user.txt"), "utf8"), "user data\n");
+		assert.deepEqual(retainedWarnings(warnings), [warning(aside)]);
+		assert.deepEqual(readdirSync(into), ["keep.txt"]);
 	});
 
 	test("when Git leaves the worktree where it was, nothing nested is removed and nothing is reported", async () => {

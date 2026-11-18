@@ -423,6 +423,12 @@ function sameIdentity(a: DirectoryIdentity, b: DirectoryIdentity): boolean {
 	return a.dev === b.dev && a.ino === b.ino && a.birthtime === b.birthtime;
 }
 
+/**
+ * How many files whose bytes differ from their blob, as a conversion at checkout leaves them, cleanup compares with what
+ * the checkout writes before it keeps the worktree, set aside, instead: each takes a Git process.
+ */
+const MAX_CONVERTED_FILES_CHECKED = 1000;
+
 /** What a file a restore checked out holds, checked again right before the file is deleted. */
 type RestoredEntry =
 	| { readonly kind: "file"; readonly algorithm: "sha1" | "sha256"; readonly digest: string; readonly blob: boolean }
@@ -600,20 +606,29 @@ async function inspectRestoredContent(
 			}
 			converted.push({ name: file.name, digest });
 		}
-		// A file the checkout converted, as for an end-of-line rule, is the snapshot's when Git converts it back to a blob.
-		if (converted.length > 0) {
-			if (!inStore) return undefined;
-			const hashed = await runGit(["-c", `core.attributesFile=${devNull}`, "hash-object", "--stdin-paths"], {
-				cwd: path,
-				env: { GIT_DIR: admin, GIT_WORK_TREE: path },
-				neutral: true,
-				input: `${converted.map((file) => file.name).join("\n")}\n`,
-			});
-			const oids = hashed.stdout.toString("utf8").trim().split("\n");
-			for (const [index, file] of converted.entries()) {
-				if (!(entries.get(file.name) ?? []).some((candidate) => candidate.oid === oids[index])) return undefined;
-				found.set(file.name, { kind: "file", algorithm: "sha256", digest: file.digest, blob: false });
+		// A file the checkout converted, as for an end-of-line rule or a smudge filter, is the snapshot's only when its bytes
+		// are exactly what the checkout writes for that path: never because a clean filter, which may drop an edit, maps it
+		// back to a blob.
+		if (converted.length > MAX_CONVERTED_FILES_CHECKED || (converted.length > 0 && !inStore)) return undefined;
+		for (const file of converted) {
+			let written = false;
+			for (const candidate of entries.get(file.name) ?? []) {
+				const checkout = await runGit(
+					["-c", `core.attributesFile=${devNull}`, "cat-file", "--filters", `--path=${file.name}`, candidate.oid],
+					{
+						cwd: path,
+						env: { GIT_DIR: admin!, GIT_WORK_TREE: path, GIT_LFS_SKIP_SMUDGE: "1" },
+						neutral: true,
+						allowExitCodes: [128],
+					},
+				);
+				if (checkout.exitCode === 0 && createHash("sha256").update(checkout.stdout).digest("hex") === file.digest) {
+					written = true;
+					break;
+				}
 			}
+			if (!written) return undefined;
+			found.set(file.name, { kind: "file", algorithm: "sha256", digest: file.digest, blob: false });
 		}
 		return found;
 	} catch {
@@ -861,7 +876,7 @@ async function sweepRestoreRecords(
  * Where the restore's worktree may be once it asked Git to move it to its target: `unchecked` until the check after the
  * move found it there (`published`), or found it nested in a directory that appeared at the target and dealt with that.
  */
-type MoveState = "none" | "unchecked" | "published" | "checked";
+type MoveState = "none" | "unchecked" | "published" | "nested" | "checked";
 
 /**
  * Under the store lock, cleanup after a restore that failed or was stopped once it asked Git to move its worktree toward
@@ -871,13 +886,31 @@ type MoveState = "none" | "unchecked" | "published" | "checked";
  * worktree it published.
  */
 async function cleanMovedRestore(record: RestoreRecord, state: MoveState): Promise<SetAside[]> {
+	const git: GitRunOptions = { cwd: dirname(record.store), env: { GIT_DIR: record.store } };
 	const pending: SetAside[] = [];
-	const candidates =
-		state === "unchecked" ? [record.target, join(record.target, basename(record.staging))] : [record.target];
+	const nested = join(record.target, basename(record.staging));
+	const candidates = state === "unchecked" ? [record.target, nested] : state === "nested" ? [nested] : [record.target];
 	for (const candidate of candidates) {
 		if (pending.length > 0) break;
 		const setAside = await setRestoredAside(candidate, record);
 		if (setAside !== undefined) pending.push(setAside);
+	}
+	if (pending.length === 0) {
+		// A worktree of this restore, or one Git registered where it moved it, that could not be set aside is kept and
+		// reported, with its crash record, never left behind silently.
+		const registered = await registeredWorktrees(git);
+		for (const candidate of candidates) {
+			const identity = await directoryIdentity(candidate);
+			if (identity === undefined) continue;
+			const own = record.identity !== undefined && sameIdentity(identity, record.identity);
+			if (own || includesPath(registered, await physicalPath(candidate))) {
+				throw new WorkspaceRestoreError("unsafe-target", {
+					snapshotId: null,
+					target: candidate,
+					reason: "not-restored",
+				});
+			}
+		}
 	}
 	const staged = await cleanRestoreRecord(record);
 	return [...pending, ...staged.filter((aside) => !pending.some((moved) => moved.path === aside.path))];
@@ -961,7 +994,7 @@ async function withRestoreRecord(
 	} catch (error) {
 		primary = error;
 		if (recorded) {
-			const moved = moveState === "unchecked" || moveState === "published";
+			const moved = moveState === "unchecked" || moveState === "published" || moveState === "nested";
 			try {
 				await cleanUpRestore(record, snapshotId, undefined, () =>
 					moved ? cleanMovedRestore(record, moveState) : cleanRestoreRecord(record),
@@ -2613,7 +2646,7 @@ async function moveIntoPlace(
 	snapshotId: string | null,
 	moving: (state: MoveState) => void,
 ): Promise<void> {
-	const { git, path, warn, signal } = publish;
+	const { git, path, signal } = publish;
 	const { staging, createdTarget } = record;
 	if (createdTarget) {
 		if ((await statIfPresent(path)) !== undefined) {
@@ -2638,20 +2671,9 @@ async function moveIntoPlace(
 	if (includesPath(registered, destination) && !includesPath(registered, nested)) {
 		moving("published");
 	} else {
-		moving("checked");
-		const error = new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
-		if (
-			includesPath(registered, nested) &&
-			(await inspectRestoredContent(nested, record.store, record.tree)) !== undefined
-		) {
-			try {
-				await runGit(["worktree", "remove", "--force", "--force", nested], { ...git, signal: undefined });
-			} catch (cleanupCause) {
-				Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
-				warn({ code: "stale-restore-retained", path: nested, kind: "worktree" });
-			}
-		}
-		throw error;
+		// The cleanup that follows takes a worktree Git nested in the directory that appeared out again.
+		moving(includesPath(registered, nested) ? "nested" : "checked");
+		throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
 	}
 }
 
