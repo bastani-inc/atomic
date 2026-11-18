@@ -167,7 +167,7 @@ Foreground subagent launches and explicit `action: "wait"` calls also yield when
 
 ### Completion messages
 
-Completion adds one notice line to the owning chat without depending on a model reply. Its marker and colour give the outcome: `●` completed, `✗` failed, `◼` stopped, `!` timed out, `⏸` paused or waiting. The line names the task, or an agent by its name, says how it ended and how long it ran. An agent's line is followed by the first line of its result:
+Completion adds one notice line to the owning chat without depending on a model reply. Its marker and colour give the outcome: `●` completed, `✗` failed, `◼` stopped, `!` timed out, `⏸` paused or quit, and a dim `◌` for a subagent [released while it waits](/subagents#released-subagents), the same mark `/tasks`, the agent panel and its launch card show it with. The line names the task, or an agent by its name, says how it ended and how long it ran. An agent's line is followed by the first line of its result:
 
 ```text
  ● Background command "npm run build" completed (exit code 0) · 3m 2s
@@ -176,6 +176,7 @@ Completion adds one notice line to the owning chat without depending on a model 
    ⎿  Authentication starts in …
       (ctrl+o for the full result)
  ⏸ debugger quit · awaiting resume
+ ◌ worker is waiting on bash (toolu_01) · 16m 16s
 ```
 
 The main chat, a workflow stage's chat and a subagent's view show the same line.
