@@ -127,7 +127,22 @@ export async function dropLibsqlScope(database: SqliteDatabase, prefix: string, 
 		prefix,
 		...fixed,
 	);
-	let pending = rows.map((row) => String(row.name));
+	const names = rows.map((row) => String(row.name));
+	// A virtual table drops its own shadow tables. Dropping one of those first leaves the virtual table undroppable on
+	// sqld ("vtable constructor failed"), which happens when the virtual table's drop meets a busy server and the pass
+	// moves on to its shadow tables before the retry.
+	const virtualTables = (
+		await database.all(
+			`SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%' AND substr(name, 1, length(?)) = ?`,
+			prefix,
+			prefix,
+		)
+	).map((row) => String(row.name));
+	const shadowOf = (name: string) => virtualTables.some((table) => name.startsWith(`${table}_`));
+	let pending = [
+		...virtualTables.filter((name) => names.includes(name)),
+		...names.filter((name) => !virtualTables.includes(name) && !shadowOf(name)),
+	];
 	while (pending.length > 0) {
 		const failed: string[] = [];
 		let cause: unknown;
