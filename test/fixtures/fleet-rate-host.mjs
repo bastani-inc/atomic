@@ -50,10 +50,19 @@ const model = { provider: "fake", id: "m", api: "anthropic-messages" };
 const { options } = await admitProviderStream(model, { fetch: fakeFetch }, false);
 const modes = [];
 const waits = [];
+let overdueRequests = 0;
 const end = Date.now() + Number(env.DURATION_MS);
 while (Date.now() < end) {
 	const started = Date.now();
-	await options.fetch("http://fake.invalid/");
+	// Compare completion with an independent timer, rather than charging a descheduled host for wall-clock lag.
+	const deadline = env.WAIT_DEADLINE_MS
+		? setTimeout(() => overdueRequests++, Number(env.WAIT_DEADLINE_MS))
+		: undefined;
+	try {
+		await options.fetch("http://fake.invalid/");
+	} finally {
+		clearTimeout(deadline);
+	}
 	waits.push(calls.at(-1).at - started);
 	modes.push(limiter.mode);
 	if (calls.length === 1 && env.READY) writeFileSync(env.READY, "ready");
@@ -61,7 +70,7 @@ while (Date.now() < end) {
 	if (pause > 0) await new Promise((resolve) => setTimeout(resolve, pause));
 }
 await limiter.close();
-writeFileSync(env.OUT, JSON.stringify({ calls, modes, waits }));
+writeFileSync(env.OUT, JSON.stringify({ calls, modes, waits, overdueRequests }));
 await journal.close();
 await database.close();
 process.exit(0);

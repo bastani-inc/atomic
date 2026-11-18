@@ -36,6 +36,7 @@ import type {
 import type { ModelFallbackReason } from "../../core/model-resolver-types.ts";
 import type { CredentialSynchronizationOperation } from "../../core/model-runtime.js";
 import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
+import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";
 import type { SerializedMissingSessionCwdError } from "../../core/session-cwd.ts";
 import type {
@@ -269,8 +270,13 @@ export interface RpcSessionState {
 	messageCount: number;
 	pendingMessageCount: number;
 	queuedMessagesPaused: boolean;
-	/** Authoritative engine trust state; absent on older RPC peers. */
+	/** Authoritative engine trust state; absent while the engine is still deciding, and on older RPC peers. */
 	projectTrusted?: boolean;
+	/**
+	 * Internal to the interactive engine child: the trust decisions it made in its session, answers for this session only
+	 * included. They are never saved; the interactive host hands them to an engine it starts to replace this one.
+	 */
+	trustDecisions?: SessionTrustDecisions;
 	resourceOverlaps?: ResourceOverlap[];
 	resourceExtensions?: RpcResourceExtension[];
 	/** Extensions that failed to load in the last (re)load; absent on older RPC peers. */

@@ -59,10 +59,16 @@ export function findGitPaths(cwd: string): GitPaths | null {
 }
 
 export async function findGitPathsAsync(cwd: string): Promise<GitPaths | null> {
-	let dir = cwd;
-	while (true) {
+	const directories: string[] = [];
+	for (let dir = cwd; ; dir = dirname(dir)) {
+		directories.push(dir);
+		if (dirname(dir) === dir) break;
+	}
+	// Probe independent ancestors together, but retain nearest-repository precedence.
+	const present = await Promise.all(directories.map((dir) => pathExists(join(dir, ".git"))));
+	for (const [index, dir] of directories.entries()) {
 		const gitPath = join(dir, ".git");
-		if (await pathExists(gitPath)) {
+		if (present[index]) {
 			try {
 				const gitStat = await stat(gitPath);
 				if (gitStat.isFile()) {
@@ -86,10 +92,8 @@ export async function findGitPathsAsync(cwd: string): Promise<GitPaths | null> {
 				return null;
 			}
 		}
-		const parent = dirname(dir);
-		if (parent === dir) return null;
-		dir = parent;
 	}
+	return null;
 }
 
 /** The resolved git, or undefined when none is available; the status surface reports the typed reason. */
