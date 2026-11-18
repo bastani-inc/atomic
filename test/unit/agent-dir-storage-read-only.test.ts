@@ -12,7 +12,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { afterEach, beforeEach, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 type FaultCode = "EPERM" | "EACCES" | "EROFS" | "EIO";
@@ -172,6 +172,26 @@ const { resolveSessionStore, selectSessionStorage } = await import(
 const { collectStorageStatus, selectJournal } = await import(
 	"../../packages/coding-agent/src/core/storage/storage-status.js"
 );
+
+const { sweepReleasedHistory } = await import(
+	"../../packages/coding-agent/src/core/storage/session/released-history-files.js"
+);
+
+/** Windows PowerShell's first start on a loaded machine: the time to look up the host's identity once. */
+const HOST_IDENTITY_TIMEOUT_MS = 60_000;
+
+// Opening a session store sweeps released history in the background, and the sweep's first run looks up the host's
+// identity once per process, on Windows with a PowerShell child that inherits the environment. Under a test's stubbed
+// USERPROFILE that child writes its profile folders (AppData\Roaming) into the test's directory, after the test has
+// ended and while its directory is being removed (#5242). The lookup runs here once, under the real environment.
+beforeAll(async () => {
+	const directory = makeTempDirectory("storage-read-only-host-");
+	try {
+		await sweepReleasedHistory(join(directory, "agent"));
+	} finally {
+		removeTempDirectory(directory);
+	}
+}, HOST_IDENTITY_TIMEOUT_MS);
 
 let root: string;
 
