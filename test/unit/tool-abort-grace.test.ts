@@ -310,6 +310,51 @@ describe("a tool call that ignores the interrupt (#5486)", () => {
 		await assertLateSettlementIsSilent(session, tool, new Error("deploy failed"));
 	});
 
+	test("discarding a late rejection does not format the abandoned call's reason (#5486)", async () => {
+		const { session, tool } = await sessionWithStuckTool("main", { detachable: true });
+		session.setToolDetachment({ afterMs: 60_000 });
+		const prompt = session.prompt("go");
+		await tool.started.promise;
+		await session.abort();
+		await prompt;
+		const before = [...session.messages];
+		let conversions = 0;
+		tool.release.reject({
+			[Symbol.toPrimitive]() {
+				conversions++;
+				throw new Error("cannot stringify");
+			},
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(conversions, 0, "nobody consumes the abandoned result");
+		assert.deepEqual(session.messages, before);
+	});
+
+	test("a detached handle returns an error result even for an unprintable rejection reason (#5486)", async () => {
+		const revoked = Proxy.revocable({}, {});
+		revoked.revoke();
+		for (const reason of [
+			Object.create(null),
+			{
+				toString() {
+					throw new Error("unprintable");
+				},
+			},
+			revoked.proxy,
+			Symbol("stopped"),
+		]) {
+			const { session, tool } = await sessionWithStuckTool("main", { detachable: true });
+			session.setToolDetachment({ afterMs: 0 });
+			await session.prompt("go");
+			const [call] = session.takeDetachedToolCalls();
+			assert.ok(call);
+			tool.release.reject(reason);
+			const outcome = await call.result;
+			assert.equal(outcome.isError, true);
+			assert.ok(textOf(outcome.result.content).length > 0);
+		}
+	});
+
 	test("a call that stops when its turn is interrupted keeps its own result, and nothing is recorded later (#5486)", async () => {
 		const { session, tool } = await sessionWithStuckTool();
 		tool.stopsWith = "stopped cleanly";

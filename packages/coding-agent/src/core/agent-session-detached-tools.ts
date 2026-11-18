@@ -107,12 +107,16 @@ function isTopLevelToolCall(session: AgentSession, toolCallId: string): boolean 
 	return false;
 }
 
-function errorToolResult(error: Error | DOMException | string | object): AgentToolResult {
-	const failure = typedFailure(error);
-	return {
-		content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
-		details: failure === undefined ? undefined : { error: failure },
-	};
+function errorToolResult(error: unknown): AgentToolResult {
+	try {
+		const failure = typedFailure(error);
+		return {
+			content: [{ type: "text", text: String(error instanceof Error ? error.message : error) }],
+			details: failure === undefined ? undefined : { error: failure },
+		};
+	} catch {
+		return { content: [{ type: "text", text: "Tool call failed with an unprintable error" }], details: undefined };
+	}
 }
 
 /**
@@ -121,7 +125,7 @@ function errorToolResult(error: Error | DOMException | string | object): AgentTo
  * `toJSON()` throws gets the latter too, marked `serialization: "fallback"`. Undefined for an error without a string
  * `code`.
  */
-function typedFailure(error: Error | DOMException | string | object): DetachedCallFailure | undefined {
+function typedFailure(error: unknown): DetachedCallFailure | undefined {
 	if (!(error instanceof Error)) return undefined;
 	const { code } = error as { readonly code?: unknown };
 	if (typeof code !== "string") return undefined;
@@ -309,7 +313,12 @@ function startOperation(
 	facts: DetachedCallFacts,
 	hold: CallHold,
 	start: OperationStart,
-): { readonly call: DetachedToolCall; readonly settled: Promise<AgentToolResult>; readonly signal: AbortSignal } {
+): {
+	readonly detach: () => DetachedToolCall;
+	readonly abort: DetachedToolCall["abort"];
+	readonly settled: Promise<AgentToolResult>;
+	readonly signal: AbortSignal;
+} {
 	return outsideAnySession(() => {
 		const controller = new AbortController();
 		if (start.inlineContext !== undefined) inline.context = start.inlineContext(facts.toolCallId, controller.signal);
@@ -321,15 +330,18 @@ function startOperation(
 			start.when === "now"
 				? new Promise<AgentToolResult>((resolve) => resolve(begin()))
 				: (start.when ?? Promise.resolve()).then(begin);
+		const outcome = observeWork(settled, hold);
+		const abort = abortWith(controller);
 		return {
 			settled,
 			signal: controller.signal,
-			call: {
+			abort,
+			detach: () => ({
 				toolCallId: facts.toolCallId,
 				toolName,
-				result: settledResult(toolName, facts.toolCallId, settled, hold),
-				abort: abortWith(controller),
-			},
+				result: detachedResult(toolName, facts.toolCallId, outcome),
+				abort,
+			}),
 		};
 	});
 }
@@ -382,25 +394,40 @@ function callContext(inline: InlineSession, facts: DetachedCallFacts): Extension
 	});
 }
 
-/**
- * The call's one reaction to its work settling: it lets the call's hold go and makes the call's result. It is built
- * apart from the call's abort, so it keeps the call's names and hold, not its controller.
- */
-function settledResult(
+type ToolSettlement = { result: AgentToolResult } | { error: unknown };
+
+/** Release the permit and consume both promise outcomes without inspecting a value the turn may have discarded. */
+function observeWork(settled: Promise<AgentToolResult>, hold: CallHold): Promise<ToolSettlement> {
+	return settled.then(
+		(result) => {
+			letGo(hold);
+			return { result };
+		},
+		(error: unknown) => {
+			letGo(hold);
+			return { error };
+		},
+	);
+}
+
+/** Only handover creates a host result. Its reaction must not retain the run that handed the call over. */
+function detachedResult(
 	toolName: string,
 	toolCallId: string,
-	settled: Promise<AgentToolResult>,
-	hold: CallHold,
+	outcome: Promise<ToolSettlement>,
 ): Promise<DetachedToolResult> {
-	return settled.then(
-		(value): DetachedToolResult => {
-			letGo(hold);
-			return { toolCallId, toolName, result: value, isError: value.isError === true };
-		},
-		(error: Error | DOMException | string | object): DetachedToolResult => {
-			letGo(hold);
+	return outsideAnySession(() =>
+		outcome.then((value) => {
+			let error: unknown;
+			if ("result" in value) {
+				try {
+					return { toolCallId, toolName, result: value.result, isError: value.result.isError === true };
+				} catch (cause) {
+					error = cause;
+				}
+			} else error = value.error;
 			return { toolCallId, toolName, result: errorToolResult(error), isError: true };
-		},
+		}),
 	);
 }
 
@@ -526,7 +553,7 @@ export function detachableTool(
 				letGo(hold);
 				throw error;
 			}
-			const { call, settled, signal: operationSignal } = operation;
+			const { abort, detach, settled, signal: operationSignal } = operation;
 			// The run waits on this gate alone: it settles at the threshold even while the call goes on, so no reaction
 			// created in the run's context stays on the call once it detaches.
 			let gate = Promise.withResolvers<symbol>();
@@ -539,7 +566,7 @@ export function detachableTool(
 			let graceTimer: ReturnType<typeof setTimeout> | undefined;
 			const forwardAbort = (): void => {
 				interrupted = true;
-				call.abort(signal?.reason);
+				abort(signal?.reason);
 				graceMs = toolAbortGraceMs();
 				graceTimer = setTimeout(() => open(ABANDON), graceMs);
 				graceTimer.unref?.();
@@ -584,7 +611,7 @@ export function detachableTool(
 			}
 			inline.onUpdate = undefined;
 			inline.context = undefined;
-			state.detached.set(toolCallId, call);
+			state.detached.set(toolCallId, detach());
 			return {
 				content: [{ type: "text", text: DETACHED_PLACEHOLDER_TEXT }],
 				details: undefined,
@@ -855,7 +882,7 @@ export function redispatchDetachedToolCalls(this: AgentSession): DetachedToolCal
 		return startOperation(toolCall.name, work.execute, params, inline, facts, holdCall(state.holds, permit), {
 			startingContext: whileOpen(this, work.context),
 			when: permit.grantedLater ?? "now",
-		}).call;
+		}).detach();
 	});
 }
 
@@ -938,7 +965,7 @@ async function finalizedResult(
 		return withReplacement(detached, replacement);
 	} catch (error) {
 		// As the agent loop does when an inline call's finalization throws: the call fails with that error.
-		return { ...detached, result: errorToolResult(error as Error | string | object), isError: true };
+		return { ...detached, result: errorToolResult(error), isError: true };
 	}
 }
 
