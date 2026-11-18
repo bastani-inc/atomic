@@ -36,6 +36,10 @@ const SNAPSHOT_CHECKPOINTS = 20;
 const MIN_TURNS_DURING_LARGE_CATCH_UP = 20;
 /** Seeding 120,000 events and folding them twice (once one-shot) is structural cost, not a slow catch-up. */
 const LARGE_JOURNAL_TEST_TIMEOUT_MS = 120_000;
+/** Checkpoints in one long run: folding them in one turn would hold it for tens of milliseconds. */
+const LONG_HISTORY_CHECKPOINTS = 20_000;
+/** Writing a run of 20,000 checkpoints through a backend and folding it three times is structural cost. */
+const LONG_HISTORY_TEST_TIMEOUT_MS = 120_000;
 /** Runs, and checkpoints per run, of the journal the equivalence tests read; each run's read spans several turns. */
 const HISTORY_RUNS = 6;
 const HISTORY_CHECKPOINTS = 1_500;
@@ -418,3 +422,42 @@ test("one caller giving up does not stop the catch-up another caller is waiting 
 	assert.deepEqual(reads.map(({ runId }) => runId).sort(), [...history].sort());
 	await assertMatchesOneShotRead(reader, [...history, ...snapshot]);
 });
+
+test(
+	"rebuilding a long history folds it over several turns, and readers see the run change in one step (#5480)",
+	async () => {
+		const { history } = await seedJournal(1, LONG_HISTORY_CHECKPOINTS);
+		const runId = history[0]!;
+		const journal = await openSqlRunJournal(path);
+		const reads = observeReads(journal);
+		const reader = await openBackend(journal, []);
+		await reader.hydrateResumableWorkflows();
+		const before = reader.getWorkflow(runId)?.completedCheckpoints;
+		assert.equal(before, LONG_HISTORY_CHECKPOINTS);
+		const writer = await openBackend(undefined, []);
+		await checkpoint(writer, runId, "after-first-read");
+		reads.length = 0;
+		const seen = new Set<number | undefined>();
+		let turnsAfterRead = 0;
+		const ticker = everyTurn(() => {
+			seen.add(reader.getWorkflow(runId)?.completedCheckpoints);
+			if (reads[0]?.done === true) turnsAfterRead++;
+		});
+		try {
+			await reader.hydrateWorkflow(runId);
+		} finally {
+			ticker.stop();
+		}
+		assert.ok(turnsAfterRead > 0, "the event loop turned while the read history was folded");
+		assert.deepEqual(
+			[...seen].filter((count) => count !== before && count !== LONG_HISTORY_CHECKPOINTS + 1),
+			[],
+			"readers saw the run only as it was before the rebuild and as it is after it",
+		);
+		assert.equal(reader.getWorkflow(runId)?.completedCheckpoints, LONG_HISTORY_CHECKPOINTS + 1);
+		await assertMatchesOneShotRead(reader, [runId]);
+		const oneShot = await openBackend(undefined, [runId]);
+		assert.deepEqual(reader.listCheckpoints(runId), oneShot.listCheckpoints(runId));
+	},
+	LONG_HISTORY_TEST_TIMEOUT_MS,
+);

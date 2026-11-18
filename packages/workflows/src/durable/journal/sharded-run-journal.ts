@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers";
 import {
 	discoverLegacyJournal,
 	isJournalCatalogError,
@@ -37,6 +38,14 @@ import { serializeJson, validateText } from "./values.js";
 const SHARDED_RUN_JOURNAL = Symbol.for("@bastani/workflows/sharded-run-journal");
 /** A read follows its run to another shard at most this often: a consolidation moves it once, a rollback moves it back. */
 const READ_FOLLOW_LIMIT = 3;
+
+/**
+ * A turn of the event loop between shards of a listing: each shard's statements hold the turn with the local SQLite
+ * store, and a store of dozens of shards held it for hundreds of milliseconds when they ran in one (#5480).
+ */
+function nextTurn(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
+}
 
 export interface ShardedRunJournalOptions {
 	/** The store's directory: its `catalog.sqlite` and native shard files. */
@@ -460,6 +469,7 @@ export class ShardedRunJournal implements RunJournal {
 		return this.operation(async () => {
 			const tokens = [await this.catalog.changeToken()];
 			for (const record of await this.catalog.shards()) {
+				await nextTurn();
 				const journal = await this.listable(record);
 				if (journal === undefined) tokens.push(`unavailable:${this.unavailable.get(record.id)!.code}`);
 				else if (journal.changeToken === undefined) tokens.push("untracked");
@@ -480,6 +490,7 @@ export class ShardedRunJournal implements RunJournal {
 			const [records, owners] = await Promise.all([this.catalog.shards(), this.catalog.owners()]);
 			const versions = new Map<string, RunVersion>();
 			for (const record of records) {
+				await nextTurn();
 				const journal = await this.listable(record);
 				if (journal === undefined) continue;
 				const shardVersions =

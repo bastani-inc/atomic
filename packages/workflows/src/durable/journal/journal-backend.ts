@@ -98,6 +98,12 @@ function removeProcessExitCleanup(cleanup: () => void): void {
 const TURN_BUDGET_MS = 8;
 /** Waiting journal operations that mark a fan-out; one workflow's own work keeps far fewer queued. */
 const FAN_OUT_WAITING_OPERATIONS = 32;
+/**
+ * Events a rebuild folds straight into the backend, in one turn of the event loop (#5480). A fold costs a few
+ * microseconds an event, so a run of tens of thousands of events would hold the turn for a hundred milliseconds or
+ * more: a longer history is folded into a staging backend over several turns and taken from it in one.
+ */
+const DIRECT_FOLD_EVENTS = 1_024;
 
 /** When the current turn's sliced work began; cleared at the next check phase. */
 let turnStartedAt: number | undefined;
@@ -934,6 +940,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	 */
 	private *rebuild(runId: string, stop?: AbortSignal): Operation<void> {
 		const entries = yield* this.entries(runId, undefined, stop);
+		if (entries.length > DIRECT_FOLD_EVENTS) return yield* this.rebuildStaged(runId, entries, stop);
 		void this.projection.deleteWorkflow(runId);
 		this.reconciledPendingStages.delete(runId);
 		this.sequences.delete(runId);
@@ -945,6 +952,56 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		// The folds below find each retained scope's checkpoints again.
 		for (const keys of this.ownCheckpoints.get(runId)?.retained.values() ?? []) keys.length = 0;
 		for (const entry of entries) this.fold(entry);
+	}
+	/**
+	 * `rebuild` of a long history (`DIRECT_FOLD_EVENTS`). The events are folded into a staging backend that narrows the
+	 * run's checkpoints as this one does, a turn's budget at a time; then this backend takes the run's state from it in
+	 * one turn, as the direct rebuild leaves it. A catch-up stopped meanwhile leaves the run as it was.
+	 */
+	private *rebuildStaged(runId: string, entries: readonly JournalEntry[], stop?: AbortSignal): Operation<void> {
+		const staging = new JournalDurableBackend(this.journal, this.holderId, false);
+		try {
+			const selection = this.checkpointSelections.get(runId);
+			if (selection !== undefined) staging.checkpointSelections.set(runId, selection);
+			const own = this.ownCheckpoints.get(runId);
+			if (own !== undefined)
+				staging.ownCheckpoints.set(runId, {
+					scopes: new Set(own.scopes),
+					retained: new Map([...own.retained.keys()].map((scope) => [scope, []])),
+				});
+			for (const entry of entries) {
+				staging.fold(entry);
+				const boundary = turnBoundary(stop);
+				if (boundary !== undefined) yield boundary;
+			}
+			this.adoptRun(runId, staging);
+		} finally {
+			staging.unregisterExecutionStorages();
+		}
+	}
+	/** Replaces the run's state with `staging`'s, which folded the run's whole history. */
+	private adoptRun(runId: string, staging: JournalDurableBackend<Journal>): void {
+		this.projection.adoptWorkflow(runId, staging.projection);
+		const take = <Value>(into: Map<string, Value>, from: Map<string, Value>) => {
+			const value = from.get(runId);
+			if (value === undefined) into.delete(runId);
+			else into.set(runId, value);
+		};
+		take(this.sequences, staging.sequences);
+		take(this.foldedAt, staging.foldedAt);
+		take(this.prompts, staging.prompts);
+		take(this.reconciledPendingStages, staging.reconciledPendingStages);
+		this.summarized.delete(runId);
+		this.overviews.delete(runId);
+		this.partialRuns.delete(runId);
+		const own = this.ownCheckpoints.get(runId);
+		const staged = staging.ownCheckpoints.get(runId);
+		if (own === undefined || staged === undefined) return;
+		for (const scope of staged.scopes) own.scopes.add(scope);
+		for (const [scope, keys] of own.retained) {
+			keys.length = 0;
+			for (const key of staged.retained.get(scope) ?? []) keys.push(key);
+		}
 	}
 	private *refresh(runId: string): Operation<void> {
 		if (!this.leases.has(runId)) return yield* this.rebuild(runId);
@@ -1937,7 +1994,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (folded > 0 && !this.partialRuns.has(runId)) {
 			const entries = yield* this.entries(runId, folded, stop);
 			if (entries[0]?.seq === folded && entries[0].at === this.foldedAt.get(runId)) {
-				for (const entry of entries) this.fold(entry);
+				// Extending only moves the run forward, as live appends do, so it may be seen part-way between turns.
+				for (const entry of entries) {
+					this.fold(entry);
+					const boundary = turnBoundary(stop);
+					if (boundary !== undefined) yield boundary;
+				}
 				return;
 			}
 		}

@@ -1,14 +1,15 @@
 /**
- * A run's snapshot tail is how the workflow catalog lists a run without reading its history: its latest snapshot event
- * and the checkpoints recorded after it. One statement used to walk back to that snapshot, visiting every event after
- * it, so a run with a hundred thousand checkpoints after its snapshot held the event loop for that whole walk, for
- * seconds when the pages were not cached (#5480). The walk now runs in bounded statements and gives the event loop a
- * turn between them, and finds what the single statement found.
+ * The reads a workflow catalog catch-up makes of a SQL journal. With the local SQLite store each statement holds the
+ * event loop while it runs, so before #5480 a few of them could freeze Atomic on a large journal: the walk back to a
+ * run's latest snapshot past every later event, every run's latest event in one statement, every shard of a store in
+ * one turn, and pages of a megabyte. Each now runs in bounded statements with turns of the event loop between them,
+ * and reads what the single statement read.
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { setImmediate } from "node:timers";
 import { afterEach, beforeEach, test } from "vitest";
+import { ShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
 import type { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import {
@@ -16,11 +17,16 @@ import {
 	type RunEvent,
 	type RunJournalSeedEvent,
 } from "../../packages/workflows/src/durable/journal/types.js";
+import { observeJournalRead } from "../helpers/journal-read-observation.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** Events after the snapshot: far more than one bounded statement visits. */
 const LONG_TAIL_EVENTS = 40_000;
+/** Runs in a journal: more than one bounded statement of `runVersions` looks up. */
+const MANY_RUNS = 600;
+/** Characters of payload one page of a run's read returns at most, events larger than that aside. */
+const QUARTER_MEGABYTE = 256 * 1024;
 
 let directory: string;
 let journal: SqlRunJournal;
@@ -67,8 +73,8 @@ async function seed(runId: string, events: readonly RunJournalSeedEvent[]): Prom
 	);
 }
 
-/** Calls the tail while counting the turns the event loop got meanwhile. */
-async function tailCountingTurns(runId: string) {
+/** Runs `read` while counting the turns the event loop got meanwhile. */
+async function countingTurns<T>(read: () => Promise<T>): Promise<{ readonly value: T; readonly turns: number }> {
 	let turns = 0;
 	let running = true;
 	const tick = () => {
@@ -78,7 +84,8 @@ async function tailCountingTurns(runId: string) {
 	};
 	setImmediate(tick);
 	try {
-		return { tail: await journal.snapshotTail(runId), turns };
+		const value = await read();
+		return { value, turns };
 	} finally {
 		running = false;
 	}
@@ -92,7 +99,7 @@ test("a snapshot behind a long tail of checkpoints is found in bounded statement
 		...tailEvents(LONG_TAIL_EVENTS),
 	]);
 	const version = (await journal.runVersions()).get(runId);
-	const { tail, turns } = await tailCountingTurns(runId);
+	const { value: tail, turns } = await countingTurns(() => journal.snapshotTail(runId));
 	assert.ok(turns > 0, "the event loop turned while the tail was read");
 	const lastCheckpoint = LONG_TAIL_EVENTS - 1 - ((LONG_TAIL_EVENTS - 1) % 3);
 	assert.deepEqual(
@@ -133,4 +140,67 @@ test("a snapshot among the latest events is read with the checkpoints after it (
 	// The checkpoints among the four events after the snapshot.
 	assert.equal(tail?.laterCheckpoints, [0, 1, 2, 3].filter((offset) => (LONG_TAIL_EVENTS + offset) % 3 === 0).length);
 	assert.equal(tail?.version.seq, LONG_TAIL_EVENTS + 6);
+});
+
+test("every run's latest event is read in bounded statements with turns between them (#5480)", async () => {
+	const runIds = Array.from({ length: MANY_RUNS }, (_, index) => testRunId(`versions-${index}`));
+	await Promise.all(
+		runIds.map((runId, index) =>
+			seed(runId, [{ event: snapshotEvent(runId, E.runStarted, "started") }, ...tailEvents(index % 3)]),
+		),
+	);
+	const { value: versions, turns } = await countingTurns(() => journal.runVersions());
+	assert.ok(turns > 0, "the event loop turned while the versions were read");
+	assert.deepEqual(
+		runIds.map((runId) => versions.get(runId)?.seq),
+		runIds.map((_, index) => 1 + (index % 3)),
+	);
+	assert.equal(versions.size, MANY_RUNS);
+});
+
+test("a store of several shards gives the event loop a turn between shards while it lists them (#5480)", async () => {
+	const store = await ShardedRunJournal.open({
+		directory: join(directory, "store"),
+		openShard: (path) => openSqlRunJournal(path),
+	});
+	try {
+		// A running root keeps its shard busy, so each new root takes a shard of its own.
+		const roots = ["first", "second", "third"];
+		for (const runId of roots)
+			assert.equal(
+				await store.createRun({ runId, name: "wf", cwd: "/project", createdAt: 1, status: "running" }),
+				"created",
+			);
+		assert.equal(new Set(roots.map((runId) => store.shardOf(runId)?.id)).size, roots.length);
+		// The first listing opens the shards; the turns that count are a listing's own.
+		await store.runVersions();
+		const versions = await countingTurns(() => store.runVersions());
+		const token = await countingTurns(() => store.changeToken());
+		assert.ok(versions.turns >= roots.length - 1, `${versions.turns} turns while the versions were read`);
+		assert.ok(token.turns >= roots.length - 1, `${token.turns} turns while the change token was read`);
+		assert.deepEqual([...versions.value.keys()].sort(), [...roots].sort());
+	} finally {
+		await store.close();
+	}
+});
+
+test("a page of a run's read holds at most a quarter megabyte of payload (#5480)", async () => {
+	const runId = testRunId("large-events");
+	const payload = "x".repeat(QUARTER_MEGABYTE / 4);
+	await seed(runId, [
+		{ event: snapshotEvent(runId, E.runStarted, "started") },
+		...Array.from({ length: 12 }, (_, index) => ({
+			event: { type: E.summaryRecorded, payload: { index, payload } } as RunEvent,
+		})),
+	]);
+	const observed = observeJournalRead(journal);
+	try {
+		const read = await Array.fromAsync(journal.read(runId));
+		assert.equal(read.length, 13);
+		// A page ends with the event that takes it past a quarter megabyte: the small first event and four large ones,
+		// then four large ones at a time.
+		assert.deepEqual(observed.pageSizes.slice(0, 3), [5, 4, 4]);
+	} finally {
+		observed.restore();
+	}
 });

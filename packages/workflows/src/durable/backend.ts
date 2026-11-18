@@ -268,6 +268,13 @@ class PendingStageReceiptIndex {
 		this.workflows.delete(workflowId);
 	}
 
+	/** Takes `staged`'s receipts of `workflowId` in place of this index's. */
+	adopt(workflowId: string, staged: PendingStageReceiptIndex): void {
+		const workflow = staged.workflows.get(workflowId);
+		if (workflow === undefined) this.workflows.delete(workflowId);
+		else this.workflows.set(workflowId, workflow);
+	}
+
 	clear(): void {
 		this.workflows.clear();
 	}
@@ -1259,6 +1266,26 @@ class JournalProjection {
 
 	isWorkflowLoadable(workflowId: string): boolean {
 		return !this.deletedWorkflowIds.has(workflowId);
+	}
+
+	/**
+	 * Takes `staged`'s state of `workflowId` in place of this projection's, as deleting the workflow here and folding its
+	 * events again would leave it: a journal backend folds a long history into a staging projection over several turns
+	 * of the event loop, and readers of this one see the workflow change in one step (#5480).
+	 */
+	adoptWorkflow(workflowId: string, staged: JournalProjection): void {
+		const take = <Value>(into: Map<string, Value>, from: Map<string, Value>) => {
+			const value = from.get(workflowId);
+			if (value === undefined) into.delete(workflowId);
+			else into.set(workflowId, value);
+		};
+		take(this.workflows, staged.workflows);
+		take(this.pendingReceipts, staged.pendingReceipts);
+		this.stickyReceipts.adopt(workflowId, staged.stickyReceipts);
+		take(this.stickyDeliveryCounts, staged.stickyDeliveryCounts);
+		this.bumpDeliveryCountVersion(workflowId);
+		if (this.workflows.has(workflowId)) this.deletedWorkflowIds.delete(workflowId);
+		else this.deletedWorkflowIds.add(workflowId);
 	}
 
 	reset(): void {

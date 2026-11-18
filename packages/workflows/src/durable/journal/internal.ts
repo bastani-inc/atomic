@@ -30,9 +30,11 @@ export const JOURNAL_READ_PAGE_SIZE = 256;
 /**
  * The most characters of event payload one journal read returns, by the payload's `length()`, so a page of large
  * checkpoints stays under a libSQL server's 10 MB response limit: a character is at most four bytes of UTF-8 (#4954).
- * A page ends with the event that takes it past this, so one event larger than this is a page of its own.
+ * A page ends with the event that takes it past this, so one event larger than this is a page of its own. Reading and
+ * decoding a page holds the event loop with the local SQLite store, so a page is kept to a quarter of a megabyte:
+ * a page of a megabyte took up to 100 ms when its pages were not cached (#5480).
  */
-export const JOURNAL_READ_PAGE_CHARS = 1024 * 1024;
+export const JOURNAL_READ_PAGE_CHARS = 256 * 1024;
 
 /**
  * The rows the next statement of a paged read fetches, after one that fetched `fetched` rows of a batch of `limit`
