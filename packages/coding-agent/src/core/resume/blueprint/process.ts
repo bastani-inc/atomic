@@ -5,7 +5,7 @@ import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { waitForChildProcess } from "../../../utils/child-process.ts";
-import { killProcessTree } from "../../../utils/shell.ts";
+import { killChildProcessTree } from "../../../utils/shell.ts";
 import { containProcessTree, type ProcessTreeContainment, processTreeEnded } from "../../process-tree-containment.ts";
 
 /** A step's log file, open for appending: the child processes of the step write their output to `fd`. */
@@ -110,7 +110,8 @@ export async function runLoggedProcess(
 			// Terminating the tree ends every process in it, and closing it ends any left: it is terminated at most once.
 			if (!treeTerminated) treeTerminated = tree?.terminate() === true;
 			if (treeTerminated) return;
-			if (child.pid !== undefined) killProcessTree(child.pid);
+			// Once the command's exit is reported, its pid may name another process: nothing is killed by that pid.
+			killChildProcessTree(child, child.exitCode !== null || child.signalCode !== null);
 		};
 		const timer = setTimeout(() => {
 			timedOut = true;

@@ -35,6 +35,7 @@
 - A subagent's chat opened after one of its requests failed or was interrupted before any text arrived, for example during the retry wait or after the subagent finished, now shows the request's `Error: …` line or `Interrupted` block, as the main chat does. Before, the chat showed them only when it was open as the request ended ([#5529](https://github.com/bastani-inc/atomic/issues/5529)).
 - An engine restart while Atomic loads models or waits for another trust answer no longer repeats a session-only trust question you already answered for a project or `-e` extension source ([#5568](https://github.com/bastani-inc/atomic/issues/5568)).
 - On Windows, a `!command` config value or a blueprint step that is stopped has its process tree terminated once. Atomic no longer terminates it again when the command's exit arrives, or when an abort comes after its timeout ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
+- On Windows, a blueprint step stopped after its command exited, while a process the step started still writes its output, no longer kills by the command's pid, which may already name another process. This applies when the step's processes could not be contained ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
 
 ## [0.9.89] - 2026-11-18
 

@@ -1,17 +1,25 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as realSleep } from "node:timers/promises";
 import { afterEach, test, vi } from "vitest";
 
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return { ...actual, spawn: vi.fn(actual.spawn) };
+});
+
 /**
  * Every process tree a caller contains is recorded on its own: what was done to it, in order. Terminating the job ends
  * every process in it on Windows; `endsOnTerminate` says whether this fake does that too, by killing the contained root.
+ * `available` false stands for a tree Windows could not put in a job, which leaves only the kill by pid.
  */
 const containment = vi.hoisted(() => ({
 	enabled: false,
+	available: true,
 	endsOnTerminate: true,
 	trees: [] as { pid: number; events: string[] }[],
 }));
@@ -23,6 +31,7 @@ vi.mock("../../packages/coding-agent/src/core/process-tree-containment.ts", asyn
 		...actual,
 		containProcessTree: (pid: number) => {
 			if (!containment.enabled) return actual.containProcessTree(pid);
+			if (!containment.available) return undefined;
 			const tree = { pid, events: ["contain"] };
 			containment.trees.push(tree);
 			return {
@@ -61,6 +70,7 @@ const PROCESS_START_WAIT_MS = 20_000;
 afterEach(() => {
 	vi.useRealTimers();
 	containment.enabled = false;
+	containment.available = true;
 	containment.endsOnTerminate = true;
 	containment.trees = [];
 });
@@ -178,6 +188,47 @@ test.skipIf(process.platform === "win32")(
 			if (hookPid > 0) kill(hookPid);
 			if (setup) await cleanupWorktrees(setup);
 			rmSync(root, { recursive: true, force: true });
+		}
+	},
+);
+
+// Only Windows copies a step's output through pipes, which a process the step started can hold after the step's command
+// exits; once that exit is reported, the command's pid may name another process.
+test.skipIf(process.platform !== "win32")(
+	"a blueprint step aborted after its command exited, while a process it started still writes its output, kills nothing by the command's pid (#5601)",
+	async () => {
+		containment.enabled = true;
+		containment.available = false;
+		const directory = realpathSync(mkdtempSync(join(tmpdir(), "process-tree-once-exited-step-")));
+		const log = await openStepLog(join(directory, "step.log"));
+		const writer =
+			"const end = Date.now() + 3000; const t = setInterval(() => { process.stdout.write('x'); if (Date.now() > end) clearInterval(t); }, 20);";
+		const command = [
+			`require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(writer)}], { stdio: "inherit", detached: true, windowsHide: true }).unref();`,
+			// The writer is writing before the command exits, so the step's output stays open past that exit.
+			"Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);",
+		].join("\n");
+		try {
+			const controller = new AbortController();
+			const reason = new Error("resume cancelled");
+			const pending = runLoggedProcess(
+				{ command: process.execPath, args: ["-e", command], cwd: directory, env: process.env },
+				log,
+				{ timeoutMs: 60_000, signal: controller.signal },
+			);
+			const child = vi.mocked(spawn).mock.results.at(-1)?.value as ChildProcess | undefined;
+			assert.ok(child?.pid, "the step's command was spawned");
+			const commandPid = String(child.pid);
+			if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+			controller.abort(reason);
+			await assert.rejects(pending, (error: unknown) => error === reason);
+			const killsByPid = vi
+				.mocked(spawn)
+				.mock.calls.filter(([file, args]) => /taskkill/i.test(String(file)) && (args ?? []).includes(commandPid));
+			assert.deepEqual(killsByPid, []);
+		} finally {
+			await log.close();
+			rmSync(directory, { recursive: true, force: true });
 		}
 	},
 );
