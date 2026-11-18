@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `subagent({ action: "resume" })` never answering while a wake ran the child. A released or finished subagent that a result, shell completion or Intercom message woke runs again, but resume did not refuse it as already running: it queued behind that run and answered only when the run ended, so the parent's turn showed no result and could not end, and the child never got the message. Resume now refuses such a child at once with `<agent> (<child-id>, <intercom-name>) is already running as task <task-id>; pause or quit it first.`, and a resume that arrives while a wake is still reopening the child waits only until it runs. Interrupting the turn (Esc) also ends a `pause`, `resume` or `quit` call that is still waiting: a stop that was already requested goes on, and a resume still queued to wake the child is withdrawn and never runs ([#5485](https://github.com/bastani-inc/atomic/issues/5485))
+
 ## [0.9.89] - 2026-11-18
 
 ### Breaking Changes

@@ -86,18 +86,66 @@ export function beginReleasedChildStop(key: string): { readonly decided: Promise
 		},
 	};
 }
+/**
+ * A resume whose caller was interrupted before it answered (#5485). `withdrawn`: the child's wake had not taken it yet,
+ * so it was withdrawn and never runs. Otherwise the wake had already begun it, and it goes on.
+ */
+export class ReleasedChildResumeInterruptedError extends Error {
+	readonly withdrawn: boolean;
+	constructor(childId: string, withdrawn: boolean) {
+		super(
+			withdrawn
+				? `The resume of ${childId} was withdrawn before its wake took it`
+				: `The resume of ${childId} had begun when its caller was interrupted`,
+		);
+		this.name = "ReleasedChildResumeInterruptedError";
+		this.withdrawn = withdrawn;
+	}
+}
+
+/** Resume wakes delivered that no wake handler has taken yet: until it is taken, a resume can be withdrawn (#5485). */
+const untaken = new Set<string>();
+
+/**
+ * Take the resume wake `id` for handling: false when its caller withdrew it, so the handler leaves it out. Once taken
+ * it can no longer be withdrawn.
+ */
+export function takeReleasedChildResume(id: string): boolean {
+	return untaken.delete(id);
+}
+
+/**
+ * Queue a resume of a released child through its wake key, behind any wake of it already queued or running. Undefined
+ * when no wake handler is bound for `owner`. When `signal` aborts first, the resume rejects with
+ * {@link ReleasedChildResumeInterruptedError}: withdrawn if no wake had taken it yet, so it never runs.
+ */
 export function resumeReleasedChild(
 	owner: string,
 	child: string,
 	request: SubagentChildResumeRequest,
+	signal?: AbortSignal,
 ): Promise<SubagentChildRestoreOutcome> | undefined {
 	const dispatcher = dispatchers.get(owner)?.dispatcher;
 	if (dispatcher === undefined) return undefined;
+	if (signal?.aborted) return Promise.reject(new ReleasedChildResumeInterruptedError(child, true));
 	const id = `resume:${randomUUID()}`;
 	const waiter = Promise.withResolvers<SubagentChildRestoreOutcome>();
 	waiters.set(id, waiter);
+	untaken.add(id);
+	if (signal !== undefined) {
+		const interrupt = () => {
+			if (!waiters.delete(id)) return;
+			waiter.reject(new ReleasedChildResumeInterruptedError(child, untaken.delete(id)));
+		};
+		signal.addEventListener("abort", interrupt, { once: true });
+		void waiter.promise.then(
+			() => signal.removeEventListener("abort", interrupt),
+			() => signal.removeEventListener("abort", interrupt),
+		);
+	}
 	const wake: ReleasedChildResumeWake = { id, kind: "intercom", resume: request };
 	void dispatcher.deliver(subagentWakeKey(owner, child), wake).catch((error: Error) => {
+		untaken.delete(id);
 		const pending = waiters.get(id);
 		if (pending !== undefined) {
 			waiters.delete(id);

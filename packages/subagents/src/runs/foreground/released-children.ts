@@ -20,7 +20,12 @@ import {
 	scheduleReleasedReplyTimeouts,
 	withReleasedReplyTimeouts,
 } from "./released-child-replies.js";
-import { type ReleasedChildResumeWake, setReleasedChildWakeActive, settleResumeWake } from "./released-child-resume.js";
+import {
+	type ReleasedChildResumeWake,
+	setReleasedChildWakeActive,
+	settleResumeWake,
+	takeReleasedChildResume,
+} from "./released-child-resume.js";
 import { isReleasedReplyHandoffResult } from "./released-reply-protocol.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import {
@@ -71,6 +76,10 @@ const REDISPATCH_WAKE_PREFIX = "redispatch:";
 
 function isRedispatchWake(wake: AgentWake): boolean {
 	return wake.id.startsWith(REDISPATCH_WAKE_PREFIX);
+}
+
+function isResumeWake(wake: AgentWake): wake is ReleasedChildResumeWake {
+	return wake.id.startsWith("resume:");
 }
 
 function waitsOnHeldResult(record: SubagentChildRecord): boolean {
@@ -478,12 +487,15 @@ export function handleReleasedChildWakes(
 					actions.redispatch !== undefined && wakes.some(isRedispatchWake) && needsRedispatch(record);
 				if (redispatch) await actions.redispatch?.(record, slot);
 				const current = redispatch ? await latest(childId) : record;
+				// A resume its caller withdrew before this handler took it is left out, as if it never arrived (#5485).
 				const others = withReleasedReplyTimeouts(
 					current,
-					wakes.filter((wake) => !isRedispatchWake(wake)),
+					wakes.filter(
+						(wake) => !isRedispatchWake(wake) && (!isResumeWake(wake) || takeReleasedChildResume(wake.id)),
+					),
 				);
 				if (others.length === 0) return;
-				const resumes = others.filter((wake): wake is ReleasedChildResumeWake => wake.id.startsWith("resume:"));
+				const resumes = others.filter(isResumeWake);
 				if (resumes.length > 0 && actions.resume !== undefined) {
 					const first = resumes[0];
 					if (first === undefined) return;

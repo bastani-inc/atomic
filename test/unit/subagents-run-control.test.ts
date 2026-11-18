@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSession, DetachedToolCall, DetachedToolResult, ExtensionContext } from "@bastani/atomic";
+import { Agent } from "@bastani/atomic-agent-core";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import {
 	AgentWakeDispatcher,
@@ -220,7 +222,13 @@ interface Harness {
 	agents: AgentConfig[];
 	/** Runs whose prompt contains a key wait until its gate resolves, then complete; checked before the rules above. */
 	readonly finishOn: Map<string, PromiseWithResolvers<void>>;
-	call(params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1]): Promise<SubagentToolResult>;
+	/** Runs whose prompt contains a key ignore a stop until its gate resolves, as a child stuck in a tool call does. */
+	readonly stuckOn: Map<string, PromiseWithResolvers<void>>;
+	/** Call the subagent tool as the parent's model does, in a turn that `signal`, when given, interrupts. */
+	call(
+		params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1],
+		signal?: AbortSignal,
+	): Promise<SubagentToolResult>;
 	launch(runId: string): Promise<{ record: SubagentChildRecord; taskId: TaskId }>;
 	/** Admit a child through `schedule`, as a parallel launch does, without waiting for it to start. */
 	admit(
@@ -388,7 +396,9 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		agentDefined: true,
 		agents: [agent],
 		finishOn: new Map(),
-		call: (params) => executor.execute("run-control", params, new AbortController().signal, undefined, state.ctx),
+		stuckOn: new Map(),
+		call: (params, signal = new AbortController().signal) =>
+			executor.execute("run-control", params, signal, undefined, state.ctx),
 		async launch(runId) {
 			const taskId = await state.admit(runId);
 			const record = await state.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
@@ -438,6 +448,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 	const runtime = async (...args: Parameters<typeof runSync>): Promise<SingleResult> => {
 		const [parentCwd, agents, agentName, task, options] = args;
 		runs.push({ task, options, agent: agents.find((candidate) => candidate.name === agentName) });
+		await [...state.stuckOn].find(([marker]) => task.includes(marker))?.[1].promise;
 		const original = task === ORIGINAL_TASK;
 		if (options.redispatchDetachedCalls) {
 			state.redispatching.active += 1;
@@ -4969,6 +4980,153 @@ test("a manual resume waits behind the wakes already using parallel.runningCapac
 	await settled(h, resumedTaskId(response));
 	assert.equal(await drained(dispatcher), 0);
 });
+
+/** A scripted model reply: `content` with `stopReason`. */
+function parentReply(content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"]) {
+	const stream = createAssistantMessageEventStream();
+	const message: AssistantMessage = {
+		role: "assistant",
+		content,
+		api: "openai-responses",
+		provider: "openai",
+		model: "mock",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason,
+		timestamp: Date.now(),
+	};
+	queueMicrotask(() => stream.push({ type: "done", reason: stopReason === "toolUse" ? "toolUse" : "stop", message }));
+	return stream;
+}
+
+/** The parent's turn: its model calls the subagent tool with `params` once, through the real turn loop, then stops. */
+function parentTurn(h: Harness, params: Parameters<Harness["call"]>[0]): Agent {
+	let replies = 0;
+	const agent = new Agent({
+		initialState: {
+			systemPrompt: "parent",
+			tools: [
+				{
+					name: "subagent",
+					label: "subagent",
+					description: "subagent",
+					parameters: { type: "object", additionalProperties: true } as never,
+					execute: (_id, args, signal) => h.call(args as typeof params, signal),
+				},
+			],
+		},
+		streamFn: () =>
+			replies++ === 0
+				? parentReply(
+						[
+							{
+								type: "toolCall",
+								id: "parent-call",
+								name: "subagent",
+								arguments: { ...params } as Record<string, never>,
+							},
+						],
+						"toolUse",
+					)
+				: parentReply([{ type: "text", text: "done" }], "stop"),
+	});
+	void agent.prompt("go").catch(() => {});
+	return agent;
+}
+
+function parentToolResultText(agent: Agent): string {
+	const result = agent.state.messages.find((message) => message.role === "toolResult");
+	assert.ok(result?.role === "toolResult", "the interrupted call has a result");
+	return result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+}
+
+/** Whether `promise` settles within {@link RESUME_ANSWER_MS}. */
+async function settlesWithin(promise: Promise<unknown>): Promise<boolean> {
+	return (await answeredWithin(promise.then(() => ({}) as SubagentToolResult))) !== undefined;
+}
+
+test("interrupting the parent's turn ends a resume still waiting for a wake slot, and withdraws it so the child never runs it (#5485)", async () => {
+	const h = harness();
+	h.deps.config.parallel = { runningCapacity: 1 };
+	const dispatcher = agentWakeDispatcher();
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	h.wakeDispatcher = dispatcher;
+	await releasedChildren(h, ["turn-a", "turn-b"]);
+	const owner = h.sessionManager.getSessionId();
+	const wakeGate = Promise.withResolvers<void>();
+	h.finishOn.set("CI green", wakeGate);
+	const wake = dispatcher.deliver(subagentWakeKey(owner, "turn-a:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: waitResult("CI green"),
+	});
+	try {
+		await h.waitForLatest("turn-a:0", (record) => record.state === "running" && record.launchLeafId !== undefined);
+		const turn = parentTurn(h, { action: "resume", id: "turn-b:0", message: "never sent" });
+		const deadline = Date.now() + RECORD_WAIT_MS;
+		while (dispatcher.stats().queued === 0 && Date.now() < deadline) await sleep(10);
+		assert.equal(dispatcher.stats().queued, 1, "the resume waits for the only wake slot");
+
+		turn.abort();
+		assert.ok(await settlesWithin(turn.waitForIdle()), "the interrupted turn ends while the resume still waits");
+		assert.match(parentToolResultText(turn), /Interrupted before .*turn-b:0.* took the resume: it was withdrawn/);
+		assert.equal(resumeWaiterCount(), 0);
+	} finally {
+		wakeGate.resolve();
+	}
+	await wake;
+	assert.equal(await drained(dispatcher), 0);
+	assert.equal(h.runs.filter((run) => run.task.includes("never sent")).length, 0, "the withdrawn resume never runs");
+	assert.equal(h.latest("turn-b:0")?.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS, "the child stays released");
+});
+
+function taskExecutionKind(h: Harness, taskId: string): string | undefined {
+	const watched = h.host.watchOwnerTasks();
+	assert.ok(watched.ok);
+	try {
+		return watched.value.snapshot.tasks.find((task) => task.ref.taskId === taskId)?.execution.kind;
+	} finally {
+		watched.value.dispose();
+	}
+}
+
+for (const action of ["pause", "quit"] as const) {
+	test(`interrupting the parent's turn ends a ${action} still waiting for a child that has not stopped yet, and the ${action} goes on (#5485)`, async () => {
+		const h = harness();
+		const stuck = Promise.withResolvers<void>();
+		h.stuckOn.set(ORIGINAL_TASK, stuck);
+		const childId = `stuck-${action}:0`;
+		const taskId = await h.admit(`stuck-${action}`);
+		try {
+			await h.waitForLatest(childId, (record) => record.taskId === taskId);
+			const turn = parentTurn(h, { action, id: childId });
+			const deadline = Date.now() + RECORD_WAIT_MS;
+			while (taskExecutionKind(h, taskId) !== "cancelling" && Date.now() < deadline) await sleep(10);
+			assert.equal(taskExecutionKind(h, taskId), "cancelling", `the ${action} waits for the child to stop`);
+
+			turn.abort();
+			assert.ok(
+				await settlesWithin(turn.waitForIdle()),
+				`the interrupted turn ends while the ${action} still waits`,
+			);
+			assert.match(
+				parentToolResultText(turn),
+				new RegExp(`Interrupted before ${action} finished: the stop was requested and goes on`),
+			);
+		} finally {
+			stuck.resolve();
+		}
+		const stopped = await h.waitForLatest(childId, (record) => record.state === "terminal");
+		assert.equal(stopped.terminalStatus, action === "pause" ? "paused" : "quit", `the ${action} took effect`);
+	});
+}
 
 test("a wake saves the results it carries in the child's record before the child is restored, and the record no longer holds them once its run has them (#4326)", async () => {
 	const h = harness();

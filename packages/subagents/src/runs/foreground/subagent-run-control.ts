@@ -15,6 +15,7 @@ import { releasedChildReservation, reserveReleasedChildren } from "./released-ch
 import {
 	beginReleasedChildStop,
 	isReleasedChildWakeActive,
+	ReleasedChildResumeInterruptedError,
 	releasedChildWakeDecided,
 	resumeReleasedChild,
 } from "./released-child-resume.js";
@@ -41,7 +42,11 @@ import {
 	takeChildRecordFailure,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
-import { restoreSubagentChild, type SubagentChildRestoreDeps } from "./subagent-child-restore.js";
+import {
+	restoreSubagentChild,
+	type SubagentChildRestoreDeps,
+	type SubagentChildRestoreOutcome,
+} from "./subagent-child-restore.js";
 import { isQueuedSubagentChild, stopQueuedSubagentChild } from "./task-execution.js";
 
 /** The prompt a resumed child runs when `resume` carries no message, as a resumed workflow stage receives. */
@@ -454,10 +459,41 @@ async function stopChildren(
 	return controlResult(text, { action, children }, failures.length > 0 && children.length === 0);
 }
 
+/** What {@link unlessInterrupted} gives when the turn that asked for the work was interrupted first. */
+const INTERRUPTED = Symbol("interrupted");
+
+/**
+ * `work`'s outcome, or {@link INTERRUPTED} once `signal` aborts first: an interrupted turn does not wait for run control
+ * (#5485). The work itself goes on, and the child's records say how it went; a failure it ends with after the
+ * interruption is not left unhandled.
+ */
+function unlessInterrupted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T | typeof INTERRUPTED> {
+	if (signal === undefined) return work;
+	const interrupted = Promise.withResolvers<typeof INTERRUPTED>();
+	const interrupt = () => {
+		work.catch(() => {});
+		interrupted.resolve(INTERRUPTED);
+	};
+	if (signal.aborted) interrupt();
+	else signal.addEventListener("abort", interrupt, { once: true });
+	return Promise.race([work, interrupted.promise]).finally(() => signal.removeEventListener("abort", interrupt));
+}
+
+/** The answer of a resume its caller's turn interrupted: whether the resume was withdrawn, or had begun and goes on. */
+function interruptedResume(record: SubagentChildRecord, withdrawn: boolean, message: string | undefined) {
+	return errorResult(
+		"resume",
+		withdrawn
+			? `Interrupted before ${label(record)} took the resume: it was withdrawn, and the child does not run it${message ? " or get your message" : ""}. Resume it again when you are ready.`
+			: `Interrupted while ${label(record)} was being resumed: the resume had begun and goes on${message ? " with your message" : ""}. subagent({ action: "status", id: "${record.childId}" }) shows how it went.`,
+	);
+}
+
 async function resumeChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 	request: SubagentRunControlRequest,
+	signal?: AbortSignal,
 ): Promise<SubagentToolResult> {
 	const action = "resume";
 	if (request.all)
@@ -473,7 +509,11 @@ async function resumeChild(
 	if (isReleasedChildWakeActive(wakeKey)) {
 		// A wake may be reopening the child right now. Wait only until it has, or has decided not to, never for the run
 		// it starts: a woken child is running, and resume refuses it as it refuses any running child (#5485).
-		await releasedChildWakeDecided(wakeKey);
+		if ((await unlessInterrupted(releasedChildWakeDecided(wakeKey), signal)) === INTERRUPTED)
+			return errorResult(
+				action,
+				`Interrupted while a wake of ${label(resolved)} was reopening it, before it could be resumed: nothing was sent to it.`,
+			);
 		await subagentChildRecordsAppended(ownerSessionId);
 		record = ownedRecords(ctx).get(resolved.childId) ?? resolved;
 	}
@@ -502,9 +542,19 @@ async function resumeChild(
 			: { prompt: message ?? SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, ...(message ? { message } : {}) };
 	const queued =
 		waking || isReleased(record) || ((record.waitingOn?.length ?? 0) > 0 && stoppedAs(record))
-			? resumeReleasedChild(ownerSessionId, record.childId, resumeRequest)
+			? resumeReleasedChild(ownerSessionId, record.childId, resumeRequest, signal)
 			: undefined;
-	const outcome = await (queued ?? restoreSubagentChild(deps, ctx, record.childId, resumeRequest));
+	let outcome: SubagentChildRestoreOutcome | typeof INTERRUPTED;
+	try {
+		// A queued resume answers an interruption itself; a direct one cannot be withdrawn, and goes on.
+		outcome = await (queued ??
+			unlessInterrupted(restoreSubagentChild(deps, ctx, record.childId, resumeRequest), signal));
+	} catch (error) {
+		if (error instanceof ReleasedChildResumeInterruptedError)
+			return interruptedResume(record, error.withdrawn, message);
+		throw error;
+	}
+	if (outcome === INTERRUPTED) return interruptedResume(record, false, message);
 	if (outcome.kind === "terminal") return errorResult(action, `${label(record)} is terminal and cannot be resumed.`);
 	if (outcome.kind === "unrestorable")
 		return errorResult(action, `${label(record)} could not be resumed: ${outcome.reason}.`);
@@ -601,19 +651,31 @@ export function subagentChildrenAwaitingResume(ctx: ExtensionContext, id?: strin
 	return [...[...records.values()].flatMap(statusLines), ...(failureLine ? [failureLine] : [])];
 }
 
-/** `subagent({ action: "pause" | "resume" | "quit" })` for the children this session launched. */
+/**
+ * `subagent({ action: "pause" | "resume" | "quit" })` for the children this session launched. `signal` is the calling
+ * turn's: when it is interrupted, the call answers at once instead of waiting for the children (#5485).
+ */
 export function controlSubagentChildren(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 	request: SubagentRunControlRequest,
+	signal?: AbortSignal,
 ): Promise<SubagentToolResult> {
 	if (request.all && request.id)
 		return Promise.resolve(errorResult(request.action, "Pass either id or all: true, not both."));
 	if (!request.all && !request.id?.trim() && request.action !== "resume")
 		return Promise.resolve(errorResult(request.action, `${request.action} needs the id of a child, or all: true.`));
-	return request.action === "resume"
-		? resumeChild(deps, ctx, request)
-		: stopChildren(deps, ctx, { ...request, action: request.action });
+	if (request.action === "resume") return resumeChild(deps, ctx, request, signal);
+	const action = request.action;
+	// A child that does not stop yet keeps its stop waiting: the interrupted turn ends, and the stop goes on.
+	return unlessInterrupted(stopChildren(deps, ctx, { ...request, action }), signal).then((result) =>
+		result === INTERRUPTED
+			? errorResult(
+					action,
+					`Interrupted before ${action} finished: the stop was requested and goes on. subagent({ action: "status"${request.id ? `, id: "${request.id}"` : ""} }) shows where ${request.id ? "the child stands" : "each child stands"}.`,
+				)
+			: result,
+	);
 }
 
 /**
