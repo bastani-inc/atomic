@@ -60,8 +60,8 @@ export class TreeHelp implements Component {
 
 	render(width: number): string[] {
 		const items = TREE_HELP_ITEMS.map(({ keys, label, labelFirst, drop }) => {
-			const text = formatHelpKeys(keys);
-			const parts = helpKeyParts(keys, text);
+			const parts = helpKeyParts(keys);
+			const text = parts.map((part) => part.text).join("");
 			return {
 				text: !text ? label : labelFirst ? `${label} ${text}` : `${text} ${label}`,
 				hint: !text
@@ -107,54 +107,24 @@ const TREE_HELP_ITEMS: Array<{ keys: Keybinding[]; label: string; labelFirst?: b
 	{ keys: ["tui.select.cancel"], label: "cancel" },
 ];
 
-/**
- * The keys of `display`, the text {@link formatHelpKeys} shows for `keybindings`, each with the key a click on it
- * presses: `ctrl+d/t/u` is three keys, each with the shared modifier, and `↑↓` is two.
- */
-function helpKeyParts(keybindings: Keybinding[], display: string): HintKeyPart[] {
+/** Compact shared modifiers and paired arrows without losing the key ID of any visible segment. */
+function helpKeyParts(keybindings: Keybinding[]): HintKeyPart[] {
 	const keys = keybindings.flatMap((keybinding) => getKeybindings().getKeys(keybinding).slice(0, 1));
-	const parts: HintKeyPart[] = [];
-	const chunks = display.split("/");
-	chunks.forEach((chunk, chunkIndex) => {
-		const glyphs = chunk === "↑↓" || chunk === "←→" ? [chunk[0]!, chunk[1]!] : [chunk];
-		glyphs.forEach((glyph, glyphIndex) => {
-			const separator = glyphIndex === glyphs.length - 1 && chunkIndex < chunks.length - 1 ? "/" : "";
-			parts.push({ text: glyph + separator, key: keys[parts.length] });
-		});
+	const modifiers = keys.map((key) => /^(?:(?:ctrl|alt|shift|super)\+)+/i.exec(key)?.[0] ?? "");
+	const prefix = modifiers.every((part) => part === modifiers[0]) ? modifiers[0] : undefined;
+	const labels = keys.map((key, index) =>
+		formatKeyText(prefix && index > 0 ? key.slice(prefix.length) : key)
+			.replace(/\bpageup\b/g, "pgup")
+			.replace(/\bpagedown\b/g, "pgdn")
+			.replace(/\bup\b/g, "↑")
+			.replace(/\bdown\b/g, "↓")
+			.replace(/\bleft\b/g, "←")
+			.replace(/\bright\b/g, "→"),
+	);
+	return keys.map((key, index) => {
+		const label = labels[index]!;
+		const next = labels[index + 1];
+		const paired = (label.endsWith("↑") && next === "↓") || (label.endsWith("←") && next === "→");
+		return { text: label + (next && !paired ? "/" : ""), key };
 	});
-	return parts.length === keys.length ? parts : [{ text: display }];
-}
-
-function formatHelpKeys(keybindings: Keybinding[]): string {
-	const keys: string[] = [];
-	for (const keybinding of keybindings) {
-		const key = getKeybindings().getKeys(keybinding)[0];
-		if (key !== undefined) keys.push(key);
-	}
-	if (keys.length === 0) return "";
-
-	return formatKeyText(compactRawKeys(keys))
-		.replace(/\bpageup\b/g, "pgup")
-		.replace(/\bpagedown\b/g, "pgdn")
-		.replace(/\bup\b/g, "↑")
-		.replace(/\bdown\b/g, "↓")
-		.replace(/\bleft\b/g, "←")
-		.replace(/\bright\b/g, "→")
-		.replace("↑/↓", "↑↓")
-		.replace("←/→", "←→");
-}
-
-function compactRawKeys(keys: string[]): string {
-	if (keys.length === 1) return keys[0]!;
-
-	const parts = keys.map((key) => {
-		const separatorIndex = key.lastIndexOf("+");
-		return separatorIndex === -1
-			? { prefix: "", suffix: key }
-			: { prefix: key.slice(0, separatorIndex + 1), suffix: key.slice(separatorIndex + 1) };
-	});
-	const prefix = parts[0]!.prefix;
-	return prefix && parts.every((part) => part.prefix === prefix)
-		? `${prefix}${parts.map((part) => part.suffix).join("/")}`
-		: keys.join("/");
 }

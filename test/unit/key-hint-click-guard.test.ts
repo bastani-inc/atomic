@@ -32,6 +32,7 @@ import {
 	renderNavKeyOverlay,
 } from "../../packages/coding-agent/src/modes/interactive/components/nav-keys.js";
 import { taskChatKeys } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
+import { TreeHelp } from "../../packages/coding-agent/src/modes/interactive/components/tree-selector-help.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { moduleDir } from "../helpers/runtime.js";
 
@@ -143,6 +144,39 @@ describe("the shared hint builders mark every key they name", () => {
 		const tasks = clicksOf(clickableHintText("2 shells · /tasks to manage"));
 		assert.equal(tasks.at(tasks.text.indexOf("/tasks")), "/tasks");
 		assert.equal(tasks.at(0), undefined, "a count is not a key");
+	});
+
+	test("a slash shortcut in text is distinct from a slash command and from separators (#5528)", () => {
+		const single = clicksOf(clickableHintText("/ choose · /tasks to manage"));
+		assert.equal(single.at(single.text.indexOf("choose")), "/");
+		assert.equal(single.at(single.text.indexOf("manage")), "/tasks");
+		const alternatives = clicksOf(clickableHintText("esc///+/-/,/space choose"));
+		for (const [atColumn, key] of [
+			[0, "escape"],
+			[4, "/"],
+			[6, "+"],
+			[8, "-"],
+			[10, ","],
+			[12, "space"],
+			[18, "space"],
+		] as const) {
+			assert.equal(alternatives.at(atColumn), key);
+		}
+	});
+
+	test("compact tree shortcuts keep the slash key distinct from the slash between actions (#5528)", () => {
+		setKeybindings(new KeybindingsManager({ "tui.select.up": "/", "tui.select.down": "+" }));
+		try {
+			const line = clicksOf(new TreeHelp().render(200)[0]!);
+			const start = line.text.indexOf("//+ move");
+			assert.notEqual(start, -1);
+			assert.deepEqual(
+				[line.at(start), line.at(start + 1), line.at(start + 2), line.at(start + 4)],
+				["/", "/", "+", "+"],
+			);
+		} finally {
+			setKeybindings(new KeybindingsManager());
+		}
 	});
 
 	test("the main chat's hints mark ↓ agents, /tasks and ? keys", () => {

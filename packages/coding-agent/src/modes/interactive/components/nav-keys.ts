@@ -75,6 +75,11 @@ export function navActionText(keybindings: NavKeybindings | undefined, action: s
 	return keys.map(navKeyText).join("/");
 }
 
+/** The first bound key as displayed. A slash can be that key, not a separator. */
+export function navFirstKeyText(keybindings: NavKeybindings, action: string): string {
+	return navKeyText(keybindings.getKeys?.(action)?.[0] ?? "");
+}
+
 /**
  * The text one entry shows for its keys; empty when its action is unbound. Keys in `taken` belong to an earlier entry
  * of the same screen, which handles them first, so they are left out; the entry's own keys are added to it.
@@ -94,6 +99,10 @@ export function navEntryKeyParts(
 	if (entry.action === undefined) return hintKeyParts(entry.keys ?? "");
 	const keys = (keybindings?.getKeys?.(entry.action) ?? []).filter((key) => !taken?.has(key));
 	for (const key of keys) taken?.add(key);
+	return boundKeyParts(keys);
+}
+
+function boundKeyParts(keys: readonly string[]): HintKeyPart[] {
 	return keys.map((key, index) => ({
 		text: `${navKeyText(key)}${index < keys.length - 1 ? "/" : ""}`,
 		key: key as KeyId,
@@ -176,6 +185,7 @@ export function renderNavKeyOverlay(
 	width: number,
 	style: NavKeyStyle,
 	keybindings: NavKeybindings | undefined,
+	closeKey: "escape" | "tui.select.cancel" = "escape",
 ): string[] {
 	const taken = new Set<string>();
 	const rows = entries.flatMap((entry) => {
@@ -183,10 +193,11 @@ export function renderNavKeyOverlay(
 		const parts = navEntryKeyParts(keybindings, entry, taken);
 		return parts.length > 0 ? [{ parts, label: entry.label }] : [];
 	});
-	rows.push({
-		parts: hintKeyParts(`esc/${navActionText(keybindings, "app.keys.help") || "?"}`),
-		label: "close this help",
-	});
+	const cancelKeys = closeKey === "escape" ? ["escape"] : (keybindings?.getKeys?.(closeKey) ?? ["escape"]);
+	const helpKeys = keybindings?.getKeys?.("app.keys.help") ?? ["?"];
+	// In selectors Ctrl+C closes the whole dialog, not just its help.
+	const exits = [...new Set([...cancelKeys, ...helpKeys])].filter((key) => closeKey === "escape" || key !== "ctrl+c");
+	if (exits.length > 0) rows.push({ parts: boundKeyParts(exits), label: "close this help" });
 	const hints = rows.map(({ parts, label }) => ({
 		keys: clickableKeysHint(parts.map((part) => ({ ...part, text: style.text(part.text) }))),
 		label: clickableKeysHint([{ ...parts.at(-1)!, text: style.muted(label) }]),

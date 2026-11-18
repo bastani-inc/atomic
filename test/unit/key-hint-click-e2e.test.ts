@@ -599,6 +599,41 @@ function isolatedEngine(ui: ReturnType<typeof makeScreen>) {
 	return { child, host: () => host };
 }
 
+test.each(["in-process", "isolated"])(
+	"a literal slash closes a confirmation's key help on %s (#5528)",
+	async (host) => {
+		const ui = makeScreen();
+		setKeybindings(new KeybindingsManager({ "app.keys.help": "/", "tui.select.cancel": "ctrl+f8" }));
+		const picker = new ExtensionSelectorComponent(
+			"Allow?",
+			["Yes", "No"],
+			() => {},
+			() => {},
+			{ numbered: true },
+		);
+		const engine = host === "isolated" ? isolatedEngine(ui) : undefined;
+		try {
+			if (engine) {
+				void engine.child.custom(() => picker);
+				await flush();
+				ui.mount(engine.host()!);
+			} else ui.mount(picker);
+			await vi.waitFor(() => assert.ok(ui.shows(/1-2 pick/)), ENGINE_FRAME_WAIT);
+			ui.terminal.input("/");
+			await vi.waitFor(() => assert.ok(ui.shows(/close this help/)), ENGINE_FRAME_WAIT);
+			await ui.click(/close this help/, "close this help");
+			await vi.waitFor(() => assert.ok(ui.shows(/1-2 pick/), "clicking the label must press /"), ENGINE_FRAME_WAIT);
+			ui.terminal.input("/");
+			await vi.waitFor(() => assert.ok(ui.shows(/ctrl\+f8\/\/.*close this help/)), ENGINE_FRAME_WAIT);
+			await ui.click(/close this help/, "ctrl+f8");
+			await vi.waitFor(() => assert.ok(ui.shows(/1-2 pick/)), ENGINE_FRAME_WAIT);
+		} finally {
+			engine?.child.dispose();
+			ui.tui.stop();
+		}
+	},
+);
+
 test("a hint the isolated engine wraps onto a second row runs its key from a click on that row", async () => {
 	const ui = makeScreen();
 	const { child, host } = isolatedEngine(ui);

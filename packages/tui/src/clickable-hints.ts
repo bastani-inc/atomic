@@ -124,8 +124,9 @@ export function hintKeyParts(text: string): HintKeyPart[] {
 				index++;
 			}
 		}
-		let separator = "";
-		while (index < text.length && (text[index] === " " || text[index] === "/")) {
+		// Consume one separator. A second slash can itself be the next key, as in `esc//`.
+		let separator = text[index] === "/" ? text[index++]! : "";
+		while (index < text.length && text[index] === " ") {
 			separator += text[index];
 			index++;
 		}
@@ -165,7 +166,7 @@ export function clickableHintText(text: string): string {
 		.map((segment) => {
 			const lead = /^\s*/.exec(segment)?.[0] ?? "";
 			const body = segment.slice(lead.length);
-			if (body.startsWith("/")) return lead + slashCommandHint(body);
+			if (/^\/[\w:-]+(?:\s|$)/.test(body)) return lead + slashCommandHint(body);
 			const words = body.split(" ");
 			const keyParts: HintKeyPart[] = [];
 			let index = 0;
