@@ -6,8 +6,14 @@
 
 - Every `subagent` launch now runs in the background. The call returns once each child is admitted, with its task id, and the child reports by its completion notice. A subagent the agent needs next is therefore listed below the prompt and in `/tasks` like any other, where you can open its chat, message it or stop it. The launch `wait` option is gone: a call that still passes `wait: { kind: "foreground" }`, as an older saved prompt, agent or workflow may, runs in the background, and the first line of its result says so. To use a child's result in the same turn, wait for it with `subagent({ action: "wait", id })`. A subagent's `contact_supervisor` decision or interview now always waits for the supervisor's reply in the same child, instead of ending a single child with a fresh-subagent handoff; only an SDK session without a task host, which still runs its subagents directly, keeps that handoff.
 
+### Changed
+
+- The bundled `tdd` skill now names tautological tests, whose expected value is recomputed the way the code computes it, as an anti-pattern, with a checklist item and an example, from its upstream skill. Its frontmatter and a new `LICENSE.txt` credit the two MIT-licensed skills it is adapted from.
+- The bundled `qlty` skill's references follow the current Qlty documentation (CLI v0.671.0): `--skip`, `plugin:rule` filters and `--trigger` for `check` and `fmt`, `--install-only` and `--skip-source-fetch`, `--sarif` for `smells`, and the integrity verification steps, which need `gh` 2.67.0 or later because older versions can report success when no matching attestation is found.
+
 ### Fixed
 
+- The bundled tmux skill's helper scripts carry the upstream fixes since they were adopted. `find-sessions.sh` shows each session's attached state and start time (it printed a literal `\t`, an empty time and "detached" for every session), counts a session with several clients as attached, matches `-q` literally against session names, and scans hidden sockets with `-A`. `wait-for-text.sh` accepts a zero-padded timeout such as `-T 08`, no longer reports a match when the pane capture fails, rejects an invalid pattern at once instead of waiting out the timeout, and stops checking at the deadline. The skill also shows how to wait for a command's completion marker without matching the echoed command line, and its new `LICENSE.txt` credits OpenClaw's MIT-licensed tmux skill, which the scripts and parts of the skill come from.
 - Pressing Esc while the agent waits for a subagent with `subagent({ action: "wait", id })` ends the wait and the turn at once, instead of holding the turn until the wait's budget runs out. The subagent keeps running, and its completion notice still arrives.
 
 ## [0.9.89] - 2026-11-18

@@ -1,6 +1,6 @@
 # GPT-6.2 Astra and Sol prompting and migration
 
-Use this reference when targeting `gpt-6.2-astra` or `gpt-6.2-sol`, or migrating from GPT-6.1 Sol, GPT-6 Astra, or GPT-6 Sol. Distilled from [OpenAI's GPT-6.2 guide](https://developers.openai.com/api/docs/guides/latest-model), the [GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra) and [GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol) model pages, and the [keep the prefix unchanged](https://developers.openai.com/api/docs/guides/keep-prefix-unchanged) guide, checked November 17, 2026. For GPT-6.1 Sol, see [gpt_6_1_sol.md](gpt_6_1_sol.md); for GPT-6.1 Terra, see [gpt_6_1_terra.md](gpt_6_1_terra.md).
+Use this reference when targeting `gpt-6.2-astra` or `gpt-6.2-sol`, or migrating from GPT-6.1 Sol, GPT-6 Astra, or GPT-6 Sol. Distilled from [OpenAI's GPT-6.2 guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6.2-astra), the [GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra) and [GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol) model pages, and the [keep the prefix unchanged](https://developers.openai.com/api/docs/guides/keep-prefix-unchanged) guide, checked November 18, 2026. For GPT-6.1 Sol, see [gpt_6_1_sol.md](gpt_6_1_sol.md); for GPT-6.1 Terra, see [gpt_6_1_terra.md](gpt_6_1_terra.md).
 
 OpenAI offers the guide's prompts as a starting point for the whole GPT-6.2 family and says they address behaviors seen on GPT-6.2 Astra and Sol. Its behavior list is written for Astra. Apply a template only to a failure you observe on your model and workload. The snippets below are adaptations, not verbatim OpenAI quotations.
 
@@ -23,7 +23,7 @@ Replace the placeholders with the actual task. A review-only request does not au
 
 ## When migrating effort
 
-Both models reject reasoning effort `none`. OpenAI's migration checklist recommends `medium` for a new integration and `low` in place of an existing `none` or `minimal`. OpenAI's Codex catalog lists `low`, `medium`, `high`, `xhigh`, and `max` for both. A prompt cannot enable an unsupported effort or replace the request configuration.
+Both models reject reasoning effort `none`. OpenAI's migration checklist recommends `medium` for a new integration and `low` in place of an existing `none` or `minimal`. OpenAI's Codex catalog lists `low`, `medium`, `high`, `xhigh`, and `max` for both. A prompt cannot enable an unsupported effort or replace the request configuration. Both models support Chat Completions, but tool calling requires the Responses API.
 
 Keep the prompt fixed while comparing efforts. Measure completion, correctness, tool behavior, latency, tokens, and cost. OpenAI notes that higher effort can help the model persist through final checks on long tasks; treat that as a hypothesis to test, not a default.
 
@@ -84,6 +84,7 @@ If the interface needs a particular look, name the imagery and typography, inclu
 Starting with GPT-6.2, the API drops reasoning items when it detects changes to earlier conversation history, a model downgrade, or a change of end user or organization. Without them, quality can decline and the model may repeat earlier work. Edits to the prefix also cut prompt-cache reuse from the changed point onward.
 
 - Append new or changed instructions as a new message instead of editing an earlier system or developer message.
+- Put reusable instructions in a `developer` message as the first item of `input`. Starting with GPT-6.2, the Responses API appends the top-level `instructions` field after `input`, so text there is not part of a cacheable prefix; keep `instructions` for guidance that applies only to the current request.
 - Leave the request's `tools` parameter and the order of its definitions unchanged. To add tools mid-conversation, append an `additional_tools` input item with the `developer` role and a `tools` array, and replay it at its original position on later requests; to narrow which tools a turn may call, use `tool_choice` with `allowed_tools`. Changing the `tools` list itself is a prefix change. See OpenAI's [keep the prefix unchanged](https://developers.openai.com/api/docs/guides/keep-prefix-unchanged) table.
 - Change reasoning effort or output format mid-conversation through the API's configuration updates, not by editing the original request.
 - Shorten long tool output before it first reaches the model rather than truncating it afterwards.
