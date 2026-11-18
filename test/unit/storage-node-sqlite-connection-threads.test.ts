@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
+import { release } from "node:os";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { afterEach, test } from "vitest";
@@ -145,6 +146,29 @@ test("on Windows, the thread that opens a connection on a thread of its own wait
 	await database.transaction((transaction) => transaction.run("CREATE TABLE t(v)"));
 	// 1 is above normal; elsewhere the priority is not changed, and reads 0.
 	assert.equal(currentThreadPriority(), process.platform === "win32" ? 1 : 0);
+});
+
+/** Whether this kernel takes a thread's request for its own time slice: Linux 6.12 and later. */
+function kernelTakesSlices(): boolean {
+	if (process.platform !== "linux") return false;
+	const [major = 0, minor = 0] = release().split(".").map(Number);
+	return major > 6 || (major === 6 && minor >= 12);
+}
+
+test("on Linux, the thread that opens a connection on a thread of its own asks for a short time slice, and the processes it starts do not take it (#5376)", async () => {
+	const natives = createRequire(import.meta.url).resolve("@bastani/atomic-natives");
+	const { currentThreadSlice } = createRequire(import.meta.url)(natives) as { currentThreadSlice(): number };
+	const database = await open(databasePath());
+	await database.run("CREATE TABLE t(v)");
+	// 0.1 ms where the kernel takes the request; elsewhere nothing was asked, and it reads 0.
+	assert.equal(currentThreadSlice(), kernelTakesSlices() ? 100_000 : 0);
+	const child = spawnSyncCollect(
+		[process.execPath, "-e", "process.stdout.write(String(require(process.argv[1]).currentThreadSlice()))", natives],
+		{ stdout: "pipe", stderr: "pipe" },
+	);
+	assert.equal(child.exitCode, 0, child.stderr.toString());
+	// The kernel reports a thread's default slice there; elsewhere 0.
+	assert.notEqual(Number(child.stdout.toString()), 100_000, "a child process's thread keeps the default slice");
 });
 
 test("a process started after a connection raised its opening thread runs at normal priority (#5376)", async () => {

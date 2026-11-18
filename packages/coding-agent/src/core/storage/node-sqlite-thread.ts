@@ -20,8 +20,11 @@ const { parentPort, workerData } = require("node:worker_threads");
 const BOOTED = -1;
 process.emitWarning = () => {};
 if (workerData.nativeBinding !== undefined) {
+	// Woken for each request: on Windows above-normal priority, on Linux a short slice, lets it run as soon as it is.
 	try {
-		require(workerData.nativeBinding).raiseCurrentThreadPriority();
+		const natives = require(workerData.nativeBinding);
+		if (process.platform === "win32") natives.raiseCurrentThreadPriority();
+		else natives.shortenCurrentThreadSlice?.();
 	} catch {}
 }
 let DatabaseSync;
@@ -403,14 +406,15 @@ export class ConnectionLoadError extends Error {
 let nativeBinding: string | null | undefined;
 
 /**
- * Where the native binding loads from, for a connection thread on Windows to raise its own priority with. Woken for
- * each request, a thread at normal priority waits behind every busy thread for a scheduler quantum once the CPUs are
- * oversubscribed, up to 190 ms a request on Windows Server; above normal it runs as soon as it is woken (#5376). The
- * binding is found as the storage adapter's open lock finds it: from this module, or beside the standalone binary.
- * Undefined on other platforms and when it cannot be found: the thread then runs at normal priority.
+ * Where the native binding loads from, for a connection thread to ask to run as soon as it is woken (#5376): on
+ * Windows above-normal priority, since a thread at normal priority waits behind every busy thread for a scheduler
+ * quantum once the CPUs are oversubscribed, up to 190 ms a request on Windows Server; on Linux a short time slice, since
+ * a woken thread otherwise waits out the slice of the busy thread it wakes behind, about 3 ms. The binding is found as
+ * the storage adapter's open lock finds it: from this module, or beside the standalone binary. Undefined on other
+ * platforms and when it cannot be found: the thread then keeps its defaults.
  */
 function threadPriorityBinding(): string | undefined {
-	if (process.platform !== "win32") return undefined;
+	if (process.platform !== "win32" && process.platform !== "linux") return undefined;
 	if (nativeBinding === undefined) {
 		nativeBinding = null;
 		for (const base of [import.meta.url, pathToFileURL(process.execPath).href]) {

@@ -678,7 +678,9 @@ export function sqliteOpenLockPath(databasePath: string): string {
 }
 
 type NativeOpenLocks = Pick<typeof native, "tryAdvisoryLock" | "trySharedAdvisoryLock" | "trySharedAdvisoryLockAsync"> &
-	Partial<Pick<typeof native, "tryAdvisoryLockAsync" | "raiseCurrentThreadPriority">>;
+	Partial<
+		Pick<typeof native, "tryAdvisoryLockAsync" | "raiseCurrentThreadPriority" | "shortenCurrentThreadSlice">
+	>;
 
 interface HeldOpenLock {
 	readonly lock: { release(): void };
@@ -715,16 +717,23 @@ function openLocks(): NativeOpenLocks | null {
 let waitingThreadRaised = false;
 
 /**
- * On Windows, raises the thread that opens connections on threads of their own to above-normal priority, once
- * (#5376). That thread waits for their answers, and for its own file operations, between short bursts of work. At
- * normal priority, on a machine whose CPUs are all busy, each wake-up could wait behind the busy threads for whole
- * scheduler time slices, so a fresh process's first transactions took seconds where the same work done without
- * waiting took milliseconds. Other platforms are unchanged.
+ * Asks, once, that the thread opening connections on threads of their own run as soon as it is woken (#5376). That
+ * thread waits for their answers, and for its own file operations, between short bursts of work. On Windows it is
+ * raised to above-normal priority: at normal priority, on a machine whose CPUs are all busy, each wake-up could wait
+ * behind the busy threads for whole scheduler time slices, so a fresh process's first transactions took seconds where
+ * the same work done without waiting took milliseconds. On Linux it asks for a short time slice, so a wake-up does not
+ * wait out a busy thread's slice, about 3 ms, for each request; a kernel that does not take the request leaves it as it
+ * was. Only the calling thread changes, and not the processes it starts. Other platforms are unchanged.
  */
 function raiseWaitingThread(): void {
-	if (waitingThreadRaised || process.platform !== "win32") return;
+	if (waitingThreadRaised) return;
 	waitingThreadRaised = true;
-	openLocks()?.raiseCurrentThreadPriority?.();
+	try {
+		if (process.platform === "win32") openLocks()?.raiseCurrentThreadPriority?.();
+		else if (process.platform === "linux") openLocks()?.shortenCurrentThreadSlice?.();
+	} catch {
+		// A best effort: the thread keeps its defaults.
+	}
 }
 
 function sqliteTargetFilePath(spec: string): string | undefined {

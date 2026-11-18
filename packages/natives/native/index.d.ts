@@ -325,6 +325,9 @@ export interface CurrentAction {
  */
 export declare function currentThreadPriority(): number
 
+/** The calling thread's time slice in nanoseconds, as Linux 6.12 and later report it: the one it asked for, or the default one; 0 on earlier kernels and elsewhere. */
+export declare function currentThreadSlice(): number
+
 export interface Cursor {
   generation: string
   sequence: string
@@ -850,6 +853,15 @@ export interface SettlementReceipt {
   result: TaskResult
   completionId: string
 }
+
+/**
+ * On Linux 6.12 and later, asks the scheduler for a short time slice (0.1 ms) for the calling thread, and only it, so
+ * that when it is woken it runs before a busy thread finishes its slice instead of waiting out about 3 ms behind it
+ * (#5376). Keeps the thread's policy and nice value, and does not pass the request on to processes it starts. Returns
+ * whether the kernel took the request; any failure, such as an older kernel or a policy that is not the default one,
+ * leaves everything as it was and returns false. Does nothing and returns false on other platforms.
+ */
+export declare function shortenCurrentThreadSlice(): boolean
 
 /**
  * Starts `options.file`, delivering its output, its end and its exit to `on_event` in the order they happened. A

@@ -6,6 +6,7 @@
 
 - `trySharedAdvisoryLockAsync(path, waitMs)`: the shared advisory lock on a worker thread, without blocking the JavaScript event loop ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
 - `raiseCurrentThreadPriority()` raises the calling thread, and only it, to above-normal priority on Windows, and `currentThreadPriority()` reads the calling thread's priority. On other platforms the first does nothing and returns false, and the second returns 0 ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+- `shortenCurrentThreadSlice()` asks Linux 6.12 and later for a short time slice for the calling thread, and only it, keeping its policy and nice value and not passing it on to processes it starts; it returns false and changes nothing where the kernel does not take it. `currentThreadSlice()` reads the slice back ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
 
 ## [0.9.89-alpha.1] - 2026-11-18
 
