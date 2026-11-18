@@ -6,12 +6,16 @@ import { killAndResume, killAndResumeBetweenTurns, STAGES } from "../helpers/wai
  * (#4309).
  * Shared fixtures and what each scenario checks: test/helpers/waiting-stage-restart.ts.
  */
-const WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS = 60_000;
-const PROCESS_RESTART_TIMEOUT_MS = 3 * WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS;
+// Two cold source loads, 20 stages' checkpoint/recovery work, and broker/directory cleanup (see the shared helper).
+const WORKFLOW_MODULE_LOAD_TIMEOUT_MS = 120_000;
+const WORKFLOW_CHECKPOINT_TIMEOUT_MS = 20_000;
+const RESTART_CLEANUP_HEADROOM_MS = 20_000;
+const PROCESS_RESTART_TIMEOUT_MS =
+	2 * WORKFLOW_MODULE_LOAD_TIMEOUT_MS + WORKFLOW_CHECKPOINT_TIMEOUT_MS + RESTART_CLEANUP_HEADROOM_MS;
 
 for (const runtime of ["node", "bun"] as const) {
 	test(
-		`${runtime}: killing the root while ${STAGES} stages wait released and resuming continues every stage without prompting again (#4309)`,
+		`${runtime}: killing the root while ${STAGES} stages wait released and resuming continues every stage without prompting again (#4309, #5539)`,
 		() => killAndResume(runtime, "wait"),
 		PROCESS_RESTART_TIMEOUT_MS,
 	);

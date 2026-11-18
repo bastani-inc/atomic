@@ -13,6 +13,7 @@ import { shortenHomePath } from "../../utils/paths.ts";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
 import { renderDiagnosticStatus } from "../interactive-engine/engine-diagnostic-view.js";
 import {
+	onInteractiveEngineProjectTrustChanged,
 	onInteractiveEngineRemoteCommandsChanged,
 	onInteractiveEngineResourceExtensionsChanged,
 	onInteractiveEngineSessionStatsChanged,
@@ -275,6 +276,8 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.setupAutocompleteProvider();
 	});
 	attachInteractiveEngineResourceExtensionRefresh(this);
+	// The engine decides project trust after this host drew the chat.
+	onInteractiveEngineProjectTrustChanged(this.runtimeHost, () => this.refreshProjectTrustWarning());
 	// Engine stats can land after the last event of a run; repaint so the idle footer shows them.
 	onInteractiveEngineSessionStatsChanged(this.runtimeHost, () => {
 		this.ui.requestRender();
