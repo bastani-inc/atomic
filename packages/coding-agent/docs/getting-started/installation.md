@@ -110,7 +110,7 @@ Override the launcher directory (default `~/.local/bin` on macOS/Linux, `%LOCALA
 
 #### GITHUB_TOKEN / GH_TOKEN
 
-Optional; raises GitHub API limits on shared networks. Curl and GNU Wget keep the token in a protected temporary file instead of process arguments. BusyBox Wget remains supported without a token, and with a token when the latest-release redirect avoids the API; if an authenticated API fallback is needed, install curl or GNU Wget rather than exposing the token.
+Optional. The installer finds the latest release and confirms a pinned `ATOMIC_VERSION` through github.com, so most installs make no GitHub API request. It asks the API only when github.com gives no clear answer, and without a token the API allows 60 requests an hour per network address. If the installer reports that GitHub's API rate limit was reached, set a token (for example `GITHUB_TOKEN=$(gh auth token)`) or try again later. Curl and GNU Wget keep the token in a protected temporary file instead of process arguments. BusyBox Wget remains supported without a token, and with a token when the latest-release redirect avoids the API; if an authenticated API fallback is needed, install curl or GNU Wget rather than exposing the token.
 
 ### Which runtime runs your workflows
 
