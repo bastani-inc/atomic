@@ -31,6 +31,15 @@ export function registerBurstDisplay(callIds: string[], taskCount: number): Burs
 	return display;
 }
 
+/** Forgets a burst whose merged run never ran, so each of its calls renders as its own again. */
+export function releaseBurstDisplay(display: BurstDisplay): void {
+	const index = displays.indexOf(display);
+	if (index >= 0) displays.splice(index, 1);
+	for (const callId of display.callIds) {
+		if (displayByCallId.get(callId) === display) displayByCallId.delete(callId);
+	}
+}
+
 export function updateBurstDisplay(display: BurstDisplay, result: SubagentToolResult): void {
 	display.result = result;
 }

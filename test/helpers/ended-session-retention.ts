@@ -80,7 +80,6 @@ export async function createRetentionFixture(): Promise<RetentionFixture> {
 							agent: "worker-retention",
 							task: `Read the fixture, part ${index}`,
 						})),
-						wait: { kind: "foreground" },
 					}),
 				],
 				{ stopReason: "toolUse" },

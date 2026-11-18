@@ -38,9 +38,6 @@ export interface TaskExecutionHooks {
 	/** Where the child is in its start, until its first turn starts; `undefined` once it has, or the start ended. */
 	reportStart?(progress: import("../runs/shared/start-progress.js").SubagentStartProgress | undefined): void;
 	onExecution(execution: { result: Promise<AttemptOutcome>; cleanup: Promise<Cleanup> }): void;
-	yieldTaskWait(reason: "intercom-coordination"): void;
-	/** True only while the launching tool call still blocks on this task and can return a handoff as its result. */
-	isParentObserving(): boolean;
 }
 
 export interface RunSyncOptions extends BaseRunSyncOptions {
