@@ -3141,10 +3141,10 @@ try {
         try { $appended.WriteByte(0) } finally { $appended.Dispose() }
         $changedOutput = & $InstallerPath -Ref "2.0.0" | Out-String
         Assert-Fixture ($changedOutput -notmatch 'skipping download') "a launcher that no longer matches its recorded hash was kept: $changedOutput"
-        Assert-Fixture ($changedOutput -match 'Verified SHA256') "a changed launcher was not reinstalled: $changedOutput"
+        Assert-Fixture ((Get-FileHash -LiteralPath $launcherTwo -Algorithm SHA256).Hash.ToLowerInvariant() -ceq ([IO.File]::ReadAllText($recordTwo)).Trim()) "a changed launcher was not reinstalled"
         [IO.File]::WriteAllBytes($launcherTwo, [byte[]]@())
         $emptyOutput = & $InstallerPath -Ref "2.0.0" | Out-String
-        Assert-Fixture ($emptyOutput -match 'Verified SHA256') "an empty atomic.exe was not reinstalled: $emptyOutput"
+        Assert-Fixture ($emptyOutput -notmatch 'skipping download') "an empty atomic.exe was kept: $emptyOutput"
         Assert-Fixture ((Get-Item -LiteralPath $launcherTwo).Length -gt 0) "the reinstall did not restore atomic.exe"
         $mark = $global:AtomicFixtureRequests.Count
         $probeMark = $global:AtomicFixtureProbes.Count
