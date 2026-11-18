@@ -1147,8 +1147,9 @@ describe("cleaning up after a failed restore", () => {
 			const link = join(asideOf(path), ".git");
 			// Once the worktree is set aside, someone rewrites its .git file before the deletion reaches it.
 			faults.lstat = (inspected) => {
-				if (changed !== "" || inspected !== link) return;
-				writeFileSync(link, "gitdir: changed after the check\n");
+				// The restore may spell the temporary directory differently on Windows (a short name, a drive letter's case).
+				if (changed !== "" || !inspected.endsWith(join(basename(asideOf(path)), ".git"))) return;
+				writeFileSync(inspected, "gitdir: changed after the check\n");
 				changed = link;
 			};
 		});
