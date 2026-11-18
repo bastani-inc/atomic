@@ -224,6 +224,32 @@ test("a statement whose kept stream's baton the server refused, as sqld does bef
 	}
 });
 
+test("a statement the server answers 'no such table' for a table that exists runs again (#5464)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	await database.run("INSERT INTO events VALUES (?)", 1);
+	fake.fail({ kind: "missing-table", table: "events" });
+	await database.run("DELETE FROM events WHERE n = ?", 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
+	assert.equal(requestsRunning(fake, "DELETE FROM events WHERE n = ?").length, 2, "refused once, then run");
+});
+
+test("a statement on a table that does not exist fails with 'no such table', sent once (#5464)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.run("SELECT 1");
+	const missing = (table: string) => (error: unknown) => {
+		const cause = (error as Error).cause;
+		return cause instanceof Error && new RegExp(`no such table: ${table}$`).test(cause.message);
+	};
+	await assert.rejects(database.run("DELETE FROM missing WHERE n = ?", 1), missing("missing"));
+	fake.fail({ kind: "missing-table", table: "gone" });
+	await assert.rejects(database.run("SELECT 2"), missing("gone"), "a table the server names that does not exist");
+	assert.equal(requestsRunning(fake, "DELETE FROM missing WHERE n = ?").length, 1);
+	assert.equal(requestsRunning(fake, "SELECT 2").length, 1);
+});
+
 test("any other HTTP 400 on the kept stream is not sent again, since it may follow a request that ran (#5151)", async () => {
 	const fake = await server();
 	const database = await open(fake.url);

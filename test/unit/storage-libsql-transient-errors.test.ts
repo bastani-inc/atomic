@@ -128,7 +128,12 @@ test("a failure that does not pass stays a plain StorageUnavailableError and is 
 		assert.equal(error instanceof StorageTransientError, false);
 		return true;
 	});
-	assert.equal(fake.pipelines.length, before + 1);
+	// After the server's `no such table`, the adapter reads the schema to see whether the table exists (#5464); the
+	// statement itself is sent once.
+	assert.equal(
+		fake.pipelines.slice(before).filter((pipeline) => pipeline.sql.includes("INSERT INTO missing VALUES (1)")).length,
+		1,
+	);
 });
 
 test("network codes for a connection that broke fail at once with an unknown outcome (#4383)", async () => {
