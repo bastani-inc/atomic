@@ -34,6 +34,11 @@ const CHAOS_TEST_TIMEOUT_MS = 120_000;
 const STALL_PAST_TICKET_MS = 3_000;
 const STALL_PAST_REMOVAL_MS = 21_000;
 const RESUME_GAP_MS = 50;
+/**
+ * How long after the host continues a writer short of CPU first runs again: several of a waiting writer's 250 ms
+ * rechecks, well within the 1.5 s a waiting writer has between refreshing its ticket and the ticket going stale.
+ */
+const STARVED_RESUME_MS = 800;
 
 interface WriterOptions {
 	readonly label: string;
@@ -372,6 +377,70 @@ for (const settled of ["as soon as they queue", "once they wait"] as const)
 		},
 		CHAOS_TEST_TIMEOUT_MS,
 	);
+
+test.skipIf(process.platform === "win32")(
+	"a writer that runs again before another stalled with it keeps its place behind it through several of its rechecks",
+	async () => {
+		const { path, writers } = database("queue-chaos-stalled-starved-");
+		const holder = await startHolder(path);
+		const first = await startWriter(path, { label: "first" });
+		const second = await startWriter(path, { label: "second" });
+		for (const writer of [first, second]) {
+			writer.go();
+			await untilWaiting(writers, writer.pid);
+		}
+		first.child.kill("SIGSTOP");
+		second.child.kill("SIGSTOP");
+		await sleep(STALL_PAST_TICKET_MS);
+		holder.child.kill("SIGKILL");
+		await holder.child.exited;
+		second.child.kill("SIGCONT");
+		await sleep(STARVED_RESUME_MS);
+		first.child.kill("SIGCONT");
+		const reports = await Promise.all([first.report(), second.report()]);
+		assert.deepEqual(
+			reports.map((report) => report.committed),
+			[1, 1],
+		);
+		assert.deepEqual(
+			rows(path).map((row) => row.writer),
+			["first", "second"],
+		);
+		assertIntact(path);
+	},
+	CHAOS_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a writer that starts after a stall queues behind the writers the stall left waiting instead of overtaking them",
+	async () => {
+		const { path, writers } = database("queue-chaos-stalled-newcomer-");
+		const holder = await startHolder(path);
+		const waiting = await startWriter(path, { label: "waiting" });
+		const newcomer = await startWriter(path, { label: "newcomer" });
+		waiting.go();
+		await untilWaiting(writers, waiting.pid);
+		holder.child.kill("SIGSTOP");
+		waiting.child.kill("SIGSTOP");
+		await sleep(STALL_PAST_TICKET_MS);
+		holder.child.kill("SIGKILL");
+		await holder.child.exited;
+		newcomer.go();
+		await sleep(STARVED_RESUME_MS);
+		waiting.child.kill("SIGCONT");
+		const reports = await Promise.all([waiting.report(), newcomer.report()]);
+		assert.deepEqual(
+			reports.map((report) => report.committed),
+			[1, 1],
+		);
+		assert.deepEqual(
+			rows(path).map((row) => row.writer),
+			["waiting", "newcomer"],
+		);
+		assertIntact(path);
+	},
+	CHAOS_TEST_TIMEOUT_MS,
+);
 
 test.skipIf(process.platform === "win32")(
 	"a holder stalled with its waiters past the removal age keeps their tickets when it commits",

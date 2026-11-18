@@ -848,6 +848,7 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.outputPad,
 			);
 			if (messageEntry.message.output) component.appendOutput(messageEntry.message.output);
+			component.setExpanded(options.toolOutputExpanded ?? false);
 			if (messageEntry.isPartial !== true) {
 				component.setComplete(
 					messageEntry.message.exitCode,

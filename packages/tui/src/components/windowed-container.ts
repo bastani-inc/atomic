@@ -1,10 +1,4 @@
-import {
-	type Component,
-	Container,
-	dispatchMouseEvent,
-	type TuiMouseDispatchResult,
-	type TuiMouseEvent,
-} from "../tui.ts";
+import { type Component, Container } from "../tui.ts";
 
 export interface WindowRows {
 	readonly length: number;
@@ -30,6 +24,8 @@ const MAX_WINDOW_PASSES = 4;
 
 interface Entry {
 	readonly component: Component;
+	/** The windowed container whose children include `component`. */
+	owner: WindowedContainer | undefined;
 	lines: readonly string[];
 	width: number;
 	current: boolean;
@@ -46,6 +42,12 @@ function yieldThen(run: () => void): void {
 }
 
 export class WindowedContainer extends Container {
+	/** The container that last laid this one out among its own rows, when this one is nested in it. */
+	private windowHost: WindowedContainer | undefined;
+	/** The windowed container this one is a child of, in that layout. */
+	private windowParent: WindowedContainer | undefined;
+	/** The host's laid-out entries this container's children occupied, `[first, end)`. */
+	private windowSpan = { first: 0, end: 0 };
 	private laidOut: Entry[] = [];
 	private offsets: number[] = [0];
 	private staleOffsetsFrom = Number.POSITIVE_INFINITY;
@@ -130,15 +132,40 @@ export class WindowedContainer extends Container {
 		return lines;
 	}
 
-	override handleMouse(event: TuiMouseEvent): TuiMouseDispatchResult | undefined {
-		if (event.width !== this.width || this.laidOut.length === 0) return super.handleMouse(event);
-		if (event.y < 0 || event.y >= event.height || event.y >= this.rowCount()) return undefined;
-		const index = this.indexAt(event.y);
-		const entry = this.laidOut[index];
-		const start = this.offsets[index] ?? 0;
-		const end = this.offsets[index + 1] ?? start;
-		if (!entry || event.y >= end) return undefined;
-		return dispatchMouseEvent(entry.component, { ...event, y: event.y - start, height: end - start });
+	/**
+	 * The child drawn at `row` as the last layout drew it: an entry, or a nested windowed container with the rows its
+	 * children took. A nested container answers from the layout of the container that laid it out, so its own mouse
+	 * handler sees the rows that were painted. Without a layout at `width`, the children are rendered to measure them.
+	 */
+	override childAtRow(width: number, row: number): { component: Component; row: number; height: number } | undefined {
+		const window = this.windowAt(width);
+		if (!window) return super.childAtRow(width, row);
+		const { host, first, end } = window;
+		const base = host.offsets[first] ?? 0;
+		const absolute = base + row;
+		if (row < 0 || absolute >= (host.offsets[end] ?? base)) return undefined;
+		const index = host.indexAt(absolute);
+		const entry = host.laidOut[index];
+		if (!entry || index < first || index >= end) return undefined;
+		let child: Component = entry.component;
+		let span = { first: index, end: index + 1 };
+		for (let owner = entry.owner; owner !== this; owner = owner.windowParent) {
+			if (!owner) return undefined;
+			child = owner;
+			span = owner.windowSpan;
+		}
+		const start = host.offsets[span.first] ?? 0;
+		const stop = host.offsets[span.end] ?? start;
+		if (absolute < start || absolute >= stop) return undefined;
+		return { component: child, row: absolute - start, height: stop - start };
+	}
+
+	private windowAt(width: number): { host: WindowedContainer; first: number; end: number } | undefined {
+		if (this.width === width && this.laidOut.length > 0) return { host: this, first: 0, end: this.laidOut.length };
+		const host = this.windowHost;
+		if (!host || host.width !== width || host.laidOut.length === 0) return undefined;
+		const { first, end } = this.windowSpan;
+		return end > first && end <= host.laidOut.length ? { host, first, end } : undefined;
 	}
 
 	private rowCount(): number {
@@ -191,20 +218,29 @@ export class WindowedContainer extends Container {
 		const laidOut = this.laidOut;
 		let index = 0;
 		let rebuilt: Entry[] | undefined;
+		const position = (): number => rebuilt?.length ?? index;
 		const visit = (container: WindowedContainer): void => {
 			for (const child of container.windowChildren()) {
 				if (child instanceof WindowedContainer) {
+					child.windowHost = this;
+					child.windowParent = container;
+					const first = position();
 					visit(child);
+					child.windowSpan = { first, end: position() };
 					continue;
 				}
 				if (rebuilt === undefined) {
-					if (laidOut[index]?.component === child) {
+					const kept = laidOut[index];
+					if (kept?.component === child) {
+						kept.owner = container;
 						index++;
 						continue;
 					}
 					rebuilt = laidOut.slice(0, index);
 				}
-				rebuilt.push(this.entryFor(child));
+				const entry = this.entryFor(child);
+				entry.owner = container;
+				rebuilt.push(entry);
 			}
 		};
 		visit(this);
@@ -226,7 +262,16 @@ export class WindowedContainer extends Container {
 		if (!entry) {
 			const estimate =
 				this.measuredChildren > 0 ? Math.max(1, Math.round(this.measuredRows / this.measuredChildren)) : 1;
-			entry = { component, lines: [], width: 0, current: false, height: estimate, index: 0, renderedIn: 0 };
+			entry = {
+				component,
+				owner: undefined,
+				lines: [],
+				width: 0,
+				current: false,
+				height: estimate,
+				index: 0,
+				renderedIn: 0,
+			};
 			entries.set(component, entry);
 			staleChanges++;
 		} else if (entry.width !== this.width) {

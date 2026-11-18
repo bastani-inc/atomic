@@ -227,7 +227,7 @@ function handleToolsExpandInput(ctx: StageChatViewContext, data: string): boolea
 	if (!matchesAction(keybindings, data, APP_ACTION.toolsExpand)) return false;
 	const expanded = ctx.getToolsExpanded?.() === true;
 	ctx.setToolsExpanded(!expanded);
-	ctx.chatHost.invalidate();
+	ctx.chatHost.toolOutputToggled();
 	ctx.requestRender?.();
 	return true;
 }

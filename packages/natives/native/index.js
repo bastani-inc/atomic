@@ -867,6 +867,7 @@ module.exports.HostProcessEventKind = nativeBinding.HostProcessEventKind
 module.exports.invalidateFsScanCache = nativeBinding.invalidateFsScanCache
 module.exports.killSupervisedProcessTrees = nativeBinding.killSupervisedProcessTrees
 module.exports.OwnerCloseCause = nativeBinding.OwnerCloseCause
+module.exports.pendingStdinInput = nativeBinding.pendingStdinInput
 module.exports.processCreationTime = nativeBinding.processCreationTime
 module.exports.renameNoReplace = nativeBinding.renameNoReplace
 module.exports.renameNoReplaceAsync = nativeBinding.renameNoReplaceAsync
