@@ -145,7 +145,11 @@ test("agent transcript footer offers messaging only when the source supports it 
 			h.fixture.runners[0].context.bindTranscript(session);
 			await peek(h.inspector);
 			await enter(h.inspector);
-			assert.equal(h.lines(110, 30).at(-2), "━".repeat(110), "an attached composer has heavy rules (#5224)");
+			assert.equal(
+				h.lines(110, 30).at(-2),
+				"─".repeat(110),
+				"an attached composer's bottom rule is the main composer's rule (#5224)",
+			);
 			const footer = h.lines(110, 30).at(-1) ?? "";
 			assert.equal(footer, "  ← task · pgup/pgdn scroll · ? keys");
 			assert.doesNotMatch(footer, / · {2}· /);
