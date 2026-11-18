@@ -476,6 +476,15 @@ CURRENT_BACKED_UP=0
 BIN_INSTALLED=0
 BIN_BACKED_UP=0
 INSTALL_COMMITTED=0
+INSTALL_LOCK_PATH=
+INSTALL_LOCK_OWNER=
+INSTALL_LOCK_HELD=0
+CURRENT_SWITCHED=0
+PREVIOUS_CURRENT_TARGET=
+CURRENT_PATH=
+VERSIONS_DIR=
+VERSION_COPY=
+MV_NO_FOLLOW=
 CREATED_INSTALL_ROOT=0
 CREATED_VERSIONS_DIR=0
 CREATED_BIN_DIR=0
@@ -487,6 +496,219 @@ CURSOR_HIDDEN=0
 
 path_exists() {
     [ -e "$1" ] || [ -L "$1" ]
+}
+
+link_target() {
+    if command -v readlink >/dev/null 2>&1; then
+        readlink "$1"
+        return
+    fi
+    command -v ls >/dev/null 2>&1 || return 1
+    link_listing=$(ls -ld "$1") || return 1
+    printf '%s\n' "${link_listing#* -> }"
+}
+
+# The start time of process $1, so a lock whose owner exited is not kept alive by a new process with the same id.
+process_start_of() {
+    if [ -r "/proc/$1/stat" ]; then
+        process_stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 0
+        process_stat=${process_stat##*) }
+        # shellcheck disable=SC2086 # split the fields after the command name
+        set -- $process_stat
+        [ "$#" -ge 20 ] && shift 19 && printf '%s' "$1"
+        return 0
+    fi
+    ps -o lstart= -p "$1" 2>/dev/null | tr -d ' ' || :
+}
+
+process_is_running() {
+    [ -n "$1" ] || return 1
+    if [ -d /proc/self ]; then
+        [ -d "/proc/$1" ]
+        return
+    fi
+    ps -p "$1" >/dev/null 2>&1 && return 0
+    kill -0 "$1" 2>/dev/null
+}
+
+# A lock line is "<pid> <start> <transaction>"; its owner is gone when that pid no longer runs, or now runs a
+# process that started at another time.
+lock_owner_is_gone() {
+    # shellcheck disable=SC2086 # split the lock line into its fields
+    set -- $1
+    [ "$#" -ge 1 ] || return 1
+    process_is_running "$1" || return 0
+    [ "$#" -ge 3 ] || return 1
+    lock_owner_start=$(process_start_of "$1")
+    [ -n "$lock_owner_start" ] && [ "$lock_owner_start" != "$2" ]
+}
+
+# Remove a lock whose owner is gone. The lock is renamed aside first and checked there, so a lock another
+# installer took in the meantime is never removed: it is linked back in place instead.
+take_over_stale_install_lock() {
+    stale_reap=$INSTALL_LOCK_PATH.stale-$TRANSACTION_ID
+    mv "$INSTALL_LOCK_PATH" "$stale_reap" 2>/dev/null || return 0
+    stale_seen=$(cat "$stale_reap" 2>/dev/null) || stale_seen=
+    if [ "$stale_seen" != "$1" ]; then
+        ln "$stale_reap" "$INSTALL_LOCK_PATH" 2>/dev/null || :
+    fi
+    rm -f "$stale_reap"
+}
+
+# One installer at a time per install root: held from before the installed version is read until exit.
+acquire_install_lock() {
+    INSTALL_LOCK_PATH=$INSTALL_ROOT/.install.lock
+    INSTALL_LOCK_OWNER="$$ $(process_start_of "$$") $TRANSACTION_ID"
+    lock_waited=0
+    lock_empty_polls=0
+    lock_announced=0
+    while :; do
+        if (set -C && printf '%s\n' "$INSTALL_LOCK_OWNER" > "$INSTALL_LOCK_PATH") 2>/dev/null; then
+            INSTALL_LOCK_HELD=1
+            return 0
+        fi
+        lock_holder=$(cat "$INSTALL_LOCK_PATH" 2>/dev/null) || lock_holder=
+        if [ -z "$lock_holder" ]; then
+            # Created but not yet written, or left empty by an installer that was killed right then.
+            lock_empty_polls=$((lock_empty_polls + 1))
+            if [ "$lock_empty_polls" -ge 5 ] && path_exists "$INSTALL_LOCK_PATH"; then
+                take_over_stale_install_lock ""
+                continue
+            fi
+        else
+            lock_empty_polls=0
+            if lock_owner_is_gone "$lock_holder"; then
+                take_over_stale_install_lock "$lock_holder"
+                continue
+            fi
+        fi
+        if [ "$lock_announced" -eq 0 ]; then
+            lock_announced=1
+            printf '%sWaiting for another atomic installer (process %s) to finish...%s\n' \
+                "$MUTED" "${lock_holder%% *}" "$RESET" >&2
+        fi
+        [ "$lock_waited" -lt "$INSTALL_LOCK_TIMEOUT" ] ||
+            fail "another atomic installer (process ${lock_holder%% *}) is still running; rerun after it finishes"
+        sleep 1
+        lock_waited=$((lock_waited + 1))
+    done
+}
+
+holds_install_lock() {
+    [ "$INSTALL_LOCK_HELD" -eq 1 ] || return 1
+    lock_contents=$(cat "$INSTALL_LOCK_PATH" 2>/dev/null) || return 1
+    [ "$lock_contents" = "$INSTALL_LOCK_OWNER" ]
+}
+
+release_install_lock() {
+    if [ "$INSTALL_LOCK_HELD" -eq 1 ]; then
+        holds_install_lock && rm -f "$INSTALL_LOCK_PATH"
+        INSTALL_LOCK_HELD=0
+    fi
+}
+
+# Is the payload in directory $1 a complete install?
+payload_is_complete() {
+    [ -f "$1/atomic" ] && [ -x "$1/atomic" ] || return 1
+    for required_file in package.json app.js native-modifiers.js native-module-path.js native-platform.js; do
+        [ -f "$1/$required_file" ] || return 1
+    done
+    for required_directory in builtin node_modules; do
+        [ -d "$1/$required_directory" ] || return 1
+    done
+}
+
+# Find how this mv renames a symlink over a symlink to a directory instead of moving it into that directory:
+# GNU and BusyBox mv take -T, BSD and macOS mv take -h. Without either, `current` is switched in two steps.
+probe_mv_no_follow() {
+    probe_root=$TEMP_DIR/mv-probe
+    for probe_flag in -T -h; do
+        rm -rf "$probe_root"
+        mkdir -p "$probe_root/a" "$probe_root/b" || return 0
+        ln -s a "$probe_root/link" && ln -s b "$probe_root/next" || return 0
+        if mv "$probe_flag" "$probe_root/next" "$probe_root/link" 2>/dev/null &&
+            [ -L "$probe_root/link" ] && [ ! -e "$probe_root/next" ] && [ ! -e "$probe_root/a/next" ] &&
+            [ "$probe_root/link" -ef "$probe_root/b" ]; then
+            MV_NO_FOLLOW=$probe_flag
+            break
+        fi
+    done
+    rm -rf "$probe_root"
+}
+
+# Point `current` at $1 (relative to the install root) with one rename, so it always resolves to a complete version.
+switch_current() {
+    rm -f "$CURRENT_NEXT"
+    ln -s "$1" "$CURRENT_NEXT" || return 1
+    if [ -n "$MV_NO_FOLLOW" ]; then
+        CURRENT_SWITCHED=1
+        mv "$MV_NO_FOLLOW" "$CURRENT_NEXT" "$CURRENT_PATH"
+    else
+        CURRENT_INSTALLED=1
+        if path_exists "$CURRENT_PATH" && [ "$CURRENT_BACKED_UP" -eq 0 ]; then
+            CURRENT_BACKED_UP=1
+            mv "$CURRENT_PATH" "$CURRENT_BACKUP"
+        else
+            rm -f "$CURRENT_PATH"
+        fi
+        mv "$CURRENT_NEXT" "$CURRENT_PATH"
+    fi
+}
+
+# Under the lock no other installer is running, so what a killed installer left behind can go: temporary links and
+# staged copies always (unless `current` resolves to one), backups once `current` resolves to a complete version.
+sweep_install_leftovers() {
+    [ "$INSTALL_LOCK_HELD" -eq 1 ] || return 0
+    set +f
+    sweep_install_leftovers_globbing
+    sweep_status=$?
+    set -f
+    return "$sweep_status"
+}
+
+sweep_install_leftovers_globbing() {
+    sweep_current=$INSTALL_ROOT/current
+    sweep_bin_backup=
+    if ! path_exists "$sweep_current"; then
+        # A killed earlier installer may have moved `current` aside: put the newest such pointer back.
+        for sweep_entry in "$INSTALL_ROOT"/.current-backup-*; do
+            path_exists "$sweep_entry" || continue
+            [ -L "$sweep_entry" ] && [ -d "$sweep_entry" ] && payload_is_complete "$sweep_entry" || continue
+            mv "$sweep_entry" "$sweep_current" 2>/dev/null && break
+        done
+    fi
+    if ! path_exists "$BIN_PATH"; then
+        for sweep_entry in "$BIN_DIR"/.atomic-backup-*; do
+            [ -L "$sweep_entry" ] || continue
+            mv "$sweep_entry" "$BIN_PATH" 2>/dev/null && break
+        done
+    fi
+    sweep_healthy=0
+    [ -d "$sweep_current" ] && payload_is_complete "$sweep_current" && sweep_healthy=1
+    for sweep_entry in "$INSTALL_ROOT"/versions/.stage-* "$INSTALL_ROOT"/versions/.tmp-* \
+        "$INSTALL_ROOT"/.current-[0-9]* "$INSTALL_ROOT"/.install.lock.stale-* "$BIN_DIR"/.atomic-[0-9]*; do
+        path_exists "$sweep_entry" || continue
+        case ${sweep_entry##*/} in
+            *-"$TRANSACTION_ID") continue ;;
+        esac
+        # shellcheck disable=SC3013 # -ef compares physical directories
+        if [ -d "$sweep_entry" ] && [ ! -L "$sweep_entry" ] && [ "$sweep_current" -ef "$sweep_entry" ]; then
+            continue
+        fi
+        rm -rf "$sweep_entry" 2>/dev/null || :
+    done
+    [ "$sweep_healthy" -eq 1 ] || return 0
+    for sweep_entry in "$INSTALL_ROOT"/versions/.backup-* "$INSTALL_ROOT"/.current-backup-* "$BIN_DIR"/.atomic-backup-*; do
+        path_exists "$sweep_entry" || continue
+        case ${sweep_entry##*/} in
+            *-"$TRANSACTION_ID") continue ;;
+        esac
+        # shellcheck disable=SC3013 # -ef compares physical directories
+        if [ -d "$sweep_entry" ] && [ ! -L "$sweep_entry" ] && [ "$sweep_current" -ef "$sweep_entry" ]; then
+            continue
+        fi
+        rm -rf "$sweep_entry" 2>/dev/null || :
+    done
 }
 
 nearest_existing_directory() {
@@ -543,6 +765,29 @@ rollback_once() {
         fi
     fi
 
+    # `current` is pointed back with one rename. When the version it pointed at is being restored under the same
+    # name, it points at the staged copy until that version is back.
+    if [ "$CURRENT_SWITCHED" -eq 1 ]; then
+        if [ -z "$PREVIOUS_CURRENT_TARGET" ]; then
+            if rm -f "$CURRENT_PATH"; then
+                CURRENT_SWITCHED=0
+            else
+                printf 'warning: failed to remove the unsuccessful current pointer: %s\n' "$CURRENT_PATH" >&2
+                rollback_incomplete=1
+            fi
+        elif [ "$PREVIOUS_CURRENT_TARGET" = "versions/${VERSION_PATH##*/}" ] &&
+            { [ "$VERSION_INSTALLED" -eq 1 ] || [ "$VERSION_BACKED_UP" -eq 1 ]; }; then
+            if [ -n "$VERSION_STAGE" ] && [ -d "$VERSION_STAGE" ]; then
+                switch_current "versions/${VERSION_STAGE##*/}" ||
+                    { printf 'warning: failed to repoint the current pointer: %s\n' "$CURRENT_PATH" >&2; rollback_incomplete=1; }
+            fi
+        elif switch_current "$PREVIOUS_CURRENT_TARGET"; then
+            CURRENT_SWITCHED=0
+        else
+            printf 'warning: failed to restore the previous current pointer: %s\n' "$CURRENT_PATH" >&2
+            rollback_incomplete=1
+        fi
+    fi
     if [ "$CURRENT_INSTALLED" -eq 1 ]; then
         if ! path_exists "$CURRENT_PATH"; then
             CURRENT_INSTALLED=0
@@ -594,6 +839,14 @@ rollback_once() {
             rollback_incomplete=1
         fi
     fi
+    if [ "$CURRENT_SWITCHED" -eq 1 ] && [ "$VERSION_INSTALLED" -eq 0 ] && [ "$VERSION_BACKED_UP" -eq 0 ]; then
+        if switch_current "$PREVIOUS_CURRENT_TARGET"; then
+            CURRENT_SWITCHED=0
+        else
+            printf 'warning: failed to restore the previous current pointer: %s\n' "$CURRENT_PATH" >&2
+            rollback_incomplete=1
+        fi
+    fi
 }
 
 cleanup() {
@@ -630,9 +883,14 @@ cleanup() {
         if [ -n "$CURRENT_NEXT" ] && path_exists "$CURRENT_NEXT"; then
             rm -rf "$CURRENT_NEXT" || printf 'warning: failed to remove temporary current pointer: %s\n' "$CURRENT_NEXT" >&2
         fi
-        if [ -n "$VERSION_STAGE" ] && path_exists "$VERSION_STAGE"; then
+        # shellcheck disable=SC3013 # -ef: never remove the copy `current` still resolves to
+        if [ -n "$VERSION_STAGE" ] && path_exists "$VERSION_STAGE" && ! [ "$CURRENT_PATH" -ef "$VERSION_STAGE" ]; then
             rm -rf "$VERSION_STAGE" || printf 'warning: failed to remove staged version: %s\n' "$VERSION_STAGE" >&2
         fi
+        if [ -n "$VERSION_COPY" ] && path_exists "$VERSION_COPY"; then
+            rm -rf "$VERSION_COPY" || printf 'warning: failed to remove copied version: %s\n' "$VERSION_COPY" >&2
+        fi
+        release_install_lock
 
         if [ "$CREATED_BIN_DIR" -eq 1 ]; then
             remove_created_empty_path "$BIN_DIR" "$BIN_DIRECTORY_STOP"
@@ -645,6 +903,7 @@ cleanup() {
         fi
     fi
 
+    release_install_lock
     rm -rf "$TEMP_DIR"
     trap - 0 HUP INT TERM
     exit "$cleanup_status"
@@ -1226,6 +1485,23 @@ print_install_summary() {
     printf '%sFor more information visit%s %s\n' "$MUTED" "$RESET" "$DOCS_URL"
 }
 
+# Only one installer works on an install root at a time: the lock is taken before the installed version is read
+# and held until exit, and a lock whose installer was killed is taken over.
+INSTALL_LOCK_TIMEOUT=${ATOMIC_INSTALL_LOCK_TIMEOUT:-1800}
+case $INSTALL_LOCK_TIMEOUT in
+    ''|*[!0123456789]*) fail "ATOMIC_INSTALL_LOCK_TIMEOUT must be a whole number of seconds" ;;
+esac
+INSTALL_DIRECTORY_STOP=$(nearest_existing_directory "$INSTALL_ROOT" && printf '_') ||
+    fail "unable to find an existing parent for ATOMIC_INSTALL_DIR: $INSTALL_ROOT"
+INSTALL_DIRECTORY_STOP=${INSTALL_DIRECTORY_STOP%_}
+if [ ! -d "$INSTALL_ROOT" ]; then
+    (umask "$ORIGINAL_UMASK" && mkdir -p "$INSTALL_ROOT") ||
+        fail "unable to create ATOMIC_INSTALL_DIR: $INSTALL_ROOT"
+    CREATED_INSTALL_ROOT=1
+fi
+acquire_install_lock
+sweep_install_leftovers
+
 # Read the installed version from where `current` points rather than executing
 # the existing binary: a hung or broken install is exactly what a rerun repairs,
 # so this informational probe must never block the download and promotion.
@@ -1425,17 +1701,11 @@ printf '%sVerified SHA256, extracted, and checked atomic --version%s\n' "$MUTED"
 VERSIONS_DIR=$INSTALL_ROOT/versions
 CURRENT_PATH=$INSTALL_ROOT/current
 
-INSTALL_DIRECTORY_STOP=$(nearest_existing_directory "$INSTALL_ROOT" && printf '_') ||
-    fail "unable to find an existing parent for ATOMIC_INSTALL_DIR: $INSTALL_ROOT"
-INSTALL_DIRECTORY_STOP=${INSTALL_DIRECTORY_STOP%_}
 BIN_DIRECTORY_STOP=$(nearest_existing_directory "$BIN_DIR" && printf '_') ||
     fail "unable to find an existing parent for ATOMIC_BIN_DIR: $BIN_DIR"
 BIN_DIRECTORY_STOP=${BIN_DIRECTORY_STOP%_}
 
-if [ ! -d "$INSTALL_ROOT" ]; then
-    mkdir -p "$INSTALL_ROOT"
-    CREATED_INSTALL_ROOT=1
-fi
+holds_install_lock || fail "another atomic installer took over $INSTALL_ROOT; rerun the installer"
 if [ ! -d "$VERSIONS_DIR" ]; then
     mkdir -p "$VERSIONS_DIR"
     CREATED_VERSIONS_DIR=1
@@ -1447,38 +1717,82 @@ fi
 
 VERSION_PATH=$VERSIONS_DIR/$RELEASE_TAG_ENCODED
 VERSION_STAGE=$VERSIONS_DIR/.stage-$TRANSACTION_ID
+VERSION_COPY_PATH=$VERSIONS_DIR/.tmp-$TRANSACTION_ID
 VERSION_BACKUP=$VERSIONS_DIR/.backup-$TRANSACTION_ID
 CURRENT_NEXT=$INSTALL_ROOT/.current-$TRANSACTION_ID
 CURRENT_BACKUP=$INSTALL_ROOT/.current-backup-$TRANSACTION_ID
 BIN_NEXT=$BIN_DIR/.atomic-$TRANSACTION_ID
 BIN_BACKUP=$BIN_DIR/.atomic-backup-$TRANSACTION_ID
 
+probe_mv_no_follow
+# What `current` points at now, as a target a rollback can point it back to.
+PREVIOUS_CURRENT_TARGET=
+if [ -L "$CURRENT_PATH" ]; then
+    # shellcheck disable=SC1007 # CDPATH= clears the search path for this cd only
+    previous_physical=$(CDPATH= cd -P "$CURRENT_PATH" 2>/dev/null && pwd && printf '_') || previous_physical=
+    previous_physical=${previous_physical%_}
+    previous_physical=${previous_physical%"$NEWLINE"}
+    # shellcheck disable=SC1007
+    versions_physical=$(CDPATH= cd -P "$VERSIONS_DIR" 2>/dev/null && pwd && printf '_') || versions_physical=
+    versions_physical=${versions_physical%_}
+    versions_physical=${versions_physical%"$NEWLINE"}
+    if [ -n "$previous_physical" ] && [ -n "$versions_physical" ] &&
+        [ "${previous_physical%/*}" = "$versions_physical" ]; then
+        PREVIOUS_CURRENT_TARGET=versions/${previous_physical##*/}
+    elif [ -n "$previous_physical" ]; then
+        PREVIOUS_CURRENT_TARGET=$previous_physical
+    else
+        PREVIOUS_CURRENT_TARGET=$(link_target "$CURRENT_PATH" 2>/dev/null) || PREVIOUS_CURRENT_TARGET=
+    fi
+fi
+
 mv "$PAYLOAD_ROOT" "$VERSION_STAGE"
 PAYLOAD_ROOT=
-if path_exists "$VERSION_PATH"; then
+# shellcheck disable=SC3013 # -ef compares the physical directories
+if [ "$FORCE_INSTALL" -eq 0 ] && [ -d "$VERSION_PATH" ] && [ ! -L "$VERSION_PATH" ] && payload_is_complete "$VERSION_PATH"; then
+    # A complete copy of this version is already installed: point `current` at it and keep it.
+    rm -rf "$VERSION_STAGE"
+    VERSION_STAGE=
+elif path_exists "$VERSION_PATH" && [ -n "$MV_NO_FOLLOW" ] && command -v cp >/dev/null 2>&1 &&
+    [ "$CURRENT_PATH" -ef "$VERSION_PATH" ]; then
+    # `current` points at the version being replaced: point it at the staged copy first, so it never resolves to a
+    # missing or partial directory, and put a copy of the stage in place under the version's name.
+    switch_current "versions/${VERSION_STAGE##*/}"
     VERSION_BACKED_UP=1
     mv "$VERSION_PATH" "$VERSION_BACKUP"
+    VERSION_COPY=$VERSION_COPY_PATH
+    cp -pPR "$VERSION_STAGE" "$VERSION_COPY"
+    VERSION_INSTALLED=1
+    mv "$VERSION_COPY" "$VERSION_PATH"
+    VERSION_COPY=
+else
+    if path_exists "$VERSION_PATH"; then
+        VERSION_BACKED_UP=1
+        mv "$VERSION_PATH" "$VERSION_BACKUP"
+    fi
+    VERSION_INSTALLED=1
+    mv "$VERSION_STAGE" "$VERSION_PATH"
+    VERSION_STAGE=
 fi
-VERSION_INSTALLED=1
-mv "$VERSION_STAGE" "$VERSION_PATH"
-VERSION_STAGE=
 
-ln -s "versions/$RELEASE_TAG_ENCODED" "$CURRENT_NEXT"
-if path_exists "$CURRENT_PATH"; then
-    CURRENT_BACKED_UP=1
-    mv "$CURRENT_PATH" "$CURRENT_BACKUP"
-fi
-CURRENT_INSTALLED=1
-mv "$CURRENT_NEXT" "$CURRENT_PATH"
-CURRENT_NEXT=
+holds_install_lock || fail "another atomic installer took over $INSTALL_ROOT; rerun the installer"
+switch_current "versions/$RELEASE_TAG_ENCODED"
 
-ln -s "$CURRENT_PATH/atomic" "$BIN_NEXT"
-if path_exists "$BIN_PATH"; then
-    BIN_BACKED_UP=1
-    mv "$BIN_PATH" "$BIN_BACKUP"
+# The launcher always points through `current`, so a switch never needs to replace it.
+BIN_TARGET=$CURRENT_PATH/atomic
+bin_target_now=
+if [ -L "$BIN_PATH" ]; then
+    bin_target_now=$(link_target "$BIN_PATH") || bin_target_now=
 fi
-BIN_INSTALLED=1
-mv "$BIN_NEXT" "$BIN_PATH"
+if [ "$bin_target_now" != "$BIN_TARGET" ]; then
+    ln -s "$BIN_TARGET" "$BIN_NEXT"
+    if path_exists "$BIN_PATH"; then
+        BIN_BACKED_UP=1
+        mv "$BIN_PATH" "$BIN_BACKUP"
+    fi
+    BIN_INSTALLED=1
+    mv "$BIN_NEXT" "$BIN_PATH"
+fi
 BIN_NEXT=
 
 if ! "$BIN_PATH" --version >/dev/null; then
@@ -1486,6 +1800,11 @@ if ! "$BIN_PATH" --version >/dev/null; then
 fi
 
 INSTALL_COMMITTED=1
+CURRENT_SWITCHED=0
+if [ -n "$VERSION_STAGE" ]; then
+    rm -rf "$VERSION_STAGE" || :
+    VERSION_STAGE=
+fi
 if [ "$BIN_BACKED_UP" -eq 1 ]; then
     rm -rf "$BIN_BACKUP" || :
     BIN_BACKED_UP=0
@@ -1498,6 +1817,8 @@ if [ "$VERSION_BACKED_UP" -eq 1 ]; then
     rm -rf "$VERSION_BACKUP" || :
     VERSION_BACKED_UP=0
 fi
+# What `current` pointed at when an earlier installer was killed is no longer in use.
+sweep_install_leftovers
 
 # Replace an Intercom broker the previous version left running, when that is safe (#4538).
 # A release without the command skips it; the install is already committed, so a failure only warns.

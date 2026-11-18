@@ -63,7 +63,24 @@ test("Windows installer declares the PowerShell 5.1 archive installation contrac
 	const installMutation = source.indexOf("New-Item -ItemType Directory -Path $versionsDir");
 	assert.ok(checksumComparison >= 0 && installMutation > checksumComparison);
 	assert.match(source, /New-Item\s+-ItemType\s+Junction/u);
-	assert.match(source, /\[Environment\]::SetEnvironmentVariable\("Path",\s*\$newUserPath,\s*"User"\)/u);
+	// The User PATH is read unexpanded and written back with its registry type, so %VAR% entries survive.
+	assert.match(source, /Set-AtomicUserPathValue \$newUserPath \$oldUserPathValue\.Kind/u);
+	assert.match(source, /DoNotExpandEnvironmentNames/u);
+	assert.match(source, /\$key\.SetValue\("Path", \$Value, \$Kind\)/u);
+	// One installer at a time: an exclusive handle the system releases when the installer exits or is killed.
+	assert.match(source, /\[IO\.FileShare\]::None, 1, \[IO\.FileOptions\]::DeleteOnClose/u);
+	assert.ok(
+		source.indexOf("$installLock = Enter-AtomicInstallLock") <
+			source.indexOf("Get-AtomicInstalledVersion (Join-Path"),
+	);
+	// The installed version is read from where `current` points, never by running the installed atomic.exe.
+	const installedVersionProbe = source.slice(
+		source.indexOf("function Get-AtomicInstalledVersion"),
+		source.indexOf("function Get-AtomicComparablePath"),
+	);
+	assert.doesNotMatch(installedVersionProbe, /--version/u);
+	// Programs the installer starts never inherit the token.
+	assert.ok(source.indexOf("$env:GITHUB_TOKEN = $null") < source.indexOf('$null = & $stagedAtomic "--version"'));
 	assert.match(source, /\$null = &\s+\$stagedAtomic\s+"--version"[\s\S]*\$LASTEXITCODE/u);
 	assert.match(source, /\$null = &\s+\$env:ComSpec\s+\/d\s+\/c\s+\$shimCommand[\s\S]*\$LASTEXITCODE/u);
 

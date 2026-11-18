@@ -13,6 +13,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$IsWindowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $ProgressPreference = "SilentlyContinue"
 
 $helpText = @'
@@ -155,17 +156,18 @@ function Get-AtomicErrorDetail {
 function Get-AtomicInstalledVersion {
     param([string]$LauncherPath)
 
+    # Read the version from the directory `current` points at instead of running the installed atomic.exe: a hung or
+    # broken install is exactly what a rerun repairs, so this probe must never block it.
     if (-not (Test-Path -LiteralPath $LauncherPath -PathType Leaf)) {
         return $null
     }
     try {
-        $ErrorActionPreference = "Continue"
-        $versionLines = @(& $LauncherPath "--version" 2>$null)
-        if ($LASTEXITCODE -ne 0 -or $versionLines.Count -eq 0) {
+        $currentTarget = Get-AtomicReparseTarget (Get-AtomicDirectoryEntry (Split-Path -Parent $LauncherPath))
+        if ([string]::IsNullOrWhiteSpace($currentTarget)) {
             return $null
         }
-        $version = ([string]$versionLines[0]).Trim()
-        if ([string]::IsNullOrWhiteSpace($version)) {
+        $version = [Uri]::UnescapeDataString((Split-Path -Leaf $currentTarget.TrimEnd([char[]]@('\', '/'))))
+        if (-not (Test-AtomicReleaseTag $version)) {
             return $null
         }
         return $version
@@ -1170,7 +1172,7 @@ function Invoke-AtomicTransactionRollback {
     }
     if ($Transaction.UserPathChangeIntended) {
         try {
-            [Environment]::SetEnvironmentVariable("Path", $Transaction.OldUserPath, "User")
+            Set-AtomicUserPathValue $Transaction.OldUserPath $Transaction.OldUserPathKind
             $Transaction.UserPathChangeIntended = $false
         }
         catch { Write-Warning -Message "Failed to restore the User PATH after installation failure: $_" -WarningAction Continue }
@@ -1231,14 +1233,59 @@ function Remove-AtomicTransactionBackups {
     }
 }
 
+# The User PATH as stored: unexpanded (%USERPROFILE%\bin stays as written) and with its registry type, so rewriting it
+# never turns a REG_EXPAND_SZ value into literal paths.
+function Get-AtomicUserPathValue {
+    if (-not $IsWindowsHost) {
+        return [pscustomobject]@{ Value = [Environment]::GetEnvironmentVariable("Path", "User"); Kind = $null }
+    }
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $false)
+    if ($null -eq $key) {
+        return [pscustomobject]@{ Value = $null; Kind = [Microsoft.Win32.RegistryValueKind]::ExpandString }
+    }
+    try {
+        $value = $key.GetValue("Path", $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $kind = if ($null -eq $value) { [Microsoft.Win32.RegistryValueKind]::ExpandString } else { $key.GetValueKind("Path") }
+        return [pscustomobject]@{ Value = $value; Kind = $kind }
+    }
+    finally {
+        $key.Close()
+    }
+}
+
+function Set-AtomicUserPathValue {
+    param([AllowNull()][string]$Value, $Kind)
+
+    if (-not $IsWindowsHost -or $null -eq $Kind) {
+        [Environment]::SetEnvironmentVariable("Path", $Value, "User")
+        return
+    }
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+    try {
+        if ($null -eq $Value) {
+            $key.DeleteValue("Path", $false)
+        }
+        else {
+            $key.SetValue("Path", $Value, $Kind)
+        }
+    }
+    finally {
+        $key.Close()
+    }
+    # Tell running programs the environment changed, as SetEnvironmentVariable does.
+    [Environment]::SetEnvironmentVariable("ATOMIC_INSTALL_PATH_REFRESH", $null, "User")
+}
+
 function Add-AtomicBinDirToPath {
     param([string]$BinDir)
 
     $userPathChanged = $false
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if (-not $binDirHasPathSeparator -and -not (Test-AtomicPathContains $userPath $BinDir)) {
+    $userPathValue = Get-AtomicUserPathValue
+    $userPath = $userPathValue.Value
+    $expandedUserPath = if ($null -eq $userPath) { $null } else { [Environment]::ExpandEnvironmentVariables($userPath) }
+    if (-not $binDirHasPathSeparator -and -not (Test-AtomicPathContains $expandedUserPath $BinDir)) {
         $newUserPath = if ([string]::IsNullOrWhiteSpace($userPath)) { $BinDir } else { "$userPath;$BinDir" }
-        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+        Set-AtomicUserPathValue $newUserPath $userPathValue.Kind
         $userPathChanged = $true
     }
     if (-not $binDirHasPathSeparator -and -not (Test-AtomicPathContains $env:Path $BinDir)) {
@@ -1249,6 +1296,87 @@ function Add-AtomicBinDirToPath {
 
 # 0.9.42 is the first release whose `atomic intercom` is a subcommand: an older one reads `intercom upgrade` as a
 # prompt for the model.
+# One installer at a time per install root. The lock is a file held open exclusively and deleted when its handle
+# closes, so the system releases it when an installer exits or is killed.
+function Enter-AtomicInstallLock {
+    param([string]$InstallRoot, [int]$TimeoutSeconds)
+
+    $lockPath = Join-Path $InstallRoot ".install.lock"
+    $waited = 0
+    $announced = $false
+    while ($true) {
+        try {
+            return [IO.FileStream]::new($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite,
+                [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
+        }
+        catch [IO.IOException] {
+            if (-not $announced) {
+                $announced = $true
+                Write-AtomicMuted "Waiting for another atomic installer to finish..."
+            }
+            if ($waited -ge $TimeoutSeconds) {
+                throw "Another atomic installer is still running for $InstallRoot; rerun after it finishes."
+            }
+            Start-Sleep -Seconds 1
+            $waited++
+        }
+    }
+}
+
+# Under the lock no other installer is running, so what a killed installer left behind can go: staged copies and
+# temporary links always (unless `current` points at one), backups once `current` points at a complete version. A
+# `current` that a killed installer moved aside is put back first.
+function Clear-AtomicInstallLeftovers {
+    param([string]$InstallRoot, [string]$BinDir)
+
+    $currentPath = Join-Path $InstallRoot "current"
+    if ($null -eq (Get-AtomicDirectoryEntry $currentPath)) {
+        foreach ($backup in @(Get-ChildItem -LiteralPath $InstallRoot -Force -Filter ".current-backup-*" -ErrorAction SilentlyContinue)) {
+            $backupTarget = Get-AtomicReparseTarget $backup
+            if (-not [string]::IsNullOrWhiteSpace($backupTarget) -and (Test-AtomicInstalledPayloadComplete $backup.FullName)) {
+                Move-Item -LiteralPath $backup.FullName -Destination $currentPath
+                break
+            }
+        }
+    }
+    $currentTarget = Get-AtomicReparseTarget (Get-AtomicDirectoryEntry $currentPath)
+    $currentComparable = if ([string]::IsNullOrWhiteSpace($currentTarget)) { $null } else { Get-AtomicComparablePath $currentTarget }
+    $healthy = $null -ne $currentComparable -and (Test-AtomicInstalledPayloadComplete $currentPath)
+    $versionsDir = Join-Path $InstallRoot "versions"
+    $candidates = @(
+        @{ Dir = $versionsDir; Filter = ".stage-*"; Backup = $false },
+        @{ Dir = $InstallRoot; Filter = ".current-*"; Backup = $false },
+        @{ Dir = $BinDir; Filter = ".atomic-*"; Backup = $false },
+        @{ Dir = $versionsDir; Filter = ".backup-*"; Backup = $true }
+    )
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate.Dir -PathType Container)) {
+            continue
+        }
+        foreach ($entry in @(Get-ChildItem -LiteralPath $candidate.Dir -Force -Filter $candidate.Filter -ErrorAction SilentlyContinue)) {
+            $isBackup = $candidate.Backup -or $entry.Name -like ".current-backup-*" -or $entry.Name -like ".atomic-current-backup-*" -or
+                $entry.Name -like ".atomic-backup-*"
+            if ($isBackup -and -not $healthy) {
+                continue
+            }
+            if ($null -ne $currentComparable -and (Get-AtomicComparablePath $entry.FullName) -ieq $currentComparable) {
+                continue
+            }
+            try {
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -and $entry.PSIsContainer) {
+                    [IO.Directory]::Delete($entry.FullName)
+                }
+                else {
+                    Remove-Item -LiteralPath $entry.FullName -Recurse -Force
+                }
+            }
+            catch {
+                Write-Warning -Message "Failed to remove a leftover from an earlier installer: $($entry.FullName): $_" -WarningAction Continue
+            }
+        }
+    }
+}
+
 function Test-AtomicReleaseHasIntercomCommand {
     param([string]$Tag)
 
@@ -1439,6 +1567,25 @@ if ([string]::IsNullOrWhiteSpace($token)) {
 if (-not [string]::IsNullOrWhiteSpace($token)) {
     $apiHeaders["Authorization"] = "Bearer $token"
 }
+# The programs this installer starts (atomic.exe, cmd.exe) never see the token; the caller's variables come back at exit.
+$savedTokenVariables = @{ GITHUB_TOKEN = $env:GITHUB_TOKEN; GH_TOKEN = $env:GH_TOKEN }
+$env:GITHUB_TOKEN = $null
+$env:GH_TOKEN = $null
+$token = $null
+
+$installLockTimeout = 1800
+if (-not [string]::IsNullOrWhiteSpace($env:ATOMIC_INSTALL_LOCK_TIMEOUT)) {
+    if (-not [int]::TryParse($env:ATOMIC_INSTALL_LOCK_TIMEOUT, [ref]$installLockTimeout) -or $installLockTimeout -lt 0) {
+        throw "ATOMIC_INSTALL_LOCK_TIMEOUT must be a whole number of seconds."
+    }
+}
+$createdInstallRootForLock = $false
+if (-not (Test-Path -LiteralPath $installRoot -PathType Container)) {
+    New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
+    $createdInstallRootForLock = $true
+}
+$installLock = Enter-AtomicInstallLock $installRoot $installLockTimeout
+Clear-AtomicInstallLeftovers $installRoot $binDir
 
 $latestApi = "https://api.github.com/repos/bastani-inc/atomic/releases/latest"
 $tagsApiBase = "https://api.github.com/repos/bastani-inc/atomic/releases/tags"
@@ -1588,7 +1735,8 @@ try {
     $atomicCurrentBackupPath = Join-Path $binDir (".atomic-current-backup-" + $transactionId)
     $shimNextPath = Join-Path $binDir (".atomic-" + $transactionId + ".cmd")
     $shimBackupPath = Join-Path $binDir (".atomic-backup-" + $transactionId + ".cmd")
-    $oldUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $oldUserPathValue = Get-AtomicUserPathValue
+    $oldUserPath = $oldUserPathValue.Value
     $oldCurrentPath = $env:Path
 
     $transaction = @{
@@ -1601,6 +1749,7 @@ try {
         ShimPath = $shimPath
         ShimBackupPath = $shimBackupPath
         OldUserPath = $oldUserPath
+        OldUserPathKind = $oldUserPathValue.Kind
         OldCurrentPath = $oldCurrentPath
         VersionBackupIntended = $false
         VersionInstallIntended = $false
@@ -1661,10 +1810,11 @@ try {
         $transaction.ShimInstallIntended = $true
         Move-Item -LiteralPath $shimNextPath -Destination $shimPath
 
-        if (-not $binDirHasPathSeparator -and -not (Test-AtomicPathContains $oldUserPath $binDir)) {
+        $expandedOldUserPath = if ($null -eq $oldUserPath) { $null } else { [Environment]::ExpandEnvironmentVariables($oldUserPath) }
+        if (-not $binDirHasPathSeparator -and -not (Test-AtomicPathContains $expandedOldUserPath $binDir)) {
             $newUserPath = if ([string]::IsNullOrWhiteSpace($oldUserPath)) { $binDir } else { "$oldUserPath;$binDir" }
             $transaction.UserPathChangeIntended = $true
-            [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+            Set-AtomicUserPathValue $newUserPath $oldUserPathValue.Kind
         }
         if (-not $binDirHasPathSeparator -and -not (Test-AtomicPathContains $env:Path $binDir)) {
             $transaction.CurrentPathChangeIntended = $true
@@ -1749,6 +1899,16 @@ finally {
 }
 }
 finally {
+    if ($null -ne (Get-Variable -Name installLock -ValueOnly -ErrorAction SilentlyContinue)) {
+        $installLock.Dispose()
+        if ($createdInstallRootForLock) {
+            try { [IO.Directory]::Delete($installRoot) } catch { }
+        }
+    }
+    if ($null -ne (Get-Variable -Name savedTokenVariables -ValueOnly -ErrorAction SilentlyContinue)) {
+        $env:GITHUB_TOKEN = $savedTokenVariables.GITHUB_TOKEN
+        $env:GH_TOKEN = $savedTokenVariables.GH_TOKEN
+    }
     try {
         [Net.ServicePointManager]::SecurityProtocol = $previousSecurityProtocol
     }
