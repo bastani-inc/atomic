@@ -9,14 +9,14 @@ Background subagents keep working after the launch call returns. You can continu
 
 ### The agent panel
 
-Below the main chat's prompt, the **agent panel** lists the session's running and recent background subagents and workflow runs, one row each. When it lists a subagent, a `● main` row comes first; it stands for the main chat. A panel of workflow runs only has no main row:
+Below the main chat's prompt, the **agent panel** lists the session's active background subagents and workflow runs, one row each. When it lists a subagent, a `● main` row comes first; it stands for the main chat. A panel of workflow runs only has no main row:
 
 ```text
   ● main
   ∀ worker    fix shipping batches                         41m · ↓ 96.1k tokens
   ∀ debugger  #5220 spawn lock                             18m · ↓ 87.4k tokens
   ∀ ralph     ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  3/5 stages         12m · ↓ 61.0k tokens
-  ✓ worker    picker clamp                                  done · 6m
+  ◼ worker    picker clamp                               stopped · 6m
 ```
 
 - **Each row shows** the status, the agent's name (a workflow's name for a run), what it works on, and how long it has run. Agents and workflow runs also show the tokens they have used. A workflow row shows stage progress; a waiting row shows its question instead.
@@ -28,12 +28,12 @@ Below the main chat's prompt, the **agent panel** lists the session's running an
   - `✓` done
   - `✗` failed, showing the reason
   - `◼` stopped
-- **Finished rows** read dim after 30 seconds and leave after three minutes. A finished workflow run stays until you have opened it. Narrow terminals drop the token count and the stage bar.
+- **Finished subagents** leave the panel as soon as they finish; `/tasks` still lists them. A stopped, paused or interrupted subagent stays while another subagent, workflow run or background shell is still running, and leaves once nothing is running. It does not come back when new work starts, unless you resume it; a resumed subagent is one row. A stopped row, and a finished workflow run, read dim after 30 seconds. A finished workflow run stays until you have opened it. Narrow terminals drop the token count and the stage bar.
 - **Up to four rows** show while the prompt has focus, then `+N more`; the focused panel shows eight at a time. The main row does not count toward either.
 
-The main footer shows `↓ N agents` while the panel has rows, plus `N needs input` when any row waits for an answer. These counts include rows folded into `+N more` and use the current chat's tasks.
+The main footer shows `↓ N agents` for the subagent rows the panel lists. Workflow runs are not agents: a panel that lists only workflow runs shows no `↓` count, though **↓** still focuses it. `N needs input` counts every row that waits for an answer, workflow runs included. These counts include rows folded into `+N more` and use the current chat's tasks. When the panel lists nothing but `/tasks` lists subagents of this chat, the footer shows `/tasks to see subagents`; while background shells run, `N shells · /tasks to manage` takes its place.
 
-Background shells are not panel rows. The footer counts the running ones, for example `2 shells`; with no subagents or workflow runs it adds `/tasks to manage`. Open, read and stop shells in [`/tasks`](#open-the-task-inspector).
+Background shells are not panel rows. The footer counts the running ones, for example `2 shells`; with no rows in the panel it adds `/tasks to manage`. Open, read and stop shells in [`/tasks`](#open-the-task-inspector).
 
 Press **↓** on an empty prompt to focus the panel. It then works like every list:
 
@@ -272,7 +272,7 @@ The cadence is fixed when the task starts, and a running task's `/tasks` detail 
 | Transcript | Scrolls like a workflow stage chat: it opens at the latest message and follows new output; PageUp/PageDown move one viewport; Ctrl+Home/Ctrl+End jump to the top and to the latest message; Ctrl+Up/Ctrl+Down jump between prompts; the mouse wheel scrolls (Alt+wheel five times faster). Earlier retained history loads as you scroll toward the top. |
 | Transcript display | A transcript opens with the chat's thinking and tool-output settings. Ctrl+T toggles thinking blocks, as in the chat, and Ctrl+O toggles the transcript's tool output. |
 | Message the agent | Type in the transcript's prompt and press Enter to send the text to the agent through Intercom. A finished subagent resumes in its own session with the message; one stopped for good shows a read-only chat with a one-line note. Up/Down, Home/End and Left/Right edit the prompt. |
-| Subagent chat | A subagent's chat has the chat box of a workflow stage chat with an **attached composer**: heavy accent rules above and below the prompt, the top one naming the subagent, its task and its state, for example `debugger · #5220 spawn lock · 18m` (`needs input` while it waits on a question). The empty prompt reads `Message debugger…` (`Answer debugger…` while it waits), and what you type goes to the subagent. Terminals narrower than 40 columns show the rules without the label. Opened from the agent panel, the chat has no title row and Left returns to the main chat. When the subagent has tasks of its own, Down on an empty prompt opens that task list without leaving its chat. A subagent you stopped with `x x` or Ctrl+X Ctrl+K reads `Stopped · send to resume`; sending a message resumes it. While the subagent runs in this session, its usage meter appears above the prompt, along with the working line and any queued messages; below the prompt, the model line shows once the subagent is idle; while it works there is no status line. Below the footer, the subagent's own running agents are listed in the agent panel's row format, and its running shells are counted under them. |
+| Subagent chat | A subagent's chat has the chat box of a workflow stage chat with an **attached composer**: heavy accent rules above and below the prompt, the top one naming the subagent, its task and its state, for example `debugger · #5220 spawn lock · 18m` (`needs input` while it waits on a question). The empty prompt reads `Message debugger…` (`Answer debugger…` while it waits), and what you type goes to the subagent. Terminals narrower than 40 columns show the rules without the label. Opened from the agent panel, the chat has no title row and Left returns to the main chat. When the subagent has tasks of its own, Down on an empty prompt opens that task list without leaving its chat. A subagent you stopped with `x x` or Ctrl+X Ctrl+K reads `Stopped · send to resume`; sending a message resumes it. While the subagent runs in this session, its usage meter appears above the prompt, along with the working line and any queued messages; below the prompt, the model line shows once the subagent is idle; while it works there is no status line. Below the footer, the subagent's own agents are listed in the agent panel's row format, by the panel's rules, and its running shells are counted under them. |
 | Subagent's tasks | Type `/tasks` in a subagent's transcript to list that subagent's own tasks: the shells it ran and the subagents it launched, not the parent's. In a nested subagent's transcript, `/tasks` lists that subagent's tasks. Escape or Left on that list returns to the subagent's chat. |
 | Go back | Left on an empty prompt, or at the start of a typed one, goes back one level, to the list or detail page you opened the chat from; the hint line names it, and a typed draft comes back when you return. Escape or Left returns from detail to the list. In a subagent's transcript, Escape only interrupts the subagent's current turn: the subagent keeps running, waits for your next message or its own background work to wake it in the same session, and the footer shows `esc interrupt` only while it works. While a subagent's own task list is open, Escape and Left go back within that list first. |
 | Stop | In the list or on a task's detail page, `x` asks for a second press; pressing `x` again within 3 seconds stops the task, and any other key keeps it running. A stopped subagent stays resumable: its chat reads `Stopped · send to resume`, and sending a message resumes it in its own session. Ctrl+X Ctrl+K stops every background subagent, shell and workflow run at once, after the same second press. Remap the key with `app.list.stop`. |

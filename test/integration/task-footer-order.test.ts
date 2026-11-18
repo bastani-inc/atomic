@@ -92,8 +92,8 @@ test.each(["stage", "engine"] as const)(
 				tasks.store.drain();
 				assert.equal(tasks.store.tasks[0]?.execution.kind, "settled");
 			});
-			// A stage chat lists only active tasks; the main panel keeps a finished row a while, marked ✗.
-			assertOrder(surface === "stage" ? [/keeps running/] : [/keeps running/, /✗ worker {2}will fail .*failed/]);
+			// A finished subagent leaves the main panel and a stage chat's task list at once.
+			assertOrder([/keeps running/]);
 			if (stage) {
 				const narrow = stripVTControlCharacters(stage.render(40).join("\n"));
 				assert.match(narrow, /∀ worker/);
