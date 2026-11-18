@@ -534,7 +534,10 @@ export class IntercomClient extends EventEmitter {
     resolve: (authorization: SupervisorAuthorization) => void;
     reject: (error: Error) => void;
   }>();
-  private pendingRestoringRecipientRequests = new Map<string, { resolve(): void; reject(error: Error): void }>();
+  private pendingRestoringRecipientRequests = new Map<
+    string,
+    { resolve(published?: boolean): void; reject(error: Error): void }
+  >();
   private pendingHostedSessionRequests = new Map<
     string,
     { resolve(sessions: readonly HostedSessionAssignment[]): void; reject(error: Error): void }
@@ -1317,27 +1320,35 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "released_children_ack": {
-        const { requestId, refusal } = brokerMessage;
+        const { requestId, refusal, published } = brokerMessage;
         const parsed = refusal === undefined ? undefined : readReleasedChildRefusal(refusal);
-        if (typeof requestId !== "string" || (refusal !== undefined && parsed === undefined)) {
+        if (
+          typeof requestId !== "string" ||
+          (refusal !== undefined && parsed === undefined) ||
+          (published !== undefined && typeof published !== "boolean")
+        ) {
           throw new Error("Invalid released_children_ack message");
         }
         const pending = this.pendingRestoringRecipientRequests.get(requestId);
         if (!pending) return;
         this.pendingRestoringRecipientRequests.delete(requestId);
-        if (parsed === undefined) pending.resolve();
+        if (parsed === undefined) pending.resolve(published !== false);
         else pending.reject(releasedChildErrorFor(parsed));
         break;
       }
       case "restoring_recipient_ack": {
-        const { requestId, error } = brokerMessage;
-        if (typeof requestId !== "string" || (error !== undefined && typeof error !== "string")) {
+        const { requestId, error, published } = brokerMessage;
+        if (
+          typeof requestId !== "string" ||
+          (error !== undefined && typeof error !== "string") ||
+          (published !== undefined && typeof published !== "boolean")
+        ) {
           throw new Error("Invalid restoring_recipient_ack message");
         }
         const pending = this.pendingRestoringRecipientRequests.get(requestId);
         if (!pending) return;
         this.pendingRestoringRecipientRequests.delete(requestId);
-        if (error === undefined) pending.resolve();
+        if (error === undefined) pending.resolve(published !== false);
         else pending.reject(new Error(error));
         break;
       }
@@ -1751,12 +1762,14 @@ export class IntercomClient extends EventEmitter {
    * #3760: hold sends to the child that `capability` (issued to this session by `authorizeSupervisorChild`)
    * names, and to its `aliases`, until the child registers with that capability. Calling again adds aliases.
    * A `dormant` hold keeps the child addressable until the supervisor that restores it takes the hold over.
+   * #5352: with multi-node routing, `published` is false when the hold is in force on this broker but brokers on other
+   * hosts could not find it yet: the broker keeps publishing it until it can, or until the hold ends.
    */
-  reserveRestoringRecipient(
+  async reserveRestoringRecipient(
     capability: string,
     options: { group?: string; aliases?: readonly string[]; dormant?: boolean; holdMs?: number } = {},
-  ): Promise<void> {
-    return this.restoringRecipientRequest({
+  ): Promise<{ readonly published: boolean }> {
+    const published = await this.restoringRecipientRequest({
       type: "reserve_restoring_recipient",
       capability,
       ...(options.group === undefined ? {} : { group: options.group }),
@@ -1764,6 +1777,7 @@ export class IntercomClient extends EventEmitter {
       ...(options.dormant === true ? { dormant: true } : {}),
       ...(options.holdMs === undefined ? {} : { holdMs: options.holdMs }),
     });
+    return { published };
   }
 
   /**
@@ -1778,7 +1792,7 @@ export class IntercomClient extends EventEmitter {
       capability,
       ...(gone === undefined ? {} : { gone }),
       ...(refusal === undefined ? {} : { refusal }),
-    });
+    }).then(() => undefined);
   }
 
   /**
@@ -1864,7 +1878,7 @@ export class IntercomClient extends EventEmitter {
     } catch (error) {
       return Promise.reject(toError(error));
     }
-    return this.restoringRecipientRequest({ type: "acknowledge_released_child_wake", childName });
+    return this.restoringRecipientRequest({ type: "acknowledge_released_child_wake", childName }).then(() => undefined);
   }
 
   acknowledgeReleasedChildReply(reply: ReleasedChildReply, accepted: boolean, deliverToChild = false): boolean {
@@ -1979,7 +1993,8 @@ export class IntercomClient extends EventEmitter {
     });
   }
 
-  private restoringRecipientRequest(frame: Record<string, unknown>): Promise<void> {
+  /** Resolves false when the broker reserved with `published: false` (#5352), true for every other success. */
+  private restoringRecipientRequest(frame: Record<string, unknown>): Promise<boolean> {
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -1993,7 +2008,7 @@ export class IntercomClient extends EventEmitter {
         void this.requestTimeout(socket, new Error("Restoring-recipient request timeout")).then(reject);
       }, RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS);
       this.pendingRestoringRecipientRequests.set(requestId, {
-        resolve: () => { clearTimeout(timeout); resolve(); },
+        resolve: (published = true) => { clearTimeout(timeout); resolve(published); },
         reject: (error) => { clearTimeout(timeout); reject(error); },
       });
       try {

@@ -86,6 +86,8 @@ function fakeSocket(): FakeSocket {
 class Node {
 	readonly sessions = new Map<string, BrokerConnectedSession>();
 	readonly revoked: { readonly key: string; readonly ownerSessionId: string }[] = [];
+	/** Reservations this broker no longer holds (released, taken by their child, or replaced), by capability. */
+	readonly dropped = new Set<string>();
 	readonly supervisorCache = new SupervisorChannelCache();
 	readonly pendingQuestions = new PendingQuestionIndex();
 	readonly deliveredMessages: DeliveredMessageCache;
@@ -132,6 +134,7 @@ class Node {
 				deliveredMessages: node.deliveredMessages,
 				dispatch: (socket, clientMessage, senderId) => node.dispatch(socket, clientMessage, senderId),
 				revokeReleasedReservation: (key, ownerSessionId) => node.revoked.push({ key, ownerSessionId }),
+				holdsReservation: (capability) => !node.dropped.has(capability),
 			},
 		});
 		return node;
@@ -577,6 +580,15 @@ test("a send whose recipient quits before its receipt wait ends is told to keep 
 		if (socket === sender.socket) toSender.push({ type: frame.type, at: Date.now() });
 		return write(socket, frame);
 	});
+	const dispatch = a!.dispatch.bind(a!);
+	let dispatched!: (messageId: string) => void;
+	const sentId = new Promise<string>((resolveSent) => {
+		dispatched = resolveSent;
+	});
+	const dispatchSpy = vi.spyOn(a!, "dispatch").mockImplementation((socket, clientMessage, senderId) => {
+		dispatched((clientMessage.message as Message).id);
+		return dispatch(socket, clientMessage, senderId);
+	});
 	try {
 		b!.leave(recipient);
 		const sentAt = Date.now();
@@ -584,6 +596,9 @@ test("a send whose recipient quits before its receipt wait ends is told to keep 
 			(result) => ({ result, at: Date.now() }),
 			(error: Error) => ({ error, at: Date.now() }),
 		);
+		// The send crosses a real socket to its broker, which queues it in the shared outbox and starts its receipt wait.
+		// Fake time moves on only once that real I/O is done, so the broker's wait and the sender's own start together.
+		await untilOutboxHas(a!, await sentId);
 		await advance(RECIPIENT_RECEIPT_TIMEOUT_MS - 500);
 		recordQuit();
 		await advance(RECIPIENT_RECEIPT_TIMEOUT_MS + PRESENCE_READ_STALL_MS);
@@ -602,11 +617,18 @@ test("a send whose recipient quits before its receipt wait ends is told to keep 
 		);
 	} finally {
 		vi.useRealTimers();
+		dispatchSpy.mockRestore();
 		writeSpy.mockRestore();
 		readSpy.mockRestore();
 		releaseSpy.mockRestore();
 	}
 });
+
+/** Waits, without stepping fake time, until `node` has the message in the shared outbox. */
+async function untilOutboxHas(node: Node, messageId: string): Promise<void> {
+	while ((await node.opened.state.outbox.read(messageId)).status !== "found") await settleFileIo();
+	await settleFileIo();
+}
 
 test("a target no presence lease and no known session names is not found, as on a single node", async () => {
 	const [a] = await cluster(1);
@@ -675,21 +697,16 @@ async function advanceUntil<T>(
 	return undefined;
 }
 
-/** Bound on the real event-loop turns a fake-time step waits for the store's file I/O it started. */
-const FILE_IO_SETTLE_TURNS = 1_000;
-
 /**
  * Lets the store finish the file I/O a fake-time step started before time moves on: the store's transactions check
- * their writers' queue and records off the event loop, so a step's work can need several real turns.
+ * their writers' queue and records off the event loop, so a step's work can need several real turns. It waits for
+ * that I/O to finish, not for a number of turns: on a loaded machine a fixed count of turns can pass while the I/O is
+ * still running, and fake time would then run ahead of the work it is meant to time. Every file request completes,
+ * so the wait ends; the test's own timeout bounds a store that never does.
  */
 async function settleFileIo(): Promise<void> {
-	await new Promise((resolveTurn) => setImmediate(resolveTurn));
-	for (
-		let turn = 0;
-		turn < FILE_IO_SETTLE_TURNS && process.getActiveResourcesInfo().some((kind) => kind.startsWith("FSReq"));
-		turn++
-	)
-		await new Promise((resolveTurn) => setImmediate(resolveTurn));
+	do await new Promise((resolveTurn) => setImmediate(resolveTurn));
+	while (process.getActiveResourcesInfo().some((kind) => kind.startsWith("FSReq")));
 }
 
 test("a lost outcome hint for a held send is noticed by the outcome poll before the hold times out", async () => {
@@ -1167,6 +1184,81 @@ test("a restoring reservation whose shared reserve is still being written when i
 	);
 	assert.equal(lookup.status, "none");
 });
+
+test(
+	"a retried reservation write still running when its child takes the reservation does not leave it in the shared store (#5352)",
+	async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const [a, b] = await cluster();
+			const supervisor = await b!.connect("supervisor", { group: "crew" });
+			const sender = await a!.connect("sender", { group: "crew" });
+			const reservations = b!.opened.state.reservations;
+			const reserve = reservations.reserve.bind(reservations);
+			let attempts = 0;
+			let retrying: () => void = () => {};
+			const retryStarted = new Promise<void>((resolve) => {
+				retrying = resolve;
+			});
+			let written: () => void = () => {};
+			const writing = new Promise<void>((resolve) => {
+				written = resolve;
+			});
+			let retried: (status: string) => void = () => {};
+			const retryWritten = new Promise<string>((resolve) => {
+				retried = resolve;
+			});
+			Object.assign(reservations, {
+				reserve: async (...args: Parameters<typeof reserve>) => {
+					if (attempts++ === 0) throw new Error("reserve failed: shared database is busy");
+					retrying();
+					await writing;
+					const result = await reserve(...args);
+					retried(result.status);
+					return result;
+				},
+			});
+			const capability = `${randomUUID()}.capability`;
+			const key = createHash("sha256").update(capability).digest("hex");
+			const published = await b!.router.restoringReserved(
+				capability,
+				supervisor.info.id,
+				"restored-child",
+				normalizeGroup("crew"),
+				[],
+				false,
+			);
+			assert.equal(published, false);
+
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await retryStarted;
+			// The child takes its reservation, on its own registration's queue, while the retried write runs.
+			b!.dropped.add(capability);
+			await b!.connect("restored-child", { group: "crew", consumed: { capability } });
+			written();
+			assert.equal(await retryWritten, "reserved", "the retry wrote the reservation after the child took it");
+
+			await vi.waitFor(
+				async () => {
+					const read = await a!.opened.state.reservations.read(key);
+					assert.equal(read.status, "ended", JSON.stringify(read));
+				},
+				{ timeout: CROSS_NODE_WAIT_MS },
+			);
+			const lookup = await a!.opened.state.reservations.lookup(
+				"restored-child",
+				{ sessionId: sender.info.id, groups: [normalizeGroup("crew")] },
+				30_000,
+			);
+			assert.equal(lookup.status, "none");
+		} finally {
+			vi.useRealTimers();
+			reported.mockRestore();
+		}
+	},
+	2 * CROSS_NODE_WAIT_MS,
+);
 
 test("a child that turns terminal fails the asks delivered to it from another node with the terminal error", async () => {
 	const [a, b] = await cluster();

@@ -269,6 +269,11 @@ export class RestoringRecipients {
 		};
 	}
 
+	/** #5352: whether `ownerSessionId` still holds the reservation under `key` here (not released, taken or replaced). */
+	holds(key: string, ownerSessionId: string): boolean {
+		return this.reservations.get(key)?.ownerSessionId === ownerSessionId;
+	}
+
 	releasedOwner(childName: string): string | undefined {
 		return this.reservations.get(releasedReservationKey(childName))?.ownerSessionId;
 	}

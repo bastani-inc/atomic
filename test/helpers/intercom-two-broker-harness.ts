@@ -340,6 +340,23 @@ export class TwoBrokerHarness {
 		);
 	}
 
+	/** Fail the first shared-store write of the reservation of `childName` on each broker (`parkableReservations`). */
+	failReservationOnce(childName: string): void {
+		writeFileSync(join(this.root, RESERVATION_GATE), `fail:${childName}`);
+	}
+
+	/** Resolve once a broker has failed the reservation write of `childName`. */
+	async reservationFailed(childName: string): Promise<void> {
+		await vi.waitFor(
+			() => {
+				const failed = readFileSync(join(this.root, `${RESERVATION_GATE}.failed`), "utf8").split("\n");
+				if (!failed.includes(childName))
+					throw new Error(`the reservation write of ${childName} has not failed yet`);
+			},
+			{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
+		);
+	}
+
 	/** Let every parked reservation write go. */
 	releaseReservation(): void {
 		rmSync(join(this.root, RESERVATION_GATE), { force: true });
