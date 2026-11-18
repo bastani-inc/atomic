@@ -264,7 +264,7 @@ test("a read that starts with WITH or VALUES the server answered schema-changed 
 		const sent = fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql));
 		assert.equal(sent.length, 2, sql);
 		assert.ok(
-			sent.every((pipeline) => !/BEGIN IMMEDIATE/i.test(pipeline.sql)),
+			sent.every((pipeline) => !pipeline.sql.some((statement) => /BEGIN IMMEDIATE/i.test(statement))),
 			`${sql} took the write lock`,
 		);
 	}
