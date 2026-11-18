@@ -152,6 +152,12 @@ export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
  * locally, with the local accepted-delivery cache as its duplicate protection.
  */
 export const LOCAL_RETRY_LOOKUP_BOUND_MS = 300;
+/**
+ * The longest a reservation's acknowledgement waits for the shared database to record it, so a sender on another broker
+ * that learns of the child after the acknowledgement finds it held. The client's reserve request gives up after 5 s; past
+ * this bound the reservation is still written when the database answers.
+ */
+export const RESERVATION_PUBLISH_BOUND_MS = 2_500;
 /** The longest `list` waits for other nodes' sessions; the client's list request gives up after 5 s. */
 const REMOTE_SESSIONS_BOUND_MS = 2_000;
 const MAX_SUPERSEDED_HOPS = 8;
@@ -474,6 +480,11 @@ export class MultiNodeRouter {
 			this.fail(request, "Pending question route does not authorize this public reply");
 			return;
 		}
+		this.refuseRouteUnavailable(request);
+	}
+
+	/** #4997: refuse a reply as retryable (`route_unavailable`): a route that would authorize it may be unreachable. */
+	private refuseRouteUnavailable(request: RemoteSendRequest): void {
 		this.host.write(request.socket, {
 			type: "delivery_failed",
 			messageId: request.message.id,
@@ -1291,8 +1302,8 @@ export class MultiNodeRouter {
 		aliases: readonly string[],
 		dormant: boolean,
 		options: ReservationOptions = {},
-	): void {
-		if (this.closed) return;
+	): Promise<void> {
+		if (this.closed) return Promise.resolve();
 		const reservationKey = reservationKeyFor(capability);
 		const owner = this.host.sessions.get(ownerSessionId);
 		const wake = options.wake === true;
@@ -1342,6 +1353,18 @@ export class MultiNodeRouter {
 				...(isReleasedReservationKey(capability) ? {} : { capability }),
 			});
 			await this.wakeWaitingChild(reservationKey);
+		});
+		// #5352: the owner is acknowledged once other brokers can find the reservation, so a sender that learns of the
+		// child afterwards is held rather than told it is not found. A database that does not answer is waited for only
+		// up to `RESERVATION_PUBLISH_BOUND_MS`.
+		const written = this.serials.get(`reservation:${reservationKey}`) ?? Promise.resolve();
+		return new Promise<void>((resolve) => {
+			const bound = setTimeout(resolve, RESERVATION_PUBLISH_BOUND_MS);
+			bound.unref?.();
+			void written.finally(() => {
+				clearTimeout(bound);
+				resolve();
+			});
 		});
 	}
 
@@ -1646,8 +1669,21 @@ export class MultiNodeRouter {
 		if (this.host.deliveredMessages.lookupForTarget(request.message.id, request.signature, deliveryTargetIdentity(target)) !== "miss")
 			return false;
 		const asker = { sessionId: target.info.id, identity: deliveryTargetIdentity(target) };
-		if (!(await this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false))) return false;
-		await this.refuseUnauthorizedReply(request, asker);
+		const elsewhere = this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false);
+		// A shared database that stops answering leaves the reply undecided: it is refused as retryable, once, within the
+		// bound, so neither it nor the sender's later replies wait on that database for good. It authorizes nothing.
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		const expired = new Promise<"expired">((resolve) => {
+			bound = setTimeout(() => resolve("expired"), PRESENCE_REGISTRATION_BOUND_MS);
+			bound.unref?.();
+		});
+		try {
+			const decided = await Promise.race([elsewhere, expired]);
+			if (decided === false) return false;
+		} finally {
+			clearTimeout(bound);
+		}
+		this.refuseRouteUnavailable(request);
 		return true;
 	}
 
@@ -1928,6 +1964,9 @@ export class MultiNodeRouter {
 			if (existing === "expired") {
 				lookup.catch((error: Error) => this.report(error));
 				await this.adoptSharedRouteWithin(request, target);
+				// #4997: a reply whose ask's route may be on a broker that is down is refused as retryable here too, not by
+				// the local path's final refusal just because the outbox lookup was slow.
+				if (await this.routeUnreachable(request, target)) return;
 				request.notFound();
 				return;
 			}

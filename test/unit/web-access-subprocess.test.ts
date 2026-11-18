@@ -12,6 +12,13 @@ import { bunExecutable, spawnSyncCollect } from "../helpers/runtime.js";
 // #3111: descendants may retain both pipes after the direct child is killed.
 test.each(["abort", "timeout", "overflow"] as const)("Node bounds inherited-pipe cleanup after %s", inheritedPipes);
 
+/**
+ * The ceiling for a child that has to start, run a one-line script and exit: what the tests check is how its exit is
+ * mapped, not how long it takes. Starting Bun or Node on a loaded Windows host has taken more than a second, which the
+ * former 1 s ceiling turned into a timeout.
+ */
+const CHILD_RUN_TIMEOUT_MS = 20_000;
+
 test("Bun host bounds inherited-pipe cleanup and preserves primary errors", () => {
 	const result = spawnSyncCollect([bunExecutable(), "test/fixtures/web-subprocess-inherited-pipes.ts", "run"], {
 		timeout: 20_000,
@@ -24,7 +31,7 @@ test("Bun host bounds inherited-pipe cleanup and preserves primary errors", () =
 test("Node subprocess adapter executes without Bun and preserves binary output", async () => {
 	assert.equal(typeof globalThis.Bun, "undefined");
 	const result = await runBunSubprocess(process.execPath, ["-e", "process.stdout.write(Buffer.from([0,255,1]))"], {
-		timeoutMs: 1000,
+		timeoutMs: CHILD_RUN_TIMEOUT_MS,
 		maxStdoutBytes: 1024,
 	});
 	assert.deepEqual([...result.stdout], [0, 255, 1]);
@@ -109,7 +116,7 @@ test("Bun subprocess execution enforces timeout and output byte caps", async () 
 	);
 	await assert.rejects(
 		runBunSubprocess(bunExecutable(), ["-e", "process.stdout.write('x'.repeat(2048))"], {
-			timeoutMs: 1_000,
+			timeoutMs: CHILD_RUN_TIMEOUT_MS,
 			maxStdoutBytes: 1024,
 		}),
 		(error: Error & { code?: string }) => error.code === "ENOBUFS",
@@ -139,7 +146,7 @@ test("Bun subprocess execution maps spawn ENOENT and non-zero exits with stderr"
 	);
 	await assert.rejects(
 		runBunSubprocess(bunExecutable(), ["-e", "process.stderr.write('boom'); process.exit(3)"], {
-			timeoutMs: 1_000,
+			timeoutMs: CHILD_RUN_TIMEOUT_MS,
 			maxStdoutBytes: 1024,
 		}),
 		(error: Error & { code?: string; stderr?: string }) => error.code === "3" && error.stderr === "boom",

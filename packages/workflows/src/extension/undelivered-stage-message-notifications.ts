@@ -1,9 +1,7 @@
-import { reportDebugAsync as reportDebug, sliceHead } from "@bastani/atomic";
+import { NoticeLine, type NoticeLineSpec, reportDebugAsync as reportDebug, sliceHead } from "@bastani/atomic";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StoreSnapshot } from "../shared/store-types.js";
-import { deriveGraphThemeFromPiTheme } from "../tui/graph-theme.js";
-import { renderWorkflowNoticeCard } from "../tui/workflow-notice-card.js";
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
 
 export const UNDELIVERED_STAGE_MESSAGE_CUSTOM_TYPE = "workflows:undelivered-stage-message";
@@ -72,10 +70,10 @@ export function registerUndeliveredStageMessageRenderer(
 	if (typeof register !== "function") return;
 	const host = options.rendererHost ?? register;
 	if (rendererRegisteredHosts.has(host)) return;
-	const renderer: PiMessageRenderer = (raw, _options, piTheme) => {
+	const renderer: PiMessageRenderer = (raw, options) => {
 		const details = (raw as { readonly details?: UndeliveredStageMessageNoticeDetails }).details;
 		if (details === undefined) return undefined;
-		return noticeComponent(details, piTheme);
+		return noticeComponent(details, options?.expanded === true, options?.outputPad);
 	};
 	register(UNDELIVERED_STAGE_MESSAGE_CUSTOM_TYPE, renderer);
 	rendererRegisteredHosts.add(host);
@@ -113,26 +111,38 @@ function snippet(value: string): string {
 	return normalized.length <= SNIPPET_LIMIT ? normalized : `${sliceHead(normalized, SNIPPET_LIMIT - 1)}…`;
 }
 
-function noticeComponent(details: UndeliveredStageMessageNoticeDetails, piTheme: unknown): PiMessageRenderComponent {
-	const theme = piTheme === undefined ? undefined : deriveGraphThemeFromPiTheme(piTheme);
+/** The notice in the shared notice anatomy: one `!` line, and its run, message and advice when expanded. */
+export function undeliveredStageMessageNoticeLine(details: UndeliveredStageMessageNoticeDetails): NoticeLineSpec {
+	return {
+		status: "warning",
+		label: "Stage",
+		subject: details.stageName,
+		outcome: "finished before this message was delivered",
+		meta: [details.workflowName],
+		detail: [
+			`run ${details.runId}`,
+			`message ${snippet(details.text)}`,
+			"Send it to another stage if it still matters.",
+		].join("\n"),
+	};
+}
+
+function noticeComponent(
+	details: UndeliveredStageMessageNoticeDetails,
+	expanded: boolean,
+	outputPad?: number,
+): PiMessageRenderComponent {
+	const line = new NoticeLine(
+		{
+			...undeliveredStageMessageNoticeLine(details),
+			countHiddenDetail: true,
+			...(outputPad === undefined ? {} : { outputPad }),
+		},
+		expanded,
+	);
 	return {
 		render(width: number): string[] {
-			return renderWorkflowNoticeCard({
-				title: "MESSAGE NOT DELIVERED",
-				glyph: "✗",
-				headline: `Stage "${details.stageName}" finished before this message was delivered`,
-				tone: "warning",
-				fields: [
-					{ label: "workflow", value: details.workflowName },
-					{ label: "run", value: details.runId },
-					{ label: "stage", value: details.stageName },
-					{ label: "message", value: snippet(details.text) },
-				],
-				footer: "Send it to another stage if it still matters.",
-				fallbackText: formatUndeliveredStageMessageNoticeText(details),
-				width,
-				...(theme ? { theme } : {}),
-			});
+			return line.render(width);
 		},
 		invalidate() {
 			/* undelivered-message notices are immutable */

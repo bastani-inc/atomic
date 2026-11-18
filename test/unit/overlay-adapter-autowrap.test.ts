@@ -13,6 +13,8 @@ async function registerIsolatedTests(): Promise<void> {
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
 	const { mock } = await import("bun:test");
 	const { replaceControlCharacters, stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
+	// The host theme's color environment, which the shared chat-input label reads, parses colors with pi-tui.
+	const { colorToHex, parseColor } = await import("@bastani/atomic-tui/dist/colors.js");
 	class TestComponent {}
 	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
 		import("@bastani/atomic-tui/dist/components/scroll-view.js"),
@@ -20,6 +22,8 @@ async function registerIsolatedTests(): Promise<void> {
 		import("@bastani/atomic-tui/dist/components/input.js"),
 	]);
 	mock.module("@bastani/atomic-tui", () => ({
+		colorToHex,
+		parseColor,
 		Box: TestComponent,
 		Editor: TestComponent,
 		// The stage-chat find box edits its query with pi-tui's own input.
@@ -66,13 +70,24 @@ async function registerIsolatedTests(): Promise<void> {
 
 	const navKeys = await import("../../packages/coding-agent/src/modes/interactive/components/nav-keys.js");
 	const { terminalDisplayText } = await import("../../packages/coding-agent/src/utils/terminal-text.ts");
+	// Workflow colors come from the host's color environment; these checks paint them in true color.
+	const hexColorAnsi = (hex: string, layer: "fg" | "bg") => {
+		const [r, g, b] = [1, 3, 5].map((start) => Number.parseInt(hex.slice(start, start + 2), 16));
+		return `\x1b[${layer === "fg" ? 38 : 48};2;${r};${g};${b}m`;
+	};
 	mock.module("@bastani/atomic", () => ({
 		...navKeys,
 		sliceHead,
 		terminalDisplayText,
+		hexColorAnsi,
 		TASK_CHAT_OVERLAY_KEYS: [],
 		taskChatKeys: () => assert.fail("graph checks must not render stage-chat hints"),
 		ChatSessionHost: TestComponent,
+		NoticeLine: class {
+			constructor() {
+				assert.fail("graph overlay checks must not render stage-chat notices");
+			}
+		},
 		formatModelLabel,
 		MODEL_LABEL_SEPARATOR,
 		applyAttachedComposer,

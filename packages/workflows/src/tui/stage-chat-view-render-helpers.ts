@@ -7,7 +7,7 @@ import {
 	getKeybindings,
 } from "@bastani/atomic-tui";
 import type { PendingPrompt } from "../shared/store-types.js";
-import { BOLD, hexBg, hexToAnsi, lerpColor, RESET } from "./color-utils.js";
+import { boldOn, hexBg, hexToAnsi, lerpColor, RESET, textStyle } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { PaintOpts } from "./stage-chat-view-types.js";
 
@@ -71,7 +71,7 @@ export function editorThemeFromGraphTheme(t: GraphTheme): EditorTheme {
 				text: normal,
 				muted: (text: string) => hexToAnsi(t.dim) + text + RESET,
 				border: (text: string) => hexToAnsi(t.border) + text + RESET,
-				bold: (text: string) => BOLD + text + RESET,
+				bold: (text: string) => boldOn() + text + RESET,
 			}),
 	} as EditorTheme;
 }
@@ -106,8 +106,8 @@ export function trailingWidgetBorderChar(line: string): string {
 export function paint(text: string, fg: string, opts: PaintOpts = {}): string {
 	if (!text) return "";
 	let out = hexToAnsi(fg);
-	if (opts.bold) out += BOLD;
-	if (opts.italic) out += ITALIC;
+	if (opts.bold) out += boldOn();
+	if (opts.italic) out += textStyle(ITALIC);
 	if (opts.bg) out = hexBg(opts.bg) + out;
 	return out + text + RESET;
 }
@@ -120,11 +120,11 @@ export function paint(text: string, fg: string, opts: PaintOpts = {}): string {
 export function paintOnFill(text: string, fg: string, opts: PaintOpts = {}): string {
 	if (!text) return "";
 	let out = hexToAnsi(fg);
-	if (opts.bold) out += BOLD;
-	if (opts.italic) out += ITALIC;
+	if (opts.bold) out += boldOn();
+	if (opts.italic) out += textStyle(ITALIC);
 	let close = FG_RESET;
-	if (opts.bold) close += WEIGHT_RESET;
-	if (opts.italic) close += ITALIC_RESET;
+	if (opts.bold) close += textStyle(WEIGHT_RESET);
+	if (opts.italic) close += textStyle(ITALIC_RESET);
 	return out + text + close;
 }
 

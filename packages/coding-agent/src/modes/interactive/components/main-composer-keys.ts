@@ -2,6 +2,7 @@ import type { Component } from "@bastani/atomic-tui";
 import type { AgentPanelSession } from "../../../core/tasks/agent-panel-source.ts";
 import { type AgentPanelCounts, agentPanelCounts } from "../../rpc/agent-panel-bridge.ts";
 import { theme } from "../theme/theme.js";
+import { panelShellHintSegments } from "./agent-panel.ts";
 import { isNavHelpKey, type NavKey, type NavKeybindings, navActionText, renderNavKeyOverlay } from "./nav-keys.ts";
 
 export interface MainComposerKeyState {
@@ -69,12 +70,8 @@ export function mainComposerHintSegments(
 		segments.push(agents);
 		if (counts.needsInput > 0) segments.push(`${counts.needsInput} needs input`);
 	}
-	const shells = Math.floor(counts.shells ?? 0);
-	if (Number.isFinite(shells) && shells > 0) {
-		segments.push(`${shells} ${shells === 1 ? "shell" : "shells"}`);
-		// Shells are not panel rows; with no panel to focus, say where they are.
-		if (!agents) segments.push("/tasks to manage");
-	}
+	// Shells are not panel rows; with no panel to focus, say where they are.
+	segments.push(...panelShellHintSegments(counts.shells ?? 0, agents !== undefined));
 	const help = navActionText(promptKeys, "app.keys.help");
 	if (help) segments.push(`${help} keys`);
 	return segments;

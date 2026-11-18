@@ -1,0 +1,6 @@
+name: Atomic CodeQL configuration
+
+paths-ignore:
+  # Fixtures for the event-loop check (scripts/event-loop). They hold backtracking regular expressions on
+  # purpose: test/unit/event-loop-check.test.ts asserts that the check reports them.
+  - test/fixtures/event-loop

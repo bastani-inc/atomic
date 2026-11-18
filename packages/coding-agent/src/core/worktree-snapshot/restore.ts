@@ -196,6 +196,30 @@ async function hasObject(git: GitRunOptions, object: string): Promise<boolean> {
 	return exitCode === 0;
 }
 
+/**
+ * The `commits` the store lacks as commits, asked of one Git process rather than one per commit. A store that cannot
+ * answer the batch is asked per commit, as {@link hasObject} does.
+ */
+async function missingCommits(git: GitRunOptions, commits: readonly string[]): Promise<string[]> {
+	if (commits.length <= 1) {
+		const missing: string[] = [];
+		for (const commit of commits) if (!(await hasObject(git, `${commit}^{commit}`))) missing.push(commit);
+		return missing;
+	}
+	const { stdout, exitCode } = await runGit(["cat-file", "--batch-check=%(objecttype)"], {
+		...git,
+		input: commits.map((commit) => `${commit}^{commit}\n`).join(""),
+		allowExitCodes: [128],
+	});
+	const types = stdout.toString("utf8").split("\n");
+	if (exitCode !== 0 || types.length <= commits.length) {
+		const missing: string[] = [];
+		for (const commit of commits) if (!(await hasObject(git, `${commit}^{commit}`))) missing.push(commit);
+		return missing;
+	}
+	return commits.filter((_, index) => types[index] !== "commit");
+}
+
 /** Runs a filesystem write of `target`, reporting a filesystem failure as `unwritable-path`. */
 async function writing<T>(target: string, snapshotId: string | null, write: () => Promise<T>): Promise<T> {
 	try {
@@ -1248,12 +1272,15 @@ async function fetchCommits(
 	remotes: readonly string[],
 	commits: readonly string[],
 	depthFirst = false,
+	knownMissing?: readonly string[],
 ): Promise<RemoteFetch> {
 	let failure: Error | undefined;
 	let supplied = false;
+	// The caller's own check of the store, made just before, answers the first remote's question.
+	let checked = knownMissing;
 	for (const remote of remotes) {
-		const missing = [];
-		for (const commit of commits) if (!(await hasObject(git, `${commit}^{commit}`))) missing.push(commit);
+		const missing = checked ?? (await missingCommits(git, commits));
+		checked = undefined;
 		if (missing.length === 0) return { failure: undefined, supplied };
 		if (depthFirst) {
 			try {
@@ -1348,10 +1375,11 @@ async function ensureHead(
 	let fetched = false;
 	if (!(await hasObject(git, `${head}^{commit}`))) {
 		// Only a fetch that succeeded proves a remote has `head`: another process may import it from a bundle meanwhile.
-		const fromRemotes = await fetchCommits(git, snapshot.remotes, [head], true);
+		const fromRemotes = await fetchCommits(git, snapshot.remotes, [head], true, [head]);
 		let failure = fromRemotes.failure;
 		fetched = fromRemotes.supplied;
-		if (!(await hasObject(git, `${head}^{commit}`)) && snapshot.bundle) {
+		let present = await hasObject(git, `${head}^{commit}`);
+		if (!present && snapshot.bundle) {
 			const data = await loadBlob(blobs, snapshot.bundle.blob, { snapshotId: snapshot.id, role: "bundle" });
 			const prerequisites = bundlePrerequisites(data);
 			assertUsableBundlePrerequisites(prerequisites, snapshot.id);
@@ -1365,8 +1393,9 @@ async function ensureHead(
 				if (!isWorkspaceGitError(error)) throw error;
 				failure = error;
 			}
+			present = await hasObject(git, `${head}^{commit}`);
 		}
-		if (!(await hasObject(git, `${head}^{commit}`))) {
+		if (!present) {
 			const denied = snapshot.omitted.find((entry) => entry.reason === "unpushed-history-denied");
 			const overCap = snapshot.omitted.find((entry) => entry.reason === "bundle-over-cap");
 			throw new WorkspaceRestoreError(
@@ -2486,7 +2515,7 @@ async function closestCommit(
 		if (tried.has(commit)) return undefined;
 		tried.add(commit);
 		if (await hasObject(git, `${commit}^{commit}`)) return { commit, fromRemote: false };
-		const fetched = await fetchCommits(git, snapshot.remotes, [commit]);
+		const fetched = await fetchCommits(git, snapshot.remotes, [commit], false, [commit]);
 		return fetched.supplied && (await hasObject(git, `${commit}^{commit}`))
 			? { commit, fromRemote: true }
 			: undefined;

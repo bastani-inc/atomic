@@ -119,12 +119,16 @@ pub(super) fn raw(handle: &impl AsRawHandle) -> HANDLE {
 /// paused virtual machine, a starved scheduler) can let the whole grace pass before the writer ran at all; once it
 /// runs it reports within a few of its polls, while a writer that is really stuck never does.
 const STDIN_WRITER_LATE_REPORT: Duration = Duration::from_millis(100);
+/// Stops the stdin writer and confirms it. `job_ended` says the command's job has exited with no process left in it: the
+/// pipe the writer feeds then has no reader, so a writer that the host has not yet scheduled can no longer deliver input
+/// to anything of the command, and it is left to end on its own instead of failing a command that ran to completion.
 fn finish_stdin_writer(
 	stop_input: &AtomicBool,
 	writer: std::thread::JoinHandle<()>,
 	writer_done: &std::sync::mpsc::Receiver<()>,
 	timeout: Duration,
 	late_report: Duration,
+	job_ended: bool,
 ) -> (Option<std::thread::JoinHandle<()>>, Option<String>) {
 	let deadline = Instant::now() + timeout;
 	stop_input.store(true, Ordering::Release);
@@ -143,7 +147,7 @@ fn finish_stdin_writer(
 		let failure =
 			writer.take().unwrap().join().err().map(|_| "Windows stdin worker panicked".into());
 		(None, failure)
-	} else if writer_done.recv_timeout(late_report).is_ok() {
+	} else if writer_done.recv_timeout(late_report).is_ok() || job_ended {
 		(None, None)
 	} else {
 		(writer, Some("Windows stdin worker stop was not confirmed".into()))
@@ -666,12 +670,16 @@ impl Actor {
 		if !preserved_background {
 			let _ = resource.kill();
 		}
+		let job_ended = !preserved_background
+			&& resource.exited().unwrap_or(false)
+			&& matches!(resource.active(), Ok(0));
 		let (writer, writer_failure) = finish_stdin_writer(
 			&stop_input,
 			writer,
 			&writer_done_rx,
 			PROCESS_DRAIN_GRACE,
 			STDIN_WRITER_LATE_REPORT,
+			job_ended,
 		);
 		if let Some(error) = writer_failure {
 			failure = Some(error);
@@ -816,6 +824,45 @@ mod tests {
 		actor.shutdown();
 		std::fs::remove_file(identities).unwrap();
 	}
+	// A command that ran to completion while its stdin writer was held off past the stop grace and the late report still
+	// completes: its job has ended, so nothing reads the input the writer would send (#5202).
+	#[test]
+	fn command_whose_job_ended_completes_while_its_stdin_writer_is_held_off_5202() {
+		let actor = Actor::new();
+		let scope = OwnerScope::Session { session_id: "windows-held-writer".into() };
+		let owner = actor.open(&actor.bind(scope.clone()), scope).unwrap();
+		let task =
+			actor.start_command(&owner, intent("ping -n 2 127.0.0.1 >NUL"), "job".into()).unwrap();
+		let command = actor.command_resource(&task).unwrap();
+		// The writer takes the input queue's lock on every pass; holding it keeps the writer from reporting its stop
+		// until the command has ended and the grace and late report have passed.
+		let held = command.input.lock().unwrap();
+		std::thread::sleep(
+			Duration::from_secs(2) + PROCESS_DRAIN_GRACE + STDIN_WRITER_LATE_REPORT * 5,
+		);
+		drop(held);
+		let deadline =
+			Instant::now() + PROCESS_DRAIN_GRACE + PROCESS_SHUTDOWN_GRACE + STDIN_WRITER_TEST_WAIT;
+		let record = loop {
+			let record = actor.snapshot(&owner).unwrap().tasks[0].clone();
+			if matches!(record.execution, Execution::Settled { .. })
+				&& !matches!(record.cleanup, Cleanup::Active {} | Cleanup::Draining {})
+			{
+				break record;
+			}
+			assert!(Instant::now() < deadline, "the result never settled: {record:?}");
+			std::thread::sleep(PROCESS_POLL);
+		};
+		actor.shutdown();
+		assert!(
+			matches!(
+				&record.execution,
+				Execution::Settled { result: TaskResult::Completed { exit_code: Some(code), .. } } if *code == 0.0
+			),
+			"{record:?}"
+		);
+		assert_eq!(record.cleanup, Cleanup::Reaped {});
+	}
 	const STDIN_WRITER_TEST_WAIT: Duration = Duration::from_secs(10);
 	#[test]
 	fn stdin_writer_completion_notifies_without_poll_delay_and_bounds_blocked_worker_5202_5340() {
@@ -840,6 +887,7 @@ mod tests {
 				&done_rx,
 				PROCESS_DRAIN_GRACE,
 				STDIN_WRITER_LATE_REPORT,
+				false,
 			);
 			assert!(retained.is_none());
 			assert!(failure.is_none());
@@ -865,6 +913,7 @@ mod tests {
 			&panic_done_rx,
 			PROCESS_DRAIN_GRACE,
 			STDIN_WRITER_LATE_REPORT,
+			false,
 		);
 		assert!(retained.is_none());
 		assert_eq!(failure.as_deref(), Some("Windows stdin worker panicked"));
@@ -883,6 +932,7 @@ mod tests {
 			&blocked_done_rx,
 			Duration::from_millis(10),
 			STDIN_WRITER_LATE_REPORT,
+			false,
 		);
 		assert!(started.elapsed() < PROCESS_DRAIN_GRACE);
 		assert!(retained.is_some());
@@ -907,6 +957,7 @@ mod tests {
 			&stall_done_rx,
 			Duration::from_millis(10),
 			STDIN_WRITER_LATE_REPORT,
+			false,
 		);
 		assert!(started.elapsed() < PROCESS_DRAIN_GRACE);
 		assert!(retained.is_some());
@@ -937,6 +988,7 @@ mod tests {
 			&done_rx,
 			Duration::from_millis(10),
 			STDIN_WRITER_LATE_REPORT,
+			false,
 		);
 		assert!(started.elapsed() < PROCESS_DRAIN_GRACE);
 		assert_eq!(failure, None);
@@ -965,10 +1017,39 @@ mod tests {
 		});
 		ready_rx.recv_timeout(STDIN_WRITER_TEST_WAIT).unwrap();
 		let (retained, failure) =
-			finish_stdin_writer(&stop_input, writer, &done_rx, grace, STDIN_WRITER_TEST_WAIT);
+			finish_stdin_writer(&stop_input, writer, &done_rx, grace, STDIN_WRITER_TEST_WAIT, false);
 		assert_eq!(failure, None);
 		assert!(retained.is_none());
 		release_tx.send(()).unwrap();
+	}
+	// A loaded host can leave the writer unscheduled past the grace and the late report. Once the command's job has
+	// ended, nothing reads the pipe it feeds, so a command that ran to completion must not fail on that (#5202); the
+	// writer still ends on its own once it runs.
+	#[test]
+	fn stdin_writer_not_yet_scheduled_after_its_job_ended_does_not_fail_the_command_5202() {
+		let stop_input = Arc::new(AtomicBool::new(false));
+		let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+		let (done_tx, done_rx) = std::sync::mpsc::channel();
+		let (ended_tx, ended_rx) = std::sync::mpsc::channel();
+		let writer = std::thread::spawn(move || {
+			let _ = release_rx.recv_timeout(STDIN_WRITER_TEST_WAIT);
+			let _ = done_tx.send(());
+			ended_tx.send(()).unwrap();
+		});
+		let started = Instant::now();
+		let (retained, failure) = finish_stdin_writer(
+			&stop_input,
+			writer,
+			&done_rx,
+			Duration::from_millis(10),
+			STDIN_WRITER_LATE_REPORT,
+			true,
+		);
+		assert!(started.elapsed() < PROCESS_DRAIN_GRACE);
+		assert_eq!(failure, None);
+		assert!(retained.is_none());
+		release_tx.send(()).unwrap();
+		ended_rx.recv_timeout(STDIN_WRITER_TEST_WAIT).unwrap();
 	}
 }
 

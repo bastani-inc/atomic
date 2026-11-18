@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	formatUndeliveredStageMessageNoticeText,
 	installUndeliveredStageMessageNotifications,
@@ -8,7 +9,7 @@ import {
 } from "../../packages/workflows/src/extension/undelivered-stage-message-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageNotice } from "../../packages/workflows/src/shared/store-types.js";
-import { noticeSummary, stageNoticeCard } from "../../packages/workflows/src/tui/stage-chat-view-transcript.js";
+import { noticeSummary, stageNoticeLine } from "../../packages/workflows/src/tui/stage-chat-view-transcript.js";
 
 function storeWithStage() {
 	const store = createStore();
@@ -104,62 +105,60 @@ test("the parent session's renderer is registered once per host and draws a card
 	assert.equal(registered.length, 1);
 	assert.equal(registered[0]!.event, UNDELIVERED_STAGE_MESSAGE_CUSTOM_TYPE);
 	assert.equal(registered[0]!.renderer({}, {}, undefined), undefined);
-	const component = registered[0]!.renderer(
-		{
-			details: {
-				runId: "run-1",
-				workflowName: "review",
-				stageId: "s",
-				stageName: "agent",
-				text: "check the tests",
-				noticeId: "n",
-			},
-		},
-		{},
-		undefined,
-	) as { render(width: number): string[] };
-	const card = component
-		.render(100)
-		.join("\n")
-		.replace(/\x1b\[[0-9;]*m/g, "");
-	assert.deepEqual(
-		card.split("\n").map((line) => line.replace(/[│╭╰─╮╯]/g, "").trim()),
-		[
-			"MESSAGE NOT DELIVERED",
-			'✗ Stage "agent" finished before this message was delivered',
-			"workflow  review",
-			"run       run-1",
-			"stage     agent",
-			"message   check the tests",
-			"Send it to another stage if it still matters.",
-			"",
-		],
-	);
-	assert.match(
-		component.render(20).join(" ").replace(/\s+/g, " "),
-		/finished before this message was delivered/,
-		"a narrow chat falls back to the notice text",
-	);
+	initTheme("dark");
+	const render = (expanded: boolean, width: number, outputPad?: number) =>
+		(
+			registered[0]!.renderer(
+				{
+					details: {
+						runId: "run-1",
+						workflowName: "review",
+						stageId: "s",
+						stageName: "agent",
+						text: "check the tests",
+						noticeId: "n",
+					},
+				},
+				{ expanded, ...(outputPad === undefined ? {} : { outputPad }) },
+				undefined,
+			) as { render(width: number): string[] }
+		)
+			.render(width)
+			.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+	const collapsed = render(false, 100);
+	assert.equal(collapsed[0], ' ! Stage "agent" finished before this message was delivered · review');
+	assert.match(collapsed[1] ?? "", /^ {3}⎿ {2}… \+3 lines(?: \(.+ to expand\))?$/, "hidden details are counted");
+	assert.equal(collapsed.length, 2);
+	assert.deepEqual(render(true, 100), [
+		' ! Stage "agent" finished before this message was delivered · review',
+		"   ⎿  run run-1",
+		"      message check the tests",
+		"      Send it to another stage if it still matters.",
+	]);
+	for (const line of render(true, 20)) assert.ok(line.length <= 20, "a narrow chat shortens the notice");
+	for (const outputPad of [0, 1, 4]) {
+		const lines = render(true, 100 + outputPad, outputPad);
+		assert.match(lines[0] ?? "", new RegExp(`^ {${outputPad}}! Stage`), "the notice starts at the output pad");
+		assert.deepEqual(
+			lines.map((line) => line.slice(outputPad)),
+			render(true, 100, 0),
+		);
+	}
 });
 
-test("the stage chat shows an undelivered message as a warning card naming it (#4884)", () => {
+test("the stage chat shows an undelivered message as a warning notice naming it (#4884)", () => {
 	const notice: StageNotice = { id: "n", ts: 1, kind: "undelivered", to: "check the tests" };
 	assert.equal(noticeSummary(notice), '~ not delivered, the stage finished first: "check the tests"');
-	const card = stageNoticeCard({
+	const line = stageNoticeLine({
 		role: "notice",
 		text: noticeSummary(notice),
 		noticeId: "n",
 		kind: "undelivered",
 		value: "check the tests",
 	});
-	assert.equal(card.title, "MESSAGE NOT DELIVERED");
-	assert.equal(card.tone, "warning");
-	assert.equal(card.headline, "The stage finished before this message was delivered");
-	assert.deepEqual(card.fields, [
-		{ label: "message", value: "check the tests", tone: "text" },
-		{ label: "next", value: "send it to another stage if it still matters", tone: "muted" },
-	]);
-	assert.equal(card.glyph, "✗");
+	assert.equal(line.status, "warning");
+	assert.equal(`${line.label} ${line.outcome}`, "Stage finished before this message was delivered");
+	assert.equal(line.detail, "message check the tests\nSend it to another stage if it still matters.");
 });
 
 test("the parent session's renderer registers once per registrar when no host is named (#4884)", () => {

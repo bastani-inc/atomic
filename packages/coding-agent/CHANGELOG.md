@@ -2,14 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- `hexColorAnsi(hex, "fg" | "bg")` returns the escape sequence for a `#rrggbb` color that follows `NO_COLOR` and `FORCE_COLOR` the way theme colors do, for extensions that paint their own colors
+
+### Changed
+
+- A task heartbeat in chat is now a notice like the others instead of a shaded card: one `♥ Task heartbeat · N tasks still running` line, a `⎿` row per task (up to five, the rest counted in one row), and `/tasks to inspect` under them. Expanding it (Ctrl+O) adds each task's status and last output lines. The text the model reads is unchanged. For extensions, `NoticeStatus` gains `heartbeat` (the `♥` mark), and `HeartbeatBlock` draws a heartbeat in this form
+- A waiting subagent's launch card in the parent's chat shows the same still `◌` mark and `Waiting on <tool>` as `/tasks`, instead of `⏸ Released · waiting`, which read as paused, and it shows the subagent running or finished again once it wakes or ends. Alt+W (`app.tasks.openWaited`) opens the output of the shell a waiting subagent waits on, from its chat or its `/tasks` row, and ← goes back; the chat's note and the `/tasks` hint name the key. `ToolBlock` and `NoticeLine` take the new `waiting` status, so code that switches over `ToolBlockStatus` or `NoticeStatus` should handle `waiting`.
+- Workflow stage chats and subagent chats count their running background shells below their agent rows, for example `2 shells`, as the main chat's footer does, instead of listing each shell as a row. With no subagent rows the line adds `/tasks to manage`. `/tasks` still lists every shell
+- Restoring a worktree snapshot, such as when a workflow resumes in a fresh worktree, starts fewer Git processes: the store is asked once whether it already holds the snapshot's commit before fetching it, several missing commits are looked up together, and the restored worktree's Git directory is read from its `.git` file. Each Git process costs tens of milliseconds on Windows
+
 ### Fixed
 
 - On Windows, installing a downloaded tool (such as `rg`, `fd` or Git) no longer fails when Atomic was started from PowerShell 7 and `tar.exe` cannot extract the zip archive: the Windows PowerShell fallback's `Expand-Archive` no longer inherits PowerShell 7's module path, which made it fail with `Cannot find an overload for "ExtractToDirectory"`. Every Windows PowerShell command Atomic runs for its own work now starts this way; the `powershell` tool and blueprint steps still run with your environment unchanged
 - `NO_COLOR` now turns off every theme color. Chat messages, tool blocks, the agent panel, `/tasks`, pickers, scrollbars, the OpenRouter row in `/login` and Mermaid diagrams used to keep their foreground and background colors while it was set. `FORCE_COLOR=0` turns colors off too, and `FORCE_COLOR=1` or `2` limits them to 256 colors.
-
-### Changed
-
-- A waiting subagent's launch card in the parent's chat shows the same still `◌` mark and `Waiting on <tool>` as `/tasks`, instead of `⏸ Released · waiting`, which read as paused, and it shows the subagent running or finished again once it wakes or ends. Alt+W (`app.tasks.openWaited`) opens the output of the shell a waiting subagent waits on, from its chat or its `/tasks` row, and ← goes back; the chat's note and the `/tasks` hint name the key. `ToolBlock` and `NoticeLine` take the new `waiting` status, so code that switches over `ToolBlockStatus` or `NoticeStatus` should handle `waiting`.
+- When an Atomic process installing git was killed while others waited for it, a waiter no longer fails with "Git is unavailable: ... could not be staged ... install lock" because the lock it had just taken was removed by another waiter. A waiter now moves an abandoned lock aside in one atomic rename and puts back at once any lock it moved that another installer had just taken, so a waiter that was paused while taking over no longer makes a second installer download git. A waiter whose new lock disappears before it is stamped tries for the lock again, and later installs remove what a waiter killed during a takeover left behind ([#4322](https://github.com/bastani-inc/atomic/issues/4322))
+- `atomic storage migrate` on PostgreSQL now says when the `pg_trgm` extension is not installed and the role could not install it, as on Azure Database for PostgreSQL and Azure HorizonDB until `pg_trgm` is added to `azure.extensions`. Without it, searches of session history read each session a page at a time instead of using their index. The storage guide now covers Azure flexible servers (direct and through the built-in PgBouncer) and Azure HorizonDB. A write the server refuses because it accepts reads only (SQLSTATE `25006`) is now retried as `StorageTransientError` with the new code `read-only-server`, so a failover that leaves the old primary read-only for a moment recovers; a call still refused after its retries fails with a message that names both causes, a URL naming a read replica or read-only endpoint, or a server that is read-only for now, instead of a generic `StorageUnavailableError`
+- Under `NO_COLOR` or `FORCE_COLOR=0`, the name in a stage or subagent chat's input rule is no longer bold
+- The install scripts install a pinned `ATOMIC_VERSION` (or `--ref`/`-Ref`) without the GitHub API. They confirm the release on github.com, so a network that used up GitHub's 60 unauthenticated API requests an hour no longer fails with `curl: (56) The requested URL returned error: 403` and `failed to resolve the GitHub release`. When the API is still needed and refuses, the installer says why: a release that does not exist is reported as not found, and a rate limit names `GITHUB_TOKEN` as the fix. A pinned rerun of a release that is already installed and healthy makes no request at all, and the installers now record the launcher's hash at install time: an installed launcher that is empty or no longer matches it is reinstalled instead of being kept
 
 ## [0.9.89-alpha.1] - 2026-11-18
 
