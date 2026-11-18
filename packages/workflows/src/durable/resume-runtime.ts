@@ -151,9 +151,24 @@ export async function resumeDurableWorkflow(
 	const backend = resumeBackend(deps, workflowId);
 	const target = resolveDurableEntry(workflowId, catalog ?? backend.listResumableWorkflows());
 	const id = target !== undefined && !("kind" in target) ? target.workflowId : workflowId;
-	const handle = backend.getWorkflow(id);
+	let handle = backend.getWorkflow(id);
 	if (handle?.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, id))
 		return alreadyRunningResult(handle.name, id);
+	const finishing = deps.jobs?.get(id);
+	if (
+		finishing !== undefined &&
+		(handle?.status === "failed" || deps.baseRunOpts.store?.run(id)?.status === "failed")
+	) {
+		// The terminal event can reach a caller before the old attempt finishes its persistence and releases its
+		// lease. Wait for that attempt before admitting a replacement, then discard its now-stale catalog version.
+		await raceAbort(finishing.promise, deps.signal);
+		await raceAbort(backend.hydrateWorkflow(id), deps.signal);
+		handle = backend.getWorkflow(id);
+		if (handle !== undefined && catalog !== undefined) {
+			const refreshed = resumableEntryFromHandle(handle);
+			catalog = catalog.map((entry) => (entry.workflowId === id ? refreshed : entry));
+		}
+	}
 	if (hasForkClaim(backend, id))
 		return {
 			ok: false,

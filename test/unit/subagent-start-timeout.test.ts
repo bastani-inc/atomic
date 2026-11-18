@@ -62,9 +62,16 @@ const SATURATED_TURN_MS = 20;
 /**
  * The loop turns a child takes from its launch to its first provider request on a saturated thread. Measured on
  * this fixture: 713 before #4319 (one fs read per header byte, two writes for the initial model and thinking level)
- * and about 110 after it; the bound leaves room for scheduling noise but not for a per-byte or per-entry regression.
+ * and about 110 after it. Independent ancestor probes run together (#5514), so directory depth adds requests but not
+ * turns; the bound leaves room for scheduling noise but not for a per-byte or per-entry regression.
  */
 const START_LOOP_TURN_BOUND = 200;
+/**
+ * How many directories below the fixture's own a nested child starts. A start that walks its parent directories one
+ * request at a time spends a loop turn on each of them, in each of its two resource loads; one that checks them
+ * together spends the same turns at any depth. Fewer extra turns than levels tells the two apart.
+ */
+const NESTED_CWD_LEVELS = 12;
 /** The fs requests a child's start makes up to its first provider request: 861 before #4319. */
 const SYNCHRONOUS_CHECK_START_FS_OPERATION_BOUND = 200;
 /**
@@ -448,23 +455,53 @@ function assertMeasuredPhase(error: SessionStartTimeoutError, stepPhase: "setup"
 	assert.equal(error.phase, loopWasStarved ? "event-loop" : stepPhase, JSON.stringify(error.eventLoop));
 }
 
+/** The loop turns a child takes from its launch to its first provider request, on a main thread saturated meanwhile. */
+async function saturatedStartTurns(
+	fixture: Awaited<ReturnType<typeof startFixture>>,
+	runId: string,
+	options: Partial<RunSyncOptions> = {},
+): Promise<number> {
+	const loop = saturate(SATURATED_TURN_MS);
+	let turnsToFirstRequest: number | undefined;
+	fixture.onFirstRequest(() => {
+		turnsToFirstRequest = loop.turns();
+	});
+	const startTurns = loop.turns();
+	try {
+		const result = await fixture.launch(runId, undefined, options);
+		assert.equal(result.status, "ok", JSON.stringify(result));
+		assert.ok(turnsToFirstRequest !== undefined, "the child reached its provider");
+		return turnsToFirstRequest - startTurns;
+	} finally {
+		loop.stop();
+	}
+}
+
 test(
 	"a child on a saturated main thread reaches its provider within a bounded number of loop turns (#4319)",
 	async () => {
 		const fixture = await startFixture();
-		const loop = saturate(SATURATED_TURN_MS);
-		let turnsToFirstRequest: number | undefined;
-		fixture.onFirstRequest(() => {
-			turnsToFirstRequest = loop.turns();
-		});
-		const startTurns = loop.turns();
-		const result = await fixture.launch("start-saturated");
-		loop.stop();
-
-		assert.equal(result.status, "ok", JSON.stringify(result));
-		assert.ok(turnsToFirstRequest !== undefined, "the child reached its provider");
-		const turns = turnsToFirstRequest - startTurns;
+		const turns = await saturatedStartTurns(fixture, "start-saturated");
 		assert.ok(turns <= START_LOOP_TURN_BOUND, `the start took ${turns} saturated loop turns`);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a child started in a deeply nested directory takes no more loop turns than one started above it (#5514)",
+	async () => {
+		const fixture = await startFixture();
+		const nested = join(fixture.cwd, ...Array.from({ length: NESTED_CWD_LEVELS }, (_, level) => `level-${level}`));
+		mkdirSync(nested, { recursive: true });
+		// Both measured starts find what the first one loaded and compiled already in place.
+		await saturatedStartTurns(fixture, "start-warm-up");
+		const shallow = await saturatedStartTurns(fixture, "start-shallow-cwd");
+		const deep = await saturatedStartTurns(fixture, "start-nested-cwd", { cwd: nested });
+
+		assert.ok(
+			deep - shallow < NESTED_CWD_LEVELS,
+			`the start took ${shallow} loop turns in ${fixture.cwd} and ${deep} ${NESTED_CWD_LEVELS} directories below it`,
+		);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
