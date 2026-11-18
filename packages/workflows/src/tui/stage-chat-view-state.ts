@@ -697,15 +697,11 @@ export function publishedStageChatActivity(
 	ctx: StageChatViewContext,
 	stage: StageSnapshot | undefined,
 ): StageSnapshot["chatActivity"] {
+	if (ctx.handle?.placement?.reconnecting || stage?.workerExecution?.reconnecting) return "idle";
 	const initial = ctx.handle?.publishedActivity;
-	if (
-		initial === undefined ||
-		!activeLiveHandle(ctx) ||
-		stage?.status === "suspended" ||
-		stage?.workerExecution?.reconnecting
-	)
-		return undefined;
-	return stage?.chatActivity ?? initial;
+	if (initial === undefined || !activeLiveHandle(ctx) || stage?.status === "suspended") return undefined;
+	// Once the worker has published the stage, an absent phase is idle, not the wait from the initial watch.
+	return stage?.chatActivity ?? (stage?.workerExecution ? "idle" : initial);
 }
 
 export function isLiveHandleStreaming(ctx: StageChatViewContext): boolean {

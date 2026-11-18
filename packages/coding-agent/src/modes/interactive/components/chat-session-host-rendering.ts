@@ -200,7 +200,9 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	const useCallerStyling =
 		!palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
 	// A retry, a model switch or a resume waits between turns; it is the chat's working line until the work resumes.
-	const publishedMessage = published && published !== "idle" ? publishedWorkingMessages[published] : undefined;
+	// The worker attempt can retire without sending a final session event to a chat that stayed open.
+	if (published === "idle") return [];
+	const publishedMessage = published && publishedWorkingMessages[published];
 	if (!state.compacting && (publishedMessage || isChatSessionBusyStatus(state.statusMessage))) {
 		return new WorkingStatusComponent({
 			frame: state.workingFrame,
