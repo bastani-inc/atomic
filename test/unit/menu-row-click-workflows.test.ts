@@ -242,6 +242,37 @@ test("a click on a stage in the switcher of a run's full-screen view opens that 
 	}
 });
 
+test("after the stage switcher scrolls a filtered list, a click opens the stage drawn under it", async () => {
+	const ui = makeClickScreen(100, 30);
+	const attached: string[] = [];
+	const stages = Array.from({ length: 10 }, (_, index) => makeStage(`段-${index}`));
+	const view = new GraphView({
+		piKeybindings: makeFakeKeybindings(),
+		mode: "overlay",
+		runId: "run-1",
+		store: makeStore(makeSnap([makeStage("other"), ...stages])),
+		graphTheme: defaultTheme,
+		piTui: ui.tui,
+		onStageAttach: (_runId: string, stageId: string) => attached.push(stageId),
+	});
+	try {
+		ui.mount(view);
+		for (const key of "/段") ui.terminal.input(key);
+		for (let step = 0; step < 7; step++) ui.terminal.input("\x1b[B");
+		ui.tui.renderNow();
+		assert.equal(
+			ui.screen().some((line) => /│.*段-0\s/.test(line)),
+			false,
+			ui.screen().join("\n"),
+		);
+		await ui.click(/│.*段-8/, "段-8");
+		assert.deepEqual(attached, ["段-8"], ui.screen().join("\n"));
+	} finally {
+		view.dispose();
+		ui.tui.stop();
+	}
+});
+
 test("a click on the stage switcher's heading leaves it open with the selection where it was", async () => {
 	const ui = makeClickScreen(100, 30);
 	const { view, attached } = stageSwitcher(ui);
