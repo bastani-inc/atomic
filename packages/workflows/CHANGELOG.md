@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A workflow journal on libSQL or local SQLite no longer gives up after half a second when it appends several events at once while another process holds the write lock: it waits for the lock as long as a single append does ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+- A lease renewal sent in one request, as on libSQL and now on local SQLite, refuses a lease whose stored epoch is out of range without renewing it, as the transaction path already did ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+- Fleet rate limits opened on a journal before its workflow pool no longer fail their first write with `no such table` ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 ### Breaking Changes
@@ -92,9 +98,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed follow-up agents failing to read workflow history with a retired-execution error after a workflow finished or its extensions reloaded ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed saved workflow rows in `/resume` showing missing stage progress, elapsed time and cost after a restart. Browsing them reads recorded summaries without resuming the workflows ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `LocalWorkerPool.close()` stops the pool's coordinator even when a stage watcher's listener throws while the pool closes; it rejects with that error once everything is closed. Before, the coordinator kept running, with its journal open.
-- A workflow journal on libSQL or local SQLite no longer gives up after half a second when it appends several events at once while another process holds the write lock: it waits for the lock as long as a single append does ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
-- A lease renewal sent in one request, as on libSQL and now on local SQLite, refuses a lease whose stored epoch is out of range without renewing it, as the transaction path already did ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
-- Fleet rate limits opened on a journal before its workflow pool no longer fail their first write with `no such table` ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
 
 ### Removed
 

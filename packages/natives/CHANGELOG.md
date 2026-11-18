@@ -2,12 +2,15 @@
 
 ## [Unreleased]
 
-## [0.9.89-alpha.1] - 2026-11-18
-
 ### Added
 
 - `trySharedAdvisoryLockAsync(path, waitMs)`: the shared advisory lock on a worker thread, without blocking the JavaScript event loop ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
 - `raiseCurrentThreadPriority()` raises the calling thread, and only it, to above-normal priority on Windows, and `currentThreadPriority()` reads the calling thread's priority. On other platforms the first does nothing and returns false, and the second returns 0 ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
+
+## [0.9.89-alpha.1] - 2026-11-18
+
+### Added
+
 - `tryAdvisoryLockAsync` and `renameNoReplaceAsync`: the advisory lock and the non-replacing rename on a worker thread, without blocking the JavaScript event loop
 - Added `pendingStdinInput()`: how much input waits unread on standard input, as bytes on Unix and as input events for a Windows console, or `null` where the operating system cannot say without waiting, such as for a Windows pipe ([#5241](https://github.com/bastani-inc/atomic/issues/5241))
 - Added `windowsDirectorySecurity(path)`: on Windows, reads a file or directory's owner SID, its DACL in SDDL form and the SID of each allow and deny entry, along with the current user's SID, without starting a process. It returns `null` where the descriptor cannot be read, and on other platforms. `windowsDirectorySecurityAsync(path)` reads a directory's security descriptor on a native worker without blocking the caller ([#5324](https://github.com/bastani-inc/atomic/issues/5324)).
