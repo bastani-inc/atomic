@@ -114,6 +114,7 @@ test("the interactive engine sends the host the panel's agent and subagent count
 			agents: 1,
 			needsInput: 0,
 			shells: 0,
+			searches: 0,
 			subagents: 1,
 		});
 		assert.deepEqual(hostHint(), ["↓ 1 agent", "? keys"]);
@@ -126,6 +127,7 @@ test("the interactive engine sends the host the panel's agent and subagent count
 			agents: 0,
 			needsInput: 0,
 			shells: 0,
+			searches: 0,
 			subagents: 1,
 		});
 		assert.deepEqual(hostHint(), ["/tasks to see subagents", "? keys"]);
