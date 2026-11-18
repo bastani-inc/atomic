@@ -729,7 +729,7 @@ During a transactional reload's `session_start` handler, `pi.appendEntry`, `pi.s
 
 ### pi.registerEntryRenderer(customType, renderer)
 
-Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context.
+Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context. Ctrl+O, or a click on the entry in fullscreen mode, toggles `expanded`.
 
 SDK hosts can inspect the original callback with `session.extensionRunner.getEntryRenderer(customType)`. To render through the owning session, call `session.extensionRunner.renderEntry(customType, entry, { expanded }, theme)`; retired runners reject rendering.
 
@@ -848,7 +848,7 @@ mode and would not execute if sent via `prompt`.
 
 ### pi.registerMessageRenderer(customType, renderer)
 
-Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. See [Custom UI](/extensions/ui#custom-ui).
+Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. A click on the message in fullscreen mode toggles `expanded` for it, as Ctrl+O does, when that changes what the renderer draws. See [Custom UI](/extensions/ui#custom-ui).
 
 ### pi.registerMarkdownTransformer(transformer)
 

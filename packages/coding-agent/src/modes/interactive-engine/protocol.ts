@@ -236,11 +236,19 @@ export type InteractiveEngineCommand =
 			frame: number;
 			/** What the frame drew on the clicked row, for a component that names its rows. */
 			rowKey?: string;
+			/** The click's number; an `engine_custom_click_settle` with it runs what the click does once it is single. */
+			clickId?: number;
 			x: number;
 			y: number;
 			width: number;
 			height: number;
 	  }
+	/**
+	 * The click numbered `clickId` stayed a single click: the multi-click interval passed with no second press there.
+	 * What the component left for that moment, such as expanding a block, runs now. A click that became part of a
+	 * double- or triple-click is never settled.
+	 */
+	| { type: "engine_custom_click_settle"; componentId: string; clickId: number }
 	| { type: "engine_custom_copy_result"; componentId: string; requestId: number; error?: string }
 	| { type: "engine_custom_scroll"; componentId: string; state: WidgetScrollState }
 	| { type: "engine_custom_dispose"; componentId: string }
@@ -860,11 +868,14 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			componentId: value.componentId,
 			frame: value.frame,
 			...(typeof value.rowKey === "string" ? { rowKey: value.rowKey } : {}),
+			...(isCellCount(value.clickId) ? { clickId: value.clickId } : {}),
 			x: value.x,
 			y: value.y,
 			width: value.width,
 			height: value.height,
 		};
+	if (value.type === "engine_custom_click_settle" && isCellCount(value.clickId))
+		return { type: value.type, componentId: value.componentId, clickId: value.clickId };
 	if (
 		value.type === "engine_custom_copy_result" &&
 		typeof value.requestId === "number" &&
