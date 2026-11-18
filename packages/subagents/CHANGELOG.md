@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.89-alpha.1] - 2026-11-18
+
 ### Breaking Changes
 
 - `model: "auto"`, which every builtin agent declares, now runs your default model at its default thinking level, or at the agent's own `thinking` when it sets one, and runs the launching session's model and thinking level when no default model is configured. No routing model is asked, so an `auto` launch starts without a routing request. An `auto` launch still falls back to the agent's `fallbackModels` and then to the session's model.
