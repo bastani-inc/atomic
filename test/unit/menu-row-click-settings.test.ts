@@ -3,6 +3,7 @@
  * there and pressing Enter would, driven through Atomic's fullscreen renderer with SGR mouse reports.
  */
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { getKeybindings, type SettingItem, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -158,6 +159,7 @@ test("a click on a resource in the resource list switches it, as enter on it doe
 	ui.dock(list);
 	await ui.click(/\brelease\b/, "release");
 	assert.deepEqual(toggled, ["release=false"]);
-	assert.deepEqual(skillPaths, [["-release/SKILL.md"]]);
+	// The setting names the skill relative to its directory, with the platform's separator.
+	assert.deepEqual(skillPaths, [[`-${join("release", "SKILL.md")}`]]);
 	ui.tui.stop();
 });
