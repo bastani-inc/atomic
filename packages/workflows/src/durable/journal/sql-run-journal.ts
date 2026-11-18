@@ -101,6 +101,14 @@ function assertRowVersion(row: SqliteRow | undefined): void {
 	if (found !== JOURNAL_SCHEMA_VERSION) throw new JournalSchemaVersionError(found);
 }
 
+/**
+ * SQL that holds while `column` is a counter in range, as `journalCounter` accepts it: a whole number from 0 to the
+ * largest safe integer, the bound passed as the parameter it ends with.
+ */
+function counterInRange(column: string): string {
+	return `${column} >= 0 AND ${column} = ROUND(${column}) AND ${column} <= ?`;
+}
+
 function entryFromRow(row: EventRow): JournalEntry {
 	assertRowVersion(row);
 	const key = row[c.key];
@@ -858,8 +866,9 @@ export class SqlRunJournal implements RunJournal {
 					params: [owned.runId],
 				},
 				{
-					sql: `UPDATE ${t.leases} SET ${c.renewedAt} = ${this.dialect.nowMs} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ? AND EXISTS (SELECT 1 FROM ${t.meta} WHERE ${c.schemaVersion} = ?)`,
-					params: [owned.runId, owned.holderId, owned.epoch, JOURNAL_SCHEMA_VERSION],
+					// An epoch out of range writes nothing, as the transaction path refuses it; the read above reports it.
+					sql: `UPDATE ${t.leases} SET ${c.renewedAt} = ${this.dialect.nowMs} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ? AND ${counterInRange(c.epoch)} AND EXISTS (SELECT 1 FROM ${t.meta} WHERE ${c.schemaVersion} = ?)`,
+					params: [owned.runId, owned.holderId, owned.epoch, Number.MAX_SAFE_INTEGER, JOURNAL_SCHEMA_VERSION],
 				},
 			],
 			// A renewal keeps the root's lease alive, so it never waits behind this process's other writes to the server.
@@ -1012,8 +1021,7 @@ export class SqlRunJournal implements RunJournal {
 		const t = this.tables;
 		// A counter out of range writes nothing, as the transaction path refuses it before writing; the reads below report
 		// it. The lease's epoch is the caller's when it is held, so a caller's out-of-range epoch is refused here too.
-		const counter = (column: string) => `${column} >= 0 AND ${column} = ROUND(${column}) AND ${column} <= ?`;
-		const holds = `EXISTS (SELECT 1 FROM ${t.leases} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ? AND ${counter(c.epoch)})`;
+		const holds = `EXISTS (SELECT 1 FROM ${t.leases} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ? AND ${counterInRange(c.epoch)})`;
 		const held = [owned.runId, owned.holderId, owned.epoch, Number.MAX_SAFE_INTEGER] as const;
 		const latest = `SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.seq} = (SELECT MAX(${c.seq}) FROM ${t.events} WHERE ${c.runId} = ?)`;
 		const statements: SqliteStatement[] = [
