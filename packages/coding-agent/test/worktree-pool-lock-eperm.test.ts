@@ -42,6 +42,12 @@ const pollClock = vi.hoisted(() => ({
 	elapsedMs: 0,
 	delays: [] as number[],
 	onSleep: undefined as (() => void) | undefined,
+	/**
+	 * Whether the filesystem's clock reads the poll clock too. Locks judge staleness by the filesystem's clock, measured
+	 * with a probe file (#5050); with this off the probe reads the real clock, so real time spent before the first
+	 * staleness check, which a loaded machine stretches, counts toward a lock's age on top of the polled time.
+	 */
+	filesystem: false,
 }));
 
 vi.mock("node:timers/promises", async (importOriginal) => {
@@ -97,7 +103,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		await lockRefusals.onRemove?.(String(path));
 		return actual.rm(path, options);
 	};
-	return { ...actual, writeFile, rm };
+	const stat = (async (path: import("node:fs").PathLike, options?: import("node:fs").StatOptions) => {
+		const stats = await actual.stat(path, options);
+		if (!pollClock.enabled || !pollClock.filesystem || !/\.clock-[0-9a-f]{16}\.probe$/.test(String(path)))
+			return stats;
+		return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { mtimeMs: Date.now() });
+	}) as typeof actual.stat;
+	return { ...actual, writeFile, rm, stat };
 });
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -168,6 +180,7 @@ afterEach(() => {
 	pollClock.elapsedMs = 0;
 	pollClock.delays = [];
 	pollClock.onSleep = undefined;
+	pollClock.filesystem = false;
 	vi.restoreAllMocks();
 	lockRefusals.remaining = 0;
 	lockRefusals.refused = 0;
@@ -445,6 +458,10 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 						: join(storeDir, "pool", `${repository}.lock`);
 			mkdirSync(lock, { recursive: true });
 			usePollClock();
+			// The stopped holder last refreshed its lock when the wait began, by the one clock the lock and the poll share.
+			pollClock.filesystem = true;
+			const stoppedAt = new Date(Date.now());
+			utimesSync(lock, stoppedAt, stoppedAt);
 			pollClock.onSleep = () => assert.ok(pollClock.elapsedMs <= 30_100, "stale holder was not replaced");
 			if (target === "seed") {
 				assert.equal(await withSeedLock(storeDir, repository, true, async () => "acquired"), "acquired");
