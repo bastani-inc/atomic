@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { cpSync, existsSync, mkdirSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { afterAll, afterEach, beforeEach, test, vi } from "vitest";
+import { toJsLiteral } from "../helpers/js-literal.js";
 import { fileExists, makeTempDirectory, readText, removeTempDirectory } from "../helpers/runtime.js";
 
 /** Junctions need no extra privileges on Windows. */
@@ -550,7 +551,7 @@ test("invalid GitHub URLs name the part that was rejected", () => {
 
 test("aborting or clearing a clone with a background grandchild holding stdio settles promptly (#5377)", async () => {
 	const pidFile = join(sandbox, "grandchild.pid");
-	boundary.cloneScript = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); process.on('SIGTERM', () => {}); const g = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setTimeout(() => {}, 2500);"], { stdio: 'inherit' }); writeFileSync(${JSON.stringify(pidFile)}, String(g.pid)); setTimeout(() => {}, 2500);`;
+	boundary.cloneScript = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); process.on('SIGTERM', () => {}); const g = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setTimeout(() => {}, 2500);"], { stdio: 'inherit' }); writeFileSync(${toJsLiteral(pidFile)}, String(g.pid)); setTimeout(() => {}, 2500);`;
 	const within = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
