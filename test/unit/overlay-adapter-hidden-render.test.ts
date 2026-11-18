@@ -85,6 +85,11 @@ async function registerIsolatedTests(): Promise<void> {
 		TASK_CHAT_OVERLAY_KEYS: [],
 		taskChatKeys: () => assert.fail("graph checks must not render stage-chat hints"),
 		ChatSessionHost: TestComponent,
+		NoticeLine: class {
+			constructor() {
+				assert.fail("graph overlay checks must not render stage-chat notices");
+			}
+		},
 		formatModelLabel,
 		MODEL_LABEL_SEPARATOR,
 		applyAttachedComposer,
