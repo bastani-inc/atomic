@@ -13,9 +13,13 @@ import {
 import { WorkflowProcessHome } from "../helpers/workflow-process.js";
 import { attachedCliPresentation, forwardCliDialogs } from "./fixtures/sdk-host-cli.js";
 
+const HOSTS = ["node", "cli"] as const;
+/** Each host opens two real sessions, including a full builtin loader, then settles and disposes its workflow. */
+const REAL_BUILTIN_HOST_PAIR_TIMEOUT_MS = HOSTS.length * 60_000;
+
 // #3105: one on-disk definition, identical runtime policy, real CLI dialog bridge.
 test.each(["true", "false", "cancelled", "invalid", "late"] as const)(
-	"unchanged workflow across hosts: %s",
+	"unchanged workflow across hosts: %s (#3105, #5520)",
 	async (reply) => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-same-host-source-"));
 		const directory = join(cwd, ".atomic", "workflows");
@@ -34,7 +38,7 @@ test.each(["true", "false", "cancelled", "invalid", "late"] as const)(
 			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		};
 		try {
-			for (const host of ["node", "cli"] as const) {
+			for (const host of HOSTS) {
 				const presentation = attachedCliPresentation(text, reply);
 				const requests: HostInputOptions[] = [];
 				const late = Promise.withResolvers<boolean>();
@@ -129,6 +133,7 @@ test.each(["true", "false", "cancelled", "invalid", "late"] as const)(
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	},
+	REAL_BUILTIN_HOST_PAIR_TIMEOUT_MS,
 );
 
 const REAL_PERSISTED_HOST_HANDOFF_TIMEOUT_MS = 120_000;
