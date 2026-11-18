@@ -1,6 +1,7 @@
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { waitsOnDetachedResults } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { noteMessageSaved } from "./agent-session-persistence-failures.ts";
 import type { DrainedAgentQueues } from "./agent-session-types.js";
 import { customMessageExcludesContext } from "./agent-session-types.js";
 import type { PendingRecoveryDelivery } from "./extensions/index.js";
@@ -182,6 +183,7 @@ async function appendDisplayCardOccurrence(
 	}
 	confirmCustomMessageWrite(session.sessionManager, admitted.stageAdmissionKey);
 	session._entryIdsByMessage.set(card, intentEntryId);
+	noteMessageSaved(session, card);
 	session._refreshFinalizedContext();
 	return { card, intentEntryId };
 }

@@ -6,7 +6,11 @@ import { releaseDetachedCallHolds, withoutDetachedPlaceholders } from "./agent-s
 import { heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
-import { clearPersistenceFailure, recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
+import {
+	clearPersistenceFailure,
+	noteMessageSaved,
+	recordPersistenceFailure,
+} from "./agent-session-persistence-failures.ts";
 import {
 	isProtectedStreamingCustomMessage,
 	markProtectedStreamingCustomMessageConsumed,
@@ -352,7 +356,10 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			// Context refreshes retain an admitted message until its append settles; an unsaved one then leaves.
 			this._messagesAwaitingPersistence.delete(event.message);
 		}
-		if (entryId) this._entryIdsByMessage.set(event.message, entryId);
+		if (entryId) {
+			this._entryIdsByMessage.set(event.message, entryId);
+			noteMessageSaved(this, event.message);
+		}
 		if (entryId && event.message.role === "custom") {
 			const pendingIndex = this._pendingNextTurnMessages.indexOf(event.message);
 			if (pendingIndex >= 0) this._pendingNextTurnMessages.splice(pendingIndex, 1);

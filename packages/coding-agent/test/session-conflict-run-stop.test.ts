@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
+import { MAX_RETAINED_UNSAVED_INPUTS } from "../src/core/agent-session-persistence-failures.ts";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { SessionConflictError } from "../src/core/storage/session/errors.js";
@@ -45,19 +46,20 @@ test("a run stopped because another process wrote to the session saves none of i
 	assert.equal(failure.conflict.sessionId, sessionId);
 	assert.deepEqual(
 		failure.unsavedMessages.map((message) => userText(message) ?? message.role),
-		["system", "continue"],
+		["continue", "system"],
 	);
 	assert.equal(harness.getPendingResponseCount(), 1, "the stopped run sent no request");
 
 	harness.session.refreshContext();
 	assert.deepEqual(
 		harness.session.getPersistenceFailure()?.unsavedMessages.map((message) => userText(message) ?? message.role),
-		["system", "continue"],
+		["continue", "system"],
 		"a context refresh keeps the unsaved prompt",
 	);
 	harness.setResponses([fauxAssistantMessage("answered")]);
 	await harness.session.prompt("continue");
 	assert.equal(harness.session.getPersistenceFailure(), undefined, "the prompt sent again was saved");
+	assert.equal(harness.session.getUnsavedInput(), undefined, "the saved prompt settles the one kept unsaved");
 });
 
 /** The store's entries of `sessionId`, as a reader that opens it now sees them. */
@@ -159,4 +161,104 @@ test("disposal leaves a reconciliation that another writer's entries stopped pen
 		"the notice's card stays pending, so the session that reopens delivers it",
 	);
 	await otherProcess.appendMessage({ role: "user", content: "the other process goes on", timestamp: Date.now() });
+});
+
+/** A session whose run another writer's entries stopped, with a `/noop` command that saves nothing. */
+async function conflictStoppedSession() {
+	const store = new MemorySessionStore();
+	const earlier = await SessionManager.create(store, process.cwd());
+	await earlier.appendMessage({ role: "user", content: "earlier work", timestamp: Date.now() });
+	const sessionId = earlier.getSessionId();
+	const harness = await createHarness({
+		sessionManager: await SessionManager.open(store, sessionId),
+		extensionFactories: [
+			(pi) => pi.registerCommand("noop", { description: "does nothing", handler: async () => {} }),
+		],
+	});
+	harnesses.push(harness);
+	harness.setResponses([fauxAssistantMessage("never requested")]);
+	const otherProcess = await SessionManager.open(store, sessionId);
+	await otherProcess.appendMessage({ role: "user", content: "the other process's prompt", timestamp: Date.now() });
+	await harness.session.prompt("continue");
+	assert.ok(harness.session.getPersistenceFailure()?.conflict instanceof SessionConflictError);
+	return { harness, store, sessionId };
+}
+
+const unsavedKinds = (harness: Harness) =>
+	harness.session.getPersistenceFailure()?.unsavedMessages.map((message) => userText(message) ?? message.role);
+
+test("a command that starts no run keeps what the stopped run could not save (#5135)", async () => {
+	const { harness, store, sessionId } = await conflictStoppedSession();
+	const stored = (await storedEntries(store, sessionId)).length;
+	harness.session.refreshContext();
+
+	await harness.session.prompt("/noop");
+
+	assert.deepEqual(unsavedKinds(harness), ["continue", "system"]);
+	assert.deepEqual(
+		harness.session.getUnsavedInput()?.messages.map((message) => userText(message)),
+		["continue"],
+	);
+	assert.equal((await storedEntries(store, sessionId)).length, stored);
+	harness.session.discardUnsavedInput();
+	assert.equal(harness.session.getUnsavedInput(), undefined, "the user can discard it");
+});
+
+test("one input sent again and again while refused is kept and shown once (#5135)", async () => {
+	const { harness } = await conflictStoppedSession();
+	const card = { customType: "notice", content: "the workflow finished", display: true };
+	for (let attempt = 0; attempt < 20; attempt++) {
+		await assert.rejects(
+			harness.session.sendCustomMessage(card, { excludeFromContext: true, stageAdmissionKey: "notice-1" }),
+			SessionConflictError,
+		);
+	}
+	assert.equal(
+		harness.events.filter(
+			(event) =>
+				event.type === "message_end" && event.message.role === "custom" && event.message.customType === "notice",
+		).length,
+		1,
+	);
+	assert.deepEqual(unsavedKinds(harness), ["continue", "custom", "system"]);
+	const kept = harness.session.getUnsavedInput()?.messages.filter((message) => message.role === "custom");
+	assert.equal(kept?.length, 1);
+});
+
+test("an input saved once it is sent again settles every refused copy of it (#5135)", async () => {
+	const { harness } = await conflictStoppedSession();
+	const card = { customType: "notice", content: "the workflow finished", display: true };
+	for (let attempt = 0; attempt < 20; attempt++) {
+		await assert.rejects(
+			harness.session.sendCustomMessage(card, { excludeFromContext: true, stageAdmissionKey: "notice-1" }),
+			SessionConflictError,
+		);
+	}
+
+	await harness.session.prompt("/noop");
+	await harness.session.sendCustomMessage(card, { excludeFromContext: true, stageAdmissionKey: "notice-1" });
+
+	assert.deepEqual(unsavedKinds(harness), ["continue", "system"]);
+});
+
+test("unsaved input is kept up to its limit, and what was dropped is reported (#5135)", async () => {
+	const { harness } = await conflictStoppedSession();
+	const extra = 3;
+	for (let index = 0; index < MAX_RETAINED_UNSAVED_INPUTS + extra; index++) {
+		await assert.rejects(
+			harness.session.sendCustomMessage(
+				{ customType: "note", content: `note ${index}`, display: true },
+				{ excludeFromContext: true },
+			),
+			SessionConflictError,
+		);
+	}
+	const unsaved = harness.session.getUnsavedInput();
+	assert.equal(unsaved?.messages.length, MAX_RETAINED_UNSAVED_INPUTS);
+	assert.equal(unsaved?.dropped, extra + 1, "the oldest, the prompt and the first notes, are dropped");
+	assert.equal(harness.session.getPersistenceFailure()?.droppedUnsavedMessages, extra + 1);
+	assert.equal(
+		unsaved?.messages.at(-1)?.role === "custom" ? unsaved.messages.at(-1)?.content : undefined,
+		`note ${MAX_RETAINED_UNSAVED_INPUTS + extra - 1}`,
+	);
 });

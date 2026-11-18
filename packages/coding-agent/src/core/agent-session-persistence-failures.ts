@@ -5,30 +5,74 @@
  * without an import cycle.
  */
 
+import { createHash } from "node:crypto";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import type { CustomMessage } from "./messages.ts";
+import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import { describeStorageError } from "./storage/errors.js";
 import { SessionConflictError } from "./storage/session/errors.js";
 
 const reportedPersistenceFailures = new WeakSet<object>();
 
-/** What runs could not save, kept apart from the transcript so a context refresh does not drop it (#5135). */
-interface UnsavedInput {
-	readonly error: string;
-	conflict?: SessionConflictError;
-	readonly messages: AgentMessage[];
-}
-const unsavedInputs = new WeakMap<object, UnsavedInput>();
+/** How many unsaved inputs a session keeps for resending; past it the oldest are dropped and counted (#5135). */
+export const MAX_RETAINED_UNSAVED_INPUTS = 64;
 
-function keepUnsaved(session: AgentSession, message: AgentMessage, failure: string, error: unknown): void {
-	let kept = unsavedInputs.get(session);
-	if (kept === undefined) {
-		kept = { error: failure, messages: [] };
-		unsavedInputs.set(session, kept);
+/**
+ * #5135: prompts and custom messages that could not be saved, kept apart from the transcript under a stable identity
+ * until one carrying the same input is saved or the user discards them. A refresh of the context does not drop them.
+ */
+interface RetainedInput {
+	error: string;
+	readonly messages: Map<string, AgentMessage>;
+	dropped: number;
+}
+const retainedInputs = new WeakMap<object, RetainedInput>();
+
+/** What the current run could not save beyond its input: its model replies, tool results and prompt records. */
+interface RunFailure {
+	conflict?: SessionConflictError;
+	readonly outputs: AgentMessage[];
+}
+const runFailures = new WeakMap<object, RunFailure>();
+
+/** The identity two sends of one input share, or undefined for what a run produces rather than receives. */
+function inputIdentity(message: AgentMessage): string | undefined {
+	if (message.role !== "user" && message.role !== "custom") return undefined;
+	if (message.role === "custom") {
+		const key = (message as StageAdmittedCustomMessage).stageAdmissionKey;
+		if (key !== undefined) return `custom-key:${key}`;
 	}
-	if (error instanceof SessionConflictError) kept.conflict ??= error;
-	if (!kept.messages.includes(message)) kept.messages.push(message);
+	const kind = message.role === "custom" ? `custom:${message.customType}` : "user";
+	return `${kind}:${createHash("sha256").update(JSON.stringify(message.content)).digest("hex")}`;
+}
+
+/** Keeps `message` as unsaved. Resolves true when it is new input, so a caller shows it once. */
+function keepUnsaved(session: AgentSession, message: AgentMessage, failure: string, error: unknown): boolean {
+	const identity = inputIdentity(message);
+	if (identity === undefined) {
+		const run = runFailures.get(session) ?? { outputs: [] };
+		runFailures.set(session, run);
+		if (error instanceof SessionConflictError) run.conflict ??= error;
+		if (!run.outputs.includes(message)) run.outputs.push(message);
+		return false;
+	}
+	const run = runFailures.get(session) ?? { outputs: [] };
+	runFailures.set(session, run);
+	if (error instanceof SessionConflictError) run.conflict ??= error;
+	let retained = retainedInputs.get(session);
+	if (retained === undefined) {
+		retained = { error: failure, messages: new Map(), dropped: 0 };
+		retainedInputs.set(session, retained);
+	}
+	if (retained.messages.has(identity)) return false;
+	retained.messages.set(identity, message);
+	while (retained.messages.size > MAX_RETAINED_UNSAVED_INPUTS) {
+		const oldest = retained.messages.keys().next().value;
+		if (oldest === undefined) break;
+		retained.messages.delete(oldest);
+		retained.dropped += 1;
+	}
+	return true;
 }
 
 function failureOf(message: AgentMessage, error: unknown): string {
@@ -45,25 +89,35 @@ export function rethrowUnlessReportedPersistenceFailure(error: unknown): void {
 
 /**
  * #4226: a new run saves again after an earlier run stopped on a message it could not save, also when another
- * writer's entries stopped it (#5135).
+ * writer's entries stopped it (#5135). Input that run could not save stays retained for resending.
  */
 export function clearPersistenceFailure(session: AgentSession): void {
 	session._persistenceFailure = undefined;
+	runFailures.delete(session);
 	session.sessionManager.resumeAppends();
 }
 
-/** The user's next prompt resends or replaces what earlier runs could not save (#5135). */
-export function forgetUnsavedInput(session: AgentSession): void {
-	unsavedInputs.delete(session);
+/** #5135: a saved message settles the retained input that carries the same identity, every copy of it. */
+export function noteMessageSaved(session: AgentSession, message: AgentMessage): void {
+	const identity = inputIdentity(message);
+	const retained = identity === undefined ? undefined : retainedInputs.get(session);
+	if (identity === undefined || retained === undefined) return;
+	retained.messages.delete(identity);
+	if (retained.messages.size === 0 && retained.dropped === 0) retainedInputs.delete(session);
+}
+
+/** #5135: the user discards the input the session could not save. */
+function discardUnsavedInput(this: AgentSession): void {
+	retainedInputs.delete(this);
 }
 
 /**
  * #5135: a custom message that the halt after another writer's entries refused stays shown and recoverable, not only
- * with its sender.
+ * with its sender. One input is shown once, however often it is sent again.
  */
 export function keepRefusedInput(session: AgentSession, message: CustomMessage, error: SessionConflictError): void {
 	session._messagesWithFailedPersistence.add(message);
-	keepUnsaved(session, message, failureOf(message, error), error);
+	if (!keepUnsaved(session, message, failureOf(message, error), error)) return;
 	session._emit({ type: "message_start", message });
 	session._emit({ type: "message_end", message });
 }
@@ -91,28 +145,51 @@ export function recordPersistenceFailure(session: AgentSession, message: AgentMe
 	}
 }
 
-/** What runs could not save, and why, until the user's next prompt (#4226, #5135). */
+/** What the current run could not save, and why, while its stop stands (#4226). */
 export interface PersistenceFailure {
 	/** The reported cause, naming the storage error. */
 	readonly error: string;
-	/** The messages the session holds in memory but could not save, oldest first. */
+	/** The messages the session holds in memory but could not save, oldest input first. */
 	readonly unsavedMessages: readonly AgentMessage[];
 	/** Set when the run stopped because another process wrote to the session (#5135). */
 	readonly conflict?: SessionConflictError;
+	/** How many older unsaved inputs were dropped past {@link MAX_RETAINED_UNSAVED_INPUTS} (#5135). */
+	readonly droppedUnsavedMessages?: number;
+}
+
+/** Input the session could not save, kept until it is saved or discarded (#5135). */
+export interface UnsavedInput {
+	readonly error: string;
+	/** The unsaved prompts and custom messages, one per input, oldest first. */
+	readonly messages: readonly AgentMessage[];
+	/** How many older ones were dropped past {@link MAX_RETAINED_UNSAVED_INPUTS}. */
+	readonly dropped: number;
+}
+
+/** #5135: the input the session could not save, until it is saved or discarded; undefined when there is none. */
+function getUnsavedInput(this: AgentSession): UnsavedInput | undefined {
+	const retained = retainedInputs.get(this);
+	if (retained === undefined) return undefined;
+	return { error: retained.error, messages: [...retained.messages.values()], dropped: retained.dropped };
 }
 
 /**
- * #5210: what runs since the user's last prompt could not save, or undefined when they saved every message. The
- * unsaved messages stay in the session's memory only, so a caller that reports the run can still name and keep them;
- * a context refresh does not drop them (#5135).
+ * #5210: what the current run could not save, or undefined when it saved every message. The unsaved messages stay in
+ * the session's memory only, so a caller that reports the run can still name and keep them. They include input that
+ * an earlier run could not save and nothing has saved since, and a context refresh does not drop them (#5135).
  */
 function getPersistenceFailure(this: AgentSession): PersistenceFailure | undefined {
-	const kept = unsavedInputs.get(this);
-	if (kept === undefined) return undefined;
-	const unsavedMessages = kept.messages.filter((message) => !this._entryIdsByMessage.has(message));
-	if (unsavedMessages.length === 0) return undefined;
-	const { error, conflict } = kept;
-	return conflict === undefined ? { error, unsavedMessages } : { error, unsavedMessages, conflict };
+	const error = this._persistenceFailure;
+	if (error === undefined) return undefined;
+	const retained = retainedInputs.get(this);
+	const run = runFailures.get(this);
+	const unsavedMessages = [...(retained?.messages.values() ?? []), ...(run?.outputs ?? [])];
+	return {
+		error,
+		unsavedMessages,
+		...(run?.conflict === undefined ? {} : { conflict: run.conflict }),
+		...(retained === undefined || retained.dropped === 0 ? {} : { droppedUnsavedMessages: retained.dropped }),
+	};
 }
 
-export const agentSessionPersistenceFailureMethods = { getPersistenceFailure };
+export const agentSessionPersistenceFailureMethods = { getPersistenceFailure, getUnsavedInput, discardUnsavedInput };
