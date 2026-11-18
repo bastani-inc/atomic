@@ -1,5 +1,6 @@
-import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentPanelItem } from "../../../core/tasks/agent-panel-source.ts";
+import { waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import { taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
@@ -15,10 +16,11 @@ export type TaskBoardRow =
 	| { readonly id: string; readonly kind: "task"; readonly task: TaskRecord }
 	| { readonly id: string; readonly kind: "item"; readonly item: TaskBoardItem };
 
-export type TaskBoardGroup = "input" | "working" | "done";
+export type TaskBoardGroup = "input" | "working" | "waiting" | "done";
 export const TASK_BOARD_GROUP_TITLES: Readonly<Record<TaskBoardGroup, string>> = {
 	input: "Needs input",
 	working: "Working",
+	waiting: "Waiting",
 	done: "Done",
 };
 
@@ -41,6 +43,7 @@ export function taskBoardState(task: TaskRecord): TaskBoardState {
 		case "cancelled":
 			return "stopped";
 		case "released":
+			return "waiting";
 		case "running":
 			return "running";
 		default:
@@ -54,6 +57,7 @@ export function rowState(row: TaskBoardRow): TaskBoardState {
 
 export function stateGroup(state: TaskBoardState): TaskBoardGroup {
 	if (state === "input") return "input";
+	if (state === "waiting") return "waiting";
 	if (state === "running" || state === "queued" || state === "stopping" || state === "paused") return "working";
 	return "done";
 }
@@ -78,18 +82,19 @@ export function rowTask(row: TaskBoardRow): string {
 export function taskBoardGroups(
 	rows: readonly TaskBoardRow[],
 ): { group: TaskBoardGroup; title: string; rows: TaskBoardRow[] }[] {
-	return (["input", "working", "done"] as const).flatMap((group) => {
+	return (["input", "working", "waiting", "done"] as const).flatMap((group) => {
 		const selected = rows.filter((row) => stateGroup(rowState(row)) === group);
 		return selected.length ? [{ group, title: TASK_BOARD_GROUP_TITLES[group], rows: selected }] : [];
 	});
 }
 
 export function taskBoardCounts(rows: readonly TaskBoardRow[]): string {
-	const counts = { input: 0, working: 0, done: 0 };
+	const counts = { input: 0, working: 0, waiting: 0, done: 0 };
 	for (const row of rows) counts[stateGroup(rowState(row))]++;
 	return [
 		counts.input ? `${counts.input} needs input` : "",
 		counts.working ? `${counts.working} working` : "",
+		counts.waiting ? `${counts.waiting} waiting` : "",
 		counts.done ? `${counts.done} done` : "",
 	]
 		.filter(Boolean)
@@ -106,6 +111,8 @@ export function stateGlyph(state: TaskBoardState, kind?: "agent" | "workflow" | 
 			return { glyph: "○", color: "muted" };
 		case "stopping":
 			return { glyph: "◼", color: "warning" };
+		case "waiting":
+			return { glyph: "◌", color: "dim" };
 		case "done":
 			return { glyph: "✓", color: "success" };
 		case "failed":
@@ -140,6 +147,10 @@ function rowElapsed(row: TaskBoardRow): number | undefined {
 	}
 	return row.item.elapsedMs;
 }
+function rowWaitingOn(row: TaskBoardRow): string | undefined {
+	if (row.kind === "item") return row.item.waitingOn;
+	return waitingReleasedTools(row.task);
+}
 function rowTokens(row: TaskBoardRow): number | undefined {
 	return row.kind === "task" ? row.task.metrics?.tokenCount : row.item.tokens;
 }
@@ -157,6 +168,8 @@ export function rowMeta(row: TaskBoardRow): string {
 	if (state === "paused" || state === "stopped") return [state, time].filter(Boolean).join(" · ");
 	if (state === "failed") return ["failed", time].filter(Boolean).join(" · ");
 	if (state === "queued") return "queued";
+	if (state === "waiting")
+		return [`waiting on ${taskDisplayText(rowWaitingOn(row) ?? "a tool call")}`, time].filter(Boolean).join(" · ");
 	if (state === "stopping") return ["stopping", time].filter(Boolean).join(" · ");
 	if (state === "done") return ["done", time].filter(Boolean).join(" · ");
 	return [time, validMetric(tokens) ? `↓ ${compactTokens(tokens)}` : ""].filter(Boolean).join(" · ");
@@ -196,12 +209,14 @@ export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: numb
 	const finished = stateGroup(state) === "done";
 	const nameText = selected ? theme.bold(namePadded) : finished ? theme.fg("muted", namePadded) : namePadded;
 	const taskStyled = finished && !selected ? theme.fg("dim", taskText) : theme.fg("muted", taskText);
-	return truncateToWidth(
+	const line = truncateToWidth(
 		`${marker}${theme.fg(color, glyph)} ${nameText}${taskStyled}${" ".repeat(gap)}${theme.fg("dim", meta)}`,
 		width,
 		"...",
 		true,
 	);
+	// NO_COLOR: the row's mark and words say its state, so it carries no colour codes.
+	return process.env.NO_COLOR === undefined ? line : stripTerminalSequences(line);
 }
 
 export type PeekContent = {

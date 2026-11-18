@@ -1167,11 +1167,42 @@ function releasedIntercomId(manager: SessionManager): { intercomId: string } | R
 	return intercomId === undefined ? {} : { intercomId };
 }
 
-/** What a released child keeps for task inspection: its session id and commands. Its history is in its session store. */
-function releasedTranscript(sessionId: string, commands: TranscriptCommands | undefined): TranscriptSource {
+/**
+ * What a released child keeps for task inspection: its session id and commands. Its history is in its session store,
+ * which a task view reads when asked, the same way it reads a finished child's, without reopening the session: reading
+ * it never wakes the child.
+ */
+function releasedTranscript(manager: SessionManager, commands: TranscriptCommands | undefined): TranscriptSource {
+	const sessionId = manager.getSessionId();
+	const sessionFile = manager.getSessionFile();
+	const store =
+		sessionFile === undefined && typeof manager.getSessionStore === "function"
+			? manager.getSessionStore()
+			: undefined;
 	return {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
+		...(store === undefined && sessionFile === undefined
+			? {}
+			: {
+					loadHistory: async () => {
+						try {
+							return {
+								entries: store
+									? [...(await store.load(sessionId)).entries]
+									: await readSessionFileEntries(sessionFile as string, sessionId),
+							};
+						} catch (error) {
+							const message = error instanceof Error ? error.message : String(error);
+							return {
+								entries: [],
+								unavailable: message.startsWith("History unavailable:")
+									? message
+									: await historyUnavailable(sessionFile, error),
+							};
+						}
+					},
+				}),
 		...(commands === undefined ? {} : { commands: () => commands }),
 	};
 }
@@ -2710,7 +2741,7 @@ export class SubagentControlRuntime {
 				const commands = await keptCommands;
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
-						? releasedTranscript(transcriptManager.getSessionId(), commands)
+						? releasedTranscript(transcriptManager, commands)
 						: settledTranscript(transcriptManager, commands, openedThroughId, unsavedAnswer),
 				);
 			};

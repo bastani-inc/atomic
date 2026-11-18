@@ -584,6 +584,11 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				// message, echoing it again here would show it twice (#4272). It shows the message as sent, which an
 				// `input` hook may have rewritten (#4277), so any message it showed meanwhile counts.
 				const shownBefore = this.userMessagesShownBySession;
+				let echoedStartedRun = false;
+				let showedUserMessage = false;
+				const unsubscribeUserMessages = this.session.subscribe((event) => {
+					if (event.type === "message_start" && event.message.role === "user") showedUserMessage = true;
+				});
 				try {
 					await this.session.prompt(text, {
 						streamingBehavior: "steer",
@@ -596,11 +601,15 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 								!text.startsWith("/") &&
 								this.userMessagesShownBySession === shownBefore
 							) {
+								echoedStartedRun = true;
 								this.renderDeferredUserInput(text);
 								this.expectStartedUserInput(text, shownBefore);
 							}
 						},
 					});
+					// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
+					if (echoedStartedRun && !showedUserMessage && this.deferredRenderedUserInputs?.includes(text) === true)
+						this.discardDeferredRenderedUserInput(text);
 				} catch (error) {
 					if (shownAsQueued) settleSubmission(this, shownAsQueued);
 					if (accepted) throw error;
@@ -610,6 +619,8 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					}
 					restoreRefusedSubmission(this, error, submittedDraft);
 					return;
+				} finally {
+					unsubscribeUserMessages();
 				}
 				if (shownAsQueued) settleSubmission(this, shownAsQueued);
 				this.updatePendingMessagesDisplay();
