@@ -10,6 +10,8 @@ test("dropping a scope never drops a full-text table's shadow tables apart from 
 	await withNodeSqliteDatabase(async ({ database }) => {
 		await database.exec("CREATE TABLE scope_sessions (id TEXT PRIMARY KEY)");
 		await database.exec("CREATE VIRTUAL TABLE scope_search_fts USING fts5(body)");
+		// An ordinary table whose name starts with the full-text table's is not one of its shadow tables.
+		await database.exec("CREATE TABLE scope_search_fts_metadata (id INTEGER PRIMARY KEY)");
 		const drops: string[] = [];
 		let failedOnce = false;
 		// The shared server answers the full-text table's first drop with a transient error, as a busy server does. A

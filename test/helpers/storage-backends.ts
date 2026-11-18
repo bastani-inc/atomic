@@ -121,27 +121,19 @@ const FACADE_SUITE_TABLES = ["children", "parents", "items", "concurrent_items",
  */
 export async function dropLibsqlScope(database: SqliteDatabase, prefix: string, facadeTables = false): Promise<void> {
 	const fixed = facadeTables ? FACADE_SUITE_TABLES : [];
+	// `pragma_table_list` tells virtual tables and the shadow tables they own from ordinary tables. A virtual table
+	// drops its own shadow tables; dropping one of those first leaves the virtual table undroppable on sqld ("vtable
+	// constructor failed"), which happens when the virtual table's drop meets a busy server and the pass moves on to
+	// its shadow tables before the retry. So virtual tables go first and shadow tables are never dropped on their own.
 	const rows = await database.all(
-		`SELECT name FROM sqlite_master WHERE type = 'table' AND (substr(name, 1, length(?)) = ? OR name IN (${fixed.map(() => "?").join(", ")}))`,
+		`SELECT name, type FROM pragma_table_list WHERE schema = 'main' AND type IN ('table', 'virtual') AND (substr(name, 1, length(?)) = ? OR name IN (${fixed.map(() => "?").join(", ")}))`,
 		prefix,
 		prefix,
 		...fixed,
 	);
-	const names = rows.map((row) => String(row.name));
-	// A virtual table drops its own shadow tables. Dropping one of those first leaves the virtual table undroppable on
-	// sqld ("vtable constructor failed"), which happens when the virtual table's drop meets a busy server and the pass
-	// moves on to its shadow tables before the retry.
-	const virtualTables = (
-		await database.all(
-			`SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%' AND substr(name, 1, length(?)) = ?`,
-			prefix,
-			prefix,
-		)
-	).map((row) => String(row.name));
-	const shadowOf = (name: string) => virtualTables.some((table) => name.startsWith(`${table}_`));
 	let pending = [
-		...virtualTables.filter((name) => names.includes(name)),
-		...names.filter((name) => !virtualTables.includes(name) && !shadowOf(name)),
+		...rows.filter((row) => row.type === "virtual").map((row) => String(row.name)),
+		...rows.filter((row) => row.type === "table").map((row) => String(row.name)),
 	];
 	while (pending.length > 0) {
 		const failed: string[] = [];
