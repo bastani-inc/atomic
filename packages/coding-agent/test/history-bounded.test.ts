@@ -2432,7 +2432,8 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		let turns: WatchedTurns;
 		try {
 			for (let index = 0; index < 500; index++) {
-				busyFor(blocked.has(index) ? 25 : 0.2, blocked.has(index) ? cpuMs : undefined);
+				if (blocked.has(index)) busyFor(25, cpuMs, CPU_CLOCK_STEP_MS);
+				else busyFor(0.2);
 				await new Promise((resolve) => setImmediate(resolve));
 			}
 		} finally {
@@ -2460,12 +2461,27 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		assert.ok(turnBlockedMs(turn, [{ start: 5, end: 25 }], 0.001) <= TURN_LIMIT_MS);
 	});
 
-	it("does not count one tick of a coarse CPU clock as blocking (#5250)", () => {
+	it("counts a turn that held the event loop past the limit while a coarse CPU clock charged it one step or none (#5599)", () => {
 		const windowsTick = 15.625;
-		const descheduledTurn = { start: 0, end: 15.2, cpu: windowsTick };
-		assert.equal(turnBlockedMs(descheduledTurn, [], windowsTick), 0);
+		for (const turn of [
+			{ start: 0, end: 12, cpu: 0 },
+			{ start: 0, end: 15.2, cpu: windowsTick },
+			{ start: 0, end: 25, cpu: windowsTick },
+		])
+			assert.ok(
+				turnBlockedMs(turn, [], windowsTick) > TURN_LIMIT_MS,
+				`a ${turn.end} ms turn charged ${turn.cpu} ms of CPU time held the event loop`,
+			);
 		const longTurn = { start: 0, end: 30, cpu: 2 * windowsTick };
 		assert.ok(turnBlockedMs(longTurn, [], windowsTick) > TURN_LIMIT_MS);
+	});
+
+	it("does not count a coarse CPU clock's step past a turn's wall time, or more than one step of waiting off the CPU (#5250)", () => {
+		const windowsTick = 15.625;
+		const shortTurn = { start: 0, end: 3, cpu: windowsTick };
+		assert.ok(turnBlockedMs(shortTurn, [], windowsTick) <= TURN_LIMIT_MS);
+		const descheduledTurn = { start: 0, end: 200, cpu: windowsTick };
+		assert.ok(turnBlockedMs(descheduledTurn, [], windowsTick) <= 2 * windowsTick);
 	});
 
 	it("spends the requested CPU time in a blocking busyFor burst even when wall time jumps (#5250)", () => {
@@ -2482,6 +2498,16 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		} finally {
 			now.mockRestore();
 		}
+	});
+
+	it("holds the event loop for the requested wall time in a blocking busyFor burst even when a coarse CPU clock steps ahead (#5599)", () => {
+		const windowsTick = 15.625;
+		let reads = 0;
+		const coarseCpuClock = () => (reads++ === 0 ? 0 : 2 * windowsTick);
+		const start = performance.now();
+		busyFor(25, coarseCpuClock, windowsTick);
+		const elapsed = performance.now() - start;
+		assert.ok(elapsed >= 25, `busyFor(25) held the event loop for ${elapsed} ms`);
 	});
 
 	it("restores the process priority after watching the event loop, also when the watched work throws (#5250)", async () => {
