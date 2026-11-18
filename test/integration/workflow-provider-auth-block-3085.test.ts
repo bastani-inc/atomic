@@ -93,9 +93,10 @@ test(
 				},
 			});
 			const definition = createIssue3085Definition(dir);
+			const jobs = createJobTracker();
 			const runtimeOptions: ExtensionRuntimeOpts = {
 				store,
-				jobs: createJobTracker(),
+				jobs,
 				cwd: dir,
 				registry: createRegistry([definition]),
 				adapters: {
@@ -155,6 +156,13 @@ test(
 			assert.ok(stageSessionId);
 			assert.equal((await parent.getSessionStore().load(stageSessionId)).header.id, stageSessionId);
 			assert.equal(notices.filter((notice) => notice.details?.kind === "blocked").length, 1);
+			// The store shows the run blocked as it ends; the run then records its ending in the journal, which the
+			// restarted process reads. Its job settles once it has.
+			while (performance.now() < settleDeadline && jobs.has(startedRun.runId)) {
+				await realSleep(5);
+				await vi.advanceTimersToNextTimerAsync();
+			}
+			assert.equal(jobs.has(startedRun.runId), false, "the blocked run recorded its ending");
 
 			await backend.close();
 			const persisted: Issue3085PersistedState = {
