@@ -204,7 +204,8 @@ export function restoreOnSessionStart(
 
 	const entries = getEntries.call(sessionManager) as readonly SessionEntry[];
 	const sessionEntries = normalizeSessionEntries(entries);
-	restoreTerminalRuns(sessionEntries, store);
+	// Replaying a start and its recorded ending is one publication, not a new running turn.
+	store.batch(() => restoreTerminalRuns(sessionEntries, store));
 	const inFlight = scanInFlightRuns(sessionEntries);
 	if (inFlight.length === 0) return;
 

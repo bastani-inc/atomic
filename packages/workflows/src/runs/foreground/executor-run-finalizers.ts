@@ -46,6 +46,7 @@ export function createRunFinalizers(input: {
 		);
 		await appendRunEndWhenRecorded(input.opts.persistence, recorded, {
 			runId: input.runId,
+			runGeneration: input.runSnapshot.runGeneration,
 			status: "failed",
 			error: metadata.errorMessage,
 			failureKind: metadata.failureKind,

@@ -430,6 +430,51 @@ test("replaying a chat's blocked workflow preserves the last pause sequence with
 	);
 });
 
+test("restoring a returned block or a failed run never advertises a resume (#5567)", async () => {
+	for (const ending of ["blocked", "failed", "invalid-exit"] as const) {
+		const status = ending === "blocked" ? "blocked" : "failed";
+		const store = createStore();
+		const entries: SessionEntry[] = [];
+		const persistence = {
+			appendEntry(type: string, payload: Record<string, unknown>) {
+				entries.push({ id: String(entries.length), type, payload: payload as SessionEntry["payload"] });
+			},
+		};
+		const def = workflow({
+			name: "review",
+			description: "",
+			inputs: {},
+			outputs: { status: Type.String() },
+			run: async (ctx) => {
+				await ctx.stage("work").complete("go");
+				store.recordRunPaused(RUN_ID);
+				store.recordRunResumed(RUN_ID);
+				if (ending === "invalid-exit") return ctx.exit({ outputs: { status: 1 as never } });
+				if (ending === "failed") throw new Error("review failed");
+				return { status: "needs_human" };
+			},
+		});
+		const result = await run(
+			def,
+			{},
+			{
+				runId: RUN_ID,
+				store,
+				persistence,
+				durableBackend: await createMemoryTestBackend(),
+				adapters: { complete: { complete: async () => "done" } },
+			},
+		);
+		assert.equal(result.status, status);
+		const restored = createStore();
+		const frames: string[] = [];
+		restored.subscribe(() => frames.push(panelItemsFromSnapshot(restored.graphSnapshot())[0]!.state));
+		restoreOnSessionStart({ getEntries: () => entries }, { resumeInFlight: "auto", persistRuns: true }, restored);
+		assert.deepEqual(frames, [status === "blocked" ? "paused" : "failed"], ending);
+		assert.equal(restored.run(RUN_ID)?.runGeneration, status === "blocked" ? 2 : 1, ending);
+	}
+});
+
 describe("run.start persistence round-trip", () => {
 	test("restores inherited elapsed onto the rehydrated run snapshot", async () => {
 		const entries: SessionEntry[] = [];
