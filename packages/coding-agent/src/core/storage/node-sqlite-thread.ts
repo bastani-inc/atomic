@@ -62,14 +62,17 @@ function bind(params) {
 	return params.map((value) => (value instanceof Uint8Array && value.byteLength === 0 ? new Uint8Array(0) : value));
 }
 
-// Object.fromEntries defines every column as an own field, a column named __proto__ included.
-function normalize(row) {
-	return Object.fromEntries(
-		Object.entries(row).map(([key, value]) => [
-			key,
-			typeof value === "bigint" && value >= -BigInt(Number.MAX_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value,
-		]),
-	);
+function integer(value) {
+	return typeof value === "bigint" && value >= -BigInt(Number.MAX_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value;
+}
+
+// Rows cross as their column names and one array of values each: cheaper to copy than an object per row, whose
+// field names would be copied with every row. A row's own fields come in column order, a later column of a name it
+// repeats replacing an earlier one, as the driver gives them.
+function table(rows) {
+	if (rows.length === 0) return { columns: [], values: [] };
+	const columns = Object.keys(rows[0]);
+	return { columns, values: rows.map((row) => columns.map((column) => integer(row[column]))) };
 }
 
 function begin() {
@@ -94,9 +97,9 @@ const handlers = {
 	run: (request) => ({ changes: Number(statement(request.sql).run(...bind(request.params)).changes) }),
 	get: (request) => {
 		const row = statement(request.sql).get(...bind(request.params));
-		return row === undefined ? undefined : normalize(row);
+		return row === undefined ? undefined : table([row]);
 	},
-	all: (request) => statement(request.sql).all(...bind(request.params)).map(normalize),
+	all: (request) => table(statement(request.sql).all(...bind(request.params))),
 	begin: () => { begin(); },
 	dataVersion: () => Number(database.prepare("PRAGMA data_version").get()?.data_version ?? 0),
 	now: () => Number(database.prepare(workerData.nowSql).get().now),
@@ -263,6 +266,26 @@ function threadPriorityBinding(): string | undefined {
 	return nativeBinding ?? undefined;
 }
 
+/** Rows as they cross from a connection's thread: the column names, then each row's values in their order. */
+interface RowTable {
+	readonly columns: readonly string[];
+	readonly values: readonly (readonly SqliteValue[])[];
+}
+
+/** The rows of `table`, one object each, every column an own field, a column named `__proto__` included. */
+function rowsOf(table: RowTable): SqliteRow[] {
+	const { columns, values } = table;
+	if (columns.includes("__proto__"))
+		return values.map((row) =>
+			Object.fromEntries(columns.map((column, index) => [column, row[index] as SqliteValue])),
+		);
+	return values.map((row) => {
+		const record: Record<string, SqliteValue> = {};
+		for (let index = 0; index < columns.length; index++) record[columns[index]!] = row[index] as SqliteValue;
+		return record;
+	});
+}
+
 /** A connection running on its own worker thread. */
 export class ThreadConnection {
 	/** The path the connection was opened with, as its caller gave it. */
@@ -347,7 +370,15 @@ export class ThreadConnection {
 
 	/** Sends one request; resolves with the thread's answer or rejects with the driver's error. */
 	request(request: ConnectionRequest): Promise<ConnectionValue> {
-		return new Promise<ConnectionValue>((resolve, reject) => {
+		const answer = this.send(request);
+		if (request.kind === "all") return answer.then((value) => rowsOf(value as RowTable));
+		if (request.kind === "get")
+			return answer.then((value) => (value === undefined ? undefined : rowsOf(value as RowTable)[0]));
+		return answer as Promise<ConnectionValue>;
+	}
+
+	private send(request: ConnectionRequest): Promise<unknown> {
+		return new Promise<unknown>((resolve, reject) => {
 			const id = this.ledger.open({ resolve, reject });
 			if (typeof id !== "number") return;
 			try {
