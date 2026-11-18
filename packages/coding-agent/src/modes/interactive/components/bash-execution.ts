@@ -19,6 +19,7 @@ import { truncateToVisualLines } from "./visual-truncate.ts";
 const PREVIEW_LINES = 20;
 
 export class BashExecutionComponent extends Container {
+	readonly expandsOnClick = true;
 	private command: string;
 	private outputLines: string[] = [];
 	private status: "running" | "complete" | "cancelled" | "error" = "running";
@@ -67,6 +68,17 @@ export class BashExecutionComponent extends Container {
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
 		this.updateDisplay();
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	/** The `$ command` row, under the spacer and the top border the component starts with. */
+	headerRows(width: number): readonly number[] {
+		const [spacer, border] = this.children;
+		const above = (spacer?.render(width).length ?? 0) + (border?.render(width).length ?? 0);
+		return this.render(width).length > above ? [above] : [];
 	}
 
 	setOutputPad(outputPad: number): void {

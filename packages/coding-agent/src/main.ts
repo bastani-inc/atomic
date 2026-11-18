@@ -156,6 +156,7 @@ import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engin
 import { announceBlueprintBuildWaits } from "./modes/print-mode.ts";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { deferDeprecationWarnings, loadShownDeprecationNotices } from "./utils/deprecation.js";
 import {
 	readInteractiveEngineBootstrap,
 	takeInteractiveEngineBootstrapArg,
@@ -432,8 +433,12 @@ export async function main(argv: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 	const agentDir = getAgentDir();
-	// Before the first settings load, so a removed routing setting is not also reported as ignored.
-	removeSavedModelRoutingSettings(cwd);
+	loadShownDeprecationNotices(agentDir);
+	// The interactive engine sends its warnings to the host, which shows them, rather than writing them to its stderr.
+	if (engineEnv.child === "1") deferDeprecationWarnings();
+	// Before the first settings load, so a removed routing setting is not also reported as ignored. When another process
+	// holds the file, its migration below tries again, and the load's "ignored" warning waits for that.
+	removeSavedModelRoutingSettings(cwd, { retryLater: true });
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	if (!inheritsDebugSetting()) setDebugSetting(bootstrapSettingsManager.getDebug());
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
@@ -905,7 +910,10 @@ export async function main(argv: string[], options?: MainOptions) {
 										if (trusted && !initialProjectTrusted) {
 											migrateAfterTrust = true;
 											// Before the project's settings load, so its removed routing settings are not also reported as ignored.
-											await removeSavedModelRoutingSettingsAsync(cwd, { projectTrusted: true });
+											await removeSavedModelRoutingSettingsAsync(cwd, {
+												projectTrusted: true,
+												retryLater: true,
+											});
 										}
 										// Print, JSON and RPC modes cannot ask, so say what an untrusted project loses (#4223).
 										const ignored = ignoredProjectSettingsWarning(cwd, {
