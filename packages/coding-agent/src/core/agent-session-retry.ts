@@ -505,6 +505,11 @@ export async function _selectModelWithCredentials(this: AgentSession): Promise<v
 
 export async function _handleRetryableError(this: AgentSession, message: AssistantMessage): Promise<boolean> {
 	if (this._agentRunAbortRequested) return false;
+	// The retry was cancelled after this attempt failed, before its backoff started: it stays cancelled.
+	if (this._retryCancelled) {
+		this._retryCancelled = false;
+		return false;
+	}
 	const settings = this.settingsManager.getRetrySettings();
 	const retryableError = this._isRetryableError?.(message) ?? true;
 	const fallbackableError = this._isFallbackableError?.(message) ?? retryableError;
@@ -600,7 +605,10 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 
 	// Retry via continue() - use setTimeout to break out of event handler chain
 	setTimeout(() => {
-		if (this._agentRunAbortRequested) {
+		// A retry cancelled after its backoff, before this next attempt, stays cancelled too.
+		const cancelled = this._retryCancelled;
+		this._retryCancelled = false;
+		if (this._agentRunAbortRequested || cancelled) {
 			finishCancelledRetry.call(this);
 			return;
 		}
@@ -625,6 +633,9 @@ function finishCancelledRetry(this: AgentSession): void {
 }
 
 export function abortRetry(this: AgentSession): void {
+	// Out of its backoff, a pending retry has no timer to abort: its failure is still being handled, or its next attempt
+	// is about to start. It reads the cancellation there.
+	if (this._retryPromise !== undefined && this._retryAbortController === undefined) this._retryCancelled = true;
 	this._retryAbortController?.abort();
 	finishCancelledRetry.call(this);
 	this._resolveRetry();
