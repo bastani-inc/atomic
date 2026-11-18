@@ -3,6 +3,7 @@ import { isDecisionConfigError } from "../core/decision/errors.js";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "../core/session-manager-errors.js";
 import { SessionConflictError } from "../core/storage/session/errors.js";
 import { isRpcTransportFailure } from "../modes/rpc/rpc-transport-error.ts";
+import { clearStartupStatus } from "./startup-status.ts";
 
 export interface StartupFailureIo {
 	readonly error: (text: string) => void;
@@ -26,6 +27,8 @@ export function sessionConflictMessage(error: SessionConflictError): string {
  * process holds with status 75 (#5135). Unexpected failures are still rethrown.
  */
 export function exitOnDecisionConfigError(error: unknown, io: StartupFailureIo = PROCESS_IO): never {
+	// The failure is reported on a line of its own, not after the startup status line.
+	clearStartupStatus();
 	if (error instanceof SessionAlreadyOpenError) {
 		io.error(chalk.red(`Error: ${error.message}`));
 		return io.exit(SESSION_ALREADY_OPEN_EXIT_CODE);

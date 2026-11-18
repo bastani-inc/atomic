@@ -18,6 +18,7 @@
 - A subagent or workflow stage chat opened while its agent already waits to retry a failed request now shows `retrying…` as its working line straight away, instead of looking idle until the next attempt. This includes a stage that runs on a local worker ([#5483](https://github.com/bastani-inc/atomic/issues/5483)).
 - A subagent released while it waits on a tool call now shows the dim `◌` waiting mark on its completion notice, as `/tasks`, the agent panel, the task footer and its launch card already show it, instead of the pause mark `⏸`. Notices saved by earlier versions show the waiting mark too. A paused or quit subagent keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - An extension tool whose call renders a `waiting` or `heartbeat` block keeps its own title once its result arrives, instead of falling back to the tool's label ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+- An interactive start no longer leaves the terminal blank until its first screen is ready. A dim `Starting atomic…` line appears as soon as the session is open and stays until the trust question or the prompt box replaces it, so a folder without a trust decision, or a busy machine, no longer looks like a hang. The line follows `NO_COLOR`, fits narrow terminals, and is not left behind the trust question or in the terminal after exit ([#5546](https://github.com/bastani-inc/atomic/issues/5546))
 
 ### Fixed
 

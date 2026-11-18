@@ -32,6 +32,7 @@ import {
 } from "./cli/credential-print.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext, ignoredProjectSettingsWarning } from "./cli/project-trust.ts";
+import { clearStartupStatus, showStartupStatus } from "./cli/startup-status.ts";
 import {
 	ENV_DEBUG,
 	ENV_OFFLINE,
@@ -775,6 +776,15 @@ export async function main(argv: string[], options?: MainOptions) {
 		(hasProjectTrustInputs(sessionCwd) ? projectTrustStore.get(sessionCwd) : true) ??
 		startupDefaultProjectTrust === "always";
 	isolateInteractiveHost &&= storagePinned || selectedProjectTrusted;
+	// An interactive host draws nothing until its first screen, which in a folder without a trust decision the isolated
+	// host holds until its engine asks the trust question; until then the terminal says that atomic is starting (#5546).
+	if (
+		appMode === "interactive" &&
+		engineEnv.child !== "1" &&
+		!isPlainRuntimeMetadataCommand(parsed) &&
+		options?.internalInteractiveHarness?.terminal === undefined
+	)
+		showStartupStatus();
 	startupEarlyInputCapture ??= beginStartupInputCapture(sessionCwd, true, deprecationWarnings.length);
 	const autoTrustOnReloadCwd =
 		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
@@ -1278,7 +1288,10 @@ export async function main(argv: string[], options?: MainOptions) {
 		...(storageWarning === undefined ? [] : [{ type: "warning" as const, message: storageWarning }]),
 	]);
 	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
-	if (appMode !== "interactive" || hasRuntimeErrors) reportDiagnostics(startupDiagnostics);
+	if (appMode !== "interactive" || hasRuntimeErrors) {
+		clearStartupStatus();
+		reportDiagnostics(startupDiagnostics);
+	}
 	if (hasRuntimeErrors) {
 		startupEarlyInputCapture?.consume();
 		process.exit(1);
@@ -1325,6 +1338,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		// Fullscreen paints on the alternate screen, so a line printed here would stay in the shell after exit
 		// (upstream #11508); the interactive mode shows it in the header instead.
 		if (modelScopeNotice && !shouldUseFullscreenTui(options?.internalInteractiveHarness?.terminal !== undefined)) {
+			clearStartupStatus();
 			console.log(chalk.dim(`Model scope: ${formatScopedModelList(scopedModels)} ${chalk.gray("(ctrl+p cycle)")}`));
 		}
 

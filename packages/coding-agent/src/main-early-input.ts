@@ -1,3 +1,4 @@
+import { clearStartupStatus, resumeStartupStatus, suspendStartupStatus } from "./cli/startup-status.ts";
 import { recordTimeSinceReset } from "./core/timings.ts";
 import { createModuleRequire } from "./utils/module-require.js";
 
@@ -98,7 +99,13 @@ export async function withEarlyInputHeldForStartupDialog<T>(
 		}
 		capture = activeCapture;
 		const hasUnfinishedInput = capture?.pause() ?? startupDialogDrafts.length > 0;
-		return await run({ hasUnfinishedInput });
+		// The dialog draws where the startup status line is; the line returns if startup still runs after it.
+		suspendStartupStatus();
+		try {
+			return await run({ hasUnfinishedInput });
+		} finally {
+			resumeStartupStatus();
+		}
 	} finally {
 		if (startupDialogQueue === current) {
 			startupDialogQueue = undefined;
@@ -306,6 +313,8 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 	};
 	const forwardSignal = (signal: NodeJS.Signals) => {
 		cleanup();
+		// The signal ends startup, so the status line saying it runs goes too.
+		clearStartupStatus();
 		processLike.kill(processLike.pid, signal);
 	};
 	const registerProcessListener = (event: EarlyInputProcessEvent, listener: EarlyInputProcessListener) => {

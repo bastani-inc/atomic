@@ -1,4 +1,5 @@
 import { replaceControlCharacters, ScrollView, VStack } from "@bastani/atomic-tui";
+import { clearStartupStatus } from "../../cli/startup-status.ts";
 import { markEventLoopStartupComplete } from "../../core/event-loop-monitor.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
@@ -299,6 +300,8 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// The editor remains local and responsive; session binding and provider work
 	// still stay behind the engine-bound gate below.
 	markLifecycleTiming("tui-start");
+	// The first frame takes the startup status line's place in the same synchronous turn, so nothing flickers.
+	clearStartupStatus();
 	this.ui.start();
 	markEventLoopStartupComplete();
 	this.programStatus.report();
