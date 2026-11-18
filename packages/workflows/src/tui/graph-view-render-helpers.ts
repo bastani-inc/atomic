@@ -1,7 +1,7 @@
 import { type NavKey, type NavKeybindings, type NavKeyStyle, navEntryKeys, sliceHead } from "@bastani/atomic";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
-import { BOLD, DEFAULT_BG, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, DEFAULT_BG, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { inertDisplayLine } from "./display-text.js";
 import type { GraphCanvas } from "./graph-canvas.js";
 import { MODE_PILL_LABEL } from "./graph-view-constants.js";
@@ -91,7 +91,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			text: (text) => `${hexToAnsi(t.text)}${text}${RESET}`,
 			muted: (text) => `${hexToAnsi(t.textMuted)}${text}${RESET}`,
 			border: (text) => `${hexToAnsi(t.borderActive)}${text}${RESET}`,
-			bold: (text) => `${hexToAnsi(t.text)}${BOLD}${text}${RESET}`,
+			bold: (text) => `${hexToAnsi(t.text)}${boldOn()}${text}${RESET}`,
 		};
 	}
 
@@ -415,8 +415,8 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				plainParts.push(entry.label.length > 0 ? `${keys} ${entry.label}` : keys);
 				styledParts.push(
 					entry.label.length > 0
-						? `${text}${BOLD}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`
-						: `${text}${BOLD}${keys}${RESET}${chromeBg}`,
+						? `${text}${boldOn()}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`
+						: `${text}${boldOn()}${keys}${RESET}${chromeBg}`,
 				);
 			}
 			return {

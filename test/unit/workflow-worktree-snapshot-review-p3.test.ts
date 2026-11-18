@@ -16,6 +16,13 @@ import { GIT_PROCESS_BUDGET_MS, GitSandbox, startedGitProcesses } from "../helpe
  */
 const TWO_RESTORES_GIT_PROCESSES = 175;
 
+/**
+ * The git processes the repeated-restores test may start: one remote with its clone, a run that captures it, and two
+ * resumes that each restore its snapshot. Git 2.5x starts about 97 on Linux; on a loaded Windows gate that is as close
+ * to the default 30 s budget as the two-worktree test was.
+ */
+const REPEATED_RESTORES_GIT_PROCESSES = 115;
+
 let sandbox: GitSandbox;
 let priorAgentDir: string | undefined;
 beforeEach(() => {
@@ -80,48 +87,58 @@ test(
 	TWO_RESTORES_GIT_PROCESSES * GIT_PROCESS_BUDGET_MS,
 );
 
-test("each warning of a restore and each later restore of the same snapshot is its own notice (#4245)", async () => {
-	const { clone } = await sandbox.remoteWithClone("one");
-	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
-	let attempt = 0;
-	const definition = workflow({
-		name: "repeated-restores",
-		description: "",
-		inputs: {},
-		outputs: {},
-		run: async (ctx) => {
-			await ctx.tool("write", {}, async () => {
-				sandbox.write(join(clone, "result.txt"), "recorded\n");
-				return "done";
-			});
-			if (attempt++ < 2) throw new Error("interrupted");
-			return {};
-		},
-	});
-	const options = { durableBackend: fixture.backend, cwd: clone };
-	const initial = await run(definition, {}, { ...options, store: createStore() });
-	assert.equal(initial.status, "failed");
-	const records = join(sandbox.path("agent"), "worktree-snapshots", "restores");
-	mkdirSync(records, { recursive: true });
-	for (let index = 0; index < 2; index++) writeFileSync(join(records, `${randomUUID()}.json`), "{");
-	const store = createStore();
-	sandbox.write(join(clone, "result.txt"), "drift\n");
-	assert.equal((await run(definition, {}, { ...options, runId: initial.runId, store })).status, "failed");
-	const firstRestore = fixture.backend.getWorkflow(initial.runId)!.worktreeRootMappings!.at(-1)!;
-	sandbox.write(join(firstRestore.to, "result.txt"), "drift again\n");
-	assert.equal((await run(definition, {}, { ...options, runId: initial.runId, store })).status, "completed");
-	const mappings = fixture.backend.getWorkflow(initial.runId)!.worktreeRootMappings!;
-	assert.equal(mappings.length, 2);
-	assert.equal(mappings[0]!.snapshotId, mappings[1]!.snapshotId);
-	const notices = store.notices().filter((notice) => notice.runId === initial.runId);
-	const restores = notices.filter((notice) => notice.level === "info");
-	const leftovers = notices.filter((notice) => notice.level === "warning");
-	assert.equal(restores.length, 2);
-	assert.deepEqual(
-		leftovers.map((notice) => notice.id.split(":").at(-1)),
-		["0", "1", "0", "1"],
-		"warnings are numbered in the order each resume reported them",
-	);
-	for (const notice of notices) assert.equal(store.ackNotice(notice.id), true, notice.id);
-	await fixture.close();
-});
+test(
+	"each warning of a restore and each later restore of the same snapshot is its own notice (#4245)",
+	async () => {
+		const trace = sandbox.traceGitProcesses();
+		const { clone } = await sandbox.remoteWithClone("one");
+		const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+		let attempt = 0;
+		const definition = workflow({
+			name: "repeated-restores",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("write", {}, async () => {
+					sandbox.write(join(clone, "result.txt"), "recorded\n");
+					return "done";
+				});
+				if (attempt++ < 2) throw new Error("interrupted");
+				return {};
+			},
+		});
+		const options = { durableBackend: fixture.backend, cwd: clone };
+		const initial = await run(definition, {}, { ...options, store: createStore() });
+		assert.equal(initial.status, "failed");
+		const records = join(sandbox.path("agent"), "worktree-snapshots", "restores");
+		mkdirSync(records, { recursive: true });
+		for (let index = 0; index < 2; index++) writeFileSync(join(records, `${randomUUID()}.json`), "{");
+		const store = createStore();
+		sandbox.write(join(clone, "result.txt"), "drift\n");
+		assert.equal((await run(definition, {}, { ...options, runId: initial.runId, store })).status, "failed");
+		const firstRestore = fixture.backend.getWorkflow(initial.runId)!.worktreeRootMappings!.at(-1)!;
+		sandbox.write(join(firstRestore.to, "result.txt"), "drift again\n");
+		assert.equal((await run(definition, {}, { ...options, runId: initial.runId, store })).status, "completed");
+		const mappings = fixture.backend.getWorkflow(initial.runId)!.worktreeRootMappings!;
+		assert.equal(mappings.length, 2);
+		assert.equal(mappings[0]!.snapshotId, mappings[1]!.snapshotId);
+		const notices = store.notices().filter((notice) => notice.runId === initial.runId);
+		const restores = notices.filter((notice) => notice.level === "info");
+		const leftovers = notices.filter((notice) => notice.level === "warning");
+		assert.equal(restores.length, 2);
+		assert.deepEqual(
+			leftovers.map((notice) => notice.id.split(":").at(-1)),
+			["0", "1", "0", "1"],
+			"warnings are numbered in the order each resume reported them",
+		);
+		for (const notice of notices) assert.equal(store.ackNotice(notice.id), true, notice.id);
+		const started = startedGitProcesses(trace).length;
+		assert.ok(
+			started <= REPEATED_RESTORES_GIT_PROCESSES,
+			`${started} git processes, more than the ${REPEATED_RESTORES_GIT_PROCESSES} this test's budget allows for`,
+		);
+		await fixture.close();
+	},
+	REPEATED_RESTORES_GIT_PROCESSES * GIT_PROCESS_BUDGET_MS,
+);

@@ -9,7 +9,7 @@ import {
 	TOOL_PAYLOAD_TRUNCATION_MARKER,
 	TOOL_PAYLOAD_VALUE_LIMIT,
 } from "../shared/tool-payload-bounds.js";
-import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration } from "./status-helpers.js";
 import { graphemeSegments, graphemes, truncateToWidth, visibleWidth } from "./text-helpers.js";
@@ -82,7 +82,7 @@ function styledStatus(status: ToolNodeStatus, theme: GraphTheme | undefined): st
 }
 
 function styledTitle(text: string, theme: GraphTheme | undefined): string {
-	return theme === undefined ? text : `${hexToAnsi(theme.toolTitle)}${BOLD}${text}${RESET}`;
+	return theme === undefined ? text : `${hexToAnsi(theme.toolTitle)}${boldOn()}${text}${RESET}`;
 }
 
 function styledOutput(text: string, theme: GraphTheme | undefined): string {

@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - On a libSQL server, appending several workflow events at once now waits for a busy write lock as long as appending one event does. Before, it gave up after the server's 5-second busy timeout ([#5439](https://github.com/bastani-inc/atomic/pull/5439))
 - `NO_COLOR` and `FORCE_COLOR=0` now turn off colors in the workflow graph, stage chats, `/workflows` run details and workflow notices, which kept their own palette. `FORCE_COLOR=1` or `2` limits them to 256 colors; otherwise they are unchanged
 - A workflow stage that moves to its next fallback model after a context overflow now stops the session it replaces before the new one starts. Before, a turn the replaced session was still running, or one started by a message delivered to it, kept calling tools in the stage's worktree next to the new session until it went idle. Messages queued for the replaced session still reach the new one
+- `NO_COLOR` and `FORCE_COLOR=0` now also turn off bold and italic in the workflow graph, stage chats, run details, the `/workflows` list and workflow notices, as they do in the rest of Atomic, so the output is plain text. With color on, nothing changes
 
 ## [0.9.89-alpha.1] - 2026-11-18
 

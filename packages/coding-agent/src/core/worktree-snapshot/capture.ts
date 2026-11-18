@@ -238,8 +238,31 @@ export const RESTORED_TREE_FILE = "atomic-restored-tree";
 
 /** Records `tree` as the tree the restored worktree at `worktree` holds. */
 export async function recordRestoredTree(worktree: GitRunOptions, tree: string): Promise<void> {
-	const gitDir = await gitText(["rev-parse", "--absolute-git-dir"], worktree);
+	const gitDir =
+		(await linkedWorktreeGitDir(worktree.cwd)) ?? (await gitText(["rev-parse", "--absolute-git-dir"], worktree));
 	await writeFile(join(gitDir, RESTORED_TREE_FILE), `${tree}\n`);
+}
+
+/**
+ * The Git directory a linked worktree's `.git` file at `root` names, read without starting Git: `git worktree add`
+ * writes it as one `gitdir: <path>` line, relative to `root` when Git writes relative worktree paths. Undefined for
+ * anything else, such as a `.git` directory or a file naming no existing directory, which Git is asked about instead.
+ */
+async function linkedWorktreeGitDir(root: string): Promise<string | undefined> {
+	let text: string;
+	try {
+		text = await readFile(join(root, ".git"), "utf8");
+	} catch {
+		return undefined;
+	}
+	const match = /^gitdir: (.+?)\r?\n?$/.exec(text);
+	if (match === null) return undefined;
+	const gitDir = resolve(root, match[1]!);
+	try {
+		return (await stat(gitDir)).isDirectory() ? gitDir : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** The tree a restore recorded in the Git directory `gitDir`, or undefined when it is not a restored worktree. */

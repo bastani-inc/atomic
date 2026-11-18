@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On a libSQL server (sqld) shared by stores that create and drop their tables, such as several sessions, workflows or teams using one server, a statement no longer fails with `SQLITE_SCHEMA: database schema has changed` when other connections change the schema while the server prepares it. The server ran nothing of such a statement, so it is sent again, as a statement the server answers busy is, for up to 5 seconds. A statement inside a transaction, and several statements sent in one `exec`, are not sent again
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 ### Fixed

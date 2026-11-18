@@ -55,6 +55,7 @@ const DROP_WAKEUPS_TRIGGER = "two_broker_harness_drop_wakeups";
 const STORAGE_OPEN_GATE = "storage-open-gate";
 const REGISTRATION_GATE = "registration-gate";
 const PRESENCE_READ_GATE = "presence-read-gate";
+const RESERVATION_GATE = "reservation-gate";
 
 export interface ReceivedFrame {
 	readonly from: SessionInfo;
@@ -122,6 +123,8 @@ export interface TwoBrokerHarnessOptions {
 	readonly gatedStorageOpening?: BrokerNode;
 	/** Both brokers can park the shared-store write that records a registration (`holdRegistration`). */
 	readonly parkableRegistrations?: true;
+	/** Both brokers can park the shared-store write that records a child's reservation (`holdReservation`). */
+	readonly parkableReservations?: true;
 	/** This node's broker can park one read of an identity's presence lease (`holdPresenceRead`). */
 	readonly parkablePresenceRead?: BrokerNode;
 	/** The nodes to run, each with its own broker over the one shared storage; default `BROKER_NODES`. */
@@ -152,6 +155,7 @@ function nodeSettings(
 	openGate?: string,
 	registrationGate?: string,
 	presenceReadGate?: string,
+	reservationGate?: string,
 ): string {
 	return JSON.stringify({
 		storage: {
@@ -162,6 +166,7 @@ function nodeSettings(
 				...(openGate === undefined ? {} : { openGate }),
 				...(registrationGate === undefined ? {} : { registrationGate }),
 				...(presenceReadGate === undefined ? {} : { presenceReadGate }),
+				...(reservationGate === undefined ? {} : { reservationGate }),
 			},
 			prefix: TWO_BROKER_STORAGE_PREFIX,
 		},
@@ -229,9 +234,10 @@ export class TwoBrokerHarness {
 			const openGate = options.gatedStorageOpening === node ? join(root, STORAGE_OPEN_GATE) : undefined;
 			const registrationGate = options.parkableRegistrations === true ? join(root, REGISTRATION_GATE) : undefined;
 			const presenceReadGate = options.parkablePresenceRead === node ? join(root, PRESENCE_READ_GATE) : undefined;
+			const reservationGate = options.parkableReservations === true ? join(root, RESERVATION_GATE) : undefined;
 			writeFileSync(
 				join(agentDir, "settings.json"),
-				nodeSettings(sharedDatabasePath, options, openGate, registrationGate, presenceReadGate),
+				nodeSettings(sharedDatabasePath, options, openGate, registrationGate, presenceReadGate, reservationGate),
 			);
 			nodes[node] = {
 				fixture: new IntercomBrokerFixture(agentDir),
@@ -313,6 +319,30 @@ export class TwoBrokerHarness {
 	/** Let the parked presence read answer. */
 	releasePresenceRead(): void {
 		rmSync(join(this.root, PRESENCE_READ_GATE), { force: true });
+	}
+
+	/**
+	 * Park the shared-store write that records the reservation of the child named `childName` (`parkableReservations`):
+	 * the broker that reserves it has not published the reservation to other brokers until `releaseReservation`.
+	 */
+	holdReservation(childName: string): void {
+		writeFileSync(join(this.root, RESERVATION_GATE), childName);
+	}
+
+	/** Resolve once a broker has parked the reservation write of `childName`. */
+	async reservationParked(childName: string): Promise<void> {
+		await vi.waitFor(
+			() => {
+				const parked = readFileSync(join(this.root, `${RESERVATION_GATE}.parked`), "utf8").split("\n");
+				if (!parked.includes(childName)) throw new Error(`the reservation of ${childName} is not parked yet`);
+			},
+			{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
+		);
+	}
+
+	/** Let every parked reservation write go. */
+	releaseReservation(): void {
+		rmSync(join(this.root, RESERVATION_GATE), { force: true });
 	}
 
 	agentDir(node: BrokerNode): string {
