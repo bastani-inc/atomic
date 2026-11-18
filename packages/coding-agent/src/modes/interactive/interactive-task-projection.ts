@@ -54,13 +54,14 @@ export function refreshInteractiveTasks(mode: InteractiveTaskHost): void {
 		for (const task of snapshot.siblings) {
 			const anchor = mounted.get(task.ref.taskId);
 			if (anchor && attached?.has(anchor)) continue;
-			// Ctrl+O sets every row's expansion; a click sets one row's.
-			let expanded = mode.toolOutputExpanded;
+			// The row follows the chat's tool-output setting until a click, or Ctrl+O, sets its own expansion.
+			let clicked: boolean | undefined;
+			const isExpanded = () => clicked ?? mode.toolOutputExpanded;
 			const component: ClickExpandableBlock = {
 				expandsOnClick: true,
-				isExpanded: () => expanded,
+				isExpanded,
 				setExpanded(next: boolean) {
-					expanded = next;
+					clicked = next;
 				},
 				clickArea: (width: number) => rowsFrom(0, component.render(width).length),
 				invalidate() {},
@@ -68,7 +69,7 @@ export function refreshInteractiveTasks(mode: InteractiveTaskHost): void {
 					const current = snapshot.byId.get(task.ref.taskId) ?? task;
 					const duplicate = (snapshot.copies.get(taskNameAndTitle(current)) ?? 0) > 1;
 					return new TaskRow(current, {
-						expanded,
+						expanded: isExpanded(),
 						duplicate,
 						siblings: snapshot.siblings,
 						activity: store.recentActivity(current.ref.taskId),

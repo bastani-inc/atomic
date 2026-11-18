@@ -7,20 +7,28 @@ import type { MessageRenderer } from "../../packages/coding-agent/src/core/exten
 import type { TaskCompletionEnvelope } from "../../packages/coding-agent/src/core/tasks/completion.js";
 import { taskCompletionMessage } from "../../packages/coding-agent/src/core/tasks/completion-message.js";
 import type { TaskHeartbeatDetails } from "../../packages/coding-agent/src/core/tasks/heartbeat-notice.js";
+import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
 	renderChatMessageEntry,
 } from "../../packages/coding-agent/src/modes/interactive/components/chat-message-renderer.js";
 import {
+	type ClickExpandableBlock,
 	clickedBlocks,
 	expandClickedBlocks,
 	isClickExpandableBlock,
 } from "../../packages/coding-agent/src/modes/interactive/components/transcript-block-clicks.js";
+import { StartupChatContainer } from "../../packages/coding-agent/src/modes/interactive/interactive-startup-chat-container.js";
+import {
+	disposeInteractiveTasks,
+	refreshInteractiveTasks,
+} from "../../packages/coding-agent/src/modes/interactive/interactive-task-projection.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { renderIntercomCustomMessage } from "../../packages/intercom/ui/inline-message.js";
 import { renderSubagentNotification } from "../../packages/subagents/src/extension/index.js";
 import { registerWorkflowHeartbeatRenderer } from "../../packages/workflows/src/extension/workflow-heartbeat-notice.js";
+import { taskFixture } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
 
 const WIDTH = 100;
@@ -346,4 +354,45 @@ test("every kind of block Ctrl+O expands takes a click on any of its rows, and a
 		EXPANDING.size,
 		"every expanding fixture was clicked",
 	);
+});
+
+test("a task row the main chat shows takes a click anywhere on it, and Ctrl+O still sets every row", async () => {
+	const fixture = taskFixture();
+	const chatContainer = new StartupChatContainer();
+	chatContainer.releaseStartupOutput();
+	const mode = { session: {}, chatContainer, toolOutputExpanded: false, ui: { requestRender() {} } };
+	refreshInteractiveTasks(mode);
+	try {
+		await fixture.start("check the release");
+		bindOwnerTaskStore(mode.session, fixture.store);
+		refreshInteractiveTasks(mode);
+		const rows = () => mode.chatContainer.render(WIDTH).map((line) => stripVTControlCharacters(line).trimEnd());
+		const detailed = () => rows().some((line) => line.includes("Activity"));
+		assert.ok(!detailed(), rows().join("\n"));
+		const lastRow = rows().length - 1;
+		const result = mode.chatContainer.handleMouse({
+			type: "click",
+			button: "left",
+			x: 2,
+			y: lastRow,
+			screenX: 2,
+			screenY: lastRow,
+			width: WIDTH,
+			height: rows().length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 1,
+		});
+		assert.equal(result?.handled, true);
+		result?.whenSingleClick?.();
+		assert.ok(detailed(), rows().join("\n"));
+
+		// Ctrl+O sets the expansion of every block in the chat, this row's included.
+		for (const child of mode.chatContainer.children) (child as Partial<ClickExpandableBlock>).setExpanded?.(false);
+		assert.ok(!detailed(), `Ctrl+O sets the row again:\n${rows().join("\n")}`);
+	} finally {
+		disposeInteractiveTasks(mode);
+		await fixture.dispose();
+	}
 });
