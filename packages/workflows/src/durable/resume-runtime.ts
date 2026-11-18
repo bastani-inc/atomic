@@ -31,7 +31,7 @@ import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 import { type ForkError, isForkError } from "./fork-errors.js";
 import { forkDurableRun } from "./fork-run.js";
 import { JournalDurableBackend, JournalOwnershipError } from "./journal/journal-backend.js";
-import { hasUncommittedSessionBlock } from "./restored-block.js";
+import { reconcileRestoredRun, retainedLeaseResult } from "./restored-block.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { claimsOf, hasActiveLiveRun, hasForkClaim, pendingResumes, unsettledResumeClaims } from "./run-claims.js";
 import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
@@ -243,13 +243,10 @@ async function resumeDurableWorkflowClaimed(
 	const resolvedCatalog = catalog ?? backend.listResumableWorkflows();
 	let resolved = resolveDurableEntry(workflowId, resolvedCatalog);
 	const restored = deps.baseRunOpts.store?.run(workflowId);
-	const directHandle = restored?.restored ? backend.getWorkflow(workflowId) : undefined;
-	if (directHandle !== undefined) {
-		if (directHandle.modelOwner !== restored?.modelOwner)
-			return { ok: false, reason: "owned_elsewhere", message: foreignInstanceMessage(backend, workflowId) };
-		if ((await backend.workflowOwnership(workflowId)) === "foreign") return retainedLeaseResult(workflowId);
-		if (resolved === undefined && hasUncommittedSessionBlock(backend, directHandle, restored))
-			resolved = resumableEntryFromHandle(directHandle);
+	if (restored?.restored && !(resolved && "kind" in resolved)) {
+		const entry = await reconcileRestoredRun(backend, restored, resolved?.updatedAt, deps.signal);
+		if (entry && "ok" in entry) return entry;
+		resolved = entry ?? resolved;
 	}
 	if (resolved === undefined) {
 		const direct = backend.getWorkflow(workflowId);
@@ -308,7 +305,7 @@ async function resumeDurableWorkflowClaimed(
 				: foreignRunningResult(handle.name, resolved.workflowId);
 		}
 	}
-	if (!isDurableWorkflowResumable(handle) && !hasUncommittedSessionBlock(backend, handle, restored)) {
+	if (!isDurableWorkflowResumable(handle)) {
 		return {
 			ok: false,
 			reason: "not_resumable",
@@ -729,14 +726,6 @@ async function refuseUnreopenableWaitingStages(
 			message: `Failed to resume durable workflow ${workflowId}: ${error instanceof Error ? error.message : String(error)}`,
 		};
 	}
-}
-
-function retainedLeaseResult(workflowId: string): ResumeDurableResult {
-	return {
-		ok: false,
-		reason: "owned_elsewhere",
-		message: `Another Atomic process may still own workflow ${workflowId}. Retry after its journal lease expires.`,
-	};
 }
 
 function foreignRunningResult(name: string, workflowId: string): ResumeDurableResult {

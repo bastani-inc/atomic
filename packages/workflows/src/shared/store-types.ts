@@ -609,6 +609,8 @@ export interface RunSnapshot extends RunExecutionState {
 	readonly restored?: true;
 	/** The journal attempt and status generation the restored session's block belongs to. */
 	readonly blockAttempt?: string;
+	/** Version shown for an older, unversioned block. It can select a journal resume but never repair its status. */
+	readonly earlierBlockVersion?: number;
 	readonly label?: string;
 	readonly summary?: string;
 	readonly summarizedThrough?: number;

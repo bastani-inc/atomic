@@ -26,7 +26,7 @@ import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { inertDisplayLine, summarizeFailureText } from "./display-text.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
 import { type RunFailureSource, runFailureText } from "./run-display-state.js";
-import { runStateIndicator } from "./run-state-indicator.js";
+import { blockedRunLabel, isQuitRun, runStateIndicator } from "./run-state-indicator.js";
 
 export interface WorkflowsListingInvalidDefinition {
 	readonly name: string;
@@ -215,6 +215,10 @@ export function runRowLabel(run: RunSnapshot): string {
 	return `${name} · ${detail}`;
 }
 
+function runListingStatusText(run: RunSnapshot, status: RunSnapshot["status"]): string {
+	return isQuitRun(run) ? "quit" : status === "blocked" ? blockedRunLabel(run) : RUN_STATUS_TEXT[status];
+}
+
 export function runRowDescription(
 	run: RunSnapshot,
 	now: number,
@@ -225,8 +229,7 @@ export function runRowDescription(
 		return ["needs input", sanitizeToolTitleText(question), listingDuration(elapsedRunMs(run, now)), runCostText(run)]
 			.filter((part): part is string => part !== undefined && part !== "")
 			.join(" · ");
-	const state = runStateIndicator(run);
-	const statusText = state?.kind === "quit" ? "quit" : RUN_STATUS_TEXT[status];
+	const statusText = runListingStatusText(run, status);
 	const live = status === "running" || status === "pending" || status === "paused";
 	const reason = status === "failed" || status === "blocked" ? shortFailureReason(run) : undefined;
 	const parts = [
@@ -270,7 +273,7 @@ export function workflowsListingItems(
 		.map((run): SelectorItem<WorkflowsListingTarget> => {
 			const status = effectiveRunStatus(run);
 			const state = runStateIndicator(run);
-			const statusText = state?.kind === "quit" ? "quit" : RUN_STATUS_TEXT[status];
+			const statusText = runListingStatusText(run, status);
 			const question = waiting.get(`run:${run.id}`);
 			const label = inertDisplayLine(runRowLabel(run));
 			const tag =

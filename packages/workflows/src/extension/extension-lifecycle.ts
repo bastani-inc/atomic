@@ -522,11 +522,12 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		const owner = manager?.getSessionId?.();
 		if (owner && ctx?.isPresentationOnly !== true && (stopsWorkflows || reason === "resume")) {
 			const entries = manager?.getEntries?.() ?? [];
-			const ids = new Set(
-				normalizeSessionEntries(entries).flatMap(({ type, payload }) =>
-					type === "workflow.run.blocked" && typeof payload.runId === "string" ? [payload.runId] : [],
-				),
-			);
+			const ids = new Set<string>();
+			for (const { type, payload } of normalizeSessionEntries(entries)) {
+				if (typeof payload.runId !== "string") continue;
+				if (type === "workflow.run.blocked") ids.add(payload.runId);
+				else if (type === "workflow.run.start" || type === "workflow.run.end") ids.delete(payload.runId);
+			}
 			if (ids.size) {
 				try {
 					await runtimeState.runtimeForContext(ctx).restoreSessionRuns?.(owner, entries, isNewest, [...ids]);

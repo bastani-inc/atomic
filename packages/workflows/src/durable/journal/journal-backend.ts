@@ -1236,6 +1236,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			yield* this.snapshot(
 				{
 					...handle,
+					// A versioned claim of an interrupted running run starts a new generation even before the
+					// executor can record its start. The preceding attempt's block must no longer match it.
+					...(status === "running" && acquired.status === "running" && expectedUpdatedAt !== undefined
+						? { transitionClaimId: randomUUID() }
+						: {}),
 					...(modelOwner !== undefined ? { modelOwner } : {}),
 					...(release !== undefined ? { releasedModelOwner: release } : {}),
 				},

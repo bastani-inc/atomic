@@ -29,6 +29,8 @@ import { jobTracker } from "../../packages/workflows/src/runs/background/job-tra
 import { killAllRuns } from "../../packages/workflows/src/runs/background/status.js";
 import type { SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { runStateIndicator } from "../../packages/workflows/src/tui/run-state-indicator.js";
+import { runRowDescription } from "../../packages/workflows/src/tui/workflows-listing.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import {
@@ -1198,10 +1200,132 @@ export default workflow({
 		assert.equal(store.run(runId)?.status, "blocked");
 		assert.equal(store.run(runId)?.resumable, true);
 		assert.equal(store.run(stale), undefined, "the old block is not the newer attempt");
+		const missingDefinition = createExtensionRuntime({ registry: createRegistry([]), store });
+		const refused = await missingDefinition.resumeDurableWorkflow(runId);
+		assert.equal(refused.ok, false);
+		assert.equal(
+			backend.getWorkflow(runId)?.status,
+			"blocked",
+			"even an unsuccessful resume leaves the journal's block recoverable independently of the session",
+		);
 		const resumed = await runtime.resumeDurableWorkflow(runId);
 		assert.ok(resumed.ok, resumed.ok ? undefined : resumed.message);
 		await cleanupJobs();
 		assert.equal(backend.getWorkflow(runId)?.status, "completed");
+	});
+
+	test("an older session's unversioned block stays visible without overwriting a newer journal claim (#5591)", async () => {
+		const backend = getDurableBackend();
+		const runId = testRunId("legacy-block-and-newer-claim");
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "legacy",
+			status: "running",
+			inputs: {},
+			modelOwner: "owner",
+			createdAt: 1,
+		});
+		await backend.commitCheckpoint({
+			workflowId: runId,
+			kind: "ui",
+			checkpointId: "first",
+			promptKind: "confirm",
+			message: "Continue?",
+			promptHash: "first",
+			response: true,
+			completedAt: 2,
+		});
+		await backend.commitWorkflowStatus(runId, "blocked", 0, true);
+		await backend.commitWorkflowStatusTransition(runId, ["blocked"], "running");
+		const claim = backend.getWorkflow(runId);
+		const entries: SessionEntry[] = [
+			{
+				id: "legacy",
+				type: "custom",
+				customType: "workflow.run.blocked",
+				data: {
+					runId,
+					failedStageId: "first",
+					error: "old outage",
+					failureKind: "provider",
+					failureRecoverability: "recoverable",
+					failureDisposition: "active_blocked",
+					resumable: true,
+					ts: 3,
+				},
+			},
+		];
+		const runtime = createExtensionRuntime({ store });
+		await runtime.restoreSessionRuns?.("owner", entries, () => true);
+		const view = store.run(runId);
+		assert.ok(view, "the owner's earlier block is still listed");
+		assert.match(runStateIndicator(view)?.text ?? "", /blocked \(may be from an earlier attempt\)/);
+		assert.match(runRowDescription(view, Date.now()), /blocked \(may be from an earlier attempt\)/);
+		assert.equal(view.resumable, true);
+		assert.deepEqual(backend.getWorkflow(runId), claim);
+		const unavailable = await runtime.resumeDurableWorkflow(runId);
+		assert.equal(unavailable.ok ? "resumed" : unavailable.reason, "workflow_not_found");
+		assert.deepEqual(backend.getWorkflow(runId), claim, "the old entry cannot repair the newer claim");
+		await backend.commitWorkflowStatus(runId, "paused");
+		const paused = backend.getWorkflow(runId);
+		const stale = await runtime.resumeDurableWorkflow(runId);
+		assert.equal(stale.ok ? "resumed" : stale.reason, "stale");
+		assert.deepEqual(backend.getWorkflow(runId), paused);
+		await runtime.restoreSessionRuns?.("owner", entries, () => true);
+		assert.equal(store.run(runId)?.status, "paused");
+	});
+
+	test("a new claim of a still-running journal invalidates a stamped block before the successor writes its start (#5591)", async () => {
+		const backend = getDurableBackend();
+		const runId = testRunId("claim-before-session-start");
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "claimed",
+			inputs: {},
+			status: "running",
+			modelOwner: "owner",
+			createdAt: 1,
+		});
+		await backend.commitCheckpoint({
+			workflowId: runId,
+			kind: "ui",
+			checkpointId: "saved",
+			promptKind: "confirm",
+			message: "Continue?",
+			promptHash: "saved",
+			response: true,
+			completedAt: 2,
+		});
+		const entries: SessionEntry[] = [
+			{
+				id: "record",
+				type: "custom",
+				customType: "workflow.run.blocked",
+				data: {
+					runId,
+					blockAttempt: "0:",
+					failedStageId: "stage",
+					error: "earlier failure",
+					failureKind: "provider",
+					failureRecoverability: "recoverable",
+					failureDisposition: "active_blocked",
+					resumable: true,
+					ts: 3,
+				},
+			},
+		];
+		const runtime = createExtensionRuntime({ store });
+		await runtime.restoreSessionRuns?.("owner", entries, () => true);
+		assert.equal(store.run(runId)?.status, "blocked");
+		const version = backend.getWorkflow(runId)!.updatedAt;
+		assert.equal(
+			await backend.commitWorkflowStatusTransition(runId, ["running"], "running", undefined, undefined, version),
+			true,
+		);
+		const newer = backend.getWorkflow(runId);
+		const refusal = await runtime.resumeDurableWorkflow(runId);
+		assert.equal(refusal.ok ? "resumed" : refusal.reason, "stale");
+		assert.deepEqual(backend.getWorkflow(runId), newer, "the older view cannot overwrite the new claim");
 	});
 
 	for (const reason of ["startup", "resume"] as const) {

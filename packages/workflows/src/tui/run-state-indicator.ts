@@ -54,9 +54,16 @@ export function isQuitRun(run: RunSnapshot): boolean {
 export function runStateIndicator(run: RunSnapshot): RunStateIndicator | undefined {
 	if (isQuitRun(run)) return indicator("quit");
 	const status = effectiveRunStatus(run);
-	if (status === "blocked") return indicator("blocked", blockedReason(run));
+	if (status === "blocked") {
+		const state = indicator("blocked", blockedReason(run));
+		return { ...state, text: `${state.glyph} ${blockedRunLabel(run)}` };
+	}
 	if (status === "paused") return indicator("paused");
 	return undefined;
+}
+
+export function blockedRunLabel(run: RunSnapshot): string {
+	return run.earlierBlockVersion === undefined ? "blocked" : "blocked (may be from an earlier attempt)";
 }
 
 export function runStateColor(state: RunStateIndicator, theme: GraphTheme): string {

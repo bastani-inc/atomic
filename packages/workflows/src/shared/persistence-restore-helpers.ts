@@ -415,7 +415,8 @@ export function findRunBlockedMetadata(
 	let latest: RestoredRunBlockedMetadata | undefined;
 	for (const entry of entries) {
 		// A later attempt of the run starts with no blocked state of its own (#4874).
-		if (entry.type === "workflow.run.start" && entry.payload.runId === runId) latest = undefined;
+		if ((entry.type === "workflow.run.start" || entry.type === "workflow.run.end") && entry.payload.runId === runId)
+			latest = undefined;
 		if (entry.type !== "workflow.run.blocked" || entry.payload.runId !== runId) continue;
 		const failedStageId = entry.payload.failedStageId;
 		const error = entry.payload.error;

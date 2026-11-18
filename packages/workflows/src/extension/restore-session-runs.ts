@@ -1,6 +1,6 @@
 import { type DurableWorkflowBackend, readDurableCheckpoints } from "../durable/backend.js";
 import { durableWorkflowRunSnapshots } from "../durable/completed-catalog.js";
-import { blockAttemptKey } from "../durable/restored-block.js";
+import { uncommittedBlockKind } from "../durable/restored-block.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { bindRunDurableBackend } from "../durable/run-owner-backend.js";
 import { normalizeSessionEntries, type SessionEntry } from "../shared/persistence-restore.js";
@@ -46,16 +46,12 @@ export async function restoreSessionRuns(
 		const checkpoints = await readDurableCheckpoints(backend, id);
 		handle = backend.getLoadableWorkflow(id);
 		if (handle?.modelOwner !== owner) continue;
-		const unfinishedBlock =
-			handle.status === "running" &&
-			handle.resumable !== false &&
-			block !== undefined &&
-			(block.blockAttempt ?? "0:") === blockAttemptKey(backend, id);
-		if (handle.status === "running" && !unfinishedBlock) continue;
+		const uncommitted = uncommittedBlockKind(backend, handle, block);
+		if (handle.status === "running" && uncommitted === undefined) continue;
 		const graph = durableWorkflowRunSnapshots(backend, handle, checkpoints);
 		for (const run of graph) {
 			const root = run.id === id;
-			const blocked = root && (unfinishedBlock || handle.status === "blocked");
+			const blocked = root && (uncommitted !== undefined || handle.status === "blocked");
 			const { ts: blockedAt, ...details } = block ?? {};
 			const snapshot: RunSnapshot = {
 				...run,
@@ -63,9 +59,10 @@ export async function restoreSessionRuns(
 				origin: handle.origin,
 				restored: true,
 				...(blocked ? { ...details, status: "blocked", blockedAt: blockedAt ?? handle.updatedAt } : {}),
+				...(root && uncommitted === "earlier" ? { earlierBlockVersion: handle.updatedAt } : {}),
 				...(root
 					? {
-							resumable: unfinishedBlock || isDurableWorkflowResumable(handle),
+							resumable: uncommitted === "current" || isDurableWorkflowResumable(handle),
 							exited: handle.exited,
 							exitReason: handle.exitReason,
 						}

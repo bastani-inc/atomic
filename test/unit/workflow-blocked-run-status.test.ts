@@ -327,6 +327,9 @@ describe("a run blocked on a stage whose session store stays unreachable stays r
 				jobs,
 				adapters: reachableAdapters(counters()),
 			});
+			const stageRetry = await runtime.resumeFailedRun(source.id, source.failedStageId);
+			assert.equal(stageRetry.ok, false, "a restored stage must not supply a live continuation");
+			assert.match(stageRetry.message, /resume the whole run/i);
 			const lease = vi.spyOn(backend, "workflowOwnership").mockResolvedValue("foreign");
 			const fenced = await runtime.resumeFailedRun(source.id);
 			assert.equal(fenced.ok, false);

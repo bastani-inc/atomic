@@ -323,6 +323,13 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				fromRecords?: true;
 		  }
 		| { ok: false; message: string } {
+		if (source.restored)
+			return stageId === undefined
+				? { ok: true, fromRecords: true }
+				: {
+						ok: false,
+						message: `This stage has no live attempt to retry. Resume the whole run ${source.id} from its journal.`,
+					};
 		const budgetExceededSource =
 			source.result?.status === "budget_exceeded" && source.budgetState?.systemOwnedStop === true;
 		if (stageId !== undefined) {
