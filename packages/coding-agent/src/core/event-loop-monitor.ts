@@ -181,7 +181,7 @@ function begin(sinceUs) {
 	session.connectToMainThread();
 	Atomics.store(state, ${WatchdogState.Attached}, 1);
 	const urls = new Map();
-	const current = { sinceUs, session, samples: [], pausing: false, nextPauseUs: 0 };
+	const current = { sinceUs, session, samples: [], ready: false, pausing: false, nextPauseUs: 0 };
 	session.on("Debugger.scriptParsed", ({ params }) => urls.set(params.scriptId, params.url));
 	session.on("Debugger.paused", ({ params }) => {
 		session.post("Debugger.resume");
@@ -198,7 +198,9 @@ function begin(sinceUs) {
 		current.pausing = false;
 		current.nextPauseUs = nowUs() + sampleIntervalMs * 1000;
 	});
-	session.post("Debugger.enable");
+	// Initial script notifications precede this response. Pausing sooner can leave the main thread waiting for
+	// this worker to drain those notifications before it can resume it. The next poll also rechecks the heartbeat.
+	session.post("Debugger.enable", (error) => { current.ready = !error; });
 	return current;
 }
 function detach() {
@@ -222,7 +224,7 @@ setInterval(() => {
 		if (sinceUs === 0 || (nowUs() - sinceUs) / 1000 - heartbeatMs < thresholdMs) return;
 		block = begin(sinceUs);
 	}
-	if (!block.pausing && block.samples.length < maxSamples && nowUs() >= block.nextPauseUs) {
+	if (block.ready && !block.pausing && block.samples.length < maxSamples && nowUs() >= block.nextPauseUs) {
 		block.pausing = true;
 		block.session.post("Debugger.pause");
 	}
