@@ -1,10 +1,6 @@
 import { bindTaskResumer, type ExtensionContext, type TaskId, type TaskResumer } from "@bastani/atomic";
 import type { SubagentChildRestoreDeps } from "./subagent-child-restore.js";
-import {
-	controlSubagentChildren,
-	subagentChildOfTask,
-	subagentChildrenAwaitingResume,
-} from "./subagent-run-control.js";
+import { controlSubagentChildren, subagentChildOfTask, subagentChildStoppedForResume } from "./subagent-run-control.js";
 
 /**
  * Lets a finished child's chat continue it: a message sent there resumes the child in its own session, as
@@ -57,7 +53,7 @@ function resumer(deps: SubagentChildRestoreDeps, ctx: ExtensionContext): TaskRes
 		},
 		isStopped(taskId: TaskId) {
 			const child = childOf(taskId);
-			return child !== undefined && subagentChildrenAwaitingResume(ctx, child.childId).length > 0;
+			return child !== undefined && subagentChildStoppedForResume(ctx, child.childId);
 		},
 		async resume(taskId: TaskId, message: string) {
 			const child = childOf(taskId);

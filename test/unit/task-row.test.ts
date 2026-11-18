@@ -104,9 +104,9 @@ test("an agent released while it waits shows released and what it waits on in /t
 		},
 	};
 	const row = plain(new TaskRow(released).render(120));
-	assert.match(row, /released · waiting/);
-	assert.doesNotMatch(row, /paused|awaiting resume|cancelled|killed|stopped/i);
-	assert.deepEqual(taskStatusAppearance(released), { label: "Released · waiting", icon: "∀", color: "muted" });
+	assert.match(row, /◌ agent: .*\n.*\n {2}waiting on bash \(toolu-7\)/);
+	assert.doesNotMatch(row, /∀|paused|awaiting resume|cancelled|killed|stopped/i);
+	assert.deepEqual(taskStatusAppearance(released), { label: "Waiting on bash", icon: "◌", color: "dim" });
 });
 
 // RFC #2884: complete projections are not limited to the mounted viewport.

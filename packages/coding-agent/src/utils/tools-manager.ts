@@ -48,6 +48,7 @@ import {
 import { fetchWithRetry } from "./management-http.ts";
 import { pathExists } from "./path-exists.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
+import { windowsPowerShellEnvironment } from "./windows-powershell.ts";
 
 const TOOLS_DIR = getBinDir();
 const NETWORK_TIMEOUT_MS = 10_000;
@@ -262,9 +263,13 @@ function formatExecFileFailure(
 	return "exit status unknown";
 }
 
-function runExtractionCommand(command: string, args: string[]): Promise<string | null> {
+function runExtractionCommand(
+	command: string,
+	args: string[],
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<string | null> {
 	return new Promise((resolvePromise) => {
-		execFile(command, args, { env: createChildProcessEnvironment() }, (error, stdout, stderr) => {
+		execFile(command, args, { env: createChildProcessEnvironment(undefined, env) }, (error, stdout, stderr) => {
 			if (!error) {
 				resolvePromise(null);
 				return;
@@ -309,17 +314,21 @@ async function extractZipArchive(archivePath: string, extractDir: string, assetN
 
 		const script =
 			"& { param($archive, $destination) $ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force }";
-		const powershellFailure = await runExtractionCommand("powershell.exe", [
-			"-NoLogo",
-			"-NoProfile",
-			"-NonInteractive",
-			"-ExecutionPolicy",
-			"Bypass",
-			"-Command",
-			script,
-			archivePath,
-			extractDir,
-		]);
+		const powershellFailure = await runExtractionCommand(
+			"powershell.exe",
+			[
+				"-NoLogo",
+				"-NoProfile",
+				"-NonInteractive",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				script,
+				archivePath,
+				extractDir,
+			],
+			windowsPowerShellEnvironment(),
+		);
 		if (!powershellFailure) return;
 		failures.push(powershellFailure);
 	} else {

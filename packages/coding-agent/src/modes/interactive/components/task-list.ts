@@ -1,5 +1,6 @@
 import type { Component } from "@bastani/atomic-tui";
 import { agentPanelTaskId, taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
+import { supersededReleasedAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { theme } from "../theme/theme.js";
@@ -59,9 +60,17 @@ export function taskListSections(
 		return selected.length ? [{ title: kind === "agent" ? "Agents" : "Shells", tasks: selected }] : [];
 	});
 }
-/** Terminal results remain inspectable but no longer advertise active work. */
+/**
+ * Terminal results remain inspectable but no longer advertise active work. A subagent released while it waits is not
+ * terminal: it wakes by itself, so it is listed, as waiting.
+ */
 export function isActiveBackgroundTask(task: TaskRecord): boolean {
-	return task.observation.kind === "background" && task.execution.kind !== "settled";
+	if (task.execution.kind !== "settled") return task.observation.kind === "background";
+	// A released subagent's observation already ended with its run; it was launched in the background.
+	return (
+		(task.wasBackground === true || task.observation.kind === "background") &&
+		waitingReleasedTools(task) !== undefined
+	);
 }
 
 export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
@@ -69,9 +78,10 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 	const running: TaskRecord[] = [];
 	const other: TaskRecord[] = [];
 	let total = 0;
+	const superseded = supersededReleasedAttempts(tasks);
 	for (let index = tasks.length - 1; index >= 0; index--) {
 		const task = tasks[index]!;
-		if (!isActiveBackgroundTask(task)) continue;
+		if (!isActiveBackgroundTask(task) || superseded.has(task.ref.taskId)) continue;
 		total++;
 		if (task.execution.kind === "running") {
 			if (task.attention.kind === "none") {
