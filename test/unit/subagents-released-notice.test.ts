@@ -275,7 +275,7 @@ test(
 		assert.equal(releasedRecord.wasBackground, true);
 		assert.notEqual(releasedRecord.observation.kind, "background", "a released run's observation has ended");
 		const footerWhileReleased = stripVTControlCharacters(renderTaskFooter(host.taskRecords(), 100).join("\n"));
-		assert.match(footerWhileReleased, /waiting on bash/);
+		assert.match(footerWhileReleased, new RegExp(`waiting on ${shellTool}`));
 
 		// In /tasks, `x` arms its stop, an unrelated update leaves the stop armed, and the second `x` stops it.
 		const cancelled: string[] = [];
