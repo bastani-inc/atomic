@@ -186,6 +186,7 @@ interface DeferredStartupProbeContext extends DraftProbeContext {
 	updateAvailableProviderCount(): Promise<void>;
 	updateEditorBorderColor(): void;
 	showError(message: string): void;
+	refreshProjectTrustWarning(): void;
 	startupNoticesContainer: object;
 	resourceDisclosureContainer: object;
 	chatContainer: Container;
@@ -215,6 +216,7 @@ function asDeferredStartupContext(probe: DraftProbe): DeferredStartupProbeContex
 		updateAvailableProviderCount: vi.fn(async () => {}),
 		updateEditorBorderColor: vi.fn(),
 		showError: vi.fn(),
+		refreshProjectTrustWarning: vi.fn(),
 		startSessionRecovery: vi.fn(),
 		startupNoticesContainer: {},
 		resourceDisclosureContainer: {},

@@ -7,6 +7,7 @@ import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test } from "vitest";
 import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { FLEET_RATE_STORE_TIMEOUT_MS } from "../../packages/workflows/src/workers/fleet-rate-limits.js";
 import { fileExists, makeTempDirectory, readJson, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 /**
@@ -18,11 +19,14 @@ import { fileExists, makeTempDirectory, readJson, removeTempDirectory, sleep } f
 const host = fileURLToPath(new URL("../fixtures/fleet-rate-host.mjs", import.meta.url));
 /** A host process loads Atomic's sources through jiti before it calls: a structural cost, on top of its run. */
 const HOST_RUN_TIMEOUT_MS = 90_000;
+/** The store deadline plus half a deadline for admission overhead; a peer timer tests ordering despite scheduling lag. */
+const FALLBACK_DEADLINE_TIMER_MS = FLEET_RATE_STORE_TIMEOUT_MS * 1.5;
 
 interface HostRun {
 	readonly calls: readonly { readonly at: number; readonly status: number }[];
 	readonly modes: readonly string[];
 	readonly waits: readonly number[];
+	readonly overdueRequests: number;
 }
 
 const directories: string[] = [];
@@ -126,10 +130,17 @@ test(
 );
 
 test(
-	"while the journal does not answer, calls fall back to a local bucket within a second, and go back to it once it does (#4768)",
+	"while the journal does not answer, calls fall back to a local bucket within a second, and go back to it once it does (#4768, #5520)",
 	async () => {
 		const f = await fleet();
-		const run = f.start({ RPM: "600", BURST: "2", PACE_MS: "50", DURATION_MS: "6000", RETRY_STORE_MS: "300" });
+		const run = f.start({
+			RPM: "600",
+			BURST: "2",
+			PACE_MS: "50",
+			DURATION_MS: "6000",
+			RETRY_STORE_MS: "300",
+			WAIT_DEADLINE_MS: String(FALLBACK_DEADLINE_TIMER_MS),
+		});
 		await until(run.ready);
 		// Holding the journal's write lock stands for a store that stopped answering.
 		const lock = new DatabaseSync(f.path);
@@ -138,11 +149,14 @@ test(
 		await sleep(2_500);
 		lock.exec("COMMIT");
 		lock.close();
-		const { modes, waits } = await run.done;
+		const { modes, waits, overdueRequests } = await run.done;
 		assert.ok(modes.includes("local-fallback"), "the host fell back while the journal held its lock");
 		assert.equal(modes.at(-1), "store", "the host went back to the journal once it answered");
-		// The 1 s bound, with headroom for the host's own scheduling.
-		assert.ok(Math.max(...waits) < 1_500, `longest wait ${Math.max(...waits)} ms`);
+		assert.equal(
+			overdueRequests,
+			0,
+			`a call outlived its ${FALLBACK_DEADLINE_TIMER_MS} ms deadline timer; wall waits: ${waits.join(", ")}`,
+		);
 	},
 	HOST_RUN_TIMEOUT_MS,
 );

@@ -13,12 +13,24 @@
 
 ### Fixed
 
+- Drawing the usage meter no longer checks credential files synchronously, avoiding a stalled frame when those file checks are slow ([#5516](https://github.com/bastani-inc/atomic/issues/5516)).
+- Subagents started from deeply nested directories no longer wait for each parent directory's resource checks one at a time, keeping starts responsive while the main thread is busy ([#5514](https://github.com/bastani-inc/atomic/issues/5514)).
 - The main chat no longer leaves a blank row between the working line and the usage meter above the prompt. Every chat now keeps exactly one row there: the usage meter, or a blank row in a subagent or stage chat with no usage to show, so a chat's last line never runs into its prompt.
 - A subagent or workflow stage chat waiting to retry a request, switch model or resume now shows `retrying…`, `switching model…` or `resuming…` as its working line above the prompt, instead of a line below its transcript.
 - A subagent or workflow stage chat opened while its agent already waits to retry a failed request now shows `retrying…` as its working line straight away, instead of looking idle until the next attempt. This includes a stage that runs on a local worker ([#5483](https://github.com/bastani-inc/atomic/issues/5483)).
 - A subagent released while it waits on a tool call now shows the dim `◌` waiting mark on its completion notice, as `/tasks`, the agent panel, the task footer and its launch card already show it, instead of the pause mark `⏸`. Notices saved by earlier versions show the waiting mark too. A paused or quit subagent keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - An extension tool whose call renders a `waiting` or `heartbeat` block keeps its own title once its result arrives, instead of falling back to the tool's label ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - Fixed Esc not ending a turn while a tool call ignored the interrupt: the turn waited for every tool call to return, so a call that did not stop (an extension or MCP tool that does not watch its abort signal, or a long wait inside a tool) kept the session busy for good, with queued messages never sent. A tool call that has not stopped 10 seconds after the interrupt now gets an `Operation aborted` result and the turn ends, in the main chat, subagent and workflow stage chats, and the default isolated host alike. The call may keep running; when it finishes, its result is added to the conversation as a `late-tool-result` message that starts no turn, and later tool calls no longer wait for it. A tool call still waiting for an earlier one ends at once with `Operation aborted` and never runs, even when the earlier call goes on after its turn let it go (a `detachable` tool's call in a released session); an interrupted `detachable` call no longer detaches, even one marked ready for detachment in the same tick as the interrupt, and gets its own result or `Operation aborted` like any other, while a call that detached before the interrupt is not cancelled by it. `ATOMIC_TOOL_ABORT_GRACE_MS` changes the 10 seconds ([#5486](https://github.com/bastani-inc/atomic/issues/5486))
+
+### Fixed
+
+- Under Node, each workflow run that finishes no longer keeps the session that wrote its summary, and the run text it summarized, in memory for the rest of the process. A long session that runs many workflows, and an SDK host that disposes such sessions, now release them ([#5487](https://github.com/bastani-inc/atomic/issues/5487))
+
+### Fixed
+
+- Starting or resuming a session in a trusted project no longer shows "This project is not trusted. Project .atomic resources and packages are ignored." The interface checked trust while the session was still deciding it, read that as untrusted, and kept the warning after the session had decided. The warning now waits for the decision and follows it, so a project trusted through `defaultProjectTrust: "always"` or a `project_trust` extension no longer shows it either
+- An answer for this session only ("Trust (this session only)" or "Do not trust (this session only)"), to the question about a project folder or about an `-e` extension source, now lasts for the whole session. After Atomic restarted its engine, for example because the engine stopped responding, it asked again about the current folder, the `-e` sources and folders you switched back to with `/resume`. The answer is still never saved
+- The warning that an untrusted project's resources are ignored no longer disappears when the chat is redrawn: after the trust question at startup, on `/reload` and after compaction. A session that started in a project you declined, or saved "Do not trust" for, showed no warning at all. After compaction the warning shows below the compaction marker
 
 ## [0.9.89] - 2026-11-18
 
