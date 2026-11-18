@@ -271,9 +271,21 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 			"statements run on the calling thread only for a connection passed to wrapNodeSqliteDatabase, where the caller's own DatabaseSync belongs, for an in-memory database, which has no file to wait for and no lock another connection holds, and in a process that declared itself background (a workflow pool's coordinator or worker, which has no UI); in an interactive process openNodeSqliteDatabase runs every file-backed connection on a thread of its own (#5376)",
 	},
 	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "NodeSqliteDatabase.send" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "CallerThreadChannel.request" },
+		reason:
+			"statements run on the calling thread only for a connection passed to wrapNodeSqliteDatabase, where the caller's own DatabaseSync belongs, for an in-memory database, which has no file to wait for and no lock another connection holds, and in a process that declared itself background (a workflow pool's coordinator or worker, which has no UI); in an interactive process openNodeSqliteDatabase runs every file-backed connection on a thread of its own (#5376)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "NodeSqliteDatabase.sendBatch" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "CallerThreadChannel.request" },
+		reason:
+			"statements run on the calling thread only for a connection passed to wrapNodeSqliteDatabase, where the caller's own DatabaseSync belongs, for an in-memory database, which has no file to wait for and no lock another connection holds, and in a process that declared itself background (a workflow pool's coordinator or worker, which has no UI); in an interactive process openNodeSqliteDatabase runs every file-backed connection on a thread of its own (#5376)",
+	},
+	{
 		from: {
 			file: "packages/coding-agent/src/core/storage/node-sqlite.ts",
-			name: "NodeSqliteDatabase.close/this.tail.then()",
+			name: "NodeSqliteDatabase.closeConnection",
 		},
 		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "CallerThreadChannel.close" },
 		reason:
