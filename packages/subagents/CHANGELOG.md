@@ -16,6 +16,7 @@
 
 - A subagent attempt whose session directory cannot be created now fails that attempt instead of rejecting the launch call
 - Agent launches and control calls use shared state-marked blocks. Foreground and background launches show the short task title, elapsed time, token count and live management hint. Completion notices name the agent and show its first result line; expansion shows the prompt, tool calls and full retained result without inherited fork history ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- A background subagent released while it waits on a call shows `◌ Waiting on <tool>` on its launch card, the way `/tasks` and the agent panel show it, instead of `⏸ Released · waiting`, and its card follows it back to running or finished when it wakes or ends
 
 ### Fixed
 

@@ -240,6 +240,7 @@ The same keys move between the main chat, subagent chats, workflow graphs, stage
 | `app.agents.stopAll` | `ctrl+k` | After the chord key: stop all background subagents and workflow runs (press twice to confirm) |
 | `app.tasks.open` | Unbound | Command-only `/tasks` route |
 | `app.tasks.input` | Unbound | Focus stdin only when the selected task has writable input |
+| `app.tasks.openWaited` | `alt+w` | Open the output of the shell a waiting subagent waits on, from its chat or its `/tasks` row |
 
 **Migrating from earlier versions:** `app.tasks.inspect` is now `app.list.open` and `app.tasks.cancel` is now `app.list.stop`; existing `keybindings.json` entries are migrated on startup. Ctrl+X used to return from a stage chat to its graph and from a graph to the main chat: use ← on an empty prompt in a stage chat and Esc in the graph instead. Esc used to close an idle stage chat and a subagent's transcript: there it now only interrupts, so use ← on an empty prompt. Stopping a task asked for `y`; press `x` a second time instead. `app.workflows.scrollUp` and `app.workflows.scrollDown` (Alt+K/J, and their Alt+PageUp/Alt+PageDown aliases) are gone with the workflow list they scrolled: workflow runs are rows of the agent panel.
 
