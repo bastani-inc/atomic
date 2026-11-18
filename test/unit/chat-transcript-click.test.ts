@@ -17,7 +17,7 @@ function block(name: string): ClickExpandableBlock {
 		setExpanded: (value) => {
 			expanded = value;
 		},
-		headerRows: () => [0],
+		clickArea: () => ({ start: 0, end: 1 }),
 		render: () => [`● ${name}`, `  ${name} output 1`, `  ${name} output 2`],
 		invalidate: () => {},
 	};
@@ -46,7 +46,7 @@ test("a click names the entry that was drawn on the row, even after earlier entr
 		["beta"],
 		"the click acts on the block the reader saw on that row",
 	);
-	assert.equal(clicked?.expand, true);
+	assert.equal(clicked?.blocks[0]?.isExpanded(), false, "it names the block as drawn, collapsed");
 });
 
 test("a click on a row of a frame drawn at another width names nothing", () => {
