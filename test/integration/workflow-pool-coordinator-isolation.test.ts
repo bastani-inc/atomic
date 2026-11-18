@@ -11,7 +11,10 @@ import { SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-p
 import { SqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { POOL_SUMMARY_INTERVAL_MS } from "../../packages/workflows/src/workers/coordinator-protocol.js";
+import {
+	POOL_COORDINATION_STATS_INTERVAL_MS,
+	POOL_SUMMARY_INTERVAL_MS,
+} from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
@@ -32,8 +35,13 @@ const WORKERS = 20;
 const STUB_HEARTBEAT_MS = 1_000;
 /** Steady traffic over which root store invalidations are counted. */
 const OBSERVED_TRAFFIC_MS = 5_000;
-/** Timer phase and the last summary of the window may add one invalidation each. */
-const SUMMARY_SLACK = 2;
+/**
+ * The coordinator reaches the root store through two fixed-rate reports: activity summaries every
+ * POOL_SUMMARY_INTERVAL_MS and its request and write counts every POOL_COORDINATION_STATS_INTERVAL_MS.
+ */
+const ROOT_REPORT_INTERVALS_MS = [POOL_SUMMARY_INTERVAL_MS, POOL_COORDINATION_STATS_INTERVAL_MS] as const;
+/** Per report: the timer's phase, and one report sent before the window opened but applied inside it. */
+const REPORT_SLACK = 2;
 const BROKER_STARTUP_TIMEOUT_MS = 60_000;
 const ACTIVATION_TIMEOUT_MS = 90_000;
 const PROCESS_EXIT_TIMEOUT_MS = 30_000;
@@ -192,12 +200,18 @@ test.skipIf(process.platform === "win32")(
 			const unsubscribe = pooled.store.subscribeInvalidation(() => {
 				invalidations++;
 			});
+			const observedFrom = performance.now();
 			await sleep(OBSERVED_TRAFFIC_MS);
 			unsubscribe();
-			const summaryBound = Math.ceil(OBSERVED_TRAFFIC_MS / POOL_SUMMARY_INTERVAL_MS) + SUMMARY_SLACK;
+			// Measured, not assumed: on a loaded machine the sleep outlasts OBSERVED_TRAFFIC_MS while the reports go on.
+			const observedMs = performance.now() - observedFrom;
+			const reportBound = ROOT_REPORT_INTERVALS_MS.reduce(
+				(bound, intervalMs) => bound + Math.floor(observedMs / intervalMs) + REPORT_SLACK,
+				0,
+			);
 			assert.ok(
-				invalidations <= summaryBound,
-				`${WORKERS} busy workers caused ${invalidations} root store invalidations in ${OBSERVED_TRAFFIC_MS} ms; the summary rate allows ${summaryBound}`,
+				invalidations <= reportBound,
+				`${WORKERS} busy workers caused ${invalidations} root store invalidations in ${Math.round(observedMs)} ms; the coordinator's report rates allow ${reportBound}`,
 			);
 
 			const coordinatorPid = pooled.pool.coordinatorPid;
