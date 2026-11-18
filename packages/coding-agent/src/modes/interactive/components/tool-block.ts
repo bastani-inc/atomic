@@ -1,6 +1,8 @@
 import {
 	type Component,
+	type DefaultTextStyle,
 	Markdown,
+	type MarkdownTheme,
 	stripTerminalSequences,
 	Text,
 	truncateToWidth,
@@ -236,8 +238,8 @@ export function isToolBlock(component: Component): component is ToolBlock | Tool
 
 export class ToolBlockMarkdown implements Component {
 	private readonly markdown: Markdown;
-	constructor(text: string) {
-		this.markdown = new Markdown(terminalDisplayText(text), 0, 0, getMarkdownTheme(), undefined, {
+	constructor(text: string, defaultTextStyle?: DefaultTextStyle) {
+		this.markdown = new Markdown(terminalDisplayText(text), 0, 0, getMarkdownTheme(), defaultTextStyle, {
 			hyperlinks: false,
 			images: false,
 		});
@@ -248,4 +250,52 @@ export class ToolBlockMarkdown implements Component {
 	render(width: number): string[] {
 		return width < 1 ? [] : this.markdown.render(width);
 	}
+}
+
+/** The narrowest width previews are rendered at: rows of later blocks wrap no narrower than this. */
+const MARKDOWN_PREVIEW_MIN_ROW_WIDTH = 256;
+const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})/;
+
+/**
+ * Columns enough to render the leading block of `text` without wrapping: from its first non-blank line to the next
+ * blank line outside a code fence. Each line gets room for table borders and list or quote markers.
+ */
+function leadingBlockWidth(text: string): number {
+	let width = MARKDOWN_PREVIEW_MIN_ROW_WIDTH;
+	let fence: string | undefined;
+	let started = false;
+	for (const line of text.split("\n")) {
+		if (!line.trim()) {
+			if (started && fence === undefined) break;
+			continue;
+		}
+		started = true;
+		const marker = FENCE_MARKER.exec(line)?.[1];
+		if (marker !== undefined && (fence === undefined || marker[0] === fence[0])) fence = fence ? undefined : marker;
+		const pipes = line.split("|").length - 1;
+		width = Math.max(width, visibleWidth(line.replace(/\t/g, "   ")) + 2 * pipes + 16);
+	}
+	return width;
+}
+
+/**
+ * Markdown as one-row previews: its rendered rows, its first block unwrapped, without blank rows, code fences or heading
+ * markers, and with links as their text. Each row closes its styles. Plain text takes `color`; bold, italic and code keep
+ * their emphasis within it.
+ */
+export function markdownPreviewRows(text: string, color: (text: string) => string): string[] {
+	const base = getMarkdownTheme();
+	const previewTheme: MarkdownTheme = {
+		...base,
+		heading: (value) => (/^#+\s*$/.test(stripTerminalSequences(value)) ? "" : base.heading(value)),
+		linkUrl: () => "",
+		codeBlockBorder: () => "",
+		codeBlockIndent: "",
+	};
+	const display = terminalDisplayText(text);
+	return new Markdown(display, 0, 0, previewTheme, { color }, { hyperlinks: false, images: false })
+		.render(leadingBlockWidth(display))
+		.map((row) => row.trimEnd())
+		.filter((row) => stripTerminalSequences(row).trim().length > 0)
+		.map((row) => (row.includes("\x1b[") ? `${row}\x1b[0m` : row));
 }

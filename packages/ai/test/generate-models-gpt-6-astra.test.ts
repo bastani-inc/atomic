@@ -201,6 +201,19 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 		{ id: "priority", cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } },
 		{ id: "ultrafast", cost: { input: 12, output: 60, cacheRead: 0.6, cacheWrite: 15 } },
 	]);
+	// GPT-6.2 Fast is 2x Standard; Ultrafast is 3x Standard until March 1, 2027.
+	const astra62Tiers = [
+		{ id: "priority", cost: withLongContext(16, 80, 0.8, 20) },
+		{ id: "ultrafast", cost: withLongContext(24, 120, 1.2, 30) },
+	];
+	const sol62Tiers = [
+		{ id: "priority", cost: withLongContext(4, 20, 0.2, 5) },
+		{ id: "ultrafast", cost: withLongContext(6, 30, 0.3, 7.5) },
+	];
+	assert.deepEqual(catalogs.openai["gpt-6.2-astra"]?.serviceTiers, astra62Tiers);
+	assert.deepEqual(catalogs.openai["gpt-6.2-sol"]?.serviceTiers, sol62Tiers);
+	assert.deepEqual(catalogs["openai-codex"]["gpt-6.2-astra"]?.serviceTiers, astra62Tiers);
+	assert.deepEqual(catalogs["openai-codex"]["gpt-6.2-sol"]?.serviceTiers, sol62Tiers);
 
 	const codexTierIds = Object.fromEntries(
 		Object.entries(catalogs["openai-codex"]).map(([id, model]) => [
@@ -217,6 +230,8 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 		"gpt-6-sol": ["priority"],
 		"gpt-6.1-sol": ["priority", "ultrafast"],
 		"gpt-6.1-terra": [],
+		"gpt-6.2-astra": ["priority", "ultrafast"],
+		"gpt-6.2-sol": ["priority", "ultrafast"],
 	});
 	// The API publishes GPT-6.1 Terra Fast at 2x Standard; Codex does not list a Terra service tier yet.
 	assert.deepEqual(catalogs.openai["gpt-6.1-terra"]?.serviceTiers, [
@@ -272,6 +287,8 @@ test("gives Codex GPT-6.1 Sol a 500K context without long-context pricing and le
 		"gpt-6-luna": { contextWindow: 272_000, tiered: true },
 		"gpt-6-sol": { contextWindow: 272_000, tiered: true },
 		"gpt-6.1-terra": { contextWindow: 500_000, tiered: true },
+		"gpt-6.2-astra": { contextWindow: 272_000, tiered: true },
+		"gpt-6.2-sol": { contextWindow: 500_000, tiered: true },
 	});
 });
 

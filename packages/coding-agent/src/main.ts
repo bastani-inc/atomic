@@ -140,7 +140,13 @@ import {
 	unreadableTrustSettingsDiagnostics,
 } from "./main-stdio.ts";
 import type { MainOptions } from "./main-types.ts";
-import { runMigrations, runMigrationsAsync, showDeprecationWarnings } from "./migrations.ts";
+import {
+	removeSavedModelRoutingSettings,
+	removeSavedModelRoutingSettingsAsync,
+	runMigrations,
+	runMigrationsAsync,
+	showDeprecationWarnings,
+} from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { isUnknownModel } from "./modes/interactive/interactive-mode-helpers.ts";
 import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
@@ -426,6 +432,8 @@ export async function main(argv: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 	const agentDir = getAgentDir();
+	// Before the first settings load, so a removed routing setting is not also reported as ignored.
+	removeSavedModelRoutingSettings(cwd);
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	if (!inheritsDebugSetting()) setDebugSetting(bootstrapSettingsManager.getDebug());
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
@@ -896,6 +904,8 @@ export async function main(argv: string[], options?: MainOptions) {
 										projectTrustByCwd.set(cwd, trusted);
 										if (trusted && !initialProjectTrusted) {
 											migrateAfterTrust = true;
+											// Before the project's settings load, so its removed routing settings are not also reported as ignored.
+											await removeSavedModelRoutingSettingsAsync(cwd, { projectTrusted: true });
 										}
 										// Print, JSON and RPC modes cannot ask, so say what an untrusted project loses (#4223).
 										const ignored = ignoredProjectSettingsWarning(cwd, {

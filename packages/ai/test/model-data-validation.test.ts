@@ -8,7 +8,9 @@ import {
 	MODEL_DATA_MANIFEST_FILE,
 	MODEL_DATA_SCHEMA_VERSION,
 	type ModelDataStructure,
+	modelDataInputsHash,
 	readModelDataStructure,
+	validateGeneratedModelData,
 	validateModelDataDirectory,
 } from "../scripts/model-data.ts";
 
@@ -63,17 +65,56 @@ function createFixture(): {
 	return { dataDir, packageRoot, structure, values };
 }
 
+/**
+ * A fixture whose generator imports a helper script and a catalog transform under `src/`, like the real
+ * `scripts/generate-models.ts` imports `src/utils/models-dev-catalog.ts`.
+ */
+function createGeneratorFixture(): ReturnType<typeof createFixture> {
+	const fixture = createFixture();
+	const scriptsDir = join(fixture.packageRoot, "scripts");
+	const utilsDir = join(fixture.packageRoot, "src", "utils");
+	mkdirSync(scriptsDir, { recursive: true });
+	mkdirSync(utilsDir, { recursive: true });
+	writeFileSync(
+		join(scriptsDir, "generate-models.ts"),
+		[
+			'import { HELPER } from "./helper.ts";',
+			"import {",
+			"\tCOSTS,",
+			'} from "../src/utils/catalog-transform.js";',
+			'import type { Shape } from "../src/utils/shape.ts";',
+			"const output = `import values from \"./data/test-provider.json\" with { type: \"json\" };`;",
+			"export const USED = [HELPER, COSTS, output] satisfies Shape[];",
+			"",
+		].join("\n"),
+	);
+	writeFileSync(join(scriptsDir, "helper.ts"), 'export const HELPER = "helper";\n');
+	writeFileSync(
+		join(utilsDir, "catalog-transform.ts"),
+		'export * from "./rates.ts";\nexport const COSTS = { "model-a": 1 };\n',
+	);
+	writeFileSync(join(utilsDir, "rates.ts"), "export const RATE = 1;\n");
+	writeFileSync(join(utilsDir, "shape.ts"), "export type Shape = unknown;\n");
+	return fixture;
+}
+
 function writeFixtureData(
 	dataDir: string,
 	structure: ModelDataStructure,
 	values: Record<string, unknown>,
 	manifestSchemaVersion = MODEL_DATA_SCHEMA_VERSION,
 	apiGroup = "openai-completions",
+	generatorRoot?: string,
 ): void {
 	const filename = "test-provider.json";
 	const content = `${JSON.stringify({ [apiGroup]: values })}\n`;
 	writeFileSync(join(dataDir, filename), content);
-	const manifest = createModelDataManifest(structure, { [filename]: content }, GENERATED_AT);
+	const manifest = createModelDataManifest(
+		structure,
+		{ [filename]: content },
+		GENERATED_AT,
+		generatorRoot === undefined ? "fixture-inputs" : modelDataInputsHash(generatorRoot),
+	);
 	manifest.schemaVersion = manifestSchemaVersion;
 	writeFileSync(join(dataDir, MODEL_DATA_MANIFEST_FILE), `${JSON.stringify(manifest)}\n`);
 }
@@ -213,7 +254,12 @@ describe("generated model data validation", () => {
 			"anthropic-messages": fixture.values,
 		})}\n`;
 		writeFileSync(join(fixture.dataDir, filename), content);
-		const manifest = createModelDataManifest(fixture.structure, { [filename]: content }, GENERATED_AT);
+		const manifest = createModelDataManifest(
+			fixture.structure,
+			{ [filename]: content },
+			GENERATED_AT,
+			"fixture-inputs",
+		);
 		writeFileSync(join(fixture.dataDir, MODEL_DATA_MANIFEST_FILE), `${JSON.stringify(manifest)}\n`);
 		expect(() => validateModelDataDirectory(fixture.structure, fixture.dataDir)).toThrow("more than one API group");
 	});
@@ -243,6 +289,42 @@ describe("generated model data validation", () => {
 		manifest.generatedAt = "invalid";
 		writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
 		expect(() => validateModelDataDirectory(fixture.structure, fixture.dataDir)).toThrow("generation timestamp");
+	});
+
+	it("rejects a snapshot generated before a catalog transform it imports changed", () => {
+		const { dataDir, packageRoot, structure, values } = createGeneratorFixture();
+		writeFixtureData(dataDir, structure, values, MODEL_DATA_SCHEMA_VERSION, "openai-completions", packageRoot);
+		expect(() => validateGeneratedModelData(packageRoot)).not.toThrow();
+
+		writeFileSync(
+			join(packageRoot, "src", "utils", "catalog-transform.ts"),
+			'export const COSTS = { "model-a": 2 };\n',
+		);
+		expect(() => validateGeneratedModelData(packageRoot)).toThrow("generated from different catalog sources");
+	});
+
+	it("hashes the generator's relative-import closure the same way on every OS", () => {
+		const { packageRoot } = createGeneratorFixture();
+		const lf = modelDataInputsHash(packageRoot);
+
+		const transform = join(packageRoot, "src", "utils", "catalog-transform.ts");
+		writeFileSync(transform, readFileSync(transform, "utf8").replaceAll("\n", "\r\n"));
+		expect(modelDataInputsHash(packageRoot)).toBe(lf);
+
+		// A generated provider shard, the aggregator, and a template string that only looks like an import are not inputs.
+		writeFileSync(join(packageRoot, "src", "providers", "test-provider.models.ts"), "// regenerated\n");
+		writeFileSync(join(packageRoot, "src", "models.generated.ts"), `${readFileSync(join(packageRoot, "src", "models.generated.ts"), "utf8")}// regenerated\n`);
+		writeFileSync(join(packageRoot, "src", "unrelated.ts"), "export const UNRELATED = 1;\n");
+		// A module reached only through `import type` cannot change the generated data.
+		writeFileSync(join(packageRoot, "src", "utils", "shape.ts"), "export type Shape = string;\n");
+		expect(modelDataInputsHash(packageRoot)).toBe(lf);
+
+		writeFileSync(join(packageRoot, "src", "utils", "rates.ts"), "export const RATE = 2;\n");
+		const reexported = modelDataInputsHash(packageRoot);
+		expect(reexported).not.toBe(lf);
+
+		writeFileSync(join(packageRoot, "scripts", "helper.ts"), 'export const HELPER = "changed";\n');
+		expect(modelDataInputsHash(packageRoot)).not.toBe(reexported);
 	});
 
 	it("rejects missing provider shards imported by the aggregator", () => {
