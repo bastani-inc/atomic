@@ -1,7 +1,20 @@
 import { execFile, spawnSync } from "child_process";
 import { createHash, randomUUID } from "crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, stat, writeFile } from "fs/promises";
+import {
+	chmod,
+	lstat,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	readlink,
+	rename,
+	rm,
+	stat,
+	utimes,
+	writeFile,
+} from "fs/promises";
 import { arch, hostname, platform } from "os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import lockfile from "proper-lockfile";
@@ -1723,6 +1736,134 @@ type GitInstallLock =
 /** proper-lockfile never declares a lock stale by itself: wall-clock staleness breaks under clock skew. */
 const LOCK_NEVER_STALE_MS = 2 ** 31 - 1;
 
+const GIT_INSTALL_LOCK_NAME = "git.install.lock";
+const LOCK_TRASH_INFIX = ".stale-";
+/** The random UUID that ends every moved-aside lock's name, so the sweep only ever touches those fixed-length names. */
+const LOCK_TRASH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Attempts at a lock path operation that fails for a moment while another process has the path open. */
+const LOCK_RETRY_ATTEMPTS = 5;
+const LOCK_RETRY_MS = 20;
+
+/**
+ * Errors a lock path reports for a moment while another process has it open or is removing it: EBUSY anywhere, and on
+ * Windows EPERM/EACCES, which a directory opened without delete sharing or pending deletion reports.
+ */
+function isTransientLockError(error: unknown): boolean {
+	const code = errnoCode(error);
+	return code === "EBUSY" || (process.platform === "win32" && (code === "EPERM" || code === "EACCES"));
+}
+
+/** Run `operation`, again after a short wait while it fails with a transient lock error, at most a few times. */
+async function retryTransient<T>(operation: () => Promise<T>): Promise<T> {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await operation();
+		} catch (error) {
+			if (!isTransientLockError(error) || attempt >= LOCK_RETRY_ATTEMPTS) throw error;
+		}
+		await delay(LOCK_RETRY_MS);
+	}
+}
+
+/**
+ * Which lock directory is at `path`: its device, its inode (the NTFS file index on Windows) and its mtime, read as
+ * bigints so no precision is lost. Renaming a directory keeps all three, and a lock removed and taken again is a new
+ * directory, so a moved lock can be told apart from the one a waiter judged abandoned. Undefined when nothing is there.
+ */
+async function lockIdentity(path: string): Promise<{ readonly id: string; readonly mtime: Date } | undefined> {
+	try {
+		const stats = await retryTransient(() => stat(path, { bigint: true }));
+		return { id: `${stats.dev}:${stats.ino}:${stats.mtimeNs}`, mtime: new Date(plainStatMtimeMs(stats.mtimeNs)) };
+	} catch (error) {
+		if (errnoCode(error) === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+/**
+ * The mtime a plain `stat` reports for `mtimeNs`, in whole milliseconds, computed as Node computes it (seconds and
+ * nanoseconds summed in floating point, then rounded). proper-lockfile compares its holder's stamp with that value,
+ * so a lock put back must carry exactly it.
+ */
+export function plainStatMtimeMs(mtimeNs: bigint): number {
+	return Math.round(Number(mtimeNs / 1_000_000_000n) * 1000 + Number(mtimeNs % 1_000_000_000n) / 1_000_000);
+}
+
+/** Move `from` to `to` atomically; false when `from` is gone. */
+async function moveLock(from: string, to: string): Promise<boolean> {
+	try {
+		await retryTransient(() => rename(from, to));
+		return true;
+	} catch (error) {
+		if (errnoCode(error) === "ENOENT") return false;
+		throw error;
+	}
+}
+
+/** Delete a lock directory moved aside. One that stays busy is left for `removeAbandonedLockTrash`. */
+async function removeLockTrash(path: string): Promise<void> {
+	try {
+		await retryTransient(() => rm(path, { recursive: true, force: true }));
+	} catch (error) {
+		if (!isTransientLockError(error)) throw error;
+	}
+}
+
+/**
+ * Remove the abandoned lock `stale`, and never a lock someone else holds. The lock is moved aside to a name of its own
+ * in one atomic rename, so of all waiters that judged it abandoned only one moves it. If what was moved is not the
+ * lock that was judged abandoned (it was replaced between the check and the move), it goes back at once: an exclusive
+ * mkdir recreates the lock path with the moved lock's mtime, which is all its holder checks.
+ *
+ * Node has no rename that refuses to replace, so the put-back is not atomic: the lock path is empty from the move until
+ * the mkdir. Only a waiter paused between its check and its move gets there, and a process taking the lock in that
+ * instant keeps it. The holder that lost its lock sees it as compromised at its next refresh, and if it finishes
+ * before that, its release removes the newcomer's lock instead. Either holder still finishes its install, which is
+ * published by an atomic rename, so the cost is at most one more download, never a failed or partial install.
+ */
+async function takeOverStaleLock(lockPath: string, stale: string): Promise<void> {
+	if ((await lockIdentity(lockPath))?.id !== stale) return;
+	const trash = `${lockPath}${LOCK_TRASH_INFIX}${randomUUID()}`;
+	if (!(await moveLock(lockPath, trash))) return;
+	const moved = await lockIdentity(trash);
+	if (moved !== undefined && moved.id !== stale) {
+		try {
+			await mkdir(lockPath);
+			await retryTransient(() => utimes(lockPath, moved.mtime, moved.mtime));
+		} catch (error) {
+			// Taken in that instant, or removed again: its holder carries on without it.
+			if (errnoCode(error) !== "EEXIST" && errnoCode(error) !== "ENOENT" && !isTransientLockError(error))
+				throw error;
+		}
+	}
+	await removeLockTrash(trash);
+}
+
+/**
+ * Remove locks moved aside by waiters that died before deleting them. Their mtime is the abandoned lock's, so any of
+ * them more than `lockStaleMs` from now, in either direction for a skewed clock, is debris; a lock moved by mistake an
+ * instant ago is fresh and stays for the waiter that is putting it back.
+ */
+async function removeAbandonedLockTrash(lockPath: string): Promise<void> {
+	const binDir = dirname(lockPath);
+	const prefix = `${basename(lockPath)}${LOCK_TRASH_INFIX}`;
+	const names = (await readdir(binDir)).filter(
+		(name) => name.startsWith(prefix) && LOCK_TRASH_ID.test(name.slice(prefix.length)),
+	);
+	for (const name of names) {
+		const path = join(binDir, name);
+		let identity: Awaited<ReturnType<typeof lockIdentity>>;
+		try {
+			identity = await lockIdentity(path);
+		} catch (error) {
+			if (isTransientLockError(error)) continue;
+			throw error;
+		}
+		if (identity !== undefined && Math.abs(Date.now() - identity.mtime.getTime()) >= gitProvisionSettings.lockStaleMs)
+			await removeLockTrash(path);
+	}
+}
+
 /**
  * Serialize installs across processes so concurrent starts download once. A waiter treats the lock as abandoned only
  * after its mtime stops changing for `lockStaleMs` of the waiter's own monotonic time, so neither clock skew nor a
@@ -1737,9 +1878,9 @@ async function acquireGitInstallLock(
 	emit: (status: ToolStatus) => void,
 ): Promise<GitInstallLock> {
 	const binDir = dirname(layout.root);
-	const lockPath = join(binDir, "git.install.lock");
+	const lockPath = join(binDir, GIT_INSTALL_LOCK_NAME);
 	const startedAt = performance.now();
-	let observedMtimeMs: number | undefined;
+	let observed: string | undefined;
 	let observedSince = startedAt;
 	let announced = false;
 	for (;;) {
@@ -1758,19 +1899,26 @@ async function acquireGitInstallLock(
 			});
 			return { kind: "held", release, compromised: () => compromised };
 		} catch (error) {
-			if (errnoCode(error) !== "ELOCKED")
+			// ENOENT after the lock directory was created: it vanished before its first stamp. Contend again.
+			const vanished = errnoCode(error) === "ENOENT" && (error as NodeJS.ErrnoException).syscall !== "mkdir";
+			if (errnoCode(error) !== "ELOCKED" && !vanished)
 				throw await installFailedAsync("stage", target, layout, error, "install lock");
 		}
 		const provisioned = await findCurrentGitAsync(target);
 		if (provisioned !== undefined) return { kind: "installed", provisioned };
 		const now = performance.now();
-		const lockStats = await stat(lockPath).catch(() => undefined);
-		const mtimeMs = lockStats?.mtimeMs;
-		if (mtimeMs !== observedMtimeMs) {
-			observedMtimeMs = mtimeMs;
-			observedSince = now;
-		} else if (mtimeMs !== undefined && now - observedSince >= gitProvisionSettings.lockStaleMs) {
-			await rm(lockPath, { recursive: true, force: true });
+		try {
+			const identity = (await lockIdentity(lockPath))?.id;
+			if (identity !== observed) {
+				observed = identity;
+				observedSince = now;
+			} else if (identity !== undefined && now - observedSince >= gitProvisionSettings.lockStaleMs) {
+				await takeOverStaleLock(lockPath, identity);
+			}
+		} catch (error) {
+			// A lock path that stays busy is looked at again on the next poll.
+			if (!isTransientLockError(error))
+				throw await installFailedAsync("stage", target, layout, error, "install lock");
 		}
 		const elapsedMs = Math.round(now - startedAt);
 		if (elapsedMs >= gitProvisionSettings.lockWaitTimeoutMs)
@@ -2072,9 +2220,24 @@ async function installGitDistribution(
 		throw await installFailedAsync("stage", target, layout, error);
 	}
 	const lock = await acquireGitInstallLock(target, layout, signal, emit);
-	if (lock.kind === "installed") return lock.provisioned;
+	if (lock.kind === "installed") {
+		try {
+			await removeAbandonedLockTrash(join(binDir, GIT_INSTALL_LOCK_NAME));
+		} catch (error) {
+			emit({
+				type: "warning",
+				message: `Could not remove an abandoned git install lock: ${firstLine(String(error))}`,
+			});
+		}
+		return lock.provisioned;
+	}
 	let primary: unknown;
 	try {
+		try {
+			await removeAbandonedLockTrash(join(binDir, GIT_INSTALL_LOCK_NAME));
+		} catch (error) {
+			throw await installFailedAsync("stage", target, layout, error, "install lock");
+		}
 		const existing = await findCurrentGitAsync(target);
 		if (existing !== undefined) return existing;
 		const retained = await findRetainedGitAsync(target);
