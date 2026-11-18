@@ -88,6 +88,8 @@ If the release you ask for (or the latest release, when you pin nothing) is alre
 
 An install counts as healthy when `current` points at that release's version directory inside the install root (a `current` that points at a versions directory somewhere else is repaired) and the launcher resolves to it. On macOS/Linux that means the launcher link resolves to an executable `current/atomic`; the installer never runs the installed binary to decide. On Windows it means `current\atomic.exe --version` reports the release and the `atomic.cmd` shim and `atomic-current` junction match what the installer creates. On both platforms the version directory must still hold the files Atomic needs to start: `package.json`, `app.js`, `native-modifiers.js`, `native-module-path.js`, `native-platform.js`, and the `builtin` and `node_modules` directories. A different version, or a missing or broken launcher or payload, installs exactly as before and repairs the install.
 
+Only one installer works on an install directory at a time. A second one started meanwhile prints `Waiting for another atomic installer ... to finish...` and continues once the first exits; after 30 minutes it gives up (set `ATOMIC_INSTALL_LOCK_TIMEOUT` to another number of seconds). An installer that was killed releases its claim, and the next run removes the partial files it left. While a new version is put in place, `atomic` keeps starting the previous one until the switch, and an interrupted install leaves the previous version usable.
+
 To reinstall a healthy install anyway, pass `--force` on macOS/Linux or `-Force` on Windows, or set `ATOMIC_FORCE_INSTALL=1`. The environment variable works with `curl ... | sh` and `irm ... | iex`, where you cannot pass a flag:
 
 ```bash

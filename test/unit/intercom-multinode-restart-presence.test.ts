@@ -145,6 +145,7 @@ async function crashedCluster() {
 				deliveredMessages: { lookupForTarget: () => "miss", lookupQuestionTarget: () => undefined },
 				dispatch: () => {},
 				revokeReleasedReservation: () => {},
+				holdsReservation: () => true,
 			},
 		});
 		cleanups.push(() => router.close());

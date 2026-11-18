@@ -2192,7 +2192,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         ...(request.dormant === true ? { dormant: true } : {}),
         ...(request.holdMs === undefined ? {} : { holdMs: request.holdMs }),
       }),
-    );
+    // #5352: a hold whose publication to other brokers is still pending is in force here; the broker finishes it.
+    ).then(() => undefined);
   });
   // #4326: released children are reserved by name for this connection, any number in one call.
   pi.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {

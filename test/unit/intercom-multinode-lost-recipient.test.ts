@@ -178,6 +178,7 @@ async function lostCluster({
 				deliveredMessages: { lookupForTarget: () => "miss", lookupQuestionTarget: () => undefined },
 				dispatch: () => {},
 				revokeReleasedReservation: () => {},
+				holdsReservation: () => true,
 			},
 		});
 		cleanups.push(() => router.close());
