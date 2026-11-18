@@ -27,6 +27,8 @@ const CONVERGE_TIMEOUT_MS = 20_000;
 const HOST_STATE_TEST_TIMEOUT_MS = 60_000;
 /** A live owner that ran beside the closed one, so a close that forgot every owner's metadata cannot pass. */
 const CONTROL_TASKS = 8;
+/** Commands launched by named sessions, each finished before newer tasks evict it. */
+const COMMAND_LAUNCHES = 16;
 /** Finished agent tasks per owner in the per-map and SDK release counts. */
 const PROBE_TASKS = 5;
 /** Enough released SDK sessions that what each one left behind would outgrow one owner's retention. */
@@ -154,6 +156,8 @@ test(
 				launchHeartbeats: FINISHED_TASK_RETENTION,
 				executionTimeouts: 0,
 				releases: 0,
+				launchers: 0,
+				launchedAt: 0,
 			});
 			const kept = new Set(store.tasks.map((task) => task.ref.taskId));
 			const evicted = taskIds.filter((id) => !kept.has(id));
@@ -221,6 +225,8 @@ test("closing a host reconciles held finished records before its watchers stop, 
 			launchHeartbeats: 0,
 			executionTimeouts: 0,
 			releases: 0,
+			launchers: 0,
+			launchedAt: 0,
 		});
 		assert.deepEqual(
 			launchMetadataSizes(control),
@@ -312,6 +318,49 @@ test(
 	},
 	SDK_RELEASE_TEST_TIMEOUT_MS,
 );
+
+test("finished commands keep their launching session and launch time only until their owner evicts them (#5342)", async () => {
+	const supervisor = new TaskSupervisor();
+	const owner = finishingOwner(supervisor);
+	const launchRecords = () => {
+		const { launchers, launchedAt } = taskHostStateSizesForTesting(owner);
+		return { launchers, launchedAt };
+	};
+	try {
+		for (let index = 0; index < COMMAND_LAUNCHES; index++) {
+			const command = value(
+				await supervisor.startCommandTask(
+					owner,
+					{
+						kind: "command",
+						command: "echo launched",
+						terminal: { kind: "pipe" },
+						launchedBy: `session-${index}`,
+					},
+					`command-${index}` as C.OperationId,
+				),
+			);
+			assert.equal(value(await supervisor.waitForTask(command, CONVERGE_TIMEOUT_MS)).kind, "settled");
+		}
+		const finished = launchRecords();
+		await finishAgentTasks(supervisor, owner, FINISHED_TASK_RETENTION, {}, { prefix: "evicting-operation" });
+		const deadline = Date.now() + CONVERGE_TIMEOUT_MS;
+		while (taskHostStateSizesForTesting(owner).tasks > FINISHED_TASK_RETENTION) {
+			assert.ok(Date.now() < deadline, `not converged: ${JSON.stringify(taskHostStateSizesForTesting(owner))}`);
+			supervisor.failedTaskCleanups(owner);
+			await sleep(5);
+		}
+		assert.deepEqual(
+			{ finished, evicted: launchRecords() },
+			{
+				finished: { launchers: COMMAND_LAUNCHES, launchedAt: COMMAND_LAUNCHES },
+				evicted: { launchers: 0, launchedAt: 0 },
+			},
+		);
+	} finally {
+		await supervisor.closeTaskOwner(owner, "session-close");
+	}
+});
 
 test("host state sizes are read only for an owner this process opened (#4385)", () => {
 	const foreign: OwnerLease = Object.freeze(Object.create(null));
