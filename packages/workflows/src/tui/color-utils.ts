@@ -55,6 +55,11 @@ export function colorLevelKey(): string {
 	return hexColorAnsi("#000000", "fg");
 }
 
+/** Whether NO_COLOR or FORCE_COLOR=0 turned color off, from the cached color level; it never reads the environment. */
+export function colorsOff(): boolean {
+	return colorLevelKey() === "";
+}
+
 /** Unpainted canvas, matching main chat and attached stage chat. */
 export const DEFAULT_BG = "\x1b[49m";
 

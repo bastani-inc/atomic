@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { afterEach, test, vi } from "vitest";
 import { refreshColorEnvironment } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -8,6 +10,7 @@ import { hexBg, hexToAnsi, paint } from "../../packages/workflows/src/tui/color-
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
+import { type RunOutcome, renderRunOutcome } from "../../packages/workflows/src/tui/run-outcome.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { makeTestTui as makeGraphTui, makeRun, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
@@ -118,6 +121,19 @@ function runSheetLines(): string[] {
 	return renderRunDetail(detail, { theme: deriveGraphTheme({}), now: 66_000, width: 100 }).split("\n");
 }
 
+const OUTCOME: RunOutcome = {
+	runId: "abc123uuid",
+	name: "refactor-auth",
+	state: "failed",
+	elapsedMs: 65_000,
+	reason: "build failed",
+	outputs: [],
+	artifacts: [],
+	blockers: [],
+	events: [],
+	log: [],
+};
+
 const SURFACES: ReadonlyArray<readonly [string, () => string[]]> = [
 	["graph view", graphLines],
 	["stage chat", stageChatLines],
@@ -169,6 +185,8 @@ test("FORCE_COLOR=1 and 2 limit workflow colors to 256, and FORCE_COLOR=3 or no 
 
 test("painting workflow colors never reads NO_COLOR or FORCE_COLOR", () => {
 	colorEnv({});
+	const theme = deriveGraphTheme({});
+	const outcome = OUTCOME;
 	const original = process.env;
 	let reads = 0;
 	process.env = new Proxy(original, {
@@ -182,6 +200,7 @@ test("painting workflow colors never reads NO_COLOR or FORCE_COLOR", () => {
 			hexToAnsi("#89b4fa");
 			hexBg("#313244");
 			paint("word", "#a6e3a1", { bg: "#1e1e2e", bold: true });
+			renderRunOutcome(outcome, { theme, width: 100, logs: false, selected: 0 });
 		}
 	} finally {
 		process.env = original;
@@ -233,4 +252,17 @@ test("an open detail view repaints in the new color level after the color enviro
 	} finally {
 		view.dispose();
 	}
+});
+
+test("no workflows or subagents source reads NO_COLOR or FORCE_COLOR itself: colors follow the cached color level", () => {
+	const roots = ["packages/workflows/src", "packages/subagents/src"].map((root) => join(process.cwd(), root));
+	const readers: string[] = [];
+	for (const root of roots) {
+		for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+			if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+			const path = join(entry.parentPath, entry.name);
+			if (/process\.env(?:\.|\[["'])(?:NO_COLOR|FORCE_COLOR)\b/.test(readFileSync(path, "utf8"))) readers.push(path);
+		}
+	}
+	assert.deepEqual(readers, []);
 });

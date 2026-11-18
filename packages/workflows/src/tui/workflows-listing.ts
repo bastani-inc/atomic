@@ -24,6 +24,7 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
+import { colorsOff } from "./color-utils.js";
 import { inertDisplayLine, summarizeFailureText } from "./display-text.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
 import { type RunFailureSource, runFailureText } from "./run-display-state.js";
@@ -471,7 +472,7 @@ function renderCompactListing(
 
 function listingStyle(): SelectorStyle {
 	const themed = themeSelectorStyle();
-	return process.env.NO_COLOR === undefined ? themed : { ...PLAIN_SELECTOR_STYLE, bold: themed.bold };
+	return colorsOff() ? { ...PLAIN_SELECTOR_STYLE, bold: themed.bold } : themed;
 }
 
 export function openWorkflowsListing(
