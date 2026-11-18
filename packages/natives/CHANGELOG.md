@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.89-alpha.2] - 2026-11-18
+
 ### Fixed
 
 - On a busy Windows machine, a supervised command that ran to completion, such as a Git command of a named worktree, no longer fails with `Windows stdin worker stop was not confirmed` when its input thread has not run yet by the time the command's processes have all ended. Nothing reads that input any more, so the thread ends on its own; a command with processes still running fails as before ([#5202](https://github.com/bastani-inc/atomic/issues/5202))
