@@ -22,7 +22,11 @@ import {
 	hasChatSessionTransientModal,
 	setChatSessionEditorText,
 } from "./chat-session-host-editor.ts";
-import { applyChatSessionAgentEvent, compactionStatusMessage } from "./chat-session-host-events.ts";
+import {
+	applyChatSessionAgentEvent,
+	compactionStatusMessage,
+	showChatSessionRetryWait,
+} from "./chat-session-host-events.ts";
 import {
 	chatSessionWorkingMeta,
 	dropExpandedOverrides,
@@ -387,6 +391,18 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			this.state.sdkBusy = true;
 			this.state.statusMessage = compactionStatusMessage(compactionReason);
 		}
+		this.syncAnimationTick();
+		this.state.requestRender?.();
+	}
+
+	/**
+	 * Show the retry wait of a session this host attached to after its `auto_retry_start`: a session between two
+	 * attempts streams nothing, so a running turn's hydration shows none of it. The wait reads as that event shows it
+	 * and ends as it does, with the next attempt's `agent_start` or the retry's `auto_retry_end`.
+	 */
+	hydrateRetryWait(): void {
+		if (this.state.disposed) return;
+		showChatSessionRetryWait(this.state);
 		this.syncAnimationTick();
 		this.state.requestRender?.();
 	}

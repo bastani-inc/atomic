@@ -42,6 +42,19 @@ import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 
 export type { CompactionReason } from "../../../core/agent-session-types.js";
 
+/**
+ * A retry waits out its backoff: `retrying…` is the working line until the next attempt's `agent_start`, or the
+ * retry's `auto_retry_end`, clears it.
+ */
+export function showChatSessionRetryWait<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): void {
+	state.sdkBusy = true;
+	state.workingMessage = undefined;
+	state.statusMessage = CHAT_SESSION_RETRYING_STATUS;
+	stopChatSessionWorkingLifecycle(state);
+}
+
 export function compactionStatusMessage(reason: CompactionReason): string {
 	switch (reason) {
 		case "manual":
@@ -368,10 +381,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			changed = true;
 			break;
 		case "auto_retry_start":
-			state.sdkBusy = true;
-			state.workingMessage = undefined;
-			state.statusMessage = CHAT_SESSION_RETRYING_STATUS;
-			stopChatSessionWorkingLifecycle(state);
+			showChatSessionRetryWait(state);
 			changed = true;
 			break;
 		case "model_fallback_start":

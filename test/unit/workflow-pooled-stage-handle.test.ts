@@ -589,6 +589,33 @@ test("the root handle reads as starting until the worker reports the stage's ses
 	handle.dispose();
 });
 
+test("the root handle says when its stage's session waits to retry, from its snapshot and then from the retry's events (#5483)", async () => {
+	const fake = singleWatch({ ...snapshot(), isStreaming: false, waitingToRetry: true });
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	assert.equal(handle.isWaitingToRetry, true, "a watch opened during the wait");
+	fake.event(1, { type: "agent_start" } as AgentSessionEvent);
+	assert.equal(handle.isWaitingToRetry, false, "the next attempt ends the wait");
+	fake.event(2, { type: "agent_end", messages: [] } as never as AgentSessionEvent);
+	fake.event(3, {
+		type: "auto_retry_start",
+		attempt: 2,
+		maxAttempts: 3,
+		delayMs: 4_000,
+		errorMessage: "overloaded",
+	} as AgentSessionEvent);
+	assert.equal(handle.isWaitingToRetry, true, "a retry that starts while the stage is watched");
+	fake.event(4, {
+		type: "auto_retry_end",
+		success: false,
+		attempt: 2,
+		finalError: "Retry cancelled",
+	} as AgentSessionEvent);
+	assert.equal(handle.isWaitingToRetry, false, "the retry's end");
+	handle.dispose();
+});
+
 test("a message sent while the stage's session is still starting waits for it instead of being reported lost (#3996)", async () => {
 	const admitted = Promise.withResolvers<void>();
 	const fake = singleWatch({ ...snapshot(), isStreaming: false, sessionStarted: false }, async () => {

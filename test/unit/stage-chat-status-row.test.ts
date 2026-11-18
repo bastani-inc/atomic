@@ -15,15 +15,16 @@ import {
 
 type Emit = ReturnType<typeof makeHandle>["emit"];
 
-/** A running stage chat in a 30-row terminal; its session, when given, has usage to show. */
+/** A running stage chat in a 30-row terminal; its session, when given, has usage to show and streams unless told not to. */
 function stageChat(
 	agentSession?: AgentSession,
 	messages: AgentSession["messages"] = [],
+	streaming = agentSession !== undefined,
 ): { view: StageChatView; emit: Emit } {
 	const store = createStore();
 	setupRun(store, "run-1", "stage-a");
 	const { handle, state, emit } = makeHandle(undefined, messages, "running", agentSession);
-	state.isStreaming = agentSession !== undefined;
+	state.isStreaming = streaming;
 	const view = new StageChatView({
 		store,
 		graphTheme: deriveGraphTheme({}),
@@ -102,3 +103,68 @@ for (const [event, status] of [
 		}
 	});
 }
+
+/** A stage session between two attempts: its retry has started and its next attempt has not. */
+function waitingToRetry(): AgentSession {
+	return Object.assign(fakeFooterAgentSession(false), { retryAttempt: 1 });
+}
+
+test("a stage chat opened while its agent waits to retry shows `retrying…` on the usage row until the next attempt (#5483)", () => {
+	const { view, emit } = stageChat(waitingToRetry(), [], false);
+	try {
+		for (const width of [80, 160]) {
+			const [gap, line, usage] = rowsAboveComposer(view, width);
+			assert.equal(gap, "", `${width} columns: a blank row above the status line`);
+			assert.equal(line, " ∀ retrying…", `${width} columns: the retry is the status line`);
+			assert.match(usage ?? "", /\(auto\)$/u, `${width} columns: right on the usage row`);
+		}
+		emit({ type: "agent_start" } as never);
+		for (const width of [80, 160]) {
+			const [, line] = rowsAboveComposer(view, width);
+			assert.match(line ?? "", /^ ∀ /u, `${width} columns: the next attempt is the working line`);
+			assert.doesNotMatch(line ?? "", /retrying…/u, `${width} columns: the next attempt clears the retry`);
+		}
+	} finally {
+		view.dispose();
+	}
+});
+
+test("a stage chat opened while its agent waits to retry stops showing it when the retry ends (#5483)", () => {
+	const { view, emit } = stageChat(waitingToRetry(), [], false);
+	try {
+		const shows = () => view.render(80).some((row) => stripAnsi(row).includes("retrying…"));
+		assert.ok(shows(), "the retry wait is shown");
+		emit({ type: "auto_retry_end", success: false, attempt: 1, finalError: "Retry cancelled" } as never);
+		assert.ok(!shows(), "the retry's end clears it");
+	} finally {
+		view.dispose();
+	}
+});
+
+test("a chat opened while a stage on a local worker waits to retry shows `retrying…` above the composer (#5483)", () => {
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	// No session in this process: the stage's handle says whether its session waits to retry.
+	const { handle } = makeHandle(undefined, [], "running");
+	const view = new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test-wf",
+		handle: Object.assign(handle, { isWaitingToRetry: true }),
+		onDetach: () => {},
+		onClose: () => {},
+		piTui: makeTestTui(30),
+	});
+	try {
+		for (const width of [80, 160]) {
+			const [gap, line, blank] = rowsAboveComposer(view, width);
+			assert.equal(gap, "", `${width} columns: a blank row above the status line`);
+			assert.equal(line, " ∀ retrying…", `${width} columns: the retry is the status line`);
+			assert.equal(blank, "", `${width} columns: the blank row in the usage row's place`);
+		}
+	} finally {
+		view.dispose();
+	}
+});
