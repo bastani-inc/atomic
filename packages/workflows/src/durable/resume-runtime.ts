@@ -154,7 +154,7 @@ export async function resumeDurableWorkflow(
 	let handle = backend.getWorkflow(id);
 	if (handle?.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, id))
 		return alreadyRunningResult(handle.name, id);
-	const finishing = (deps.jobs ?? deps.baseRunOpts.jobs)?.get(id);
+	const finishing = deps.jobs?.get(id);
 	if (
 		finishing !== undefined &&
 		(handle?.status === "failed" || deps.baseRunOpts.store?.run(id)?.status === "failed")
