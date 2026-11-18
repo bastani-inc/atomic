@@ -344,14 +344,14 @@ export class SessionManager {
 
 	/** Iterate the stored history in append order up to the watermark at the start of the read. Stopping iteration
 	 * stops further reads; none of the historical payloads are added to the live manager. */
-	readHistory(options: SessionHistoryReadOptions = {}): AsyncGenerator<SessionHistoryPage> {
+	readHistory(options: SessionHistoryReadOptions = {}): AsyncGenerator<SessionHistoryPage, void> {
 		return historyPages(this.store, this.sessionId, this.historyEpoch, this.lastSeq, options);
 	}
 
 	readHistoryChunks(
 		reference: OversizedSessionEntry,
 		options: { readonly offset?: number; readonly signal?: AbortSignal } = {},
-	): AsyncGenerator<Uint8Array> {
+	): AsyncGenerator<Uint8Array, void> {
 		return historyChunks(this.store, this.sessionId, this.historyEpoch, reference, options);
 	}
 
@@ -1266,6 +1266,10 @@ export class SessionManager {
 	/** Get the label for an entry, if any. */
 	getLabel(id: string): string | undefined {
 		return this.labelsById.get(id);
+	}
+
+	getLabelTimestamp(id: string): string | undefined {
+		return this.labelTimestampsById.get(id);
 	}
 
 	/** Set or clear a label on an entry. */

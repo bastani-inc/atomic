@@ -25,7 +25,7 @@ export async function* historyPages(
 	epoch: string | undefined,
 	watermark: number,
 	options: SessionHistoryReadOptions,
-): AsyncGenerator<SessionHistoryPage> {
+): AsyncGenerator<SessionHistoryPage, void> {
 	if (!store.readEntrySizes || !store.readRange)
 		throw new TypeError(
 			`Session store ${store.descriptor.adapter} must implement bounded history reads (readEntrySizes and readRange)`,
@@ -85,7 +85,7 @@ export async function* historyChunks(
 	epoch: string | undefined,
 	reference: OversizedSessionEntry,
 	options: { readonly offset?: number; readonly signal?: AbortSignal },
-): AsyncGenerator<Uint8Array> {
+): AsyncGenerator<Uint8Array, void> {
 	if (!store.readEntryChunk)
 		throw new TypeError(`Session store ${store.descriptor.adapter} must implement readEntryChunk`);
 	if (reference.sessionId !== sessionId || (epoch !== undefined && reference.epoch !== epoch))
