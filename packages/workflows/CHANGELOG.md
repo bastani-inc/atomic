@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- On libSQL storage, a workflow journal whose stored lease epoch or event sequence is corrupt (negative, fractional or past the largest safe integer) now refuses a lease renewal or an append without writing, as on local SQLite and PostgreSQL. Before, the renewal renewed the lease and the append wrote an event, and the error came only afterwards ([#5439](https://github.com/bastani-inc/atomic/pull/5439))
+- On a libSQL server, appending several workflow events at once now waits for a busy write lock as long as appending one event does. Before, it gave up after the server's 5-second busy timeout ([#5439](https://github.com/bastani-inc/atomic/pull/5439))
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 ### Breaking Changes
@@ -92,8 +97,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed follow-up agents failing to read workflow history with a retired-execution error after a workflow finished or its extensions reloaded ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed saved workflow rows in `/resume` showing missing stage progress, elapsed time and cost after a restart. Browsing them reads recorded summaries without resuming the workflows ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `LocalWorkerPool.close()` stops the pool's coordinator even when a stage watcher's listener throws while the pool closes; it rejects with that error once everything is closed. Before, the coordinator kept running, with its journal open.
-- On libSQL storage, a workflow journal whose stored lease epoch or event sequence is corrupt (negative, fractional or past the largest safe integer) now refuses a lease renewal or an append without writing, as on local SQLite and PostgreSQL. Before, the renewal renewed the lease and the append wrote an event, and the error came only afterwards ([#5439](https://github.com/bastani-inc/atomic/pull/5439))
-- On a libSQL server, appending several workflow events at once now waits for a busy write lock as long as appending one event does. Before, it gave up after the server's 5-second busy timeout ([#5439](https://github.com/bastani-inc/atomic/pull/5439))
 
 ### Removed
 
