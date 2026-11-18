@@ -153,6 +153,84 @@ describe("StageUiBroker", () => {
 		}
 	});
 
+	test("replacing the run record releases the old stage dialog waiter without consuming its successor's answer (#5577)", async () => {
+		const { broker, store } = setupStage();
+		const old = broker.claimStage("run-1", "stage-1");
+		const dialog = broker.requestDialog("run-1", "stage-1", { kind: "confirm", message: "Old?" });
+		const settled = dialog.then(
+			() => "answered",
+			() => "cancelled",
+		);
+		const original = store.run("run-1")!;
+		const next = { ...original.stages[0]!, pendingPrompt: undefined, status: "running" as const };
+		store.recordRunStart({ ...original, stages: [next] });
+		const current = broker.claimStage("run-1", "stage-1");
+		try {
+			const successor = broker.requestDialog("run-1", "stage-1", { kind: "confirm", message: "New?" });
+			const prompt = store.run("run-1")!.stages[0]!.pendingPrompt!;
+			assert.equal(store.resolveStagePendingPrompt("run-1", "stage-1", prompt.id, true), true);
+			assert.equal(await successor, true);
+			assert.equal(
+				await Promise.race([
+					settled,
+					new Promise<string>((resolve) => setImmediate(() => resolve("still waiting"))),
+				]),
+				"cancelled",
+			);
+		} finally {
+			old.release();
+			current.release();
+		}
+	});
+
+	test("settling an old form on another broker cannot clear the successor's shared store record (#5577)", async () => {
+		const { store, broker: oldBroker } = setupStage();
+		const route = ["run-1", "stage-1"] as const;
+		const nextBroker = new StageUiBroker(store);
+		const adapter = buildStagePromptAdapter("same", "ask_user_question", COLOR_ARGS, Date.now())!;
+		const old = oldBroker.claimStage(...route);
+		oldBroker.provideStagePrompt(...route, adapter, old.signal);
+		const pending = oldBroker.requestCustomUi(...route, () => ({ render: () => [] }));
+		const rejected = assert.rejects(pending);
+		const row = store.run(route[0])!;
+		store.recordRunStart({ ...row, stages: [{ ...row.stages[0]!, inputRequest: undefined, status: "running" }] });
+		const next = nextBroker.claimStage(...route);
+		nextBroker.provideStagePrompt(...route, adapter, next.signal);
+		const answer = nextBroker.requestCustomUi(...route, () => ({ render: () => [] }));
+		try {
+			oldBroker.cancelStagePrompt(...route, new Error("closed"), old.signal);
+			await rejected;
+			assert.equal(store.run(route[0])!.stages[0]!.inputRequest?.id, "same");
+			assert.equal(store.run(route[0])!.stages[0]!.status, "awaiting_input");
+			assert.equal(nextBroker.answerStagePrompt(...route, { optionLabels: ["Green"] }), true);
+			await answer;
+		} finally {
+			old.release();
+			next.release();
+			await answer.catch(() => {});
+		}
+	});
+
+	test("releasing the current producer clears its unanswered form from the stage record (#5577)", async () => {
+		const { store, broker } = setupStage();
+		const owner = broker.claimStage("run-1", "stage-1");
+		broker.provideStagePrompt(
+			"run-1",
+			"stage-1",
+			buildStagePromptAdapter("end", "ask_user_question", COLOR_ARGS, Date.now())!,
+			owner.signal,
+		);
+		const ended = assert.rejects(
+			broker.requestCustomUi("run-1", "stage-1", () => ({ render: () => [] })),
+			/released/,
+		);
+		owner.release();
+		await ended;
+		const stage = store.run("run-1")!.stages[0]!;
+		assert.equal(stage.inputRequest, undefined);
+		assert.equal(stage.status, "running");
+	});
+
 	test("uses collision-resistant request ids", async () => {
 		const { broker } = setupStage();
 		let requestId = "";

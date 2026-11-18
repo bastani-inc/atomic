@@ -257,6 +257,19 @@ describe("an ask in the read that carries the hosting answer (#4642)", () => {
 });
 
 describe("adopting a stage again (#4642)", () => {
+	test("a delayed release announcement cannot redirect the current stage's ask (#5577)", async () => {
+		const { peers, connections } = harness();
+		try {
+			await peers.adopt(route(0, { answer: async () => "current" }));
+			await peers.adopt(route(0, { isCurrent: () => false, answer: async () => "obsolete" }));
+			deliver(connections[0]!, idOf(0), "which stage?", { id: "q" });
+			await settle();
+			assert.equal(connections[0]!.sent[0]?.options.text, "current");
+		} finally {
+			await peers.disconnectAll();
+		}
+	});
+
 	test("a changed model, live-route capability or stage keys hosts the stage again; the same route does not (#4642)", async () => {
 		const live = { stageKeys: ["stage-0", "review-0"], capability: "cap" };
 		const { peers, connections } = harness();

@@ -572,7 +572,7 @@ export function createWorkflowStageFactory(input: {
 					toolEvent.args as QuestionParams,
 					uiOwner.signal,
 				);
-				input.activeStore.recordStageAwaitingInput(input.runId, stageId, true);
+				if (!supersededBySuccessor()) input.activeStore.recordStageAwaitingInput(input.runId, stageId, true);
 				return;
 			}
 			if (toolEvent.callId !== undefined && activeAskUserQuestionCalls.has(toolEvent.callId)) {
@@ -616,6 +616,7 @@ export function createWorkflowStageFactory(input: {
 				});
 				return write;
 			},
+			uiOwner.signal,
 		);
 
 		/** This stage's control handle, once created; see {@link supersededBySuccessor}. */

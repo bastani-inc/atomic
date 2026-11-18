@@ -181,11 +181,13 @@ class WorkerStageUiBroker extends StageUiBroker {
 function failablePrompts(store: Store): WorkerStagePrompts["fail"] {
 	const failures = new Map<string, (error: Error) => void>();
 	const awaitPrompt = store.awaitStagePendingPrompt.bind(store);
-	store.awaitStagePendingPrompt = (runId, stageId, promptId) => {
+	store.awaitStagePendingPrompt = (runId, stageId, promptId, signal) => {
 		const failed = Promise.withResolvers<never>();
 		const key = JSON.stringify([runId, stageId, promptId]);
 		failures.set(key, failed.reject);
-		return Promise.race([awaitPrompt(runId, stageId, promptId), failed.promise]).finally(() => failures.delete(key));
+		return Promise.race([awaitPrompt(runId, stageId, promptId, signal), failed.promise]).finally(() => {
+			if (failures.get(key) === failed.reject) failures.delete(key);
+		});
 	};
 	return (runId, stageId, promptId, error) => {
 		const fail = failures.get(JSON.stringify([runId, stageId, promptId]));

@@ -131,7 +131,8 @@ function mayReopen(
 ): boolean {
 	if (stageRecord(runId, stageId, deps) !== record) return false;
 	const owner = deps.stageUiBroker?.currentStageOwner(runId, stageId);
-	return owner === undefined || deps.registry.peek(runId, stageId)?.stageUiSignal === owner;
+	const registered = deps.registry.peek(runId, stageId)?.stageUiSignal;
+	return registered?.aborted !== true && (owner === undefined || registered === owner);
 }
 
 /**

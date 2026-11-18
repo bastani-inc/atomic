@@ -46,12 +46,13 @@ function announcementFor(
 	// Only a stage that connected to Intercom at startup was a peer before release.
 	if (run === undefined || stage?.pendingStageDeliveryAvailable !== true) return undefined;
 	const record = released.stageRecord ?? new WeakRef(stage);
-	if (record.deref() !== stage || stage.sessionId !== released.sessionId) return undefined;
+	if (record.deref() !== stage || (stage.sessionId !== undefined && stage.sessionId !== released.sessionId))
+		return undefined;
 	const isCurrent = () => {
 		const held = record.deref();
 		return (
 			held !== undefined &&
-			held.sessionId === released.sessionId &&
+			(held.sessionId === undefined || held.sessionId === released.sessionId) &&
 			store.run(released.runId)?.stages.includes(held) === true
 		);
 	};

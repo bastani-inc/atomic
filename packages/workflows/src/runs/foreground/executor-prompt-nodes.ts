@@ -398,7 +398,7 @@ export function buildPromptNodeUiAdapter(input: {
 			return fallbackForPromptDescriptor(descriptor);
 		}
 
-		const waiter = input.activeStore.awaitStagePendingPrompt(input.runId, stageId, prompt.id);
+		const waiter = input.activeStore.awaitStagePendingPrompt(input.runId, stageId, prompt.id, owner.signal);
 		try {
 			const response = await new Promise<unknown>((resolve, reject) => {
 				const onAbort = (): void => {
