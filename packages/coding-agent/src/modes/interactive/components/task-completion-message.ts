@@ -170,7 +170,8 @@ function legacyStopWording(title: string, result: unknown): string | undefined {
 function legacyStop(title: string, result: unknown): { line: TaskNoticeLine; agentName?: string } | undefined {
 	const wording = legacyStopWording(title, result);
 	if (wording === undefined) return undefined;
-	const end = title.indexOf(` ${wording}: `);
+	// The space after "Subagent" introduces its name, even if the name itself starts with the recorded outcome.
+	const end = title.indexOf(` ${wording}: `, title.startsWith("Subagent ") ? "Subagent ".length : 0);
 	// The writer saved only the first physical line, even when a call ID continued on the next one.
 	const [ending] = ` ${wording}.`.split("\n", 1);
 	const label = end >= 0 ? title.slice(0, end) : title.endsWith(ending) ? title.slice(0, -ending.length) : undefined;

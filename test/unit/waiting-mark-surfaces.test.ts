@@ -205,6 +205,15 @@ test("the saved result distinguishes a release from punctuation and release word
 	);
 });
 
+test("a subagent whose name starts with its release wording still shows its saved wait (#5563)", () => {
+	const saved = completionNoticeFromDetails(savedNotices.nameStartsWithOutcome088Details);
+	assert.ok(saved);
+	assert.equal(
+		stripVTControlCharacters(new TaskCompletionMessage(saved, false).render(120)[0]!).trim(),
+		"◌ released while waiting on bash (toolu_1): reviewer is waiting on bash (toolu_1)",
+	);
+});
+
 test("a release whose title ended mid-call still shows the whole saved wait on one row (#5563)", () => {
 	const saved = completionNoticeFromDetails(savedNotices.firstLine088Details);
 	assert.ok(saved);

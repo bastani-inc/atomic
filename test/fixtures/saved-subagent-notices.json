@@ -95,6 +95,26 @@
 			"taskKind": "agent"
 		}
 	},
+	"nameStartsWithOutcome088Details": {
+		"completionId": "completion-1",
+		"ownerId": "owner",
+		"taskId": "worker-1",
+		"terminalSequence": "1",
+		"result": {
+			"kind": "cancelled",
+			"cause": "pause",
+			"released": { "waitingOn": [{ "toolName": "bash", "toolCallId": "toolu_1" }] }
+		},
+		"display": false,
+		"taskKind": "agent",
+		"notification": {
+			"title": "Subagent released while waiting on bash (toolu_1): reviewer released while waiting on bash (toolu_1): Review docs",
+			"preview": "",
+			"status": "cancelled",
+			"taskId": "worker-1",
+			"taskKind": "agent"
+		}
+	},
 	"firstLine088Details": {
 		"completionId": "completion-1",
 		"ownerId": "owner",
