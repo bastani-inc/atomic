@@ -36,6 +36,7 @@ interface ForkableStageOptions {
 	readonly forkFromSessionId?: string;
 	readonly forkFromEntryId?: string;
 	readonly forkFromEmptySource?: boolean;
+	readonly durableForkPoint?: () => Promise<ForkPoint>;
 }
 
 /**
@@ -144,11 +145,13 @@ export function forkSourceRecordWithSessions(
 /**
  * `options` with the fork point of a stage that forks a session without naming an entry: the entry its source was at
  * when the stage was launched, or its empty start, so every stage launched from that point gets the same copy, and a
- * stage that starts later, because it was retried or resumed after a restart, never sees a later turn of its source
- * (#5481). The point is read from the run's record when an earlier launch of the stage recorded one, and otherwise
- * from the source's session when it is open in this process, and then recorded. Unchanged for a stage that resumes
- * its own session, has its fork point already (it names its entry, or its parallel set its launch's point), or forks a
- * session that is not open here, whose stored conversation it copies at start.
+ * stage that starts later, because it was retried, resumed after a restart or run again by `workflow fork`, never sees
+ * a later turn of its source (#5481). The point is read from the run's record when an earlier launch of the stage
+ * recorded one, and otherwise from the source's session when it is open in this process, and then recorded: the stage
+ * opens its session only once the record is durable, at the point the run kept, and fails before it when the record
+ * cannot be written. Unchanged for a stage that resumes its own session, has its fork point already (it names its
+ * entry, or its parallel set its launch's point), or forks a session that is not open here, whose stored conversation
+ * it copies at start.
  */
 export function withLaunchForkPoint<TOptions extends ForkableStageOptions>(input: {
 	readonly backend: DurableWorkflowBackend;
@@ -161,16 +164,17 @@ export function withLaunchForkPoint<TOptions extends ForkableStageOptions>(input
 	const sessionId = launchForkSourceOf(options);
 	if (input.resuming || options === undefined || sessionId === undefined) return options;
 	const key = forkSourceCheckpointKey(input.replayKey);
-	const recorded = input.backend.getToolCheckpoint(input.workflowId, key)?.output;
-	if (isForkSourceRecord(recorded) && recorded.sessionId === sessionId)
-		return withForkPoint(options, recorded.entryId);
+	const recordedPoint = (): ForkSourceRecord | undefined => {
+		const recorded = input.backend.getToolCheckpoint(input.workflowId, key)?.output;
+		return isForkSourceRecord(recorded) && recorded.sessionId === sessionId ? recorded : undefined;
+	};
+	const recorded = recordedPoint();
+	if (recorded !== undefined) return withForkPoint(options, recorded.entryId);
 	const entryId = liveStageSessionLeaf(sessionId);
 	if (entryId === undefined) return options;
 	const record: ForkSourceRecord = { sessionId, entryId };
-	// A single stage has no sibling to share its point with: once its session is recorded it resumes that session, and
-	// one whose session was not recorded when the run stopped is launched anew, so it need not wait for this record.
-	void input.backend
-		.commitAdditiveCheckpointBestEffort({
+	const durable = input.backend
+		.commitCheckpoint({
 			kind: "tool",
 			workflowId: input.workflowId,
 			checkpointId: key,
@@ -179,6 +183,10 @@ export function withLaunchForkPoint<TOptions extends ForkableStageOptions>(input
 			output: record as unknown as WorkflowSerializableValue,
 			completedAt: Date.now(),
 		})
-		.catch(() => false);
-	return withForkPoint(options, entryId);
+		// The journal keeps the first record written under a key: a record of this launch that an earlier attempt wrote,
+		// though that attempt failed before it learned so, is the launch's point.
+		.then(() => recordedPoint()?.entryId ?? entryId);
+	// Observed when the stage opens its session; a stage that never opens one has nothing to fail.
+	durable.catch(() => {});
+	return { ...withForkPoint(options, entryId), durableForkPoint: () => durable };
 }

@@ -18,6 +18,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
 import {
 	FAN_OUT_FORK_SOURCES_SUFFIX,
+	FORK_SOURCE_CHECKPOINT_SUFFIX,
 	withLaunchForkPoint,
 } from "../../packages/workflows/src/durable/stage-fork-point.js";
 import {
@@ -416,19 +417,29 @@ describe("a parallel's launch fixes its steps' identities and fork point (#5481)
 
 	test("a stage launched while its live source is still empty starts empty, also when launched again (#5481)", async () => {
 		const { backend, run, store, source } = await launchRun({ empty: true });
-		const launch = () =>
-			withLaunchForkPoint({
-				backend,
-				workflowId: run,
-				replayKey: "stage:task:alone:1",
-				options: { context: "fork" as const, forkFromSessionId: source.getSessionId() },
-				resuming: false,
-			})!;
-		const launched = launch();
+		const launched = launchStage(backend, run, source);
 		await source.appendMessage(userMessage("after the launch"));
 		assert.deepEqual(await stepConversation(store, launched), []);
-		// The record's write is queued behind nothing: once it is in, a stage launched again reads the empty point.
-		await vi.waitFor(() => assert.deepEqual(launch(), launched));
+		// Launched again, as after a resume, the stage reads the empty point the run recorded.
+		assert.deepEqual(await stepConversation(store, launchStage(backend, run, source)), []);
+	});
+
+	test("a stage whose fork point record cannot be written does not open its session (#5481)", async () => {
+		const { backend, run, store, source } = await launchRun();
+		const unavailable = failForkRecordOnce(backend, { written: false });
+		const launched = launchStage(backend, run, source);
+		await assert.rejects(stepConversation(store, launched), (error) => error === unavailable);
+	});
+
+	test("a stage launched again after its fork point record was kept, though the write failed, forks at the kept point (#5481)", async () => {
+		const { backend, run, store, source } = await launchRun();
+		const unavailable = failForkRecordOnce(backend, { written: true });
+		await assert.rejects(
+			stepConversation(store, launchStage(backend, run, source)),
+			(error) => error === unavailable,
+		);
+		await source.appendMessage(userMessage("before the run resumes"));
+		assert.deepEqual(await stepConversation(store, launchStage(backend, run, source)), ["before launch"]);
 	});
 
 	test("a parallel whose fork point record cannot be written starts none of its steps and is launched again whole (#5481)", async () => {
@@ -594,13 +605,34 @@ async function stepConversation(store: MemorySessionStore, options: WorkflowTask
 		.messages.map((message) => ("content" in message ? message.content : message.role));
 }
 
+/** The options of a stage that forks `source`, launched in `run` under `replayKey`. */
+function launchStage(
+	backend: MemoryJournalBackend,
+	run: string,
+	source: SessionManager,
+	replayKey = "stage:task:alone:1",
+): StageOptions {
+	const launched = withLaunchForkPoint({
+		backend,
+		workflowId: run,
+		replayKey,
+		options: { context: "fork" as const, forkFromSessionId: source.getSessionId() },
+		resuming: false,
+	});
+	assert.ok(launched);
+	return launched;
+}
+
 function isForkRecordAppend(event: { readonly type: string; readonly payload?: unknown }): boolean {
-	const argsHash = (event.payload as { readonly argsHash?: unknown } | undefined)?.argsHash;
-	return event.type === "CheckpointRecorded" && String(argsHash).endsWith(FAN_OUT_FORK_SOURCES_SUFFIX);
+	const argsHash = String((event.payload as { readonly argsHash?: unknown } | undefined)?.argsHash);
+	return (
+		event.type === "CheckpointRecorded" &&
+		(argsHash.endsWith(FAN_OUT_FORK_SOURCES_SUFFIX) || argsHash.endsWith(FORK_SOURCE_CHECKPOINT_SUFFIX))
+	);
 }
 
 /**
- * Fails the next write of a parallel's fork point record with a storage error, as a briefly unavailable journal does;
+ * Fails the next write of a fork point record (a parallel's or a single stage's) with a storage error, as a briefly unavailable journal does;
  * later writes go through. With `written`, the record is stored before the write fails, as when only its
  * acknowledgement is lost.
  */
@@ -620,7 +652,7 @@ function failForkRecordOnce(backend: MemoryJournalBackend, options: { readonly w
 	return unavailable;
 }
 
-/** Holds the write of a parallel's fork point record until `release()`. */
+/** Holds the write of a fork point record until `release()`. */
 function holdForkRecord(backend: MemoryJournalBackend) {
 	const writing = Promise.withResolvers<void>();
 	const released = Promise.withResolvers<void>();
