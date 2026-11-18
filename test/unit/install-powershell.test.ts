@@ -144,6 +144,9 @@ test("Windows installer skips a healthy install before any download and keeps th
 	for (const required of ["builtin", "node_modules"]) {
 		assert.ok(health.includes(`"${required}"`), `the Windows health check must require the ${required} directory`);
 	}
+	assert.match(health, /\$launcherItem\.Length -eq 0/u, "an empty atomic.exe must not count as healthy");
+	assert.match(health, /Test-AtomicLauncherMatchesRecord \$currentRoot/u, "a recorded launcher hash must still match");
+	assert.match(health, /function Test-AtomicInstallVerified/u);
 	assert.match(health, /Join-Path \$BinDir "atomic\.cmd"/u);
 	assert.match(health, /ReadAllText\(\$shimItem\.FullName\) -ceq \$ExpectedShimContent/u);
 	assert.doesNotMatch(health, /&\s+\$|Invoke-WebRequest|Move-Item|Remove-Item/u, "the health check must be read-only");
@@ -433,7 +436,8 @@ test("Windows installer enforces Atomic release grammar before archive downloads
 	const source = installerSource();
 	assert.match(source, /function Test-AtomicReleaseTag/u);
 	assert.ok(
-		source.includes("'^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-alpha\\.(?:[1-9][0-9]*))?$'"),
+		// \z, not $: .NET's $ also matches before a final newline, which install.sh rejects.
+		source.includes("'^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-alpha\\.(?:[1-9][0-9]*))?\\z'"),
 		"the PowerShell grammar does not match install.sh",
 	);
 	assert.match(source, /-cmatch/u);
@@ -1108,7 +1112,7 @@ try {
     $env:PATHEXT = $null
 
     # Unsupported release tag grammar must fail before the tags API request.
-    foreach ($invalidTag in @("v1.0.0", "1.0", "1.0.0.0", "1.0.0-alpha.0", "1.0.0-beta.1", "1.0.0-alpha", "01.0.0", "release/1.0", "hash#tag", "percent%tag")) {
+    foreach ($invalidTag in @("v1.0.0", "1.0", "1.0.0.0", "1.0.0-alpha.0", "1.0.0-beta.1", "1.0.0-alpha", "01.0.0", "release/1.0", "hash#tag", "percent%tag", ("1.0.0" + [char]10), ("1.0.0-alpha.1" + [char]10))) {
         $null = New-ProbeSpace
         $null = Assert-Rejected "explicit ref $invalidTag" 'unsupported release tag: expected MAJOR\.MINOR\.PATCH or MAJOR\.MINOR\.PATCH-alpha\.REVISION' -Ref $invalidTag
     }
@@ -1379,7 +1383,7 @@ Set-Content -LiteralPath (Join-Path $versionPath "sentinel.txt") -Value "survive
 $before = Get-InstallSnapshot
 $result = Invoke-Installer @{ Ref = "1.0.0" }
 Assert-Skipped $result "1.0.0" "requested version"
-Assert-Probe (@($global:requests | Where-Object { $_ -match '/releases/tags/1\.0\.0$' }).Count -eq 1) "the requested tag was not resolved"
+Assert-Probe ($global:requests.Count -eq 0) "a healthy pinned rerun made a network request: $($global:requests -join ', ')"
 Assert-Probe ((Get-InstallSnapshot) -ceq $before) "a skipped rerun changed the install"
 Assert-Probe (Test-Path -LiteralPath (Join-Path $versionPath "sentinel.txt")) "a skipped rerun removed the version payload"
 Assert-Probe ($env:Path -split [IO.Path]::PathSeparator -contains $global:binDir) "a skipped rerun did not repair the current session PATH"
@@ -1960,6 +1964,19 @@ $global:AtomicFixtureFailApi = $false
 $global:AtomicFixtureRedirectFails = $false
 $global:AtomicFixtureRedirectTag = "2.0.0"
 $global:AtomicFixtureLatestApiTag = "2.0.0"
+# Off by default: the github.com release page is then unknown to the fixture, so an exact tag
+# falls back to the REST API as when github.com gives no clear answer.
+$global:AtomicFixtureWebPages = $false
+$global:AtomicFixtureApiRateLimited = $false
+$global:AtomicFixtureProbes = New-Object System.Collections.ArrayList
+
+# An HTTP error shaped like Invoke-WebRequest's: the exception carries the response status and headers.
+function global:New-AtomicFixtureHttpError {
+    param([int]$StatusCode, [hashtable]$ResponseHeaders, [string]$ResponseUri = "https://api.github.com/")
+    $exception = New-Object System.Exception ("The remote server returned an error: (" + $StatusCode + ").")
+    Add-Member -InputObject $exception -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = $StatusCode; Headers = $ResponseHeaders; ResponseUri = [Uri]$ResponseUri })
+    return $exception
+}
 
 function global:Invoke-WebRequest {
     [CmdletBinding()]
@@ -1968,8 +1985,21 @@ function global:Invoke-WebRequest {
         [string]$OutFile,
         [hashtable]$Headers,
         [switch]$UseBasicParsing,
-        [int]$MaximumRedirection
+        [int]$MaximumRedirection,
+        [string]$Method
     )
+
+    # The release probe (HEAD of a release's SHA256SUMS, no redirects) is recorded apart, so the
+    # request counts of the scenarios below stay those of resolution and downloads.
+    if ($Method -eq "Head" -and $Uri -match '^https://github\.com/bastani-inc/atomic/releases/download/([^/]+)/SHA256SUMS$') {
+        [void]$global:AtomicFixtureProbes.Add($Uri)
+        if (-not $global:AtomicFixtureWebPages) { throw "github.com gives no answer in this fixture scenario: $Uri" }
+        $probeTag = [Uri]::UnescapeDataString($Matches[1])
+        if (Test-Path -LiteralPath (Join-Path (Join-Path $global:AtomicFixtureAssetRoot $probeTag) "SHA256SUMS")) {
+            return [pscustomobject]@{ StatusCode = 302; Headers = @{} }
+        }
+        throw (New-AtomicFixtureHttpError 404 @{} $Uri)
+    }
 
     $authorization = $null
     if ($null -ne $Headers -and $Headers.ContainsKey("Authorization")) {
@@ -1992,6 +2022,7 @@ function global:Invoke-WebRequest {
 
     if ($Uri -match '^https://api\.github\.com/') {
         if ($global:AtomicFixtureFailApi) { throw "GitHub API is unavailable in this fixture scenario: $Uri" }
+        if ($global:AtomicFixtureApiRateLimited) { throw (New-AtomicFixtureHttpError 403 @{ "X-RateLimit-Remaining" = "0" }) }
         if ($Uri -match '/repos/bastani-inc/atomic/releases/latest$') {
             return [pscustomobject]@{ Content = ('{"tag_name":"' + $global:AtomicFixtureLatestApiTag + '"}'); Headers = @{} }
         }
@@ -2355,9 +2386,10 @@ try {
         Assert-Fixture ($reinstallOutput -notmatch 'to your User PATH') "same-version rerun claimed a User PATH update although the entry already existed"
         Assert-Fixture (@(Get-Content -LiteralPath $upgradeLog).Count -eq 1) "a skipped same-version rerun ran 'intercom upgrade'"
         Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $skipRequestStart | Where-Object { $_.Uri -match '/releases/download/' }).Count -eq 0) "a healthy same-version rerun still downloaded release assets"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $skipRequestStart).Count -eq 0) "a healthy same-version rerun made a network request"
+        $forcedOutput = & $InstallerPath -Force | Out-String
         $fallbackApiRequests = @($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' })
         Assert-Fixture ($fallbackApiRequests[$fallbackApiRequests.Count - 1].Authorization -eq "Bearer gh-token") "GH_TOKEN was not used when GITHUB_TOKEN was unset"
-        $forcedOutput = & $InstallerPath -Force | Out-String
         Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $versionOne "stale.txt"))) "forced same-version reinstall was not clean"
         Assert-Fixture ($forcedOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "forced reinstall did not report the installed launcher path"
 
@@ -3022,6 +3054,70 @@ try {
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $installRoot "versions\1.0.0\atomic.exe")) "a matching exact ref did not install"
         Assert-NoTransactionResidue $installRoot $binDir
     }
+    elseif ($Scenario -eq "api-rate-limit") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $env:GITHUB_TOKEN = $null
+        $env:GH_TOKEN = $null
+        $global:AtomicFixtureWebPages = $true
+        $global:AtomicFixtureApiRateLimited = $true
+
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $installRoot "versions\1.0.0\atomic.exe")) "an exact tag did not install while the GitHub API was rate limited"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '^https://api\.github\.com/' }).Count -eq 0) "an exact tag confirmed on github.com still queried the API"
+        Assert-Fixture (@($global:AtomicFixtureProbes | Where-Object { $_ -eq "https://github.com/bastani-inc/atomic/releases/download/1.0.0/SHA256SUMS" }).Count -eq 1) "the exact tag was not confirmed on github.com"
+
+        $mark = $global:AtomicFixtureRequests.Count
+        $missing = $null
+        try { & $InstallerPath -Ref "9.9.9" | Out-Null }
+        catch { $missing = $_ }
+        Assert-Fixture ($null -ne $missing) "a missing exact tag did not fail"
+        Assert-Fixture ($missing.Exception.Message -match 'release 9\.9\.9 not found') "a missing exact tag was not reported as not found: $($missing.Exception.Message)"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark | Where-Object { $_.Uri -match '^https://api\.github\.com/|/releases/download/' }).Count -eq 0) "a missing exact tag queried the API or downloaded"
+        Assert-Fixture (@($global:AtomicFixtureProbes | Where-Object { $_ -match '/releases/download/9\.9\.9/SHA256SUMS$' }).Count -eq 1) "a missing exact tag was not probed on github.com"
+
+        $global:AtomicFixtureWebPages = $false
+        $limited = $null
+        try { & $InstallerPath -Ref "2.0.0" | Out-Null }
+        catch { $limited = $_ }
+        Assert-Fixture ($null -ne $limited) "a rate-limited API request did not fail"
+        Assert-Fixture ($limited.Exception.Message -match "GitHub's API rate limit was reached for this network") "the rate limit was not explained: $($limited.Exception.Message)"
+        Assert-Fixture ($limited.Exception.Message -match 'GITHUB_TOKEN') "the rate-limit error did not name GITHUB_TOKEN: $($limited.Exception.Message)"
+
+        $env:GITHUB_TOKEN = "github-secret-token"
+        $tokenLimited = $null
+        try { & $InstallerPath -Ref "2.0.0" | Out-Null }
+        catch { $tokenLimited = $_ }
+        $env:GITHUB_TOKEN = $null
+        Assert-Fixture ($null -ne $tokenLimited) "a rate-limited token request did not fail"
+        Assert-Fixture ($tokenLimited.Exception.Message -match "GitHub's API rate limit was reached for this token") "the token rate limit was not explained: $($tokenLimited.Exception.Message)"
+        Assert-Fixture ($tokenLimited.Exception.Message -notmatch 'github-secret-token') "the rate-limit error printed the token"
+
+        $mark = $global:AtomicFixtureRequests.Count
+        & $InstallerPath | Out-Null
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path (Join-Path $installRoot "current") "version.txt") -Raw) -eq "2.0.0") "the latest release did not install through the redirect"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark | Where-Object { $_.Uri -match '^https://api\.github\.com/' }).Count -eq 0) "the latest path changed: it queried the API"
+        # A launcher that no longer matches its recorded hash, or is empty, is reinstalled.
+        $global:AtomicFixtureWebPages = $true
+        $launcherTwo = Join-Path $installRoot "versions\2.0.0\atomic.exe"
+        $recordTwo = Join-Path $installRoot "versions\2.0.0\.atomic-launcher.sha256"
+        Assert-Fixture (([IO.File]::ReadAllText($recordTwo)).Trim() -ceq (Get-FileHash -LiteralPath $launcherTwo -Algorithm SHA256).Hash.ToLowerInvariant()) "the install did not record the launcher hash"
+        $appended = [IO.File]::Open($launcherTwo, [IO.FileMode]::Append)
+        try { $appended.WriteByte(0) } finally { $appended.Dispose() }
+        $null = & $InstallerPath -Ref "2.0.0" | Out-String
+        Assert-Fixture ((Get-FileHash -LiteralPath $launcherTwo -Algorithm SHA256).Hash.ToLowerInvariant() -ceq ([IO.File]::ReadAllText($recordTwo)).Trim()) "a changed launcher was not reinstalled"
+        [IO.File]::WriteAllBytes($launcherTwo, [byte[]]@())
+        $null = & $InstallerPath -Ref "2.0.0" | Out-String
+        Assert-Fixture ((Get-Item -LiteralPath $launcherTwo).Length -gt 0) "the reinstall did not restore atomic.exe"
+        $mark = $global:AtomicFixtureRequests.Count
+        $probeMark = $global:AtomicFixtureProbes.Count
+        $verifiedOutput = & $InstallerPath -Ref "2.0.0" | Out-String
+        Assert-Fixture ($verifiedOutput -match ('(?m)^Installed to ' + [regex]::Escape((Join-Path $binDir "atomic.cmd")) + '\s*$')) "a verified pinned rerun did not finish: $verifiedOutput"
+        Assert-Fixture ((@($global:AtomicFixtureRequests).Count -eq $mark) -and (@($global:AtomicFixtureProbes).Count -eq $probeMark)) "a verified pinned install made a request"
+
+        $global:AtomicFixtureApiRateLimited = $false
+        Assert-NoTransactionResidue $installRoot $binDir
+    }
     elseif ($Scenario -eq "semicolon-bin") {
         $semicolonBinDir = Join-Path $workspace "semi;bin"
         $env:ATOMIC_BIN_DIR = $semicolonBinDir
@@ -3176,7 +3272,7 @@ try {
         Assert-Fixture ($skipOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "the skip did not keep the Installed to line"
         Assert-Fixture ($skipOutput -notmatch 'to your User PATH') "the skip claimed a User PATH update although the entry existed"
         Assert-Fixture ((Get-DownloadRequestCount $mark) -eq 0) "the skip requested release assets"
-        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' }).Count -eq 1) "the skip did not resolve the requested tag"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark).Count -eq 0) "a healthy pinned rerun made a network request"
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $versionOne "sentinel.txt")) "the skip replaced the installed version"
         Assert-Fixture ((Get-FixtureLinkTarget $current) -ceq $currentTarget) "the skip repointed current"
         Assert-Fixture ((Get-FixtureLinkTarget $atomicCurrent) -ceq $atomicCurrentTarget) "the skip repointed atomic-current"
@@ -4120,6 +4216,7 @@ function runPowerShellFixture(
 		| "ctrl-c"
 		| "hash-fallback"
 		| "ref-identity"
+		| "api-rate-limit"
 		| "semicolon-bin"
 		| "shadowed-shim"
 		| "custom-pathext"
@@ -4248,6 +4345,12 @@ powershellTest("PowerShell 5.1 fixture fails closed when an exact-tag response n
 	runPowerShellFixture("ref-identity");
 });
 
+powershellTest(
+	"PowerShell 5.1 fixture installs an exact tag while the GitHub API is rate limited and explains API failures",
+	() => {
+		runPowerShellFixture("api-rate-limit");
+	},
+);
 powershellTest("PowerShell 5.1 fixture never appends a semicolon-containing bin directory to PATH", () => {
 	runPowerShellFixture("semicolon-bin");
 });

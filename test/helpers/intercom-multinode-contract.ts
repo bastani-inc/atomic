@@ -446,6 +446,23 @@ export function registerOutboxStoreConformance(
 		assert.equal(expectStatus(await a.read("m1"), "found").row.state, "delivered");
 	});
 
+	check("a claim handed back as never written to its recipient does not count as an attempt", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await insert(a, frameFor("m1", "first"));
+		const [unwritten] = await claimAll(a, "broker-a");
+		assert.ok(unwritten);
+		assert.equal(unwritten.row.claimAttempts, 1);
+		assert.deepEqual(await a.releaseClaim(unwritten.claim, { unwritten: true }), { status: "released" });
+		const read = expectStatus(await b.read("m1"), "found").row;
+		assert.equal(read.state, "queued");
+		assert.equal(read.claimAttempts, 0);
+		const [written] = await claimAll(b, "broker-b");
+		assert.ok(written);
+		assert.equal(written.row.claimAttempts, 1);
+		assert.deepEqual(await b.releaseClaim(written.claim), { status: "released" });
+		assert.equal(expectStatus(await a.read("m1"), "found").row.claimAttempts, 1);
+	});
+
 	check("stores and returns the delivery frame verbatim and detached", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		const frame = richFrame("rich");
