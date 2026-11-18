@@ -921,8 +921,10 @@ jobs:
     # global setup still builds a missing binding, so a cold job needs Rust.
     runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.static-checks.linux-amd64
     # Run 34873678170: all steps passed, but 182s finalization hit the 3-minute cap. Add 50% headroom.
-    # `npm run check` now also walks the call graph for blocking calls (about 25 s more), so 6 minutes.
-    timeout-minutes: 6
+    # `npm run check` now also walks the call graph for blocking calls (about 25 s more), so 6 minutes. A cold job
+    # also builds the native binding (over 4.5 minutes in run 44226304327) and may retry the Rust install (4 minutes):
+    # 6 + 5 + 4 = 15. The bindings cache below keeps the build off a warm job.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -937,7 +939,26 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
+      - name: Week for the native bindings cache key
+        id: week
+        shell: bash
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore native bindings built from these sources
+        id: natives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/natives/native/*.node
+          key: atomic-natives-linux-x64-${{ steps.week.outputs.week }}-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'packages/natives/package.json', 'packages/natives/scripts/**') }}
       - name: Install Rust toolchain
+        id: rust
+        if: steps.natives.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        continue-on-error: true
+        timeout-minutes: 4
+        with:
+          toolchain: stable
+      - name: Retry Rust toolchain install
+        if: steps.rust.outcome == 'failure'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         timeout-minutes: 4
         with:

@@ -309,7 +309,16 @@ describe("windows session temp root verification", () => {
 					"@{ currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; dacl = $acl.GetSecurityDescriptorSddlForm('Access'); accessRules = $rules } | ConvertTo-Json -Depth 4 -Compress",
 				].join("; "),
 			],
-			{ env: { ...process.env, ATOMIC_TEST_SECURITY_PATH: path }, timeout: 30_000 },
+			{
+				// A PowerShell 7 parent's module path keeps Windows PowerShell from loading Get-Acl's module.
+				env: {
+					...Object.fromEntries(
+						Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"),
+					),
+					ATOMIC_TEST_SECURITY_PATH: path,
+				},
+				timeout: 30_000,
+			},
 		);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
 		return JSON.parse(result.stdout.toString()) as WindowsDirectorySecurity;
@@ -608,6 +617,7 @@ interface FakePowerShell {
 	readonly logPath: string;
 	launches(): Array<{ pid: number; host: string; path: string }>;
 	argumentsOf(host: string): string[];
+	modulePathOf(host: string): string;
 	restore(): void;
 }
 
@@ -628,6 +638,7 @@ function fakeHostScript(host: string, mode: FakePowerShellMode, bin: string): st
 			: []),
 		`echo "$$ ${host} $ATOMIC_SECURITY_QUERY_PATH" >> '${join(bin, "launches.log")}'`,
 		`printf '%s\\n' "$@" > '${join(bin, `${host}.args`)}'`,
+		`printf '%s' "\${PSModulePath-unset}" > '${join(bin, `${host}.psmodulepath`)}'`,
 		...body[mode],
 	].join("\n");
 }
@@ -658,6 +669,7 @@ function installFakePowerShell(mode: FakePowerShellMode, pwshMode: FakePowerShel
 			readFileSync(join(bin, `${host}.args`), "utf8")
 				.split("\n")
 				.slice(0, -1),
+		modulePathOf: (host) => readFileSync(join(bin, `${host}.psmodulepath`), "utf8"),
 		restore() {
 			process.env.PATH = savedPath;
 			rmSync(bin, { recursive: true, force: true });
@@ -727,6 +739,22 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 		assert.match(script ?? "", /Get-Acl -LiteralPath \$env:ATOMIC_SECURITY_QUERY_PATH/);
 		assert.ok(blockedMs < MAIN_THREAD_BLOCK_LIMIT_MS, `the main thread was blocked for ${blockedMs} ms`);
 	});
+
+	it.skipIf(isWindows)(
+		"starts the PowerShell read without the parent's PSModulePath, which breaks Get-Acl under a PowerShell 7 parent (#5324)",
+		async () => {
+			fake = installFakePowerShell("answer");
+			const saved = process.env.PSModulePath;
+			process.env.PSModulePath = "C:\\Program Files\\PowerShell\\7\\Modules";
+			try {
+				assert.equal((await readWindowsDirectorySecurityAsync(dir))?.ownerSid, CURRENT_SID);
+			} finally {
+				if (saved === undefined) delete process.env.PSModulePath;
+				else process.env.PSModulePath = saved;
+			}
+			assert.equal(fake.modulePathOf("powershell.exe"), "unset");
+		},
+	);
 
 	it.skipIf(isWindows)("shares one subprocess among concurrent reads of one path (#5285)", async () => {
 		fake = installFakePowerShell("answer");

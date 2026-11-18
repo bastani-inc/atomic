@@ -172,6 +172,19 @@ export function powershellCandidates(): string[] {
 	return candidates;
 }
 
+/**
+ * The environment for a PowerShell read. A PowerShell 7 parent puts its own module directories in `PSModulePath`, and
+ * Windows PowerShell started from it then fails to load `Get-Acl`'s module. Without the variable each host uses its
+ * own default module path.
+ */
+function powershellEnvironment(path: string): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = { ATOMIC_SECURITY_QUERY_PATH: path };
+	for (const [key, value] of Object.entries(process.env)) {
+		if (key.toLowerCase() !== "psmodulepath" && key !== "ATOMIC_SECURITY_QUERY_PATH") env[key] = value;
+	}
+	return env;
+}
+
 function windowsDirectory(): string {
 	return process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
 }
@@ -359,7 +372,7 @@ class SharedSecurityRead {
 			try {
 				child = spawn(executable, ["-NoProfile", "-NonInteractive", "-Command", READ_SECURITY_SCRIPT], {
 					cwd,
-					env: { ...process.env, ATOMIC_SECURITY_QUERY_PATH: this.path },
+					env: powershellEnvironment(this.path),
 					stdio: ["ignore", "pipe", "pipe"],
 					windowsHide: true,
 				});
