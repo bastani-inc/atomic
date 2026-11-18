@@ -1714,6 +1714,68 @@ type GitInstallLock =
 /** proper-lockfile never declares a lock stale by itself: wall-clock staleness breaks under clock skew. */
 const LOCK_NEVER_STALE_MS = 2 ** 31 - 1;
 
+/** Which lock directory is on disk: a lock removed and taken again by another process gets a different identity. */
+async function lockIdentity(path: string): Promise<string | undefined> {
+	const stats = await stat(path).catch(() => undefined);
+	return stats === undefined ? undefined : `${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}`;
+}
+
+function takeoverClaimPrefix(lockPath: string, staleIdentity: string): string {
+	return `${basename(lockPath)}.takeover-${createHash("sha256").update(staleIdentity).digest("hex").slice(0, 16)}`;
+}
+
+interface Observation {
+	readonly identity: string | undefined;
+	readonly since: number;
+}
+
+/** Record `identity` seen at `path` now; returns how long it has stayed unchanged. */
+function observe(observations: Map<string, Observation>, path: string, identity: string | undefined, now: number) {
+	const previous = observations.get(path);
+	if (previous !== undefined && previous.identity === identity) return now - previous.since;
+	observations.set(path, { identity, since: now });
+	return 0;
+}
+
+/**
+ * Remove the abandoned lock `staleIdentity`, and nothing else. Waiters that judged the same lock stale race to create
+ * a claim directory named after it, and only the winner removes the lock, after checking it is still that lock: a
+ * waiter that lost the race, or that acts after the lock was already replaced, never removes the replacement another
+ * installer now holds. A claim whose creator died before finishing is taken over the same way, one level deeper.
+ */
+async function takeOverStaleLock(
+	lockPath: string,
+	staleIdentity: string,
+	observations: Map<string, Observation>,
+	now: number,
+): Promise<void> {
+	const binDir = dirname(lockPath);
+	const prefix = takeoverClaimPrefix(lockPath, staleIdentity);
+	let claim = join(binDir, prefix);
+	for (;;) {
+		try {
+			await mkdir(claim);
+			break;
+		} catch (error) {
+			if (errnoCode(error) !== "EEXIST") throw error;
+		}
+		const claimIdentity = await lockIdentity(claim);
+		if (claimIdentity === undefined) return;
+		if (observe(observations, claim, claimIdentity, now) < gitProvisionSettings.lockStaleMs) return;
+		claim = `${claim}-${createHash("sha256").update(claimIdentity).digest("hex").slice(0, 16)}`;
+	}
+	try {
+		if ((await lockIdentity(lockPath)) === staleIdentity) await rm(lockPath, { recursive: true, force: true });
+	} finally {
+		const names = await readdir(binDir).catch(() => [] as string[]);
+		await Promise.all(
+			names
+				.filter((name) => name.startsWith(prefix))
+				.map((name) => rm(join(binDir, name), { recursive: true, force: true })),
+		);
+	}
+}
+
 /**
  * Serialize installs across processes so concurrent starts download once. A waiter treats the lock as abandoned only
  * after its mtime stops changing for `lockStaleMs` of the waiter's own monotonic time, so neither clock skew nor a
@@ -1730,8 +1792,7 @@ async function acquireGitInstallLock(
 	const binDir = dirname(layout.root);
 	const lockPath = join(binDir, "git.install.lock");
 	const startedAt = performance.now();
-	let observedMtimeMs: number | undefined;
-	let observedSince = startedAt;
+	const observations = new Map<string, Observation>();
 	let announced = false;
 	for (;;) {
 		signal.throwIfAborted();
@@ -1749,19 +1810,24 @@ async function acquireGitInstallLock(
 			});
 			return { kind: "held", release, compromised: () => compromised };
 		} catch (error) {
-			if (errnoCode(error) !== "ELOCKED")
+			// ENOENT after the lock directory was created: it vanished before its first stamp. Contend again.
+			const vanished = errnoCode(error) === "ENOENT" && (error as NodeJS.ErrnoException).syscall !== "mkdir";
+			if (errnoCode(error) !== "ELOCKED" && !vanished)
 				throw await installFailedAsync("stage", target, layout, error, "install lock");
 		}
 		const provisioned = await findCurrentGitAsync(target);
 		if (provisioned !== undefined) return { kind: "installed", provisioned };
 		const now = performance.now();
-		const lockStats = await stat(lockPath).catch(() => undefined);
-		const mtimeMs = lockStats?.mtimeMs;
-		if (mtimeMs !== observedMtimeMs) {
-			observedMtimeMs = mtimeMs;
-			observedSince = now;
-		} else if (mtimeMs !== undefined && now - observedSince >= gitProvisionSettings.lockStaleMs) {
-			await rm(lockPath, { recursive: true, force: true });
+		const identity = await lockIdentity(lockPath);
+		if (
+			identity !== undefined &&
+			observe(observations, lockPath, identity, now) >= gitProvisionSettings.lockStaleMs
+		) {
+			try {
+				await takeOverStaleLock(lockPath, identity, observations, now);
+			} catch (error) {
+				throw await installFailedAsync("stage", target, layout, error, "install lock");
+			}
 		}
 		const elapsedMs = Math.round(now - startedAt);
 		if (elapsedMs >= gitProvisionSettings.lockWaitTimeoutMs)

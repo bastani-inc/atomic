@@ -1331,6 +1331,41 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 		assert.equal(existsSync(lockPath), false);
 	});
 
+	it("two waiters taking over the same stale lock never remove the lock the faster one took (#4322)", async () => {
+		const fake = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 400));
+			return new Response(new Uint8Array(fake.bytes));
+		});
+		const lockPath = join(agentDir, "bin", "git.install.lock");
+		mkdirSync(lockPath, { recursive: true });
+		vi.resetModules();
+		const otherProcess = await import("../src/utils/tools-manager.js");
+		// The first removal of the abandoned lock stalls briefly, as on a loaded machine, so the other waiter's takeover
+		// lands between that waiter's staleness check and its removal.
+		const actualRemove = mocks.actualFs!.rmSync as (path: string, options?: object) => void;
+		let stalled = false;
+		mocks.rmSync.mockImplementation((path: string, options?: object) => {
+			if (path !== lockPath || stalled) return actualRemove(path, options);
+			stalled = true;
+			return new Promise((resolveDelay) => setTimeout(resolveDelay, 200)).then(() => actualRemove(path, options));
+		});
+		const settings = { release: fake.release, lockPollMs: 10, lockStaleMs: 500, lockUpdateMs: 100 };
+
+		const results = await Promise.allSettled(
+			[tools, otherProcess].map((installer) =>
+				installer.withGitProvisionSettingsForTest(settings, () => installer.resolveGit()),
+			),
+		);
+
+		for (const result of results) {
+			if (result.status === "rejected") assert.fail(String(result.reason));
+			assert.equal(result.value.path, provisionedExecutable());
+		}
+		assert.equal(fetchMock.mock.calls.length, 1, "exactly one installer downloads after the takeover");
+		assert.deepEqual(leftovers(), []);
+	});
+
 	it("keeps a healthy install another process published first and publishes beside a broken one", async () => {
 		const fake = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
