@@ -29,7 +29,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { homedir, constants as osConstants } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, parse, posix, relative, resolve, sep, win32 } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -196,6 +196,36 @@ function nativeClaimRenamer(): ClaimRenamer | null {
 	return claimRenamer;
 }
 
+/** Windows system error numbers a native call reports, as the errno codes Node reports for them. */
+const WINDOWS_ERROR_CODES: Readonly<Record<number, string>> = {
+	2: "ENOENT",
+	3: "ENOENT",
+	5: "EPERM",
+	19: "EROFS",
+	32: "EBUSY",
+	33: "EBUSY",
+	80: "EEXIST",
+	183: "EEXIST",
+};
+
+/**
+ * Native calls fail with a generic status whose message ends with the OS error number (`... (os error 32)`). Gives the
+ * error the errno code Node would report for that number, so callers can tell a busy file from a read-only one.
+ */
+function withNativeErrorCode(error: unknown): unknown {
+	if (!(error instanceof Error)) return error;
+	const code = (error as NodeJS.ErrnoException).code;
+	if (typeof code === "string" && code.startsWith("E")) return error;
+	const match = /\(os error (\d+)\)/.exec(error.message);
+	if (match === null) return error;
+	const number = Number(match[1]);
+	const mapped =
+		process.platform === "win32"
+			? WINDOWS_ERROR_CODES[number]
+			: Object.entries(osConstants.errno).find(([, value]) => value === number)?.[0];
+	return mapped === undefined ? error : Object.assign(error, { code: mapped, errno: number });
+}
+
 function fileStat(stats: BigIntStats): StorageFileStat {
 	return { dev: stats.dev, ino: stats.ino, birthtimeNs: stats.birthtimeNs, symbolicLink: stats.isSymbolicLink() };
 }
@@ -239,7 +269,13 @@ const syncIo: StorageIo = {
 		writeFileSync(path, contents, mode === undefined ? { flag: "wx" } : { flag: "wx", mode });
 	},
 	link: (from, to) => linkSync(from, to),
-	renameNoReplace: (from, to) => nativeClaimRenamer()?.renameNoReplace(from, to),
+	renameNoReplace: (from, to) => {
+		try {
+			return nativeClaimRenamer()?.renameNoReplace(from, to);
+		} catch (error) {
+			throw withNativeErrorCode(error);
+		}
+	},
 	rename: (from, to) => renameSync(from, to),
 	remove: (path) => rmSync(path, { force: true }),
 	mkdir: (path) => {
@@ -286,9 +322,13 @@ const asyncIo: AsyncStorageIo = {
 	renameNoReplace: async (from, to) => {
 		const renamer = nativeClaimRenamer();
 		if (renamer === null) return undefined;
-		return renamer.renameNoReplaceAsync === undefined
-			? renamer.renameNoReplace(from, to)
-			: await renamer.renameNoReplaceAsync(from, to);
+		try {
+			return renamer.renameNoReplaceAsync === undefined
+				? renamer.renameNoReplace(from, to)
+				: await renamer.renameNoReplaceAsync(from, to);
+		} catch (error) {
+			throw withNativeErrorCode(error);
+		}
 	},
 	rename: (from, to) => rename(from, to),
 	remove: (path) => rm(path, { force: true }),
@@ -513,7 +553,7 @@ type ClaimRead =
  * sharing violation, and on Windows the access errors reported for a file another process has open in a conflicting
  * way.
  */
-function isTransientClaimReadError(error: unknown): boolean {
+function isTransientClaimError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException).code;
 	return (
 		code === "EBUSY" || code === "EAGAIN" || (process.platform === "win32" && (code === "EPERM" || code === "EACCES"))
@@ -522,26 +562,43 @@ function isTransientClaimReadError(error: unknown): boolean {
 
 /**
  * Reads a claim another process may be publishing at this moment. A claim that does not exist when the reader looks is
- * absent, even if it is published a moment later: the caller then publishes its own claim and reads whichever won. A
- * file that is empty (the exclusive-create fallback creates it before writing it) or transiently busy is a publication
- * in progress, and the reader polls for up to `CLAIM_PUBLICATION_WAIT_MS` before reporting it unreadable. Any other
- * read error is reported at once.
+ * absent, even if it is published a moment later: the caller then publishes its own claim and reads whichever won.
+ * Publishers end every record with a newline. A file that is empty or holds a record without its newline that is not a
+ * whole JSON value (the exclusive-create fallback creates the file before writing it), or that is transiently busy, is a
+ * publication in progress: the reader polls for up to `CLAIM_PUBLICATION_WAIT_MS` before reporting it unreadable (or,
+ * for a record that never gained its newline, returning it for its reader to validate). Any other read error is
+ * reported at once.
  */
 function* readPublishedClaimSteps(file: string): StorageSteps<ClaimRead> {
 	if (!(yield* io("exists", file))) return { state: "absent" };
+	let partial: string | undefined;
 	for (let waitedMs = 0; ; ) {
 		try {
 			const raw = yield* io("readFile", file);
 			const contents = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
-			if (contents.length > 0) return { state: "published", contents };
+			if (contents.length > 0 && (contents !== raw || isJsonRecord(contents)))
+				return { state: "published", contents };
+			partial = contents.length > 0 ? contents : undefined;
 		} catch (error) {
 			if (!(yield* io("exists", file))) return { state: "absent" };
 			// A file missing at the read that exists again now is being replaced: read it again.
-			if (!isMissingEntry(error) && !isTransientClaimReadError(error)) return { state: "unreadable" };
+			if (!isMissingEntry(error) && !isTransientClaimError(error)) return { state: "unreadable" };
 		}
-		if (waitedMs >= CLAIM_PUBLICATION_WAIT_MS) return { state: "unreadable" };
+		if (waitedMs >= CLAIM_PUBLICATION_WAIT_MS) {
+			// Still no terminating newline: a record written without one, which its reader validates as it is.
+			return partial === undefined ? { state: "unreadable" } : { state: "published", contents: partial };
+		}
 		yield* io("sleep", CLAIM_PUBLICATION_POLL_MS);
 		waitedMs += CLAIM_PUBLICATION_POLL_MS;
+	}
+}
+
+function isJsonRecord(contents: string): boolean {
+	try {
+		JSON.parse(contents);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -563,22 +620,49 @@ function* claimFileAtomicallySteps(file: string, contents: string): StorageSteps
 	return (yield* publishClaimFileSteps(file, contents)) === "claimed";
 }
 
+/**
+ * Publishes a claim unless one exists, by hard-linking a fully written staged copy into place, else by a native
+ * no-replace rename, else (neither available) by exclusive create, whose record readers recognise as complete only once
+ * it is fully written. Writing the staged copy is the write probe: when it fails with a permission or read-only error the
+ * store is read-only. Once it succeeded the directory is writable, so a placement that keeps failing is a failure, never
+ * a read-only store. A placement another process holds busy (a sharing violation) is retried, for up to
+ * `CLAIM_PUBLICATION_WAIT_MS` in all, before the next way is tried.
+ */
 function* publishClaimFileSteps(file: string, contents: string): StorageSteps<ClaimPublication> {
 	const staged = `${file}.${randomUUID()}`;
+	let waitedMs = 0;
+	function* waitWhileBusy(error: unknown): StorageSteps<boolean> {
+		if (!isTransientClaimError(error) || waitedMs >= CLAIM_PUBLICATION_WAIT_MS) return false;
+		yield* io("sleep", CLAIM_PUBLICATION_POLL_MS);
+		waitedMs += CLAIM_PUBLICATION_POLL_MS;
+		return true;
+	}
 	try {
-		yield* io("writeNewFile", staged, contents, undefined);
 		try {
-			yield* io("link", staged, file);
-			return "claimed";
+			yield* io("writeNewFile", staged, contents, undefined);
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "EEXIST") return "exists";
+			return isReadOnlyStorageError(error as NodeJS.ErrnoException) ? "read-only" : "failed";
 		}
-		const renamed = yield* io("renameNoReplace", staged, file);
-		if (renamed !== undefined) return renamed ? "claimed" : "exists";
-		yield* io("writeNewFile", file, contents, undefined);
-		return "claimed";
-	} catch (error) {
-		return isReadOnlyStorageError(error as NodeJS.ErrnoException) ? "read-only" : "failed";
+		for (;;) {
+			try {
+				yield* io("link", staged, file);
+				return "claimed";
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "EEXIST") return "exists";
+				if (!(yield* waitWhileBusy(error))) break;
+			}
+		}
+		for (;;) {
+			try {
+				const renamed = yield* io("renameNoReplace", staged, file);
+				if (renamed !== undefined) return renamed ? "claimed" : "exists";
+				yield* io("writeNewFile", file, contents, undefined);
+				return "claimed";
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "EEXIST") return "exists";
+				if (!(yield* waitWhileBusy(error))) return "failed";
+			}
+		}
 	} finally {
 		// The claim is settled either way; a staged copy that cannot be removed yet must not undo the publication.
 		try {
