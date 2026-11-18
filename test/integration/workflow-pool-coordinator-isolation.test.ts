@@ -182,7 +182,7 @@ async function startPooledRoot(root: string, workers: number, whenBrokerReady?: 
 }
 
 test.skipIf(process.platform === "win32")(
-	"pool coordination runs in the coordinator process and reaches the root store only as rate-bounded summaries (#3903)",
+	"pool coordination runs in the coordinator process and reaches the root store only as rate-bounded reports (#3903, #5510)",
 	async () => {
 		const root = testRunId("pool-coordinator-isolation-root");
 		const writes = POOL_WRITES.map((method) => [method, vi.spyOn(SqlPoolQueue.prototype, method)] as const);
