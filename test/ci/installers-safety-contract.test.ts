@@ -34,7 +34,8 @@ test("POSIX path conflicts and unexpected launcher directories fail before I/O",
 		assert.ok(failure >= 0);
 		assert.ok(failure < shell.indexOf("for required_command"));
 		assert.ok(failure < shell.indexOf("TEMP_BASE="));
-		assert.ok(failure < shell.indexOf("if ! RELEASE_JSON=$(http_get"));
+		assert.ok(failure < shell.indexOf("case $(release_page_status"));
+		assert.ok(failure < shell.indexOf('api_request "$API_URL"'));
 	}
 });
 
@@ -55,7 +56,8 @@ test("POSIX bin paths under transaction-owned install paths fail before any requ
 	for (const boundary of [
 		"for required_command",
 		"TEMP_BASE=",
-		"if ! RELEASE_JSON=$(http_get",
+		"case $(release_page_status",
+		'api_request "$API_URL"',
 		"resolve_redirect_tag",
 		'if ! download_archive "$RELEASE_BASE/$ASSET_NAME"',
 		'mkdir -p "$INSTALL_ROOT"',
@@ -231,7 +233,7 @@ test("Windows safety and version checks all precede temp creation and archive do
 	);
 
 	assert.ok(
-		powershell.includes("'^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-alpha\\.(?:[1-9][0-9]*))?$'"),
+		powershell.includes("'^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-alpha\\.(?:[1-9][0-9]*))?\\z'"),
 		"the Windows tag grammar does not mirror install.sh",
 	);
 	assert.match(shell, /MAJOR\.MINOR\.PATCH or MAJOR\.MINOR\.PATCH-alpha\.REVISION/u);
@@ -311,8 +313,8 @@ test("POSIX API authentication uses protected files and never authenticates rele
 	assert.match(shell, /printf 'Authorization: Bearer %s\\n' "\$TOKEN" > "\$API_AUTH_PATH"/u);
 	assert.match(shell, /printf 'header = Authorization: Bearer %s\\n' "\$TOKEN" > "\$API_AUTH_PATH"/u);
 	assert.match(shell, /chmod 600 "\$API_AUTH_PATH"/u);
-	assert.match(shell, /curl[^\n]+-H "@\$API_AUTH_PATH" "\$http_url"/u);
-	assert.match(shell, /WGETRC="\$API_AUTH_PATH" wget[^\n]+"\$http_url"/u);
+	assert.match(shell, /-H 'Accept: application\/vnd\.github\+json' -H "@\$API_AUTH_PATH" "\$api_url"/u);
+	assert.match(shell, /WGETRC="\$API_AUTH_PATH" wget[^\n]+\\\n[^\n]+"\$api_url"/u);
 	assert.doesNotMatch(shell, /--location-trusted/u);
 	assert.doesNotMatch(shell, /(?:-H|--header=)"Authorization: Bearer \$TOKEN"/u);
 	const clearAuth = shell.indexOf("clear_api_auth");
