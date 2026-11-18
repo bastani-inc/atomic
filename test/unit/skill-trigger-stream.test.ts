@@ -4,8 +4,8 @@ import { describe, test } from "vitest";
 import { moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
 const root = resolve(moduleDir(import.meta.url), "../..");
-function evaluate(scenario: string) {
-	return spawnSyncCollect(["python3", resolve(root, "test/fixtures/skill-trigger-stream.py"), scenario], {
+function evaluate(...args: string[]) {
+	return spawnSyncCollect(["python3", resolve(root, "test/fixtures/skill-trigger-stream.py"), ...args], {
 		env: {
 			PATH: process.env.PATH,
 			PYTHONPATH: resolve(root, "packages/workflows/skills/skill-creator"),
@@ -20,6 +20,12 @@ describe.skipIf(process.platform === "win32")("bundled skill trigger evaluator",
 		const result = evaluate("late");
 		assert.notEqual(result.exitCode, 0, result.stdout.toString());
 		assert.match(result.stderr.toString(), /timed out/iu);
+	});
+
+	test("accepts a buffered trigger with a timeout larger than the platform timer (#5566)", () => {
+		const result = evaluate("exited", `1${"0".repeat(350)}`);
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		assert.equal(result.stdout.toString().trim(), "True");
 	});
 
 	test("counts a timely trigger still buffered after the producer exits (#5566)", () => {

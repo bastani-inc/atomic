@@ -36,4 +36,5 @@ def resume_reader(*args):
 
 
 with tempfile.TemporaryDirectory() as root, patch("subprocess.Popen", start_producer), patch("select.select", resume_reader):
-    print(run_single_query("query", "sample", "sample skill", 1 if scenario == "late" else 30, root))
+    timeout = int(sys.argv[2]) if len(sys.argv) > 2 else (1 if scenario == "late" else 30)
+    print(run_single_query("query", "sample", "sample skill", timeout, root))

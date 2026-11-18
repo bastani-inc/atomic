@@ -58,14 +58,6 @@ if ! [[ "$lines" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-# grep returns 1 for a valid pattern with no input; syntax errors must not poll.
-grep "$grep_flag" -- "$pattern" </dev/null >/dev/null || {
-  status=$?
-  if (( status != 1 )); then
-    exit "$status"
-  fi
-}
-
 if ! command -v tmux >/dev/null 2>&1; then
   echo "tmux not found in PATH" >&2
   exit 1
@@ -111,14 +103,21 @@ stop_worker() {
   fi
 }
 trap 'stop_worker; rm -rf -- "$scratch"' EXIT
-trap 'exit 1' HUP INT TERM
+# A signal between the background launch and saving $! must not orphan the group.
+cancelled=0
+trap 'cancelled=1' HUP INT TERM
 : >"$scratch/pane"
 
 poll() {
-  local pane_text
+  local pane_text rc
+  # Check the pattern inside the timed worker: even the first grep can stall.
+  grep "$grep_flag" -- "$pattern" </dev/null >/dev/null || {
+    rc=$?
+    (( rc == 1 )) || return "$rc"
+  }
   while before_deadline; do
-    if pane_text=$(tmux capture-pane -p -J -t "$target" -S "-${lines}" 2>/dev/null); then
-      printf '%s\n' "$pane_text" >"$scratch/pane"
+    if pane_text=$(tmux capture-pane -p -J -t "$target" -S "-${lines}" 2>/dev/null) &&
+      printf '%s\n' "$pane_text" >"$scratch/next" && mv -f "$scratch/next" "$scratch/pane"; then
       if before_deadline && grep "$grep_flag" -- "$pattern" "$scratch/pane" >/dev/null 2>&1 && before_deadline; then
         return 0
       fi
@@ -150,6 +149,8 @@ set -m
   exit "$result"
 ) &
 worker=$!
+trap 'exit 1' HUP INT TERM
+(( ! cancelled )) || exit 1
 status=0
 wait "$worker" 2>/dev/null || status=$?
 stop_worker

@@ -180,6 +180,19 @@ exec "$REAL_TMUX" -S "$SOCKET" "$@"
 		}
 	});
 
+	test("wait-for-text includes a stalled pattern check in its timeout (#5566)", () => {
+		const grepPath = join(stubBin, "grep");
+		writeFileSync(
+			grepPath,
+			'#!/bin/sh\nif [ ! -f "$HOME/checked" ]; then touch "$HOME/checked"; sleep 6; fi\nexec /usr/bin/grep "$@"\n',
+		);
+		chmodSync(grepPath, 0o755);
+		const result = run("wait-for-text.sh", ["-t", "s", "-F", "-p", "ready", "-T", "1"], { STUB_PANE: "ready" });
+		assert.equal(result.exitCode, 1, result.stderr);
+		assert.match(result.stderr, /Timed out after 1s/u);
+		assert.ok(result.elapsedMs < 5_000, `took ${Math.round(result.elapsedMs)} ms`);
+	});
+
 	test("wait-for-text refuses to poll without a fractional sleep timer (#5566)", () => {
 		const sleepPath = join(stubBin, "sleep");
 		writeFileSync(sleepPath, '#!/bin/sh\ncase "$1" in *.*) exit 1 ;; esac\nexec /bin/sleep "$@"\n');
@@ -216,6 +229,33 @@ echo working
 		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "1", "-i", "0.01"]);
 		assert.equal(result.exitCode, 1);
 		assert.match(result.stderr, /Timed out after 1s[\s\S]*Last 1000 lines from s:\nworking/u);
+	});
+
+	test("wait-for-text keeps the last complete snapshot when a replacement is interrupted (#5566)", () => {
+		const bashEnv = join(dir, "file-limit");
+		writeFileSync(bashEnv, "ulimit -f 1\n");
+		writeFileSync(
+			join(stubBin, "tmux"),
+			'#!/bin/sh\nif [ -f "$HOME/probed" ]; then yes incomplete | head -n 600; else touch "$HOME/probed"; echo working; fi\n',
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "1", "-i", "0.01"], {
+			BASH_ENV: bashEnv,
+		});
+		assert.equal(result.exitCode, 1);
+		assert.match(result.stderr, /Last 1000 lines from s:\nworking\n$/u);
+	});
+
+	test("wait-for-text cancels its worker even if interrupted during launch (#5566)", () => {
+		const bashEnv = join(dir, "interrupt-launch");
+		// Interrupt this shell itself as soon as its first background job has been launched.
+		writeFileSync(
+			bashEnv,
+			`interrupt() { if [[ $BASH_SUBSHELL == 0 && ! -f "$HOME/interrupted" && -n $(jobs -p) ]]; then touch "$HOME/interrupted"; kill -TERM "$$"; fi; }; trap interrupt DEBUG\n`,
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "missing", "-T", "8"], { BASH_ENV: bashEnv });
+		assert.ok(existsSync(join(dir, "interrupted")));
+		assert.notEqual(result.exitCode, 0);
+		assert.ok(result.elapsedMs < 6_000, `worker still held the pipes for ${Math.round(result.elapsedMs)} ms`);
 	});
 
 	test("wait-for-text never counts a failed pane capture as a match", () => {

@@ -90,16 +90,18 @@ def run_single_query(
             env=env,
         )
 
-        deadline = time.monotonic() + timeout
+        second_ns = 1_000_000_000
+        deadline_ns = time.monotonic_ns() + timeout * second_ns
 
         def read_trigger():
             triggered = False
             buffer = b""
             pending_tool_name = None
             accumulated_json = ""
-            while (remaining_time := deadline - time.monotonic()) > 0:
-                ready, _, _ = select.select([process.stdout], [], [], remaining_time)
-                if not ready or time.monotonic() >= deadline:
+            while (remaining_ns := deadline_ns - time.monotonic_ns()) > 0:
+                # A large user budget need not fit the operating system's select timer.
+                ready, _, _ = select.select([process.stdout], [], [], min(remaining_ns, second_ns) / second_ns)
+                if not ready or time.monotonic_ns() >= deadline_ns:
                     continue
 
                 chunk = os.read(process.stdout.fileno(), 8192)
@@ -167,7 +169,7 @@ def run_single_query(
 
         try:
             triggered = read_trigger()
-            if time.monotonic() >= deadline:
+            if time.monotonic_ns() >= deadline_ns:
                 raise TimeoutError(f"Timed out after {timeout}s waiting for a skill trigger")
             return triggered
         finally:

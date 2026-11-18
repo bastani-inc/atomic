@@ -576,7 +576,7 @@ describe("synced upstream skill trees", () => {
 		// The wait helper is pinned with Atomic's deadline handling applied.
 		const expectedScripts: ReadonlyArray<readonly [path: string, sha256: string]> = [
 			["scripts/find-sessions.sh", "5cd5f80305c7a08871d62988e908cd366a22d1c6e4b4857b77a64f52955b59e3"],
-			["scripts/wait-for-text.sh", "bae579a4a0347c88f7d042a7763b78975166b9fba33d39a0bfb2baed2fbb1b18"],
+			["scripts/wait-for-text.sh", "09c4a0738a34e1e54e60ed1402ba9101938be9380080773e635a7734cd426520"],
 		];
 		for (const [path, expected] of expectedScripts) {
 			const normalized = canonicalText(readFileSync(join(skillRoot, path)))
