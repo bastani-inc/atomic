@@ -145,5 +145,16 @@ export interface SqliteDatabase extends SqliteExecutor {
 	 * saves a round trip per statement against a remote database.
 	 */
 	batch?(statements: readonly SqliteStatement[], options?: SqliteBatchOptions): Promise<SqliteRow[][]>;
+	/**
+	 * Runs the statements in order in one write transaction, all of them committed or none, and resolves with each
+	 * statement's rows once the commit returned. A driver offers it when it can send them, with the write lock and the
+	 * commit, as one request, but its other writes should keep their own path: stores that choose how to write by the
+	 * presence of `batch` do not see it. The run journal appends an event through it. Optional: adapters that leave it
+	 * unset, as the libSQL and PostgreSQL ones do, keep working unchanged.
+	 */
+	commitStatements?(
+		statements: readonly SqliteStatement[],
+		options?: SqliteTransactionOptions,
+	): Promise<SqliteRow[][]>;
 	close(): Promise<void>;
 }

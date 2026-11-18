@@ -913,7 +913,7 @@ export class SqlRunJournal implements RunJournal {
 		const owned = { ...lease };
 		const prepared = this.prepare(event, options?.key, this.appendGuard.getStore());
 		const expected = options?.expectSeq;
-		const batch = this.database.batch?.bind(this.database);
+		const batch = this.oneRequestWrite();
 		// One request where the database sends batches and the append needs no guard, no expected sequence and no chunks,
 		// as `appendMany` sends them: the lease, the key and the sequence are checked in SQL, so the write lock is never
 		// held across a round trip.
@@ -962,7 +962,7 @@ export class SqlRunJournal implements RunJournal {
 				return error as Error;
 			}
 		});
-		const batch = this.database.batch?.bind(this.database);
+		const batch = this.oneRequestWrite();
 		if (batch && prepared.every((append) => append instanceof Error || this.inOneRequest(append)))
 			return this.operation(() => this.appendInOneRequest(batch, owned, prepared));
 		return this.operation(() =>
@@ -989,6 +989,17 @@ export class SqlRunJournal implements RunJournal {
 	}
 
 	/**
+	 * How the database runs an append's statements as one request: its `batch`, or a driver's `commitStatements`. The
+	 * pool's writes, which choose their path by `batch`, keep their transactions on a driver that offers only the latter.
+	 */
+	private oneRequestWrite(): NonNullable<SqliteDatabase["batch"]> | undefined {
+		const { database } = this;
+		if (database.batch !== undefined) return database.batch.bind(database);
+		const commit = database.commitStatements?.bind(database);
+		return commit && ((statements, options) => commit(statements, { lockWaitMs: options?.lockWaitMs }));
+	}
+
+	/**
 	 * `appendMany` as one `SqliteDatabase.batch` request, for a batch with no pool guards and no payload errors. Every
 	 * write checks the lease, the key and the sequence limit in SQL, so the outcomes match the savepoint path: a stale
 	 * lease writes nothing and rejects the batch, a known key reports `exists`, and each append settles alone, in order.
@@ -999,8 +1010,11 @@ export class SqlRunJournal implements RunJournal {
 		prepared: readonly (ReturnType<SqlRunJournal["prepare"]> | Error)[],
 	): Promise<readonly PromiseSettledResult<AppendOutcome>[]> {
 		const t = this.tables;
-		const holds = `EXISTS (SELECT 1 FROM ${t.leases} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ?)`;
-		const held = [owned.runId, owned.holderId, owned.epoch] as const;
+		// A counter out of range writes nothing, as the transaction path refuses it before writing; the reads below report
+		// it. The lease's epoch is the caller's when it is held, so a caller's out-of-range epoch is refused here too.
+		const counter = (column: string) => `${column} >= 0 AND ${column} = ROUND(${column}) AND ${column} <= ?`;
+		const holds = `EXISTS (SELECT 1 FROM ${t.leases} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ? AND ${counter(c.epoch)})`;
+		const held = [owned.runId, owned.holderId, owned.epoch, Number.MAX_SAFE_INTEGER] as const;
 		const latest = `SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.seq} = (SELECT MAX(${c.seq}) FROM ${t.events} WHERE ${c.runId} = ?)`;
 		const statements: SqliteStatement[] = [
 			{
@@ -1022,7 +1036,7 @@ export class SqlRunJournal implements RunJournal {
 			// The append is written when the run's last sequence is below the limit, the lease is still held and the key
 			// is new. The status update tests the same condition first, which it does not change, so the two agree.
 			const appends = `FROM (SELECT COALESCE(MAX(${c.seq}), 0) AS latest FROM ${t.events} WHERE ${c.runId} = ?) AS current
-					WHERE current.latest < ? AND ${holds} AND EXISTS (SELECT 1 FROM ${t.meta} WHERE ${c.schemaVersion} = ?)${
+					WHERE current.latest < ? AND current.latest >= 0 AND current.latest = ROUND(current.latest) AND ${holds} AND EXISTS (SELECT 1 FROM ${t.meta} WHERE ${c.schemaVersion} = ?)${
 						key === undefined
 							? ""
 							: ` AND NOT EXISTS (SELECT 1 FROM ${t.events} WHERE ${c.runId} = ? AND ${c.key} = ?)`

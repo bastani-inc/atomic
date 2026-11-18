@@ -7,6 +7,7 @@ import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storag
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { interceptConnectionRequests } from "../helpers/sqlite-connection-requests.js";
 import { holdSqliteWriteLock } from "../helpers/sqlite-lock-holder.js";
 
 /** How long the waiting connection's busy handler waits for the lock: long enough to show it never ran out. */
@@ -144,4 +145,83 @@ test("a connection's thread raises only its own scheduling priority, never the c
 	await database.transaction((transaction) => transaction.run("CREATE TABLE t(v)"));
 	assert.equal(currentThreadPriority(), before, "the calling thread keeps its priority");
 	assert.equal(before, 0, "at normal priority");
+});
+
+/** The kinds of the requests every adapter connection sends its thread while `work` runs. */
+async function requestKinds<T>(work: () => Promise<T>): Promise<{ value: T; kinds: string[] }> {
+	const kinds: string[] = [];
+	const interception = interceptConnectionRequests((request, send) => {
+		kinds.push(request.kind);
+		return send(request);
+	});
+	try {
+		return { value: await work(), kinds };
+	} finally {
+		interception.restore();
+	}
+}
+
+test("committed statements with nobody waiting for the lock are one request to their connection's thread, lock and commit included (#5376)", async () => {
+	const database = await open(databasePath());
+	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	const { value, kinds } = await requestKinds(() =>
+		database.commitStatements!([
+			{ sql: "INSERT INTO items VALUES (?)", params: ["first"] },
+			{ sql: "INSERT INTO items VALUES (?) RETURNING value", params: ["second"] },
+		]),
+	);
+	assert.deepEqual(value, [[], [{ value: "second" }]], "each statement's rows");
+	assert.deepEqual(kinds, ["transaction"]);
+	assert.deepEqual(await rows(database), ["first", "second"]);
+});
+
+test("committed statements of which one fails write nothing and reject with the driver's error (#5376)", async () => {
+	const database = await open(databasePath());
+	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	await assert.rejects(
+		database.commitStatements!([
+			{ sql: "INSERT INTO items VALUES (?)", params: ["kept back"] },
+			{ sql: "INSERT INTO items VALUES (NULL)", params: [] },
+		]),
+		(error: Error) => /NOT NULL constraint failed/.test(String((error as { cause?: Error }).cause?.message)),
+	);
+	assert.deepEqual(await rows(database), [], "the first statement was rolled back with the rest");
+	await database.commitStatements!([{ sql: "INSERT INTO items VALUES (?)", params: ["after"] }]);
+	assert.deepEqual(await rows(database), ["after"], "and the connection is out of the transaction");
+});
+
+test("committed statements refused by a lock another process holds wait for it, then commit in order with the connection's other calls (#5376)", async () => {
+	const path = databasePath();
+	const database = await open(path);
+	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	const other = await holdSqliteWriteLock(path);
+	const committed = database.commitStatements!([{ sql: "INSERT INTO items VALUES (?)", params: ["committed"] }]);
+	const after = database.run("INSERT INTO items VALUES ('after')");
+	await sleep(HOLD_MS);
+	await other.release();
+	await Promise.all([committed, after]);
+	assert.deepEqual(await rows(database), ["committed", "after"]);
+});
+
+test("committing statements leaves the connection without batch, so stores that write in batches keep their transactions (#5376)", async () => {
+	const database = await open(databasePath());
+	assert.equal(database.batch, undefined);
+	assert.equal(typeof database.commitStatements, "function");
+});
+
+test("committed statements that waited for the lock run and commit in one request once they hold it (#5376)", async () => {
+	const path = databasePath();
+	const database = await open(path);
+	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	const other = await holdSqliteWriteLock(path);
+	const { kinds } = await requestKinds(async () => {
+		const committed = database.commitStatements!([{ sql: "INSERT INTO items VALUES (?)", params: ["waited"] }]);
+		await sleep(HOLD_MS);
+		await other.release();
+		await committed;
+	});
+	const tookLock = kinds.lastIndexOf("begin");
+	assert.ok(tookLock >= 0, `the call waited for the lock: ${kinds.join(", ")}`);
+	assert.deepEqual(kinds.slice(tookLock + 1), ["statements"], "then ran and committed in one request");
+	assert.deepEqual(await rows(database), ["waited"]);
 });

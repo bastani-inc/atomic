@@ -75,6 +75,10 @@ function table(rows) {
 	return { columns, values: rows.map((row) => columns.map((column) => integer(row[column]))) };
 }
 
+function rows(statements) {
+	return statements.map((each) => table(statement(each.sql).all(...bind(each.params))));
+}
+
 function begin() {
 	const configured = Number(database.prepare("PRAGMA busy_timeout").get()?.timeout ?? 0);
 	database.exec("PRAGMA busy_timeout=0");
@@ -101,6 +105,29 @@ const handlers = {
 	},
 	all: (request) => table(statement(request.sql).all(...bind(request.params))),
 	begin: () => { begin(); },
+	statements: (request) => {
+		const result = rows(request.statements);
+		if (request.commit === true) database.exec("COMMIT");
+		return result;
+	},
+	transaction: (request) => {
+		try {
+			begin();
+		} catch (error) {
+			if (((error?.errcode ?? 0) & 0xff) === 5) return { busy: failure(error) };
+			throw error;
+		}
+		try {
+			const result = rows(request.statements);
+			database.exec("COMMIT");
+			return { rows: result };
+		} catch (error) {
+			try {
+				database.exec("ROLLBACK");
+			} catch {}
+			throw error;
+		}
+	},
 	dataVersion: () => Number(database.prepare("PRAGMA data_version").get()?.data_version ?? 0),
 	now: () => Number(database.prepare(workerData.nowSql).get().now),
 	close: () => {
@@ -127,13 +154,35 @@ parentPort.on("message", (request) => {
 });
 `;
 
-/** What a connection thread is asked to do. */
+/**
+ * What a connection thread is asked to do. `statements` runs statements in order and answers each one's rows; with
+ * `commit`, it then commits the transaction they ran in, and a statement that fails leaves it open and uncommitted.
+ * `transaction` takes the write lock as `begin` does, runs its statements and commits, as one request; it answers
+ * `busy` with nothing run when the lock was busy, and rolls back whatever ran when a statement or the commit fails.
+ */
 export type ConnectionRequest =
 	| { readonly kind: "exec"; readonly sql: string }
 	| { readonly kind: "run" | "get" | "all"; readonly sql: string; readonly params: readonly SqliteValue[] }
+	| { readonly kind: "statements"; readonly statements: readonly ConnectionStatement[]; readonly commit?: boolean }
+	| { readonly kind: "transaction"; readonly statements: readonly ConnectionStatement[] }
 	| { readonly kind: "begin" | "dataVersion" | "now" | "close" };
 
-export type ConnectionValue = { readonly changes: number } | SqliteRow | SqliteRow[] | number | undefined;
+export interface ConnectionStatement {
+	readonly sql: string;
+	readonly params: readonly SqliteValue[];
+}
+
+/** A `transaction` request's answer: each statement's rows once committed, or the busy lock that ran nothing. */
+export type ConnectionTransactionValue = { readonly rows: SqliteRow[][] } | { readonly busy: ConnectionFailure };
+
+export type ConnectionValue =
+	| { readonly changes: number }
+	| SqliteRow
+	| SqliteRow[]
+	| SqliteRow[][]
+	| ConnectionTransactionValue
+	| number
+	| undefined;
 
 /** A failure as it crosses from the connection thread: the driver's error fields, kept for callers that read them. */
 export interface ConnectionFailure {
@@ -374,6 +423,12 @@ export class ThreadConnection {
 		if (request.kind === "all") return answer.then((value) => rowsOf(value as RowTable));
 		if (request.kind === "get")
 			return answer.then((value) => (value === undefined ? undefined : rowsOf(value as RowTable)[0]));
+		if (request.kind === "statements") return answer.then((value) => (value as RowTable[]).map(rowsOf));
+		if (request.kind === "transaction")
+			return answer.then((value) => {
+				const answered = value as { readonly rows: RowTable[] } | { readonly busy: ConnectionFailure };
+				return "busy" in answered ? answered : { rows: answered.rows.map(rowsOf) };
+			});
 		return answer as Promise<ConnectionValue>;
 	}
 

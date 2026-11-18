@@ -48,13 +48,23 @@ const CLOCK_CALL = /\b(unixepoch|julianday)\s*\(([^()]*)\)/gi;
  * functions, so a column default still reads the clock when a row is written.
  */
 export function clockConnections(now: () => number): RequestInterception {
+	const clocked = (sql: string): string =>
+		/^\s*(?:CREATE|ALTER|DROP)\b/i.test(sql)
+			? sql
+			: sql.replace(CLOCK_CALL, (_call, name: string) => {
+					const at = now();
+					return name.toLowerCase() === "unixepoch" ? `(${at / 1_000})` : `(${at / 86_400_000 + 2_440_587.5})`;
+				});
 	return interceptConnectionRequests((request, send) => {
 		if (request.kind === "now") return Promise.resolve(now());
-		if (!("sql" in request) || /^\s*(?:CREATE|ALTER|DROP)\b/i.test(request.sql)) return send(request);
-		const sql = request.sql.replace(CLOCK_CALL, (_call, name: string) => {
-			const at = now();
-			return name.toLowerCase() === "unixepoch" ? `(${at / 1_000})` : `(${at / 86_400_000 + 2_440_587.5})`;
-		});
+		// A batch's statements, sent together.
+		if ("statements" in request)
+			return send({
+				...request,
+				statements: request.statements.map((statement) => ({ ...statement, sql: clocked(statement.sql) })),
+			});
+		if (!("sql" in request)) return send(request);
+		const sql = clocked(request.sql);
 		return send(sql === request.sql ? request : ({ ...request, sql } as ConnectionRequest));
 	});
 }

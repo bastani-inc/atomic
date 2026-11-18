@@ -23,6 +23,7 @@ import type {
 	SqliteExecutor,
 	SqliteRow,
 	SqliteRunResult,
+	SqliteStatement,
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
@@ -49,6 +50,8 @@ import {
 import {
 	ConnectionLoadError,
 	type ConnectionRequest,
+	type ConnectionStatement,
+	type ConnectionTransactionValue,
 	type ConnectionValue,
 	ThreadConnection,
 } from "./node-sqlite-thread.js";
@@ -1019,8 +1022,18 @@ export const DEFAULT_GROUP_COMMIT_HOLD_MS = 100;
 /** The span `getWriterQueueStats` reports on. */
 const WRITER_QUEUE_STATS_WINDOW_MS = 10_000;
 
+/** A transaction's executor; `commitStatements` runs its statements through `statements`, as one request. */
+interface ConnectionExecutor extends SqliteExecutor {
+	statements(statements: readonly ConnectionStatement[]): Promise<SqliteRow[][]>;
+}
+
 interface QueuedTransaction {
-	readonly callback: (transaction: SqliteExecutor) => Promise<unknown>;
+	readonly callback: (transaction: ConnectionExecutor) => Promise<unknown>;
+	/**
+	 * The statements of a `commitStatements` call: alone and with nobody waiting for the lock, they commit with the lock
+	 * in one request.
+	 */
+	readonly statements?: readonly ConnectionStatement[];
 	readonly resolve: (value: unknown) => void;
 	readonly reject: (error: unknown) => void;
 	readonly lockWaitMs?: number;
@@ -1212,6 +1225,13 @@ class CallerThreadChannel implements ConnectionChannel {
 			case "begin":
 				this.begin();
 				return undefined;
+			case "statements": {
+				const rows = this.rows(request.statements);
+				if (request.commit === true) this.connection.exec("COMMIT");
+				return rows;
+			}
+			case "transaction":
+				return this.transaction(request.statements);
 			case "dataVersion":
 				return Number(this.connection.prepare("PRAGMA data_version").get()?.data_version ?? 0);
 			case "now":
@@ -1219,6 +1239,37 @@ class CallerThreadChannel implements ConnectionChannel {
 			case "close":
 				finalizeReleasedStatements();
 				return undefined;
+		}
+	}
+
+	private rows(statements: readonly ConnectionStatement[]): SqliteRow[][] {
+		return statements.map((each) =>
+			this.statement(each.sql)
+				.all(...each.params)
+				.map((row) => normalizeRow(row)),
+		);
+	}
+
+	/** A `transaction` request, as a connection's thread runs it. */
+	private transaction(statements: readonly ConnectionStatement[]): ConnectionTransactionValue {
+		try {
+			this.begin();
+		} catch (error) {
+			if (!isSqliteBusy(error)) throw error;
+			const { name, message } = error as Error;
+			return { busy: { name, message, errcode: (error as { errcode?: number }).errcode } };
+		}
+		try {
+			const rows = this.rows(statements);
+			this.connection.exec("COMMIT");
+			return { rows };
+		} catch (error) {
+			try {
+				this.connection.exec("ROLLBACK");
+			} catch {
+				// SQLite already rolled the transaction back; there is nothing left to undo.
+			}
+			throw error;
 		}
 	}
 
@@ -1264,7 +1315,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private readonly waitingBatches: PendingBatch[] = [];
 	private closing = false;
 	private closePromise?: Promise<void>;
-	private readonly executor: SqliteExecutor;
+	private readonly executor: ConnectionExecutor;
 
 	private readonly transactionIdentity: string | object;
 	private readonly lockWaitMs: number;
@@ -1544,7 +1595,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
-	private createExecutor(active: () => boolean): SqliteExecutor {
+	private createExecutor(active: () => boolean): ConnectionExecutor {
 		const execute = async (request: ConnectionRequest): Promise<ConnectionValue> => {
 			if (!active()) throw new StorageTransactionClosedError();
 			const params = "params" in request ? request.params : [];
@@ -1553,6 +1604,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			return this.call(request);
 		};
 		return {
+			statements: async (statements) => (await execute({ kind: "statements", statements })) as SqliteRow[][],
 			exec: async (sql) => {
 				await execute({ kind: "exec", sql });
 			},
@@ -1613,14 +1665,38 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		options?: SqliteTransactionOptions,
 	): Promise<T> {
+		return this.queueTransaction({ callback }, options?.lockWaitMs) as Promise<T>;
+	}
+
+	/**
+	 * Runs `statements` in one write transaction, as a transaction whose body runs them does, and resolves with each
+	 * one's rows once it committed. They cross to the connection's thread as one request; alone, and with no writer of
+	 * another process waiting for the lock, so do the lock attempt and the commit (#5376). The call keeps its place
+	 * among this connection's calls. See `SqliteDatabase.commitStatements`.
+	 */
+	commitStatements(
+		statements: readonly SqliteStatement[],
+		options?: SqliteTransactionOptions,
+	): Promise<SqliteRow[][]> {
+		const bound: ConnectionStatement[] = [];
+		for (const statement of statements) {
+			const invalidIndex = statement.params.findIndex((value) => typeof value === "string" && value.includes("\0"));
+			if (invalidIndex !== -1) return Promise.reject(new StorageInvalidTextError(invalidIndex));
+			bound.push({ sql: statement.sql, params: snapshotParams(statement.params) });
+		}
+		return this.queueTransaction(
+			{ callback: (transaction) => transaction.statements(bound), statements: bound },
+			options?.lockWaitMs,
+		) as Promise<SqliteRow[][]>;
+	}
+
+	private queueTransaction(
+		work: Pick<QueuedTransaction, "callback" | "statements">,
+		lockWaitMs: number | undefined,
+	): Promise<unknown> {
 		if (this.closing) return Promise.reject(new StoreClosedError(this.descriptor));
-		return new Promise<T>((resolve, reject) => {
-			const queued: QueuedTransaction = {
-				callback,
-				resolve: resolve as (value: unknown) => void,
-				reject,
-				lockWaitMs: options?.lockWaitMs,
-			};
+		return new Promise<unknown>((resolve, reject) => {
+			const queued: QueuedTransaction = { ...work, resolve, reject, lockWaitMs };
 			const last = this.waitingBatches.at(-1);
 			if (last?.open === true && last.members.length < MAX_GROUP_COMMIT_TRANSACTIONS) {
 				last.members.push(queued);
@@ -1651,6 +1727,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * connections to the file wait for at most one batch of this one's.
 	 */
 	private async runBatch(batch: PendingBatch, firstAcquisition: boolean): Promise<void> {
+		const lone = firstAcquisition && batch.members.length === 1 ? batch.members[0] : undefined;
+		// Nothing queued directly behind it to take along once it holds the lock.
+		const followed = this.waitingBatches[0]?.position === batch.position + 1;
+		if (lone?.statements !== undefined && !followed && (await this.commitAtOnce(lone, lone.statements))) {
+			batch.members.length = 0;
+			return;
+		}
 		try {
 			await this.begin(this.lockWait(batch.members));
 		} catch (cause) {
@@ -1678,13 +1761,48 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		return Math.max(...batch.map((queued) => queued.lockWaitMs ?? this.lockWaitMs));
 	}
 
+	/**
+	 * A lone `commitStatements` call as one request to the connection's thread: the lock attempt, its statements and the
+	 * commit (#5376). False, with nothing run, when writers of other processes wait for the lock or it is busy: the call
+	 * then waits for it as a transaction does. A statement or commit that fails rolls back on the thread, and the call
+	 * rejects.
+	 */
+	private async commitAtOnce(queued: QueuedTransaction, statements: readonly ConnectionStatement[]): Promise<boolean> {
+		const queue = this.writeQueue;
+		queue?.observe();
+		if (queue !== undefined && (await queue.contendedOffLoop())) return false;
+		const waitStarted = performance.now();
+		let outcome: ConnectionTransactionValue;
+		try {
+			outcome = (await this.call({ kind: "transaction", statements })) as ConnectionTransactionValue;
+		} catch (cause) {
+			this.acquired(waitStarted);
+			await this.released(false);
+			queued.reject(cause);
+			return true;
+		}
+		// Nothing ran: the call queues for the lock as a transaction refused by it does.
+		if ("busy" in outcome) return false;
+		this.acquired(waitStarted);
+		await this.released(true);
+		queued.resolve(outcome.rows);
+		return true;
+	}
+
 	/** A transaction with nobody queued with it commits on its own, without savepoints. */
 	private async commitAlone(queued: QueuedTransaction): Promise<void> {
 		let active = true;
 		try {
-			const value = await queued.callback(this.createExecutor(() => active));
-			active = false;
-			await this.executor.exec("COMMIT");
+			let value: unknown;
+			// Committed statements run and commit in one request once the lock is held (#5376).
+			if (queued.statements !== undefined) {
+				active = false;
+				value = await this.call({ kind: "statements", statements: queued.statements, commit: true });
+			} else {
+				value = await queued.callback(this.createExecutor(() => active));
+				active = false;
+				await this.executor.exec("COMMIT");
+			}
 			await this.released(true);
 			queued.resolve(value);
 		} catch (cause) {
