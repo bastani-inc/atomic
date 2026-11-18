@@ -177,6 +177,10 @@ async function startNode(
 		readonly presenceAcquireGate?: Promise<void>;
 		/** Outbox claims are handed back only once this settles, as when the database is slow to answer. */
 		readonly releaseClaimGate?: Promise<void>;
+		/** Outbox claims reach the database only once this settles, as when the database is slow to answer. */
+		readonly claimGate?: Promise<void>;
+		/** Presence leases are released only once this settles, as when the database is slow to answer. */
+		readonly presenceReleaseGate?: Promise<void>;
 		/** Held sends are written only once this settles, as when the database is slow to answer. */
 		readonly holdGate?: Promise<void>;
 		/** Outbox rows are written only once this settles, as when the database is slow to answer. */
@@ -195,6 +199,10 @@ async function startNode(
 			acquire: async (subject, holderId, staleAfterMs) => {
 				if (subject.kind === "presence") await options.presenceAcquireGate;
 				return inner.leases.acquire(subject, holderId, staleAfterMs);
+			},
+			release: async (lease) => {
+				if (lease.key.kind === "presence") await options.presenceReleaseGate;
+				return inner.leases.release(lease);
 			},
 		},
 		heldSends: {
@@ -216,9 +224,13 @@ async function startNode(
 				await options.enqueueGate;
 				return inner.outbox.enqueue(row);
 			},
-			releaseClaim: async (claim) => {
+			claim: async (request) => {
+				await options.claimGate;
+				return inner.outbox.claim(request);
+			},
+			releaseClaim: async (claim, releaseOptions) => {
 				await options.releaseClaimGate;
-				return inner.outbox.releaseClaim(claim);
+				return inner.outbox.releaseClaim(claim, releaseOptions);
 			},
 			listUndelivered: async (identity) =>
 				options.undeliveredListInvalid === true
@@ -2014,3 +2026,66 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		assert.deepEqual(await queuedFor(senderNode, original), [send.id]);
 	});
 });
+
+describe("a send racing its recipient's clean quit", () => {
+	test("a claim that reaches the database only after its recipient quit is handed back as never claimed, so the send is queued for the recipient's return at once and delivered to it once", async () => {
+		const shared = await cluster();
+		const claimLands = Promise.withResolvers<void>();
+		const presenceReleased = Promise.withResolvers<void>();
+		const senderNode = await startNode(shared);
+		const recipientNode = await startNode(shared, {
+			claimGate: claimLands.promise,
+			presenceReleaseGate: presenceReleased.promise,
+		});
+		const sender = session("sender");
+		senderNode.sessions.set(sender.info.id, sender);
+		await senderNode.router.sessionRegistered(sender);
+		const recipient = session("recipient");
+		recipientNode.sessions.set(recipient.info.id, recipient);
+		// Its broker looks for rows to deliver to it as it registers; that claim is still on its way to the database.
+		await recipientNode.router.sessionRegistered(recipient);
+		await flush();
+
+		// It quits cleanly. Its presence is still live while its broker cleans up after it.
+		recipientNode.sessions.delete(recipient.info.id);
+		recipientNode.router.sessionLeft(recipient);
+		await flush();
+		const send = remoteSend(sender, "recipient", false);
+		senderNode.router.routeSend(send.request);
+		await flush();
+		assert.equal(await queuedRowCount(senderNode, recipient), 1, "routed to its live presence and written");
+
+		// The claim lands after the row was written, for a recipient its broker no longer has; then its presence goes.
+		claimLands.resolve();
+		await flush();
+		presenceReleased.resolve();
+		const outcomes = () =>
+			framesOf(sender).flatMap((frame) =>
+				frame.type === "queued"
+					? [["queued", frame.messageId, frame.target]]
+					: frame.type === "delivery_failed"
+						? [["failed", frame.messageId, frame.reason]]
+						: [],
+			);
+		// Well within the receipt wait, which would otherwise end with the outcome reported uncertain.
+		await vi.waitFor(() => assert.deepEqual(outcomes(), [["queued", send.id, "offline session"]]), {
+			timeout: 2_000,
+			interval: 10,
+		});
+
+		const back: BrokerConnectedSession = { ...recipient, info: { ...recipient.info }, socket: fakeSocket() };
+		recipientNode.sessions.set(back.info.id, back);
+		await recipientNode.router.sessionRegistered(back);
+		await vi.waitFor(() =>
+			assert.deepEqual(
+				framesOf(back).flatMap((frame) => (frame.type === "message" ? [frame.message.id] : [])),
+				[send.id],
+			),
+		);
+	});
+});
+
+async function queuedRowCount(node: Node, target: BrokerConnectedSession): Promise<number> {
+	const listed = await node.state.outbox.listUndelivered(deliveryTargetIdentity(target));
+	return listed.status === "listed" ? listed.rows.length : 0;
+}

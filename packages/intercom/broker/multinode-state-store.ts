@@ -279,8 +279,12 @@ export interface OutboxStore {
 	 * waiting. Optional: a store without it never extends a sender's wait.
 	 */
 	reportSaving?(claim: OutboxClaim): Promise<OutboxRenewClaimResult>;
-	/** Return the row to `queued`, for example when its recipient disconnected before acknowledging. */
-	releaseClaim(claim: OutboxClaim): Promise<OutboxReleaseClaimResult>;
+	/**
+	 * Return the row to `queued`, for example when its recipient disconnected before acknowledging. `unwritten`: the
+	 * claim never wrote the row to any recipient (it left before), so the attempt is not counted and the row reads as
+	 * never claimed, as it was before this claim.
+	 */
+	releaseClaim(claim: OutboxClaim, options?: { readonly unwritten?: boolean }): Promise<OutboxReleaseClaimResult>;
 	/**
 	 * #5038: return every row `claimantId` holds to `queued`, as its own `releaseClaim` would, so a dead broker's
 	 * claims stop holding its recipients' queues until they go stale. Resolves to the number of rows released.
