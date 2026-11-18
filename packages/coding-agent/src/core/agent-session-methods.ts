@@ -147,6 +147,11 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly resourceLoader: ResourceLoader;
 	readonly autoCompactionEnabled: boolean;
 	readonly isRetrying: boolean;
+	/**
+	 * The session waits out a retry's backoff before its next attempt. A session with fallback models keeps its run
+	 * open through the wait, so it also reads as streaming then.
+	 */
+	readonly isWaitingToRetry: boolean;
 	readonly autoRetryEnabled: boolean;
 	readonly isBashRunning: boolean;
 	readonly hasPendingBashMessages: boolean;
@@ -484,6 +489,7 @@ export interface AgentSessionPublicSurface
 		| "resourceLoader"
 		| "autoCompactionEnabled"
 		| "isRetrying"
+		| "isWaitingToRetry"
 		| "autoRetryEnabled"
 		| "abortSessionSummary"
 		| "isBashRunning"
@@ -639,6 +645,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_longStreamCutRetries: number;
 	_retryPromise: Promise<void> | undefined;
 	_retryResolve: (() => void) | undefined;
+	_retryCancelled: boolean;
 	_bashAbortControllers: Map<string | symbol, Set<AbortController>>;
 	_pendingBashMessages: BashExecutionMessage[];
 	_extensionRunner: ExtensionRunner;
