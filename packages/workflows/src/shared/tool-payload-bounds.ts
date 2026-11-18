@@ -131,17 +131,19 @@ interface PropertyReadFailure {
 function readToolPayloadProperty(
 	value: ToolPayloadObject | ToolPayloadArray,
 	key: PropertyKey,
+	strict = false,
 ): PropertyRead | PropertyReadFailure {
 	try {
 		const property: ToolPayloadValue = Reflect.get(value, key);
 		return { ok: true, value: property };
-	} catch {
+	} catch (error) {
+		if (strict) throw error;
 		return { ok: false };
 	}
 }
 
-function safeProperty(value: ToolPayloadObject | ToolPayloadArray, key: PropertyKey): ToolPayloadValue {
-	const result = readToolPayloadProperty(value, key);
+function safeProperty(value: ToolPayloadObject | ToolPayloadArray, key: PropertyKey, strict = false): ToolPayloadValue {
+	const result = readToolPayloadProperty(value, key, strict);
 	return result.ok ? result.value : TOOL_PAYLOAD_UNREADABLE_PLACEHOLDER;
 }
 
@@ -155,13 +157,18 @@ interface SafeOwnKeyScan {
 	readonly stoppedByLimit: () => boolean;
 }
 
-function safeOwnKeys(value: ToolPayloadObject | ToolPayloadArray, consumeKey: () => boolean): SafeOwnKeyScan {
+function safeOwnKeys(
+	value: ToolPayloadObject | ToolPayloadArray,
+	consumeKey: () => boolean,
+	strict = false,
+): SafeOwnKeyScan {
 	let stopped = false;
 	function* enumerate(): Generator<string> {
 		let keys: readonly PropertyKey[];
 		try {
 			keys = Reflect.ownKeys(value);
-		} catch {
+		} catch (error) {
+			if (strict) throw error;
 			return;
 		}
 		for (const key of keys) {
@@ -173,7 +180,8 @@ function safeOwnKeys(value: ToolPayloadObject | ToolPayloadArray, consumeKey: ()
 			let descriptor: PropertyDescriptor | undefined;
 			try {
 				descriptor = Object.getOwnPropertyDescriptor(value, key);
-			} catch {
+			} catch (error) {
+				if (strict) throw error;
 				continue;
 			}
 			if (descriptor?.enumerable === true) yield key;
@@ -182,8 +190,8 @@ function safeOwnKeys(value: ToolPayloadObject | ToolPayloadArray, consumeKey: ()
 	return { keys: enumerate(), stoppedByLimit: () => stopped };
 }
 
-function safeArrayLength(value: ToolPayloadArray): number {
-	const result = readToolPayloadProperty(value, "length");
+function safeArrayLength(value: ToolPayloadArray, strict = false): number {
+	const result = readToolPayloadProperty(value, "length", strict);
 	if (!result.ok || typeof result.value !== "number") return 0;
 	return Number.isSafeInteger(result.value) && result.value > 0 ? result.value : 0;
 }
@@ -192,14 +200,15 @@ function safeArrayLength(value: ToolPayloadArray): number {
  * Apply `toJSON` the way `JSON.stringify` would, containing a throwing accessor
  * or a throwing conversion instead of letting it escape.
  */
-function resolveJsonValue(value: ToolPayloadValue): ToolPayloadValue {
+function resolveJsonValue(value: ToolPayloadValue, strict = false): ToolPayloadValue {
 	if (!isToolPayloadObjectLike(value)) return value;
-	const toJson = readToolPayloadProperty(value, "toJSON");
+	const toJson = readToolPayloadProperty(value, "toJSON", strict);
 	if (!toJson.ok) return TOOL_PAYLOAD_UNREADABLE_PLACEHOLDER;
 	if (!isToolPayloadCallable(toJson.value)) return value;
 	try {
 		return toJson.value.call(value);
-	} catch {
+	} catch (error) {
+		if (strict) throw error;
 		return TOOL_PAYLOAD_UNSERIALIZABLE_PLACEHOLDER;
 	}
 }
@@ -224,6 +233,7 @@ const CONTAINER_COST = 2; // "{}" or "[]"
 const SEPARATOR_COST = 1; // "," between elements
 
 interface CloneState {
+	readonly strict?: boolean;
 	remaining: number;
 	depth: number;
 	keysRemaining: number;
@@ -252,14 +262,14 @@ function cloneObjectLike(state: CloneState, value: ToolPayloadObject | ToolPaylo
 	try {
 		if (isToolPayloadArray(value)) {
 			const items: ToolPayloadRetainedValue[] = [];
-			const length = safeArrayLength(value);
+			const length = safeArrayLength(value, state.strict);
 			for (let index = 0; index < length; index++) {
 				if (state.remaining <= 0) {
 					items.push(TOOL_PAYLOAD_TRUNCATION_MARKER);
 					break;
 				}
 				state.remaining -= SEPARATOR_COST;
-				const item = safeProperty(value, index);
+				const item = safeProperty(value, index, state.strict);
 				// A hole, `undefined`, a function, or a symbol serializes as `null`
 				// and is charged as one: an array of them is not free to retain.
 				if (isOmittedJsonValue(item)) {
@@ -272,12 +282,12 @@ function cloneObjectLike(state: CloneState, value: ToolPayloadObject | ToolPaylo
 			return items;
 		}
 		const cloned: { [key: string]: ToolPayloadRetainedValue } = {};
-		const scan = safeOwnKeys(value, () => state.remaining > 0 && consumeKeyBudget(state));
+		const scan = safeOwnKeys(value, () => state.remaining > 0 && consumeKeyBudget(state), state.strict);
 		for (const key of scan.keys) {
 			// Charged before the omission check for the same reason: inspecting a
 			// key costs work whether or not JSON would emit it.
 			state.remaining -= key.length + SEPARATOR_COST;
-			const child = safeProperty(value, key);
+			const child = safeProperty(value, key, state.strict);
 			if (isOmittedJsonValue(child)) continue;
 			cloned[key] = cloneValue(state, child);
 		}
@@ -290,7 +300,7 @@ function cloneObjectLike(state: CloneState, value: ToolPayloadObject | ToolPaylo
 }
 
 function cloneValue(state: CloneState, value: ToolPayloadValue): ToolPayloadRetainedValue {
-	const resolved = resolveJsonValue(value);
+	const resolved = resolveJsonValue(value, state.strict);
 	if (resolved === null) {
 		state.remaining -= NULL_COST;
 		return null;
@@ -307,6 +317,7 @@ function cloneValue(state: CloneState, value: ToolPayloadValue): ToolPayloadReta
 		case "object":
 			return cloneObjectLike(state, resolved);
 		case "bigint":
+			if (state.strict) throw new TypeError("BigInt cannot be stored in JSON");
 			// BigInt is retained in the inspection copy like structuredClone.
 			state.remaining -= NUMBER_COST;
 			return resolved;
@@ -328,8 +339,23 @@ export function boundedToolPayload(
 	value: ToolPayloadValue,
 	limit = TOOL_PAYLOAD_VALUE_LIMIT,
 ): ToolPayloadRetainedValue {
+	return cloneToolPayload(value, limit, false);
+}
+
+/** A durable result has the same size bounds as an inspection copy, but an unreadable field fails the result. */
+export function boundedRecordedToolPayload(value: WorkflowSerializableValue): WorkflowSerializableValue {
+	return cloneToolPayload(value, TOOL_PAYLOAD_VALUE_LIMIT, true) as WorkflowSerializableValue;
+}
+
+function cloneToolPayload(value: ToolPayloadValue, limit: number, strict: boolean): ToolPayloadRetainedValue {
 	return cloneValue(
-		{ remaining: Math.max(1, limit), depth: 0, keysRemaining: TOOL_PAYLOAD_MAX_KEYS, seen: new Set<object>() },
+		{
+			remaining: Math.max(1, limit),
+			depth: 0,
+			keysRemaining: TOOL_PAYLOAD_MAX_KEYS,
+			seen: new Set<object>(),
+			strict,
+		},
 		value,
 	);
 }

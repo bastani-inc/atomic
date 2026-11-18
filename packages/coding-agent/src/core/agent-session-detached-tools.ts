@@ -12,6 +12,7 @@ import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
 import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
 import { uniquifyToolCallIds } from "./context-tool-pairing.js";
 import { reportDebugAsync as reportDebug } from "./debug.ts";
+import { readableDetachedOutput } from "./detached-tool-output.ts";
 import { type ErrorFieldValue, serializeErrorCause } from "./error-contract.ts";
 import type { ExtensionToolContext } from "./extensions/context-types.ts";
 import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
@@ -418,15 +419,13 @@ function detachedResult(
 ): Promise<DetachedToolResult> {
 	return outsideAnySession(() =>
 		outcome.then((value) => {
-			let error: unknown;
-			if ("result" in value) {
-				try {
-					return { toolCallId, toolName, result: value.result, isError: value.result.isError === true };
-				} catch (cause) {
-					error = cause;
-				}
-			} else error = value.error;
-			return { toolCallId, toolName, result: errorToolResult(error), isError: true };
+			if ("error" in value) return { toolCallId, toolName, result: errorToolResult(value.error), isError: true };
+			try {
+				const result = readableDetachedOutput(value.result);
+				return { toolCallId, toolName, result, isError: result.isError === true };
+			} catch {
+				return { toolCallId, toolName, result: errorToolResult("Could not read this tool result"), isError: true };
+			}
 		}),
 	);
 }
@@ -951,9 +950,15 @@ async function finalizedResult(
 	toolCall: ToolCall,
 	reported: DetachedToolResult,
 ): Promise<DetachedToolResult> {
-	// A result handed back across a process boundary may omit its content, as an untyped tool's may.
-	const detached = { ...reported, result: { ...reported.result, content: reported.result.content ?? [] } };
 	try {
+		// SDK hosts can hand back their own values, including one without content from a process boundary.
+		const output = readableDetachedOutput(reported.result);
+		const detached = {
+			toolCallId: reported.toolCallId,
+			toolName: reported.toolName,
+			isError: reported.isError,
+			result: output.content == null ? { ...output, content: [] } : output,
+		};
 		const replacement = await finalizeToolResult(session, {
 			toolCall,
 			args: toolCall.arguments,
@@ -965,7 +970,27 @@ async function finalizedResult(
 		return withReplacement(detached, replacement);
 	} catch (error) {
 		// As the agent loop does when an inline call's finalization throws: the call fails with that error.
-		return { ...detached, result: errorToolResult(error), isError: true };
+		return { toolCallId: toolCall.id, toolName: toolCall.name, result: errorToolResult(error), isError: true };
+	}
+}
+
+/** Prepare the wire message before emitting or appending it. A bad payload fails the call, not the store or turn. */
+function prepareRecordedAnswer(result: DetachedToolResult): { result: DetachedToolResult; message: ToolResultMessage } {
+	try {
+		// The host keeps its original result (including non-wire extension markers); the store gets only its JSON.
+		const message: ToolResultMessage = JSON.parse(JSON.stringify(resultMessage(result)));
+		return { result, message };
+	} catch {
+		const failed = {
+			toolCallId: result.toolCallId,
+			toolName: result.toolName,
+			isError: true,
+			result: {
+				content: [{ type: "text" as const, text: "Could not record this tool result" }],
+				details: undefined,
+			},
+		};
+		return { result: failed, message: resultMessage(failed) };
 	}
 }
 
@@ -995,8 +1020,9 @@ async function recordAnswers(session: AgentSession, answers: readonly Answer[]):
 	for (const answer of answers) session._reissuedToolCallIds.add(answer.result.toolCallId);
 	try {
 		for (const answer of answers) {
-			const result = await finalizedResult(session, answer.toolCall, answer.result);
-			const message = resultMessage(result);
+			const { result, message } = prepareRecordedAnswer(
+				await finalizedResult(session, answer.toolCall, answer.result),
+			);
 			// Through the session's event pipeline, as the agent loop records a result: hosts see the call end,
 			// and the result is persisted as that call's result.
 			session._handleAgentEvent({
