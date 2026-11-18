@@ -31,6 +31,7 @@ export interface ReleasedStageAnnouncement {
 		readonly stageKeys: readonly string[];
 		readonly capability: string;
 	};
+	readonly generation?: number;
 	readonly isCurrent?: () => boolean;
 	readonly answer: (content: string) => Promise<string>;
 }
@@ -48,6 +49,7 @@ export function isReleasedStageAnnouncement(value: object): value is ReleasedSta
 		route.sessionId.length > 0 &&
 		typeof route.group === "string" &&
 		(route.model === undefined || typeof route.model === "string") &&
+		(route.generation === undefined || Number.isSafeInteger(route.generation)) &&
 		(route.isCurrent === undefined || typeof route.isCurrent === "function") &&
 		typeof route.answer === "function" &&
 		(live === undefined ||
@@ -105,6 +107,8 @@ function peerKey(route: Pick<ReleasedStageAnnouncement, "runId" | "stageId">): s
 /** Whether an announcement registers the stage exactly as the peer is registered already. */
 function sameRegistration(left: ReleasedStageAnnouncement, right: ReleasedStageAnnouncement): boolean {
 	return (
+		left.generation === right.generation &&
+		left.isCurrent?.() !== false &&
 		left.sessionId === right.sessionId &&
 		left.group === right.group &&
 		left.model === right.model &&
@@ -167,6 +171,7 @@ export class ReleasedStagePeers {
 		if (!validation.ok) throw hostedSessionErrorFor(validation.refusal);
 		const key = peerKey(route);
 		const previous = this.peers.get(key);
+		if (previous?.route.generation !== undefined && route.generation !== undefined && route.generation < previous.route.generation) return;
 		if (previous !== undefined && sameRegistration(previous.route, route)) {
 			previous.route = route;
 			await this.host(previous);

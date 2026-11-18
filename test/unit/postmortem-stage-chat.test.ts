@@ -300,6 +300,45 @@ describe("ensurePostMortemStageHandle", () => {
 		assert.deepEqual(registry.forRun("run-1"), []);
 	});
 	for (const resolve of [ensurePostMortemStageHandle, acquirePostMortemStageHandle]) {
+		test(`${resolve.name} does not resurrect a disposed run's registration after clear(runId) (#5577)`, async () => {
+			const registry = createStageControlRegistry();
+			const stage = completedStage(retainedSession("clear-one"));
+			const store = createStore();
+			const stageUiBroker = new StageUiBroker(store);
+			store.recordRunStart({
+				id: "run-1",
+				name: "reopen",
+				status: "completed",
+				startedAt: 1,
+				inputs: {},
+				toolNodes: [],
+				stages: [stage],
+			});
+			const started = Promise.withResolvers<void>();
+			const finish = Promise.withResolvers<void>();
+			const load = sessionStore.load.bind(sessionStore);
+			vi.spyOn(sessionStore, "load").mockImplementationOnce(async (id) => {
+				started.resolve();
+				await finish.promise;
+				return load(id);
+			});
+			try {
+				const opening = resolve("run-1", stage, {
+					registry,
+					store,
+					stageUiBroker,
+					adapters: adaptersRecording(mockSession(), { creates: 0 }),
+				});
+				await started.promise;
+				await registry.clear("run-1");
+				finish.resolve();
+				assert.deepEqual(await opening, { ok: false, reason: "closed" });
+				assert.equal(stageUiBroker.currentStageOwner("run-1", stage.id), undefined);
+			} finally {
+				finish.resolve();
+				await registry.clear();
+			}
+		});
 		test(`${resolve.name} does not register a retained handle after its registry is cleared during validation`, async () => {
 			const registry = createStageControlRegistry();
 			const stage = completedStage(retainedSession("shutdown-race"));

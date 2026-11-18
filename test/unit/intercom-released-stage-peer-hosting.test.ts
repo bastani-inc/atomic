@@ -260,11 +260,52 @@ describe("adopting a stage again (#4642)", () => {
 	test("a delayed release announcement cannot redirect the current stage's ask (#5577)", async () => {
 		const { peers, connections } = harness();
 		try {
-			await peers.adopt(route(0, { answer: async () => "current" }));
-			await peers.adopt(route(0, { isCurrent: () => false, answer: async () => "obsolete" }));
+			await peers.adopt(route(0, { generation: 2, answer: async () => "current" }));
+			// One obsolete release still belongs to the stage recorded in its own store; the shared route is newer.
+			await peers.adopt(route(0, { generation: 1, isCurrent: () => true, answer: async () => "out of order" }));
+			await peers.adopt(route(0, { generation: 3, isCurrent: () => false, answer: async () => "obsolete" }));
 			deliver(connections[0]!, idOf(0), "which stage?", { id: "q" });
 			await settle();
 			assert.equal(connections[0]!.sent[0]?.options.text, "current");
+		} finally {
+			await peers.disconnectAll();
+		}
+	});
+
+	test("a retired stage's exact broker address never reaches the newer chat on the same transcript (#5577)", async () => {
+		const { peers, connections } = harness({
+			host: async (frame, _, call) => frame.map(({ key }) => ({ key, sessionId: `unique-${call}` })),
+		});
+		let generation = 1;
+		const delivered: number[] = [];
+		try {
+			await peers.adopt(
+				route(0, {
+					generation: 1,
+					isCurrent: () => generation === 1,
+					answer: async () => {
+						delivered.push(1);
+						return "old";
+					},
+				}),
+			);
+			generation = 2;
+			await peers.adopt(
+				route(0, {
+					generation: 2,
+					isCurrent: () => generation === 2,
+					answer: async () => {
+						delivered.push(2);
+						return "current";
+					},
+				}),
+			);
+			deliver(connections[0]!, "unique-0", "for old conversation", { id: "old" });
+			await settle();
+			assert.deepEqual(delivered, []);
+			deliver(connections[0]!, "unique-1", "for current conversation", { id: "new" });
+			await settle();
+			assert.deepEqual(delivered, [2]);
 		} finally {
 			await peers.disconnectAll();
 		}

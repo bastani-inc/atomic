@@ -252,6 +252,8 @@ export interface WorkflowRunControlHandle {
 }
 
 export interface StageControlRegistry {
+	/** Watches a pending asynchronous registration for this run until its caller releases the check. */
+	beginRegistrationCheck?(runId: string): { current(): boolean; release(): void };
 	/** Changes whenever cleanup invalidates pending asynchronous handle acquisition. */
 	readonly generation: number;
 	/**
@@ -321,16 +323,48 @@ export interface StageControlRegistry {
 	 * stage after its session is gone, so it can leave a route that reopens the
 	 * stage on demand. Returns the unsubscribe function.
 	 */
-	onStageReleased(listener: (stage: ReleasedStage) => void): () => void;
+	onStageReleased(listener: ReleasedStageListener): () => void;
 }
 
 /** What remains of a stage whose session was released: ids only, never a session or store. */
 export interface ReleasedStage {
-	readonly stageRecord?: WeakRef<StageSnapshot>;
 	readonly runId: string;
 	readonly stageId: string;
 	readonly stageName: string;
 	readonly sessionId: string;
+}
+
+/** The registration that released a stage, separate from the IDs used for the public notice. */
+export interface ReleasedStageSource {
+	readonly generation: number;
+	readonly record?: WeakRef<StageSnapshot>;
+}
+type ReleasedStageListener = (stage: ReleasedStage, source?: ReleasedStageSource) => void;
+
+// Release announcements from independently loaded registries reach the same host, sometimes out of order.
+const sourceKey = Symbol.for("atomic-workflows/stage-release-generations@1");
+const processState = globalThis as typeof globalThis &
+	Record<symbol, { next: number; readonly records: WeakMap<StageSnapshot, number> } | undefined>;
+const sources = processState[sourceKey] ?? { next: 0, records: new WeakMap<StageSnapshot, number>() };
+processState[sourceKey] = sources;
+
+export function beginStageRegistrationCheck(registry: StageControlRegistry, runId: string) {
+	if (registry.beginRegistrationCheck) return registry.beginRegistrationCheck(runId);
+	const generation = registry.generation;
+	return { current: () => registry.generation === generation, release() {} };
+}
+
+function releaseSource(record?: StageSnapshot): ReleasedStageSource {
+	const generation = ++sources.next;
+	if (!record) return { generation };
+	sources.records.set(record, generation);
+	return { generation, record: new WeakRef(record) };
+}
+
+export function isLatestStageRelease(source?: ReleasedStageSource): boolean {
+	if (!source?.record) return true;
+	const record = source.record.deref();
+	return record !== undefined && sources.records.get(record) === source.generation;
 }
 
 /** Whether the stage's session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */
@@ -350,6 +384,7 @@ export const CLAIM_GRACE_MS = 10_000;
 export function createStageControlRegistry(): StageControlRegistry {
 	type RegistryEntry = {
 		handle: StageControlHandle;
+		readonly source: ReleasedStageSource;
 		controlsDependencies: boolean;
 		permanent: boolean;
 		readonly leases: Set<symbol>;
@@ -370,8 +405,9 @@ export function createStageControlRegistry(): StageControlRegistry {
 
 	const _byRun = new Map<string, Map<string, RegistryEntry>>();
 	const pendingDisposals = new Set<Promise<void>>();
+	const pendingLookups = new Map<string, { count: number }>();
 	const sessionStores = new Map<string, Map<string, SessionStore>>();
-	const releaseListeners = new Set<(stage: ReleasedStage) => void>();
+	const releaseListeners = new Set<ReleasedStageListener>();
 	let generation = 0;
 	function rememberSessionStore(
 		handle: StageControlHandle,
@@ -407,7 +443,13 @@ export function createStageControlRegistry(): StageControlRegistry {
 		handle: StageControlHandle,
 		fields: Pick<RegistryEntry, "controlsDependencies" | "permanent" | "releaseWanted">,
 	): RegistryEntry {
-		const entry: RegistryEntry = { handle, ...fields, leases: new Set(), epoch: 0 };
+		const entry: RegistryEntry = {
+			handle,
+			source: releaseSource(handle.stageRecord),
+			...fields,
+			leases: new Set(),
+			epoch: 0,
+		};
 		entry.stopWatching = handle.releaseGate?.onHoldLifted(() => releaseWhenLetGo(runId, stageId, entry));
 		return entry;
 	}
@@ -523,16 +565,10 @@ export function createStageControlRegistry(): StageControlRegistry {
 		runMap.delete(stageId);
 		if (runMap.size === 0) _byRun.delete(runId);
 		await disposeEntry(entry);
-		if (sessionId === undefined || _byRun.get(runId)?.has(stageId)) return;
+		if (sessionId === undefined || _byRun.get(runId)?.has(stageId) || !isLatestStageRelease(entry.source)) return;
 		for (const listener of [...releaseListeners]) {
 			try {
-				listener({
-					runId,
-					stageId,
-					stageName,
-					sessionId,
-					...(entry.handle.stageRecord ? { stageRecord: new WeakRef(entry.handle.stageRecord) } : {}),
-				});
+				listener({ runId, stageId, stageName, sessionId }, entry.source);
 			} catch (error) {
 				console.warn("atomic-workflows: released stage listener failed", error);
 			}
@@ -602,18 +638,27 @@ export function createStageControlRegistry(): StageControlRegistry {
 		get generation() {
 			return generation;
 		},
+		beginRegistrationCheck(runId) {
+			const checks = pendingLookups.get(runId) ?? { count: 0 };
+			checks.count++;
+			pendingLookups.set(runId, checks);
+			return {
+				current: () => pendingLookups.get(runId) === checks,
+				release() {
+					if (--checks.count === 0 && pendingLookups.get(runId) === checks) pendingLookups.delete(runId);
+				},
+			};
+		},
 		register(handle: StageControlHandle): () => void {
 			rememberSessionStore(handle);
 			const runMap = ensureRun(handle.runId);
 			const displaced = runMap.get(handle.stageId);
-			runMap.set(
-				handle.stageId,
-				createEntry(handle.runId, handle.stageId, handle, {
-					controlsDependencies: true,
-					permanent: true,
-					releaseWanted: handle.releaseGate?.releaseWhenIdle === true,
-				}),
-			);
+			const registered = createEntry(handle.runId, handle.stageId, handle, {
+				controlsDependencies: true,
+				permanent: true,
+				releaseWanted: handle.releaseGate?.releaseWhenIdle === true,
+			});
+			runMap.set(handle.stageId, registered);
 			if (displaced !== undefined) stopWatching(displaced);
 			if (displaced !== undefined && displaced.handle !== handle && !displaced.permanent) {
 				disposeEntryInBackground(displaced, "atomic-workflows: displaced provisional stage handle dispose failed");
@@ -622,7 +667,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 				const existing = _byRun.get(handle.runId);
 				if (!existing) return;
 				const entry = existing.get(handle.stageId);
-				if (entry?.handle === handle) {
+				if (entry === registered) {
 					rememberSessionStore(handle);
 					stopWatching(entry);
 					existing.delete(handle.stageId);
@@ -744,9 +789,11 @@ export function createStageControlRegistry(): StageControlRegistry {
 					? [..._byRun.values()].flatMap((runMap) => [...runMap.values()])
 					: [...(_byRun.get(runId)?.values() ?? [])];
 			if (runId === undefined) {
+				pendingLookups.clear();
 				_byRun.clear();
 				sessionStores.clear();
 			} else {
+				pendingLookups.delete(runId);
 				_byRun.get(runId)?.clear();
 				_byRun.delete(runId);
 				sessionStores.delete(runId);
@@ -754,6 +801,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 			await disposeEntries(entries);
 		},
 		async clearDetached(): Promise<void> {
+			pendingLookups.clear();
 			const entries: RegistryEntry[] = [];
 			generation += 1;
 			for (const [runId, runMap] of [..._byRun]) {
@@ -782,7 +830,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 			// A release a hold's end started may have unregistered its stage already: wait for its session to go too.
 			await Promise.allSettled([...pendingDisposals]);
 		},
-		onStageReleased(listener: (stage: ReleasedStage) => void): () => void {
+		onStageReleased(listener: ReleasedStageListener): () => void {
 			releaseListeners.add(listener);
 			return () => {
 				releaseListeners.delete(listener);

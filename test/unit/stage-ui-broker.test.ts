@@ -231,6 +231,31 @@ describe("StageUiBroker", () => {
 		assert.equal(stage.status, "running");
 	});
 
+	test("replacing a stage hides its old mounted form on the host that showed it (#5577)", async () => {
+		const { broker } = setupStage();
+		const owner = broker.claimStage("run-1", "stage-1");
+		const shown: string[] = [],
+			hidden: string[] = [];
+		broker.registerHost(
+			"run-1",
+			"stage-1",
+			{ showCustomUi: (request) => shown.push(request.id), hideCustomUi: (request) => hidden.push(request.id) },
+			owner.signal,
+		);
+		const rejected = assert.rejects(
+			broker.requestCustomUi("run-1", "stage-1", () => ({ render: () => [] })),
+			/replaced/,
+		);
+		const next = broker.claimStage("run-1", "stage-1");
+		try {
+			await rejected;
+			assert.equal(shown.length, 1);
+			assert.deepEqual(hidden, shown);
+		} finally {
+			next.release();
+		}
+	});
+
 	test("uses collision-resistant request ids", async () => {
 		const { broker } = setupStage();
 		let requestId = "";

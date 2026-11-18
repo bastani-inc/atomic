@@ -47,7 +47,12 @@ import type {
 import { cleanupFailedStageSessionBinding } from "../runs/foreground/stage-runner-session.js";
 import { setAgentSessionAdapterDefaultCwd } from "../runs/foreground/stage-runner-session-options.js";
 import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
-import { currentStageUiBroker, type StageDialogRequest, type StageUiBroker } from "../shared/stage-ui-broker.js";
+import {
+	currentStageUiBroker,
+	type StageDialogRequest,
+	type StageUiBroker,
+	stageRouteIsCurrent,
+} from "../shared/stage-ui-broker.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
 import type { PiCodingAgentSdk, PrepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 import { prepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
@@ -126,6 +131,7 @@ type LateStageMessageEvent = {
 	workflowRunId: string;
 	workflowStageId: string;
 	workflowStageName: string;
+	assertCurrentStage?: () => void;
 	options?: Parameters<StageLateMessageRouter["routeMessage"]>[1];
 };
 
@@ -341,8 +347,24 @@ function emitLateIntercomRoute(
 	options: LateStageMessageEvent["options"] | undefined,
 	batch: boolean,
 ): Promise<void> | undefined {
-	if (!messages.some((message) => message.customType === "intercom_message") || !pi.events?.emit) return undefined;
+	if (!messages.some((message) => message.customType === "intercom_message")) return undefined;
+	const producer = meta.stageUiSignal;
+	const isAsk = messages.some(
+		(message) =>
+			message.customType === "intercom_message" &&
+			(message.details as { message?: { expectsReply?: boolean } } | undefined)?.message?.expectsReply === true,
+	);
+	const assertCurrentStage =
+		isAsk && producer
+			? () => {
+					if (!stageRouteIsCurrent(producer))
+						throw new Error("Intercom ask target is unavailable: the workflow stage was replaced.");
+				}
+			: undefined;
+	assertCurrentStage?.();
+	if (!pi.events?.emit) return undefined;
 	const event: LateStageMessageEvent = {
+		...(assertCurrentStage ? { assertCurrentStage } : {}),
 		handled: false,
 		messages,
 		options,

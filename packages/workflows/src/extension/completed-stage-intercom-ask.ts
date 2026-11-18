@@ -21,6 +21,7 @@ interface CompletedStageAskEvent {
 	handled: boolean;
 	completion?: Promise<void>;
 	readonly batch: boolean;
+	readonly assertCurrentStage?: () => void;
 	readonly workflowRunId?: string;
 	readonly workflowStageId?: string;
 	readonly messages: readonly IntercomAskMessage[];
@@ -59,7 +60,10 @@ export function registerCompletedStageIntercomAskRouter(
 		if (disposed || !isCompletedStageAskEvent(payload) || payload.handled === true) return;
 		payload.handled = true;
 		payload.completion = enqueueTargetTurn(queues, `${payload.workflowRunId}:${payload.workflowStageId}`, () =>
-			deliverAsPostMortemTurn(payload, resolveHandle, assertActive),
+			deliverAsPostMortemTurn(payload, resolveHandle, () => {
+				assertActive();
+				payload.assertCurrentStage?.();
+			}),
 		);
 	});
 	const dispose = (): void => {
@@ -78,6 +82,7 @@ function isCompletedStageAskEvent(payload: unknown): payload is CompletedStageAs
 	if (typeof payload !== "object" || payload === null) return false;
 	const event = payload as Partial<CompletedStageAskEvent>;
 	return (
+		(event.assertCurrentStage === undefined || typeof event.assertCurrentStage === "function") &&
 		typeof event.workflowRunId === "string" &&
 		event.workflowRunId.length > 0 &&
 		typeof event.workflowStageId === "string" &&

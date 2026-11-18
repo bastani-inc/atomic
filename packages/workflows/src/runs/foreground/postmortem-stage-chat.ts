@@ -32,11 +32,12 @@ import { stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
-import type {
-	AgentSessionEventListener,
-	DetachedStageHandleLease,
-	StageControlHandle,
-	StageControlRegistry,
+import {
+	type AgentSessionEventListener,
+	beginStageRegistrationCheck,
+	type DetachedStageHandleLease,
+	type StageControlHandle,
+	type StageControlRegistry,
 } from "./stage-control-registry.js";
 import { StageQueuedUserMessageBuffer, stageQueuedUserMessageCount } from "./stage-queued-user-messages.js";
 import { createStageContext, type StageAdapters } from "./stage-runner.js";
@@ -148,7 +149,6 @@ export async function ensurePostMortemStageHandle(
 	stage: StageSnapshot,
 	deps: PostMortemStageChatDeps,
 ): Promise<EnsurePostMortemStageHandleResult> {
-	const generation = deps.registry.generation;
 	if (!reopensForPostMortem(stage)) return { ok: false, reason: "not_terminal" };
 	const record = stageRecord(runId, stage.id, deps);
 	if (!mayReopen(runId, stage.id, deps, record)) return { ok: false, reason: "closed" };
@@ -156,31 +156,10 @@ export async function ensurePostMortemStageHandle(
 	if (existing !== undefined && existing.isDisposed !== true) {
 		return { ok: true, handle: existing };
 	}
-	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
-	const sessionId = stage.sessionId;
-	if (sessionId === undefined) return { ok: false, reason: "no_session" };
-	const sessionStore = await reopenableSessionStore(runId, stage.id, sessionId, deps);
-	if (sessionStore === undefined) return { ok: false, reason: "invalid_session" };
-	if (deps.registry.generation !== generation || !mayReopen(runId, stage.id, deps, record))
-		return { ok: false, reason: "closed" };
-
-	const adapters = deps.adapters;
-	const handle = deps.registry.getOrCreateDetached(runId, stage.id, () =>
-		withWorktreeRootMappings(deps.worktreeRootMappings ?? [], () =>
-			createPostMortemStageHandle(
-				runId,
-				stage,
-				sessionId,
-				adapters,
-				deps.cwd,
-				deps.defaultSessionDir,
-				sessionStore,
-				deps.stageUiBroker,
-				record,
-			),
-		),
-	);
-	return { ok: true, handle };
+	return withSavedStage(runId, stage, deps, record, (create) => ({
+		ok: true,
+		handle: deps.registry.getOrCreateDetached(runId, stage.id, create),
+	}));
 }
 
 /** Acquire a tentative detached handle for programmatic message admission. */
@@ -189,7 +168,6 @@ export async function acquirePostMortemStageHandle(
 	stage: StageSnapshot,
 	deps: PostMortemStageChatDeps,
 ): Promise<AcquirePostMortemStageHandleResult> {
-	const generation = deps.registry.generation;
 	if (!reopensForPostMortem(stage)) return { ok: false, reason: "not_terminal" };
 	const record = stageRecord(runId, stage.id, deps);
 	if (!mayReopen(runId, stage.id, deps, record)) return { ok: false, reason: "closed" };
@@ -200,30 +178,46 @@ export async function acquirePostMortemStageHandle(
 			lease: deps.registry.acquireDetached(runId, stage.id, () => existing),
 		};
 	}
-	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
+	return withSavedStage(runId, stage, deps, record, (create) => ({
+		ok: true,
+		lease: deps.registry.acquireDetached(runId, stage.id, create),
+	}));
+}
+
+async function withSavedStage<T extends { ok: true }>(
+	runId: string,
+	stage: StageSnapshot,
+	deps: PostMortemStageChatDeps,
+	record: StageSnapshot | undefined,
+	register: (create: () => StageControlHandle) => T,
+): Promise<T | { ok: false; reason: PostMortemUnavailableReason }> {
+	const adapters = deps.adapters;
+	if (adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
 	const sessionId = stage.sessionId;
 	if (sessionId === undefined) return { ok: false, reason: "no_session" };
-	const sessionStore = await reopenableSessionStore(runId, stage.id, sessionId, deps);
-	if (sessionStore === undefined) return { ok: false, reason: "invalid_session" };
-	if (deps.registry.generation !== generation || !mayReopen(runId, stage.id, deps, record))
-		return { ok: false, reason: "closed" };
-	const adapters = deps.adapters;
-	const lease = deps.registry.acquireDetached(runId, stage.id, () =>
-		withWorktreeRootMappings(deps.worktreeRootMappings ?? [], () =>
-			createPostMortemStageHandle(
-				runId,
-				stage,
-				sessionId,
-				adapters,
-				deps.cwd,
-				deps.defaultSessionDir,
-				sessionStore,
-				deps.stageUiBroker,
-				record,
+	const check = beginStageRegistrationCheck(deps.registry, runId);
+	try {
+		const sessionStore = await reopenableSessionStore(runId, stage.id, sessionId, deps);
+		if (!check.current() || !mayReopen(runId, stage.id, deps, record)) return { ok: false, reason: "closed" };
+		if (sessionStore === undefined) return { ok: false, reason: "invalid_session" };
+		return register(() =>
+			withWorktreeRootMappings(deps.worktreeRootMappings ?? [], () =>
+				createPostMortemStageHandle(
+					runId,
+					stage,
+					sessionId,
+					adapters,
+					deps.cwd,
+					deps.defaultSessionDir,
+					sessionStore,
+					deps.stageUiBroker,
+					record,
+				),
 			),
-		),
-	);
-	return { ok: true, lease };
+		);
+	} finally {
+		check.release();
+	}
 }
 
 /**
@@ -242,7 +236,7 @@ export function createPostMortemStageHandle(
 	stageUiBroker?: StageUiBroker,
 	stageRecord?: StageSnapshot,
 ): StageControlHandle {
-	const uiOwner = stageUiBroker?.claimStage(runId, stage.id);
+	const uiOwner = stageUiBroker?.claimStage(runId, stage.id, stageRecord, true);
 	const context = createStageContext({
 		runId,
 		stageId: stage.id,

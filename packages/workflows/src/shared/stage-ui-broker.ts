@@ -13,7 +13,7 @@ import { createSessionScopedSingleton } from "./session-scoped-singleton.js";
 import type { StageInputAnswer, StagePromptAdapter } from "./stage-prompt.js";
 import type { StagePromptAnswerSource, Store } from "./store.js";
 import { currentWorkflowStore } from "./store-factory.js";
-import type { PendingPrompt, StageInputRequest } from "./store-types.js";
+import type { PendingPrompt, StageInputRequest, StageSnapshot } from "./store-types.js";
 
 export interface StageCustomUiRequest<T = unknown> {
 	readonly id: string;
@@ -106,14 +106,39 @@ interface StageRegistration {
 
 // A store can be shared by separately constructed brokers, including copies of the extension after a reload.
 const ownershipKey = Symbol.for("atomic-workflows/stage-ui-owners@1");
-const processState = globalThis as typeof globalThis &
-	Record<symbol, WeakMap<Store, Map<string, StageRegistration>> | undefined>;
-const ownersByStore = processState[ownershipKey] ?? new WeakMap<Store, Map<string, StageRegistration>>();
-processState[ownershipKey] = ownersByStore;
+interface RouteOrigin {
+	current: boolean;
+	readonly record?: WeakRef<StageSnapshot>;
+}
+type Origins = Map<string, WeakRef<RouteOrigin>>;
+interface StageDirectory {
+	readonly owners: Map<string, StageRegistration>;
+	readonly origins: Origins;
+}
+interface StageOwnership {
+	readonly stores: WeakMap<Store, StageDirectory>;
+	readonly producers: WeakMap<AbortSignal, RouteOrigin>;
+}
+const processState = globalThis as typeof globalThis & Record<symbol, StageOwnership | undefined>;
+const ownership: StageOwnership = processState[ownershipKey] ?? { stores: new WeakMap(), producers: new WeakMap() };
+processState[ownershipKey] = ownership;
+// A released session can still receive a late ask. Retain the address watermark only as long as a route can use it.
+const retiredOrigins = new FinalizationRegistry<{
+	directory: WeakRef<Origins>;
+	key: string;
+	ref: WeakRef<RouteOrigin>;
+}>(({ directory, key, ref }) => {
+	const origins = directory.deref();
+	if (origins?.get(key) === ref) origins.delete(key);
+});
+export function stageRouteIsCurrent(producer: AbortSignal): boolean {
+	return ownership.producers.get(producer)?.current ?? !producer.aborted;
+}
 
 export class StageUiBroker {
 	private readonly store: Store;
 	private readonly owners: Map<string, StageRegistration>;
+	private readonly origins: Origins;
 	private readonly pending = new Map<StageUiKey, StageCustomUiRequest>();
 	private readonly dialogs = new Map<StageUiKey, string>();
 	private readonly turns = new Map<
@@ -122,7 +147,8 @@ export class StageUiBroker {
 	>();
 	private readonly customTurns = new Map<StageUiKey, object>();
 	private readonly dialogJournals = new Map<StageUiKey, { readonly journal: StageDialogJournal }>();
-	private readonly hosts = new Map<StageUiKey, { readonly host: StageCustomUiHost }>();
+	private readonly hosts = new Map<StageUiKey, { readonly host: StageCustomUiHost; readonly owner?: AbortSignal }>();
+	private readonly presenters = new WeakMap<StageCustomUiRequest, StageCustomUiHost>();
 	// Headless-answer adapters keyed by (runId, stageId). Populated by the
 	// executor's ask_user_question watcher and the readiness gate so a brokered
 	// custom-UI prompt can be answered programmatically (e.g. via `workflow
@@ -138,8 +164,10 @@ export class StageUiBroker {
 
 	constructor(store: Store = currentWorkflowStore()) {
 		this.store = store;
-		this.owners = ownersByStore.get(store) ?? new Map();
-		ownersByStore.set(store, this.owners);
+		const directory = ownership.stores.get(store) ?? { owners: new Map(), origins: new Map() };
+		ownership.stores.set(store, directory);
+		this.owners = directory.owners;
+		this.origins = directory.origins;
 	}
 
 	private stageKey(runId: string, stageId: string): StageUiKey {
@@ -152,7 +180,10 @@ export class StageUiBroker {
 	}
 
 	private hostFor(stageKey: StageUiKey, runId: string, stageId: string): StageCustomUiHost | undefined {
-		return (this.hosts.get(stageKey) ?? this.hosts.get(key(runId, stageId)))?.host;
+		const registration = this.hosts.get(stageKey) ?? this.hosts.get(key(runId, stageId));
+		const owner = registration?.owner;
+		if (owner && (owner.aborted || (typeof stageKey !== "string" && stageKey !== owner))) return undefined;
+		return registration?.host;
 	}
 
 	private retire(stageKey: StageUiKey, controller: AbortController | undefined, message: string): void {
@@ -174,10 +205,22 @@ export class StageUiBroker {
 		if (statusesChanged) this.notifyStatusesChanged();
 	}
 
-	claimStage(runId: string, stageId: string): StageUiOwner {
+	claimStage(runId: string, stageId: string, record?: StageSnapshot, reopen = false): StageUiOwner {
+		record ??= this.store.run(runId)?.stages.find((stage) => stage.id === stageId);
 		const stageKey = key(runId, stageId);
 		const previous = this.owners.get(stageKey);
 		const controller = new AbortController();
+		const prior = this.origins.get(stageKey);
+		let origin = prior?.deref();
+		if (!reopen || origin === undefined || origin.record?.deref() !== record) {
+			if (origin) origin.current = false;
+			if (prior) retiredOrigins.unregister(prior);
+			origin = { current: true, ...(record === undefined ? {} : { record: new WeakRef(record) }) };
+			const ref = new WeakRef(origin);
+			this.origins.set(stageKey, ref);
+			retiredOrigins.register(origin, { directory: new WeakRef(this.origins), key: stageKey, ref }, ref);
+		}
+		ownership.producers.set(controller.signal, origin);
 		const run = this.store.run(runId);
 		const runRecord = run && new WeakRef(run);
 		const registration: StageRegistration = {
@@ -386,6 +429,8 @@ export class StageUiBroker {
 	}
 
 	private hideHost(host: StageCustomUiHost | undefined, request: StageCustomUiRequest, reason: unknown): void {
+		if (this.presenters.get(request) !== host) return;
+		this.presenters.delete(request);
 		try {
 			host?.hideCustomUi?.(request, reason);
 		} catch {
@@ -395,6 +440,7 @@ export class StageUiBroker {
 
 	private showHostOrReject(host: StageCustomUiHost, request: StageCustomUiRequest): void {
 		if (request.humanInput?.usesOwnBinding()) return;
+		this.presenters.set(request, host);
 		try {
 			host.showCustomUi(request);
 		} catch (error) {
@@ -403,10 +449,12 @@ export class StageUiBroker {
 	}
 
 	registerHost(runId: string, stageId: string, host: StageCustomUiHost, owner?: AbortSignal): () => void {
-		if (owner !== undefined && owner !== this.stageKey(runId, stageId)) return () => {};
-		const hostKey = owner ?? key(runId, stageId);
+		const current = this.currentStageOwner(runId, stageId);
+		if (owner?.aborted || (owner !== undefined && current !== undefined && current !== owner)) return () => {};
+		// A caller can mount the live handle in another broker with no producer of its own.
+		const hostKey = owner !== undefined && current === owner ? owner : key(runId, stageId);
 		const previousHost = this.hostFor(this.stageKey(runId, stageId), runId, stageId);
-		const registration = { host };
+		const registration = { host, owner };
 		this.hosts.set(hostKey, registration);
 		const request = this.pending.get(this.stageKey(runId, stageId));
 		if (previousHost && previousHost !== host && request) {
@@ -422,6 +470,8 @@ export class StageUiBroker {
 		return () => {
 			if (this.hosts.get(hostKey) !== registration) return;
 			this.hosts.delete(hostKey);
+			const displayed = this.pending.get(owner ?? this.stageKey(runId, stageId));
+			if (displayed && this.presenters.get(displayed) === host) this.presenters.delete(displayed);
 			// Unregistering a host means it stops *displaying* the request — not that
 			// the request is cancelled. A stage-scoped human-input request (e.g.
 			// ask_user_question / readiness gate) outlives any one attached chat:
@@ -668,7 +718,7 @@ export class StageUiBroker {
 		this.pending.delete(hostKey);
 		this.adapters.delete(hostKey);
 		if (prompt !== undefined) this.resolvedPromptIds.set(hostKey, prompt.id);
-		const host = this.hostFor(hostKey, request.runId, request.stageId);
+		const host = this.presenters.get(request);
 		this.store.batch(() => {
 			this.store.clearStageInputRequest(request.runId, request.stageId);
 			this.store.recordStageAwaitingInput(request.runId, request.stageId, false);
@@ -693,7 +743,7 @@ export class StageUiBroker {
 		this.pending.delete(hostKey);
 		this.adapters.delete(hostKey);
 		this.resolvedPromptIds.delete(hostKey);
-		const host = this.hostFor(hostKey, request.runId, request.stageId);
+		const host = this.presenters.get(request);
 		if (this.stageKey(request.runId, request.stageId) === hostKey)
 			this.store.batch(() => {
 				this.store.clearStageInputRequest(request.runId, request.stageId);
