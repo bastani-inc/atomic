@@ -10,9 +10,16 @@ import {
 } from "../../shared/types.js";
 import { subagentChildIdOfPath } from "../inprocess/control-registry.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
-import { isLiveOwnerlessChild, isQueuedOwnerlessChild, stopOwnerlessChild } from "./ownerless-children.js";
+import {
+	isLiveOwnerlessChild,
+	isQueuedOwnerlessChild,
+	liveOwnerlessAdmissions,
+	stopOwnerlessChild,
+} from "./ownerless-children.js";
 import { releasedChildReservation, reserveReleasedChildren } from "./released-child-reservations.js";
 import {
+	type AdmittedSubagentChild,
+	admittedSubagentChild,
 	awaitResumeCheck,
 	beginReleasedChildStop,
 	isReleasedChildWakeActive,
@@ -23,11 +30,7 @@ import {
 } from "./released-child-resume.js";
 import { subagentWakeKey } from "./released-children.js";
 import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
-import {
-	indexSubagentChildOwner,
-	observedSubagentRunIds,
-	subagentChildIndexEntry,
-} from "./subagent-child-card-state.js";
+import { indexSubagentChildOwner, observedSubagentRunIds } from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
 import {
 	currentWakeFailure,
@@ -101,7 +104,9 @@ function errorResult(action: SubagentRunControlAction, text: string): SubagentTo
 	return controlResult(text, { action, children: [] }, true);
 }
 
-function label(record: SubagentChildRecord): string {
+type ChildLabel = Pick<SubagentChildRecord, "agent" | "childId" | "intercomTarget">;
+
+function label(record: ChildLabel): string {
 	return `${record.agent} (${record.childId}${record.intercomTarget ? `, ${record.intercomTarget}` : ""})`;
 }
 
@@ -231,16 +236,25 @@ export async function subagentRunsLaunchedBy(ctx: ExtensionContext): Promise<Set
  * A child by its child id, launch task id, Intercom name, the run id of a run that launched only that child, or the
  * path `status` lists it under.
  */
-function resolveRecord(
-	records: ReadonlyMap<string, SubagentChildRecord>,
+function resolveRecord<T extends Pick<SubagentChildRecord, "childId" | "runId" | "taskId" | "intercomTarget">>(
+	records: ReadonlyMap<string, T>,
 	id: string,
-): SubagentChildRecord | string | undefined {
-	const direct = findSubagentChildRecord(records, id);
-	if (direct) return direct;
-	const listedAs = subagentChildIdOfPath(id.trim());
-	const byPath = listedAs === undefined ? undefined : records.get(listedAs);
+	live?: ReadonlyMap<string, T>,
+): T | string | undefined {
+	const target = id.trim();
+	const direct =
+		live?.get(target) ??
+		records.get(target) ??
+		(live && findSubagentChildRecord(live, target)) ??
+		findSubagentChildRecord(records, target);
+	// An earlier saved task ID still identifies the same child now running under its admitted ID.
+	if (direct) return live?.get(direct.childId) ?? direct;
+	const listedAs = subagentChildIdOfPath(target);
+	const byPath = listedAs === undefined ? undefined : (live?.get(listedAs) ?? records.get(listedAs));
 	if (byPath) return byPath;
-	const inRun = [...records.values()].filter((record) => record.runId === id.trim());
+	const inRun: T[] = [];
+	for (const record of records.values()) if (record.runId === target && !live?.has(record.childId)) inRun.push(record);
+	if (live) for (const child of live.values()) if (child.runId === target) inRun.push(child);
 	if (inRun.length === 1) return inRun[0];
 	if (inRun.length > 1)
 		return `Run ${id} launched ${inRun.length} children; target one by its child id: ${inRun.map((record) => record.childId).join(", ")}.`;
@@ -496,17 +510,28 @@ function interruptedResume(record: SubagentChildRecord, withdrawn: boolean, mess
 	);
 }
 
-function alreadyRunning(record: SubagentChildRecord, taskId: string): SubagentToolResult {
+function alreadyRunning(record: ChildLabel, taskId: string): SubagentToolResult {
 	return errorResult("resume", `${label(record)} is already running as task ${taskId}; pause or quit it first.`);
 }
 
-function runningResumeRefusal(ctx: ExtensionContext, record: SubagentChildRecord): SubagentToolResult | undefined {
-	// The owner's new task may be live before the record carrying its id is durable.
-	const observed = subagentChildIndexEntry(record.childId);
-	const taskId = (observed?.ownerSessionId === record.owner.sessionId ? observed.taskId : undefined) ?? record.taskId;
-	return taskId !== undefined && (liveTaskIds(ctx.getAgentTaskHost?.()).has(taskId) || isLiveOwnerlessChild(taskId))
-		? alreadyRunning(record, taskId)
-		: undefined;
+function liveResumeAdmissions(ctx: ExtensionContext, owner: string): Map<string, AdmittedSubagentChild> {
+	const live = new Map<string, AdmittedSubagentChild>();
+	for (const child of liveOwnerlessAdmissions(owner)) live.set(child.childId, child);
+	const host = ctx.getAgentTaskHost?.();
+	if (!host) return live;
+	const watched = host.watchOwnerTasks();
+	if (!watched.ok) return live;
+	try {
+		for (const task of watched.value.snapshot.tasks) {
+			if (task.kind !== "agent" || task.execution.kind === "settled") continue;
+			const lease = host.resolveTask(task.ref.taskId);
+			const child = lease.ok ? admittedSubagentChild(lease.value, owner) : undefined;
+			if (child) live.set(child.childId, child);
+		}
+	} finally {
+		watched.value.dispose();
+	}
+	return live;
 }
 
 async function resumeChild(
@@ -519,11 +544,16 @@ async function resumeChild(
 	if (request.all)
 		return errorResult(action, "resume targets one child by id; all: true is only valid with pause or quit.");
 	if (!request.id?.trim()) return errorResult(action, "resume needs the id of the child to resume.");
-	const records = ownedRecords(ctx);
-	const resolved = resolveRecord(records, request.id);
+	const ownerSessionId = subagentChildOwner(ctx).sessionId;
+	// Live handles can refuse a resume without their first saved record. Only a durable record can start a restore.
+	const resolved = resolveRecord<SubagentChildRecord | AdmittedSubagentChild>(
+		ownedRecords(ctx),
+		request.id,
+		liveResumeAdmissions(ctx, ownerSessionId),
+	);
 	if (typeof resolved === "string") return errorResult(action, resolved);
 	if (!resolved) return errorResult(action, `Unknown subagent '${request.id}': this session launched no such child.`);
-	const ownerSessionId = subagentChildOwner(ctx).sessionId;
+	if ("ownerSessionId" in resolved) return alreadyRunning(resolved, resolved.taskId);
 	const wakeKey = subagentWakeKey(ownerSessionId, resolved.childId);
 	let record = resolved;
 	// A wake or another resume may be reopening the child right now. Wait only until it has, or has given up, never for
@@ -535,8 +565,6 @@ async function resumeChild(
 	for (const reopening of reopenings) {
 		const settled = reopening();
 		if (settled === undefined) continue;
-		const running = runningResumeRefusal(ctx, record);
-		if (running) return running;
 		// A sibling's save can still be pending after the relaunch. Esc ends only our wait, not that save.
 		const readable = settled.then(() => subagentChildRecordsAppended(ownerSessionId));
 		const check = await awaitResumeCheck(wakeKey, readable, signal);
@@ -546,6 +574,8 @@ async function resumeChild(
 				`Interrupted while ${label(resolved)} was being reopened, before it could be resumed: nothing was sent to it.`,
 			);
 		if (check !== "readable") return alreadyRunning(record, check.taskId);
+		const admitted = liveResumeAdmissions(ctx, ownerSessionId).get(resolved.childId);
+		if (admitted) return alreadyRunning(admitted, admitted.taskId);
 		record = ownedRecords(ctx).get(resolved.childId) ?? resolved;
 	}
 	const terminalReason =
@@ -555,8 +585,6 @@ async function resumeChild(
 			action,
 			`${label(record)} is terminal and cannot be resumed: ${terminalReason}. Launch a fresh subagent if its work is still needed.`,
 		);
-	const running = runningResumeRefusal(ctx, record);
-	if (running) return running;
 	// A wake that did not reopen the child may still be finishing: the resume is queued behind it, not dropped.
 	const waking = isReleasedChildWakeActive(wakeKey);
 	const message = request.message?.trim() ? request.message : undefined;

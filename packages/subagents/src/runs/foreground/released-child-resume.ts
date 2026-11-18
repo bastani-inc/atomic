@@ -205,9 +205,28 @@ export async function awaitResumeCheck(
 	}
 }
 
-/** Admission makes a new task live, before its record save or Intercom registration. Pending resumes never run it again. */
-export function refuseResumesAtAdmission(owner: string, childId: string, taskId: string): void {
-	const key = subagentWakeKey(owner, childId);
+export interface AdmittedSubagentChild {
+	readonly ownerSessionId: string;
+	readonly childId: string;
+	readonly runId: string;
+	readonly taskId: string;
+	readonly agent: string;
+	readonly intercomTarget?: string;
+}
+
+// A hosted task lease or SDK launch owns this identity; no session, transcript or ended handle is kept here.
+const admissions = new WeakMap<object, AdmittedSubagentChild>();
+
+export function admittedSubagentChild(handle: object, ownerSessionId: string): AdmittedSubagentChild | undefined {
+	const child = admissions.get(handle);
+	return child?.ownerSessionId === ownerSessionId ? child : undefined;
+}
+
+/** Admission makes a new task addressable, before its record save or Intercom registration. */
+export function recordSubagentAdmission(handle: object, child: AdmittedSubagentChild): void {
+	admissions.set(handle, child);
+	const { childId, taskId } = child;
+	const key = subagentWakeKey(child.ownerSessionId, childId);
 	for (const running of checking.get(key) ?? []) running(taskId);
 	for (const [id, queuedOn] of untaken) {
 		if (queuedOn !== key) continue;

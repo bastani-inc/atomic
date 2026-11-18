@@ -66,6 +66,7 @@ import {
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
 import { holdRunWorktree } from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
 import {
+	bindSubagentChildCards,
 	observeSubagentChildRecord,
 	subagentChildRecordOf,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
@@ -4948,6 +4949,44 @@ function blockSiblingSave(h: Harness): () => Promise<void> {
 	};
 }
 
+test("resume resolves unsaved live launches by their owner's identifiers, even when two children share a name (#5560)", async () => {
+	const first = harness();
+	const second = harness();
+	const outside = harness();
+	Object.assign(outside.ctx, { getAgentTaskHost: () => first.host }); // A different session sharing the task host.
+	const saves = [blockSiblingSave(first), blockSiblingSave(second)];
+	try {
+		const name = "shared-worker";
+		const a = await first.admit("first", undefined, { intercomSessionName: name });
+		const b = await second.admit("second", undefined, { intercomSessionName: name });
+		for (const [h, runId, taskId] of [
+			[first, "first", a],
+			[second, "second", b],
+		] as const) {
+			assert.equal(h.latest(`${runId}:0`), undefined);
+			for (const id of [taskId, name, runId, `${runId}:0`]) {
+				const result = await h.call({ action: "resume", id });
+				assert.equal(
+					text(result),
+					`worker (${runId}:0, ${name}) is already running as task ${taskId}; pause or quit it first.`,
+				);
+			}
+		}
+		assert.match(text(await outside.call({ action: "resume", id: name })), /Unknown subagent/);
+		assert.match(text(await outside.call({ action: "resume", id: a })), /Unknown subagent/);
+		assert.match(text(await first.call({ action: "resume", id: "second:0" })), /Unknown subagent/);
+		await first.admit("first", undefined, { index: 1, intercomSessionName: "another-worker" });
+		assert.match(text(await first.call({ action: "resume", id: "first" })), /Run first launched 2 children/);
+	} finally {
+		await Promise.all(saves.map((save) => save()));
+	}
+	await first.waitForLatest("first:0", (record) => record.launchLeafId !== undefined);
+	await first.call({ action: "quit", id: "first:0" });
+	const retried = await first.call({ action: "resume", id: "shared-worker", message: "retry" });
+	await settled(first, resumedTaskId(retried));
+	assert.equal(first.runs.at(-1)?.task, "retry", "a settled lease never causes a stale live refusal");
+});
+
 test("Esc ends a pending resume while its sibling's record is still being saved (#5560)", async () => {
 	const h = harness();
 	const childId = "paused:0";
@@ -5046,7 +5085,17 @@ for (const ownerless of [false, true]) {
 			const result = await answeredWithin(resume);
 			assert.ok(result, "resume refuses the running child before its record save or registration");
 			assert.equal(h.latest(childId)?.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS);
-			// The new task is already known, even to a caller that arrives before the record is durable.
+			// Reopening the owner's view still sees the old durable row. It must not hide the admitted task.
+			bindSubagentChildCards(h.ctx);
+			const newTaskId = /already running as task ([^;]+);/.exec(text(result))?.[1];
+			assert.ok(newTaskId);
+			const byTask = await h.call({ action: "resume", id: newTaskId });
+			assert.equal(text(byTask), text(result), "the task ID is addressable before its first durable record");
+			const foreign = harness({ ownerless });
+			assert.match(text(await foreign.call({ action: "resume", id: newTaskId })), /Unknown subagent/);
+			const plain = await answeredWithin(h.call({ action: "resume", id: childId }));
+			assert.ok(plain, "reloading the owner did not leave resume waiting for the pending save");
+			assert.equal(text(plain), text(result));
 			const next = await h.call({ action: "resume", id: childId }, AbortSignal.abort());
 			assert.equal(text(next), text(result));
 			save.resolve();

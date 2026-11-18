@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentSource } from "../../agents/agent-types.js";
 import type { RunSyncOptions, SingleResult } from "../../shared/types.js";
 import { isExecutionTicket } from "../shared/parallel-utils.js";
-import { refuseResumesAtAdmission } from "./released-child-resume.js";
+import { type AdmittedSubagentChild, admittedSubagentChild, recordSubagentAdmission } from "./released-child-resume.js";
 import {
 	claimRunWorktree,
 	holdRunWorktree,
@@ -58,6 +58,14 @@ export type OwnerlessQueuedStart = (launch: {
 }) => OwnerlessChildLaunch;
 
 const stoppedQueued = new Map<string, OwnerlessQueuedStart>();
+
+/** The SDK children still live for this owner, including a launch whose first record has not been saved. */
+export function* liveOwnerlessAdmissions(ownerSessionId: string): Iterable<AdmittedSubagentChild> {
+	for (const launch of liveLaunches.values()) {
+		const admitted = admittedSubagentChild(launch, ownerSessionId);
+		if (admitted) yield admitted;
+	}
+}
 
 /** Whether this process runs the launch, queued or started. */
 export function isLiveOwnerlessChild(launchId: string): boolean {
@@ -275,7 +283,14 @@ export function runOwnerlessChild(input: {
 		schedule ? subagentChildLaunch(input.task, undefined, input.options) : undefined,
 	);
 	if (input.recordChild.ownerSessionId !== undefined)
-		refuseResumesAtAdmission(input.recordChild.ownerSessionId, subagentChildId(runId, index), launchId);
+		recordSubagentAdmission(launch, {
+			ownerSessionId: input.recordChild.ownerSessionId,
+			childId: subagentChildId(runId, index),
+			runId,
+			agent: input.agent,
+			taskId: launchId,
+			intercomTarget: input.options.intercomSessionName,
+		});
 	if (schedule) rememberSubagentChildSchedule(runId, index, schedule);
 	const result = (
 		schedule
