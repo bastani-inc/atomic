@@ -401,6 +401,29 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 		});
 	});
 
+	test("atomic storage migrate says when the owner role cannot install pg_trgm for session search, and is quiet once it can", async () => {
+		await withRoles(async (scope, roles) => {
+			// As on a managed server whose allow list leaves pg_trgm out: the owner role owns the schema, so it may create
+			// Atomic's tables, but not the extension, which a role creates only with CREATE on the database.
+			const admin = await scope.open();
+			await admin.exec("CREATE SCHEMA IF NOT EXISTS atomic");
+			await admin.exec(`ALTER SCHEMA atomic OWNER TO ${roles.owner}`);
+			await scope.admin.exec(`ALTER DATABASE ${scope.name} OWNER TO CURRENT_USER`);
+			const withoutExtension = await migrateAs(roles, "owner");
+			assert.equal(withoutExtension.code, 0, withoutExtension.err);
+			assert.match(withoutExtension.out, /set up for this version/);
+			assert.match(withoutExtension.out, /pg_trgm/);
+			assert.match(withoutExtension.out, /azure\.extensions/);
+			assert.match(withoutExtension.out, /atomic storage migrate/);
+
+			await scope.admin.exec(`GRANT CREATE ON DATABASE ${scope.name} TO ${roles.owner}`);
+			const withExtension = await migrateAs(roles, "owner");
+			assert.equal(withExtension.code, 0, withExtension.err);
+			assert.doesNotMatch(withExtension.out, /pg_trgm/);
+			assert.ok(await admin.get("SELECT 1 AS present FROM pg_catalog.pg_extension WHERE extname = 'pg_trgm'"));
+		});
+	});
+
 	test("atomic storage migrate moves earlier tables and fleet waiting counters from public, and refuses earlier writers (#5218, #4768)", async () => {
 		await withRoles(async (scope, roles) => {
 			// An earlier release's layout: every table in public, as the adapter keeps them for an explicit schema public.
