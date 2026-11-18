@@ -620,6 +620,8 @@ export class SqlRunJournal implements RunJournal {
 				add(page);
 			if (listed.length === 0) await this.assertVersion(this.database);
 			for await (const page of this.legacy?.pending(this.database, filter, options?.signal) ?? []) add(page);
+			await this.assertVersion(this.database);
+			options?.signal?.throwIfAborted();
 			return listed.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 		});
 	}

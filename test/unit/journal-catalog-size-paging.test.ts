@@ -1,9 +1,42 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { runJournalTables } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { JournalCatalog } from "../../packages/coding-agent/src/core/storage/journal-catalog.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import {
+	JOURNAL_SCHEMA_VERSION,
+	JournalSchemaVersionError,
+} from "../../packages/workflows/src/durable/journal/types.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 describe("journal catalog paging", () => {
+	it("refuses a schema upgrade that arrives before the final empty catalog page (#5537)", async () => {
+		const directory = makeTempDirectory("atomic-catalog-version-");
+		const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+		const journal = await SqlRunJournal.open(database);
+		try {
+			await journal.createRun({ runId: "run", name: "run", cwd: "/project", createdAt: 1, status: "running" });
+			let upgraded: Promise<unknown> = Promise.resolve();
+			const timer = setImmediate(() => {
+				upgraded = database.run(
+					`UPDATE ${runJournalTables().meta} SET schema_version = ?`,
+					JOURNAL_SCHEMA_VERSION + 1,
+				);
+			});
+			try {
+				await expect(journal.listRuns()).rejects.toBeInstanceOf(JournalSchemaVersionError);
+			} finally {
+				clearImmediate(timer);
+				await upgraded;
+			}
+		} finally {
+			await journal.close();
+			await database.close();
+			removeTempDirectory(directory);
+		}
+	});
+
 	it("can cancel a large ownership catalog between pages and then read it completely (#5537)", async () => {
 		const directory = makeTempDirectory("atomic-catalog-paging-");
 		const catalog = await JournalCatalog.open(directory);
