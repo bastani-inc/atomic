@@ -1,6 +1,7 @@
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { waitsOnDetachedResults } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { noteMessageSaved } from "./agent-session-persistence-failures.ts";
 import type { DrainedAgentQueues } from "./agent-session-types.js";
 import { customMessageExcludesContext } from "./agent-session-types.js";
 import type { PendingRecoveryDelivery } from "./extensions/index.js";
@@ -182,6 +183,7 @@ async function appendDisplayCardOccurrence(
 	}
 	confirmCustomMessageWrite(session.sessionManager, admitted.stageAdmissionKey);
 	session._entryIdsByMessage.set(card, intentEntryId);
+	noteMessageSaved(session, card);
 	session._refreshFinalizedContext();
 	return { card, intentEntryId };
 }
@@ -586,13 +588,25 @@ export async function retryConsumedProtectedStreamingCustomMessages(session: Age
 	}
 }
 
+/**
+ * #5135: appends stopped by another writer's entries are refused, not failed: the card stays pending in the store,
+ * so the session that reopens delivers it.
+ */
+function refusedByConflictHalt(session: AgentSession, error: unknown): boolean {
+	return error !== undefined && error === session.sessionManager.getAppendHalt();
+}
+
 /** Flush consumed reconciliations before session state can be discarded. */
 export async function flushConsumedProtectedStreamingCustomMessages(session: AgentSession): Promise<void> {
 	for (const entry of [...protectedMessages(session)]) {
 		if (entry.phase === "queued") continue;
 		// Do not swallow the final write failure: callers must keep this session
 		// alive rather than discard the only remaining recovery state.
-		await persistProtectedStreamingCustomMessage(session, entry.message);
+		try {
+			await persistProtectedStreamingCustomMessage(session, entry.message);
+		} catch (error) {
+			if (!refusedByConflictHalt(session, error)) throw error;
+		}
 	}
 }
 
@@ -648,15 +662,19 @@ export async function prepareProtectedStreamingCustomMessagesForDisposal(session
 	}
 	for (const entry of pending.filter((candidate) => candidate.phase === "queued")) {
 		const admitted = entry.message as StageAdmittedCustomMessage;
-		await session.sessionManager.appendCustomMessageEntry(
-			entry.message.customType,
-			entry.message.content,
-			entry.message.display,
-			entry.message.details,
-			customMessageExcludesContext(entry.message),
-			undefined,
-			admitted.stageAdmissionKey,
-		);
+		try {
+			await session.sessionManager.appendCustomMessageEntry(
+				entry.message.customType,
+				entry.message.content,
+				entry.message.display,
+				entry.message.details,
+				customMessageExcludesContext(entry.message),
+				undefined,
+				admitted.stageAdmissionKey,
+			);
+		} catch (error) {
+			if (!refusedByConflictHalt(session, error)) throw error;
+		}
 		removeQueuedProtectedReference(session, entry.message);
 		const index = pending.indexOf(entry);
 		if (index >= 0) pending.splice(index, 1);

@@ -10,7 +10,7 @@ import type {
 	ToolResultMessage,
 } from "@bastani/atomic-ai/compat";
 import type { DetachedToolCall, DetachedToolResult, ToolDetachmentPolicy } from "./agent-session-detached-tools.ts";
-import type { PersistenceFailure } from "./agent-session-persistence-failures.ts";
+import type { PersistenceFailure, UnsavedInput } from "./agent-session-persistence-failures.ts";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import type { RecordedToolLoadout } from "./agent-session-state.ts";
 import type {
@@ -451,6 +451,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	transferWorkflowStageDeliveriesTo(target: object): void;
 	hasExtensionHandlers(eventType: string): boolean;
 	getPersistenceFailure(): PersistenceFailure | undefined;
+	getUnsavedInput(): UnsavedInput | undefined;
+	discardUnsavedInput(): void;
 }
 
 export interface AgentSessionPublicSurface
@@ -553,6 +555,8 @@ export interface AgentSessionPublicSurface
 		| "createReplacedSessionContext"
 		| "hasExtensionHandlers"
 		| "getPersistenceFailure"
+		| "getUnsavedInput"
+		| "discardUnsavedInput"
 	> {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;

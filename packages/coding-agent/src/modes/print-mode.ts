@@ -8,6 +8,7 @@
 
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, ImageContent, ToolResultMessage } from "@bastani/atomic-ai/compat";
+import { sessionConflictMessage } from "../cli/settings-startup.ts";
 import type { AgentSession, AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import type { ExtensionError } from "../core/extensions/index.js";
@@ -222,6 +223,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			} else {
 				await session.prompt(text, promptOptions);
 			}
+			const conflict = session.getPersistenceFailure()?.conflict;
+			if (conflict !== undefined) {
+				exitCode = 1;
+				console.error(sessionConflictMessage(conflict));
+			}
 		} finally {
 			// Final-output suppression is scoped to the most recent prompt so a
 			// later successful prompt in the same invocation can still print its
@@ -261,6 +267,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				const isCommandError = isCommandExtensionError(err);
 				if (isCommandError || isSessionSaveError(err)) exitCode = 1;
 				activePromptHadCommandError = activePromptHadCommandError || isCommandError;
+				if (isSessionSaveError(err) && session.getPersistenceFailure()?.conflict !== undefined) return;
 				console.error(`Extension error (${err.extensionPath}): ${err.error}`);
 			},
 		});
