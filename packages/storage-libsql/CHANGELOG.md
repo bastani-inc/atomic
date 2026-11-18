@@ -5,6 +5,7 @@
 ### Fixed
 
 - On a libSQL server (sqld) shared by stores that create and drop their tables, such as several sessions, workflows or teams using one server, a statement no longer fails with `SQLITE_SCHEMA: database schema has changed` when other connections change the schema while the server prepares it. The server ran nothing of such a statement, so it is sent again, as a statement the server answers busy is, for up to 5 seconds. A statement inside a transaction, and several statements sent in one `exec`, are not sent again
+- On a libSQL server (sqld) shared by stores that create and drop their tables, a read or write outside a transaction no longer fails now and then with `SQLITE_UNKNOWN: no such table` for a table that exists. sqld gives that answer, without running the statement, when it compiles the statement while other connections change the schema; it happened to a `DELETE` from a table whose rows a trigger also removes from a full-text index, on kept and new streams alike. When the server names a table the database's schema lists, the statement now runs again with growing waits, up to 20 times; a table that does not exist is still reported at once ([#5464](https://github.com/bastani-inc/atomic/issues/5464))
 
 ## [0.9.89-alpha.1] - 2026-11-18
 

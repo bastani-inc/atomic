@@ -80,11 +80,14 @@ interface Stream {
  * a batch runs as its conditions say. `stream-busy`: the request fails as a whole with `SQLITE_BUSY`, which ends its
  * stream and rolls back the stream's open transaction. `schema-changed`: as `busy`, but the statement fails with
  * `SQLITE_SCHEMA`, as sqld answers a statement whose schema another connection kept changing while it was prepared.
+ * `missing-table`: as `busy`, but the statement fails with `no such table: <table>`, as sqld answers, without running
+ * it, a statement it prepared while other connections changed the schema, though the table exists.
  */
 export type FakeLibsqlFault =
 	| { readonly kind: "expired" }
 	| { readonly kind: "busy" }
 	| { readonly kind: "schema-changed" }
+	| { readonly kind: "missing-table"; readonly table: string }
 	| { readonly kind: "stream-busy" }
 	| { readonly kind: "result-error"; readonly code: string }
 	| { readonly kind: "timed-out-mid-batch" }
@@ -217,6 +220,7 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 
 	let busy = false;
 	let schemaChanged = false;
+	let missingTable: string | undefined;
 	const execute = (stream: Stream, stmt: HranaStmt): StmtResult => {
 		const sql = stmt.sql ?? stream.sqls.get(stmt.sql_id ?? -1);
 		// The read of `sqlite_schema` a kept stream sends before its statement takes no write lock, so the server never
@@ -228,6 +232,11 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		if (schemaChanged && !sql?.startsWith("SELECT 1 FROM sqlite_schema")) {
 			schemaChanged = false;
 			throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
+		}
+		if (missingTable !== undefined && !sql?.startsWith("SELECT 1 FROM sqlite_schema")) {
+			const table = missingTable;
+			missingTable = undefined;
+			throw Object.assign(new Error(`SQLite error: no such table: ${table}`), { errstr: "unknown" });
 		}
 		if (sql === undefined) throw Object.assign(new Error("SQL text not found"), { errstr: "error" });
 		const statement = database.prepare(sql);
@@ -389,6 +398,7 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		if (timedOut !== undefined) rollBack(stream);
 		busy = fault?.kind === "busy";
 		schemaChanged = fault?.kind === "schema-changed";
+		missingTable = fault?.kind === "missing-table" ? fault.table : undefined;
 		const results = body.requests.map((each) => {
 			if (fault?.kind === "timed-out-mid-batch" && each.type === "batch") {
 				const began: StmtResult = { cols: [], rows: [], affected_row_count: 0, last_insert_rowid: null };

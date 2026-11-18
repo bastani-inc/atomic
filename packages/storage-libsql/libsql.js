@@ -409,6 +409,17 @@ const STREAM_CLOSE_WAIT_MS = 1_000;
  */
 const SCHEMA_CHECK = "SELECT 1 FROM sqlite_schema LIMIT 0";
 
+/** The table a server's `no such table` answer names, at the end of its message. */
+const MISSING_TABLE = /no such table: (\S+)$/;
+/** A read of the schema itself, not of the connection's copy of it, for a table or view of the main database. */
+const TABLE_LOOKUP = "SELECT 1 FROM sqlite_schema WHERE type IN ('table', 'view') AND name = ? COLLATE NOCASE";
+/**
+ * How many times a statement the server answered `no such table` for a table that exists runs again. Each answer is
+ * an independent loss of a race with other connections' schema changes, so the bound counts runs, not time: a server
+ * slowed by load answers each run late, yet each run loses as rarely.
+ */
+const MISSING_TABLE_RERUNS = 20;
+
 /**
  * What sqld answers, as plain text with HTTP 400, for a request whose baton it refuses when it looks the stream up,
  * before it runs any request of the pipeline (`stream::acquire` and `Guard::get_db` in sqld's
@@ -489,7 +500,10 @@ function hranaCode(hrana, error) {
  * tables; a stream kept open loads it once. A stream that failed, sat idle `STREAM_REUSE_IDLE_MS` or lived
  * `STREAM_REUSE_MAX_AGE_MS` is closed and a new one opened. A statement is sent again only when the server refused its
  * request without running it: it found the stream expired, or refused its baton (`REFUSED_BATON`). A request whose
- * answer was lost may have run, so its failure is the caller's, as it is for a statement on a stream of its own.
+ * answer was lost may have run, so its failure is the caller's, as it is for a statement on a stream of its own. A
+ * statement the server answered `no such table` for a table the schema holds runs again, with growing waits, up to
+ * `MISSING_TABLE_RERUNS` times (#5464): the server compiled it while other connections changed the schema and ran none
+ * of it.
  */
 class ReusedStream {
 	/** @type {import("@libsql/hrana-client").Stream | undefined} */
@@ -520,7 +534,9 @@ class ReusedStream {
 		if (this.busy) return undefined;
 		this.busy = true;
 		try {
-			for (let resent = false; ; resent = true) {
+			let resent = false;
+			let reruns = 0;
+			for (let wait = SERVER_BUSY_FIRST_WAIT_MS; ; ) {
 				const now = performance.now();
 				const kept = this.stream;
 				if (
@@ -549,7 +565,15 @@ class ReusedStream {
 					};
 				} catch (error) {
 					if (stream.closed && this.stream === stream) this.stream = undefined;
-					if (fresh || resent || !this.ranNothing(error)) throw this.libsqlError(error);
+					if (!fresh && !resent && this.ranNothing(error)) {
+						resent = true;
+						continue;
+					}
+					if (reruns >= MISSING_TABLE_RERUNS || !(await this.namesExistingTable(stream, error)))
+						throw this.libsqlError(error);
+					reruns++;
+					await new Promise((resolve) => setTimeout(resolve, wait));
+					wait = Math.min(wait * 2, SERVER_BUSY_LAST_WAIT_MS);
 				} finally {
 					this.usedAt = performance.now();
 				}
@@ -572,6 +596,26 @@ class ReusedStream {
 			error.status === 400 &&
 			REFUSED_BATON.some((refusal) => error.message.endsWith(`: ${refusal}`))
 		);
+	}
+
+	/**
+	 * Whether `error` is the server's answer `no such table` for a table that `stream` finds in the schema. sqld gives
+	 * that answer, without running the statement, when it prepares the statement while other connections change the
+	 * schema; the same statement sent again finds the table (#5464). A table that does not exist is reported.
+	 * @param {import("@libsql/hrana-client").Stream} stream
+	 * @param {unknown} error
+	 */
+	async namesExistingTable(stream, error) {
+		if (!(error instanceof this.hrana.ResponseError) || stream.closed) return false;
+		const named = MISSING_TABLE.exec(error.message)?.[1];
+		if (named === undefined) return false;
+		try {
+			const lookup = new this.hrana.Stmt(TABLE_LOOKUP);
+			lookup.bindIndexes([named.replace(/^main\./i, "")]);
+			return (await stream.query(lookup)).rows.length > 0;
+		} catch {
+			return false;
+		}
 	}
 
 	/**
