@@ -1,27 +1,39 @@
 import { stripVTControlCharacters } from "node:util";
 import { describe } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import {
+	isDurableWorkflowResumable,
+	isWorkflowRunResumable,
+} from "../../packages/workflows/src/durable/resume-eligibility.js";
+import { isAbsorbingDurableStatus } from "../../packages/workflows/src/durable/workflow-status-transition.js";
 import {
 	createWorkflowLifecycleNotificationState,
 	installWorkflowLifecycleNotifications,
 	type WorkflowLifecycleNoticeDetails,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { isWorkflowHeartbeatTerminalRun } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { inspectRun, statusRuns } from "../../packages/workflows/src/runs/background/status.js";
+import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type { StageLifecycleEvent } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { runIndicatorStatus } from "../../packages/workflows/src/shared/run-indicator-status.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { workflowRunResumeCandidate } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { renderHeader } from "../../packages/workflows/src/tui/header.js";
 import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 import { isTerminalOrBlockedRun } from "../../packages/workflows/src/tui/run-display-state.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { workflowsListingItems } from "../../packages/workflows/src/tui/workflows-listing.js";
+import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { assert, createStore, run, test, workflow } from "./executor-shared.js";
 import { defaultTheme, makeStore } from "./overlay-graph-helpers.js";
-import { counters, detachingAdapters, FakeCiService } from "./waiting-stage-helpers.js";
+import { type Counters, counters, detachingAdapters, FakeCiService } from "./waiting-stage-helpers.js";
 
 /** The session store's own failure while it is unreachable, as its adapter reports it. */
 function storeUnavailable(): StorageUnavailableError {
@@ -77,11 +89,19 @@ async function blockOnUnreachableSessionStore() {
 	assert.ok(source);
 	assert.equal(source.status, "running", "the block keeps the run live for a resume");
 	assert.ok(source.blockedAt !== undefined);
+	/** Adapters for a resume once the store is reachable again: the same session store, sessions that reopen. */
+	const reachableAdapters = (resumedCounters: Counters): StageAdapters => ({
+		...detachingAdapters(service, resumedCounters, { resumable: true }),
+		sessionStore: adapters.sessionStore,
+	});
 	return {
 		store,
+		backend,
+		service,
 		source,
 		notices,
 		stopNotices,
+		reachableAdapters,
 		resume: () =>
 			run(
 				definition,
@@ -92,10 +112,7 @@ async function blockOnUnreachableSessionStore() {
 					durableBackend: backend,
 					releaseWhenWaiting: { afterMs: 0 },
 					continuation: { source, resumeFromStageId: source.failedStageId },
-					adapters: {
-						...detachingAdapters(service, counters(), { resumable: true }),
-						sessionStore: adapters.sessionStore,
-					},
+					adapters: reachableAdapters(counters()),
 					onStageLifecycleEvent,
 				},
 			),
@@ -191,5 +208,67 @@ describe("a run blocked on a stage whose session store stays unreachable reads a
 			`no update of the resumed run reads blocked: ${seen.join(", ")}`,
 		);
 		assert.equal(seen.at(-1), "completed|completed");
+	});
+});
+
+describe("a run blocked on a stage whose session store stays unreachable stays resumable", () => {
+	test("its journal keeps it as blocked and resumable, never as an ended run, and its live record stays running", async () => {
+		const { store, backend, source } = await blockOnUnreachableSessionStore();
+		const handle = backend.getWorkflow(source.id);
+		assert.ok(handle);
+		assert.equal(handle.status, "blocked", "kept durably as blocked, like any recoverable block");
+		assert.equal(handle.resumable, true);
+		assert.equal(isAbsorbingDurableStatus(handle.status, handle.resumable), false, "not a final status");
+		assert.equal(isDurableWorkflowResumable(handle), true);
+		assert.ok(backend.listResumableWorkflows().some((entry) => entry.workflowId === source.id));
+		assert.equal(isWorkflowRunResumable(workflowRunResumeCandidate(source, store.runs(), backend)), true);
+		assert.equal(source.endedAt, undefined);
+		assert.equal(isWorkflowHeartbeatTerminalRun(source), false, "its run state is not cleaned up as ended");
+	});
+
+	test("resuming it in the same session, as the graph's r does, continues the stage from its saved results", async () => {
+		const { store, service, source, reachableAdapters } = await blockOnUnreachableSessionStore();
+		const resumedCounters = counters();
+		const jobs = createJobTracker();
+		const runtime = createExtensionRuntime({
+			registry: createRegistry([definition]),
+			store,
+			jobs,
+			adapters: reachableAdapters(resumedCounters),
+		});
+		const resumed = await runtime.resumeFailedRun(source.id);
+		assert.ok(resumed.ok, resumed.ok ? undefined : resumed.message);
+		await jobs.get(resumed.runId)?.promise;
+		assert.equal(store.run(resumed.runId)?.status, "completed", store.run(resumed.runId)?.error);
+		assert.equal(service.dispatches, 1, "the tool did not run again");
+		assert.equal(resumedCounters.continued.get("implement"), 1);
+		assert.equal(resumedCounters.userPrompts.get("implement"), undefined);
+	});
+
+	test("after a restart, resuming it from its journal continues the stage from its saved results", async () => {
+		const { backend, service, source, reachableAdapters } = await blockOnUnreachableSessionStore();
+		setDurableBackend(backend);
+		try {
+			const restarted = createStore();
+			const resumedCounters = counters();
+			const jobs = createJobTracker();
+			const runtime = createExtensionRuntime({
+				registry: createRegistry([definition]),
+				store: restarted,
+				jobs,
+				adapters: reachableAdapters(resumedCounters),
+			});
+			await runtime.prepareDurableResumable(source.id);
+			const resumed = await runtime.resumeDurableWorkflow(source.id, { actor: "user" });
+			assert.ok(resumed.ok, resumed.ok ? undefined : resumed.message);
+			await jobs.get(source.id)?.promise;
+			assert.equal(restarted.run(source.id)?.status, "completed", restarted.run(source.id)?.error);
+			assert.equal(backend.getWorkflow(source.id)?.status, "completed");
+			assert.equal(service.dispatches, 1, "the tool did not run again");
+			assert.equal(resumedCounters.continued.get("implement"), 1);
+			assert.equal(resumedCounters.userPrompts.get("implement"), undefined);
+		} finally {
+			setDurableBackend(undefined);
+		}
 	});
 });
