@@ -10,6 +10,7 @@ import {
 	clearPersistenceFailure,
 	noteMessageSaved,
 	recordPersistenceFailure,
+	repeatsShownUnsavedInput,
 } from "./agent-session-persistence-failures.ts";
 import {
 	isProtectedStreamingCustomMessage,
@@ -124,6 +125,12 @@ function consumePersistenceStopReply(session: AgentSession, event: AgentEvent): 
 		if (index >= 0) messages.splice(index, 1);
 	}
 	return true;
+}
+
+/** #5135: a message event of input the session already shows as unsaved; the earlier display stands for it. */
+function repeatsShownInput(session: AgentSession, event: AgentEvent): boolean {
+	if (event.type !== "message_start" && event.type !== "message_update" && event.type !== "message_end") return false;
+	return repeatsShownUnsavedInput(session, event.message);
 }
 
 /** Internal handler for agent events - shared by subscribe and reconnect */
@@ -301,7 +308,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	try {
 		await this._emitExtensionEvent(event);
 		if (event.type === "agent_start") this._undeliveredAgentStarts -= 1;
-		if (event.type !== "message_end") this._emit(event);
+		if (event.type !== "message_end" && !repeatsShownInput(this, event)) this._emit(event);
 	} finally {
 		// Agent-core has consumed this protected input already. Its durability
 		// boundary cannot be skipped by a fallible extension or session listener.
@@ -364,7 +371,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			const pendingIndex = this._pendingNextTurnMessages.indexOf(event.message);
 			if (pendingIndex >= 0) this._pendingNextTurnMessages.splice(pendingIndex, 1);
 		}
-		this._emit(event);
+		if (!repeatsShownInput(this, event)) this._emit(event);
 		// Other message types (bashExecution, branchSummary) are persisted elsewhere
 
 		// Track assistant message for auto-compaction (checked on agent_end)

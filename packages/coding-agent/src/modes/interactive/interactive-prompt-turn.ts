@@ -65,6 +65,8 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 					if (success) settleDispatch();
 				},
 			});
+			// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
+			if (this.startedDeferredUserInput === userInput) this.discardDeferredRenderedUserInput(userInput);
 		}
 	} catch (error) {
 		this.discardDeferredRenderedUserInput(userInput);

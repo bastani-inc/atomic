@@ -106,6 +106,30 @@ export function noteMessageSaved(session: AgentSession, message: AgentMessage): 
 	if (retained.messages.size === 0 && retained.dropped === 0) retainedInputs.delete(session);
 }
 
+/** Messages a run sends again that repeat unsaved input already shown; their display events are not shown again. */
+const repeatedInputs = new WeakSet<object>();
+
+/**
+ * #5135: whether `message` repeats input the session could not save and already showed: the earlier display stands
+ * for it, so its own message events are not shown again. Earlier unsaved copies leave the live transcript.
+ */
+export function repeatsShownUnsavedInput(session: AgentSession, message: AgentMessage): boolean {
+	if (repeatedInputs.has(message)) return true;
+	const identity = inputIdentity(message);
+	const earlier = identity === undefined ? undefined : retainedInputs.get(session)?.messages.get(identity);
+	if (identity === undefined || earlier === undefined || earlier === message) return false;
+	repeatedInputs.add(message);
+	const messages = session.agent.state.messages;
+	const kept = messages.filter(
+		(candidate) =>
+			candidate === message ||
+			!session._messagesWithFailedPersistence.has(candidate) ||
+			inputIdentity(candidate) !== identity,
+	);
+	if (kept.length !== messages.length) session.agent.state.messages = kept;
+	return true;
+}
+
 /** #5135: the user discards the input the session could not save. */
 function discardUnsavedInput(this: AgentSession): void {
 	retainedInputs.delete(this);

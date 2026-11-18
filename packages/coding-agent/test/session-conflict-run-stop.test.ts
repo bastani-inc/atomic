@@ -262,3 +262,28 @@ test("unsaved input is kept up to its limit, and what was dropped is reported (#
 		`note ${MAX_RETAINED_UNSAVED_INPUTS + extra - 1}`,
 	);
 });
+
+test("a prompt sent again and again while another writer's entries stop each run is shown once (#5135)", async () => {
+	const store = new MemorySessionStore();
+	const earlier = await SessionManager.create(store, process.cwd());
+	await earlier.appendMessage({ role: "user", content: "earlier work", timestamp: Date.now() });
+	const sessionId = earlier.getSessionId();
+	const harness = await createHarness({ sessionManager: await SessionManager.open(store, sessionId) });
+	harnesses.push(harness);
+	const otherProcess = await SessionManager.open(store, sessionId);
+	const repeated = "repeated unsaved input";
+	for (let attempt = 0; attempt < 20; attempt++) {
+		await otherProcess.appendMessage({ role: "user", content: `other ${attempt}`, timestamp: Date.now() });
+		harness.setResponses([fauxAssistantMessage("never requested")]);
+		await harness.session.prompt(repeated);
+		assert.ok(harness.session.getPersistenceFailure()?.conflict instanceof SessionConflictError);
+	}
+
+	const shown = harness.events.filter(
+		(event) =>
+			event.type === "message_start" && event.message.role === "user" && userText(event.message) === repeated,
+	);
+	assert.equal(shown.length, 1);
+	assert.equal(harness.session.messages.filter((message) => userText(message) === repeated).length, 1);
+	assert.equal(harness.session.getUnsavedInput()?.messages.length, 1);
+});
