@@ -7,6 +7,7 @@ import type { PendingStageMessage, PendingStageMessageDelivery } from "../../sha
 import type { WorkflowSerializableValue } from "../../shared/types.js";
 import { WorkflowInstanceOwnershipError } from "../../shared/workflow-instance-ownership-error.js";
 import {
+	type CatalogReadOptions,
 	checkpointKey,
 	createJournalProjection,
 	type DurableWorkflowBackend,
@@ -113,6 +114,23 @@ function turnStart(): number {
 
 function nextTurn(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Where a journal read or a catalog catch-up may hand the event loop on (#5480). With the local SQLite store every
+ * statement runs synchronously and resolves in a microtask, so a read of a run's whole history, or a catch-up of
+ * every run in the journal, would otherwise keep one turn to itself until it ended: seconds on a large journal, with no
+ * timer, abort or budget able to run meanwhile. Once the turn's journal work has run for `TURN_BUDGET_MS`, this yields
+ * with one `setImmediate`, so no turn runs longer than the budget plus one statement and one run's fold. It returns
+ * undefined while the turn has budget left, so the many entries of a read cost no extra promise each. After a turn, a
+ * catch-up whose callers have all stopped waiting (`stop`) ends here.
+ */
+function turnBoundary(stop?: AbortSignal): Promise<void> | undefined {
+	if (stop?.aborted) return Promise.reject(new CatalogCatchUpStoppedError());
+	if (performance.now() - turnStart() < TURN_BUDGET_MS) return undefined;
+	return nextTurn().then(() => {
+		if (stop?.aborted) throw new CatalogCatchUpStoppedError();
+	});
 }
 
 /**
@@ -347,6 +365,48 @@ export class JournalExecutionRetiredError extends JournalError {
 		this.name = "JournalExecutionRetiredError";
 	}
 }
+/** Ends a catalog catch-up between turns once no caller is waiting for it; no caller sees it (#5480). */
+class CatalogCatchUpStoppedError extends JournalError {
+	constructor() {
+		super("Workflow catalog catch-up stopped: no caller is waiting for it");
+		this.name = "CatalogCatchUpStoppedError";
+	}
+}
+
+/**
+ * One catalog catch-up and the callers waiting for it (#5480). It reads the journal only once it starts, after every
+ * caller that joined it asked, so it serves them all. A caller stops waiting when its own signal aborts; the catch-up
+ * stops at its next turn once no caller is left waiting, and a caller without a signal waits for it to finish. What it
+ * caught up before it stopped stays caught up, and the next catch-up goes on from there.
+ */
+class SharedCatalogCatchUp {
+	private readonly stopping = new AbortController();
+	private waiting = 0;
+	private held = false;
+	done: Promise<void> = Promise.resolve();
+
+	/** Aborts once no caller is waiting for the catch-up. */
+	get stop(): AbortSignal {
+		return this.stopping.signal;
+	}
+
+	join(signal: AbortSignal | undefined): Promise<void> {
+		if (signal === undefined) {
+			this.held = true;
+			return this.done;
+		}
+		this.waiting++;
+		return new Promise<void>((resolve, reject) => {
+			const leave = () => {
+				reject(signal.reason);
+				if (--this.waiting === 0 && !this.held) this.stopping.abort();
+			};
+			signal.addEventListener("abort", leave, { once: true });
+			this.done.then(resolve, reject).finally(() => signal.removeEventListener("abort", leave));
+		});
+	}
+}
+
 export class JournalMessageScopeError extends JournalError {
 	constructor(
 		readonly runId: string,
@@ -543,6 +603,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private readonly overviews = new Map<string, RunVersion & { readonly checkpoints: readonly DurableCheckpoint[] }>();
 	/** Journal change token at the last complete catalog hydration. */
 	private catalogToken: string | undefined;
+	/** The catalog catch-up waiting for its turn on the catalog queue, which a caller asking now joins. */
+	private queuedCatalogCatchUp: SharedCatalogCatchUp | undefined;
 	private readonly leases = new Map<string, Lease>();
 	private readonly executions = new Map<string, WorkflowLeaseExecution>();
 	private readonly executionContext = new AsyncLocalStorage<ReadonlyMap<string, WorkflowLeaseExecution>>();
@@ -854,15 +916,24 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		this.summarized.set(runId, tail.version);
 	}
 
-	private *entries(runId: string, fromSeq?: number): Operation<readonly JournalEntry[]> {
+	private *entries(runId: string, fromSeq?: number, stop?: AbortSignal): Operation<readonly JournalEntry[]> {
 		return yield* invoke(async () => {
 			const entries: JournalEntry[] = [];
-			for await (const entry of this.journal.read(runId, fromSeq)) entries.push(await migratedEntry(entry));
+			for await (const entry of this.journal.read(runId, fromSeq)) {
+				entries.push(await migratedEntry(entry));
+				const boundary = turnBoundary(stop);
+				if (boundary !== undefined) await boundary;
+			}
 			return entries;
 		});
 	}
-	private *rebuild(runId: string): Operation<void> {
-		const entries = yield* this.entries(runId);
+	/**
+	 * Replaces the run's state with a fold of its whole history. The history is read in turns (`turnBoundary`); the fold
+	 * runs in one, after the read, so no reader ever sees the run half rebuilt, and a catch-up stopped during the read
+	 * leaves the run as it was.
+	 */
+	private *rebuild(runId: string, stop?: AbortSignal): Operation<void> {
+		const entries = yield* this.entries(runId, undefined, stop);
 		void this.projection.deleteWorkflow(runId);
 		this.reconciledPendingStages.delete(runId);
 		this.sequences.delete(runId);
@@ -1787,29 +1858,66 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	 * events are folded onto a hydrated run, a run that is not hydrated is summarized again from its latest
 	 * snapshot, and a run whose history was replaced or removed is rebuilt. Ownership is never cached here;
 	 * resume checks the lease when an entry is selected.
+	 *
+	 * The catch-up runs in bounded turns of the event loop (`turnBoundary`). Callers that ask before it starts share it
+	 * (`SharedCatalogCatchUp`); one that asks after it started waits for the next, which reads what was committed since.
+	 * A caller whose `signal` aborts stops waiting at once, with the signal's reason.
 	 */
-	hydrateResumableWorkflows(): Promise<void> {
-		return this.serialize(this.catalogQueue, () =>
-			invoke(async () => {
-				const journal = runJournalVersions(this.journal);
-				if (journal === undefined) {
-					const runs = await this.journal.listRuns();
-					for (const runId of new Set([...this.sequences.keys(), ...runs.map((run) => run.runId)]))
-						await this.hydrateWorkflow(runId);
-					return;
-				}
-				// Read the token first: a commit racing the version read moves it again before the next call.
-				const token = await journal.changeToken();
-				if (token !== undefined && token === this.catalogToken) return;
-				const versions = await journal.runVersions();
-				for (const runId of new Set([...this.sequences.keys(), ...this.summarized.keys(), ...versions.keys()]))
-					await this.serialize(runId, () => this.catchUp(runId, versions.get(runId), journal), false);
-				this.catalogToken = token;
-			}),
-		);
+	hydrateResumableWorkflows(options: CatalogReadOptions = {}): Promise<void> {
+		const { signal } = options;
+		try {
+			this.ensureOpen();
+			this.assertExecutionActive();
+			signal?.throwIfAborted();
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		let shared = this.queuedCatalogCatchUp;
+		if (shared === undefined || shared.stop.aborted) {
+			const next = new SharedCatalogCatchUp();
+			next.done = this.serialize(this.catalogQueue, () => {
+				if (this.queuedCatalogCatchUp === next) this.queuedCatalogCatchUp = undefined;
+				return this.catchUpCatalog(next.stop);
+			});
+			// Each caller waiting for it takes its outcome; one that stopped had no caller left to take it.
+			next.done.catch(() => {});
+			this.queuedCatalogCatchUp = next;
+			shared = next;
+		}
+		return shared.join(signal);
 	}
-	private *catchUp(runId: string, version: RunVersion | undefined, journal: RunJournalVersions): Operation<void> {
-		if (this.partialRuns.has(runId)) return yield* this.rebuild(runId);
+	private catchUpCatalog(stop: AbortSignal): Operation<void> {
+		return invoke(async () => {
+			if (stop.aborted) throw new CatalogCatchUpStoppedError();
+			const journal = runJournalVersions(this.journal);
+			if (journal === undefined) {
+				const runs = await this.journal.listRuns();
+				for (const runId of new Set([...this.sequences.keys(), ...runs.map((run) => run.runId)])) {
+					const boundary = turnBoundary(stop);
+					if (boundary !== undefined) await boundary;
+					await this.serialize(runId, () => this.rebuild(runId, stop), false);
+				}
+				return;
+			}
+			// Read the token first: a commit racing the version read moves it again before the next call.
+			const token = await journal.changeToken();
+			if (token !== undefined && token === this.catalogToken) return;
+			const versions = await journal.runVersions();
+			for (const runId of new Set([...this.sequences.keys(), ...this.summarized.keys(), ...versions.keys()])) {
+				const boundary = turnBoundary(stop);
+				if (boundary !== undefined) await boundary;
+				await this.serialize(runId, () => this.catchUp(runId, versions.get(runId), journal, stop), false);
+			}
+			this.catalogToken = token;
+		});
+	}
+	private *catchUp(
+		runId: string,
+		version: RunVersion | undefined,
+		journal: RunJournalVersions,
+		stop: AbortSignal,
+	): Operation<void> {
+		if (this.partialRuns.has(runId)) return yield* this.rebuild(runId, stop);
 		const folded = this.sequences.get(runId) ?? 0;
 		if (folded === 0 && version !== undefined) {
 			const summarized = this.summarized.get(runId);
@@ -1818,25 +1926,25 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			// A snapshot holding delivery changes needs the events before it, so the run is read in full.
 			if (tail !== undefined && !snapshotNeedsHistory(tail)) return this.summarize(runId, tail);
 			if (summarized === undefined && version.seq === 0) return;
-			return yield* this.rebuild(runId);
+			return yield* this.rebuild(runId, stop);
 		}
 		if (version !== undefined && version.seq === folded && version.at === (this.foldedAt.get(runId) ?? 0)) return;
-		if (version !== undefined && folded > 0 && version.seq > folded) return yield* this.extend(runId);
-		yield* this.rebuild(runId);
+		if (version !== undefined && folded > 0 && version.seq > folded) return yield* this.extend(runId, stop);
+		yield* this.rebuild(runId, stop);
 	}
-	private *extend(runId: string): Operation<void> {
+	private *extend(runId: string, stop?: AbortSignal): Operation<void> {
 		const folded = this.sequences.get(runId) ?? 0;
 		if (folded > 0 && !this.partialRuns.has(runId)) {
-			const entries = yield* this.entries(runId, folded);
+			const entries = yield* this.entries(runId, folded, stop);
 			if (entries[0]?.seq === folded && entries[0].at === this.foldedAt.get(runId)) {
 				for (const entry of entries) this.fold(entry);
 				return;
 			}
 		}
-		yield* this.rebuild(runId);
+		yield* this.rebuild(runId, stop);
 	}
-	async prepareWorkflowCatalog() {
-		await this.hydrateResumableWorkflows();
+	async prepareWorkflowCatalog(options: CatalogReadOptions = {}) {
+		await this.hydrateResumableWorkflows(options);
 		const catalog = await this.projection.prepareWorkflowCatalog();
 		const unavailableShards = (this.journal as Partial<UnavailableShardsReader>).unavailableShards?.() ?? [];
 		return unavailableShards.length === 0 ? catalog : { ...catalog, unavailableShards };

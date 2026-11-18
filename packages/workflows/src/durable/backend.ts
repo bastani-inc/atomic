@@ -291,6 +291,11 @@ export type DurableInactiveDeleteResult =
 	| { readonly ok: true }
 	| { readonly ok: false; readonly reason: "not_found" | "running" };
 
+/** How long a caller of a catalog read waits: until `signal` aborts, when it rejects with the signal's reason. */
+export interface CatalogReadOptions {
+	readonly signal?: AbortSignal;
+}
+
 /** Await mutations before observing their persisted result. */
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
@@ -497,8 +502,8 @@ export interface DurableWorkflowBackend {
 	listResumableWorkflows(): readonly ResumableWorkflowEntry[];
 	/** List successful completed root workflows with durable checkpoint progress. */
 	listCompletedWorkflows(): readonly ResumableWorkflowEntry[];
-	/** Current resumable and completed catalog. */
-	prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries>;
+	/** Current resumable and completed catalog. A caller whose `signal` aborts stops waiting for it. */
+	prepareWorkflowCatalog(options?: CatalogReadOptions): Promise<DurableWorkflowCatalogEntries>;
 
 	/** Current run metadata. */
 	toMetadata(workflowId: string): Omit<DurableWorkflowMetadata, "promptReservationEpoch"> | undefined;
@@ -516,8 +521,8 @@ export interface DurableWorkflowBackend {
 
 	/** Hydrate one workflow from persistent storage. */
 	hydrateWorkflow(workflowId: string): Promise<void>;
-	/** Hydrate all catalog candidates from persistent storage. */
-	hydrateResumableWorkflows(): Promise<void>;
+	/** Hydrate all catalog candidates from persistent storage. A caller whose `signal` aborts stops waiting for it. */
+	hydrateResumableWorkflows(options?: CatalogReadOptions): Promise<void>;
 	promptReservationScope(workflowId: string): { readonly rootWorkflowId: string; readonly scope: string };
 	pendingPromptToken(
 		workflowId: string,
