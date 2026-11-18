@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The agent panel below the prompt drops a subagent as soon as it finishes. Stopped, paused or interrupted subagents stay only while another subagent, workflow run or background shell is still running, then the whole panel closes, and a resumed subagent is listed once. `↓ N agents` counts only the subagents the panel lists, not workflow runs, so a running workflow alone no longer shows `↓ 1 agent`; `N needs input` still counts a workflow run's question. When the panel lists nothing but `/tasks` lists subagents, the hint shows `/tasks to see subagents`, or `N shells · /tasks to manage` while background shells run.
+
 ### Fixed
 
 - Fixed Esc not ending a turn while a tool call ignored the interrupt: the turn waited for every tool call to return, so a call that did not stop (an extension or MCP tool that does not watch its abort signal, or a long wait inside a tool) kept the session busy for good, with queued messages never sent. A tool call that has not stopped 10 seconds after the interrupt now gets an `Operation aborted` result and the turn ends, in the main chat, subagent and workflow stage chats, and the default isolated host alike. The call may keep running; when it finishes, its result is added to the conversation as a `late-tool-result` message that starts no turn, and later tool calls no longer wait for it. `ATOMIC_TOOL_ABORT_GRACE_MS` changes the 10 seconds ([#5486](https://github.com/bastani-inc/atomic/issues/5486))

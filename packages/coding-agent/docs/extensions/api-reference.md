@@ -976,7 +976,7 @@ Return at most 10,000 rows per source. Atomic ignores additional rows and warns 
 | `waitingOn` | What a `waiting` item waits on, shown as `waiting on <waitingOn>`. |
 | `queued` | Messages typed to it that it has not taken yet. A non-negative safe integer. |
 | `endedAt` | When a finished item finished, in finite, non-negative epoch milliseconds. |
-| `viewed` | For a finished `workflow` item, whether the user has opened it. A finished workflow row stays in the panel until it is viewed: opening it from the panel or `/tasks` counts, and a source sets `viewed: true` when the user opens the item another way. Finished `agent` and `shell` rows always fade and leave after three minutes. |
+| `viewed` | For a finished `workflow` item, whether the user has opened it. A finished workflow row stays in the panel until it is viewed: opening it from the panel or `/tasks` counts, and a source sets `viewed: true` when the user opens the item another way. A `done` or `failed` `agent` row leaves the panel as soon as it finishes. A `stopped` or `paused` `agent` row stays while another row is active or a background shell runs, and leaves once nothing is. |
 
 Atomic strips terminal control sequences from the text fields before drawing them. An item with invalid fields is skipped, and `items()` or `subscribe` throwing is reported as an extension error. The source's other items, and the other sources, are still shown.
 

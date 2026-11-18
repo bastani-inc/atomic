@@ -12,7 +12,6 @@ import {
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
-	AGENT_PANEL_DROP_MS,
 	AGENT_PANEL_FADE_MS,
 	AGENT_PANEL_MAIN_ID,
 	AgentPanelFocus,
@@ -233,29 +232,31 @@ test("rendering collapsed panel rows does not measure hidden names (#5224, #5239
 	assert.ok(reads <= 24, `only the focused window is measured, read ${reads}`);
 });
 
-test("rows sort needing input, running, then finished; finished rows fade, then leave unless kept (#5224)", () => {
+test("rows sort needing input, running, then finished; kept finished rows fade, and the rest leave at once (#5224)", () => {
 	let now = 0;
 	const model = new AgentPanelModel(() => now);
+	const stopped: AgentPanelRow = { ...ROWS[3]!, state: "stopped" };
 	const rows: AgentPanelRow[] = [
-		{ ...ROWS[3]! },
+		stopped,
 		{ ...ROWS[0]! },
 		{ id: "run:q", kind: "workflow", state: "input", name: "ralph", task: "approve the plan?" },
 	];
 	assert.deepEqual(
 		model.rows(rows).map((row) => row.id),
 		["run:q", "task:a", "task:c"],
+		"a stopped subagent stays, last, while something is active",
 	);
-	assert.equal(model.faded(rows[0]!), false);
+	assert.equal(model.faded(stopped), false);
 	now += AGENT_PANEL_FADE_MS;
-	assert.equal(model.faded(rows[0]!), true, "a finished row reads dim after a while");
-	now += AGENT_PANEL_DROP_MS;
+	assert.equal(model.faded(stopped), true, "a finished row reads dim after a while");
 	assert.deepEqual(
-		model.rows(rows).map((row) => row.id),
-		["run:q", "task:a"],
+		model.rows([{ ...ROWS[3]! }, { ...ROWS[0]! }]).map((row) => row.id),
+		["task:a"],
+		"a done subagent leaves at once",
 	);
 	const finishedRun: AgentPanelRow = { ...ROWS[2]!, id: "run:done", state: "done" };
-	model.rows([finishedRun]);
-	now += AGENT_PANEL_DROP_MS * 2;
+	assert.deepEqual(model.rows([finishedRun]), [], "a finished run nobody keeps leaves at once");
+	now += 24 * 60 * 60_000;
 	assert.deepEqual(
 		model.rows([finishedRun], () => true).map((row) => row.id),
 		["run:done"],
@@ -265,7 +266,7 @@ test("rows sort needing input, running, then finished; finished rows fade, then 
 
 test("panel row ordering reads each status a bounded number of times in a large mixed list (#5224, #5239)", () => {
 	let reads = 0;
-	const states = ["done", "running", "queued", "input", "stopping"] as const;
+	const states = ["stopped", "running", "queued", "input", "stopping"] as const;
 	const rows = Array.from(
 		{ length: 10_000 },
 		(_, index): AgentPanelRow => ({
