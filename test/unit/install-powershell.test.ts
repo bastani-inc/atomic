@@ -433,7 +433,8 @@ test("Windows installer enforces Atomic release grammar before archive downloads
 	const source = installerSource();
 	assert.match(source, /function Test-AtomicReleaseTag/u);
 	assert.ok(
-		source.includes("'^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-alpha\\.(?:[1-9][0-9]*))?$'"),
+		// \z, not $: .NET's $ also matches before a final newline, which install.sh rejects.
+		source.includes("'^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-alpha\\.(?:[1-9][0-9]*))?\\z'"),
 		"the PowerShell grammar does not match install.sh",
 	);
 	assert.match(source, /-cmatch/u);
@@ -1108,7 +1109,7 @@ try {
     $env:PATHEXT = $null
 
     # Unsupported release tag grammar must fail before the tags API request.
-    foreach ($invalidTag in @("v1.0.0", "1.0", "1.0.0.0", "1.0.0-alpha.0", "1.0.0-beta.1", "1.0.0-alpha", "01.0.0", "release/1.0", "hash#tag", "percent%tag")) {
+    foreach ($invalidTag in @("v1.0.0", "1.0", "1.0.0.0", "1.0.0-alpha.0", "1.0.0-beta.1", "1.0.0-alpha", "01.0.0", "release/1.0", "hash#tag", "percent%tag", ("1.0.0" + [char]10), ("1.0.0-alpha.1" + [char]10))) {
         $null = New-ProbeSpace
         $null = Assert-Rejected "explicit ref $invalidTag" 'unsupported release tag: expected MAJOR\.MINOR\.PATCH or MAJOR\.MINOR\.PATCH-alpha\.REVISION' -Ref $invalidTag
     }
@@ -1379,7 +1380,7 @@ Set-Content -LiteralPath (Join-Path $versionPath "sentinel.txt") -Value "survive
 $before = Get-InstallSnapshot
 $result = Invoke-Installer @{ Ref = "1.0.0" }
 Assert-Skipped $result "1.0.0" "requested version"
-Assert-Probe (@($global:requests | Where-Object { $_ -match '/releases/tags/1\.0\.0$' }).Count -eq 1) "the requested tag was not resolved"
+Assert-Probe ($global:requests.Count -eq 0) "a healthy pinned rerun made a network request: $($global:requests -join ', ')"
 Assert-Probe ((Get-InstallSnapshot) -ceq $before) "a skipped rerun changed the install"
 Assert-Probe (Test-Path -LiteralPath (Join-Path $versionPath "sentinel.txt")) "a skipped rerun removed the version payload"
 Assert-Probe ($env:Path -split [IO.Path]::PathSeparator -contains $global:binDir) "a skipped rerun did not repair the current session PATH"
@@ -2381,9 +2382,10 @@ try {
         Assert-Fixture ($reinstallOutput -notmatch 'to your User PATH') "same-version rerun claimed a User PATH update although the entry already existed"
         Assert-Fixture (@(Get-Content -LiteralPath $upgradeLog).Count -eq 1) "a skipped same-version rerun ran 'intercom upgrade'"
         Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $skipRequestStart | Where-Object { $_.Uri -match '/releases/download/' }).Count -eq 0) "a healthy same-version rerun still downloaded release assets"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $skipRequestStart).Count -eq 0) "a healthy same-version rerun made a network request"
+        $forcedOutput = & $InstallerPath -Force | Out-String
         $fallbackApiRequests = @($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' })
         Assert-Fixture ($fallbackApiRequests[$fallbackApiRequests.Count - 1].Authorization -eq "Bearer gh-token") "GH_TOKEN was not used when GITHUB_TOKEN was unset"
-        $forcedOutput = & $InstallerPath -Force | Out-String
         Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $versionOne "stale.txt"))) "forced same-version reinstall was not clean"
         Assert-Fixture ($forcedOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "forced reinstall did not report the installed launcher path"
 
@@ -3257,7 +3259,7 @@ try {
         Assert-Fixture ($skipOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "the skip did not keep the Installed to line"
         Assert-Fixture ($skipOutput -notmatch 'to your User PATH') "the skip claimed a User PATH update although the entry existed"
         Assert-Fixture ((Get-DownloadRequestCount $mark) -eq 0) "the skip requested release assets"
-        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' }).Count -eq 1) "the skip did not resolve the requested tag"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark).Count -eq 0) "a healthy pinned rerun made a network request"
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $versionOne "sentinel.txt")) "the skip replaced the installed version"
         Assert-Fixture ((Get-FixtureLinkTarget $current) -ceq $currentTarget) "the skip repointed current"
         Assert-Fixture ((Get-FixtureLinkTarget $atomicCurrent) -ceq $atomicCurrentTarget) "the skip repointed atomic-current"

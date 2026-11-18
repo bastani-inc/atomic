@@ -274,7 +274,7 @@ function Test-AtomicReleaseTag {
         return $false
     }
 
-    return $Tag -cmatch '^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-alpha\.(?:[1-9][0-9]*))?$'
+    return $Tag -cmatch '^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-alpha\.(?:[1-9][0-9]*))?\z'
 }
 
 function Get-AtomicRedirectTag {
@@ -1492,10 +1492,22 @@ if ([string]::IsNullOrWhiteSpace($requestedRef)) {
 }
 else {
     $encodedRequestedRef = [Uri]::EscapeDataString($requestedRef)
+    $pinnedInstalledVersion = $null
+    if (-not $forceInstall) {
+        $pinnedInstalledVersion = Get-AtomicInstalledVersion (Join-Path (Join-Path $installRoot "current") "atomic.exe")
+    }
+    $releasePageStatus = $null
+    if (-not [string]::IsNullOrWhiteSpace($pinnedInstalledVersion) -and
+        (Test-AtomicInstallIntact $pinnedInstalledVersion $requestedRef $installRoot $binDir $shimContent)) {
+        # The pinned release is already installed and healthy: it needs no network request.
+        $releasePageStatus = "installed"
+    }
     # An exact tag is confirmed on github.com; the REST API, limited to 60 requests an
     # hour per address without a token, is asked only when github.com cannot tell.
-    $releasePageStatus = Get-AtomicReleasePageStatus $encodedRequestedRef $requestedRef
-    if ($releasePageStatus -eq "found") {
+    if ($null -eq $releasePageStatus) {
+        $releasePageStatus = Get-AtomicReleasePageStatus $encodedRequestedRef $requestedRef
+    }
+    if ($releasePageStatus -eq "found" -or $releasePageStatus -eq "installed") {
         $releaseTag = $requestedRef
     }
     elseif ($releasePageStatus -eq "missing") {

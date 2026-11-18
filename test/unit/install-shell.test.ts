@@ -946,7 +946,7 @@ unixTest(
 			assert.equal(readlinkSync(join(fixture.binDir, "atomic")), launcherTarget);
 			assert.equal(readlinkSync(join(fixture.installRoot, "current")), currentTarget);
 			const requests = requestsSince(fixture, offset);
-			assert.match(requests, /(GET|HEAD) https:\/\/github\.com\/bastani-inc\/atomic\/releases\/tag\/1\.0\.0\n/u);
+			assert.equal(requests, "", "a healthy pinned rerun needs no network request");
 			assertNoArtifactRequests(requests);
 
 			const upgrade = fixture.run({ args: ["--ref", "2.0.0"], environment: { SHELL: "/usr/local/bin/fish" } });
@@ -1991,6 +1991,54 @@ unixTest("shell installer gives GITHUB_TOKEN advice for a BusyBox wget 403 that 
 	} finally {
 		fixture.cleanup();
 	}
+});
+
+unixTest("shell installer skips a healthy pinned install with no request while GitHub is unavailable", () => {
+	for (const downloader of ["curl", "wget"] as const) {
+		const fixture = createFixture();
+		try {
+			assertSuccess(fixture.run({ downloader, args: ["--ref", "1.0.0"] }));
+			const offset = requestLogLength(fixture);
+			const rerun = fixture.run({
+				downloader,
+				environment: { ATOMIC_VERSION: "1.0.0", ATOMIC_FIXTURE_WEB_FAIL: "1", ATOMIC_FIXTURE_API_STATUS: "403" },
+			});
+			assertSkipped(fixture, rerun, "1.0.0");
+			assert.equal(requestsSince(fixture, offset), "");
+
+			const forced = fixture.run({
+				downloader,
+				args: ["--force"],
+				environment: { ATOMIC_VERSION: "1.0.0", ATOMIC_FIXTURE_WEB_FAIL: "1", ATOMIC_FIXTURE_API_STATUS: "403" },
+			});
+			assert.notEqual(forced.exitCode, 0, "--force must still resolve the release");
+		} finally {
+			fixture.cleanup();
+		}
+	}
+});
+
+unixTest("shell installer decodes no tag that would lose a percent-encoded newline", () => {
+	const source = readFileSync(installerPath, "utf8");
+	const definition = (name: string) => {
+		const start = source.indexOf(`\n${name}() {`);
+		assert.ok(start >= 0, name);
+		return source.slice(start, source.indexOf("\n}\n", start) + 3);
+	};
+	const script = `${definition("hex_nibble")}${definition("percent_decode")}
+for value in "$@"; do if decoded=$(percent_decode "$value"); then printf 'ok[%s]\\n' "$decoded"; else printf 'fail\\n'; fi; done`;
+	const result = spawnSyncCollect([
+		"sh",
+		"-c",
+		script,
+		"sh",
+		"1.2.3-alpha.1",
+		"1%2E2.3",
+		"1.2%0A.3",
+		"1.2.3%0a",
+		"1%00",
+	]);
+	assert.equal(result.stdout.toString(), "ok[1.2.3-alpha.1]\nok[1.2.3]\nfail\nfail\nfail\n");
 });
 
 unixTest("shell installer still resolves the latest release through the github.com redirect", () => {

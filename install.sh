@@ -242,7 +242,9 @@ percent_decode() {
             decode_high_value=$(hex_nibble "$decode_high") || return 1
             decode_low_value=$(hex_nibble "$decode_low") || return 1
             decode_decimal=$((decode_high_value * 16 + decode_low_value))
-            [ "$decode_decimal" -ne 0 ] || return 1
+            # NUL cannot be held in a shell string, and a decoded newline would be lost to
+            # command substitution, so neither decodes.
+            [ "$decode_decimal" -ne 0 ] && [ "$decode_decimal" -ne 10 ] || return 1
             decode_octal=$(printf '%03o' "$decode_decimal")
             decode_output=$decode_output$(printf "\\$decode_octal")
             decode_input=${decode_after_high#?}
@@ -1240,6 +1242,48 @@ print_install_summary() {
     printf '%sFor more information visit%s %s\n' "$MUTED" "$RESET" "$DOCS_URL"
 }
 
+# Read the installed version from where `current` points rather than executing
+# the existing binary: a hung or broken install is exactly what a rerun repairs,
+# so this informational probe must never block the download and promotion.
+INSTALLED_VERSION=
+if [ -L "$INSTALL_ROOT/current" ] && [ -d "$INSTALL_ROOT/current" ]; then
+    # shellcheck disable=SC1007 # CDPATH= clears the search path for this cd only
+    installed_physical=$(CDPATH= cd -P "$INSTALL_ROOT/current" 2>/dev/null && pwd && printf '_') || installed_physical=
+    installed_physical=${installed_physical%_}
+    installed_physical=${installed_physical%"$NEWLINE"}
+    case $installed_physical in
+        */versions/*)
+            installed_encoded=${installed_physical##*/}
+            if INSTALLED_VERSION=$(percent_decode "$installed_encoded") &&
+                is_atomic_release_tag "$INSTALLED_VERSION"; then
+                :
+            else
+                INSTALLED_VERSION=
+            fi
+            ;;
+    esac
+    installed_physical=
+    installed_encoded=
+fi
+installed_payload_is_complete() {
+    for required_file in package.json app.js native-modifiers.js native-module-path.js native-platform.js; do
+        [ -f "$INSTALL_ROOT/current/$required_file" ] || return 1
+    done
+    for required_directory in builtin node_modules; do
+        [ -d "$INSTALL_ROOT/current/$required_directory" ] || return 1
+    done
+}
+
+installed_launcher_is_healthy() {
+    [ -f "$INSTALL_ROOT/current/atomic" ] && [ -x "$INSTALL_ROOT/current/atomic" ] || return 1
+    [ -L "$BIN_PATH" ] || return 1
+    # shellcheck disable=SC3013 # -ef is the only way to compare symlink targets without readlink
+    [ "$BIN_PATH" -ef "$INSTALL_ROOT/current/atomic" ] || return 1
+    # shellcheck disable=SC3013 # -ef compares the physical directories, so a symlinked install root still matches
+    [ "$INSTALL_ROOT/current" -ef "$INSTALL_ROOT/versions/$RELEASE_TAG_ENCODED" ] || return 1
+    installed_payload_is_complete
+}
+
 TAGS_API=$GITHUB_API/repos/$REPOSITORY/releases/tags
 RELEASE_TAG=
 RELEASE_TAG_ENCODED=
@@ -1248,6 +1292,13 @@ if [ -n "$REQUESTED_REF" ]; then
     is_atomic_release_tag "$REQUESTED_REF" ||
         fail "unsupported release tag: expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION"
     REQUESTED_REF_ENCODED=$(percent_encode "$REQUESTED_REF")
+    RELEASE_TAG_ENCODED=$REQUESTED_REF_ENCODED
+fi
+if [ -n "$REQUESTED_REF" ] && [ "$FORCE_INSTALL" -eq 0 ] && [ "$INSTALLED_VERSION" = "$REQUESTED_REF" ] &&
+    installed_launcher_is_healthy; then
+    # The pinned release is already installed and healthy: it needs no network request.
+    RELEASE_TAG=$REQUESTED_REF
+elif [ -n "$REQUESTED_REF" ]; then
     # An exact tag is confirmed on github.com; the REST API, limited to 60 requests an
     # hour per address without a token, is asked only when github.com cannot tell.
     case $(release_page_status "$REQUESTED_REF_ENCODED" "$REQUESTED_REF") in
@@ -1310,48 +1361,6 @@ esac
 PLATFORM_LABEL=${ASSET_NAME#atomic-}
 PLATFORM_LABEL=${PLATFORM_LABEL%.tar.gz}
 printf '%sInstalling atomic version:%s %s (%s)\n' "$MUTED" "$RESET" "$RELEASE_TAG" "$PLATFORM_LABEL"
-
-# Read the installed version from where `current` points rather than executing
-# the existing binary: a hung or broken install is exactly what a rerun repairs,
-# so this informational probe must never block the download and promotion.
-INSTALLED_VERSION=
-if [ -L "$INSTALL_ROOT/current" ] && [ -d "$INSTALL_ROOT/current" ]; then
-    # shellcheck disable=SC1007 # CDPATH= clears the search path for this cd only
-    installed_physical=$(CDPATH= cd -P "$INSTALL_ROOT/current" 2>/dev/null && pwd && printf '_') || installed_physical=
-    installed_physical=${installed_physical%_}
-    installed_physical=${installed_physical%"$NEWLINE"}
-    case $installed_physical in
-        */versions/*)
-            installed_encoded=${installed_physical##*/}
-            if INSTALLED_VERSION=$(percent_decode "$installed_encoded") &&
-                is_atomic_release_tag "$INSTALLED_VERSION"; then
-                :
-            else
-                INSTALLED_VERSION=
-            fi
-            ;;
-    esac
-    installed_physical=
-    installed_encoded=
-fi
-installed_payload_is_complete() {
-    for required_file in package.json app.js native-modifiers.js native-module-path.js native-platform.js; do
-        [ -f "$INSTALL_ROOT/current/$required_file" ] || return 1
-    done
-    for required_directory in builtin node_modules; do
-        [ -d "$INSTALL_ROOT/current/$required_directory" ] || return 1
-    done
-}
-
-installed_launcher_is_healthy() {
-    [ -f "$INSTALL_ROOT/current/atomic" ] && [ -x "$INSTALL_ROOT/current/atomic" ] || return 1
-    [ -L "$BIN_PATH" ] || return 1
-    # shellcheck disable=SC3013 # -ef is the only way to compare symlink targets without readlink
-    [ "$BIN_PATH" -ef "$INSTALL_ROOT/current/atomic" ] || return 1
-    # shellcheck disable=SC3013 # -ef compares the physical directories, so a symlinked install root still matches
-    [ "$INSTALL_ROOT/current" -ef "$INSTALL_ROOT/versions/$RELEASE_TAG_ENCODED" ] || return 1
-    installed_payload_is_complete
-}
 
 if [ -n "$INSTALLED_VERSION" ]; then
     if [ "$INSTALLED_VERSION" = "$RELEASE_TAG" ] && [ "$FORCE_INSTALL" -eq 0 ] && installed_launcher_is_healthy; then
