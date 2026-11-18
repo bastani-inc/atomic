@@ -14,8 +14,13 @@ import { dropLibsqlScope } from "../helpers/storage-backends.js";
 const serverUrl = process.env.ATOMIC_TEST_LIBSQL_URL;
 const tokenFile = process.env.ATOMIC_TEST_LIBSQL_TOKEN_FILE;
 
-/** Connections that change the schema at the same time; sqld answered about 7 in 10 large inserts `SQLITE_SCHEMA` with 8. */
+/**
+ * Connections that change the schema at the same time, each pausing between changes. Enough that the server answers
+ * the writes `SQLITE_SCHEMA` without the adapter running them again, yet each pause leaves the server, which other
+ * test files share, time for their own statements.
+ */
 const SCHEMA_CHANGERS = 8;
+const SCHEMA_CHANGE_PAUSE_MS = 5;
 /** The writes that run while the schema keeps changing: enough that some meet a changed schema. */
 const WRITES = 60;
 /** A row large enough that the server takes long to prepare and run it, so other connections change the schema meanwhile. */
@@ -58,6 +63,7 @@ describe.skipIf(serverUrl === undefined)(
 							await changer.exec(`CREATE TABLE IF NOT EXISTS ${table} (x)`).catch(() => undefined);
 							await changer.exec(`CREATE INDEX IF NOT EXISTS ${table}_x ON ${table}(x)`).catch(() => undefined);
 							await changer.exec(`DROP TABLE IF EXISTS ${table}`).catch(() => undefined);
+							await new Promise((resolve) => setTimeout(resolve, SCHEMA_CHANGE_PAUSE_MS));
 						}
 					}),
 				);
