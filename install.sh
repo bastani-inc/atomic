@@ -479,6 +479,7 @@ INSTALL_COMMITTED=0
 INSTALL_LOCK_PATH=
 INSTALL_LOCK_OWNER=
 INSTALL_LOCK_HELD=0
+TAKEOVER_EMPTY_POLLS=0
 CURRENT_SWITCHED=0
 PREVIOUS_CURRENT_TARGET=
 CURRENT_PATH=
@@ -543,16 +544,43 @@ lock_owner_is_gone() {
     [ -n "$lock_owner_start" ] && [ "$lock_owner_start" != "$2" ]
 }
 
-# Remove a lock whose owner is gone. The lock is renamed aside first and checked there, so a lock another
-# installer took in the meantime is never removed: it is linked back in place instead.
+# Remove a lock whose owner is gone. Takeovers are serialized by a takeover directory (mkdir), so two waiters never
+# remove each other's new lock; under it the lock is read again, and only a lock whose owner is still gone (or that
+# is still empty) is renamed aside, read once more there, and removed. A live lock found there is linked back with
+# `ln`, which never replaces. A takeover directory whose owner is gone is removed.
 take_over_stale_install_lock() {
-    stale_reap=$INSTALL_LOCK_PATH.stale-$TRANSACTION_ID
-    mv "$INSTALL_LOCK_PATH" "$stale_reap" 2>/dev/null || return 0
-    stale_seen=$(cat "$stale_reap" 2>/dev/null) || stale_seen=
-    if [ "$stale_seen" != "$1" ]; then
-        ln "$stale_reap" "$INSTALL_LOCK_PATH" 2>/dev/null || :
+    takeover_dir=$INSTALL_LOCK_PATH.takeover
+    if mkdir "$takeover_dir" 2>/dev/null; then
+        printf '%s\n' "$INSTALL_LOCK_OWNER" > "$takeover_dir/owner" 2>/dev/null || :
+        takeover_line=$(cat "$INSTALL_LOCK_PATH" 2>/dev/null) || takeover_line=
+        if path_exists "$INSTALL_LOCK_PATH" && { [ -z "$takeover_line" ] || lock_owner_is_gone "$takeover_line"; }; then
+            stale_reap=$INSTALL_LOCK_PATH.stale-$TRANSACTION_ID
+            if mv "$INSTALL_LOCK_PATH" "$stale_reap" 2>/dev/null; then
+                stale_seen=$(cat "$stale_reap" 2>/dev/null) || stale_seen=
+                if [ "$stale_seen" != "$takeover_line" ]; then
+                    ln "$stale_reap" "$INSTALL_LOCK_PATH" 2>/dev/null || :
+                fi
+                rm -f "$stale_reap"
+            fi
+        fi
+        rm -rf "$takeover_dir"
+        return 0
     fi
-    rm -f "$stale_reap"
+    takeover_owner=$(cat "$takeover_dir/owner" 2>/dev/null) || takeover_owner=
+    if [ -n "$takeover_owner" ]; then
+        TAKEOVER_EMPTY_POLLS=0
+        if lock_owner_is_gone "$takeover_owner"; then
+            rm -rf "$takeover_dir"
+        fi
+    else
+        # Created but not yet written, or left empty by a waiter that was killed right then.
+        TAKEOVER_EMPTY_POLLS=$((TAKEOVER_EMPTY_POLLS + 1))
+        if [ "$TAKEOVER_EMPTY_POLLS" -ge 5 ]; then
+            TAKEOVER_EMPTY_POLLS=0
+            rm -rf "$takeover_dir"
+        fi
+    fi
+    sleep 1
 }
 
 # One installer at a time per install root: held from before the installed version is read until exit.
@@ -572,13 +600,13 @@ acquire_install_lock() {
             # Created but not yet written, or left empty by an installer that was killed right then.
             lock_empty_polls=$((lock_empty_polls + 1))
             if [ "$lock_empty_polls" -ge 5 ] && path_exists "$INSTALL_LOCK_PATH"; then
-                take_over_stale_install_lock ""
+                take_over_stale_install_lock
                 continue
             fi
         else
             lock_empty_polls=0
             if lock_owner_is_gone "$lock_holder"; then
-                take_over_stale_install_lock "$lock_holder"
+                take_over_stale_install_lock
                 continue
             fi
         fi

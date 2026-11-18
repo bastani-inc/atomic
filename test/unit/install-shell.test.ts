@@ -2874,6 +2874,9 @@ unixTest("an install lock left by an installer that is gone is taken over", () =
 			"",
 		]) {
 			writeFileSync(lockPath, line);
+			// A waiter that was killed while it took over the lock left its takeover directory behind.
+			mkdirSync(`${lockPath}.takeover`);
+			writeFileSync(join(`${lockPath}.takeover`, "owner"), installLockLine(exitedPid, "1"));
 			const result = fixture.run({
 				args: ["--ref", "2.0.0", "--force"],
 				environment: { ATOMIC_INSTALL_LOCK_TIMEOUT: "30" },
@@ -2881,6 +2884,7 @@ unixTest("an install lock left by an installer that is gone is taken over", () =
 			assertSuccess(result);
 			assert.equal(currentVersion(fixture), "2.0.0");
 			assert.ok(!existsSync(lockPath), `the lock ${JSON.stringify(line)} was left behind`);
+			assert.ok(!existsSync(`${lockPath}.takeover`));
 			assertNoTemporaryState(fixture);
 		}
 	} finally {
