@@ -12,7 +12,7 @@ import { finalizeDurableTerminalStatus } from "../../packages/workflows/src/engi
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { recordActiveBlockedFailure } from "../../packages/workflows/src/runs/foreground/executor-lifecycle.js";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
-import { appendRunStart } from "../../packages/workflows/src/shared/persistence-session-entries.js";
+import { appendRunBlocked, appendRunStart } from "../../packages/workflows/src/shared/persistence-session-entries.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { elapsedRunMs } from "../../packages/workflows/src/shared/timing.js";
 import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
@@ -466,12 +466,41 @@ test("restoring a returned block or a failed run never advertises a resume (#556
 			},
 		);
 		assert.equal(result.status, status);
-		const restored = createStore();
-		const frames: string[] = [];
-		restored.subscribe(() => frames.push(panelItemsFromSnapshot(restored.graphSnapshot())[0]!.state));
-		restoreOnSessionStart({ getEntries: () => entries }, { resumeInFlight: "auto", persistRuns: true }, restored);
-		assert.deepEqual(frames, [status === "blocked" ? "paused" : "failed"], ending);
-		assert.equal(restored.run(RUN_ID)?.runGeneration, status === "blocked" ? 2 : 1, ending);
+		for (const id of ["peer", "stage-block"])
+			await appendRunStart(persistence, { runId: id, name: id, inputs: {}, ts: 1 });
+		await appendRunBlocked(persistence, {
+			runId: "stage-block",
+			failedStageId: "review",
+			error: "wait",
+			failureKind: "provider",
+			failureRecoverability: "recoverable",
+			resumable: true,
+			runGeneration: 3,
+			ts: 2,
+		});
+		for (const mode of ["auto", "ask"] as const) {
+			const restored = createStore();
+			const frames: string[][] = [];
+			const observe = () =>
+				panelItemsFromSnapshot(restored.graphSnapshot())
+					.map((row) => `${row.name}:${row.state}`)
+					.sort();
+			restored.subscribe(() => frames.push(observe()));
+			const callbacks: string[][] = [];
+			const onRestore = () => callbacks.push(observe());
+			restoreOnSessionStart({ getEntries: () => entries }, { resumeInFlight: mode, persistRuns: true }, restored, {
+				onResume: onRestore,
+				onCrashed: onRestore,
+			});
+			const complete = [
+				`peer:${mode === "auto" ? "running" : "failed"}`,
+				`review:${status === "blocked" ? "paused" : "failed"}`,
+				"stage-block:paused",
+			];
+			assert.deepEqual(frames, [complete], ending);
+			assert.deepEqual(callbacks, [complete], ending);
+			assert.equal(restored.run(RUN_ID)?.runGeneration, status === "blocked" ? 2 : 1, ending);
+		}
 	}
 });
 
