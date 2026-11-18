@@ -268,17 +268,23 @@ export function registerPendingStageIntercomBridge(
 			outsideWorkflowExecutions(() => pi.events?.emit?.(PENDING_STAGE_ROUTE_RETIRED_EVENT, { runId, group }));
 		}
 	};
-	/** Retires the oldest finished invocations past the retention; one a sweep found owing a sender a notice waits. */
+	/**
+	 * Retires the oldest finished invocations past the retention. An invocation a sweep found owing a sender a notice keeps
+	 * its routes and does not count toward the retention, so the most recently finished ones that owe none keep theirs.
+	 */
 	const retireOldestFinished = (noted?: string): void => {
 		const owingNotice = new Set<string>();
 		for (const [runId, rootRunId] of announcedRootOf) if (unsettledRunIds.has(runId)) owingNotice.add(rootRunId);
+		let excess = -TERMINAL_INVOCATION_ROUTE_RETENTION;
+		for (const rootRunId of finishedRoots) if (!owingNotice.has(rootRunId)) excess += 1;
 		for (const rootRunId of finishedRoots) {
-			if (finishedRoots.size <= TERMINAL_INVOCATION_ROUTE_RETENTION) return;
+			if (excess <= 0) return;
 			// The invocation just noted is the most recent; no sweep has looked at it yet.
 			if (rootRunId === noted || owingNotice.has(rootRunId)) continue;
 			finishedRoots.delete(rootRunId);
 			retiredRoots.add(rootRunId);
 			retireRoutes(rootRunId);
+			excess -= 1;
 		}
 	};
 	/**
