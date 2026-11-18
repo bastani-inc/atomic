@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The agent panel below the prompt drops a subagent as soon as it finishes. Stopped, paused or interrupted subagents stay only while another subagent, workflow run or background shell is still running, then the whole panel closes, and a resumed subagent is listed once. `↓ N agents` counts only the subagents the panel lists, not workflow runs, so a running workflow alone no longer shows `↓ 1 agent`; `N needs input` still counts a workflow run's question. When the panel lists nothing but `/tasks` lists subagents, the hint shows `/tasks to see subagents`, or `N shells · /tasks to manage` while background shells run.
+
 ### Fixed
 
 - Starting or resuming a session in a trusted project no longer shows "This project is not trusted. Project .atomic resources and packages are ignored." The interface checked trust while the session was still deciding it, read that as untrusted, and kept the warning after the session had decided. The warning now waits for the decision and follows it, so a project trusted through `defaultProjectTrust: "always"` or a `project_trust` extension no longer shows it either

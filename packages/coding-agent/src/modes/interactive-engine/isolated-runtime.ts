@@ -123,6 +123,20 @@ type PendingQueueClear = {
  * rendering, custom UI, and recovery lifecycle stay separate from pi-client's
  * protocol lease lifecycle.
  */
+/** The agent panel counts an engine's panel state carries, as the host's hint line reads them. */
+export function engineAgentPanelCounts(
+	message: Extract<InteractiveEngineMessage, { type: "engine_agent_panel_state" }>,
+): AgentPanelCounts {
+	return {
+		total: message.total,
+		// An engine that predates the agent count counted every row as an agent.
+		agents: message.agents ?? message.total,
+		needsInput: message.needsInput,
+		shells: message.shells ?? 0,
+		subagents: message.subagents ?? 0,
+	};
+}
+
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
 	/** The engine prepares every resume of this session and builds its blueprints; this mirror only restores the same state. */
@@ -132,7 +146,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private mirroringPersistedModelDefault = false;
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
-	private panelCounts: AgentPanelCounts = { total: 0, needsInput: 0, shells: 0 };
+	private panelCounts: AgentPanelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 	private compacting = false;
 	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
 	private retrying = false;
@@ -263,7 +277,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.onGenerationEnded((event) => {
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
-				this.panelCounts = { total: 0, needsInput: 0, shells: 0 };
+				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 				this.updateResources({});
 			}
 			// A first child that never became ready failed startup; initialStart reports it instead of a restart.
@@ -283,11 +297,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				return;
 			}
 			if (message.type === "engine_agent_panel_state") {
-				this.panelCounts = { total: message.total, needsInput: message.needsInput, shells: message.shells ?? 0 };
+				this.panelCounts = engineAgentPanelCounts(message);
 				return;
 			}
 			if (message.type === "engine_extension_ui_reset") {
-				this.panelCounts = { total: 0, needsInput: 0, shells: 0 };
+				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 				this.hostExtensionUIReset?.();
 				return;
 			}

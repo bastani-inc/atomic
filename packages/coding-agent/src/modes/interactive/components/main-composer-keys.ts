@@ -1,20 +1,25 @@
 import type { Component } from "@bastani/atomic-tui";
+import { panelHintParts, panelHintText } from "../../../core/tasks/agent-panel-rules.ts";
 import type { AgentPanelSession } from "../../../core/tasks/agent-panel-source.ts";
 import { type AgentPanelCounts, agentPanelCounts } from "../../rpc/agent-panel-bridge.ts";
 import { theme } from "../theme/theme.js";
-import { panelShellHintSegments } from "./agent-panel.ts";
 import { isNavHelpKey, type NavKey, type NavKeybindings, navActionText, renderNavKeyOverlay } from "./nav-keys.ts";
 
 export interface MainComposerKeyState {
+	/** Every row the panel lists, workflow runs included. */
 	readonly agentRows?: number;
+	/** The subagent rows among them; defaults to `agentRows`. */
+	readonly agents?: number;
 	readonly needsInput?: number;
 	/** Running background shells, which /tasks lists. */
 	readonly shells?: number;
+	/** The chat's subagents in /tasks, listed in the panel or not. */
+	readonly subagents?: number;
 	readonly working: boolean;
 }
 
 export type MainComposerHintSource =
-	| Pick<MainComposerKeyState, "agentRows" | "needsInput" | "shells">
+	| Pick<MainComposerKeyState, "agentRows" | "agents" | "needsInput" | "shells" | "subagents">
 	| (AgentPanelSession & object)
 	| (() => AgentPanelCounts);
 
@@ -31,7 +36,13 @@ function resolveAgentCounts(
 	if (typeof source === "function") return source();
 	if (source !== undefined) {
 		if ("agentRows" in source && typeof source.agentRows === "number") {
-			return { total: source.agentRows, needsInput: source.needsInput ?? 0, shells: source.shells ?? 0 };
+			return {
+				total: source.agentRows,
+				agents: source.agents ?? source.agentRows,
+				needsInput: source.needsInput ?? 0,
+				shells: source.shells ?? 0,
+				subagents: source.subagents ?? 0,
+			};
 		}
 		return agentPanelCounts(source as AgentPanelSession & object);
 	}
@@ -49,32 +60,28 @@ function promptKeybindings(keybindings: NavKeybindings | undefined): NavKeybindi
 	};
 }
 
-function agentsSegment(keybindings: NavKeybindings | undefined, rows: number): string | undefined {
-	if (!Number.isFinite(rows) || rows <= 0) return undefined;
-	const count = Math.floor(rows);
-	if (count <= 0) return undefined;
-	const key = navActionText(keybindings, "app.agents.focus");
-	if (!key) return undefined;
-	return `${key} ${count} ${count === 1 ? "agent" : "agents"}`;
-}
-
 export function mainComposerHintSegments(
 	keybindings: NavKeybindings | undefined,
 	state?: MainComposerHintSource,
 ): string[] {
-	const segments: string[] = [];
 	const counts = resolveAgentCounts(keybindings, state);
 	const promptKeys = promptKeybindings(keybindings);
-	const agents = agentsSegment(promptKeys, counts.total);
-	if (agents) {
-		segments.push(agents);
-		if (counts.needsInput > 0) segments.push(`${counts.needsInput} needs input`);
-	}
-	// Shells are not panel rows; with no panel to focus, say where they are.
-	segments.push(...panelShellHintSegments(counts.shells ?? 0, agents !== undefined));
+	const focusKey = navActionText(promptKeys, "app.agents.focus");
+	const total = finiteCount(counts.total);
+	const parts = panelHintParts(
+		{ total, agents: finiteCount(counts.agents ?? total), needsInput: finiteCount(counts.needsInput) },
+		finiteCount(counts.shells ?? 0),
+		finiteCount(counts.subagents ?? 0),
+		focusKey !== "",
+	);
+	const segments = panelHintText(parts, focusKey);
 	const help = navActionText(promptKeys, "app.keys.help");
 	if (help) segments.push(`${help} keys`);
 	return segments;
+}
+
+function finiteCount(value: number): number {
+	return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
 export function mainComposerKeys(state: MainComposerKeyState): NavKey[] {
