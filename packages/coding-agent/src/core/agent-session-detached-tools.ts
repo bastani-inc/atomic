@@ -7,6 +7,7 @@ import type {
 	AgentToolResult,
 } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@bastani/atomic-ai/compat";
+import { recordLateToolOutcome } from "./agent-session-late-tool-results.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
 import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
@@ -16,6 +17,7 @@ import { type ErrorFieldValue, serializeErrorCause } from "./error-contract.ts";
 import type { ExtensionToolContext } from "./extensions/context-types.ts";
 import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
 import { MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "./tool-detachment-errors.ts";
+import { abandonedToolResult, toolAbortGraceMs } from "./tools/tool-abort-grace.ts";
 import {
 	resolveToolConcurrency,
 	type ToolConcurrencyMode,
@@ -409,6 +411,8 @@ function abortWith(controller: AbortController): DetachedToolCall["abort"] {
 
 const INLINE = Symbol("inline");
 const DETACH = Symbol("detach");
+/** The interrupted turn stopped waiting for the call (#5486). */
+const ABANDON = Symbol("abandon");
 
 interface SchedulerPermit {
 	readonly grantedLater: Promise<void> | undefined;
@@ -493,13 +497,21 @@ export function detachableTool(
 				throw error;
 			}
 			const { call, settled, signal: operationSignal } = operation;
-			const forwardAbort = (): void => call.abort(signal?.reason);
-			if (signal?.aborted) forwardAbort();
-			else signal?.addEventListener("abort", forwardAbort, { once: true });
 			// The run waits on this gate alone: it settles at the threshold even while the call goes on, so no reaction
 			// created in the run's context stays on the call once it detaches.
 			const gate = Promise.withResolvers<symbol>();
 			hold.gate = gate.resolve;
+			// An interrupted turn waits for the call only a grace period, as for any tool call (#5486).
+			let graceMs: number | undefined;
+			let graceTimer: ReturnType<typeof setTimeout> | undefined;
+			const forwardAbort = (): void => {
+				call.abort(signal?.reason);
+				graceMs = toolAbortGraceMs();
+				graceTimer = setTimeout(() => gate.resolve(ABANDON), graceMs);
+				graceTimer.unref?.();
+			};
+			if (signal?.aborted) forwardAbort();
+			else signal?.addEventListener("abort", forwardAbort, { once: true });
 			let ready = !requiresReady;
 			let elapsed = false;
 			if (requiresReady)
@@ -512,10 +524,23 @@ export function detachableTool(
 				if (ready) gate.resolve(DETACH);
 			}, policy.afterMs);
 			try {
-				if ((await gate.promise) === INLINE) return await settled;
+				const opened = await gate.promise;
+				if (opened === INLINE) return await settled;
+				if (opened === ABANDON) {
+					// The turn stops waiting: the call gives its scheduler place back, and what it returns later is recorded.
+					const permit = hold.permit;
+					hold.permit = undefined;
+					permit?.release();
+					void settled.then(
+						(result) => recordLateToolOutcome(session, toolCallId, tool.name, { kind: "result", result }),
+						(error: unknown) => recordLateToolOutcome(session, toolCallId, tool.name, { kind: "error", error }),
+					);
+					return abandonedToolResult(tool.name, graceMs ?? toolAbortGraceMs());
+				}
 			} finally {
 				hold.gate = undefined;
 				clearTimeout(timer);
+				clearTimeout(graceTimer);
 				readinessCallbacks.delete(operationSignal);
 				signal?.removeEventListener("abort", forwardAbort);
 			}

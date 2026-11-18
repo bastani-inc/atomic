@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Esc not ending a turn while a tool call ignored the interrupt: the turn waited for every tool call to return, so a call that did not stop (an extension or MCP tool that does not watch its abort signal, or a long wait inside a tool) kept the session busy for good, with queued messages never sent. A tool call that has not stopped 10 seconds after the interrupt now gets an `Operation aborted` result and the turn ends, in the main chat, subagent and workflow stage chats, and the default isolated host alike. The call may keep running; when it finishes, its result is added to the conversation as a `late-tool-result` message that starts no turn, and later tool calls no longer wait for it. `ATOMIC_TOOL_ABORT_GRACE_MS` changes the 10 seconds ([#5486](https://github.com/bastani-inc/atomic/issues/5486))
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.

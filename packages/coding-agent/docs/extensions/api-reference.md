@@ -634,6 +634,8 @@ pi.registerTool({
 });
 ```
 
+Stop promptly when `signal` aborts: the user interrupted the turn, or its session is stopping. A call that has not returned 10 seconds after the abort (`ATOMIC_TOOL_ABORT_GRACE_MS`) gets an `Operation aborted` error result so the turn can end, and the next tool call no longer waits for it. Its promise keeps running; whatever it returns or throws later is added to the conversation as a `late-tool-result` custom message, with `details: { toolCallId, toolName, isError }`, which starts no turn.
+
 ### pi.sendMessage(message, options?)
 
 Inject a custom message into the session. The call returns `void | Promise<void>` for compatibility with synchronous hosts; use `await Promise.resolve(pi.sendMessage(...))` when admission or routing failure must be observed. Atomic's AgentSession runtime returns an admission receipt: it settles after the message is accepted by the local queue or workflow late-message route, without waiting for the resulting model turn to finish.

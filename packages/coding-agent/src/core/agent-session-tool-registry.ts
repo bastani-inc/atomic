@@ -1,6 +1,7 @@
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { shellCommandPrefixFor } from "./agent-session-blueprint-environment.ts";
 import { detachableTool, forgetDetachableTools } from "./agent-session-detached-tools.ts";
+import { recordLateToolOutcome } from "./agent-session-late-tool-results.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { isWorkflowStageTaskOwner } from "./agent-session-tasks.js";
 import type { ToolDefinitionEntry } from "./agent-session-types.js";
@@ -26,6 +27,7 @@ import { rejectMalformedToolArguments } from "./tools/malformed-tool-arguments.t
 import { createLocalPowerShellOperations } from "./tools/powershell.ts";
 import { createSessionHistoryToolDefinition } from "./tools/session-history.ts";
 import { resolveSessionTempDirPath } from "./tools/session-temp-dir.ts";
+import { withToolAbortGrace } from "./tools/tool-abort-grace.ts";
 import { scheduleToolExecution } from "./tools/tool-concurrency.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
@@ -133,7 +135,11 @@ export function _refreshToolRegistry(
 				),
 		};
 		const guarded = rejectMalformedToolArguments(scoped, () => this.agent.state.messages);
-		const scheduled = scheduleToolExecution(guarded, this._toolExecutionScheduler, abortError);
+		// Inside the scheduler: a call its interrupted turn stopped waiting for no longer holds back later calls (#5486).
+		const graced = withToolAbortGrace(guarded, (toolCallId, toolName, outcome) =>
+			recordLateToolOutcome(this, toolCallId, toolName, outcome),
+		);
+		const scheduled = scheduleToolExecution(graced, this._toolExecutionScheduler, abortError);
 		const definition = definitionRegistry.get(tool.name)?.definition;
 		const detachable = builtInQuestion && !questionsDetach ? undefined : definition?.detachable;
 		return definition !== undefined && (detachable === true || typeof detachable === "function")
