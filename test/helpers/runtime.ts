@@ -39,23 +39,9 @@ export function makeTempDirectory(prefix: string): string {
 	return nodeRealpathSync(nodeMkdtempSync(join(tmpdir(), prefix)));
 }
 
-/**
- * On Windows a file deleted while another process, such as a virus scanner reading a newly written SQLite file, has it
- * open stays in its directory until that handle closes, so removing the directory right after fails with `ENOTEMPTY`
- * although the test closed everything it opened. Removal tries again, waiting a little longer each time, as long as
- * this.
- */
-const TEMP_DIRECTORY_REMOVE_RETRIES = 10;
-const TEMP_DIRECTORY_REMOVE_RETRY_DELAY_MS = 100;
-
 /** Remove a temporary test directory and everything it contains. */
 export function removeTempDirectory(path: string): void {
-	nodeRmSync(path, {
-		recursive: true,
-		force: true,
-		maxRetries: TEMP_DIRECTORY_REMOVE_RETRIES,
-		retryDelay: TEMP_DIRECTORY_REMOVE_RETRY_DELAY_MS,
-	});
+	nodeRmSync(path, { recursive: true, force: true });
 }
 
 /** Synchronous filesystem adapters for root suites that need setup before a test starts. */
