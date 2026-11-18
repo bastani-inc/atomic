@@ -165,8 +165,11 @@ export function panelProgressBar(done: number, total: number, cells = 16): strin
 export class AgentPanelModel {
 	private readonly finishedAt = new Map<string, { since: number; pass: number }>();
 	private readonly finishedTaskAt = new Map<string, { since: number; pass: number }>();
-	/** Resting rows that left because nothing was active, by row id, with the pass that last saw them. */
-	private readonly retired = new Map<string, number>();
+	/**
+	 * Resting rows that left because nothing was active, by row id, with the pass that last saw them and the run they
+	 * rest from (`AgentPanelItem.runGeneration`).
+	 */
+	private readonly retired = new Map<string, { pass: number; run: string | undefined }>();
 	private readonly readAt = new WeakMap<AgentPanelRow, number>();
 	private readonly bases = new WeakMap<AgentPanelRow, AgentPanelRow>();
 	private pass = 0;
@@ -209,17 +212,23 @@ export class AgentPanelModel {
 	}
 	/**
 	 * Whether a resting row (`isRestingPanelRow`) has left the panel: it leaves when nothing is active, and stays gone
-	 * until it runs again or is gone. `rowId` is the row's id; `pass` the ranking pass that sees it resting.
+	 * until it runs again or is gone. `rowId` is the row's id; `pass` the ranking pass that sees it resting; `run` the
+	 * run it rests from (`AgentPanelItem.runGeneration`). A row resting from another run than the one it left in ran
+	 * again, even if no pass saw it running, so it is listed while something is active.
 	 */
-	retireResting(rowId: string, active: boolean, pass: number): boolean {
-		if (active && !this.retired.has(rowId)) return false;
-		this.retired.set(rowId, pass);
+	retireResting(rowId: string, active: boolean, pass: number, run?: string): boolean {
+		const left = this.retired.get(rowId);
+		if (active && (left === undefined || left.run !== run)) {
+			if (left !== undefined) this.retired.delete(rowId);
+			return false;
+		}
+		this.retired.set(rowId, { pass, run });
 		return true;
 	}
 	endPass(pass: number): void {
 		// A retired row that runs again, or is gone, is forgotten: when it stops again it is listed again.
 		if (this.retired.size > 0) {
-			for (const [id, seen] of this.retired) if (seen !== pass) this.retired.delete(id);
+			for (const [id, seen] of this.retired) if (seen.pass !== pass) this.retired.delete(id);
 		}
 		if (this.passMatchedFinished === this.finishedAt.size + this.finishedTaskAt.size) return;
 		for (const table of [this.finishedAt, this.finishedTaskAt]) {
@@ -291,7 +300,7 @@ export class AgentPanelModel {
 			const state = states.get(row)!;
 			const resting = isRestingPanelRow(row.kind, state);
 			const finished = FINISHED.has(state) && !isInterruptedPanelTask(row);
-			const retired = resting && this.retireResting(row.id, active, pass);
+			const retired = resting && this.retireResting(row.id, active, pass, row.runGeneration);
 			if (!panelRowListed(row.kind, state, finished, { active, retired, kept: finished && keep(row) })) {
 				if (retired && row.kind !== "workflow") hidden.push(row);
 				continue;

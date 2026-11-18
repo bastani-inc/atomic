@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Agent panel sources can set `runGeneration` on an item, an identity of its latest run, so a stopped or paused row that left the panel and ran again, however briefly, is listed again while other work runs ([#5504](https://github.com/bastani-inc/atomic/issues/5504))
+
 ### Changed
 
 - The agent panel below the prompt drops a subagent as soon as it finishes. Stopped, paused or interrupted subagents stay only while another subagent, workflow run or background shell is still running, then the whole panel closes, and a resumed subagent is listed once. `↓ N agents` counts only the subagents the panel lists, not workflow runs, so a running workflow alone no longer shows `↓ 1 agent`; `N needs input` still counts a workflow run's question. When the panel lists nothing but `/tasks` lists subagents, the hint shows `/tasks to see subagents`, or `N shells · /tasks to manage` while background shells run.
@@ -9,6 +13,7 @@
 ### Fixed
 
 - A paused workflow run, or one blocked on a failed stage, no longer keeps the agent panel open on its own. Like a paused subagent, it stays listed while another subagent, workflow run or background shell runs, and leaves once nothing does, until you resume it; `/tasks` and `/workflows` still list it. A run waiting for input still keeps the panel open ([#5490](https://github.com/bastani-inc/atomic/issues/5490))
+- A subagent whose turn was interrupted, or a paused or blocked workflow run, that left the agent panel and was resumed and then stopped or paused again before the panel updated now comes back while other work runs, instead of staying hidden ([#5504](https://github.com/bastani-inc/atomic/issues/5504))
 
 ## [0.9.89] - 2026-11-18
 

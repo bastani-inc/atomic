@@ -19,6 +19,7 @@ import {
 	taskPanelItem,
 	taskPanelRole,
 	taskPanelState,
+	taskRunGeneration,
 	viewedAgentPanelItems,
 } from "../../core/tasks/agent-panel-source.ts";
 import { supersededSettledAttempts } from "../../core/tasks/completion.js";
@@ -312,8 +313,9 @@ function rankPanelSession(
 		kept: boolean,
 		fadeKey: string,
 		native: boolean,
+		run: string | undefined,
 	): boolean => {
-		const retired = isRestingPanelRow(kind, rowState) && state.model.retireResting(rowId, active, pass);
+		const retired = isRestingPanelRow(kind, rowState) && state.model.retireResting(rowId, active, pass, run);
 		if (!panelRowListed(kind, rowState, finished, { active, retired, kept })) return false;
 		if (finished) state.model.keepFinished(fadeKey, true, now, pass, native);
 		counts = countPanelRow(counts, kind, rowState);
@@ -335,7 +337,8 @@ function rankPanelSession(
 			return;
 		}
 		const finished = isFinishedPanelRow(item);
-		if (!listed(item.id, item.kind, item.state, finished, finished && keep, item.id, false)) return;
+		if (!listed(item.id, item.kind, item.state, finished, finished && keep, item.id, false, item.runGeneration))
+			return;
 		place(item.state, finished, () => item);
 	};
 
@@ -373,7 +376,8 @@ function rankPanelSession(
 				continue;
 			}
 			// Every native task here is a subagent row: a stopped or interrupted one rests, a finished one leaves.
-			if (!listed(`task:${id}`, "agent", rowState, finishedState, false, id, true)) continue;
+			if (!listed(`task:${id}`, "agent", rowState, finishedState, false, id, true, taskRunGeneration(task)))
+				continue;
 			place(rowState, finishedState, () => lazyTaskPanelItem(task, sourceClocks));
 		}
 	}
