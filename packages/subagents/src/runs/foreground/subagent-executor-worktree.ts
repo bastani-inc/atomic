@@ -92,12 +92,15 @@ export function findDuplicateParallelOutputPath(input: {
 	paramsCwd: string;
 	ctxCwd: string;
 	worktreeSetup?: WorktreeSetup;
+	unresolvedCwd?: (task: TaskParam) => boolean;
 }): string | undefined {
 	const seen = new Map<string, { index: number; agent: string }>();
 	for (let index = 0; index < input.tasks.length; index++) {
 		const behavior = input.behaviors[index];
 		if (!behavior?.output) continue;
 		const task = input.tasks[index]!;
+		// An absolute output is known even if the run failed before making this task's worktree.
+		if (input.unresolvedCwd?.(task) && !path.isAbsolute(behavior.output)) continue;
 		const taskCwd = resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index);
 		const outputPath = resolveSingleOutputPath(behavior.output, input.ctxCwd, taskCwd);
 		if (!outputPath) continue;

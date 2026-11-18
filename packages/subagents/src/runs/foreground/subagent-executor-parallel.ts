@@ -105,9 +105,9 @@ export function parallelOutputSetupError(input: {
 	paramsCwd: string;
 	ctxCwd: string;
 	worktreeSetup: WorktreeSetup | undefined;
-	checkDuplicates: boolean;
+	unresolvedCwd?: (task: TaskParam) => boolean;
 }): SubagentToolResult | undefined {
-	const duplicateOutputError = input.checkDuplicates ? findDuplicateParallelOutputPath(input) : undefined;
+	const duplicateOutputError = findDuplicateParallelOutputPath(input);
 	if (duplicateOutputError) return buildParallelModeError(duplicateOutputError);
 	for (let index = 0; index < input.tasks.length; index++) {
 		const taskCwd = resolveParallelTaskCwd(input.tasks[index]!, input.paramsCwd, input.worktreeSetup, index);
@@ -228,7 +228,6 @@ export async function runParallelPath(
 			paramsCwd: effectiveCwd,
 			ctxCwd: ctx.cwd,
 			worktreeSetup,
-			checkDuplicates: true,
 		});
 		if (outputError) return outputError;
 

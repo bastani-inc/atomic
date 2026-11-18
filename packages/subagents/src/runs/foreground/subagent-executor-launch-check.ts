@@ -61,7 +61,6 @@ export async function launchSetupError(
 		paramsCwd: effectiveCwd,
 		ctxCwd: ctx.cwd,
 		worktreeSetup: undefined,
-		// Never guess a worktree's output path if the merged run failed before preparing it.
-		checkDuplicates: preparedTasks !== undefined || (!launch.worktree && tasks.every((task) => !task.worktree)),
+		unresolvedCwd: preparedTasks ? undefined : (task) => Boolean(launch.worktree || task.worktree),
 	});
 }

@@ -59,6 +59,7 @@ function harness(
 	defaultContext?: "fork",
 	concurrency = 4,
 	hooks?: {
+		maxTasks?: number;
 		beforeDiscover?: (callIndex: number) => Promise<void> | void;
 		onEventEmit?: (eventName: string, payload: unknown) => void;
 	},
@@ -103,7 +104,7 @@ function harness(
 			pendingForegroundControlNotices: new Map(),
 			lastUiContext: null,
 		},
-		config: { parallel: { concurrency, maxTasks: 50 } } as ExecutorDeps["config"],
+		config: { parallel: { concurrency, maxTasks: hooks?.maxTasks ?? 50 } } as ExecutorDeps["config"],
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
@@ -523,6 +524,54 @@ test.each([undefined, false, "named on third task", "shared named"] as const)(
 		assert.notEqual(good.isError, true, "a valid sibling does not inherit a call's own duplicate-output error");
 		assert.match(await settledOutput(call, single(good).observation.taskId), /output:good/);
 		assert.deepEqual(launched, ["good"]);
+	},
+);
+
+test.each([
+	["absolute", 1],
+	["absolute", 3],
+	["relative", 1],
+] as const)(
+	"only eligible calls count toward the combined limit with %s outputs and %i valid siblings (#3427)",
+	async (pathKind, valid) => {
+		const launched: string[] = [];
+		const { cwd, call } = harness(
+			async (_cwd, _agents, _agent, task) => {
+				launched.push(task);
+				return childResult(task);
+			},
+			undefined,
+			4,
+			{ maxTasks: 2 },
+		);
+		git(cwd, "init", "-q", "-b", "main");
+		git(cwd, "commit", "--allow-empty", "-qm", "init");
+		const output = pathKind === "absolute" ? join(cwd, "same.md") : "same.md";
+		const [repeated, ...rest] = await Promise.all([
+			call("repeated", { worktree: true, tasks: [{ agent: "echo", task: "repeated", count: 2, output }] }),
+			...Array.from({ length: valid }, (_, i) =>
+				call(`good-${i}`, { worktree: true, agent: "echo", task: `good-${i}` }),
+			),
+		]);
+		assert.equal(repeated.isError, true);
+		if (pathKind === "relative") {
+			// These tasks would each have a worktree of their own, so the paths do not collide.
+			for (const result of [repeated, ...rest])
+				assert.match(text(result), /Too many parallel tasks \(3 after count expansion\)/);
+			assert.deepEqual(launched, []);
+			return;
+		}
+		assert.match(text(repeated), /Parallel tasks 1 .* and 2 .* resolve output to the same path/);
+		if (valid === 1) {
+			assert.match(await settledOutput(call, single(rest[0]!).observation.taskId), /output:good-0/);
+			assert.deepEqual(launched, ["good-0"]);
+		} else {
+			for (const result of rest) {
+				assert.equal(result.isError, true);
+				assert.match(text(result), /Too many parallel tasks \(3 after count expansion\)/);
+			}
+			assert.deepEqual(launched, []);
+		}
 	},
 );
 
