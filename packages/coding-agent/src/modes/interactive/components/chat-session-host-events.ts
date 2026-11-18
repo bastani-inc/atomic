@@ -21,7 +21,13 @@ import {
 	startChatSessionWorkingLifecycle,
 	stopChatSessionWorkingLifecycle,
 } from "./chat-session-host-runtime.ts";
-import { type ChatSessionHostState, countableTranscriptLength } from "./chat-session-host-state.ts";
+import {
+	CHAT_SESSION_RETRYING_STATUS,
+	CHAT_SESSION_RETRYING_SUMMARY_STATUS,
+	CHAT_SESSION_SWITCHING_MODEL_STATUS,
+	type ChatSessionHostState,
+	countableTranscriptLength,
+} from "./chat-session-host-state.ts";
 import {
 	exactTextOnlyUserPrompt,
 	extractMessageText,
@@ -345,7 +351,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		}
 		case "summarization_retry_scheduled":
 			state.sdkBusy = true;
-			state.statusMessage = "retrying summary…";
+			state.statusMessage = CHAT_SESSION_RETRYING_SUMMARY_STATUS;
 			changed = true;
 			break;
 		case "summarization_retry_attempt_start": {
@@ -364,14 +370,14 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		case "auto_retry_start":
 			state.sdkBusy = true;
 			state.workingMessage = undefined;
-			state.statusMessage = "retrying…";
+			state.statusMessage = CHAT_SESSION_RETRYING_STATUS;
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
 			break;
 		case "model_fallback_start":
 			state.sdkBusy = true;
 			state.workingMessage = undefined;
-			state.statusMessage = "switching model…";
+			state.statusMessage = CHAT_SESSION_SWITCHING_MODEL_STATUS;
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
 			break;

@@ -703,7 +703,8 @@ describe("a live subagent's chat box (#4640)", () => {
 		);
 		await settled.load();
 		const rows = plain(settled.render(80, 16));
-		const label = rows.indexOf(labelRows(rows)[0] ?? "");
+		// Either rule glyph, so the test checks the row above the rule, not which glyph the rule draws.
+		const label = rows.findIndex((row) => /^[─━]+ agent-child · .+ [─━]$/u.test(row));
 		assert.ok(label > 2, "the composer's labelled top rule is painted");
 		assert.equal(rows[label - 1]?.trim(), "", "one blank row sits on the composer's top rule");
 		assert.equal(rows[label - 2]?.trim(), "answer line 19", "the transcript ends right above that row");
