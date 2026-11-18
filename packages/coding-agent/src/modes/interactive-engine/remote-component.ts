@@ -180,7 +180,10 @@ class RemoteComponent implements Component {
 		const row = Math.floor(event.y);
 		if (!this.paintedRowKeys?.[row]) return undefined;
 		const button = event.wheelDelta < 0 ? 64 : 65;
-		void this.handleInput(`\x1b[<${button};${Math.max(0, Math.floor(event.x)) + 1};${row + 1}M`);
+		// The host's own input path paints a key once the engine answers it; this turn did not come through there.
+		void this.handleInput(`\x1b[<${button};${Math.max(0, Math.floor(event.x)) + 1};${row + 1}M`).then((handled) => {
+			if (handled === true) this.requestRender();
+		});
 		return { handled: true };
 	}
 

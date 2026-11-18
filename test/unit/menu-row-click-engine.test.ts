@@ -40,9 +40,13 @@ async function showFromEngine(
 	overlay: boolean,
 ): Promise<{ dispose(): void }> {
 	const listeners: Array<(message: InteractiveEngineMessage) => void> = [];
+	// The engine's messages reach the host a little later, as they do from the child process.
 	const engine = new EngineCustomUiService((line) => {
 		const message = parseInteractiveEngineMessage(line);
-		if (message) for (const listener of [...listeners]) listener(message);
+		if (!message) return;
+		setTimeout(() => {
+			for (const listener of [...listeners]) listener(message);
+		}, 10);
 	}, new KeybindingsManager());
 	const runtime = {
 		onGenerationEnded: () => () => {},
@@ -72,12 +76,9 @@ async function showFromEngine(
 	return { dispose: () => engine.dispose() };
 }
 
-/** Lets the engine's frames reach the host and paints them. */
-async function settle(ui: ClickScreen): Promise<void> {
-	for (let round = 0; round < 10; round++) {
-		ui.tui.renderNow();
-		await sleep(5);
-	}
+/** Lets the engine's frames reach the host and the paints they ask for run; nothing paints on the test's behalf. */
+async function settle(_ui: ClickScreen): Promise<void> {
+	await sleep(100);
 }
 
 const agent = (name: string): AgentConfig => ({
