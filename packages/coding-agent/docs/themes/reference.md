@@ -180,3 +180,8 @@ Check truecolor support:
 ```bash
 echo $COLORTERM  # Should output "truecolor" or "24bit"
 ```
+
+Turning colors off:
+
+- `NO_COLOR` (any value) turns off every theme color, foreground and background, and text styles such as bold, italic and dim. Layout and text stay the same.
+- `FORCE_COLOR=0` does the same. `FORCE_COLOR=1` or `2` limits colors to the 256-color palette, and `FORCE_COLOR=3` keeps the terminal's own color mode. `NO_COLOR` wins when both are set.
