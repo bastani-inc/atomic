@@ -853,17 +853,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.patchSessionManager(session.sessionManager);
 		this.patchSettingsManager(session.settingsManager);
 		this.sessionStats.track(session);
-		const bindExtensions = session.bindExtensions.bind(session);
+		// Optional because focused runtime test doubles stand in for a session without extension bindings.
+		const bindExtensions = session.bindExtensions?.bind(session);
 		Object.defineProperties(session, {
-			bindExtensions: {
-				configurable: true,
-				value: async (bindings: ExtensionBindings) => {
-					await bindExtensions(bindings);
-					if (!bindings.onError) return;
-					this.errorReportingSessions.add(session);
-					for (const error of this.heldExtensionErrors.splice(0)) session.extensionRunner.emitError(error);
+			...(bindExtensions && {
+				bindExtensions: {
+					configurable: true,
+					value: async (bindings: ExtensionBindings) => {
+						await bindExtensions(bindings);
+						if (!bindings.onError) return;
+						this.errorReportingSessions.add(session);
+						for (const error of this.heldExtensionErrors.splice(0)) session.extensionRunner.emitError(error);
+					},
 				},
-			},
+			}),
 			isStreaming: { configurable: true, get: () => this.streaming },
 			isCompacting: { configurable: true, get: () => this.compacting },
 			compactionReason: { configurable: true, get: () => this.compactionReason },
