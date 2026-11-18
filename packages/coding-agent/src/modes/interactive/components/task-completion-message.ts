@@ -24,8 +24,17 @@ function previewRow(row: string): string {
 	return process.env.NO_COLOR === undefined ? row : stripTerminalSequences(row);
 }
 
-const NOTICE_LINE_STATUSES = new Set(["success", "failure", "stopped", "warning", "paused"]);
+const NOTICE_LINE_STATUSES = new Set(["success", "failure", "stopped", "warning", "paused", "waiting"]);
 const parsedNotices = new WeakMap<object, TaskCompletionNotice>();
+
+/**
+ * A line's status as saved. Earlier versions saved the line of a subagent released while it waits as paused; its
+ * outcome alone says it waits, so it reads as waiting, as every other view shows that subagent (#5489).
+ */
+function savedNoticeStatus(status: string, outcome: string): TaskNoticeLine["status"] {
+	if (status === "paused" && outcome.startsWith("is waiting on ")) return "waiting";
+	return status as TaskNoticeLine["status"];
+}
 
 function noticeLineFrom(value: unknown): TaskNoticeLine | undefined {
 	if (!value || typeof value !== "object") return undefined;
@@ -33,7 +42,7 @@ function noticeLineFrom(value: unknown): TaskNoticeLine | undefined {
 	if (typeof line.status !== "string" || !NOTICE_LINE_STATUSES.has(line.status)) return undefined;
 	if (typeof line.label !== "string" || typeof line.outcome !== "string") return undefined;
 	return {
-		status: line.status as TaskNoticeLine["status"],
+		status: savedNoticeStatus(line.status, line.outcome),
 		label: line.label,
 		outcome: line.outcome,
 		...(typeof line.subject === "string" ? { subject: line.subject } : {}),

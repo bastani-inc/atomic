@@ -23,6 +23,7 @@ import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { CodeHighlighter, theme } from "../theme/theme.js";
 import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { keyHint, keyText } from "./keybinding-hints.js";
+import { STATUS_MARKERS } from "./notice-line.ts";
 import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
 import {
 	collapseToolBlockLines,
@@ -62,6 +63,16 @@ interface RenderedImageSpec {
 }
 const SUBAGENT_RESULT_ANIMATION_TIMER_KEY = "subagentResultAnimationTimer";
 const SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY = "subagentResultAnimationCleanup";
+
+let statusMarkPrefix: RegExp | undefined;
+/** A block's header row opens with its status mark, any of the shared marks, then a space. */
+function blockStatusMarkPrefix(): RegExp {
+	if (statusMarkPrefix === undefined) {
+		const marks = [...new Set(Object.values(STATUS_MARKERS).map((marker) => marker.glyph))].join("");
+		statusMarkPrefix = new RegExp(`^ *[${marks.replace(/[\\\]^-]/g, "\\$&")}] `, "u");
+	}
+	return statusMarkPrefix;
+}
 
 export class ToolExecutionComponent extends Container {
 	readonly expandsOnClick = true;
@@ -460,7 +471,7 @@ export class ToolExecutionComponent extends Container {
 			render: (width) => {
 				const line = call.render(width).find((row) => stripTerminalSequences(row).trim().length > 0);
 				if (line === undefined) return [terminalDisplayText(this.toolDefinition?.label ?? this.toolName)];
-				const prefix = /^ *[∀●✗◼!⏸›] /u.exec(stripTerminalSequences(line))?.[0];
+				const prefix = blockStatusMarkPrefix().exec(stripTerminalSequences(line))?.[0];
 				return prefix
 					? [sliceByColumn(line, visibleWidth(prefix), width)]
 					: [terminalDisplayText(this.toolDefinition?.label ?? this.toolName)];

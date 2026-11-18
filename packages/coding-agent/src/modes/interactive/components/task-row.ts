@@ -10,6 +10,7 @@ import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
+import { WAITING_MARKER } from "./notice-line.ts";
 import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 const EMOJI_OR_IGNORABLE_PATTERN = String.raw`(\p{RGI_Emoji}|\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*(?:\u200d\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*)+|[\p{Extended_Pictographic}\p{Emoji_Presentation}]\ufe0f)|\p{Default_Ignorable_Code_Point}`;
@@ -80,8 +81,8 @@ export function taskStatusAppearance(task: TaskRecord): {
 			// It is not working: a still mark, not the running ∀, as its /tasks row and the agent panel show it.
 			return {
 				label: `Waiting on ${waitingReleasedTools(task) ?? "a tool call"}`,
-				icon: "◌",
-				color: "dim",
+				icon: WAITING_MARKER.glyph,
+				color: WAITING_MARKER.color,
 			};
 		case "cancelled":
 			return { label: "Stopped", icon: "✗", color: "warning" };
