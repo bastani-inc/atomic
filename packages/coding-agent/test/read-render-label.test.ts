@@ -21,10 +21,14 @@ afterEach(() => {
 });
 
 function htmlText(html: string): string {
-	return html
-		.replace(/<[^>]+>/g, "")
-		.replaceAll("&nbsp;", " ")
-		.replaceAll("&amp;", "&");
+	let text = "";
+	let inTag = false;
+	for (const character of html) {
+		if (character === "<") inTag = true;
+		else if (character === ">" && inTag) inTag = false;
+		else if (!inTag) text += character;
+	}
+	return text.replaceAll("&nbsp;", " ").replaceAll("&amp;", "&");
 }
 
 test.each([

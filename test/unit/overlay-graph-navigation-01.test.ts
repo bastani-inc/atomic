@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
-import { BOLD, RESET } from "../../packages/workflows/src/tui/color-utils.js";
+import { boldOn, RESET } from "../../packages/workflows/src/tui/color-utils.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { renderSwitcher } from "../../packages/workflows/src/tui/switcher.js";
 import { Key, visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
@@ -401,9 +401,9 @@ describe("GraphView keyboard navigation", () => {
 		assert.equal(visibleWidth(selectedRow), width);
 		assert.match(selectedText, /branch-with-a-very-long-…/);
 
-		const boldIndex = selectedRow.indexOf(BOLD);
+		const boldIndex = selectedRow.indexOf(boldOn());
 		const ellipsisIndex = selectedRow.indexOf("…", boldIndex);
-		const firstResetAfterBold = selectedRow.indexOf(RESET, boldIndex + BOLD.length);
+		const firstResetAfterBold = selectedRow.indexOf(RESET, boldIndex + boldOn().length);
 
 		assert.notEqual(boldIndex, -1);
 		assert.notEqual(ellipsisIndex, -1);
