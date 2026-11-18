@@ -8,6 +8,10 @@
 - `NO_COLOR` now turns off every theme color. Chat messages, tool blocks, the agent panel, `/tasks`, pickers, scrollbars, the OpenRouter row in `/login` and Mermaid diagrams used to keep their foreground and background colors while it was set. `FORCE_COLOR=0` turns colors off too, and `FORCE_COLOR=1` or `2` limits them to 256 colors.
 - When an Atomic process installing git was killed while others waited for it, a waiter no longer fails with "Git is unavailable: ... could not be staged ... install lock" because the lock it had just taken was removed by another waiter. A waiter now moves an abandoned lock aside in one atomic rename and puts back at once any lock it moved that another installer had just taken, so a waiter that was paused while taking over no longer makes a second installer download git. A waiter whose new lock disappears before it is stamped tries for the lock again, and later installs remove what a waiter killed during a takeover left behind ([#4322](https://github.com/bastani-inc/atomic/issues/4322))
 
+### Changed
+
+- A waiting subagent's launch card in the parent's chat shows the same still `◌` mark and `Waiting on <tool>` as `/tasks`, instead of `⏸ Released · waiting`, which read as paused, and it shows the subagent running or finished again once it wakes or ends. Alt+W (`app.tasks.openWaited`) opens the output of the shell a waiting subagent waits on, from its chat or its `/tasks` row, and ← goes back; the chat's note and the `/tasks` hint name the key. `ToolBlock` and `NoticeLine` take the new `waiting` status, so code that switches over `ToolBlockStatus` or `NoticeStatus` should handle `waiting`.
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 Compaction clears the context and lets the agent recover from history, `model: "auto"` runs your default model, and a new agent panel keeps subagents and workflows in view while the interface stays responsive under load.
