@@ -78,13 +78,18 @@ export async function openCompletedDurableWorkflow(
 			`Workflow ${resolved.snapshot.id} is already active in this session; open it with /workflows ${resolved.snapshot.id} instead.`,
 		);
 	}
+	// The selected run may belong to a different journal than the store's default. Take its finish order from
+	// the same handle as the historical graph, not from the time of this inspection or a later journal write.
+	const finishSequence = deps.durableBackend.getWorkflow(resolved.entry.workflowId)?.finishSequence;
 	const snapshots = await completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry, selectedStore);
 	const snapshot = snapshots.find((run) => run.id === resolved.snapshot.id) ?? resolved.snapshot;
 	deps.beforeRestore?.(snapshots);
 	for (const restored of snapshots) {
 		const previous = deps.store.run(restored.id);
 		if (previous !== undefined) deps.store.removeRun(previous.id);
-		deps.store.recordRunStart(restored);
+		deps.store.recordRunStart(
+			restored.id === snapshot.id ? { ...restored, finishSequence: finishSequence ?? restored.endedAt } : restored,
+		);
 		registerCompletedChatHandles(restored, deps, selectedStore);
 	}
 	const hasReopenableStage = snapshots.some((run) => run.stages.some((stage) => stage.sessionId !== undefined));

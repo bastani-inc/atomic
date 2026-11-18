@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
+import { openCompletedDurableWorkflow } from "../../packages/workflows/src/durable/completed-inspection.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import {
 	registerPendingStageIntercomBridge,
 	TERMINAL_INVOCATION_ROUTE_RETENTION,
 } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
+import { claimExternalRunRoute } from "../../packages/workflows/src/shared/external-run-routes.js";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
@@ -97,6 +100,32 @@ test("a run that resumes and finishes between announcements gets a new place in 
 	store.recordRunStart({ ...store.run(resumed)!, status: "running", endedAt: undefined });
 	await bridge.flush();
 	assert.deepEqual(routed, new Set(ids));
+});
+
+test("a local route handed to an external owner is withdrawn without withdrawing a sibling (#5561)", async () => {
+	const { ids, store } = await startRuns();
+	const { routed, bridge } = observeRoutes(store);
+	for (const id of ids) store.recordRunEnd(id, "failed");
+	await bridge.flush();
+	const moved = ids.at(-1)!;
+	const owner = { notifyUndeliverable: async () => false, deliversQueued: () => false };
+	for (const full of [false, true]) {
+		const release = claimExternalRunRoute(store, moved, owner);
+		try {
+			if (full) bridge.refresh();
+			else store.recordRunStart({ ...store.run(moved)! });
+			await bridge.flush();
+			assert.deepEqual(
+				routed,
+				new Set(ids.slice(0, -1)),
+				"local routes exclude the external owner and backfill the window",
+			);
+		} finally {
+			release();
+		}
+		bridge.refresh();
+		assert.deepEqual(routed, new Set(ids.slice(1)), "a locally owned invocation is reachable again");
+	}
 });
 
 test("settling an older finisher's notice never displaces a newer finisher (#5561)", async () => {
@@ -248,6 +277,26 @@ test("restoring finished runs keeps their original finish order, not journal arr
 			earlierClock.mockRestore();
 		}
 		await bridge.flush();
-		assert.deepEqual(routed, new Set([...finishing.slice(2), resumed]), source);
+		const kept = new Set([...finishing.slice(2), resumed]);
+		assert.deepEqual(routed, kept, source);
+		if (source === "journal") {
+			// A later journal write is not a new finish. Opening the retired run from its own journal must not
+			// promote it even when this host now uses a different default journal.
+			const retired = finishing[1]!;
+			await reopened.persistPendingStageMessages(retired, []);
+			const other = await createMemoryTestBackend();
+			cleanups.push(() => other.close());
+			bindStoreDurableBackend(restored, other);
+			const sessionStore = new MemorySessionStore();
+			cleanups.push(() => sessionStore.close());
+			const opened = await openCompletedDurableWorkflow(
+				retired,
+				{ durableBackend: reopened, store: restored, sessionStore },
+				reopened.listCompletedWorkflows(),
+			);
+			assert.ok(opened.ok, opened.message);
+			await bridge.flush();
+			assert.deepEqual(routed, kept, "inspecting a finished run from another journal is not a new finish");
+		}
 	}
 });

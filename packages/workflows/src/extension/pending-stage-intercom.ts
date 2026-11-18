@@ -260,16 +260,18 @@ export function registerPendingStageIntercomBridge(
 	let retainedRoots = new Set<string>();
 	let retentionChanged = false;
 	let needsBackfill = false;
-	const retireRoute = (runId: string, rootRunId: string): void => {
-		const group = workflowInvocationIntercomGroup(rootRunId);
-		announcedRootOf.delete(runId);
+	const retireRoute = (runId: string): void => {
+		const rootRunId = announcedRootOf.get(runId);
 		unpublishedRunIds.delete(runId);
 		dropRoute(runId);
+		if (rootRunId === undefined) return;
+		announcedRootOf.delete(runId);
+		const group = workflowInvocationIntercomGroup(rootRunId);
 		outsideWorkflowExecutions(() => pi.events?.emit?.(PENDING_STAGE_ROUTE_RETIRED_EVENT, { runId, group }));
 	};
-	const noteFinishedRoot = (root: RunSnapshot, owesNotice: boolean): void => {
+	const noteFinishedRoot = (root: RunSnapshot, owesNotice: boolean, owned = true): void => {
 		const wasCounted = retainedRoots.has(root.id) && !owingRoots.has(root.id);
-		if (!isTerminalRunStatus(root.status)) {
+		if (!owned || !isTerminalRunStatus(root.status)) {
 			if (wasCounted) needsBackfill = true;
 			if (finishedRoots.delete(root.id)) retentionChanged = true;
 			owingRoots.delete(root.id);
@@ -297,7 +299,7 @@ export function registerPendingStageIntercomBridge(
 		const keep = new Set([...owingRoots, ...recent.slice(0, TERMINAL_INVOCATION_ROUTE_RETENTION)]);
 		// Newly terminal invocations may have live routes even if they were never in the previous finished window.
 		for (const [id, root] of announcedRootOf) {
-			if (finishedRoots.has(root) && !keep.has(root)) retireRoute(id, root);
+			if (finishedRoots.has(root) && !keep.has(root)) retireRoute(id);
 		}
 		for (const root of keep) if (!retainedRoots.has(root)) changed?.add(root);
 		retainedRoots = keep;
@@ -473,6 +475,11 @@ export function registerPendingStageIntercomBridge(
 		for (const run of runs) {
 			if (ownedRunIds.has(run.id) && topology.rootOf(run.id) === run.id) noteFinishedRoot(run, owing.has(run.id));
 		}
+		// Withdraw this bridge's old publication before announcing any replacement. A route on another host is
+		// carried by that host's connection; forgetting our local claim alone would leave ours connected.
+		for (const [id, root] of announcedRootOf) {
+			if (!ownedRunIds.has(id) || topology.rootOf(id) !== root) retireRoute(id);
+		}
 		applyRetention();
 		for (const run of runs) if (ownedRunIds.has(run.id)) announceRun(run, topology.rootOf(run.id)!, lookups);
 		// Drop claims for runs with no currently resolvable durable owner, so a removed
@@ -485,11 +492,6 @@ export function registerPendingStageIntercomBridge(
 		}
 		for (const rootRunId of possibleStageRowIndexes.keys()) {
 			if (!ownedRunIds.has(rootRunId)) possibleStageRowIndexes.delete(rootRunId);
-		}
-		for (const [id, root] of announcedRootOf) {
-			if (!runById.has(id) || !runById.has(root)) retireRoute(id, root);
-			// An existing run handed to another route owner is no longer ours to retire.
-			else if (!ownedRunIds.has(id)) announcedRootOf.delete(id);
 		}
 	};
 	/**
@@ -526,20 +528,22 @@ export function registerPendingStageIntercomBridge(
 		};
 		for (const rootRunId of roots) {
 			const root = activeStore.run(rootRunId);
-			if (root === undefined || topology.rootOf(rootRunId) !== rootRunId || !locallyOwned(rootRunId)) continue;
+			if (root === undefined || topology.rootOf(rootRunId) !== rootRunId) continue;
+			const owned = locallyOwned(rootRunId);
 			const owes =
+				owned &&
 				isTerminalRunStatus(root.status) &&
 				membersOf(rootRunId).some(
 					(run) => topology.rootOf(run.id) === rootRunId && hasSettlementWork(run) && locallyOwned(run.id),
 				);
-			noteFinishedRoot(root, owes);
+			noteFinishedRoot(root, owes, owned);
 		}
 		applyRetention(roots);
 		const position = (runId: string) => activeStore.runPosition(runId) ?? Number.MAX_SAFE_INTEGER;
 		for (const rootRunId of [...roots].sort((left, right) => position(left) - position(right))) {
 			for (const run of membersOf(rootRunId)) {
 				if (topology.rootOf(run.id) !== rootRunId) continue;
-				if (!locallyOwned(run.id)) dropRoute(run.id);
+				if (!locallyOwned(run.id)) retireRoute(run.id);
 				else announceRun(run, rootRunId, lookups);
 			}
 		}
