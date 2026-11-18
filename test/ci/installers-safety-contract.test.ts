@@ -255,7 +255,7 @@ test("POSIX release identities stay within Atomic's supported tag grammar", asyn
 	assert.match(shell, /RELEASE_TAG_ENCODED=\$\(percent_encode "\$RELEASE_TAG"\)/u);
 	assert.match(shell, /releases\/download\/\$RELEASE_TAG_ENCODED/u);
 	assert.match(shell, /VERSION_PATH=\$VERSIONS_DIR\/\$RELEASE_TAG_ENCODED/u);
-	assert.match(shell, /ln -s "versions\/\$RELEASE_TAG_ENCODED"/u);
+	assert.match(shell, /switch_current "versions\/\$RELEASE_TAG_ENCODED"/u);
 	assert.match(shell, /Installing atomic version:[^\n]+"\$RELEASE_TAG"/u);
 	assert.doesNotMatch(shell, /installed successfully|Binary: %s|Add Atomic to PATH/u);
 	// The installed-version line is informational and must never execute the existing
@@ -299,7 +299,7 @@ test("POSIX path normalization preserves caller-controlled trailing newlines", a
 test("Windows PATH updates refuse a bin directory that cannot be one PATH entry", async () => {
 	const { powershell } = await installers();
 	assert.match(powershell, /\$binDirHasPathSeparator = \$binDir\.Contains\(";"\)/u);
-	const userPathUpdate = powershell.indexOf('[Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")');
+	const userPathUpdate = powershell.indexOf("Set-AtomicUserPathValue $newUserPath");
 	const processPathUpdate = powershell.indexOf("$env:Path = if ([string]::IsNullOrWhiteSpace($env:Path))");
 	assert.ok(userPathUpdate >= 0 && processPathUpdate >= 0);
 	for (const guard of [userPathUpdate, processPathUpdate]) {

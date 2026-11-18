@@ -63,7 +63,24 @@ test("Windows installer declares the PowerShell 5.1 archive installation contrac
 	const installMutation = source.indexOf("New-Item -ItemType Directory -Path $versionsDir");
 	assert.ok(checksumComparison >= 0 && installMutation > checksumComparison);
 	assert.match(source, /New-Item\s+-ItemType\s+Junction/u);
-	assert.match(source, /\[Environment\]::SetEnvironmentVariable\("Path",\s*\$newUserPath,\s*"User"\)/u);
+	// The User PATH is read unexpanded and written back with its registry type, so %VAR% entries survive.
+	assert.match(source, /Set-AtomicUserPathValue \$newUserPath \$oldUserPathValue\.Kind/u);
+	assert.match(source, /DoNotExpandEnvironmentNames/u);
+	assert.match(source, /\$key\.SetValue\("Path", \$Value, \$Kind\)/u);
+	// One installer at a time: an exclusive handle the system releases when the installer exits or is killed.
+	assert.match(source, /\[IO\.FileShare\]::None, 1, \[IO\.FileOptions\]::DeleteOnClose/u);
+	assert.ok(
+		source.indexOf("$installLock = Enter-AtomicInstallLock") <
+			source.indexOf("Get-AtomicInstalledVersion (Join-Path"),
+	);
+	// The installed version is read from where `current` points, never by running the installed atomic.exe.
+	const installedVersionProbe = source.slice(
+		source.indexOf("function Get-AtomicInstalledVersion"),
+		source.indexOf("function Get-AtomicComparablePath"),
+	);
+	assert.doesNotMatch(installedVersionProbe, /--version/u);
+	// Programs the installer starts never inherit the token.
+	assert.ok(source.indexOf("$env:GITHUB_TOKEN = $null") < source.indexOf('$null = & $stagedAtomic "--version"'));
 	assert.match(source, /\$null = &\s+\$stagedAtomic\s+"--version"[\s\S]*\$LASTEXITCODE/u);
 	assert.match(source, /\$null = &\s+\$env:ComSpec\s+\/d\s+\/c\s+\$shimCommand[\s\S]*\$LASTEXITCODE/u);
 
@@ -2646,6 +2663,24 @@ try {
         Assert-Fixture ($env:Path -eq $beforeProcessPath) "failed final smoke did not restore current PATH"
         Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "failed final smoke left a new installation"
         Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "failed final smoke left a new bin directory"
+
+        # A user who has no User Path value keeps having none after a rollback (not an empty one).
+        $environmentKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+        $savedRawPath = $environmentKey.GetValue("Path", $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $savedPathKind = if ($null -ne $savedRawPath) { $environmentKey.GetValueKind("Path") } else { $null }
+        try {
+            $environmentKey.DeleteValue("Path", $false)
+            $failure = $null
+            try { & $InstallerPath -Ref "2.0.0" | Out-Null }
+            catch { $failure = $_ }
+            Assert-Fixture ($null -ne $failure) "the second final smoke failure was not reported"
+            $rolledBackPath = $environmentKey.GetValue("Path", $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            Assert-Fixture ($null -eq $rolledBackPath) "rollback wrote a User Path value for a user who had none: [$rolledBackPath]"
+        }
+        finally {
+            if ($null -ne $savedRawPath) { $environmentKey.SetValue("Path", $savedRawPath, $savedPathKind) }
+            $environmentKey.Close()
+        }
     }
     elseif ($Scenario -eq "busy-stage-move") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
