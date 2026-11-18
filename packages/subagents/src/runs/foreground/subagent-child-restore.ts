@@ -193,6 +193,19 @@ interface ActiveRestoration {
 }
 
 const activeRestorations = new Map<string, ActiveRestoration>();
+
+/**
+ * A restoration of this child that has not relaunched it yet: it settles once the child runs again or could not be
+ * restored, never later, so a caller does not wait for the run it starts (#5485). Undefined when none is under way.
+ */
+export function subagentChildRestoring(ownerSessionId: string, childId: string): Promise<void> | undefined {
+	const active = activeRestorations.get(childHoldKey(ownerSessionId, childId));
+	if (active === undefined || active.settled !== undefined) return undefined;
+	return active.outcome.then(
+		() => undefined,
+		() => undefined,
+	);
+}
 /** Children this process found unrestorable, kept until their gone record is durable so senders see them as gone at once. */
 const goneChildren = new Map<
 	string,

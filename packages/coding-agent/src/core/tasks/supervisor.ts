@@ -43,6 +43,7 @@ export type ChatBoxSession = Pick<
 	| "isCompacting"
 	| "compactionStartedAt"
 	| "isRetrying"
+	| "isWaitingToRetry"
 	| "retryAttempt"
 	| "isBashRunning"
 > & {

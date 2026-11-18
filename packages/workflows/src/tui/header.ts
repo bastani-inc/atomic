@@ -27,7 +27,7 @@ import { boldOn, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.j
 import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { type RunStateIndicator, runStateColor, runStateIndicator } from "./run-state-indicator.js";
-import { statusColor, statusIcon } from "./status-helpers.js";
+import { SUSPENDED_STAGE_ICON, statusColor, statusIcon } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 export interface HeaderOpts {
@@ -238,7 +238,7 @@ export function renderHeader(run: RunSnapshot, opts: HeaderOpts): string[] {
 	if (counts.paused > 0) badges.push({ text: `❚❚ ${counts.paused}`, fg: theme.warning });
 	if (counts.blocked > 0)
 		badges.push({ text: `${statusIcon("blocked")} ${counts.blocked}`, fg: statusColor("blocked", theme) });
-	if (counts.suspended > 0) badges.push({ text: `◷ ${counts.suspended}`, fg: theme.dim });
+	if (counts.suspended > 0) badges.push({ text: `${SUSPENDED_STAGE_ICON} ${counts.suspended}`, fg: theme.dim });
 	if (counts.pending > 0) badges.push({ text: `○ ${counts.pending}`, fg: theme.dim });
 	if (counts.skipped > 0) badges.push({ text: `⊘ ${counts.skipped}`, fg: theme.dim });
 	if (counts.failed > 0) badges.push({ text: `✗ ${counts.failed}`, fg: theme.error });
