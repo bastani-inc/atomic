@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
+- The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - A stage with `context: "fork"` copies its source session unchanged and then answers each tool call the source's last turn left open, before the stage's own prompt. A stage forked from a session in the middle of a turn no longer starts with tool calls that have no results. Without `forkFromEntryId`, a forked stage now forks where its source was when the stage was launched, and the run records that point. A stage that starts later, because it waited for a slot or the run resumed, no longer copies turns its source made after the launch ([#5481](https://github.com/bastani-inc/atomic/issues/5481))
 
 ## [0.9.89] - 2026-11-18

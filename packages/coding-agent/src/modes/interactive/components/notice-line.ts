@@ -41,6 +41,12 @@ export interface NoticeLineSpec {
 	readonly countHiddenDetail?: boolean;
 }
 
+/**
+ * The mark of a subagent released while it waits: still and dim, not the pause mark. Its completion notice, launch
+ * card, `/tasks` row and detail, the agent panel and a chat's task footer all show it with this one mark.
+ */
+export const WAITING_MARKER = { glyph: "◌", color: "dim" } as const;
+
 /** The marker and colour of each status, so a status reads without colour too. */
 export const STATUS_MARKERS: Readonly<Record<NoticeStatus, { readonly glyph: string; readonly color: ThemeColor }>> = {
 	success: { glyph: "●", color: "success" },
@@ -48,7 +54,7 @@ export const STATUS_MARKERS: Readonly<Record<NoticeStatus, { readonly glyph: str
 	stopped: { glyph: "◼", color: "muted" },
 	warning: { glyph: "!", color: "warning" },
 	paused: { glyph: "⏸", color: "muted" },
-	waiting: { glyph: "◌", color: "dim" },
+	waiting: WAITING_MARKER,
 	running: { glyph: "∀", color: "accent" },
 	info: { glyph: "›", color: "muted" },
 	heartbeat: { glyph: "♥", color: "muted" },
