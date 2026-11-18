@@ -9,7 +9,7 @@ import {
 } from "../../packages/workflows/src/extension/undelivered-stage-message-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageNotice } from "../../packages/workflows/src/shared/store-types.js";
-import { noticeSummary, stageNoticeCard } from "../../packages/workflows/src/tui/stage-chat-view-transcript.js";
+import { noticeSummary, stageNoticeLine } from "../../packages/workflows/src/tui/stage-chat-view-transcript.js";
 
 function storeWithStage() {
 	const store = createStore();
@@ -146,24 +146,19 @@ test("the parent session's renderer is registered once per host and draws a card
 	}
 });
 
-test("the stage chat shows an undelivered message as a warning card naming it (#4884)", () => {
+test("the stage chat shows an undelivered message as a warning notice naming it (#4884)", () => {
 	const notice: StageNotice = { id: "n", ts: 1, kind: "undelivered", to: "check the tests" };
 	assert.equal(noticeSummary(notice), '~ not delivered, the stage finished first: "check the tests"');
-	const card = stageNoticeCard({
+	const line = stageNoticeLine({
 		role: "notice",
 		text: noticeSummary(notice),
 		noticeId: "n",
 		kind: "undelivered",
 		value: "check the tests",
 	});
-	assert.equal(card.title, "MESSAGE NOT DELIVERED");
-	assert.equal(card.tone, "warning");
-	assert.equal(card.headline, "The stage finished before this message was delivered");
-	assert.deepEqual(card.fields, [
-		{ label: "message", value: "check the tests", tone: "text" },
-		{ label: "next", value: "send it to another stage if it still matters", tone: "muted" },
-	]);
-	assert.equal(card.glyph, "✗");
+	assert.equal(line.status, "warning");
+	assert.equal(`${line.label} ${line.outcome}`, "Stage finished before this message was delivered");
+	assert.equal(line.detail, "message check the tests\nSend it to another stage if it still matters.");
 });
 
 test("the parent session's renderer registers once per registrar when no host is named (#4884)", () => {

@@ -1,4 +1,5 @@
 import { describe, test } from "vitest";
+import { theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	assert,
 	createStore,
@@ -15,7 +16,7 @@ import {
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
-	test("renders workflow stage notices as cards", () => {
+	test("renders workflow stage notices as notice lines", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		assert.equal(
@@ -43,18 +44,15 @@ describe("StageChatView", () => {
 
 		const rendered = view.render(90);
 		const visible = stripAnsi(rendered.join("\n"));
-		assert.match(visible, /╭ STAGE MODEL/);
-		assert.match(visible, /→ Stage model changed/);
-		assert.match(visible, /value\s+gpt-5\.5-codex/);
-		assert.match(visible, /from\s+gpt-5\.5/);
-		assert.match(visible, /meta\s+fallback/);
+		assert.match(visible, /› Model changed to "gpt-5\.5-codex" · was gpt-5\.5 · fallback/);
+		assert.doesNotMatch(visible, /STAGE MODEL/);
 		assert.doesNotMatch(visible, /~ model →/);
 		for (const line of rendered) {
 			assert.ok(stripAnsi(line).length <= 90, `line exceeds width: ${JSON.stringify(stripAnsi(line))}`);
 		}
 	});
 
-	test("renders a quarantined task cleanup notice as a warning card (#4338)", () => {
+	test("renders a quarantined task cleanup notice as a warning notice (#4338)", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		store.recordStageNotice("run-1", "stage-a", {
@@ -65,6 +63,7 @@ describe("StageChatView", () => {
 			meta: "task-1 process-group:42: Output reader drain was not confirmed",
 		});
 		const { handle } = makeHandle();
+		let expanded = false;
 		const view = new StageChatView({
 			store,
 			graphTheme: deriveGraphTheme({ warning: "#ff0000", info: "#00ff00", text: "#0000ff", textMuted: "#00ffff" }),
@@ -74,21 +73,20 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
+			getToolsExpanded: () => expanded,
 		});
 
 		const rendered = view.render(90);
 		const visible = stripAnsi(rendered.join("\n"));
-		assert.match(visible, /╭ TASK CLEANUP/);
-		assert.match(visible, /! Task finished; its process cleanup is still being confirmed/);
-		assert.match(visible, /value\s+quarantined/);
-		assert.match(visible, /meta\s+task-1 process-group:42: Output reader drain was not confirmed/);
-		const title = rendered.find((line) => stripAnsi(line).includes("TASK CLEANUP"));
-		const value = rendered.find((line) => stripAnsi(line).includes("quarantined"));
-		assert.ok(title?.includes("\x1b[38;2;255;0;0m"), "the card is drawn in the warning color");
+		assert.match(visible, /! Task finished; its process cleanup is still being confirmed · quarantined/);
+		assert.doesNotMatch(visible, /TASK CLEANUP/);
+		const header = rendered.find((line) => stripAnsi(line).includes("Task finished"));
+		assert.ok(header?.includes(theme.fg("warning", "!")), "the notice's glyph is drawn in the warning color");
+		expanded = true;
 		assert.match(
-			value ?? "",
-			/\x1b\[38;2;255;0;0m(?:\x1b\[1m)?quarantined/,
-			"the notice value is drawn in the warning color",
+			stripAnsi(view.render(90).join("\n")),
+			/task-1 process-group:42: Output reader drain was not confirmed/,
+			"expanding the chat's blocks shows the resources still being confirmed",
 		);
 	});
 

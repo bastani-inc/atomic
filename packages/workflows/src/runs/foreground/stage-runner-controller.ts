@@ -106,7 +106,7 @@ import {
 	storedTranscript,
 	unansweredToolCallIds,
 } from "./stage-runner-reopen.js";
-import { StageSessionReplacement } from "./stage-runner-replacement.js";
+import { REPLACED_SESSION_STOP_TIMEOUT_MS, StageSessionReplacement } from "./stage-runner-replacement.js";
 import { sendStageUserMessage } from "./stage-runner-send-user-message.js";
 import {
 	asAgentSession,
@@ -3359,6 +3359,16 @@ export class StageSessionController {
 		this.unsubscribeTerminateWatcher?.();
 		this.unsubscribeTerminateWatcher = undefined;
 		this.residency.terminatingToolCallIds.clear();
+		// A replaced session must not keep working beside its successor: its turn ends before the successor exists.
+		try {
+			const stopped = await this.residency.replacement.stop(current, { signal: this.opts.signal });
+			if (stopped === "timed-out")
+				console.warn(
+					`atomic-workflows: stage "${this.opts.stageName}" replaced a session whose turn did not end within ${REPLACED_SESSION_STOP_TIMEOUT_MS} ms; it starts no new turn and is disposed once idle`,
+				);
+		} catch (error) {
+			console.error("atomic-workflows: stopping a replaced stage session failed", error);
+		}
 		// #3020: every creator must wait for ownership release, not only the prompt
 		// advancing fallback. Keep a failed barrier: shutdown failure is not proof
 		// of release, so later attachment must fail rather than register a new owner.
@@ -3380,6 +3390,9 @@ export class StageSessionController {
 		initialText: string,
 		sdkOptions: PromptOptions | undefined,
 	): Promise<{ readonly terminalScanStartIndex: number }> {
+		// A replacement first takes over the deliveries its predecessor held, so the prompt finds them.
+		const successorReady = this.residency.replacement.successorReady();
+		if (successorReady !== undefined) await successorReady;
 		let nextText: string | undefined = initialText;
 		let nextOptions = sdkOptions;
 		while (nextText !== undefined) {
