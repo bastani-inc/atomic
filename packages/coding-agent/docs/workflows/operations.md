@@ -616,6 +616,8 @@ Only runs with usable durable checkpoints or pending prompts can resume. Deleted
 
 Only valid current-format journal records are selectable. Unsupported or malformed records are not reinterpreted.
 
+You can resume a failed run by ID as soon as the failure appears. If its previous attempt is still saving in this session, resume waits for that save before retrying; you do not need to start a new run.
+
 Selecting a paused, resumable failed, blocked, or crash-recovery target from the current project re-dispatches the workflow with its cached inputs and the **original workflow id**. Every nested invocation validates and reuses its durable boundary and child identity before dispatch. Previously completed `ctx.tool`, `ctx.ui`, stage/task/chain/parallel items, and child boundaries replay from checkpoints instead of executing again; only incomplete work continues.
 
 Workflow resume is project-scoped. Resuming a run from another project in `/resume` asks: `Workflow run found in different project: <cwd>. Fork it into the current directory?` Choosing Yes forks the whole run into the current directory with the same mechanism as a stage fork: a new run ID copies saved checkpoints and stage conversation history in one step and continues incomplete work there. Completed side effects replay from their saved results; the source run remains unchanged. Choosing No cancels without creating a run. The workflow definition must remain available in the current or original project. SDK, workflow-tool, and headless resume calls do not prompt: use the workflow tool's `fork` action or `forkRun` instead, or reopen the original project to resume the original run.
@@ -632,7 +634,7 @@ Older compatible tool checkpoints still replay their cached output without rerun
 
 Fresh completed inspection does not currently persist the workflow's declared root output. Live `run()` results still expose the declared output, and this output-persistence limit does not block durable tool topology or read-only graph inspection.
 
-Targets resolve across top-level live, resumable durable, and completed entries as one namespace using full UUIDs or unique 8-hex prefixes. Exact loadable paused live targets retain direct in-session precedence. Prefixes require successful catalog discovery and reject collisions. A root appearing in both resumable and read-only history remains resumable. Nested child runs remain excluded from this top-level resume namespace.
+Targets resolve across top-level live and stored runs using full UUIDs or unique 8-hex prefixes. A stored run that cannot resume is not a missing run. Exact loadable paused live targets retain direct in-session precedence. Prefixes require successful catalog discovery and reject collisions. A root appearing in both resumable and read-only history remains resumable. Nested child runs remain excluded from this top-level resume namespace.
 
 The non-interactive `workflow` surface reads the journal for explicit IDs. `resume` loads the definition, revalidates eligibility, then claims and dispatches the run. `status`, `stages`, `stage`, and `transcript` read a missing-local root without dispatching it. `status` without a run ID remains session-local.
 

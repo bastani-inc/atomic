@@ -15,6 +15,7 @@ import {
 	type ResumeDurableDeps,
 	type ResumeDurableResult,
 	resumeDurableWorkflow as resumeDurableWorkflowAdapter,
+	selectedResumeEntry,
 } from "../durable/resume-runtime.js";
 import { hasActiveLiveRun } from "../durable/run-claims.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
@@ -23,7 +24,7 @@ import { bindStoreDurableBackend, DurableBackendNotInitializedError } from "../d
 import { inspectTargetedDurableWorkflow, type TargetedDurableInspection } from "../durable/targeted-inspection.js";
 import type { DurableWorkflowHandle, ResumableWorkflowEntry, WorkflowForkedFrom } from "../durable/types.js";
 import type { ToolControlRegistry } from "../engine/run-tool-control-registry.js";
-import type { JobTracker } from "../runs/background/job-tracker.js";
+import { currentJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
@@ -258,9 +259,11 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		},
 		async resumeDurableWorkflow(workflowId, options): Promise<ResumeDurableResult> {
 			options?.signal?.throwIfAborted();
+			const jobs = deps.jobs ?? currentJobTracker();
+			const selected = selectedResumeEntry(workflowId, preparedCatalog, deps.store, jobs);
 			return raceWorkflowRequestAbort(
 				withWorkflowResumeAdmission(deps.store, async (dormantWrites) => {
-					const backend = await withRecovery(async () => {
+					const { backend, catalog } = await withRecovery(async () => {
 						const backend =
 							options?.durableBackend ??
 							availableRunDurableBackend(deps.store, workflowId) ??
@@ -268,14 +271,14 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						options?.signal?.throwIfAborted();
 						// A message queued for an interrupted run before resume changed its journal, so a
 						// catalog read before that write would make the resume claim stale (#3760).
-						if (dormantWrites.size > 0 || resolveCatalogEntry(workflowId, preparedCatalog) === undefined)
-							preparedCatalog = isFullRunId(workflowId)
-								? await prepareTargetedDurableResumable(backend, [workflowId])
-								: await prepareRuntimeDurableResumable(() => backend, workflowId);
+						let catalog: readonly ResumableWorkflowEntry[] | undefined =
+							dormantWrites.size === 0 && selected !== undefined ? [selected] : undefined;
+						if (isFullRunId(workflowId)) {
+							if (catalog !== undefined) await backend.hydrateWorkflow(workflowId);
+							else catalog = await prepareTargetedDurableResumable(backend, [workflowId]);
+						}
 						options?.signal?.throwIfAborted();
-						const resolved = resolveCatalogEntry(workflowId, preparedCatalog);
-						if (resolved !== undefined) await backend.hydrateWorkflow(resolved.workflowId);
-						return backend;
+						return { backend, catalog };
 					});
 					const adapterDeps: ResumeDurableDeps = {
 						registry: deps.registry,
@@ -296,9 +299,9 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 							options?.definition === undefined
 								? (name, cwd) => discoverDefinition(name, cwd, options?.confirmProjectTrust)
 								: async () => options.definition,
-						...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
+						jobs,
 					};
-					return await resumeDurableWorkflowAdapter(workflowId, adapterDeps, preparedCatalog);
+					return await resumeDurableWorkflowAdapter(workflowId, adapterDeps, catalog);
 				}),
 				options?.signal,
 			);

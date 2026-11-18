@@ -403,6 +403,7 @@ export async function handleRunControlCommand(
 				runId = exactBeforePreparation.id;
 			} else {
 				const localIsDurableResumeShadow = shadow === "eligible";
+				let storedIds: readonly string[] | undefined;
 				let durable: readonly ResumableWorkflowEntry[] = [];
 				let completed: readonly ResumableWorkflowEntry[] = backend.listCompletedWorkflows();
 				let preparationError: string | undefined;
@@ -416,6 +417,7 @@ export async function handleRunControlCommand(
 					const runtime = deps.runtimeForContext(ctx);
 					try {
 						const catalog = isRunIdPrefix(target) ? await runtime.prepareDurableCatalog?.() : undefined;
+						storedIds = catalog?.inspectableIds;
 						durable = catalog?.resumable ?? (await runtime.prepareDurableResumable(target));
 						completed =
 							catalog?.completed ??
@@ -442,6 +444,7 @@ export async function handleRunControlCommand(
 					completed,
 					store.runs(),
 					backend,
+					storedIds,
 				);
 				if (combined.kind === "malformed" || combined.kind === "ambiguous") {
 					fail(combined.message);
@@ -460,7 +463,7 @@ export async function handleRunControlCommand(
 						fail(`Failed to resolve workflow resume target: ${preparationError}`);
 						return true;
 					}
-					return await durableResume(target);
+					return await durableResume(combined.kind === "stored" ? combined.workflowId : target);
 				}
 			}
 		}

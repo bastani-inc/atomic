@@ -277,6 +277,7 @@ export async function confirmEditedWorkflowDefinition(
 }
 
 export interface WorkflowResumeCatalog {
+	readonly inspectableIds?: readonly string[];
 	readonly resumable: readonly ResumableWorkflowEntry[];
 	readonly completed: readonly ResumableWorkflowEntry[];
 }
@@ -295,6 +296,7 @@ export interface WorkflowResumeTarget {
 
 export type WorkflowResumeTargetResolution =
 	| WorkflowResumeTarget
+	| { readonly kind: "stored"; readonly workflowId: string }
 	| { readonly kind: "malformed"; readonly message: string }
 	| { readonly kind: "ambiguous"; readonly message: string }
 	| { readonly kind: "not_found" };
@@ -363,6 +365,7 @@ export async function prepareWorkflowResumeCatalog(
 			? await runtime.prepareCompletedDurable()
 			: await listOpenableCompletedWorkflows(activeBackend() ?? runtime.durableBackend()));
 	return {
+		...(cleanTarget === undefined ? {} : { inspectableIds: shared?.inspectableIds }),
 		resumable,
 		completed: completed.filter((entry) => isDisplayLoadable(entry)),
 	};
@@ -412,6 +415,9 @@ export async function handleDurableResume(
 			// Reuse the catalog prepared above instead of re-enumerating the durable
 			// directory a second time for the same command invocation.
 			catalog.completed,
+			undefined,
+			undefined,
+			catalog.inspectableIds,
 		);
 		if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
 			fail(resolved.message);
@@ -424,6 +430,7 @@ export async function handleDurableResume(
 			return await resumeDurableTarget(resolved.workflowId, ctx, reporter, deps, runtime, resumeOptions);
 		}
 
+		if (resolved.kind === "stored") target = resolved.workflowId;
 		const completedAttempt = await openCompleted(
 			runtime,
 			target,
@@ -494,6 +501,7 @@ export function resolveWorkflowResumeTarget(
 	completed: readonly ResumableWorkflowEntry[],
 	sessionRuns?: readonly RunSnapshot[],
 	backend?: DurableWorkflowBackend,
+	storedIds: readonly string[] = [],
 ): WorkflowResumeTargetResolution {
 	const targets = new Map<string, WorkflowResumeTarget>();
 	for (const entry of resumable) {
@@ -514,11 +522,11 @@ export function resolveWorkflowResumeTarget(
 			name: run.name,
 		});
 	}
-	const resolution = resolveRunIdTarget(target, targets.keys());
+	const resolution = resolveRunIdTarget(target, [...targets.keys(), ...storedIds]);
 	if (resolution.kind === "malformed" || resolution.kind === "ambiguous" || resolution.kind === "not_found") {
 		return resolution;
 	}
-	return targets.get(resolution.runId) ?? { kind: "not_found" };
+	return targets.get(resolution.runId) ?? { kind: "stored", workflowId: resolution.runId };
 }
 
 function isExplicitResumeCandidate(
