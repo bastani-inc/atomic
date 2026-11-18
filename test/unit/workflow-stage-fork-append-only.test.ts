@@ -138,15 +138,26 @@ describe("forked workflow stages copy their source append-only (#5481)", () => {
 				resuming: false,
 			});
 		const launched = [launch("stage:a"), launch("stage:b")];
+		const atLaunch = source.buildSessionContext().messages;
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		// The source keeps going before either stage starts.
 		await source.appendMessage(toolResult("toolu_log", "the source's own result"));
 		await source.appendMessage(sourceTurn([{ type: "text", text: "LATER_SOURCE_TURN" }]));
 
 		const stages = await Promise.all(launched.map((options) => fork(source, options?.forkFromEntryId)));
-		const [first, second] = stages.map((stage) => stage.buildSessionContext().messages);
-		assert.deepEqual(first, second);
-		assert.doesNotMatch(JSON.stringify(first), /LATER_SOURCE_TURN|the source's own result/);
+		for (const stage of stages) {
+			const messages = stage.buildSessionContext().messages;
+			// Each stage holds the source as it was at launch, then answers the call that was open then.
+			assert.deepEqual(messages.slice(0, atLaunch.length), atLaunch);
+			assert.deepEqual(
+				messages.slice(atLaunch.length).map((message) => {
+					assert.equal(message.role, "toolResult");
+					return { id: message.toolCallId, text: message.content };
+				}),
+				[{ id: "toolu_log", text: [{ type: "text", text: STAGE_FORK_TOOL_RESULT }] }],
+			);
+			assert.doesNotMatch(JSON.stringify(messages), /LATER_SOURCE_TURN|the source's own result/);
+		}
 
 		// A resumed run launches the stage again; it forks where the first launch did, not where the source is now.
 		assert.equal(launch("stage:a")?.forkFromEntryId, launched[0]?.forkFromEntryId);
