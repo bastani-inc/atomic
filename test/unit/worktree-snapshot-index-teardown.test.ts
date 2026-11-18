@@ -107,9 +107,14 @@ async function indexedStore() {
 	return { database, stores, long, short, unicode };
 }
 
-/** What an older build leaves: the session entries' index without this build's version row (#5065). */
+/**
+ * What an older build leaves: the session entries' index without this build's version row (#5065), and without the
+ * row of this build's own backfill progress, which no older build writes (#5558).
+ */
 async function installedByAnOlderBuild(database: SqliteDatabase): Promise<void> {
-	await database.run("DELETE FROM snapshot_index_sources WHERE source = 'session-entries@degraded-pins'");
+	await database.run(
+		"DELETE FROM snapshot_index_sources WHERE source IN ('session-entries@degraded-pins', 'session-entries@own-progress')",
+	);
 }
 
 const SESSION_INDEX = ["snapshot_session_links", "snapshot_session_refs", "snapshot_session_records"] as const;

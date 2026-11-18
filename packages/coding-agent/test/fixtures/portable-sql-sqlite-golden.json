@@ -1227,8 +1227,8 @@
 				},
 				{
 					"source": "session-entries@degraded-pins",
-					"watermark": 0,
-					"backfilled_through": 0
+					"watermark": 1,
+					"backfilled_through": 1
 				},
 				{
 					"source": "session-entries@own-progress",

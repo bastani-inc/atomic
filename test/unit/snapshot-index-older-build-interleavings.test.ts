@@ -25,6 +25,18 @@ const release0987 = (await import(
 )) as { SqlSnapshotBlobStore: { open(database: SqliteDatabase): Promise<Release0987BlobStore> } };
 
 /**
+ * The snapshot blob store of Atomic 0.9.89, vendored unmodified (test/fixtures/snapshot-store-0.9.89/README.md): a
+ * released build that indexes degraded pins and keeps no progress row of its own backfill.
+ */
+interface Release0989BlobStore {
+	completeIndex(options?: { readonly signal?: AbortSignal }): Promise<void>;
+	collectGarbage(options: { readonly graceSeconds: number }): Promise<readonly string[]>;
+}
+const release0989 = (await import(
+	pathToFileURL(join(import.meta.dirname, "../fixtures/snapshot-store-0.9.89/worktree-snapshot/blob-store.ts")).href
+)) as { SqlSnapshotBlobStore: { open(database: SqliteDatabase): Promise<Release0989BlobStore> } };
+
+/**
  * The session-entries triggers and progress rows 0.9.87 leaves when it installs its reference index over a session
  * table that has none, recorded from the vendored store above (the first test checks it still writes exactly these).
  */
@@ -98,6 +110,60 @@ async function appendDegradedRestore(sessions: SqlSessionStore, session: string,
 	} as SessionEntry;
 	await sessions.append(session, [lacked, derived], { expectSeq });
 	return { hash, bundle };
+}
+
+/** `count` message entries, each the child of the one before. */
+function chain(prefix: string, count: number): SessionEntry[] {
+	const entries: SessionEntry[] = [messageEntry(`${prefix} 0`) as SessionEntry];
+	for (let index = 1; index < count; index++)
+		entries.push({ ...messageEntry(`${prefix} ${index}`), parentId: entries.at(-1)!.id } as SessionEntry);
+	return entries;
+}
+
+/** Leaves the session entries without any reference index, as before a build installs one over them. */
+async function dropSessionIndex(database: SqliteDatabase): Promise<void> {
+	for (const name of SESSION_TRIGGERS) await database.exec(`DROP TRIGGER IF EXISTS ${name}`);
+	await database.exec(
+		"DELETE FROM snapshot_session_links; DELETE FROM snapshot_session_refs; DELETE FROM snapshot_session_records; DELETE FROM snapshot_index_sources WHERE source LIKE 'session-entries%'",
+	);
+}
+
+/** Runs this build's collection of the index until its first batch is done, then stops it, as when Atomic exits. */
+async function stopAfterFirstBatch(store: SqlSnapshotBlobStore): Promise<void> {
+	const controller = new AbortController();
+	class StoppingPace extends BackgroundCollectionPace {
+		override wait(milliseconds: number): Promise<void> {
+			controller.abort(new Error("Atomic exits"));
+			return super.wait(milliseconds);
+		}
+	}
+	await assert.rejects(store.completeIndex({ signal: controller.signal, pace: new StoppingPace(controller.signal) }));
+}
+
+/** The progress of the session entries' backfill. */
+async function entriesProgress(database: SqliteDatabase) {
+	const row = await database.get<SqliteRow & { watermark: number; backfilled_through: number }>(
+		"SELECT watermark, backfilled_through FROM snapshot_index_sources WHERE source = 'session-entries'",
+	);
+	return { watermark: Number(row?.watermark), backfilled: Number(row?.backfilled_through) };
+}
+
+/** `database`, counting its write transactions. */
+function countingTransactions(database: SqliteDatabase) {
+	const counted = { transactions: 0 };
+	const wrapped: SqliteDatabase = {
+		exec: (sql) => database.exec(sql),
+		run: (sql, ...params) => database.run(sql, ...params),
+		get: (sql, ...params) => database.get(sql, ...params),
+		all: (sql, ...params) => database.all(sql, ...params),
+		descriptor: database.descriptor,
+		close: () => database.close(),
+		transaction: (callback, options) => {
+			counted.transactions++;
+			return database.transaction(callback, options);
+		},
+	};
+	return { wrapped, counted };
 }
 
 /** How the index records the entry that names the snapshot it lacks: its pin, or null when the pin was not indexed. */
@@ -242,33 +308,207 @@ describe("an older build working on this build's session index (#5558)", () => {
 		assert.equal(await indexedPin(database), "S-lacked");
 	});
 
-	test("a store indexed by a released build that writes degraded pins is trusted without indexing it again (#5558)", async () => {
+	test("a store 0.9.89 indexed is trusted without indexing it again (#5558)", async () => {
 		const database = await open();
 		const created = await SqlSessionStore.open(database);
 		const first = messageEntry("hi") as SessionEntry;
 		await createSession(created, "s1", [first]);
-		// What 0.9.88 to 0.9.90 leave: the same reference triggers and version row, and no row of this build's own
-		// backfill progress.
-		await database.run("DELETE FROM snapshot_index_sources WHERE source = 'session-entries@own-progress'");
+		const { hash } = await appendDegradedRestore(created, "s1", first.id, 1);
+		await dropSessionIndex(database);
+		await (await release0989.SqlSnapshotBlobStore.open(database)).completeIndex();
 		const before = await database.all("SELECT * FROM snapshot_session_links ORDER BY session_id, seq");
-		let transactions = 0;
-		const counting: SqliteDatabase = {
+		const { wrapped, counted } = countingTransactions(database);
+		const store = await SqlSnapshotBlobStore.open(wrapped);
+
+		await store.completeIndex();
+
+		assert.equal(counted.transactions, 0, "the index needed no work");
+		assert.deepEqual(await database.all("SELECT * FROM snapshot_session_links ORDER BY session_id, seq"), before);
+		assert.equal((await store.collectGarbage({ graceSeconds: 0 })).includes(hash), false);
+	});
+});
+
+describe("0.9.87 and a released build that indexes degraded pins on one store (#5558)", () => {
+	test("entries written at reused rowids after this build took over 0.9.89's backfill keep their pin when 0.9.87 indexes them (#5558)", async () => {
+		const database = await open();
+		const created = await SqlSessionStore.open(database);
+		await createSession(created, "older", chain("older", SNAPSHOT_INDEX_BACKFILL_BATCH - 11));
+		await createSession(created, "newest", chain("newest", 120));
+		// 0.9.89 installs the index over the entries; this build's collection takes its backfill over and stops.
+		await dropSessionIndex(database);
+		await release0989.SqlSnapshotBlobStore.open(database);
+		const upgraded = await SqlSnapshotBlobStore.open(database);
+		await stopAfterFirstBatch(upgraded);
+		// The newest session is deleted and a new one takes its rowids, some of them below where the backfill got.
+		await created.delete("newest");
+		const start = messageEntry("pinned start") as SessionEntry;
+		await createSession(created, "pinned", [start]);
+		const { hash, bundle } = await appendDegradedRestore(created, "pinned", start.id, 1);
+		const reused = await database.get<SqliteRow & { id: number }>(
+			"SELECT max(rowid) AS id FROM session_entries WHERE session_id = 'pinned'",
+		);
+		assert.ok(
+			Number(reused?.id) <= SNAPSHOT_INDEX_BACKFILL_BATCH,
+			"the new entries reuse rowids the backfill passed",
+		);
+		// 0.9.87 collects next and indexes them its way.
+		await (await release0987.SqlSnapshotBlobStore.open(database)).collectGarbage({ graceSeconds: 1_000_000 });
+		assert.equal(await indexedPin(database), null, "0.9.87 indexed the entry without its pin");
+
+		const deleted = await upgraded.collectGarbage({ graceSeconds: 0 });
+
+		assert.equal(deleted.includes(hash), false, "the bundle the pin keeps was collected");
+		assert.deepEqual(await upgraded.getBlob(hash), bundle);
+		assert.equal(await indexedPin(database), "S-lacked");
+	});
+
+	test("this build finishes 0.9.89's interrupted backfill by indexing the entries again, without removing the index (#5558)", async () => {
+		const database = await open();
+		const created = await SqlSessionStore.open(database);
+		await createSession(created, "older", chain("older", 2 * SNAPSHOT_INDEX_BACKFILL_BATCH + 20));
+		const start = messageEntry("pinned start") as SessionEntry;
+		await createSession(created, "pinned", [start]);
+		const { hash } = await appendDegradedRestore(created, "pinned", start.id, 1);
+		await dropSessionIndex(database);
+		await release0989.SqlSnapshotBlobStore.open(database);
+		const links = async () =>
+			Number((await database.get<SqliteRow & { n: number }>("SELECT count(*) AS n FROM snapshot_session_links"))?.n);
+		const removed: number[] = [];
+		const watched: SqliteDatabase = {
 			exec: (sql) => database.exec(sql),
 			run: (sql, ...params) => database.run(sql, ...params),
 			get: (sql, ...params) => database.get(sql, ...params),
 			all: (sql, ...params) => database.all(sql, ...params),
 			descriptor: database.descriptor,
 			close: () => database.close(),
-			transaction: (callback, options) => {
-				transactions++;
-				return database.transaction(callback, options);
+			transaction: async (callback, options) => {
+				const before = await links();
+				const result = await database.transaction(callback, options);
+				removed.push(before - (await links()));
+				return result;
 			},
 		};
-		const store = await SqlSnapshotBlobStore.open(counting);
+		const upgraded = await SqlSnapshotBlobStore.open(watched);
+
+		const deleted = await upgraded.collectGarbage({ graceSeconds: 0 });
+
+		assert.deepEqual(
+			removed.filter((rows) => rows > 0),
+			[],
+			"no transaction removed index rows",
+		);
+		assert.equal(deleted.includes(hash), false);
+		assert.equal(await indexedPin(database), "S-lacked");
+		const entries = Number(
+			(await database.get<SqliteRow & { n: number }>("SELECT count(*) AS n FROM session_entries"))?.n,
+		);
+		assert.equal(await links(), entries, "every entry is indexed");
+	});
+
+	test("0.9.89 collecting after 0.9.87 finished this build's interrupted backfill keeps the bundle a pin keeps (#5558)", async () => {
+		const database = await open();
+		const created = await SqlSessionStore.open(database);
+		const first = messageEntry("hi") as SessionEntry;
+		await createSession(created, "s1", [first]);
+		const { hash, bundle } = await appendDegradedRestore(created, "s1", first.id, 1);
+		// This build installs its index over the entries, and Atomic exits before its backfill runs.
+		await dropSessionIndex(database);
+		await SqlSnapshotBlobStore.open(database);
+		// 0.9.87 collects next and indexes the entries its way.
+		await (await release0987.SqlSnapshotBlobStore.open(database)).collectGarbage({ graceSeconds: 1_000_000 });
+		assert.equal(await indexedPin(database), null, "0.9.87 indexed the entry without its pin");
+
+		const deleted = await (await release0989.SqlSnapshotBlobStore.open(database)).collectGarbage({ graceSeconds: 0 });
+
+		assert.equal(deleted.includes(hash), false, "0.9.89 collected the bundle the pin keeps");
+		assert.equal(await indexedPin(database), "S-lacked", "0.9.89 indexed the entries again");
+		const sessions = await SqlSessionStore.open(database);
+		assert.equal((await sessions.snapshotBlobs.collectGarbage({ graceSeconds: 0 })).includes(hash), false);
+		assert.deepEqual(await sessions.snapshotBlobs.getBlob(hash), bundle);
+	});
+
+	test("0.9.89 collecting while this build indexes again what 0.9.87 indexed keeps the bundle a pin keeps (#5558)", async () => {
+		const database = await open();
+		const created = await SqlSessionStore.open(database);
+		await createSession(created, "older", chain("older", SNAPSHOT_INDEX_BACKFILL_BATCH + 20));
+		const start = messageEntry("pinned start") as SessionEntry;
+		await createSession(created, "pinned", [start]);
+		const { hash, bundle } = await appendDegradedRestore(created, "pinned", start.id, 1);
+		// This build installs its index over the entries and exits; 0.9.87 indexes them all its way.
+		await dropSessionIndex(database);
+		const upgraded = await SqlSnapshotBlobStore.open(database);
+		await (await release0987.SqlSnapshotBlobStore.open(database)).collectGarbage({ graceSeconds: 1_000_000 });
+		// This build indexes the first entries again, past which the pin lies, and exits.
+		await stopAfterFirstBatch(upgraded);
+		assert.equal(await indexedPin(database), null, "the pin is not indexed again yet");
+
+		const deleted = await (await release0989.SqlSnapshotBlobStore.open(database)).collectGarbage({ graceSeconds: 0 });
+
+		assert.equal(deleted.includes(hash), false, "0.9.89 collected the bundle the pin keeps");
+		assert.deepEqual(await upgraded.getBlob(hash), bundle);
+	});
+
+	test("entries 0.9.87 indexed during 0.9.89's interrupted backfill are indexed again by this build (#5558)", async () => {
+		const database = await open();
+		const created = await SqlSessionStore.open(database);
+		const start = messageEntry("pinned start") as SessionEntry;
+		await createSession(created, "pinned", [start]);
+		const { hash, bundle } = await appendDegradedRestore(created, "pinned", start.id, 1);
+		await createSession(created, "newer", chain("newer", SNAPSHOT_INDEX_BACKFILL_BATCH + 20));
+		// 0.9.89 installs the index over the entries and exits; 0.9.87 indexes the first of them its way and exits.
+		await dropSessionIndex(database);
+		await release0989.SqlSnapshotBlobStore.open(database);
+		const controller = new AbortController();
+		const stopping: SqliteDatabase = {
+			exec: (sql) => database.exec(sql),
+			run: (sql, ...params) => database.run(sql, ...params),
+			get: (sql, ...params) => database.get(sql, ...params),
+			all: (sql, ...params) => database.all(sql, ...params),
+			descriptor: database.descriptor,
+			close: () => database.close(),
+			transaction: async (callback, options) => {
+				const result = await database.transaction(callback, options);
+				if ((await entriesProgress(database)).backfilled > 0) controller.abort(new Error("Atomic 0.9.87 exits"));
+				return result;
+			},
+		};
+		await assert.rejects(
+			(await release0987.SqlSnapshotBlobStore.open(stopping)).collectGarbage({
+				graceSeconds: 1_000_000,
+				signal: controller.signal,
+			} as { graceSeconds: number }),
+		);
+		const progress = await entriesProgress(database);
+		assert.ok(progress.backfilled > 0 && progress.backfilled < progress.watermark, "0.9.87 indexed part of it");
+		assert.equal(await indexedPin(database), null, "0.9.87 indexed the entry without its pin");
+
+		const sessions = await SqlSessionStore.open(database);
+		const deleted = await sessions.snapshotBlobs.collectGarbage({ graceSeconds: 0 });
+
+		assert.equal(deleted.includes(hash), false, "the bundle the pin keeps was collected");
+		assert.deepEqual(await sessions.snapshotBlobs.getBlob(hash), bundle);
+		assert.equal(await indexedPin(database), "S-lacked");
+	});
+
+	test("after 0.9.89 indexed again a store this build was indexing, this build trusts it without indexing it again (#5558)", async () => {
+		const database = await open();
+		const created = await SqlSessionStore.open(database);
+		await createSession(created, "older", chain("older", SNAPSHOT_INDEX_BACKFILL_BATCH + 20));
+		const start = messageEntry("pinned start") as SessionEntry;
+		await createSession(created, "pinned", [start]);
+		const { hash } = await appendDegradedRestore(created, "pinned", start.id, 1);
+		// This build installs its index over the entries, indexes a batch of them and exits.
+		await dropSessionIndex(database);
+		await stopAfterFirstBatch(await SqlSnapshotBlobStore.open(database));
+		// 0.9.89 collects next: it indexes the store its way, which writes degraded pins too.
+		await (await release0989.SqlSnapshotBlobStore.open(database)).collectGarbage({ graceSeconds: 1_000_000 });
+		assert.equal(await indexedPin(database), "S-lacked", "0.9.89 indexed the pin");
+		const { wrapped, counted } = countingTransactions(database);
+		const store = await SqlSnapshotBlobStore.open(wrapped);
 
 		await store.completeIndex();
 
-		assert.equal(transactions, 0, "the index needed no work");
-		assert.deepEqual(await database.all("SELECT * FROM snapshot_session_links ORDER BY session_id, seq"), before);
+		assert.equal(counted.transactions, 0, "this build trusts the index 0.9.89 built");
+		assert.equal((await store.collectGarbage({ graceSeconds: 0 })).includes(hash), false);
 	});
 });
