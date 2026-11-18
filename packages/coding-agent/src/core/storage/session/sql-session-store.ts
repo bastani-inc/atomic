@@ -6,7 +6,7 @@ import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaV
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
-import { readSqlCatalog } from "../sql-catalog.js";
+import { readSqlCatalog, readSqlCatalogPages } from "../sql-catalog.js";
 import { sha256Hex } from "./blob-hash.js";
 import {
 	SessionConflictError,
@@ -1262,26 +1262,31 @@ export class SqlSessionStore implements SessionStore {
 		}
 	}
 
-	/** A session's search texts as one JSON array, read in pages of at most {@link SESSION_READ_PAGE_CHARS}. */
+	/** Search texts as one JSON array: bounded metadata pages, then text pages of at most {@link SESSION_READ_PAGE_CHARS}. */
 	private async readSearchTexts(sessionId: string, query: SessionListQuery): Promise<string> {
 		this.assertListing(query);
-		const sizes = await this.database.all<SizedRow & { seq: number }>(
-			`SELECT seq, length(text_json) AS size FROM ${this.tables.searchTexts} WHERE session_id = ? ORDER BY seq`,
-			sessionId,
-		);
-		this.assertListing(query);
 		const texts: string[] = [];
-		for (const page of pagesOf(sizes)) {
-			this.assertListing(query);
-			const rows = await this.database.all<SqliteRow & { text_json: string }>(
-				`SELECT text_json FROM ${this.tables.searchTexts} WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq`,
-				sessionId,
-				page[0]!.seq,
-				page.at(-1)!.seq,
-			);
-			this.assertListing(query);
-			for (const row of rows) texts.push(row.text_json);
-			await yieldTurn();
+		for await (const sizes of readSqlCatalogPages<SizedRow & { seq: number }>(this.database, {
+			sql: `SELECT seq, length(text_json) AS size FROM ${this.tables.searchTexts} WHERE session_id = ?`,
+			params: [sessionId],
+			key: "seq",
+			size: "1",
+			pageRows: SESSION_READ_FETCH.max,
+			signal: query.signal,
+			assertOpen: () => this.assertOpen(),
+		})) {
+			for (const page of pagesOf(sizes)) {
+				this.assertListing(query);
+				const rows = await this.database.all<SqliteRow & { text_json: string }>(
+					`SELECT text_json FROM ${this.tables.searchTexts} WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq`,
+					sessionId,
+					page[0]!.seq,
+					page.at(-1)!.seq,
+				);
+				this.assertListing(query);
+				for (const row of rows) texts.push(row.text_json);
+				await yieldTurn();
+			}
 		}
 		this.assertListing(query);
 		return `[${texts.join(",")}]`;
@@ -2033,10 +2038,14 @@ class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
 	async list(sessionId: string): Promise<readonly SessionOpenMarkerAge[]> {
 		this.assertOpen();
 		const now = dialectOf(this.database).nowMs;
-		const rows = await this.database.all<OpenMarkerRow>(
-			`SELECT token, pid, host, ${now} - heartbeat_at AS age_ms FROM ${this.table} WHERE session_id = ?`,
-			sessionId,
-		);
+		const rows = await readSqlCatalog<OpenMarkerRow>(this.database, {
+			sql: `SELECT token, pid, host, ${now} - heartbeat_at AS age_ms FROM ${this.table} WHERE session_id = ?`,
+			params: [sessionId],
+			key: "token",
+			size: "length(token) + length(host)",
+			assertOpen: this.assertOpen,
+		});
+		this.assertOpen();
 		return rows.map((row) => ({ token: row.token, pid: Number(row.pid), host: row.host, ageMs: Number(row.age_ms) }));
 	}
 }

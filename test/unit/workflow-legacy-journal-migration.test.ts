@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
-import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
+import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { inspectJournalFile } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
@@ -84,6 +84,92 @@ function writeLegacyJournal(path: string): void {
 		database.close();
 	}
 }
+
+for (const method of ["listRuns", "runVersions", "getRun"] as const)
+	test(`${method} does not lose a legacy run converted by another connection at its first read boundary (#5537)`, async () => {
+		const path = join(tempDirectory(), `conversion-${method}.sqlite`);
+		writeLegacyJournal(path);
+		const database = await openNodeSqliteDatabase(path);
+		const writerDatabase = await openNodeSqliteDatabase(path);
+		const journal = await SqlRunJournal.open(database);
+		const writer = await SqlRunJournal.open(writerDatabase);
+		const all = database.all.bind(database);
+		const get = database.get.bind(database);
+		let converted = false;
+		const convert = async () => {
+			if (converted) return;
+			converted = true;
+			assert.equal((await writer.acquire(legacyRun.runId, "conversion-writer")).status, "acquired");
+		};
+		if (method === "getRun") {
+			database.get = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+				const row = await get<Row>(sql, ...params);
+				await convert();
+				return row;
+			};
+		} else {
+			database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+				const rows = await all<Row>(sql, ...params);
+				await convert();
+				return rows;
+			};
+		}
+		try {
+			if (method === "getRun") assert.equal((await journal.getRun(legacyRun.runId))?.runId, legacyRun.runId);
+			else if (method === "runVersions")
+				assert.deepEqual([...(await journal.runVersions()).keys()], [legacyRun.runId]);
+			else
+				assert.deepEqual(
+					(await journal.listRuns()).map((run) => run.runId),
+					[legacyRun.runId],
+				);
+			assert.equal(converted, true);
+		} finally {
+			database.all = all;
+			database.get = get;
+			await writer.close();
+			await journal.close();
+			await writerDatabase.close();
+			await database.close();
+		}
+	});
+
+test("legacy event reads honor the same size budget as current event reads (#5537)", async () => {
+	const path = join(tempDirectory(), "large-legacy-events.sqlite");
+	writeLegacyJournal(path);
+	const payload = JSON.stringify({ inputs: { text: '"'.repeat(1_000_000) } });
+	const raw = new DatabaseSync(path);
+	try {
+		const insert = raw.prepare(
+			"INSERT INTO events(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, 3, NULL, ?, ?, ?)",
+		);
+		for (let seq = 2; seq <= 7; seq++)
+			insert.run(legacyRun.runId, seq, RUN_EVENT_TYPES.runStarted, payload, legacyRun.createdAt + seq);
+	} finally {
+		raw.close();
+	}
+	const database = await openNodeSqliteDatabase(path);
+	const journal = await SqlRunJournal.open(database);
+	const all = database.all.bind(database);
+	database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+		const rows = await all<Row>(sql, ...params);
+		const bytes = rows.reduce(
+			(total, row) => total + (typeof row.payload === "string" ? Buffer.byteLength(row.payload) : 0),
+			0,
+		);
+		assert.ok(bytes <= 4 * 1024 * 1024 + Buffer.byteLength(payload), `legacy payload response was ${bytes} bytes`);
+		return rows;
+	};
+	try {
+		const seqs: number[] = [];
+		for await (const entry of journal.read(legacyRun.runId)) seqs.push(entry.seq);
+		assert.deepEqual(seqs, [1, 2, 3, 4, 5, 6, 7]);
+	} finally {
+		database.all = all;
+		await journal.close();
+		await database.close();
+	}
+});
 
 test("inspection lists a 150,000-run legacy catalog without overflowing the call stack (#5537)", async () => {
 	const path = join(tempDirectory(), "large-legacy.sqlite");

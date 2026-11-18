@@ -22,6 +22,43 @@ const variants: readonly { name: string; query: SessionListQuery; cached?: boole
 
 for (const backend of storageBackends) {
 	describe.skipIf(backend.skipReason !== undefined)(`session listing lifetime: ${backend.name}`, () => {
+		it("bounds open-marker catalog responses for a session shared by several hosts (#5537)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const database = await scope.connect();
+				const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+				try {
+					const host = "x".repeat(2_000_000);
+					for (let index = 0; index < 6; index++)
+						await store.openMarkers.put("selected", { token: `token-${index}`, pid: index + 1, host });
+					await store.openMarkers.put("other", { token: "outside", pid: 99, host: "outside" });
+					const all = database.all.bind(database);
+					database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+						const rows = await all<Row>(sql, ...params);
+						const bytes = rows.reduce(
+							(total, row) => total + (typeof row.host === "string" ? Buffer.byteLength(row.host) : 0),
+							0,
+						);
+						expect(bytes).toBeLessThanOrEqual(4 * 1024 * 1024 + Buffer.byteLength(host));
+						return rows;
+					};
+					try {
+						const markers = await store.openMarkers.list("selected");
+						expect(markers.map(({ token, pid }) => [token, pid])).toEqual(
+							Array.from({ length: 6 }, (_, index) => [`token-${index}`, index + 1]),
+						);
+						expect(markers.every((marker) => marker.host === host && Number.isFinite(marker.ageMs))).toBe(true);
+					} finally {
+						database.all = all;
+					}
+				} finally {
+					await store.close();
+				}
+			} finally {
+				await scope.close();
+			}
+		});
+
 		for (const variant of variants) {
 			for (const stop of ["abort", "close"] as const) {
 				it(`${variant.name} listing starts no further read after ${stop} at a page boundary (#5537)`, async () => {

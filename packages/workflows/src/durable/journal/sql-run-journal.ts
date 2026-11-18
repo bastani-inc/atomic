@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import type { WorktreeSnapshot } from "@bastani/atomic";
 import {
 	assertStoredSchemaVersion,
@@ -15,6 +16,7 @@ import {
 	type SqliteStatement,
 	type SqliteValue,
 	SqlSnapshotBlobStore,
+	STORED_JSON_CHUNK_BYTES,
 	type StorageDescriptor,
 	type StorageDialect,
 	type StorageFailureCause,
@@ -144,9 +146,10 @@ async function readSizedPage(
 	params: readonly SqliteValue[],
 	limit: number,
 ): Promise<{ readonly page: JournalEntry[]; readonly more: boolean; readonly limit: number }> {
+	const rowChars = `length(page.${c.payload}) + length(page.${c.runId}) + length(page.${c.type}) + coalesce(length(page.${c.key}), 0) + coalesce(page.${c.chunks}, 0) * ${STORED_JSON_CHUNK_BYTES}`;
 	const rows = await database.all<EventRow & { fetched: number | bigint }>(
 		`SELECT *, (SELECT ${c.schemaVersion} FROM ${meta}) AS ${META_VERSION} FROM (
-			SELECT page.*, sum(length(page.${c.payload})) OVER (ORDER BY page.${order}) - length(page.${c.payload}) AS before_chars,
+			SELECT page.*, sum(${rowChars}) OVER (ORDER BY page.${order}) - (${rowChars}) AS before_chars,
 				count(*) OVER () AS fetched
 			FROM (${pageRows}) AS page
 		) AS sized WHERE before_chars < ? ORDER BY ${order}`,
@@ -460,6 +463,11 @@ export class SqlRunJournal implements RunJournal {
 		return `(SELECT ${c.schemaVersion} FROM ${this.tables.meta}) AS ${META_VERSION}`;
 	}
 
+	private get runHeaderSource(): string {
+		const current = `SELECT ${c.runId}, ${c.headerJson}, ${c.status}, ${c.cwd} FROM ${this.tables.runs}`;
+		return this.legacy === undefined ? current : `${current} UNION ALL ${this.legacy.pendingSource}`;
+	}
+
 	private async readSnapshot<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T> {
 		const readerFile = this.readerFile;
 		if (readerFile === undefined) return body(this.database);
@@ -582,14 +590,13 @@ export class SqlRunJournal implements RunJournal {
 		validateText("runId", runId);
 		return this.operation(async () => {
 			const row = await this.database.get<HeaderRow>(
-				`SELECT ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM ${this.tables.runs} WHERE ${c.runId} = ?`,
+				`SELECT ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM (${this.runHeaderSource}) AS runs WHERE ${c.runId} = ?`,
 				runId,
 			);
 			if (row === undefined) await this.assertVersion(this.database);
 			assertRowVersion(row);
-			const found = row ?? (await this.legacy?.find(this.database, runId));
-			return found
-				? { ...(JSON.parse(found[c.headerJson]) as RunHeader), status: runStatusFromRecord(found[c.status]) }
+			return row
+				? { ...(JSON.parse(row[c.headerJson]) as RunHeader), status: runStatusFromRecord(row[c.status]) }
 				: undefined;
 		});
 	}
@@ -610,7 +617,7 @@ export class SqlRunJournal implements RunJournal {
 				}
 			};
 			for await (const page of readSqlCatalogPages<HeaderRow>(this.database, {
-				sql: `SELECT ${c.runId}, ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM ${this.tables.runs} ${filter?.cwd === undefined ? "" : `WHERE ${c.cwd} = ?`}`,
+				sql: `SELECT ${c.runId}, ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM (${this.runHeaderSource}) AS runs ${filter?.cwd === undefined ? "" : `WHERE ${c.cwd} = ?`}`,
 				params: filter?.cwd === undefined ? [] : [filter.cwd],
 				key: c.runId,
 				size: `length(${c.headerJson}) + length(${c.runId}) + length(${c.status})`,
@@ -618,8 +625,7 @@ export class SqlRunJournal implements RunJournal {
 				pageRows: this.database.descriptor.adapter === "node-sqlite" ? 128 : 4_096,
 			}))
 				add(page);
-			if (listed.length === 0) await this.assertVersion(this.database);
-			for await (const page of this.legacy?.pending(this.database, filter, options?.signal) ?? []) add(page);
+			options?.signal?.throwIfAborted();
 			await this.assertVersion(this.database);
 			options?.signal?.throwIfAborted();
 			return listed.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
@@ -657,8 +663,9 @@ export class SqlRunJournal implements RunJournal {
 					seq: journalCounter(row[c.runId], "seq", row[c.seq]),
 					at: Number(row[c.at]),
 				});
+			const current = `SELECT runs.${c.runId}, ${latestEventColumns(this.tables.events, "runs")} FROM ${this.tables.runs} AS runs`;
 			for await (const page of readSqlCatalogPages<RunVersionRow>(this.database, {
-				sql: `SELECT runs.${c.runId}, ${latestEventColumns(this.tables.events, "runs")} FROM ${this.tables.runs} AS runs`,
+				sql: this.legacy === undefined ? current : `${current} UNION ALL ${this.legacy.versionSource}`,
 				key: c.runId,
 				size: `length(${c.runId})`,
 				signal: stop,
@@ -666,7 +673,6 @@ export class SqlRunJournal implements RunJournal {
 			})) {
 				for (const row of page) add(row);
 			}
-			for (const row of (await this.legacy?.versions(this.database, stop)) ?? []) add(row);
 			return versions;
 		});
 	}
@@ -1240,17 +1246,15 @@ export class SqlRunJournal implements RunJournal {
 		let limit = JOURNAL_READ_PAGE_SIZE;
 		const legacy = this.legacy;
 		const readsLegacy = legacy !== undefined && (await this.operation(() => this.isUnconvertedLegacyRun(runId)));
+		const events = readsLegacy ? JOURNAL_TABLES.events : this.tables.events;
+		const select = readsLegacy ? `${EVENT_COLUMNS.join(", ")}, 0 AS ${c.chunks}` : "*";
 		for (;;) {
 			const { page, more, ...next } = await this.operation(async () => {
-				if (readsLegacy) {
-					const rows = (await legacy.events(this.database, runId, nextSeq, JOURNAL_READ_PAGE_SIZE)) as EventRow[];
-					return { page: rows.map(entryFromRow), more: rows.length === JOURNAL_READ_PAGE_SIZE, limit };
-				}
 				return readSizedPage(
 					this.database,
 					this.tables.eventChunks,
 					this.tables.meta,
-					`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
+					`SELECT ${select} FROM ${events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
 					c.seq,
 					[runId, nextSeq],
 					limit,
@@ -1265,6 +1269,7 @@ export class SqlRunJournal implements RunJournal {
 			if (last === undefined || !more) return;
 			nextSeq = last.seq + 1;
 			limit = next.limit;
+			await nextTurn();
 		}
 	}
 

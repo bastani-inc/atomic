@@ -201,6 +201,48 @@ for (const backend of storageBackends) {
 			}
 		});
 
+		it("does not start final metadata validation after an abort at the empty-page completion boundary (#5537)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const database = await scope.connect();
+				const journal = await SqlRunJournal.open(database, { prefix: scope.prefix });
+				try {
+					await journal.createRun({ runId: "run", name: "run", cwd: "/project", createdAt: 1, status: "running" });
+					const controller = new AbortController();
+					const reason = new Error("catalog finished-page cancellation");
+					const all = database.all.bind(database);
+					const get = database.get.bind(database);
+					let armed = false;
+					let readsAfterAbort = 0;
+					database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+						if (controller.signal.aborted) readsAfterAbort++;
+						const rows = await all<Row>(sql, ...params);
+						if (rows.length === 0 && !armed) {
+							armed = true;
+							queueMicrotask(() => queueMicrotask(() => controller.abort(reason)));
+						}
+						return rows;
+					};
+					database.get = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+						if (controller.signal.aborted) readsAfterAbort++;
+						return get<Row>(sql, ...params);
+					};
+					try {
+						await expect(journal.listRuns(undefined, { signal: controller.signal })).rejects.toBe(reason);
+						expect(armed).toBe(true);
+						expect(readsAfterAbort).toBe(0);
+					} finally {
+						database.all = all;
+						database.get = get;
+					}
+				} finally {
+					await journal.close();
+				}
+			} finally {
+				await scope.close();
+			}
+		});
+
 		it("lists empty, exact and adjacent row-page boundaries once in run-id order (#5537)", async () => {
 			const scope = await backend.openScope();
 			try {

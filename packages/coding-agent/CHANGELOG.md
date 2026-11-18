@@ -13,7 +13,7 @@
 
 ### Fixed
 
-- Workflow exports and import comparisons read large catalogs and event histories in size-bounded pages instead of failing at the storage server's response limit. Session listings also page project-directory text by size and avoid oversized project-filter parameter lists ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
+- Workflow exports and import comparisons read large catalogs and event histories in size-bounded pages instead of failing at the storage server's response limit. Session listings also page project-directory text, search-text metadata and open-host markers by size, and avoid oversized project-filter parameter lists ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
 - Session listings stop reading pages when cancelled or closed, including cached listings and directory scans. A session deleted and recreated during a listing is returned only once ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
 - The main chat no longer leaves a blank row between the working line and the usage meter above the prompt. Every chat now keeps exactly one row there: the usage meter, or a blank row in a subagent or stage chat with no usage to show, so a chat's last line never runs into its prompt.
 - A subagent or workflow stage chat waiting to retry a request, switch model or resume now shows `retrying…`, `switching model…` or `resuming…` as its working line above the prompt, instead of a line below its transcript.
