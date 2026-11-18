@@ -447,6 +447,7 @@ export class ReleasedStagePeers {
 	): Promise<void> {
 		let reply: { text: string; replyError?: string };
 		try {
+			if (peer.route.isCurrent?.() === false) throw new Error("The workflow stage was replaced.");
 			reply = { text: await peer.route.answer(askPrompt(from, message)) };
 		} catch (error) {
 			const failure = `Released workflow stage could not answer: ${toError(error).message}`;

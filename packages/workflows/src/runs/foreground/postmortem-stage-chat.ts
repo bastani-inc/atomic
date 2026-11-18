@@ -37,6 +37,7 @@ import {
 	type AgentSessionEventListener,
 	beginStageRegistrationCheck,
 	type DetachedStageHandleLease,
+	isLatestStageRelease,
 	type StageControlHandle,
 	type StageControlRegistry,
 } from "./stage-control-registry.js";
@@ -55,6 +56,12 @@ export type EnsurePostMortemStageHandleResult =
 export type AcquirePostMortemStageHandleResult =
 	| { readonly ok: true; readonly lease: DetachedStageHandleLease }
 	| { readonly ok: false; readonly reason: PostMortemUnavailableReason };
+
+export interface PostMortemAdmission {
+	assertCurrent(): void;
+	/** Transfer an admitted ask to the exact handle its own lookup acquired, before yielding. */
+	acquired(current: () => boolean): void;
+}
 
 export interface PostMortemStageChatDeps {
 	readonly registry: StageControlRegistry;
@@ -125,9 +132,22 @@ function stageRecord(runId: string, stageId: string, deps: PostMortemStageChatDe
 	return deps.store?.run(runId)?.stages.find((stage) => stage.id === stageId);
 }
 
-function mayReopen(runId: string, stageId: string, deps: PostMortemStageChatDeps): boolean {
-	const owner = deps.stageUiBroker?.currentStageOwner(runId, stageId);
-	const registered = deps.registry.peek(runId, stageId)?.stageUiSignal;
+function mayReopen(
+	runId: string,
+	stage: StageSnapshot,
+	deps: PostMortemStageChatDeps,
+	record: StageSnapshot | undefined,
+): boolean {
+	const owner = deps.stageUiBroker?.currentStageOwner(runId, stage.id);
+	const resident = deps.registry.peek(runId, stage.id);
+	if (resident && !resident.isDisposed) {
+		const source = deps.registry.registrationSource?.(resident);
+		const saved = source?.record ?? (resident.stageRecord && stageRecordOwner(resident.stageRecord));
+		if ((deps.store && saved && !ownsStageRecord(saved, record)) || !isLatestStageRelease(source)) return false;
+		if (resident.sessionId !== undefined && stage.sessionId !== undefined && resident.sessionId !== stage.sessionId)
+			return false;
+	}
+	const registered = resident?.isDisposed ? undefined : resident?.stageUiSignal;
 	return registered?.aborted !== true && (owner === undefined || registered === owner);
 }
 
@@ -143,18 +163,32 @@ export async function ensurePostMortemStageHandle(
 	runId: string,
 	stage: StageSnapshot,
 	deps: PostMortemStageChatDeps,
+	admission?: PostMortemAdmission,
 ): Promise<EnsurePostMortemStageHandleResult> {
 	if (!reopensForPostMortem(stage)) return { ok: false, reason: "not_terminal" };
 	const record = stageRecord(runId, stage.id, deps);
-	if (!mayReopen(runId, stage.id, deps)) return { ok: false, reason: "closed" };
+	if (!mayReopen(runId, stage, deps, record)) return { ok: false, reason: "closed" };
+	const acquired = (handle: StageControlHandle) => {
+		if (admission) {
+			const source = deps.registry.registrationSource?.(handle);
+			const expected = source?.record ?? (record && stageRecordOwner(record));
+			admission.acquired(
+				() =>
+					deps.registry.peek(runId, stage.id) === handle &&
+					deps.registry.registrationSource?.(handle) === source &&
+					isLatestStageRelease(source) &&
+					(!deps.store || ownsStageRecord(expected, stageRecord(runId, stage.id, deps))),
+			);
+		}
+		return { ok: true as const, handle };
+	};
+	admission?.assertCurrent();
 	const existing = deps.registry.claim(runId, stage.id);
-	if (existing !== undefined && existing.isDisposed !== true) {
-		return { ok: true, handle: existing };
-	}
-	return withSavedStage(runId, stage, deps, record, (create) => ({
-		ok: true,
-		handle: deps.registry.getOrCreateDetached(runId, stage.id, create),
-	}));
+	if (existing !== undefined && existing.isDisposed !== true) return acquired(existing);
+	return withSavedStage(runId, stage, deps, record, (create) => {
+		admission?.assertCurrent();
+		return acquired(deps.registry.getOrCreateDetached(runId, stage.id, create));
+	});
 }
 
 /** Acquire a tentative detached handle for programmatic message admission. */
@@ -165,7 +199,7 @@ export async function acquirePostMortemStageHandle(
 ): Promise<AcquirePostMortemStageHandleResult> {
 	if (!reopensForPostMortem(stage)) return { ok: false, reason: "not_terminal" };
 	const record = stageRecord(runId, stage.id, deps);
-	if (!mayReopen(runId, stage.id, deps)) return { ok: false, reason: "closed" };
+	if (!mayReopen(runId, stage, deps, record)) return { ok: false, reason: "closed" };
 	const existing = deps.registry.peek(runId, stage.id);
 	if (existing !== undefined && existing.isDisposed !== true) {
 		return {
@@ -197,7 +231,7 @@ async function withSavedStage<T extends { ok: true }>(
 		const selected = await reopenableSessionStore(runId, stage.id, sessionId, deps);
 		if (selected?.openedHere) unused = selected.store;
 		const current = stageRecord(runId, stage.id, deps);
-		if (!check.current() || !ownsStageRecord(owner, current) || !mayReopen(runId, stage.id, deps))
+		if (!check.current() || !ownsStageRecord(owner, current) || !mayReopen(runId, stage, deps, current))
 			return { ok: false, reason: "closed" };
 		if (selected === undefined) return { ok: false, reason: "invalid_session" };
 		return register(() => {

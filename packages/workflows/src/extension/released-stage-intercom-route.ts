@@ -47,7 +47,7 @@ function announcementFor(
 	store: Store,
 	released: ReleasedStage,
 	source: ReleasedStageSource | undefined,
-	answer: (content: string, assertCurrent: () => void) => Promise<string>,
+	answer: (content: string, assertCurrent: () => void, initialSource: () => boolean) => Promise<string>,
 ): ReleasedStageAnnouncement | undefined {
 	const run = store.run(released.runId);
 	const stage = run?.stages.find((candidate) => candidate.id === released.stageId);
@@ -77,9 +77,14 @@ function announcementFor(
 		...(source === undefined ? {} : { generation: source.generation }),
 		isCurrent: () => isCurrent() && isLatestStageRelease(source),
 		answer: (content) =>
-			answer(content, () => {
-				if (!isCurrent()) throw new Error("Intercom ask target is unavailable: the workflow stage was replaced.");
-			}),
+			answer(
+				content,
+				() => {
+					if (!isCurrent())
+						throw new Error("Intercom ask target is unavailable: the workflow stage was replaced.");
+				},
+				() => isLatestStageRelease(source),
+			),
 	};
 }
 
@@ -100,8 +105,8 @@ export function registerReleasedStageIntercomRoutes(
 	});
 	const unsubscribe = registry.onStageReleased((released, source) => {
 		if (disposed) return;
-		const announcement = announcementFor(store, released, source, (content, assertCurrent) =>
-			answerAsCompletedStage(released.runId, released.stageId, content, assertCurrent),
+		const announcement = announcementFor(store, released, source, (content, assertCurrent, initialSource) =>
+			answerAsCompletedStage(released.runId, released.stageId, content, assertCurrent, initialSource),
 		);
 		if (announcement === undefined) return;
 		try {

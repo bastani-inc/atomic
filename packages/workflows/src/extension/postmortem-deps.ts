@@ -18,6 +18,7 @@ import { availableStoreDurableBackend, requireStoreDurableBackend } from "../dur
 import {
 	type EnsurePostMortemStageHandleResult,
 	ensurePostMortemStageHandle,
+	type PostMortemAdmission,
 	type PostMortemStageChatDeps,
 } from "../runs/foreground/postmortem-stage-chat.js";
 import {
@@ -97,8 +98,12 @@ export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps
  */
 export function createPostMortemHandleResolver(
 	deps: PostMortemResolverDeps,
-): (runId: string, stageId: string) => Promise<EnsurePostMortemStageHandleResult | undefined> {
-	return async (requestedRunId, requestedStageId) => {
+): (
+	runId: string,
+	stageId: string,
+	admission?: PostMortemAdmission,
+) => Promise<EnsurePostMortemStageHandleResult | undefined> {
+	return async (requestedRunId, requestedStageId, admission) => {
 		const snapshot = readGraphStoreSnapshot(deps.store ?? store);
 		const requested = snapshot.runs
 			.find((candidate) => candidate.id === requestedRunId)
@@ -143,7 +148,7 @@ export function createPostMortemHandleResolver(
 			...(sessionId === undefined ? {} : { sessionId }),
 		};
 		if (!ownsStageRecord(owner, currentRecord())) return { ok: false, reason: "closed" };
-		return ensurePostMortemStageHandle(runId, stage, postMortemDepsForRun(runId, deps));
+		return ensurePostMortemStageHandle(runId, stage, postMortemDepsForRun(runId, deps), admission);
 	};
 }
 

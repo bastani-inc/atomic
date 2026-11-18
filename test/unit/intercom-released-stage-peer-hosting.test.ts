@@ -272,6 +272,30 @@ describe("adopting a stage again (#4642)", () => {
 		}
 	});
 
+	test("an exact hosted address refuses an ask once retired, before any new announcement (#5577)", async () => {
+		const { peers, connections } = harness();
+		let current = true,
+			delivered = false;
+		try {
+			await peers.adopt(
+				route(0, {
+					isCurrent: () => current,
+					answer: async () => {
+						delivered = true;
+						return "wrong";
+					},
+				}),
+			);
+			current = false;
+			deliver(connections[0]!, idOf(0), "obsolete ask", { id: "old" });
+			await settle();
+			assert.equal(delivered, false);
+			assert.match(connections[0]!.sent[0]?.options.replyError ?? "", /replaced/);
+		} finally {
+			await peers.disconnectAll();
+		}
+	});
+
 	test("a retired stage's exact broker address never reaches the newer chat on the same transcript (#5577)", async () => {
 		const { peers, connections } = harness({
 			host: async (frame, _, call) => frame.map(({ key }) => ({ key, sessionId: `unique-${call}` })),

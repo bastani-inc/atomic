@@ -34,7 +34,7 @@ import type {
 	TaskViewSource,
 } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
-import { type StageRecordOwner, stageRecordOwner } from "../../shared/stage-record-owner.js";
+import { type StageRecordOwner, stageRecordIdentity, stageRecordOwner } from "../../shared/stage-record-owner.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
@@ -278,6 +278,8 @@ export interface StageControlRegistry {
 	 * it through `claim()` / `getOrCreateDetached()`.
 	 */
 	acquireDetached(runId: string, stageId: string, create: () => StageControlHandle): DetachedStageHandleLease;
+	/** The exact registration of this handle, if it is still resident in this registry. */
+	registrationSource?(handle: StageControlHandle): ReleasedStageSource | undefined;
 	/** Inspect without claiming a provisional detached handle. */
 	peek(runId: string, stageId: string): StageControlHandle | undefined;
 	/** Resolve and permanently claim a provisional detached handle. */
@@ -358,7 +360,7 @@ export function beginStageRegistrationCheck(registry: StageControlRegistry, runI
 function releaseSource(record?: StageSnapshot): ReleasedStageSource {
 	const generation = ++sources.next;
 	if (!record) return { generation };
-	const identity = record.workerExecution ?? record;
+	const identity = stageRecordIdentity(record);
 	const stages = sources.records.get(identity) ?? new Map<string, number>();
 	sources.records.set(identity, stages);
 	stages.set(record.id, generation);
@@ -760,6 +762,10 @@ export function createStageControlRegistry(): StageControlRegistry {
 			if (!entry.controlsDependencies) return false;
 			entry.controlsDependencies = false;
 			return true;
+		},
+		registrationSource(handle) {
+			const entry = _byRun.get(handle.runId)?.get(handle.stageId);
+			return entry?.handle === handle ? entry.source : undefined;
 		},
 		peek(runId: string, stageId: string): StageControlHandle | undefined {
 			return _byRun.get(runId)?.get(stageId)?.handle;

@@ -124,6 +124,47 @@ describe("ensurePostMortemStageHandle", () => {
 	});
 
 	for (const resolve of [ensurePostMortemStageHandle, acquirePostMortemStageHandle]) {
+		test(`${resolve.name} does not deliver a newer worker's chat to a still-held earlier transcript (#5577)`, async () => {
+			const registry = createStageControlRegistry();
+			const store = createStore();
+			const stageUiBroker = new StageUiBroker(store);
+			const older = completedStage({
+				...retainedSession("earlier"),
+				workerExecution: { worker: "w", generation: 1, renewedAt: 1, expiresAt: 2 },
+			});
+			const newer = completedStage({
+				...retainedSession("later"),
+				workerExecution: { ...older.workerExecution!, generation: 2 },
+			});
+			store.recordRunStart({
+				id: "run-1",
+				name: "reopen",
+				status: "completed",
+				startedAt: 1,
+				inputs: {},
+				toolNodes: [],
+				stages: [older],
+			});
+			const deps = { registry, store, stageUiBroker, adapters: adaptersRecording(mockSession(), { creates: 0 }) };
+			const old = await ensurePostMortemStageHandle("run-1", older, deps);
+			assert.ok(old.ok);
+			const unhold = old.handle.subscribe(() => {});
+			try {
+				store.editRun("run-1", (run) => {
+					run.stages[0] = newer;
+					return { stageIds: [newer.id] };
+				});
+				assert.deepEqual(await resolve("run-1", newer, deps), { ok: false, reason: "closed" });
+				assert.equal(old.handle.isDisposed, false);
+				await old.handle.dispose?.();
+				const opened = await resolve("run-1", newer, deps);
+				assert.ok(opened.ok);
+				assert.equal(("handle" in opened ? opened.handle : opened.lease.handle).sessionId, newer.sessionId);
+			} finally {
+				unhold();
+				await registry.clear();
+			}
+		});
 		test(`${resolve.name} leaves a successor's stage alone when its saved transcript finishes loading (#5577)`, async () => {
 			const registry = createStageControlRegistry();
 			const store = createStore();
