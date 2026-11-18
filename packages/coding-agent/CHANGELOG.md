@@ -6,6 +6,7 @@
 
 - Agent panel sources can set `runGeneration` on an item, an identity of its latest run, so a stopped or paused row that left the panel and ran again, however briefly, is listed again while other work runs ([#5504](https://github.com/bastani-inc/atomic/issues/5504))
 - A storage driver's `transientFailure` can return `hop: { name, failure }` for a call that failed before it reached the database server, such as at a proxy. `StorageTransientError`, and the warning printed while the call is retried, then say what happened at that hop instead of "the database server call failed", and the hint asks to check that hop; the error carries it as `hop` and `hopFailure`. The PostgreSQL adapter uses it to name the proxy ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
+- Set `ATOMIC_EVENT_LOOP_BLOCK_STACKS=0` alongside the event-loop diagnostic threshold to record delays without a stack sampler changing the process's latency. Stack collection remains the diagnostic's default ([#5544](https://github.com/bastani-inc/atomic/issues/5544)).
 
 ### Changed
 
@@ -27,8 +28,6 @@
 
 - Under Node, each workflow run that finishes no longer keeps the session that wrote its summary, and the run text it summarized, in memory for the rest of the process. A long session that runs many workflows, and an SDK host that disposes such sessions, now release them ([#5487](https://github.com/bastani-inc/atomic/issues/5487))
 - The opt-in event-loop diagnostic prepares its stack sampler before interactive startup and reuses it, instead of activating the debugger during a stall and making that stall longer ([#5544](https://github.com/bastani-inc/atomic/issues/5544)).
-
-### Fixed
 
 - Starting or resuming a session in a trusted project no longer shows "This project is not trusted. Project .atomic resources and packages are ignored." The interface checked trust while the session was still deciding it, read that as untrusted, and kept the warning after the session had decided. The warning now waits for the decision and follows it, so a project trusted through `defaultProjectTrust: "always"` or a `project_trust` extension no longer shows it either
 - An answer for this session only ("Trust (this session only)" or "Do not trust (this session only)"), to the question about a project folder or about an `-e` extension source, now lasts for the whole session. After Atomic restarted its engine, for example because the engine stopped responding, it asked again about the current folder, the `-e` sources and folders you switched back to with `/resume`. The answer is still never saved

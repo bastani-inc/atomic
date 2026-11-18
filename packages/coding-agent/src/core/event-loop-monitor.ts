@@ -9,11 +9,12 @@ import { DiagnosticWriter } from "./diagnostic-writer.ts";
 
 export const EVENT_LOOP_BLOCK_MS_ENV = "ATOMIC_EVENT_LOOP_BLOCK_MS";
 export const EVENT_LOOP_BLOCK_LOG_ENV = "ATOMIC_EVENT_LOOP_BLOCK_LOG";
+export const EVENT_LOOP_BLOCK_STACKS_ENV = "ATOMIC_EVENT_LOOP_BLOCK_STACKS";
 export const EVENT_LOOP_BLOCK_LOG_NAME = "event-loop-blocks.jsonl";
 
 export type EventLoopProcessRole = "host" | "engine";
 
-export type EventLoopStackSource = "debugger" | "profiler" | "unavailable";
+export type EventLoopStackSource = "debugger" | "profiler" | "unavailable" | "disabled";
 
 export interface EventLoopBlockStack {
 	readonly count: number;
@@ -389,6 +390,8 @@ const noStacks: StackSampler = {
 	exit: () => {},
 };
 
+const delayOnly: StackSampler = { ...noStacks, source: "disabled" };
+
 function createSampler(thresholdMs: number, nowUs: number): StackSampler {
 	try {
 		if (!isBunRuntime) return new DebuggerSampler(thresholdMs);
@@ -425,14 +428,14 @@ class EventLoopMonitor {
 	private readonly thresholdMs: number;
 	private readonly logPath: string;
 
-	constructor(role: EventLoopProcessRole, thresholdMs: number, logPath: string) {
+	constructor(role: EventLoopProcessRole, thresholdMs: number, logPath: string, collectStacks: boolean) {
 		this.role = role;
 		this.thresholdMs = thresholdMs;
 		this.logPath = logPath;
 		this.lastBeatUs = epochUs();
 		this.phaseStartedUs = this.lastBeatUs;
 		this.histogram = startDelayHistogram();
-		this.sampler = createSampler(thresholdMs, this.lastBeatUs);
+		this.sampler = collectStacks ? createSampler(thresholdMs, this.lastBeatUs) : delayOnly;
 		this.sampler.beat(this.lastBeatUs);
 		setInterval(() => this.beat(), HEARTBEAT_MS).unref();
 		process.once("exit", () => {
@@ -543,7 +546,8 @@ export function startEventLoopMonitor(role: EventLoopProcessRole, env: NodeJS.Pr
 		return false;
 	}
 	if (env[EVENT_LOOP_BLOCK_LOG_ENV]?.trim()) env[EVENT_LOOP_BLOCK_LOG_ENV] = logPath;
-	monitor = new EventLoopMonitor(role, thresholdMs, logPath);
+	const collectStacks = env[EVENT_LOOP_BLOCK_STACKS_ENV]?.trim() !== "0";
+	monitor = new EventLoopMonitor(role, thresholdMs, logPath, collectStacks);
 	return true;
 }
 

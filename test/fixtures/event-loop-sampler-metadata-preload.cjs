@@ -1,6 +1,6 @@
 const { isMainThread } = require("node:worker_threads");
 
-// Model a debugger connection delivering a large script catalog slowly. Only its worker pays this cost; application
+// Deliver a large debugger script catalog slowly. Only its worker pays this cost; application
 // work on the main thread remains unchanged. The diagnostic must not pause that thread before the catalog arrives.
 if (!isMainThread) {
 	const { Session } = require("node:inspector");
