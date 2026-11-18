@@ -22,6 +22,10 @@ const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/waiting-stage-restart.ts");
 export const STAGES = 20;
 const WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS = 60_000;
+// The two real process starts share the scenario's existing budget. Cold source loading can spend more than one
+// third of it on a busy host; it is not a per-process recovery deadline. Keep time for the broker and directory cleanup.
+const PROCESS_RESTART_TIMEOUT_MS = 3 * WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS;
+const RESTART_CLEANUP_HEADROOM_MS = 20_000;
 const STAGE_NAMES = Array.from({ length: STAGES }, (_, index) => `stage-${index}`);
 
 /** How often each stage logged `<entry> <stage> [<detail>]`, in stage order; `detail` narrows to one kind of entry. */
@@ -71,7 +75,7 @@ async function killThenResume(
 	const stdout = new Response(child.stdout).text();
 	const stderr = new Response(child.stderr).text();
 	try {
-		const deadline = Date.now() + WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS;
+		const deadline = Date.now() + PROCESS_RESTART_TIMEOUT_MS - RESTART_CLEANUP_HEADROOM_MS;
 		while (!(await fileExists(join(directory, ready)))) {
 			assert.equal(child.exitCode, null, `${mode} process exited early: ${await stderr}`);
 			assert.ok(Date.now() < deadline, `the stages did not all reach ${ready}`);
@@ -83,7 +87,7 @@ async function killThenResume(
 		const resumed = spawnSyncCollect([...command, FIXTURE, "resume", directory, String(STAGES), runId, scenario], {
 			cwd: ROOT,
 			env: environment,
-			timeout: WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS,
+			timeout: Math.max(1, deadline - Date.now()),
 		});
 		assert.equal(resumed.exitCode, 0, resumed.stdout.toString() + resumed.stderr.toString());
 		return {

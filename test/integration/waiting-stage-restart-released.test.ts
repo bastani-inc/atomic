@@ -11,7 +11,7 @@ const PROCESS_RESTART_TIMEOUT_MS = 3 * WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIM
 
 for (const runtime of ["node", "bun"] as const) {
 	test(
-		`${runtime}: killing the root while ${STAGES} stages wait released and resuming continues every stage without prompting again (#4309)`,
+		`${runtime}: killing the root while ${STAGES} stages wait released and resuming continues every stage without prompting again (#4309, #5539)`,
 		() => killAndResume(runtime, "wait"),
 		PROCESS_RESTART_TIMEOUT_MS,
 	);
