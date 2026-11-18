@@ -3,6 +3,7 @@ import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
+import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { ENGINE_SESSION_STORAGE_FLAG } from "../../core/session-storage.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { flushPersistentCompileCache } from "../../utils/compile-cache.ts";
@@ -38,12 +39,16 @@ export interface RpcClientProcessOptions {
 const guardianFiles = new WeakMap<ChildProcess, string>();
 const bootstrapHandles = new WeakMap<ChildProcess, InteractiveEngineBootstrapHandle>();
 
-export async function prepareRpcClientBootstrap(interactiveEngineApiKey?: string): Promise<PreparedRpcClientBootstrap> {
+export async function prepareRpcClientBootstrap(
+	interactiveEngineApiKey?: string,
+	trustDecisions?: SessionTrustDecisions,
+): Promise<PreparedRpcClientBootstrap> {
 	const guardianFile = join(tmpdir(), `atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`);
 	const bootstrap = await writeInteractiveEngineBootstrapAsync({
 		hostPid: process.pid,
 		guardFile: guardianFile,
 		...(interactiveEngineApiKey ? { apiKey: interactiveEngineApiKey } : {}),
+		...(trustDecisions ? { trustDecisions } : {}),
 	});
 	return { guardianFile, bootstrap };
 }
