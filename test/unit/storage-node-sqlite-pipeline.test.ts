@@ -2,14 +2,17 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { setTimeout as realSleep, setImmediate as realTurn } from "node:timers/promises";
+import { setTimeout as realSleep } from "node:timers/promises";
 import { afterEach, test } from "vitest";
 import type {
 	SqliteDatabase,
 	SqliteRow,
 	SqliteTransactionOptions,
 } from "../../packages/coding-agent/src/core/storage/database.js";
-import { StorageWriteLockTimeoutError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import {
+	StorageRollbackError,
+	StorageWriteLockTimeoutError,
+} from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { interceptConnectionRequests } from "../helpers/sqlite-connection-requests.js";
@@ -23,8 +26,17 @@ import { interceptConnectionRequests } from "../helpers/sqlite-connection-reques
 
 /** How long another connection holds the write lock: long enough that every call behind the refused one was sent. */
 const HOLD_MS = 300;
-/** Real event-loop turns a held request waits for the requests behind it; far more than sending them takes. */
-const SEND_TURNS = 10_000;
+/**
+ * How long, in real milliseconds, a held request waits for the requests behind it to be sent, and a test for a refusal
+ * to be answered: far more than either takes, a batch's look at the writers' queue on a loaded disk included.
+ */
+const SEND_WAIT_MS = 5_000;
+
+/** Waits in real time until `done`, or `SEND_WAIT_MS` passed. */
+async function within(done: () => boolean): Promise<void> {
+	const started = performance.now();
+	while (!done() && performance.now() - started < SEND_WAIT_MS) await realSleep(1);
+}
 
 const cleanups: (() => Promise<void> | void)[] = [];
 
@@ -101,7 +113,7 @@ test("a connection sends calls that are one request each without waiting for the
 		mostInFlight = Math.max(mostInFlight, inFlight);
 		try {
 			// The first answer waits until the calls behind it were sent, or until they plainly were not.
-			if (sent === 1) for (let turn = 0; turn < SEND_TURNS && sent < 4; turn++) await realTurn();
+			if (sent === 1) await within(() => sent >= 4);
 			return await send(request);
 		} finally {
 			inFlight--;
@@ -170,7 +182,7 @@ test("while a busy transaction waits for the lock, its connection's lock record 
 	const refusals = countRefusals();
 	const holder = holdLock(path);
 	const calls = [insert(db, 1), db.run("INSERT INTO items VALUES (2)")];
-	for (let turn = 0; turn < SEND_TURNS && refusals.refused === 0; turn++) await realTurn();
+	await within(() => refusals.refused > 0);
 	// Long enough for the refused answer to be handled and any record it wrote to land.
 	await realSleep(50);
 	const records = `${path}-holders`;
@@ -182,3 +194,45 @@ test("while a busy transaction waits for the lock, its connection's lock record 
 	assert.deepEqual(states, ["want"], "a writer that gives up waiting meanwhile names this process");
 	assert.deepEqual(await items(path), [1, 2]);
 });
+
+/**
+ * A member whose own statement releases the savepoint the connection put it in: the connection cannot release it, nor
+ * roll it back, so the group stops there (#5376).
+ */
+const RELEASES_ITS_SAVEPOINT = [
+	{ sql: "INSERT INTO items VALUES (?)", params: [1] },
+	{ sql: "RELEASE atomic_group_0", params: [] },
+];
+
+for (const [where, openAt] of [
+	["on its own thread", (directory: string) => join(directory, "group.sqlite")],
+	["in memory, on the calling thread", () => ":memory:"],
+] as const)
+	test(`a member whose savepoint cannot be rolled back fails alone, ${where}: the members after it commit, and the connection goes on (#5376)`, async () => {
+		const directory = makeTempDirectory("node-sqlite-pipeline-group-");
+		cleanups.push(() => removeTempDirectory(directory));
+		const db = await openNodeSqliteDatabase(openAt(directory));
+		cleanups.push(() => db.close());
+		await db.exec("CREATE TABLE items (n INTEGER NOT NULL)");
+		const commit = db.commitStatements!.bind(db);
+		// Requested together, they are one group.
+		const [stopped, after] = await Promise.allSettled([
+			commit(RELEASES_ITS_SAVEPOINT),
+			commit([{ sql: "INSERT INTO items VALUES (?)", params: [2] }]),
+		]);
+		assert.equal(stopped.status, "rejected");
+		assert.ok(
+			(stopped as PromiseRejectedResult).reason instanceof StorageRollbackError,
+			String((stopped as PromiseRejectedResult).reason),
+		);
+		assert.equal(after.status, "fulfilled", "the member after it ran again and committed");
+		// Alone, the last of its group.
+		await assert.rejects(commit(RELEASES_ITS_SAVEPOINT), StorageRollbackError);
+		// Nothing of either stopped member stayed, and the connection is not left inside a transaction.
+		await commit([{ sql: "INSERT INTO items VALUES (?)", params: [3] }]);
+		await db.run("INSERT INTO items VALUES (4)");
+		assert.deepEqual(
+			(await db.all<{ n: number }>("SELECT n FROM items ORDER BY rowid")).map((row) => row.n),
+			[2, 3, 4],
+		);
+	});

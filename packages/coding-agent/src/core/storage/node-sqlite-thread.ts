@@ -140,8 +140,10 @@ const handlers = {
 				throw error;
 			}
 			try {
-				outcomes.push({ rows: rows(request.members[index]) });
+				const ran = rows(request.members[index]);
+				// A member ran only once its savepoint was released: a release that fails is that member's failure.
 				database.exec("RELEASE " + savepoint);
+				outcomes.push({ rows: ran });
 			} catch (error) {
 				try {
 					database.exec("ROLLBACK TO " + savepoint);

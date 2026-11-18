@@ -1370,13 +1370,22 @@ class CallerThreadChannel implements ConnectionChannel {
 				throw error;
 			}
 			try {
-				outcomes.push({ rows: this.rows(statements) });
+				const rows = this.rows(statements);
+				// A member ran only once its savepoint was released: a release that fails is that member's failure.
 				this.connection.exec(`RELEASE ${savepoint}`);
+				outcomes.push({ rows });
 			} catch (error) {
 				try {
 					this.connection.exec(`ROLLBACK TO ${savepoint}`);
 					this.connection.exec(`RELEASE ${savepoint}`);
 				} catch (rollbackError) {
+					// A lock this request took is let go, as the connection's thread lets it go.
+					if (begin)
+						try {
+							this.connection.exec("ROLLBACK");
+						} catch {
+							// SQLite already rolled the transaction back; there is nothing left to undo.
+						}
 					return { outcomes, abandoned: { failure: failureOf(error), rollbackFailure: failureOf(rollbackError) } };
 				}
 				outcomes.push({ failure: failureOf(error) });
@@ -2118,10 +2127,11 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	/**
 	 * Moves the transactions of the batches at the head of the line (no statement between them) into this one, up to
 	 * the batch size limit. They run after this batch's own, in the order they were requested. Calls the thread refused
-	 * behind this batch, or is yet to refuse, come before them, so nothing is moved then.
+	 * behind this batch, or is yet to refuse, and a batch being made ready to send, which has left the line, come
+	 * before them, so nothing is moved then.
 	 */
 	private absorbNext(batch: PendingBatch): void {
-		if (this.refused.length > 0 || this.olderInFlight()) return;
+		if (this.preparing || this.refused.length > 0 || this.olderInFlight()) return;
 		for (let next = this.line[0]; next?.kind === "batch"; next = this.line[0]) {
 			batch.members.push(...next.batch.members.splice(0, MAX_GROUP_COMMIT_TRANSACTIONS - batch.members.length));
 			if (next.batch.members.length > 0) return;
