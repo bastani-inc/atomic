@@ -60,10 +60,11 @@ export function taskCompletionEnvelope(
 
 /**
  * The one notice line a finished task shows in the transcript: what it is, its name, how it ended and how long it ran.
- * Status reads as the line's marker: success ●, failure ✗, stopped ◼, warning !, paused ⏸.
+ * Status reads as the line's marker: success ●, failure ✗, stopped ◼, warning !, paused ⏸, waiting ◌ (a subagent
+ * released while it waits, which wakes by itself).
  */
 export type TaskNoticeLine = {
-	status: "success" | "failure" | "stopped" | "warning" | "paused";
+	status: "success" | "failure" | "stopped" | "warning" | "paused" | "waiting";
 	/** `Background command`, `Agent` or `Task`. */
 	label: string;
 	/** The task's description or command, quoted on the line. */
@@ -132,7 +133,8 @@ export function taskNoticeLine(
 		return { status: "success", label, outcome: kind === "agent" ? "finished" : `completed${exitCode}`, ...facts };
 	if (result.kind !== "cancelled") return { status: "failure", label, outcome: `failed${exitCode}`, ...facts };
 	const waitingOn = releasedWaitingOn(result);
-	if (waitingOn !== undefined) return { status: "paused", label, outcome: `is waiting on ${waitingOn}`, ...facts };
+	// Released while it waits, it is not paused: it wakes by itself, and every view marks it as waiting (#5489).
+	if (waitingOn !== undefined) return { status: "waiting", label, outcome: `is waiting on ${waitingOn}`, ...facts };
 	if (envelope.interruptedByRestart === true)
 		return { status: "stopped", label, outcome: "was interrupted by a restart", ...facts };
 	if (result.cause === "pause" && kind !== "agent")

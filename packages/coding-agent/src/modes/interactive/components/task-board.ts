@@ -6,6 +6,7 @@ import { taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.
 import { isTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
+import { WAITING_MARKER } from "./notice-line.ts";
 import { taskDisplayText, taskLabel, taskState } from "./task-row.js";
 
 export type TaskBoardState = AgentPanelItem["state"];
@@ -116,7 +117,7 @@ export function stateGlyph(
 		case "stopping":
 			return { glyph: "◼", color: "warning" };
 		case "waiting":
-			return { glyph: "◌", color: "dim" };
+			return WAITING_MARKER;
 		case "done":
 			return { glyph: "✓", color: "success" };
 		case "failed":
