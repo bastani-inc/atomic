@@ -141,6 +141,13 @@ export interface FakeLibsqlServer {
 	 * `undefined` removes it.
 	 */
 	onStreamClose(hook: (() => Promise<void> | void) | undefined): void;
+	/**
+	 * While `churning`, the server answers as sqld does while other connections keep changing the schema: every
+	 * statement outside a write transaction, other than `BEGIN`, `COMMIT`, `ROLLBACK` and a kept stream's read of
+	 * `sqlite_schema`, fails with `SQLITE_SCHEMA` without running, however often it is sent. A statement inside a write
+	 * transaction runs: the transaction holds the write lock, so no other connection changes the schema under it.
+	 */
+	churnSchema(churning: boolean): void;
 	/** Expires every open stream at once, rolling back the open transaction. */
 	expireStreams(): void;
 	close(): Promise<void>;
@@ -220,6 +227,7 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 
 	let busy = false;
 	let schemaChanged = false;
+	let churning = false;
 	let missingTable: string | undefined;
 	const execute = (stream: Stream, stmt: HranaStmt): StmtResult => {
 		const sql = stmt.sql ?? stream.sqls.get(stmt.sql_id ?? -1);
@@ -233,6 +241,12 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 			schemaChanged = false;
 			throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
 		}
+		if (
+			churning &&
+			!database.isTransaction &&
+			!/^(?:BEGIN|COMMIT|ROLLBACK|SELECT 1 FROM sqlite_schema)\b/.test(sql ?? "")
+		)
+			throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
 		if (missingTable !== undefined && !sql?.startsWith("SELECT 1 FROM sqlite_schema")) {
 			const table = missingTable;
 			missingTable = undefined;
@@ -311,6 +325,8 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 					schemaChanged = false;
 					throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
 				}
+				if (churning && !database.isTransaction)
+					throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
 				database.exec(request.sql ?? stream.sqls.get(request.sql_id ?? -1) ?? "");
 				return { type: "sequence" };
 			case "store_sql":
@@ -489,6 +505,9 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		},
 		onOpenTransaction(next) {
 			hook = next;
+		},
+		churnSchema(next) {
+			churning = next;
 		},
 		onStreamClose(next) {
 			closeHook = next;

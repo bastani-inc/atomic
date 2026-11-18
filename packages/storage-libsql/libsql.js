@@ -733,22 +733,63 @@ async function writeBatch(hrana, api, client, batched) {
 /**
  * @param {() => Promise<import("@libsql/client").Client | import("@libsql/client").Transaction>} connection
  * @param {<T>(operation: () => Promise<T>) => Promise<T>} watch
- * @param {<T>(operation: () => Promise<T>) => Promise<T>} [single] runs one statement, which a failure may run again
+ * @param {<T>(operation: () => Promise<T>, afterSchemaChange?: () => Promise<T>) => Promise<T>} [single] runs one
+ *   statement, which a failure may run again; after `SQLITE_SCHEMA` it may run `afterSchemaChange` in its place
  * @param {() => Promise<ReusedStream | undefined>} [shared] the stream statements outside a transaction reuse
+ * @param {(batched: readonly import("@bastani/atomic/storage").SqliteStatement[]) => Promise<import("@bastani/atomic/storage").SqliteDriverResult[]>} [locked]
+ *   runs statements in one write transaction, where no other connection can change the schema
  * @returns {import("@bastani/atomic/storage").SqliteDriverExecutor}
  */
-function statements(connection, watch, single = watch, shared = async () => undefined) {
+function statements(connection, watch, single = watch, shared = async () => undefined, locked) {
 	return {
 		execute: (sql, params) =>
-			single(async () => {
-				const reused = reusable(sql) ? await (await shared())?.execute(sql, params) : undefined;
-				return reused ?? driverResult(await (await connection()).execute({ sql, args: [...params] }));
-			}),
+			single(
+				async () => {
+					const reused = reusable(sql) ? await (await shared())?.execute(sql, params) : undefined;
+					return reused ?? driverResult(await (await connection()).execute({ sql, args: [...params] }));
+				},
+				// A write that commits on its own and that the server answered `SQLITE_SCHEMA` runs again in a write
+				// transaction of its own: no other connection changes the schema while the transaction holds the write lock,
+				// so sent as it was it could keep meeting a changed schema for as long as other connections keep changing it.
+				locked !== undefined && rerunsLocked(sql) ? async () => (await locked([{ sql, params }]))[0] : undefined,
+			),
 		// An `exec` of one statement wrote nothing when it fails, as one `execute` did; one of several statements may
 		// fail after the statements before it committed.
 		executeMultiple: (sql) =>
-			(isOneStatement(sql) ? single : watch)(async () => (await connection()).executeMultiple(sql)),
+			isOneStatement(sql)
+				? single(
+						async () => (await connection()).executeMultiple(sql),
+						locked !== undefined && rerunsLocked(sql)
+							? async () => {
+									await locked([{ sql, params: [] }]);
+								}
+							: undefined,
+					)
+				: watch(async () => (await connection()).executeMultiple(sql)),
 	};
+}
+
+/** The keyword of a statement that writes and runs the same inside a write transaction as on its own. */
+const LOCKED_RERUN_KEYWORD = /(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER)\b/iy;
+/** The keyword of a statement that starts with common table expressions, which may read or write. */
+const COMMON_TABLE_KEYWORD = /WITH\b/iy;
+/** A write inside a statement that starts with common table expressions. */
+const COMMON_TABLE_WRITE = /\b(?:INSERT|UPDATE|DELETE|REPLACE)\b/i;
+
+/**
+ * Whether `sql`, one statement the server answered `SQLITE_SCHEMA`, runs again in a write transaction of its own: a
+ * write (also one that starts with common table expressions) or a schema change. Not a read, such as `SELECT`,
+ * `VALUES` or a `WITH` that only selects, and not a statement that runs differently in a transaction or not at all, as
+ * `PRAGMA foreign_keys` and `VACUUM` do.
+ * @param {string} sql
+ */
+function rerunsLocked(sql) {
+	const start = firstTokenStart(sql);
+	if (start === -1 || readsOnly(sql) || !isOneStatement(sql)) return false;
+	LOCKED_RERUN_KEYWORD.lastIndex = start;
+	if (LOCKED_RERUN_KEYWORD.test(sql)) return true;
+	COMMON_TABLE_KEYWORD.lastIndex = start;
+	return COMMON_TABLE_KEYWORD.test(sql) && COMMON_TABLE_WRITE.test(sql.slice(start));
 }
 
 /**
@@ -1233,10 +1274,29 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		const version = (await probe.execute("PRAGMA data_version")).rows[0]?.data_version;
 		return typeof version === "bigint" || typeof version === "number" ? version : undefined;
 	};
-	/** @type {<T>(operation: () => Promise<T>) => Promise<T>} */
-	const waitForLock = async (operation) => {
-		// A server answers busy before it runs anything of one statement or a batch.
-		if (!local) return whileServerBusy(() => watch(operation), () => true);
+	/** @type {<T>(operation: () => Promise<T>, afterSchemaChange?: () => Promise<T>) => Promise<T>} */
+	const waitForLock = async (operation, afterSchemaChange) => {
+		// A server answers busy before it runs anything of one statement or a batch, and `SQLITE_SCHEMA` before it runs
+		// anything of one statement. After `SQLITE_SCHEMA`, `afterSchemaChange`, when given, runs in its place, with a
+		// wait of its own: the run the server answered `SQLITE_SCHEMA` may itself have taken the whole wait.
+		if (!local) {
+			if (afterSchemaChange === undefined) return whileServerBusy(() => watch(operation), () => true);
+			let schemaChanged = false;
+			try {
+				return await whileServerBusy(
+					() => watch(operation),
+					() => true,
+					undefined,
+					() => {
+						schemaChanged = true;
+						return false;
+					},
+				);
+			} catch (error) {
+				if (!schemaChanged) throw error;
+			}
+			return whileServerBusy(() => watch(afterSchemaChange), () => true);
+		}
 		/** @type {bigint | number | undefined} */
 		let version;
 		for (;;) {
@@ -1262,6 +1322,18 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		}
 		return (client ??= create());
 	};
+	/**
+	 * Runs `batched` in one write transaction, in one request to a server.
+	 * @param {readonly import("@bastani/atomic/storage").SqliteStatement[]} batched
+	 */
+	const writeTransaction = async (batched) => {
+		if (protocol !== undefined) return writeBatch(protocol[0], protocol[3], remote(), batched);
+		const results = await (await connection()).batch(
+			batched.map(({ sql, params }) => ({ sql, args: [...params] })),
+			"write",
+		);
+		return results.map(driverResult);
+	};
 	const redact = redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]);
 	/** The server's location as diagnostics show it, without credentials. */
 	const redacted = redact(url);
@@ -1275,19 +1347,12 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		// One statement outside a transaction, run alone or as an `exec` of one statement, that waited out the busy
 		// timeout wrote nothing and runs again. Several statements in one `exec` do not: the ones before the failed
 		// statement were committed.
-		...statements(connection, watch, waitForLock, shared),
+		...statements(connection, watch, waitForLock, shared, local ? undefined : writeTransaction),
 		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way. Only
 		// its `BEGIN IMMEDIATE` waits for the write lock, so a batch the busy timeout ended wrote nothing (`lockBusy`). A
 		// server's batch counts against this process's writes in flight to that server, unless it has priority.
 		batch: (batched, options) => {
-			const send = async () => {
-				if (protocol !== undefined) return writeBatch(protocol[0], protocol[3], remote(), batched);
-				const results = await (await connection()).batch(
-					batched.map(({ sql, params }) => ({ sql, args: [...params] })),
-					"write",
-				);
-				return results.map(driverResult);
-			};
+			const send = () => writeTransaction(batched);
 			if (local) return waitForLock(send);
 			const sent = () =>
 				watch(() =>
