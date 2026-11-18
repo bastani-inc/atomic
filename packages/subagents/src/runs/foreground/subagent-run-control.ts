@@ -561,6 +561,16 @@ function statusLines(record: SubagentChildRecord): string[] {
 }
 
 /**
+ * Whether the child `id` names was stopped so that it waits for a resume: paused, quit, or its last wake failed. A
+ * released child is not: it wakes by itself.
+ */
+export function subagentChildStoppedForResume(ctx: ExtensionContext, id: string): boolean {
+	const resolved = resolveRecord(ownedRecords(ctx), id);
+	if (typeof resolved !== "object" || isReleased(resolved)) return false;
+	return stoppedAs(resolved) !== undefined || currentWakeFailure(resolved) !== undefined;
+}
+
+/**
  * `status` lines for the paused or quit children this session launched: the one `id` names, or every one without an
  * id. Read from the session's child records, so they survive a restart.
  */

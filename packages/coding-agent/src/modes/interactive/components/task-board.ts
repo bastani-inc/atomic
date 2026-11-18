@@ -1,6 +1,6 @@
-import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentPanelItem } from "../../../core/tasks/agent-panel-source.ts";
-import { releasedWaitingTools } from "../../../core/tasks/completion.js";
+import { waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import { taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
@@ -149,7 +149,7 @@ function rowElapsed(row: TaskBoardRow): number | undefined {
 }
 function rowWaitingOn(row: TaskBoardRow): string | undefined {
 	if (row.kind === "item") return row.item.waitingOn;
-	return row.task.execution.kind === "settled" ? releasedWaitingTools(row.task.execution.result) : undefined;
+	return waitingReleasedTools(row.task);
 }
 function rowTokens(row: TaskBoardRow): number | undefined {
 	return row.kind === "task" ? row.task.metrics?.tokenCount : row.item.tokens;
@@ -209,12 +209,14 @@ export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: numb
 	const finished = stateGroup(state) === "done";
 	const nameText = selected ? theme.bold(namePadded) : finished ? theme.fg("muted", namePadded) : namePadded;
 	const taskStyled = finished && !selected ? theme.fg("dim", taskText) : theme.fg("muted", taskText);
-	return truncateToWidth(
+	const line = truncateToWidth(
 		`${marker}${theme.fg(color, glyph)} ${nameText}${taskStyled}${" ".repeat(gap)}${theme.fg("dim", meta)}`,
 		width,
 		"...",
 		true,
 	);
+	// NO_COLOR: the row's mark and words say its state, so it carries no colour codes.
+	return process.env.NO_COLOR === undefined ? line : stripTerminalSequences(line);
 }
 
 export type PeekContent = {

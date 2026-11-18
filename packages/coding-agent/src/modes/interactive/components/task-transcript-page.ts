@@ -10,7 +10,7 @@ import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provi
 import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
-import { releasedWaitingOn, releasedWaitingTools } from "../../../core/tasks/completion.js";
+import { releasedWaitingOn, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
@@ -203,7 +203,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	 */
 	private releasedNote(): string | undefined {
 		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
-		const waitingOn = task?.execution.kind === "settled" ? releasedWaitingOn(task.execution.result) : undefined;
+		const waitingOn =
+			task?.execution.kind === "settled" && waitingReleasedTools(task) !== undefined
+				? releasedWaitingOn(task.execution.result)
+				: undefined;
 		if (waitingOn === undefined) return undefined;
 		const shells = (this.source.ownerTasks ?? this.source.tasks).filter(
 			(candidate) =>
@@ -214,7 +217,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const shellNote =
 			shells.length === 0
 				? ""
-				: ` · ${shells.length === 1 ? `its shell ${taskDisplayText(shortTaskTitle(shells[0]!.title || "shell"))} is` : `${shells.length} of its shells are`} running, /tasks opens ${shells.length === 1 ? "it" : "them"}`;
+				: ` · ${shells.length === 1 ? `its shell ${taskDisplayText(shortTaskTitle(shells[0]!.title || "shell"))} is` : `${shells.length} of its shells are`} running · /tasks opens ${shells.length === 1 ? "it" : "them"}`;
 		return `Waiting on ${taskDisplayText(waitingOn)} · wakes by itself when it finishes${shellNote}`;
 	}
 	set status(value: string) {
@@ -537,7 +540,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 											taskClockRunning(task.execution.kind),
 										) ?? task.metrics.elapsedMs,
 									);
-		const released = task?.execution.kind === "settled" ? releasedWaitingTools(task.execution.result) : undefined;
+		const released = task === undefined ? undefined : waitingReleasedTools(task);
 		const stopped = released === undefined && this.source.taskStopped?.(this.taskId) === true;
 		const label = [
 			name,

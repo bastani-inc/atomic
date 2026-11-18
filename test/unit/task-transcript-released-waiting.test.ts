@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
+import { visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { TaskId, TaskRecord } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
+import { wrapNotes } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskRecord } from "../helpers/task-record.js";
@@ -21,7 +23,7 @@ function releasedAgent(): TaskRecord {
 			result: {
 				kind: "cancelled",
 				cause: "pause",
-				released: { waitingOn: [{ toolCallId: "toolu_9", toolName: "bash" }] },
+				released: { waitingOn: [{ toolCallId: "toolu_01HjmiFx7uK94BXWuKCMzW2d", toolName: "bash" }] },
 			},
 		},
 	};
@@ -53,7 +55,7 @@ test("a released subagent's transcript says what it waits on, that it wakes by i
 	await page.load();
 	assert.equal(
 		page.status,
-		"Waiting on bash (toolu_9) · wakes by itself when it finishes · its shell npm run build is running, /tasks opens it",
+		"Waiting on bash (toolu_01HjmiFx7uK94BXWuKCMzW2d) · wakes by itself when it finishes · its shell npm run build is running · /tasks opens it",
 	);
 	const screen = page
 		.render(100, 12)
@@ -63,5 +65,16 @@ test("a released subagent's transcript says what it waits on, that it wakes by i
 	assert.match(screen, /worker · Build and wait for the build · waiting on bash/);
 	assert.match(screen, /Message worker to wake it…/);
 	assert.doesNotMatch(screen, /Stopped · send to resume/);
+	for (const width of [40, 80]) {
+		const rows = wrapNotes(page.status, width);
+		assert.ok(rows.length <= 6, `${width} columns: ${rows.length} rows`);
+		for (const row of rows) assert.ok(visibleWidth(row) <= width, `${width} columns: ${JSON.stringify(row)}`);
+		const shown = rows.join("\n");
+		assert.match(shown, /Waiting on bash/, `${width} columns`);
+		assert.match(shown, /toolu_01HjmiFx7uK94BXWuKCMzW2d/, `${width} columns`);
+		assert.match(shown, /wakes by itself when it finishes/, `${width} columns`);
+		assert.match(shown, /\/tasks opens it/, `${width} columns`);
+		assert.match(shown, /npm run build/, `${width} columns`);
+	}
 	page.dispose();
 });

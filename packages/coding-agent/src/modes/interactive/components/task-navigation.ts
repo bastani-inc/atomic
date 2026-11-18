@@ -1,5 +1,6 @@
 import { matchesKey } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
+import { waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { TwoPressConfirm } from "./nav-keys.ts";
 import type { TaskDetailAction } from "./task-detail.js";
@@ -90,24 +91,21 @@ export class TaskNavigation {
 		const task = this.actions.currentTask ? this.actions.currentTask(listed.ref.taskId) : listed;
 		if (!task) return;
 		if (action === "transcript") return this.actions.transcript(task);
+		// A subagent released while it waits is not finished: it wakes by itself, so `x` stops it rather than dismissing it.
+		const finished = task.execution.kind === "settled" && waitingReleasedTools(task) === undefined;
 		const armed = this.stopConfirm.pending();
-		if (
-			action === "cancel" &&
-			task.execution.kind === "settled" &&
-			armed !== undefined &&
-			armed !== task.ref.taskId
-		) {
+		if (action === "cancel" && finished && armed !== undefined && armed !== task.ref.taskId) {
 			this.stopConfirm.reset();
 			return;
 		}
 		const paintedKind = this.paintedExecution.get(task.ref.taskId);
-		if (action === "cancel" && task.execution.kind === "settled" && paintedKind !== "settled") {
+		if (action === "cancel" && finished && paintedKind !== "settled") {
 			this.stopConfirm.reset();
 			this.finishedWhileArmed = task;
 			this.finishedAcknowledged = true;
 			return;
 		}
-		if (task.execution.kind === "settled") {
+		if (finished) {
 			if (action !== "cancel") return;
 			// The second press meant for a stop arrives after the task finished on its own: it only acknowledges the
 			// notice, so a row is never dismissed by a press aimed at a running task.

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { type Component, truncateToWidth } from "@bastani/atomic-tui";
 import { formatModelLabel } from "../../../core/model-label.ts";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
-import { isResumableStop, releasedWaitingOn, releasedWaitingTools } from "../../../core/tasks/completion.js";
+import { isResumableStop, releasedWaitingOn, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { liveElapsedMs, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted, type TaskActivity } from "../../../core/tasks/owner-store.js";
@@ -30,7 +30,7 @@ export function taskState(task: TaskRecord): string {
 	)
 		return "killed";
 	// A released agent waits on a call and wakes by itself when it finishes; nothing paused it (#5031).
-	if (task.execution.kind === "settled" && releasedWaitingOn(task.execution.result)) return "released";
+	if (waitingReleasedTools(task) !== undefined) return "released";
 	// A quit or paused agent awaits resume, as a quit workflow run does.
 	if (task.kind === "agent" && task.execution.kind === "settled" && isResumableStop(task.execution.result))
 		return "paused";
@@ -78,7 +78,7 @@ export function taskStatusAppearance(task: TaskRecord): {
 		case "released":
 			// It is not working: a still mark, not the running ∀, as its /tasks row and the agent panel show it.
 			return {
-				label: `Waiting on ${task.execution.kind === "settled" ? (releasedWaitingTools(task.execution.result) ?? "a tool call") : "a tool call"}`,
+				label: `Waiting on ${waitingReleasedTools(task) ?? "a tool call"}`,
 				icon: "◌",
 				color: "dim",
 			};
@@ -206,7 +206,7 @@ export class TaskRow implements Component {
 				? "killed (non-resumable)"
 				: taskState(task) === "paused"
 					? "paused · awaiting resume"
-					: task.execution.kind === "settled" && releasedWaitingOn(task.execution.result)
+					: task.execution.kind === "settled" && waitingReleasedTools(task) !== undefined
 						? `waiting on ${releasedWaitingOn(task.execution.result)}`
 						: taskState(task);
 		const live = task.execution.kind === "running" || task.execution.kind === "queued";

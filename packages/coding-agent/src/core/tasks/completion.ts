@@ -5,6 +5,7 @@ import { sliceTail } from "../tools/truncate.ts";
 import { cancelReasonText, formatTimeoutSeconds, longerRunAdvice } from "./cancel-reason.js";
 import { taskOutcomeStatus } from "./command-output.js";
 import type { OwnerId, Sequence, SettlementReceipt, TaskId, TaskRecord, TaskResult } from "./contracts.js";
+import { taskStoppedForResume } from "./task-resumer.ts";
 
 export const TASK_COMPLETION_MESSAGE_TYPE = "task-completion";
 export type TaskCompletionEnvelope = {
@@ -189,6 +190,62 @@ export function isResumableStop(result: TaskResult): result is Extract<TaskResul
 export function releasedWaitingOn(result: TaskResult): string | undefined {
 	if (result.kind !== "cancelled" || result.released === undefined) return undefined;
 	return result.released.waitingOn.map((call) => `${call.toolName} (${call.toolCallId})`).join(", ") || "a tool call";
+}
+
+/** The subagent a task is an attempt of: its launch operation without the `:resume:<id>` a woken or resumed attempt adds. */
+function childOfAttempt(task: Pick<TaskRecord, "launchOperationId">): string {
+	const operation = task.launchOperationId;
+	const suffix = operation.indexOf(":resume:");
+	return suffix > 0 ? operation.slice(0, suffix) : operation;
+}
+
+const NONE_SUPERSEDED: ReadonlySet<TaskId> = new Set();
+
+/**
+ * The released attempts in `tasks` whose subagent has a later attempt there: it woke (or was resumed) and that attempt
+ * is the subagent now. Such an attempt waits on nothing any more, so views list the later attempt instead of it.
+ */
+export function supersededReleasedAttempts(tasks: readonly TaskRecord[]): ReadonlySet<TaskId> {
+	const released: Array<TaskRecord> = [];
+	for (const task of tasks) {
+		if (task.kind === "agent" && task.execution.kind === "settled" && releasedWaitingOn(task.execution.result))
+			released.push(task);
+	}
+	if (released.length === 0) return NONE_SUPERSEDED;
+	const latest = new Map<string, { readonly task: TaskRecord; readonly index: number }>();
+	for (const [index, task] of tasks.entries()) {
+		if (task.kind !== "agent") continue;
+		const child = childOfAttempt(task);
+		const seen = latest.get(child);
+		if (seen === undefined || laterAttempt(task, index, seen.task, seen.index)) latest.set(child, { task, index });
+	}
+	const superseded = new Set<TaskId>();
+	for (const task of released) {
+		if (latest.get(childOfAttempt(task))?.task !== task) superseded.add(task.ref.taskId);
+	}
+	return superseded.size === 0 ? NONE_SUPERSEDED : superseded;
+}
+
+/** Whether `a` (at `aIndex`) was launched after `b`: by its owner's launch order, else by list order. */
+function laterAttempt(a: TaskRecord, aIndex: number, b: TaskRecord, bIndex: number): boolean {
+	if (a.ref.ownerId === b.ref.ownerId && a.launchOrdinal !== b.launchOrdinal) return a.launchOrdinal > b.launchOrdinal;
+	return aIndex > bIndex;
+}
+
+/** `tasks` without the released attempts a later attempt of the same subagent supersedes. */
+export function withoutSupersededAttempts(tasks: readonly TaskRecord[]): readonly TaskRecord[] {
+	const superseded = supersededReleasedAttempts(tasks);
+	return superseded.size === 0 ? tasks : tasks.filter((task) => !superseded.has(task.ref.taskId));
+}
+
+/**
+ * What an agent released while it waited still waits on, by tool name: `undefined` for any other task, and for a
+ * released agent that was then stopped (paused or quit), which waits for a resume instead of waking by itself.
+ */
+export function waitingReleasedTools(task: Pick<TaskRecord, "execution" | "ref">): string | undefined {
+	if (task.execution.kind !== "settled") return undefined;
+	const tools = releasedWaitingTools(task.execution.result);
+	return tools === undefined || taskStoppedForResume(task.ref.taskId) ? undefined : tools;
 }
 
 /** The tools an agent released while it waited waits on, by name and once each, as a task row names them. */

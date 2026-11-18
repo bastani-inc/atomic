@@ -1,15 +1,22 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext } from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall, type Message } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
+import { taskPanelItems } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { createChildCommandTaskOwner } from "../../packages/coding-agent/src/core/tasks/child-command-owner.js";
-import { formatTaskCompletion } from "../../packages/coding-agent/src/core/tasks/completion.js";
+import {
+	formatTaskCompletion,
+	withoutSupersededAttempts,
+} from "../../packages/coding-agent/src/core/tasks/completion.js";
 import type { OperationId, OwnerId, Sequence, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { loadTaskOwnTranscriptHistory } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { taskBoardGroups } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
+import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -282,6 +289,29 @@ test(
 		assert.equal(woken.value.result.kind, "completed", JSON.stringify(woken.value.result));
 		assert.equal(finished.terminalStatus, "ok", "the wake ran the child again on its own, and it finished");
 		assert.equal(env.faux.getPendingResponseCount(), 0, "the woken child answered its wait's result");
+		// Its released attempt is superseded by the attempt that woke: nothing lists the child as waiting any more.
+		const records = host.taskRecords();
+		const agents = records.filter((record) => record.kind === "agent");
+		assert.ok(agents.some((record) => record.ref.taskId === childTaskId));
+		assert.ok(agents.length > 1, "the wake ran as a later attempt of the child");
+		const listed = withoutSupersededAttempts(agents);
+		assert.deepEqual(
+			listed.map((record) => record.ref.taskId),
+			[finished.taskId],
+		);
+		assert.deepEqual(
+			taskBoardGroups(listed.map((task) => ({ id: task.ref.taskId, kind: "task" as const, task }))).map(
+				(group) => group.title,
+			),
+			["Done"],
+		);
+		assert.deepEqual(
+			taskPanelItems({ backgroundTasks: records }, new Set(), { topLevelOnly: false })
+				.filter((item) => item.state === "waiting")
+				.map((item) => item.id),
+			[],
+		);
+		assert.doesNotMatch(stripVTControlCharacters(renderTaskFooter(records, 100).join("\n")), /waiting/);
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );

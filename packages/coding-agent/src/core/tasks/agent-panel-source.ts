@@ -1,7 +1,7 @@
 import { inspect, types } from "node:util";
 import { sanitizeTerminalText } from "../../utils/terminal-text.ts";
 import type { ExtensionError } from "../extensions/runtime-types.ts";
-import { releasedWaitingTools } from "./completion.js";
+import { waitingReleasedTools, withoutSupersededAttempts } from "./completion.js";
 import type { TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.js";
 import { getOwnerTaskStore, isTaskTurnInterrupted, watchOwnerTaskStoreBinding } from "./owner-store.js";
@@ -255,7 +255,7 @@ export function taskPanelState(task: TaskRecord): AgentPanelState {
 			return isTaskTurnInterrupted(task) ? "stopped" : "running";
 		case "settled": {
 			const result = task.execution.result;
-			if (releasedWaitingTools(result) !== undefined) return "waiting";
+			if (waitingReleasedTools(task) !== undefined) return "waiting";
 			if (result.kind === "completed") return "done";
 			if (result.kind === "failed") return "failed";
 			return "stopped";
@@ -326,7 +326,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed"
 			? (task.execution.result.message.split("\n")[0] ?? "")
 			: undefined;
-	const waitingOn = task.execution.kind === "settled" ? releasedWaitingTools(task.execution.result) : undefined;
+	const waitingOn = waitingReleasedTools(task);
 	if (
 		cached !== undefined &&
 		cached.clocks === clocks &&
@@ -407,7 +407,7 @@ export function taskPanelItems(
 	const hasDismissed = dismissed.size > 0;
 	const sourceClocks = taskClockOf(source);
 	const items: AgentPanelItem[] = [];
-	for (const task of source.backgroundTasks) {
+	for (const task of withoutSupersededAttempts(source.backgroundTasks)) {
 		if (topLevelOnly && task.parentTaskId !== undefined) continue;
 		const finishedState = task.execution.kind === "settled";
 		if (finishedState && hasDismissed && dismissed.has(task.ref.taskId)) continue;

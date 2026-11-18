@@ -3,6 +3,10 @@ import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@bastani/atomic-tui";
 import { beforeAll, test } from "vitest";
 import { taskPanelState } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import {
+	supersededReleasedAttempts,
+	withoutSupersededAttempts,
+} from "../../packages/coding-agent/src/core/tasks/completion.js";
 import type { TaskRecord } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { renderAgentPanelRows } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import {
@@ -112,4 +116,32 @@ test("a chat's task footer lists a released subagent as waiting, beside its runn
 	assert.match(footer, /◌ worker .*waiting on bash · 12m/);
 	assert.match(footer, /npm run build/);
 	assert.doesNotMatch(footer, /∀ worker/);
+});
+
+test("a released attempt is superseded by a later attempt of the same subagent, and a re-released latest attempt still waits", () => {
+	const first = { ...released("a0"), launchOperationId: "run:0", launchOrdinal: 0 } as TaskRecord;
+	const woken = { ...done("a1"), launchOperationId: "run:0:resume:x", launchOrdinal: 1 } as TaskRecord;
+	const other = { ...released("b0"), launchOperationId: "run:1", launchOrdinal: 2 } as TaskRecord;
+	assert.deepEqual([...supersededReleasedAttempts([first, woken, other])], ["a0"]);
+	assert.deepEqual(
+		withoutSupersededAttempts([first, woken, other]).map((task) => task.ref.taskId),
+		["a1", "b0"],
+	);
+	const releasedAgain = { ...released("a2"), launchOperationId: "run:0:resume:y", launchOrdinal: 3 } as TaskRecord;
+	assert.deepEqual([...supersededReleasedAttempts([first, woken, releasedAgain])], ["a0"]);
+	const footer = stripVTControlCharacters(renderTaskFooter([first, woken, releasedAgain], 80).join("\n"));
+	assert.equal(footer.match(/waiting on bash/g)?.length, 1);
+});
+
+test("with NO_COLOR a waiting row carries no colour codes", () => {
+	const saved = process.env.NO_COLOR;
+	process.env.NO_COLOR = "1";
+	try {
+		const raw = renderBoardRow(row(released("r")), false, 80);
+		assert.doesNotMatch(raw, /\x1b\[/);
+		assert.match(raw, /◌ worker/);
+	} finally {
+		if (saved === undefined) delete process.env.NO_COLOR;
+		else process.env.NO_COLOR = saved;
+	}
 });

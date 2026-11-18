@@ -1,6 +1,6 @@
 import type { Component } from "@bastani/atomic-tui";
 import { agentPanelTaskId, taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
-import { releasedWaitingOn } from "../../../core/tasks/completion.js";
+import { supersededReleasedAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { theme } from "../theme/theme.js";
@@ -67,7 +67,7 @@ export function taskListSections(
 export function isActiveBackgroundTask(task: TaskRecord): boolean {
 	return (
 		task.observation.kind === "background" &&
-		(task.execution.kind !== "settled" || releasedWaitingOn(task.execution.result) !== undefined)
+		(task.execution.kind !== "settled" || waitingReleasedTools(task) !== undefined)
 	);
 }
 
@@ -76,9 +76,10 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 	const running: TaskRecord[] = [];
 	const other: TaskRecord[] = [];
 	let total = 0;
+	const superseded = supersededReleasedAttempts(tasks);
 	for (let index = tasks.length - 1; index >= 0; index--) {
 		const task = tasks[index]!;
-		if (!isActiveBackgroundTask(task)) continue;
+		if (!isActiveBackgroundTask(task) || superseded.has(task.ref.taskId)) continue;
 		total++;
 		if (task.execution.kind === "running") {
 			if (task.attention.kind === "none") {
