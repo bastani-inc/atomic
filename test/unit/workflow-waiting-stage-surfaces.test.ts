@@ -362,16 +362,16 @@ describe("the run header counts waiting stages (#4309)", () => {
 			stage("c", "running"),
 			stage("d", "pending"),
 		]);
-		assert.match(text, /◷ 2/);
+		assert.match(text, /◌ 2/);
 		assert.match(text, /● 1/);
 		assert.match(text, /○ 1/);
 	});
 
 	test("a single waiting stage shows its count, and no stage waiting shows no badge", () => {
-		assert.match(header([stage("a", "suspended", { wait: WAIT })]), /◷ 1/);
+		assert.match(header([stage("a", "suspended", { wait: WAIT })]), /◌ 1/);
 		const none = header([stage("a", "running"), stage("b", "completed")]);
-		assert.equal(none.includes("◷"), false);
-		assert.equal(header([]).includes("◷"), false);
+		assert.equal(none.includes("◌"), false);
+		assert.equal(header([]).includes("◌"), false);
 	});
 
 	test("the waiting badge is drawn in the dim color, as the pending badge is, and not as a running one", () => {
@@ -381,9 +381,9 @@ describe("the run header counts waiting stages (#4309)", () => {
 		).join("\n");
 		const colorOf = (label: string): string | undefined =>
 			new RegExp(`((?:\\x1b\\[[0-9;]*m)+)${label}`).exec(colored)?.[1];
-		assert.ok(colorOf("◷ 1") !== undefined);
-		assert.equal(colorOf("◷ 1"), colorOf("○ 1"));
-		assert.notEqual(colorOf("◷ 1"), colorOf("● 1"));
+		assert.ok(colorOf("◌ 1") !== undefined);
+		assert.equal(colorOf("◌ 1"), colorOf("○ 1"));
+		assert.notEqual(colorOf("◌ 1"), colorOf("● 1"));
 	});
 });
 
