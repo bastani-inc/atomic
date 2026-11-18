@@ -6,6 +6,7 @@ import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaV
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
+import { readSqlCatalog } from "../sql-catalog.js";
 import { sha256Hex } from "./blob-hash.js";
 import {
 	SessionConflictError,
@@ -262,7 +263,6 @@ const LISTING_SIZE =
 	"length(id) + length(cwd) + length(header_json) + length(modified_at) + length(first_message) + COALESCE(length(name), 0) + COALESCE(length(summary), 0) + COALESCE(length(summarized_through_id), 0) + length(revision) + 256";
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
-const LISTING_CWD_PAGE = 2_000;
 const STUB_ENTRY: SessionEntry = {
 	type: "custom",
 	id: "",
@@ -1001,7 +1001,7 @@ export class SqlSessionStore implements SessionStore {
 
 	private async *listWithoutSearchText(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		await this.assertReadableSchema(this.database);
-		const scope = await this.scopeOf(query, true);
+		const scope = await this.scopeOf(query);
 		if (scope === undefined) return;
 		const order = this.dialect.rowOrder();
 		const bound = await this.database.get<SqliteRow & { upper: number | bigint | null }>(
@@ -1065,31 +1065,18 @@ export class SqlSessionStore implements SessionStore {
 		this.assertListing(query);
 	}
 
-	private async distinctCwds(paced: boolean, query: SessionListQuery): Promise<string[]> {
-		if (!paced)
-			return (
-				await this.database.all<SqliteRow & { cwd: string }>(`SELECT DISTINCT cwd FROM ${this.tables.sessions}`)
-			).map((project) => project.cwd);
-		const order = this.dialect.rowOrder();
-		const cwds = new Set<string>();
-		for (let after = 0; ; ) {
-			this.assertListing(query);
-			const rows = await this.database.all<SqliteRow & { ord: number | bigint; cwd: string }>(
-				`SELECT ${order} AS ord, cwd FROM ${this.tables.sessions} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`,
-				after,
-				LISTING_CWD_PAGE,
-			);
-			for (const row of rows) cwds.add(row.cwd);
-			if (rows.length < LISTING_CWD_PAGE) return [...cwds];
-			after = Number(rows.at(-1)!.ord);
-			await yieldTurn();
-		}
+	private async distinctCwds(query: SessionListQuery): Promise<string[]> {
+		const rows = await readSqlCatalog<SqliteRow & { cwd: string }>(this.database, {
+			sql: `SELECT DISTINCT cwd FROM ${this.tables.sessions}`,
+			key: "cwd",
+			size: "length(cwd)",
+			signal: query.signal,
+		});
+		this.assertListing(query);
+		return rows.map((row) => row.cwd);
 	}
 
-	private async scopeOf(
-		query: SessionListQuery,
-		paced: boolean,
-	): Promise<
+	private async scopeOf(query: SessionListQuery): Promise<
 		| {
 				readonly where: string;
 				readonly params: SqliteValue[];
@@ -1103,7 +1090,7 @@ export class SqlSessionStore implements SessionStore {
 				: (this.cwdMatcher?.(query.cwd) ?? ((candidate: string | undefined) => candidate === query.cwd));
 		let projectCwds: string[] | undefined;
 		if (matchesCwd) {
-			const distinct = await this.distinctCwds(paced, query);
+			const distinct = await this.distinctCwds(query);
 			const matched = await Promise.all(distinct.map(async (cwd) => ((await matchesCwd(cwd)) ? cwd : undefined)));
 			projectCwds = matched.filter((cwd): cwd is string => cwd !== undefined);
 			this.assertListing(query);
@@ -1123,7 +1110,7 @@ export class SqlSessionStore implements SessionStore {
 
 	/** The scope's session ids in store order, with a current summary cached for each. */
 	private async readScope(query: SessionListQuery, listedBefore: boolean): Promise<readonly string[]> {
-		const resolved = await this.scopeOf(query, false);
+		const resolved = await this.scopeOf(query);
 		if (resolved === undefined) return [];
 		const { where: scope, params, inScope } = resolved;
 		const filterInScope = async (rows: readonly ListingRow[]): Promise<ListingRow[]> => {

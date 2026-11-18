@@ -103,8 +103,9 @@ export class MemoryRunJournal implements RunJournal {
 		return run ? this.summaryOf(run) : undefined;
 	}
 
-	async listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]> {
+	async listRuns(filter?: { cwd?: string }, options?: { signal?: AbortSignal }): Promise<readonly RunSummary[]> {
 		this.ensureOpen();
+		options?.signal?.throwIfAborted();
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return [...this.runs.values()]
 			.filter((run) => filter?.cwd === undefined || run.header.cwd === filter.cwd)

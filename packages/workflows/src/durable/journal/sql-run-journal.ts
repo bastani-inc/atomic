@@ -7,6 +7,7 @@ import {
 	olderBuildLive,
 	openNodeSqliteDatabase,
 	RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
+	readSqlCatalogPages,
 	renderStorageIdentifiers,
 	type SqliteDatabase,
 	type SqliteExecutor,
@@ -593,23 +594,32 @@ export class SqlRunJournal implements RunJournal {
 		});
 	}
 
-	async listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]> {
+	async listRuns(filter?: { cwd?: string }, options?: { signal?: AbortSignal }): Promise<readonly RunSummary[]> {
 		this.assertOpen();
+		options?.signal?.throwIfAborted();
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return this.operation(async () => {
-			const rows = await this.database.all<HeaderRow>(
-				`SELECT ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM ${this.tables.runs} ${filter?.cwd === undefined ? "" : `WHERE ${c.cwd} = ?`} ORDER BY ${c.runId}`,
-				...(filter?.cwd === undefined ? [] : [filter.cwd]),
-			);
-			if (rows.length === 0) await this.assertVersion(this.database);
-			assertRowVersion(rows[0]);
-			const legacy = (await this.legacy?.pending(this.database, filter)) ?? [];
-			return [...rows, ...legacy]
-				.map((row) => ({
-					...(JSON.parse(row[c.headerJson]) as RunHeader),
-					status: runStatusFromRecord(row[c.status]),
-				}))
-				.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
+			const listed: RunSummary[] = [];
+			const add = (rows: readonly HeaderRow[]) => {
+				for (const row of rows) {
+					assertRowVersion(row);
+					listed.push({
+						...(JSON.parse(row[c.headerJson]) as RunHeader),
+						status: runStatusFromRecord(row[c.status]),
+					});
+				}
+			};
+			for await (const page of readSqlCatalogPages<HeaderRow>(this.database, {
+				sql: `SELECT ${c.runId}, ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM ${this.tables.runs} ${filter?.cwd === undefined ? "" : `WHERE ${c.cwd} = ?`}`,
+				params: filter?.cwd === undefined ? [] : [filter.cwd],
+				key: c.runId,
+				size: `length(${c.headerJson}) + length(${c.runId}) + length(${c.status})`,
+				signal: options?.signal,
+			}))
+				add(page);
+			if (listed.length === 0) await this.assertVersion(this.database);
+			for await (const page of this.legacy?.pending(this.database, filter, options?.signal) ?? []) add(page);
+			return listed.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 		});
 	}
 

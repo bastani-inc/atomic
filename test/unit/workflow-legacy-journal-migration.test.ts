@@ -5,6 +5,7 @@ import { afterEach, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { inspectJournalFile } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { migrateStageSessionCheckpoint } from "../../packages/workflows/src/durable/backend.js";
@@ -83,6 +84,41 @@ function writeLegacyJournal(path: string): void {
 		database.close();
 	}
 }
+
+test("inspection lists a 150,000-run legacy catalog without overflowing the call stack (#5537)", async () => {
+	const path = join(tempDirectory(), "large-legacy.sqlite");
+	writeLegacyJournal(path);
+	const database = new DatabaseSync(path);
+	try {
+		database.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 150000)
+			INSERT INTO runs(run_id, name, cwd, created_at, status, header_json)
+			SELECT 'run-' || i, 'run', '/project', 1, 'running',
+			'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
+	} finally {
+		database.close();
+	}
+	const inspection = await inspectJournalFile(path);
+	assert.equal(inspection.runs.length, 150_001);
+	assert.equal(new Set(inspection.runs.map((run) => run.runId)).size, 150_001);
+});
+
+test("legacy catalog listings check cancellation between size-bounded pages (#5537)", async () => {
+	const path = join(tempDirectory(), "journal.sqlite");
+	writeLegacyJournal(path);
+	const journal = await openSqlRunJournal(path);
+	try {
+		const controller = new AbortController();
+		const reason = new Error("legacy catalog cancelled");
+		const timer = setImmediate(() => controller.abort(reason));
+		try {
+			await assert.rejects(journal.listRuns(undefined, { signal: controller.signal }), (error) => error === reason);
+		} finally {
+			clearImmediate(timer);
+		}
+	} finally {
+		await journal.close();
+	}
+});
 
 async function readAll(iterable: AsyncIterable<JournalEntry>): Promise<JournalEntry[]> {
 	const entries: JournalEntry[] = [];

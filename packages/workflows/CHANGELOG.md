@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `RunJournal.listRuns(filter?, { signal? })` accepts cancellation. SQL journals check it between pages; existing custom journals can keep their one-argument implementation ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
+
 ### Changed
 
 - Updated the bundled `unslop` and `teach` skills to the current cursor/plugins pstack text. `unslop` keeps the same rule numbers but states each rule in one line, and `teach` drops repeated wording from its steps while still asking `why` to stay narrow. `unslop` stays available to the model.
@@ -14,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Large workflow catalogs and run inputs no longer make run listing fail with a storage response-size error. SQL journals read headers in size-bounded pages, preserving run order and yielding between pages ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
 - The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
 - The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 

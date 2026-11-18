@@ -40,6 +40,7 @@ import {
 	withJournalPayloads,
 	writeJournalPayloadChunks,
 } from "./run-journal.js";
+import { readSqlCatalog } from "./sql-catalog.js";
 import {
 	readTransferDirectory,
 	StorageImportIncompleteError,
@@ -272,7 +273,11 @@ async function openExportSource(
 			await closeExportSource({ database, snapshot: open === undefined });
 			return { path, reason: `unsupported journal schema version ${String(version)}`, oldFormat: false };
 		}
-		const runs = await database.all<JournalRunTableRow>(`SELECT * FROM ${t.runs} ORDER BY run_id`);
+		const runs = await readSqlCatalog<JournalRunTableRow>(database, {
+			sql: `SELECT * FROM ${t.runs}`,
+			key: "run_id",
+			size: "length(run_id) + length(name) + length(cwd) + length(status) + length(header_json)",
+		});
 		return {
 			path,
 			database,
@@ -511,10 +516,12 @@ export async function exportWorkflowRuns(
 					withJournalPayloads(
 						executor,
 						t.eventChunks,
-						await executor.all<JournalEventTableRow>(
-							`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
-							listedRun.run_id,
-						),
+						await readSqlCatalog<JournalEventTableRow>(executor, {
+							sql: `SELECT * FROM ${t.events} WHERE run_id = ?`,
+							params: [listedRun.run_id],
+							key: "seq",
+							size: "length(run_id) + length(type) + length(payload) + coalesce(length(key), 0)",
+						}),
 					);
 				// A source without a read snapshot reads each run's row and events together, in one transaction, so a
 				// run that finishes meanwhile is exported with the status its events reach.
@@ -717,7 +724,12 @@ async function readStoredRun(
 	const events = await withJournalPayloads(
 		executor,
 		t.eventChunks,
-		await executor.all<JournalEventTableRow>(`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`, runId),
+		await readSqlCatalog<JournalEventTableRow>(executor, {
+			sql: `SELECT * FROM ${t.events} WHERE run_id = ?`,
+			params: [runId],
+			key: "seq",
+			size: "length(run_id) + length(type) + length(payload) + coalesce(length(key), 0)",
+		}),
 	);
 	const lease = (await hasTable(executor, t.leases, dialect))
 		? await executor.get<JournalLeaseTableRow & { age_ms: number }>(

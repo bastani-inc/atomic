@@ -121,7 +121,8 @@ export interface RunJournalSeedEvent {
 export interface RunJournal {
 	createRun(header: RunHeader): Promise<"created" | "exists">;
 	getRun(runId: string): Promise<RunSummary | undefined>;
-	listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]>;
+	/** Lists in run-id order; SQL journals check cancellation between size-bounded pages. */
+	listRuns(filter?: { cwd?: string }, options?: { signal?: AbortSignal }): Promise<readonly RunSummary[]>;
 	acquire(runId: string, holderId: string): Promise<LeaseOutcome>;
 	takeover(runId: string, holderId: string, expectedHolder: string): Promise<LeaseOutcome>;
 	takeoverExpired(runId: string, holderId: string, staleAfterMs: number): Promise<LeaseOutcome>;
