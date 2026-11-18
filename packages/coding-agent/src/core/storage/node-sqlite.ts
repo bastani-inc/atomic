@@ -100,9 +100,10 @@ let clockConnection: DatabaseSync | undefined;
  * calling thread; a waiting writer reads it on its connection's thread.
  */
 function databaseNowSync(): number {
-	clockConnection ??= new (createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite")).DatabaseSync(
-		":memory:",
-	);
+	if (clockConnection === undefined) {
+		const { DatabaseSync: Database } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+		clockConnection = new Database(":memory:");
+	}
 	return Number(clockConnection.prepare(DATABASE_NOW).get()!.now);
 }
 
