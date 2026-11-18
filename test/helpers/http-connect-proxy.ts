@@ -21,6 +21,8 @@ export interface ConnectProxyTunnel {
 	readonly target: string;
 	/** Every byte the client sent through the tunnel so far. */
 	clientBytes(): Buffer;
+	/** Every byte the target sent back through the tunnel so far. */
+	serverBytes(): Buffer;
 }
 
 export interface ConnectProxy {
@@ -72,6 +74,7 @@ export async function startConnectProxy(options: ConnectProxyOptions): Promise<C
 		const route = options.routes(target);
 		if (route === undefined) return answer(client, 403);
 		const chunks: Buffer[] = [];
+		const answers: Buffer[] = [];
 		const record = (chunk: Buffer) => chunks.push(Buffer.from(chunk));
 		if (head.length > 0) record(head);
 		const upstream = track(connect(route.port, route.host));
@@ -79,7 +82,7 @@ export async function startConnectProxy(options: ConnectProxyOptions): Promise<C
 		upstream.once("connect", () => {
 			upstream.removeAllListeners("error");
 			upstream.on("error", () => client.destroy());
-			tunnels.push({ target, clientBytes: () => Buffer.concat(chunks) });
+			tunnels.push({ target, clientBytes: () => Buffer.concat(chunks), serverBytes: () => Buffer.concat(answers) });
 			open.set(client, target);
 			client.on("close", () => {
 				open.delete(client);
@@ -94,7 +97,10 @@ export async function startConnectProxy(options: ConnectProxyOptions): Promise<C
 					record(chunk);
 					upstream.write(chunk);
 				});
-				upstream.pipe(client);
+				upstream.on("data", (chunk: Buffer) => {
+					answers.push(Buffer.from(chunk));
+					client.write(chunk);
+				});
 			};
 			if (options.answerDelayMs === undefined) establish();
 			else setTimeout(establish, options.answerDelayMs);

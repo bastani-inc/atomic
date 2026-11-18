@@ -65,8 +65,35 @@ describe("PostgreSQL proxy selection (#5473)", () => {
 		assert.equal(postgresTransport(target, { ...env, NO_PROXY: "example.com" }).kind, "direct");
 		assert.equal(postgresTransport(target, { ...env, no_proxy: "db.example.com:5432" }).kind, "direct");
 		assert.equal(postgresTransport(target, { ...env, NO_PROXY: "db.example.com:6543" }).kind, "proxy");
-		for (const host of ["localhost", "127.0.0.1", "::1", "[::1]", "/var/run/postgresql", "127.1", "0:0:0:0:0:0:0:1"])
+		// The host is matched in its canonical form, as a URL's host is.
+		for (const [host, noProxy] of [
+			["10.1", "10.0.0.1"],
+			["167772161", "10.0.0.1"],
+			["2001:DB8:0:0::5", "2001:db8::5"],
+			["bücher.example", "xn--bcher-kva.example"],
+		])
+			assert.equal(
+				postgresTransport({ host: host!, port: 5432 }, { ...env, NO_PROXY: noProxy }).kind,
+				"direct",
+				host,
+			);
+		for (const host of [
+			"localhost",
+			"LOCALHOST",
+			"localhost.",
+			"127.0.0.1",
+			"127.0.0.2",
+			"::1",
+			"[::1]",
+			"/var/run/postgresql",
+			"127.1",
+			"0:0:0:0:0:0:0:1",
+			"::ffff:127.0.0.1",
+			"[::ffff:127.0.0.1]",
+		])
 			assert.equal(postgresTransport({ host, port: 5432 }, env).kind, "direct", host);
+		for (const host of ["128.0.0.1", "::ffff:10.0.0.1", "::2", "localhost.example.com", "10.0.0.1"])
+			assert.equal(postgresTransport({ host, port: 5432 }, env).kind, "proxy", host);
 	});
 
 	test("the environment's variables are read as Atomic's HTTPS clients read them, with ALL_PROXY between (#5473)", () => {

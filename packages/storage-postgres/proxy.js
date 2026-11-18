@@ -215,7 +215,13 @@ function isLocalTarget(/** @type {string} */ host) {
 	const name = normalizedHost(host);
 	if (name === "" || name.startsWith("/")) return true;
 	const canonical = canonicalHost(name);
-	return canonical === "localhost" || canonical === "::1" || /^127(?:\.\d{1,3}){3}$/.test(canonical);
+	return (
+		canonical === "localhost" ||
+		canonical === "::1" ||
+		/^127(?:\.\d{1,3}){3}$/.test(canonical) ||
+		// An IPv4-mapped IPv6 address of 127.0.0.0/8, which a URL writes as `::ffff:7fxx:xxxx`.
+		/^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(canonical)
+	);
 }
 
 /**
@@ -236,7 +242,8 @@ export function postgresTransport(target, env, option) {
 	const setting = proxySetting(env);
 	if (setting === undefined) return { kind: "direct" };
 	const noProxy = env.no_proxy ?? env.NO_PROXY ?? "";
-	if (noProxyMatches(target.host, target.port, noProxy)) return { kind: "direct" };
+	// Matched against the host's canonical form, as Atomic's HTTPS clients match a URL's host: `10.1` is `10.0.0.1`.
+	if (noProxyMatches(canonicalHost(target.host), target.port, noProxy)) return { kind: "direct" };
 	return { kind: "proxy", proxy: parseProxy(setting.value, setting.variable) };
 }
 

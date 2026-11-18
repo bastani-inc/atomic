@@ -212,7 +212,7 @@ Where the only way out is an HTTP proxy, such as a sandbox that allows only `CON
 - **Setting it for the store alone.** The `proxy` option in `storage.options` overrides the environment: a proxy URL sends every connection through it, and `"none"` connects directly. SDK callers pass `proxy` to `openPostgresDatabase`, or `socket`, a function that opens a connection to `{ host, port }` for a custom transport.
 - **TLS still runs end to end.** Atomic negotiates TLS with the database through the tunnel and checks the certificate against the database's host name, as in [TLS](#tls), so the proxy sees only encrypted traffic. A cancel request goes through the tunnel encrypted too.
 
-When the proxy refuses the tunnel, the store fails to open with `StorageUnavailableError`, and the message names the proxy and the `host:port` it refused, for example `the proxy http://127.0.0.1:3128 refused the tunnel to db.example.com:5432 (403 Forbidden)`. A `403` or `407` is not retried. A proxy that cannot be reached, or answers `502` or `503`, is retried like an unreachable server.
+When the proxy refuses the tunnel, the store fails to open with `StorageUnavailableError`, and the message names the proxy and the `host:port` it refused, for example `the proxy http://127.0.0.1:3128 refused the tunnel to db.example.com:5432 (403 Forbidden)`. A `403` or `407` is not retried. A proxy that cannot be reached, or answers `502` or `503`, is retried like an unreachable server, so the open fails after about 4 seconds; one that does not answer within 8 seconds is retried too, so it fails after about 45 seconds.
 
 ### Connection poolers
 

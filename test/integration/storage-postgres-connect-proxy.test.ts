@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { connect } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
+import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
+import { createServer as createTlsServer } from "node:tls";
 import { inspect } from "node:util";
 import { type SqliteDatabase, StorageUnavailableError } from "@bastani/atomic/storage";
 import { afterAll, beforeAll, describe, test } from "vitest";
@@ -172,9 +174,66 @@ async function failure(promise: Promise<unknown>): Promise<Error> {
 	return outcome.error;
 }
 
+/** This machine's first IPv4 address that is not loopback, which only NO_PROXY can exempt; undefined without one. */
+const MACHINE_ADDRESS = Object.values(networkInterfaces())
+	.flat()
+	.find((address) => address !== undefined && address.family === "IPv4" && !address.internal)?.address;
+
+/** Whether `host` is this machine by a loopback name or address, as the test server's URL names it. */
+function isLoopbackHost(host: string): boolean {
+	const name = host.replace(/^\[|\]$/g, "").toLowerCase();
+	return name === "localhost" || name === "::1" || /^127(?:\.\d{1,3}){3}$/.test(name);
+}
+
+/** Why `bytes` is not a run of whole TLS records (a last record cut short by a closed tunnel counts), or undefined. */
+function tlsRecordProblem(bytes: Buffer): string | undefined {
+	let offset = 0;
+	while (offset + 5 <= bytes.length) {
+		const type = bytes[offset]!;
+		if (type < 20 || type > 23 || bytes[offset + 1] !== 3) return `byte ${offset} starts no TLS record`;
+		offset += 5 + bytes.readUInt16BE(offset + 3);
+	}
+	return undefined;
+}
+
+/** A TCP forwarder on `host` to the front on 127.0.0.1:`port`, counting the connections it passed on. */
+async function startForwarder(
+	host: string,
+	port: number,
+): Promise<{ port: number; connections(): number; close(): Promise<void> }> {
+	const sockets = new Set<Socket>();
+	let count = 0;
+	const server = createServer((client) => {
+		count++;
+		const upstream = connect(port, "127.0.0.1");
+		for (const socket of [client, upstream]) {
+			sockets.add(socket);
+			socket.on("error", () => {});
+			socket.on("close", () => {
+				client.destroy();
+				upstream.destroy();
+			});
+		}
+		client.pipe(upstream).pipe(client);
+	});
+	await new Promise<void>((resolve) => server.listen(0, host, resolve));
+	const address = server.address();
+	assert.ok(address !== null && typeof address === "object");
+	return {
+		port: address.port,
+		connections: () => count,
+		close: () =>
+			new Promise<void>((resolve) => {
+				for (const socket of sockets) socket.destroy();
+				server.close(() => resolve());
+			}),
+	};
+}
+
 describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CONNECT proxy (#5473)", () => {
 	let directory: string;
 	let ca: string;
+	let frontCertificate: { cert: Buffer; key: Buffer };
 	let front: { port: number; close(): Promise<void> };
 	let proxy: ConnectProxy;
 	/** Whether the front drops the server's answers, after a statement marked with {@link STALL_MARKER}. */
@@ -186,6 +245,7 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 		directory = makeTempDirectory("atomic-pg-connect-proxy-");
 		const certificate = writeCertificates(directory);
 		ca = certificate.ca;
+		frontCertificate = certificate;
 		front = await startPostgresProxy(certificate, (client: Duplex, upstream: Duplex, first: Buffer) => {
 			if (first.length >= 8 && first.readInt32BE(4) === CANCEL_REQUEST_CODE) cancelRequests++;
 			let stalled = false;
@@ -235,17 +295,28 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 		});
 	}
 
-	/** Every tunnel opened since `from` carries TLS after its SSLRequest, and none of the session's plaintext. */
+	/**
+	 * Every tunnel opened since `from` carries, from the client, an SSLRequest and then TLS records only, and from the
+	 * server its `S` and then TLS records only: the proxy sees none of the session's plaintext either way.
+	 */
 	function assertCiphertextOnly(from: number): void {
 		const opened = proxy.tunnels.slice(from);
 		assert.ok(opened.length > 0, "no tunnel was opened");
 		for (const tunnel of opened) {
-			const bytes = tunnel.clientBytes();
-			assert.ok(bytes.length > 8, `the tunnel to ${tunnel.target} carried ${bytes.length} bytes`);
-			assert.equal(bytes.readInt32BE(4), SSL_REQUEST_CODE, "the first message was not an SSLRequest");
-			assert.equal(bytes[8], 0x16, "TLS did not start right after the SSLRequest");
-			for (const plain of ["application_name", "atomic", "SELECT", "LISTEN"])
-				assert.equal(bytes.includes(Buffer.from(plain)), false, `the proxy saw ${plain} in clear`);
+			const sent = tunnel.clientBytes();
+			const answered = tunnel.serverBytes();
+			assert.ok(sent.length > 8, `the tunnel to ${tunnel.target} carried ${sent.length} bytes`);
+			assert.equal(sent.readInt32BE(4), SSL_REQUEST_CODE, "the first message was not an SSLRequest");
+			assert.equal(tlsRecordProblem(sent.subarray(8)), undefined, "the client sent something other than TLS");
+			assert.equal(answered.subarray(0, 1).toString("latin1"), "S", "the server did not accept TLS");
+			assert.equal(tlsRecordProblem(answered.subarray(1)), undefined, "the server sent something other than TLS");
+			for (const plain of ["application_name", "atomic", "SELECT", "LISTEN", "pg_notify", "user\0"])
+				for (const bytes of [sent, answered])
+					assert.equal(
+						bytes.includes(Buffer.from(plain)),
+						false,
+						`the proxy saw ${JSON.stringify(plain)} in clear`,
+					);
 		}
 	}
 
@@ -480,6 +551,13 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 					}
 					assert.ok(targets.length > 0);
 					for (const target of targets) assert.equal(target, `${DATABASE_HOST}:${PORT}`);
+					// A custom transport changes how the bytes travel, not whom TLS checks: a certificate for another name
+					// is still refused.
+					const wrong = await failure(
+						open(scope.name, { host: OTHER_HOST, socket: () => connect(front.port, "127.0.0.1") }),
+					);
+					assert.ok(wrong instanceof StorageUnavailableError, inspect(wrong));
+					assert.match(inspect(wrong), /ERR_TLS_CERT_ALTNAME_INVALID/);
 				});
 			});
 		});
@@ -511,16 +589,88 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 		});
 	});
 
-	test(
-		"NO_PROXY for the database host, and a loopback database, connect directly (#5473)",
+	test.skipIf(MACHINE_ADDRESS === undefined)(
+		"NO_PROXY for the database host connects directly, the listening session too, while the pool tunnels (#5473)",
 		async () => {
-			await withEnvironment({ HTTPS_PROXY: proxy.url, NO_PROXY: `localhost,.${DATABASE_HOST}` }, async () => {
+			// The front, reached directly at this machine's own address, which is not loopback, so only NO_PROXY exempts it.
+			const forwarder = await startForwarder(MACHINE_ADDRESS!, front.port);
+			try {
+				await withPostgresDatabase(async (scope) => {
+					const user = new URL(postgresTestUrl!).username;
+					const direct = new URL(`postgresql://${user}@${MACHINE_ADDRESS}:${forwarder.port}/${scope.name}`);
+					// The front's certificate names db.invalid, not the address: check its CA only.
+					direct.searchParams.set("sslmode", "verify-ca");
+					direct.searchParams.set("sslrootcert", ca);
+					const password = postgresTestPassword === undefined ? {} : { password: postgresTestPassword };
+					await withEnvironment({ HTTPS_PROXY: proxy.url, NO_PROXY: `localhost,${MACHINE_ADDRESS}` }, async () => {
+						const requestsBefore = proxy.requests.length;
+						const database = await openPostgresDatabase({ url: direct.href, ...password });
+						try {
+							assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+						} finally {
+							await database.close();
+						}
+						assert.equal(proxy.requests.length, requestsBefore, "an exempt host went through the proxy");
+						assert.ok(forwarder.connections() > 0);
+
+						// The pool through the tunnel, the listening session to the exempt endpoint, directly.
+						const opened: SqliteDatabase[] = [];
+						const split = async () => {
+							const database = await open(scope.name, { listenUrl: direct.href });
+							opened.push(database);
+							return database;
+						};
+						const publisher = await openDatabaseWakeUpBus({
+							openDatabase: split,
+							prefix: "n5473_",
+							pollIntervalMs: NEVER_POLL_MS,
+						});
+						const subscriber = await openDatabaseWakeUpBus({
+							openDatabase: split,
+							prefix: "n5473_",
+							pollIntervalMs: NEVER_POLL_MS,
+						});
+						try {
+							const hints: WakeUpHint[] = [];
+							await subscriber.subscribe("broker-b", (event) => {
+								if (event.kind === "hint") hints.push(event.hint);
+							});
+							await listening(scope);
+							await publisher.publish({ brokerId: "broker-b", reason: "outbox", version: 4 });
+							await until(() => hints.length > 0, NOTIFIED_WAKE_BOUND_MS, "the notification never arrived");
+						} finally {
+							await publisher.close();
+							await subscriber.close();
+							await Promise.allSettled(opened.map((database) => database.close()));
+						}
+						const requests = proxy.requests.slice(requestsBefore);
+						assert.ok(requests.length > 0, "the pool did not go through the proxy");
+						for (const request of requests) assert.equal(request.target, `${DATABASE_HOST}:${PORT}`);
+					});
+					// Without NO_PROXY, the same address goes to the proxy, whose allow-list refuses it.
+					await withEnvironment({ HTTPS_PROXY: proxy.url }, async () => {
+						const error = await failure(openPostgresDatabase({ url: direct.href, ...password }));
+						assert.ok(error instanceof StorageUnavailableError, inspect(error));
+						assert.ok(
+							error.message.includes(
+								`the proxy ${proxy.url} refused the tunnel to ${MACHINE_ADDRESS}:${forwarder.port} (403 Forbidden)`,
+							),
+							error.message,
+						);
+					});
+				});
+			} finally {
+				await forwarder.close();
+			}
+		},
+		60_000,
+	);
+
+	test.skipIf(!isLoopbackHost(postgresTestUrl === undefined ? "" : new URL(postgresTestUrl).hostname))(
+		"a database on this machine is reached directly whatever the environment's proxy says (#5473)",
+		async () => {
+			await withEnvironment({ HTTPS_PROXY: proxy.url }, async () => {
 				const requestsBefore = proxy.requests.length;
-				// Directly, the reserved name resolves to nothing: the open fails as unreachable, and the proxy saw nothing.
-				const error = await failure(open("postgres"));
-				assert.ok(error instanceof StorageUnavailableError, inspect(error));
-				assert.equal(proxy.requests.length, requestsBefore);
-				// The test server on this machine is reached directly whatever the environment says.
 				const local = await openPostgresDatabase({
 					url: postgresTestUrl!,
 					...(postgresTestPassword === undefined ? {} : { password: postgresTestPassword }),
@@ -533,8 +683,32 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 				assert.equal(proxy.requests.length, requestsBefore);
 			});
 		},
-		TRANSIENT_RETRIES_TIMEOUT_MS,
 	);
+
+	test("an https proxy whose certificate is not trusted is refused before any tunnel request (#5473)", async () => {
+		const requests: Buffer[] = [];
+		const secure = createTlsServer({ cert: frontCertificate.cert, key: frontCertificate.key }, (socket) => {
+			socket.on("error", () => {});
+			socket.on("data", (chunk: Buffer) => requests.push(chunk));
+		});
+		secure.on("tlsClientError", () => {});
+		await new Promise<void>((resolve) => secure.listen(0, "127.0.0.1", resolve));
+		const address = secure.address();
+		assert.ok(address !== null && typeof address === "object");
+		try {
+			const error = await failure(open("postgres", { proxy: `https://127.0.0.1:${address.port}` }));
+			assert.ok(error instanceof StorageUnavailableError, inspect(error));
+			assert.match(
+				error.message,
+				new RegExp(
+					`the proxy https://127\\.0\\.0\\.1:${address.port} showed a TLS certificate that was not accepted \\(\\w+\\), so no tunnel to ${DATABASE_HOST}:${PORT} was opened`,
+				),
+			);
+			assert.equal(requests.length, 0, "a tunnel request reached a proxy that was not trusted");
+		} finally {
+			await new Promise<void>((resolve) => secure.close(() => resolve()));
+		}
+	});
 
 	test(
 		"a proxy that refuses the tunnel fails the open with StorageUnavailableError naming the proxy and the target (#5473)",
@@ -583,18 +757,32 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 			} finally {
 				await guarded.close();
 			}
-			// A proxy that is not there: retried as unreachable, then named with the target.
+			// A proxy that is not there: retried as unreachable, then named with the target. Neither the failure nor the
+			// warnings the retries print name the proxy's credentials.
 			const port = await closedPort();
-			await withEnvironment({ HTTPS_PROXY: `http://127.0.0.1:${port}` }, async () => {
-				const error = await failure(open("postgres"));
-				assert.ok(error instanceof StorageUnavailableError, inspect(error));
-				assert.match(
-					error.message,
-					new RegExp(
-						`the proxy http://127.0.0.1:${port} could not be reached for the tunnel to ${DATABASE_HOST}:${PORT} \\(ECONNREFUSED\\)`,
-					),
-				);
-			});
+			await withEnvironment(
+				{ HTTPS_PROXY: `http://agent:fixture-unreachable-secret@127.0.0.1:${port}` },
+				async () => {
+					const warnings: string[] = [];
+					const onWarning = (warning: Error) => warnings.push(inspect(warning, { depth: null }));
+					process.on("warning", onWarning);
+					try {
+						const error = await failure(open("postgres"));
+						assert.ok(error instanceof StorageUnavailableError, inspect(error));
+						assert.ok(
+							error.message.includes(
+								`the proxy http://127.0.0.1:${port} could not be reached for the tunnel to ${DATABASE_HOST}:${PORT} (ECONNREFUSED)`,
+							),
+							error.message,
+						);
+						assert.equal(inspect(error, { depth: null }).includes("fixture-unreachable-secret"), false);
+					} finally {
+						process.off("warning", onWarning);
+					}
+					for (const warning of warnings)
+						assert.equal(warning.includes("fixture-unreachable-secret"), false, warning);
+				},
+			);
 		},
 		TRANSIENT_RETRIES_TIMEOUT_MS,
 	);
