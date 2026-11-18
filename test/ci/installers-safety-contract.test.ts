@@ -233,7 +233,9 @@ test("Windows safety and version checks all precede temp creation and archive do
 	);
 
 	assert.ok(
-		powershell.includes("'^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-alpha\\.(?:[1-9][0-9]*))?\\z'"),
+		powershell.includes(
+			"'^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-alpha\\.(?:[1-9][0-9]*))?\\z'",
+		),
 		"the Windows tag grammar does not mirror install.sh",
 	);
 	assert.match(shell, /MAJOR\.MINOR\.PATCH or MAJOR\.MINOR\.PATCH-alpha\.REVISION/u);
