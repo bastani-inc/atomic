@@ -382,13 +382,15 @@ test("aborting a catalog catch-up stops it between turns and a later catch-up fi
 		ticker.stop();
 	}
 	assert.ok(readsWhenAborted !== undefined && readsWhenAborted < history.length, "aborted before every run was read");
-	const finished = reads.filter((read) => read.done).map(({ runId }) => runId);
+	// A run is finished when the catch-up folded it. A long history's staged fold runs over turns after its read ends,
+	// so a run whose read ended may still be left as it was, and is caught up later.
+	const finished = history.filter((runId) => reader.getWorkflow(runId) !== undefined);
+	const readWhole = new Set(reads.filter((read) => read.done).map(({ runId }) => runId));
 	// The catch-up stopped where it was: it read no run after the abort, and it left no run half folded.
 	assert.ok(reads.length <= readsWhenAborted!);
-	for (const runId of history) {
-		const handle = reader.getWorkflow(runId);
-		if (finished.includes(runId)) assert.equal(handle?.completedCheckpoints, HISTORY_CHECKPOINTS);
-		else assert.equal(handle, undefined, runId);
+	for (const runId of finished) {
+		assert.ok(readWhole.has(runId), `${runId} was folded before its history was read`);
+		assert.equal(reader.getWorkflow(runId)?.completedCheckpoints, HISTORY_CHECKPOINTS, runId);
 	}
 	reads.length = 0;
 	await reader.hydrateResumableWorkflows();
