@@ -4,13 +4,16 @@ import { join } from "node:path";
 import { describe, vi } from "vitest";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { ensurePostMortemStageHandle } from "../../packages/workflows/src/runs/foreground/postmortem-stage-chat.js";
-import type {
-	StageControlHandle,
-	StageControlRegistry,
+import {
+	type StageControlHandle,
+	type StageControlRegistry,
+	stageControlRegistry,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { WorkflowUIAdapter } from "../../packages/workflows/src/shared/types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
+import { type CollectionCount, collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
 import {
 	assert,
 	createStageControlRegistry,
@@ -192,6 +195,158 @@ describe("completed stage session release", () => {
 			assert.equal(fixture.sessions.length, 4);
 			assert.equal(fixture.disposals(), 3, "every completed session was disposed");
 			await registry.clear();
+		});
+
+		/** One failed run, started without a stage registry; tracks its run store and every stage session it opened. */
+		async function failUnowned(tracked: CollectionCount): Promise<string> {
+			const store = createStore();
+			const fixture = createPersistedStageFixture({
+				onPrompt(text) {
+					if (text === "fail now") throw new Error("stage exploded");
+				},
+			});
+			tracked.track(store);
+			const failed = await run(failingWorkflow({ stage: "last" }), {}, { store, adapters: fixture.adapters });
+			assert.equal(failed.status, "failed");
+			assert.equal(store.run(failed.runId)?.resumable, true);
+			for (const record of fixture.sessions) tracked.track(record.session);
+			return failed.runId;
+		}
+
+		test("failed runs started without a stage registry leave nothing in the process that keeps their stages (#5499)", async () => {
+			const tracked = trackCollection();
+			const runIds: string[] = [];
+			for (let index = 0; index < 3; index++) runIds.push(await failUnowned(tracked));
+
+			await collectEverythingTracked(tracked, 100);
+
+			assert.deepEqual(
+				runIds.filter((runId) => stageControlRegistry.has(runId)),
+				[],
+				"no failed run keeps stage handles in the process-wide registry",
+			);
+			assert.deepEqual(tracked.uncollected(), [], "every failed run's store and stage sessions can be collected");
+		});
+
+		test("a failed run's cleanup leaves alone a stage handle that a resume registered under its id meanwhile (#5499)", async () => {
+			const store = createStore();
+			const fixture = createPersistedStageFixture({
+				onPrompt(text) {
+					if (text === "fail now") throw new Error("stage exploded");
+				},
+			});
+			let successorDisposed = false;
+			let unregisterSuccessor: (() => void) | undefined;
+			const failed = await run(
+				failingWorkflow({ stage: "last" }),
+				{},
+				{
+					store,
+					adapters: fixture.adapters,
+					// The run's end is observable before its cleanup runs; a resume can take its id right then.
+					onRunEnd: (runId, status) => {
+						if (status !== "failed") return;
+						unregisterSuccessor = stageControlRegistry.register({
+							runId,
+							stageId: "resumed-stage",
+							stageName: "resumed",
+							dispose: () => {
+								successorDisposed = true;
+							},
+						} as unknown as StageControlHandle);
+					},
+				},
+			);
+			try {
+				assert.equal(failed.status, "failed");
+				assert.equal(successorDisposed, false, "the failed run's cleanup must not dispose a resume's stage");
+				assert.deepEqual(
+					stageControlRegistry.forRun(failed.runId).map((handle) => handle.stageName),
+					["resumed"],
+					"the failed run released its own stages and kept the resume's",
+				);
+				assert.equal(
+					fixture.disposals(),
+					fixture.sessions.length,
+					"every stage session of the failed run was disposed",
+				);
+			} finally {
+				unregisterSuccessor?.();
+			}
+		});
+
+		test("a failed run started without a stage registry releases every stage, and its resume replays them and asks its question again (#5499)", async () => {
+			const store = createStore();
+			const fixture = createPersistedStageFixture({
+				onPrompt(text) {
+					if (text === "fail now") throw new Error("stage exploded");
+				},
+			});
+			const questions: string[] = [];
+			const ui: WorkflowUIAdapter = {
+				input: async () => "",
+				select: async <T extends string>(_message: string, options: readonly T[]) => options[0]!,
+				editor: async () => "",
+				confirm: async (title: string) => {
+					questions.push(title);
+					return true;
+				},
+				custom: async <T>() => undefined as T,
+			};
+			const failAt: { stage: string | undefined } = { stage: "last" };
+			const def = workflow({
+				name: "failed-run-release-unowned",
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					for (const name of ["one", "two"]) await ctx.stage(name).prompt(`prompt ${name}`);
+					assert.equal(await ctx.ui.confirm("go on?"), true);
+					await ctx.stage("last").prompt(failAt.stage === "last" ? "fail now" : "prompt last");
+					return {};
+				},
+			});
+
+			const failed = await run(def, {}, { store, adapters: fixture.adapters, ui });
+			assert.equal(failed.status, "failed");
+			const source = store.runs().find((candidate) => candidate.id === failed.runId)!;
+			assert.equal(source.resumable, true);
+			assert.equal(stageControlRegistry.has(failed.runId), false, "no stage of the failed run stays registered");
+			assert.equal(
+				fixture.disposals(),
+				fixture.sessions.length,
+				"every stage session, the failed one too, was disposed",
+			);
+
+			failAt.stage = undefined;
+			const createdBeforeResume = fixture.sessions.length;
+			const resumed = await run(
+				def,
+				{},
+				{
+					store,
+					adapters: fixture.adapters,
+					ui,
+					continuation: { source, resumeFromStageId: source.failedStageId! },
+				},
+			);
+
+			assert.equal(resumed.status, "completed", resumed.error);
+			assert.deepEqual(
+				resumed.stages.map((stage) => [stage.name, stage.replayed === true]),
+				[
+					["one", true],
+					["two", true],
+					["last", false],
+				],
+			);
+			assert.deepEqual(questions, ["go on?", "go on?"], "the resumed attempt asks its question again and goes on");
+			assert.equal(
+				fixture.sessions.length,
+				createdBeforeResume + 1,
+				"only the stage that failed opens a new session",
+			);
+			assert.equal(stageControlRegistry.has(resumed.runId), false);
 		});
 
 		test("a failed run whose completed stages were released resumes by replaying them (#3622)", async () => {

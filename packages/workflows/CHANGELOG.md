@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The bundled `show-me` skill now runs only when you type `/skill:show-me`, as its upstream HumanLayer skill does; the model no longer loads it on its own.
 - The `prompt-engineer` GPT-6.2 guide now says where reusable instructions belong: GPT-6.2 appends the Responses API's top-level `instructions` after `input`, so a `developer` message at the start of `input` keeps them in the cached prefix. The Claude Opus 5.5 guide adds that its progress notes arrive as thinking blocks a client must request to show, and the `max_tokens` Anthropic used for long agentic coding turns. The Claude Fable 5.2 page follows Anthropic's revised guide: a new code-ownership sentence and its measurements, new subagent and caution advice, and the `null` refusal category. The Claude Haiku 5.5 page notes that `budget_tokens` now returns an error, and the GPT-6 and GPT-6.1 pages link to OpenAI's GPT-6 guide again and follow its current text, which moved the per-model descriptions into the model pages.
 
+### Fixed
+
+- A workflow run that the SDK's `run()` starts without your own `stageControlRegistry` no longer keeps its stage sessions, their session stores and the run's state in memory until the process exits when it fails in a way that can be resumed. Like a completed run, it releases them before `run()` returns, and resuming it still replays its completed stages from its record. A run given your own `stageControlRegistry` keeps its stage sessions until you clear that registry, as before ([#5499](https://github.com/bastani-inc/atomic/issues/5499))
+
 ## [0.9.89] - 2026-11-18
 
 ### Breaking Changes

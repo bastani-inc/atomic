@@ -112,7 +112,11 @@ import {
 	type RunEvictionCheck,
 	RunStageResidency,
 } from "../runs/foreground/run-residency.js";
-import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import {
+	stageControlRegistry as defaultStageControlRegistry,
+	type StageControlHandle,
+	type StageControlRegistry,
+} from "../runs/foreground/stage-control-registry.js";
 import { disposeStageIdleReleaser, settleReleasedStages } from "../runs/foreground/stage-idle-release.js";
 import { readReplayedStageMessages } from "../runs/foreground/stage-runner-options.js";
 import type { StageWaitHandoff } from "../runs/foreground/stage-wake-dispatcher.js";
@@ -748,7 +752,13 @@ async function executeRun(
 	});
 	const mapRestoredOptions = restoredStageOptionsMapper(opts.worktreeRootMappings ?? []);
 	const limiter = createRunLimiter(inputConcurrency ?? opts.config?.defaultConcurrency);
-	const stageRegistry = opts.stageControlRegistry ?? defaultStageControlRegistry;
+	const sharedStageRegistry = opts.stageControlRegistry ?? defaultStageControlRegistry;
+	/**
+	 * The stage handles this execution registered. A resume can take the run's id before this execution's cleanup
+	 * runs, so its end releases only these and leaves a successor's handles alone (#5499).
+	 */
+	const ownStageHandles = new WeakSet<StageControlHandle>();
+	const stageRegistry = recordStageRegistrations(sharedStageRegistry, ownStageHandles);
 	const stageUiBroker = opts.stageUiBroker ?? currentStageUiBroker();
 	const sourceToContinuationNodeIds = new Map<string, string>();
 	const replayIndex = createContinuationReplayIndex(opts.continuation, sourceToContinuationNodeIds);
@@ -2032,15 +2042,15 @@ async function executeRun(
 					runtime.wakeDispatcher.dispose();
 					terminalEvents.dispose();
 					await subscriberReports.release();
-					// Standalone terminal runs have no host to own retained SDK sessions.
-					// Preserve caller-owned registries and handles needed for continuation.
+					// Standalone terminal runs have no host to own retained SDK sessions, so every ending releases them,
+					// a resumable failure included: resume replays its completed stages from the record and opens new
+					// sessions for the rest (#5499). Caller-owned registries keep theirs until their owner clears them.
 					if (
 						opts.stageControlRegistry === undefined &&
 						opts.executionMode !== "interactive" &&
-						isTerminalRunStatus(runSnapshot.status) &&
-						runSnapshot.resumable !== true
+						isTerminalRunStatus(runSnapshot.status)
 					) {
-						await stageRegistry.clear(runId);
+						await releaseOwnStageHandles(sharedStageRegistry, runId, ownStageHandles);
 					} else if (isTerminalRunStatus(runSnapshot.status)) {
 						// The workflow body has returned, so no author code can reuse a stage
 						// context. Saved, idle stage sessions leave RAM; chat reopens them.
@@ -2053,4 +2063,44 @@ async function executeRun(
 			}
 		}
 	}
+}
+
+/** `registry`, recording in `own` every handle registered through it. */
+function recordStageRegistrations(
+	registry: StageControlRegistry,
+	own: WeakSet<StageControlHandle>,
+): StageControlRegistry {
+	return new Proxy(registry, {
+		get(target, key) {
+			if (key === "register") {
+				return (handle: StageControlHandle) => {
+					own.add(handle);
+					return target.register(handle);
+				};
+			}
+			const value: unknown = Reflect.get(target, key, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+}
+
+/**
+ * Release the stage handles an ended execution registered under `runId`: all of the run's when every one is its own,
+ * otherwise only its own, so a resume that took the id meanwhile, or a chat opened on a stage, keeps its handles.
+ */
+async function releaseOwnStageHandles(
+	registry: StageControlRegistry,
+	runId: string,
+	own: WeakSet<StageControlHandle>,
+): Promise<void> {
+	const handles = registry.forRun(runId);
+	if (handles.every((handle) => own.has(handle))) {
+		await registry.clear(runId);
+		return;
+	}
+	const results = await Promise.allSettled(
+		handles.filter((handle) => own.has(handle)).map((handle) => handle.dispose?.()),
+	);
+	for (const result of results)
+		if (result.status === "rejected") console.warn("atomic-workflows: stage session release failed", result.reason);
 }
