@@ -51,6 +51,8 @@ export async function buildStageSessionOptions(input: StageSessionOptionsInput):
 		options.context = undefined;
 		options.forkFromSessionId = undefined;
 		options.forkFromEntryId = undefined;
+		options.forkFromEmptySource = undefined;
+		options.durableForkPoint = undefined;
 	}
 	if (input.sharedModelRuntime !== undefined && options.modelRuntime === undefined) {
 		options.modelRuntime = input.sharedModelRuntime;

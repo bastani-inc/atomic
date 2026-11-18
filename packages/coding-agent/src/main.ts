@@ -66,6 +66,7 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
+import { startupProjectTrust } from "./core/project-trust-state.ts";
 import { holdToolsUntilOwnerBuilt, shareBlueprintBuild } from "./core/resume/blueprint/barrier.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
 import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
@@ -781,8 +782,12 @@ export async function main(argv: string[], options?: MainOptions) {
 
 	const builtinPackagePaths = options?.builtinPackagePaths;
 	const trustPromptMode: AppMode = appMode;
-	const projectTrustByCwd = new Map<string, boolean>();
-	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
+	// Decisions made in this host session. An engine the host started to replace one that stopped is handed the
+	// decisions of the one it replaces, so nobody is asked twice.
+	const projectTrustByCwd = new Map<string, boolean>(Object.entries(engineEnv.trustDecisions?.projects ?? {}));
+	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>(
+		Object.entries(engineEnv.trustDecisions?.extensionSources ?? {}),
+	);
 	let deferredExtensionLoad = false;
 	let deferredStartupThinkingLevel: ThinkingLevel | undefined;
 	let deferredSavedThinkingLevel: ThinkingLevel | undefined;
@@ -799,13 +804,14 @@ export async function main(argv: string[], options?: MainOptions) {
 		const cachedProjectTrust = projectTrustByCwd.get(cwd);
 		const hasTrustInputs = await hasProjectTrustInputsAsync(cwd);
 		const storedProjectTrust = await projectTrustStore.getAsync(cwd);
-		const initialProjectTrusted =
-			parsed.projectTrustOverride ?? cachedProjectTrust ?? storedProjectTrust ?? !hasTrustInputs;
-		const shouldResolveProjectTrust =
-			!isolateInteractiveHost &&
-			parsed.projectTrustOverride === undefined &&
-			cachedProjectTrust === undefined &&
-			hasTrustInputs;
+		const startupTrust = startupProjectTrust({
+			override: parsed.projectTrustOverride,
+			sessionDecision: cachedProjectTrust,
+			saved: storedProjectTrust,
+			hasTrustInputs,
+		});
+		const initialProjectTrusted = startupTrust.trusted;
+		const shouldResolveProjectTrust = !isolateInteractiveHost && startupTrust.decide;
 		const runtimeSettingsManager = await SettingsManager.createAsync(cwd, agentDir, {
 			projectTrusted: initialProjectTrusted,
 		});
@@ -817,6 +823,9 @@ export async function main(argv: string[], options?: MainOptions) {
 			(shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0);
 		let completeStartupReload: (() => Promise<void>) | undefined;
 		let startupTrustContext: typeof projectTrustContext;
+		// While a deferred startup decision is still to come, the settings read the project untrusted to load only what
+		// the decision itself needs. That is no decision, so no one may report it as one.
+		let startupTrustPending = deferStartupTrust;
 		const resolvedExtensionPathCount = resolvedExtensionPaths?.length ?? 0;
 		const hasSystemPromptInput = parsed.systemPrompt !== undefined || (parsed.appendSystemPrompt?.length ?? 0) > 0;
 		const resolvedResourcePathCount =
@@ -893,6 +902,7 @@ export async function main(argv: string[], options?: MainOptions) {
 									}
 								: undefined,
 							onProjectTrustResolved: async () => {
+								startupTrustPending = false;
 								await finalizeStartupStorage();
 								engineLiveness?.projectTrustResolved();
 							},
@@ -907,6 +917,7 @@ export async function main(argv: string[], options?: MainOptions) {
 											onExtensionError: (message) => console.error(chalk.yellow(`Warning: ${message}`)),
 										});
 										projectTrustByCwd.set(cwd, trusted);
+										engineLiveness?.trustDecision("projects", cwd, trusted);
 										if (trusted && !initialProjectTrusted) {
 											migrateAfterTrust = true;
 											// Before the project's settings load, so its removed routing settings are not also reported as ignored.
@@ -941,6 +952,7 @@ export async function main(argv: string[], options?: MainOptions) {
 									onExtensionError: (message) => console.error(chalk.yellow(`Warning: ${message}`)),
 								});
 								borrowedExtensionSourceTrustByPath.set(source, trusted);
+								engineLiveness?.trustDecision("extensionSources", source, trusted);
 								return trusted;
 							},
 						}
@@ -1048,6 +1060,17 @@ export async function main(argv: string[], options?: MainOptions) {
 				!isolateInteractiveHost && !deferStartupTrust,
 			);
 			startupSession = created.session;
+			services.projectTrust = {
+				get pending() {
+					return startupTrustPending;
+				},
+				abandon() {
+					// No decision is coming any more: the session stays as untrusted as its settings read.
+					startupTrustPending = false;
+				},
+				decisions: projectTrustByCwd,
+				extensionSourceDecisions: borrowedExtensionSourceTrustByPath,
+			};
 			if (completeStartupReload) {
 				const completeReload = completeStartupReload;
 				let completion: Promise<void> | undefined;
@@ -1175,6 +1198,8 @@ export async function main(argv: string[], options?: MainOptions) {
 						}
 					})().catch((error) => {
 						completion = undefined;
+						// No decision is coming any more: the session stays as untrusted as its settings read.
+						startupTrustPending = false;
 						throw error;
 					}));
 			}

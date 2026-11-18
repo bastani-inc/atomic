@@ -2002,6 +2002,8 @@ export class SubagentControlRuntime {
 		let unsubscribe: (() => void) | undefined;
 		let eventLog: EventLog | undefined;
 		let skillReport: AttemptSkillReport = {};
+		/** Reports the attempt's metrics as of now, once its progress is tracked; the attempt's end reports them last. */
+		let reportFinalMetrics: (() => void) | undefined;
 		const terminate = async (cause: TerminationCauseName): Promise<void> => {
 			if (terminating) {
 				if (!terminationWasKill) this.killedChildren.delete(admitted.identity.path);
@@ -2278,7 +2280,8 @@ export class SubagentControlRuntime {
 			}
 			const transcriptSession = session;
 			const interruptTurn = async (): Promise<void> => {
-				if (!transcriptSession.isStreaming || termination !== undefined) return;
+				// A turn is interrupted while it streams, and between two attempts of a retry, where nothing streams.
+				if ((!transcriptSession.isStreaming && !transcriptSession.isRetrying) || termination !== undefined) return;
 				interruptedTurnSettlement = nextTurnSettled(
 					transcriptSession,
 					[signals.abort, signals.interrupt, executionEnded.signal],
@@ -2365,12 +2368,8 @@ export class SubagentControlRuntime {
 			const attemptStartedAt = Date.now();
 			const activityPrefix = randomUUID();
 			let lastProgressEmit = 0;
-			const emitProgress = (force: boolean) => {
-				const onProgress = admitted.spec.onProgress;
-				if (!onProgress && !taskHooks) return;
-				const now = Date.now();
+			const reportMetrics = (now: number) => {
 				progressState.durationMs = now - attemptStartedAt;
-				progressState.lastActivityAt = now;
 				taskHooks?.reportActivity({
 					reportId: `${activityPrefix}:metrics-${++activitySequence}`,
 					change: {
@@ -2380,11 +2379,19 @@ export class SubagentControlRuntime {
 						tokenCount: progressState.tokens,
 					},
 				});
+			};
+			const emitProgress = (force: boolean) => {
+				const onProgress = admitted.spec.onProgress;
+				if (!onProgress && !taskHooks) return;
+				const now = Date.now();
+				progressState.lastActivityAt = now;
+				reportMetrics(now);
 				if (!force && now - lastProgressEmit < 400) return;
 				lastProgressEmit = now;
 				onProgress?.({ ...progressState, recentTools: [...progressState.recentTools] });
 			};
 			let activitySequence = 0;
+			reportFinalMetrics = () => reportMetrics(Date.now());
 			const reportModel = () =>
 				taskHooks?.reportActivity({
 					reportId: `${activityPrefix}:model-${++activitySequence}`,
@@ -2715,6 +2722,13 @@ export class SubagentControlRuntime {
 				...skillReport,
 			};
 		} finally {
+			// Whatever ended the attempt, its time runs to now: a child released, or stopped, while a tool call ran sent no
+			// report since that call started (#5496).
+			try {
+				reportFinalMetrics?.();
+			} catch {
+				// A report the task host refuses must not replace the attempt result.
+			}
 			startBudget.end();
 			// End reply capability before asynchronous cleanup or extension invalidation.
 			executionEnded.abort();

@@ -723,7 +723,7 @@ Custom editors and `ctx.ui.custom()` components receive `keybindings: Keybinding
 - Use `Text` with padding `(0, 0)`. The default Box handles padding.
 - Use `\n` for multi-line content.
 - Handle `isPartial` for streaming progress.
-- Support `expanded` for detail on demand.
+- Support `expanded` for detail on demand. Ctrl+O sets it for every block, and a click on your block toggles it for that block alone.
 - Keep default view compact.
 - Read `context.args` in `renderResult` instead of copying args into `context.state`.
 - Use `context.state` only for data that must be shared across call and result slots.

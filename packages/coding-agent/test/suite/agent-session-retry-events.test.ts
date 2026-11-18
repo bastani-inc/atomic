@@ -225,6 +225,53 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.faux.state.callCount).toBe(1);
 	});
 
+	it.each([
+		{ failure: 1, expected: [] },
+		{ failure: 2, expected: ["start:1", "end:Retry cancelled"] },
+	])(
+		"cancels the retry when abortRetry is called after failure $failure, before its backoff starts (#5507)",
+		async ({ failure, expected }) => {
+			const endHandled = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			let failures = 0;
+			const harness = await createHarness({
+				settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
+				extensionFactories: [
+					(pi) => {
+						// Holds the failed attempt's `agent_end` where the session has not yet decided to retry it.
+						pi.on("agent_end", async () => {
+							if (++failures !== failure) return;
+							endHandled.resolve();
+							await release.promise;
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+			const retryEvents: string[] = [];
+			harness.session.subscribe((event) => {
+				if (event.type === "auto_retry_start") retryEvents.push(`start:${event.attempt}`);
+				if (event.type === "auto_retry_end") retryEvents.push(`end:${event.success || event.finalError}`);
+			});
+			harness.setResponses([
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+				fauxAssistantMessage("recovered"),
+			]);
+
+			const prompt = harness.session.prompt("test");
+			await endHandled.promise;
+			expect(harness.session.isRetrying).toBe(true);
+			harness.session.abortRetry();
+			release.resolve();
+			await prompt;
+
+			expect(retryEvents).toEqual(expected);
+			expect(harness.faux.state.callCount).toBe(failure);
+			expect(harness.session.isRetrying).toBe(false);
+		},
+	);
+
 	it("waits for the full loop when retry recovery produces tool calls", async () => {
 		const toolRuns: string[] = [];
 		const echoTool: AgentTool = {

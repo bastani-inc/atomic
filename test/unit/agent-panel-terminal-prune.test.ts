@@ -277,12 +277,100 @@ describe("only subagent rows count as agents", () => {
 	});
 });
 
+describe("a paused or blocked workflow run rests like a paused subagent (#5490)", () => {
+	/** A workflow run's row; a live run that is paused, or blocked on a failed stage, reads `paused`. */
+	const run = (state: AgentPanelItem["state"], id = "w"): AgentPanelItem => ({
+		id: `run:${id}`,
+		kind: "workflow",
+		state,
+		name: "ralph",
+		task: "stage review",
+	});
+	const shell = (state: AgentPanelItem["state"]): AgentPanelItem => ({
+		id: "ext:sh",
+		kind: "shell",
+		state,
+		name: "shell",
+		task: "sleep 300",
+	});
+
+	test("stays listed while a subagent runs, and the whole panel goes once nothing is active (#5490)", () => {
+		const items = [run("paused"), agent("stopped", "stopped"), agent("live", "running")];
+		const panel = panelSession(items);
+		assert.deepEqual(new Set(panel.ids()), new Set(["run:w", "ext:stopped", "ext:live"]));
+		assert.deepEqual(new Set(modelIds(items)), new Set(panel.ids()));
+		assert.deepEqual(panel.hint(), ["↓ 2 agents", "? keys"]);
+
+		const idle = [run("paused"), agent("stopped", "stopped"), agent("live", "done")];
+		panel.set(idle);
+		assert.deepEqual(panel.ids(), []);
+		assert.deepEqual(modelIds(idle), []);
+		assert.equal(agentPanelCounts(panel.session).total, 0);
+		assert.deepEqual(panel.hint(), ["? keys"]);
+	});
+
+	test("alone, it does not keep the panel up (#5490)", () => {
+		const panel = panelSession([run("paused")]);
+		assert.deepEqual(panel.ids(), []);
+		assert.deepEqual(modelIds([run("paused")]), []);
+		assert.deepEqual(panel.hint(), ["? keys"]);
+	});
+
+	test("stays listed while another workflow run or a background shell is active (#5490)", () => {
+		for (const other of [run("running", "other"), run("waiting", "other"), shell("running")]) {
+			const items = [run("paused"), other];
+			const panel = panelSession(items);
+			const expected = other.kind === "shell" ? ["run:w"] : ["run:w", "run:other"];
+			assert.deepEqual(new Set(panel.ids()), new Set(expected), other.state);
+			assert.deepEqual(new Set(modelIds(items)), new Set(expected), other.state);
+		}
+	});
+
+	test("once it left, it stays out when new work starts and comes back only after it runs again (#5490)", () => {
+		const panel = panelSession([run("paused"), agent("a", "running")]);
+		assert.deepEqual(new Set(panel.ids()), new Set(["run:w", "ext:a"]));
+		panel.set([run("paused"), agent("a", "done")]);
+		assert.deepEqual(panel.ids(), []);
+
+		panel.set([run("paused"), agent("a", "done"), agent("b", "running")]);
+		assert.deepEqual(panel.ids(), ["ext:b"], "a new subagent does not bring the paused run back");
+
+		panel.set([run("running"), agent("a", "done"), agent("b", "running")]);
+		assert.deepEqual(new Set(panel.ids()), new Set(["run:w", "ext:b"]), "resumed, it is listed again");
+		panel.set([run("paused"), agent("a", "done"), agent("b", "running")]);
+		assert.deepEqual(new Set(panel.ids()), new Set(["run:w", "ext:b"]), "paused again while work runs");
+	});
+
+	test("a run waiting for input still keeps the panel up and counts as needing input (#5490)", () => {
+		const items = [{ ...run("input"), question: "Ship it?" }, run("paused", "other")];
+		const panel = panelSession(items);
+		assert.deepEqual(new Set(panel.ids()), new Set(["run:w", "run:other"]));
+		assert.deepEqual(new Set(modelIds(items)), new Set(panel.ids()));
+		assert.deepEqual(panel.hint(), ["1 needs input", "? keys"]);
+	});
+
+	test("a stopped run still stays until it is opened, and does not read as resting (#5490)", () => {
+		const panel = panelSession([run("stopped")]);
+		assert.deepEqual(panel.ids(), ["run:w"]);
+		assert.deepEqual(modelIds([run("stopped")]), ["run:w"]);
+		panel.set([{ ...run("stopped"), viewed: true }]);
+		assert.deepEqual(panel.ids(), []);
+	});
+});
+
 describe("the focused panel", () => {
 	for (const [name, initial] of [
 		["its only subagent finishes", [agent("a", "running")]],
 		[
 			"the only active subagent finishes and the stopped one leaves with it",
 			[agent("a", "running"), agent("b", "stopped")],
+		],
+		[
+			"the only active subagent finishes and a paused workflow run leaves with it (#5490)",
+			[
+				agent("a", "running"),
+				{ id: "run:w", kind: "workflow", state: "paused", name: "ralph", task: "stage review" },
+			],
 		],
 	] as const) {
 		test(`returns to the prompt when ${name}`, async () => {

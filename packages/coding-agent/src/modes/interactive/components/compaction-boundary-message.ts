@@ -1,4 +1,4 @@
-import { Box, Container, MouseRegion, Spacer, Text } from "@bastani/atomic-tui";
+import { Box, Container, Spacer, Text } from "@bastani/atomic-tui";
 import type {
 	CompactionForm,
 	VerbatimCompactionDetails,
@@ -12,6 +12,7 @@ import {
 } from "../../../core/messages.ts";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound } from "./keybinding-hints.js";
+import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 import { formatWorkingTokens } from "./working-run-meter.ts";
 
 /** The mark every compaction boundary line starts with. */
@@ -81,6 +82,18 @@ export class CompactionBoundaryMessageComponent extends Box {
 		this.updateDisplay();
 	}
 
+	/** A click anywhere on the compaction boundary expands or collapses it, as Ctrl+O does. */
+	readonly expandsOnClick = true;
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	/** Every row of the compaction boundary, its padding included. */
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(0, this.render(width).length);
+	}
+
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
 		this.updateDisplay();
@@ -127,13 +140,7 @@ export class CompactionBoundaryMessageComponent extends Box {
 				.join("\n");
 			content.addChild(new Text(rendered, 0, 0));
 		}
-		this.addChild(
-			new MouseRegion(content, (event) => {
-				if (event.type !== "click" || event.button !== "left") return undefined;
-				this.setExpanded(!this.expanded);
-				return { handled: true };
-			}),
-		);
+		this.addChild(content);
 	}
 }
 

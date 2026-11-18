@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
-import { getKeybindings, setKeybindings, type TuiMouseEvent } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, type TuiMouseEvent, type TuiMouseEventResult } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -50,8 +50,21 @@ function click(x: number, y: number, width: number, height: number, clickCount =
 	};
 }
 
+/**
+ * Delivers a click as the renderer does: to `target`, then, once no second press made it a double-click, its
+ * single-click action.
+ */
+function singleClick(
+	target: { handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined },
+	event: TuiMouseEvent,
+): TuiMouseEventResult | undefined {
+	const result = target.handleMouse?.(event);
+	result?.whenSingleClick?.();
+	return result;
+}
+
 for (const width of [80, 160]) {
-	test(`in an open task transcript a click on a grouped summary shows its calls and a click on a call header folds them, at ${width} columns`, async () => {
+	test(`in an open task transcript a click on a grouped summary shows its calls and a click on any row of one of them folds them, at ${width} columns`, async () => {
 		initTheme("dark");
 		const keys = getKeybindings();
 		setKeybindings(new KeybindingsManager());
@@ -113,20 +126,16 @@ for (const width of [80, 160]) {
 			assert.ok(!expanded("beta"), screen().join("\n"));
 
 			const summary = rowOf(/Ran 2 shell commands/);
-			inspector.handleMouse(click(screen()[summary]!.indexOf("Ran"), summary, width, height));
+			singleClick(inspector, click(screen()[summary]!.indexOf("Ran"), summary, width, height));
 			assert.ok(expanded("alpha"), screen().join("\n"));
 			assert.ok(expanded("beta"), screen().join("\n"));
 
 			const body = rowOf(/beta line 18$/);
-			inspector.handleMouse(click(8, body, width, height));
-			assert.ok(expanded("beta"), "a click in a block's output selects, it does not toggle");
-
-			const header = rowOf(/beta-cmd/);
-			const column = screen()[header]!.indexOf("beta-cmd");
-			inspector.handleMouse(click(column, header, width, height, 2));
+			const column = screen()[body]!.indexOf("beta");
+			assert.equal(singleClick(inspector, click(column, body, width, height, 2)), undefined);
 			assert.ok(expanded("beta"), "a double-click is a selection");
 
-			inspector.handleMouse(click(column, header, width, height));
+			singleClick(inspector, click(column, body, width, height));
 			assert.ok(!expanded("alpha"), screen().join("\n"));
 			assert.ok(!expanded("beta"), screen().join("\n"));
 			assert.notEqual(
@@ -142,7 +151,7 @@ for (const width of [80, 160]) {
 	});
 }
 
-test("a subagent chat opened from the agent panel takes the click on a block header through its full-screen view", async () => {
+test("a subagent chat opened from the agent panel takes a click on a block's output through its full-screen view", async () => {
 	initTheme("dark");
 	const keys = getKeybindings();
 	setKeybindings(new KeybindingsManager());
@@ -183,10 +192,16 @@ test("a subagent chat opened from the agent panel takes the click on a block hea
 					await flush();
 					const lines = () => component.render(width).map((line) => stripVTControlCharacters(line));
 					views.push(lines());
-					const header = lines().findIndex((line) => line.includes("child-cmd"));
-					assert.notEqual(header, -1, lines().join("\n"));
-					const handled = component.handleMouse?.(click(lines()[header]!.indexOf("child-cmd"), header, width, 40));
+					const shown = lines().findIndex((line) => line.trimEnd().endsWith("child line 18"));
+					assert.notEqual(shown, -1, lines().join("\n"));
+					const handled = component.handleMouse?.(click(lines()[shown]!.indexOf("child"), shown, width, 40));
 					assert.equal(handled?.handled, true);
+					assert.equal(
+						lines().some((line) => line.trimEnd().endsWith("child line 1")),
+						false,
+						"not before it settles",
+					);
+					handled?.whenSingleClick?.();
 					views.push(lines());
 					component.handleInput?.("\x1b[D");
 					component.dispose?.();

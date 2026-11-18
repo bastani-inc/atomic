@@ -54,8 +54,9 @@ async function handleManagementRequest(input: {
 	requestCwd: string;
 	ctx: ExtensionContext;
 	deps: ResolvedExecutorDeps;
+	signal: AbortSignal;
 }): Promise<SubagentToolResult> {
-	const { params, paramsWithResolvedCwd, requestCwd, ctx, deps } = input;
+	const { params, paramsWithResolvedCwd, requestCwd, ctx, deps, signal } = input;
 	const action = params.action;
 	if (!action) {
 		return {
@@ -134,14 +135,19 @@ async function handleManagementRequest(input: {
 		};
 	}
 	if ((SUBAGENT_RUN_CONTROL_ACTIONS as readonly string[]).includes(action)) {
-		return controlSubagentChildren(deps, ctx, {
-			action: action as SubagentRunControlAction,
-			...((paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId)
-				? { id: paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId }
-				: {}),
-			...(params.message !== undefined ? { message: params.message } : {}),
-			...(params.all !== undefined ? { all: params.all } : {}),
-		});
+		return controlSubagentChildren(
+			deps,
+			ctx,
+			{
+				action: action as SubagentRunControlAction,
+				...((paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId)
+					? { id: paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId }
+					: {}),
+				...(params.message !== undefined ? { message: params.message } : {}),
+				...(params.all !== undefined ? { all: params.all } : {}),
+			},
+			signal,
+		);
 	}
 	const targetTaskId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
 	// A paused or quit child awaits resume, as a quit workflow run does; its records outlive its task and a restart.
@@ -277,7 +283,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
-			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps });
+			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps, signal });
 		}
 		// Fanout authorization gates delegation and privileged control. Only `list`,
 		// `get`, `status`, and `wait` stay available to an unauthorized child; run control

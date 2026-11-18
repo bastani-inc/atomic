@@ -25,8 +25,14 @@ function createOrderingMode(getWarning: () => string | undefined = () => undefin
 		ui: { requestRender() {} },
 		lastStatusSpacer: undefined,
 		lastStatusText: undefined,
-		// `session` is a getter over `runtimeHost`; the eager binding reads the model catalog through it.
-		runtimeHost: { session: { modelRuntime: { getError: () => undefined, getWarning } } },
+		// `session` is a getter over `runtimeHost`; the eager binding reads the model catalog through it, and a redraw
+		// reads the project trust (a trusted session here).
+		runtimeHost: {
+			session: {
+				modelRuntime: { getError: () => undefined, getWarning },
+				settingsManager: { isProjectTrusted: () => true },
+			},
+		},
 	});
 	return mode;
 }

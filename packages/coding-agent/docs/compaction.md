@@ -131,7 +131,7 @@ The main chat, subagent views in `/tasks`, and workflow stage chats show one lin
 ⚛ Context compacted · morph/morph-compactor · 182k → 21.4k tokens
 ```
 
-A boundary written from an extension's replacement text names `extension` as its source. When a configured compactor was not used, the `Compaction model not used (<reason>); context cleared instead` notice follows the line. Press Ctrl+O (`app.tools.expand`) or click the line to show the whole boundary message: the recovery instructions and any compacted text.
+A boundary written from an extension's replacement text names `extension` as its source. When a configured compactor was not used, the `Compaction model not used (<reason>); context cleared instead` notice follows the line. Press Ctrl+O (`app.tools.expand`) or click the boundary to show the whole boundary message: the recovery instructions and any compacted text.
 
 A failed or cancelled `/compact` stops its spinner, shows the error, writes no boundary, and leaves the session ready for another `/compact` or a normal turn.
 
