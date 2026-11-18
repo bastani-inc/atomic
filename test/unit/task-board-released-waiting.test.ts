@@ -110,11 +110,12 @@ test("the agent panel shows a released subagent as waiting, kept among unfinishe
 	assert.doesNotMatch(text, /∀/);
 });
 
-test("a chat's task footer lists a released subagent as waiting, beside its running shells", () => {
+test("a chat's task footer lists a released subagent as waiting, and counts its running shells", () => {
 	const shell = { ...taskRecord("s", "command"), title: "npm run build" };
 	const footer = stripVTControlCharacters(renderTaskFooter([released("r"), shell], 80).join("\n"));
 	assert.match(footer, /◌ worker .*waiting on bash · 12m/);
-	assert.match(footer, /npm run build/);
+	assert.match(footer, /^ {2}1 shell$/m);
+	assert.doesNotMatch(footer, /npm run build/);
 	assert.doesNotMatch(footer, /∀ worker/);
 });
 

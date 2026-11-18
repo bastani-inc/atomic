@@ -254,6 +254,39 @@ export function fgAnsi(color: string | number, mode: ColorMode): string {
 	throw new Error(`Invalid color value: ${color}`);
 }
 
+/** Distinct `#rrggbb` colors kept per color environment by {@link hexColorAnsi}; past it the cache starts over. */
+const HEX_COLOR_SEQUENCE_CACHE_LIMIT = 1024;
+const hexColorSequences = {
+	environment: undefined as ColorEnvironment | undefined,
+	fg: new Map<string, string>(),
+	bg: new Map<string, string>(),
+};
+
+/**
+ * The escape sequence that sets the `#rrggbb` color `hex` as the foreground or background, in the color environment
+ * themes paint with: none when NO_COLOR or FORCE_COLOR=0 turns color off, the nearest 256-color entry under
+ * FORCE_COLOR=1 or 2, and true color otherwise. Code that builds its own colors uses it to follow NO_COLOR and
+ * FORCE_COLOR like the theme does; it never reads the environment itself.
+ */
+export function hexColorAnsi(hex: string, layer: "fg" | "bg"): string {
+	const environment = colorEnvironment();
+	if (environment.off) return "";
+	if (hexColorSequences.environment !== environment) {
+		hexColorSequences.environment = environment;
+		hexColorSequences.fg.clear();
+		hexColorSequences.bg.clear();
+	}
+	const cache = hexColorSequences[layer];
+	let sequence = cache.get(hex);
+	if (sequence === undefined) {
+		const mode: ColorMode = environment.forced === 1 || environment.forced === 2 ? "256color" : "truecolor";
+		sequence = layer === "fg" ? fgAnsi(hex, mode) : bgAnsi(hex, mode);
+		if (cache.size >= HEX_COLOR_SEQUENCE_CACHE_LIMIT) cache.clear();
+		cache.set(hex, sequence);
+	}
+	return sequence;
+}
+
 export function bgAnsi(color: string | number, mode: ColorMode, quantization: Quantization = "nearest"): string {
 	if (color === "") return "\x1b[49m";
 	if (typeof color === "number") return `\x1b[48;5;${color}m`;
