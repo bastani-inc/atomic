@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The bundled `show-me` skill now runs only when you type `/skill:show-me`, as its upstream HumanLayer skill does; the model no longer loads it on its own.
 - The `prompt-engineer` GPT-6.2 guide now says where reusable instructions belong: GPT-6.2 appends the Responses API's top-level `instructions` after `input`, so a `developer` message at the start of `input` keeps them in the cached prefix. The Claude Opus 5.5 guide adds that its progress notes arrive as thinking blocks a client must request to show, and the `max_tokens` Anthropic used for long agentic coding turns. The Claude Fable 5.2 page follows Anthropic's revised guide: a new code-ownership sentence and its measurements, new subagent and caution advice, and the `null` refusal category. The Claude Haiku 5.5 page notes that `budget_tokens` now returns an error, and the GPT-6 and GPT-6.1 pages link to OpenAI's GPT-6 guide again and follow its current text, which moved the per-model descriptions into the model pages.
 
+### Fixed
+
+- The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
+- The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+
 ## [0.9.89] - 2026-11-18
 
 ### Breaking Changes

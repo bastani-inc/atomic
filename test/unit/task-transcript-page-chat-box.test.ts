@@ -53,8 +53,8 @@ const text = (rows: readonly string[]) => plain(rows).join("\n");
 const TASK_ROW = /^ {2}(?:∀ |\d+ shells?\b)/;
 const taskRows = (rows: readonly string[]) => plain(rows).filter((row) => TASK_ROW.test(row));
 
-/** The attached composer's top rule: heavy, ending in its label and one rule glyph (#5224). */
-const labelRows = (rows: readonly string[]) => plain(rows).filter((row) => /^━+ .+ ━$/.test(row));
+/** The attached composer's top rule: the main composer's rule, ending in its label and one rule glyph (#5224). */
+const labelRows = (rows: readonly string[]) => plain(rows).filter((row) => /^─+ .+ ─$/.test(row));
 
 function record(id: string, kind: TaskRecord["kind"], parent?: string, extra: Partial<TaskRecord> = {}): TaskRecord {
 	const taskId = id as TaskId;
@@ -213,11 +213,11 @@ describe("a subagent's chat label (#4640, #5224)", () => {
 		await page.load();
 		const rows = plain(page.render(80, 12));
 		const [label] = labelRows(rows);
-		assert.match(label ?? "", /^━+ agent-child · title-child · running ━$/);
+		assert.match(label ?? "", /^─+ agent-child · title-child · running ─$/);
 		assert.equal(visibleWidth(label ?? ""), 80);
 		const top = rows.indexOf(label ?? "");
 		assert.ok(rows[top + 1]?.startsWith("❯"), "the prompt stays on the editor's content line");
-		assert.equal(rows[top + 2], "━".repeat(80), "the bottom rule is heavy too");
+		assert.equal(rows[top + 2], "─".repeat(80), "the bottom rule is the main composer's rule too");
 		page.dispose();
 	});
 
@@ -239,9 +239,11 @@ describe("a subagent's chat label (#4640, #5224)", () => {
 		);
 		await page.load();
 		assert.deepEqual(labelRows(page.render(39, 12)), []);
-		assert.ok(plain(page.render(39, 12)).includes("━".repeat(39)), "narrow terminals keep the heavy rule");
+		const narrowRows = plain(page.render(39, 12));
+		const prompt = narrowRows.findIndex((row) => row.startsWith("❯"));
+		assert.equal(narrowRows[prompt - 1], "─".repeat(39), "narrow terminals keep the rule above the prompt");
 		const [narrow] = labelRows(page.render(40, 12));
-		assert.match(narrow ?? "", /^━+ agent-child · review.*… ━$/);
+		assert.match(narrow ?? "", /^─+ agent-child · review.*… ─$/);
 		assert.equal(visibleWidth(narrow ?? ""), 40);
 		page.dispose();
 	});
@@ -251,7 +253,7 @@ describe("a subagent's chat label (#4640, #5224)", () => {
 		await page.load();
 		page.chat.setInputText(Array.from({ length: 40 }, (_, index) => `line ${index}`).join("\n"));
 		const rows = plain(page.render(80, 30));
-		const top = rows.find((row) => row.includes("more") && row.startsWith("━"));
+		const top = rows.find((row) => row.includes("more") && row.startsWith("─"));
 		assert.match(top ?? "", /↑ \d+ more/);
 		assert.match(top ?? "", /agent-child · title-child · running/);
 		assert.equal(visibleWidth(top ?? ""), 80);
@@ -302,14 +304,14 @@ describe("a subagent's chat box rows (#4640)", () => {
 			);
 		assert.deepEqual(kept(1), ["LABEL"]);
 		assert.deepEqual(kept(0), ["LABEL"]);
-		assert.deepEqual(kept(3), ["LABEL", "PROMPT", "━".repeat(80)]);
-		assert.deepEqual(kept(4), ["LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
-		assert.deepEqual(kept(5), ["PENDING", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
-		assert.deepEqual(kept(6), ["PENDING", "WORKING", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
-		assert.deepEqual(kept(7), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(3), ["LABEL", "PROMPT", "─".repeat(80)]);
+		assert.deepEqual(kept(4), ["LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(5), ["PENDING", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(6), ["PENDING", "WORKING", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
+		assert.deepEqual(kept(7), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
 		const roomy = kept(8);
 		assert.equal(roomy.length, 8, "the transcript takes the one row left");
-		assert.deepEqual(roomy.slice(1), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "━".repeat(80), "FOOTER"]);
+		assert.deepEqual(roomy.slice(1), ["PENDING", "WORKING", "USAGE", "LABEL", "PROMPT", "─".repeat(80), "FOOTER"]);
 		page.dispose();
 	});
 
@@ -593,6 +595,42 @@ describe("a live subagent's chat box (#4640)", () => {
 		idle.page.dispose();
 	});
 
+	test("a chat opened while its subagent waits to retry shows `retrying…` on the usage row until the next attempt (#5483)", async () => {
+		// Between attempts the session is not streaming, but its retry has started and not ended.
+		const waiting = { ...(await liveChatSession()), retryAttempt: 1 } as ChatBoxSession;
+		const { page, live } = await livePage({ chatSession: waiting, isRunning: () => false });
+		for (const width of [80, 160]) {
+			const rows = plain(page.render(width, 20)).map((row) => row.trimEnd());
+			const label = rows.indexOf(labelRows(rows)[0] ?? "");
+			assert.match(rows[label - 2] ?? "", /^ ∀ retrying…$/u, `${width} columns: the retry is the working line`);
+			assert.match(rows[label - 1] ?? "", /\(auto\)$/u, `${width} columns: right on the usage row`);
+		}
+		for (const listener of live.listeners) listener({ type: "agent_start" } as AgentSessionEvent);
+		const next = plain(page.render(100, 20));
+		assert.ok(!next.some((row) => row.includes("retrying…")), "the next attempt clears the retry");
+		assert.ok(
+			next.some((row) => WORKING_LINE.test(row)),
+			"the next attempt is the working line",
+		);
+		page.dispose();
+	});
+
+	test("a chat opened while its subagent waits to retry stops showing it when the retry ends (#5483)", async () => {
+		const waiting = { ...(await liveChatSession()), retryAttempt: 1 } as ChatBoxSession;
+		const { page, live } = await livePage({ chatSession: waiting, isRunning: () => false });
+		assert.ok(plain(page.render(100, 20)).some((row) => row.includes("retrying…")));
+		for (const listener of live.listeners) {
+			listener({
+				type: "auto_retry_end",
+				success: false,
+				attempt: 1,
+				finalError: "Retry cancelled",
+			} as AgentSessionEvent);
+		}
+		assert.ok(!plain(page.render(100, 20)).some((row) => row.includes("retrying…")));
+		page.dispose();
+	});
+
 	test("a running subagent's working line counts the same tokens as its task row (#5224)", async () => {
 		let tokenCount = 87_400;
 		const live = { ...session("child", "subagent-worker-aabcf28b-1"), isRunning: () => true };
@@ -663,6 +701,49 @@ describe("a live subagent's chat box (#4640)", () => {
 		assert.ok(!rows.some((row) => row.includes("↑1.2k")));
 		assert.equal(taskRows(rows).length, 2);
 		page.dispose();
+		settled.dispose();
+	});
+
+	test("keeps one blank row between the transcript and the composer when there is no usage meter", async () => {
+		const answer = Array.from({ length: 20 }, (_, index) => `answer line ${index}`).join("\n\n");
+		const settled = subagentPage(
+			treeSource(tree(), new Map(), {
+				readTaskTranscript: () => ({
+					ok: true,
+					value: {
+						messages: [
+							{ role: "user", content: "transcript of child", timestamp: 1 },
+							{
+								role: "assistant",
+								content: [{ type: "text", text: answer }],
+								api: "openai-responses",
+								provider: "faux",
+								model: "worker-model",
+								usage: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+								stopReason: "stop",
+								timestamp: 2,
+							},
+						],
+					},
+				}),
+			}),
+			"child",
+			environment({ footerData }),
+		);
+		await settled.load();
+		const rows = plain(settled.render(80, 16));
+		// Either rule glyph, so the test checks the row above the rule, not which glyph the rule draws.
+		const label = rows.findIndex((row) => /^[─━]+ agent-child · .+ [─━]$/u.test(row));
+		assert.ok(label > 2, "the composer's labelled top rule is painted");
+		assert.equal(rows[label - 1]?.trim(), "", "one blank row sits on the composer's top rule");
+		assert.equal(rows[label - 2]?.trim(), "answer line 19", "the transcript ends right above that row");
 		settled.dispose();
 	});
 });

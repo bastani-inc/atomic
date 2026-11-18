@@ -87,8 +87,7 @@ test("workflow sheet uses every fitting row at 80x24 and 80x25 in the production
 		const transcriptRow = 1;
 		const usageRow = 1;
 		const footerRows = 2;
-		const spacerRow = 1;
-		const externalRows = transcriptRow + usageRow + footerRows + spacerRow;
+		const externalRows = transcriptRow + usageRow + footerRows;
 		let sheet: PiCustomComponent | undefined;
 		let lastLines: string[] = [];
 		const custom: PiCustomOverlayFunction = (factory, options) =>

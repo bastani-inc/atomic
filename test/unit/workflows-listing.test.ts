@@ -613,7 +613,7 @@ async function liveListing(initialRuns: RunSnapshot[], terminal?: { rows: number
 }
 
 test("workflow previews are disabled rather than advertised when their card cannot fit (#5224)", async () => {
-	const terminal = { rows: 14 };
+	const terminal = { rows: 13 };
 	const fixture = await liveListing(
 		[run({ id: "preview", status: "running", stages: stages(["running"]) })],
 		terminal,
@@ -626,7 +626,7 @@ test("workflow previews are disabled rather than advertised when their card cann
 		assert.match(stripVTControlCharacters(fixture.component.render(80).join("\n")), /space preview/);
 		fixture.component.handleInput?.(" ");
 		assert.match(stripVTControlCharacters(fixture.component.render(80).join("\n")), /id preview/);
-		terminal.rows = 14;
+		terminal.rows = 13;
 		assert.doesNotMatch(
 			stripVTControlCharacters(fixture.component.render(80).join("\n")),
 			/space.*preview|╭|id preview/,

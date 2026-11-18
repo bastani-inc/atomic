@@ -8,7 +8,6 @@ const plain = (text: string) => text;
 describe("composer rule (#5224)", () => {
 	test("a rule without a label is one glyph per column", () => {
 		assert.equal(renderComposerRule(10, { color: plain }), "─".repeat(10));
-		assert.equal(renderComposerRule(10, { color: plain, heavy: true }), "━".repeat(10));
 	});
 
 	test("a label sits right-aligned with a space on each side and one glyph after it", () => {
@@ -18,10 +17,10 @@ describe("composer rule (#5224)", () => {
 		assert.ok(rule.startsWith("──"), rule);
 	});
 
-	test("the heavy accent variant names the attached target the same way", () => {
-		const rule = renderComposerRule(80, { color: plain, heavy: true, label: "debugger · #5220 spawn lock · 18m" });
+	test("names an attached chat's target the same way", () => {
+		const rule = renderComposerRule(80, { color: plain, label: "debugger · #5220 spawn lock · 18m" });
 		assert.equal(visibleWidth(rule), 80);
-		assert.ok(rule.endsWith(" debugger · #5220 spawn lock · 18m ━"), rule);
+		assert.ok(rule.endsWith(" debugger · #5220 spawn lock · 18m ─"), rule);
 	});
 
 	test("a label longer than the rule is shortened with an ellipsis and keeps the width", () => {
