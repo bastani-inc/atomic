@@ -1,0 +1,261 @@
+import assert from "node:assert/strict";
+import { createServer, type Server, type Socket } from "node:net";
+import { describe, test } from "vitest";
+import {
+	authorityOf,
+	noProxyMatches,
+	openProxyTunnel,
+	ProxySettingError,
+	ProxyTunnelError,
+	parseProxy,
+	postgresTransport,
+	proxySetting,
+} from "../../packages/storage-postgres/proxy.js";
+
+/**
+ * Which proxy a PostgreSQL connection uses, and the tunnel it asks the proxy for (#5473). The adapter's integration
+ * tests run a real server through a real proxy; these cover the decisions and the proxy's answers one by one.
+ */
+
+/** A loopback server that answers each connection with `answer`, given the request it received. */
+async function fakeProxy(answer: (socket: Socket, request: string) => void): Promise<{
+	server: Server;
+	port: number;
+	requests: string[];
+}> {
+	const requests: string[] = [];
+	const server = createServer((socket) => {
+		let received = "";
+		socket.on("error", () => {});
+		socket.on("data", (chunk: Buffer) => {
+			received += chunk.toString("latin1");
+			if (!received.includes("\r\n\r\n")) return;
+			requests.push(received);
+			answer(socket, received);
+			received = "";
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address !== null && typeof address === "object");
+	return { server, port: address.port, requests };
+}
+
+function proxyAt(port: number, credentials = "") {
+	return parseProxy(`http://${credentials}127.0.0.1:${port}`, "HTTPS_PROXY");
+}
+
+async function tunnelFailure(promise: Promise<unknown>): Promise<ProxyTunnelError> {
+	const error = await promise.then(
+		() => undefined,
+		(caught: Error) => caught,
+	);
+	assert.ok(error instanceof ProxyTunnelError, String(error));
+	return error;
+}
+
+describe("PostgreSQL proxy selection (#5473)", () => {
+	const target = { host: "db.example.com", port: 5432 };
+
+	test("HTTPS_PROXY applies to a remote database; NO_PROXY, a loopback host and a socket directory go direct (#5473)", () => {
+		const env = { HTTPS_PROXY: "http://proxy.local:3128" };
+		const proxied = postgresTransport(target, env);
+		assert.equal(proxied.kind, "proxy");
+		assert.equal(proxied.kind === "proxy" && proxied.proxy.label, "http://proxy.local:3128");
+		assert.equal(postgresTransport(target, { ...env, NO_PROXY: "example.com" }).kind, "direct");
+		assert.equal(postgresTransport(target, { ...env, no_proxy: "db.example.com:5432" }).kind, "direct");
+		assert.equal(postgresTransport(target, { ...env, NO_PROXY: "db.example.com:6543" }).kind, "proxy");
+		for (const host of ["localhost", "127.0.0.1", "::1", "[::1]", "/var/run/postgresql", "127.1", "0:0:0:0:0:0:0:1"])
+			assert.equal(postgresTransport({ host, port: 5432 }, env).kind, "direct", host);
+	});
+
+	test("the environment's variables are read as Atomic's HTTPS clients read them, with ALL_PROXY between (#5473)", () => {
+		assert.equal(proxySetting({}), undefined);
+		assert.deepEqual(proxySetting({ HTTPS_PROXY: "http://a:1" }), { variable: "HTTPS_PROXY", value: "http://a:1" });
+		// The lowercase form wins, even empty, which then sets nothing and the next variable is read.
+		assert.deepEqual(proxySetting({ https_proxy: "http://b:1", HTTPS_PROXY: "http://a:1" }), {
+			variable: "https_proxy",
+			value: "http://b:1",
+		});
+		assert.deepEqual(proxySetting({ https_proxy: "", HTTPS_PROXY: "http://a:1", HTTP_PROXY: "http://c:1" }), {
+			variable: "HTTP_PROXY",
+			value: "http://c:1",
+		});
+		assert.deepEqual(proxySetting({ ALL_PROXY: "http://d:1", HTTP_PROXY: "http://c:1" }), {
+			variable: "ALL_PROXY",
+			value: "http://d:1",
+		});
+		// A SOCKS ALL_PROXY, meant for other tools, is passed over.
+		assert.deepEqual(proxySetting({ ALL_PROXY: "socks5://d:1", HTTP_PROXY: "http://c:1" }), {
+			variable: "HTTP_PROXY",
+			value: "http://c:1",
+		});
+		assert.equal(proxySetting({ ALL_PROXY: "socks5h://d:1" }), undefined);
+	});
+
+	test("NO_PROXY matches hosts, subdomains, wildcards and ports as Atomic's HTTPS clients do (#5473)", () => {
+		assert.equal(noProxyMatches("db.example.com", 5432, ""), false);
+		assert.equal(noProxyMatches("db.example.com", 5432, "*"), true);
+		assert.equal(noProxyMatches("db.example.com", 5432, " other.test , * "), true);
+		assert.equal(noProxyMatches("db.example.com", 5432, "*:6543"), false);
+		assert.equal(noProxyMatches("db.example.com", 5432, ".example.com"), true);
+		assert.equal(noProxyMatches("example.com", 5432, ".example.com"), true);
+		assert.equal(noProxyMatches("example.com", 5432, "*.example.com"), false);
+		assert.equal(noProxyMatches("db.example.com", 5432, "*.example.com"), true);
+		assert.equal(noProxyMatches("notexample.com", 5432, "example.com"), false);
+		assert.equal(noProxyMatches("DB.Example.COM.", 5432, "db.example.com"), true);
+		assert.equal(noProxyMatches("::1", 5432, "[::1]:5432"), true);
+		assert.equal(noProxyMatches("::1", 5432, "::1"), true);
+	});
+
+	test("the proxy option overrides the environment: none, or a URL used even for this machine (#5473)", () => {
+		const env = { HTTPS_PROXY: "http://proxy.local:3128" };
+		assert.equal(postgresTransport(target, env, "none").kind, "direct");
+		assert.equal(postgresTransport(target, env, " NONE ").kind, "direct");
+		const local = postgresTransport({ host: "127.0.0.1", port: 5432 }, {}, "http://127.0.0.1:9");
+		assert.equal(local.kind, "proxy");
+		const option = postgresTransport(target, { ...env, NO_PROXY: "*" }, "proxy.other:8080");
+		assert.equal(option.kind === "proxy" && option.proxy.label, "http://proxy.other:8080");
+	});
+
+	test("a proxy URL's credentials are sent as Basic and never named; unusable settings name their source only (#5473)", () => {
+		const proxy = parseProxy("http://agent%40corp:p%3Ass@proxy.local:3128", "HTTPS_PROXY");
+		assert.equal(proxy.label, "http://proxy.local:3128");
+		assert.equal(proxy.authorization, `Basic ${Buffer.from("agent@corp:p:ss").toString("base64")}`);
+		assert.equal(parseProxy("https://proxy.local", "x").port, 443);
+		assert.equal(parseProxy("proxy.local", "x").port, 80);
+		for (const value of [
+			"socks5://user:fixture-secret@proxy.local:1080",
+			"http://user:fixture%zzsecret@proxy.local:1",
+			"http://",
+		]) {
+			assert.throws(
+				() => parseProxy(value, "HTTPS_PROXY"),
+				(error: Error) => {
+					assert.ok(error instanceof ProxySettingError, String(error));
+					assert.match(error.message, /^HTTPS_PROXY /);
+					assert.equal(error.message.includes("fixture"), false);
+					return true;
+				},
+			);
+		}
+	});
+
+	test("a tunnel request names an IPv6 target in brackets (#5473)", () => {
+		assert.equal(authorityOf({ host: "db.example.com", port: 5432 }), "db.example.com:5432");
+		assert.equal(authorityOf({ host: "2001:db8::1", port: 5432 }), "[2001:db8::1]:5432");
+		assert.equal(authorityOf({ host: "[2001:db8::1]", port: 6432 }), "[2001:db8::1]:6432");
+	});
+});
+
+describe("PostgreSQL proxy tunnel (#5473)", () => {
+	const target = { host: "db.example.com", port: 5432 };
+
+	test("asks for CONNECT with the target and credentials, and carries the target's bytes after a 200 (#5473)", async () => {
+		const proxy = await fakeProxy((socket) => {
+			// Bytes the proxy passes on right after its answer reach the caller first.
+			socket.write("HTTP/1.1 200 Connection established\r\n\r\nS");
+			socket.on("data", (chunk: Buffer) => socket.write(chunk));
+		});
+		try {
+			const socket = await openProxyTunnel(proxyAt(proxy.port, "agent:secret@"), target);
+			const echoed = await new Promise<string>((resolve) => {
+				let text = "";
+				socket.on("data", (chunk: Buffer) => {
+					text += chunk.toString("latin1");
+					if (text.length >= 5) resolve(text);
+				});
+				socket.resume();
+				socket.write("ping");
+			});
+			socket.destroy();
+			assert.equal(echoed, "Sping");
+			assert.match(
+				proxy.requests[0]!,
+				/^CONNECT db\.example\.com:5432 HTTP\/1\.1\r\nHost: db\.example\.com:5432\r\n/,
+			);
+			assert.match(
+				proxy.requests[0]!,
+				new RegExp(`Proxy-Authorization: Basic ${Buffer.from("agent:secret").toString("base64")}\r\n`),
+			);
+		} finally {
+			proxy.server.close();
+		}
+	});
+
+	test("an answer that arrives a few bytes at a time still opens the tunnel (#5473)", async () => {
+		const answer = "HTTP/1.1 200 Connection established\r\n\r\n";
+		for (const split of [1, 2, 3, 4, 7]) {
+			const proxy = await fakeProxy((socket) => {
+				socket.setNoDelay(true);
+				socket.write(answer.slice(0, split));
+				setTimeout(() => socket.write(answer.slice(split)), 20);
+			});
+			try {
+				const socket = await openProxyTunnel(proxyAt(proxy.port), target);
+				socket.destroy();
+			} finally {
+				proxy.server.close();
+			}
+		}
+	});
+
+	test("refusals, failures and silence are told apart, permanent or not, naming the proxy and target (#5473)", async () => {
+		const cases: [string | ((socket: Socket) => void), ProxyTunnelError["code"], boolean, RegExp][] = [
+			[
+				"HTTP/1.1 403 Forbidden\r\n\r\n",
+				"proxy-refused",
+				true,
+				/refused the tunnel to db\.example\.com:5432 \(403 Forbidden\)/,
+			],
+			[
+				"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic\r\n\r\n",
+				"proxy-auth-required",
+				true,
+				/without accepted credentials \(407 Proxy Authentication Required\)/,
+			],
+			[
+				"HTTP/1.1 502 Bad Gateway\r\n\r\n",
+				"proxy-upstream",
+				false,
+				/could not open the tunnel to db\.example\.com:5432 \(502 Bad Gateway\)/,
+			],
+			["SSH-2.0-OpenSSH\r\n\r\n", "proxy-protocol", true, /with something other than HTTP/],
+			["\x00\x01\x02\x03\x04", "proxy-protocol", true, /with something other than HTTP/],
+			[(socket) => socket.end(), "proxy-closed", false, /closed the connection before answering/],
+		];
+		for (const [answer, code, permanent, message] of cases) {
+			const proxy = await fakeProxy((socket) =>
+				typeof answer === "string" ? socket.write(answer) : answer(socket),
+			);
+			try {
+				const error = await tunnelFailure(openProxyTunnel(proxyAt(proxy.port, "agent:fixture-secret@"), target));
+				assert.equal(error.code, code, error.message);
+				assert.equal(error.permanent, permanent, code);
+				assert.match(error.message, message);
+				assert.match(error.message, new RegExp(`^the proxy http://127\\.0\\.0\\.1:${proxy.port} `));
+				assert.equal(error.message.includes("fixture-secret"), false);
+			} finally {
+				proxy.server.close();
+			}
+		}
+
+		const silent = await fakeProxy(() => {});
+		try {
+			const error = await tunnelFailure(openProxyTunnel(proxyAt(silent.port), target, { timeoutMs: 100 }));
+			assert.equal(error.code, "proxy-timeout");
+			assert.equal(error.permanent, false);
+			assert.match(error.message, /did not answer the tunnel request to db\.example\.com:5432 within 100 ms/);
+		} finally {
+			silent.server.close();
+		}
+
+		const unreachable = await fakeProxy(() => {});
+		const port = unreachable.port;
+		await new Promise<void>((resolve) => unreachable.server.close(() => resolve()));
+		const error = await tunnelFailure(openProxyTunnel(proxyAt(port), target));
+		assert.equal(error.code, "proxy-unreachable");
+		assert.equal(error.permanent, false);
+		assert.match(error.message, /could not be reached for the tunnel to db\.example\.com:5432 \(ECONNREFUSED\)/);
+	});
+});

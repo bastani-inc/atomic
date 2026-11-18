@@ -13,6 +13,8 @@ export interface ConnectProxyOptions {
 	readonly routes: (target: string) => { readonly host: string; readonly port: number } | undefined;
 	readonly refuse?: (target: string) => number | undefined;
 	readonly credentials?: { readonly user: string; readonly password: string };
+	/** How long the proxy waits before it answers a tunnel it opens, as a slow proxy or a long network path does. */
+	readonly answerDelayMs?: number;
 }
 
 export interface ConnectProxyTunnel {
@@ -84,13 +86,18 @@ export async function startConnectProxy(options: ConnectProxyOptions): Promise<C
 				upstream.destroy();
 			});
 			upstream.on("close", () => client.destroy());
-			client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-			if (head.length > 0) upstream.write(head);
-			client.on("data", (chunk: Buffer) => {
-				record(chunk);
-				upstream.write(chunk);
-			});
-			upstream.pipe(client);
+			const establish = () => {
+				if (client.destroyed) return;
+				client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+				if (head.length > 0) upstream.write(head);
+				client.on("data", (chunk: Buffer) => {
+					record(chunk);
+					upstream.write(chunk);
+				});
+				upstream.pipe(client);
+			};
+			if (options.answerDelayMs === undefined) establish();
+			else setTimeout(establish, options.answerDelayMs);
 		});
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

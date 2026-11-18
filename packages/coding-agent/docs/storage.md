@@ -188,6 +188,7 @@ You can write this block by hand as well. `secrets.password` takes `{ "file": �
 | `statementTimeoutMs` | 30000 | How long one statement may run before the server cancels it |
 | `listenUrl` | `url` | A direct endpoint for [wake-ups](#wake-ups), when `url` goes through a transaction pooler |
 | `schema` | `"atomic"` | The schema Atomic's tables live in: a lowercase name of letters, digits and `_`. Atomic creates it when the role may |
+| `proxy` | from the environment | An `http://` or `https://` proxy every connection tunnels through, or `"none"` to connect directly. See [Through an HTTP proxy](#through-an-http-proxy) |
 
 `atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. To run worker hosts and a fleet controller on a managed service, follow [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres). SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
 
@@ -201,6 +202,17 @@ By provider:
 - Supabase: download the project's CA certificate (**Project Settings → Database → SSL Configuration**) and add `?sslrootcert=/path/to/supabase-ca.pem`. Its certificates chain to Supabase's own CA.
 - Amazon RDS and Aurora: download your region's certificate bundle from `https://truststore.pki.rds.amazonaws.com/<region>/<region>-bundle.pem` and add `?sslrootcert=/path/to/bundle.pem`.
 - Google Cloud SQL: save the instance's server CA certificate (`gcloud sql instances describe <instance> --format='value(serverCaCert.cert)'`) and add `?sslmode=verify-ca&sslrootcert=/path/to/server-ca.pem` when you connect by private IP address, which is not among the certificate's names.
+
+### Through an HTTP proxy
+
+Where the only way out is an HTTP proxy, such as a sandbox that allows only `CONNECT` tunnels to listed `host:port` entries, Atomic opens each connection to PostgreSQL through a `CONNECT` tunnel: the pool's, the [wake-ups](#wake-ups) connection, and the connections that cancel a statement. List `<database host>:5432` (or the URL's port) on the proxy.
+
+- **Which proxy.** Atomic reads the variables its other HTTPS clients read: `HTTPS_PROXY` (or `https_proxy`), then `ALL_PROXY` when it names an `http://` or `https://` proxy, then `HTTP_PROXY`. Credentials in the proxy URL, such as `http://user:password@proxy:3128`, are sent as `Proxy-Authorization` and never appear in messages.
+- **Which hosts.** `NO_PROXY` (or `no_proxy`) exempts hosts as it does for those clients: `db.example.com`, `.example.com` or `example.com` (the domain and its subdomains), `*.example.com` (subdomains only), `host:port`, or `*`. A database on this machine (`localhost`, a loopback address, or a socket directory) is always reached directly.
+- **Setting it for the store alone.** The `proxy` option in `storage.options` overrides the environment: a proxy URL sends every connection through it, and `"none"` connects directly. SDK callers pass `proxy` to `openPostgresDatabase`, or `socket`, a function that opens a connection to `{ host, port }` for a custom transport.
+- **TLS still runs end to end.** Atomic negotiates TLS with the database through the tunnel and checks the certificate against the database's host name, as in [TLS](#tls), so the proxy sees only encrypted traffic. A cancel request goes through the tunnel encrypted too.
+
+When the proxy refuses the tunnel, the store fails to open with `StorageUnavailableError`, and the message names the proxy and the `host:port` it refused, for example `the proxy http://127.0.0.1:3128 refused the tunnel to db.example.com:5432 (403 Forbidden)`. A `403` or `407` is not retried. A proxy that cannot be reached, or answers `502` or `503`, is retried like an unreachable server.
 
 ### Connection poolers
 
@@ -273,6 +285,8 @@ A cloud identity is a role like any other: make it the runtime role with the gra
 - **The server refused a token**: `28P01` ("password authentication failed") is a token for the wrong user or one that expired. Azure answers `28000` ("The access token has invalid format") for a malformed one, such as a token for another resource or an empty or truncated token file: get it for `https://ossrdbms-aad.database.windows.net` (`az account get-access-token --resource-type oss-rdbms`), or use `--auth azure`.
 - **`StorageUnavailableError`** when the store opens: the server refused the password (`28P01`, or `28000` for an Azure token, as above), the database does not exist (`3D000`), or the server is older than PostgreSQL 14. Atomic's tables need PostgreSQL 16: on 14 and 15 the adapter connects, but sessions and workflow runs fail to open.
 - **A certificate error** (`self-signed certificate in certificate chain`, `unable to get local issuer certificate`): the server's CA is not one Node.js trusts. Add `sslrootcert`, as in [TLS](#tls).
+- **"the proxy … refused the tunnel to …"**: the proxy's allow-list does not name the database's `host:port`, or (`407`) it wants credentials it was not given: put them in the proxy URL. "could not be reached" means nothing answers at the proxy's address; check `HTTPS_PROXY`. To connect without the proxy, add the host to `NO_PROXY` or set the `proxy` option to `"none"`. See [Through an HTTP proxy](#through-an-http-proxy).
+- **`unsupported-proxy`**: the proxy variable or option is not an `http://` or `https://` URL, for example a `socks5://` proxy in `HTTPS_PROXY`. Set an HTTP proxy, add the database host to `NO_PROXY`, or set the `proxy` option to `"none"`.
 - **`StorageTransientError` with code `read-only-server`** (`25006`): the server accepts reads only. Either the URL names a read replica, a standby or a read-only endpoint, such as an Azure HorizonDB pool's: use the primary server, or the cluster's read/write endpoint. Or the server is read-only for now, during a failover or while Azure keeps a server whose storage is nearly full read-only: Atomic retries, and a call still refused after its retries fails with this code.
 - **`too many connections`** or **`remaining connection slots are reserved`** (`53300`): lower `maxConnections`, raise the server's `max_connections`, or put a [pooler](#connection-poolers) in front.
 - **`StorageTransientError` with code `lock-conflict` or `transaction-timeout`**: the server cancelled a statement or transaction that waited too long for a lock or ran past `statementTimeoutMs`, and nothing it wrote was kept. Persistent ones point to an overloaded server.

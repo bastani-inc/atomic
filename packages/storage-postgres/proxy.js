@@ -182,7 +182,13 @@ export function parseProxy(value, subject) {
 	const host = url.hostname.replace(/^\[(.+)\]$/, "$1");
 	const label = `${protocol}//${url.host}`;
 	if (url.username === "" && url.password === "") return { protocol, host, port, label };
-	const credentials = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+	/** @type {string} */
+	let credentials;
+	try {
+		credentials = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+	} catch {
+		throw new ProxySettingError(subject, "has credentials that are not valid percent-encoding");
+	}
 	return {
 		protocol,
 		host,
@@ -192,16 +198,24 @@ export function parseProxy(value, subject) {
 	};
 }
 
+/**
+ * `host` in the canonical form a URL gives an address, such as `127.0.0.1` for `127.1` and `::1` for
+ * `0:0:0:0:0:0:0:1`, which name the same address to the resolver; a name, or a host a URL cannot hold, as it is.
+ */
+function canonicalHost(/** @type {string} */ host) {
+	try {
+		return normalizedHost(new URL(`http://${host.includes(":") ? `[${host}]` : host}/`).hostname);
+	} catch {
+		return host;
+	}
+}
+
 /** Whether `host` is this machine: a socket directory, a loopback name or a loopback address. */
 function isLocalTarget(/** @type {string} */ host) {
 	const name = normalizedHost(host);
-	return (
-		name === "" ||
-		name.startsWith("/") ||
-		name === "localhost" ||
-		name === "::1" ||
-		/^127(?:\.\d{1,3}){3}$/.test(name)
-	);
+	if (name === "" || name.startsWith("/")) return true;
+	const canonical = canonicalHost(name);
+	return canonical === "localhost" || canonical === "::1" || /^127(?:\.\d{1,3}){3}$/.test(canonical);
 }
 
 /**
@@ -361,7 +375,9 @@ export function openProxyTunnel(proxy, target, options = {}) {
 			const received = Buffer.concat(answer, answerBytes);
 			const end = received.indexOf("\r\n\r\n");
 			if (end === -1) {
-				if (answerBytes > MAX_PROXY_ANSWER_BYTES || !/^HTTP\/?\d?/.test(received.subarray(0, 5).toString("latin1")))
+				// The answer so far can still become HTTP while it is a prefix of `HTTP/`, however few bytes came first.
+				const head = received.subarray(0, 5).toString("latin1");
+				if (answerBytes > MAX_PROXY_ANSWER_BYTES || !("HTTP/".startsWith(head) || head.startsWith("HTTP/")))
 					fail(
 						"proxy-protocol",
 						`the proxy ${proxy.label} answered the tunnel request to ${authority} with something other than HTTP`,
@@ -549,11 +565,9 @@ export class OpenedSocket extends Duplex {
  * The function that opens a connection to a target through `transport`, or undefined for a direct connection, which
  * pg opens itself.
  * @param {PostgresTransport} transport
- * @param {PostgresSocketFactory} [socket] A caller's own factory, which replaces both.
  * @returns {PostgresSocketFactory | undefined}
  */
-export function socketOpener(transport, socket) {
-	if (socket !== undefined) return socket;
+export function socketOpener(transport) {
 	if (transport.kind === "direct") return undefined;
 	const { proxy } = transport;
 	return (target) => openProxyTunnel(proxy, target);

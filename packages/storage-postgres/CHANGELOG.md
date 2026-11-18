@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Connections through an HTTP proxy: where the only way out is a proxy that opens `CONNECT` tunnels, such as a sandbox's, every connection to PostgreSQL (the pool's, the wake-ups connection and cancel requests, and their reconnects) tunnels through the proxy `HTTPS_PROXY` names, then `ALL_PROXY` or `HTTP_PROXY`, unless `NO_PROXY` exempts the database host, as for Atomic's other HTTPS clients; a database on this machine is reached directly. The new `proxy` option, an `http://` or `https://` URL or `"none"`, overrides the environment, and SDK callers can pass `socket`, a function that opens each connection, for a custom transport. TLS still runs end to end with the server and checks its certificate against the database's host name, so the proxy sees only encrypted traffic, cancel requests included. A proxy that refuses the tunnel fails the open with `StorageUnavailableError` naming the proxy, without its credentials, and the `host:port` it refused ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
+
+### Fixed
+
+- Wake-ups no longer turn off for the rest of the process when the check of the listening connection had to open a new pool connection that took longer than 2 seconds, as through a slow proxy or while a cloud identity issues its first token. The check now waits for its notification only once it was sent ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
+
 ## [0.9.88] - 2026-11-16
 
 ### Added

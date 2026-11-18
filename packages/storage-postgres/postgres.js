@@ -600,6 +600,19 @@ function lockKey(scope) {
 	return `hashtextextended(${literal(scope)}, 0)`;
 }
 
+/**
+ * The endpoint pg connects to for `config`, resolved as pg resolves it: the URL's host and port, else `PGHOST` and
+ * `PGPORT`, else `localhost` and 5432.
+ * @param {{ host?: string | null, port?: string | number | null }} config
+ * @returns {{ host: string, port: number }}
+ */
+function endpointOf(config) {
+	return {
+		host: config.host || process.env.PGHOST || "localhost",
+		port: Number.parseInt(String(config.port || process.env.PGPORT || 5432), 10),
+	};
+}
+
 /** The protocol's SSLRequest code, sent before a TLS handshake on a new connection. */
 const SSL_REQUEST_CODE = 80877103;
 
@@ -719,18 +732,17 @@ export async function openPostgresDatabase(options) {
 	/**
 	 * How connections to `target` are opened (#5473): through the caller's socket factory, the `proxy` option, or the
 	 * environment's HTTP proxy, as `postgresTransport` decides; undefined for a direct connection, which pg opens itself.
-	 * A socket directory is always reached directly.
+	 * A socket directory is always reached directly. The decision is made for the endpoint pg connects to, which falls
+	 * back to `PGHOST` and `PGPORT` when the URL names no host or port.
 	 * @param {typeof connection} target
 	 * @returns {import("./proxy.js").PostgresSocketFactory | undefined}
 	 */
 	const openerFor = (target) => {
-		const host = target.host ?? "localhost";
+		const { host, port } = endpointOf(target);
 		if (host.startsWith("/")) return undefined;
+		if (options.socket !== undefined) return options.socket;
 		try {
-			return socketOpener(
-				postgresTransport({ host, port: Number(target.port ?? 5432) }, process.env, options.proxy),
-				options.socket,
-			);
+			return socketOpener(postgresTransport({ host, port }, process.env, options.proxy));
 		} catch (error) {
 			if (error instanceof ProxySettingError)
 				throw configError(
@@ -865,8 +877,7 @@ export async function openPostgresDatabase(options) {
 		request.writeInt32BE(CANCEL_REQUEST_CODE, 4);
 		request.writeInt32BE(processID, 8);
 		request.writeInt32BE(secretKey, 12);
-		const host = connection.host ?? "localhost";
-		const port = connection.port ?? 5432;
+		const { host, port } = endpointOf(connection);
 		return new Promise((resolve) => {
 			/** @type {import("node:stream").Duplex | undefined} */
 			let socket;
@@ -889,7 +900,7 @@ export async function openPostgresDatabase(options) {
 					: // Through a tunnel the request is sent over TLS when the connection is, so the proxy never sees the
 						// connection's cancel key (#5473).
 						Promise.resolve()
-							.then(() => opener({ host, port: Number(port) }))
+							.then(() => opener({ host, port }))
 							.then((raw) => (connection.ssl ? secureCancelStream(raw, host, connection.ssl) : raw));
 			opened.then(
 				(opening) => {

@@ -38,6 +38,9 @@ chmod 600 ~/.atomic/postgres-password
 | `statementTimeoutMs` | no | How long one statement may run before the server cancels it. Default 30000. |
 | `listenUrl` | no | A direct (session) endpoint for the connection that listens for wake-ups, when `url` goes through a transaction pooler. Default `url`. |
 | `schema` | no | The schema Atomic's tables live in, a lowercase name. Default `atomic`, which the first store that sets up its tables creates when the role may. A database whose `public` schema holds an earlier release's tables, and has no `atomic` schema, keeps using `public` until `atomic storage migrate` moves them. Every transaction sets it with `SET LOCAL search_path`. |
+| `proxy` | no | An `http://` or `https://` proxy every connection tunnels through with `CONNECT`, or `"none"` to connect directly. Default: the environment's, as below. |
+
+Where the only way out is an HTTP proxy, such as a sandbox's, every connection (the pool's, the one that listens for wake-ups, cancel requests, and their reconnects) tunnels through the proxy `HTTPS_PROXY` (or `https_proxy`) names, then `ALL_PROXY` when it names an HTTP proxy, then `HTTP_PROXY`, unless `NO_PROXY` exempts the database host, read as Atomic's other HTTPS clients read them. A database on this machine (a loopback host or a socket directory) is reached directly; the `proxy` option overrides all of this. Credentials in the proxy URL are sent as `Proxy-Authorization` and never appear in messages. TLS still runs end to end with the server through the tunnel, checking the certificate against the database's host name, so the proxy sees only encrypted traffic. A proxy that refuses the tunnel fails the open with `StorageUnavailableError`, whose message names the proxy and the refused `host:port`.
 
 PostgreSQL 14 or newer is required. A URL that names no `sslmode` gets `sslmode=verify-full` when its host is not this machine, so the connection is encrypted and the server certificate is checked. Name a CA with `sslrootcert=/path/to/ca.pem` when the server's certificate is not signed by a CA Node trusts, or set `sslmode` yourself. `sslmode` follows libpq: `verify-ca` checks the certificate's CA (`sslrootcert`, or else the CAs Node trusts) but not its host name, for a server reached by an address its certificate does not name; `prefer` and `allow` encrypt without checking the certificate; `disable` turns TLS off. `require` with `sslrootcert` acts as `verify-ca`; without it, `require` checks the certificate and its host name, as `verify-full` does, which is stricter than libpq. Parameter names are case-sensitive, as in libpq: a TLS parameter that is not lowercase, or an unknown `sslmode`, is refused.
 
@@ -164,6 +167,8 @@ const database = await openPostgresDatabase({
 ```
 
 `password` is a string or a function called for each new connection. The returned `SqliteDatabase` can be passed as SDK `sessionStore: { kind: "database", database }` or workflow `journal: { database }`.
+
+For a custom transport, pass `socket`, a function that opens a connection to `{ host, port }` and returns a stream (or a promise of one) that carries the PostgreSQL protocol there; the adapter negotiates TLS over it as over a socket. It replaces the proxy, and a socket directory is still reached directly.
 
 The package ships plain ESM JavaScript with TypeScript declarations. This import works in supported Node versions without a TypeScript loader.
 

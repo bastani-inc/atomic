@@ -105,7 +105,4 @@ export class OpenedSocket extends Duplex {
 }
 
 /** The function that opens connections through `transport`, or undefined for a direct connection pg opens itself. */
-export function socketOpener(
-	transport: PostgresTransport,
-	socket?: PostgresSocketFactory,
-): PostgresSocketFactory | undefined;
+export function socketOpener(transport: PostgresTransport): PostgresSocketFactory | undefined;

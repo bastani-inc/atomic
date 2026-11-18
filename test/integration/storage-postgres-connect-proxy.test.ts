@@ -40,6 +40,8 @@ const OTHER_HOST = "other.invalid";
 /** A name the proxy's allow-list does not carry. */
 const BLOCKED_HOST = "blocked.invalid";
 const PORT = 5432;
+/** Another port the proxy routes {@link DATABASE_HOST} on, as `PGPORT` names it. */
+const OTHER_PORT = 6543;
 /** How long a hint may take to arrive through a notification, with the poll an hour away. */
 const NOTIFIED_WAKE_BOUND_MS = 2_000;
 const NEVER_POLL_MS = 60 * 60 * 1000;
@@ -47,6 +49,13 @@ const NEVER_POLL_MS = 60 * 60 * 1000;
 const LISTENING_BOUND_MS = 10_000;
 /** The listener's first reconnect waits a second; through the tunnel the whole reconnect stays well inside this. */
 const RELISTENING_BOUND_MS = 15_000;
+/** A proxy's answer slower than the listening connection's 2 s probe wait (#5473). */
+const SLOW_PROXY_ANSWER_MS = 2_500;
+/**
+ * Through {@link SLOW_PROXY_ANSWER_MS}, the listening connection's reconnect waits its first retry (1 s), its own tunnel,
+ * and a pool connection's tunnel for the probe, plus TLS and sign-in on each.
+ */
+const SLOW_RELISTENING_BOUND_MS = 30_000;
 /** An open that fails as unreachable runs five times with the facade's backoff, about four seconds. */
 const TRANSIENT_RETRIES_TIMEOUT_MS = 30_000;
 /** The statement timeout of the cancel test: the client gives up 5 s after it and sends a cancel request. */
@@ -132,6 +141,8 @@ async function withEnvironment<T>(variables: Record<string, string | undefined>,
 		"all_proxy",
 		"NO_PROXY",
 		"no_proxy",
+		"PGHOST",
+		"PGPORT",
 	]) {
 		saved.set(name, process.env[name]);
 		delete process.env[name];
@@ -190,7 +201,9 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 		});
 		proxy = await startConnectProxy({
 			routes: (target) =>
-				target === `${DATABASE_HOST}:${PORT}` || target === `${OTHER_HOST}:${PORT}`
+				target === `${DATABASE_HOST}:${PORT}` ||
+				target === `${DATABASE_HOST}:${OTHER_PORT}` ||
+				target === `${OTHER_HOST}:${PORT}`
 					? { host: "127.0.0.1", port: front.port }
 					: undefined,
 		});
@@ -372,6 +385,58 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 		});
 	}, 60_000);
 
+	test("wake-ups survive a proxy slower than the listening probe's wait, after every tunnel dropped (#5473)", async () => {
+		const slow = await startConnectProxy({
+			routes: (target) =>
+				target === `${DATABASE_HOST}:${PORT}` ? { host: "127.0.0.1", port: front.port } : undefined,
+			answerDelayMs: SLOW_PROXY_ANSWER_MS,
+		});
+		try {
+			await withPostgresDatabase(async (scope) => {
+				const opened: SqliteDatabase[] = [];
+				const through = async () => {
+					const database = await open(scope.name, { proxy: slow.url });
+					opened.push(database);
+					return database;
+				};
+				const publisher = await openDatabaseWakeUpBus({
+					openDatabase: through,
+					prefix: "s5473_",
+					pollIntervalMs: NEVER_POLL_MS,
+				});
+				const subscriber = await openDatabaseWakeUpBus({
+					openDatabase: through,
+					prefix: "s5473_",
+					pollIntervalMs: NEVER_POLL_MS,
+				});
+				try {
+					const hints: WakeUpHint[] = [];
+					await subscriber.subscribe("broker-b", (event) => {
+						if (event.kind === "hint") hints.push(event.hint);
+					});
+					await listening(scope, SLOW_RELISTENING_BOUND_MS);
+					// Every connection drops, the pool's idle ones too: the listening probe's notification then needs a new
+					// pool connection, through the slow proxy, before it is sent.
+					slow.dropTunnels();
+					await new Promise((resolve) => setTimeout(resolve, 200));
+					await listening(scope, SLOW_RELISTENING_BOUND_MS);
+					await publisher.publish({ brokerId: "broker-b", reason: "outbox", version: 3 });
+					await until(
+						() => hints.length > 0,
+						SLOW_PROXY_ANSWER_MS * 4,
+						"no notification after the slow reconnect",
+					);
+				} finally {
+					await publisher.close();
+					await subscriber.close();
+					await Promise.allSettled(opened.map((database) => database.close()));
+				}
+			});
+		} finally {
+			await slow.close();
+		}
+	}, 90_000);
+
 	/** Waits until a session of the scope's database listens for wake-ups. */
 	async function listening(scope: PostgresScope, boundMs = LISTENING_BOUND_MS): Promise<void> {
 		await until(
@@ -399,21 +464,50 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 				}
 				assert.ok(proxy.requests.length > requestsBefore);
 
-				const targets: string[] = [];
-				const viaSocket = await open(scope.name, {
-					socket: ({ host, port }) => {
-						targets.push(`${host}:${port}`);
-						return connect(front.port, "127.0.0.1");
-					},
+				// A socket factory replaces the proxy, so even a proxy setting that could not be used does not matter.
+				await withEnvironment({ HTTPS_PROXY: "socks5://agent:fixture%zz@127.0.0.1:1080" }, async () => {
+					const targets: string[] = [];
+					const viaSocket = await open(scope.name, {
+						socket: ({ host, port }) => {
+							targets.push(`${host}:${port}`);
+							return connect(front.port, "127.0.0.1");
+						},
+					});
+					try {
+						assert.deepEqual(await viaSocket.get("SELECT 1 AS one"), { one: 1 });
+					} finally {
+						await viaSocket.close();
+					}
+					assert.ok(targets.length > 0);
+					for (const target of targets) assert.equal(target, `${DATABASE_HOST}:${PORT}`);
 				});
-				try {
-					assert.deepEqual(await viaSocket.get("SELECT 1 AS one"), { one: 1 });
-				} finally {
-					await viaSocket.close();
-				}
-				assert.ok(targets.length > 0);
-				for (const target of targets) assert.equal(target, `${DATABASE_HOST}:${PORT}`);
 			});
+		});
+	});
+
+	test("a URL without a host is decided for PGHOST and PGPORT, the endpoint pg connects to (#5473)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const requestsBefore = proxy.requests.length;
+			const url = new URL(urlFor(scope.name));
+			url.searchParams.set("user", url.username);
+			const hostless = `postgresql:///${scope.name}${url.search}`;
+			await withEnvironment(
+				{ HTTPS_PROXY: proxy.url, PGHOST: DATABASE_HOST, PGPORT: String(OTHER_PORT) },
+				async () => {
+					const database = await openPostgresDatabase({
+						url: hostless,
+						...(postgresTestPassword === undefined ? {} : { password: postgresTestPassword }),
+					});
+					try {
+						assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+					} finally {
+						await database.close();
+					}
+				},
+			);
+			const requests = proxy.requests.slice(requestsBefore);
+			assert.ok(requests.length > 0, "the connection did not go through the proxy");
+			for (const request of requests) assert.equal(request.target, `${DATABASE_HOST}:${OTHER_PORT}`);
 		});
 	});
 
