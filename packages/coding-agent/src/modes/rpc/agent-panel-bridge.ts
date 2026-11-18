@@ -1,4 +1,4 @@
-import { matchesKey, truncateToWidth } from "@bastani/atomic-tui";
+import { matchesKey, type TuiMouseEvent, type TuiMouseEventResult, truncateToWidth } from "@bastani/atomic-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import {
 	type AgentPanelItem,
@@ -26,11 +26,13 @@ import {
 	AGENT_PANEL_DROP_MS,
 	AGENT_PANEL_FOCUSED_ROWS,
 	AGENT_PANEL_IDLE_ROWS,
+	AGENT_PANEL_MAIN_ID,
 	AgentPanelFocus,
 	AgentPanelModel,
 	type AgentPanelRow,
 	type AgentPanelStyle,
 	agentPanelKeys,
+	agentPanelRowIdAtLine,
 	isFinishedPanelRow,
 	panelTaskId,
 	renderAgentPanelHint,
@@ -38,6 +40,7 @@ import {
 } from "../interactive/components/agent-panel.ts";
 import { atomicWorkingFrame } from "../interactive/components/atomic-working-status.ts";
 import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
+import { isSingleLeftClick } from "../interactive/components/single-click.ts";
 import { dismissedTasks } from "../interactive/components/task-dismissal.ts";
 import { taskDisplayText } from "../interactive/components/task-row.js";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
@@ -460,6 +463,8 @@ export function bindAgentPanel(
 	ui: Pick<ExtensionUIContext, "setWidget" | "requestRender"> &
 		Partial<Pick<ExtensionUIContext, "onWidgetRelease" | "notify">>,
 	onCounts?: (counts: AgentPanelCounts) => void,
+	/** Where a click on a row opens that row's view; without it the rows take no clicks. */
+	inspector?: TaskInspectorUi,
 ): () => void {
 	boundSessions.add(session);
 	const state = panelState(session);
@@ -494,6 +499,8 @@ export function bindAgentPanel(
 	let cachedFaded = -1;
 	let cachedHiddenBelow = -1;
 	let cachedMain = false;
+	/** The rows the widget last drew, which a click is resolved against. */
+	let painted: { rows: readonly AgentPanelRow[]; hiddenBelow: number; main: boolean } | undefined;
 	let cachedLines: string[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -584,6 +591,32 @@ export function bindAgentPanel(
 						cachedHiddenBelow = -1;
 						cachedLines = [];
 					},
+					/** The id of the row last drawn on `row`, so a click on a row whose item changed is not taken. */
+					paintedRowKey(row: number): string | undefined {
+						if (!visible || painted === undefined) return undefined;
+						return agentPanelRowIdAtLine(
+							painted.rows,
+							{ hiddenBelow: painted.hiddenBelow, showMain: painted.main },
+							row,
+						);
+					},
+					handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+						if (!visible || inspector === undefined || painted === undefined || !isSingleLeftClick(event))
+							return undefined;
+						// The rows the reader saw: the panel's rows can change before it paints them again.
+						const id = agentPanelRowIdAtLine(
+							painted.rows,
+							{ hiddenBelow: painted.hiddenBelow, showMain: painted.main },
+							event.y,
+						);
+						if (id === undefined) return undefined;
+						// The main row is the chat the reader is already in.
+						if (id === AGENT_PANEL_MAIN_ID) return { handled: true };
+						const row = painted.rows.find((candidate) => candidate.id === id);
+						if (row === undefined) return undefined;
+						openPanelRow(session, inspector, materializePanelItem(row), report).catch(report);
+						return { handled: true };
+					},
 					render(width: number) {
 						if (!visible) return [];
 						try {
@@ -616,6 +649,7 @@ export function bindAgentPanel(
 									}
 								}
 							}
+							painted = { rows: currentRows, hiddenBelow: currentHiddenBelow, main: currentMain };
 							if (!Number.isFinite(w)) {
 								return renderAgentPanelRows(currentRows, w, THEMED_STYLE, {
 									frame: atomicWorkingFrame(),
@@ -733,6 +767,32 @@ export function bindAgentPanel(
 	};
 }
 
+/**
+ * Open a panel row's view, as Enter on the focused row does: a subagent's chat, or the view its source opens, such as a
+ * workflow run. Leaving that view returns to the focused panel with the row selected.
+ */
+async function openPanelRow(
+	session: AgentPanelSession & object,
+	ui: TaskInspectorUi,
+	item: AgentPanelItem,
+	report: (error: unknown) => void,
+): Promise<void> {
+	const store = getOwnerTaskStore(session);
+	const taskId = panelTaskId(item);
+	const back = () => showAgentPanel(session, ui, item.id);
+	if (taskId !== undefined && store !== undefined) {
+		if ((await showTaskInspector(ui, store, taskId, { chat: true, backLabel: "main chat" })) === "back") await back();
+		return;
+	}
+	const opened = openAgentPanelItem(session, item.id, {
+		onReturn: () => {
+			back().catch(report);
+		},
+	});
+	if (opened) panelState(session).viewed.add(item.id);
+	else ui.notify?.(`Could not open ${safeLabel(item.name)}.`, "warning");
+}
+
 export async function showAgentPanel(
 	session: AgentPanelSession & object,
 	ui: TaskInspectorUi,
@@ -780,6 +840,10 @@ export async function showAgentPanel(
 				let cachedSelectedId: string | undefined;
 				let cachedScroll = -1;
 				let cachedMain = false;
+				/** The rows and view the focused panel last drew, which a click is resolved against. */
+				let paintedFocus:
+					| { rows: readonly AgentPanelRow[]; selectedId: string; scroll: number; showMain: boolean }
+					| undefined;
 				let cachedFrame = -1;
 				let cachedFaded = -1;
 				let cachedRowLines: string[] = [];
@@ -793,27 +857,7 @@ export async function showAgentPanel(
 				const focus = new AgentPanelFocus(keys, {
 					open(row) {
 						const item = materializePanelItem(row);
-						const taskId = panelTaskId(item);
-						const back = () => showAgentPanel(session, ui, item.id);
-						if (taskId !== undefined && store !== undefined)
-							next = async () => {
-								if (
-									(await showTaskInspector(ui, store, taskId, { chat: true, backLabel: "main chat" })) ===
-									"back"
-								)
-									await back();
-							};
-						else {
-							next = async () => {
-								const opened = openAgentPanelItem(session, item.id, {
-									onReturn: () => {
-										back().catch(report);
-									},
-								});
-								if (opened) state.viewed.add(item.id);
-								else ui.notify?.(`Could not open ${safeLabel(item.name)}.`, "warning");
-							};
-						}
+						next = () => openPanelRow(session, ui, item, report);
 						finish();
 					},
 					stop(row) {
@@ -899,6 +943,27 @@ export async function showAgentPanel(
 						cachedRows = undefined;
 						cachedRowLines = [];
 					},
+					/** The id of the row last drawn on `row`, so a click on a row whose item changed is not taken. */
+					paintedRowKey(row: number): string | undefined {
+						if (paintedFocus === undefined) return undefined;
+						const { rows, ...view } = paintedFocus;
+						return agentPanelRowIdAtLine(rows, view, row);
+					},
+					handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+						if (focus.helpOpen || paintedFocus === undefined || !isSingleLeftClick(event)) return undefined;
+						// The rows the reader saw: the panel's rows can change before it paints them again.
+						const { rows, ...view } = paintedFocus;
+						const id = agentPanelRowIdAtLine(rows, view, event.y);
+						if (id === undefined) return undefined;
+						try {
+							focus.click(id);
+							syncTick();
+						} catch (error) {
+							report(error);
+						}
+						tui.requestRender();
+						return { handled: true };
+					},
 					render(width: number) {
 						try {
 							const w = +width;
@@ -907,6 +972,7 @@ export async function showAgentPanel(
 								refreshRows();
 								syncTick();
 							}
+							paintedFocus = undefined;
 							if (focus.helpOpen)
 								return renderNavKeyOverlay(
 									"keys · agents",
@@ -964,6 +1030,12 @@ export async function showAgentPanel(
 								}
 							}
 							focus.notePainted(currentRows.slice(focus.scroll, focus.scroll + AGENT_PANEL_FOCUSED_ROWS));
+							paintedFocus = {
+								rows: currentRows,
+								selectedId: focus.selectedId,
+								scroll: focus.scroll,
+								showMain: focus.showMain,
+							};
 							return [...rowLines, truncateToWidth(renderAgentPanelHint(focus, w, style, keys), w)];
 						} catch (error) {
 							report(error);

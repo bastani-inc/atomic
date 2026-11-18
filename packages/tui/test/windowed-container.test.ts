@@ -181,6 +181,43 @@ describe("WindowedContainer in a scroll view", () => {
 		}
 	});
 
+	it("lets a nested windowed container that handles the mouse see the press first, at its own rows as painted", async () => {
+		class Nested extends WindowedContainer {
+			readonly seen: Array<{ row: number; child: Component | undefined; childRow: number | undefined }> = [];
+			override handleMouse(event: TuiMouseEvent) {
+				if (event.type === "press") {
+					const hit = this.childAtRow(event.width, event.y);
+					this.seen.push({ row: event.y, child: hit?.component, childRow: hit?.row });
+				}
+				return super.handleMouse(event);
+			}
+		}
+		const before = entries(40);
+		const nestedChildren = entries(60);
+		const nested = new Nested();
+		for (const child of nestedChildren) nested.addChild(child);
+		const session = open(new WindowedContainer(), [...before, nested]);
+		try {
+			const rows = await screen(session);
+			const row = rows.findIndex((line) => line.startsWith("entry 57 row 1"));
+			assert.ok(row >= 0, rows.join("\n"));
+			session.terminal.sendInput(`\x1b[<0;3;${row + 1}M`);
+			session.terminal.sendInput(`\x1b[<0;3;${row + 1}m`);
+			await screen(session);
+			// Its row counts the rows laid out before the child, which may still be estimates for children not rendered.
+			assert.equal(nested.seen.length, 1);
+			assert.equal(nested.seen[0]!.child, nestedChildren[57]);
+			assert.equal(nested.seen[0]!.childRow, 1);
+			assert.deepEqual(nestedChildren[57]!.mouseRows, [1]);
+			assert.deepEqual(
+				before.flatMap((child) => child.mouseRows),
+				[],
+			);
+		} finally {
+			session.tui.stop();
+		}
+	});
+
 	it("searches and jumps between prompts in children not rendered yet", async () => {
 		const children = entries(400);
 		const session = open(new WindowedContainer(), children);

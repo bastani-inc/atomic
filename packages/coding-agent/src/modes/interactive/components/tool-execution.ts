@@ -63,6 +63,7 @@ const SUBAGENT_RESULT_ANIMATION_TIMER_KEY = "subagentResultAnimationTimer";
 const SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY = "subagentResultAnimationCleanup";
 
 export class ToolExecutionComponent extends Container {
+	readonly expandsOnClick = true;
 	private contentContainer: Container;
 	private readonly codeHighlighter = new CodeHighlighter();
 	private readonly taskRecordReader: ToolExecutionOptions["getTaskRecord"];
@@ -268,6 +269,19 @@ export class ToolExecutionComponent extends Container {
 				result.durationMs ??
 				(this.executionStartedAt === undefined ? undefined : Math.max(0, Date.now() - this.executionStartedAt));
 		this.updateDisplay();
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	getGroupRole(): ToolGroupRole {
+		return this.groupRole;
+	}
+
+	/** The block's title row, which `render` draws right after the blank row it leads with. */
+	headerRows(width: number): readonly number[] {
+		return this.render(width).length > 1 ? [1] : [];
 	}
 
 	setExpanded(expanded: boolean): void {
