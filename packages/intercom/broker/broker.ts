@@ -2562,7 +2562,10 @@ class IntercomBroker {
         this.dispatchHeldSends(this.departedChildren.supersede(currentId, childName));
         // #5352: acknowledged once senders on other brokers can find the reservation (bounded by the router).
         const requestId = clientMessage.requestId;
-        void published.then(() => writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId }));
+        // `published: false`: reserved here, and written for other brokers once the shared database takes it.
+        void published.then((visible) =>
+          writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId, ...(visible ? {} : { published: false }) }),
+        );
         break;
       }
 
@@ -2652,7 +2655,7 @@ class IntercomBroker {
           writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId, refusal });
           break;
         }
-        const published: Promise<void>[] = [];
+        const published: Promise<boolean>[] = [];
         for (const child of validation.children) {
           published.push(this.reserveReleasedChild(currentId, owner.registrationGroup, child));
           this.releasedAskerReplies.attach(child.childName, currentId);
@@ -2667,8 +2670,12 @@ class IntercomBroker {
         }
         // #5352: acknowledged once senders on other brokers can find the reservations (bounded by the router).
         const requestId = clientMessage.requestId;
-        void Promise.all(published).then(() =>
-          writeMessageIfOpen(socket, { type: "released_children_ack", requestId }),
+        void Promise.all(published).then((visible) =>
+          writeMessageIfOpen(socket, {
+            type: "released_children_ack",
+            requestId,
+            ...(visible.every(Boolean) ? {} : { published: false }),
+          }),
         );
         break;
       }
@@ -3603,18 +3610,18 @@ class IntercomBroker {
     group: string,
     aliases: readonly string[],
     options: { readonly dormant: boolean; readonly wake?: boolean; readonly replaceAliases?: true; readonly holdMs?: number },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const wake = this.restoringRecipients.reserve(key, ownerSessionId, childName, group, aliases, options);
     const published = this.multiNode?.restoringReserved(key, ownerSessionId, childName, group, aliases, options.dormant, {
       wake: options.wake === true,
       ...(options.replaceAliases === true ? { replaceAliases: true } : {}),
     });
     if (wake !== undefined) this.wakeRestoringRecipientOwner(wake);
-    return published ?? Promise.resolve();
+    return published ?? Promise.resolve(true);
   }
 
-  /** Resolves once senders on other brokers can find the reservation (see `reserveRestoringRecipient`). */
-  private reserveReleasedChild(ownerSessionId: string, ownerGroup: string, child: ParsedReleasedChild): Promise<void> {
+  /** Resolves true once senders on other brokers can find the reservation, false while its write is retried. */
+  private reserveReleasedChild(ownerSessionId: string, ownerGroup: string, child: ParsedReleasedChild): Promise<boolean> {
     return this.reserveRestoringRecipient(
       releasedReservationKey(child.childName),
       ownerSessionId,

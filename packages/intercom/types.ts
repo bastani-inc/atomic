@@ -574,8 +574,12 @@ export type BrokerMessage =
 	| { type: "restoring_recipient_wake"; childName: string; capability?: string }
 	/** #4326: `handoffId` identifies this handoff, so the owner's acknowledgement cannot confirm another reply that reuses the message id. */
 	| { type: "released_child_reply"; childName: string; handoffId: string; replyTo: string; from: SessionInfo; message: Message }
-	| { type: "restoring_recipient_ack"; requestId: string; error?: string }
-	| { type: "released_children_ack"; requestId: string; refusal?: ReleasedChildRefusal }
+	/**
+	 * #5352: `published: false` when the reservation holds sends on the owner's broker but did not reach the shared
+	 * database within the broker's bound; the broker keeps writing it there until it lands or the reservation ends.
+	 */
+	| { type: "restoring_recipient_ack"; requestId: string; error?: string; published?: false }
+	| { type: "released_children_ack"; requestId: string; refusal?: ReleasedChildRefusal; published?: false }
 	| { type: "hosted_sessions_ack"; requestId: string; sessions?: HostedSessionAssignment[]; refusal?: HostedSessionRefusal }
 	| {
 			type: "delivery_failed";
