@@ -64,7 +64,21 @@ export function colorsOff(): boolean {
 export const DEFAULT_BG = "\x1b[49m";
 
 export const RESET = "\x1b[0m";
-export const BOLD = "\x1b[1m";
+const BOLD = "\x1b[1m";
+
+/**
+ * A text style sequence (bold, italic, inverse, ...) in the style level the host theme paints with: none when NO_COLOR
+ * or FORCE_COLOR=0 turned colors and styles off, as the host theme drops them. It reads the cached level, never the
+ * environment.
+ */
+export function textStyle(sequence: string): string {
+	return colorsOff() ? "" : sequence;
+}
+
+/** The bold sequence in the host theme's style level; see {@link textStyle}. */
+export function boldOn(): string {
+	return textStyle(BOLD);
+}
 
 /** Keep a filled row intact across pi-tui truncation and nested style resets. */
 export function fillBackground(text: string, width: number, background: string): string {
@@ -86,6 +100,6 @@ export function fillBackground(text: string, width: number, background: string):
  */
 export function paint(text: string, fg: string, opts: { bg?: string; bold?: boolean } = {}): string {
 	const bgSeq = opts.bg ? hexBg(opts.bg) : "";
-	const boldSeq = opts.bold ? BOLD : "";
+	const boldSeq = opts.bold ? boldOn() : "";
 	return `${bgSeq}${hexToAnsi(fg)}${boldSeq}${text}${RESET}`;
 }

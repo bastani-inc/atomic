@@ -31,7 +31,7 @@ import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import { boundedToolText, boundedToolTitleText } from "../shared/tool-payload-bounds.js";
 import type { FlatBandBadge } from "./chat-surface.js";
 import { renderRoundedBox } from "./chat-surface.js";
-import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
 import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
@@ -164,7 +164,7 @@ function renderThemed(
 
 	const tools = detail.tools;
 	if (detail.stages.length > 0 || tools.length === 0) {
-		out.push(` ${muted}${BOLD}STAGES${RESET} `);
+		out.push(` ${muted}${boldOn()}STAGES${RESET} `);
 		if (detail.stages.length === 0) out.push(`  ${dim}(no stages recorded yet)${RESET} `);
 		else
 			for (const stage of detail.stages)
@@ -184,14 +184,14 @@ function renderThemed(
 		out.push("");
 	}
 	if (tools.length > 0) {
-		out.push(` ${muted}${BOLD}TOOLS${RESET} `);
+		out.push(` ${muted}${boldOn()}TOOLS${RESET} `);
 		for (const tool of tools) out.push(...renderToolRowsThemed(tool, now, theme, width - 4));
 		out.push("");
 	}
 
 	const artifactRows = artifactRowsFor(detail, width);
 	if (artifactRows.length > 0) {
-		out.push(` ${muted}${BOLD}ARTIFACTS${RESET} `);
+		out.push(` ${muted}${boldOn()}ARTIFACTS${RESET} `);
 		for (const [k, v] of artifactRows) {
 			out.push(
 				` ${muted}${pad(k, KEY_COL)}${RESET}${dim}${truncateToWidth(v, Math.max(1, width - 4 - KEY_COL), "…")}${RESET} `,

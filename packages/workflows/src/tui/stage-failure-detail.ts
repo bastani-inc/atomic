@@ -12,7 +12,7 @@ import {
 	TOOL_PAYLOAD_TRUNCATION_MARKER,
 	TOOL_PAYLOAD_VALUE_LIMIT,
 } from "../shared/tool-payload-bounds.js";
-import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, hexToAnsi, RESET } from "./color-utils.js";
 import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration } from "./status-helpers.js";
@@ -278,7 +278,7 @@ export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageF
 	const tokens = stageTokensText(stage);
 	const indent = "  ";
 	const room = Math.max(1, width - indent.length);
-	const title = `${indent}${statusTone}${BOLD}${statusGlyph} ${inertDisplayLine(boundedToolTitleText(stage.name, width * 4))}${RESET}${muted} · ${statusWord}${after}${tokens}${RESET}`;
+	const title = `${indent}${statusTone}${boldOn()}${statusGlyph} ${inertDisplayLine(boundedToolTitleText(stage.name, width * 4))}${RESET}${muted} · ${statusWord}${after}${tokens}${RESET}`;
 	if (opts.logs) {
 		const partLimit = Math.min(TOOL_PAYLOAD_VALUE_LIMIT, room * MAX_FAILURE_LOG_ROWS);
 		const markerRow = truncateToWidth(TOOL_PAYLOAD_TRUNCATION_MARKER, room, "…");

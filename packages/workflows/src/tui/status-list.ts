@@ -14,7 +14,7 @@ import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import { boundedToolTitleText } from "../shared/tool-payload-bounds.js";
 import type { FlatBandBadge, ProgressCell } from "./chat-surface.js";
 import { chatWidth, ELLIPSIS, progressStrip, renderRoundedBox } from "./chat-surface.js";
-import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
 import { runStateColor, runStateIndicator } from "./run-state-indicator.js";
@@ -139,7 +139,7 @@ function renderRunEntry(
 	const trailingText = truncateToWidth(trailing?.text ?? "", Math.max(0, interior - 1), ELLIPSIS);
 	const nameBudget = Math.max(1, interior - 3 - visibleWidth(trailingText) - (trailingText ? 2 : 0));
 	const name = truncateToWidth(boundedToolTitleText(run.name, nameBudget * 4), nameBudget, ELLIPSIS);
-	const nameSeg = theme ? `${text}${BOLD}${name}${RESET}` : name;
+	const nameSeg = theme ? `${text}${boldOn()}${name}${RESET}` : name;
 	const trailingSeg =
 		theme && trailingText ? `${hexToAnsi(trailing?.fg ?? theme.dim)}${trailingText}${RESET}` : trailingText;
 	const identity = `   ${nameSeg}${trailingSeg ? `  ${trailingSeg}` : ""}`;

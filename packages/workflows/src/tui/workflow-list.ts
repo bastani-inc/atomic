@@ -1,5 +1,5 @@
 import { chatWidth, ELLIPSIS, renderHintRows, renderRoundedBox } from "./chat-surface.js";
-import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
@@ -77,7 +77,7 @@ function renderWorkflowEntry(entry: WorkflowListEntry, opts: RenderWorkflowListO
 	const interior = Math.max(8, width - 2);
 	const titleBudget = Math.max(8, Math.min(TAG_NAME_BUDGET, interior - 2));
 	const title = truncateToWidth(entry.name, titleBudget, ELLIPSIS);
-	const titleLine = theme ? ` ${hexToAnsi(theme.text)}${BOLD}${title}${RESET} ` : ` ${title} `;
+	const titleLine = theme ? ` ${hexToAnsi(theme.text)}${boldOn()}${title}${RESET} ` : ` ${title} `;
 
 	const descBudget = Math.max(8, interior - 4);
 	const description = truncateToWidth(entry.description, descBudget, ELLIPSIS);

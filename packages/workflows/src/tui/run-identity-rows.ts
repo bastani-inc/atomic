@@ -1,6 +1,6 @@
 /** Shared two-row run identity rendering for workflow cards and attribution banners. */
 
-import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { boldOn, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { visibleWidth } from "./text-helpers.js";
 
@@ -79,7 +79,7 @@ export function renderRunIdentityRows(opts: RunIdentityRowsOpts): string[] {
 	const themed = opts.theme !== undefined;
 	const glyph = themed ? `${hexToAnsi(opts.glyphColor ?? opts.theme.text)}${opts.glyph}${RESET}` : opts.glyph;
 	const id = themed ? (text: string) => `${hexToAnsi(opts.theme!.accent)}${text}${RESET}` : (text: string) => text;
-	const name = themed ? `${hexToAnsi(opts.theme.text)}${BOLD}${opts.name}${RESET}` : opts.name;
+	const name = themed ? `${hexToAnsi(opts.theme.text)}${boldOn()}${opts.name}${RESET}` : opts.name;
 	const metaColor = opts.metaColor ?? opts.theme?.dim;
 	const meta =
 		themed && opts.meta !== undefined && opts.meta.length > 0
