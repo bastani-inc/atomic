@@ -1,10 +1,22 @@
 import { type Component, truncateToWidth } from "@bastani/atomic-tui";
-import { agentPanelTaskId, taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
-import { supersededReleasedAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
+import {
+	isActivePanelState,
+	isRestingPanelRow,
+	panelHintParts,
+	panelHintText,
+	panelRowListed,
+} from "../../../core/tasks/agent-panel-rules.ts";
+import {
+	agentPanelTaskId,
+	taskPanelItems,
+	taskPanelRole,
+	taskPanelState,
+} from "../../../core/tasks/agent-panel-source.ts";
+import { supersededSettledAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { theme } from "../theme/theme.js";
-import { AGENT_PANEL_IDLE_ROWS, panelShellHintSegments, renderAgentPanelRows } from "./agent-panel.ts";
+import { AGENT_PANEL_IDLE_ROWS, AgentPanelModel, renderAgentPanelRows } from "./agent-panel.ts";
 import { countTasksBy, TaskRow, taskLabel, taskSiblings, taskTitle } from "./task-row.js";
 
 const labelAndTitle = (task: TaskRecord): string => JSON.stringify([taskLabel(task), taskTitle(task)]);
@@ -73,47 +85,67 @@ export function isActiveBackgroundTask(task: TaskRecord): boolean {
 	);
 }
 
+/** The stopped subagents each task footer retired, kept per task source by its shared clocks. */
+const footerRetired = new WeakMap<TaskElapsedClocks, AgentPanelModel>();
+
 /**
- * A chat's own active tasks below its prompt, as the main chat's agent panel shows them: subagents as rows, and running
- * shells, which are not rows, counted on a line of their own in the main chat's hint wording.
+ * A chat's own background tasks below its prompt, listed by the main chat's agent panel rules: subagents as rows, and
+ * running shells, which are not rows, counted on a line of their own in the main chat's hint wording. A finished
+ * subagent is not listed; a stopped or interrupted one only while other work is active, and not again once it left
+ * until it runs again; a resumed one only as its latest attempt. Pass the task source's shared clocks
+ * (`taskClocksFor(source)`): they keep the elapsed times and remember across renders which stopped subagents left.
+ * Without them, each render decides on its own.
  */
 export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
+	let shells = 0;
+	const candidates: TaskRecord[] = [];
+	const superseded = supersededSettledAttempts(tasks);
+	for (let index = tasks.length - 1; index >= 0; index--) {
+		const task = tasks[index]!;
+		if (superseded.has(task.ref.taskId)) continue;
+		const role = taskPanelRole(task);
+		if (role !== "agent") {
+			if (role === "shell" && isActiveBackgroundTask(task)) shells++;
+			continue;
+		}
+		if (task.observation.kind === "background" || task.wasBackground === true) candidates.push(task);
+	}
+	const active = shells > 0 || candidates.some((task) => isActivePanelState(taskPanelState(task)));
+	let memory = clocks === undefined ? undefined : footerRetired.get(clocks);
+	if (memory === undefined) {
+		memory = new AgentPanelModel();
+		if (clocks !== undefined) footerRetired.set(clocks, memory);
+	}
+	const { pass } = memory.beginPass();
 	const input: TaskRecord[] = [];
 	const running: TaskRecord[] = [];
 	const other: TaskRecord[] = [];
-	let total = 0;
-	let shells = 0;
-	const superseded = supersededReleasedAttempts(tasks);
-	for (let index = tasks.length - 1; index >= 0; index--) {
-		const task = tasks[index]!;
-		if (!isActiveBackgroundTask(task) || superseded.has(task.ref.taskId)) continue;
-		if (task.kind === "command") {
-			shells++;
-			continue;
-		}
-		total++;
-		if (task.execution.kind === "running") {
-			if (task.attention.kind === "none") {
-				if (input.length + running.length < AGENT_PANEL_IDLE_ROWS) running.push(task);
-			} else if (input.length < AGENT_PANEL_IDLE_ROWS) {
-				input.push(task);
-			}
-		} else if (input.length + running.length + other.length < AGENT_PANEL_IDLE_ROWS) {
-			other.push(task);
-		}
+	const finished: TaskRecord[] = [];
+	for (const task of candidates) {
+		const state = taskPanelState(task);
+		const settled =
+			task.execution.kind === "settled" && (state === "done" || state === "failed" || state === "stopped");
+		const retired =
+			isRestingPanelRow("agent", state) && memory.retireResting(`task:${task.ref.taskId}`, active, pass);
+		if (!panelRowListed("agent", state, settled, { active, retired, kept: false })) continue;
+		(settled ? finished : state === "input" ? input : state === "running" ? running : other).push(task);
 	}
-	const shellHint = panelShellHintSegments(shells, total > 0);
+	memory.endPass(pass);
+	const listed = [...input, ...running, ...other, ...finished];
+	const total = listed.length;
+	// The chat's own key hint already offers ↓ to its task list, so this line never adds the subagents pointer.
+	const hint = panelHintText(panelHintParts({ total, agents: 0, needsInput: 0 }, shells, 0, true), "");
 	const shellLine =
-		shellHint.length === 0
+		hint.length === 0
 			? []
 			: [
 					truncateToWidth(
-						`  ${shellHint.map((segment) => theme.fg("muted", segment)).join(theme.fg("dim", " · "))}`,
+						`  ${hint.map((segment) => theme.fg("muted", segment)).join(theme.fg("dim", " · "))}`,
 						Math.max(1, width),
 					),
 				];
 	if (total === 0) return shellLine;
-	const shownTasks = [...input, ...running, ...other].slice(0, AGENT_PANEL_IDLE_ROWS);
+	const shownTasks = listed.slice(0, AGENT_PANEL_IDLE_ROWS);
 	const now = Date.now();
 	const items = taskPanelItems({ backgroundTasks: shownTasks }, new Set(), { topLevelOnly: false }).map((row) => {
 		if (row.state === "queued") return row;

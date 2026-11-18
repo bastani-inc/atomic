@@ -6,6 +6,10 @@
 
 - SDK: `createForkedSession` forks a session at an entry append-only: the new session holds the source's branch unchanged, followed by one result for each tool call the source's last turn left open. `appendForkToolResults`, `unansweredToolCalls`, `forkToolResults` and `forkPointEntryId` expose its steps. Subagent forks and forked workflow stages use it ([#5481](https://github.com/bastani-inc/atomic/issues/5481))
 
+### Changed
+
+- The agent panel below the prompt drops a subagent as soon as it finishes. Stopped, paused or interrupted subagents stay only while another subagent, workflow run or background shell is still running, then the whole panel closes, and a resumed subagent is listed once. `↓ N agents` counts only the subagents the panel lists, not workflow runs, so a running workflow alone no longer shows `↓ 1 agent`; `N needs input` still counts a workflow run's question. When the panel lists nothing but `/tasks` lists subagents, the hint shows `/tasks to see subagents`, or `N shells · /tasks to manage` while background shells run.
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.

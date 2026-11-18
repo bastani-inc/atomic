@@ -10,7 +10,6 @@ import {
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
-	AGENT_PANEL_DROP_MS,
 	AgentPanelFocus,
 	type AgentPanelRow,
 	type AgentPanelStyle,
@@ -313,12 +312,12 @@ test("renderAgentPanelRows only reads names in the visible window and agentPanel
 			open: () => {},
 		});
 		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+		// A finished run already opened is not listed; an unopened one stays until it is opened.
 		assert.deepEqual(
 			agentPanelRows(session).map((row) => row.id),
-			["run:b", "run:a"],
+			["run:a"],
 		);
 		openAgentPanelItem(session, "run:a");
-		now += AGENT_PANEL_DROP_MS + 1;
 		assert.deepEqual(agentPanelRows(session), []);
 
 		currentItems = [];
@@ -332,7 +331,7 @@ test("renderAgentPanelRows only reads names in the visible window and agentPanel
 			agentPanelRows(session).map((row) => row.id),
 			["run:a"],
 		);
-		now += AGENT_PANEL_DROP_MS + 1;
+		now += 60 * 60_000;
 		assert.deepEqual(
 			agentPanelRows(session).map((row) => row.id),
 			["run:a"],
