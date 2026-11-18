@@ -226,6 +226,35 @@ test(
 );
 
 test(
+	"startup reports distinct discovery handlers with the same error but not a repeat of the same handler (#5501)",
+	async () => {
+		let discoveries = 0;
+		const { mode } = await createMode(
+			(pi) => {
+				// Removing a preceding handler changes the others' list positions, not their identities.
+				const unsubscribe = pi.on("resources_discover", () => unsubscribe());
+				pi.on("resources_discover", function firstDirectory() {
+					discoveries++;
+					throw new Error("unavailable directory");
+				});
+				pi.on("resources_discover", function secondDirectory() {
+					if (discoveries === 2) throw new Error("unavailable directory");
+				});
+			},
+			{ settlesStartupTrust: true },
+		);
+		mode.deferredStartupPending = true;
+		await mode.completeDeferredStartup();
+		const chat = normalizeRenderedOutput(mode.chatContainer);
+		assert.equal(discoveries, 2);
+		assert.equal(occurrences(chat, 'Extension "<inline:1>" error: unavailable directory'), 2, chat);
+		assert.equal(occurrences(chat, "at firstDirectory"), 1, chat);
+		assert.equal(occurrences(chat, "at secondDirectory"), 1, chat);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
 	"/reload in the interactive host shows the error of an extension whose session_start throws and keeps the reload (#5501)",
 	async () => {
 		const { mode } = await createMode((pi) => {

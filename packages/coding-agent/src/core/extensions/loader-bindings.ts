@@ -4,6 +4,8 @@ import type { Extension, ExtensionRuntime } from "./types.ts";
 type Callback = (...args: never[]) => unknown;
 
 const originalCallbacks = new WeakMap<Callback, Callback>();
+/** The registration's ordinal for this extension and hook, not its changing position in the active handler list. */
+export const startupHandlerSlots = new WeakMap<Callback, number>();
 
 function retainCallbackIdentity(wrapped: Callback, original: Callback): Callback {
 	originalCallbacks.set(wrapped, originalCallbacks.get(original) ?? original);

@@ -200,6 +200,11 @@ export class RpcSessionBinding {
 						extensionPath: err.extensionPath,
 						event: err.event,
 						error: err.error,
+						...(this.customUi &&
+						(err.event === "session_start" || err.event === "resources_discover") &&
+						err.stack
+							? { stack: err.stack }
+							: {}),
 					});
 				},
 			});

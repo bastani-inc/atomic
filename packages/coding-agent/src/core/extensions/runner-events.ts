@@ -8,6 +8,7 @@ import {
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "../system-prompt.ts";
+import { originalRegistrationCallback, startupHandlerSlots } from "./loader-bindings.ts";
 import type {
 	AgentBeforeSettleEvent,
 	BeforeAgentStartEvent,
@@ -133,8 +134,17 @@ function shutdownErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-const emitCaughtError = (emitError: EmitExtensionError, extensionPath: string, event: string, error: unknown): void => {
-	emitError({
+/** Local dispatch metadata; extension error listeners and the engine transport do not need the registration slot. */
+export const startupErrorHandlerSlots = new WeakMap<ExtensionError, number>();
+
+const emitCaughtError = (
+	emitError: EmitExtensionError,
+	extensionPath: string,
+	event: string,
+	error: unknown,
+	slot?: number,
+): void => {
+	const failure: ExtensionError = {
 		extensionPath,
 		event,
 		error:
@@ -144,7 +154,9 @@ const emitCaughtError = (emitError: EmitExtensionError, extensionPath: string, e
 					? error.message
 					: String(error),
 		stack: error instanceof Error ? error.stack : undefined,
-	});
+	};
+	if (slot !== undefined) startupErrorHandlerSlots.set(failure, slot);
+	emitError(failure);
 };
 
 export function snapshotEventHandlers(extensions: Extension[], event: ExtensionEvent["type"]) {
@@ -188,7 +200,11 @@ export async function runGenericHandlers<TEvent extends RunnerEmitEvent>(
 					if (result.cancel) return result as RunnerEmitResult<TEvent>;
 				}
 			} catch (error) {
-				emitCaughtError(emitError, ext.path, event.type, error);
+				const slot =
+					event.type === "session_start"
+						? (startupHandlerSlots.get(originalRegistrationCallback(handler)) ?? handlers.indexOf(handler))
+						: undefined;
+				emitCaughtError(emitError, ext.path, event.type, error, slot);
 			}
 		}
 	}
@@ -619,7 +635,8 @@ export async function runResourcesDiscoverHandlers(
 					themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
 				}
 			} catch (error) {
-				emitCaughtError(emitError, ext.path, "resources_discover", error);
+				const slot = startupHandlerSlots.get(originalRegistrationCallback(handler)) ?? handlers.indexOf(handler);
+				emitCaughtError(emitError, ext.path, "resources_discover", error, slot);
 			}
 		}
 	}

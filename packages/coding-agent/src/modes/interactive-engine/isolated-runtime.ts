@@ -1436,7 +1436,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (isEngineExtensionError(record)) {
 			// A load failure is part of the engine's resource state, which the host shows with its resource diagnostics.
 			if (isExtensionLoadError(record)) return;
-			const error = { extensionPath: record.extensionPath, event: record.event, error: record.error };
+			const error = {
+				extensionPath: record.extensionPath,
+				event: record.event,
+				error: record.error,
+				...(typeof record.stack === "string" && { stack: record.stack }),
+			};
 			// An engine that loads its resources eagerly starts its extensions while this host is still starting up.
 			if (this.errorReportingSessions.has(session)) session.extensionRunner.emitError(error);
 			else this.heldExtensionErrors.push(error);

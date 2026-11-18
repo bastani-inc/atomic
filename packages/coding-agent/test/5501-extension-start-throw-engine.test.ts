@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
-import { afterEach, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import type { ExtensionError } from "../src/core/extensions/index.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
@@ -91,8 +91,14 @@ test("the interactive engine keeps its session when an extension throws in sessi
 
 	await binding.rebindSession();
 
-	assert.deepEqual(extensionErrors(output), [
-		{ type: "extension_error", extensionPath: "<inline:1>", event: "session_start", error: "boom in session_start" },
+	expect(extensionErrors(output)).toEqual([
+		{
+			type: "extension_error",
+			extensionPath: "<inline:1>",
+			event: "session_start",
+			error: "boom in session_start",
+			stack: expect.stringContaining("boom in session_start"),
+		},
 	]);
 	harness.setResponses([fauxAssistantMessage("still working")]);
 	await harness.session.prompt("hello");
@@ -141,12 +147,13 @@ test("the interactive engine's deferred resource load keeps the extensions whose
 
 	await binding.loadDeferredResources();
 
-	assert.deepEqual(extensionErrors(output), [
+	expect(extensionErrors(output)).toEqual([
 		{
 			type: "extension_error",
 			extensionPath,
 			event: "session_start",
 			error: "boom in deferred session_start",
+			stack: expect.stringContaining("extension.ts"),
 		},
 	]);
 	// The extension stays loaded and the session takes input: its command still runs.
@@ -174,12 +181,13 @@ test("an engine startup that settles project trust reports a resources_discover 
 
 	// The isolated host shows every record it gets; the engine may finish startup after the host finished its own.
 	assert.equal(discoveries, 2, "settling trust discovered the resources again, as documented");
-	assert.deepEqual(extensionErrors(output), [
+	expect(extensionErrors(output)).toEqual([
 		{
 			type: "extension_error",
 			extensionPath: "<inline:1>",
 			event: "resources_discover",
 			error: "boom in resources_discover",
+			stack: expect.stringContaining("boom in resources_discover"),
 		},
 	]);
 });
@@ -211,7 +219,12 @@ test("an engine startup that settles project trust still reports a second discov
 test("the isolated host shows an engine startup error that arrived before the host bound its session (#5501)", async () => {
 	// An engine that loads its resources eagerly starts its extensions while the host is still starting up.
 	pair = await createEngineHostPair({});
-	const reported = { extensionPath: "/extensions/throw.ts", event: "session_start", error: "boom in session_start" };
+	const reported = {
+		extensionPath: "/extensions/throw.ts",
+		event: "session_start",
+		error: "boom in session_start",
+		stack: "Error: boom in session_start\n    at firstDirectory (throw.ts:10:2)",
+	};
 	pair.engineOutput({ type: "extension_error", ...reported });
 	await pair.drain();
 	const errors: ExtensionError[] = [];
