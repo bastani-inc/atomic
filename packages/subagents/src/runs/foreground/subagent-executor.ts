@@ -369,7 +369,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		execute: async (id, params, signal, onUpdate, ctx) => {
 			if (params.action) return execute(id, params, signal, onUpdate, ctx);
 			// Every launch runs in the background; one that still asks to wait in the foreground is told so.
-			const legacy = takeLegacyForegroundWait(params);
+			const legacy = takeLegacyForegroundWait(id, params, ctx);
 			const result = await (invalidHeartbeatResult(legacy.params) ??
 				executeWithBurstCollection(id, legacy.params, signal, onUpdate, ctx));
 			return legacy.foreground ? withLegacyForegroundWaitNote(result) : result;

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentTool } from "@bastani/atomic-agent-core";
 import type { Tool, ToolCall } from "@bastani/atomic-ai";
 import { validateToolArguments } from "@bastani/atomic-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
@@ -16,6 +18,7 @@ import type { ExtensionContext } from "../../packages/coding-agent/src/index.js"
 import { mainComposerHintSegments } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { agentPanelRows } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
+import { createHarness, getMessageText } from "../../packages/coding-agent/test/suite/harness.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { prepareSubagentArguments, SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
@@ -64,9 +67,9 @@ afterEach(async () => {
  * A parent session with a real task owner and the subagent tool's executor. Each child runs until the test releases
  * it, binds a transcript that takes messages through the parent's Intercom relay, and records what reached it.
  */
-function parentWithBlockedChildren() {
+function parentWithBlockedChildren(options: { sessionManager?: SessionManager } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-background-launch-"));
-	const parentManager = SessionManager.inMemory(cwd);
+	const parentManager = options.sessionManager ?? SessionManager.inMemory(cwd);
 	const ready = parentManager.appendMessage({ role: "user", content: "parent context", timestamp: Date.now() });
 	const host = new AgentTaskHost({
 		scope: { kind: "session", sessionId: `bg-launch-${++sessions}` },
@@ -151,16 +154,21 @@ function parentWithBlockedChildren() {
 		started,
 		delivered,
 		release: () => release.resolve(),
-		/** A model's call: its arguments are prepared and validated against the tool's schema, as the agent loop does. */
-		modelCall(id: string, args: ToolCall["arguments"], signal = new AbortController().signal) {
+		/**
+		 * A model's call, as a session runs it: the assistant message that issued it is saved first, then its arguments
+		 * are prepared and validated against the tool's schema. A call that fails validation never executes.
+		 */
+		async modelCall(id: string, args: ToolCall["arguments"], signal = new AbortController().signal) {
+			await ready;
+			const call = fauxToolCall("subagent", args, { id });
+			await parentManager.appendMessage(fauxAssistantMessage(call, { stopReason: "toolUse" }));
 			const tool = { name: "subagent", description: "", parameters: SubagentParams } as unknown as Tool;
-			const call: ToolCall = { type: "toolCall", id, name: "subagent", arguments: args };
 			const prepared: ToolCall = {
 				...call,
 				arguments: prepareSubagentArguments(call.arguments) as ToolCall["arguments"],
 			};
 			const params = validateToolArguments(tool, prepared) as SubagentParamsLike;
-			return ready.then(() => executor.execute(id, params, signal, undefined, ctx));
+			return executor.execute(id, params, signal, undefined, ctx);
 		},
 		/** A call from an extension or SDK host, which reaches the executor without the model's schema. */
 		directCall(id: string, params: SubagentParamsLike, signal = new AbortController().signal) {
@@ -214,6 +222,52 @@ test("a launch that still asks to wait in the foreground runs in the background 
 	}
 	const plain = await parent.modelCall("plain", { agent: "echo", task: "plain" });
 	assert.doesNotMatch(text(plain), /^Note:/, "a launch that asks for nothing gets no note");
+});
+
+test("a launch that asked to wait in the foreground but failed validation leaves no note for the same launch after it", async () => {
+	const parent = parentWithBlockedChildren();
+	await assert.rejects(
+		parent.modelCall("invalid", {
+			agent: "echo",
+			task: "same",
+			wait: { kind: "foreground", budgetMs: LEGACY_FOREGROUND_BUDGET_MS },
+			notAField: true,
+		}),
+		/notAField|additional/i,
+	);
+	const next = await parent.modelCall("next", { agent: "echo", task: "same" });
+	assert.equal(admitted(next).observation.kind, "yielded");
+	assert.doesNotMatch(text(next), /^Note:/, "only the call that asked for the foreground gets the note");
+});
+
+test("through the agent loop, the note goes to exactly the call that asked to wait in the foreground", async () => {
+	const sessionManager = SessionManager.inMemory();
+	const parent = parentWithBlockedChildren({ sessionManager });
+	const subagent: AgentTool = {
+		name: "subagent",
+		label: "Subagent",
+		description: "Launch a subagent",
+		parameters: SubagentParams,
+		prepareArguments: prepareSubagentArguments,
+		execute: (id, params, signal) => parent.directCall(id, params as SubagentParamsLike, signal),
+	};
+	const harness = await createHarness({ sessionManager, tools: [subagent] });
+	cleanups.push(() => harness.cleanup());
+	const launch = (args: ToolCall["arguments"]) =>
+		fauxAssistantMessage(fauxToolCall("subagent", args), { stopReason: "toolUse" });
+	const foreground = { kind: "foreground", budgetMs: LEGACY_FOREGROUND_BUDGET_MS };
+	harness.setResponses([
+		launch({ agent: "echo", task: "same", wait: foreground, notAField: true }),
+		launch({ agent: "echo", task: "same" }),
+		launch({ agent: "echo", task: "asked", wait: foreground }),
+		fauxAssistantMessage("done"),
+	]);
+	await harness.session.prompt("Launch them");
+	const results = harness.session.messages.filter((message) => message.role === "toolResult");
+	assert.equal(results.length, 3);
+	assert.equal(results[0]?.role === "toolResult" && results[0].isError, true, "the invalid call never runs");
+	assert.doesNotMatch(getMessageText(results[1]), /Note: subagents always run in the background/);
+	assert.match(getMessageText(results[2]), /^Note: subagents always run in the background\b/);
 });
 
 test("a just-launched subagent is listed below the prompt and in /tasks, and takes a message typed into its chat", async () => {

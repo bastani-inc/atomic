@@ -1,3 +1,4 @@
+import type { ExtensionContext } from "@bastani/atomic";
 import type { SubagentToolResult } from "../../shared/types.js";
 import type { SubagentParamsLike } from "./subagent-executor-types.js";
 
@@ -5,63 +6,56 @@ import type { SubagentParamsLike } from "./subagent-executor-types.js";
 export const LEGACY_FOREGROUND_WAIT_NOTE =
 	'Note: subagents always run in the background; the foreground wait this call asked for was removed. Use subagent({ action: "wait", id }) to wait for a launched child.';
 
-/**
- * Launches a model asked to run in the foreground, by their agents and tasks, from the moment their arguments are
- * prepared until they execute. Schema validation copies the arguments in between, so nothing else links the two.
- * Bounded: a prepared call that never executes (its arguments failed validation) is forgotten in time.
- */
-const MAX_REMEMBERED_LAUNCHES = 64;
-const rememberedForegroundLaunches: string[] = [];
+/** How many entries back from its session's leaf a running call's assistant message is looked for. */
+const ISSUING_MESSAGE_SEARCH_DEPTH = 256;
 
-interface LaunchShape {
-	readonly agent?: unknown;
-	readonly task?: unknown;
-	readonly tasks?: unknown;
-}
-
-function launchKey(params: LaunchShape): string {
-	const tasks = Array.isArray(params.tasks)
-		? params.tasks.map((task: LaunchShape | null) => [task?.agent, task?.task])
-		: undefined;
-	return JSON.stringify([params.agent, params.task, tasks]);
-}
-
-function asksForForeground(wait: unknown): boolean {
+function asksForForeground(args: unknown): boolean {
+	const wait = typeof args === "object" && args !== null ? (args as { wait?: unknown }).wait : undefined;
 	return typeof wait === "object" && wait !== null && (wait as { kind?: unknown }).kind === "foreground";
 }
 
-function withoutWait<T extends object>(args: T): { readonly launch: T; readonly foreground: boolean } {
-	if (!Object.hasOwn(args, "wait")) return { launch: args, foreground: false };
-	const { wait, ...launch } = args as T & { readonly wait?: unknown };
-	return { launch: launch as T, foreground: asksForForeground(wait) };
-}
-
 /**
- * Drops the `wait` a model's call still passes, which the tool no longer has: every launch runs in the background. A
- * launch that asked to wait in the foreground is remembered, so its result can say why it returned at once.
+ * Drops the `wait` a call still passes, which the tool no longer has: every launch runs in the background. Whether the
+ * call asked to wait in the foreground stays in its own arguments, which {@link takeLegacyForegroundWait} reads.
  */
 export function withoutLegacyWait<T extends object>(args: T): T {
-	const { launch, foreground } = withoutWait(args);
-	if (foreground) {
-		rememberedForegroundLaunches.push(launchKey(launch));
-		if (rememberedForegroundLaunches.length > MAX_REMEMBERED_LAUNCHES) rememberedForegroundLaunches.shift();
-	}
-	return launch;
+	if (!Object.hasOwn(args, "wait")) return args;
+	return Object.fromEntries(Object.entries(args).filter(([key]) => key !== "wait")) as T;
 }
 
 /**
- * The launch to run, without the `wait` an extension or SDK caller may still pass, and whether it asked to wait in the
- * foreground: directly, or as a model's call {@link withoutLegacyWait} prepared.
+ * Whether the model's call `toolCallId` asked to wait in the foreground, read from the assistant message that issued
+ * it: a session saves that message before it runs any of its calls, and it is the session's latest.
  */
-export function takeLegacyForegroundWait(params: SubagentParamsLike): {
-	readonly params: SubagentParamsLike;
-	readonly foreground: boolean;
-} {
-	const { launch, foreground } = withoutWait(params);
-	if (foreground) return { params: launch, foreground };
-	const index = rememberedForegroundLaunches.indexOf(launchKey(launch));
-	if (index >= 0) rememberedForegroundLaunches.splice(index, 1);
-	return { params: launch, foreground: index >= 0 };
+function issuedCallAsksForeground(
+	sessionManager: Pick<ExtensionContext["sessionManager"], "getLeafId" | "getEntry">,
+	toolCallId: string,
+): boolean {
+	let entryId = sessionManager.getLeafId();
+	for (let depth = 0; entryId !== null && depth < ISSUING_MESSAGE_SEARCH_DEPTH; depth++) {
+		const entry = sessionManager.getEntry(entryId);
+		if (entry === undefined) return false;
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			const call = entry.message.content.find((block) => block.type === "toolCall" && block.id === toolCallId);
+			return call?.type === "toolCall" && asksForForeground(call.arguments);
+		}
+		entryId = entry.parentId;
+	}
+	return false;
+}
+
+/**
+ * The launch to run, without the `wait` it may still pass, and whether this very call asked to wait in the foreground:
+ * in the arguments an extension or SDK caller passed, or in the saved assistant message that issued a model's call.
+ * Nothing is remembered between calls, so no other launch is ever told about it.
+ */
+export function takeLegacyForegroundWait(
+	toolCallId: string,
+	params: SubagentParamsLike,
+	ctx: Pick<ExtensionContext, "sessionManager">,
+): { readonly params: SubagentParamsLike; readonly foreground: boolean } {
+	const foreground = asksForForeground(params) || issuedCallAsksForeground(ctx.sessionManager, toolCallId);
+	return { params: withoutLegacyWait(params), foreground };
 }
 
 /** The result with {@link LEGACY_FOREGROUND_WAIT_NOTE} as its first line. */
