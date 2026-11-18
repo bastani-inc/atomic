@@ -191,6 +191,12 @@ export function releasedWaitingOn(result: TaskResult): string | undefined {
 	return result.released.waitingOn.map((call) => `${call.toolName} (${call.toolCallId})`).join(", ") || "a tool call";
 }
 
+/** The tools an agent released while it waited waits on, by name and once each, as a task row names them. */
+export function releasedWaitingTools(result: TaskResult): string | undefined {
+	if (result.kind !== "cancelled" || result.released === undefined) return undefined;
+	return [...new Set(result.released.waitingOn.map((call) => call.toolName))].join(", ") || "a tool call";
+}
+
 /**
  * The id a subagent resume names: the child id the agent launched under. A resumed child's launch operation appends
  * `:resume:<id>` to it. Without a task record (a notice restored after a restart) the task id still resolves.

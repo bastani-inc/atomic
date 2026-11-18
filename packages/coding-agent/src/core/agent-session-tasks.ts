@@ -12,7 +12,12 @@ import {
 	forgetChildDelivery,
 	type TaskCompletionMessage,
 } from "./tasks/child-command-owner.js";
-import { type AdmittedTaskCompletion, type TaskCompletionEnvelope, TaskCompletionOutbox } from "./tasks/completion.js";
+import {
+	type AdmittedTaskCompletion,
+	releasedWaitingOn,
+	type TaskCompletionEnvelope,
+	TaskCompletionOutbox,
+} from "./tasks/completion.js";
 import { commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
 import type { TaskCompletionSource } from "./tasks/completion-ordering.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
@@ -170,9 +175,12 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				);
 			}
 			const key = own[0]!.envelope.completionId;
-			// A restored notice, or one whose task is gone, joins the transcript without starting a turn. Notices admitted
-			// together reach the model in one request, which they start as one turn.
-			const live = !restored && own.some((notice) => notice.hasTask);
+			// A restored notice, or one whose task is gone, joins the transcript without starting a turn. So does the notice of
+			// a subagent released while it waits: it wakes by itself and nothing is asked of this session, which reads the
+			// notice with its next turn. Notices admitted together reach the model in one request, which they start as one turn.
+			const live =
+				!restored &&
+				own.some((notice) => notice.hasTask && releasedWaitingOn(notice.envelope.result) === undefined);
 			const options = {
 				triggerTurn: live,
 				...(live ? { persistWhenStreaming: true } : {}),

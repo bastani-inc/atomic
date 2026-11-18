@@ -46,7 +46,7 @@ export interface AgentPanelStyle extends NavKeyStyle {
 const FINISHED: ReadonlySet<AgentPanelState> = new Set(["done", "failed", "stopped"]);
 const NON_PRINTABLE_ASCII = /[^\x20-\x7e]/;
 const NON_SINGLE_CELL = /[^\x20-\x7e\u00b7\u25b0\u25b1\u2193]/;
-const NON_SINGLE_CELL_LINE = /[^\x20-\x7e·▰▱↓∀⧗◆‖○◼✓✗●❯]/;
+const NON_SINGLE_CELL_LINE = /[^\x20-\x7e·▰▱↓∀⧗◆‖○◌◼✓✗●❯]/;
 const SGR_SEQUENCE = /\x1b\[[\d;:]*m/g;
 const MAX_CACHED_LINE_WIDTHS = 512;
 const singleCellLineWidths = new Map<string, number>();
@@ -305,6 +305,8 @@ function glyph(row: AgentPanelRow, style: AgentPanelStyle, frame: number | undef
 			return style.dim("○");
 		case "stopping":
 			return style.warning("◼");
+		case "waiting":
+			return style.dim("◌");
 		case "done":
 			return style.success("✓");
 		case "failed":
@@ -326,6 +328,8 @@ function stateWord(row: AgentPanelRow): string {
 			return "queued";
 		case "stopping":
 			return "stopping";
+		case "waiting":
+			return row.waitingOn ? `waiting on ${panelText(row.waitingOn)}` : "waiting";
 		case "done":
 			return "done";
 		case "failed":

@@ -9,6 +9,7 @@ import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-
 import { createChildCommandTaskOwner } from "../../packages/coding-agent/src/core/tasks/child-command-owner.js";
 import { formatTaskCompletion } from "../../packages/coding-agent/src/core/tasks/completion.js";
 import type { OperationId, OwnerId, Sequence, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { loadTaskOwnTranscriptHistory } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -104,7 +105,7 @@ async function recordUntil(
 }
 
 test(
-	"a background child released on a budgetless bash wait is reported as released, then wakes and completes without a resume (#5031)",
+	"a background child released on a budgetless bash wait is reported as released, shows its saved transcript without waking, then wakes and completes without a resume (#5031)",
 	async () => {
 		const env = await liveChildEnvironment(cleanups);
 		const owner = SessionManager.inMemory(env.root);
@@ -232,6 +233,30 @@ test(
 			"build-wait:0",
 			(record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS,
 		);
+
+		// Its transcript reads from its saved session, and reading it does not wake it.
+		const lease = host.resolveTask(childTaskId);
+		assert.ok(lease.ok);
+		const history = await loadTaskOwnTranscriptHistory(lease.value);
+		assert.equal(history?.unavailable, undefined, history?.unavailable);
+		const messages = (history?.entries ?? []).flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+		assert.ok(
+			messages.some(
+				(message) => message.role === "user" && JSON.stringify(message.content).includes("wait for the build"),
+			),
+			"the released child's prompt is shown",
+		);
+		assert.ok(
+			messages.some(
+				(message) =>
+					message.role === "assistant" &&
+					message.content.some((block) => block.type === "toolCall" && block.id === "wait-1"),
+			),
+			"the call it waits on is shown",
+		);
+		assert.equal(env.faux.getPendingResponseCount(), 1, "reading the transcript did not run the child");
+		const stillReleased = host.resolveTask(childTaskId);
+		assert.ok(stillReleased.ok);
 
 		// The build finishes; nobody resumes the child.
 		assert.deepEqual(released.waitingOn, [{ toolCallId: "wait-1", toolName: shellTool }]);

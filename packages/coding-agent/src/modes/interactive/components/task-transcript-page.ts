@@ -10,6 +10,7 @@ import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provi
 import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
+import { releasedWaitingOn, releasedWaitingTools } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
@@ -194,7 +195,27 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
 	get status(): string {
-		return [this.loadStatus, this.readOnlyReason() ?? ""].filter(Boolean).join(" · ");
+		return [this.loadStatus, this.releasedNote() ?? "", this.readOnlyReason() ?? ""].filter(Boolean).join(" · ");
+	}
+	/**
+	 * What a subagent released while it waits waits on, that it wakes by itself, and the shells it launched that still
+	 * run, which `/tasks` opens. Its transcript is its saved session, read without waking it.
+	 */
+	private releasedNote(): string | undefined {
+		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		const waitingOn = task?.execution.kind === "settled" ? releasedWaitingOn(task.execution.result) : undefined;
+		if (waitingOn === undefined) return undefined;
+		const shells = (this.source.ownerTasks ?? this.source.tasks).filter(
+			(candidate) =>
+				candidate.parentTaskId === this.taskId &&
+				candidate.kind === "command" &&
+				candidate.execution.kind !== "settled",
+		);
+		const shellNote =
+			shells.length === 0
+				? ""
+				: ` · ${shells.length === 1 ? `its shell ${taskDisplayText(shortTaskTitle(shells[0]!.title || "shell"))} is` : `${shells.length} of its shells are`} running, /tasks opens ${shells.length === 1 ? "it" : "them"}`;
+		return `Waiting on ${taskDisplayText(waitingOn)} · wakes by itself when it finishes${shellNote}`;
 	}
 	set status(value: string) {
 		this.loadStatus = value;
@@ -516,16 +537,21 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 											taskClockRunning(task.execution.kind),
 										) ?? task.metrics.elapsedMs,
 									);
-		const stopped = this.source.taskStopped?.(this.taskId) === true;
+		const released = task?.execution.kind === "settled" ? releasedWaitingTools(task.execution.result) : undefined;
+		const stopped = released === undefined && this.source.taskStopped?.(this.taskId) === true;
 		const label = [
 			name,
 			task?.title ? taskDisplayText(shortTaskTitle(task.title)) : "",
-			stopped ? "stopped" : (state ?? ""),
+			stopped ? "stopped" : released !== undefined ? `waiting on ${taskDisplayText(released)}` : (state ?? ""),
 		]
 			.filter(Boolean)
 			.join(" · ");
 
-		const placeholder = stopped ? STOPPED_NOTE : `${waiting ? "Answer" : "Message"} ${name}…`;
+		const placeholder = stopped
+			? STOPPED_NOTE
+			: released !== undefined
+				? `Message ${name} to wake it…`
+				: `${waiting ? "Answer" : "Message"} ${name}…`;
 		return applyAttachedComposer(
 			{ accent: this.env.style.accent, text: this.env.style.text, dim: this.env.style.dim },
 			label,
