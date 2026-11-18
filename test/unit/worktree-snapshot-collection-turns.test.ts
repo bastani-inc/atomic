@@ -235,6 +235,29 @@ test.each<[string, () => Promise<readonly string[]>]>([
 	LARGE_STORE_TEST_TIMEOUT_MS,
 );
 
+test(
+	"a timer can stop a collection that pages through blobs a run retains: it rejects with the abort reason at the next page (#5530)",
+	async () => {
+		await seedRunRetainedBlobs();
+		const controller = new AbortController();
+		const reason = new Error("the storage is closing");
+
+		const stop = setTimeout(() => controller.abort(reason), 1);
+		const collection = collectSnapshotGarbage(shared.journal.snapshotBlobs, {
+			graceSeconds: 0,
+			signal: controller.signal,
+		});
+		await assert.rejects(collection, (error: unknown) => error === reason);
+		clearTimeout(stop);
+
+		const { blobs } = (await shared.database.get<{ blobs: number }>(
+			`SELECT count(*) AS blobs FROM ${shared.journal.snapshotBlobs.table}`,
+		))!;
+		assert.equal(blobs, RUN_RETAINED_BLOBS);
+	},
+	LARGE_STORE_TEST_TIMEOUT_MS,
+);
+
 test("a collection keeps a blob that another host's session retains again before its delete batch commits (#5530)", async () => {
 	const early = textBlob("recorded by the early snapshot");
 	const late = textBlob("recorded by the late snapshot");
