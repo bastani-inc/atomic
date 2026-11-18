@@ -538,3 +538,38 @@ test("a history search that has printed as much as its task keeps stops there an
 		await rm(tempDir, { recursive: true, force: true });
 	}
 });
+
+test("a cut history search result still shows what could not be read or searched and where to continue", async () => {
+	const owner = host(10_000);
+	const tempDir = await mkdtemp(join(tmpdir(), "search-notes-"));
+	const unreadable = "history://workflows:0: [searched workflow runs 1-7 of 110, 1 unreadable]";
+	const skipped = "history://sessions/s2:0: [entry 9 not searched: the pattern ran past its time limit]";
+	const nextPage = "history://sessions:0: [searched sessions 1-25 of 164; continue with history://sessions?offset=25]";
+	try {
+		const result = await run(
+			searchTool(owner, tempDir).search,
+			{ pattern: "needle", paths: "history://workflows" },
+			{
+				internalResourceRouter: {
+					search: async () =>
+						[
+							`history://workflows/r1:1: needle ${"x".repeat(45_000)}`,
+							unreadable,
+							skipped,
+							nextPage,
+							`history://workflows/r2:1: needle ${"y".repeat(30_000)}`,
+						].join("\n"),
+				},
+			},
+		);
+		const shown = text(result);
+		assert.match(shown, /Full output: /);
+		assert.ok(shown.includes(unreadable), shown.slice(-600));
+		assert.ok(shown.includes(skipped), shown.slice(-600));
+		assert.ok(shown.includes(nextPage), shown.slice(-600));
+		assert.ok(Buffer.byteLength(shown) < 45_000);
+	} finally {
+		await owner.close("session-close");
+		await rm(tempDir, { recursive: true, force: true });
+	}
+});

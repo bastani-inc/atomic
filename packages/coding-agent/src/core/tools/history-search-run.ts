@@ -61,8 +61,8 @@ export interface HistorySearchCall extends HistorySearchRun {
 }
 
 /**
- * Most bytes of the notes that end a search's output a result whose output is cut still shows after its start: where
- * the search stopped, and where to continue from, are printed last and must not be only in the saved file.
+ * Most bytes of notes a result whose output is cut still shows after its start: what the search could not read or
+ * search, and where it stopped and continues from, must not be only in the saved file.
  */
 const HISTORY_SEARCH_END_NOTE_BYTES = 4_000;
 /**
@@ -70,27 +70,55 @@ const HISTORY_SEARCH_END_NOTE_BYTES = 4_000;
  * stopped), not a match that quotes one.
  */
 const CONTINUE_NOTE = /^(?:\S+?(?::0: |-0- ))?\[.*\bcontinue with history:\/\/\S+?\]\s*$/;
+/** A note of the search that something was not covered: an entry it could not search, records it could not read. */
+const GAP_NOTE = /^\S+?(?::0: |-0- )\[.*\b(?:not searched|unreadable)\b.*\]\s*$/;
 
-/** The notes `rest` ends with that name where to continue, in order, within {@link HISTORY_SEARCH_END_NOTE_BYTES}. */
-function endNotes(rest: string): string[] {
-	const notes: string[] = [];
-	let bytes = 0;
+/** Whether `line` is a note a cut result shows again: what was not covered, or where the search continues. */
+function isKeptNote(line: string): boolean {
+	if (line.includes("continue with history://") && CONTINUE_NOTE.test(line)) return true;
+	return (line.includes("not searched") || line.includes("unreadable")) && GAP_NOTE.test(line);
+}
+
+/**
+ * The notes of `rest`, the part of a search's output its cut result does not show, that the result shows after its
+ * start, in order and within {@link HISTORY_SEARCH_END_NOTE_BYTES}: wherever they were printed, what the search could
+ * not read or search and the pages it left for the next call (`continue with`), then the notes the output ends with,
+ * which say where it stopped. Those come first when not all fit, and a line says how many of the others only the saved
+ * output holds.
+ */
+function hiddenNotes(rest: string): string[] {
 	const lines = rest.split("\n");
+	const ending = new Set<number>();
+	let bytes = 0;
 	for (let index = lines.length - 1; index >= 0; index--) {
 		const line = lines[index]!;
 		if (line.trim().length === 0) continue;
 		if (!CONTINUE_NOTE.test(line)) break;
 		const size = Buffer.byteLength(line, "utf8") + 1;
 		if (bytes + size > HISTORY_SEARCH_END_NOTE_BYTES) break;
-		notes.unshift(line);
+		ending.add(index);
 		bytes += size;
 	}
-	return notes;
+	const kept: string[] = [];
+	let left = 0;
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index]!;
+		if (ending.has(index) || !isKeptNote(line)) continue;
+		const size = Buffer.byteLength(line, "utf8") + 1;
+		if (left > 0 || bytes + size > HISTORY_SEARCH_END_NOTE_BYTES) left++;
+		else {
+			kept.push(line);
+			bytes += size;
+		}
+	}
+	const more = left === 0 ? [] : [`[${left} more ${left === 1 ? "note" : "notes"} in the full output]`];
+	return [...kept, ...more, ...[...ending].sort((a, b) => a - b).map((index) => lines[index]!)];
 }
 
 /**
  * What a search printed, as its result shows it: the start, and all of it in a file when there is more. A result cut
- * short still shows the notes its output ends with, so where to continue from is always in the result.
+ * short still shows what the search could not read or search and the notes its output ends with, so what it missed and
+ * where to continue from are always in the result.
  */
 async function formatHistoryOutput(
 	text: string,
@@ -103,7 +131,7 @@ async function formatHistoryOutput(
 	);
 	const lastNewline = head.lastIndexOf("\n");
 	if (lastNewline > 0) head = head.slice(0, lastNewline);
-	const notes = endNotes(text.slice(head.length));
+	const notes = hiddenNotes(text.slice(head.length));
 	let fullOutputPath: string | undefined;
 	try {
 		const directory = tempDir ?? tmpdir();
@@ -116,7 +144,7 @@ async function formatHistoryOutput(
 	} catch {
 		// The file could not be written: the result still shows the start, and names no path.
 	}
-	const shown = `the first ${formatSize(Buffer.byteLength(head, "utf8"))} of ${formatSize(bytes.length)}${notes.length > 0 ? " and the notes it ends with" : ""}`;
+	const shown = `the first ${formatSize(Buffer.byteLength(head, "utf8"))} of ${formatSize(bytes.length)}${notes.length > 0 ? " and the notes below" : ""}`;
 	const note = `[Showing ${shown}.${fullOutputPath ? ` Full output: ${fullOutputPath}` : ""}]`;
 	return {
 		text: [head, "", note, ...notes].join("\n"),
