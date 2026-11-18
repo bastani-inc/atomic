@@ -678,9 +678,7 @@ export function sqliteOpenLockPath(databasePath: string): string {
 }
 
 type NativeOpenLocks = Pick<typeof native, "tryAdvisoryLock" | "trySharedAdvisoryLock" | "trySharedAdvisoryLockAsync"> &
-	Partial<
-		Pick<typeof native, "tryAdvisoryLockAsync" | "raiseCurrentThreadPriority" | "shortenCurrentThreadSlice">
-	>;
+	Partial<Pick<typeof native, "tryAdvisoryLockAsync" | "raiseCurrentThreadPriority" | "shortenCurrentThreadSlice">>;
 
 interface HeldOpenLock {
 	readonly lock: { release(): void };
