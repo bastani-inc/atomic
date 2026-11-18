@@ -1738,6 +1738,8 @@ const LOCK_NEVER_STALE_MS = 2 ** 31 - 1;
 
 const GIT_INSTALL_LOCK_NAME = "git.install.lock";
 const LOCK_TRASH_INFIX = ".stale-";
+/** The random UUID that ends every moved-aside lock's name, so the sweep only ever touches those fixed-length names. */
+const LOCK_TRASH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Attempts at a lock path operation that fails for a moment while another process has the path open. */
 const LOCK_RETRY_ATTEMPTS = 5;
 const LOCK_RETRY_MS = 20;
@@ -1771,7 +1773,10 @@ async function retryTransient<T>(operation: () => Promise<T>): Promise<T> {
 async function lockIdentity(path: string): Promise<{ readonly id: string; readonly mtime: Date } | undefined> {
 	try {
 		const stats = await retryTransient(() => stat(path, { bigint: true }));
-		return { id: `${stats.dev}:${stats.ino}:${stats.mtimeNs}`, mtime: new Date(Number(stats.mtimeMs)) };
+		// The mtime as a plain stat reports it, rounded to the nearest millisecond: proper-lockfile compares its
+		// holder's stamp with that value, and a stamp of X ms is often stored as X ms less a few nanoseconds.
+		const mtimeMs = (stats.mtimeNs + 500_000n) / 1_000_000n;
+		return { id: `${stats.dev}:${stats.ino}:${stats.mtimeNs}`, mtime: new Date(Number(mtimeMs)) };
 	} catch (error) {
 		if (errnoCode(error) === "ENOENT") return undefined;
 		throw error;
@@ -1802,9 +1807,13 @@ async function removeLockTrash(path: string): Promise<void> {
  * Remove the abandoned lock `stale`, and never a lock someone else holds. The lock is moved aside to a name of its own
  * in one atomic rename, so of all waiters that judged it abandoned only one moves it. If what was moved is not the
  * lock that was judged abandoned (it was replaced between the check and the move), it goes back at once: an exclusive
- * mkdir recreates the lock path with the moved lock's mtime, which is all its holder checks. If the path was taken in
- * that instant, the lock stays with whoever took it, and the holder that lost it finishes its install, which is
- * published by an atomic rename either way.
+ * mkdir recreates the lock path with the moved lock's mtime, which is all its holder checks.
+ *
+ * Node has no rename that refuses to replace, so the put-back is not atomic: the lock path is empty from the move until
+ * the mkdir. Only a waiter paused between its check and its move gets there, and a process taking the lock in that
+ * instant keeps it. The holder that lost its lock sees it as compromised at its next refresh, and if it finishes
+ * before that, its release removes the newcomer's lock instead. Either holder still finishes its install, which is
+ * published by an atomic rename, so the cost is at most one more download, never a failed or partial install.
  */
 async function takeOverStaleLock(lockPath: string, stale: string): Promise<void> {
 	if ((await lockIdentity(lockPath))?.id !== stale) return;
@@ -1832,7 +1841,9 @@ async function takeOverStaleLock(lockPath: string, stale: string): Promise<void>
 async function removeAbandonedLockTrash(lockPath: string): Promise<void> {
 	const binDir = dirname(lockPath);
 	const prefix = `${basename(lockPath)}${LOCK_TRASH_INFIX}`;
-	const names = (await readdir(binDir)).filter((name) => name.startsWith(prefix));
+	const names = (await readdir(binDir)).filter(
+		(name) => name.startsWith(prefix) && LOCK_TRASH_ID.test(name.slice(prefix.length)),
+	);
 	for (const name of names) {
 		const path = join(binDir, name);
 		let identity: Awaited<ReturnType<typeof lockIdentity>>;
@@ -2203,7 +2214,17 @@ async function installGitDistribution(
 		throw await installFailedAsync("stage", target, layout, error);
 	}
 	const lock = await acquireGitInstallLock(target, layout, signal, emit);
-	if (lock.kind === "installed") return lock.provisioned;
+	if (lock.kind === "installed") {
+		try {
+			await removeAbandonedLockTrash(join(binDir, GIT_INSTALL_LOCK_NAME));
+		} catch (error) {
+			emit({
+				type: "warning",
+				message: `Could not remove an abandoned git install lock: ${firstLine(String(error))}`,
+			});
+		}
+		return lock.provisioned;
+	}
 	let primary: unknown;
 	try {
 		try {
