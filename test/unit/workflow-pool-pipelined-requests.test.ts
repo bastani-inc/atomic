@@ -66,6 +66,9 @@ vi.mock("../../packages/workflows/src/runs/foreground/sdk-intercom.js", () => ({
 
 afterEach(() => {
 	simulation.spawn = undefined;
+	// Restoring puts the journal methods back but keeps each spy, with its record of every call (`this`, arguments and
+	// result), for the rest of the file: about 25 MB a test for 300 workers. Resetting first drops those records.
+	vi.resetAllMocks();
 	vi.restoreAllMocks();
 });
 

@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
+- The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - A workflow run that the SDK's `run()` starts without your own `stageControlRegistry` no longer keeps its stage sessions, their session stores and the run's state in memory until the process exits when it fails in a way that can be resumed. Like a completed run, it releases them before `run()` returns, and resuming it still replays its completed stages from its record. A run given your own `stageControlRegistry` keeps its stage sessions until you clear that registry, as before ([#5499](https://github.com/bastani-inc/atomic/issues/5499))
 
 ## [0.9.89] - 2026-11-18
