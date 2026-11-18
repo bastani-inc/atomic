@@ -3,10 +3,13 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	appendFileSync,
+	closeSync,
 	copyFileSync,
 	existsSync,
+	ftruncateSync,
 	lstatSync,
 	mkdirSync,
+	openSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
@@ -15,6 +18,7 @@ import {
 	symlinkSync,
 	utimesSync,
 	writeFileSync,
+	writeSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -1156,7 +1160,15 @@ describe("cleaning up after a failed restore", () => {
 					!/\.d-[0-9a-f]{12}$/.test(basename(dirname(inspected)))
 				)
 					return;
-				writeFileSync(inspected, "gitdir: changed after the check\n");
+				// Rewritten in place: Windows refuses to recreate the hidden .git file Git made.
+				const handle = openSync(inspected, "r+");
+				try {
+					const text = Buffer.from("gitdir: changed after the check\n");
+					writeSync(handle, text, 0, text.length, 0);
+					ftruncateSync(handle, text.length);
+				} finally {
+					closeSync(handle);
+				}
 				changed = link;
 			};
 		});
