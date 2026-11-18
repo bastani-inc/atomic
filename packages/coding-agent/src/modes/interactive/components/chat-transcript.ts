@@ -11,7 +11,7 @@ import {
 	visibleWidth,
 	type WheelScrollLines,
 } from "@bastani/atomic-tui";
-import { theme } from "../theme/theme.js";
+import { colorEnvironment } from "../theme/color-utils.ts";
 import { isUserPromptRow } from "./jump-to-latest.ts";
 import { disposeRenderer as disposeComponent } from "./renderer-disposal.js";
 import { clickedBlocks } from "./transcript-block-clicks.ts";
@@ -953,7 +953,8 @@ export class ScrollableComponentViewport implements Component {
 		);
 		const thumbTop =
 			position.maxScroll === 0 ? 0 : Math.round((position.start / position.maxScroll) * (track - thumbHeight));
-		const plain = theme.getStyleLevel() === 0;
+		// The default colors are off with NO_COLOR or FORCE_COLOR=0; the viewport may paint before any theme loads.
+		const plain = colorEnvironment().off;
 		const thumbStyle =
 			this.options.scrollbarThumbStyle ?? ((text: string) => (plain ? text : `\x1b[37m${text}\x1b[39m`));
 		const trackStyle =
