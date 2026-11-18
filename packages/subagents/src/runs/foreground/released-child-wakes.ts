@@ -16,6 +16,7 @@ import { releasedReplyTimeoutId, releasedReplyToolResult } from "./released-chil
 import {
 	acknowledgeReleasedChildWake,
 	INTERCOM_CONNECTED_EVENT,
+	isHeldChildRecord,
 	markEndedChildrenOf,
 	type ReleasedChildHoldFailure,
 	releasedChildReservation,
@@ -116,6 +117,8 @@ export function bindReleasedChildWakes(
 			const record = recordsByName.get(childName);
 			if (record === undefined) continue;
 			failure.handled = true;
+			// #5551: a child that runs again or has ended is not released any more: there is nothing to hold for it.
+			if (!isHeldChildRecord(record)) continue;
 			const error = new ReleasedChildError(
 				"hold-failed",
 				{ ownerSessionId, childId: record.childId, childName, reason: "Intercom reservation request failed" },
@@ -131,7 +134,8 @@ export function bindReleasedChildWakes(
 					runId: record.runId,
 					agent: record.agent,
 					status: "error",
-					summary: `${error.message} (${error.code}). ${error.hint}`,
+					// The message already names the code and the hint.
+					summary: error.message,
 					timestamp: Date.now(),
 					noticeLabel: "Released subagent reservation",
 				},
@@ -193,7 +197,9 @@ export function bindReleasedChildWakes(
 				);
 				if (unsaved.length > 0) await holdResults(record, unsaved);
 				if (refuseRelaunch(record)() !== undefined) return;
-				if (record.intercomTarget !== undefined) void acknowledgeReleasedChildWake(events, record.intercomTarget);
+				// #5551: only a released child is reserved; one that ended on its own and is woken for a late result is not.
+				const reservation = releasedChildReservation(record);
+				if (reservation?.wake === true) void acknowledgeReleasedChildWake(events, reservation.childName);
 				await restore(
 					record,
 					{

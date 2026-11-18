@@ -86,15 +86,22 @@ type ChildReservationFacts = Pick<
 	| "releasedIntercomId"
 >;
 
+/** Whether the broker should hold sends for this child: it is released, or was stopped while it waited (#5551). */
+export function isHeldChildRecord(
+	record: Pick<ChildReservationFacts, "state" | "terminalStatus" | "waitingOn">,
+): boolean {
+	if (record.state !== "terminal") return false;
+	if (record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS) return true;
+	return (record.waitingOn?.length ?? 0) > 0 && PARKED_STATUSES.has(record.terminalStatus ?? "");
+}
+
 /**
  * What the broker should hold for this child, if it is released or was stopped while it waited: a released child wakes
  * its owner when a send is held for it, a stopped one only holds the send. Undefined for every other child.
  */
 export function releasedChildReservation(record: ChildReservationFacts): ReleasedChildReservation | undefined {
-	if (record.intercomTarget === undefined || record.state !== "terminal") return undefined;
+	if (record.intercomTarget === undefined || !isHeldChildRecord(record)) return undefined;
 	const released = record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS;
-	const parked = (record.waitingOn?.length ?? 0) > 0 && PARKED_STATUSES.has(record.terminalStatus ?? "");
-	if (!released && !parked) return undefined;
 	return {
 		childName: record.intercomTarget,
 		...(record.intercomGroup === undefined ? {} : { group: record.intercomGroup }),

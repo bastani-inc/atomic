@@ -62,22 +62,32 @@ function hintFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFields)
 	}
 }
 
+/** "subagent <id>" by its child id, else its Intercom name; "the subagent" when the failure names neither (#5551). */
+function subagentNamed(fields: ReleasedChildErrorFields): string {
+	const id = fields.childId ?? fields.childName;
+	return id === undefined ? "the subagent" : `subagent ${id}`;
+}
+
 function subjectFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFields): string {
+	const named = subagentNamed(fields);
+	const leading = `${named.charAt(0).toUpperCase()}${named.slice(1)}`;
 	switch (code) {
 		case "child-record-missing":
-			return `Session ${fields.ownerSessionId} has no record of subagent ${fields.childId}`;
+			return `Session ${fields.ownerSessionId} has no record of ${named}`;
 		case "child-record-unreadable":
-			return `The latest record of subagent ${fields.childId} is in entry ${fields.entryId ?? "(none)"} of session ${fields.sessionId ?? fields.ownerSessionId}, which is not open in this process`;
+			return `The latest record of ${named} is in entry ${fields.entryId ?? "(none)"} of session ${fields.sessionId ?? fields.ownerSessionId}, which is not open in this process`;
 		case "child-unrestorable":
-			return `Subagent ${fields.childId} cannot be restored: ${fields.reason}`;
+			return `${leading} cannot be restored: ${fields.reason}`;
 		case "record-append-failed":
-			return `The ${fields.state === undefined ? "" : `${fields.state} `}record of subagent ${fields.childId} could not be saved`;
-		case "hold-failed":
-			return `Sends to released subagent ${fields.childName} cannot be held`;
+			return `The ${fields.state === undefined ? "" : `${fields.state} `}record of ${named} could not be saved`;
+		case "hold-failed": {
+			const target = fields.childName ?? fields.childId;
+			return `Sends to ${target === undefined ? "a released subagent" : `released subagent ${target}`} cannot be held`;
+		}
 		case "completion-not-held":
-			return `Subagent ${fields.childId} runs again or has ended, so it does not hold the completion of a task it launched`;
+			return `${leading} runs again or has ended, so it does not hold the completion of a task it launched`;
 		case "wake-failed":
-			return `Waking subagent ${fields.childId} failed: ${fields.reason}`;
+			return `Waking ${named} failed: ${fields.reason}`;
 	}
 }
 
@@ -91,20 +101,24 @@ export interface SerializedReleasedChildError {
 }
 
 /**
- * Waking, recording or keeping addressable a released subagent failed. `code` says why, `fields` carries the ids
- * involved, `hint` says what to do next, and `retryable` is true only when trying again later can succeed.
+ * Waking, recording or keeping addressable a released subagent failed. `subject` says what failed, `code` says why,
+ * `fields` carries the ids involved, `hint` says what to do next, and `retryable` is true only when trying again
+ * later can succeed. The message is the subject followed by the code and the hint.
  */
 export class ReleasedChildError extends Error {
 	override readonly name: string = RELEASED_CHILD_ERROR_NAME;
 	readonly code: ReleasedChildErrorCode;
+	readonly subject: string;
 	readonly hint: string;
 	readonly retryable: boolean;
 	readonly fields: ReleasedChildErrorFields;
 
 	constructor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFields, options?: ErrorOptions) {
 		const hint = hintFor(code, fields);
-		super(`${subjectFor(code, fields)} (${code}). ${hint}`, options);
+		const subject = subjectFor(code, fields);
+		super(`${subject} (${code}). ${hint}`, options);
 		this.code = code;
+		this.subject = subject;
 		this.hint = hint;
 		this.retryable = RETRYABLE_CODES.has(code);
 		this.fields = fields;

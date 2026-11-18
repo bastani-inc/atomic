@@ -207,6 +207,67 @@ test("a broker refusal of a released child's reservation appears in status and n
 	}
 });
 
+test("a released child's reservation failure notice and status state its code and hint once (#5551)", async () => {
+	const { ctx } = await ownerWith([{ waitingOn: [] }]);
+	const { events, emitted } = bus();
+	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (data) => {
+		(data as { completion?: Promise<void> }).completion = Promise.reject(new Error("Not connected"));
+	});
+	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+	try {
+		await vi.waitFor(() =>
+			assert.equal(emitted.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT).length, 1),
+		);
+		const notice = emitted.find((item) => item.channel === SUBAGENT_COMPLETE_EVENT)?.data as { summary: string };
+		const once =
+			"Sends to released subagent subagent-worker-run0-1 cannot be held (hold-failed). Check that Intercom is connected; until the reservation exists, sends to this subagent are answered as not found.";
+		assert.equal(notice.summary, once);
+		const status = subagentChildrenAwaitingResume(ctx);
+		assert.equal(status.at(-1), `Subagent run0:0: ${once}`);
+	} finally {
+		stop();
+	}
+});
+
+test("a reservation that fails after its child runs again or has ended notifies nobody and logs nothing (#5551)", async () => {
+	const { ctx } = await ownerWith([
+		{ terminalStatus: "ok", waitingOn: undefined },
+		// Woken: its running record still carries the status of its last released run.
+		{ state: "running", terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS, waitingOn: undefined },
+	]);
+	const { events, emitted } = bus();
+	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (data) => {
+		(data as { completion?: Promise<void> }).completion = Promise.reject(
+			new Error("Restoring-recipient request timeout"),
+		);
+	});
+	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+	const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		const before = subagentChildRecordFailures.count;
+		await reserveReleasedChildren(events, [
+			{ childName: "subagent-worker-run0-1", aliases: [], wake: true },
+			{ childName: "subagent-worker-run1-1", aliases: [], wake: true },
+		]);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(
+			emitted.filter((item) => item.channel === SUBAGENT_HOLD_FAILURE_EVENT).length,
+			1,
+			"the failure reached the owner",
+		);
+		assert.deepEqual(
+			emitted.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT),
+			[],
+			"no notice: neither child is released, so there is nothing to hold",
+		);
+		assert.equal(subagentChildRecordFailures.count, before, "status shows no failure");
+		assert.deepEqual(logged.mock.calls, []);
+	} finally {
+		logged.mockRestore();
+		stop();
+	}
+});
+
 test("a failed reservation of thousands of children finds them by name in one pass over the owner's records (#4326)", async () => {
 	const { ctx, ownerSessionId } = await ownerWith([]);
 	const { events, emitted } = bus();

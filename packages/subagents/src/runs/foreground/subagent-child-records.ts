@@ -1047,7 +1047,8 @@ export async function recordSubagentChildWakeFailure(
 			wakeFailure: {
 				...(latest.taskId === undefined ? {} : { taskId: latest.taskId }),
 				code: failure.code,
-				reason: failure.fields.reason ?? failure.message,
+				// Shown before the code and the hint, so not the message, which ends with them (#5551).
+				reason: failure.fields.reason ?? failure.subject ?? failure.message,
 				hint: failure.hint,
 				...(reported ? { reported } : {}),
 			},

@@ -12,24 +12,37 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT } from "../../packages/intercom/session-recovery.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
-import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
+import {
+	requestSupervisorAuthorization,
+	SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT,
+} from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import {
+	INTERCOM_CONNECTED_EVENT,
 	type ReleasedChildReservation,
 	reserveReleasedChildren,
+	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
-import { SUBAGENT_RELEASED_WAKE_PROMPT } from "../../packages/subagents/src/runs/foreground/released-children.js";
+import {
+	SUBAGENT_RELEASED_WAKE_PROMPT,
+	subagentWakeKey,
+} from "../../packages/subagents/src/runs/foreground/released-children.js";
 import { SUBAGENT_RESERVE_RESTORING_CHILD_EVENT } from "../../packages/subagents/src/runs/foreground/subagent-child-hold.js";
 import {
 	createSubagentChildRecordSink,
 	readSubagentChildRecords,
 	SUBAGENT_CHILD_RELEASED_STATUS,
+	subagentChildRecordFailures,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import type { SubagentChildRestoreDeps } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
-import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
+import {
+	type RunSyncOptions,
+	type SingleResult,
+	SUBAGENT_COMPLETE_EVENT,
+} from "../../packages/subagents/src/shared/types.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
@@ -376,6 +389,130 @@ test(
 			assert.deepEqual(wakes, [{ childName: released }]);
 			assert.equal(restoringSendSettled, false, "the send to the restoring child is still held");
 		} finally {
+			await parent.host.close("session-close");
+			await parent.fire("session_shutdown", { type: "session_shutdown", reason: "quit" });
+			removeTempDirectory(cwd);
+		}
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a subagent that finished on its own and is woken for a late result gets no reservation notice (#5551)",
+	async () => {
+		const cwd = makeTempDirectory("released-intercom-late-");
+		const parent = parentSession("late-result-parent", cwd);
+		const ownerSessionId = parent.sessionManager.getSessionId();
+		const childName = "subagent-worker-late1-1";
+		const launched: RunSyncOptions[] = [];
+		const runtime = {
+			runSync: async (...args: Parameters<typeof runSync>): Promise<SingleResult> => {
+				launched.push(args[4]);
+				return runSync(args[0], args[1], args[2], args[3], {
+					...args[4],
+					testSession: { output: launched.length === 1 ? "all done" : "read the late result" },
+				});
+			},
+		};
+		const deps: SubagentChildRestoreDeps = {
+			pi: {
+				events: parent.events,
+				appendEntry: parent.appendEntry,
+				getSessionName: () => "late-result-parent",
+			} as never,
+			config: {},
+			discoverAgents: () => ({ agents: [worker] }),
+			runtime,
+		};
+		const notices: Array<{ readonly noticeLabel?: string; readonly summary?: string }> = [];
+		parent.events.on(SUBAGENT_COMPLETE_EVENT, (notice) => notices.push(notice as never));
+		const confirmations: Array<{ readonly childName: string; completion?: Promise<void> }> = [];
+		parent.events.on(SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, (request) =>
+			confirmations.push(request as never),
+		);
+		let connected = false;
+		parent.events.on(INTERCOM_CONNECTED_EVENT, () => {
+			connected = true;
+		});
+		const dispatcher = new AgentWakeDispatcher();
+		const stopWakes = bindReleasedChildWakes(deps, parent.ctx, parent.events, dispatcher);
+		const failuresBefore = subagentChildRecordFailures.count;
+		try {
+			await parent.fire("session_start", { type: "session_start", reason: "startup" });
+			// As a launch does, the owner authorizes the child as its supervisor on its own broker connection.
+			const supervisorAuthorization = await requestSupervisorAuthorization(parent.events, childName);
+			assert.ok(supervisorAuthorization);
+			assert.equal(connected, true, "the owner is connected to the broker");
+			const response = await runAgentTask({
+				host: parent.host,
+				cwd,
+				agents: [worker],
+				agent: "worker",
+				task: "finish quickly",
+				options: {
+					cwd,
+					runId: "late1",
+					index: 0,
+					sessionDir: join(cwd, "children", "late1"),
+					intercomSessionName: childName,
+					intercomGroup: "default",
+					intercomEvents: parent.events,
+					supervisorAuthorization,
+				},
+				wait: { kind: "background" },
+				recordChild: createSubagentChildRecordSink(
+					{ appendEntry: parent.appendEntry },
+					{ sessionManager: parent.sessionManager, orchestrationContext: undefined },
+				),
+				runtime,
+			});
+			assert.equal(response.kind, "admitted");
+			await vi.waitFor(
+				() =>
+					assert.equal(
+						readSubagentChildRecords(parent.sessionManager.getEntries()).get("late1:0")?.terminalStatus,
+						"ok",
+					),
+				{ timeout: RECORD_WAIT_MS, interval: 10 },
+			);
+			// The child was never released, so the broker holds no reservation for it.
+			// The result of a call that kept running in the background arrives after the child finished.
+			const woken = dispatcher.deliver(subagentWakeKey(ownerSessionId, "late1:0"), {
+				id: "tool-result:ci-late-1",
+				kind: "tool-result",
+				toolResult: {
+					toolCallId: "ci-late-1",
+					toolName: "bash",
+					result: { content: [{ type: "text", text: "CI finished" }], details: undefined },
+					isError: false,
+				},
+			});
+			await vi.waitFor(() => assert.equal(launched.length, 2), { timeout: RECORD_WAIT_MS, interval: 10 });
+			const relaunch = launched[1];
+			assert.equal(relaunch?.resumeSession, true, "the child is woken from its session to read the late result");
+			const capability = relaunch?.supervisorAuthorization;
+			assert.ok(capability, "the relaunch carries its owner's capability");
+			// The woken session registers on Intercom under its owner, as a restored child does.
+			await peer(childName, {
+				capability: capability.capability,
+				supervisorSessionId: capability.supervisorSessionId,
+			});
+			await woken;
+			const settled = await Promise.allSettled(confirmations.map((request) => request.completion));
+			await new Promise((resolveTurn) => setImmediate(resolveTurn));
+			assert.deepEqual(
+				settled.flatMap((outcome) => (outcome.status === "rejected" ? [String(outcome.reason)] : [])),
+				[],
+				"the broker refuses nothing the owner asks of it for this child",
+			);
+
+			assert.deepEqual(
+				notices.filter((notice) => notice.noticeLabel === "Released subagent reservation").map((n) => n.summary),
+				[],
+			);
+			assert.equal(subagentChildRecordFailures.count, failuresBefore, "status shows no reservation failure");
+		} finally {
+			stopWakes();
 			await parent.host.close("session-close");
 			await parent.fire("session_shutdown", { type: "session_shutdown", reason: "quit" });
 			removeTempDirectory(cwd);
