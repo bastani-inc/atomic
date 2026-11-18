@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Restoring a worktree snapshot, such as when a workflow resumes in a fresh worktree, starts fewer Git processes: the store is asked once whether it already holds the snapshot's commit before fetching it, several missing commits are looked up together, and the restored worktree's Git directory is read from its `.git` file. Each Git process costs tens of milliseconds on Windows
+
 ### Fixed
 
 - On Windows, installing a downloaded tool (such as `rg`, `fd` or Git) no longer fails when Atomic was started from PowerShell 7 and `tar.exe` cannot extract the zip archive: the Windows PowerShell fallback's `Expand-Archive` no longer inherits PowerShell 7's module path, which made it fail with `Cannot find an overload for "ExtractToDirectory"`. Every Windows PowerShell command Atomic runs for its own work now starts this way; the `powershell` tool and blueprint steps still run with your environment unchanged
