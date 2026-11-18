@@ -70,11 +70,9 @@ function unquotedCommandLine(parts: readonly string[]): string {
 	return parts.join(" ");
 }
 
-/**
- * Under Node, whose terminal input waits in the terminal until its event loop reads it. Under Bun on a loaded Windows
- * runner the console never reported the typed input as waiting, so there the dialog relies on its grace.
- */
-const terminalCases = (["bun", "node"] as const).flatMap((runtime) => (["hello", "hello\r"] as const).map((input) => ({ runtime, input })));
+const terminalCases = (["bun", "node"] as const).flatMap((runtime) =>
+	(["hello", "hello\r"] as const).map((input) => ({ runtime, input })),
+);
 
 test.each(terminalCases)(
 	"keeps input $input the terminal already holds before a startup dialog takes stdin under $runtime (#5241)",
@@ -101,10 +99,7 @@ test.each(terminalCases)(
 			}
 			child.write(input);
 			writeTextSync(join(dir, "input-written"), "ready");
-			const exit = await child.exited;
-			const diag = (await fileExists(join(dir, "diag.txt"))) ? readTextSync(join(dir, "diag.txt"), "utf8") : "no diag";
-			assert.equal(exit.exitCode, 0, `${screen}\n${diag}`);
-			console.log(`DIAG ${runtime} ${JSON.stringify(input)}\n${diag}`);
+			assert.equal((await child.exited).exitCode, 0, screen);
 			assert.deepEqual(JSON.parse(readTextSync(join(dir, "snapshot.json"), "utf8")), {
 				text: "hello",
 				submissions: [],
