@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -38,8 +38,17 @@ writeFileSync(join(directory, "capture-ready"), "ready");
 const inputWritten = join(directory, "input-written");
 while (!existsSync(inputWritten)) {}
 if (scenario === "terminal") {
+	const diag = (line: string) => appendFileSync(join(directory, "diag.txt"), `${performance.now().toFixed(1)} ${line}\n`);
+	diag(`input-written seen pending=${osStdinPendingInput()}`);
 	const deadline = Date.now() + 30_000;
-	while ((osStdinPendingInput() ?? 0) < Number(typedLength) && Date.now() < deadline) {}
+	let next = 0;
+	while ((osStdinPendingInput() ?? 0) < Number(typedLength) && Date.now() < deadline) {
+		if (performance.now() >= next) {
+			diag(`waiting pending=${osStdinPendingInput()}`);
+			next = performance.now() + 500;
+		}
+	}
+	diag(`done waiting pending=${osStdinPendingInput()}`);
 }
 if (scenario === "after-read") {
 	setImmediate(() => {

@@ -74,13 +74,13 @@ function unquotedCommandLine(parts: readonly string[]): string {
  * Under Node, whose terminal input waits in the terminal until its event loop reads it. Under Bun on a loaded Windows
  * runner the console never reported the typed input as waiting, so there the dialog relies on its grace.
  */
-const terminalCases = (["hello", "hello\r"] as const).map((input) => ({ runtime: "node" as const, input }));
+const terminalCases = (["bun", "node"] as const).flatMap((runtime) => (["hello", "hello\r"] as const).map((input) => ({ runtime, input })));
 
 test.each(terminalCases)(
 	"keeps input $input the terminal already holds before a startup dialog takes stdin under $runtime (#5241)",
-	async ({ input }) => {
+	async ({ runtime, input }) => {
 		const dir = makeTempDirectory("atomic-startup-handoff-");
-		const command = [process.execPath, await bundledNodeFixture()];
+		const command = runtime === "node" ? [process.execPath, await bundledNodeFixture()] : [bunExecutable(), FIXTURE];
 		let screen = "";
 		const child = startPty({
 			command: unquotedCommandLine([...command, dir, "terminal", String(input.length)]),
@@ -101,7 +101,10 @@ test.each(terminalCases)(
 			}
 			child.write(input);
 			writeTextSync(join(dir, "input-written"), "ready");
-			assert.equal((await child.exited).exitCode, 0, screen);
+			const exit = await child.exited;
+			const diag = (await fileExists(join(dir, "diag.txt"))) ? readTextSync(join(dir, "diag.txt"), "utf8") : "no diag";
+			assert.equal(exit.exitCode, 0, `${screen}\n${diag}`);
+			console.log(`DIAG ${runtime} ${JSON.stringify(input)}\n${diag}`);
 			assert.deepEqual(JSON.parse(readTextSync(join(dir, "snapshot.json"), "utf8")), {
 				text: "hello",
 				submissions: [],
