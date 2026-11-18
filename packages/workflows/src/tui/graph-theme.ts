@@ -10,6 +10,8 @@
  * overrides without forking the renderer.
  */
 
+import { colorToRgb, foregroundAnsi, parseColor } from "@bastani/atomic-tui";
+
 // ---------------------------------------------------------------------------
 // Canonical palette (Catppuccin Mocha)
 // ---------------------------------------------------------------------------
@@ -101,6 +103,9 @@ export interface GraphTheme {
 	accent: string;
 	mauve: string;
 
+	/** Palette slots have no fixed RGB. Keep a live stage's slot when its host uses one. */
+	stagePaletteFg?: (role: "warning" | "info") => string | undefined;
+
 	/** Statuses */
 	success: string;
 	warning: string;
@@ -161,6 +166,7 @@ export function deriveGraphTheme(theme: GenericTheme = {}): GraphTheme {
 export interface PiRuntimeTheme {
 	readonly name?: string;
 	getFgAnsi?: (color: string) => string;
+	getStyleLevel?: () => number;
 	getBgAnsi?: (color: string) => string;
 }
 
@@ -227,6 +233,17 @@ function tryPiAccessor(
 	} catch {
 		return undefined;
 	}
+}
+
+/** Round the peak hue once to a basic foreground. Relative channel strengths keep pastel yellow yellow, not white. */
+function basicForeground(hex: string): string {
+	const { r, g, b } = colorToRgb(parseColor(hex));
+	const hi = Math.max(r, g, b);
+	const lo = Math.min(r, g, b);
+	if (hi === lo) return `\x1b[${hi < 64 ? 30 : hi < 160 ? 90 : hi < 224 ? 37 : 97}m`;
+	const mid = (hi + lo) / 2;
+	const slot = Number(r >= mid) + 2 * Number(g >= mid) + 4 * Number(b >= mid);
+	return `\x1b[${(hi >= 192 ? 90 : 30) + slot}m`;
 }
 
 function fgHex(theme: PiRuntimeTheme, color: string): string | undefined {
@@ -296,5 +313,22 @@ export function deriveGraphThemeFromPiTheme(theme: unknown): GraphTheme {
 			(cleaned as Record<string, string>)[k] = v;
 		}
 	}
-	return deriveGraphTheme(cleaned);
+	const graph = deriveGraphTheme(cleaned);
+	if (typeof t.getStyleLevel === "function" && typeof t.getFgAnsi === "function") {
+		const styleLevel = t.getStyleLevel.bind(t);
+		const depth = process.stdout.getColorDepth?.();
+		graph.stagePaletteFg = (role) => {
+			const level = styleLevel();
+			if (level === 0) return "";
+			const ansi = tryPiAccessor(t, t.getFgAnsi, role === "info" ? "accent" : role);
+			const indexed = /^\x1b\[38;5;(\d{1,3})m$/.exec(ansi ?? "");
+			const index = indexed ? Number(indexed[1]) : undefined;
+			if (index !== undefined && index < 16) return `\x1b[${index < 8 ? 30 + index : 90 + index - 8}m`;
+			if (level === 1 || depth === 4) return basicForeground(graph[role]);
+			if (index !== undefined && index < 256) return ansi;
+			if (depth === 8) return foregroundAnsi(parseColor(graph[role]), "256color");
+			return undefined;
+		};
+	}
+	return graph;
 }

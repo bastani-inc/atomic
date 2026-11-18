@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - A session that keeps running workflows no longer holds an Intercom connection for every run it has finished. Only the 32 most recently finished invocations keep their pending-stage routes, so a message to one of their stages still gets that run's own answer; an older finished invocation's routes are withdrawn and its connection closes, and an invocation that runs again is routed again ([#5492](https://github.com/bastani-inc/atomic/issues/5492))
 - The `/workflows` graph marks a stage suspended with its session released with the dim `◌` waiting mark, the same mark a released subagent has in the chat, `/tasks` and the agent panel, in node cards, the stage switcher, the stage strip and the header's count. It used `◷`. A paused stage keeps `❚❚` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+- Running and awaiting-input stage borders now pulse in their own status colour instead of fading through the graph connector colour ([#5596](https://github.com/bastani-inc/atomic/issues/5596)).
 
 ## [0.9.89] - 2026-11-18
 
