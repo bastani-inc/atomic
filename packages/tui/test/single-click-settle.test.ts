@@ -120,6 +120,98 @@ describe("a single click's action waits until it cannot become a double-click", 
 		tui.stop();
 	});
 
+	it("holding the second press of a captured double-click never runs a single-click action (#5562)", async (t) => {
+		const { terminal, tui, acted } = settleFixture({ capture: true });
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+
+		terminal.sendInput(press(1, 0));
+		t.mock.timers.tick(10);
+		terminal.sendInput(release(1, 0));
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS - 10);
+		terminal.sendInput(press(1, 0)); // The interval includes its last millisecond.
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS);
+		terminal.sendInput(release(1, 0));
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, []);
+	});
+
+	it("a captured single held beyond its deadline acts at release, and the next press starts over (#5562)", async (t) => {
+		const { terminal, tui, acted, click } = settleFixture({ capture: true });
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+		terminal.sendInput(press(1, 0));
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, []);
+		terminal.sendInput(release(1, 0));
+		t.mock.timers.tick(1);
+		assert.deepStrictEqual(acted, ["first"]);
+		click(1, 0);
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, ["first", "first"]);
+	});
+
+	for (const captureFirst of [true, false]) {
+		it(`keeps a triple-click together when only the ${captureFirst ? "outer presses" : "middle press"} are captured (#5562)`, async (t) => {
+			const options = { capture: captureFirst };
+			const { terminal, tui, acted, copied, click } = settleFixture(options);
+			tui.start();
+			t.after(() => tui.stop());
+			await terminal.waitForRender();
+			t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+
+			click(8, 0);
+			options.capture = !captureFirst;
+			t.mock.timers.tick(100);
+			click(8, 0);
+			options.capture = captureFirst;
+			t.mock.timers.tick(100);
+			click(8, 0);
+			t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+			assert.deepStrictEqual(acted, []);
+			assert.deepStrictEqual(copied, [captureFirst ? "words" : "first words here"]);
+		});
+	}
+
+	for (const capture of [false, true]) {
+		it(`a wheel turn separates ${capture ? "captured" : "uncaptured"} clicks and interrupts a held press (#5562)`, async (t) => {
+			const { terminal, tui, acted, click } = settleFixture({ capture });
+			tui.start();
+			t.after(() => tui.stop());
+			await terminal.waitForRender();
+			t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+			const wheel = () => terminal.sendInput("\x1b[<65;2;1M");
+			click(1, 0);
+			wheel();
+			click(1, 0);
+			terminal.sendInput(press(1, 1));
+			wheel();
+			terminal.sendInput(release(1, 1));
+			t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+			assert.deepStrictEqual(acted, ["first", "first"]);
+		});
+	}
+
+	it("losing terminal focus cancels an outstanding single click and a held press (#5562)", async (t) => {
+		const { terminal, tui, acted, click } = settleFixture({ capture: true });
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+		click(1, 0);
+		terminal.sendInput(press(1, 1));
+		terminal.sendInput("\x1b[O");
+		terminal.sendInput("\x1b[I");
+		terminal.sendInput(release(1, 1));
+		click(1, 1);
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, ["second"]);
+	});
+
 	it("drops a waiting action when the renderer stops", async () => {
 		const { terminal, tui, acted, click } = settleFixture();
 		tui.start();

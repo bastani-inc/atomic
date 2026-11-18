@@ -95,6 +95,8 @@ function isolatedEngine() {
 		},
 		/** How many messages the engine sent while held. */
 		held: () => held?.length ?? 0,
+		hasClickComparison: () =>
+			held?.some((m) => m.type === "engine_custom_frame" && m.expansionChangesRows !== undefined),
 	};
 	return { runtime, frames };
 }
@@ -272,6 +274,75 @@ test("a click on any row of an Intercom message card the isolated engine draws e
 
 	await chat.click(/Message from worker-2/, "worker-2");
 	await chat.waitFor(/peer line 12$/);
+});
+
+test("a single click on changing one-line output keeps following the end (#5562)", async () => {
+	const chat = await mountIsolatedChat();
+	const row = chat.bash("streaming", "status", "short A");
+	await chat.waitFor(/short A$/);
+	chat.quickClick(/short A$/, "short");
+	chat.frames.hold();
+	row.updateResult({ content: [{ type: "text", text: "short B" }], isError: false, durationMs: 100 }, true);
+	await chat.settle();
+	chat.frames.release();
+	await chat.waitFor(/short B$/);
+	await vi.waitFor(() => assert.equal(row.isExpanded(), false), ENGINE_FRAME_WAIT);
+	assert.equal(chat.transcript.isFollowingEnd, true);
+});
+
+test("two clicks waiting on engine frames each use the output at their own settlement (#5562)", async () => {
+	const chat = await mountIsolatedChat();
+	const row = chat.bash("progress", "status", "short output");
+	await chat.waitFor(/short output$/);
+	chat.frames.hold();
+	await chat.click(/short output$/, "short"); // Nothing to expand yet.
+	chat.quickClick(/short output$/, "short");
+	row.updateResult({ content: [{ type: "text", text: lines(20, "more") }], isError: false, durationMs: 100 });
+	await chat.settle(); // This click now has more rows to show.
+	chat.frames.release();
+	await chat.waitFor(/more 1$/);
+	assert.equal(row.isExpanded(), true);
+	assert.equal(chat.transcript.isFollowingEnd, false);
+});
+
+test("a running tool's elapsed time changing during a click does not count as extra output (#5562)", async () => {
+	const { runtime, frames } = isolatedEngine();
+	// Use a live call without a finished duration. Its header advances between the two draws.
+	const live = new RemoteToolExecutionComponent("bash", "live", { command: "working" }, {}, runtime, () => {});
+	closers.unshift(() => live.dispose());
+	live.setArgsComplete();
+	live.markExecutionStarted();
+	live.updateResult({ content: [{ type: "text", text: "working line" }], isError: false }, true);
+	await vi.waitFor(() => assert.ok(live.render(80).some((line) => line.includes("working line"))), ENGINE_FRAME_WAIT);
+	let now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => (now += 1_000));
+	let changed = false;
+	try {
+		frames.hold();
+		live.expandByClick(true, () => {
+			changed = true;
+		});
+		await vi.waitFor(() => assert.ok(frames.hasClickComparison()), ENGINE_FRAME_WAIT);
+		frames.release();
+		assert.equal(changed, false);
+		assert.equal(live.isExpanded(), false);
+	} finally {
+		clock.mockRestore();
+	}
+});
+
+test("a delayed click decision cannot undo a later global expansion (#5562)", async () => {
+	const chat = await mountIsolatedChat();
+	const row = chat.bash("progress", "status", "only line");
+	await chat.waitFor(/only line$/);
+	chat.frames.hold();
+	await chat.click(/only line$/, "only");
+	await vi.waitFor(() => assert.ok(chat.frames.held() > 0), ENGINE_FRAME_WAIT);
+	row.setExpanded(true); // Ctrl+O sets this on every row.
+	chat.frames.release();
+	row.updateResult({ content: [{ type: "text", text: lines(20, "more") }], isError: false, durationMs: 100 });
+	await chat.waitFor(/more 20$/);
+	assert.ok(chat.shows(/more 1$/));
 });
 
 test("a click on a block the isolated engine draws with nothing to expand changes nothing and keeps following the end", async () => {

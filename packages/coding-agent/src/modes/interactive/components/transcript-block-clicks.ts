@@ -104,6 +104,23 @@ export function isClickedGroup(unit: readonly ClickExpandableBlock[]): boolean {
 	return unit.length > 1 || (head !== undefined && roleOf(head) === "head");
 }
 
+let comparisonTime: number | undefined;
+
+/** A tool's elapsed label must read the same clock in both synchronous draws of a click comparison. */
+export function blockRenderTime(): number {
+	return comparisonTime ?? Date.now();
+}
+
+export function withBlockRenderTime<T>(draw: () => T): T {
+	const previous = comparisonTime;
+	comparisonTime = blockRenderTime();
+	try {
+		return draw();
+	} finally {
+		comparisonTime = previous;
+	}
+}
+
 export function sameRows(left: readonly string[], right: readonly string[]): boolean {
 	return left.length === right.length && left.every((line, index) => line === right[index]);
 }
@@ -113,11 +130,13 @@ export function sameRows(left: readonly string[], right: readonly string[]): boo
  * it did: a block with nothing to expand or collapse goes back to how it was.
  */
 export function expandIfItChangesRows(block: ClickExpandableBlock, width: number, expanded: boolean): boolean {
-	const before = block.render(width);
-	block.setExpanded(expanded);
-	if (!sameRows(before, block.render(width))) return true;
-	block.setExpanded(!expanded);
-	return false;
+	return withBlockRenderTime(() => {
+		const before = block.render(width);
+		block.setExpanded(expanded);
+		if (!sameRows(before, block.render(width))) return true;
+		block.setExpanded(!expanded);
+		return false;
+	});
 }
 
 /**
