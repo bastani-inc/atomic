@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.9.89] - 2026-11-18
+
+### Added
+
+- `tryAdvisoryLockAsync` and `renameNoReplaceAsync`: the advisory lock and the non-replacing rename on a worker thread, without blocking the JavaScript event loop
+- Added `pendingStdinInput()`: how much input waits unread on standard input, as bytes on Unix and as input events for a Windows console, or `null` where the operating system cannot say without waiting, such as for a Windows pipe ([#5241](https://github.com/bastani-inc/atomic/issues/5241))
+- Added `windowsDirectorySecurity(path)`: on Windows, reads a file or directory's owner SID, its DACL in SDDL form and the SID of each allow and deny entry, along with the current user's SID, without starting a process. It returns `null` where the descriptor cannot be read, and on other platforms. `windowsDirectorySecurityAsync(path)` reads a directory's security descriptor on a native worker without blocking the caller ([#5324](https://github.com/bastani-inc/atomic/issues/5324)).
+- Added `trySharedAdvisoryLock(path, waitMs)`: takes a shared operating-system advisory lock on `path` (`flock` on Unix, `LockFileEx` on Windows), waiting up to `waitMs` while an exclusive holder keeps it, and returns an `AdvisoryLock` or `null`. Both `tryAdvisoryLock` and `trySharedAdvisoryLock` reopen `path` when the file was unlinked while acquiring the lock, and treat a delete-pending file on Windows as contention until `waitMs` expires. Permanent access errors still throw, and repeated path replacement does not extend the wait ([#5317](https://github.com/bastani-inc/atomic/issues/5317)).
+
+### Fixed
+
+- On Windows, `tryAdvisoryLock`, `tryAdvisoryLockAsync` and `trySharedAdvisoryLock` no longer throw `Access is denied` when another process removes the lock file while they open or lock it. A refusal that the removal explains is retried, a bounded number of times in a row, before it counts as a real permission error ([#5317](https://github.com/bastani-inc/atomic/issues/5317)).
+- On Windows, `TaskSupervisor` no longer reports a command that ran to completion as failed with `Windows stdin worker stop was not confirmed` when its input thread, on a loaded or briefly stalled machine, closed the command's stdin just after the cleanup grace or ended later than it. A stop the thread reported counts as confirmed; one it never reports still fails the cleanup. On a busy Windows machine, a supervised command that ran to completion, such as a Git command of a named worktree, also no longer fails this way when its input thread has not run yet by the time the command's processes have all ended. Nothing reads that input any more, so the thread ends on its own; a command with processes still running fails as before ([#5340](https://github.com/bastani-inc/atomic/pull/5340), [#5202](https://github.com/bastani-inc/atomic/issues/5202), [#5450](https://github.com/bastani-inc/atomic/pull/5450))
+
 ## [0.9.89-alpha.2] - 2026-11-18
 
 ### Fixed
