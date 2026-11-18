@@ -216,6 +216,8 @@ const failedExtensionStarts = new WeakSet<ExtensionRunner>();
 // Binding intent is session-local and survives runner reloads, even when a host object is reused.
 const humanInputBindingRevisions = new WeakMap<AgentSession, number>();
 const presentationOnlyBindings = new WeakMap<AgentSession, boolean>();
+// Sessions whose host reports startup handler errors instead of failing the start (`reportStartupErrors`).
+const startupErrorReports = new WeakMap<AgentSession, boolean>();
 const statusSinks = new WeakMap<AgentSession, NonNullable<ExtensionBindings["onStatus"]>>();
 const sessionSummaryBackfills = new WeakSet<AgentSession>();
 
@@ -231,9 +233,15 @@ function startExtensions(
 	const start = trackSessionWork(session, () =>
 		Promise.resolve().then(async () => {
 			const failures: ExtensionStartupFailure[] = [];
+			const reportsStartupErrors = startupErrorReports.get(session) === true;
+			// The session's error listener hears only the runner it is bound to. A reload's candidate runner is bound after
+			// it commits, so the startup errors it reports are handed to that listener here.
+			const reportStartupError =
+				reportsStartupErrors && runner !== session._extensionRunner ? session._extensionErrorListener : undefined;
 			const unsubscribe = runner.onError((error) => {
 				if (error.event === "session_start" || error.event === "resources_discover") {
 					failures.push({ extensionPath: error.extensionPath, event: error.event, message: error.error });
+					reportStartupError?.(error);
 				}
 			});
 			try {
@@ -246,7 +254,8 @@ function startExtensions(
 					await session.sessionManager.loadFullHistory();
 				await runner.emit(event);
 				await extendRunnerResources(session, runner, loader, event.reason === "reload" ? "reload" : "startup");
-				if (failures.length) throw new ExtensionStartupError(failures);
+				// A reported failure leaves the extension loaded, as a failing handler for any other event does.
+				if (failures.length && !reportsStartupErrors) throw new ExtensionStartupError(failures);
 				await finalize?.();
 				if (runner === session.extensionRunner) runner.reportUnhandledMcpServers();
 				completeStartup(runner);
@@ -294,6 +303,7 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 		this._extensionMode = bindings.mode;
 	}
 	if (bindings.isPresentationOnly !== undefined) presentationOnlyBindings.set(this, bindings.isPresentationOnly);
+	if (bindings.reportStartupErrors !== undefined) startupErrorReports.set(this, bindings.reportStartupErrors);
 	if (bindings.onStatus !== undefined) statusSinks.set(this, bindings.onStatus);
 	if (bindings.commandContextActions !== undefined) {
 		this._extensionCommandContextActions = bindings.commandContextActions;

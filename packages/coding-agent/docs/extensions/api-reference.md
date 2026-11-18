@@ -1214,6 +1214,7 @@ Registered servers are the lowest-precedence MCP layer. They replace a same-name
 ## Error Handling
 
 - Extension errors are logged, agent continues
+- In the interactive terminal, a `session_start` or `resources_discover` handler that throws, at startup, with `-c`/`--resume`, on `/new`, `/resume`, `/fork` or `/reload`, is shown once with the extension's path and error, and the session keeps working. The extension stays loaded, so its commands, tools and other handlers still run. Print mode (`-p`), standalone RPC mode (`--mode rpc`), SDK sessions and workflow stages instead fail startup with `ExtensionStartupError`, which names each failing extension.
 - `tool_call` errors block the tool (fail-safe)
 - Tool `execute` errors must be signaled by throwing; the thrown error is caught, reported to the LLM with `isError: true`, and execution continues
 

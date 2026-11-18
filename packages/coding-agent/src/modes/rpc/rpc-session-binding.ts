@@ -192,6 +192,8 @@ export class RpcSessionBinding {
 					},
 				},
 				shutdownHandler: this.requestShutdown,
+				// The interactive engine's user sees extension errors on the host; a standalone RPC client keeps failed starts.
+				reportStartupErrors: this.customUi !== undefined,
 				onError: (err) => {
 					this.output({
 						type: "extension_error",

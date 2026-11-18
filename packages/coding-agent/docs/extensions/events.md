@@ -150,6 +150,8 @@ pi.on("session_start", async (event, ctx) => {
 });
 ```
 
+If the handler throws, the interactive terminal shows the error with the extension's path and keeps the session; print mode, RPC mode, SDK sessions and workflow stages fail startup instead. See [Error Handling](/extensions/api-reference#error-handling).
+
 #### session_recovery_restore / session_recovery_replay
 
 Fired once per session when the host recovers work an earlier process left unfinished. The interactive host does this after the transcript is visible. SDK and RPC hosts do it when they call `session.startPendingRecovery()` or send `start_pending_recovery`. Startup binding never fires them.
