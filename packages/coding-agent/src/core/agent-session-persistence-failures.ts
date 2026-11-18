@@ -7,10 +7,33 @@
 
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import type { CustomMessage } from "./messages.ts";
 import { describeStorageError } from "./storage/errors.js";
-import type { SessionConflictError } from "./storage/session/errors.js";
+import { SessionConflictError } from "./storage/session/errors.js";
 
 const reportedPersistenceFailures = new WeakSet<object>();
+
+/** What runs could not save, kept apart from the transcript so a context refresh does not drop it (#5135). */
+interface UnsavedInput {
+	readonly error: string;
+	conflict?: SessionConflictError;
+	readonly messages: AgentMessage[];
+}
+const unsavedInputs = new WeakMap<object, UnsavedInput>();
+
+function keepUnsaved(session: AgentSession, message: AgentMessage, failure: string, error: unknown): void {
+	let kept = unsavedInputs.get(session);
+	if (kept === undefined) {
+		kept = { error: failure, messages: [] };
+		unsavedInputs.set(session, kept);
+	}
+	if (error instanceof SessionConflictError) kept.conflict ??= error;
+	if (!kept.messages.includes(message)) kept.messages.push(message);
+}
+
+function failureOf(message: AgentMessage, error: unknown): string {
+	return `could not persist the ${message.role} message: ${error instanceof Error ? describeStorageError(error) : String(error)}`;
+}
 
 /**
  * For queue barriers inside the agent loop: a message that could not be saved was already reported where its
@@ -29,6 +52,22 @@ export function clearPersistenceFailure(session: AgentSession): void {
 	session.sessionManager.resumeAppends();
 }
 
+/** The user's next prompt resends or replaces what earlier runs could not save (#5135). */
+export function forgetUnsavedInput(session: AgentSession): void {
+	unsavedInputs.delete(session);
+}
+
+/**
+ * #5135: a custom message that the halt after another writer's entries refused stays shown and recoverable, not only
+ * with its sender.
+ */
+export function keepRefusedInput(session: AgentSession, message: CustomMessage, error: SessionConflictError): void {
+	session._messagesWithFailedPersistence.add(message);
+	keepUnsaved(session, message, failureOf(message, error), error);
+	session._emit({ type: "message_start", message });
+	session._emit({ type: "message_end", message });
+}
+
 /**
  * #4226: records that `message` could not be saved. The run stops on its first unsaved message; later failures of
  * the same run are part of that stop and are not reported again.
@@ -37,7 +76,8 @@ export function recordPersistenceFailure(session: AgentSession, message: AgentMe
 	// An unsaved message has no entry for turn_end to resolve; name the cause here instead.
 	session._messagesWithFailedPersistence.add(message);
 	if (typeof error === "object" && error !== null) reportedPersistenceFailures.add(error);
-	const failure = `could not persist the ${message.role} message: ${error instanceof Error ? describeStorageError(error) : String(error)}`;
+	const failure = failureOf(message, error);
+	keepUnsaved(session, message, failure, error);
 	const firstFailure = session._persistenceFailure === undefined;
 	session._persistenceFailure ??= failure;
 	// #3105: disposal reports failures that interrupt it through its own rejection.
@@ -51,27 +91,27 @@ export function recordPersistenceFailure(session: AgentSession, message: AgentMe
 	}
 }
 
-/** What the current run could not save, and why, while its stop stands (#4226). */
+/** What runs could not save, and why, until the user's next prompt (#4226, #5135). */
 export interface PersistenceFailure {
 	/** The reported cause, naming the storage error. */
 	readonly error: string;
-	/** The run's messages the session holds in memory but could not save, oldest first. */
+	/** The messages the session holds in memory but could not save, oldest first. */
 	readonly unsavedMessages: readonly AgentMessage[];
 	/** Set when the run stopped because another process wrote to the session (#5135). */
 	readonly conflict?: SessionConflictError;
 }
 
 /**
- * #5210: what the current run could not save, or undefined when it saved every message. The unsaved messages stay in
- * the session's memory only, so a caller that reports the run can still name and keep them.
+ * #5210: what runs since the user's last prompt could not save, or undefined when they saved every message. The
+ * unsaved messages stay in the session's memory only, so a caller that reports the run can still name and keep them;
+ * a context refresh does not drop them (#5135).
  */
 function getPersistenceFailure(this: AgentSession): PersistenceFailure | undefined {
-	const error = this._persistenceFailure;
-	if (error === undefined) return undefined;
-	const unsavedMessages = this.agent.state.messages.filter((message) =>
-		this._messagesWithFailedPersistence.has(message),
-	);
-	const conflict = this.sessionManager.getAppendHalt();
+	const kept = unsavedInputs.get(this);
+	if (kept === undefined) return undefined;
+	const unsavedMessages = kept.messages.filter((message) => !this._entryIdsByMessage.has(message));
+	if (unsavedMessages.length === 0) return undefined;
+	const { error, conflict } = kept;
 	return conflict === undefined ? { error, unsavedMessages } : { error, unsavedMessages, conflict };
 }
 

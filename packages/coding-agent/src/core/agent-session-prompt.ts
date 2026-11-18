@@ -13,7 +13,7 @@ import {
 	stopWaiting,
 } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { clearPersistenceFailure } from "./agent-session-persistence-failures.ts";
+import { clearPersistenceFailure, forgetUnsavedInput } from "./agent-session-persistence-failures.ts";
 import {
 	isProtectedStreamingCustomMessage,
 	queueHeldCustomMessages,
@@ -254,6 +254,7 @@ async function admittedPrompt(this: AgentSession, text: string, options?: Prompt
 		this._agentRunAbortRequested = false;
 		// #4226: a new prompt saves again after an earlier run stopped on a message it could not save.
 		clearPersistenceFailure(this);
+		forgetUnsavedInput(this);
 	}
 	this._activePromptCount += 1;
 	try {

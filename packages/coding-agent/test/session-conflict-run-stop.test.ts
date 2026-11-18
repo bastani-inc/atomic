@@ -48,6 +48,16 @@ test("a run stopped because another process wrote to the session saves none of i
 		["system", "continue"],
 	);
 	assert.equal(harness.getPendingResponseCount(), 1, "the stopped run sent no request");
+
+	harness.session.refreshContext();
+	assert.deepEqual(
+		harness.session.getPersistenceFailure()?.unsavedMessages.map((message) => userText(message) ?? message.role),
+		["system", "continue"],
+		"a context refresh keeps the unsaved prompt",
+	);
+	harness.setResponses([fauxAssistantMessage("answered")]);
+	await harness.session.prompt("continue");
+	assert.equal(harness.session.getPersistenceFailure(), undefined, "the prompt sent again was saved");
 });
 
 /** The store's entries of `sessionId`, as a reader that opens it now sees them. */
@@ -97,6 +107,14 @@ test("a message sent while a run's first write waits is not saved once another w
 	await run;
 
 	await assert.rejects(note, SessionConflictError);
+	const unsaved = harness.session.getPersistenceFailure()?.unsavedMessages ?? [];
+	const kept = unsaved.find((message) => message.role === "custom" && message.customType === "note");
+	assert.ok(kept, "the refused message stays recoverable in the session, not only with its sender");
+	assert.equal(kept.role === "custom" ? kept.content : undefined, "sent while the run saves");
+	assert.ok(
+		harness.events.some((event) => event.type === "message_end" && event.message === kept),
+		"the refused message is shown",
+	);
 	const entries = await storedEntries(store, sessionId);
 	assert.equal(entries.length, 2, JSON.stringify(entries.map((entry) => entry.type)));
 	await otherProcess.appendMessage({ role: "user", content: "the other process goes on", timestamp: Date.now() });
