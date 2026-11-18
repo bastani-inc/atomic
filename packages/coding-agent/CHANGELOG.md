@@ -19,6 +19,7 @@
 - Esc in a subagent's chat now cancels the subagent's retry while it waits to send a failed request again, as Esc does in the main chat: the subagent stops, shows `Stopped · send to resume`, and your next message continues it in the same session. The hint under its prompt shows `esc interrupt` for the whole wait. Before, Esc did nothing during the wait and the hint dropped `esc interrupt` ([#5507](https://github.com/bastani-inc/atomic/issues/5507)).
 - Cancelling a retry right after a request fails, before the retry's wait starts (for example with the RPC `abort_retry` command), now cancels it. Before, the next attempt still started after the cancellation ([#5507](https://github.com/bastani-inc/atomic/issues/5507)).
 - A subagent's chat opened while the subagent waits to retry now shows `retrying…` also when the subagent has a fallback model, as the builtin agents on `model: auto` do, instead of a running turn with a growing timer ([#5523](https://github.com/bastani-inc/atomic/issues/5523)).
+- A subagent's chat opened after one of its requests failed or was interrupted before any text arrived, for example during the retry wait or after the subagent finished, now shows the request's `Error: …` line or `Interrupted` block, as the main chat does. Before, the chat showed them only when it was open as the request ended ([#5529](https://github.com/bastani-inc/atomic/issues/5529)).
 
 ## [0.9.89] - 2026-11-18
 
