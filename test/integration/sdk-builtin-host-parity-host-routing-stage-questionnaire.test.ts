@@ -10,9 +10,17 @@ import {
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
 
+/**
+ * Each case starts a real SDK session with its bundled extensions, loads the provider extension and the workflow
+ * definition from source, and runs a real workflow stage session through the broker: about 7 s on an idle machine and
+ * 14-33 s on a loaded CI runner.
+ */
+const REAL_STAGE_HOST_SESSION_TIMEOUT_MS = 90_000;
+
 // #3105: exact authored questionnaire through actual factory/stage/broker, no renderer.
 test.for(["approval", "nested", "cancelled", "invalid", "missing", "stay"] as const)(
 	"Node stage questionnaire preserves original params and readiness: %s",
+	{ timeout: REAL_STAGE_HOST_SESSION_TIMEOUT_MS },
 	async (scenario, { signal }) => {
 		vi.stubEnv("NODE_ENV", "production");
 		vi.stubEnv("NODE_TEST_CONTEXT", undefined);
