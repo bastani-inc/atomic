@@ -54,7 +54,9 @@ export function followedStopNote(line: string): string | undefined {
 	if (note === null) return undefined;
 	const kept = note[2]!
 		.split("; ")
-		.filter((part) => !/^the (?:byte|row|time) budget ran out/.test(part) && !part.startsWith("continue with "));
+		// A part that says a budget ran out is the stop itself (`sessions not searched: the time budget ran out …` too),
+		// which the chain goes on from; an entry the pattern ran past (`… not searched: the pattern ran past …`) is not.
+		.filter((part) => !/\bthe (?:byte|row|time) budget ran out\b/.test(part) && !part.startsWith("continue with "));
 	return kept.some((part) => /\bnot searched\b|\bunreadable\b/.test(part))
 		? `${note[1]}[${kept.join("; ")}]`
 		: undefined;

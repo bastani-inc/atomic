@@ -316,3 +316,22 @@ test("a search step that fails is noted with where to continue, and the other pa
 		await owner.close("session-close");
 	}
 });
+
+test("a background search does not report a source a stop handed on as not searched", async () => {
+	const owner = host(10_000);
+	try {
+		const result = await run(
+			searchTool(owner).search,
+			{ pattern: "needle", paths: "history://" },
+			scriptedRouter((url) =>
+				url === "history://"
+					? "history://sessions:0: [sessions not searched: the time budget ran out waiting for the store; continue with history://sessions]"
+					: "history://sessions/s1:1: needle one",
+			),
+		);
+		assert.match(text(result), /needle one/);
+		assert.doesNotMatch(text(result), /not searched/);
+	} finally {
+		await owner.close("session-close");
+	}
+});

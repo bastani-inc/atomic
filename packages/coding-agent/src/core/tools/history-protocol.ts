@@ -169,7 +169,7 @@ interface CreatedKey {
 const CREATED_KEY = /^(-?\d+)(?:\.(.+))?$/s;
 
 function createdKeyOf(summary: SessionSummary): CreatedKey {
-	return { createdMs: timeMs(summary.createdAt), id: summary.id };
+	return { createdMs: Math.trunc(timeMs(summary.createdAt)), id: summary.id };
 }
 
 function compareCreatedKeys(a: CreatedKey, b: CreatedKey): number {
@@ -194,7 +194,8 @@ interface StartedKey {
 type ChainKey = SessionKey | CreatedKey | StartedKey;
 
 function startedKeyOf(run: Pick<WorkflowRunSummary, "startedAt" | "runId">): StartedKey {
-	return { startedMs: run.startedAt, runId: run.runId };
+	// Whole milliseconds, as a continuation writes them, so a run sorts where its own position names it.
+	return { startedMs: Math.trunc(run.startedAt), runId: run.runId };
 }
 
 function compareStartedKeys(a: StartedKey, b: StartedKey): number {

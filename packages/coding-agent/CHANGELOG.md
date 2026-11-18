@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- A `search` of `history://` now runs like a shell command. It follows every `continue with` its steps stop at, so one call covers what a chain of calls did. It is watched for your session's automatic budget (normally 10 seconds) and then goes on as a background task: `/tasks` lists it under Searches, heartbeats report it, `search({ action: "wait", id })` reads it, `kill` stops it, and one notice reports its results. `timeout` (300 seconds by default) and `wait` work as they do for `bash`, and the result shows the first 40 KB with the rest saved to a file. Searches of files and other resources are unchanged ([#5479](https://github.com/bastani-inc/atomic/pull/5479))
+- Extensions and SDK callers see a third task kind, `tool`, beside agents and commands: a tool call's in-process work running as a task. `SearchToolInput` also accepts the `{ action: "wait", id, budgetMs }` form ([#5479](https://github.com/bastani-inc/atomic/pull/5479))
+
+### Fixed
+
+- Following the `continue with` URLs of a `history://` search no longer skips or repeats what it covers: a session that got new activity before the search reached it, a workflow run removed or started between calls, matches already shown when the store was slow right after a stop inside an entry, and a session created before a search began that another search's unfinished listing left out. Continuations saved by earlier versions start again from the newest record and say so ([#5479](https://github.com/bastani-inc/atomic/pull/5479))
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.

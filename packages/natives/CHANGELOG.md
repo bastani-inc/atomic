@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `AgentTaskKind.Tool`: the task supervisor admits a tool call's in-process work as a task of its own kind (`kind: "tool"` on its record), observed, retained and cancelled like an agent task but never given process resources
+
 ## [0.9.89] - 2026-11-18
 
 ### Added
