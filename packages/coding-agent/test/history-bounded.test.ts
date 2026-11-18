@@ -2372,6 +2372,11 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			);
 		const longTurn = { start: 0, end: 30, cpu: 2 * windowsTick };
 		assert.ok(turnBlockedMs(longTurn, [], windowsTick) > TURN_LIMIT_MS);
+		const aroundPreemptedCollection = { start: 0, end: 42, cpu: windowsTick };
+		assert.ok(
+			turnBlockedMs(aroundPreemptedCollection, [{ start: 10, end: 40 }], windowsTick) > TURN_LIMIT_MS,
+			"12 ms of work around a 30 ms collection pause, charged one step, held the event loop",
+		);
 	});
 
 	it("does not count a coarse CPU clock's step past a turn's wall time, or more than one step of waiting off the CPU (#5250)", () => {

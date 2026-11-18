@@ -68,7 +68,12 @@ function overlapMs(turn: Interval, pauses: readonly Interval[]): number {
  * more than a step short of the wall time shows that the thread waited off the CPU.
  */
 export function turnBlockedMs(turn: WatchedTurn, collections: readonly Interval[], cpuClockStepMs: number): number {
-	return Math.max(0, Math.min(turn.end - turn.start - overlapMs(turn, collections), turn.cpu + cpuClockStepMs));
+	return blockedMs(turn.end - turn.start - overlapMs(turn, collections), turn.cpu, cpuClockStepMs);
+}
+
+/** The rule of turnBlockedMs, which the watcher also keeps turns by before it knows their collections. */
+function blockedMs(wallMs: number, usedCpuMs: number, cpuClockStepMs: number): number {
+	return Math.max(0, Math.min(wallMs, usedCpuMs + cpuClockStepMs));
 }
 
 /** Raises this process's priority so other processes rarely take the CPU from a watched turn; returns the undo. */
@@ -106,7 +111,7 @@ export function watchEventLoopTurns(keepOverMs: number): () => Promise<WatchedTu
 		count++;
 		// Only retain a turn that could fail an assertion, even before subtracting collection pauses. A worker can
 		// leave millions of idle turns here; retaining each one makes the measurement itself allocate and stall.
-		if (Math.min(now - last, cpu - lastCpu + CPU_CLOCK_STEP_MS) > keepOverMs)
+		if (blockedMs(now - last, cpu - lastCpu, CPU_CLOCK_STEP_MS) > keepOverMs)
 			turns.push({ start: last, end: now, cpu: cpu - lastCpu });
 		if (watching) setImmediate(turn);
 		// The collector's own allocation and scheduling are not work done by history://.
