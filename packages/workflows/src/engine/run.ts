@@ -2057,7 +2057,7 @@ async function executeRun(
 						// A failed run is resumable too, but resume replays its completed
 						// stages from the snapshot and never reuses their live sessions.
 						// Paused and still-running runs are not terminal and keep theirs.
-						await releaseOwnIdleStages(sharedStageRegistry, runId, ownStageHandles);
+						await stageRegistry.releaseIdle(runId);
 					}
 				}
 			}
@@ -2080,6 +2080,15 @@ function recordStageRegistrations(registry: StageControlRegistry, own: Set<Stage
 						own.delete(handle);
 						unregister();
 					};
+				};
+			}
+			if (key === "releaseIdle") {
+				return (runId: string, stageId?: string) => {
+					if (stageId === undefined) return releaseOwnIdleStages(target, runId, own);
+					// An old context can be collected after a resume takes its stage id. Release only this run's session.
+					const current = target.peek(runId, stageId);
+					if (current === undefined || !own.has(current)) return Promise.resolve();
+					return target.releaseIdle(runId, stageId);
 				};
 			}
 			const value: unknown = Reflect.get(target, key, target);
