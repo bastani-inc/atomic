@@ -399,6 +399,33 @@ describe("clicking transcript blocks in the main chat", () => {
 		}
 	});
 
+	test("fast single clicks on different rows of one block each toggle it once they settle", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const header = chat.rowOf(/Bash\(first-command\)/);
+			const output = chat.rowOf(/first output 18$/);
+			const later = chat.rowOf(/first output 19$/);
+			chat.quickClick(chat.columnOf(header, "Bash"), header);
+			vi.advanceTimersByTime(100);
+			chat.quickClick(chat.columnOf(output, "output"), output);
+			chat.settle();
+			assert.ok(
+				!chat.expanded("first"),
+				`the second click folds what the first opened:\n${chat.screen().join("\n")}`,
+			);
+
+			chat.quickClick(chat.columnOf(header, "Bash"), header);
+			vi.advanceTimersByTime(100);
+			chat.quickClick(chat.columnOf(output, "output"), output);
+			vi.advanceTimersByTime(100);
+			chat.quickClick(chat.columnOf(later, "output"), later);
+			chat.settle();
+			assert.ok(chat.expanded("first"), `three clicks leave it open:\n${chat.screen().join("\n")}`);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
 	test("a click on a block with nothing to expand changes nothing, and the chat keeps following its end", async () => {
 		const chat = await mountChat(100, 60);
 		try {

@@ -31,6 +31,7 @@ import {
 	chatSessionWorkingMeta,
 	dropExpandedOverrides,
 	entryExpands,
+	entryIsExpanded,
 	renderChatSessionBody,
 	renderChatSessionEditor,
 	renderChatSessionEntry,
@@ -574,26 +575,27 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const clicked = state.transcriptComponent.clickedEntries(hit.width, hit.row);
 		if (clicked === undefined) return undefined;
 		// The entries are drawn again with the click's expansion.
-		const expandEntries = () => {
+		const expandEntries = (expand: boolean) => {
 			for (const entry of clicked.entries) {
-				setExpandedOverride(state, entry, clicked.expand);
+				setExpandedOverride(state, entry, expand);
 				state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
 			}
 			const first = state.bodyViewport.firstVisibleRow();
-			if (clicked.expand && state.bodyViewport.getScrollFromBottom() === 0 && first !== undefined) {
+			if (expand && state.bodyViewport.getScrollFromBottom() === 0 && first !== undefined) {
 				state.bodyViewport.scrollTo(first);
 			}
 			state.requestRender?.();
 		};
-		// The blocks as drawn may be redrawn by the time the click settles: whether the entries change is asked of
-		// them, drawn both ways, and a group always changes as its calls fold or show.
+		// The blocks as drawn may be redrawn by the time the click settles, by another click on them among others: the
+		// entries are asked then how they are drawn and whether they change, and a group always changes as its calls
+		// fold or show.
 		const [entry] = clicked.entries;
 		return {
 			handled: true,
 			whenSingleClick: () => {
-				const changes =
-					isClickedGroup(clicked.blocks) || (entry !== undefined && entryExpands(state, entry, hit.width));
-				if (changes) expandEntries();
+				if (entry === undefined) return;
+				const changes = isClickedGroup(clicked.blocks) || entryExpands(state, entry, hit.width);
+				if (changes) expandEntries(!entryIsExpanded(state, entry));
 			},
 		};
 	}

@@ -16,8 +16,8 @@ import {
 import {
 	type ClickExpandableBlock,
 	clickedBlocks,
-	expandClickedBlocks,
 	isClickExpandableBlock,
+	toggleClickedBlocks,
 } from "../../packages/coding-agent/src/modes/interactive/components/transcript-block-clicks.js";
 import { StartupChatContainer } from "../../packages/coding-agent/src/modes/interactive/interactive-startup-chat-container.js";
 import {
@@ -338,8 +338,8 @@ test("every kind of block Ctrl+O expands takes a click on any of its rows, and a
 		}
 		let changed = false;
 		const unit = clickedBlocks([collapsed], 0, WIDTH, area.end - 1)!;
-		expandClickedBlocks(unit, WIDTH, true, () => {
-			changed = true;
+		toggleClickedBlocks(unit, WIDTH, (expanded) => {
+			changed = expanded;
 		});
 		assert.equal(
 			changed,

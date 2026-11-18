@@ -111,9 +111,17 @@ function makeScreen() {
 		await pressAndRelease(pattern, text);
 		await settle();
 	};
+	/**
+	 * Single clicks on different rows, `[pattern, text]` each, every one pressed before the one before it settles, then
+	 * settled together.
+	 */
+	const fastClicks = async (...targets: readonly (readonly [RegExp, string])[]) => {
+		for (const [pattern, text] of targets) await pressAndRelease(pattern, text);
+		await settle();
+	};
 	const mount = (component: Component) =>
 		tui.showOverlay(component, { anchor: "top-left", row: 0, col: 0, width: "100%", maxHeight: "100%" });
-	return { terminal, tui, screen, click, pressAndRelease, settle, mount };
+	return { terminal, tui, screen, click, pressAndRelease, settle, fastClicks, mount };
 }
 
 function stageView(
@@ -162,6 +170,31 @@ test("a stage chat expands a block when a terminal press and release land on its
 		await ui.settle();
 		assert.ok(expanded(), ui.screen().join("\n"));
 		overlay.hide();
+	} finally {
+		view.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("fast single clicks on different rows of a block in a stage chat each toggle it once they settle", async () => {
+	const ui = makeScreen();
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	const { handle, emit } = makeHandle();
+	const view = stageView(store, handle);
+	try {
+		emitBash(emit, "stage-cmd", "stage");
+		ui.mount(view);
+		ui.tui.renderNow();
+		const expanded = () => ui.screen().some((line) => line.trimEnd().endsWith("stage line 1"));
+		await ui.fastClicks([/Bash\(stage-cmd\)/, "stage-cmd"], [/stage line 18\s*$/, "stage"]);
+		assert.ok(!expanded(), `the second click folds what the first opened:\n${ui.screen().join("\n")}`);
+		await ui.fastClicks(
+			[/Bash\(stage-cmd\)/, "stage-cmd"],
+			[/stage line 18\s*$/, "stage"],
+			[/stage line 19\s*$/, "stage"],
+		);
+		assert.ok(expanded(), `three clicks leave it open:\n${ui.screen().join("\n")}`);
 	} finally {
 		view.dispose();
 		ui.tui.stop();
@@ -241,6 +274,34 @@ test("a subagent's chat expands a block when a terminal press and release land o
 	}
 });
 
+test("fast single clicks on different rows of a block in a subagent's chat each toggle it once they settle", async () => {
+	const ui = makeScreen();
+	const fixture = taskFixture();
+	try {
+		await fixture.start("Subagent task");
+		const session = await sessionWithBash("child-cmd", "child");
+		fixture.runners[0]!.context.bindTranscript(Object.assign(session, { subscribe: () => () => {} }));
+		void showTaskInspector(taskUi(ui), fixture.store, fixture.store.tasks[0]!.ref.taskId, {
+			chat: true,
+			backLabel: "main chat",
+		});
+		await flush();
+		ui.tui.renderNow();
+		const expanded = () => ui.screen().some((line) => line.trimEnd().endsWith("child line 1"));
+		await ui.fastClicks([/Bash\(child-cmd\)/, "child-cmd"], [/child line 18\s*$/, "child"]);
+		assert.ok(!expanded(), `the second click folds what the first opened:\n${ui.screen().join("\n")}`);
+		await ui.fastClicks(
+			[/Bash\(child-cmd\)/, "child-cmd"],
+			[/child line 18\s*$/, "child"],
+			[/child line 19\s*$/, "child"],
+		);
+		assert.ok(expanded(), `three clicks leave it open:\n${ui.screen().join("\n")}`);
+	} finally {
+		ui.tui.stop();
+		await fixture.dispose();
+	}
+});
+
 test("a /tasks transcript expands a block when a terminal press and release land on its collapsed-lines row", async () => {
 	const ui = makeScreen();
 	const fixture = taskFixture();
@@ -265,12 +326,18 @@ test("a /tasks transcript expands a block when a terminal press and release land
 	}
 });
 
-/** A stage chat the isolated engine draws, the way the workflow overlay shows it, mirrored on the host's screen. */
-async function engineStageChat(ui: ReturnType<typeof makeScreen>) {
+/**
+ * A stage chat the isolated engine draws, the way the workflow overlay shows it, mirrored on the host's screen. With
+ * `olderHost`, the host talks to the engine as one from before clicks were settled does: its clicks carry no number
+ * and it never settles them.
+ */
+async function engineStageChat(ui: ReturnType<typeof makeScreen>, options: { readonly olderHost?: boolean } = {}) {
 	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
+	let frames = 0;
 	const child = new EngineCustomUiService((line) => {
 		const message = parseInteractiveEngineMessage(line);
 		if (!message) return;
+		if (message.type === "engine_custom_frame") frames += 1;
 		for (const listener of [...engineListeners]) listener(message);
 	}, new KeybindingsManager());
 	const sent: InteractiveEngineCommand[] = [];
@@ -282,6 +349,12 @@ async function engineStageChat(ui: ReturnType<typeof makeScreen>) {
 		},
 		sendEngineCommand: (command: InteractiveEngineCommand) => {
 			sent.push(command);
+			if (options.olderHost && command.type === "engine_custom_click_settle") return;
+			if (options.olderHost && command.type === "engine_custom_click") {
+				const { clickId: _settledLater, ...click } = command;
+				child.handleLine(serializeInteractiveEngineFrame(click));
+				return;
+			}
 			child.handleLine(serializeInteractiveEngineFrame(command));
 		},
 	} as unknown as IsolatedInteractiveRuntime;
@@ -328,6 +401,8 @@ async function engineStageChat(ui: ReturnType<typeof makeScreen>) {
 	return {
 		sent,
 		shows,
+		/** How many frames the engine has sent the host. */
+		frames: () => frames,
 		dispose: () => {
 			pane?.dispose();
 			unregister();
@@ -345,6 +420,37 @@ test("a stage chat in the isolated engine expands a block when a terminal press 
 		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 0);
 		await ui.settle();
 		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 1);
+		await vi.waitFor(() => assert.ok(engine.shows(/engine line 1\s*$/), ui.screen().join("\n")), ENGINE_FRAME_WAIT);
+	} finally {
+		engine.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("fast single clicks on different rows of a block in the isolated engine's stage chat each toggle it once they settle", async () => {
+	const ui = makeScreen();
+	const engine = await engineStageChat(ui);
+	try {
+		const before = engine.frames();
+		await ui.fastClicks([/Bash\(engine-cmd\)/, "engine-cmd"], [/engine line 18\s*$/, "engine"]);
+		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 2);
+		// The frames the engine drew once the clicks settled show the block folded again.
+		await vi.waitFor(() => {
+			assert.ok(engine.frames() > before);
+			assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
+		}, ENGINE_FRAME_WAIT);
+	} finally {
+		engine.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("a stage chat in an isolated engine paired with an older host expands a block on a click, as that host expects", async () => {
+	const ui = makeScreen();
+	const engine = await engineStageChat(ui, { olderHost: true });
+	try {
+		assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
+		await ui.click(/engine line 18\s*$/, "engine");
 		await vi.waitFor(() => assert.ok(engine.shows(/engine line 1\s*$/), ui.screen().join("\n")), ENGINE_FRAME_WAIT);
 	} finally {
 		engine.dispose();

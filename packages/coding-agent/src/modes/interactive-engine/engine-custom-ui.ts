@@ -513,9 +513,11 @@ export class EngineCustomUiService {
 							ctrl: false,
 							clickCount: 1,
 						});
-						// Resolved against the frame the host clicked, it acts once the host settles the click.
+						// Resolved against the frame the host clicked, it acts once the host settles the click. A host from
+						// before clicks were settled numbers none and settles none: its click acts now, as it did there.
 						const action = result?.whenSingleClick;
-						if (action !== undefined && clickId !== undefined) {
+						if (action !== undefined && clickId === undefined) action();
+						else if (action !== undefined && clickId !== undefined) {
 							const waiting = record.singleClickActions ?? new Map<number, () => void>();
 							record.singleClickActions = waiting;
 							waiting.set(clickId, action);

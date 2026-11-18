@@ -121,27 +121,29 @@ export function expandIfItChangesRows(block: ClickExpandableBlock, width: number
 }
 
 /**
- * Expands or collapses `unit`, the blocks a click landed on, and calls `changed` once that changes what they draw. A
- * group always does, since its summary folds or shows the calls; a lone block with nothing to expand stays as it is.
+ * Toggles `unit`, the blocks a click landed on, from the expansion they have now, and calls `changed` with the new
+ * expansion once that changes what they draw. A group always does, since its summary folds or shows the calls; a lone
+ * block with nothing to expand stays as it is.
  */
-export function expandClickedBlocks(
+export function toggleClickedBlocks(
 	unit: readonly ClickExpandableBlock[],
 	width: number,
-	expanded: boolean,
-	changed: () => void,
+	changed: (expanded: boolean) => void,
 ): void {
 	const [head] = unit;
-	if (head === undefined || head.isExpanded() === expanded) return;
+	if (head === undefined) return;
+	// Read when the click settles, not when it landed: another click on the block may have settled in between.
+	const expanded = !head.isExpanded();
 	if (isClickedGroup(unit)) {
 		for (const block of unit) block.setExpanded(expanded);
-		changed();
+		changed(expanded);
 		return;
 	}
 	if (head.expandByClick) {
-		head.expandByClick(expanded, changed);
+		head.expandByClick(expanded, () => changed(expanded));
 		return;
 	}
-	if (expandIfItChangesRows(head, width, expanded)) changed();
+	if (expandIfItChangesRows(head, width, expanded)) changed(expanded);
 }
 
 /**
@@ -178,13 +180,12 @@ export function handleTranscriptBlockClick(
 	onToggled?: (expanded: boolean) => void,
 ): ContainerMouseResult {
 	if (!isSingleLeftClick(event)) return undefined;
+	// The click names its blocks where it lands; it toggles them once it settles, so each single click toggles once.
 	const unit = clickUnitAt(siblings, locate, event.width, event.y);
 	if (!unit) return undefined;
-	// What the reader saw decides the direction: the block drawn collapsed under the pointer opens.
-	const expand = !unit[0]!.isExpanded();
 	return {
 		handled: true,
-		whenSingleClick: () => expandClickedBlocks(unit, event.width, expand, () => onToggled?.(expand)),
+		whenSingleClick: () => toggleClickedBlocks(unit, event.width, (expanded) => onToggled?.(expanded)),
 		target: {
 			component: owner,
 			originX: event.screenX - event.x,

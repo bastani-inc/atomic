@@ -31,7 +31,7 @@ import { FooterComponent, UsageMeterComponent } from "./footer.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
 import { taskDisplayText } from "./task-row.js";
 import { toolGroupRoleKey } from "./tool-group-tracker.ts";
-import { sameRows } from "./transcript-block-clicks.ts";
+import { isClickExpandableBlock, sameRows } from "./transcript-block-clicks.ts";
 import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
@@ -651,4 +651,17 @@ export function entryExpands<TExtraEntry extends ChatTranscriptEntryLike>(
 		}
 	};
 	return !sameRows(rows(false), rows(true));
+}
+
+/** Whether `entry` is drawn expanded now: as a click last set it, or else as the chat's setting draws it. */
+export function entryIsExpanded<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ChatSessionHostEntry<TExtraEntry>,
+): boolean {
+	const component = renderChatSessionEntry(state, entry);
+	try {
+		return isClickExpandableBlock(component) && component.isExpanded();
+	} finally {
+		disposeRenderer(component);
+	}
 }

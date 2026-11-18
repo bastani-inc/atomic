@@ -97,11 +97,18 @@ abstract class RemoteRenderer implements Component {
 	private readonly requestScopes = new Map<number, string>();
 	private lastScope: string | undefined;
 	/**
-	 * A click's expansion waiting for the engine to draw it: the rows shown before it, the last request that drew them,
-	 * and what to do once the first frame drawn after it shows whether the rows changed.
+	 * Clicks' expansion waiting for the engine to draw it: the rows shown and the expansion before the first of them, the
+	 * last request sent before the latest of them, the expansion they asked for, and what to do once the first frame
+	 * drawn after that shows whether the rows changed.
 	 */
 	private clickFrame:
-		| { readonly before: readonly string[]; readonly after: number; changed(): void; unchanged(): void }
+		| {
+				readonly before: readonly string[];
+				readonly from: boolean;
+				readonly after: number;
+				readonly expanded: boolean;
+				changed(): void;
+		  }
 		| undefined;
 
 	protected readonly runtime: IsolatedInteractiveRuntime;
@@ -132,9 +139,12 @@ abstract class RemoteRenderer implements Component {
 			const clicked = this.clickFrame;
 			if (clicked !== undefined && message.requestId > clicked.after) {
 				this.clickFrame = undefined;
-				// Decided before the new rows are painted, so a held view keeps the block where the reader clicked it.
-				if (sameLines(clicked.before, message.lines)) clicked.unchanged();
-				else clicked.changed();
+				// Decided before the new rows are painted, so a held view keeps the block where the reader clicked it. Clicks
+				// that toggled the row back to where it started changed nothing.
+				if (clicked.expanded !== clicked.from) {
+					if (sameLines(clicked.before, message.lines)) this.setExpanded(clicked.from);
+					else clicked.changed();
+				}
 			}
 			this.lines = message.lines;
 			this.requestRender();
@@ -185,18 +195,24 @@ abstract class RemoteRenderer implements Component {
 		this.requestRender();
 	}
 
+	abstract isExpanded(): boolean;
+	abstract setExpanded(expanded: boolean): void;
+
 	/**
-	 * Sets the expansion a click asked for with `setExpanded`, and decides once the engine draws it: `changed` runs
-	 * when the rows differ from the ones shown now, and otherwise the row goes back to the expansion it had.
+	 * Sets the expansion a click asked for, and decides once the engine draws it: `changed` runs when the rows differ
+	 * from the ones shown before, and otherwise the row goes back to the expansion it had. A click that settles while an
+	 * earlier one still waits for its frame takes over from it, measured against the rows shown before the earlier one.
 	 */
-	protected expandOnceDrawn(expanded: boolean, setExpanded: (expanded: boolean) => void, changed: () => void): void {
+	expandByClick(expanded: boolean, changed: () => void): void {
+		const waiting = this.clickFrame;
 		this.clickFrame = {
-			before: this.lines,
+			before: waiting?.before ?? this.lines,
+			from: waiting?.from ?? this.isExpanded(),
 			after: this.requestId,
+			expanded,
 			changed,
-			unchanged: () => setExpanded(!expanded),
 		};
-		setExpanded(expanded);
+		this.setExpanded(expanded);
 	}
 
 	protected abstract command(requestId: number, width: number): RemoteRenderCommand;
@@ -299,9 +315,6 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	clickArea(width: number): RowRange | undefined {
 		return rowsFrom(1, this.render(width).length);
 	}
-	expandByClick(expanded: boolean, changed: () => void): void {
-		this.expandOnceDrawn(expanded, (next) => this.setExpanded(next), changed);
-	}
 	setShowImages(show: boolean): void {
 		this.showImages = show;
 		this.changed();
@@ -378,9 +391,6 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 	/** Every row of the card: the engine draws it after the blank row it leads with. */
 	clickArea(width: number): RowRange | undefined {
 		return rowsFrom(1, this.render(width).length);
-	}
-	expandByClick(expanded: boolean, changed: () => void): void {
-		this.expandOnceDrawn(expanded, (next) => this.setExpanded(next), changed);
 	}
 	setOutputPad(outputPad: number): void {
 		this.outputPad = outputPad;

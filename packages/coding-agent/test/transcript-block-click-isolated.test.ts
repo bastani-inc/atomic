@@ -44,13 +44,23 @@ afterEach(() => {
 const lines = (count: number, label: string) =>
 	Array.from({ length: count }, (_, index) => `${label} ${index + 1}`).join("\n");
 
-/** The isolated engine's render service behind an in-memory transport, with the Intercom message renderer loaded. */
+/**
+ * The isolated engine's render service behind an in-memory transport, with the Intercom message renderer loaded.
+ * `frames.hold()` keeps what the engine sends back from reaching the host, as a busy engine or a slow pipe does, until
+ * `frames.release()`.
+ */
 function isolatedEngine() {
 	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
+	let held: InteractiveEngineMessage[] | undefined;
+	const deliver = (message: InteractiveEngineMessage) => {
+		for (const listener of [...listeners]) listener(message);
+	};
 	setCallbackActivityReporter({ started() {}, finished() {} });
 	const service = new EngineRenderService((line) => {
 		const message = parseInteractiveEngineMessage(line.trim());
-		if (message) for (const listener of [...listeners]) listener(message);
+		if (!message) return;
+		if (held) held.push(message);
+		else deliver(message);
 	});
 	service.bindSession({
 		extensionRunner: {
@@ -74,7 +84,19 @@ function isolatedEngine() {
 		service.dispose();
 		setCallbackActivityReporter(undefined);
 	});
-	return runtime;
+	const frames = {
+		hold() {
+			held ??= [];
+		},
+		release() {
+			const messages = held ?? [];
+			held = undefined;
+			for (const message of messages) deliver(message);
+		},
+		/** How many messages the engine sent while held. */
+		held: () => held?.length ?? 0,
+	};
+	return { runtime, frames };
 }
 
 function intercomMessage(text: string): CustomMessage<unknown> {
@@ -99,7 +121,7 @@ function intercomMessage(text: string): CustomMessage<unknown> {
 
 /** The main chat of an isolated session: rows the engine draws, in a following transcript, under the real renderer. */
 async function mountIsolatedChat() {
-	const runtime = isolatedEngine();
+	const { runtime, frames } = isolatedEngine();
 	const terminal = new RecordingTerminal();
 	terminal.columns = 100;
 	terminal.rows = 60;
@@ -151,16 +173,24 @@ async function mountIsolatedChat() {
 		assert.notEqual(row, -1, `no row matches ${pattern}:\n${screen().join("\n")}`);
 		return row;
 	};
-	/** A single click on `text` in the first row matching `pattern`: no second press follows within the interval. */
-	const click = async (pattern: RegExp, text: string) => {
+	/** A press and release on `text` in the first row matching `pattern`, which has not settled into a single click yet. */
+	const quickClick = (pattern: RegExp, text: string) => {
 		const row = rowOf(pattern);
 		const column = screen()[row]!.indexOf(text);
 		terminal.input(`\x1b[<0;${column + 1};${row + 1}M`);
 		terminal.input(`\x1b[<0;${column + 1};${row + 1}m`);
-		await new Promise((resolve) => setTimeout(resolve, MULTI_CLICK_INTERVAL_MS + 50));
 	};
-	return { transcript, bash, message, screen, shows, waitFor, click };
+	/** Lets the multi-click interval pass with no further press, so the clicks so far settle as single clicks. */
+	const settle = () => sleep(MULTI_CLICK_INTERVAL_MS + 50);
+	/** A single click on `text` in the first row matching `pattern`: no second press follows within the interval. */
+	const click = async (pattern: RegExp, text: string) => {
+		quickClick(pattern, text);
+		await settle();
+	};
+	return { transcript, frames, bash, message, screen, shows, waitFor, quickClick, settle, click };
 }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("a click on any row of a tool block the isolated engine draws expands it, and a second click collapses it", async () => {
 	const chat = await mountIsolatedChat();
@@ -174,6 +204,58 @@ test("a click on any row of a tool block the isolated engine draws expands it, a
 
 	await chat.click(/long output 3$/, "output");
 	await chat.waitFor(/long output 1$/, false);
+});
+
+test("fast single clicks on different rows of a block the isolated engine draws each toggle it once they settle", async () => {
+	const chat = await mountIsolatedChat();
+	const row = chat.bash("long", "long-command", lines(20, "long output"));
+	await chat.waitFor(/long output 20$/);
+
+	chat.quickClick(/Bash\(long-command\)/, "long-command");
+	await sleep(100);
+	chat.quickClick(/long output 18$/, "output");
+	await chat.settle();
+	// The first click opened the block and the second folds it again.
+	await vi.waitFor(() => {
+		assert.equal(row.isExpanded(), false);
+		assert.equal(chat.shows(/long output 1$/), false, chat.screen().join("\n"));
+	}, ENGINE_FRAME_WAIT);
+});
+
+test("fast single clicks on a block the isolated engine draws each toggle it, also when the engine draws them only after both settle", async () => {
+	const chat = await mountIsolatedChat();
+	const row = chat.bash("long", "long-command", lines(20, "long output"));
+	await chat.waitFor(/long output 20$/);
+
+	chat.frames.hold();
+	chat.quickClick(/Bash\(long-command\)/, "long-command");
+	await sleep(100);
+	chat.quickClick(/long output 18$/, "output");
+	await chat.settle();
+	// The engine drew both clicks' rows, which have not reached the host yet.
+	await vi.waitFor(() => assert.ok(chat.frames.held() >= 1), ENGINE_FRAME_WAIT);
+	await sleep(50);
+	chat.frames.release();
+	await sleep(100);
+	await vi.waitFor(() => {
+		assert.equal(row.isExpanded(), false);
+		assert.equal(chat.shows(/long output 1$/), false, chat.screen().join("\n"));
+	}, ENGINE_FRAME_WAIT);
+	assert.equal(chat.transcript.isFollowingEnd, true, "a block opened and folded again does not hold the view");
+
+	chat.frames.hold();
+	chat.quickClick(/Bash\(long-command\)/, "long-command");
+	await sleep(100);
+	chat.quickClick(/long output 18$/, "output");
+	await sleep(100);
+	chat.quickClick(/long output 19$/, "output");
+	await chat.settle();
+	await vi.waitFor(() => assert.ok(chat.frames.held() >= 1), ENGINE_FRAME_WAIT);
+	await sleep(50);
+	chat.frames.release();
+	await chat.waitFor(/long output 1$/);
+	assert.equal(row.isExpanded(), true, "three clicks leave it open");
+	assert.equal(chat.transcript.isFollowingEnd, false, "the opened block holds the view");
 });
 
 test("a click on any row of an Intercom message card the isolated engine draws expands it, and a second click collapses it", async () => {
