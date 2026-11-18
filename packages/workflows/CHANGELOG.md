@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Resuming a workflow immediately after a tool failure now waits for the previous attempt to finish saving its state, instead of sometimes refusing the resume as stale or already running ([#5527](https://github.com/bastani-inc/atomic/issues/5527)).
 - The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
 
 ## [0.9.89] - 2026-11-18
