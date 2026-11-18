@@ -1,6 +1,13 @@
 ---
 name: tdd
 description: Test-driven development with red-green-refactor loop, plus a value gate and audit workflow for tests. Use when user wants to build features or fix bugs using TDD, mentions "red-green-refactor", wants integration tests, asks for test-first development, or asks to review, audit, prune, or clean up low-value, duplicated, or implementation-coupled tests.
+license: MIT. LICENSE.txt has complete terms
+metadata:
+    author: Matt Pocock
+    github-repo: https://github.com/mattpocock/skills
+    github-path: skills/engineering/tdd
+    github-ref: refs/tags/v1.3.2
+    github-tree-sha: 667dbdd00c09d0e2189e082986e6a4d61a67c2a6
 ---
 
 # Test-Driven Development
@@ -12,6 +19,8 @@ description: Test-driven development with red-green-refactor loop, plus a value 
 **Good tests** are integration-style: they exercise real code paths through public APIs. They describe _what_ the system does, not _how_ it does it. A good test reads like a specification - "user can checkout with valid cart" tells you exactly what capability exists. These tests survive refactors because they don't care about internal structure.
 
 **Bad tests** are coupled to implementation. They mock internal collaborators, test private methods, or verify through external means (like querying a database directly instead of using the interface). The warning sign: your test breaks when you refactor, but behavior hasn't changed. If you rename an internal function and tests fail, those tests were testing implementation, not behavior.
+
+**Tautological tests** recompute the expected value the way the code does (`expect(add(a, b)).toBe(a + b)`, a snapshot derived by hand the same way, a constant asserted equal to itself), so they pass by construction and can never disagree with the code. Expected values must come from an independent source of truth: a known-good literal, a worked example, the spec.
 
 See [tests.md](tests.md) for examples, [mocking.md](mocking.md) for mocking guidelines, and [test-audit.md](test-audit.md) for the value gate every new test must pass and the workflow for auditing existing tests.
 
@@ -111,6 +120,7 @@ When asked to review or prune tests rather than write them, follow the [audit wo
 [ ] Test describes behavior, not implementation
 [ ] Test uses public interface only
 [ ] Test would survive internal refactor
+[ ] Expected values are independent literals, not recomputed from the code
 [ ] Bug fixes only: the regression test failed on the pre-fix code for the intended reason
 [ ] Code is minimal for this test
 [ ] No speculative features added

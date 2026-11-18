@@ -8,12 +8,12 @@ import {
 	type AgentPanelAnswerOptions,
 	type AgentPanelItem,
 	AgentPanelSourceHub,
+	openAgentPanelItem,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { taskClocksFor } from "../../packages/coding-agent/src/core/tasks/live-elapsed.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
-	AGENT_PANEL_DROP_MS,
 	AGENT_PANEL_FADE_MS,
 	AGENT_PANEL_IDLE_ROWS,
 	AgentPanelModel,
@@ -46,14 +46,18 @@ async function flushMicrotasks(): Promise<void> {
 	for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-test("dismissing a finished background task in /tasks removes it from the agent panel even when the panel rank cache is warm (#5224)", async () => {
+test("dismissing a stopped background task in /tasks removes it from the agent panel even when the panel rank cache is warm (#5224)", async () => {
 	const fixture = taskFixture();
 	await fixture.start("first task");
-	await fixture.settle(0);
+	// A second subagent keeps running, so the stopped one stays listed in the panel.
+	await fixture.start("second task");
+	fixture.runners[0]!.result.resolve({ kind: "cancelled", cause: "user" });
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	fixture.store.drain();
 	const hub = new AgentPanelSourceHub();
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 	bindOwnerTaskStore(session, fixture.store);
-	const taskId = fixture.store.backgroundTasks[0]!.ref.taskId;
+	const taskId = fixture.store.tasks[0]!.ref.taskId;
 	assert.ok(agentPanelRows(session).some((row) => row.id === `task:${taskId}`));
 	const inspector = new TaskInspector(
 		fixture.store,
@@ -63,6 +67,11 @@ test("dismissing a finished background task in /tasks removes it from the agent 
 	inspector.setBoardSource(agentPanelBoardSource(session));
 	try {
 		inspector.renderPicker(100, 12);
+		for (let moves = 0; moves < 3 && inspector.navigation.selectedTaskId !== taskId; moves++) {
+			inspector.handleInput("\x1b[B");
+			inspector.renderPicker(100, 12);
+		}
+		assert.equal(inspector.navigation.selectedTaskId, taskId);
 		inspector.handleInput("x");
 		await flushMicrotasks();
 		assert.equal(
@@ -80,12 +89,12 @@ test("dismissing a finished background task in /tasks removes it from the agent 
 	}
 });
 
-test("a finished native task row in the agent panel fades after AGENT_PANEL_FADE_MS and expires after AGENT_PANEL_DROP_MS (#5224)", async () => {
+test("a stopped native task row in the agent panel fades after AGENT_PANEL_FADE_MS and leaves once nothing is active (#5224)", async () => {
 	let now = 50_000_000;
 	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const model = new AgentPanelModel(() => now);
 	const { pass } = model.beginPass();
-	model.keepFinished("T1", false, now, pass, true);
+	model.keepFinished("T1", true, now, pass, true);
 	model.endPass(pass);
 	assert.equal(model.faded({ id: "task:T1" }), false);
 	now += AGENT_PANEL_FADE_MS + 1;
@@ -93,11 +102,14 @@ test("a finished native task row in the agent panel fades after AGENT_PANEL_FADE
 
 	const fixture = taskFixture();
 	await fixture.start("fading task");
-	await fixture.settle(0);
+	await fixture.start("still running");
+	fixture.runners[0]!.result.resolve({ kind: "cancelled", cause: "user" });
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	fixture.store.drain();
 	const hub = new AgentPanelSourceHub();
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 	bindOwnerTaskStore(session, fixture.store);
-	const rowId = `task:${fixture.store.backgroundTasks[0]!.ref.taskId}`;
+	const rowId = `task:${fixture.store.tasks[0]!.ref.taskId}`;
 	let widget: { render(width: number): string[] } | undefined;
 	const dispose = bindAgentPanel(session, {
 		setWidget(_key, factory) {
@@ -113,11 +125,8 @@ test("a finished native task row in the agent panel fades after AGENT_PANEL_FADE
 		now += AGENT_PANEL_FADE_MS + 1;
 		const faded = widget.render(100).join("\n");
 		assert.notEqual(faded, fresh);
-		now += AGENT_PANEL_DROP_MS + 1;
-		assert.deepEqual(
-			agentPanelRows(session).filter((row) => row.id === rowId),
-			[],
-		);
+		await fixture.settle(1);
+		assert.deepEqual(agentPanelRows(session), [], "nothing is active: the stopped row leaves with the finished one");
 	} finally {
 		dispose();
 		clock.mockRestore();
@@ -216,23 +225,28 @@ test("agent panel rank cache refreshes extension row text at group-offset slots 
 	}
 });
 
-test("AgentPanelModel drops unkept finished rows at AGENT_PANEL_DROP_MS, forgets absent native finished tasks, and invalidates cached cap views (#5224)", () => {
+test("AgentPanelModel drops unkept finished rows at once, forgets absent native finished tasks, and invalidates cached cap views (#5224)", () => {
 	const model = new AgentPanelModel(() => 1_000);
 	let { pass } = model.beginPass();
-	model.keepFinished("ext:y", false, 1_000, pass);
-	assert.equal(model.keepFinished("X", false, 1_000, pass, true), true);
-	assert.equal(model.keepFinished("X", false, 1_000 + AGENT_PANEL_DROP_MS, pass, true), false);
+	assert.equal(model.keepFinished("ext:y", true, 1_000, pass), true);
+	assert.equal(model.keepFinished("X", true, 1_000, pass, true), true);
+	assert.equal(model.keepFinished("Z", false, 1_000, pass, true), false, "a finished row nobody keeps leaves at once");
 	model.endPass(pass);
 
 	({ pass } = model.beginPass());
-	model.keepFinished("ext:y", false, 1_000, pass);
+	model.keepFinished("ext:y", true, 1_000, pass);
 	model.endPass(pass);
 	assert.equal(model.finishedSince("X", true), undefined);
+	assert.equal(model.finishedSince("ext:y"), 1_000);
 
-	let now = 10_000;
-	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const hub = new AgentPanelSourceHub();
-	const finished: AgentPanelItem = { id: "ext:helper", kind: "agent", name: "helper", task: "check", state: "done" };
+	const finished: AgentPanelItem = {
+		id: "run:helper",
+		kind: "workflow",
+		name: "helper",
+		task: "check",
+		state: "done",
+	};
 	let items: AgentPanelItem[] = [finished];
 	let changed = () => {};
 	hub.register({
@@ -241,21 +255,18 @@ test("AgentPanelModel drops unkept finished rows at AGENT_PANEL_DROP_MS, forgets
 			changed = listener;
 			return () => {};
 		},
+		open: () => true,
 	});
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-	try {
-		assert.equal(agentPanelHasRows(session), true);
-		now += AGENT_PANEL_DROP_MS + 1;
-		assert.equal(agentPanelHasRows(session), false);
-		items = [];
-		changed();
-		agentPanelRows(session);
-		items = [finished];
-		changed();
-		assert.equal(agentPanelHasRows(session), true);
-	} finally {
-		clock.mockRestore();
-	}
+	assert.equal(agentPanelHasRows(session), true, "an unopened finished run stays");
+	assert.equal(openAgentPanelItem(session, finished.id), true);
+	assert.equal(agentPanelHasRows(session), false, "an opened finished run leaves");
+	items = [];
+	changed();
+	agentPanelRows(session);
+	items = [finished];
+	changed();
+	assert.equal(agentPanelHasRows(session), true, "a new unopened run with the same id stays again");
 });
 
 test("taskDisplayText replaces Unicode line and paragraph separators with spaces (#5224)", () => {

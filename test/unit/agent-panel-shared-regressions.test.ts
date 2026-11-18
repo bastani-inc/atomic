@@ -12,7 +12,6 @@ import {
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
-	AGENT_PANEL_DROP_MS,
 	AgentPanelFocus,
 	AgentPanelModel,
 	type AgentPanelRow,
@@ -149,7 +148,7 @@ test("focused panel single x does not dismiss a row painted as running that fini
 	assert.equal(dismissedAgentPanelItems(harness.session).has("run:deploy"), false);
 });
 
-test("quit workflow run ages out of the panel and is dismissable with x (#5224)", () => {
+test("a quit workflow run nobody keeps leaves the panel and is dismissable with x (#5224)", () => {
 	const runId = testRunId("quit-row");
 	runIds.add(runId);
 	store.recordRunStart({
@@ -165,10 +164,11 @@ test("quit workflow run ages out of the panel and is dismissable with x (#5224)"
 	const item = panelItemsFromSnapshot(store.runs()).find((row) => row.id === `run:${runId}`)!;
 	assert.ok(item);
 
-	let now = 0;
-	const model = new AgentPanelModel(() => now);
-	model.rows([item]);
-	now = AGENT_PANEL_DROP_MS + 1_000;
+	const model = new AgentPanelModel(() => 0);
+	assert.ok(
+		model.rows([item], () => true).some((row) => row.id === item.id),
+		"listed while it is kept",
+	);
 	const stillThere = model.rows([item]).some((row) => row.id === item.id);
 
 	const calls: string[] = [];
@@ -356,7 +356,7 @@ test("focused panel retains no clocks for extension rows that have left the sour
 	});
 });
 
-test("after an extension row settles, the focused panel and /tasks show the same frozen time (#5224)", async () => {
+test("after an extension row stops, the focused panel and /tasks show the same frozen time (#5224)", async () => {
 	let now = 1_000_000;
 	vi.spyOn(Date, "now").mockImplementation(() => now);
 	const job = (id: string, state: AgentPanelItem["state"], elapsedMs: number): AgentPanelItem => ({
@@ -367,17 +367,19 @@ test("after an extension row settles, the focused panel and /tasks show the same
 		task: "work",
 		elapsedMs,
 	});
-	const harness = createPanelHarness([job("ext:job", "running", 0)]);
+	// Another row keeps running, so the stopped row stays listed in the panel.
+	const other = job("ext:other", "running", 0);
+	const harness = createPanelHarness([job("ext:job", "running", 0), other]);
 	let panelLine = "";
 	await withFocusedPanel(harness.session, (panel) => {
 		panel.render(100);
 		now += 1_000;
-		harness.set([job("ext:job", "running", 0)]);
+		harness.set([job("ext:job", "running", 0), other]);
 		panel.render(100);
 		now += 1_900;
 		panel.render(100);
 		now += 50;
-		harness.set([job("ext:job", "done", 500)]);
+		harness.set([job("ext:job", "stopped", 500), other]);
 		now += 5_000;
 		panelLine = stripVTControlCharacters(panel.render(100).join("\n")).match(/job[^\n]*/)?.[0] ?? "";
 	});
@@ -392,6 +394,7 @@ test("after an extension row settles, the focused panel and /tasks show the same
 		const boardLine =
 			stripVTControlCharacters(inspector.renderPicker(100, 20).join("\n")).match(/job[^\n]*/)?.[0] ?? "";
 		const extractTime = (text: string) => text.match(/(\d+s)\s*$/)?.[1];
+		assert.ok(extractTime(panelLine), panelLine);
 		assert.equal(extractTime(panelLine), extractTime(boardLine));
 	} finally {
 		inspector.dispose();
