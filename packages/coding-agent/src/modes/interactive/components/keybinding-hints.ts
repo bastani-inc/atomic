@@ -83,12 +83,23 @@ function formatHintLabel(description: string): string {
 }
 
 /** The keys of `keybinding` as a hint names them, each with the key a click on its text presses. */
-function keyParts(keybinding: Keybinding): HintKeyPart[] {
+function keyParts(keybinding: Keybinding, style = (text: string) => theme.fg("dim", text)): HintKeyPart[] {
 	const keys = getKeybindings().getKeys(keybinding);
 	return keys.map((key, index) => ({
-		text: theme.fg("dim", `${formatKeyText(key)}${index < keys.length - 1 ? "/" : ""}`),
+		text: style(`${formatKeyText(key)}${index < keys.length - 1 ? "/" : ""}`),
 		key,
 	}));
+}
+
+/**
+ * `esc Cancel` with no style of its own, for text styled as a whole, such as a loader's message: the keys of
+ * `keybinding` and what they do. A click on the hint presses its key.
+ */
+export function keyTextHint(keybinding: Keybinding, description: string): string {
+	return clickableKeysHint(
+		keyParts(keybinding, (text) => text),
+		` ${formatHintLabel(description)}`,
+	);
 }
 
 /** `ctrl+o expand`: the keys of `keybinding` and what they do. A click on the hint presses its key. */

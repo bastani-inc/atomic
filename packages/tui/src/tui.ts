@@ -14,7 +14,15 @@ import {
 	type TerminalColors,
 } from "./terminal-colors.ts";
 import { getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
-import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
+import {
+	extractSegments,
+	HINT_CLOSE,
+	HINT_OPEN,
+	normalizeTerminalOutput,
+	sliceByColumn,
+	sliceWithWidth,
+	visibleWidth,
+} from "./utils.ts";
 
 /**
  * Component interface - all components must implement this
@@ -440,6 +448,12 @@ export class Container implements Component {
  * TUI - Main class for managing terminal UI with differential rendering
  */
 const SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07";
+/**
+ * Between the segments of a composited line that holds key hints: styles end there, and so does a hint, whose part
+ * beyond a box drawn over it is re-opened with the rest of its styles. The renderer removes the hint marker before
+ * writing the line.
+ */
+const HINT_SEGMENT_RESET = SEGMENT_RESET + HINT_CLOSE;
 
 /** Composite overlay content into a terminal line at a fixed column. */
 export function compositeTuiLine(
@@ -453,6 +467,8 @@ export function compositeTuiLine(
 
 	const afterStart = startCol + overlayWidth;
 	const base = extractSegments(baseLine, startCol, afterStart, totalWidth - afterStart, true);
+	const boundary =
+		baseLine.includes(HINT_OPEN) || overlayLine.includes(HINT_OPEN) ? HINT_SEGMENT_RESET : SEGMENT_RESET;
 	const overlay = sliceWithWidth(overlayLine, 0, overlayWidth, true);
 	const beforePad = Math.max(0, startCol - base.beforeWidth);
 	const overlayPad = Math.max(0, overlayWidth - overlay.width);
@@ -463,10 +479,10 @@ export function compositeTuiLine(
 	const result =
 		base.before +
 		" ".repeat(beforePad) +
-		SEGMENT_RESET +
+		boundary +
 		overlay.text +
 		" ".repeat(overlayPad) +
-		SEGMENT_RESET +
+		boundary +
 		base.after +
 		" ".repeat(afterPad);
 

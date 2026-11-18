@@ -5,7 +5,7 @@
  */
 
 import { type KeyId, keyInputData } from "./keys.ts";
-import { extractAnsiCode, visibleWidth } from "./utils.ts";
+import { extractAnsiCode, HINT_CLOSE, HINT_OPEN, visibleWidth } from "./utils.ts";
 
 /** What a click on a hint runs: a key, exactly as if it were pressed, or a slash command such as `/tasks`. */
 export type HintAction =
@@ -25,9 +25,6 @@ export interface HintKeyPart {
 	readonly key?: KeyId;
 }
 
-const HINT_MARKER = "\x1b_pi:h";
-const HINT_OPEN = `${HINT_MARKER}:`;
-const HINT_CLOSE = `\x1b_pi:/h\x07`;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
 
 export function keyHintAction(key: KeyId): HintAction {
@@ -200,7 +197,7 @@ export function slashCommandHint(text: string): string {
 
 /** Whether `line` has hint markers. */
 export function hasHintMarkers(line: string): boolean {
-	return line.includes(HINT_MARKER) || line.includes(HINT_CLOSE);
+	return line.includes(HINT_OPEN) || line.includes(HINT_CLOSE);
 }
 
 /** `line` without its hint markers. */

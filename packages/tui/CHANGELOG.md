@@ -6,7 +6,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Added
 
-- `clickableHint()`, `clickableKeysHint()`, `clickableKeyTextHint()`, `clickableHintText()` and `slashCommandHint()` mark hint text with the key or slash command a click on it runs; the marks take no columns and never reach the terminal. In the fullscreen renderer a single left click on a marked hint sends its key through the input path, as a key press, to whatever has the keyboard, and a hint drawn under an overlay that has the keyboard runs nothing. `setHintCommandHandler()` receives the slash commands, `isHintActivation()` tells a component that the key it handles came from a click, and `keyInputData(keyId)` returns the input a key sends
+- `clickableHint()`, `clickableKeysHint()`, `clickableKeyTextHint()`, `clickableHintText()` and `slashCommandHint()` mark hint text with the key or slash command a click on it runs; the marks take no columns and never reach the terminal. In the fullscreen renderer a single left click on a marked hint sends its key through the input path, as a key press, to whatever has the keyboard, and a hint drawn under an overlay that has the keyboard runs nothing. A hint keeps its action on every row it wraps onto, and ends where its text does when it is truncated or an overlay covers part of it. `setHintCommandHandler()` receives the slash commands, `isHintActivation()` tells a component that the key it handles came from a click, and `keyInputData(keyId)` returns the input a key sends
 
 ## [0.9.89] - 2026-11-18
 

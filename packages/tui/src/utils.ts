@@ -132,7 +132,7 @@ function finalizeTruncatedResult(
 	pad: boolean,
 ): string {
 	const reset = "\x1b[0m";
-	const hyperlinkClose = getActiveOsc8Close(prefix);
+	const hyperlinkClose = getActiveOsc8Close(prefix) + getActiveHintClose(prefix);
 	const visibleWidth = prefixWidth + ellipsisWidth;
 	let result: string;
 
@@ -604,6 +604,17 @@ function formatOsc8Close(terminator: Osc8Terminator): string {
 	return `\x1b]8;;${terminator}`;
 }
 
+/** The opening marker of a clickable key hint, which its action and a BEL follow; see clickable-hints.ts. */
+export const HINT_OPEN = "\x1b_pi:h:";
+/** The closing marker of a clickable key hint. */
+export const HINT_CLOSE = "\x1b_pi:/h\x07";
+
+/** The closing marker for a key hint `prefix` leaves open, or "" when it leaves none open. */
+function getActiveHintClose(prefix: string): string {
+	const open = prefix.lastIndexOf(HINT_OPEN);
+	return open !== -1 && prefix.indexOf(HINT_CLOSE, open) === -1 ? HINT_CLOSE : "";
+}
+
 function getActiveOsc8Close(prefix: string): string {
 	if (!prefix.includes("\x1b]8;")) {
 		return "";
@@ -642,8 +653,19 @@ class AnsiCodeTracker {
 	private fgColor: string | null = null; // Stores the full code like "31" or "38;5;240"
 	private bgColor: string | null = null; // Stores the full code like "41" or "48;5;240"
 	private activeHyperlink: ActiveHyperlink | null = null;
+	/** The opening marker of the key hint the text is inside, closed at a line's end and re-opened on the next. */
+	private activeHint: string | null = null;
 
 	process(ansiCode: string): void {
+		if (ansiCode.startsWith(HINT_OPEN)) {
+			this.activeHint = ansiCode;
+			return;
+		}
+		if (ansiCode === HINT_CLOSE) {
+			this.activeHint = null;
+			return;
+		}
+
 		// OSC 8 hyperlink: \x1b]8;;<url>\x1b\\ (open) or \x1b]8;;\x1b\\ (close).
 		// Preserve the original terminator because some terminals only make BEL-terminated
 		// links clickable. OAuth login URLs use BEL, so reopening wrapped lines with ST
@@ -788,13 +810,19 @@ class AnsiCodeTracker {
 		this.strikethrough = false;
 		this.fgColor = null;
 		this.bgColor = null;
-		// SGR reset does not affect OSC 8 hyperlink state
+		// SGR reset does not affect OSC 8 hyperlink or key hint state
 	}
 
 	/** Clear all state for reuse. */
 	clear(): void {
 		this.reset();
 		this.activeHyperlink = null;
+		this.activeHint = null;
+	}
+
+	/** The closing marker of the key hint the text is inside, or "" outside one. */
+	getHintClose(): string {
+		return this.activeHint === null ? "" : HINT_CLOSE;
 	}
 
 	getActiveCodes(): string {
@@ -813,6 +841,9 @@ class AnsiCodeTracker {
 		let result = codes.length > 0 ? `\x1b[${codes.join(";")}m` : "";
 		if (this.activeHyperlink) {
 			result += formatOsc8Hyperlink(this.activeHyperlink);
+		}
+		if (this.activeHint) {
+			result += this.activeHint;
 		}
 		return result;
 	}
@@ -833,14 +864,15 @@ class AnsiCodeTracker {
 			this.strikethrough ||
 			this.fgColor !== null ||
 			this.bgColor !== null ||
-			this.activeHyperlink !== null
+			this.activeHyperlink !== null ||
+			this.activeHint !== null
 		);
 	}
 
 	/**
 	 * Get reset codes for attributes that need to be turned off at line end.
 	 * Underline and strikethrough must be closed to prevent bleeding into padding.
-	 * Active OSC 8 hyperlinks must be closed and re-opened on the next line.
+	 * Active OSC 8 hyperlinks and key hints must be closed and re-opened on the next line.
 	 * Returns empty string if no attributes need closing.
 	 */
 	getLineEndReset(): string {
@@ -854,7 +886,7 @@ class AnsiCodeTracker {
 		if (this.activeHyperlink) {
 			result += formatOsc8Close(this.activeHyperlink.terminator); // Re-opened at line start via getActiveCodes()
 		}
-		return result;
+		return result + this.getHintClose(); // Re-opened at line start via getActiveCodes()
 	}
 }
 
@@ -997,6 +1029,9 @@ export function wrapTextWithAnsi(text: string, width: number): string[] {
 	for (const inputLine of inputLines) {
 		// Prepend active ANSI codes from previous lines (except for first line)
 		const prefix = result.length > 0 ? tracker.getActiveCodes() : "";
+		// A key hint open across the newline ends with this line's text, so padding or a border after it is not part
+		// of the hint; the next line re-opens it.
+		if (result.length > 0) result[result.length - 1] += tracker.getHintClose();
 		const wrappedLines = wrapSingleLine(prefix + inputLine, width);
 		for (const wrappedLine of wrappedLines) {
 			result.push(wrappedLine);

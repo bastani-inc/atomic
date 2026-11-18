@@ -18,6 +18,7 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import {
 	keyHint,
 	keyHintIfBound,
+	keyTextHint,
 	parenthesizedKeyHint,
 	rawKeyHint,
 } from "../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.js";
@@ -78,6 +79,9 @@ describe("the shared hint builders mark every key they name", () => {
 	test("keyHint, keyHintIfBound, parenthesizedKeyHint and rawKeyHint press the keys they show", () => {
 		assertEveryHintClickable(keyHint("app.tools.expand", "expand"), "keyHint");
 		assertEveryHintClickable(keyHintIfBound("tui.select.cancel", "cancel"), "keyHintIfBound");
+		const plain = clicksOf(keyTextHint("tui.select.cancel", "Cancel"));
+		assert.equal(plain.text, "esc/ctrl+c Cancel", "keyTextHint adds no style of its own");
+		assert.deepEqual([plain.at(0), plain.at(5), plain.at(12)], ["escape", "ctrl+c", "ctrl+c"]);
 		const raw = clicksOf(rawKeyHint("↑↓", "navigate"));
 		assert.deepEqual([raw.at(0), raw.at(1), raw.at(5)], ["up", "down", "down"]);
 		const parenthesized = clicksOf(parenthesizedKeyHint("app.tools.expand", "to expand", "20 more lines"));
@@ -159,7 +163,7 @@ const HINT_TEXT = new RegExp(
 );
 /** Calls that draw a hint with its click: a line holding one of these, or near one, draws through it. */
 const BUILDERS =
-	/\b(?:clickableHintText|clickableKeyTextHint|clickableKeysHint|clickableHint|slashCommandHint|rawKeyHint|keyHint|keyHintIfBound|parenthesizedKeyHint|renderNavHintLine|localKeyHint|graphRawKeyHint|graphKeyHint)\(/;
+	/\b(?:clickableHintText|clickableKeyTextHint|clickableKeysHint|clickableHint|slashCommandHint|rawKeyHint|keyHint|keyHintIfBound|keyTextHint|parenthesizedKeyHint|renderNavHintLine|localKeyHint|graphRawKeyHint|graphKeyHint)\(/;
 /** A `NavKey` entry: hint lines and the `?` overlay draw these through the builders. */
 const NAV_KEY_ENTRY = /\b(?:keys|label|action)\s*:/;
 
@@ -219,7 +223,7 @@ const NOT_HINTS: ReadonlyArray<{ readonly file: string; readonly text: RegExp; r
 	},
 	{
 		file: "packages/coding-agent/src/modes/interactive/components/settings-selector-items.ts",
-		text: /(?:enter while streaming|pressing esc twice)/,
+		text: /(?:enter while streaming|pressing esc twice|\$\{followUpKey\} queues follow-up messages)/,
 		why: "a setting's description, which is prose",
 	},
 	{
@@ -256,6 +260,16 @@ const NOT_HINTS: ReadonlyArray<{ readonly file: string; readonly text: RegExp; r
 		file: "packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts",
 		text: /Esc interrupt · Ctrl\+C terminate/,
 		why: "part of a diagnostic message that is also written to the log, which must stay plain text",
+	},
+	{
+		file: "packages/workflows/src/tui/tool-detail.ts",
+		text: /\$\{expandKey\} Expand\)$/,
+		why: "the unstyled text of a tool's detail, which carries no escape sequences; the graph draws it with its theme, through clickableKeysHint",
+	},
+	{
+		file: "packages/workflows/src/tui/stage-chat-view-footer-status.ts",
+		text: /^ ?(?:· )?\$\{backKey\} graph$/,
+		why: "the plain text of the return-to-graph hint, used to find and measure it; it is drawn through clickableHintText",
 	},
 	{
 		file: "packages/workflows/src/tui/node-card.ts",
@@ -303,6 +317,76 @@ test("every hint written as text in the shipped sources is drawn through a hint 
 		[],
 		"Draw these hints through clickableHintText, keyHint or another hint builder so a click runs them, or list " +
 			"them in NOT_HINTS with the reason they are not hints:\n" +
+			unrouted.join("\n"),
+	);
+});
+
+/** Calls that return the text of a key, such as `esc/ctrl+c`, without the key a click on it presses. */
+const KEY_TEXT_CALL = String.raw`(?:keyText|keyDisplayText|formatKeyText|formatKeys|navKeyText|navActionText|getKeys)\(`;
+/** A variable that holds the text of a key, such as `key`, `keys` or `openKey`. */
+const KEY_TEXT_NAME = String.raw`(?:[a-z]\w*(?:Key|Keys|KeyText|KeyLabel)|key|keys)`;
+/** An interpolated expression that is the plain text of a key. */
+const KEY_TEXT_EXPRESSION = new RegExp(
+	String.raw`^(?:(?:[\w.]+\.)?${KEY_TEXT_CALL}.*\)|(?:[\w.]+\.)?${KEY_TEXT_NAME}(?:\(\))?)$`,
+	"s",
+);
+/** What follows a key in a hint: what it does, such as ` Cancel`, ` to manage`, `: Send` or ` again`. */
+const WHAT_IT_DOES = String.raw`:?\s+(?:to\s+(?:\$\{|[a-z])|[A-Za-z]{3,})`;
+/** An interpolation in a template literal: `${...}`, with up to one level of braces inside it. */
+const INTERPOLATION = /\$\{((?:[^{}]|\{[^{}]*\})*)\}/g;
+/** Key text joined to what it does with `+`, such as `keyText("tui.select.cancel") + " cancel"`. */
+const KEY_TEXT_CONCATENATION = new RegExp(
+	String.raw`(?:\b${KEY_TEXT_CALL}[^;+]*\)|\b${KEY_TEXT_NAME})\s*\+\s*["'\`]${WHAT_IT_DOES}`,
+);
+/** A file that reads key bindings or builds hints, where a variable named for a key holds a key's text. */
+const FORMATS_KEYS = new RegExp(String.raw`\b(?:${KEY_TEXT_CALL}|getKeybindings\(|clickable\w*Hint\(|hintKeyParts\()`);
+
+/** The key text a template literal draws as a hint without a builder, by the `${...}` it interpolates. */
+function interpolatedKeyHints(literal: string, keyNames: boolean): string[] {
+	if (!literal.startsWith("`")) return [];
+	const found: string[] = [];
+	for (const match of literal.matchAll(INTERPOLATION)) {
+		const expression = match[1]!.trim();
+		if (!KEY_TEXT_EXPRESSION.test(expression)) continue;
+		if (!keyNames && !new RegExp(String.raw`^(?:[\w.]+\.)?${KEY_TEXT_CALL}`).test(expression)) continue;
+		const after = literal.slice(match.index + match[0].length);
+		const before = literal.slice(0, match.index);
+		// What the key does follows it, or the key stands alone in parentheses, as `(ctrl+o)` does.
+		if (new RegExp(`^${WHAT_IT_DOES}`).test(after) || (before.endsWith("(") && after.startsWith(")")))
+			found.push(match[0]);
+	}
+	return found;
+}
+
+test("key text interpolated or concatenated into a hint is drawn through a hint builder", () => {
+	const unrouted: string[] = [];
+	for (const file of SHIPPED_SOURCES.flatMap(sourceFiles)) {
+		const path = relative(repositoryRoot, file).replaceAll("\\", "/");
+		const source = readFileSync(file, "utf8");
+		const keyNames = FORMATS_KEYS.test(source);
+		source.split("\n").forEach((line, index) => {
+			const trimmed = line.trim();
+			if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) return;
+			const found: string[] = [];
+			for (const match of line.matchAll(STRING_LITERAL)) {
+				// A template literal passed to a builder on its line is drawn through it.
+				if (BUILDERS.test(line.slice(0, match.index))) continue;
+				if (interpolatedKeyHints(match[0], keyNames).length > 0) found.push(match[0].slice(1, -1));
+			}
+			const concatenated = KEY_TEXT_CONCATENATION.exec(line);
+			if (concatenated && (keyNames || new RegExp(`^${KEY_TEXT_CALL}`).test(concatenated[0])))
+				found.push(concatenated[0]);
+			for (const content of found) {
+				if (NOT_HINTS.some((entry) => entry.file === path && entry.text.test(content))) continue;
+				unrouted.push(`${path}:${index + 1}: ${content}`);
+			}
+		});
+	}
+	assert.deepEqual(
+		unrouted,
+		[],
+		"Draw these keys through clickableKeyTextHint, keyHint or another hint builder so a click presses them, " +
+			"or list them in NOT_HINTS with the reason they are not hints:\n" +
 			unrouted.join("\n"),
 	);
 });

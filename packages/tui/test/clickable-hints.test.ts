@@ -1,9 +1,18 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { clickableHint, clickableKeysHint, commandHintAction, keyHintAction } from "../src/clickable-hints.ts";
+import {
+	clickableHint,
+	clickableKeysHint,
+	clickableKeyTextHint,
+	commandHintAction,
+	keyHintAction,
+	readHintSpans,
+} from "../src/clickable-hints.ts";
+import { Text } from "../src/components/text.ts";
 import { keyInputData, matchesKey } from "../src/keys.ts";
-import type { Component, TuiMouseEvent, TuiMouseEventResult } from "../src/tui.ts";
+import { type Component, compositeTuiLine, type TuiMouseEvent, type TuiMouseEventResult } from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
+import { stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from "../src/utils.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 /** A terminal that keeps every write, so a test can tell what reached it. */
@@ -151,6 +160,76 @@ describe("a click on a key hint runs its key", () => {
 		await click(3, 0);
 		assert.deepStrictEqual(commands, ["/tasks"]);
 		tui.stop();
+	});
+});
+
+/** The text of each hint on `line` as the terminal shows it, with the key or command a click on it runs. */
+function hintsOn(line: string): string[] {
+	const { line: unmarked, spans } = readHintSpans(line);
+	const text = stripTerminalSequences(unmarked);
+	return spans.map(
+		(span) =>
+			`${span.action.kind === "key" ? span.action.key : span.action.command}: ${text.slice(span.start, span.end)}`,
+	);
+}
+
+describe("a hint keeps its action on every row it is drawn over, and no further", () => {
+	const notice = `(${clickableKeyTextHint("ctrl+o", " for prompt, tool calls and full result")})`;
+
+	it("runs its key from a click on the continuation of a wrapped hint, and not from the text after it", async () => {
+		const { terminal, view, click, tui } = await mount([...new Text(notice, 0, 0).render(40), "after the hint"]);
+		assert.deepStrictEqual(
+			terminal
+				.getViewport()
+				.slice(0, 3)
+				.map((row) => row.trimEnd()),
+			["(ctrl+o for prompt, tool calls and full", "result)", "after the hint"],
+		);
+		await click(2, 1); // result
+		assert.deepStrictEqual(keysOf(view, "ctrl+o"), ["ctrl+o"], "the wrapped row is part of the hint");
+		await new Promise((resolve) => setTimeout(resolve, DOUBLE_CLICK_GAP_MS));
+		await click(6, 1); // )
+		await new Promise((resolve) => setTimeout(resolve, DOUBLE_CLICK_GAP_MS));
+		await click(2, 2); // after
+		assert.deepStrictEqual(keysOf(view, "ctrl+o"), ["ctrl+o"], "the text after the hint runs nothing");
+		tui.stop();
+	});
+
+	it("marks each row of a hint wrapped at a space, broken inside a long word, or continued after a newline", () => {
+		assert.deepStrictEqual(wrapTextWithAnsi(`${notice} after`, 40).map(hintsOn), [
+			["ctrl+o: ctrl+o for prompt, tool calls and full"],
+			["ctrl+o: result"],
+		]);
+		const long = wrapTextWithAnsi(`${clickableHint("x".repeat(25), keyHintAction("escape"))} after`, 10);
+		assert.deepStrictEqual(long.map(hintsOn), [
+			["escape: xxxxxxxxxx"],
+			["escape: xxxxxxxxxx"],
+			["escape: xxxxx"],
+			[],
+		]);
+		// A row is padded or bordered after it is wrapped, and the hint must end where its text does.
+		const lines = wrapTextWithAnsi(`${clickableHint("esc\ncancel", keyHintAction("escape"))} after`, 40);
+		assert.deepStrictEqual(
+			lines.map((line) => hintsOn(`${line}   │`)),
+			[["escape: esc"], ["escape: cancel"]],
+		);
+	});
+
+	it("ends a truncated hint where its kept text does, before the ellipsis and whatever follows", () => {
+		const hint = clickableHint("esc cancel the dialog", keyHintAction("escape"));
+		assert.deepStrictEqual(hintsOn(`${truncateToWidth(hint, 10, "…")} · more`), ["escape: esc cance"]);
+		// A row clipped to a narrower width, as a frame drawn for the previous width is until the next one arrives.
+		assert.deepStrictEqual(hintsOn(`${truncateToWidth(`${hint} after`, 12, "")}│`), ["escape: esc cancel t"]);
+	});
+
+	it("keeps a hint's action on the parts beside a box drawn over it, and not on the box", () => {
+		const base = clickableHint("esc to interrupt the running turn", keyHintAction("escape"));
+		const row = compositeTuiLine(base, "dialog", 4, 8, 40);
+		assert.strictEqual(
+			stripTerminalSequences(readHintSpans(row).line),
+			`esc dialog  rupt the running turn${" ".repeat(7)}`,
+		);
+		assert.deepStrictEqual(hintsOn(row), ["escape: esc ", "escape: rupt the running turn"]);
 	});
 });
 

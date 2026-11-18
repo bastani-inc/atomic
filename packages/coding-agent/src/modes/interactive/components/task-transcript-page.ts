@@ -31,7 +31,7 @@ import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-h
 import { ScrollableComponentViewport } from "./chat-transcript.js";
 import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
-import { navActionText } from "./nav-keys.ts";
+import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
 import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
@@ -217,7 +217,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (task === undefined || waitingOn === undefined) return undefined;
 		const shells = waitingReleasedShells(task, this.source.ownerTasks ?? this.source.tasks);
 		const openKey = navActionText(getKeybindings(), "app.tasks.openWaited");
-		const opens = openKey ? `${openKey} opens` : "/tasks opens";
+		const opens = openKey ? clickableKeyTextHint(openKey, " opens") : "/tasks opens";
 		const shellNote =
 			shells.length === 0
 				? ""

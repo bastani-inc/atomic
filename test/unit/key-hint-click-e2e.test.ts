@@ -10,7 +10,9 @@ import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import {
 	type Component,
 	Container,
+	clickableKeyTextHint,
 	getKeybindings,
+	matchesKey,
 	setKeybindings,
 	Text,
 	type TuiAltScreen,
@@ -19,13 +21,14 @@ import {
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
-import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { type SessionInfo, SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentPanelSourceHub } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.ts";
 import { mainComposerHints } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
 import { slashCommandHint } from "../../packages/coding-agent/src/modes/interactive/components/nav-keys.ts";
 import { Selector } from "../../packages/coding-agent/src/modes/interactive/components/selector.ts";
+import { SessionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { shouldHandleFullscreenViewportInput } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.js";
 import { createFullscreenTui } from "../../packages/coding-agent/src/modes/interactive/interactive-tui.js";
@@ -325,6 +328,57 @@ test("a dialog's hints run their keys: ↓ of ↑↓ select moves, enter choose 
 	}
 });
 
+test("the /resume rename dialog's hints run their keys: esc of esc/ctrl+c Cancel closes it, enter Save renames", async () => {
+	const ui = makeScreen();
+	const session: SessionInfo = {
+		path: "/tmp/session-a.jsonl",
+		id: "session-a",
+		cwd: "",
+		name: "Old",
+		created: new Date(0),
+		modified: new Date(0),
+		messageCount: 1,
+		firstMessage: "hello",
+		allMessagesText: "hello",
+	};
+	const renamed: string[] = [];
+	const selector = new SessionSelectorComponent(
+		async () => [session],
+		async () => [],
+		() => {},
+		() => {},
+		() => {},
+		() => ui.tui.requestRender(),
+		{
+			renameSession: async (_session, name) => {
+				renamed.push(name ?? "");
+			},
+			showRenameHint: true,
+			keybindings: new KeybindingsManager(),
+		},
+	);
+	try {
+		ui.mount(selector);
+		await flush();
+		await ui.click(/ctrl\+r rename/, "ctrl+r");
+		assert.ok(ui.shows(/Rename Session/), ui.screen().join("\n"));
+
+		await pastDoubleClick();
+		await ui.click(/esc\/ctrl\+c Cancel/, "esc");
+		assert.ok(!ui.shows(/Rename Session/), `esc closes the rename dialog:\n${ui.screen().join("\n")}`);
+
+		await pastDoubleClick();
+		await ui.click(/ctrl\+r rename/, "ctrl+r");
+		typeText(ui.terminal, "X");
+		await flush();
+		await pastDoubleClick();
+		await ui.click(/enter Save/, "Save");
+		assert.deepEqual(renamed, ["XOld"]);
+	} finally {
+		ui.tui.stop();
+	}
+});
+
 type InputListener = (data: string) => { consume?: boolean; data?: string } | undefined;
 
 /**
@@ -478,6 +532,69 @@ test("a /tasks hint runs /tasks as if typed into an empty prompt, and the prompt
 		assert.deepEqual(submitted, ["/tasks"]);
 		assert.equal(editor.getText(), "draft");
 	} finally {
+		ui.tui.stop();
+	}
+});
+
+/** A host screen showing what the isolated engine draws for one custom component, as the main chat's engine does. */
+function isolatedEngine(ui: ReturnType<typeof makeScreen>) {
+	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
+	const child = new EngineCustomUiService((line) => {
+		const message = parseInteractiveEngineMessage(line);
+		if (!message) return;
+		for (const listener of [...engineListeners]) listener(message);
+	}, new KeybindingsManager());
+	const runtime = {
+		onGenerationEnded: () => () => {},
+		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
+			engineListeners.push(listener);
+			return () => {};
+		},
+		sendEngineCommand: (command: InteractiveEngineCommand) => {
+			child.handleLine(serializeInteractiveEngineFrame(command));
+		},
+	} as unknown as IsolatedInteractiveRuntime;
+	let host: Component | undefined;
+	const hostUi = {
+		requestRender: () => ui.tui.requestRender(),
+		setWidget: () => {},
+		custom: (factory: (tui: unknown, theme: unknown, keys: unknown, done: (result: unknown) => void) => Component) =>
+			new Promise(() => {
+				host = factory(ui.tui, {}, {}, () => {});
+			}),
+	} as unknown as ExtensionUIContext;
+	new RemoteComponentController(runtime, hostUi, { isFullscreen: () => true, onRendererReplaced: () => () => {} });
+	return { child, host: () => host };
+}
+
+test("a hint the isolated engine wraps onto a second row runs its key from a click on that row", async () => {
+	const ui = makeScreen();
+	const { child, host } = isolatedEngine(ui);
+	const label = ` to show the prompt, every tool call and the full result of ${"this stage ".repeat(8)}lastword`;
+	const notice = new Text(`(${clickableKeyTextHint("ctrl+o", label)})`, 0, 0);
+	const received: string[] = [];
+	try {
+		void child.custom(() => ({
+			render: (width: number) => [...notice.render(width), "after the notice"],
+			invalidate: () => notice.invalidate(),
+			handleInput: (data: string) => {
+				received.push(data);
+			},
+		}));
+		await flush();
+		const mirrored = host();
+		assert.ok(mirrored, "the engine's component is mirrored on the host");
+		ui.mount(mirrored);
+		await vi.waitFor(() => assert.ok(ui.shows(/^stage .*lastword\)/), ui.screen().join("\n")), ENGINE_FRAME_WAIT);
+		await ui.click(/^stage .*lastword\)/, "lastword");
+		const pressed = () => received.filter((data) => matchesKey(data, "ctrl+o")).length;
+		await vi.waitFor(() => assert.equal(pressed(), 1, JSON.stringify(received)), ENGINE_FRAME_WAIT);
+		await pastDoubleClick();
+		await ui.click(/after the notice/, "after");
+		await flush();
+		assert.equal(pressed(), 1, "the row after the hint runs nothing");
+	} finally {
+		child.dispose();
 		ui.tui.stop();
 	}
 });

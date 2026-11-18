@@ -36,6 +36,7 @@ import { theme } from "../theme/theme.js";
 import { parseWheelReport } from "./chat-transcript.js";
 import { renderExtensionStatusRow } from "./footer.ts";
 import {
+	clickableKeyTextHint,
 	isNavHelpKey,
 	NAV_CONFIRM_WINDOW_MS,
 	type NavKey,
@@ -1513,13 +1514,13 @@ export class TaskInspector implements Component {
 		if (this.itemFinishedWhileArmed !== undefined) {
 			const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
 			const action = this.itemFinishedAcknowledged ? "dismiss" : "acknowledge";
-			return `${this.itemFinishedWhileArmed.name} finished · ${key} to ${action}`;
+			return `${this.itemFinishedWhileArmed.name} finished · ${clickableKeyTextHint(key, ` to ${action}`)}`;
 		}
 		const finished = this.navigation.finishedWhileArmed;
 		if (finished !== undefined) {
 			const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
 			const action = this.navigation.finishedAcknowledged ? "dismiss" : "acknowledge";
-			return `${taskDisplayText(finished.title || taskLabel(finished))} finished · ${key} to ${action}`;
+			return `${taskDisplayText(finished.title || taskLabel(finished))} finished · ${clickableKeyTextHint(key, ` to ${action}`)}`;
 		}
 		const pending = this.navigation.stopConfirm.pending();
 		if (pending === undefined) return "";
@@ -1528,7 +1529,7 @@ export class TaskInspector implements Component {
 		if (row === undefined && task === undefined) return "";
 		const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
 		const name = task ? taskDisplayText(task.title || taskLabel(task)) : row ? rowName(row) : "the task";
-		return `Press ${key} again within 3s to stop ${name}`;
+		return `Press ${clickableKeyTextHint(key, " again")} within 3s to stop ${name}`;
 	}
 	renderPicker(width: number, availableRows: number): string[] {
 		return this.renderViewport(width, Math.max(1, Math.min(12, availableRows)));
@@ -1771,7 +1772,8 @@ export class TaskInspector implements Component {
 		}
 		const selected = this.selectedRow();
 		if (selected !== undefined && this.peekId === selected.id) this.dropStaleReply(selected);
-		const notice = this.failureNotice || this.stopNotice() || this.status;
+		const stopNotice = this.failureNotice ? "" : this.stopNotice();
+		const notice = this.failureNotice || stopNotice || this.status;
 		const counts = taskBoardCounts(all);
 		const edge = theme.fg("borderMuted", "▔".repeat(Math.max(1, width)));
 		const header = ` ${theme.bold("Tasks")}${counts ? `  ${theme.fg("muted", counts)}` : ""}`;
@@ -1916,7 +1918,9 @@ export class TaskInspector implements Component {
 								return [{ ...key, keys: peekKey ? `${peekKey}/${key.keys}` : key.keys }];
 							});
 		const hint = renderNavHintLine(keys, width, style, getKeybindings(), 2, { compact: true });
-		const footer = [...(notice ? [theme.fg("warning", clip(taskDisplayText(notice)))] : []), hint];
+		// A stop notice names its tasks sanitized already, and marks the key a click presses, which sanitizing drops.
+		const noticeText = stopNotice ? stopNotice : taskDisplayText(notice);
+		const footer = [...(notice ? [theme.fg("warning", clip(noticeText))] : []), hint];
 		const recordPaintedRow = (row: TaskBoardRow, drawnTasks: TaskRecord[]) => {
 			if (row.kind === "item") {
 				this.paintedItemFinished.set(row.id, rowFinished(row));

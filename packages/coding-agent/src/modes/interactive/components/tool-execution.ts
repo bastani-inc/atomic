@@ -406,7 +406,7 @@ export class ToolExecutionComponent extends Container {
 			render(available) {
 				if (available < 1) return [];
 				const full = keys ? theme.fg("dim", `  (${clickableKeyTextHint(keys, " to expand")})`) : "";
-				const compact = keys ? theme.fg("dim", ` (${keys})`) : "";
+				const compact = keys ? theme.fg("dim", ` (${clickableKeyTextHint(keys, "")})`) : "";
 				const suffix = visibleWidth(full) < available ? full : visibleWidth(compact) < available ? compact : "";
 				return [`${truncateToWidth(summary, available - visibleWidth(suffix), "…")}${suffix}`];
 			},

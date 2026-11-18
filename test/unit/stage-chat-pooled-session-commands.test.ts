@@ -167,7 +167,9 @@ test("a stop of a worker stage's task that does not reach the worker says so in 
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /npm run build/));
 		assert.match(view.render(120).join("\n"), /x stop/, "the task list offers x");
 		view.handleInput("x");
-		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /again within 3s to stop npm run build/));
+		await vi.waitFor(() =>
+			assert.match(stripAnsi(view.render(120).join("\n")), /again within 3s to stop npm run build/),
+		);
 		view.handleInput("x");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Could not stop the task: The connection/));
 	} finally {
@@ -205,11 +207,11 @@ test("a stop from a task's detail page that does not reach the worker says so, a
 		view.handleInput("\r");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Transcript ·/));
 		view.handleInput("x");
-		assert.doesNotMatch(view.render(120).join("\n"), /again within 3s/);
+		assert.doesNotMatch(stripAnsi(view.render(120).join("\n")), /again within 3s/);
 		view.handleInput("\x1b[D");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Inspect transcript/));
 		view.handleInput("x");
-		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /again within 3s to stop/));
+		await vi.waitFor(() => assert.match(stripAnsi(view.render(120).join("\n")), /again within 3s to stop/));
 		view.handleInput("x");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Could not stop the task: the worker is gone/));
 	} finally {
