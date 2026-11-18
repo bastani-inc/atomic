@@ -263,7 +263,9 @@ for (const [upgraded, countedCalls] of [
 		const database = await openNodeSqliteDatabase(":memory:");
 		const journal = await SqlRunJournal.open(database);
 		try {
-			registerOlderStorage(journal, sqlPoolStorage(journal)!);
+			// A 0.9.88 host's node-sqlite connections sent no batches: its writes went as transactions (#5376).
+			const { batch: _unbatched, ...older088 } = sqlPoolStorage(journal)!;
+			registerOlderStorage(journal, older088);
 			const older = await OlderRateBuckets.open(journal);
 			const current = upgraded ? await SqlRateBuckets.open(journal) : undefined;
 			const cap = new FleetRateCap();

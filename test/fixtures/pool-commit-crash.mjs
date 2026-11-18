@@ -61,6 +61,16 @@ const messages = [
 	},
 ];
 const database = await openNodeSqliteDatabase(path);
+// Runs after each batch the journal sends, once the coordinator arms it below: the journal binds the batch it writes
+// with as it opens.
+let afterBatch;
+const sendBatch = database.batch?.bind(database);
+if (sendBatch !== undefined)
+	database.batch = async (statements, options) => {
+		const rows = await sendBatch(statements, options);
+		await afterBatch?.();
+		return rows;
+	};
 const journal = await SqlRunJournal.open(database);
 const pool = await openSqlPoolQueue(journal);
 try {
@@ -90,13 +100,32 @@ try {
 			header: { id: "session", version: 4, createdAt: messages[0].timestamp, cwd: process.cwd() },
 			entries: messages,
 		};
-		const transact = database.transaction.bind(database);
-		database.transaction = async (body) => {
-			const receipt = await transact(body);
+		// The process stops right after the commit, before the commit's caller hears of it. A journal that writes in
+		// batches commits the pool's write as one batch, after opening the pool's sessions in a transaction of their own
+		// (#5376): the receipt the batch committed is read back.
+		const committed = async (receipt) => {
 			send({ event: "committed", saved, created: receipt, create });
 			assert.equal((await receive()).event, "release-ack");
-			return receipt;
 		};
+		if (sendBatch !== undefined) {
+			afterBatch = async () => {
+				const stored = await database.get(
+					"SELECT receipt FROM wf_runs_pool_operations WHERE work = ? AND generation = ? AND operation = 'create'",
+					attempt.id,
+					attempt.generation,
+				);
+				if (stored === undefined) return;
+				afterBatch = undefined;
+				await committed(JSON.parse(stored.receipt));
+			};
+		} else {
+			const transact = database.transaction.bind(database);
+			database.transaction = async (body) => {
+				const receipt = await transact(body);
+				await committed(receipt);
+				return receipt;
+			};
+		}
 		const created = await pool.commit(lease, attempt, "create", create);
 		send({ event: "acknowledged", saved, created });
 	} else {

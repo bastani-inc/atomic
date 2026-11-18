@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import type {
+	SqliteBatchOptions,
 	SqliteDatabase,
 	SqliteExecutor,
+	SqliteStatement,
 	StorageNotificationEvent,
 	StorageNotifications,
 } from "@bastani/atomic/storage";
@@ -313,8 +315,19 @@ test("ready-producing writes advance readiness in the work table trigger and sen
 	await database.exec("CREATE TABLE notices(id INTEGER PRIMARY KEY, channel TEXT NOT NULL, payload TEXT NOT NULL)");
 	const recording = recordingNotifications();
 	let events: string[] = [];
+	const record = (sql: string) => {
+		if (sql.includes("wf_runs_pool_ready")) events.push("client:ready");
+		if (sql.includes("INSERT INTO notices")) events.push("notice");
+	};
 	const pipelined: SqliteDatabase = new Proxy(withNotifications(database, recording.notifications), {
 		get(target, key) {
+			// A node-sqlite database sends a pool write as one batch (#5376): its statements are recorded as a
+			// transaction's are.
+			if (key === "batch")
+				return (statements: readonly SqliteStatement[], options?: SqliteBatchOptions) => {
+					for (const statement of statements) record(statement.sql);
+					return target.batch!(statements, options);
+				};
 			if (key !== "transaction") return Reflect.get(target, key);
 			return <T>(body: (tx: SqliteExecutor) => Promise<T>) =>
 				target.transaction((tx) => {
@@ -323,8 +336,7 @@ test("ready-producing writes advance readiness in the work table trigger and sen
 						get: (sql, ...params) => tx.get(sql, ...params),
 						all: (sql, ...params) => tx.all(sql, ...params),
 						async run(sql, ...params) {
-							if (sql.includes("wf_runs_pool_ready")) events.push("client:ready");
-							if (sql.includes("INSERT INTO notices")) events.push("notice");
+							record(sql);
 							return tx.run(sql, ...params);
 						},
 					};

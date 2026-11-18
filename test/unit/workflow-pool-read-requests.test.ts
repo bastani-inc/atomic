@@ -476,18 +476,32 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 	"a pool reader that cannot be opened fails the read, and the next read opens it (#4314)",
 	async () => {
 		const f = await pooledRoot();
+		// The root's pool reads its writes' plans through the reader as it sets up, so it holds one open already (#5376):
+		// a second journal over the file opens its reader at its first pool read.
+		const connection = new DatabaseSync(f.path!);
+		const database = wrapNodeSqliteDatabase(connection);
+		const journal = await SqlRunJournal.open(database);
+		const storage = sqlPoolStorage(journal)!;
+		const control = () =>
+			storage.read((read) =>
+				read.get("SELECT state, revision FROM wf_runs_pool_control WHERE root = ?", f.lease.runId),
+			);
 		try {
 			chmodSync(f.path!, 0o000);
-			const refused = await f.pool.control(f.lease).then(
+			const refused = await control().then(
 				() => assert.fail("the reader opened an unreadable file"),
 				(error: unknown) => error,
 			);
 			chmodSync(f.path!, 0o600);
 			assert.ok(refused instanceof StorageUnavailableError);
 			assert.equal(refused.adapter, "node-sqlite");
+			assert.equal(await control(), undefined, "the next read opens the reader and finds no control set");
 			assert.deepEqual(await f.pool.control(f.lease), { state: "running", revision: 0 });
 		} finally {
 			chmodSync(f.path!, 0o600);
+			await journal.close();
+			await database.close();
+			connection.close();
 			await f.close();
 		}
 	},

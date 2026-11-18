@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type * as native from "@bastani/atomic-natives";
 import type {
+	SqliteBatchOptions,
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,
@@ -1739,6 +1740,19 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			{ callback: (transaction) => transaction.statements(bound), statements: bound },
 			options?.lockWaitMs,
 		) as Promise<SqliteRow[][]>;
+	}
+
+	/**
+	 * `commitStatements` as `SqliteDatabase.batch`: the statements in one write transaction and one request, all of
+	 * them committed or none (#5376). Stores that write in batches where a database offers them, the workflow pool's
+	 * included, take their batched path on this connection. `priority` changes nothing here: this connection runs its
+	 * calls in the order they were made, as it always has.
+	 */
+	batch(statements: readonly SqliteStatement[], options?: SqliteBatchOptions): Promise<SqliteRow[][]> {
+		return this.commitStatements(
+			statements,
+			options?.lockWaitMs === undefined ? undefined : { lockWaitMs: options.lockWaitMs },
+		);
 	}
 
 	private queueTransaction(

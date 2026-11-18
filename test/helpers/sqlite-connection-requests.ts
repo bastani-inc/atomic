@@ -1,6 +1,7 @@
 import { setImmediate as realTurn } from "node:timers/promises";
 import {
 	type ConnectionRequest,
+	type ConnectionStatement,
 	type ConnectionValue,
 	ThreadConnection,
 } from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
@@ -58,11 +59,11 @@ export function clockConnections(now: () => number): RequestInterception {
 	return interceptConnectionRequests((request, send) => {
 		if (request.kind === "now") return Promise.resolve(now());
 		// A batch's statements, sent together.
-		if ("statements" in request)
-			return send({
-				...request,
-				statements: request.statements.map((statement) => ({ ...statement, sql: clocked(statement.sql) })),
-			});
+		const clockedStatements = (statements: readonly ConnectionStatement[]) =>
+			statements.map((statement) => ({ ...statement, sql: clocked(statement.sql) }));
+		if ("statements" in request) return send({ ...request, statements: clockedStatements(request.statements) });
+		// A group's members, sent together.
+		if ("members" in request) return send({ ...request, members: request.members.map(clockedStatements) });
 		if (!("sql" in request)) return send(request);
 		const sql = clocked(request.sql);
 		return send(sql === request.sql ? request : ({ ...request, sql } as ConnectionRequest));

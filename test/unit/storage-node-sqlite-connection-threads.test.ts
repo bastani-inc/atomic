@@ -204,10 +204,15 @@ test("committed statements refused by a lock another process holds wait for it, 
 	assert.deepEqual(await rows(database), ["committed", "after"]);
 });
 
-test("committing statements leaves the connection without batch, so stores that write in batches keep their transactions (#5376)", async () => {
+test("a batch on a node-sqlite connection commits its statements as committed statements do, in one request (#5376)", async () => {
 	const database = await open(databasePath());
-	assert.equal(database.batch, undefined);
-	assert.equal(typeof database.commitStatements, "function");
+	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	const { value, kinds } = await requestKinds(() =>
+		database.batch!([{ sql: "INSERT INTO items VALUES (?) RETURNING value", params: ["batched"] }]),
+	);
+	assert.deepEqual(kinds, ["transaction"]);
+	assert.deepEqual(value, [[{ value: "batched" }]]);
+	assert.deepEqual(await rows(database), ["batched"]);
 });
 
 test("committed statements that waited for the lock run and commit in one request once they hold it (#5376)", async () => {
