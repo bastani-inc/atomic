@@ -308,11 +308,12 @@ function outboxStore(shared: OutboxState): OutboxStore {
 			record.claim!.renewedAt = Date.now();
 			return { status: "renewed" };
 		},
-		async releaseClaim(claim) {
+		async releaseClaim(claim, options) {
 			const record = heldClaim(claim);
 			if ("status" in record) return record;
 			record.claim = undefined;
 			record.state = "queued";
+			if (options?.unwritten === true) record.claimAttempts = Math.max(record.claimAttempts - 1, 0);
 			return { status: "released" };
 		},
 		async releaseClaimsOf(claimantId) {

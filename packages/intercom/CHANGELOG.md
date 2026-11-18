@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- With multi-node routing, a send to a session on another broker that quit cleanly just before is again reported as queued for its return, instead of waiting out the receipt wait and being reported uncertain. The recipient's broker could claim the message for the session in the moment it left, and that claim, which never reached the session, counted as an attempt to deliver it.
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 ### Added
