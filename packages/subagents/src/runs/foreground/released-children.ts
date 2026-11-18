@@ -480,8 +480,16 @@ export function handleReleasedChildWakes(
 		namespace,
 		async (wakeKey, wakes, slot) => {
 			const childId = wakeKey.slice(namespace.length + 1);
-			const record = await latest(childId);
+			// Active from the moment this handler holds the batch, before any await: a resume arriving meanwhile then waits for
+			// this wake's relaunch decision instead of queuing behind the run it starts (#5485).
 			setReleasedChildWakeActive(wakeKey, true);
+			let record: SubagentChildRecord;
+			try {
+				record = await latest(childId);
+			} catch (error) {
+				setReleasedChildWakeActive(wakeKey, false);
+				throw error;
+			}
 			try {
 				const redispatch =
 					actions.redispatch !== undefined && wakes.some(isRedispatchWake) && needsRedispatch(record);

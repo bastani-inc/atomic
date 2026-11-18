@@ -4839,6 +4839,86 @@ test("resume of a child a wake is running is refused at once, not queued until t
 	assert.equal(h.runs.filter((run) => run.task.includes("follow up after CI")).length, 1);
 });
 
+/** Deliver a result that wakes `childId`, whose woken run then waits for `gate`. */
+function wakeWithResult(
+	h: Harness,
+	dispatcher: AgentWakeDispatcher,
+	childId: string,
+	gate: PromiseWithResolvers<void>,
+) {
+	h.finishOn.set("CI green", gate);
+	return dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), childId), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: waitResult("CI green"),
+	});
+}
+
+/** Assert `resume` answers with a refusal while the child's woken run goes on, and nothing waits behind that run. */
+async function refusedWhileWokenRunRuns(h: Harness, childId: string, resume: Promise<SubagentToolResult>) {
+	const woken = await h.waitForLatest(childId, (record) => record.state === "running" && record.taskId !== undefined);
+	const answered = await answeredWithin(resume);
+	assert.ok(answered, "resume answers while the woken run still runs");
+	assert.equal(answered.isError, true);
+	assert.match(text(answered), new RegExp(`already running as task ${woken.taskId}; pause or quit it first`));
+	assert.equal(resumeWaiterCount(), 0, "nothing waits behind the woken run");
+}
+
+test("resume the moment a wake has taken its batch, before the wake reads the child's record, is refused while the woken run goes on (#5485)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "taken-batch");
+	const gate = Promise.withResolvers<void>();
+	// The dispatcher hands the wake its batch at once; the handler then reads the child's latest record.
+	const wake = wakeWithResult(h, dispatcher, "taken-batch:0", gate);
+	const resume = h.call({ action: "resume", id: "taken-batch:0", message: "right after the wake" });
+	try {
+		await refusedWhileWokenRunRuns(h, "taken-batch:0", resume);
+	} finally {
+		gate.resolve();
+	}
+	await wake;
+	assert.equal(
+		h.runs.filter((run) => run.task.includes("right after the wake")).length,
+		0,
+		"a refused resume never runs",
+	);
+});
+
+test("resume while a wake waits for an earlier record of its owner to be saved is refused while the woken run goes on (#5485)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "slow-append");
+	// Another child's record of the same owner is still being saved, so the wake waits before it reads the record.
+	const saved = Promise.withResolvers<void>();
+	const pi = h.deps.pi as unknown as { appendEntry(type: string, data?: unknown): Promise<void> };
+	createSubagentChildRecordSink(
+		{
+			appendEntry: async (type: string, data?: unknown) => {
+				await saved.promise;
+				await pi.appendEntry(type, data);
+			},
+		},
+		h.ctx,
+	).record({ runId: "slow-other", index: 0, agent: "worker", state: "running", cwd: h.cwd });
+	const gate = Promise.withResolvers<void>();
+	const wake = wakeWithResult(h, dispatcher, "slow-append:0", gate);
+	await sleep(50);
+	assert.equal(dispatcher.stats().running, 1, "the wake holds its batch");
+	const resume = h.call({ action: "resume", id: "slow-append:0", message: "while the record saves" });
+	await sleep(50);
+	saved.resolve();
+	try {
+		await refusedWhileWokenRunRuns(h, "slow-append:0", resume);
+	} finally {
+		gate.resolve();
+	}
+	await wake;
+	assert.equal(
+		h.runs.filter((run) => run.task.includes("while the record saves")).length,
+		0,
+		"a refused resume never runs",
+	);
+});
+
 test("resume during a wake that has not relaunched its child yet waits only for that relaunch, then refuses the running child (#5485)", async () => {
 	const h = harness();
 	const dispatcher = await releasedWithWakes(h, "relaunching");
