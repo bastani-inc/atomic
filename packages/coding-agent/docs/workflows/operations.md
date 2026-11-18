@@ -45,7 +45,7 @@ Each of the session's top-level workflow runs has a row in the [agent panel](/ba
   ✗ deploy    stage build failed                            failed · 41m
 ```
 
-The row shows the run's state, stage progress, elapsed time and available token totals. A waiting question or a failure's reason replaces the progress display. Narrow terminals omit the stage bar and tokens before shortening the task text. Press ↓ on an empty prompt, select the run and press Enter to open its graph. A finished run's row stays until you have opened the run, from the panel, `/tasks`, F2 or `/workflows`. `x` pressed twice stops a run gracefully; it stays resumable.
+The row shows the run's state, stage progress, elapsed time and available token totals. A waiting question or a failure's reason replaces the progress display. Narrow terminals omit the stage bar and tokens before shortening the task text. Press ↓ on an empty prompt, select the run and press Enter to open its graph. A finished run's row stays until you have opened the run, from the panel, `/tasks`, F2 or `/workflows`. A paused run, or one blocked on a failed stage, is listed like a paused subagent: its row stays while another subagent, workflow run or background shell runs, and leaves once nothing does, until you resume the run. `x` pressed twice stops a run gracefully; it stays resumable.
 
 Stage progress includes nested child workflows and updates as stages appear:
 

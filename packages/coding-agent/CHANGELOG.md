@@ -4,6 +4,7 @@
 
 ### Added
 
+- Agent panel sources can set `runGeneration` on an item, an identity of its latest run, so a stopped or paused row that left the panel and ran again, however briefly, is listed again while other work runs ([#5504](https://github.com/bastani-inc/atomic/issues/5504))
 - A storage driver's `transientFailure` can return `hop: { name, failure }` for a call that failed before it reached the database server, such as at a proxy. `StorageTransientError`, and the warning printed while the call is retried, then say what happened at that hop instead of "the database server call failed", and the hint asks to check that hop; the error carries it as `hop` and `hopFailure`. The PostgreSQL adapter uses it to name the proxy ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
 
 ### Changed
@@ -20,6 +21,8 @@
 - A subagent or workflow stage chat opened while its agent already waits to retry a failed request now shows `retrying…` as its working line straight away, instead of looking idle until the next attempt. This includes a stage that runs on a local worker ([#5483](https://github.com/bastani-inc/atomic/issues/5483)).
 - A subagent released while it waits on a tool call now shows the dim `◌` waiting mark on its completion notice, as `/tasks`, the agent panel, the task footer and its launch card already show it, instead of the pause mark `⏸`. Notices saved by earlier versions show the waiting mark too. A paused or quit subagent keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - An extension tool whose call renders a `waiting` or `heartbeat` block keeps its own title once its result arrives, instead of falling back to the tool's label ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+- A paused workflow run, or one blocked on a failed stage, no longer keeps the agent panel open on its own. Like a paused subagent, it stays listed while another subagent, workflow run or background shell runs, and leaves once nothing does, until you resume it; `/tasks` and `/workflows` still list it. A run waiting for input still keeps the panel open ([#5490](https://github.com/bastani-inc/atomic/issues/5490))
+- A subagent whose turn was interrupted, or a paused or blocked workflow run, that left the agent panel and was resumed and then stopped or paused again before the panel updated now comes back while other work runs, instead of staying hidden ([#5504](https://github.com/bastani-inc/atomic/issues/5504))
 
 ### Fixed
 
