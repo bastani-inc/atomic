@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+## [0.9.89-alpha.1] - 2026-11-18
+
 ### Added
 
 - `WindowedContainer`, a vertical list a fullscreen `ScrollView` lays out by its visible window: frames render only the children on screen and one viewport around them, the rest render in bounded background slices, and the view stays in place while content above it changes height

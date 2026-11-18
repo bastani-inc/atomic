@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.9.89-alpha.1] - 2026-11-18
+
 ### Added
 
 - `getEnvApiKeyAsync()` checks environment-provided credentials without synchronous file access. `getEnvApiKey()` remains synchronous and recognizes a passed credentials file on its first call. The compatibility entry point also exports `getDirectEnvApiKey()` for environment-only lookups that never inspect a file
