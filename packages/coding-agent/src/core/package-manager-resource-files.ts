@@ -132,13 +132,13 @@ export async function collectAutoSkillEntries(dir: string, mode: SkillDiscoveryM
 }
 
 async function findGitRepoRoot(startDir: string): Promise<string | null> {
-	let dir = resolve(startDir);
-	while (true) {
-		if (await exists(join(dir, ".git"))) return dir;
-		const parent = dirname(dir);
-		if (parent === dir) return null;
-		dir = parent;
+	const directories: string[] = [];
+	for (let dir = resolve(startDir); ; dir = dirname(dir)) {
+		directories.push(dir);
+		if (dirname(dir) === dir) break;
 	}
+	const present = await Promise.all(directories.map((dir) => exists(join(dir, ".git"))));
+	return directories.find((_, index) => present[index]) ?? null;
 }
 
 export async function collectAncestorAgentsSkillDirs(startDir: string): Promise<string[]> {
