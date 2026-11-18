@@ -662,13 +662,18 @@ async function writeBatch(hrana, api, client, batched) {
 			: error;
 	const version = await client.getVersion();
 	const stream = client.openStream();
-	const { began, ran, committed, executed } = (() => {
+	const { began, refreshed, ran, committed, executed } = (() => {
 		try {
 			const batch = stream.batch(false);
 			const inTransaction = () => hrana.BatchCond.not(hrana.BatchCond.isAutocommit(batch));
 			const begin = batch.step();
 			const began = settle(begin.run("BEGIN IMMEDIATE"));
-			let last = begin;
+			// The connection may have loaded its schema before another connection's DDL committed. BEGIN takes the
+			// write lock but does not refresh that schema; read it after the lock, while no other DDL can change it.
+			const refresh = batch.step().condition(hrana.BatchCond.ok(begin));
+			if (version >= 3) refresh.condition(inTransaction());
+			const refreshed = settle(refresh.run(SCHEMA_CHECK));
+			let last = refresh;
 			const ran = batched.map(({ sql, params }) => {
 				const step = batch.step().condition(hrana.BatchCond.ok(last));
 				if (version >= 3) step.condition(inTransaction());
@@ -681,7 +686,7 @@ async function writeBatch(hrana, api, client, batched) {
 			if (version >= 3) commit.condition(inTransaction());
 			const committed = settle(commit.run("COMMIT"));
 			void settle(batch.step().condition(hrana.BatchCond.not(hrana.BatchCond.ok(commit))).run("ROLLBACK"));
-			return { began, ran, committed, executed: batch.execute() };
+			return { began, refreshed, ran, committed, executed: batch.execute() };
 		} finally {
 			stream.closeGracefully();
 		}
@@ -693,6 +698,10 @@ async function writeBatch(hrana, api, client, batched) {
 	}
 	const beginning = await began;
 	if (!beginning.ok) throw mapped(beginning.error);
+	const refresh = await refreshed;
+	if (!refresh.ok) throw mapped(refresh.error);
+	if (refresh.value === undefined)
+		throw new api.LibsqlError("The batch ended before its schema could be refreshed", "TRANSACTION_CLOSED");
 	/** @type {import("@bastani/atomic/storage").SqliteDriverResult[]} */
 	const results = [];
 	for (const [index, outcome] of (await Promise.all(ran)).entries()) {

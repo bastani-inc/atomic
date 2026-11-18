@@ -183,6 +183,17 @@ test("a statement outside a transaction that the server answered schema-changed 
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
 });
 
+test("a write whose schema-change fallback opened with an outdated schema refreshes it under the write lock (#5536)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER PRIMARY KEY)");
+	await database.run("INSERT INTO events VALUES (1), (2)");
+	fake.fail(SCHEMA_CHANGED, { kind: "stale-schema", table: "events" });
+	assert.equal((await database.run("DELETE FROM events WHERE n = 1")).changes, 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 1"), 0);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 2"), 1);
+});
+
 test("a statement in a transaction that the server answered schema-changed is not run again in it, and the transaction writes nothing", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
