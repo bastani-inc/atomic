@@ -152,6 +152,12 @@ export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
  * locally, with the local accepted-delivery cache as its duplicate protection.
  */
 export const LOCAL_RETRY_LOOKUP_BOUND_MS = 300;
+/**
+ * The longest a reservation's acknowledgement waits for the shared database to record it, so a sender on another broker
+ * that learns of the child after the acknowledgement finds it held. The client's reserve request gives up after 5 s; past
+ * this bound the reservation is still written when the database answers.
+ */
+export const RESERVATION_PUBLISH_BOUND_MS = 2_500;
 /** The longest `list` waits for other nodes' sessions; the client's list request gives up after 5 s. */
 const REMOTE_SESSIONS_BOUND_MS = 2_000;
 const MAX_SUPERSEDED_HOPS = 8;
@@ -1296,8 +1302,8 @@ export class MultiNodeRouter {
 		aliases: readonly string[],
 		dormant: boolean,
 		options: ReservationOptions = {},
-	): void {
-		if (this.closed) return;
+	): Promise<void> {
+		if (this.closed) return Promise.resolve();
 		const reservationKey = reservationKeyFor(capability);
 		const owner = this.host.sessions.get(ownerSessionId);
 		const wake = options.wake === true;
@@ -1347,6 +1353,18 @@ export class MultiNodeRouter {
 				...(isReleasedReservationKey(capability) ? {} : { capability }),
 			});
 			await this.wakeWaitingChild(reservationKey);
+		});
+		// #5352: the owner is acknowledged once other brokers can find the reservation, so a sender that learns of the
+		// child afterwards is held rather than told it is not found. A database that does not answer is waited for only
+		// up to `RESERVATION_PUBLISH_BOUND_MS`.
+		const written = this.serials.get(`reservation:${reservationKey}`) ?? Promise.resolve();
+		return new Promise<void>((resolve) => {
+			const bound = setTimeout(resolve, RESERVATION_PUBLISH_BOUND_MS);
+			bound.unref?.();
+			void written.finally(() => {
+				clearTimeout(bound);
+				resolve();
+			});
 		});
 	}
 

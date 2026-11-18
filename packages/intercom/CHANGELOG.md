@@ -7,6 +7,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - With multi-node routing, a reply sent right after the broker that kept its question's only route crashed is refused as retryable again (`route_unavailable`, "try again") when the shared database is slow. Before, a slow lookup skipped that check, so the reply got the final "Pending question route does not authorize this public reply" and was never retried. If the database stops answering during that check, the reply is refused as retryable within 5 s, where before it could wait for good. A reply that no route could authorize is still refused for good ([#4997](https://github.com/bastani-inc/atomic/issues/4997)).
+- Fixed a message to a subagent that was still starting under a supervisor on another machine sometimes failing with `Session not found` instead of waiting for the subagent. With multi-node routing, the broker confirmed the subagent's reservation to its supervisor before other machines' brokers could see it, so a session that sent to the subagent right away, on another machine, found nothing to wait for. The broker now confirms the reservation, and that of a released subagent, once other machines can find it, waiting at most 2.5 s for a shared database that does not answer ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
 
 ## [0.9.89-alpha.1] - 2026-11-18
 
