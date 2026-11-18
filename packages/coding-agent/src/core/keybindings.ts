@@ -46,6 +46,10 @@ const APP_KEYBINDINGS = {
 	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
 	"app.tasks.open": { defaultKeys: [], description: "Open task list" },
 	"app.tasks.input": { defaultKeys: [], description: "Input to selected task" },
+	"app.tasks.openWaited": {
+		defaultKeys: "alt+w",
+		description: "Open the output of the shell a waiting subagent waits on",
+	},
 	"app.nav.back": { defaultKeys: "left", description: "Go back one level from an empty prompt" },
 	"app.list.open": { defaultKeys: ["enter", "right"], description: "Open the selected item" },
 	"app.list.stop": {
