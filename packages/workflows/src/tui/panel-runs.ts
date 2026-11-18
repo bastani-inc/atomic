@@ -124,8 +124,9 @@ function panelState(status: RunStatus, awaiting: boolean, live: boolean): AgentP
 
 /**
  * The identity of a paused or blocked run's latest run (`AgentPanelItem.runGeneration`): when its current pause or
- * block began. A pause always gets a later time than the resume before it, so a run that is resumed and pauses or
- * blocks again rests under a new identity, however briefly it ran.
+ * block began. A pause gets a later time than the resume before it, and a block a later or equal one (both read the
+ * clock in milliseconds), so a run that is resumed and pauses or blocks again rests under a new identity however
+ * briefly it ran, unless its earlier block, the resume and the new block all fall in one millisecond.
  */
 function restingRunGeneration(run: RunSnapshot): string {
 	return String(run.pausedAt ?? run.blockedAt ?? run.endedAt ?? run.startedAt);
@@ -406,10 +407,7 @@ export function panelItemsFromSnapshot(
 		const graph = isLeaf ? undefined : expand(run.id);
 		const stages = graph?.stages ?? run.stages;
 		const settled = index?.settled ?? settledStageCount(stages);
-		const effective = effectiveRunStatus(run);
-		// A live run blocked on a failed stage keeps `running` with `blockedAt` set when its failure is not one the
-		// effective status reads as blocked, such as a stage whose session store stayed unreachable when it woke.
-		const status = effective === "running" && run.blockedAt !== undefined ? "blocked" : effective;
+		const status = effectiveRunStatus(run);
 		const quit = run.exitReason === "quit" || run.quitAt !== undefined;
 		const live = !quit && (run.endedAt === undefined || run.resumable === true || run.blockedAt !== undefined);
 		const state = quit ? "stopped" : panelState(status, indicator(run) === "awaiting_input", live);
