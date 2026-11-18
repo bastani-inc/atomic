@@ -144,8 +144,11 @@ export async function openSqlKnownSessionStore({
 		},
 		async bind(intercomSessionId, returnAddress, retentionMs): Promise<KnownSessionBindResult> {
 			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
+			const diagStart = Date.now();
+			let diagEntered = 0;
 			const bound = await database.transaction(
 				async (tx) => {
+					diagEntered = Date.now();
 					await tx.run(
 						`DELETE FROM ${bindings} WHERE intercom_session_id = ? AND ${nowMs} - recorded_at > ?`,
 						intercomSessionId,
@@ -175,6 +178,10 @@ export async function openSqlKnownSessionStore({
 				},
 				{ concurrency: { kind: "serial", domain: bindings } },
 			);
+			if (process.env.DIAG_ROUTER_TRACE)
+				try {
+					(await import("node:fs")).appendFileSync(process.env.DIAG_ROUTER_TRACE, `${new Date().toISOString()} pid=${process.pid} bind-tx ${intercomSessionId} wait=${diagEntered - diagStart} total=${Date.now() - diagStart}\n`);
+				} catch {}
 			if (bound === undefined || bound.return_address === returnAddress) return { status: "bound" };
 			return { status: "refused", returnAddress: bound.return_address };
 		},

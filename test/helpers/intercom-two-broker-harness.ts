@@ -1,10 +1,30 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync as diagAppend,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { vi } from "vitest";
+
+function hdiag(...parts: unknown[]): void {
+	const file = process.env.DIAG_ROUTER_TRACE;
+	if (!file) return;
+	try {
+		diagAppend(
+			file,
+			`${new Date().toISOString()} HARNESS ${process.pid} ${parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" ")}\n`,
+		);
+	} catch {}
+}
+
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { defaultSharedStoragePath } from "../../packages/coding-agent/src/core/storage/file-identity.js";
@@ -381,10 +401,21 @@ export class TwoBrokerHarness {
 
 	/** `env`: added to this start's broker environment only, as a crash point (`ATOMIC_INTERCOM_BROKER_CRASH_AT`). */
 	async startBroker(node: BrokerNode, env: Readonly<Record<string, string>> = {}): Promise<void> {
+		hdiag(
+			"startBroker",
+			node,
+			(globalThis as { __vitest_worker__?: { current?: { name?: string } } }).__vitest_worker__?.current?.name,
+		);
 		const state = this.node(node);
 		const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
 			env: { ...process.env, ...this.brokerEnv, ...env, ATOMIC_CODING_AGENT_DIR: state.fixture.agentDir },
-			stdio: "ignore",
+			stdio: process.env.DIAG_BROKER_LOG_DIR
+				? [
+						"ignore",
+						"ignore",
+						openSync(join(process.env.DIAG_BROKER_LOG_DIR, `${process.pid}-${node}-${Date.now()}.log`), "a"),
+					]
+				: "ignore",
 		});
 		state.broker = broker;
 		state.fixture.trackBroker(broker);
@@ -495,6 +526,7 @@ export class TwoBrokerHarness {
 		const broker = this.node(node).broker;
 		if (!broker || broker.exitCode !== null || broker.signalCode !== null) return;
 		const closed = new Promise<void>((resolveClosed) => broker.once("close", () => resolveClosed()));
+		hdiag("stopBroker", node, signal, broker.pid);
 		broker.kill(signal);
 		await closed;
 		await vi.waitFor(
@@ -551,6 +583,7 @@ export class TwoBrokerHarness {
 			options.supervisor,
 			options.supervisorOwnerToken,
 		);
+		hdiag("connected", node, name, client.sessionId, "preferred", options.preferredSessionId);
 		return attached;
 	}
 

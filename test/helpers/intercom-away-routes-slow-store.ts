@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, vi } from "vitest";
 import {
@@ -38,7 +42,14 @@ export function useSlowStoreBrokers(): void {
 		harness = await TwoBrokerHarness.start(HARNESS_OPTIONS);
 	}, REAL_BROKERS_HOOK_TIMEOUT_MS);
 	afterAll(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
-	beforeEach(() => harness.ensureBrokersRunning(), REAL_BROKERS_HOOK_TIMEOUT_MS);
+	beforeEach((ctx) => {
+		if (process.env.DIAG_ROUTER_TRACE)
+			require("node:fs").appendFileSync(
+				process.env.DIAG_ROUTER_TRACE,
+				`${new Date().toISOString()} TEST ${process.pid} ${ctx.task.name}\n`,
+			);
+		return harness.ensureBrokersRunning();
+	}, REAL_BROKERS_HOOK_TIMEOUT_MS);
 }
 
 export const unique = (label: string): string => `${label}-${randomUUID().slice(0, 8)}`;
