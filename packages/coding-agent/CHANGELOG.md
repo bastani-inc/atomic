@@ -61,6 +61,7 @@
 - `ChatTranscriptComponent` accepts a cache key made of parts, compared one by one, as well as a string, so a host can name what an entry renders from without building a string for every entry on every frame.
 - Workflow graphs open run details with `o`, including outputs, artifacts, events, nested blockers and logs. Broken workflow definitions appear beside runs in `/workflows`, with actionable error details and `/reload` guidance ([#5255](https://github.com/bastani-inc/atomic/pull/5255))
 - `SessionInfo` and `ctx.ui.hostSessionPicker()` rows accept optional `title`, `detail` and `canDelete` fields (`SessionInfo` also accepts `resumeKind: "workflow"` for workflow-run rows), and the picker request accepts `title` for the heading and `variant: "runs"` for rows that are not sessions, which leaves the folder scope, named-only filter and path keys out. See [Host-native session picker](docs/tui/reference.md#host-native-session-picker) ([#5256](https://github.com/bastani-inc/atomic/pull/5256))
+- `ToolBlockMarkdown` takes an optional default text style, such as a color, for the plain text it renders
 
 ### Changed
 
@@ -180,6 +181,7 @@
 - A folder scan that completes after a session was deleted no longer brings the deleted session back into `/resume` ([#5256](https://github.com/bastani-inc/atomic/pull/5256))
 - Another SQLite connection in the same process no longer fails with "database is locked" when it writes while a transaction that waited for the write lock behind another process takes it. That transaction used to hold the lock while it removed its queue entry, and the other connection's wait for the lock blocked the process, so neither could finish.
 - Closing a session no longer waits forever for a session save that never settles, such as one to a storage backend that stopped responding. Disposal waits up to 60 seconds for cancelled work, then closes the session without it and rejects with `ShutdownFailed`, naming how many operations were still running.
+- A finished agent's result preview in chat renders its Markdown the way the chat does instead of showing the raw first line: bold, italic, code, headings, lists and links are styled in the muted preview tone, so markers such as `**`, backticks and `#` no longer appear around them. HTML blocks stay literal, as they do in the chat. The collapsed first line is cut to the width with `…`, and `NO_COLOR` shows plain text
 
 ### Removed
 
