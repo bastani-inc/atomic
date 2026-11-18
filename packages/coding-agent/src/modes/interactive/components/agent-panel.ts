@@ -376,15 +376,7 @@ export function renderAgentPanelRows(
 	options: AgentPanelRenderOptions = {},
 ): string[] {
 	if (rows.length === 0) return [];
-	const focused = options.selectedId !== undefined;
-	const preSliced = options.hiddenAbove !== undefined || options.hiddenBelow !== undefined;
-	const start = focused && !preSliced ? Math.max(0, options.scroll ?? 0) : 0;
-	const visible = focused ? rows.slice(start, start + AGENT_PANEL_FOCUSED_ROWS) : rows;
-	const shown = focused
-		? visible
-		: visible.length <= AGENT_PANEL_IDLE_ROWS
-			? visible
-			: visible.slice(0, AGENT_PANEL_IDLE_ROWS);
+	const { shown, showMain, hiddenAbove, hiddenBelow } = panelWindow(rows, options);
 	const count = shown.length;
 	const names = new Array<string>(count);
 	const nameWidths = new Array<number>(count);
@@ -439,11 +431,10 @@ export function renderAgentPanelRows(
 		const full = `${cursor}${glyphText} ${nameText}  ${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
 		lines.push(clampLine(full, width));
 	};
-	if (options.showMain ?? focused) {
+	if (showMain) {
 		const selected = options.selectedId === AGENT_PANEL_MAIN_ID;
 		line(AGENT_PANEL_MAIN_ID, selected ? style.accent("●") : style.text("●"), "main", 4, "", "", false);
 	}
-	const hiddenAbove = options.hiddenAbove ?? (focused ? Math.min(start, rows.length) : 0);
 	if (hiddenAbove > 0) lines.push(style.dim(truncateToWidth(`  ↑ ${hiddenAbove} more`, width)));
 	for (let i = 0; i < count; i++) {
 		const raw = shown[i]!;
@@ -462,10 +453,60 @@ export function renderAgentPanelRows(
 			queued,
 		);
 	}
-	const hiddenBelow =
-		options.hiddenBelow ?? (focused ? Math.max(0, rows.length - (start + shown.length)) : rows.length - shown.length);
 	if (hiddenBelow > 0) lines.push(style.dim(truncateToWidth(`  +${hiddenBelow} more`, width)));
 	return lines;
+}
+
+/** Which rows `renderAgentPanelRows` draws for `options`, and the lines it adds around them. */
+function panelWindow(
+	rows: readonly AgentPanelRow[],
+	options: AgentPanelRenderOptions,
+): {
+	readonly shown: readonly AgentPanelRow[];
+	readonly showMain: boolean;
+	readonly hiddenAbove: number;
+	readonly hiddenBelow: number;
+} {
+	const focused = options.selectedId !== undefined;
+	const preSliced = options.hiddenAbove !== undefined || options.hiddenBelow !== undefined;
+	const start = focused && !preSliced ? Math.max(0, options.scroll ?? 0) : 0;
+	const visible = focused ? rows.slice(start, start + AGENT_PANEL_FOCUSED_ROWS) : rows;
+	const shown = focused
+		? visible
+		: visible.length <= AGENT_PANEL_IDLE_ROWS
+			? visible
+			: visible.slice(0, AGENT_PANEL_IDLE_ROWS);
+	return {
+		shown,
+		showMain: options.showMain ?? focused,
+		hiddenAbove: options.hiddenAbove ?? (focused ? Math.min(start, rows.length) : 0),
+		hiddenBelow:
+			options.hiddenBelow ??
+			(focused ? Math.max(0, rows.length - (start + shown.length)) : rows.length - shown.length),
+	};
+}
+
+/**
+ * The id of the row `renderAgentPanelRows(rows, width, style, options)` draws on line `line`: `AGENT_PANEL_MAIN_ID` for
+ * the main row, a row's id, or undefined for the `↑ N more` and `+N more` lines and past the last line.
+ */
+export function agentPanelRowIdAtLine(
+	rows: readonly AgentPanelRow[],
+	options: AgentPanelRenderOptions,
+	line: number,
+): string | undefined {
+	if (rows.length === 0 || line < 0) return undefined;
+	const { shown, showMain, hiddenAbove } = panelWindow(rows, options);
+	let at = line;
+	if (showMain) {
+		if (at === 0) return AGENT_PANEL_MAIN_ID;
+		at -= 1;
+	}
+	if (hiddenAbove > 0) {
+		if (at === 0) return undefined;
+		at -= 1;
+	}
+	return shown[at]?.id;
 }
 
 export interface AgentPanelActions {
@@ -578,6 +619,21 @@ export class AgentPanelFocus {
 			if (mainWasShown) this.selectionMovedUnseen = true;
 		}
 		this.keepInView();
+	}
+	/** A click on a row opens it, as Enter on it does; a click on the main row returns to the prompt. */
+	click(id: string): void {
+		this.stopConfirm.reset();
+		this.finishedWhileArmed = undefined;
+		this.selectionMovedUnseen = false;
+		if (id === AGENT_PANEL_MAIN_ID) {
+			this.actions.close();
+			return;
+		}
+		const row = this.rows.find((candidate) => candidate.id === id);
+		if (row === undefined) return;
+		this.selectedId = id;
+		this.keepInView();
+		this.actions.open(row);
 	}
 	enter(selectId?: string): void {
 		this.selectedId = this.rows.some((row) => row.id === selectId)

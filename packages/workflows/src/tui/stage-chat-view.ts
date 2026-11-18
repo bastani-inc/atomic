@@ -18,7 +18,7 @@
  *  - packages/coding-agent/docs/tui.md (the @bastani/atomic-tui component contract)
  */
 
-import type { Component, Focusable } from "@bastani/atomic-tui";
+import type { Component, Focusable, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
 	renderBlockedBody,
@@ -109,22 +109,43 @@ export class StageChatView implements Component, Focusable {
 	private _unsubscribeFooterData!: StageChatViewContext["_unsubscribeFooterData"];
 	private _unregisterStageUiHost!: StageChatViewContext["_unregisterStageUiHost"];
 
+	/** The frame rows the stage's transcript took in the last render, while the plain chat was drawn. */
+	private transcriptRows: { readonly top: number; readonly rows: number } | undefined;
+
 	constructor(opts: StageChatViewOpts) {
 		initializeStageChatView(this._ctx(), opts);
 	}
 
+	/** A single click on a block header in the stage's transcript expands or collapses that block. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const region = this.transcriptRows;
+		if (region === undefined || event.y < region.top || event.y >= region.top + region.rows) return undefined;
+		// While a dialog the stage opened, its question or the key help owns input, a click on the transcript does nothing.
+		if (this.mountedCustomUi !== null || promptCardShown(this._ctx()) || this.helpOpen) return undefined;
+		if (!this.chatHost.handleBodyClick({ ...event, y: event.y - region.top })) return undefined;
+		this.requestRender?.();
+		return { handled: true };
+	}
+
+	/** What the last frame drew on `row` of the transcript: the entry there and the row within it. */
+	paintedRowKey(row: number): string | undefined {
+		const region = this.transcriptRows;
+		if (region === undefined || row < region.top || row >= region.top + region.rows) return undefined;
+		return this.chatHost.bodyRowKey(row - region.top);
+	}
+
 	render(width: number): string[] {
 		const ctx = this._ctx();
+		this.transcriptRows = undefined;
 		if (this.chatHost.hasTaskInspector) {
 			const taskWidth = Math.max(1, width);
 			const rows = viewLineCount(ctx);
 			const footer = this.chatHost.taskInspectorFullscreen ? [] : this.chatHost.renderFooter(taskWidth);
 			const visibleFooter = footer.slice(0, Math.max(0, rows - 1));
-			return fitStageChatFrame(
-				[...this.chatHost.renderBody(taskWidth, rows - visibleFooter.length), ...visibleFooter],
-				rows,
-				blankLine(taskWidth),
-			);
+			const body = this.chatHost.renderBody(taskWidth, rows - visibleFooter.length);
+			// The chat's body, with the task list or a task's transcript it shows, starts at the top row.
+			this.transcriptRows = { top: 0, rows: body.length };
+			return fitStageChatFrame([...body, ...visibleFooter], rows, blankLine(taskWidth));
 		}
 		const w = Math.max(40, width);
 		const stage = currentStage(ctx);
@@ -200,7 +221,13 @@ export class StageChatView implements Component, Focusable {
 		if (blocked) this.chatHost.scrollToBottom();
 
 		let bodyLines: string[];
-		const renderTranscript = (rows: number): string[] => this.chatHost.renderBody(w, rows);
+		// Every body that shows the transcript draws it from the body's first row; this records how many rows it took.
+		let transcriptLines: number | undefined;
+		const renderTranscript = (rows: number): string[] => {
+			const lines = this.chatHost.renderBody(w, rows);
+			transcriptLines = lines.length;
+			return lines;
+		};
 		const waitingNotice = pooledStageWaitingNotice(ctx, stage);
 		if (bodyBudget <= 0) {
 			bodyLines = [];
@@ -217,6 +244,12 @@ export class StageChatView implements Component, Focusable {
 		} else {
 			bodyLines = renderTranscript(bodyBudget);
 		}
+		if (transcriptLines !== undefined) {
+			this.transcriptRows = {
+				top: headerLines.length + sepLines.length,
+				rows: Math.min(transcriptLines, bodyBudget),
+			};
+		}
 		const visibleBodyLines = bodyLines.slice(0, bodyBudget);
 		const lines = [
 			...headerLines,
@@ -228,6 +261,8 @@ export class StageChatView implements Component, Focusable {
 			...visibleEditorLines,
 			...visibleFooterLines,
 		];
+		// A frame taller than the view loses rows from its top, and the transcript rows with them.
+		if (lines.length > totalRows) this.transcriptRows = undefined;
 		return fitStageChatFrame(lines, totalRows, blankLine(w));
 	}
 

@@ -35,7 +35,7 @@ import { assertSessionCwdExists, findMissingSessionCwdIssueAsync, MissingSession
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
 	abortSessionWork,
-	drainSessionWork,
+	drainSessionWorkWithin,
 	hasCallingSessionWork,
 	ownedSessionManagerStores,
 	ownedSessionStores,
@@ -965,7 +965,11 @@ export class AgentSessionRuntime {
 		void current.catch(() => {});
 		this.closing = (async () => {
 			await drainWindowsDirectorySecurityReads(sessionLifetime(this));
-			await drainSessionWork(this);
+			try {
+				await drainSessionWorkWithin(this);
+			} catch (error) {
+				this.cleanupFailures.push(error);
+			}
 			for (const candidate of this.candidates) {
 				try {
 					await (candidate as unknown as AgentSessionInternalSurface)._close(this.quitEvent());

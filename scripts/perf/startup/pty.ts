@@ -35,8 +35,11 @@ export interface PtyProcess {
 }
 
 export interface StartPtyOptions {
-	/** A shell command line: run by `cmd /d /s /c` on Windows and `/bin/sh -c` elsewhere. */
-	readonly command: string;
+	/**
+	 * A shell command line, run by `cmd /d /s /c` on Windows and `/bin/sh -c` elsewhere; or a program and its
+	 * arguments, started without a shell and each argument passed as given, whatever spaces or quotes it holds.
+	 */
+	readonly command: string | readonly [program: string, first: string, ...rest: string[]];
 	readonly cwd: string;
 	readonly env: Record<string, string>;
 	readonly timeoutMs: number;
@@ -56,17 +59,30 @@ export function startPty(options: StartPtyOptions): PtyProcess {
 	if (typeof loaded.PtySession !== "function") throw new Error("@bastani/atomic-natives does not export PtySession");
 	const session = new loaded.PtySession();
 	const windows = process.platform === "win32";
+	// The native PTY runs `shell` with `shellArgs`, then `command` as one more argument.
+	const launch =
+		typeof options.command === "string"
+			? {
+					shell: windows ? (process.env.ComSpec ?? "cmd.exe") : "/bin/sh",
+					shellArgs: windows ? ["/d", "/s", "/c"] : ["-c"],
+					command: options.command,
+				}
+			: {
+					shell: options.command[0],
+					shellArgs: options.command.slice(1, -1),
+					command: options.command[options.command.length - 1]!,
+				};
 	const exited = session
 		.start(
 			{
-				command: options.command,
+				command: launch.command,
 				cwd: options.cwd,
 				env: options.env,
 				timeoutMs: options.timeoutMs,
 				cols: options.cols,
 				rows: options.rows,
-				shell: windows ? (process.env.ComSpec ?? "cmd.exe") : "/bin/sh",
-				shellArgs: windows ? ["/d", "/s", "/c"] : ["-c"],
+				shell: launch.shell,
+				shellArgs: launch.shellArgs,
 				commandTransport: "argv",
 				closeStdinAfterCommand: false,
 			},

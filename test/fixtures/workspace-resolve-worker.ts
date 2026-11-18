@@ -4,10 +4,14 @@
  *
  *   bind <repo> <branch>           resolve the workspace
  *   restore <binding.json>         restore a recorded binding
- *   hold-lock <git common dir>     take the repository lock, print "locked", and hold it until killed
+ *   hold-lock <git common dir>     take the repository lock, print "locked" once its write-lock record says so, and
+ *                                  hold it until killed
  *   wait-lock <git common dir> <ms> wait at most <ms> for the repository lock, print "locked" if it was taken
  */
 import { readFileSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { resolveWorkspace, restoreWorkspace, workspace } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import { withRepositoryLock } from "../../packages/coding-agent/src/core/workspace/lease.ts";
 
@@ -25,6 +29,15 @@ try {
 		await withRepositoryLock(first, async () => process.stdout.write(`${JSON.stringify({ outcome: "locked" })}\n`), Number(second));
 	} else if (mode === "hold-lock" && first !== undefined) {
 		await withRepositoryLock(first, async () => {
+			// The record is written in the background as the lock is taken; a waiter names this process from it.
+			const holders = join(first, "atomic-repository-lock.sqlite-holders");
+			const recorded = async () => {
+				for (const name of await readdir(holders))
+					if (name.startsWith(`${process.pid}-`) && (await readFile(join(holders, name), "utf8")).startsWith("held "))
+						return true;
+				return false;
+			};
+			while (!(await recorded())) await sleep(1);
 			process.stdout.write(`${JSON.stringify({ outcome: "locked" })}\n`);
 			await new Promise(() => {});
 		});

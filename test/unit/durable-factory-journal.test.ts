@@ -52,26 +52,37 @@ test("shared journal initialization releases its exit listener on explicit close
 	const directory = mkdtempSync(join(tmpdir(), "journal-factory-lifecycle-"));
 	directories.push(directory);
 	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
-	const listenersBefore = process.listenerCount("exit");
-	const [first, shared] = await Promise.all([initializeDurableBackend(), initializeDurableBackend()]);
-	assert.ok(first instanceof JournalDurableBackend);
-	assert.equal(shared, first);
-	assert.equal(first.persistent, true);
-	assert.equal(process.listenerCount("exit"), listenersBefore + 1);
-	await first.close();
-	assert.equal(process.listenerCount("exit"), listenersBefore);
-	setDurableBackend(undefined);
-	const reopened = await initializeDurableBackend();
-	assert.ok(reopened instanceof JournalDurableBackend);
-	await reopened.commitWorkflowRegistration({
-		workflowId: "reset",
-		name: "reset",
-		inputs: {},
-		status: "paused",
-		createdAt: 1,
-	});
-	setDurableBackend(undefined);
-	assert.equal(process.listenerCount("exit"), listenersBefore);
+	// Only the journal's own listener is counted: other modules may add or remove exit listeners meanwhile.
+	const journalExitListeners = () =>
+		process.listeners("exit").filter((listener) => listener.name === "runProcessExitCleanups").length;
+	const unrelated = () => {};
+	process.once("exit", unrelated);
+	try {
+		assert.equal(journalExitListeners(), 0);
+		const [first, shared] = await Promise.all([initializeDurableBackend(), initializeDurableBackend()]);
+		assert.ok(first instanceof JournalDurableBackend);
+		assert.equal(shared, first);
+		assert.equal(first.persistent, true);
+		assert.equal(journalExitListeners(), 1);
+		process.off("exit", unrelated);
+		await first.close();
+		assert.equal(journalExitListeners(), 0);
+		setDurableBackend(undefined);
+		const reopened = await initializeDurableBackend();
+		assert.ok(reopened instanceof JournalDurableBackend);
+		assert.equal(journalExitListeners(), 1);
+		await reopened.commitWorkflowRegistration({
+			workflowId: "reset",
+			name: "reset",
+			inputs: {},
+			status: "paused",
+			createdAt: 1,
+		});
+		setDurableBackend(undefined);
+		assert.equal(journalExitListeners(), 0);
+	} finally {
+		process.off("exit", unrelated);
+	}
 	const observer = await JournalDurableBackend.open(await openSqlRunJournal(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH));
 	try {
 		assert.equal(await observer.workflowOwnership("reset"), "available");
