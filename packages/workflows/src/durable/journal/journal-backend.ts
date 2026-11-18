@@ -1727,8 +1727,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	 * Notes a checkpoint the run recorded through another journal that this backend's journal does not hold yet: a pooled
 	 * worker's checkpoint its host accepted and will ship to the root's journal (#4768). Reads find it from now on, as if
 	 * it were folded after every event the journal holds now: an earlier event a catch-up folds meanwhile, even between
-	 * the turns of one fold, does not replace it (#5480). Its own event, once shipped and folded, is the same checkpoint:
-	 * the run reads as the journal does from then on, and counts it once.
+	 * the turns of one fold, does not replace it (#5480). Once its own event is folded, the journal's stored payload
+	 * replaces the local one; the run reads as the journal does and counts it once.
 	 */
 	noteRecordedCheckpoint(checkpoint: DurableCheckpoint): void {
 		validateCheckpointInvocationFingerprint(checkpoint);
@@ -1750,16 +1750,20 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		await this.serialize(runId, () => this.narrow(runId, selection), false);
 	}
 	private *narrow(runId: string, selection: CheckpointSelection): Operation<void> {
-		this.checkpointSelections.set(runId, selection);
-		this.projection.releaseCheckpoints(runId);
 		const folded = this.sequences.get(runId) ?? 0;
-		if (folded === 0 || (selection.ids.length === 0 && selection.prefixes.length === 0)) return;
-		// Events after `folded` are not read here: the next catch-up folds them under the new selection.
-		for (const entry of yield* this.selectedCheckpoints(runId, selection, folded)) {
+		// Keep the old selection live during the read: a late receipt for an already folded event is not a new note.
+		const entries =
+			folded > 0 && (selection.ids.length > 0 || selection.prefixes.length > 0)
+				? yield* this.selectedCheckpoints(runId, selection, folded)
+				: [];
+		this.checkpointSelections.set(runId, selection);
+		const pending = this.projection.releaseCheckpoints(runId);
+		for (const entry of entries) {
 			const checkpoint = (entry.event as BackendEventOf<typeof E.checkpointRecorded, DurableCheckpoint>).payload;
 			validateCheckpointInvocationFingerprint(checkpoint);
 			this.projection.restoreCheckpoint(checkpoint);
 		}
+		for (const note of pending) if (selectsCheckpoint(selection, note)) this.projection.noteCheckpoint(note);
 	}
 	/**
 	 * Keeps in memory only the checkpoints `runId` recorded itself, from now on and for as long as this backend owns the

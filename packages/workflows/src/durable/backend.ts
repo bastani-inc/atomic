@@ -953,11 +953,13 @@ class JournalProjection {
 		if (!rec) return;
 		const key = checkpointKey(recorded);
 		// The event of a noted checkpoint: the run holds it and counts it already, and from here on the journal orders it.
-		const shipped = rec.noted?.delete(key) === true ? rec.checkpoints.get(key) : undefined;
+		const shipped = rec.noted?.delete(key) === true ? normalizedCheckpoint(recorded) : undefined;
 		if (shipped !== undefined) {
+			// Use the journal's payload: a snapshot whose blobs were collected before shipping is no longer in it.
 			rec.checkpoints.delete(key);
 			rec.checkpoints.set(key, shipped);
 			rec.sortedCheckpoints = undefined;
+			rec.nestedSnapshotVersion.record(shipped);
 			this.indexLookups(rec, shipped, false);
 		}
 		const checkpoint = shipped ?? this.index(rec, recorded);
@@ -1007,13 +1009,15 @@ class JournalProjection {
 	}
 
 	/**
-	 * Drops every checkpoint of a run from memory; they stay counted, and `restoreCheckpoint` brings one back. A noted
-	 * checkpoint (`noteCheckpoint`) is counted once its event is recorded or counted instead.
+	 * Drops the held checkpoints so `restoreCheckpoint` can restore the selected journal prefix. Pending receipts
+	 * have no journal entry to restore: return them in order so the caller can keep those still selected.
 	 */
-	releaseCheckpoints(workflowId: string): void {
+	releaseCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
 		const rec = this.workflows.get(workflowId);
-		if (!rec) return;
-		rec.released += rec.checkpoints.size - (rec.noted?.size ?? 0);
+		if (!rec) return [];
+		const pending = Array.from(rec.noted ?? [], (key) => rec.checkpoints.get(key)!);
+		rec.released += rec.checkpoints.size - pending.length;
+		if (pending.length) rec.handle = { ...rec.handle, completedCheckpoints: rec.released };
 		rec.noted = undefined;
 		rec.checkpoints.clear();
 		rec.sortedCheckpoints = undefined;
@@ -1022,6 +1026,7 @@ class JournalProjection {
 		rec.stageOutputByReplayKey.clear();
 		rec.stageSessionByReplayKey.clear();
 		rec.nestedSnapshotVersion = new NestedSnapshotVersion(workflowId);
+		return pending;
 	}
 
 	/**
@@ -1035,6 +1040,7 @@ class JournalProjection {
 	forgetCheckpoints(workflowId: string, keys: readonly string[]): void {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return;
+		const pendingBefore = rec.noted?.size;
 		for (const key of keys) {
 			const checkpoint = rec.checkpoints.get(key);
 			if (checkpoint === undefined) continue;
@@ -1048,6 +1054,8 @@ class JournalProjection {
 				rec.stageSessionByReplayKey.delete(checkpoint.replayKey);
 			}
 		}
+		if (rec.noted?.size !== pendingBefore)
+			rec.handle = { ...rec.handle, completedCheckpoints: rec.checkpoints.size + rec.released };
 	}
 
 	/**
@@ -1148,19 +1156,26 @@ class JournalProjection {
 		};
 	}
 
+	/** The folded prefix followed by pending local receipts, including when both finished in the same millisecond. */
+	private inRecordOrder(rec: JournalWorkflowRecord): DurableCheckpoint[] {
+		if (!rec.noted?.size) return [...rec.checkpoints.values()];
+		const ordered: DurableCheckpoint[] = [];
+		for (const [key, checkpoint] of rec.checkpoints) if (!rec.noted.has(key)) ordered.push(checkpoint);
+		for (const key of rec.noted) ordered.push(rec.checkpoints.get(key)!);
+		return ordered;
+	}
+
 	recordedCheckpoints(workflowId: string): readonly DurableCheckpoint[] | undefined {
 		const rec = this.workflows.get(workflowId);
 		if (rec === undefined || rec.released > 0) return undefined;
-		return [...rec.checkpoints.values()];
+		return this.inRecordOrder(rec);
 	}
 
 	listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return [];
 		if (rec.sortedCheckpoints === undefined) {
-			rec.sortedCheckpoints = Object.freeze(
-				[...rec.checkpoints.values()].sort((a, b) => a.completedAt - b.completedAt),
-			);
+			rec.sortedCheckpoints = Object.freeze(this.inRecordOrder(rec).sort((a, b) => a.completedAt - b.completedAt));
 		}
 		return rec.sortedCheckpoints;
 	}

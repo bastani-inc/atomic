@@ -11,6 +11,7 @@ import { afterEach, beforeEach, test } from "vitest";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type { JournalEntry } from "../../packages/workflows/src/durable/journal/types.js";
+import { latestStageSessionCheckpoints } from "../../packages/workflows/src/durable/stage-primitive.js";
 import type {
 	DurableStageCheckpoint,
 	DurableToolCheckpoint,
@@ -145,6 +146,47 @@ test("a noted tool result keeps its lookup from an earlier one completed at the 
 	await reader.catchUpWorkflow("root");
 	assert.equal(reader.getToolOutput("root", "tie"), writer.getToolOutput("root", "tie"));
 	assert.equal(reader.getToolOutput("root", "skew"), writer.getToolOutput("root", "skew"));
+	assertReadsAsJournal();
+});
+
+test("the worker recovers the latest noted stage session on a completion tie before shipment (#5480)", async () => {
+	const earlier = { ...taskResult("older", 100), sessionId: "s-older" };
+	const noted = { ...taskResult("latest", 100), sessionId: "s-newer" };
+	await writer.commitCheckpoint(earlier);
+	reader.noteRecordedCheckpoint(noted);
+	await reader.catchUpWorkflow("root");
+	assert.equal(reader.getStageSession("root", noted.replayKey)?.sessionId, "s-newer");
+	assert.equal(latestStageSessionCheckpoints(reader, "root").get(noted.replayKey)?.sessionId, "s-newer");
+});
+
+test("a late receipt for a folded result during selection restoration is not counted twice (#5480)", async () => {
+	const own = taskResult("own", 10);
+	await writer.commitCheckpoint(own);
+	await reader.catchUpWorkflow("root");
+	await reader.retainCheckpoints("root", { ids: [], prefixes: [] });
+	let late = false;
+	const read = reader.journal.readKey.bind(reader.journal);
+	reader.journal.readKey = async (...args) => {
+		if (!late) reader.noteRecordedCheckpoint(own);
+		late = true;
+		return read(...args);
+	};
+	await reader.retainCheckpoints("root", { ids: [own.checkpointId], prefixes: CHILD.prefixes });
+	reader.journal.readKey = read;
+	assert.ok(late);
+	await writer.commitCheckpoint(taskResult("next", 11));
+	await reader.catchUpWorkflow("root");
+	assert.equal(reader.getStageOutput("root", own.replayKey), "next");
+	assertReadsAsJournal();
+});
+
+test("a narrowed worker keeps a still-selected local receipt until its event folds (#5480)", async () => {
+	const local = taskResult("unshipped", 15);
+	reader.noteRecordedCheckpoint(local);
+	await reader.retainCheckpoints("root", { ids: [local.checkpointId], prefixes: [] });
+	assert.equal(reader.getStageOutput("root", local.replayKey), local.output);
+	await writer.commitCheckpoint(local);
+	await reader.catchUpWorkflow("root");
 	assertReadsAsJournal();
 });
 

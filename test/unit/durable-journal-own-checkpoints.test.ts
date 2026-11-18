@@ -400,9 +400,11 @@ test("a checkpoint noted under a child its pooled root lets go of is counted onc
 	const backend = await recording.narrowed();
 	const [scope] = scopes(backend.listCheckpoints(ROOT));
 	const noted = ownTool(`${scope}:noted`, 30_000_000);
+	const foldedCount = backend.getWorkflow(ROOT)?.completedCheckpoints;
 	backend.noteRecordedCheckpoint(noted);
 	assert.equal(backend.getToolOutput(ROOT, noted.argsHash), noted.output);
 	backend.releaseCheckpointScope(ROOT, scope!);
+	assert.equal(backend.getWorkflow(ROOT)?.completedCheckpoints, foldedCount);
 	await backend.commitCheckpoint(noted);
 	const full = await recording.full();
 	assert.equal(backend.getWorkflow(ROOT)?.completedCheckpoints, full.getWorkflow(ROOT)?.completedCheckpoints);
