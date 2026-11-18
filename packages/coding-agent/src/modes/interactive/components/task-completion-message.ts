@@ -171,8 +171,9 @@ function legacyStop(title: string, result: unknown): { line: TaskNoticeLine; age
 	const wording = legacyStopWording(title, result);
 	if (wording === undefined) return undefined;
 	const end = title.indexOf(` ${wording}: `);
-	const label =
-		end >= 0 ? title.slice(0, end) : title.endsWith(` ${wording}.`) ? title.slice(0, -wording.length - 2) : undefined;
+	// The writer saved only the first physical line, even when a call ID continued on the next one.
+	const [ending] = ` ${wording}.`.split("\n", 1);
+	const label = end >= 0 ? title.slice(0, end) : title.endsWith(ending) ? title.slice(0, -ending.length) : undefined;
 	if (label !== "Background task" && !label?.startsWith("Subagent ")) return undefined;
 	const waiting = wording.startsWith(RELEASE_WORDING);
 	return {

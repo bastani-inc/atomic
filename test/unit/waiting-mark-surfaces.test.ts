@@ -205,6 +205,13 @@ test("the saved result distinguishes a release from punctuation and release word
 	);
 });
 
+test("a release whose title ended mid-call still shows the whole saved wait on one row (#5563)", () => {
+	const saved = completionNoticeFromDetails(savedNotices.firstLine088Details);
+	assert.ok(saved);
+	const rows = new TaskCompletionMessage(saved, false).render(120).map((row) => stripVTControlCharacters(row).trim());
+	assert.deepEqual(rows, ["◌ worker is waiting on bash (ci step)"]);
+});
+
 test("a released subagent's notice saved by an earlier version shows the waiting mark too (#5489)", () => {
 	const saved = completionNoticeFromDetails({ notification: savedNotices.release089 });
 	assert.ok(saved);
