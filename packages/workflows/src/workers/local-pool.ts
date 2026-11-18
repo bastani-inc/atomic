@@ -1939,62 +1939,77 @@ export class LocalWorkerPool {
 	private async dispose(): Promise<void> {
 		this.closed = true;
 		this.disposal.abort();
+		// A step that throws, such as a watcher's listener, never keeps the steps after it, and the coordinator's close
+		// above all, from running: the first failure is reported once everything is closed.
+		let failure: unknown;
+		const settle = (step: () => void) => {
+			try {
+				step();
+			} catch (error) {
+				failure ??= error;
+			}
+		};
 		for (const { controller } of this.routedQuestions.values())
-			controller.abort(new Error("Local worker pool is closed"));
+			settle(() => controller.abort(new Error("Local worker pool is closed")));
 		this.routedQuestions.clear();
 		this.heldAnswers.clear();
 		this.routedPromptAnswers.clear();
-		this.stopSharingRateLimits?.();
-		this.stopSharingDebugSetting?.();
+		settle(() => this.stopSharingRateLimits?.());
+		settle(() => this.stopSharingDebugSetting?.());
 		clearInterval(this.ticker);
 		this.ticker = undefined;
 		const fleetStopped = this.fleet?.stop();
 		const rootSnapshotReleased = this.releaseRootSnapshot();
-		this.releaseStageSource?.();
+		settle(() => this.releaseStageSource?.());
 		// A pool that failed takes its unfinished children with it: show them failed rather than
 		// running forever (#3996). A graceful quit leaves them resumable.
 		const poolFailure = this.failure;
 		const store = this.store;
 		if (poolFailure !== undefined && store !== undefined)
-			store.batch(() => {
-				for (const run of store.runs())
-					if (
-						run.endedAt === undefined &&
-						run.rootRunId === this.root &&
-						run.id !== this.root &&
-						run.stages.some((stage) => stage.workerExecution !== undefined)
-					)
-						endPooledRun(store, run, poolFailure.message);
-			});
+			settle(() =>
+				store.batch(() => {
+					for (const run of store.runs())
+						if (
+							run.endedAt === undefined &&
+							run.rootRunId === this.root &&
+							run.id !== this.root &&
+							run.stages.some((stage) => stage.workerExecution !== undefined)
+						)
+							endPooledRun(store, run, poolFailure.message);
+				}),
+			);
 		void this.registrations?.then((registrations) => registrations.clear());
 		const watches = [...this.stageWatches.values()];
 		this.stageWatches.clear();
-		for (const listener of watches) listener({ kind: "ended", reason: "pool_closed" });
+		for (const listener of watches) settle(() => listener({ kind: "ended", reason: "pool_closed" }));
 		// Views between attempts have no open watch to end; tell them the pool is gone.
-		for (const view of this.stageViews.values()) view.handle?.receive({ kind: "ended", reason: "pool_closed" });
+		for (const view of this.stageViews.values())
+			settle(() => view.handle?.receive({ kind: "ended", reason: "pool_closed" }));
 		this.reconnectingViews.clear();
 		this.outboxes.clear();
 		if (this.options.rootId === undefined) workflowResourceAdmission.delete(this.backend);
-		this.signalChange();
-		let failure: unknown;
+		settle(() => this.signalChange());
 		const coordinator = this.coordinator;
 		if (coordinator !== undefined) {
+			let closeFailure: unknown;
 			// A coordinator that is already gone has nothing left to close; its loss is the pool's failure.
 			if (this.coordinatorLost === undefined) {
 				try {
 					await this.command({ kind: "close" });
 				} catch (error) {
-					failure = error;
+					closeFailure = error;
+					failure ??= error;
 				}
 			}
 			// The coordinator's log goes with a pool that closed cleanly; a lost or failed one keeps it for diagnosis.
-			const cleanClose = failure === undefined && this.coordinatorLost === undefined && poolFailure === undefined;
+			const cleanClose =
+				closeFailure === undefined && this.coordinatorLost === undefined && poolFailure === undefined;
 			await this.inbound;
 			await coordinator.port.close();
 			this.pids.clear();
 			if (cleanClose)
 				await coordinator.removeLog?.().catch((error: unknown) => {
-					failure = error;
+					failure ??= error;
 				});
 		}
 		// The root's store outlives this pool; a claim left behind would keep the closed pool reachable.

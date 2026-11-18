@@ -10,6 +10,7 @@ pub mod process_start;
 pub mod pty;
 #[cfg(target_os = "linux")]
 pub(crate) mod spawn;
+pub mod stdin_input;
 pub mod subagent_control;
 pub mod task;
 pub mod task_supervisor;

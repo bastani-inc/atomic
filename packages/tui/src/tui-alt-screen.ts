@@ -118,10 +118,105 @@ type SelectionGranularity = "character" | "word" | "line";
 interface ClickTarget {
 	timestamp: number;
 	count: number;
+	/** The screen row, so clicks count alike whether or not an overlay changed how the press was located. */
 	row: number;
-	scrollView?: ScrollView;
+	/** The screen columns of the word under the click, or of the clicked cell when no word is there. */
 	wordStart: number;
 	wordEnd: number;
+	/** The screen column of the click. */
+	col: number;
+	/**
+	 * What was drawn under the click: a click on another item drawn there since counts from one again. A click a
+	 * component acted on, such as one that expanded a block, takes what the next paint draws there instead.
+	 */
+	drawn: readonly unknown[];
+	/** Whether a component acted on the click, so the next paint shows what the click itself drew. */
+	awaitingPaint: boolean;
+}
+
+/** What the screen showed at a pointer position: the painted row and the components drawn there. */
+interface PointerFrame {
+	readonly line: string | undefined;
+	readonly boxes: readonly { readonly component: Component; readonly x: number; readonly y: number }[];
+	/** The overlay drawn at the pointer and the rectangle it was drawn in, or undefined. */
+	readonly overlay:
+		| {
+				readonly component: Component;
+				readonly row: number;
+				readonly col: number;
+				readonly width: number;
+				readonly height: number;
+		  }
+		| undefined;
+	readonly decorated: boolean;
+	/** The components drawn at the pointer, outermost first, then what the innermost reports for its row. */
+	readonly drawn: readonly unknown[];
+}
+
+/** Whether the same components are drawn at the pointer in the same places: the frame's geometry there. */
+function samePointerGeometry(a: PointerFrame | undefined, b: PointerFrame): boolean {
+	return (
+		a !== undefined &&
+		a.overlay?.component === b.overlay?.component &&
+		a.overlay?.row === b.overlay?.row &&
+		a.overlay?.col === b.overlay?.col &&
+		a.overlay?.width === b.overlay?.width &&
+		a.overlay?.height === b.overlay?.height &&
+		a.decorated === b.decorated &&
+		a.boxes.length === b.boxes.length &&
+		a.boxes.every(
+			(box, index) =>
+				box.component === b.boxes[index]?.component && box.x === b.boxes[index]?.x && box.y === b.boxes[index]?.y,
+		)
+	);
+}
+
+/**
+ * The same geometry at the pointer, drawn by the same components naming the same item there. What a target that took
+ * the press needs for its click: its own rows may repaint, as a pressed button's do, but it must still be drawn there.
+ */
+function sameDrawnAtPointer(a: PointerFrame | undefined, b: PointerFrame): boolean {
+	return (
+		a !== undefined &&
+		a.drawn.length === b.drawn.length &&
+		a.drawn.every((item, index) => item === b.drawn[index]) &&
+		samePointerGeometry(a, b)
+	);
+}
+
+/** The same geometry at the pointer, and the same painted row under it, drawn by the same components. */
+function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean {
+	return a !== undefined && a.line === b.line && sameDrawnAtPointer(a, b);
+}
+
+/** Bounds the walk into nested containers when recording what a frame drew at the pointer. */
+const MAX_DRAWN_DEPTH = 32;
+
+/** A component that stacks children, as `Container` does, and can say which child it drew on a row. */
+type ChildRows = Component & Pick<Container, "childAtRow">;
+
+function stacksChildren(component: Component): component is ChildRows {
+	return typeof (component as Partial<ChildRows>).childAtRow === "function";
+}
+
+/**
+ * The components a frame drew at `row` of `component`, laid out `width` wide, from `component` itself inward, then
+ * the innermost one's row key. A root that draws the row itself is the only component named.
+ */
+function drawnAt(component: Component, width: number, row: number): unknown[] {
+	const drawn: unknown[] = [component];
+	let current: Component = component;
+	let at = row;
+	for (let depth = 0; depth < MAX_DRAWN_DEPTH && stacksChildren(current); depth++) {
+		const hit = current.childAtRow(width, at);
+		if (!hit) break;
+		drawn.push(hit.component);
+		current = hit.component;
+		at = hit.row;
+	}
+	const innermost: Component = current;
+	drawn.push(innermost.paintedRowKey?.(at));
+	return drawn;
 }
 
 interface SgrMouseEvent {
@@ -242,10 +337,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private scrollToEndIndicatorRect?: ScrollToEndIndicatorRect;
 	private activeSearch?: ActiveSearch;
 	private pressedUrl?: string;
+	/** What the screen showed under the pointer when the left button went down. */
+	private pressFrame?: PointerFrame;
+	/** Rows of the primary transcript that a drawn-over row covers: the pinned prompt and the jump-to-latest row. */
+	private decoratedRows = new Map<number, { readonly x: number; readonly width: number }>();
 	private selectionDragged = false;
 	private mouseCapture?: TuiMouseDispatchTarget;
 	private mousePressTarget?: TuiMouseDispatchTarget;
 	private mousePressPoint?: { x: number; y: number };
+	/** What the screen showed at a press a component took: its click needs the same geometry at the release. */
+	private mousePressFrame?: PointerFrame;
 	private mousePressMoved = false;
 	private lastComponentClick?: {
 		timestamp: number;
@@ -273,13 +374,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		options: TuiAltScreenOptions = {},
 	) {
 		super(terminal, showHardwareCursor, logDirectory);
-		this.implicitDocument = {
+		const implicitDocument: ChildRows = {
 			render: (width) => super.render(width),
 			handleMouse: (event) => super.handleMouse(event),
+			childAtRow: (width, row) => super.childAtRow(width, row),
 			invalidate: () => {
 				for (const child of this.children) child.invalidate();
 			},
 		};
+		this.implicitDocument = implicitDocument;
 		this.implicitScrollView = new ScrollView(this.implicitDocument, { follow: "end", primary: true });
 		this.flashes = new AltScreenFlashContainer(() => this.requestRender());
 		this.wheelScroll = new WheelScrollAccelerator(options.wheelScrollLines ?? 1);
@@ -777,6 +880,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.mouseCapture = undefined;
 		this.mousePressTarget = undefined;
 		this.mousePressPoint = undefined;
+		this.mousePressFrame = undefined;
 		this.mousePressMoved = false;
 	}
 
@@ -1022,7 +1126,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const targetResult = this.dispatchMouseToTarget(event, target);
 			if (targetResult) render = this.applyMouseDispatchResult(event, targetResult);
 			if (raw.release) {
-				if (!this.mousePressMoved && this.mousePressPoint?.x === raw.x && this.mousePressPoint.y === raw.y) {
+				// The release always reaches the target, so it can end what its press started. The click needs the
+				// same target still drawn where it was pressed, not another that took its place.
+				if (
+					!this.mousePressMoved &&
+					this.mousePressPoint?.x === raw.x &&
+					this.mousePressPoint.y === raw.y &&
+					sameDrawnAtPointer(this.mousePressFrame, this.pointerFrame(raw.x, raw.y))
+				) {
 					const clickEvent = this.createMouseEvent("click", raw.button, raw.x, raw.y, {
 						clickCount: this.getComponentClickCount(target, raw.x, raw.y),
 					});
@@ -1054,6 +1165,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.clearTextSelection();
 				this.mousePressTarget = result.target;
 				this.mousePressPoint = { x: raw.x, y: raw.y };
+				this.mousePressFrame = this.pointerFrame(raw.x, raw.y);
 				this.mousePressMoved = false;
 			}
 			if (render) this.requestRender();
@@ -1340,30 +1452,66 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 	}
 
-	private getClickCount(point: SelectionPoint, word: SelectionRange | undefined): number {
+	private getClickCount(
+		screenRow: number,
+		screenCol: number,
+		point: SelectionPoint,
+		word: SelectionRange | undefined,
+		drawn: readonly unknown[],
+	): number {
 		const now = Date.now();
 		const previous = this.lastClick;
+		// Clicks count on the screen, in rows and columns alike: a press located in a scroll view and one located on
+		// the screen, because an overlay opened between them, are on the same spot. A second click counts on the same
+		// word, or on the same cell where there is no word, so a fast second click on empty space is a double-click.
+		const toScreen = screenCol - point.col;
+		const start = (word?.start.col ?? point.col) + toScreen;
+		const end = (word?.end.col ?? point.col) + toScreen;
 		const count =
-			word &&
 			previous &&
 			now - previous.timestamp <= DOUBLE_CLICK_INTERVAL_MS &&
-			previous.row === point.row &&
-			previous.scrollView === point.scrollView &&
-			previous.wordStart === word.start.col &&
-			previous.wordEnd === word.end.col
+			previous.row === screenRow &&
+			previous.wordStart === start &&
+			previous.wordEnd === end &&
+			previous.drawn.length === drawn.length &&
+			previous.drawn.every((item, index) => item === drawn[index])
 				? (previous.count % 3) + 1
 				: 1;
-		this.lastClick = word
-			? {
-					timestamp: now,
-					count,
-					row: point.row,
-					scrollView: point.scrollView,
-					wordStart: word.start.col,
-					wordEnd: word.end.col,
-				}
-			: undefined;
+		this.lastClick = {
+			timestamp: now,
+			count,
+			row: screenRow,
+			col: screenCol,
+			wordStart: start,
+			wordEnd: end,
+			drawn,
+			awaitingPaint: false,
+		};
 		return count;
+	}
+
+	/** What the screen shows at `x`, `y`: the painted row, the layout boxes and overlay drawn there. */
+	private pointerFrame(x: number, y: number): PointerFrame {
+		const decoration = this.decoratedRows.get(y);
+		const overlay = this.overlayAt(x, y);
+		const boxes = this.currentLayout ? getLayoutBoxesAt(this.currentLayout, x, y) : [];
+		const innermost = boxes[0];
+		return {
+			line: this.previousScreen[y],
+			boxes: boxes.map((box) => ({ component: box.component, x: box.rect.x, y: box.rect.y })),
+			drawn: overlay
+				? drawnAt(overlay.component, overlay.width, y - overlay.row)
+				: innermost
+					? drawnAt(innermost.component, innermost.rect.width, y - innermost.rect.y)
+					: [],
+			overlay,
+			// An overlay drawn over the row takes its clicks; the decoration under it is hidden.
+			decorated:
+				overlay === undefined &&
+				decoration !== undefined &&
+				x >= decoration.x &&
+				x < decoration.x + decoration.width,
+		};
 	}
 
 	private updateSelectionAutoScroll(event: SgrMouseEvent): void {
@@ -1432,11 +1580,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.stopSelectionAutoScroll();
 			if (!this.selectionAnchor) return;
 			this.updateSelectionFocus(point);
+			const releaseFrame = this.pointerFrame(event.x, event.y);
 			const isClick =
 				!this.selectionDragged &&
 				this.selectionAnchor.scrollView === point.scrollView &&
 				this.selectionAnchor.row === point.row &&
 				this.selectionAnchor.col === point.col;
+			// A click acts on what the screen showed when it was pressed: a repaint that changed what is under the
+			// pointer before the release makes it no click at all.
+			const samePaint = samePointerFrame(this.pressFrame, releaseFrame);
+			this.pressFrame = undefined;
 			const clickedUrl = isClick ? this.pressedUrl : undefined;
 			this.pressedUrl = undefined;
 			if (clickedUrl && this.openUrl) {
@@ -1450,7 +1603,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.requestRender();
 				return;
 			}
-			if (isClick) {
+			if (isClick && samePaint && !releaseFrame.decorated) {
 				const clickEvent = this.createMouseEvent("click", event.button, event.x, event.y, {
 					clickCount: this.lastClick?.count ?? 1,
 				});
@@ -1459,6 +1612,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				if (result) {
 					const render = this.applyMouseDispatchResult(clickEvent, result);
 					this.clearTextSelection();
+					if (this.lastClick) this.lastClick.awaitingPaint = true;
 					if (render) this.requestRender();
 					return;
 				}
@@ -1485,13 +1639,21 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				: undefined;
 		const anchor = this.getSelectionPoint(event, scrollView);
 		const word = this.getWordSelection(anchor);
-		const clickCount = this.getClickCount(anchor, word);
+		const pressFrame = this.pointerFrame(event.x, event.y);
+		const clickCount = this.getClickCount(
+			event.y,
+			Math.max(0, Math.min(this.terminal.columns - 1, event.x)),
+			anchor,
+			word,
+			pressFrame.drawn,
+		);
 		const range = clickCount === 2 ? word : clickCount === 3 ? this.getLineSelection(anchor) : undefined;
 		this.selectionGranularity = range ? (clickCount === 2 ? "word" : "line") : "character";
 		this.selectionInitialRange = range;
 		this.selectionAnchor = range?.start ?? anchor;
 		this.selectionFocus = range?.end ?? anchor;
 		this.selectionDragged = false;
+		this.pressFrame = pressFrame;
 		this.pressedUrl = range
 			? undefined
 			: getOsc8LinkAtColumn(
@@ -1743,6 +1905,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private compositeScrollToEndIndicator(screen: string[], layout: LayoutFrame, width: number): string[] {
 		this.scrollToEndIndicatorRect = undefined;
+		this.decoratedRows = new Map();
 		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
 		if (!this.scrollToEndIndicator || !scrollView.followEnd || scrollView.isFollowingEnd) return screen;
 		const box = getScrollViewBox(layout, scrollView);
@@ -1762,6 +1925,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const result = [...screen];
 		result[row] = compositeTuiLine(result[row] ?? "", text, column, textWidth, width);
 		this.scrollToEndIndicatorRect = { row, column, width: textWidth };
+		// The rest of the row still shows the transcript, but its row is half covered: no click reaches it.
+		this.decoratedRows.set(row, { x: clip.x, width: clip.width });
 		return result;
 	}
 
@@ -1847,6 +2012,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const padded = text + " ".repeat(Math.max(0, available - textWidth));
 		const result = [...screen];
 		result[row] = compositeTuiLine(result[row] ?? "", padded, clip.x, available, width);
+		this.decoratedRows.set(row, { x: clip.x, width: available });
 		return result;
 	}
 
@@ -1961,6 +2127,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.previousScreenWidth = width;
 		this.previousScreenHeight = height;
 		this.currentLayout = nextLayout;
+		const click = this.lastClick;
+		if (click?.awaitingPaint) {
+			click.awaitingPaint = false;
+			click.drawn = this.pointerFrame(click.col, click.row).drawn;
+		}
 	}
 }
 

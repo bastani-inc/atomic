@@ -299,6 +299,11 @@ export interface StorageWriteLockTimeoutDetails {
 	readonly holderPid?: number;
 	/** How long ago that process took the lock. */
 	readonly holderHeldMs?: number;
+	/**
+	 * When no record names the holder: the processes of the other connections trying for the lock, comma-separated.
+	 * One of them may hold it, having taken it before it could record so.
+	 */
+	readonly holderCandidates?: string;
 }
 
 const WRITE_LOCK_TIMEOUT_HINT =
@@ -320,11 +325,14 @@ export class StorageWriteLockTimeoutError extends StorageUnavailableError {
 	readonly phase: StorageWriteLockWaitPhase;
 	declare readonly holderPid?: number;
 	declare readonly holderHeldMs?: number;
+	declare readonly holderCandidates?: string;
 	constructor(descriptor: StorageDescriptor, details: StorageWriteLockTimeoutDetails, cause?: StorageFailureCause) {
 		const heldBy =
-			details.holderPid === undefined
-				? ""
-				: `by process ${details.holderPid}${details.holderHeldMs === undefined ? "" : ` (which took it ${details.holderHeldMs} ms ago)`} `;
+			details.holderPid !== undefined
+				? `by process ${details.holderPid}${details.holderHeldMs === undefined ? "" : ` (which took it ${details.holderHeldMs} ms ago)`} `
+				: details.holderCandidates !== undefined
+					? `by a writer that has not recorded taking it (processes trying for it: ${details.holderCandidates}) `
+					: "";
 		super(
 			descriptor,
 			cause,
@@ -335,6 +343,7 @@ export class StorageWriteLockTimeoutError extends StorageUnavailableError {
 		this.phase = details.phase;
 		if (details.holderPid !== undefined) this.holderPid = details.holderPid;
 		if (details.holderHeldMs !== undefined) this.holderHeldMs = details.holderHeldMs;
+		if (details.holderCandidates !== undefined) this.holderCandidates = details.holderCandidates;
 	}
 }
 
@@ -1307,6 +1316,7 @@ function knownStorageError(
 					phase: field<string>(serialized, "phase", "string") === "queued" ? "queued" : "acquiring",
 					holderPid: field<number>(serialized, "holderPid", "number"),
 					holderHeldMs: field<number>(serialized, "holderHeldMs", "number"),
+					holderCandidates: field<string>(serialized, "holderCandidates", "string"),
 				},
 				cause,
 			);

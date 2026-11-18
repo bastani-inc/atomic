@@ -41,6 +41,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"hasMatch",
 	"invalidateFsScanCache",
 	"killSupervisedProcessTrees",
+	"pendingStdinInput",
 	"processCreationTime",
 	"raiseCurrentThreadPriority",
 	"renameNoReplace",

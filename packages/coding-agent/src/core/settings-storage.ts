@@ -12,6 +12,7 @@ import {
 	readlinkSync,
 	realpath as realpathCallback,
 	realpathSync,
+	renameSync,
 	rmdirSync,
 	rmSync,
 	statSync,
@@ -61,6 +62,34 @@ const SETTINGS_LOCK_POLL_MIN_MS = 10;
 const SETTINGS_LOCK_POLL_MAX_MS = 50;
 /** How old a settings lock must be before it is judged left by a process that cannot be proven dead. */
 const SETTINGS_LOCK_STALE_MS = 10_000;
+
+/**
+ * How many times a save is merged again into a settings file that changed after it was read. Editors save without the
+ * lock, so a save checks the file is still what it read before replacing it; one that keeps changing is left to the
+ * editor.
+ */
+const SETTINGS_CHANGED_RETRIES = 3;
+
+/** The settings file no longer holds what the save read: something saved it without the lock, such as an editor. */
+export class SettingsFileChangedError extends Error {
+	readonly code = "ECHANGED";
+	constructor(path: string) {
+		super(`${path} changed while it was being saved`);
+	}
+}
+
+/** The content a save read from a settings file: `undefined` when the file did not exist. */
+export interface SettingsFileExpectation {
+	readonly content: string | undefined;
+}
+
+function contentIfPresent(path: string): string | undefined {
+	return existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+}
+
+function isSettingsFileChanged(error: unknown): boolean {
+	return error instanceof SettingsFileChangedError;
+}
 
 /** A rename that cannot replace the file at all: it is a mount point (EBUSY), or on another device (EXDEV). */
 const UNREPLACEABLE_FILE_CODES: ReadonlySet<string> = new Set(["EBUSY", "EXDEV"]);
@@ -136,12 +165,22 @@ async function readIfPresent(path: string): Promise<string | undefined> {
  * write a sibling temporary file with the same mode, then rename it over the file. A symbolic link stays a link; its
  * target is replaced, or created when it does not exist yet. A file that cannot be replaced, such as a single file
  * mounted into a container, is written in place instead, under the caller's lock; that fallback is returned and
- * recorded in {@link settingsFilesWrittenInPlace}.
+ * recorded in {@link settingsFilesWrittenInPlace}. With `expected`, a file that no longer holds the content the caller
+ * read is left as it is and {@link SettingsFileChangedError} is thrown, so a save never replaces an editor's.
  */
-export function writeSettingsFile(path: string, content: string): SettingsFileWrite {
+export function writeSettingsFile(
+	path: string,
+	content: string,
+	expected?: SettingsFileExpectation,
+): SettingsFileWrite {
 	const target = settingsFileTarget(path);
 	const mode = existsSync(target) ? statSync(target).mode & 0o777 : undefined;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	// Before every attempt to replace it: a rename Windows refuses for a moment is tried again for about two seconds.
+	const assertUnchanged = () => {
+		if (expected !== undefined && contentIfPresent(target) !== expected.content)
+			throw new SettingsFileChangedError(path);
+	};
 	try {
 		writeFileSync(temporary, content, { encoding: "utf-8", ...(mode === undefined ? {} : { mode }) });
 		if (mode !== undefined) chmodSync(temporary, mode);
@@ -150,22 +189,34 @@ export function writeSettingsFile(path: string, content: string): SettingsFileWr
 		throw error;
 	}
 	try {
-		renameReplacing(temporary, target);
+		renameReplacing(temporary, target, process.platform, (from, to) => {
+			assertUnchanged();
+			renameSync(from, to);
+		});
 		return { mode: "replaced" };
 	} catch (error) {
 		rmSync(temporary, { force: true });
 		const reason = error as NodeJS.ErrnoException;
 		if (!UNREPLACEABLE_FILE_CODES.has(reason.code ?? "")) throw error;
+		assertUnchanged();
 		writeFileSync(target, content, "utf-8");
 		if (!inPlaceWrites.has(target)) inPlaceWrites.set(target, reason);
 		return { mode: "in-place", reason };
 	}
 }
 
-export async function writeSettingsFileAsync(path: string, content: string): Promise<SettingsFileWrite> {
+export async function writeSettingsFileAsync(
+	path: string,
+	content: string,
+	expected?: SettingsFileExpectation,
+): Promise<SettingsFileWrite> {
 	const target = await settingsFileTargetAsync(path);
 	const mode = (await pathExists(target)) ? (await fsPromises.stat(target)).mode & 0o777 : undefined;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	const assertUnchanged = async () => {
+		if (expected !== undefined && (await readIfPresent(target)) !== expected.content)
+			throw new SettingsFileChangedError(path);
+	};
 	try {
 		await fsPromises.writeFile(temporary, content, { encoding: "utf-8", ...(mode === undefined ? {} : { mode }) });
 		if (mode !== undefined) await fsPromises.chmod(temporary, mode);
@@ -174,12 +225,16 @@ export async function writeSettingsFileAsync(path: string, content: string): Pro
 		throw error;
 	}
 	try {
-		await renameReplacingAsync(temporary, target);
+		await renameReplacingAsync(temporary, target, process.platform, async (from, to) => {
+			await assertUnchanged();
+			await fsPromises.rename(from, to);
+		});
 		return { mode: "replaced" };
 	} catch (error) {
 		await fsPromises.rm(temporary, { force: true });
 		const reason = error as NodeJS.ErrnoException;
 		if (!UNREPLACEABLE_FILE_CODES.has(reason.code ?? "")) throw error;
+		await assertUnchanged();
 		await fsPromises.writeFile(target, content, "utf-8");
 		if (!inPlaceWrites.has(target)) inPlaceWrites.set(target, reason);
 		return { mode: "in-place", reason };
@@ -451,20 +506,29 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 			if (fileExists) {
 				release = this.acquireLockSyncWithRetry(path);
 			}
-			const current = this.readMergedSettings(readPaths);
-			const next = fn(current);
-
-			if (next !== undefined) {
+			for (let attempt = 0; ; attempt += 1) {
+				const current = this.readMergedSettings(readPaths);
+				let expected = { content: this.primaryContentRead(path, readPaths) };
+				const next = fn(current);
+				if (next === undefined) break;
 				// Only create directory when we actually need to write.
 				if (!existsSync(dir)) {
 					mkdirSync(dir, { recursive: true });
 				}
 				if (!release) {
-					if (!existsSync(path)) writeFileSync(path, "{}", "utf-8");
+					if (!existsSync(path)) {
+						writeFileSync(path, "{}", "utf-8");
+						if (expected.content === undefined) expected = { content: "{}" };
+					}
 					release = this.acquireLockSyncWithRetry(path);
 				}
-				writeSettingsFile(path, next);
-				this.remember(path, next);
+				try {
+					writeSettingsFile(path, next, expected);
+					this.remember(path, next);
+					break;
+				} catch (error) {
+					if (!isSettingsFileChanged(error) || attempt >= SETTINGS_CHANGED_RETRIES) throw error;
+				}
 			}
 		} finally {
 			if (release) {
@@ -484,18 +548,28 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 				if (await pathExists(path)) {
 					release = await this.acquireLockWithRetry(path);
 				}
-				const next = fn(await this.readMergedSettingsAsync(readPaths));
-
-				if (next !== undefined) {
+				for (let attempt = 0; ; attempt += 1) {
+					const current = await this.readMergedSettingsAsync(readPaths);
+					let expected = { content: await this.primaryContentReadAsync(path, readPaths) };
+					const next = fn(current);
+					if (next === undefined) break;
 					if (!(await pathExists(dir))) {
 						await mkdir(dir, { recursive: true });
 					}
 					if (!release) {
-						if (!(await pathExists(path))) await fsPromises.writeFile(path, "{}", "utf-8");
+						if (!(await pathExists(path))) {
+							await fsPromises.writeFile(path, "{}", "utf-8");
+							if (expected.content === undefined) expected = { content: "{}" };
+						}
 						release = await this.acquireLockWithRetry(path);
 					}
-					await writeSettingsFileAsync(path, next);
-					this.remember(path, next);
+					try {
+						await writeSettingsFileAsync(path, next, expected);
+						this.remember(path, next);
+						break;
+					} catch (error) {
+						if (!isSettingsFileChanged(error) || attempt >= SETTINGS_CHANGED_RETRIES) throw error;
+					}
 				}
 			} finally {
 				if (release) {
@@ -514,15 +588,35 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 
 		const release = this.acquireLockSyncWithRetry(path);
 		try {
-			const currentPrimary = existsSync(path) ? readFileSync(path, "utf-8") : undefined;
-			const next = fn(currentPrimary);
-			if (next !== undefined) {
-				writeSettingsFile(path, next);
-			}
-			this.remember(path, next ?? currentPrimary);
+			this.rewritePrimary(path, fn);
 		} finally {
 			releaseLockSync(release, path);
 		}
+	}
+
+	/** Write `fn` of the primary file, merged again into it while something saves it without the lock. */
+	private rewritePrimary(path: string, fn: (currentPrimary: string | undefined) => string | undefined): void {
+		for (let attempt = 0; ; attempt += 1) {
+			const currentPrimary = contentIfPresent(path);
+			const next = fn(currentPrimary);
+			try {
+				if (next !== undefined) writeSettingsFile(path, next, { content: currentPrimary });
+				this.remember(path, next ?? currentPrimary);
+				return;
+			} catch (error) {
+				if (!isSettingsFileChanged(error) || attempt >= SETTINGS_CHANGED_RETRIES) throw error;
+			}
+		}
+	}
+
+	private primaryContentRead(path: string, readPaths: string[]): string | undefined {
+		const key = normalizePath(path);
+		return readPaths.includes(key) ? this.knownContent.get(key) : contentIfPresent(path);
+	}
+
+	private async primaryContentReadAsync(path: string, readPaths: string[]): Promise<string | undefined> {
+		const key = normalizePath(path);
+		return readPaths.includes(key) ? this.knownContent.get(key) : readIfPresent(path);
 	}
 
 	withPrimaryWriteLockAtExit(
@@ -537,8 +631,7 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 			return;
 		}
 		try {
-			const next = fn(existsSync(path) ? readFileSync(path, "utf-8") : undefined);
-			if (next !== undefined) writeSettingsFile(path, next);
+			this.rewritePrimary(path, fn);
 		} finally {
 			if (createdHere) removeCreatedLock(`${path}.lock`);
 		}
@@ -557,12 +650,17 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 		await inLockTurn(path, async () => {
 			const release = await this.acquireLockWithRetry(path);
 			try {
-				const currentPrimary = await readIfPresent(path);
-				const next = fn(currentPrimary);
-				if (next !== undefined) {
-					await writeSettingsFileAsync(path, next);
+				for (let attempt = 0; ; attempt += 1) {
+					const currentPrimary = await readIfPresent(path);
+					const next = fn(currentPrimary);
+					try {
+						if (next !== undefined) await writeSettingsFileAsync(path, next, { content: currentPrimary });
+						this.remember(path, next ?? currentPrimary);
+						break;
+					} catch (error) {
+						if (!isSettingsFileChanged(error) || attempt >= SETTINGS_CHANGED_RETRIES) throw error;
+					}
 				}
-				this.remember(path, next ?? currentPrimary);
 			} finally {
 				await releaseLock(release, path);
 			}

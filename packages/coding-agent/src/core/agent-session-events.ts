@@ -58,6 +58,7 @@ import {
 	ownedSessionPermits,
 	ownedSessionStores,
 	sessionLifetime,
+	shutdownDeadline,
 } from "./session-lifecycle-work.ts";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { observeToolExecutionTiming } from "./tool-execution-timing.ts";
@@ -738,9 +739,12 @@ export function closeAgentSession(
 	sessionClosing(session);
 	const closing = Promise.resolve().then(async () => {
 		const errors: Error[] = [];
+		// Bounds the whole shutdown, its waits for the event queue and the aborted turn included.
+		const deadline = shutdownDeadline(session);
 		const attempt = async (component: string, cleanup: () => void | Promise<void>) => {
 			try {
-				await cleanup();
+				const unsettled = await deadline.run(component, cleanup);
+				if (unsettled) errors.push(new Error(component, { cause: unsettled }));
 			} catch (cause) {
 				if (cause instanceof AggregateError)
 					errors.push(...cause.errors.map((error) => new Error(component, { cause: error })));
@@ -814,6 +818,7 @@ export function closeAgentSession(
 		const permit = ownedSessionPermits.get(session);
 		ownedSessionPermits.delete(session);
 		if (!errors.length) await attempt("admission", () => permit?.());
+		deadline.clear();
 		if (errors.length)
 			throw Object.assign(new AggregateError(errors, "Session shutdown failed"), { code: "ShutdownFailed" });
 	});
