@@ -31,6 +31,7 @@
 import type { RunStatus, StageStatus } from "../shared/store-types.js";
 import { boldOn, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
+import { SUSPENDED_STAGE_ICON } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 /** Unicode end-of-line truncation marker. Mocks use it verbatim. */
@@ -438,7 +439,7 @@ function stageGlyph(status: ProgressCell["status"]): string {
 		case "awaiting_input":
 			return "？";
 		case "suspended":
-			return "◷";
+			return SUSPENDED_STAGE_ICON;
 		case "killed":
 		case "cancelled":
 			return "◼";
