@@ -1,0 +1,240 @@
+/**
+ * A collection decides whether a blob is referenced by computing the snapshots each session retains (the latest one
+ * of each checkout on each open branch). Before #5530 every page and every delete computed them for the whole store in
+ * one statement: seconds on a large store, run synchronously by the local SQLite driver, so the event loop got no turn
+ * until it ended. These tests hold every step of a collection to a bounded number of session references, with a turn
+ * between steps, and hold what it deletes to what a retention scan of the same store keeps.
+ */
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setImmediate } from "node:timers";
+import { afterEach, beforeEach, test } from "vitest";
+import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
+import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
+import { SNAPSHOT_COLLECTION_SESSION_REFS } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
+import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
+import { assertLag, measureLag } from "../helpers/event-loop-lag.js";
+import {
+	ageBlobs,
+	createSession,
+	fullScanRetainedHashes,
+	messageEntry,
+	openSharedSnapshotDatabase,
+	type SharedSnapshotDatabase,
+	snapshotEntry,
+	syntheticSnapshot,
+	textBlob,
+} from "../helpers/snapshot-reference-index.js";
+
+/** Sessions of the large store, and snapshot entries on each one's branch. */
+const SESSIONS = 24;
+const SNAPSHOT_ENTRIES_PER_SESSION = 2_000;
+/** Seeding 48,000 indexed session entries is structural cost, not a slow collection. */
+const LARGE_STORE_TEST_TIMEOUT_MS = 120_000;
+
+let directory: string;
+let path: string;
+let shared: SharedSnapshotDatabase;
+const others: SharedSnapshotDatabase[] = [];
+beforeEach(async () => {
+	directory = mkdtempSync(join(tmpdir(), "snapshot-collection-turns-"));
+	path = join(directory, "shared.sqlite");
+	shared = await openSharedSnapshotDatabase(path);
+});
+afterEach(async () => {
+	while (others.length > 0) await others.pop()?.close();
+	await shared.close();
+	rmSync(directory, { recursive: true, force: true });
+});
+
+/** Another host of the same store: its own connection to the file, as another process has. */
+async function anotherHost(database?: SqliteDatabase): Promise<SharedSnapshotDatabase> {
+	const host = await openSharedSnapshotDatabase(path, { database: database ?? (await openNodeSqliteDatabase(path)) });
+	others.push(host);
+	return host;
+}
+
+/** `database`, running `write` once, to its end, just before the first write transaction it starts after `arm()`. */
+function writeBeforeFirstTransaction(database: SqliteDatabase, write: () => Promise<void>) {
+	let armed = false;
+	let wrote = false;
+	const wrapped: SqliteDatabase = {
+		descriptor: database.descriptor,
+		exec: (sql) => database.exec(sql),
+		run: (sql, ...params) => database.run(sql, ...params),
+		get: (sql, ...params) => database.get(sql, ...params),
+		all: (sql, ...params) => database.all(sql, ...params),
+		transaction: async (callback, options) => {
+			if (armed && !wrote) {
+				wrote = true;
+				await write();
+			}
+			return database.transaction(callback, options);
+		},
+		close: () => database.close(),
+	};
+	return {
+		database: wrapped,
+		arm: () => {
+			armed = true;
+		},
+		wrote: () => wrote,
+	};
+}
+
+/** Counts the turns the event loop gets until the returned function is called. */
+function countTurns(): () => number {
+	let turns = 0;
+	let counting = true;
+	const tick = () => {
+		if (!counting) return;
+		turns++;
+		setImmediate(tick);
+	};
+	setImmediate(tick);
+	return () => {
+		counting = false;
+		return turns;
+	};
+}
+
+/**
+ * Session `index`: its first snapshot entry records a blob of its own, and every later entry names a snapshot of the
+ * same checkout without a record, as an unchanged capture does. Its latest entry is then the checkout's retained
+ * snapshot, so the first entry's blob is garbage, unless `keepLatest` gives the latest entry a record with a blob
+ * that it retains.
+ */
+async function seedSession(index: number, keepLatest: boolean) {
+	const dropped = textBlob(`dropped by session ${index}`);
+	const kept = textBlob(`kept by session ${index}`);
+	const root = `/repo/${index}`;
+	const entries: SessionEntry[] = [
+		snapshotEntry(root, `s${index}-0`, syntheticSnapshot(`s${index}-0`, [dropped.hash], { root })),
+	];
+	for (let seq = 1; seq < SNAPSHOT_ENTRIES_PER_SESSION - 1; seq++)
+		entries.push(snapshotEntry(root, `s${index}-${seq}`));
+	const latest = `s${index}-${SNAPSHOT_ENTRIES_PER_SESSION - 1}`;
+	entries.push(snapshotEntry(root, latest, keepLatest ? syntheticSnapshot(latest, [kept.hash], { root }) : undefined));
+	await shared.journal.snapshotBlobs.putBlobs(keepLatest ? [dropped, kept] : [dropped]);
+	await createSession(shared.sessions, `session-${index}`, entries);
+	return { dropped: dropped.hash, kept: keepLatest ? kept.hash : undefined };
+}
+
+test(
+	"a collection reads a bounded number of session references per turn of the event loop, and deletes only what retention lets go (#5530)",
+	async () => {
+		const dropped: string[] = [];
+		const kept: string[] = [];
+		for (let index = 0; index < SESSIONS; index++) {
+			const seeded = await seedSession(index, index % 2 === 0);
+			dropped.push(seeded.dropped);
+			if (seeded.kept !== undefined) kept.push(seeded.kept);
+		}
+		await ageBlobs(shared.database, shared.journal.snapshotBlobs.table, 10_000);
+		const retained = await fullScanRetainedHashes(shared.journal, shared.sessions);
+		assert.deepEqual([...retained].sort(), [...kept].sort(), "the store retains exactly the latest records");
+
+		const turns = countTurns();
+		const lag = measureLag();
+		const { deleted } = await collectSnapshotGarbage(shared.journal.snapshotBlobs, { graceSeconds: 0 });
+		const counted = turns();
+
+		const references = SESSIONS * SNAPSHOT_ENTRIES_PER_SESSION;
+		assert.ok(
+			counted >= Math.floor(references / SNAPSHOT_COLLECTION_SESSION_REFS),
+			`the collection read ${references} session references in ${counted} turns, more than ${SNAPSHOT_COLLECTION_SESSION_REFS} per turn`,
+		);
+		assertLag("snapshot collection over a large session index", lag());
+		assert.deepEqual([...deleted].sort(), [...dropped].sort());
+		assert.deepEqual([...(await shared.journal.snapshotBlobs.listBlobHashes())].sort(), [...kept].sort());
+	},
+	LARGE_STORE_TEST_TIMEOUT_MS,
+);
+
+test("a collection keeps a blob that another host's session retains again before its delete batch commits (#5530)", async () => {
+	const early = textBlob("recorded by the early snapshot");
+	const late = textBlob("recorded by the late snapshot");
+	const orphan = textBlob("recorded by nothing");
+	await shared.journal.snapshotBlobs.putBlobs([early, late, orphan]);
+	const root = messageEntry("start");
+	const earlySnapshot = snapshotEntry("/repo", "early", syntheticSnapshot("early", [early.hash]), root.id);
+	const reply = messageEntry("reply", earlySnapshot.id);
+	const lateSnapshot = snapshotEntry("/repo", "late", syntheticSnapshot("late", [late.hash]), reply.id);
+	const entries = [root, earlySnapshot, reply, lateSnapshot];
+	await createSession(shared.sessions, "session-1", entries);
+	await ageBlobs(shared.database, shared.journal.snapshotBlobs.table, 10_000);
+	const writer = await anotherHost();
+	// The other host branches from the reply, whose latest snapshot is the early one: a new leaf that retains it, with
+	// no blob stored again.
+	const collector = writeBeforeFirstTransaction(await openNodeSqliteDatabase(path), async () => {
+		await writer.sessions.append("session-1", [messageEntry("branch from the reply", reply.id)], {
+			expectSeq: entries.length,
+		});
+	});
+	const host = await anotherHost(collector.database);
+	collector.arm();
+
+	const { deleted } = await collectSnapshotGarbage(host.journal.snapshotBlobs, { graceSeconds: 0 });
+
+	assert.equal(collector.wrote(), true, "the other host wrote while the collection ran");
+	assert.deepEqual(deleted, [orphan.hash]);
+	assert.deepEqual([...(await shared.journal.snapshotBlobs.listBlobHashes())].sort(), [early.hash, late.hash].sort());
+	assert.deepEqual(
+		[...(await fullScanRetainedHashes(shared.journal, shared.sessions))].sort(),
+		[early.hash, late.hash].sort(),
+	);
+});
+
+test("a collection keeps a blob a session another host creates records, when it is created before the delete batch commits (#5530)", async () => {
+	const dropped = textBlob("dropped by the first session");
+	await shared.journal.snapshotBlobs.putBlobs([dropped]);
+	await createSession(shared.sessions, "session-1", [
+		snapshotEntry("/repo", "dropped", syntheticSnapshot("dropped", [dropped.hash])),
+		snapshotEntry("/repo", "unchanged"),
+	]);
+	await ageBlobs(shared.database, shared.journal.snapshotBlobs.table, 10_000);
+	const writer = await anotherHost();
+	// A copy of the session's first snapshot entry, as a fork writes it: its blob is stored, so the write goes ahead.
+	const collector = writeBeforeFirstTransaction(await openNodeSqliteDatabase(path), async () => {
+		await createSession(writer.sessions, "fork", [
+			snapshotEntry("/repo", "dropped", syntheticSnapshot("dropped", [dropped.hash])),
+		]);
+	});
+	const host = await anotherHost(collector.database);
+	collector.arm();
+
+	const { deleted } = await collectSnapshotGarbage(host.journal.snapshotBlobs, { graceSeconds: 0 });
+
+	assert.equal(collector.wrote(), true);
+	assert.deepEqual(deleted, []);
+	assert.deepEqual(await shared.journal.snapshotBlobs.listBlobHashes(), [dropped.hash]);
+});
+
+test(
+	"two hosts collecting one store at once delete each unretained blob once and keep every retained one (#5530)",
+	async () => {
+		const dropped: string[] = [];
+		const kept: string[] = [];
+		for (let index = 0; index < 6; index++) {
+			const seeded = await seedSession(index, index % 2 === 0);
+			dropped.push(seeded.dropped);
+			if (seeded.kept !== undefined) kept.push(seeded.kept);
+		}
+		await ageBlobs(shared.database, shared.journal.snapshotBlobs.table, 10_000);
+		const other = await anotherHost();
+
+		const [first, second] = await Promise.all([
+			collectSnapshotGarbage(shared.journal.snapshotBlobs, { graceSeconds: 0 }),
+			collectSnapshotGarbage(other.journal.snapshotBlobs, { graceSeconds: 0 }),
+		]);
+
+		const both = [...first.deleted, ...second.deleted];
+		assert.equal(new Set(both).size, both.length, "no blob is reported deleted by both hosts");
+		assert.deepEqual([...both].sort(), [...dropped].sort());
+		assert.deepEqual([...(await shared.journal.snapshotBlobs.listBlobHashes())].sort(), [...kept].sort());
+	},
+	LARGE_STORE_TEST_TIMEOUT_MS,
+);

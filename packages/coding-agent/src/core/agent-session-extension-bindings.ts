@@ -312,6 +312,7 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 	});
 	migrateSavedCompactionModel(this);
 	scheduleOpeningSummary(this);
+	scheduleOpeningCollection(this);
 }
 
 /**
@@ -324,6 +325,17 @@ function migrateSavedCompactionModel(session: AgentSession): void {
 
 export async function _waitForExtensionStart(this: AgentSession): Promise<void> {
 	await extensionStarts.get(this._extensionRunner);
+}
+
+/**
+ * Schedules the snapshot blob collection of an interactive session once it has started (#5530), as the opening summary
+ * is scheduled: a session that only closes when its process quits would otherwise never collect, because a collection
+ * scheduled at close starts after a delay the process does not wait for.
+ */
+function scheduleOpeningCollection(session: AgentSession): void {
+	if (presentationOnlyBindings.get(session) || (session._extensionMode !== "tui" && session._extensionMode !== "rpc"))
+		return;
+	session._worktreeSnapshots.scheduleCollection();
 }
 
 function scheduleOpeningSummary(session: AgentSession): void {
