@@ -11,7 +11,7 @@ import {
 	SqlSnapshotBlobStore,
 	snapshotIndexTables,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
-import { storageBackends } from "../helpers/storage-backends.js";
+import { dropLibsqlScope, storageBackends } from "../helpers/storage-backends.js";
 
 /**
  * The move of a chunk table 0.9.89 created to the row layout (#5541), on every backend of
@@ -193,3 +193,60 @@ for (const backend of storageBackends) {
 		);
 	});
 }
+
+const sqld = storageBackends.find((backend) => backend.name === "libSQL server (sqld)")!;
+describe.skipIf(sqld.skipReason !== undefined)("test scopes on a shared libSQL server (#5541)", () => {
+	// SQLite checks every trigger of the database when it renames a table, and fails the rename while one of them writes
+	// a table that is gone. The move above renames tables while other suites on the same server drop their scopes.
+	test(
+		"dropping a scope never leaves a trigger that fails a table rename elsewhere on the server (#5541)",
+		async () => {
+			const other = await sqld.openScope();
+			try {
+				const renamer = await other.connect();
+				const names = [`${other.prefix}left`, `${other.prefix}right`];
+				await renamer.exec(`CREATE TABLE ${names[0]} (x)`);
+				let renames = 0;
+				const failures: string[] = [];
+				// The order a scope's tables are dropped in follows the server's schema, which differs from prefix to prefix.
+				for (let scopes = 0; scopes < 6; scopes++) {
+					const scope = await sqld.openScope();
+					try {
+						const database = await scope.connect();
+						await SqlSnapshotBlobStore.open(database, scope.prefix);
+						const watched: SqliteDatabase = {
+							descriptor: database.descriptor,
+							run: database.run.bind(database),
+							get: database.get.bind(database),
+							all: database.all.bind(database),
+							transaction: database.transaction.bind(database),
+							close: database.close.bind(database),
+							async exec(sql) {
+								await database.exec(sql);
+								if (!sql.startsWith("DROP TABLE")) return;
+								// Between two of the scope's drops, another scope renames one of its tables. A failure is recorded
+								// here: the drop retries a table whose drop failed, and would hide it.
+								try {
+									await renamer.exec(
+										`ALTER TABLE ${names[renames % 2]} RENAME TO ${names[(renames + 1) % 2]}`,
+									);
+									renames++;
+								} catch (error) {
+									failures.push(`after ${sql}: ${(error as Error).cause ?? error}`);
+								}
+							},
+						};
+						await dropLibsqlScope(watched, scope.prefix);
+					} finally {
+						await scope.close();
+					}
+				}
+				assert.deepEqual(failures, []);
+				assert.ok(renames >= 12, `renamed after each of ${renames} table drops`);
+			} finally {
+				await other.close();
+			}
+		},
+		SERVER_TIMEOUT_MS,
+	);
+});
