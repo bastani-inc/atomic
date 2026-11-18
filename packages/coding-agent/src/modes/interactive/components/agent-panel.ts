@@ -369,6 +369,18 @@ export interface AgentPanelRenderOptions {
 }
 
 /** The main-chat row leads the panel whenever it lists a subagent; a panel of workflow runs has none. */
+/**
+ * How every chat's hint names its running background shells, which are not panel rows: `2 shells`, plus where to
+ * manage them when the panel has no rows to focus.
+ */
+export function panelShellHintSegments(shells: number, panelHasRows: boolean): string[] {
+	const count = Math.floor(shells);
+	if (!Number.isFinite(count) || count <= 0) return [];
+	const segments = [`${count} ${count === 1 ? "shell" : "shells"}`];
+	if (!panelHasRows) segments.push("/tasks to manage");
+	return segments;
+}
+
 export function panelShowsMain(rows: readonly Pick<AgentPanelRow, "kind">[]): boolean {
 	return rows.some((row) => row.kind === "agent");
 }

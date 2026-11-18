@@ -3,8 +3,10 @@ import { randomUUID } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext } from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall, type Message } from "@bastani/atomic-ai/compat";
+import { getKeybindings, setKeybindings, type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
+import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
@@ -15,12 +17,20 @@ import {
 	withoutSupersededAttempts,
 } from "../../packages/coding-agent/src/core/tasks/completion.js";
 import type { OperationId, OwnerId, Sequence, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { loadTaskOwnTranscriptHistory } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { taskBoardGroups } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
+import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import { TaskNavigation } from "../../packages/coding-agent/src/modes/interactive/components/task-navigation.js";
+import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
+import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
+import {
+	renderSubagentToolCall,
+	renderSubagentToolResult,
+} from "../../packages/subagents/src/extension/tool-rendering.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
@@ -36,12 +46,21 @@ import {
 	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
-import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { runAgentTask, subagentTaskResultLabel } from "../../packages/subagents/src/runs/foreground/task-execution.js";
+import type {
+	ExecutorDeps,
+	SubagentParamsLike,
+} from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
+import {
+	runAgentTask,
+	subagentTaskResultLabel,
+	taskToolResult,
+} from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
-import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
+import type { Details, RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
+import type { SubagentResultRenderState } from "../../packages/subagents/src/tui/render.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { sleep } from "../helpers/runtime.js";
+import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 
 /** A live child loads its real resources and runs a real shell; that is the structural cost of this test. */
 const LIVE_CHILD_TIMEOUT_MS = 120_000;
@@ -49,6 +68,37 @@ const RECORD_WAIT_MS = 30_000;
 const shellTool = process.platform === "win32" ? "powershell" : "bash";
 const shellCommand =
 	process.platform === "win32" ? "$v = [Console]::ReadLine(); Write-Output 'built'" : "read v; printf built";
+
+/** Alt+W as a terminal sends it: Esc, then the key. */
+const ALT_W = "\x1bw";
+
+/** The parent's launch card of the subagent tool, reading live task records from `host`. */
+function launchCard(host: AgentTaskHost, cwd: string, args: SubagentParamsLike): ToolExecutionComponent {
+	const definition: ToolDefinition<typeof SubagentParams, Details, SubagentResultRenderState> = {
+		name: "subagent",
+		label: "Subagent",
+		description: "Subagent launch card",
+		parameters: SubagentParams,
+		execute: async () => {
+			throw new Error("Rendering must not execute the tool");
+		},
+		renderCall: (callArgs, theme, context) => renderSubagentToolCall(callArgs as SubagentParamsLike, theme, context),
+		renderResult: renderSubagentToolResult,
+	};
+	return new ToolExecutionComponent(
+		"subagent",
+		"launch-card",
+		args,
+		{ getTaskRecord: (taskId) => host.taskRecords().find((record) => record.ref.taskId === taskId) },
+		definition,
+		{ requestRender() {} } as TUI,
+		cwd,
+	);
+}
+
+async function settle(): Promise<void> {
+	for (let turn = 0; turn < 5; turn++) await sleep(10);
+}
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -269,6 +319,70 @@ test(
 		const stillReleased = host.resolveTask(childTaskId);
 		assert.ok(stillReleased.ok);
 
+		// The parent's launch card shows it waiting, with the still mark, not as paused or released.
+		const card = launchCard(host, env.root, { agent: "builder", task: "build, then wait for the build" });
+		cleanups.push(() => card.dispose());
+		card.updateResult({ ...taskToolResult(response, host), isError: false });
+		for (const width of [100, 40]) {
+			const lines = card.render(width);
+			for (const line of lines) assert.ok(visibleWidth(line) <= width, `${width} columns: ${JSON.stringify(line)}`);
+			const text = stripVTControlCharacters(lines.join("\n"));
+			assert.match(text, /◌ Agent/, `${width} columns: ${text}`);
+			assert.match(text, new RegExp(`Waiting on ${shellTool}`), `${width} columns: ${text}`);
+			assert.doesNotMatch(text, /⏸|Released|Paused|awaiting resume|Running/, `${width} columns: ${text}`);
+		}
+
+		// One key opens the shell it waits on, from its transcript and from its /tasks row, without waking it.
+		const keys = getKeybindings();
+		setKeybindings(new KeybindingsManager());
+		cleanups.push(() => setKeybindings(keys));
+		const store = new OwnerTaskStore(host.ownerBinding.supervisor, host.ownerBinding.owner);
+		assert.ok(store.connect().ok);
+		cleanups.push(() => store.dispose());
+		const inspector = new TaskInspector(
+			store,
+			() => {},
+			() => {},
+			undefined,
+			() => taskTranscriptEnvironment(),
+		);
+		cleanups.push(() => inspector.dispose());
+		const screen = (width: number) =>
+			inspector
+				.renderViewport(width, 40)
+				.map((line) => stripVTControlCharacters(line))
+				.join("\n");
+		inspector.open(childTaskId);
+		inspector.handleInput("\r");
+		await settle();
+		for (const width of [100, 40]) {
+			const shown = screen(width);
+			assert.match(shown, /alt\+w opens it/, `${width} columns: ${shown}`);
+			assert.match(shown, /wakes by itself when it finishes/, `${width} columns: ${shown}`);
+		}
+		inspector.handleInput(ALT_W);
+		await settle();
+		const shellPage = screen(100);
+		assert.match(shellPage, /^Transcript · bash/, `alt+w opens the shell the child waits on: ${shellPage}`);
+		assert.match(shellPage, /Retained shell output/, "alt+w opens the shell's output");
+		assert.match(shellPage, /← builder/, "back leads to the waiting child");
+		inspector.handleInput("\x1b[D");
+		await settle();
+		assert.equal(inspector.navigation.selectedTaskId, childTaskId, "back returns to the waiting child");
+		assert.match(screen(100), /alt\+w opens it/, "back reopens the waiting child's transcript");
+		inspector.handleInput("\x1b[D");
+		await settle();
+		assert.equal(inspector.navigation.focus.kind, "tasks", "back again returns to /tasks");
+		assert.equal(inspector.navigation.selectedTaskId, childTaskId);
+		for (const width of [100, 40]) assert.match(screen(width), /alt\+w shell/, `${width} columns: ${screen(width)}`);
+		inspector.handleInput(ALT_W);
+		await settle();
+		const shellFromRow = screen(100);
+		assert.match(shellFromRow, /^Transcript · bash/, `alt+w on the Waiting row opens its shell: ${shellFromRow}`);
+		assert.match(shellFromRow, /Retained shell output/);
+		assert.match(shellFromRow, /← tasks/);
+		assert.equal(env.faux.getPendingResponseCount(), 1, "opening its shell did not wake the child");
+
 		// While it waits, a chat's task footer lists it, beside the shell it waits on.
 		const releasedRecord = host.taskRecords().find((record) => record.ref.taskId === childTaskId);
 		assert.ok(releasedRecord);
@@ -332,6 +446,11 @@ test(
 		assert.equal(woken.value.result.kind, "completed", JSON.stringify(woken.value.result));
 		assert.equal(finished.terminalStatus, "ok", "the wake ran the child again on its own, and it finished");
 		assert.equal(env.faux.getPendingResponseCount(), 0, "the woken child answered its wait's result");
+		// Its launch card follows the child: once it woke and finished, the card reads done, not waiting.
+		const cardAfterWake = stripVTControlCharacters(card.render(100).join("\n"));
+		assert.match(cardAfterWake, /● Agent/, cardAfterWake);
+		assert.match(cardAfterWake, /Done/, cardAfterWake);
+		assert.doesNotMatch(cardAfterWake, /◌|Waiting/, cardAfterWake);
 		// The selection follows the child to the attempt that woke, not to the shell beside it.
 		navigation.update(host.taskRecords(), listedOrder());
 		assert.equal(navigation.selectedId, finished.taskId);

@@ -4,10 +4,20 @@ import { type ThemeColor, theme } from "../theme/theme.js";
 import { collapseToolBlockLines, ToolBlock } from "./tool-block.ts";
 
 /**
- * How the subject of a notice ended or stands. A started subject reads as `success`; `heartbeat` marks a periodic
- * check on work that is still running.
+ * How the subject of a notice ended or stands. A started subject reads as `success`; `waiting` is a subagent released
+ * while it waits on a call, which wakes by itself when that call finishes; `heartbeat` marks a periodic check on work
+ * that is still running.
  */
-export type NoticeStatus = "success" | "failure" | "stopped" | "warning" | "paused" | "running" | "info" | "heartbeat";
+export type NoticeStatus =
+	| "success"
+	| "failure"
+	| "stopped"
+	| "warning"
+	| "paused"
+	| "waiting"
+	| "running"
+	| "info"
+	| "heartbeat";
 
 /**
  * One notice line: what finished, how it ended, and a few dim facts. Background commands, subagents, workflow runs
@@ -38,6 +48,7 @@ export const STATUS_MARKERS: Readonly<Record<NoticeStatus, { readonly glyph: str
 	stopped: { glyph: "◼", color: "muted" },
 	warning: { glyph: "!", color: "warning" },
 	paused: { glyph: "⏸", color: "muted" },
+	waiting: { glyph: "◌", color: "dim" },
 	running: { glyph: "∀", color: "accent" },
 	info: { glyph: "›", color: "muted" },
 	heartbeat: { glyph: "♥", color: "muted" },
