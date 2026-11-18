@@ -39,6 +39,13 @@ interface NodeSqliteDatabase {
 	close(): void;
 }
 
+/**
+ * How long a fixture's statement waits for a lock another connection holds. The product's connections commit on
+ * threads of their own, at the same time as a fixture reads the file from the test's thread, so a fixture waits out
+ * a commit as the product's own connections do rather than failing with `database is locked` at once.
+ */
+const FIXTURE_BUSY_TIMEOUT_MS = 5_000;
+
 export class TestSqliteDatabase implements FixtureDatabase {
 	private readonly node: NodeSqliteDatabase;
 
@@ -48,6 +55,7 @@ export class TestSqliteDatabase implements FixtureDatabase {
 			DatabaseSync: new (path: string) => NodeSqliteDatabase;
 		};
 		this.node = new DatabaseSync(path);
+		this.node.exec(`PRAGMA busy_timeout = ${FIXTURE_BUSY_TIMEOUT_MS}`);
 	}
 
 	run(sql: string, ...params: unknown[]): void {
