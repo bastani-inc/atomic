@@ -1,6 +1,7 @@
 // @ts-check
-import { connect as connectSocket } from "node:net";
+import { connect as connectSocket, isIP } from "node:net";
 import { join } from "node:path";
+import { connect as connectTls } from "node:tls";
 import {
 	createSqliteDatabase,
 	postgresDialect,
@@ -11,6 +12,7 @@ import {
 } from "@bastani/atomic/storage";
 import { createCloudPasswordProvider } from "./auth.js";
 import { createPostgresListener } from "./listen.js";
+import { OpenedSocket, ProxySettingError, ProxyTunnelError, postgresTransport, socketOpener } from "./proxy.js";
 
 /**
  * @typedef {import("@bastani/atomic/storage").SqliteDriverResult} SqliteDriverResult
@@ -28,6 +30,8 @@ import { createPostgresListener } from "./listen.js";
  *   listenUrl?: string,
  *   schema?: string,
  *   sdkSearchPaths?: readonly string[],
+ *   proxy?: string,
+ *   socket?: import("./proxy.js").PostgresSocketFactory,
  * }} PostgresDatabaseOptions
  */
 
@@ -96,6 +100,21 @@ function tlsVerificationFailure(cause) {
 				{ cause: /** @type {Error} */ (cause) },
 			);
 		}
+		current = /** @type {{ cause?: unknown }} */ (current).cause;
+	}
+	return undefined;
+}
+
+/**
+ * The tunnel a proxy did not open along `cause`'s chain (#5473), or undefined when the failure is not a proxy's.
+ * @param {unknown} cause
+ * @returns {ProxyTunnelError | undefined}
+ */
+function proxyTunnelFailure(cause) {
+	/** @type {unknown} */
+	let current = cause;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		if (current instanceof ProxyTunnelError) return current;
 		current = /** @type {{ cause?: unknown }} */ (current).cause;
 	}
 	return undefined;
@@ -581,6 +600,49 @@ function lockKey(scope) {
 	return `hashtextextended(${literal(scope)}, 0)`;
 }
 
+/** The protocol's SSLRequest code, sent before a TLS handshake on a new connection. */
+const SSL_REQUEST_CODE = 80877103;
+
+/**
+ * `raw`, a new connection to the server, with TLS negotiated on it as pg negotiates it for a session: an SSLRequest,
+ * then a handshake with `ssl`'s options that checks the certificate against `host`. A server that declines TLS gets
+ * nothing more, so a cancel key meant for an encrypted connection is never sent in clear (#5473).
+ * @param {import("node:stream").Duplex} raw
+ * @param {string} host
+ * @param {boolean | import("node:tls").ConnectionOptions} ssl
+ * @returns {Promise<import("node:stream").Duplex>}
+ */
+function secureCancelStream(raw, host, ssl) {
+	return new Promise((resolve, reject) => {
+		const request = Buffer.alloc(8);
+		request.writeInt32BE(8, 0);
+		request.writeInt32BE(SSL_REQUEST_CODE, 4);
+		raw.once("error", reject);
+		raw.once("data", (/** @type {Buffer} */ answer) => {
+			raw.pause();
+			if (answer.toString("latin1") !== "S") {
+				raw.destroy();
+				reject(new Error("The server declined TLS for the cancel request"));
+				return;
+			}
+			const secure = connectTls({
+				socket: /** @type {import("node:net").Socket} */ (raw),
+				host,
+				...(ssl === true ? {} : ssl),
+				...(isIP(host) === 0 ? { servername: host } : {}),
+			});
+			secure.once("error", reject);
+			secure.once("secureConnect", () => {
+				secure.off("error", reject);
+				resolve(secure);
+			});
+		});
+		// A tunnel is handed over paused, and a `data` listener alone does not resume a paused stream.
+		raw.resume();
+		raw.write(request);
+	});
+}
+
 /**
  * Quotes `text` as a SQL string literal.
  * @param {string} text
@@ -609,6 +671,12 @@ export async function openPostgresDatabase(options) {
 	);
 	if (options.schema !== undefined && (typeof options.schema !== "string" || !SCHEMA_NAME.test(options.schema)))
 		throw configError("schema", "invalid-schema", "Use a lowercase identifier of letters, digits and _, such as atomic");
+	if (options.proxy !== undefined && typeof options.proxy !== "string")
+		throw configError("proxy", "unsupported-proxy", 'Use an http:// or https:// proxy URL, or "none"');
+	if (options.socket !== undefined && typeof options.socket !== "function")
+		throw configError("socket", "invalid-socket-factory", "Pass a function that opens a connection to { host, port }");
+	if (options.proxy !== undefined && options.socket !== undefined)
+		throw configError("proxy", "conflicting-transport", "Pass either a proxy or a socket factory, not both");
 	/**
 	 * The schema every statement runs in, set with `SET LOCAL search_path` in each transaction so a transaction-mode
 	 * pooler can serve it: the configured one, else `atomic`, or `public` for a database an earlier release set up there.
@@ -647,6 +715,39 @@ export async function openPostgresDatabase(options) {
 	// Notifications reach only a session of their own: through a transaction pooler `listenUrl` names a direct endpoint.
 	const listenConnection =
 		options.listenUrl === undefined ? connection : parseConnection(connectionUrl(options.listenUrl, "listenUrl"));
+
+	/**
+	 * How connections to `target` are opened (#5473): through the caller's socket factory, the `proxy` option, or the
+	 * environment's HTTP proxy, as `postgresTransport` decides; undefined for a direct connection, which pg opens itself.
+	 * A socket directory is always reached directly.
+	 * @param {typeof connection} target
+	 * @returns {import("./proxy.js").PostgresSocketFactory | undefined}
+	 */
+	const openerFor = (target) => {
+		const host = target.host ?? "localhost";
+		if (host.startsWith("/")) return undefined;
+		try {
+			return socketOpener(
+				postgresTransport({ host, port: Number(target.port ?? 5432) }, process.env, options.proxy),
+				options.socket,
+			);
+		} catch (error) {
+			if (error instanceof ProxySettingError)
+				throw configError(
+					"proxy",
+					"unsupported-proxy",
+					`${error.message}. Use an http:// or https:// proxy URL, set NO_PROXY for the database host, or pass proxy "none"`,
+				);
+			throw error;
+		}
+	};
+	const opener = openerFor(connection);
+	const listenOpener = listenConnection === connection ? opener : openerFor(listenConnection);
+	/**
+	 * pg's `stream` option for connections opened by `open`: a fresh stream for each connection.
+	 * @param {import("./proxy.js").PostgresSocketFactory | undefined} open
+	 */
+	const streamOption = (open) => (open === undefined ? {} : { stream: () => new OpenedSocket(open) });
 
 	/** The cloud token providers of the pool's and the listening connection's hosts. */
 	/** @type {Set<{ invalidate(): void }>} */
@@ -699,6 +800,7 @@ export async function openPostgresDatabase(options) {
 	const pool = new pg.Pool({
 		Client: /** @type {typeof pg.Client} */ (/** @type {unknown} */ (ClosingClient)),
 		...connection,
+		...streamOption(opener),
 		...(password === undefined ? {} : { password }),
 		max: maxConnections,
 		connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
@@ -716,11 +818,20 @@ export async function openPostgresDatabase(options) {
 	pool.on("error", (_error, client) => lost.add(client));
 	pool.on("connect", (client) => client.on("error", () => lost.add(client)));
 
+	/**
+	 * The proxy's refusal or failure the latest attempt to connect ended in, kept here because the facade passes on a
+	 * redacted copy of a failure, which is no longer a `ProxyTunnelError` (#5473). Cleared by a connection that opens.
+	 * @type {ProxyTunnelError | undefined}
+	 */
+	let tunnelFailure;
 	/** @returns {Promise<PoolClient>} */
 	const connect = async () => {
 		try {
-			return await pool.connect();
+			const client = await pool.connect();
+			tunnelFailure = undefined;
+			return client;
 		} catch (cause) {
+			tunnelFailure = proxyTunnelFailure(cause);
 			// A cloud token the server refused (28P01, or Azure's 28000 for a malformed one) is dropped, and a fresh one
 			// tried once: a clock that runs behind can reuse a cached token past its expiry (#5218).
 			if (tokenProviders.size > 0 && cause instanceof pg.DatabaseError && REFUSED_TOKEN_SQLSTATES.has(cause.code ?? "")) {
@@ -733,6 +844,9 @@ export async function openPostgresDatabase(options) {
 			}
 			const tls = tlsVerificationFailure(cause);
 			if (tls !== undefined) throw tls;
+			// A proxy that refused the tunnel refuses it again: permanent, never retried as unreachable (#5473).
+			const tunnel = proxyTunnelFailure(cause);
+			if (tunnel?.permanent === true) throw new StorageError(tunnel.message, { cause: /** @type {Error} */ (cause) });
 			throw new PostgresConnectionFailure("connect", /** @type {StorageFailureCause} */ (cause));
 		}
 	};
@@ -753,11 +867,42 @@ export async function openPostgresDatabase(options) {
 		request.writeInt32BE(secretKey, 12);
 		const host = connection.host ?? "localhost";
 		const port = connection.port ?? 5432;
-		const socket = host.startsWith("/") ? connectSocket(`${host}/.s.PGSQL.${port}`) : connectSocket(port, host);
-		socket.setTimeout(CLIENT_TIMEOUT_GRACE_MS, () => socket.destroy());
-		socket.on("error", () => socket.destroy());
-		socket.end(request);
-		return new Promise((resolve) => socket.once("close", () => resolve()));
+		return new Promise((resolve) => {
+			/** @type {import("node:stream").Duplex | undefined} */
+			let socket;
+			let done = false;
+			const finish = () => {
+				if (done) return;
+				done = true;
+				clearTimeout(timer);
+				socket?.destroy();
+				resolve(undefined);
+			};
+			// The whole request, a proxy tunnel and its TLS included, is bounded.
+			const timer = setTimeout(finish, CLIENT_TIMEOUT_GRACE_MS);
+			/** @type {Promise<import("node:stream").Duplex>} */
+			const opened =
+				opener === undefined
+					? Promise.resolve(
+							host.startsWith("/") ? connectSocket(`${host}/.s.PGSQL.${port}`) : connectSocket(port, host),
+						)
+					: // Through a tunnel the request is sent over TLS when the connection is, so the proxy never sees the
+						// connection's cancel key (#5473).
+						Promise.resolve()
+							.then(() => opener({ host, port: Number(port) }))
+							.then((raw) => (connection.ssl ? secureCancelStream(raw, host, connection.ssl) : raw));
+			opened.then(
+				(opening) => {
+					socket = opening;
+					if (done) return void opening.destroy();
+					opening.on("error", finish);
+					opening.once("close", finish);
+					opening.end(request);
+					opening.resume();
+				},
+				finish,
+			);
+		});
 	};
 
 	/**
@@ -843,6 +988,7 @@ export async function openPostgresDatabase(options) {
 		creatingSchema ??= (async () => {
 			const client = new ClosingClient({
 				...connection,
+				...streamOption(opener),
 				...(password === undefined ? {} : { password }),
 				connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
 				application_name: "atomic",
@@ -853,6 +999,8 @@ export async function openPostgresDatabase(options) {
 					client.connect((/** @type {Error | undefined} */ error) => (error ? reject(error) : resolve(undefined))),
 				);
 			} catch (cause) {
+				const tunnel = proxyTunnelFailure(cause);
+				if (tunnel?.permanent === true) throw new StorageError(tunnel.message, { cause: /** @type {Error} */ (cause) });
 				throw new PostgresConnectionFailure("connect", /** @type {StorageFailureCause} */ (cause));
 			}
 			try {
@@ -1008,6 +1156,7 @@ export async function openPostgresDatabase(options) {
 		async connect() {
 			const client = new ClosingClient({
 				...listenConnection,
+				...streamOption(listenOpener),
 				...(listenPassword === undefined ? {} : { password: listenPassword }),
 				connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
 				// A short keepalive notices a peer that vanished without a reset sooner than the system's two hours; the
@@ -1140,7 +1289,13 @@ export async function openPostgresDatabase(options) {
 		}
 		else schemaReady = Number(found?.present) > 0;
 		return database;
-	} catch (error) {
+	} catch (caught) {
+		// A proxy that did not open the tunnel is named, with the server it was asked for, in the failure itself (#5473):
+		// a worker that relays only the message keeps the reason. The message names the proxy without its credentials.
+		const error =
+			tunnelFailure === undefined
+				? caught
+				: new StorageUnavailableError(database.descriptor, /** @type {Error} */ (caught), tunnelFailure.message);
 		await database
 			.close()
 			.catch((cleanupCause) =>
@@ -1178,6 +1333,8 @@ const adapter = {
 			...(typeof options.statementTimeoutMs === "number" ? { statementTimeoutMs: options.statementTimeoutMs } : {}),
 			...(typeof options.listenUrl === "string" ? { listenUrl: options.listenUrl } : {}),
 			...(options.schema === undefined ? {} : { schema: /** @type {string} */ (options.schema) }),
+			// A value that is not a string reaches the option's check, which names it.
+			...(options.proxy === undefined ? {} : { proxy: /** @type {string} */ (options.proxy) }),
 			// A cloud SDK `atomic install` put in the user packages, for an adapter installed from a local path (#5218).
 			...(cloud ? { sdkSearchPaths: [join(context.agentDir, "npm")] } : {}),
 		});

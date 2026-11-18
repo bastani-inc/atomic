@@ -1,4 +1,7 @@
 import type { AdapterOptions, SqliteDatabase, StorageOpenContext } from "@bastani/atomic/storage";
+import type { PostgresSocketFactory } from "./proxy.js";
+
+export type { PostgresSocketFactory, ProxyTarget } from "./proxy.js";
 
 export interface PostgresDatabaseOptions {
 	/** A `postgres://` or `postgresql://` URL without a password. */
@@ -30,6 +33,15 @@ export interface PostgresDatabaseOptions {
 	 * `openDatabase` passes `<agentDir>/npm`, where `atomic install npm:<package>` installs user packages.
 	 */
 	sdkSearchPaths?: readonly string[];
+	/**
+	 * The HTTP proxy connections tunnel through with `CONNECT` (#5473): an `http://` or `https://` URL, with credentials
+	 * sent as `Proxy-Authorization` when it has them, or `"none"` for direct connections. It overrides the environment:
+	 * without it, a connection to a host other than this machine tunnels through `HTTPS_PROXY` (or `ALL_PROXY`, then
+	 * `HTTP_PROXY`) unless `NO_PROXY` exempts the host. TLS still runs end to end with the server.
+	 */
+	proxy?: string;
+	/** Opens each connection to the server for a custom transport, in place of a socket or a proxy tunnel. */
+	socket?: PostgresSocketFactory;
 }
 
 export const DEFAULT_MAX_CONNECTIONS: 8;
