@@ -286,11 +286,12 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			});
 		},
 
-		releaseClaim(claim) {
+		releaseClaim(claim, options) {
+			const attempts = options?.unwritten === true ? `, claim_attempts = ${greatest("0", "claim_attempts - 1")}` : "";
 			return withClaim(claim, async (executor) => {
 				await executor.run(
 					`UPDATE ${table} SET state = 'queued', claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL,
-						saving_at = NULL
+						saving_at = NULL${attempts}
 					WHERE message_id = ?`,
 					claim.messageId,
 				);

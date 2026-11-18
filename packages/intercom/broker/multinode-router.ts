@@ -2577,7 +2577,11 @@ export class MultiNodeRouter {
 		for (const { row, claim } of claimed.rows) {
 			const session = this.localSessionFor(identity);
 			if (session === undefined) {
-				await this.state.outbox.releaseClaim(claim);
+				// The recipient left while the claim was on its way to the database: the row was never written to it, so it
+				// goes back as never claimed. Its sender's broker then still queues it for the recipient's return
+				// (`positionIfRecipientLeft`), instead of reporting the send uncertain once its receipt wait ends.
+				const released = await this.state.outbox.releaseClaim(claim, { unwritten: true });
+				if (released.status === "released") await this.wakeOrigin(row);
 				continue;
 			}
 			if (row.frame.type === "released_child_reply") {
