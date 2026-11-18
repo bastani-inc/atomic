@@ -61,6 +61,14 @@ const PROCESS_HOLDER_ID = randomUUID();
 const CHANGE_APPEND_ATTEMPTS = 4;
 /** Most receipts, settlements and checkpoints one journal transaction writes for a run. */
 const APPEND_BATCH_LIMIT = 256;
+/**
+ * Most appends in one journal transaction that holds a pending-stage change's chained receipts (#3931). A synchronous
+ * driver holds the event loop for the whole transaction: 150 receipts took 13 to 16 ms on an idle host and several
+ * times that on a loaded one. 16 keeps one transaction near a millisecond idle and within a frame (16 ms) loaded,
+ * and a 150-stage broadcast's receipts still commit in 10 transactions rather than 150. The event loop turns between
+ * a chain's transactions.
+ */
+export const RECEIPT_CHAIN_BATCH_LIMIT = 16;
 const processExitCleanups = new Set<() => void>();
 
 function runProcessExitCleanups(): void {
@@ -1400,7 +1408,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			return Promise.reject(error);
 		}
 		const open = this.appendBatches.get(runId);
-		const batch = open !== undefined && open.length < APPEND_BATCH_LIMIT ? open : [];
+		const limit = chain === undefined ? APPEND_BATCH_LIMIT : RECEIPT_CHAIN_BATCH_LIMIT;
+		const batch = open !== undefined && open.length < limit ? open : [];
 		const after = chain === undefined ? undefined : this.chainTails.get(chain);
 		const queued = new Promise<void>((resolve, reject) => {
 			const append: QueuedAppend = {
@@ -1431,6 +1440,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private *appendBatch(runId: string, queued: QueuedAppend[]): Operation<void> {
 		if (this.appendBatches.get(runId) === queued) this.appendBatches.delete(runId);
+		// A chain's later transaction lets the event loop turn first, so its bounded transactions never add up to one
+		// long hold of the loop.
+		if (queued.some((append) => append.after !== undefined && !queued.includes(append.after)))
+			yield* invoke(nextTurn);
 		// A chained receipt whose predecessor was not written is not written either, so a chain never leaves a gap.
 		// Batches run in queue order, so a predecessor in an earlier batch has settled by now. One in this batch is
 		// written in the same journal transaction, whose lease or storage failure writes neither; a chain's receipts

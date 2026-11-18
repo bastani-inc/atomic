@@ -9,9 +9,12 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
-import type { SqliteDatabase } from "@bastani/atomic/storage";
+import type { SqliteDatabase, SqliteExecutor } from "@bastani/atomic/storage";
 import { afterEach, test } from "vitest";
-import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import {
+	JournalDurableBackend,
+	RECEIPT_CHAIN_BATCH_LIMIT,
+} from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import { PendingStageTransitionLedger } from "../../packages/workflows/src/shared/pending-stage-transition-ledger.js";
@@ -26,8 +29,11 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 const DELIVERED_STAGES = 150;
 /** Receipts on one chain that need two journal transactions: more than one batch holds. */
 const RECEIPTS_ACROSS_BATCHES = 300;
-/** One batch of queued appends, the one it may queue behind, and slack: never one transaction per receipt. */
-const ARCHIVE_TRANSACTION_BOUND = 4;
+/**
+ * Full transactions of at most RECEIPT_CHAIN_BATCH_LIMIT receipts, plus a short first one and slack: about 10 for 150
+ * receipts, never one per receipt.
+ */
+const ARCHIVE_TRANSACTION_BOUND = Math.ceil(DELIVERED_STAGES / RECEIPT_CHAIN_BATCH_LIMIT) + 2;
 
 const cleanups: (() => Promise<void> | void)[] = [];
 
@@ -40,6 +46,38 @@ async function countingBackend(options: { failTransaction?: () => boolean } = {}
 	cleanups.push(() => removeTempDirectory(directory));
 	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
 	let transactions = 0;
+	/** Appends written by each journal transaction, in order. */
+	const appendsPerTransaction: number[] = [];
+	/** Event-loop turns seen when each journal transaction began. */
+	const turnsAtTransaction: number[] = [];
+	let turns = 0;
+	let ticker: NodeJS.Immediate | undefined;
+	const tick = () => {
+		turns++;
+		ticker = setImmediate(tick);
+	};
+	tick();
+	cleanups.push(() => clearImmediate(ticker));
+	const counting = (transaction: SqliteExecutor, index: number): SqliteExecutor => {
+		const count = (sql: string) => {
+			if (/^\s*INSERT INTO/i.test(sql)) appendsPerTransaction[index]!++;
+		};
+		return {
+			exec: (sql) => transaction.exec(sql),
+			run: (sql, ...params) => {
+				count(sql);
+				return transaction.run(sql, ...params);
+			},
+			get: (sql, ...params) => {
+				count(sql);
+				return transaction.get(sql, ...params);
+			},
+			all: (sql, ...params) => {
+				count(sql);
+				return transaction.all(sql, ...params);
+			},
+		};
+	};
 	const counted: SqliteDatabase = {
 		get descriptor() {
 			return database.descriptor;
@@ -48,10 +86,12 @@ async function countingBackend(options: { failTransaction?: () => boolean } = {}
 		run: (sql, ...params) => database.run(sql, ...params),
 		get: (sql, ...params) => database.get(sql, ...params),
 		all: (sql, ...params) => database.all(sql, ...params),
-		transaction: (body) => {
-			transactions++;
+		transaction: (body, transactionOptions) => {
+			const index = transactions++;
+			appendsPerTransaction.push(0);
+			turnsAtTransaction.push(turns);
 			if (options.failTransaction?.() === true) throw new Error("injected storage failure");
-			return database.transaction(body);
+			return database.transaction((transaction) => body(counting(transaction, index)), transactionOptions);
 		},
 		close: () => database.close(),
 	};
@@ -69,7 +109,13 @@ async function countingBackend(options: { failTransaction?: () => boolean } = {}
 		createdAt: 1,
 		status: "running",
 	});
-	return { backend, journal, transactions: () => transactions };
+	return {
+		backend,
+		journal,
+		transactions: () => transactions,
+		appendsPerTransaction: () => [...appendsPerTransaction],
+		turnsAtTransaction: () => [...turnsAtTransaction],
+	};
 }
 
 function delivery(index: number): PendingStageMessageDelivery {
@@ -103,8 +149,8 @@ function endedStage(runId: string): RunSnapshot {
 	return { id: runId, stages: [{ id: "stage", name: "stage", status: "completed" }] } as unknown as RunSnapshot;
 }
 
-test("a transition archives a broadcast's receipts for 150 ended stages in a few journal transactions, not one per receipt (#3931)", async () => {
-	const { backend, journal, transactions } = await countingBackend();
+test("a transition archives a broadcast's receipts for 150 ended stages in about 10 bounded journal transactions, letting the event loop turn between them (#3931)", async () => {
+	const { backend, journal, transactions, appendsPerTransaction, turnsAtTransaction } = await countingBackend();
 	const entry = broadcast();
 	assert.equal(await backend.persistPendingStageMessages("run", [entry]), true);
 	const before = transactions();
@@ -116,6 +162,20 @@ test("a transition archives a broadcast's receipts for 150 ended stages in a few
 		archiveTransactions <= ARCHIVE_TRANSACTION_BOUND,
 		`${archiveTransactions} journal transactions archived ${DELIVERED_STAGES} receipts`,
 	);
+	// No transaction holds the synchronous driver for more than the bounded batch.
+	const written = appendsPerTransaction().slice(before);
+	assert.equal(
+		written.reduce((sum, appends) => sum + appends, 0),
+		DELIVERED_STAGES,
+	);
+	assert.ok(
+		written.every((appends) => appends <= RECEIPT_CHAIN_BATCH_LIMIT),
+		`receipts per journal transaction: ${written.join(", ")}`,
+	);
+	// The event loop turned before each of the chain's later transactions.
+	const turnsSeen = turnsAtTransaction().slice(before);
+	for (let index = 1; index < turnsSeen.length; index++)
+		assert.ok(turnsSeen[index]! > turnsSeen[index - 1]!, `transactions ${index - 1} and ${index} ran in one turn`);
 	assert.deepEqual(compacted.messages[0]?.deliveries, []);
 	const receipts = [];
 	for await (const written of journal.read("run"))
