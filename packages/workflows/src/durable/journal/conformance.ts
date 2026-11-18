@@ -546,6 +546,36 @@ export function registerRunJournalConformance(
 		);
 		assert.equal((await journal.getRun(header.runId))?.status, "suspended");
 	});
+	check(
+		"optional appendMany rejects, unwritten, an append whose named predecessor was rejected (#3931)",
+		async (journal) => {
+			if (journal.appendMany === undefined) return;
+			await journal.createRun(header);
+			const held = await lease(journal);
+			const context = <R>(action: () => R): R => action();
+			const failure = new Error("injected append failure");
+			const failing = <R>(): R => {
+				throw failure;
+			};
+			const results = await journal.appendMany(held, [
+				{ event: { type: "RunStarted", payload: null }, context },
+				{ event: { type: "StatusChanged", payload: { status: "suspended" } }, context: failing, after: 0 },
+				{ event: { type: "StatusChanged", payload: { status: "paused" } }, context, after: 1 },
+				{ event: { type: "StatusChanged", payload: { status: "running" } }, context, after: 2 },
+				{ event: { type: "RunFinished", payload: null }, context },
+			]);
+			assert.deepEqual(
+				results.map((result) => result.status),
+				["fulfilled", "rejected", "rejected", "rejected", "fulfilled"],
+			);
+			for (const rejected of results.slice(1, 4))
+				assert.ok(rejected.status === "rejected" && rejected.reason === failure);
+			assert.deepEqual(
+				(await entries(journal)).map((entry) => entry.event.type),
+				["RunStarted", "RunFinished"],
+			);
+		},
+	);
 	check("optional createRunWithEvents creates a run with its events atomically, or nothing", async (journal) => {
 		const createRunWithEvents = journal.createRunWithEvents;
 		if (createRunWithEvents === undefined) return;

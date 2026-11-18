@@ -5,6 +5,7 @@
 ### Added
 
 - `hexColorAnsi(hex, "fg" | "bg")` returns the escape sequence for a `#rrggbb` color that follows `NO_COLOR` and `FORCE_COLOR` the way theme colors do, for extensions that paint their own colors
+- `RunJournalBatchAppend` takes an optional `after`: the index of an earlier append in the same `appendMany` batch that this one depends on. A run journal rejects the append with that predecessor's error, without writing it, when the predecessor is rejected ([#3931](https://github.com/bastani-inc/atomic/issues/3931))
 
 ### Changed
 

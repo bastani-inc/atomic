@@ -41,7 +41,9 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function countingBackend(options: { failTransaction?: () => boolean } = {}) {
+async function countingBackend(
+	options: { failTransaction?: () => boolean; failInsert?: (params: readonly unknown[]) => boolean } = {},
+) {
 	const directory = makeTempDirectory("receipt-archive-batching-");
 	cleanups.push(() => removeTempDirectory(directory));
 	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
@@ -59,21 +61,23 @@ async function countingBackend(options: { failTransaction?: () => boolean } = {}
 	tick();
 	cleanups.push(() => clearImmediate(ticker));
 	const counting = (transaction: SqliteExecutor, index: number): SqliteExecutor => {
-		const count = (sql: string) => {
-			if (/^\s*INSERT INTO/i.test(sql)) appendsPerTransaction[index]!++;
+		const count = (sql: string, params: readonly unknown[]) => {
+			if (!/^\s*INSERT INTO/i.test(sql)) return;
+			if (options.failInsert?.(params) === true) throw new Error("injected insert failure");
+			appendsPerTransaction[index]!++;
 		};
 		return {
 			exec: (sql) => transaction.exec(sql),
 			run: (sql, ...params) => {
-				count(sql);
+				count(sql, params);
 				return transaction.run(sql, ...params);
 			},
 			get: (sql, ...params) => {
-				count(sql);
+				count(sql, params);
 				return transaction.get(sql, ...params);
 			},
 			all: (sql, ...params) => {
-				count(sql);
+				count(sql, params);
 				return transaction.all(sql, ...params);
 			},
 		};
@@ -226,5 +230,41 @@ test("a receipt chain whose first batch fails writes none of the receipts queued
 	assert.equal(
 		await backend.hasPendingStageDeliveryReceipt("run", "broadcast", delivery(RECEIPTS_ACROSS_BATCHES - 1)),
 		false,
+	);
+});
+
+test("a receipt that fails inside a chain's journal transaction stops the receipts after it in that transaction too (#3931)", async () => {
+	const failedStage = 5;
+	const { backend, journal } = await countingBackend({
+		failInsert: (params) =>
+			params.includes(RUN_EVENT_TYPES.messageDelivered) &&
+			params.some((param) => typeof param === "string" && param.includes(`"child-${failedStage}"`)),
+	});
+	const entry = broadcast();
+	assert.equal(await backend.persistPendingStageMessages("run", [entry]), true);
+	const chain = { queued: 0 };
+	const results = await Promise.allSettled(
+		Array.from({ length: RECEIPT_CHAIN_BATCH_LIMIT }, (_, index) =>
+			backend.archivePendingStageDeliveryReceipt(
+				"run",
+				"broadcast",
+				delivery(index),
+				{ messageRunId: "run", deliveryCount: index + 1 },
+				chain,
+			),
+		),
+	);
+
+	assert.deepEqual(
+		results.map((result) => result.status),
+		Array.from({ length: RECEIPT_CHAIN_BATCH_LIMIT }, (_, index) => (index < failedStage ? "fulfilled" : "rejected")),
+	);
+	const receipts = [];
+	for await (const written of journal.read("run"))
+		if (written.event.type === RUN_EVENT_TYPES.messageDelivered)
+			receipts.push((written.event.payload as unknown as { delivery: PendingStageMessageDelivery }).delivery.runId);
+	assert.deepEqual(
+		receipts,
+		Array.from({ length: failedStage }, (_, index) => `child-${index}`),
 	);
 });

@@ -112,6 +112,11 @@ export interface RunJournalBatchAppend {
 	readonly event: RunEvent;
 	readonly key?: string;
 	readonly context: <R>(action: () => R) => R;
+	/**
+	 * The index, in the same batch, of an earlier append this one depends on: when that append is rejected, this one is
+	 * rejected with the same reason and not written.
+	 */
+	readonly after?: number;
 }
 /** One event of a run created with `createRunWithEvents`; `key` is the event's idempotency key, as with `append`. */
 export interface RunJournalSeedEvent {

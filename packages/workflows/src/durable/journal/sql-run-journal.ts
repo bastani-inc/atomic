@@ -948,8 +948,9 @@ export class SqlRunJournal implements RunJournal {
 	 * Append several events to one run in one transaction, checking the lease once and assigning consecutive
 	 * sequences in order. Each append is checked by the pool append guard of the context that issued it, or by none
 	 * when that context had none, whatever guard the batch itself runs under. Each runs in its own savepoint, so
-	 * one append's guard or payload failure is reported for it alone and the rest still commit. A lease or storage
-	 * failure rejects the whole batch, with nothing written.
+	 * one append's guard or payload failure is reported for it alone and the rest still commit, except an append that
+	 * names it with `after`, which is rejected with it and not written. A lease or storage failure rejects the whole
+	 * batch, with nothing written.
 	 */
 	async appendMany(
 		lease: Lease,
@@ -971,6 +972,11 @@ export class SqlRunJournal implements RunJournal {
 				return error as Error;
 			}
 		});
+		// An append whose predecessor in the batch already failed its preparation fails with it, unwritten.
+		for (const [index, append] of appends.entries()) {
+			const after = append.after === undefined ? undefined : prepared[append.after];
+			if (after instanceof Error) prepared[index] = after;
+		}
 		const batch = this.database.batch?.bind(this.database);
 		if (batch && prepared.every((append) => append instanceof Error || this.inOneRequest(append)))
 			// Waits for the write lock as the transaction below and a single append do.
@@ -981,9 +987,16 @@ export class SqlRunJournal implements RunJournal {
 			this.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
 				const results: PromiseSettledResult<AppendOutcome>[] = [];
-				for (const append of prepared) {
+				for (const [index, append] of prepared.entries()) {
 					if (append instanceof Error) {
 						results.push({ status: "rejected", reason: append });
+						continue;
+					}
+					// An append whose predecessor in the batch was rejected is rejected with it, unwritten.
+					const after = appends[index]!.after;
+					const predecessor = after === undefined ? undefined : results[after];
+					if (predecessor?.status === "rejected") {
+						results.push(predecessor);
 						continue;
 					}
 					await tx.exec(`SAVEPOINT ${APPEND_SAVEPOINT}`);

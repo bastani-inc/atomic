@@ -377,7 +377,7 @@ interface QueuedAppend {
 	/** Runs a function in the async context the append was issued from, which carries its pool append guard. */
 	readonly context: <R>(action: () => R) => R;
 	/** The receipt queued before this one on its chain: this one is written only if that one was. */
-	readonly after?: QueuedAppend;
+	readonly previous?: QueuedAppend;
 	/** Set once the append is settled without being written. */
 	failure?: Error;
 	resolve(): void;
@@ -1410,14 +1410,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const open = this.appendBatches.get(runId);
 		const limit = chain === undefined ? APPEND_BATCH_LIMIT : RECEIPT_CHAIN_BATCH_LIMIT;
 		const batch = open !== undefined && open.length < limit ? open : [];
-		const after = chain === undefined ? undefined : this.chainTails.get(chain);
+		const previous = chain === undefined ? undefined : this.chainTails.get(chain);
 		const queued = new Promise<void>((resolve, reject) => {
 			const append: QueuedAppend = {
 				event,
 				...(key === undefined ? {} : { key }),
 				...(requiresRegisteredRun ? { requiresRegisteredRun } : {}),
 				context: AsyncLocalStorage.snapshot(),
-				...(after === undefined ? {} : { after }),
+				...(previous === undefined ? {} : { previous }),
 				resolve,
 				reject: (error) => {
 					append.failure = error;
@@ -1442,14 +1442,13 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (this.appendBatches.get(runId) === queued) this.appendBatches.delete(runId);
 		// A chain's later transaction lets the event loop turn first, so its bounded transactions never add up to one
 		// long hold of the loop.
-		if (queued.some((append) => append.after !== undefined && !queued.includes(append.after)))
+		if (queued.some((append) => append.previous !== undefined && !queued.includes(append.previous)))
 			yield* invoke(nextTurn);
 		// A chained receipt whose predecessor was not written is not written either, so a chain never leaves a gap.
-		// Batches run in queue order, so a predecessor in an earlier batch has settled by now. One in this batch is
-		// written in the same journal transaction, whose lease or storage failure writes neither; a chain's receipts
-		// carry one caller's append guard and payloads the run's pending list already holds.
+		// Batches run in queue order, so a predecessor in an earlier batch has settled by now; one in this batch is
+		// named to the journal, which rejects the receipt unwritten when its predecessor is rejected.
 		const unbroken = queued.filter((append) => {
-			const failure = append.after?.failure;
+			const failure = append.previous?.failure;
 			if (failure === undefined) return true;
 			append.reject(failure);
 			return false;
@@ -1459,8 +1458,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const appendMany = runJournalAppendMany(this.journal);
 		if (appendMany === undefined || batch.length === 1) {
 			for (const append of batch) {
-				if (append.after?.failure !== undefined) {
-					append.reject(append.after.failure);
+				if (append.previous?.failure !== undefined) {
+					append.reject(append.previous.failure);
 					continue;
 				}
 				try {
@@ -1482,7 +1481,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		let settled = 0;
 		try {
 			const lease = yield* this.ownership(runId);
-			const results = yield* invoke(() => appendMany(lease, batch));
+			const index = new Map(batch.map((append, position) => [append, position]));
+			const appends = batch.map(({ event, key, context, previous }) => {
+				const after = previous === undefined ? undefined : index.get(previous);
+				return { event, ...(key === undefined ? {} : { key }), context, ...(after === undefined ? {} : { after }) };
+			});
+			const results = yield* invoke(() => appendMany(lease, appends));
 			for (const result of results) {
 				const append = batch[settled]!;
 				if (result.status === "rejected") {

@@ -613,11 +613,7 @@ export class ShardedRunJournal implements RunJournal {
 			const journal = await this.route(owned);
 			const results = journal.appendMany
 				? await journal.appendMany(owned, recorded)
-				: await Promise.allSettled(
-						recorded.map((append) =>
-							append.context(() => journal.append(owned, append.event, { key: append.key })),
-						),
-					);
+				: await appendInOrder(journal, owned, recorded);
 			let status: string | undefined;
 			results.forEach((result, index) => {
 				const changed = this.statusOf(recorded[index]!.event);
@@ -775,4 +771,29 @@ export async function rootRunJournal(journal: RunJournal, rootRunId: string): Pr
 /** `rootRunJournal` for a reader: never reserves a shard, and falls back to the store when the root is unknown. */
 export async function existingRootRunJournal(journal: RunJournal, rootRunId: string): Promise<RunJournal> {
 	return isShardedRunJournal(journal) ? ((await journal.existingJournalFor(rootRunId)) ?? journal) : journal;
+}
+
+/** One append at a time, in order; an append whose predecessor (`after`) was rejected is rejected with it, unwritten. */
+async function appendInOrder(
+	journal: RunJournal,
+	lease: Lease,
+	appends: readonly RunJournalBatchAppend[],
+): Promise<PromiseSettledResult<AppendOutcome>[]> {
+	const results: PromiseSettledResult<AppendOutcome>[] = [];
+	for (const append of appends) {
+		const predecessor = append.after === undefined ? undefined : results[append.after];
+		if (predecessor?.status === "rejected") {
+			results.push(predecessor);
+			continue;
+		}
+		try {
+			results.push({
+				status: "fulfilled",
+				value: await append.context(() => journal.append(lease, append.event, { key: append.key })),
+			});
+		} catch (error) {
+			results.push({ status: "rejected", reason: error });
+		}
+	}
+	return results;
 }
