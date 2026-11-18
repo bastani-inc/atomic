@@ -15,6 +15,7 @@ import { codemodeRenderers } from "../src/extensions/codemode/renderer.js";
 import { ToolExecutionComponent as BaseToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
+import { shortenHomePath } from "../src/utils/paths.ts";
 
 const toolRows = new Set<BaseToolExecutionComponent>();
 
@@ -831,7 +832,7 @@ describe("ToolExecutionComponent parity", () => {
 			title: "outside AGENTS.md",
 			path: resolve(process.cwd(), "..", "AGENTS.md"),
 			content: "Hidden outside resource instructions",
-			compact: `Read(${resolve(process.cwd(), "..", "AGENTS.md").replace(/\\/g, "/")})`,
+			compact: `Read(${shortenHomePath(resolve(process.cwd(), "..", "AGENTS.md")).replace(/\\/g, "/")})`,
 			hidden: "Hidden outside resource instructions",
 			absent: undefined,
 		},
