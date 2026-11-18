@@ -729,8 +729,10 @@ async function migrate(
 	// Tables created in public after the move hold state the moved ones do not (#5218).
 	const checked = await open("journal");
 	let strays: string[];
+	let withoutTrigrams: boolean;
 	try {
 		strays = await strayPostgresStorageTables(checked);
+		withoutTrigrams = dialectOf(checked).name === "postgres" && !(await hasPostgresExtension(checked, "pg_trgm"));
 	} finally {
 		await checked.close();
 	}
@@ -743,7 +745,18 @@ async function migrate(
 	log(
 		`Atomic's tables in ${describeStorageSelection(selection)} are set up for this version: sessions, workflow runs, worker pools and Intercom.`,
 	);
+	if (withoutTrigrams)
+		log(
+			`Searches of session history will read each session a page at a time: the pg_trgm extension, which their index uses, is not installed in this database and this role could not install it. On Azure Database for PostgreSQL and Azure HorizonDB, add pg_trgm to the server parameter azure.extensions; elsewhere, grant this role CREATE on the database or have an administrator run CREATE EXTENSION pg_trgm in it. Then run \`${APP_NAME} storage migrate\` again.`,
+		);
 	return 0;
+}
+
+/** Whether the PostgreSQL extension `name` is installed in `database`'s current database. */
+async function hasPostgresExtension(database: SqliteDatabase, name: string): Promise<boolean> {
+	return (
+		(await database.get("SELECT 1 AS present FROM pg_catalog.pg_extension WHERE extname = ?", name)) !== undefined
+	);
 }
 
 /** A note when this directory's workflow runs use another journal than the journal store `adopt` writes to. */

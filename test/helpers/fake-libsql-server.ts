@@ -433,7 +433,8 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 	const server = createServer((request, response) => {
 		if (request.method === "POST" && request.url === "/v2/pipeline") {
 			handlePipeline(request, response).catch((error: unknown) => {
-				if (!response.headersSent) answer(response, 500, { message: String(error) });
+				if (!response.headersSent)
+					answer(response, 500, { message: error instanceof Error ? error.message : "internal error" });
 			});
 			return;
 		}

@@ -78,7 +78,7 @@ To move existing runs and sessions to another store, see [Exporting and importin
 
 ## PostgreSQL
 
-`@bastani/atomic-storage-postgres` keeps Atomic's shared state in a PostgreSQL database. It needs PostgreSQL 16 or later, self-hosted or managed: Azure Database for PostgreSQL Flexible Server, Amazon RDS or Aurora PostgreSQL, Google Cloud SQL or AlloyDB, Neon, Supabase, and others.
+`@bastani/atomic-storage-postgres` keeps Atomic's shared state in a PostgreSQL database. It needs PostgreSQL 16 or later, self-hosted or managed: Azure Database for PostgreSQL Flexible Server, Azure HorizonDB, Amazon RDS or Aurora PostgreSQL, Google Cloud SQL or AlloyDB, Neon, Supabase, and others.
 
 ### What works on PostgreSQL
 
@@ -197,7 +197,7 @@ Atomic connects with TLS to every host except the local machine, and checks the 
 
 By provider:
 
-- Azure Database for PostgreSQL and Neon use certificates that Node.js trusts: no option is needed.
+- Azure Database for PostgreSQL, Azure HorizonDB and Neon use certificates that Node.js trusts: no option is needed.
 - Supabase: download the project's CA certificate (**Project Settings → Database → SSL Configuration**) and add `?sslrootcert=/path/to/supabase-ca.pem`. Its certificates chain to Supabase's own CA.
 - Amazon RDS and Aurora: download your region's certificate bundle from `https://truststore.pki.rds.amazonaws.com/<region>/<region>-bundle.pem` and add `?sslrootcert=/path/to/bundle.pem`.
 - Google Cloud SQL: save the instance's server CA certificate (`gcloud sql instances describe <instance> --format='value(serverCaCert.cert)'`) and add `?sslmode=verify-ca&sslrootcert=/path/to/server-ca.pem` when you connect by private IP address, which is not among the certificate's names.
@@ -220,6 +220,24 @@ Wake-ups make Atomic faster and lighter on the database. An idle worker does not
 - `wake-ups: polling only, notifications do not pass the URL's transaction pooler`: set `listenUrl` to a direct endpoint, as in [Connection poolers](#connection-poolers).
 - `wake-ups: polling only, the listen connection failed`: the listen endpoint is unreachable or refused the login. Check `listenUrl`, or the server's connection limit.
 
+### Azure
+
+**Azure Database for PostgreSQL (flexible server).**
+
+- Connect to `<server>.postgres.database.azure.com`. Port 5432 reaches the server directly.
+- Port 6432 is the server's built-in PgBouncer, a transaction pooler. It is available on General Purpose and Memory Optimized servers once you turn on the server parameter `pgbouncer.enabled`; Burstable servers have none. When you connect through 6432, set `listenUrl` to the same URL on port 5432 so [wake-ups](#wake-ups) still arrive.
+- Add `PG_TRGM` to the server parameter `azure.extensions` before you run `atomic storage migrate`, so the search index of session history can be built. Without it, searches read each session a page at a time, and `atomic storage migrate` tells you so; run it again after you allow the extension.
+- Mind the connection limit. A Burstable B1ms server allows 50 connections and reserves 15 of them for administrators, and each Atomic process opens up to `maxConnections` (8) plus one for wake-ups. For more than a few processes, lower `maxConnections`, connect through PgBouncer, or choose a larger server.
+- Allow each machine's address in the server's firewall rules, or use private access.
+
+**Azure HorizonDB** (preview), PostgreSQL 17.
+
+- Connect to the cluster's read/write endpoint, `<cluster>.rw.<id>.<region>.horizondb.azure.com`, on port 5432. Don't use the pool's read-only endpoint: Atomic writes on every connection. Wake-ups arrive on the read/write endpoint.
+- Add `pg_trgm` to `azure.extensions` in the parameter group assigned to the compute pool, then run `atomic storage migrate`.
+- Allow each machine's address in the pool's firewall rules, or connect through a private endpoint.
+
+On both services the URL needs no TLS parameter: their certificates chain to CAs Node.js trusts, and HorizonDB, which requires TLS, gets it by default. The administrator is a member of `azure_pg_admin`, not a superuser, and the owner and runtime roles in [Set up the database](#set-up-the-database) work as written. Both take Microsoft Entra sign-in with `--auth azure`; see [Cloud identities](#cloud-identities).
+
 ### Cloud identities
 
 With `--auth`, or `options.auth` in settings, Atomic gets a short-lived token from the machine's cloud identity for each new connection and sends it as the password. No password is stored anywhere, and tokens stay in memory. Each cloud signs in through its own SDK, which you install beside the adapter:
@@ -234,7 +252,7 @@ When the SDK is missing or gives no token, the store fails to open with `Storage
 
 On each service, map the identity to a database user that may connect:
 
-- **Azure:** enable Microsoft Entra authentication on the server. As the Entra administrator, connected to the `postgres` database, create a role named exactly as the identity with `SELECT * FROM pgaadauth_create_principal('<identity name>', false, false);` and grant it `CONNECT` on the database. The URL's user name is that role.
+- **Azure** (flexible server or HorizonDB cluster): enable Microsoft Entra authentication and add a Microsoft Entra administrator. As that administrator, connected to the `postgres` database, create a role named exactly as the identity with `SELECT * FROM pgaadauth_create_principal('<identity name>', false, false);` and grant it `CONNECT` on the database. The URL's user name is that role.
 - **AWS:** enable IAM database authentication, run `CREATE USER atomic; GRANT rds_iam TO atomic;`, and allow the identity only `rds-db:connect` on `arn:aws:rds-db:<region>:<account>:dbuser:<DbiResourceId>/atomic`.
 - **Google Cloud:** set the instance flag `cloudsql.iam_authentication=on`, add the service account as an IAM database user, and grant it `roles/cloudsql.instanceUser`. The URL's user name is the service account's email without `.gserviceaccount.com`. A Compute Engine VM needs the `cloud-platform` access scope.
 
@@ -255,7 +273,8 @@ A cloud identity is a role like any other: make it the runtime role with the gra
 - **The server refused a token**: `28P01` ("password authentication failed") is a token for the wrong user or one that expired. Azure answers `28000` ("The access token has invalid format") for a malformed one, such as a token for another resource or an empty or truncated token file: get it for `https://ossrdbms-aad.database.windows.net` (`az account get-access-token --resource-type oss-rdbms`), or use `--auth azure`.
 - **`StorageUnavailableError`** when the store opens: the server refused the password (`28P01`, or `28000` for an Azure token, as above), the database does not exist (`3D000`), or the server is older than PostgreSQL 14. Atomic's tables need PostgreSQL 16: on 14 and 15 the adapter connects, but sessions and workflow runs fail to open.
 - **A certificate error** (`self-signed certificate in certificate chain`, `unable to get local issuer certificate`): the server's CA is not one Node.js trusts. Add `sslrootcert`, as in [TLS](#tls).
-- **`too many connections`** (`53300`): lower `maxConnections`, raise the server's `max_connections`, or put a [pooler](#connection-poolers) in front.
+- **`StorageTransientError` with code `read-only-server`** (`25006`): the server accepts reads only. Either the URL names a read replica, a standby or a read-only endpoint, such as an Azure HorizonDB pool's: use the primary server, or the cluster's read/write endpoint. Or the server is read-only for now, during a failover or while Azure keeps a server whose storage is nearly full read-only: Atomic retries, and a call still refused after its retries fails with this code.
+- **`too many connections`** or **`remaining connection slots are reserved`** (`53300`): lower `maxConnections`, raise the server's `max_connections`, or put a [pooler](#connection-poolers) in front.
 - **`StorageTransientError` with code `lock-conflict` or `transaction-timeout`**: the server cancelled a statement or transaction that waited too long for a lock or ran past `statementTimeoutMs`, and nothing it wrote was kept. Persistent ones point to an overloaded server.
 - **`wake-ups: polling only`** in `atomic storage status`: see [Wake-ups](#wake-ups). Work still runs, found by the regular checks.
 - **Connections dropped during a failover or a pooler restart** are reported as `StorageTransientError` with code `connection-lost`, as for [libSQL](#turso-and-libsql).
@@ -987,7 +1006,7 @@ These storage errors carry a stable `code` and a `hint` with the remedy:
 | `StorageUnsupportedOperationError` | `unsupported-operation` | `getWriterQueueStats` or `getWriterQueueDegradation` received a handle that `openNodeSqliteDatabase` or `wrapNodeSqliteDatabase` did not return. | `operation` (`"getWriterQueueStats"` or `"getWriterQueueDegradation"`), `adapter`, `location` | Pass a node-sqlite handle. |
 | `StorageWriterQueueDegradedError` | `writer-queue-degraded` | Not thrown: recorded once per reason on the connection (read with `getWriterQueueDegradation`) and emitted once as a process warning. A waiting writer could not watch its release notice (`watch-unavailable`), a writer letting go of the lock could not read the queue or notify the next writer (`wake-failed`), an entry or notice could not be removed on leaving or after abandonment (`stale-ticket-kept`), or the connection could not keep its record of holding the write lock in `<file>-holders`, so a writer that gives up waiting may not name the holder (`holder-record-unavailable`). | `reason` (`"watch-unavailable"`, `"wake-failed"`, `"stale-ticket-kept"`, or `"holder-record-unavailable"`), `adapter`, `location`, `cause`, and a `hint` for the reason | Raise the file-watch limits; make the `<file>-writers`, `<file>-wakes` and `<file>-holders` directories readable and writable; or remove abandoned entries by hand. A live entry left behind can delay the queue until it becomes stale. |
 | `StorageWriterQueueUnusableError` (a `StorageUnavailableError`) | `writer-queue-unusable` | A node-sqlite transaction could not read the `<file>-writers` directory, or add, refresh, or read an entry or its release notice. Nothing of the transaction ran. | `adapter`, `location`, `errno` (such as `"EACCES"`) when the cause has one, `cause` | Make the `<file>-writers` and `<file>-wakes` directories readable and writable for every process that writes the database. |
-| `StorageTransientError` (a `StorageUnavailableError`) | `stream-expired`, `transaction-timeout`, `connection-refused`, `connection-lost` | A call to a database server failed for a reason that passes: the server expired an idle stream, for example of a process stopped mid-transaction (`stream-expired`); it rolled back a transaction that kept the write lock while another writer waited (`transaction-timeout`); no connection could be made (`connection-refused`); or the connection broke during the request, or something in front of a libSQL server answered HTTP 5xx (`connection-lost`). Thrown after the call ran up to five times when it wrote nothing, or at once when its outcome is unknown. | `adapter`, `location`, `outcome` (`"not-applied"`, nothing was written; or `"unknown"`, the write may have been applied), `attempts` (the run that failed), `retryable: true`, `cause` (the driver failure, credentials redacted) | Check that the server is reachable and the process is not stopped or starved of CPU, then retry. With `outcome: "unknown"`, read the write back before retrying one that is not idempotent. |
+| `StorageTransientError` (a `StorageUnavailableError`) | `stream-expired`, `transaction-timeout`, `connection-refused`, `connection-lost`, `read-only-server` | A call to a database server failed for a reason that passes: the server expired an idle stream, for example of a process stopped mid-transaction (`stream-expired`); it rolled back a transaction that kept the write lock while another writer waited (`transaction-timeout`); no connection could be made (`connection-refused`); or the connection broke during the request, or something in front of a libSQL server answered HTTP 5xx (`connection-lost`); or a PostgreSQL server that accepts reads only refused a write (`read-only-server`): a read replica or read-only endpoint, or a server read-only for now, during a failover or while its storage is nearly full. Thrown after the call ran up to five times when it wrote nothing, or at once when its outcome is unknown. | `adapter`, `location`, `outcome` (`"not-applied"`, nothing was written; or `"unknown"`, the write may have been applied), `attempts` (the run that failed), `retryable: true`, `cause` (the driver failure, credentials redacted) | Check that the server is reachable and the process is not stopped or starved of CPU, then retry. With `outcome: "unknown"`, read the write back before retrying one that is not idempotent. |
 | `SessionBlobError` | `blobs-unsupported` | The session store has no `putBlob` and `getBlob` (a session directory, or a custom store without them), and an import, fork, branch or `tool-output://` read needs them. Nothing was written. | `sessionId`, `adapter` | Keep the session in a SQLite or libSQL session store, or give the custom store `putBlob` and `getBlob`. |
 | `SessionBlobError` | `blob-missing` | A `tool-output://<sha256>` URL names a blob the current session does not hold. A copy, fork or export that finds blobs missing from its source carries on without them and reports this once as a process warning (an `onMissingBlob` function passed to `copySessionBlobs` or `inlineToolOutput` receives it instead). | `sessionId`, `hash` (the first missing one), `missing` (how many, when a copy or export reports it) | The output is gone, for example because the export it came from left it out; run the tool again. |
 | `SessionBlobError` | `blob-incomplete` | The store holds a blob's record but lost part of its content. | `sessionId`, `hash`, `bytes` | The store lost part of this output; run the tool again. |
