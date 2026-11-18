@@ -21,6 +21,10 @@
 - An extension whose `session_start` or `resources_discover` handler throws no longer takes the interactive session down. Atomic shows `Extension "<path>" error: <message>` once and keeps working: the extension stays loaded, so its commands, tools and other handlers still run. Before, the error was shown up to three times and every prompt answered `Session is closed`; the isolated engine stopped Atomic with `Agent process exited (code=1)` or left a submitted prompt in the editor; `/new` exited Atomic, `/fork` left a closed session and `/reload` was rejected. This applies at startup, with `-c` or `--resume`, and on `/new`, `/resume`, `/fork` and `/reload`. Print mode, standalone RPC mode, SDK sessions and workflow stages still fail startup with `ExtensionStartupError`. SDK hosts can choose the interactive behaviour with `extensionBindings.reportStartupErrors` ([#5501](https://github.com/bastani-inc/atomic/issues/5501)).
 - An extension error reported while interactive startup is still loading, for example by a project extension whose `session_start` throws after you answer the trust question, now stays on screen instead of disappearing when startup redraws the transcript ([#5501](https://github.com/bastani-inc/atomic/issues/5501)).
 
+### Fixed
+
+- Under Node, each workflow run that finishes no longer keeps the session that wrote its summary, and the run text it summarized, in memory for the rest of the process. A long session that runs many workflows, and an SDK host that disposes such sessions, now release them ([#5487](https://github.com/bastani-inc/atomic/issues/5487))
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.
