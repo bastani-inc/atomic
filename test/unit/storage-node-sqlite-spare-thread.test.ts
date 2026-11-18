@@ -50,8 +50,9 @@ function directory(): string {
 	return made;
 }
 
-test("a connection opened while another is open takes the thread started ahead of it, and no thread is left once both closed (#5376)", async () => {
-	const { openNodeSqliteDatabase } = await adapter();
+test("a connection opened while another is open takes the thread started ahead of it, and none is left once stopped (#5376)", async () => {
+	const { openNodeSqliteDatabase, stopSpareConnectionThread } = await adapter();
+	cleanups.push(stopSpareConnectionThread);
 	const where = directory();
 	threads.started = 0;
 	const first = await openNodeSqliteDatabase(join(where, "first.sqlite"));
@@ -64,13 +65,24 @@ test("a connection opened while another is open takes the thread started ahead o
 	assert.equal(threads.started, 3, "never more than one thread is started ahead");
 	await first.close();
 	await second.close();
-	assert.equal(threads.live.size, 0, "no thread is left once every connection closed");
+	assert.equal(threads.live.size, 1, "the thread started ahead waits for a while after the last close");
+	await stopSpareConnectionThread();
+	assert.equal(threads.live.size, 0, "stopping it leaves no thread");
 });
 
-test("closing the only open connection stops the thread started ahead of the next open (#5376)", async () => {
-	const { openNodeSqliteDatabase } = await adapter();
-	const only = await openNodeSqliteDatabase(join(directory(), "only.sqlite"));
+test("an open soon after the last close takes the thread started ahead of it, and none is left once it waited its time (#5376)", async () => {
+	const { openNodeSqliteDatabase, SPARE_THREAD_IDLE_MS, stopSpareConnectionThread } = await adapter();
+	cleanups.push(stopSpareConnectionThread);
+	const where = directory();
+	const only = await openNodeSqliteDatabase(join(where, "only.sqlite"));
 	await until(() => threads.live.size === 2, "a thread was started ahead of the next open");
 	await only.close();
-	assert.equal(threads.live.size, 0);
+	assert.equal(threads.live.size, 1);
+	threads.started = 0;
+	const again = await openNodeSqliteDatabase(join(where, "again.sqlite"));
+	assert.equal(threads.live.size >= 1 && threads.started <= 1, true, "the open took the waiting thread");
+	await until(() => threads.started === 1, "one thread was started ahead of the open after it");
+	await again.close();
+	await realSleep(SPARE_THREAD_IDLE_MS);
+	await until(() => threads.live.size === 0, "no thread is left once the thread started ahead waited its time");
 });

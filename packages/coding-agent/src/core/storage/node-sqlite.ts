@@ -2450,6 +2450,8 @@ export function ordinarySqlitePath<T extends string | null>(location: T): T {
  * What a process is, for the file-backed connections `openNodeSqliteDatabase` opens: `interactive` (every process
  * that does not say otherwise) or `background`. See `declareSqliteProcessRole`.
  */
+export { SPARE_THREAD_IDLE_MS, stopSpareConnectionThread } from "./node-sqlite-thread.js";
+
 export type SqliteProcessRole = "interactive" | "background";
 
 let processRole: SqliteProcessRole = "interactive";

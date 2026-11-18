@@ -489,12 +489,20 @@ function startThread(): StartedThread {
 }
 
 /**
+ * How long the spare thread outlives the last open connection: a close followed by an open, as switching between
+ * stores does, takes it instead of starting a thread.
+ */
+export const SPARE_THREAD_IDLE_MS = 5_000;
+
+/**
  * A thread started ahead of the next open, so that open does not wait for a thread to start (#5376): starting one
  * takes about 20 ms on an idle machine and several times that on a busy one. There is at most one, it is started once a
- * connection opened, it does not keep the process alive, and it is stopped once no connection is open.
+ * connection opened, and it never keeps the process alive. It is stopped `SPARE_THREAD_IDLE_MS` after the last
+ * connection closed, or at once by `stopSpareConnectionThread`.
  */
 let spare: StartedThread | undefined;
 let openConnections = 0;
+let idleStop: ReturnType<typeof setTimeout> | undefined;
 
 function takeThread(): StartedThread {
 	const taken = spare;
@@ -508,7 +516,10 @@ function startSpare(): void {
 	spare.worker.unref();
 }
 
-async function stopSpare(): Promise<void> {
+/** Stops the thread started ahead of the next open, if there is one; the next open starts its own. */
+export async function stopSpareConnectionThread(): Promise<void> {
+	clearTimeout(idleStop);
+	idleStop = undefined;
 	const stopping = spare;
 	spare = undefined;
 	await stopping?.worker.terminate();
@@ -526,7 +537,6 @@ export class ThreadConnection {
 	private lost?: Error;
 	/** Counted among the open connections, which keep the spare thread. */
 	private counted = false;
-	private released?: Promise<void>;
 
 	private constructor(path: string, worker: Worker) {
 		this.path = path;
@@ -581,18 +591,21 @@ export class ThreadConnection {
 		}
 		connection.counted = true;
 		openConnections += 1;
+		clearTimeout(idleStop);
+		idleStop = undefined;
 		startSpare();
 		return { connection, location };
 	}
 
-	/** No longer counted among the open connections; the last one to go stops the spare thread. Once. */
-	private release(): Promise<void> {
-		if (!this.counted) return Promise.resolve();
-		this.released ??= (() => {
-			openConnections -= 1;
-			return openConnections === 0 ? stopSpare() : Promise.resolve();
-		})();
-		return this.released;
+	/** No longer counted among the open connections; the last one to go lets the spare thread wait. Once. */
+	private release(): void {
+		if (!this.counted) return;
+		this.counted = false;
+		openConnections -= 1;
+		if (openConnections > 0 || spare === undefined) return;
+		clearTimeout(idleStop);
+		idleStop = setTimeout(() => void stopSpareConnectionThread(), SPARE_THREAD_IDLE_MS);
+		idleStop.unref();
 	}
 
 	private receive(reply: ConnectionReply): void {
@@ -616,7 +629,7 @@ export class ThreadConnection {
 	private lose(cause: Error): void {
 		if (this.lost !== undefined) return;
 		this.lost = cause;
-		void this.release();
+		this.release();
 		this.settleOpen?.({ id: 0, failure: { name: cause.name, message: cause.message } });
 		this.ledger.end(cause);
 		this.worker.unref();
@@ -678,7 +691,7 @@ export class ThreadConnection {
 			} finally {
 				this.ledger.end(new Error("SQLite connection closed"));
 				await this.worker.terminate();
-				await this.release();
+				this.release();
 			}
 		})();
 		return this.closing;

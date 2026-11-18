@@ -50,8 +50,10 @@ export {
 	getWriterQueueDegradation,
 	getWriterQueueStats,
 	openNodeSqliteDatabase,
+	SPARE_THREAD_IDLE_MS,
 	type SqliteProcessRole,
 	sqliteFilePath,
+	stopSpareConnectionThread,
 	type WriterQueueStats,
 	wrapNodeSqliteDatabase,
 } from "./node-sqlite.js";
