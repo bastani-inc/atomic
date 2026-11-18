@@ -109,7 +109,7 @@ The bundled `/skill:qlty` uses the [qlty](https://qlty.sh) CLI for code-quality 
 
 The skill triggers on requests for verifiers or high code quality and prefers one CLI over ad-hoc linter commands. It directs the agent to [docs.qlty.sh/llms.txt](https://docs.qlty.sh/llms.txt), the authoritative documentation index, and tells it to enable plugins and linter extensions that fit the codebase before checking. Source-attributed reference excerpts ship beside `SKILL.md`.
 
-The CLI is not bundled. Install it with `curl https://qlty.sh | bash` on macOS or Linux, or `powershell -c "iwr https://qlty.sh | iex"` on Windows, and keep `~/.qlty/bin` on `PATH`. Note that `qlty init` writes `.qlty/qlty.toml` into the repository.
+The CLI is not bundled. Install it with `curl https://qlty.sh | sh` on macOS or Linux, or `powershell -c "iwr https://qlty.sh | iex"` on Windows, and keep `~/.qlty/bin` on `PATH`. Note that `qlty init` writes `.qlty/qlty.toml` into the repository.
 
 Offline, `qlty metrics` and `qlty smells` still work through built-in static analysis. `qlty check` and `qlty fmt` need network access on first use per repository to download plugins and runtimes.
 

@@ -127,6 +127,8 @@ describe.skipIf(process.platform === "win32")("bundled tmux skill helper scripts
 			STUB_PANE: "server ready",
 		});
 		assert.equal(exitCode, 0, stderr);
+		// The old script matched here too, after bash had already rejected `08` as an octal number.
+		assert.doesNotMatch(stderr, /value too great|unbound variable/u);
 		// A pane that never matches must time out normally, not fail on the timeout's arithmetic.
 		const late = run("wait-for-text.sh", ["-t", "s:0.0", "-p", "ready", "-T", "01", "-i", "0.2"], {
 			STUB_PANE: "still starting",

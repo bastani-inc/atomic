@@ -1,6 +1,7 @@
 ---
 name: tmux
 description: "Control tmux-compatible sessions/windows/panes for interactive CLIs: list, capture output, send keys, paste text, monitor prompts."
+license: MIT. LICENSE.txt has complete terms
 metadata:
   {
     "github-repo": "https://github.com/openclaw/openclaw",

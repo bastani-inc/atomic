@@ -433,15 +433,26 @@ describe("synced upstream skill trees", () => {
 	test("ships the pstack teach, unslop and bro bodies of cursor/plugins main 35a90942", () => {
 		// Body SHA-256 of cursor/plugins pstack/skills/<name>/SKILL.md at that commit, after the frontmatter. The pstack
 		// skills record the upstream commit in github-tree-sha. how and why are Atomic adaptations and are not pinned here.
-		const pstack: ReadonlyArray<readonly [name: string, bodySha256: string, userInvokedOnly: boolean]> = [
-			["teach", "e8d8607040e6824f0fcd20c168b416b2f835c0611079d22a281b4447c04dc4b6", true],
-			["unslop", "4e2c21fbdfcdec160e3249bc433e7bf6d500f9269449bec14dcd8161bb16a563", false],
-			["bro", "638186a185a29dbaa188e976ab505c0e0e630d83ebc37b0ec83feba342aecb1f", true],
+		// teach keeps the sentence upstream dropped when it collapsed `why` into a single pass (#1236): Atomic's `why`
+		// still sweeps every evidence category by default, so teach must still ask it to stay narrow.
+		const teachKeepsWhyNarrow =
+			"Keep `why` narrow by default since its full sweep is slow: put the narrowing in the ask itself (a scoped question, git plus a source or two) so `why` records the skipped categories per its own contract, and widen it only when the reasons are the point.";
+		const pstack: ReadonlyArray<
+			readonly [name: string, bodySha256: string, userInvokedOnly: boolean, adaptation: string | undefined]
+		> = [
+			["teach", "e8d8607040e6824f0fcd20c168b416b2f835c0611079d22a281b4447c04dc4b6", true, teachKeepsWhyNarrow],
+			["unslop", "4e2c21fbdfcdec160e3249bc433e7bf6d500f9269449bec14dcd8161bb16a563", false, undefined],
+			["bro", "638186a185a29dbaa188e976ab505c0e0e630d83ebc37b0ec83feba342aecb1f", true, undefined],
 		];
-		for (const [name, bodySha256, userInvokedOnly] of pstack) {
+		for (const [name, bodySha256, userInvokedOnly, adaptation] of pstack) {
 			const skillRoot = join(workflowSkills, name);
 			const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
-			assert.equal(sha256(body.replace(/^\n/u, "")), bodySha256, `${name} body drifted from upstream`);
+			let upstreamBody = body;
+			if (adaptation !== undefined) {
+				assert.ok(body.includes(` ${adaptation}`), `${name} must keep its documented adaptation`);
+				upstreamBody = body.replace(` ${adaptation}`, "");
+			}
+			assert.equal(sha256(upstreamBody.replace(/^\n/u, "")), bodySha256, `${name} body drifted from upstream`);
 			assert.match(frontmatter, new RegExp(`^name: ${name}$`, "mu"));
 			assert.equal(/^disable-model-invocation: true$/mu.test(frontmatter), userInvokedOnly, name);
 			for (const [key, value] of [
@@ -499,6 +510,11 @@ describe("synced upstream skill trees", () => {
 	});
 
 	test("credits the tdd skill's MIT sources and carries mattpocock/skills v1.3.2's tautological-test example", () => {
+		// The provenance records v1.3.2 as the upstream release reviewed. From it Atomic took only the tautological-test
+		// anti-pattern. Declined on purpose, so a later sync should not treat their absence as drift: the reshaping into a
+		// reference with pre-agreed seams and the removal of the refactor stage, the deletion of deep-modules.md,
+		// interface-design.md and refactoring.md, the GLOSSARY.md convention, calls to the upstream codebase-design and
+		// code-review skills, and agents/openai.yaml.
 		const skillRoot = join(subagentSkills, "tdd");
 		const { frontmatter } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
 		assert.match(frontmatter, /^license: MIT\. LICENSE\.txt has complete terms$/mu);
@@ -525,6 +541,50 @@ describe("synced upstream skill trees", () => {
 			readFileSync(join(skillRoot, "SKILL.md"), "utf8"),
 			/^\[ \] Expected values are independent literals, not recomputed from the code\r?$/mu,
 		);
+	});
+
+	test("ships openclaw/openclaw main 6d815d78's tmux helper scripts with only the socket-directory rename", () => {
+		// main, not the latest calendar release: v2026.11.5's skills/tmux tree (dd5ddfca) lacks seven of the nine script fixes.
+		const skillRoot = join(subagentSkills, "tmux");
+		const skill = canonicalText(readFileSync(join(skillRoot, "SKILL.md")));
+		const { frontmatter } = splitFrontmatter(skill);
+		assert.match(frontmatter, /^license: MIT\. LICENSE\.txt has complete terms$/mu);
+		for (const [key, value] of [
+			["github-repo", "https://github.com/openclaw/openclaw"],
+			["github-path", "skills/tmux"],
+			["github-ref", "refs/heads/main"],
+			["github-tree-sha", "65bac7c67ae8d4acaf2d8cd2e7e3fc6e7ff90803"],
+		] as const) {
+			assert.ok(frontmatter.split("\n").includes(`    "${key}": "${value}",`), key);
+		}
+		const license = canonicalText(readFileSync(join(skillRoot, "LICENSE.txt")));
+		assert.match(license, /^Copyright \(c\) 2026 OpenClaw Foundation$/mu);
+		assert.equal(license.match(/^Permission is hereby granted, free of charge/gmu)?.length, 1);
+		assert.deepEqual(collectFiles(skillRoot, [], skillRoot).sort(), [
+			"LICENSE.txt",
+			"SKILL.md",
+			"scripts/find-sessions.sh",
+			"scripts/wait-for-text.sh",
+		]);
+		assert.deepEqual(trackedModes("packages/subagents/skills/tmux"), [
+			"100644 packages/subagents/skills/tmux/LICENSE.txt",
+			"100644 packages/subagents/skills/tmux/SKILL.md",
+			"100755 packages/subagents/skills/tmux/scripts/find-sessions.sh",
+			"100755 packages/subagents/skills/tmux/scripts/wait-for-text.sh",
+		]);
+		// Upstream blob SHA-256 once Atomic's ATOMIC_/atomic- socket-directory names are turned back into OpenClaw's.
+		const upstreamScripts: ReadonlyArray<readonly [path: string, sha256: string]> = [
+			["scripts/find-sessions.sh", "5cd5f80305c7a08871d62988e908cd366a22d1c6e4b4857b77a64f52955b59e3"],
+			["scripts/wait-for-text.sh", "6eee6443ee1e22c211cefde2f8bd4c835fef5d71b7326a858e109fc2e29d972c"],
+		];
+		for (const [path, expected] of upstreamScripts) {
+			const upstream = canonicalText(readFileSync(join(skillRoot, path)))
+				.replaceAll("ATOMIC_TMUX_SOCKET_DIR", "OPENCLAW_TMUX_SOCKET_DIR")
+				.replaceAll("atomic-tmux-sockets", "openclaw-tmux-sockets");
+			assert.equal(sha256(upstream), expected, `${path} diverges from upstream beyond the rename`);
+		}
+		// Upstream's completion-marker example, with Atomic's marker name.
+		assert.ok(skill.includes(`marker="ATOMIC_DONE_\${nonce}"`));
 	});
 
 	test("tracks the skill-creator scripts with the modes of anthropics/skills tree 3cf9a8db", () => {
