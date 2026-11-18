@@ -32,7 +32,17 @@ import { type ForkError, isForkError } from "./fork-errors.js";
 import { forkDurableRun } from "./fork-run.js";
 import { JournalDurableBackend } from "./journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
-import { claimsOf, hasActiveLiveRun, hasForkClaim, pendingResumes, unsettledResumeClaims } from "./run-claims.js";
+import {
+	admitResume,
+	claimsOf,
+	hasActiveLiveRun,
+	hasForkClaim,
+	hasResumeClaim,
+	pendingResumes,
+	resumeAdmissionMark,
+	resumedSince,
+	unsettledResumeClaims,
+} from "./run-claims.js";
 import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
 import { availableRunDurableBackend } from "./run-owner-backend.js";
 import { restorePreconditionsChecked, resumeClaim, resumeLaunchCwd } from "./run-restore-preconditions.js";
@@ -82,6 +92,12 @@ export interface ResumeDurableDeps {
 	readonly onBeforeResume?: (runId: string, forkedFrom?: string) => Promise<void>;
 	readonly confirmCrossProjectFork?: (cwd: string) => Promise<boolean>;
 	readonly forkModelOwner?: string;
+	/**
+	 * The request's {@link resumeAdmissionMark}, taken when it saw the run, before any await of its own: a caller that
+	 * reads the run and awaits before it calls passes its mark, so a resume admitted meanwhile answers its request
+	 * (#5534). Taken on entry when absent.
+	 */
+	readonly admissionMark?: number;
 }
 
 function resumeBackend(deps: ResumeDurableDeps, workflowId?: string): DurableWorkflowBackend {
@@ -147,6 +163,7 @@ export async function resumeDurableWorkflow(
 	deps: ResumeDurableDeps,
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
+	const mark = deps.admissionMark ?? resumeAdmissionMark(workflowId);
 	resolveWorktreeSnapshotSettings(deps.baseRunOpts.snapshots, "sdk", "snapshots");
 	const backend = resumeBackend(deps, workflowId);
 	const target = resolveDurableEntry(workflowId, catalog ?? backend.listResumableWorkflows());
@@ -158,6 +175,11 @@ export async function resumeDurableWorkflow(
 		finishing !== undefined &&
 		(handle?.status === "failed" || live?.status === "failed" || live?.blockedAt !== undefined)
 	) {
+		// A resume being admitted now, or admitted since the request saw the run, replaced what the request saw: the job
+		// is that replacement, or will be, not the attempt that failed or blocked, and the run reads as that attempt only
+		// until the replacement starts. The request waits for nothing and starts nothing (#5534).
+		if (hasResumeClaim(backend, id)) return pendingResumeResult(id);
+		if (resumedSince(id, mark)) return alreadyResumedResult(handle?.name ?? live?.name ?? id, id);
 		// The failure or block can reach a caller before the old attempt finishes its persistence and releases its
 		// lease: a blocked run's journal still says `running` until then. Wait for that attempt before admitting a
 		// replacement, then discard its now-stale catalog version.
@@ -188,12 +210,12 @@ export async function resumeDurableWorkflow(
 		return resumeIntoFork(handle, currentCwd, { ...deps, durableBackend: backend });
 	const pending = claimsOf(pendingResumes, backend);
 	if (pending.has(id) || unsettledResumeClaims.get(backend)?.has(id) || deps.jobs?.has(id))
-		return {
-			ok: false,
-			reason: "not_resumable",
-			message: `Workflow ${id} is already running or has a pending resume admission.`,
-		};
+		return pendingResumeResult(id);
+	// Exactly one replacement per block or failure (#5534): of the requests that saw it, the first one here is admitted,
+	// in this turn, and every other one is told it was resumed, however long its own reads took.
+	if (resumedSince(id, mark)) return alreadyResumedResult(handle?.name ?? id, id);
 	pending.add(id);
+	const admission = admitResume(id);
 	// #5149: an abort releases the caller only until the executor is admitted; from then on the resume has succeeded.
 	let admitted = false;
 	const caller = new AbortController();
@@ -207,7 +229,18 @@ export async function resumeDurableWorkflow(
 			resumeDurableWorkflowClaimed(workflowId, { ...deps, durableBackend: backend }, catalog, () => {
 				admitted = true;
 			});
-		const execution = backend instanceof JournalDurableBackend ? backend.withWorkflowLease(id, resume) : resume();
+		const claimed = backend instanceof JournalDurableBackend ? backend.withWorkflowLease(id, resume) : resume();
+		// An admission that started no replacement leaves the run as it was, for a request that saw it to resume.
+		const execution = claimed.then(
+			(result) => {
+				admission.settle(result.ok);
+				return result;
+			},
+			(error: unknown) => {
+				admission.settle(false);
+				throw error;
+			},
+		);
 		return await raceAbort(execution, deps.signal === undefined ? undefined : caller.signal);
 	} finally {
 		deps.signal?.removeEventListener("abort", releaseCaller);
@@ -725,6 +758,22 @@ function foreignRunningResult(name: string, workflowId: string): ResumeDurableRe
 		message:
 			`Workflow "${name}" (${workflowId}) is actively running in another Atomic session. ` +
 			"Control it from that session; it becomes resumable here only after that session pauses, quits, or crashes.",
+	};
+}
+
+function pendingResumeResult(workflowId: string): ResumeDurableResult {
+	return {
+		ok: false,
+		reason: "not_resumable",
+		message: `Workflow ${workflowId} is already running or has a pending resume admission.`,
+	};
+}
+
+function alreadyResumedResult(name: string, workflowId: string): ResumeDurableResult {
+	return {
+		ok: false,
+		reason: "not_resumable",
+		message: `Workflow "${name}" (${workflowId}) was already resumed by another request; it was not resumed again. See its progress with \`/workflows ${workflowId}\`.`,
 	};
 }
 

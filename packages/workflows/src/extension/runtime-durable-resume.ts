@@ -16,7 +16,7 @@ import {
 	type ResumeDurableResult,
 	resumeDurableWorkflow as resumeDurableWorkflowAdapter,
 } from "../durable/resume-runtime.js";
-import { hasActiveLiveRun } from "../durable/run-claims.js";
+import { hasActiveLiveRun, resumeAdmissionMark } from "../durable/run-claims.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { canonicalDirectoryAsync } from "../durable/sdk-recovery-scope.js";
 import { bindStoreDurableBackend, DurableBackendNotInitializedError } from "../durable/store-backend.js";
@@ -95,6 +95,11 @@ export interface DurableResumeRuntime {
 			/** Run this definition instead of resolving the run's name: a fork's, found where its source ran. */
 			readonly definition?: WorkflowDefinition;
 			readonly durableBackend?: DurableWorkflowBackend;
+			/**
+			 * The mark (`resumeAdmissionMark`) the request took when it read the run, before its own awaits: a resume
+			 * admitted after it already resumed what the request saw (#5534). Taken on entry when absent.
+			 */
+			readonly admissionMark?: number;
 		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
@@ -258,6 +263,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		},
 		async resumeDurableWorkflow(workflowId, options): Promise<ResumeDurableResult> {
 			options?.signal?.throwIfAborted();
+			// What this request resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
+			const admissionMark = options?.admissionMark ?? resumeAdmissionMark(workflowId);
 			return raceWorkflowRequestAbort(
 				withWorkflowResumeAdmission(deps.store, async (dormantWrites) => {
 					const backend = await withRecovery(async () => {
@@ -279,6 +286,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					});
 					const adapterDeps: ResumeDurableDeps = {
 						registry: deps.registry,
+						admissionMark,
 						signal: options?.signal,
 						onRunAccepted: options?.onRunAccepted,
 						onBeforeResume: options?.onBeforeResume,
