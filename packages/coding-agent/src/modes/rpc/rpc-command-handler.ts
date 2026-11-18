@@ -339,7 +339,10 @@ export function createRpcCommandHandler({
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					queuedMessagesPaused: session.queuedMessagesPaused,
-					projectTrusted: session.settingsManager.isProjectTrusted?.() === true,
+					// No report while startup is still deciding: the settings read untrusted until then (see isProjectTrustPending).
+					...(runtimeHost.isProjectTrustPending?.()
+						? {}
+						: { projectTrusted: session.settingsManager.isProjectTrusted?.() === true }),
 					resourceOverlaps: extensionResult.overlaps ?? [],
 					resourceErrors: extensionResult.errors,
 					resourceWarnings: extensionResult.warnings ?? [],

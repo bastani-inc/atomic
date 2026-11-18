@@ -817,6 +817,9 @@ export async function main(argv: string[], options?: MainOptions) {
 			(shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0);
 		let completeStartupReload: (() => Promise<void>) | undefined;
 		let startupTrustContext: typeof projectTrustContext;
+		// While a deferred startup decision is still to come, the settings read the project untrusted to load only what
+		// the decision itself needs. That is no decision, so no one may report it as one.
+		let startupTrustPending = deferStartupTrust;
 		const resolvedExtensionPathCount = resolvedExtensionPaths?.length ?? 0;
 		const hasSystemPromptInput = parsed.systemPrompt !== undefined || (parsed.appendSystemPrompt?.length ?? 0) > 0;
 		const resolvedResourcePathCount =
@@ -893,6 +896,7 @@ export async function main(argv: string[], options?: MainOptions) {
 									}
 								: undefined,
 							onProjectTrustResolved: async () => {
+								startupTrustPending = false;
 								await finalizeStartupStorage();
 								engineLiveness?.projectTrustResolved();
 							},
@@ -1048,6 +1052,7 @@ export async function main(argv: string[], options?: MainOptions) {
 				!isolateInteractiveHost && !deferStartupTrust,
 			);
 			startupSession = created.session;
+			services.isProjectTrustPending = () => startupTrustPending;
 			if (completeStartupReload) {
 				const completeReload = completeStartupReload;
 				let completion: Promise<void> | undefined;

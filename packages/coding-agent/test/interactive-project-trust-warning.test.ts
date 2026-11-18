@@ -25,6 +25,11 @@ function writeProjectSettings(): void {
 }
 
 async function renderInitialChat(projectTrusted: boolean): Promise<string> {
+	return (await renderLiveChat({ trusted: projectTrusted })).text();
+}
+
+/** Renders the initial messages, then repaints the chat on demand as the session's trust state changes. */
+async function renderLiveChat(state: { trusted: boolean; pending?: boolean }): Promise<{ text(): string }> {
 	const chatContainer = new Container();
 	const mode = {
 		chatContainer,
@@ -32,13 +37,14 @@ async function renderInitialChat(projectTrusted: boolean): Promise<string> {
 		ui: { requestRender: vi.fn() },
 		attachStartupNoticesContainer: vi.fn(),
 		renderSessionEntries: vi.fn(),
+		runtimeHost: { isProjectTrustPending: () => state.pending === true },
 		sessionManager: {
 			getSessionId: () => "session-1",
 			getEntries: () => [],
 			getLeafId: () => null,
 			getCwd: () => projectDir,
 		},
-		settingsManager: { isProjectTrusted: () => projectTrusted },
+		settingsManager: { isProjectTrusted: () => state.trusted },
 	};
 	InteractiveModeBase.prototype.renderInitialMessages.call(mode as never);
 	await vi.waitFor(() =>
@@ -46,7 +52,12 @@ async function renderInitialChat(projectTrusted: boolean): Promise<string> {
 			false,
 		),
 	);
-	return stripTerminalSequences(chatContainer.render(200).join("\n"));
+	return {
+		text: () => {
+			chatContainer.invalidate();
+			return stripTerminalSequences(chatContainer.render(200).join("\n"));
+		},
+	};
 }
 
 test("warns that untrusted project settings are ignored", async () => {
@@ -66,4 +77,28 @@ test("does not warn once the project is trusted", async () => {
 
 test("does not warn for a project without trust-gated resources", async () => {
 	expect(await renderInitialChat(false)).not.toContain(TRUST_WARNING);
+});
+
+// The interactive host learns its engine's trust decision after it rendered the chat.
+test("the warning follows the session's trust after the chat was rendered", async () => {
+	writeProjectSettings();
+	const state = { trusted: true };
+	const chat = await renderLiveChat(state);
+	expect(chat.text()).not.toContain(TRUST_WARNING);
+
+	state.trusted = false;
+	expect(chat.text()).toContain(TRUST_WARNING);
+
+	state.trusted = true;
+	expect(chat.text()).not.toContain(TRUST_WARNING);
+});
+
+test("does not warn while the session's trust decision is still to be made", async () => {
+	writeProjectSettings();
+	const state = { trusted: false, pending: true };
+	const chat = await renderLiveChat(state);
+	expect(chat.text()).not.toContain(TRUST_WARNING);
+
+	state.pending = false;
+	expect(chat.text()).toContain(TRUST_WARNING);
 });

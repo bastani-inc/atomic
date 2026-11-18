@@ -280,3 +280,57 @@ for (const scenario of [
 		REAL_STARTUP_RPC_TIMEOUT_MS,
 	);
 }
+
+// The interactive host copies this report into its own settings and warns when it says untrusted, so a report made
+// while the engine is still deciding showed a trusted project as untrusted.
+test(
+	"isolated startup reports no project trust until the engine decides, then the saved decision",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-startup-rpc-pending-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(join(cwd, ".atomic"), { recursive: true });
+		writeFileSync(join(cwd, ".atomic", "settings.json"), "{}");
+		mkdirSync(join(agentDir, "extensions"), { recursive: true });
+		writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [realpathSync(cwd)]: true }));
+		// Holds the decision open until the test answers, then leaves it to the saved decision.
+		writeFileSync(
+			join(agentDir, "extensions", "hold-trust.ts"),
+			`
+			export default function(pi) {
+				pi.on('project_trust', async (_event, ctx) => {
+					await ctx.ui.confirm('Hold trust', 'Continue?');
+					return { trusted: 'undecided' };
+				});
+			}
+		`,
+		);
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			args: ["--no-session", "--offline", "--no-skills", "--no-themes", "--no-prompt-templates"],
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+			interactiveEngine: { onDiagnostic: () => {} },
+		});
+		let held!: (request: RpcExtensionUIRequest) => void;
+		const holding = new Promise<RpcExtensionUIRequest>((resolve) => {
+			held = resolve;
+		});
+		client.onExtensionUIRequest((request) => {
+			if (request.method === "confirm") held(request);
+		});
+		try {
+			await client.start();
+			const request = await holding;
+			assert.equal((await client.getState()).projectTrusted, undefined);
+			await client.respondExtensionUI({ type: "extension_ui_response", id: request.id, confirmed: true });
+			await client.waitForInteractiveEngineResources();
+			assert.equal((await client.getState()).projectTrusted, true);
+		} finally {
+			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);

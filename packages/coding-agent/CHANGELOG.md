@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Starting or resuming a session in a trusted project no longer shows "This project is not trusted. Project .atomic resources and packages are ignored." The interface checked trust while the session was still deciding it, read that as untrusted, and kept the warning after the session had decided. The warning now waits for the decision and follows it, so a project trusted through `defaultProjectTrust: "always"` or a `project_trust` extension no longer shows it either
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.

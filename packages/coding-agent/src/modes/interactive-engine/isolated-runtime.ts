@@ -152,6 +152,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly sessionStats: EngineSessionStats;
 	private autoCompactionEnabled = true;
 	private autoRetryEnabled = true;
+	/** Whether the engine reported a trust decision for its current session; it reports none while still deciding. */
+	private engineProjectTrustReported = false;
 	private remoteSessionName: string | undefined;
 	private remoteSessionId: string | undefined;
 	private remoteSessionFile: string | undefined;
@@ -398,6 +400,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				await session.resourceLoader.reload();
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
+			this.engineProjectTrustReported = state.projectTrusted !== undefined;
 			this.remoteModelCatalog.apply(catalog, scope);
 			this.remoteModelCatalog.patch(session);
 			if (modelEpoch === this.modelEpoch) {
@@ -532,6 +535,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	async waitUntilProjectTrustSettled(): Promise<void> {
 		await this.client.waitForInteractiveEngineProjectTrust();
 		await this.initializeFromEngine();
+	}
+	/** The engine decides project trust: until it reports a decision, this host's trust is only its own lookup. */
+	override isProjectTrustPending(): boolean {
+		return !this.engineProjectTrustReported;
 	}
 	async waitUntilResourcesReady(): Promise<void> {
 		while (true) {

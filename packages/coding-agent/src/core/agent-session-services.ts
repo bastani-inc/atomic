@@ -102,6 +102,11 @@ export interface AgentSessionServices {
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 	/** Complete interactive trust after the safe session has a live UI binding. */
 	completeStartup?: (context: ProjectTrustContext) => Promise<void>;
+	/**
+	 * True while `completeStartup` has yet to decide whether the project is trusted. Until then the settings report the
+	 * project untrusted, which is not a decision.
+	 */
+	isProjectTrustPending?: () => boolean;
 }
 
 function applyExtensionFlagValues(

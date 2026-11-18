@@ -269,7 +269,7 @@ export interface RpcSessionState {
 	messageCount: number;
 	pendingMessageCount: number;
 	queuedMessagesPaused: boolean;
-	/** Authoritative engine trust state; absent on older RPC peers. */
+	/** Authoritative engine trust state; absent while the engine is still deciding, and on older RPC peers. */
 	projectTrusted?: boolean;
 	resourceOverlaps?: ResourceOverlap[];
 	resourceExtensions?: RpcResourceExtension[];

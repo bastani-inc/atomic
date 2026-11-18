@@ -979,10 +979,42 @@ InteractiveModeBase.prototype.renderInitialMessages = function (this: Interactiv
 	}
 };
 
-function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
-	if (mode.settingsManager.isProjectTrusted()) {
-		return;
+/**
+ * Says that the session's project is untrusted, for as long as it is. It reads the trust when the chat paints: an
+ * isolated interactive host learns its engine's decision only after the chat was rendered, and a decision that is still
+ * to be made is neither trusted nor untrusted.
+ */
+class ProjectTrustWarning implements Component {
+	private readonly untrusted: () => boolean;
+	private readonly lines: Component[];
+
+	constructor(untrusted: () => boolean, separated: boolean) {
+		this.untrusted = untrusted;
+		const text = new ThemedText(
+			() =>
+				theme.fg(
+					"warning",
+					`This project is not trusted. Project ${CONFIG_DIR_NAME} resources and packages are ignored. Use /trust to save a trust decision, then restart ${APP_NAME}.`,
+				),
+			1,
+			0,
+		);
+		this.lines = separated ? [new Spacer(1), text] : [text];
 	}
+
+	render(width: number): string[] {
+		return this.untrusted() ? this.lines.flatMap((line) => line.render(width)) : [];
+	}
+
+	invalidate(): void {
+		for (const line of this.lines) line.invalidate();
+	}
+}
+
+function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
+	const settings = mode.settingsManager;
+	const runtime = mode.runtimeHost;
+	const untrusted = () => !settings.isProjectTrusted() && runtime?.isProjectTrustPending?.() !== true;
 	const chat = mode.chatContainer;
 	const separated = chat.children.length > 0;
 	const slot = new Container();
@@ -993,20 +1025,7 @@ function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
 			chat.removeChild(slot);
 			return;
 		}
-		if (separated) {
-			slot.addChild(new Spacer(1));
-		}
-		slot.addChild(
-			new ThemedText(
-				() =>
-					theme.fg(
-						"warning",
-						`This project is not trusted. Project ${CONFIG_DIR_NAME} resources and packages are ignored. Use /trust to save a trust decision, then restart ${APP_NAME}.`,
-					),
-				1,
-				0,
-			),
-		);
+		slot.addChild(new ProjectTrustWarning(untrusted, separated));
 		mode.ui.requestRender();
 	};
 	void hasTrustRequiringProjectResourcesAsync(mode.sessionManager.getCwd()).then(settle, () => settle(false));

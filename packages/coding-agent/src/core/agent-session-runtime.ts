@@ -247,6 +247,11 @@ export class AgentSessionRuntime {
 		});
 	}
 
+	/** Whether the current session's project trust decision is still to be made, so it is neither trusted nor untrusted yet. */
+	isProjectTrustPending(): boolean {
+		return this.services.isProjectTrustPending?.() === true;
+	}
+
 	private declare _session: AgentSession;
 	private declare _services: AgentSessionServices;
 	private declare readonly createRuntime: CreateAgentSessionRuntimeFactory;
