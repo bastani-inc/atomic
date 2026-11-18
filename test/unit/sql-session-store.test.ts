@@ -557,6 +557,49 @@ test("SQL light listing of a project gives the event loop a turn every 256 sessi
 	});
 });
 
+/** Sessions of another project whose wide columns a light listing of this project must not read. */
+const OTHER_PROJECT_SESSIONS = 128;
+/** Characters of each other session's stored summary: 64 MiB across them, most of it in overflow pages. */
+const OTHER_SUMMARY_CHARS = 512 * 1024;
+/** Best of several listings, so a pause of the test process does not decide the comparison. */
+const LISTING_TIMINGS = 5;
+/** Time a listing may take beyond four times its time beside narrow sessions; copying the summaries takes ~20 ms. */
+const LISTING_TIMING_SLACK_MS = 5;
+
+test("SQL light listing of a project reads only the keys of other projects' sessions (#5480)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		const store = await SqlSessionStore.open(database);
+		const tables = renderStorageIdentifiers("sessions", SESSION_TABLES);
+		await database.exec("PRAGMA synchronous=OFF");
+		await store.create(header, [message("m", "this project")]);
+		for (let index = 0; index < OTHER_PROJECT_SESSIONS; index++)
+			await store.create({ ...header, id: `other-${index}`, cwd: "/other" }, [message("m", "other project")]);
+		const fastestListing = async (): Promise<number> => {
+			let fastest = Number.POSITIVE_INFINITY;
+			for (let run = 0; run < LISTING_TIMINGS; run++) {
+				const started = performance.now();
+				const listed: string[] = [];
+				for await (const summary of store.list({ cwd: header.cwd, withoutSearchText: true }))
+					listed.push(summary.id);
+				fastest = Math.min(fastest, performance.now() - started);
+				assert.deepEqual(listed, [header.id]);
+			}
+			return fastest;
+		};
+		const narrow = await fastestListing();
+		await database.run(
+			`UPDATE ${tables.sessions} SET summary = json_quote(printf('%.*c', ?, 'y')) WHERE cwd = '/other'`,
+			OTHER_SUMMARY_CHARS,
+		);
+		const wide = await fastestListing();
+		assert.ok(
+			wide <= narrow * 4 + LISTING_TIMING_SLACK_MS,
+			`listing took ${wide.toFixed(1)} ms beside wide sessions, ${narrow.toFixed(1)} ms beside narrow ones`,
+		);
+		await store.close();
+	});
+});
+
 for (let seed = 1; seed <= 16; seed++) {
 	test(`SQL incremental summaries match full history after reopen for random sequence ${seed} (#3645)`, async () => {
 		const directory = makeTempDirectory("atomic-summary-property-");

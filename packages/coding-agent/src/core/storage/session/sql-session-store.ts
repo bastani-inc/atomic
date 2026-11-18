@@ -262,10 +262,13 @@ const LISTING_SIZE =
 	"length(id) + length(cwd) + length(header_json) + length(modified_at) + length(first_message) + COALESCE(length(name), 0) + COALESCE(length(summary), 0) + COALESCE(length(summarized_through_id), 0) + length(revision) + 256";
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
+/** Sessions one statement of a paced listing's project scan reads over a database server. */
+const LISTING_CWD_PAGE = 2_000;
 /**
- * Sessions a paced listing scans per statement, with a turn of the event loop after each (#5480): a statement reads
- * every scanned row, and on a large store whose pages are not cached one row can cost a disk read, so a few thousand
- * rows per statement held the event loop for seconds.
+ * Sessions one statement of a paced listing scans over this process's own SQLite connection, with a turn of the event
+ * loop after each (#5480). Such a statement runs on the event loop and reads every row it scans; on a large store whose
+ * pages are not cached a row can cost a disk read, so a few thousand rows per statement held the event loop for
+ * seconds. A database server's statements do not hold the event loop, so listings over one keep larger statements.
  */
 const LISTING_SCAN_ROWS = 256;
 const STUB_ENTRY: SessionEntry = {
@@ -1014,14 +1017,18 @@ export class SqlSessionStore implements SessionStore {
 		);
 		const upper = Number(bound?.upper ?? 0);
 		const seen = new Set<string>();
-		for (let after = 0, limit: number = LISTING_SCAN_ROWS; after < upper; ) {
+		const scanRows = this.listingScanRows(SESSION_READ_FETCH.max);
+		for (let after = 0, limit: number = Math.min(scanRows, SESSION_READ_FETCH.first); after < upper; ) {
 			this.assertListing(query);
 			const rows = await this.database.all<ListingWindowRow>(
-				`WITH keyed AS MATERIALIZED (
-					SELECT ${order} AS ord, row_number() OVER (ORDER BY ${order}) AS key_row,
-						CASE WHEN ${scope.where} THEN ${LISTING_SIZE} END AS size
+				// The scan sizes each session in scope and nothing else. Numbering its rows in the same SELECT would make
+				// SQLite copy every column the size reads, of every scanned session, before the scope is checked (#5480).
+				`WITH scanned AS MATERIALIZED (
+					SELECT ${order} AS ord, CASE WHEN ${scope.where} THEN ${LISTING_SIZE} END AS size
 					FROM ${this.tables.sessions} WHERE ${order} > ? AND ${order} <= ?
 					ORDER BY ${order} LIMIT ?
+				), keyed AS MATERIALIZED (
+					SELECT ord, row_number() OVER (ORDER BY ord) AS key_row, size FROM scanned
 				), bound AS (SELECT max(ord) AS upto FROM keyed),
 				page AS (
 					SELECT ord, key_row, count(*) OVER () AS fetched,
@@ -1064,7 +1071,7 @@ export class SqlSessionStore implements SessionStore {
 				: batchChars - pageChars <= SESSION_READ_PAGE_CHARS * 4
 					? limit
 					: Math.max(SESSION_READ_FETCH.min, Number(last.key_row) * 2);
-			limit = Math.min(LISTING_SCAN_ROWS, next);
+			limit = Math.min(scanRows, next);
 			await yieldTurn();
 		}
 		this.assertListing(query);
@@ -1076,19 +1083,25 @@ export class SqlSessionStore implements SessionStore {
 				await this.database.all<SqliteRow & { cwd: string }>(`SELECT DISTINCT cwd FROM ${this.tables.sessions}`)
 			).map((project) => project.cwd);
 		const order = this.dialect.rowOrder();
+		const page = this.listingScanRows(LISTING_CWD_PAGE);
 		const cwds = new Set<string>();
 		for (let after = 0; ; ) {
 			this.assertListing(query);
 			const rows = await this.database.all<SqliteRow & { ord: number | bigint; cwd: string }>(
 				`SELECT ${order} AS ord, cwd FROM ${this.tables.sessions} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`,
 				after,
-				LISTING_SCAN_ROWS,
+				page,
 			);
 			for (const row of rows) cwds.add(row.cwd);
 			await yieldTurn();
-			if (rows.length < LISTING_SCAN_ROWS) return [...cwds];
+			if (rows.length < page) return [...cwds];
 			after = Number(rows.at(-1)!.ord);
 		}
+	}
+
+	/** The most sessions one statement of a paced listing scans: fewer when the statement holds the event loop. */
+	private listingScanRows(overServer: number): number {
+		return this.database.descriptor.adapter === "node-sqlite" ? LISTING_SCAN_ROWS : overServer;
 	}
 
 	private async scopeOf(
