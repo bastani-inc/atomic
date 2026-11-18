@@ -67,7 +67,7 @@ import { isSingleLeftClick } from "./single-click.ts";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
-import { type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
+import { type MeteredRunMessage, retriedRunInProgress, runInProgress } from "./working-run-meter.ts";
 
 export type {
 	ChatSessionHostBashRequest,
@@ -232,6 +232,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			this.state.interruptedTurnSnapshot = undefined;
 		}
 		this.state.workingRunMeter.stop();
+		this.state.retryContinuesRun = false;
 		this.state.manualCompactionTakeoverPending = false;
 		this.state.compacting = false;
 		this.state.compactionStartedAt = undefined;
@@ -398,10 +399,16 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	/**
 	 * Show the retry wait of a session this host attached to after its `auto_retry_start`: a session between two
 	 * attempts streams nothing, so a running turn's hydration shows none of it. The wait reads as that event shows it
-	 * and ends as it does, with the next attempt's `agent_start` or the retry's `auto_retry_end`.
+	 * and ends as it does, with the next attempt's `agent_start` or the retry's `auto_retry_end`. With the session's
+	 * messages, the next attempt's working line counts from the turn's start, as it does in a chat that saw the turn.
 	 */
-	hydrateRetryWait(): void {
+	hydrateRetryWait(messages?: readonly MeteredRunMessage[]): void {
 		if (this.state.disposed) return;
+		const run = messages === undefined ? undefined : retriedRunInProgress(messages);
+		if (run?.startedAt !== undefined) {
+			this.state.workingRunMeter.awaitRetry(run.startedAt, run.settledTokens);
+			this.state.retryContinuesRun = true;
+		}
 		showChatSessionRetryWait(this.state);
 		this.syncAnimationTick();
 		this.state.requestRender?.();

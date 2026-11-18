@@ -433,7 +433,7 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const streaming = handle.agentSession?.agent?.state.streamingMessage ?? handle.streamingMessage?.();
 	ctx.chatHost.hydrateStreamingAssistantMessage(streaming);
 	if (isLiveHandleStreaming(ctx)) ctx.chatHost.hydrateRunningTurn(handle.messages, streaming);
-	else if (isLiveHandleWaitingToRetry(ctx)) ctx.chatHost.hydrateRetryWait();
+	else if (isLiveHandleWaitingToRetry(ctx)) ctx.chatHost.hydrateRetryWait(handle.messages);
 }
 
 /** The calls a stage with its session released waits on: their results arrive when it reopens, so none is interrupted. */

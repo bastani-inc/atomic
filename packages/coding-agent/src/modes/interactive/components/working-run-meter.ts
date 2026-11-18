@@ -78,6 +78,23 @@ export function runInProgress(
 	return { startedAt, settledTokens, requesting };
 }
 
+/**
+ * The run a turn that waits to retry belongs to: the run in progress before its failed attempts, with the tokens those
+ * attempts produced. Its next attempt continues it.
+ */
+export function retriedRunInProgress(messages: readonly MeteredRunMessage[]): {
+	readonly startedAt: number | undefined;
+	readonly settledTokens: number;
+} {
+	let end = messages.length;
+	while (end > 0 && messages[end - 1]!.role === "assistant" && messages[end - 1]!.stopReason === "error") end -= 1;
+	const failed = messages.slice(end);
+	const run = runInProgress(messages.slice(0, end));
+	const startedAt = run.startedAt ?? failed.map((message) => message.timestamp).find(isTimestamp);
+	const settledTokens = failed.reduce((tokens, message) => tokens + meteredOutputTokens(message), run.settledTokens);
+	return { startedAt, settledTokens };
+}
+
 function isTimestamp(value: number | undefined): value is number {
 	return typeof value === "number" && value > 0;
 }
@@ -166,6 +183,8 @@ export class WorkingRunMeter {
 	private streamingMessage: MeteredMessage | undefined;
 	private cachedStreamingTokens: number | undefined;
 	private requesting = false;
+	/** The run {@link stop} ended last: the next attempt of its turn, after a retry or a model fallback, continues it. */
+	private endedRun: { readonly startedAt: number; readonly settledTokens: number } | undefined;
 	private readonly now: () => number;
 
 	constructor(now: () => number = Date.now) {
@@ -178,6 +197,32 @@ export class WorkingRunMeter {
 		this.streamingMessage = undefined;
 		this.cachedStreamingTokens = 0;
 		this.requesting = false;
+		this.endedRun = undefined;
+	}
+
+	/**
+	 * Start the next attempt of the turn whose run {@link stop} ended last, as a retry or a fallback model does: the
+	 * elapsed time and the tokens keep counting from the turn's start. With no ended run it starts a run.
+	 */
+	continueRun(): void {
+		const run = this.endedRun;
+		if (run === undefined) {
+			this.start();
+			return;
+		}
+		this.resume(run.startedAt, run.settledTokens);
+	}
+
+	/** Record the run of a turn that waits to retry, for a chat that opened during the wait: its next attempt continues it. */
+	awaitRetry(startedAt: number, settledTokens: number): void {
+		this.endedRun = { startedAt: Math.min(startedAt, this.now()), settledTokens };
+	}
+
+	/** The run {@link stop} ended last, counted up to now: a turn that ends while it waits to retry ends now. */
+	endedRunSnapshot(): WorkingRunSnapshot | undefined {
+		const run = this.endedRun;
+		if (run === undefined) return undefined;
+		return { elapsedMs: Math.max(0, this.now() - run.startedAt), tokens: run.settledTokens };
 	}
 
 	requestStarted(): void {
@@ -208,6 +253,8 @@ export class WorkingRunMeter {
 	}
 
 	stop(): void {
+		if (this.startedAt !== undefined)
+			this.endedRun = { startedAt: this.startedAt, settledTokens: this.settledTokens };
 		this.startedAt = undefined;
 		this.streamingMessage = undefined;
 		this.cachedStreamingTokens = undefined;

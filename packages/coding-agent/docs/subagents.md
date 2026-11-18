@@ -241,7 +241,7 @@ subagent({ agent: "codebase-analyzer", task: "Trace the auth flow with file refe
 
 Use [run control](#run-control) to stop, hold, or continue a child.
 
-Main chat, workflow stage chats and subagent chats show the same `∀` working line. Its changing verb is followed by elapsed time and a token count; `↑` means a request is waiting for content, and `↓` means content has arrived. Zero token counts stay hidden. After the run ends, a dim past-tense row keeps its time and tokens visible until the next run. Opening a chat mid-run preserves its elapsed time instead of restarting the clock.
+Main chat, workflow stage chats and subagent chats show the same `∀` working line. Its changing verb is followed by elapsed time and a token count; `↑` means a request is waiting for content, and `↓` means content has arrived. Zero token counts stay hidden. After the run ends, a dim past-tense row keeps its time and tokens visible until the next run. Opening a chat mid-run preserves its elapsed time instead of restarting the clock. A request that is retried, or moves to a fallback model, continues the same count: time and tokens run from the turn's start through every attempt and wait. In a stage or subagent chat, a turn that ends because its retry was cancelled or ran out of attempts keeps the time up to that moment.
 
 Each launch shows `Agent(<agent> · <short task title>)` with its state, elapsed time and tokens. A management hint appears only when the task can be selected. Ctrl+O expands the prompt, tool calls and result. Completion notices show the agent's name and first result line. If an older transcript is unavailable, expansion shows the full retained result and an unavailable-transcript message rather than an empty tool-call list.
 

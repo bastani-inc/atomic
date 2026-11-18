@@ -181,7 +181,9 @@ InteractiveModeBase.prototype.handleEvent = async function (
 	switch (event.type) {
 		case "agent_start":
 			this.lastWorkingMessage = this.workingMessage;
-			this.workingRunMeter.start();
+			// The attempt after a retry's wait or a model fallback continues its turn, and its time and tokens with it.
+			if (this.retryLoader !== undefined || this.fallbackLoader !== undefined) this.workingRunMeter.continueRun();
+			else this.workingRunMeter.start();
 			this.pendingTools.clear();
 			mainTurnToolBatches.delete(this);
 			endMainToolTurn(this);

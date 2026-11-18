@@ -712,7 +712,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.chat.beginExternalPromptLifecycle();
 			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
 		} else if (waitsToRetry(session.chatSession)) {
-			this.chat.hydrateRetryWait();
+			this.chat.hydrateRetryWait(messages);
 		} else if (session.isRunning?.() === false) {
 			const lastAssistant = [...messages]
 				.reverse()
