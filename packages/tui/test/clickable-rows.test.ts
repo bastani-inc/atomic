@@ -373,6 +373,29 @@ describe("clickable list rows", () => {
 		}
 	});
 
+	it("a modal opened by the release handler removes the pending link activation", async () => {
+		const terminal = new VirtualTerminal(40, 12);
+		const opened: string[] = [];
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { openUrl: (url) => opened.push(url) });
+		tui.addChild({
+			render: () => ["\x1b]8;;https://example.invalid/background\x1b\\link\x1b]8;;\x1b\\"],
+			invalidate() {},
+			handleMouse(event) {
+				if (event.type === "release") tui.showOverlay(new Text("Confirm?", 0, 0));
+				return undefined;
+			},
+		});
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput(press(1, 0));
+			terminal.sendInput(release(1, 0));
+			assert.deepStrictEqual(opened, []);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("a dialog takes clicks away from a lower overlay before the dialog's first paint", async () => {
 		const list = letters();
 		const chosen: string[] = [];
@@ -487,35 +510,37 @@ describe("clickable list rows", () => {
 		}
 	});
 
-	it("a picker taking focus on its own press also acts on the first release", async () => {
-		const terminal = new VirtualTerminal(40, 12);
-		const tui = new TuiAltScreen(terminal);
-		const composer = new Text("compose", 0, 0);
-		const received: string[] = [];
-		const pane: Component = {
-			render: () => ["pick"],
-			invalidate() {},
-			handleInput() {},
-			handleMouse(event) {
-				if (event.type === "press") return { handled: true, capture: true, focus: true };
-				if (event.type === "click" && tui.getFocusedComponent() === pane) received.push("picked");
-				return undefined;
-			},
-		};
-		tui.addChild(composer);
-		tui.setFocus(composer);
-		tui.start();
-		try {
-			const handle = tui.showOverlay(pane, { anchor: "bottom-right", width: 10 });
-			handle.unfocus({ target: composer });
-			await terminal.waitForRender();
-			terminal.sendInput(press(34, 11));
-			terminal.sendInput(release(34, 11));
-			assert.deepStrictEqual(received, ["picked"]);
-		} finally {
-			tui.stop();
-		}
-	});
+	for (const claim of ["press", "release"] as const)
+		it(`a picker taking focus on its own ${claim} acts on the first click`, async () => {
+			const terminal = new VirtualTerminal(40, 12);
+			const tui = new TuiAltScreen(terminal);
+			const composer = new Text("compose", 0, 0);
+			const received: string[] = [];
+			const pane: Component = {
+				render: () => ["pick"],
+				invalidate() {},
+				handleInput() {},
+				handleMouse(event) {
+					if (event.type === "press") return { handled: true, capture: true, focus: claim === "press" };
+					if (event.type === "release" && claim === "release") return { handled: true, focus: true };
+					if (event.type === "click" && tui.getFocusedComponent() === pane) received.push("picked");
+					return undefined;
+				},
+			};
+			tui.addChild(composer);
+			tui.setFocus(composer);
+			tui.start();
+			try {
+				const handle = tui.showOverlay(pane, { anchor: "bottom-right", width: 10 });
+				handle.unfocus({ target: composer });
+				await terminal.waitForRender();
+				terminal.sendInput(press(34, 11));
+				terminal.sendInput(release(34, 11));
+				assert.deepStrictEqual(received, ["picked"]);
+			} finally {
+				tui.stop();
+			}
+		});
 
 	it("a component that took a press does not receive a release behind a new modal", async () => {
 		const terminal = new VirtualTerminal(40, 12);

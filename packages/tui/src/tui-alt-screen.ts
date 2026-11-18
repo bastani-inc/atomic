@@ -1131,7 +1131,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const focusTarget = this.resolveMouseFocusTarget(result.focusTarget ?? result.target.component);
 		const focusChanged =
 			result.focus === true && this.getPointerFocus() === focus && this.getFocusedComponent() !== focusTarget;
-		if (focusChanged) this.setFocus(focusTarget);
+		if (focusChanged) {
+			this.setFocus(focusTarget);
+			// A captured control can claim focus on release rather than on press.
+			if (this.mousePressFocus === focus) this.mousePressFocus = this.focusAfterClaim(focus, focusTarget);
+		}
 		if (result.capture) this.mouseCapture = result.target;
 		return (
 			result.render ??
@@ -1262,7 +1266,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					const clickEvent = this.createMouseEvent("click", raw.button, raw.x, raw.y, {
 						clickCount: this.getComponentClickCount(target, raw.x, raw.y),
 					});
-					const clickFocus = this.focusForClick(clickEvent, this.mousePressFrame!, focus);
+					const clickFocus = this.focusForClick(clickEvent, this.mousePressFrame!, this.getPointerFocus());
 					const clickResult =
 						clickFocus === this.getPointerFocus() ? this.dispatchMouseToTarget(clickEvent, target) : undefined;
 					if (clickResult) {
@@ -1313,7 +1317,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return;
 		}
 
-		if ((!focus.owner || this.modalContainsPoint(focus.owner, raw.x, raw.y)) && this.handleRightClickPaste(raw))
+		if (
+			raw.button === 2 &&
+			this.getPointerFocus() === focus &&
+			(!focus.owner || this.modalContainsPoint(focus.owner, raw.x, raw.y)) &&
+			this.handleRightClickPaste(raw)
+		)
 			return;
 		this.handleSelectionMouseEvent(raw, focus);
 	}
@@ -1741,7 +1750,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.selectionAnchor.col === point.col;
 			// A click acts on what the screen showed when it was pressed: a repaint that changed what is under the
 			// pointer before the release makes it no click at all.
-			const samePaint = samePointerFrame(this.pressFrame, releaseFrame) && focus === this.pressFocus;
+			// A component may open a dialog while handling the raw release before it falls through to selection.
+			const samePaint =
+				samePointerFrame(this.pressFrame, releaseFrame) && this.getPointerFocus() === this.pressFocus;
 			this.pressFrame = undefined;
 			this.pressFocus = undefined;
 			const clickedUrl = isClick && samePaint ? this.pressedUrl : undefined;
