@@ -744,22 +744,28 @@ const SERVER_BUSY_LAST_WAIT_MS = 200;
 
 /**
  * Runs `operation` again, with growing waits, while it fails with `SQLITE_BUSY` and `ranNothing` says the failed run
- * ran nothing, until `SERVER_BUSY_TIMEOUT_MS` has passed; then it fails with the last run's failure. `prepare` runs
- * before each run after the first.
+ * ran nothing, or with `SQLITE_SCHEMA`, until `SERVER_BUSY_TIMEOUT_MS` has passed; then it fails with the last run's
+ * failure. `prepare` runs before each run after the first.
+ *
+ * A server answers `SQLITE_SCHEMA` when other connections kept changing the database's schema while it prepared the
+ * statement, as on a server shared by several stores that create and drop their tables: the statement never ran, and
+ * a transaction it was part of stays as it was, so the statement runs again where it was sent.
  * @template T
  * @param {() => Promise<T>} operation
  * @param {() => boolean} ranNothing
  * @param {() => Promise<void>} [prepare]
+ * @param {() => boolean} [rerunsAfterSchemaChange] whether a run that `SQLITE_SCHEMA` ended may run again
  * @returns {Promise<T>}
  */
-async function whileServerBusy(operation, ranNothing, prepare) {
+async function whileServerBusy(operation, ranNothing, prepare, rerunsAfterSchemaChange = () => true) {
 	const deadline = performance.now() + SERVER_BUSY_TIMEOUT_MS;
 	for (let wait = SERVER_BUSY_FIRST_WAIT_MS; ; wait = Math.min(wait * 2, SERVER_BUSY_LAST_WAIT_MS)) {
 		try {
 			return await operation();
 		} catch (error) {
 			const left = deadline - performance.now();
-			if (!isBusy(error) || !ranNothing() || left <= 0) throw error;
+			const rerun = isBusy(error) ? ranNothing() : isSchemaChanged(error) && rerunsAfterSchemaChange();
+			if (!rerun || left <= 0) throw error;
 			await new Promise((resolve) => setTimeout(resolve, Math.min(wait, left)));
 			await prepare?.();
 		}
@@ -772,6 +778,14 @@ async function whileServerBusy(operation, ranNothing, prepare) {
  */
 function isBusy(error) {
 	return /** @type {{ readonly code?: unknown } | undefined} */ (error)?.code === "SQLITE_BUSY";
+}
+
+/**
+ * Whether a server refused a statement because the schema it was prepared against kept changing.
+ * @param {unknown} error
+ */
+function isSchemaChanged(error) {
+	return /** @type {{ readonly code?: unknown } | undefined} */ (error)?.code === "SQLITE_SCHEMA";
 }
 
 /** V8's `gc`, taken from a context created while `--expose-gc` is set; the flag is off again for code that runs later. */
@@ -1258,6 +1272,8 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			// again in a new transaction. A busy answer after the transaction began is not run again: a busy statement
 			// leaves the transaction open, and a busy answer that ends its stream also ends the statements it already ran.
 			// The transaction began once a statement in it settled and left it open: the server acknowledged its BEGIN.
+			// A statement the server answered `SQLITE_SCHEMA` ran nothing and left the transaction open, so it runs again in
+			// it; one that ended a transaction already under way is not run again.
 			let started = false;
 			/** @type {<T>(operation: () => Promise<T>) => Promise<T>} */
 			const inTransaction = async (operation) => {
@@ -1266,8 +1282,9 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 						() => watch(operation),
 						() => !started && transaction.closed,
 						async () => {
-							transaction = await watch(begin);
+							if (transaction.closed) transaction = await watch(begin);
 						},
+						() => !started || !transaction.closed,
 					);
 				} finally {
 					if (!transaction.closed) started = true;

@@ -167,3 +167,34 @@ test("a transaction whose stream the server ended after it began does not go on 
 	assert.ok(failure instanceof StorageUnavailableError);
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
 });
+
+/**
+ * What sqld answers a statement whose schema other connections kept changing while it prepared it, as on a server
+ * shared by stores that create and drop their tables: `SQLITE_SCHEMA`, and nothing of the statement ran.
+ */
+const SCHEMA_CHANGED: FakeLibsqlFault = { kind: "schema-changed" };
+
+test("a statement outside a transaction that the server answered schema-changed runs again and writes once", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	fake.fail(SCHEMA_CHANGED, SCHEMA_CHANGED);
+	await database.run("INSERT INTO events VALUES (1)");
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
+});
+
+test("a statement in a transaction that the server answered schema-changed runs again in that transaction, which commits once", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	let runs = 0;
+	await database.transaction(async (tx) => {
+		runs++;
+		await tx.run("INSERT INTO events VALUES (1)");
+		fake.fail(SCHEMA_CHANGED);
+		await tx.run("INSERT INTO events VALUES (2)");
+	});
+	assert.equal(runs, 1);
+	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes("BEGIN IMMEDIATE")).length, 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 2);
+});
