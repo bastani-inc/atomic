@@ -1,6 +1,13 @@
 import { LAYOUT_NODE, type ScrollLayoutNode } from "../layout-node.ts";
 import { type Component, Container } from "../tui.ts";
 
+/** Whether NO_COLOR (any value) or FORCE_COLOR=0 asks for no color. */
+function colorTurnedOff(env: NodeJS.ProcessEnv = process.env): boolean {
+	if (env.NO_COLOR !== undefined) return true;
+	const forced = env.FORCE_COLOR?.trim().toLowerCase();
+	return forced === "0" || forced === "false";
+}
+
 export type ScrollViewScrollbar = "hidden" | "auto" | "always";
 
 export interface ScrollViewOptions {
@@ -50,8 +57,10 @@ export class ScrollView extends Container {
 		this.primary = options.primary ?? false;
 		this.overscroll = options.overscroll ?? "chain";
 		this.currentScrollbar = options.scrollbar ?? "hidden";
-		this.scrollbarTrackStyle = options.scrollbarTrackStyle ?? ((text) => `\x1b[90m${text}\x1b[39m`);
-		this.scrollbarThumbStyle = options.scrollbarThumbStyle ?? ((text) => `\x1b[37m${text}\x1b[39m`);
+		// The default styles honor NO_COLOR and FORCE_COLOR=0, read once here rather than on every painted cell.
+		const plain = colorTurnedOff();
+		this.scrollbarTrackStyle = options.scrollbarTrackStyle ?? ((text) => (plain ? text : `\x1b[90m${text}\x1b[39m`));
+		this.scrollbarThumbStyle = options.scrollbarThumbStyle ?? ((text) => (plain ? text : `\x1b[37m${text}\x1b[39m`));
 		this.scrollbarHideDelayMs = Math.max(0, Math.floor(options.scrollbarHideDelayMs ?? 1000));
 	}
 

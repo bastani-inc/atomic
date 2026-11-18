@@ -242,7 +242,9 @@ percent_decode() {
             decode_high_value=$(hex_nibble "$decode_high") || return 1
             decode_low_value=$(hex_nibble "$decode_low") || return 1
             decode_decimal=$((decode_high_value * 16 + decode_low_value))
-            [ "$decode_decimal" -ne 0 ] || return 1
+            # NUL cannot be held in a shell string, and a decoded newline would be lost to
+            # command substitution, so neither decodes.
+            [ "$decode_decimal" -ne 0 ] && [ "$decode_decimal" -ne 10 ] || return 1
             decode_octal=$(printf '%03o' "$decode_decimal")
             decode_output=$decode_output$(printf "\\$decode_octal")
             decode_input=${decode_after_high#?}
@@ -363,6 +365,28 @@ else
     fail "sha256sum, shasum, or openssl is required"
 fi
 
+LAUNCHER_RECORD=.atomic-launcher.sha256
+# How long BusyBox wget may take to bring github.com's answer to the release probe.
+RELEASE_PROBE_TIMEOUT_SECONDS=10
+
+# The SHA-256 of a file, as lowercase hex.
+sha256_of() {
+    case $CHECKSUM_TOOL in
+        sha256sum) sha256_output=$(sha256sum "$1") || return 1 ;;
+        shasum) sha256_output=$(shasum -a 256 "$1") || return 1 ;;
+        openssl) sha256_output=$(openssl dgst -sha256 "$1") || return 1 ;;
+    esac
+    set -- $sha256_output
+    if [ "$CHECKSUM_TOOL" = openssl ]; then
+        for sha256_word in "$@"; do
+            sha256_value=$sha256_word
+        done
+    else
+        sha256_value=$1
+    fi
+    printf '%s' "$sha256_value"
+}
+
 HOST_OS=$(uname -s 2>/dev/null) || fail "unable to determine the host operating system"
 HOST_MACHINE=$(uname -m 2>/dev/null) || fail "unable to determine the host architecture"
 
@@ -456,6 +480,8 @@ TRANSACTION_ID=$$.$TEMP_ATTEMPT
 ARCHIVE_PATH=$TEMP_DIR/$ASSET_NAME
 CHECKSUM_PATH=$TEMP_DIR/$CHECKSUM_FILE
 API_AUTH_PATH=$TEMP_DIR/github-api-auth
+API_BODY_PATH=$TEMP_DIR/github-api-body
+API_HEADERS_PATH=$TEMP_DIR/github-api-headers
 EXTRACT_ROOT=$TEMP_DIR/extract
 PAYLOAD_ROOT=
 VERSION_PATH=
@@ -669,21 +695,154 @@ clear_api_auth() {
     unset TOKEN
 }
 
-http_get() {
-    http_url=$1
+# The status code of the first or last HTTP status line in a header dump (curl -D,
+# wget -S): a line that starts with HTTP/ after its indentation, or BusyBox wget's
+# "server returned error: HTTP/1.1 404 Not Found". Header values that merely contain
+# HTTP/ (such as `Server: BaseHTTP/0.6`) are not status lines. The first status line is
+# the answer of the requested address; the last is the answer after any redirects.
+http_status_line() {
+    status_which=$1
+    picked_status=
+    while IFS= read -r status_line || [ -n "$status_line" ]; do
+        status_line=${status_line#"${status_line%%[! ]*}"}
+        case $status_line in
+            HTTP/*) status_rest=$status_line ;;
+            *'server returned error: HTTP/'*) status_rest=HTTP/${status_line##*'server returned error: HTTP/'} ;;
+            *) continue ;;
+        esac
+        status_rest=${status_rest#* }
+        status_word=${status_rest%% *}
+        status_word=${status_word%"$CARRIAGE_RETURN"}
+        case $status_word in
+            [123456789][0123456789][0123456789])
+                picked_status=$status_word
+                [ "$status_which" = first ] && break
+                ;;
+        esac
+    done < "$2"
+    printf '%s' "${picked_status:-000}"
+}
+
+last_http_status() {
+    http_status_line last "$1"
+}
+
+first_http_status() {
+    http_status_line first "$1"
+}
+
+file_text() {
+    file_text_value=
+    while IFS= read -r file_line || [ -n "$file_line" ]; do
+        file_text_value=$file_text_value$file_line$NEWLINE
+    done < "$1"
+    printf '%s' "$file_text_value"
+}
+
+# Whether a rate-limited GitHub API response says so: GitHub answers 403 (or 429)
+# with `x-ratelimit-remaining: 0` or a message naming the rate limit.
+api_response_is_rate_limited() {
+    case $API_STATUS in
+        429) return 0 ;;
+        403) ;;
+        *) return 1 ;;
+    esac
+    if [ -f "$API_HEADERS_PATH" ]; then
+        while IFS= read -r header_line || [ -n "$header_line" ]; do
+            header_line=${header_line#"${header_line%%[! ]*}"}
+            header_line=${header_line%"$CARRIAGE_RETURN"}
+            case $header_line in
+                [Xx]-[Rr][Aa][Tt][Ee][Ll][Ii][Mm][Ii][Tt]-[Rr][Ee][Mm][Aa][Ii][Nn][Ii][Nn][Gg]:*)
+                    remaining=${header_line#*:}
+                    remaining=${remaining# }
+                    [ "$remaining" = 0 ] && return 0
+                    ;;
+            esac
+        done < "$API_HEADERS_PATH"
+    fi
+    [ -f "$API_BODY_PATH" ] || return 1
+    case $(file_text "$API_BODY_PATH") in
+        *'rate limit'*|*'Rate limit'*|*'RATE LIMIT'*) return 0 ;;
+    esac
+    return 1
+}
+
+# GET a GitHub API URL: the body goes to API_BODY_PATH, the headers to API_HEADERS_PATH,
+# and API_STATUS is the HTTP status (000 when no response arrived).
+api_request() {
+    api_url=$1
+    rm -f "$API_BODY_PATH" "$API_HEADERS_PATH"
+    : > "$API_HEADERS_PATH"
     if [ "$DOWNLOADER" = curl ]; then
         if [ -n "$TOKEN" ]; then
-            curl -fsSL -H 'Accept: application/vnd.github+json' -H "@$API_AUTH_PATH" "$http_url"
+            API_STATUS=$(curl -sL -D "$API_HEADERS_PATH" -o "$API_BODY_PATH" -w '%{http_code}' \
+                -H 'Accept: application/vnd.github+json' -H "@$API_AUTH_PATH" "$api_url" 2>/dev/null) || :
         else
-            curl -fsSL -H 'Accept: application/vnd.github+json' "$http_url"
+            API_STATUS=$(curl -sL -D "$API_HEADERS_PATH" -o "$API_BODY_PATH" -w '%{http_code}' \
+                -H 'Accept: application/vnd.github+json' "$api_url" 2>/dev/null) || :
         fi
+        case $API_STATUS in
+            [123456789][0123456789][0123456789]) ;;
+            *) API_STATUS=000 ;;
+        esac
     else
         if [ -n "$TOKEN" ]; then
-            WGETRC="$API_AUTH_PATH" wget -q -O - --header='Accept: application/vnd.github+json' "$http_url"
+            WGETRC="$API_AUTH_PATH" wget -q -S -O "$API_BODY_PATH" --header='Accept: application/vnd.github+json' \
+                "$api_url" 2>"$API_HEADERS_PATH" || :
         else
-            wget -q -O - --header='Accept: application/vnd.github+json' "$http_url"
+            wget -q -S -O "$API_BODY_PATH" --header='Accept: application/vnd.github+json' \
+                "$api_url" 2>"$API_HEADERS_PATH" || :
         fi
+        API_STATUS=$(last_http_status "$API_HEADERS_PATH")
     fi
+}
+
+# Whether the requested release exists: github.com's own answer to a HEAD request for
+# the release's SHA256SUMS, without following its redirect to the file storage. A 2xx
+# or 3xx means found, 404 means missing (also for a tag with no published release),
+# anything else or no answer unknown. github.com is not subject to the REST API's
+# 60-requests-an-hour limit for unauthenticated clients.
+release_page_status() {
+    release_probe_url=$GITHUB_WEB/$REPOSITORY/releases/download/$1/$CHECKSUM_FILE
+    if [ "$DOWNLOADER" = curl ]; then
+        release_probe_code=$(curl -sI -o /dev/null -w '%{http_code}' "$release_probe_url" 2>/dev/null) || :
+    else
+        release_probe_headers=$TEMP_DIR/release-probe-headers
+        : > "$release_probe_headers"
+        case $(wget --version 2>/dev/null || :) in
+            *'GNU Wget'*)
+                wget -S --spider --max-redirect=0 "$release_probe_url" > /dev/null 2>"$release_probe_headers" || :
+                ;;
+            *)
+                # BusyBox wget always follows redirects: read only github.com's own first
+                # answer, then stop it, so the file storage it redirects to is never awaited.
+                wget -S --spider "$release_probe_url" > /dev/null 2>"$release_probe_headers" &
+                release_probe_pid=$!
+                if sleep 0.1 2>/dev/null; then
+                    release_probe_step=0.1
+                    release_probe_steps=$((RELEASE_PROBE_TIMEOUT_SECONDS * 10))
+                else
+                    release_probe_step=1
+                    release_probe_steps=$RELEASE_PROBE_TIMEOUT_SECONDS
+                fi
+                while kill -0 "$release_probe_pid" 2>/dev/null &&
+                    [ "$(first_http_status "$release_probe_headers")" = 000 ] &&
+                    [ "$release_probe_steps" -gt 0 ]; do
+                    sleep "$release_probe_step"
+                    release_probe_steps=$((release_probe_steps - 1))
+                done
+                kill "$release_probe_pid" 2>/dev/null || :
+                wait "$release_probe_pid" 2>/dev/null || :
+                ;;
+        esac
+        release_probe_code=$(first_http_status "$release_probe_headers")
+        rm -f "$release_probe_headers"
+    fi
+    case $release_probe_code in
+        [23][0123456789][0123456789]) printf 'found' ;;
+        404) printf 'missing' ;;
+        *) printf 'unknown' ;;
+    esac
 }
 
 download_file() {
@@ -882,7 +1041,7 @@ tag_from_release_url() {
 resolve_redirect_tag() {
     latest_url=$GITHUB_WEB/$REPOSITORY/releases/latest
     if [ "$DOWNLOADER" = curl ]; then
-        if latest_effective_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$latest_url" 2>/dev/null); then
+        if latest_effective_url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$latest_url" 2>/dev/null); then
             tag_from_release_url "$latest_effective_url"
             return
         fi
@@ -1115,48 +1274,6 @@ print_install_summary() {
     printf '%sFor more information visit%s %s\n' "$MUTED" "$RESET" "$DOCS_URL"
 }
 
-TAGS_API=$GITHUB_API/repos/$REPOSITORY/releases/tags
-RELEASE_TAG=
-RELEASE_TAG_ENCODED=
-API_URL=
-if [ -n "$REQUESTED_REF" ]; then
-    is_atomic_release_tag "$REQUESTED_REF" ||
-        fail "unsupported release tag: expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION"
-    REQUESTED_REF_ENCODED=$(percent_encode "$REQUESTED_REF")
-    API_URL=$TAGS_API/$REQUESTED_REF_ENCODED
-else
-    REDIRECT_TAG=
-    if REDIRECT_TAG=$(resolve_redirect_tag); then
-        is_atomic_release_tag "$REDIRECT_TAG" ||
-            fail "latest release redirect returned an unsupported Atomic release tag"
-        RELEASE_TAG=$REDIRECT_TAG
-    else
-        API_URL=$GITHUB_API/repos/$REPOSITORY/releases/latest
-    fi
-fi
-
-if [ -z "$RELEASE_TAG" ]; then
-    prepare_api_auth
-    if ! RELEASE_JSON=$(http_get "$API_URL"); then
-        fail "failed to resolve the GitHub release"
-    fi
-    if ! RELEASE_TAG=$(parse_release_tag "$RELEASE_JSON"); then
-        fail "GitHub release response did not contain a valid tag_name"
-    fi
-    if [ -n "$REQUESTED_REF" ] && [ "$RELEASE_TAG" != "$REQUESTED_REF" ]; then
-        fail "GitHub returned release $RELEASE_TAG for requested tag $REQUESTED_REF"
-    fi
-fi
-clear_api_auth
-RELEASE_TAG_ENCODED=$(percent_encode "$RELEASE_TAG")
-case $RELEASE_TAG_ENCODED in
-    ''|.|..) fail "release tag cannot be used as a version directory: $RELEASE_TAG" ;;
-esac
-
-PLATFORM_LABEL=${ASSET_NAME#atomic-}
-PLATFORM_LABEL=${PLATFORM_LABEL%.tar.gz}
-printf '%sInstalling atomic version:%s %s (%s)\n' "$MUTED" "$RESET" "$RELEASE_TAG" "$PLATFORM_LABEL"
-
 # Read the installed version from where `current` points rather than executing
 # the existing binary: a hung or broken install is exactly what a rerun repairs,
 # so this informational probe must never block the download and promotion.
@@ -1189,15 +1306,132 @@ installed_payload_is_complete() {
     done
 }
 
+# Whether the installed launcher matches the hash recorded at install time. Fails when the
+# record is missing (an install from an older installer) or the launcher changed since.
+installed_launcher_matches_record() {
+    [ -f "$INSTALL_ROOT/current/$LAUNCHER_RECORD" ] || return 1
+    recorded_sha256=
+    IFS= read -r recorded_sha256 < "$INSTALL_ROOT/current/$LAUNCHER_RECORD" || [ -n "$recorded_sha256" ] || return 1
+    case $recorded_sha256 in
+        *[!0123456789abcdef]*|'') return 1 ;;
+    esac
+    [ "${#recorded_sha256}" -eq 64 ] || return 1
+    installed_sha256=$(sha256_of "$INSTALL_ROOT/current/atomic") || return 1
+    [ "$installed_sha256" = "$recorded_sha256" ]
+}
+
+# A healthy install: a non-empty launcher that the bin link and `current` reach, the
+# complete payload, and, when the install recorded the launcher's hash, a launcher that
+# still matches it.
 installed_launcher_is_healthy() {
+    # One answer per run and release: the launcher hash is read once, not again for the skip.
+    if [ "${INSTALLED_HEALTH_TAG-}" = "$RELEASE_TAG_ENCODED" ] && [ -n "${INSTALLED_HEALTH:-}" ]; then
+        [ "$INSTALLED_HEALTH" = healthy ]
+        return
+    fi
+    INSTALLED_HEALTH_TAG=$RELEASE_TAG_ENCODED
+    INSTALLED_HEALTH=unhealthy
+    installed_launcher_check_health || return 1
+    INSTALLED_HEALTH=healthy
+}
+
+installed_launcher_check_health() {
     [ -f "$INSTALL_ROOT/current/atomic" ] && [ -x "$INSTALL_ROOT/current/atomic" ] || return 1
+    [ -s "$INSTALL_ROOT/current/atomic" ] || return 1
     [ -L "$BIN_PATH" ] || return 1
     # shellcheck disable=SC3013 # -ef is the only way to compare symlink targets without readlink
     [ "$BIN_PATH" -ef "$INSTALL_ROOT/current/atomic" ] || return 1
     # shellcheck disable=SC3013 # -ef compares the physical directories, so a symlinked install root still matches
     [ "$INSTALL_ROOT/current" -ef "$INSTALL_ROOT/versions/$RELEASE_TAG_ENCODED" ] || return 1
-    installed_payload_is_complete
+    installed_payload_is_complete || return 1
+    if [ -f "$INSTALL_ROOT/current/$LAUNCHER_RECORD" ]; then
+        installed_launcher_matches_record || return 1
+    fi
 }
+
+# A healthy install whose launcher hash was recorded and still matches: it can be kept
+# without asking GitHub anything. An install without the record resolves over the network.
+installed_launcher_is_verified() {
+    [ -f "$INSTALL_ROOT/current/$LAUNCHER_RECORD" ] && installed_launcher_is_healthy
+}
+
+TAGS_API=$GITHUB_API/repos/$REPOSITORY/releases/tags
+RELEASE_TAG=
+RELEASE_TAG_ENCODED=
+API_URL=
+if [ -n "$REQUESTED_REF" ]; then
+    is_atomic_release_tag "$REQUESTED_REF" ||
+        fail "unsupported release tag: expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION"
+    REQUESTED_REF_ENCODED=$(percent_encode "$REQUESTED_REF")
+    RELEASE_TAG_ENCODED=$REQUESTED_REF_ENCODED
+fi
+if [ -n "$REQUESTED_REF" ] && [ "$FORCE_INSTALL" -eq 0 ] && [ "$INSTALLED_VERSION" = "$REQUESTED_REF" ] &&
+    installed_launcher_is_verified; then
+    # The pinned release is already installed and healthy: it needs no network request.
+    RELEASE_TAG=$REQUESTED_REF
+elif [ -n "$REQUESTED_REF" ]; then
+    # An exact tag is confirmed on github.com by its release's SHA256SUMS; the REST API, limited to 60 requests an
+    # hour per address without a token, is asked only when github.com cannot tell.
+    case $(release_page_status "$REQUESTED_REF_ENCODED") in
+        found) RELEASE_TAG=$REQUESTED_REF ;;
+        missing) fail "release $REQUESTED_REF not found" ;;
+        *) API_URL=$TAGS_API/$REQUESTED_REF_ENCODED ;;
+    esac
+else
+    REDIRECT_TAG=
+    if REDIRECT_TAG=$(resolve_redirect_tag); then
+        is_atomic_release_tag "$REDIRECT_TAG" ||
+            fail "latest release redirect returned an unsupported Atomic release tag"
+        RELEASE_TAG=$REDIRECT_TAG
+    else
+        API_URL=$GITHUB_API/repos/$REPOSITORY/releases/latest
+    fi
+fi
+
+if [ -z "$RELEASE_TAG" ]; then
+    prepare_api_auth
+    api_request "$API_URL"
+    case $API_STATUS in
+        200) RELEASE_JSON=$(file_text "$API_BODY_PATH") ;;
+        404)
+            if [ -n "$REQUESTED_REF" ]; then
+                fail "release $REQUESTED_REF not found"
+            fi
+            fail "failed to resolve the GitHub release: no published release found"
+            ;;
+        *)
+            if api_response_is_rate_limited; then
+                if [ -n "$TOKEN" ]; then
+                    fail "failed to resolve the GitHub release: GitHub's API rate limit was reached for this token; try again later"
+                fi
+                fail "failed to resolve the GitHub release: GitHub's API rate limit was reached for this network. Set GITHUB_TOKEN (for example GITHUB_TOKEN=\$(gh auth token)) or try again later"
+            fi
+            if [ "$API_STATUS" = 000 ]; then
+                fail "failed to resolve the GitHub release: no response from the GitHub API"
+            fi
+            if [ "$API_STATUS" = 403 ]; then
+                fail "failed to resolve the GitHub release: GitHub refused the API request (HTTP 403), usually its API rate limit for this network. Set GITHUB_TOKEN (for example GITHUB_TOKEN=\$(gh auth token)) or try again later"
+            fi
+            fail "failed to resolve the GitHub release (HTTP $API_STATUS)"
+            ;;
+    esac
+    rm -f "$API_BODY_PATH" "$API_HEADERS_PATH"
+    if ! RELEASE_TAG=$(parse_release_tag "$RELEASE_JSON"); then
+        fail "GitHub release response did not contain a valid tag_name"
+    fi
+    if [ -n "$REQUESTED_REF" ] && [ "$RELEASE_TAG" != "$REQUESTED_REF" ]; then
+        fail "GitHub returned release $RELEASE_TAG for requested tag $REQUESTED_REF"
+    fi
+fi
+clear_api_auth
+RELEASE_TAG_ENCODED=$(percent_encode "$RELEASE_TAG")
+case $RELEASE_TAG_ENCODED in
+    ''|.|..) fail "release tag cannot be used as a version directory: $RELEASE_TAG" ;;
+esac
+
+PLATFORM_LABEL=${ASSET_NAME#atomic-}
+PLATFORM_LABEL=${PLATFORM_LABEL%.tar.gz}
+printf '%sInstalling atomic version:%s %s (%s)\n' "$MUTED" "$RESET" "$RELEASE_TAG" "$PLATFORM_LABEL"
 
 if [ -n "$INSTALLED_VERSION" ]; then
     if [ "$INSTALLED_VERSION" = "$RELEASE_TAG" ] && [ "$FORCE_INSTALL" -eq 0 ] && installed_launcher_is_healthy; then
@@ -1245,20 +1479,7 @@ while IFS= read -r checksum_line || [ -n "$checksum_line" ]; do
 done < "$CHECKSUM_PATH"
 [ "$CHECKSUM_MATCHES" -eq 1 ] || fail "$CHECKSUM_FILE must contain exactly one row for $ASSET_NAME"
 
-case $CHECKSUM_TOOL in
-    sha256sum) checksum_output=$(sha256sum "$ARCHIVE_PATH") || fail "failed to hash $ASSET_NAME" ;;
-    shasum) checksum_output=$(shasum -a 256 "$ARCHIVE_PATH") || fail "failed to hash $ASSET_NAME" ;;
-    openssl) checksum_output=$(openssl dgst -sha256 "$ARCHIVE_PATH") || fail "failed to hash $ASSET_NAME" ;;
-esac
-set -- $checksum_output
-if [ "$CHECKSUM_TOOL" = openssl ]; then
-    ACTUAL_CHECKSUM=
-    for checksum_word in "$@"; do
-        ACTUAL_CHECKSUM=$checksum_word
-    done
-else
-    ACTUAL_CHECKSUM=$1
-fi
+ACTUAL_CHECKSUM=$(sha256_of "$ARCHIVE_PATH") || fail "failed to hash $ASSET_NAME"
 [ "$ACTUAL_CHECKSUM" = "$EXPECTED_CHECKSUM" ] || fail "checksum verification failed for $ASSET_NAME"
 
 umask "$ORIGINAL_UMASK"
@@ -1273,6 +1494,10 @@ chmod +x "$PAYLOAD_ROOT/atomic"
 if ! "$PAYLOAD_ROOT/atomic" --version >/dev/null; then
     fail "staged atomic --version check failed"
 fi
+# The launcher's hash, recorded beside it, lets a later run confirm the installed payload
+# without the network (see installed_launcher_is_verified).
+LAUNCHER_SHA256=$(sha256_of "$PAYLOAD_ROOT/atomic") || fail "failed to hash the staged atomic launcher"
+printf '%s\n' "$LAUNCHER_SHA256" > "$PAYLOAD_ROOT/$LAUNCHER_RECORD" || fail "failed to record the launcher hash"
 printf '%sVerified SHA256, extracted, and checked atomic --version%s\n' "$MUTED" "$RESET"
 
 VERSIONS_DIR=$INSTALL_ROOT/versions

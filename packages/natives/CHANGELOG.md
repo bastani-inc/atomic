@@ -8,6 +8,10 @@
 - `raiseCurrentThreadPriority()` raises the calling thread, and only it, to above-normal priority on Windows, and `currentThreadPriority()` reads the calling thread's priority. On other platforms the first does nothing and returns false, and the second returns 0 ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
 - `shortenCurrentThreadSlice()` asks Linux 6.12 and later for a short time slice for the calling thread, and only it, keeping its policy and nice value and not passing it on to processes it starts; it returns false and changes nothing where the kernel does not take it. `currentThreadSlice()` reads the slice back ([#5376](https://github.com/bastani-inc/atomic/issues/5376))
 
+### Fixed
+
+- On a busy Windows machine, a supervised command that ran to completion, such as a Git command of a named worktree, no longer fails with `Windows stdin worker stop was not confirmed` when its input thread has not run yet by the time the command's processes have all ended. Nothing reads that input any more, so the thread ends on its own; a command with processes still running fails as before ([#5202](https://github.com/bastani-inc/atomic/issues/5202))
+
 ## [0.9.89-alpha.1] - 2026-11-18
 
 ### Added

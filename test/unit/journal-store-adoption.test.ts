@@ -42,6 +42,16 @@ import { expireWorkflowLease } from "../helpers/workflow-lease.js";
 
 let root: string;
 let store: string;
+/**
+ * The most writing one journal fixture and discovering it may take on a loaded CI host: the fixture opens a SQLite
+ * file and commits a run, a lease, an event and its release, and discovery opens it again. Windows takes several
+ * times longer than Linux beside other suites. A test that writes and discovers many journals budgets them at this
+ * each.
+ */
+const JOURNAL_FIXTURE_BUDGET_MS = 1_000;
+/** The journals the transitive-discovery test writes and discovers: a chain past the limit, a loop of two and one more. */
+const TRANSITIVE_DISCOVERY_JOURNALS = JOURNAL_DISCOVERY_LIMIT + 3 + 3;
+
 beforeEach(() => {
 	root = makeTempDirectory("journal-store-adoption-");
 	store = join(root, "workflows", "journal");
@@ -223,45 +233,51 @@ test("adoption takes each path once, recognises the store's own shards, and leav
 	});
 });
 
-test("discovery follows references transitively, once each, up to its limit, and records what it skips (#4325)", async () => {
-	const files = Array.from({ length: JOURNAL_DISCOVERY_LIMIT + 3 }, (_, index) =>
-		join(root, `chain-${index}`, "journal.sqlite"),
-	);
-	for (const [index, file] of files.entries())
-		await journal(file, [{ runId: `chain-${index}`, references: files[index + 1] ?? files[0] }]);
-	const loop = await journal(join(root, "loop-a", "journal.sqlite"), [
-		{ runId: "loop-a", references: join(root, "loop-b", "journal.sqlite") },
-	]);
-	await journal(join(root, "loop-b", "journal.sqlite"), [{ runId: "loop-b", references: loop }]);
-	const report = await adoptJournals(store, [files[0]!]);
-	assert.equal(report.discovered.length, JOURNAL_DISCOVERY_LIMIT);
-	assert.deepEqual(
-		report.discovered.slice(0, 2).map((record) => [record.path, record.outcome, record.referencedBy]),
-		[
-			[files[1], "adopted", files[0]],
-			[files[2], "adopted", files[1]],
-		],
-	);
-	const loops = await adoptJournals(store, [loop]);
-	assert.deepEqual(
-		loops.discovered.map((record) => [record.path, record.outcome]),
-		[[join(root, "loop-b", "journal.sqlite"), "adopted"]],
-	);
-	const registered = await adoptJournals(store, [files[2]!]);
-	assert.deepEqual(
-		registered.adopted.map((outcome) => outcome.status),
-		["already-registered"],
-	);
-	assert.deepEqual(registered.discovered, [], "references already registered are not considered again");
-	const notJournal = join(root, "notes.sqlite");
-	writeFileSync(notJournal, "plain");
-	const pointing = await journal(join(root, "pointing", "journal.sqlite"), [{ runId: "p", references: notJournal }]);
-	const skipped = await adoptJournals(store, [pointing]);
-	assert.deepEqual(
-		skipped.discovered.map((record) => [record.path, record.outcome, record.reason]),
-		[[notJournal, "skipped", "not-a-journal"]],
-	);
-});
+test(
+	"discovery follows references transitively, once each, up to its limit, and records what it skips (#4325)",
+	async () => {
+		const files = Array.from({ length: JOURNAL_DISCOVERY_LIMIT + 3 }, (_, index) =>
+			join(root, `chain-${index}`, "journal.sqlite"),
+		);
+		for (const [index, file] of files.entries())
+			await journal(file, [{ runId: `chain-${index}`, references: files[index + 1] ?? files[0] }]);
+		const loop = await journal(join(root, "loop-a", "journal.sqlite"), [
+			{ runId: "loop-a", references: join(root, "loop-b", "journal.sqlite") },
+		]);
+		await journal(join(root, "loop-b", "journal.sqlite"), [{ runId: "loop-b", references: loop }]);
+		const report = await adoptJournals(store, [files[0]!]);
+		assert.equal(report.discovered.length, JOURNAL_DISCOVERY_LIMIT);
+		assert.deepEqual(
+			report.discovered.slice(0, 2).map((record) => [record.path, record.outcome, record.referencedBy]),
+			[
+				[files[1], "adopted", files[0]],
+				[files[2], "adopted", files[1]],
+			],
+		);
+		const loops = await adoptJournals(store, [loop]);
+		assert.deepEqual(
+			loops.discovered.map((record) => [record.path, record.outcome]),
+			[[join(root, "loop-b", "journal.sqlite"), "adopted"]],
+		);
+		const registered = await adoptJournals(store, [files[2]!]);
+		assert.deepEqual(
+			registered.adopted.map((outcome) => outcome.status),
+			["already-registered"],
+		);
+		assert.deepEqual(registered.discovered, [], "references already registered are not considered again");
+		const notJournal = join(root, "notes.sqlite");
+		writeFileSync(notJournal, "plain");
+		const pointing = await journal(join(root, "pointing", "journal.sqlite"), [
+			{ runId: "p", references: notJournal },
+		]);
+		const skipped = await adoptJournals(store, [pointing]);
+		assert.deepEqual(
+			skipped.discovered.map((record) => [record.path, record.outcome, record.reason]),
+			[[notJournal, "skipped", "not-a-journal"]],
+		);
+	},
+	TRANSITIVE_DISCOVERY_JOURNALS * JOURNAL_FIXTURE_BUDGET_MS,
+);
 
 test("the legacy default journal is adopted once, and a file that is not a journal is recorded once (#4325)", async () => {
 	await withCatalog(async (catalog) => {

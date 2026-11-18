@@ -243,6 +243,10 @@
       "$ref": "#/$defs/KeybindingValue",
       "description": "Input to selected task"
     },
+    "app.tasks.openWaited": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "Open the output of the shell a waiting subagent waits on"
+    },
     "app.nav.back": {
       "$ref": "#/$defs/KeybindingValue",
       "description": "Go back one level from an empty prompt"

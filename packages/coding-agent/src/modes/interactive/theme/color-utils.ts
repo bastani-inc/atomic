@@ -4,16 +4,73 @@ import type { ColorValue } from "./theme-schema.ts";
 export type ColorMode = "truecolor" | "256color";
 export type ThemeStyleLevel = 0 | 1 | 2 | 3;
 
-export function resolveThemeStyleLevel(mode: ColorMode, env: NodeJS.ProcessEnv = process.env): ThemeStyleLevel {
-	if (env.NO_COLOR !== undefined) return 0;
+/** What NO_COLOR and FORCE_COLOR ask for: color off, a forced level, or the terminal's own color mode. */
+export type ColorEnvironment = { readonly off: true } | { readonly off: false; readonly forced?: ThemeStyleLevel };
+
+const COLOR_ENVIRONMENT_KEY = Symbol.for("@bastani/atomic:theme-color-environment");
+
+/** A theme that repaints its palette when the color environment is read again. */
+export interface ColorEnvironmentListener {
+	applyColorEnvironment(environment: ColorEnvironment): void;
+}
+
+type ColorEnvironmentState = {
+	environment: ColorEnvironment;
+	readonly listeners: Set<WeakRef<ColorEnvironmentListener>>;
+};
+
+/** Shared across module instances, like the global theme, so every loaded copy of the theme module agrees. */
+function colorEnvironmentState(): ColorEnvironmentState {
+	const store = globalThis as Record<symbol, ColorEnvironmentState | undefined>;
+	let state = store[COLOR_ENVIRONMENT_KEY];
+	if (!state) {
+		state = { environment: readColorEnvironment(), listeners: new Set() };
+		store[COLOR_ENVIRONMENT_KEY] = state;
+	}
+	return state;
+}
+
+export function readColorEnvironment(env: NodeJS.ProcessEnv = process.env): ColorEnvironment {
+	if (env.NO_COLOR !== undefined) return { off: true };
 	if (env.FORCE_COLOR !== undefined) {
 		const forced = env.FORCE_COLOR.trim().toLowerCase();
-		if (forced === "0" || forced === "false") return 0;
-		if (forced === "1" || forced === "true" || forced === "") return 1;
-		if (forced === "2") return 2;
-		if (forced === "3") return 3;
+		if (forced === "0" || forced === "false") return { off: true };
+		if (forced === "1" || forced === "true" || forced === "") return { off: false, forced: 1 };
+		if (forced === "2") return { off: false, forced: 2 };
+		if (forced === "3") return { off: false, forced: 3 };
 	}
-	return mode === "truecolor" ? 3 : 2;
+	return { off: false };
+}
+
+/**
+ * The color environment themes paint with. It is read when the first theme is created and again by
+ * {@link refreshColorEnvironment}, which theme loads and switches call; painting never reads the environment.
+ */
+export function colorEnvironment(): ColorEnvironment {
+	return colorEnvironmentState().environment;
+}
+
+/** Keep `listener` (held weakly) on the color environment in use from now on. */
+export function onColorEnvironmentChange(listener: ColorEnvironmentListener): void {
+	colorEnvironmentState().listeners.add(new WeakRef(listener));
+}
+
+/** Read NO_COLOR and FORCE_COLOR again and apply them to every theme; tests that change them call it too. */
+export function refreshColorEnvironment(env: NodeJS.ProcessEnv = process.env): ColorEnvironment {
+	const state = colorEnvironmentState();
+	const next = readColorEnvironment(env);
+	state.environment = next;
+	for (const reference of state.listeners) {
+		const listener = reference.deref();
+		if (listener === undefined) state.listeners.delete(reference);
+		else listener.applyColorEnvironment(next);
+	}
+	return next;
+}
+
+export function themeStyleLevel(mode: ColorMode, environment: ColorEnvironment): ThemeStyleLevel {
+	if (environment.off) return 0;
+	return environment.forced ?? (mode === "truecolor" ? 3 : 2);
 }
 
 export function detectColorMode(): ColorMode {
@@ -195,6 +252,39 @@ export function fgAnsi(color: string | number, mode: ColorMode): string {
 		}
 	}
 	throw new Error(`Invalid color value: ${color}`);
+}
+
+/** Distinct `#rrggbb` colors kept per color environment by {@link hexColorAnsi}; past it the cache starts over. */
+const HEX_COLOR_SEQUENCE_CACHE_LIMIT = 1024;
+const hexColorSequences = {
+	environment: undefined as ColorEnvironment | undefined,
+	fg: new Map<string, string>(),
+	bg: new Map<string, string>(),
+};
+
+/**
+ * The escape sequence that sets the `#rrggbb` color `hex` as the foreground or background, in the color environment
+ * themes paint with: none when NO_COLOR or FORCE_COLOR=0 turns color off, the nearest 256-color entry under
+ * FORCE_COLOR=1 or 2, and true color otherwise. Code that builds its own colors uses it to follow NO_COLOR and
+ * FORCE_COLOR like the theme does; it never reads the environment itself.
+ */
+export function hexColorAnsi(hex: string, layer: "fg" | "bg"): string {
+	const environment = colorEnvironment();
+	if (environment.off) return "";
+	if (hexColorSequences.environment !== environment) {
+		hexColorSequences.environment = environment;
+		hexColorSequences.fg.clear();
+		hexColorSequences.bg.clear();
+	}
+	const cache = hexColorSequences[layer];
+	let sequence = cache.get(hex);
+	if (sequence === undefined) {
+		const mode: ColorMode = environment.forced === 1 || environment.forced === 2 ? "256color" : "truecolor";
+		sequence = layer === "fg" ? fgAnsi(hex, mode) : bgAnsi(hex, mode);
+		if (cache.size >= HEX_COLOR_SEQUENCE_CACHE_LIMIT) cache.clear();
+		cache.set(hex, sequence);
+	}
+	return sequence;
 }
 
 export function bgAnsi(color: string | number, mode: ColorMode, quantization: Quantization = "nearest"): string {

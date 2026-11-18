@@ -995,6 +995,82 @@ test("a local send is delivered at once when the shared database stops answering
 	assert.ok(outcomes.length <= 1, JSON.stringify(outcomes));
 });
 
+test("a reply whose ask's only route is on another broker is refused as retryable even when the shared database is slow to answer its retry lookup (#4997)", async () => {
+	const [a, b] = await cluster();
+	// The ask is kept by broker b, where both of its peers are present.
+	const asker = await b!.connect("asker");
+	const recipient = await b!.connect("recipient");
+	const ask = message({ expectsReply: true });
+	b!.send(asker, "recipient", ask);
+	await waitFor(() => messageFrames(recipient, ask.id)[0]);
+	// Broker b stops answering: both sessions come back on broker a, whose routes do not have the ask.
+	const askerOnA = await a!.connect("asker", { returnAddress: asker.registrationReturnAddress!, id: asker.info.id });
+	const recipientOnA = await a!.connect("recipient", {
+		returnAddress: recipient.registrationReturnAddress!,
+		id: recipient.info.id,
+	});
+	const bystander = await a!.connect("bystander");
+	// The shared outbox never answers whether the reply is a retry of a cross-node send within the local bound.
+	const outbox = a!.opened.state.outbox;
+	Object.assign(outbox, { read: () => new Promise<Awaited<ReturnType<typeof outbox.read>>>(() => {}) });
+
+	const reply = message({ replyTo: ask.id, content: { text: "answer" } });
+	a!.send(recipientOnA, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+	const refused = await waitFor(() => outcomeOf(recipientOnA, reply.id));
+	assert.equal(refused.type, "delivery_failed");
+	assert.equal(refused.type === "delivery_failed" && refused.routeUnavailable, true, reasonOf(refused));
+	assert.deepEqual(messageFrames(askerOnA, reply.id), []);
+
+	// A session no route could authorize is still refused for good.
+	const forged = message({ replyTo: ask.id, content: { text: "forged" } });
+	a!.send(bystander, asker.info.id, forged, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+	const unauthorized = await waitFor(() => outcomeOf(bystander, forged.id));
+	assert.equal(unauthorized.type === "delivery_failed" && unauthorized.routeUnavailable, undefined);
+	assert.match(reasonOf(unauthorized) ?? "", /does not authorize this public reply/);
+	assert.deepEqual(messageFrames(askerOnA, forged.id), []);
+});
+
+test(
+	"a reply that no local route authorizes is answered once, as retryable, when the shared database stops answering whether its route is elsewhere (#4997)",
+	async () => {
+		const [a] = await cluster(1);
+		const asker = await a!.connect("asker");
+		const replier = await a!.connect("replier");
+		const { outbox, leases } = a!.opened.state;
+		// Both reads stop answering until the end of the test, when they answer, late.
+		const stalled: Array<() => void> = [];
+		const stall =
+			<A extends unknown[], R>(read: (...args: A) => Promise<R>) =>
+			(...args: A) =>
+				new Promise<R>((resolve, reject) => stalled.push(() => read(...args).then(resolve, reject)));
+		const [outboxRead, leasesRead] = [outbox.read.bind(outbox), leases.read.bind(leases)];
+		Object.assign(outbox, { read: stall(outboxRead) });
+		Object.assign(leases, { read: stall(leasesRead) });
+		cleanups.push(async () => {
+			Object.assign(outbox, { read: outboxRead });
+			Object.assign(leases, { read: leasesRead });
+			for (const answer of stalled.splice(0)) answer();
+		});
+
+		const reply = message({ replyTo: randomUUID(), content: { text: "answer" } });
+		a!.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+		const refused = await waitFor(
+			() => outcomeOf(replier, reply.id),
+			LOCAL_RETRY_LOOKUP_BOUND_MS + 2 * PRESENCE_REGISTRATION_BOUND_MS + 2_000,
+		);
+		assert.equal(refused.type === "delivery_failed" && refused.routeUnavailable, true, reasonOf(refused));
+		// The late answers decide nothing more.
+		for (const answer of stalled.splice(0)) answer();
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		const outcomes = framesOf(replier).filter(
+			(frame) => (frame.type === "delivered" || frame.type === "delivery_failed") && frame.messageId === reply.id,
+		);
+		assert.equal(outcomes.length, 1, JSON.stringify(outcomes));
+		assert.deepEqual(messageFrames(asker, reply.id), []);
+	},
+	LOCAL_RETRY_LOOKUP_BOUND_MS + 2 * PRESENCE_REGISTRATION_BOUND_MS + 10_000,
+);
+
 test("a same-id retry of a message delivered locally is not delivered again after its recipient moves to another broker", async () => {
 	const [a, b] = await cluster();
 	const sender = await a!.connect("sender");

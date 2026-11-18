@@ -56,7 +56,7 @@ test("a task heartbeat card lists each task compactly and shows status and outpu
 	assert.match(collapsed, /♥ Task heartbeat · 3 tasks still running/);
 	assert.match(collapsed, /shell task-shell npm run build · 45m/);
 	assert.match(collapsed, /subagent task-agent Trace the auth flow · 30m/);
-	assert.match(collapsed, /and 1 more/);
+	assert.match(collapsed, /… \+1 more/);
 	assert.match(collapsed, /\/tasks to inspect/);
 	assert.doesNotMatch(collapsed, /compiling|running bash/, "details stay folded until expanded");
 	assert.doesNotMatch(collapsed, /\[task-heartbeat\]/, "not the generic custom-message box");

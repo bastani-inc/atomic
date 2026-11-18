@@ -1,4 +1,4 @@
-import { reportDebugAsync as reportDebug, sliceHead } from "@bastani/atomic";
+import { NoticeLine, type NoticeLineSpec, reportDebugAsync as reportDebug, sliceHead } from "@bastani/atomic";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
@@ -11,8 +11,6 @@ import type {
 	StageSnapshot,
 	StoreSnapshot,
 } from "../shared/store-types.js";
-import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
-import { renderWorkflowNoticeCard } from "../tui/workflow-notice-card.js";
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
 
 export const HIL_ANSWER_NOTICE_CUSTOM_TYPE = "workflows:hil-answer-notice";
@@ -135,10 +133,10 @@ export function registerHilAnswerNoticeRenderer(
 	const host = options.rendererHost ?? register;
 	if (rendererRegisteredHosts.has(host)) return;
 
-	const renderer: RawRenderer = (raw, _options, piTheme) => {
+	const renderer: RawRenderer = (raw, renderOptions) => {
 		const details = readHilAnswerNoticeDetails(raw);
 		if (details === undefined) return undefined;
-		return makeNoticeComponent(details, themeFromRenderer(piTheme));
+		return makeNoticeComponent(details, renderOptions?.expanded === true, renderOptions?.outputPad);
 	};
 
 	register(HIL_ANSWER_NOTICE_CUSTOM_TYPE, renderer);
@@ -332,38 +330,38 @@ function escapeQuotedText(value: string): string {
 	return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+/** The notice in the shared notice anatomy: one `●` line, and the prompt, answer and advice when expanded. */
+export function hilAnswerNoticeLine(details: WorkflowHilAnswerNoticeDetails): NoticeLineSpec {
+	return {
+		status: "success",
+		label: "Workflow",
+		subject: details.workflowName,
+		outcome: "received the user's response",
+		meta: [details.stageName ?? details.stageId],
+		detail: [
+			`run ${details.runId}`,
+			...(details.promptMessage ? [`prompt ${details.promptMessage}`] : []),
+			`answer ${details.answerSummary}`,
+			"No main-chat action is needed; do not answer other workflow prompts unless the user explicitly provides that answer.",
+		].join("\n"),
+	};
+}
+
 function makeNoticeComponent(
 	details: WorkflowHilAnswerNoticeDetails,
-	theme: GraphTheme | undefined,
+	expanded: boolean,
+	outputPad?: number,
 ): PiMessageRenderComponent {
-	const text = formatWorkflowHilAnswerNoticeText(details);
+	const line = new NoticeLine(
+		{ ...hilAnswerNoticeLine(details), countHiddenDetail: true, ...(outputPad === undefined ? {} : { outputPad }) },
+		expanded,
+	);
 	return {
 		render(width: number): string[] {
-			return renderWorkflowNoticeCard({
-				title: "HIL ANSWERED",
-				glyph: "✓",
-				headline: `Workflow "${details.workflowName}" received the user's response`,
-				tone: "success",
-				fields: [
-					{ label: "workflow", value: details.workflowName },
-					{ label: "run", value: details.runId },
-					{ label: "stage", value: details.stageName ?? details.stageId },
-					{ label: "prompt", value: details.promptMessage, tone: "muted" },
-					{ label: "answer", value: details.answerSummary },
-				],
-				footer:
-					"No main-chat action is needed; do not answer other workflow prompts unless the user explicitly provides that answer.",
-				fallbackText: text,
-				width,
-				...(theme ? { theme } : {}),
-			});
+			return line.render(width);
 		},
 		invalidate() {
 			/* stored HiL-answer notices are immutable */
 		},
 	};
-}
-
-function themeFromRenderer(piTheme: unknown): GraphTheme | undefined {
-	return piTheme === undefined ? undefined : deriveGraphThemeFromPiTheme(piTheme);
 }
