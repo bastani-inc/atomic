@@ -96,7 +96,7 @@ The skill no longer recommends response prefilling, which returns an error on Cl
 
 ### Built-in visual explanation guidance
 
-The bundled `/skill:show-me` from [HumanLayer](https://github.com/humanlayer/skills) helps explain the current topic visually with concise diagrams, code-shape sketches, and focused HTML artifacts. It is distributed under the MIT License.
+The bundled `/skill:show-me` from [HumanLayer](https://github.com/humanlayer/skills) helps explain the current topic visually with concise diagrams, code-shape sketches, and focused HTML artifacts. It runs only when you type `/skill:show-me`; the model does not load it on its own. It is distributed under the MIT License.
 
 ### Built-in code quality guidance
 

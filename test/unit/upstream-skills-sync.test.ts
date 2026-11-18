@@ -461,6 +461,43 @@ describe("synced upstream skill trees", () => {
 		);
 	});
 
+	test("ships the humanlayer/skills show-me body with only its documented opener adaptation", () => {
+		const skillRoot = join(workflowSkills, "show-me");
+		const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
+		// Upstream opens the artifact with macOS `open`; Atomic uses a portable opener through its bash tool.
+		const atomicOpener = [
+			"Use Atomic's `bash` tool to run:",
+			"",
+			"```bash",
+			'if [ "$(uname -s)" = "Darwin" ] && command -v open >/dev/null 2>&1; then',
+			'  open "path/to/show-me-{description}.html"',
+			'elif [ "$(uname -s)" = "Linux" ] && command -v xdg-open >/dev/null 2>&1; then',
+			'  xdg-open "path/to/show-me-{description}.html"',
+			"else",
+			"  printf 'Open this file: %s\\n' \"path/to/show-me-{description}.html\"",
+			"fi",
+			"```",
+		].join("\n");
+		const upstreamOpener = ["```", "Bash(open path/to/show-me-{description}.html)", "```"].join("\n");
+		assert.ok(body.includes(atomicOpener), "show-me must keep Atomic's portable opener");
+		// humanlayer/skills plugins/show-me/skills/show-me/SKILL.md at main 4d69d20f, after the frontmatter.
+		assert.equal(
+			sha256(body.replace(atomicOpener, upstreamOpener).replace(/^\n/u, "")),
+			"56419a7c9342221f9840ea11b63b51ad16c39ce2377cb5646b6093fc060384b2",
+			"show-me diverges from upstream beyond its documented opener adaptation",
+		);
+		assert.match(frontmatter, /^disable-model-invocation: true$/mu);
+		for (const [key, value] of [
+			["github-repo", "https://github.com/humanlayer/skills"],
+			["github-path", "plugins/show-me/skills/show-me"],
+			["github-ref", "refs/heads/main"],
+			["github-tree-sha", "362200ac2fb3c17b765049444e88de73767e6d08"],
+		] as const) {
+			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`), key);
+		}
+		assert.deepEqual(collectFiles(skillRoot, [], skillRoot), ["LICENSE.txt", "SKILL.md"]);
+	});
+
 	test("tracks the skill-creator scripts with the modes of anthropics/skills tree 3cf9a8db", () => {
 		const skillCreatorRoot = "packages/workflows/skills/skill-creator/";
 		const executableScripts = new Set(
