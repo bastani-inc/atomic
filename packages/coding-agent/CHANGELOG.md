@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Drawing the usage meter no longer checks credential files synchronously, avoiding a stalled frame when those file checks are slow ([#5516](https://github.com/bastani-inc/atomic/issues/5516)).
+- Subagents started from deeply nested directories no longer wait for each parent directory's resource checks one at a time, keeping starts responsive while the main thread is busy ([#5514](https://github.com/bastani-inc/atomic/issues/5514)).
 - The main chat no longer leaves a blank row between the working line and the usage meter above the prompt. Every chat now keeps exactly one row there: the usage meter, or a blank row in a subagent or stage chat with no usage to show, so a chat's last line never runs into its prompt.
 - A subagent or workflow stage chat waiting to retry a request, switch model or resume now shows `retrying…`, `switching model…` or `resuming…` as its working line above the prompt, instead of a line below its transcript.
 - A subagent or workflow stage chat opened while its agent already waits to retry a failed request now shows `retrying…` as its working line straight away, instead of looking idle until the next attempt. This includes a stage that runs on a local worker ([#5483](https://github.com/bastani-inc/atomic/issues/5483)).
