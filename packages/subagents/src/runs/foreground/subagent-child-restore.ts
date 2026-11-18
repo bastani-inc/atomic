@@ -1046,7 +1046,12 @@ export async function restoreSubagentChild(
 			},
 		},
 	);
-	let releaseWorktree: (() => void) | undefined;
+	let releaseWorktree: (() => Promise<void>) | undefined;
+	// The resume reports only once its run's worktrees are swept, so nothing of Atomic still runs in the child's worktree
+	// when it does (#5589). A sweep that fails leaves the worktree to the next one; it never changes how the resume ends.
+	const worktreeReleased = async () => {
+		await releaseWorktree?.().catch(() => {});
+	};
 	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {
 		releaseWorktree = await worktreeResume;
 		// Hold sends to the child before anything can fail, so no sender is told `Session not found` meanwhile.
@@ -1076,14 +1081,14 @@ export async function restoreSubagentChild(
 				registered.settled = outcome;
 				registered.knownPreviousIntercomId = knownPreviousIntercomId;
 			}
-			releaseWorktree?.();
+			await worktreeReleased();
 			if (outcome.kind === "unrestorable") await markGone(outcome.reason);
 			else if (outcome.kind !== "restored") release();
 			return outcome;
 		},
 		async (error: Error) => {
 			previousIntercomId.resolve(undefined);
-			releaseWorktree?.();
+			await worktreeReleased();
 			// A failure that passes, such as a read of its history that ran out of file descriptors (#4502), leaves the
 			// child as it was, for a later wake or resume; only a lasting one makes it gone.
 			if (isRetryableStorageError(error)) {

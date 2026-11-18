@@ -221,6 +221,8 @@ interface Harness {
 	onSession?: (session: TestSessionQueue) => void;
 	/** Whether the worker agent is still defined; resume looks it up again. */
 	agentDefined: boolean;
+	/** When set, looking up agents fails with it, as agent definitions that cannot be read do. */
+	agentDiscoveryError?: Error;
 	/** The agent definitions discovery finds, from every source; a project agent shadows a user one of its name. */
 	agents: AgentConfig[];
 	/** Runs whose prompt contains a key wait until its gate resolves, then complete; checked before the rules above. */
@@ -523,7 +525,10 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
-		discoverAgents: (_cwd, scope) => ({ agents: state.agentDefined ? discoverInScope(state.agents, scope) : [] }),
+		discoverAgents: (_cwd, scope) => {
+			if (state.agentDiscoveryError) throw state.agentDiscoveryError;
+			return { agents: state.agentDefined ? discoverInScope(state.agents, scope) : [] };
+		},
 		runtime: { runSync: runtime },
 	};
 	const executor = createSubagentExecutor(deps);
@@ -3009,11 +3014,58 @@ test("a resume that cannot restart a paused worktree child keeps its dirty workt
 	const resumed = await h.call({ action: "resume", id: childA.childId });
 	assert.equal(resumed.isError, true, text(resumed));
 	assert.match(text(resumed), /agent "worker" \(project\) is no longer defined/);
-	await sleep(100);
+	// Read as it reports, not after a pause: by then it has decided to keep the worktree, and runs nothing in it (#5589).
 	assert.equal(readFileSync(trackedEdit, "utf8"), "edited by A\n", "the tracked edit survives the failed resume");
 	assert.equal(readFileSync(untrackedDraft, "utf8"), "draft by A\n", "the untracked draft survives the failed resume");
 	assert.equal(gitOutput(h.cwd, ["branch", "--list", branch]).replace(/^[*+ ]+/, ""), branch, "its branch survives");
 });
+
+const unrestartable = [
+	{
+		why: "its agent is no longer defined",
+		fail: (h: Harness) => {
+			h.agentDefined = false;
+		},
+		reported: /agent "worker" \(project\) is no longer defined/,
+	},
+	{
+		why: "looking up its agent fails",
+		fail: (h: Harness) => {
+			h.agentDiscoveryError = new Error("agent definitions could not be read");
+		},
+		reported: /agent definitions could not be read/,
+	},
+] as const;
+
+for (const { why, fail, reported } of unrestartable)
+	test(`a resume that cannot restart a paused worktree child because ${why} is done with its worktree when it reports: the clean worktree it recreated is already gone (#5589)`, async () => {
+		const h = harness();
+		initGitRepository(h.cwd);
+		const siblingDone = Promise.withResolvers<void>();
+		h.finishOn.set("task-a-marker", Promise.withResolvers<void>());
+		h.finishOn.set("task-b-marker", siblingDone);
+		const [childA, childB] = await launchWorktreeRun(h, ["task-a-marker", "task-b-marker"]);
+		assert.ok(childA && childB);
+		const diffsDir = childA.worktree?.diffsDir;
+		if (diffsDir) cleanups.push(async () => rmSync(diffsDir, { recursive: true, force: true }));
+		const running = await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
+		const branch = running.worktree?.branch;
+		assert.ok(branch, "the child record names its worktree branch");
+
+		await h.call({ action: "pause", id: childA.childId });
+		await h.waitForLatest(childA.childId, (candidate) => candidate.terminalStatus === "paused");
+		siblingDone.resolve();
+		await settled(h, childB.taskId as string);
+		await waitForWorktreeCleanup(h, childA);
+		assert.equal(existsSync(childA.cwd), false, "the run removed the paused child's clean worktree");
+
+		fail(h);
+		const resumed = await h.call({ action: "resume", id: childA.childId });
+		assert.equal(resumed.isError, true, text(resumed));
+		assert.match(text(resumed), reported);
+		assert.equal(existsSync(childA.cwd), false, "the worktree resume recreated is removed before it reports");
+		assert.equal(gitOutput(h.cwd, ["branch", "--list", branch]), "", "so is the branch it recreated");
+	});
 
 function savedPatches(record: SubagentChildRecord): string[] {
 	const diffsDir = record.worktree?.diffsDir;

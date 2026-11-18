@@ -222,7 +222,8 @@ export function runWorktreeRecord(runId: string, index: number): SubagentChildWo
  * process no longer tracks, after a restart for one, is tracked again from the child's record. Its new execution saves
  * its edits as a patch of its own, so no earlier patch is overwritten. The worktree stays kept for the stopped child
  * until its new execution starts ({@link claimRunWorktree}), so a resume that fails keeps its unsaved work. Returns the
- * release of the resume hold.
+ * release of the resume hold, which settles once the run's worktrees are swept: until then git may still be running in
+ * the child's worktree, which on Windows keeps anyone from removing it (#5589).
  */
 export async function resumeRunWorktree(
 	child: {
@@ -234,7 +235,7 @@ export async function resumeRunWorktree(
 	},
 	setupHook?: WorktreeSetupHookConfig,
 	namedOptions: NamedWorktreeOptions = {},
-): Promise<() => void> {
+): Promise<() => Promise<void>> {
 	// A named worktree is the caller's: put back where it was if it was removed, and never tracked for removal.
 	if (child.worktree?.named) {
 		try {
