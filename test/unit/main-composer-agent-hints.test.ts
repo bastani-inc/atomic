@@ -7,7 +7,6 @@ import {
 	AgentPanelSourceHub,
 	dismissedAgentPanelItems,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
-import { AGENT_PANEL_DROP_MS } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.ts";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.ts";
 import {
@@ -203,12 +202,13 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 					progress: { done: 3, total: 5 },
 				},
 			]);
-			const threeAgentsWorking = stripTerminalSequences(footer.render(width)[0] ?? "");
-			assert.equal(threeAgentsWorking, "esc to interrupt · ↓ 3 agents · ? keys");
+			// The workflow run is a row ↓ can focus, but not an agent.
+			const twoAgentsWorking = stripTerminalSequences(footer.render(width)[0] ?? "");
+			assert.equal(twoAgentsWorking, "esc to interrupt · ↓ 2 agents · ? keys");
 
 			setWorking(false);
-			const threeAgentsIdle = stripTerminalSequences(footer.render(width)[0] ?? "");
-			assert.ok(threeAgentsIdle.endsWith(" · ↓ 3 agents · ? keys"), threeAgentsIdle);
+			const twoAgentsIdle = stripTerminalSequences(footer.render(width)[0] ?? "");
+			assert.ok(twoAgentsIdle.endsWith(" · ↓ 2 agents · ? keys"), twoAgentsIdle);
 
 			defaultEditor.handleInput("?");
 			assert.equal(customs.length, 1);
@@ -240,7 +240,11 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 
 			dismissedAgentPanelItems(session).add("ext:t1");
 			dismissedAgentPanelItems(session).add("ext:t2");
-			assert.equal(stripTerminalSequences(footer.render(width)[0] ?? "").endsWith(" · ↓ 1 agent · ? keys"), true);
+			// Only the stopped workflow run is left: ↓ still focuses its row, but it is not an agent.
+			const workflowOnly = stripTerminalSequences(footer.render(width)[0] ?? "");
+			assert.equal(workflowOnly.includes("↓"), false, workflowOnly);
+			assert.ok(workflowOnly.endsWith(" · ? keys"), workflowOnly);
+			assert.equal(pressDown(), true);
 
 			dismissedAgentPanelItems(session).add("run:r1");
 			assert.equal(stripTerminalSequences(footer.render(width)[0] ?? "").includes("↓"), false);
@@ -248,23 +252,19 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 		});
 	}
 
-	test("finished rows that age out of the panel drop from the footer count so the hint never advertises a dead key (#5239)", async () => {
-		const start = Date.UTC(2026, 10, 17, 1, 0, 0);
-		vi.useFakeTimers({ now: start, toFake: ["Date"] });
-		const { mode, footer, pressDown } = createHarness({
+	test("a finished subagent drops from the panel and the footer count so the hint never advertises a dead key (#5239)", async () => {
+		const { mode, footer, pressDown, setItems } = createHarness({
 			working: false,
-			initialItems: [
-				{ id: "ext:done", kind: "agent", state: "done", name: "worker", task: "picker clamp", endedAt: start },
-			],
+			initialItems: [{ id: "ext:live", kind: "agent", state: "running", name: "worker", task: "picker clamp" }],
 		});
 		await mode.setupKeyHandlers();
 
 		assert.ok(stripTerminalSequences(footer.render(160)[0] ?? "").endsWith(" · ↓ 1 agent · ? keys"));
 		assert.equal(pressDown(), true);
 
-		vi.setSystemTime(start + AGENT_PANEL_DROP_MS + 1);
-		const expiredLine = stripTerminalSequences(footer.render(160)[0] ?? "");
-		assert.equal(expiredLine.includes("↓"), false, expiredLine);
+		setItems([{ id: "ext:live", kind: "agent", state: "done", name: "worker", task: "picker clamp" }]);
+		const finishedLine = stripTerminalSequences(footer.render(160)[0] ?? "");
+		assert.equal(finishedLine.includes("↓"), false, finishedLine);
 		assert.equal(pressDown(), false);
 	});
 
@@ -273,7 +273,7 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 			initialItems: [{ id: "run:waiting", kind: "workflow", state: "input", name: "review", task: "Approve?" }],
 		});
 		await mode.setupKeyHandlers();
-		assert.match(stripTerminalSequences(footer.render(160)[0] ?? ""), /↓ 1 agent · 1 needs input · \? keys$/u);
+		assert.match(stripTerminalSequences(footer.render(160)[0] ?? ""), /\) · 1 needs input · \? keys$/u);
 		setNavigationActive(true);
 		const sheetFooter = footer.render(160).map(stripTerminalSequences).join("\n");
 		assert.match(sheetFooter, /claude-sonnet-4-5/u);
@@ -281,10 +281,7 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 		setWorking(true);
 		assert.deepEqual(footer.render(160), []);
 		setNavigationActive(false);
-		assert.equal(
-			stripTerminalSequences(footer.render(160)[0] ?? ""),
-			"esc to interrupt · ↓ 1 agent · 1 needs input · ? keys",
-		);
+		assert.equal(stripTerminalSequences(footer.render(160)[0] ?? ""), "esc to interrupt · 1 needs input · ? keys");
 	});
 
 	test("unbound app.agents.focus is omitted from the footer and overlay even when items exist (#5239)", () => {

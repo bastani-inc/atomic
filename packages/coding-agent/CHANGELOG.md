@@ -6,6 +6,10 @@
 
 - `session.workflows.listRuns()` and a run control's `listProjectRuns()` take `{ signal }` as their last argument. When it aborts, the listing stops waiting for stored runs and rejects with the signal's reason ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
 
+### Changed
+
+- The agent panel below the prompt drops a subagent as soon as it finishes. Stopped, paused or interrupted subagents stay only while another subagent, workflow run or background shell is still running, then the whole panel closes, and a resumed subagent is listed once. `↓ N agents` counts only the subagents the panel lists, not workflow runs, so a running workflow alone no longer shows `↓ 1 agent`; `N needs input` still counts a workflow run's question. When the panel lists nothing but `/tasks` lists subagents, the hint shows `/tasks to see subagents`, or `N shells · /tasks to manage` while background shells run.
+
 ### Fixed
 
 - `history://sessions` no longer freezes Atomic for up to seconds at a time on a large SQLite session store. Listing one project's sessions read the first message and summary of every stored session, of every project, up to 8,192 sessions per step, which took seconds per step when the store's pages were not cached. The listing now reads other projects' sessions only far enough to skip them, reads at most 256 sessions per step, and lets the interface run between steps. On a store of 70,000 sessions it finishes in a third to a quarter of the time ([#5480](https://github.com/bastani-inc/atomic/issues/5480))

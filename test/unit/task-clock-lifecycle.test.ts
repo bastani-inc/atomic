@@ -44,6 +44,8 @@ test("stopping a task keeps the elapsed clock monotone across the panel and task
 	);
 	try {
 		const task = await fixture.start("A long task");
+		// Another subagent keeps running, so the stopped one stays listed in the panel.
+		await fixture.start("Still running");
 		taskValue(
 			fixture.runners[0].context.reportActivity({
 				reportId: "metrics",
@@ -62,7 +64,8 @@ test("stopping a task keeps the elapsed clock monotone across the panel and task
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		fixture.store.drain();
 		assert.match(text(inspector), /stopped · 1m\b/);
-		assert.ok((rows[0]?.elapsedMs ?? 0) >= 60_000, `panel elapsed ${rows[0]?.elapsedMs}`);
+		const stopped = rows.find((row) => row.id === `task:${fixture.store.tasks[0]!.ref.taskId}`);
+		assert.ok((stopped?.elapsedMs ?? 0) >= 60_000, `panel elapsed ${stopped?.elapsedMs}`);
 	} finally {
 		inspector.dispose();
 		unsubscribe();
@@ -214,8 +217,11 @@ test("a second task store settling first does not reset the session store's cloc
 		const whileStale = model.rows(taskPanelItems(source, new Set()))[0]?.elapsedMs ?? 0;
 		assert.ok(whileStale >= 60_000, `stale read before session store drain: ${whileStale}`);
 		fixture.store.drain();
-		const settledRows = model.rows(taskPanelItems(source, new Set()));
-		assert.ok((settledRows[0]?.elapsedMs ?? 0) >= 60_000, `settled panel elapsed: ${settledRows[0]?.elapsedMs}`);
+		// A finished subagent leaves the panel; the clock the panel and /tasks share keeps the time it reached.
+		assert.deepEqual(model.rows(taskPanelItems(source, new Set())), []);
+		const task = fixture.store.tasks[0]!;
+		const settled = taskClocksFor(source).elapsedMs(task.ref.taskId, task.metrics?.elapsedMs, false, now);
+		assert.ok((settled ?? 0) >= 60_000, `settled elapsed: ${settled}`);
 		assert.match(text(inspector), /done · 1m\b/);
 	} finally {
 		inspector.dispose();
@@ -234,14 +240,23 @@ test("a paused extension agent or shell row keeps its running clock on resume (#
 		name: "helper",
 		task: "background check",
 	};
-	assert.equal(model.rows([{ ...base, state: "running" }])[0]?.elapsedMs, 0);
+	// Another subagent keeps running, so the paused one stays listed.
+	const live = { ...base, id: "ext:agent-2", state: "running" as const };
+	const elapsedOf = (state: "running" | "paused") =>
+		model.rows([{ ...base, state }, live]).find((row) => row.id === base.id)?.elapsedMs;
+	assert.equal(elapsedOf("running"), 0);
 	now += 10_000;
-	assert.equal(model.rows([{ ...base, state: "running" }])[0]?.elapsedMs, 10_000);
-	assert.equal(model.rows([{ ...base, state: "paused" }])[0]?.elapsedMs, 10_000);
+	assert.equal(elapsedOf("running"), 10_000);
+	assert.equal(elapsedOf("paused"), 10_000);
 	now += 10_000;
-	assert.equal(model.rows([{ ...base, state: "running" }])[0]?.elapsedMs, 10_000, "time spent paused is not counted");
+	assert.equal(elapsedOf("running"), 10_000, "time spent paused is not counted");
 	now += 10_000;
-	assert.equal(model.rows([{ ...base, state: "running" }])[0]?.elapsedMs, 20_000);
+	assert.equal(elapsedOf("running"), 20_000);
+
+	// Paused with nothing else active, it leaves the panel, and its clock still stops while it is gone.
+	assert.deepEqual(model.rows([{ ...base, state: "paused" }]), []);
+	now += 10_000;
+	assert.equal(model.rows([{ ...base, state: "running" }])[0]?.elapsedMs, 20_000, "time spent paused is not counted");
 });
 
 test("renderTaskFooter ranks input-needed tasks first and shares the live task clock (#5224)", async () => {

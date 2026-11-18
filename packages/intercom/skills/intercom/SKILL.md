@@ -3,14 +3,16 @@ name: intercom
 description: |
   Streamline session-to-session coordination with the intercom extension. Send
   messages, delegate tasks, and coordinate work across multiple atomic sessions on
-  the same machine. Use for planner-worker workflows, cross-session context
-  sharing, and real-time collaboration between sessions.
+  one machine, or on machines that share storage. Use for planner-worker
+  workflows, cross-session context sharing, and real-time collaboration between
+  sessions.
 ---
 
 # Intercom Skill
 
 Use this skill when you need to coordinate work across multiple atomic sessions
-running on the same machine. Intercom enables direct 1:1 messaging between
+running on one machine, or on several machines that share storage with
+multi-node routing on. Intercom enables direct 1:1 messaging between
 sessions for delegation, context sharing, and collaborative workflows.
 
 When you are supervising with the `subagent` skill, delegated child agents can
@@ -113,7 +115,18 @@ intercom({ action: "leave", group: "api-review" })
 intercom({ action: "leave" })
 ```
 
-`list` still lists sessions: without a filter it returns every peer sharing at least one membership. `default` remains shared, while `true` and `auto` remain reserved. Later subagents inherit the most recently joined membership. Ordinary `send`/`ask` requires a shared membership; only authorized `contact_supervisor` traffic crosses group boundaries.
+`list` still lists sessions: without a filter it returns every peer sharing at least one membership. `default` remains shared, while `true` and `auto` remain reserved. With multi-node routing on, a session with no configured group joins its repository's `project:<owner>/<repo>` group instead of `default`. Later subagents inherit the most recently joined membership. Ordinary `send`/`ask` requires a shared membership, with two exceptions: authorized `contact_supervisor` traffic, and an answer to a sender outside your groups whose message reached you.
+
+### Answer a sender outside your groups
+
+A message can reach you from a session outside your groups: the session that launched a workflow run writing to its stages, a supervisor answering its child, or a child reporting to its supervisor. Answer it with `send` or `ask` to the name or ID its message shows, without joining a group. This return path leads only to that sender, allows up to 3 messages within 30 minutes of its latest message to you, and reopens with a fresh count each time it writes again. Pattern sends (name globs, `subagents:*`) never use it, and a session with a host-set reach policy never uses it.
+
+```typescript
+// The launcher of your workflow run wrote to you; answer it by the name its message showed.
+intercom({ action: "send", to: "main-session", message: "Stage done: report written to research/notes.md" })
+```
+
+After the window or the message count runs out, a send is refused with `<sender> is outside your intercom groups and its return path has closed`. Wait for the sender to write again, or, for a longer exchange, have it join your group.
 
 ### Pattern 3: Reply Naturally
 
@@ -498,6 +511,12 @@ if (!result.delivered) {
 }
 ```
 
+**"... is outside your intercom groups and its return path has closed"**
+```typescript
+// You answered a sender outside your groups more than 3 times, or 30 minutes after its
+// latest message. Wait until it writes to you again, or share a group with it.
+```
+
 **An ask that stays pending**
 ```typescript
 // Asks do not expire. Check what you are still waiting for, and cancel what you no longer need.
@@ -511,7 +530,7 @@ intercom({ action: "cancel", askId: "4c4d8427" });
 
 1. Check Intercom connection status: `intercom({ action: "status" })`
 2. Verify the target session has loaded Atomic's bundled Intercom extension
-3. Ensure both sessions are on the same machine (intercom is same-machine only)
+3. Ensure both sessions use the same machine's broker, or that multi-node routing is on and both machines share storage (`intercom({ action: "status" })` shows a `Multi-node routing:` line)
 
 ### Message not delivered
 

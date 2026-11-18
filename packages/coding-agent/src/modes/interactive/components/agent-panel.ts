@@ -1,4 +1,5 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { isActivePanelState, isRestingPanelRow, panelRowListed } from "../../../core/tasks/agent-panel-rules.ts";
 import {
 	type AgentPanelItem,
 	type AgentPanelState,
@@ -31,7 +32,6 @@ export type AgentPanelRow = AgentPanelItem;
 export type { AgentPanelState };
 
 export const AGENT_PANEL_FADE_MS = 30_000;
-export const AGENT_PANEL_DROP_MS = 180_000;
 export const AGENT_PANEL_IDLE_ROWS = 4;
 export const AGENT_PANEL_FOCUSED_ROWS = 8;
 export const AGENT_PANEL_MAIN_ID = "main";
@@ -78,6 +78,14 @@ function cachedWorkingGlyph(frame: number): string {
 
 export function isFinishedPanelRow(row: Pick<AgentPanelRow, "state">): boolean {
 	return FINISHED.has(row.state) && !isInterruptedPanelTask(row);
+}
+
+/**
+ * Whether a row is work still in progress: running, queued, waiting on an answer, stopping, or waiting to wake. A
+ * running background shell counts too, though it is not a row. While nothing is active, stopped subagents leave.
+ */
+export function isActivePanelRow(row: Pick<AgentPanelRow, "state">): boolean {
+	return isActivePanelState(row.state);
 }
 
 function panelText(text: string): string {
@@ -157,6 +165,8 @@ export function panelProgressBar(done: number, total: number, cells = 16): strin
 export class AgentPanelModel {
 	private readonly finishedAt = new Map<string, { since: number; pass: number }>();
 	private readonly finishedTaskAt = new Map<string, { since: number; pass: number }>();
+	/** Stopped subagent rows that left because nothing was active, by row id, with the pass that last saw them. */
+	private readonly retired = new Map<string, number>();
 	private readonly readAt = new WeakMap<AgentPanelRow, number>();
 	private readonly bases = new WeakMap<AgentPanelRow, AgentPanelRow>();
 	private pass = 0;
@@ -178,7 +188,12 @@ export class AgentPanelModel {
 		this.passMatchedFinished = 0;
 		return { now: this.now(), pass: ++this.pass };
 	}
+	/**
+	 * Whether a finished row stays listed. Only a row its owner keeps stays, such as a workflow run not opened yet or a
+	 * stopped subagent while something is active; the rest leave the moment they finish.
+	 */
 	keepFinished(id: string, keep: boolean, now: number, pass: number, native = false): boolean {
+		if (!keep) return false;
 		const table = native ? this.finishedTaskAt : this.finishedAt;
 		let entry = table.get(id);
 		if (entry === undefined) {
@@ -190,9 +205,22 @@ export class AgentPanelModel {
 			entry.pass = pass;
 			this.passMatchedFinished++;
 		}
-		return keep || now - entry.since < AGENT_PANEL_DROP_MS;
+		return true;
+	}
+	/**
+	 * Whether a resting row (`isRestingPanelRow`) has left the panel: it leaves when nothing is active, and stays gone
+	 * until it runs again or is gone. `rowId` is the row's id; `pass` the ranking pass that sees it resting.
+	 */
+	retireResting(rowId: string, active: boolean, pass: number): boolean {
+		if (active && !this.retired.has(rowId)) return false;
+		this.retired.set(rowId, pass);
+		return true;
 	}
 	endPass(pass: number): void {
+		// A retired row that runs again, or is gone, is forgotten: when it stops again it is listed again.
+		if (this.retired.size > 0) {
+			for (const [id, seen] of this.retired) if (seen !== pass) this.retired.delete(id);
+		}
 		if (this.passMatchedFinished === this.finishedAt.size + this.finishedTaskAt.size) return;
 		for (const table of [this.finishedAt, this.finishedTaskAt]) {
 			for (const [id, entry] of table) {
@@ -239,6 +267,7 @@ export class AgentPanelModel {
 		this.bases.set(copy, base);
 		return copy;
 	}
+	/** The listed rows, in panel order. `keep` says whether a finished workflow run stays: nobody has opened it yet. */
 	rows(
 		rows: readonly AgentPanelRow[],
 		keep: (row: AgentPanelRow) => boolean = () => false,
@@ -250,11 +279,25 @@ export class AgentPanelModel {
 		const otherRows: AgentPanelRow[] = [];
 		const finishedRows: AgentPanelRow[] = [];
 		const states = new Map<AgentPanelRow, AgentPanelState>();
+		let active = false;
 		for (const row of rows) {
 			const state = row.state;
 			states.set(row, state);
-			if (isFinishedPanelRow(row)) {
-				if (!this.keepFinished(row.id, keep(row), now, pass)) continue;
+			if (isActivePanelState(state)) active = true;
+		}
+		/** Resting rows that left: their clocks still follow them, so a resumed one keeps its time. */
+		const hidden: AgentPanelRow[] = [];
+		for (const row of rows) {
+			const state = states.get(row)!;
+			const resting = isRestingPanelRow(row.kind, state);
+			const finished = FINISHED.has(state) && !isInterruptedPanelTask(row);
+			const retired = resting && this.retireResting(row.id, active, pass);
+			if (!panelRowListed(row.kind, state, finished, { active, retired, kept: finished && keep(row) })) {
+				if (retired) hidden.push(row);
+				continue;
+			}
+			if (finished) {
+				this.keepFinished(row.id, true, now, pass);
 				finishedRows.push(row);
 			} else if (state === "input") inputRows.push(row);
 			else if (state === "running") runningRows.push(row);
@@ -269,6 +312,10 @@ export class AgentPanelModel {
 		const limit = Math.max(0, window?.limit ?? Number.POSITIVE_INFINITY);
 		const end = Math.min(ordered.length, start + limit);
 		const localClockIds = new Set<string>();
+		for (const row of hidden) {
+			this.withElapsed(row, now, states.get(row)!);
+			if (taskClockOf(row) === undefined) localClockIds.add(agentPanelTaskId(row.id) ?? row.id);
+		}
 		for (let index = start; index < end; index++) {
 			const row = ordered[index]!;
 			const state = states.get(row)!;
@@ -369,18 +416,6 @@ export interface AgentPanelRenderOptions {
 }
 
 /** The main-chat row leads the panel whenever it lists a subagent; a panel of workflow runs has none. */
-/**
- * How every chat's hint names its running background shells, which are not panel rows: `2 shells`, plus where to
- * manage them when the panel has no rows to focus.
- */
-export function panelShellHintSegments(shells: number, panelHasRows: boolean): string[] {
-	const count = Math.floor(shells);
-	if (!Number.isFinite(count) || count <= 0) return [];
-	const segments = [`${count} ${count === 1 ? "shell" : "shells"}`];
-	if (!panelHasRows) segments.push("/tasks to manage");
-	return segments;
-}
-
 export function panelShowsMain(rows: readonly Pick<AgentPanelRow, "kind">[]): boolean {
 	return rows.some((row) => row.kind === "agent");
 }

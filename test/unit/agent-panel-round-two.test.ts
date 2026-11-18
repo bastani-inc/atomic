@@ -12,7 +12,7 @@ import {
 import { bindOwnerTaskStore, setTaskTurnInterrupted } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
-	AGENT_PANEL_DROP_MS,
+	AGENT_PANEL_FADE_MS,
 	AgentPanelFocus,
 	type AgentPanelStyle,
 	isFinishedPanelRow,
@@ -23,6 +23,7 @@ import { dismissedTasks } from "../../packages/coding-agent/src/modes/interactiv
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
+	AGENT_PANEL_REFRESH_WINDOW_MS,
 	agentPanelRows,
 	bindAgentPanel,
 	showAgentPanel,
@@ -217,7 +218,7 @@ test("a focused paused panel has no recurring repaint timer (#5239)", async () =
 	}
 });
 
-test("a finished workflow opened outside the panel expires without another source event (#5239)", async () => {
+test("a finished workflow opened outside the panel leaves it without another source event (#5239)", async () => {
 	initTheme("dark");
 	vi.useFakeTimers();
 	const hub = new AgentPanelSourceHub();
@@ -235,7 +236,7 @@ test("a finished workflow opened outside the panel expires without another sourc
 		assert.ok(widget);
 		assert.equal(vi.getTimerCount(), 0);
 		assert.equal(openAgentPanelItem(session, "run:opened"), true);
-		await vi.advanceTimersByTimeAsync(AGENT_PANEL_DROP_MS);
+		await vi.advanceTimersByTimeAsync(AGENT_PANEL_REFRESH_WINDOW_MS);
 		assert.equal(widget, undefined);
 	} finally {
 		dispose();
@@ -290,11 +291,11 @@ test("newly scrolled panel rows show their elapsed time on the first frame (#523
 	}
 });
 
-test("the panel retention interval is three minutes (#5239)", () => {
-	assert.equal(AGENT_PANEL_DROP_MS, 180_000);
+test("finished rows the panel keeps read dim after thirty seconds (#5239)", () => {
+	assert.equal(AGENT_PANEL_FADE_MS, 30_000);
 });
 
-test("a source's viewed flag starts the finished workflow drop timer (#5239)", async () => {
+test("a source's viewed flag drops the finished workflow row (#5239)", async () => {
 	initTheme("dark");
 	vi.useFakeTimers();
 	const hub = new AgentPanelSourceHub();
@@ -317,9 +318,10 @@ test("a source's viewed flag starts the finished workflow drop timer (#5239)", a
 	} as never);
 	try {
 		vi.advanceTimersByTime(31_000);
+		assert.ok(widget);
 		viewed = true;
 		changed();
-		await vi.advanceTimersByTimeAsync(AGENT_PANEL_DROP_MS);
+		await vi.advanceTimersByTimeAsync(AGENT_PANEL_REFRESH_WINDOW_MS);
 		assert.equal(widget, undefined);
 	} finally {
 		dispose();
@@ -335,15 +337,18 @@ test("an interrupted-but-running subagent is treated as live for x in the panel 
 	const fixture = taskFixture();
 	try {
 		await fixture.start("Inspect concurrent spawn locks.");
+		// Another subagent still runs, so the interrupted one stays listed.
+		await fixture.start("Keep working.");
 		const session = {};
 		bindOwnerTaskStore(session, fixture.store);
 		const taskId = fixture.store.tasks[0]!.ref.taskId;
 		setTaskTurnInterrupted(fixture.store, taskId, true);
 
 		const initialRows = agentPanelRows(session);
-		assert.equal(initialRows.length, 1);
-		assert.equal(initialRows[0]?.state, "stopped");
-		assert.equal(isFinishedPanelRow(initialRows[0]!), false);
+		assert.equal(initialRows.length, 2);
+		const interruptedRow = initialRows.find((candidate) => candidate.id === `task:${taskId}`);
+		assert.equal(interruptedRow?.state, "stopped");
+		assert.equal(isFinishedPanelRow(interruptedRow!), false);
 
 		await showAgentPanel(session, {
 			custom: async (
@@ -360,7 +365,13 @@ test("an interrupted-but-running subagent is treated as live for x in the panel 
 					(() => {}) as never,
 				);
 				try {
-					const initialLines = component.render(100).map(stripVTControlCharacters);
+					let initialLines = component.render(100).map(stripVTControlCharacters);
+					for (let moves = 0; moves < 3; moves++) {
+						if (initialLines.find((line) => line.startsWith("❯"))?.includes("Inspect concurrent")) break;
+						component.handleInput("\x1b[B");
+						initialLines = component.render(100).map(stripVTControlCharacters);
+					}
+					assert.match(initialLines.find((line) => line.startsWith("❯")) ?? "", /Inspect concurrent/);
 					assert.match(initialLines.join("\n"), /stopped/);
 					assert.match(initialLines.at(-1) ?? "", /\bx stop\b/);
 					assert.doesNotMatch(initialLines.at(-1) ?? "", /\bx dismiss\b/);
@@ -370,7 +381,7 @@ test("an interrupted-but-running subagent is treated as live for x in the panel 
 					assert.match(afterFirstX.at(-1) ?? "", /Press x again within 3s to stop/);
 					assert.equal(dismissedAgentPanelItems(session).has(`task:${taskId}`), false);
 					assert.equal(dismissedTasks(ownerTaskViewSource(fixture.store)).has(taskId), false);
-					assert.equal(agentPanelRows(session).length, 1);
+					assert.equal(agentPanelRows(session).length, 2);
 
 					const inspector = new TaskInspector(
 						ownerTaskViewSource(fixture.store),
