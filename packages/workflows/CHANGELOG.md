@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- New workflow failure code `session_unavailable`: a run blocked because a stage that waited between turns could not reopen its session store reports it in `RunResult.failure.code` and on the stage, with `retryable: true`, instead of `code: "unknown"` and `retryable: false`. Code that switches exhaustively over `WorkflowFailureCode` needs a case for it ([#5534](https://github.com/bastani-inc/atomic/issues/5534))
+
 ### Changed
 
 - Updated the bundled `unslop` and `teach` skills to the current cursor/plugins pstack text. `unslop` keeps the same rule numbers but states each rule in one line, and `teach` drops repeated wording from its steps while still asking `why` to stay narrow. `unslop` stays available to the model.

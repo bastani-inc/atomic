@@ -20,7 +20,7 @@ import type { StageAdapters } from "../../packages/workflows/src/runs/foreground
 import type { StageLifecycleEvent } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { runIndicatorStatus } from "../../packages/workflows/src/shared/run-indicator-status.js";
-import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { workflowRunResumeCandidate } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { renderHeader } from "../../packages/workflows/src/tui/header.js";
@@ -98,6 +98,7 @@ async function blockOnUnreachableSessionStore() {
 		store,
 		backend,
 		service,
+		blocked,
 		source,
 		notices,
 		stopNotices,
@@ -212,6 +213,23 @@ describe("a run blocked on a stage whose session store stays unreachable reads a
 });
 
 describe("a run blocked on a stage whose session store stays unreachable stays resumable", () => {
+	test("run() reports it as it reports every recoverable block: still running, with an active_blocked failure", async () => {
+		const { blocked } = await blockOnUnreachableSessionStore();
+		assert.equal(blocked.status, "running");
+		assert.deepEqual(blocked.failure, {
+			kind: "unknown",
+			code: "session_unavailable",
+			retryable: true,
+			resumable: true,
+			recoverability: "recoverable",
+			disposition: "active_blocked",
+		});
+		const stage = blocked.stages.find((candidate) => candidate.name === "implement") as
+			| (StageSnapshot & { readonly failureCode?: string })
+			| undefined;
+		assert.equal(stage?.failureCode, "session_unavailable");
+	});
+
 	test("its journal keeps it as blocked and resumable, never as an ended run, and its live record stays running", async () => {
 		const { store, backend, source } = await blockOnUnreachableSessionStore();
 		const handle = backend.getWorkflow(source.id);
