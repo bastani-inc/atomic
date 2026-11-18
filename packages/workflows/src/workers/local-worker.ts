@@ -8,7 +8,7 @@ import {
 	setProviderRequestGate,
 	withResourceAdmission,
 } from "@bastani/atomic";
-import { type SessionStore, StorageProvider } from "@bastani/atomic/storage";
+import { declareSqliteProcessRole, type SessionStore, StorageProvider } from "@bastani/atomic/storage";
 import { WORKFLOW_ATTEMPT_CHECKPOINT_PREFIX } from "../durable/attempt-identity.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
@@ -284,6 +284,9 @@ export async function openWorkerJournals(
 
 /** Entry of every local worker process; the same module also runs a pool's coordinator. */
 export async function runLocalWorker(start: WorkerStart | PoolCoordinatorStart): Promise<void> {
+	// A pool's coordinator and workers have no UI: their SQLite statements run on the calling thread, each without a
+	// round trip to a connection's thread, which the pool's many small journal writes cannot afford (#5376).
+	declareSqliteProcessRole("background");
 	if ("role" in start && start.role === POOL_COORDINATOR_ROLE) {
 		const { runPoolCoordinator } = await import("./pool-coordinator.js");
 		runPoolCoordinator();

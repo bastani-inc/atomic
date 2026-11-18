@@ -268,7 +268,7 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "NodeSqliteDatabase.call" },
 		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "CallerThreadChannel.request" },
 		reason:
-			"statements run on the calling thread only for a connection passed to wrapNodeSqliteDatabase, where the caller's own DatabaseSync belongs, and for an in-memory database, which has no file to wait for and no lock another connection holds; openNodeSqliteDatabase runs every file-backed connection on a thread of its own (#5376)",
+			"statements run on the calling thread only for a connection passed to wrapNodeSqliteDatabase, where the caller's own DatabaseSync belongs, for an in-memory database, which has no file to wait for and no lock another connection holds, and in a process that declared itself background (a workflow pool's coordinator or worker, which has no UI); in an interactive process openNodeSqliteDatabase runs every file-backed connection on a thread of its own (#5376)",
 	},
 	{
 		from: {
@@ -277,7 +277,25 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 		},
 		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "CallerThreadChannel.close" },
 		reason:
-			"closes a connection on the calling thread only for an in-memory database, which has no file to release, and never a connection passed to wrapNodeSqliteDatabase, which its caller closes; a file-backed connection closes on its own thread (#5376)",
+			"closes a connection on the calling thread only for an in-memory database, which has no file to release, and for a connection a background process (a workflow pool's coordinator or worker, which has no UI) opened, and never a connection passed to wrapNodeSqliteDatabase, which its caller closes; in an interactive process a file-backed connection closes on its own thread (#5376)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openNodeSqliteDatabase/exec" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "CallerThreadChannel.request" },
+		reason:
+			"configures a file-backed connection on the calling thread only when openOnCallerThread opened it, in a process that declared itself background (a workflow pool's coordinator or worker, which has no UI); an interactive process configures it on the connection's own thread (#5376)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openNodeSqliteDatabase" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "CallerThreadChannel.close" },
+		reason:
+			"closes a connection that failed to open on the calling thread only when openOnCallerThread opened it, in a process that declared itself background (a workflow pool's coordinator or worker, which has no UI); an interactive process closes it on the connection's own thread (#5376)",
+	},
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openNodeSqliteDatabase" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openOnCallerThread" },
+		reason:
+			"opens a file-backed connection on the calling thread only in a process that declared itself background with declareSqliteProcessRole, which only a workflow pool's coordinator and workers do as they start: they have no UI. Every other process is interactive by default and opens it on a thread of its own (#5376)",
 	},
 	{
 		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "openNodeSqliteDatabase" },

@@ -1956,6 +1956,44 @@ export function ordinarySqlitePath<T extends string | null>(location: T): T {
 	return location;
 }
 
+/**
+ * What a process is, for the file-backed connections `openNodeSqliteDatabase` opens: `interactive` (every process
+ * that does not say otherwise) or `background`. See `declareSqliteProcessRole`.
+ */
+export type SqliteProcessRole = "interactive" | "background";
+
+let processRole: SqliteProcessRole = "interactive";
+
+/**
+ * Declares what this process is, for the file-backed connections `openNodeSqliteDatabase` opens from now on (#5376).
+ * In an interactive process, the default, each connection runs its statements on a thread of its own, so the event
+ * loop that draws the UI and reads input never waits for SQLite. A background process without a UI, such as a workflow
+ * pool's coordinator or worker, declares itself `background` as it starts: its connections run their statements on
+ * the calling thread, as node:sqlite does, so a statement costs no round trip to another thread. A busy write there
+ * waits for the lock on the calling thread, as it does in node:sqlite. Connections already open keep their thread.
+ */
+export function declareSqliteProcessRole(role: SqliteProcessRole): void {
+	processRole = role;
+}
+
+/**
+ * Opens `path` on the calling thread, for a background process (see `declareSqliteProcessRole`), through the
+ * long-path form when it needs it (#5139), and reports its location as `ThreadConnection.open` does.
+ */
+async function openOnCallerThread(
+	path: string,
+	readOnly: boolean,
+): Promise<{ readonly connection: ConnectionChannel; readonly location: string | null }> {
+	let Database: typeof DatabaseSync;
+	try {
+		({ DatabaseSync: Database } = await import("node:sqlite"));
+	} catch (cause) {
+		throw new StorageAdapterLoadError("node:sqlite", cause as StorageFailureCause);
+	}
+	const connection = new Database(sqliteFilePath(path), { readOnly });
+	return { connection: new CallerThreadChannel(connection, true), location: connection.location() };
+}
+
 export async function openNodeSqliteDatabase(
 	path: string,
 	{
@@ -1981,15 +2019,19 @@ export async function openNodeSqliteDatabase(
 	if (targetFile === undefined)
 		return openInMemoryDatabase(path, descriptor, readOnly, busyTimeoutMs, lockWaitMs, holdMs);
 	let heldOpenLock: HeldOpenLock | undefined;
-	let connection: ThreadConnection | undefined;
+	let connection: ConnectionChannel | undefined;
 	try {
 		if (!readOnly && targetFile !== undefined) await mkdir(dirname(targetFile), { recursive: true });
 		heldOpenLock = await acquireOpenLock(targetFile, readOnly, busyTimeoutMs);
-		// The connection opens on a thread of its own, through the long-path form when it needs it (#5139), and
-		// reports its location as the ordinary path, so every reader of it sees the path it was given.
-		let opened: Awaited<ReturnType<typeof ThreadConnection.open>>;
+		// The connection opens on a thread of its own, or on this one in a background process, through the long-path
+		// form when it needs it (#5139), and reports its location as the ordinary path, so every reader of it sees the
+		// path it was given.
+		let opened: { readonly connection: ConnectionChannel; readonly location: string | null };
 		try {
-			opened = await ThreadConnection.open(path, { readOnly, openAs: sqliteFilePath(path) });
+			opened =
+				processRole === "background"
+					? await openOnCallerThread(path, readOnly)
+					: await ThreadConnection.open(path, { readOnly, openAs: sqliteFilePath(path) });
 		} catch (cause) {
 			// node:sqlite is loaded on the connection's thread, so the caller's never prints its experimental warning.
 			if (cause instanceof ConnectionLoadError)

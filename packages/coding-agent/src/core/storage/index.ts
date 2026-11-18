@@ -46,9 +46,11 @@ export * from "./journal-catalog.js";
 export * from "./migrations.js";
 export {
 	DEFAULT_GROUP_COMMIT_HOLD_MS,
+	declareSqliteProcessRole,
 	getWriterQueueDegradation,
 	getWriterQueueStats,
 	openNodeSqliteDatabase,
+	type SqliteProcessRole,
 	sqliteFilePath,
 	type WriterQueueStats,
 	wrapNodeSqliteDatabase,
