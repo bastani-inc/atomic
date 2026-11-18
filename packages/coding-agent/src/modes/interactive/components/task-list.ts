@@ -6,7 +6,12 @@ import {
 	panelHintText,
 	panelRowListed,
 } from "../../../core/tasks/agent-panel-rules.ts";
-import { agentPanelTaskId, taskPanelItems, taskPanelState } from "../../../core/tasks/agent-panel-source.ts";
+import {
+	agentPanelTaskId,
+	taskPanelItems,
+	taskPanelRole,
+	taskPanelState,
+} from "../../../core/tasks/agent-panel-source.ts";
 import { supersededReleasedAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
@@ -97,8 +102,9 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 	for (let index = tasks.length - 1; index >= 0; index--) {
 		const task = tasks[index]!;
 		if (superseded.has(task.ref.taskId)) continue;
-		if (task.kind === "command") {
-			if (isActiveBackgroundTask(task)) shells++;
+		const role = taskPanelRole(task);
+		if (role !== "agent") {
+			if (role === "shell" && isActiveBackgroundTask(task)) shells++;
 			continue;
 		}
 		subagents++;

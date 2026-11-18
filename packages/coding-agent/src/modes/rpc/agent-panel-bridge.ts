@@ -17,6 +17,7 @@ import {
 	stopAgentPanelItem,
 	subscribeAgentPanel,
 	taskPanelItem,
+	taskPanelRole,
 	taskPanelState,
 	viewedAgentPanelItems,
 } from "../../core/tasks/agent-panel-source.ts";
@@ -279,10 +280,11 @@ function rankPanelSession(
 	if (!active) {
 		for (const task of tasks) {
 			if (task.parentTaskId !== undefined || (superseded.size > 0 && superseded.has(task.ref.taskId))) continue;
+			// Background work that is not a row (a shell) is active while it runs.
 			if (
-				task.kind === "command"
-					? task.execution.kind !== "settled"
-					: isActivePanelRow({ state: taskPanelState(task) })
+				taskPanelRole(task) === "agent"
+					? isActivePanelRow({ state: taskPanelState(task) })
+					: task.execution.kind !== "settled"
 			) {
 				active = true;
 				break;
@@ -349,8 +351,10 @@ function rankPanelSession(
 			const task = tasks[i]!;
 			if (superseded.size > 0 && superseded.has(task.ref.taskId)) continue;
 			if (task.parentTaskId !== undefined) continue;
-			if (task.kind === "command") {
-				if (task.execution.kind !== "settled") shells++;
+			// Only subagents are rows. A shell is counted on the hint line and listed in /tasks.
+			const role = taskPanelRole(task);
+			if (role !== "agent") {
+				if (role === "shell" && task.execution.kind !== "settled") shells++;
 				continue;
 			}
 			subagents++;
