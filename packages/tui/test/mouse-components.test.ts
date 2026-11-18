@@ -110,9 +110,12 @@ describe("mouse-aware components", () => {
 			selected = item.value;
 		};
 
-		assert.strictEqual(list.handleMouse(mouse("press", 1, 2, 40, 3))?.handled, true);
-		assert.strictEqual(list.getSelectedItem()?.value, "c");
+		list.render(40);
+		// The press is left to the renderer, so a drag across rows selects their text.
+		assert.strictEqual(list.handleMouse(mouse("press", 1, 2, 40, 3)), undefined);
+		assert.strictEqual(list.getSelectedItem()?.value, "a");
 		assert.strictEqual(list.handleMouse(mouse("click", 1, 2, 40, 3))?.handled, true);
+		assert.strictEqual(list.getSelectedItem()?.value, "c");
 		assert.strictEqual(selected, "c");
 	});
 
@@ -131,6 +134,7 @@ describe("mouse-aware components", () => {
 			() => {},
 		);
 
+		list.render(40);
 		list.handleMouse(mouse("press", 1, 2, 40, 5));
 		list.handleMouse(mouse("click", 1, 2, 40, 5));
 		assert.deepStrictEqual(changes, [{ id: "third", value: "high" }]);

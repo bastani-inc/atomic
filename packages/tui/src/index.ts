@@ -9,6 +9,12 @@ export {
 	CombinedAutocompleteProvider,
 	type SlashCommand,
 } from "./autocomplete.ts";
+export {
+	type ClickableColumns,
+	type ClickableRowActions,
+	ClickableRows,
+	isSingleLeftClick,
+} from "./clickable-rows.ts";
 // Colors and styling
 export {
 	backgroundAnsi,
