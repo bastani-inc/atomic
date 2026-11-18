@@ -2663,6 +2663,24 @@ try {
         Assert-Fixture ($env:Path -eq $beforeProcessPath) "failed final smoke did not restore current PATH"
         Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "failed final smoke left a new installation"
         Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "failed final smoke left a new bin directory"
+
+        # A user who has no User Path value keeps having none after a rollback (not an empty one).
+        $environmentKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+        $savedRawPath = $environmentKey.GetValue("Path", $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $savedPathKind = if ($null -ne $savedRawPath) { $environmentKey.GetValueKind("Path") } else { $null }
+        try {
+            $environmentKey.DeleteValue("Path", $false)
+            $failure = $null
+            try { & $InstallerPath -Ref "2.0.0" | Out-Null }
+            catch { $failure = $_ }
+            Assert-Fixture ($null -ne $failure) "the second final smoke failure was not reported"
+            $rolledBackPath = $environmentKey.GetValue("Path", $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            Assert-Fixture ($null -eq $rolledBackPath) "rollback wrote a User Path value for a user who had none: [$rolledBackPath]"
+        }
+        finally {
+            if ($null -ne $savedRawPath) { $environmentKey.SetValue("Path", $savedRawPath, $savedPathKind) }
+            $environmentKey.Close()
+        }
     }
     elseif ($Scenario -eq "busy-stage-move") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"

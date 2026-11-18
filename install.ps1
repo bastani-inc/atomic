@@ -1303,7 +1303,9 @@ function Get-AtomicUserPathValue {
 }
 
 function Set-AtomicUserPathValue {
-    param([AllowNull()][string]$Value, $Kind)
+    # [object], not [string]: a [string] parameter turns $null into "", which would write an empty Path
+    # instead of removing a value the user never had.
+    param([AllowNull()][object]$Value, $Kind)
 
     if (-not $IsWindowsHost -or $null -eq $Kind) {
         [Environment]::SetEnvironmentVariable("Path", $Value, "User")
@@ -1395,7 +1397,9 @@ function Clear-AtomicInstallLeftovers {
     $candidates = @(
         @{ Dir = $versionsDir; Filter = ".stage-*"; Backup = $false },
         @{ Dir = $InstallRoot; Filter = ".current-*"; Backup = $false },
-        @{ Dir = $BinDir; Filter = ".atomic-*"; Backup = $false },
+        # Only the bin directory's `atomic-current` junctions can be traced to this install root; other roots'
+        # installers may share the bin directory, and their shims and junctions are not this run's to remove.
+        @{ Dir = $BinDir; Filter = ".atomic-current-*"; Backup = $false },
         @{ Dir = $versionsDir; Filter = ".backup-*"; Backup = $true }
     )
     foreach ($candidate in $candidates) {
@@ -1407,6 +1411,16 @@ function Clear-AtomicInstallLeftovers {
                 $entry.Name -like ".atomic-backup-*"
             if ($isBackup -and -not $healthy) {
                 continue
+            }
+            if ($candidate.Dir -eq $BinDir) {
+                $junctionTarget = Get-AtomicReparseTarget $entry
+                if ([string]::IsNullOrWhiteSpace($junctionTarget)) {
+                    continue
+                }
+                $rootPrefix = (Get-AtomicComparablePath $InstallRoot).TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
+                if (-not (Get-AtomicComparablePath $junctionTarget).StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                    continue
+                }
             }
             if ($null -ne $currentComparable -and (Get-AtomicComparablePath $entry.FullName) -ieq $currentComparable) {
                 continue

@@ -541,7 +541,8 @@ process_start_of() {
         [ "$#" -ge 20 ] && shift 19 && printf '%s' "$1"
         return 0
     fi
-    ps -o lstart= -p "$1" 2>/dev/null | tr -d ' ' || :
+    # ps prints the start time with the caller's time zone and locale: fix both, so every installer reads the same text.
+    LC_ALL=C TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null | tr -d ' ' || :
 }
 
 process_is_running() {
@@ -705,6 +706,17 @@ switch_current() {
     fi
 }
 
+# Whether bin entry $1 belongs to this install root: a link into it. Other install roots may share the bin directory,
+# and their installers do not take this root's lock.
+bin_entry_is_ours() {
+    [ -L "$1" ] || return 1
+    bin_entry_target=$(link_target "$1" 2>/dev/null) || return 1
+    case $bin_entry_target in
+        "$INSTALL_ROOT"/*) return 0 ;;
+    esac
+    return 1
+}
+
 # Under the lock no other installer is running, so what a killed installer left behind can go: temporary links and
 # staged copies always (unless `current` resolves to one), backups once `current` resolves to a complete version.
 sweep_install_leftovers() {
@@ -729,7 +741,7 @@ sweep_install_leftovers_globbing() {
     fi
     if ! path_exists "$BIN_PATH"; then
         for sweep_entry in "$BIN_DIR"/.atomic-backup-*; do
-            [ -L "$sweep_entry" ] || continue
+            bin_entry_is_ours "$sweep_entry" || continue
             mv "$sweep_entry" "$BIN_PATH" 2>/dev/null && break
         done
     fi
@@ -740,6 +752,9 @@ sweep_install_leftovers_globbing() {
         path_exists "$sweep_entry" || continue
         case ${sweep_entry##*/} in
             *-"$TRANSACTION_ID") continue ;;
+        esac
+        case $sweep_entry in
+            "$BIN_DIR"/.atomic-*) bin_entry_is_ours "$sweep_entry" || continue ;;
         esac
         # shellcheck disable=SC3013 # -ef compares physical directories
         if [ -d "$sweep_entry" ] && [ ! -L "$sweep_entry" ] && [ "$sweep_current" -ef "$sweep_entry" ]; then
@@ -752,6 +767,9 @@ sweep_install_leftovers_globbing() {
         path_exists "$sweep_entry" || continue
         case ${sweep_entry##*/} in
             *-"$TRANSACTION_ID") continue ;;
+        esac
+        case $sweep_entry in
+            "$BIN_DIR"/.atomic-*) bin_entry_is_ours "$sweep_entry" || continue ;;
         esac
         # shellcheck disable=SC3013 # -ef compares physical directories
         if [ -d "$sweep_entry" ] && [ ! -L "$sweep_entry" ] && [ "$sweep_current" -ef "$sweep_entry" ]; then
@@ -1855,7 +1873,8 @@ fi
 mv "$PAYLOAD_ROOT" "$VERSION_STAGE"
 PAYLOAD_ROOT=
 # shellcheck disable=SC3013 # -ef compares the physical directories
-if [ "$FORCE_INSTALL" -eq 0 ] && [ -d "$VERSION_PATH" ] && [ ! -L "$VERSION_PATH" ] && payload_is_complete "$VERSION_PATH"; then
+if [ "$FORCE_INSTALL" -eq 0 ] && [ -d "$VERSION_PATH" ] && [ ! -L "$VERSION_PATH" ] && payload_is_complete "$VERSION_PATH" &&
+    [ "$(sha256_of "$VERSION_PATH/atomic" 2>/dev/null)" = "$LAUNCHER_SHA256" ]; then
     # A complete copy of this version is already installed: point `current` at it and keep it.
     rm -rf "$VERSION_STAGE"
     VERSION_STAGE=
