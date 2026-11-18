@@ -16,8 +16,6 @@ import type { NamedWorktree, NamedWorktreeRequest } from "../shared/named-worktr
 import type { runSync } from "./execution.js";
 
 export const BURST_TASK_DISCOVERY_CWD = Symbol("burstTaskDiscoveryCwd");
-export const BURST_EXECUTION_SCHEDULE = Symbol("burstExecutionSchedule");
-export const TASK_EXECUTION_TICKETS = Symbol("taskExecutionTickets");
 /** The named worktree a launch's child runs in, once it exists (#5202). */
 export const NAMED_WORKTREE = Symbol("namedWorktree");
 
@@ -27,7 +25,6 @@ export interface TaskParam {
 	cwd?: string;
 	worktree?: NamedWorktreeRequest;
 	[NAMED_WORKTREE]?: NamedWorktree;
-	[TASK_EXECUTION_TICKETS]?: import("../shared/parallel-utils.js").ExecutionTicket[];
 	count?: number;
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
@@ -44,7 +41,6 @@ export type BurstTaskParam = TaskParam & {
 };
 
 export interface SubagentParamsLike {
-	[BURST_EXECUTION_SCHEDULE]?: import("../shared/parallel-utils.js").ExecutionScheduler;
 	action?: (typeof SUBAGENT_ACTIONS)[number];
 	id?: string;
 	/** `action: "wait"` only: how long to wait for the task. */

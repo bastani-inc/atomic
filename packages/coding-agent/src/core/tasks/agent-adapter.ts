@@ -142,13 +142,14 @@ export class AgentTaskHost {
 
 	/**
 	 * The launch's observation of an agent task, which always runs in the background: it yields once registered, with
-	 * `explicit` when the launch asked for the background and `default-background` otherwise. Wait for the task
-	 * explicitly with {@link waitForTask}.
+	 * `explicit` when the launch asked for the background and `default-background` otherwise, also for any other policy
+	 * an untyped caller passes. Wait for the task explicitly with {@link waitForTask}.
 	 */
 	observeAgentLaunch(taskId: C.TaskId, policy?: { readonly kind: "background" }, onRegistered?: () => void) {
 		const task = this.resolveTask(taskId);
+		const background = policy?.kind === "background" ? policy : undefined;
 		return task.ok
-			? this.supervisor.initialObservation(task.value, policy, () => onRegistered?.())
+			? this.supervisor.initialObservation(task.value, background, () => onRegistered?.())
 			: Promise.resolve(task);
 	}
 

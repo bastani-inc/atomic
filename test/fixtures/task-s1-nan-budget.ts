@@ -98,7 +98,7 @@ async function nativeScenario(foreground: boolean): Promise<void> {
 	assert.ok(receipt.tasks.every((record) => record.cleanup.kind === "reaped"));
 }
 
-type Door = "wait" | "foreground" | "foreground-first";
+type Door = "wait" | "foreground-first";
 // RFC #2884: configuration and each per-call door share native scheduling, not new input validation.
 async function facadeScenario(door: Door, configured: boolean): Promise<void> {
 	const supervisor = new TaskSupervisor();
@@ -126,12 +126,10 @@ async function facadeScenario(door: Door, configured: boolean): Promise<void> {
 	const observe = (
 		target: typeof task,
 		budget: number | undefined,
-	): Promise<C.Result<C.WaitOutcome, C.WaitError | C.ForegroundError>> =>
+	): Promise<C.Result<C.WaitOutcome, C.WaitError>> =>
 		door === "wait"
 			? supervisor.waitForTask(target, budget, host)
-			: door === "foreground"
-				? supervisor.foregroundTask(target, budget)
-				: supervisor.initialObservation(target, { kind: "foreground", budgetMs: budget });
+			: supervisor.initialObservation(target, { kind: "foreground", budgetMs: budget });
 	const register = (target: typeof task, budget: number | undefined) => {
 		const observation = observe(target, budget);
 		watch.drain();
@@ -192,10 +190,10 @@ async function facadeScenario(door: Door, configured: boolean): Promise<void> {
 
 await nativeScenario(false);
 await nativeScenario(true);
-for (const door of ["wait", "foreground", "foreground-first"] as const) {
+for (const door of ["wait", "foreground-first"] as const) {
 	for (const configured of [false, true]) await facadeScenario(door, configured);
 }
 await setImmediate();
 assert.deepEqual(unhandled, []);
 process.off("unhandledRejection", onUnhandled);
-console.log("NAN BUDGET LIFECYCLE VERIFIED 2 native doors 6 facade configurations; native timers executed");
+console.log("NAN BUDGET LIFECYCLE VERIFIED 2 native doors 4 facade configurations; native timers executed");

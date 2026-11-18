@@ -170,6 +170,30 @@ test("same-scope hosts dispatch each original launch factory", async () => {
 	assert.equal((await first.close("session-close")).ok, true);
 });
 
+test("an agent launch a JavaScript caller still asks to observe in the foreground runs in the background", async () => {
+	const owner = new AgentTaskHost({
+		scope: { kind: "session", sessionId: randomUUID() },
+		// A foreground observation that is still honoured would hold this test until it times out.
+		tasks: { wait: { kind: "until-settled" } },
+		authorizeLaunch() {},
+	});
+	const result = deferred<TaskResult>();
+	try {
+		const started = await owner.startAgentTask(intent, operation(), () => ({
+			result: result.promise,
+			cleanup: result.promise.then(() => ({ kind: "reaped" as const })),
+		}));
+		assert.ok(started.ok);
+		const untyped: unknown = { kind: "foreground" };
+		const observed = await owner.observeAgentLaunch(started.value.taskId, untyped as { kind: "background" });
+		assert.ok(observed.ok && observed.value.kind === "yielded");
+		assert.equal(observed.value.reason, "default-background");
+	} finally {
+		result.resolve({ kind: "cancelled", cause: "user" });
+		await owner.close("session-close");
+	}
+});
+
 for (const [label, policy, reason] of [
 	["explicit background", { kind: "background" }, "explicit"],
 	["default background", undefined, "default-background"],

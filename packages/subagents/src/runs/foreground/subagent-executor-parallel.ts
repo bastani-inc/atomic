@@ -38,12 +38,7 @@ import {
 	notifyDetachedForegroundChildExit,
 	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
-import {
-	BURST_EXECUTION_SCHEDULE,
-	type ExecutionContextData,
-	type ResolvedExecutorDeps,
-	type TaskParam,
-} from "./subagent-executor-types.js";
+import type { ExecutionContextData, ResolvedExecutorDeps, TaskParam } from "./subagent-executor-types.js";
 import {
 	buildParallelModeError,
 	buildParallelWorktreeSuffix,
@@ -207,7 +202,6 @@ export async function runParallelPath(
 		const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 		const results = await runForegroundParallelTasks({
 			...(params.heartbeatMs === undefined ? {} : { heartbeatMs: params.heartbeatMs }),
-			schedule: params[BURST_EXECUTION_SCHEDULE],
 			onDetachedExit: (index, result) => {
 				if (workflowStageAcceptsDetachedNotification(detachedNotificationScope)) {
 					notifyDetachedForegroundChildExit({

@@ -30,7 +30,7 @@ import { runOwnerlessChild } from "./ownerless-children.js";
 import { holdStartingChild, type StartingChildHold } from "./subagent-child-hold.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
 import { markLiveResultIndices } from "./subagent-executor-live-update.js";
-import { type SubagentExecutorRuntimeDeps, TASK_EXECUTION_TICKETS, type TaskParam } from "./subagent-executor-types.js";
+import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
 import { resolveParallelTaskCwd } from "./subagent-executor-worktree.js";
 import { runAgentTask } from "./task-execution.js";
 
@@ -157,7 +157,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 	const host = input.ctx.getAgentTaskHost?.();
 	// Admit observations independently; only actual execution holds a concurrency slot.
 	const schedule = input.schedule ?? createExecutionScheduler(input.concurrencyLimit);
-	const tickets = input.tasks.map((task) => task[TASK_EXECUTION_TICKETS]?.[0] ?? schedule.reserve?.());
+	const tickets = input.tasks.map(() => schedule.reserve?.());
 	const cwdVerdicts = await Promise.all(
 		input.tasks.map((task, index) =>
 			checkLaunchCwd(resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index)),

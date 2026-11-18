@@ -49,10 +49,8 @@ export function registerExecutionIntercomDetach(
 		}
 		options.intercomEvents?.emit?.(INTERCOM_DETACH_RESPONSE_EVENT, { ...event, accepted: true });
 	});
-	const detachSibling = () => {
-		if (options.taskExecution) acknowledged = true;
-		else state.detach();
-	};
+	// Only a child no task host runs gets a group detach signal: its siblings' launching call blocks on it too.
+	const detachSibling = () => state.detach();
 	options.intercomDetachSignal?.addEventListener("abort", detachSibling, { once: true });
 	if (options.intercomDetachSignal?.aborted) detachSibling();
 

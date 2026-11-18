@@ -12,6 +12,7 @@ import type {
 import type { ExtensionContext } from "../../packages/coding-agent/src/index.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
+import { getBurstDisplay } from "../../packages/subagents/src/runs/foreground/subagent-executor-burst-display.js";
 import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
@@ -379,4 +380,32 @@ test("an out-of-range subagent heartbeatMs is refused before any child launches"
 	assert.equal(parallelCall.isError, true);
 	assert.match(text(parallelCall), /^Invalid tasks\[1\]\.heartbeatMs NaN/);
 	assert.equal(launches, 0);
+});
+
+test("a launch naming an unknown agent fails alone: a sibling launch in the same message still runs and hears nothing of it (#3427)", async () => {
+	const launched: string[] = [];
+	const { call } = harness(async (_cwd, _agents, _agent, task) => {
+		launched.push(task);
+		return childResult(task);
+	});
+	const [bad, good, parallelBad] = await Promise.all([
+		call("bad", { agent: "nonexistent", task: "bad" }),
+		call("good", { agent: "echo", task: "good" }),
+		call("parallel-bad", {
+			tasks: [
+				{ agent: "echo", task: "fine" },
+				{ agent: "missing", task: "unknown" },
+			],
+		}),
+	]);
+	assert.equal(bad.isError, true);
+	assert.equal(text(bad), "Unknown agent: nonexistent");
+	assert.equal(parallelBad.isError, true);
+	assert.equal(text(parallelBad), "Unknown agent: missing (task 2)", "the index is the caller's own task");
+	assert.notEqual(good.isError, true);
+	assert.doesNotMatch(text(good), /nonexistent|missing/);
+	assert.match(await settledOutput(call, single(good).observation.taskId), /output:good/);
+	assert.deepEqual(launched, ["good"]);
+	for (const id of ["bad", "good", "parallel-bad"])
+		assert.equal(getBurstDisplay(id), undefined, `${id} renders as its own call, not as part of the failed burst`);
 });

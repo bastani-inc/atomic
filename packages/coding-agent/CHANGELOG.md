@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- `AgentTaskHost.observeAgentLaunch` takes only `{ kind: "background" }` or no policy, and always returns once the launch's observation is registered, because every subagent now runs in the background; wait for a task with `waitForTask`. `TaskViewSource.foregroundTask`, which no view used, was removed.
+- `AgentTaskHost.observeAgentLaunch` takes only `{ kind: "background" }` or no policy, and always returns once the launch's observation is registered, because every subagent now runs in the background; wait for a task with `waitForTask`. Its `onRegistered` callback no longer receives a function that yields the observation. A JavaScript caller that still passes `{ kind: "foreground" }` gets the default background observation, with reason `default-background`. `TaskViewSource.foregroundTask`, which no view used, was removed.
 
 ### Added
 

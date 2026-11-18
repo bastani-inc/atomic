@@ -7,7 +7,7 @@ import type { Tool, ToolCall } from "@bastani/atomic-ai";
 import { validateToolArguments } from "@bastani/atomic-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
-import { afterEach, beforeEach, test } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
@@ -67,7 +67,7 @@ afterEach(async () => {
  * A parent session with a real task owner and the subagent tool's executor. Each child runs until the test releases
  * it, binds a transcript that takes messages through the parent's Intercom relay, and records what reached it.
  */
-function parentWithBlockedChildren(options: { sessionManager?: SessionManager } = {}) {
+function parentWithBlockedChildren(options: { sessionManager?: SessionManager; taskHost?: false } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-background-launch-"));
 	const parentManager = options.sessionManager ?? SessionManager.inMemory(cwd);
 	const ready = parentManager.appendMessage({ role: "user", content: "parent context", timestamp: Date.now() });
@@ -122,7 +122,7 @@ function parentWithBlockedChildren(options: { sessionManager?: SessionManager } 
 		getContextUsage: () => undefined,
 		compact: () => {},
 		getSystemPrompt: () => "",
-		getAgentTaskHost: () => host,
+		...(options.taskHost === false ? {} : { getAgentTaskHost: () => host }),
 	} as unknown as ExtensionContext;
 	const executor = createSubagentExecutor({
 		pi: { events, getSessionName: () => "parent" } as unknown as ExecutorDeps["pi"],
@@ -270,6 +270,19 @@ test("through the agent loop, the note goes to exactly the call that asked to wa
 	assert.match(getMessageText(results[2]), /^Note: subagents always run in the background\b/);
 });
 
+test("without a task host, a launch that asks to wait in the foreground still waits for its child, so it gets no note", async () => {
+	const parent = parentWithBlockedChildren({ taskHost: false });
+	parent.release();
+	const result = await parent.modelCall("direct-run", {
+		agent: "echo",
+		task: "direct",
+		wait: { kind: "foreground", budgetMs: LEGACY_FOREGROUND_BUDGET_MS },
+	});
+	assert.equal(result.details?.taskResponse, undefined, "the child ran directly, not as a task");
+	assert.match(text(result), /Children: 1 completed/, "the call returns the finished run");
+	assert.doesNotMatch(text(result), /^Note:/);
+});
+
 test("a just-launched subagent is listed below the prompt and in /tasks, and takes a message typed into its chat", async () => {
 	const parent = parentWithBlockedChildren();
 	const result = await parent.modelCall("launch", {
@@ -312,7 +325,8 @@ test.each(["while it waits", "before it waits"] as const)(
 			esc.signal,
 		);
 		if (when === "while it waits") {
-			parent.store.drain();
+			// Esc comes once the wait is registered, so only the abort listener can end it.
+			await vi.waitFor(() => assert.equal(parent.host.hasActiveTaskWaits, true, "the wait registered before Esc"));
 			esc.abort();
 		}
 		// The child is still blocked: only the abort can end this wait before its budget.

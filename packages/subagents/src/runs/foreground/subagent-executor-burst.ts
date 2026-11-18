@@ -9,7 +9,7 @@ import type { SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { formatParallelResultContent } from "../shared/parallel-utils.js";
 import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
-import { registerBurstDisplay, updateBurstDisplay } from "./subagent-executor-burst-display.js";
+import { registerBurstDisplay, releaseBurstDisplay, updateBurstDisplay } from "./subagent-executor-burst-display.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
 import { withForkContext } from "./subagent-executor-input.js";
 import { getLiveResultIndices } from "./subagent-executor-live-update.js";
@@ -336,6 +336,15 @@ async function projectOwnerResult(
 	return withForkContext(projected, item.params.context ?? result.details?.context);
 }
 
+/** A run that failed before any of its children started, as an unknown agent or invalid input fails it. */
+function failedBeforeStart(result: SubagentToolResult): boolean {
+	return (
+		result.isError === true &&
+		result.details?.taskResponse === undefined &&
+		(result.details?.results.length ?? 0) === 0
+	);
+}
+
 function resolveItem(item: BurstItem, result: SubagentToolResult): void {
 	if (item.settled) return;
 	item.settled = true;
@@ -375,11 +384,32 @@ export function createExecutionBurstDispatcher(input: {
 	isActive: () => boolean;
 	setActive: (active: boolean) => void;
 	duplicateResult: (params: SubagentParamsLike) => SubagentToolResult;
+	/** The error a launch fails with on its own, such as an unknown agent, if any. */
+	ownError: (params: SubagentParamsLike, ctx: ExtensionContext) => Promise<SubagentToolResult | undefined>;
 }): ExecuteSubagent {
 	let queue: BurstItem[] = [];
 	let flushScheduled = false;
 
+	/**
+	 * Gives each launch that fails on its own, such as one naming an unknown agent, its own error, and returns the
+	 * others. A failure to check leaves the launch with the others.
+	 */
+	const withoutOwnErrors = async (items: BurstItem[]): Promise<BurstItem[]> => {
+		const errors = await Promise.all(
+			items.map((item) => input.ownError(item.params, item.ctx).catch(() => undefined)),
+		);
+		items.forEach((item, index) => {
+			const error = errors[index];
+			if (error) resolveItem(item, error);
+		});
+		return items.filter((_item, index) => errors[index] === undefined);
+	};
+
 	const run = async (items: BurstItem[], finish: () => void): Promise<void> => {
+		if (items.length === 0) {
+			finish();
+			return;
+		}
 		if (items.length === 1) {
 			const item = items[0]!;
 			try {
@@ -416,24 +446,37 @@ export function createExecutionBurstDispatcher(input: {
 				if (!item.settled) item.onUpdate?.(projectResult(update, merged.routes![index]!, true));
 			}
 		};
+		// A merged run fails as a whole before any child starts when one launch fails on its own. That launch gets
+		// its own error, and the others run again without it.
+		let retry: BurstItem[] | undefined;
 		try {
 			const result = await input.execute(first.id, merged.params!, first.signal, onUpdate, first.ctx);
-			updateBurstDisplay(display, result);
-			const projections = await Promise.all(
-				items.map(
-					async (item, index) =>
-						(await projectOwnerResult(result, merged.routes![index]!, item, first.ctx)) ??
-						projectResult(result, merged.routes![index]!),
-				),
-			);
-			for (let index = 0; index < items.length; index++) resolveItem(items[index]!, projections[index]!);
+			if (failedBeforeStart(result)) {
+				const rest = await withoutOwnErrors(items);
+				if (rest.length < items.length) {
+					releaseBurstDisplay(display);
+					retry = rest;
+				}
+			}
+			if (retry === undefined) {
+				updateBurstDisplay(display, result);
+				const projections = await Promise.all(
+					items.map(
+						async (item, index) =>
+							(await projectOwnerResult(result, merged.routes![index]!, item, first.ctx)) ??
+							projectResult(result, merged.routes![index]!),
+					),
+				);
+				for (let index = 0; index < items.length; index++) resolveItem(items[index]!, projections[index]!);
+			}
 		} catch (error) {
 			const rejection = error instanceof Error ? error : new Error(String(error));
 			for (const item of items) rejectItem(item, rejection);
 		} finally {
 			cleanupLaterAborts();
-			finish();
+			if (retry === undefined) finish();
 		}
+		if (retry !== undefined) await run(retry, finish);
 	};
 
 	const runBurst = (items: BurstItem[]): void => {

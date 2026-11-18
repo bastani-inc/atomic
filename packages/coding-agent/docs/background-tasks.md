@@ -275,7 +275,7 @@ Scrolling settings apply to transcripts as they do to the chat: `fullscreenWheel
 
 The list groups subagents, workflow runs and shells by **Needs input**, **Working** and **Done**, with counts and status symbols. Detail views pin identity, state, available metrics, and the selected action while their body scrolls. Missing metrics are omitted rather than displayed as zero. Recorded zero values remain visible.
 
-Agent rows in `/tasks` show the resolved model and reasoning setting, for example `openai-codex/gpt-6-astra · thinking medium`. These settings update on fallback and remain after completion. Foreground results retain the same metadata. Completion notices keep it in their saved details but do not display a model line. Missing settings are not inferred from token counts; early launch receipts may not yet have a resolved model.
+Agent rows in `/tasks` show the resolved model and reasoning setting, for example `openai-codex/gpt-6-astra · thinking medium`. These settings update on fallback and remain after completion. A subagent's result, when a wait returns it, keeps the same metadata. Completion notices keep it in their saved details but do not display a model line. Missing settings are not inferred from token counts; early launch receipts may not yet have a resolved model.
 
 Agent details include recent retained tool activity, the prompt, a latest-response preview, and error or attention information. Transcript inspection shows the agent's conversation as a chat: retained messages, thinking blocks, tool calls and results, compaction boundaries, branch summaries, and extension notices, with a compaction status while the agent compacts. Earlier pages do not jump back to the latest page when background activity arrives.
 

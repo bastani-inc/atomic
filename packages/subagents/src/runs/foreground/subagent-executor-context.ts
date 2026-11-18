@@ -24,6 +24,7 @@ import {
 	type SubagentToolResult,
 } from "../../shared/types.js";
 import { resolveControlConfig } from "../shared/subagent-control.js";
+import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
 import {
 	applyAgentDefaultContext,
 	normalizeRepeatedParallelCounts,
@@ -55,6 +56,25 @@ export function refuseSubagentChildDelegation(
 		isError: true,
 		details: { mode, results: [] },
 	};
+}
+
+/**
+ * The error a launch fails with on its own, from its input and its agents, if any. A burst merges sibling launches
+ * into one run, which fails as a whole; when it does, this tells which launch the error is its own.
+ */
+export async function launchInputError(
+	params: SubagentParamsLike,
+	ctx: ExtensionContext,
+	deps: Pick<ResolvedExecutorDeps, "discoverAgents">,
+): Promise<SubagentToolResult | undefined> {
+	const normalized = normalizeRepeatedParallelCounts(params);
+	if (normalized.error) return normalized.error;
+	const launch = normalized.params!;
+	const cwd = resolveRequestedCwd(ctx.cwd, launch.cwd);
+	const scope = resolveExecutionAgentScope(launch.agentScope);
+	const { agents } = await deps.discoverAgents(cwd, scope, contextAgentDiscoveryOptions(ctx));
+	const hasTasks = (launch.tasks?.length ?? 0) > 0;
+	return validateExecutionInput(launch, agents, hasTasks, !hasTasks && Boolean(launch.agent)) ?? undefined;
 }
 
 export async function prepareExecutionContext(input: {

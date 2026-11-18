@@ -15,7 +15,11 @@ import { registerNamedRunWorktrees } from "./run-worktrees.js";
 import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
 import { subagentChildOwner } from "./subagent-child-records.js";
 import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
-import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
+import {
+	launchInputError,
+	prepareExecutionContext,
+	refuseSubagentChildDelegation,
+} from "./subagent-executor-context.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
 import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.js";
 import { runParallelPath } from "./subagent-executor-parallel.js";
@@ -363,16 +367,18 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			deps.state.subagentInProgress = active;
 		},
 		duplicateResult: duplicateSubagentCallResult,
+		ownError: (params, ctx) => launchInputError(params, ctx, deps),
 	});
 
 	return {
 		execute: async (id, params, signal, onUpdate, ctx) => {
 			if (params.action) return execute(id, params, signal, onUpdate, ctx);
-			// Every launch runs in the background; one that still asks to wait in the foreground is told so.
+			// Under a task host every launch runs in the background; one that still asks to wait in the foreground is
+			// told so. Without one the call still runs its children directly and waits for them, so nothing changed.
 			const legacy = takeLegacyForegroundWait(id, params, ctx);
 			const result = await (invalidHeartbeatResult(legacy.params) ??
 				executeWithBurstCollection(id, legacy.params, signal, onUpdate, ctx));
-			return legacy.foreground ? withLegacyForegroundWaitNote(result) : result;
+			return legacy.foreground && ctx.getAgentTaskHost ? withLegacyForegroundWaitNote(result) : result;
 		},
 	};
 }
