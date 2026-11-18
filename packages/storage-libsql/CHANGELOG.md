@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A `CREATE TRIGGER` sent alone in `exec` now retries after `SQLITE_SCHEMA` while other connections change a libSQL server's schema. Semicolons inside the trigger body no longer make it look like several statements. An `exec` containing additional statements is still never replayed ([#5509](https://github.com/bastani-inc/atomic/issues/5509))
+
 ## [0.9.89] - 2026-11-18
 
 ### Fixed

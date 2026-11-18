@@ -254,6 +254,34 @@ test("a schema change in one exec lands once while other connections keep changi
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'events'"), 1);
 });
 
+test("a trigger created in one exec lands once while other connections keep changing the server's schema longer than the adapter waits (#5509)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE blobs(hash TEXT PRIMARY KEY, chunks INTEGER NOT NULL)");
+	await database.exec("CREATE TABLE chunks(hash TEXT NOT NULL)");
+	fake.churnSchema(true);
+	try {
+		// The body's `;` and the `END` of a `CASE` inside it belong to the one statement.
+		await database.exec(
+			"CREATE TRIGGER IF NOT EXISTS blobs_delete AFTER DELETE ON blobs WHEN OLD.chunks > 0 BEGIN DELETE FROM chunks WHERE hash = CASE WHEN OLD.hash = ';' THEN '' ELSE OLD.hash END; END;",
+		);
+	} finally {
+		fake.churnSchema(false);
+	}
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'blobs_delete'"), 1);
+});
+
+test("a trigger followed by another statement in one exec that the server answered schema-changed is not run again (#5509)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	fake.fail(SCHEMA_CHANGED);
+	const sql = "CREATE TRIGGER events_insert AFTER INSERT ON events BEGIN SELECT 1; END; INSERT INTO events VALUES (1)";
+	await assert.rejects(database.exec(sql));
+	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length, 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
+});
+
 test("a read that starts with WITH or VALUES the server answered schema-changed is sent again as it was, while a WITH that writes lands once under churn", async () => {
 	const fake = await server();
 	const database = await open(fake.url);

@@ -793,13 +793,65 @@ function rerunsLocked(sql) {
 }
 
 /**
- * Whether `sql` is one statement: it has no `;` but at its end. A `;` in a literal or a comment also counts, so
- * several statements are never taken for one.
+ * Whether `sql` is one statement: it has no `;` but at its end, or it is one `CREATE TRIGGER`, whose body holds a `;`
+ * after each of its statements. Otherwise a `;` in a literal or a comment also counts, so several statements are never
+ * taken for one.
  * @param {string} sql
  */
 function isOneStatement(sql) {
 	const first = sql.indexOf(";");
-	return first === -1 || /^[\s;]*$/.test(sql.slice(first));
+	return first === -1 || /^[\s;]*$/.test(sql.slice(first)) || isOneTrigger(sql);
+}
+
+/** The start of a `CREATE TRIGGER` statement, its words separated by whitespace only. */
+const CREATE_TRIGGER = /CREATE\s+(?:(?:TEMP|TEMPORARY)\s+)?TRIGGER\b/iy;
+/** A word of SQL: a keyword or a name that is not quoted. */
+const SQL_WORD = /[\p{L}\p{N}_$]+/uy;
+/** The text that ends a quoted literal or name, by the character that opened it. */
+const QUOTE_END = /** @type {Record<string, string>} */ ({ "'": "'", '"': '"', "`": "`", "[": "]" });
+
+/**
+ * Whether `sql` is one `CREATE [TEMP] TRIGGER ... BEGIN ... END` statement, followed by nothing but `;` and
+ * whitespace. Literals, quoted names and comments are skipped; the trigger ends at the first `END` after `BEGIN` that
+ * closes no `CASE`. A trigger followed by another statement, or text this cannot follow, is not one statement: an `END`
+ * that is a column's name ends the trigger early, which only ever makes the answer "several".
+ * @param {string} sql
+ */
+function isOneTrigger(sql) {
+	const start = firstTokenStart(sql);
+	if (start === -1) return false;
+	CREATE_TRIGGER.lastIndex = start;
+	if (!CREATE_TRIGGER.test(sql)) return false;
+	let body = false;
+	let cases = 0;
+	let index = CREATE_TRIGGER.lastIndex;
+	while (index < sql.length) {
+		const character = sql[index];
+		const close = QUOTE_END[character];
+		if (close !== undefined) {
+			// A quote doubled inside a literal or name stays in it: the scan goes on to the quote after it.
+			const end = sql.indexOf(close, index + 1);
+			if (end === -1) return false;
+			index = end + 1;
+		} else if (sql.startsWith("--", index) || sql.startsWith("/*", index)) {
+			const end = sql.startsWith("--", index) ? sql.indexOf("\n", index + 2) : sql.indexOf("*/", index + 2);
+			if (end === -1) return false;
+			index = end + (sql[end] === "\n" ? 1 : 2);
+		} else {
+			SQL_WORD.lastIndex = index;
+			if (!SQL_WORD.test(sql)) {
+				index++;
+				continue;
+			}
+			const word = sql.slice(index, SQL_WORD.lastIndex).toUpperCase();
+			index = SQL_WORD.lastIndex;
+			if (word === "BEGIN") body = true;
+			else if (word === "CASE") cases++;
+			else if (word === "END" && cases > 0) cases--;
+			else if (word === "END" && body) return /^[\s;]*$/.test(sql.slice(index));
+		}
+	}
+	return false;
 }
 
 /**
