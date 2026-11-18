@@ -96,7 +96,13 @@ for (const width of [80, 160]) {
 			assert.equal(lines[0], "  ● main");
 			assert.match(lines[1]!, /^ {2}\S worker {2}fix shipping batches/);
 			assert.ok(!lines.some((line) => line.includes("sleep 300")), "a shell is not a panel row");
-			assert.deepEqual(agentPanelCounts(session as never), { total: 1, needsInput: 0, shells: 1 });
+			assert.deepEqual(agentPanelCounts(session as never), {
+				total: 1,
+				agents: 1,
+				needsInput: 0,
+				shells: 1,
+				subagents: 1,
+			});
 			assert.deepEqual(mainComposerHintSegments(new KeybindingsManager(), session as never), [
 				"↓ 1 agent",
 				"1 shell",
@@ -145,7 +151,7 @@ test("with only shells running there are no rows: the hint counts them and point
 	try {
 		assert.equal(panel.mounted(), false, "no empty panel is mounted");
 		assert.equal(agentPanelHasRows(session as never), false, "↓ has no panel to focus");
-		assert.deepEqual(counts.at(-1), { total: 0, needsInput: 0, shells: 2 });
+		assert.deepEqual(counts.at(-1), { total: 0, agents: 0, needsInput: 0, shells: 2, subagents: 0 });
 		assert.deepEqual(mainComposerHintSegments(new KeybindingsManager(), session as never), [
 			"2 shells",
 			"/tasks to manage",
@@ -161,7 +167,13 @@ test("finished shells are not counted", () => {
 	const done = shell("sh-done");
 	done.execution = { kind: "settled", result: { kind: "completed", output: done.output } };
 	bindTasks(session, [done]);
-	assert.deepEqual(agentPanelCounts(session as never), { total: 0, needsInput: 0, shells: 0 });
+	assert.deepEqual(agentPanelCounts(session as never), {
+		total: 0,
+		agents: 0,
+		needsInput: 0,
+		shells: 0,
+		subagents: 0,
+	});
 	assert.deepEqual(mainComposerHintSegments(new KeybindingsManager(), session as never), ["? keys"]);
 });
 
