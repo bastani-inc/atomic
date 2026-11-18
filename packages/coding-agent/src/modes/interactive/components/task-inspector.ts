@@ -199,10 +199,19 @@ export class TaskInspector implements Component {
 	/** Where ← from an open task chat goes: the list, the task's detail page, or out to whatever opened the inspector. */
 	private chatFrom: "list" | "detail" | "caller" = "detail";
 	/**
-	 * The shell whose output is open because a waiting subagent's key opened it, and what the back key returns to: the
-	 * subagent's chat, the list or its detail page.
+	 * The shell whose output is open because a waiting subagent's key opened it, and the view the back key returns to
+	 * as it was left: the subagent's chat (kept, not closed, so its scroll, draft and cursor stay), the list with its
+	 * peek, or the detail page with its scroll and chosen action.
 	 */
-	private waitedShell: { readonly taskId: TaskId; readonly returnTo: "chat" | "list" | "detail" } | undefined;
+	private waitedShell:
+		| {
+				readonly taskId: TaskId;
+				readonly returnTo: "chat" | "list" | "detail";
+				readonly suspended: TaskTranscriptPage | undefined;
+				readonly scroll: number;
+				readonly actionIndex: number;
+		  }
+		| undefined;
 
 	closedByBack = false;
 	/** What ← from a chat opened by the caller names, such as `main chat`. */
@@ -755,6 +764,7 @@ export class TaskInspector implements Component {
 	private closeTranscript(): void {
 		this.transcript?.dispose();
 		this.transcript = undefined;
+		this.waitedShell?.suspended?.dispose();
 		this.waitedShell = undefined;
 	}
 	/** The newest running shell of the selected subagent while it is released and waits; undefined otherwise. */
@@ -770,10 +780,10 @@ export class TaskInspector implements Component {
 	private openWaitedShell(): boolean {
 		const shell = this.waitedShellOfSelected();
 		if (shell === undefined) return false;
-		const returnTo =
-			this.transcript !== undefined ? "chat" : this.navigation.focus.kind === "tasks" ? "list" : "detail";
-		this.closeTranscript();
-		if (this.peekId !== undefined) this.closePeek();
+		const suspended = this.transcript;
+		const returnTo = suspended !== undefined ? "chat" : this.navigation.focus.kind === "tasks" ? "list" : "detail";
+		// The chat, a peek or the detail page stays as it is under the shell's output, for the back key.
+		this.transcript = undefined;
 		const taskId = shell.ref.taskId;
 		const byteCount = () => BigInt(this.waitedShellRecord(taskId)?.output.byteCount ?? "0");
 		this.navigation.focus = { kind: "detail" };
@@ -784,7 +794,7 @@ export class TaskInspector implements Component {
 			this.transcriptEnvironment(),
 			this.requestRender,
 		);
-		this.waitedShell = { taskId, returnTo };
+		this.waitedShell = { taskId, returnTo, suspended, scroll: this.scroll, actionIndex: this.actionIndex };
 		this.requestRender();
 		void this.transcript.load();
 		return true;
@@ -792,16 +802,23 @@ export class TaskInspector implements Component {
 	private waitedShellRecord(taskId: TaskId): TaskRecord | undefined {
 		return (this.store.ownerTasks ?? this.store.tasks).find((task) => task.ref.taskId === taskId);
 	}
-	/** Back from a waiting subagent's shell: to the subagent's chat, the list, or its detail page. */
-	private leaveWaitedShell(returnTo: "chat" | "list" | "detail"): void {
-		this.closeTranscript();
-		this.scroll = 0;
-		if (returnTo === "chat") {
-			this.openTranscript();
-		} else if (returnTo === "list") {
+	/** Back from a waiting subagent's shell to the view it was opened from, as it was left. */
+	private leaveWaitedShell(): void {
+		const back = this.waitedShell;
+		if (back === undefined) return;
+		this.waitedShell = undefined;
+		this.transcript?.dispose();
+		this.transcript = undefined;
+		this.scroll = back.scroll;
+		this.actionIndex = back.actionIndex;
+		if (back.suspended !== undefined) {
+			this.transcript = back.suspended;
+			this.navigation.focus = { kind: "detail" };
+			back.suspended.refresh();
+		} else if (back.returnTo === "list") {
 			this.navigation.focus = { kind: "tasks" };
 		} else {
-			this.detailGeneration++;
+			this.navigation.focus = { kind: "detail" };
 			void this.loadDetail();
 		}
 		this.requestRender();
@@ -880,7 +897,8 @@ export class TaskInspector implements Component {
 			stopKey ||
 			keys.matches(data, "app.list.open") ||
 			keys.matches(data, "app.list.peek") ||
-			keys.matches(data, "app.tasks.input");
+			keys.matches(data, "app.tasks.input") ||
+			keys.matches(data, "app.tasks.openWaited");
 		const armedBeforeRefresh = stopKey ? this.navigation.stopConfirm.pending() : undefined;
 		const selectedBeforeRefresh = this.navigation.selectedId;
 		const peekRow = this.peekId === undefined ? undefined : this.selectedRow();
@@ -1039,7 +1057,7 @@ export class TaskInspector implements Component {
 		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
 		if (!matchesKey(data, "escape") && keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
 			if (this.waitedShell !== undefined) {
-				this.leaveWaitedShell(this.waitedShell.returnTo);
+				this.leaveWaitedShell();
 				return true;
 			}
 			if (this.chatFrom === "caller") {
