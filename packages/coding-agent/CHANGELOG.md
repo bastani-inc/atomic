@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent released while it waits on a tool call now shows the dim `◌` waiting mark on its completion notice, as `/tasks`, the agent panel, the task footer and its launch card already show it, instead of the pause mark `⏸`. Notices saved by earlier versions show the waiting mark too. A paused or quit subagent keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+- An extension tool whose call renders a `waiting` or `heartbeat` block keeps its own title once its result arrives, instead of falling back to the tool's label ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.

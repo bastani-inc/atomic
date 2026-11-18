@@ -25,6 +25,7 @@ import {
 	renderNavHintLine,
 	TwoPressConfirm,
 } from "./nav-keys.ts";
+import { WAITING_MARKER } from "./notice-line.ts";
 import { taskDisplayText } from "./task-row.js";
 
 export type AgentPanelRow = AgentPanelItem;
@@ -306,7 +307,7 @@ function glyph(row: AgentPanelRow, style: AgentPanelStyle, frame: number | undef
 		case "stopping":
 			return style.warning("◼");
 		case "waiting":
-			return style.dim("◌");
+			return style[WAITING_MARKER.color](WAITING_MARKER.glyph);
 		case "done":
 			return style.success("✓");
 		case "failed":
