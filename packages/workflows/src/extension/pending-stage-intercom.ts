@@ -269,7 +269,7 @@ export function registerPendingStageIntercomBridge(
 		}
 	};
 	/** Retires the oldest finished invocations past the retention; one a sweep found owing a sender a notice waits. */
-	const retireOldestFinished = (noted: string): void => {
+	const retireOldestFinished = (noted?: string): void => {
 		const owingNotice = new Set<string>();
 		for (const [runId, rootRunId] of announcedRootOf) if (unsettledRunIds.has(runId)) owingNotice.add(rootRunId);
 		for (const rootRunId of finishedRoots) {
@@ -535,6 +535,8 @@ export function registerPendingStageIntercomBridge(
 				if (rootRunId !== undefined && retiredRoots.delete(rootRunId)) reopened = true;
 			}
 			if (reopened) scheduleAnnouncement();
+			// Invocations kept past the retention while they owed notices give up their routes once they owe none.
+			retireOldestFinished();
 		}
 	};
 	/**

@@ -1825,6 +1825,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     runId: string,
     route: PendingStageRouteRegistration,
   ): Promise<void> {
+    // #5492: a route retired while the main client was connecting is not registered, and opens no connection.
+    if (!samePendingStageRoute(pendingStageRoutes.get(runId), route)) return;
     if (registersOnMainClient(route)) {
       await activeClient.registerPendingStageRouteAcknowledged(
         runId,

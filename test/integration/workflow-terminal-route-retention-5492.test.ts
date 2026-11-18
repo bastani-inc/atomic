@@ -252,3 +252,123 @@ test("a session that keeps running workflows keeps a bounded number of Intercom 
 		throw new Error(`${error.message}; ${observed} connected after ${runCount} finished runs`);
 	});
 });
+
+async function connectedObserver(name: string) {
+	const observer = new IntercomClient(name);
+	observer.on("error", () => {});
+	await observer.connect({
+		name,
+		cwd: repoRoot,
+		model: "test-model",
+		pid: process.pid,
+		startedAt: Date.now(),
+		lastActivity: Date.now(),
+		group: "default",
+		groups: ["default"],
+	});
+	cleanups.push(() => observer.disconnect().catch(() => {}));
+	return {
+		sessions: async (): Promise<number> => {
+			const status = await observer.brokerStatus();
+			assert.ok(status, "the broker answers its status");
+			return status.sessions;
+		},
+	};
+}
+
+test("a route retired while the Intercom runtime is still loading is not connected once it loads (#5492)", async () => {
+	const observer = await connectedObserver("terminal-route-loading-observer");
+	const host = hostFixture("terminal-route-loading-host", "terminal-route-loading-host");
+	const importGate = Promise.withResolvers<void>();
+	intercom(host.pi as never, {
+		importHeavy: async () => {
+			await importGate.promise;
+			return import("../../packages/intercom/index-heavy.js");
+		},
+	});
+	await host.start();
+	cleanups.push(() => host.shutdown());
+	const backend = await JournalTestBackend.create();
+	setDurableBackend(backend);
+	const store = createStore();
+	configureTestStoreBackend(store, backend);
+	const bridge = registerPendingStageIntercomBridge(host.pi as never, store);
+	cleanups.push(bridge);
+	let retired = 0;
+	host.pi.events.on("atomic:workflow-pending-stage-route-retired", () => {
+		retired += 1;
+	});
+	const short = workflow({
+		name: "short-run-loading",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await ctx.tool("step", {}, async () => "done");
+			return {};
+		},
+	});
+	const jobs = createJobTracker();
+	const runtime = createExtensionRuntime({
+		store,
+		jobs,
+		toolControlRegistry: createToolControlRegistry(),
+		cwd: repoRoot,
+		registry: createRegistry([short]),
+	});
+	for (let index = 0; index < TERMINAL_INVOCATION_ROUTE_RETENTION + RUNS_PAST_RETENTION; index++) {
+		const started = await runtime.dispatch({ action: "run", workflow: short.name, inputs: {} });
+		assert.ok("runId" in started && typeof started.runId === "string", JSON.stringify(started));
+		await jobs.get(started.runId)?.promise;
+	}
+	bridge.refresh();
+	assert.equal(retired, RUNS_PAST_RETENTION, "the oldest finished invocations were retired before the runtime loaded");
+
+	importGate.resolve();
+	await bridge.flush();
+	const expected = 2 + TERMINAL_INVOCATION_ROUTE_RETENTION;
+	let observed = 0;
+	await until(`${expected} connected sessions`, async () => {
+		observed = await observer.sessions();
+		return observed === expected ? observed : undefined;
+	}).catch((error: Error) => {
+		throw new Error(`${error.message}; ${observed} connected once the runtime loaded`);
+	});
+});
+
+test("a route retired right after it was published is never connected (#5492)", async () => {
+	const observer = await connectedObserver("terminal-route-order-observer");
+	const host = hostFixture("terminal-route-order-host", "terminal-route-order-host");
+	intercom(host.pi as never);
+	await host.start();
+	cleanups.push(() => host.shutdown());
+	type Route = { runId: string; group: string; capability: string; stages: []; completion?: Promise<void> };
+	const kept: Route = {
+		runId: "kept-5492",
+		group: "workflow:kept-5492",
+		capability: "kept-5492-capability",
+		stages: [],
+	};
+	host.pi.events.emit("atomic:workflow-pending-stage-route", kept);
+	await kept.completion;
+	const retiring: Route = {
+		runId: "retired-5492",
+		group: "workflow:retired-5492",
+		capability: "retired-5492-capability",
+		stages: [],
+	};
+	host.pi.events.emit("atomic:workflow-pending-stage-route", retiring);
+	host.pi.events.emit("atomic:workflow-pending-stage-route-retired", { runId: retiring.runId, group: retiring.group });
+	await retiring.completion?.catch(() => {});
+
+	// The host's connection, the observer's and the kept route's; the retired route's never stays open.
+	let observed = 0;
+	await until("3 connected sessions", async () => {
+		observed = await observer.sessions();
+		return observed === 3 ? observed : undefined;
+	}).catch((error: Error) => {
+		throw new Error(`${error.message}; ${observed} connected`);
+	});
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+	assert.equal(await observer.sessions(), 3, "a connection opened for the retired route after it was retired");
+});
