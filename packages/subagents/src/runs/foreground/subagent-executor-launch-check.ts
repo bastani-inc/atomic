@@ -60,6 +60,7 @@ export async function launchSetupError(
 		ctxCwd: ctx.cwd,
 		worktreeSetup: undefined,
 		// A task in a worktree writes a relative output inside it, which only the run that makes the worktree knows.
-		checkDuplicates: launch.worktree === undefined && tasks.every((task) => task.worktree === undefined),
+		// `worktree: false` asks for none, as leaving it out does.
+		checkDuplicates: !launch.worktree && tasks.every((task) => !task.worktree),
 	});
 }

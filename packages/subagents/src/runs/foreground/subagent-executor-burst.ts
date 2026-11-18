@@ -71,9 +71,15 @@ const SHARED_FIELDS: readonly SharedField[] = [
 	"agentScope",
 ];
 
-/** A named worktree belongs to its call's own children (#5202); only `worktree: true` is shared by the burst. */
+/** Shared fields that are off unless set to `true`: `false` and leaving them out ask for the same. */
+const OFF_UNLESS_TRUE: ReadonlySet<SharedField> = new Set(["worktree", "share", "includeProgress"]);
+
+/**
+ * The value a call gives a field its burst shares. A named worktree belongs to its call's own children (#5202); only
+ * `worktree: true` is shared by the burst.
+ */
 function sharedValue(params: SubagentParamsLike, field: SharedField): SubagentParamsLike[SharedField] {
-	return field === "worktree" && namedWorktree(params) ? undefined : params[field];
+	return OFF_UNLESS_TRUE.has(field) ? (params[field] === true ? true : undefined) : params[field];
 }
 
 /** The named worktree a call's top level gives each of its children without one of their own. */

@@ -479,3 +479,53 @@ test.each([false, true])(
 		assert.doesNotMatch(rendered, /Stopped/);
 	},
 );
+
+test.each([undefined, false] as const)(
+	"duplicate outputs fail only their own call with worktree: %s, and a valid sibling launches once (#3427)",
+	async (worktree) => {
+		const launched: string[] = [];
+		const { call } = harness(async (_cwd, _agents, _agent, task) => {
+			launched.push(task);
+			return childResult(task);
+		});
+		const badArgs: SubagentParamsLike = {
+			worktree,
+			tasks: [
+				{ agent: "echo", task: "bad-1", output: "same.md" },
+				{ agent: "echo", task: "bad-2", output: "same.md" },
+			],
+		};
+		const alone = await call(`duplicate-alone-${worktree}`, badArgs);
+		assert.equal(alone.isError, true);
+		assert.match(text(alone), /resolve output to the same path/);
+		const [bad, good] = await Promise.all([
+			call(`duplicate-bad-${worktree}`, badArgs),
+			call(`duplicate-good-${worktree}`, { agent: "echo", task: "good", worktree }),
+		]);
+		assert.equal(bad.isError, true);
+		assert.match(text(bad), /resolve output to the same path/);
+		assert.notEqual(good.isError, true, "a valid sibling does not inherit a call's own duplicate-output error");
+		assert.match(await settledOutput(call, single(good).observation.taskId), /output:good/);
+		assert.deepEqual(launched, ["good"]);
+	},
+);
+
+test.each(["worktree", "share", "includeProgress"] as const)(
+	"sibling calls launch together when one sets %s to false and the other leaves it out (#3427)",
+	async (field) => {
+		const launched: string[] = [];
+		const { call } = harness(async (_cwd, _agents, _agent, task) => {
+			launched.push(task);
+			return childResult(task);
+		});
+		const [explicit, omitted] = await Promise.all([
+			call(`false-${field}`, { agent: "echo", task: "explicit", [field]: false }),
+			call(`omitted-${field}`, { agent: "echo", task: "omitted" }),
+		]);
+		assert.notEqual(explicit.isError, true, text(explicit));
+		assert.notEqual(omitted.isError, true, text(omitted));
+		assert.match(await settledOutput(call, single(explicit).observation.taskId), /output:explicit/);
+		assert.match(await settledOutput(call, single(omitted).observation.taskId), /output:omitted/);
+		assert.deepEqual(launched.sort(), ["explicit", "omitted"]);
+	},
+);
