@@ -456,6 +456,8 @@ TRANSACTION_ID=$$.$TEMP_ATTEMPT
 ARCHIVE_PATH=$TEMP_DIR/$ASSET_NAME
 CHECKSUM_PATH=$TEMP_DIR/$CHECKSUM_FILE
 API_AUTH_PATH=$TEMP_DIR/github-api-auth
+API_BODY_PATH=$TEMP_DIR/github-api-body
+API_HEADERS_PATH=$TEMP_DIR/github-api-headers
 EXTRACT_ROOT=$TEMP_DIR/extract
 PAYLOAD_ROOT=
 VERSION_PATH=
@@ -669,21 +671,113 @@ clear_api_auth() {
     unset TOKEN
 }
 
-http_get() {
-    http_url=$1
+# The status code of the last HTTP response line in a header dump (curl -D, wget -S);
+# BusyBox wget reports errors as "server returned error: HTTP/1.1 404 Not Found".
+last_http_status() {
+    last_status=
+    while IFS= read -r status_line || [ -n "$status_line" ]; do
+        case $status_line in
+            *HTTP/*)
+                status_rest=${status_line##*HTTP/}
+                status_rest=${status_rest#* }
+                last_status=${status_rest%% *}
+                last_status=${last_status%"$CARRIAGE_RETURN"}
+                ;;
+        esac
+    done < "$1"
+    case $last_status in
+        [123456789][0123456789][0123456789]) printf '%s' "$last_status" ;;
+        *) printf '000' ;;
+    esac
+}
+
+file_text() {
+    file_text_value=
+    while IFS= read -r file_line || [ -n "$file_line" ]; do
+        file_text_value=$file_text_value$file_line$NEWLINE
+    done < "$1"
+    printf '%s' "$file_text_value"
+}
+
+# Whether a rate-limited GitHub API response says so: GitHub answers 403 (or 429)
+# with `x-ratelimit-remaining: 0` or a message naming the rate limit.
+api_response_is_rate_limited() {
+    case $API_STATUS in
+        429) return 0 ;;
+        403) ;;
+        *) return 1 ;;
+    esac
+    if [ -f "$API_HEADERS_PATH" ]; then
+        while IFS= read -r header_line || [ -n "$header_line" ]; do
+            header_line=${header_line#"${header_line%%[! ]*}"}
+            header_line=${header_line%"$CARRIAGE_RETURN"}
+            case $header_line in
+                [Xx]-[Rr][Aa][Tt][Ee][Ll][Ii][Mm][Ii][Tt]-[Rr][Ee][Mm][Aa][Ii][Nn][Ii][Nn][Gg]:*)
+                    remaining=${header_line#*:}
+                    remaining=${remaining# }
+                    [ "$remaining" = 0 ] && return 0
+                    ;;
+            esac
+        done < "$API_HEADERS_PATH"
+    fi
+    [ -f "$API_BODY_PATH" ] || return 1
+    case $(file_text "$API_BODY_PATH") in
+        *'rate limit'*|*'Rate limit'*|*'RATE LIMIT'*) return 0 ;;
+    esac
+    return 1
+}
+
+# GET a GitHub API URL: the body goes to API_BODY_PATH, the headers to API_HEADERS_PATH,
+# and API_STATUS is the HTTP status (000 when no response arrived).
+api_request() {
+    api_url=$1
+    rm -f "$API_BODY_PATH" "$API_HEADERS_PATH"
+    : > "$API_HEADERS_PATH"
     if [ "$DOWNLOADER" = curl ]; then
         if [ -n "$TOKEN" ]; then
-            curl -fsSL -H 'Accept: application/vnd.github+json' -H "@$API_AUTH_PATH" "$http_url"
+            API_STATUS=$(curl -sL -D "$API_HEADERS_PATH" -o "$API_BODY_PATH" -w '%{http_code}' \
+                -H 'Accept: application/vnd.github+json' -H "@$API_AUTH_PATH" "$api_url" 2>/dev/null) || :
         else
-            curl -fsSL -H 'Accept: application/vnd.github+json' "$http_url"
+            API_STATUS=$(curl -sL -D "$API_HEADERS_PATH" -o "$API_BODY_PATH" -w '%{http_code}' \
+                -H 'Accept: application/vnd.github+json' "$api_url" 2>/dev/null) || :
         fi
+        case $API_STATUS in
+            [123456789][0123456789][0123456789]) ;;
+            *) API_STATUS=000 ;;
+        esac
     else
         if [ -n "$TOKEN" ]; then
-            WGETRC="$API_AUTH_PATH" wget -q -O - --header='Accept: application/vnd.github+json' "$http_url"
+            WGETRC="$API_AUTH_PATH" wget -q -S -O "$API_BODY_PATH" --header='Accept: application/vnd.github+json' \
+                "$api_url" 2>"$API_HEADERS_PATH" || :
         else
-            wget -q -O - --header='Accept: application/vnd.github+json' "$http_url"
+            wget -q -S -O "$API_BODY_PATH" --header='Accept: application/vnd.github+json' \
+                "$api_url" 2>"$API_HEADERS_PATH" || :
         fi
+        API_STATUS=$(last_http_status "$API_HEADERS_PATH")
     fi
+}
+
+# Whether the release page for an encoded tag exists on github.com: prints found,
+# missing, or unknown when github.com gave no clear answer. github.com is not subject
+# to the REST API's 60-requests-an-hour limit for unauthenticated clients.
+release_page_status() {
+    release_page_url=$GITHUB_WEB/$REPOSITORY/releases/tag/$1
+    if [ "$DOWNLOADER" = curl ]; then
+        release_page_code=$(curl -sL -o /dev/null -w '%{http_code}' "$release_page_url" 2>/dev/null) || :
+    else
+        release_page_headers=$TEMP_DIR/release-page-headers
+        if wget -S --spider "$release_page_url" > /dev/null 2>"$release_page_headers"; then
+            release_page_code=200
+        else
+            release_page_code=$(last_http_status "$release_page_headers")
+        fi
+        rm -f "$release_page_headers"
+    fi
+    case $release_page_code in
+        200) printf 'found' ;;
+        404) printf 'missing' ;;
+        *) printf 'unknown' ;;
+    esac
 }
 
 download_file() {
@@ -1123,7 +1217,13 @@ if [ -n "$REQUESTED_REF" ]; then
     is_atomic_release_tag "$REQUESTED_REF" ||
         fail "unsupported release tag: expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION"
     REQUESTED_REF_ENCODED=$(percent_encode "$REQUESTED_REF")
-    API_URL=$TAGS_API/$REQUESTED_REF_ENCODED
+    # An exact tag is confirmed on github.com; the REST API, limited to 60 requests an
+    # hour per address without a token, is asked only when github.com cannot tell.
+    case $(release_page_status "$REQUESTED_REF_ENCODED") in
+        found) RELEASE_TAG=$REQUESTED_REF ;;
+        missing) fail "release $REQUESTED_REF not found" ;;
+        *) API_URL=$TAGS_API/$REQUESTED_REF_ENCODED ;;
+    esac
 else
     REDIRECT_TAG=
     if REDIRECT_TAG=$(resolve_redirect_tag); then
@@ -1137,9 +1237,29 @@ fi
 
 if [ -z "$RELEASE_TAG" ]; then
     prepare_api_auth
-    if ! RELEASE_JSON=$(http_get "$API_URL"); then
-        fail "failed to resolve the GitHub release"
-    fi
+    api_request "$API_URL"
+    case $API_STATUS in
+        200) RELEASE_JSON=$(file_text "$API_BODY_PATH") ;;
+        404)
+            if [ -n "$REQUESTED_REF" ]; then
+                fail "release $REQUESTED_REF not found"
+            fi
+            fail "failed to resolve the GitHub release: no published release found"
+            ;;
+        *)
+            if api_response_is_rate_limited; then
+                if [ -n "$TOKEN" ]; then
+                    fail "failed to resolve the GitHub release: GitHub's API rate limit was reached for this token; try again later"
+                fi
+                fail "failed to resolve the GitHub release: GitHub's API rate limit was reached for this network. Set GITHUB_TOKEN (for example GITHUB_TOKEN=\$(gh auth token)) or try again later"
+            fi
+            if [ "$API_STATUS" = 000 ]; then
+                fail "failed to resolve the GitHub release: no response from the GitHub API"
+            fi
+            fail "failed to resolve the GitHub release (HTTP $API_STATUS)"
+            ;;
+    esac
+    rm -f "$API_BODY_PATH" "$API_HEADERS_PATH"
     if ! RELEASE_TAG=$(parse_release_tag "$RELEASE_JSON"); then
         fail "GitHub release response did not contain a valid tag_name"
     fi

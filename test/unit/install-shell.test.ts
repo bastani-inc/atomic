@@ -341,16 +341,83 @@ function shellExpansion(expression: string): string {
 const overrideReleaseBase = "http://127.0.0.1:1/fake-releases";
 const overrideReleaseBaseQuoted = overrideReleaseBase.replaceAll(".", "\\.").replaceAll("/", "\\/");
 
+/**
+ * A shell function the fixture downloaders answer GitHub web and API requests with: `respond <status> <body>`
+ * writes the status, headers and body the way the real downloader would, so the installer's status handling runs.
+ * `ATOMIC_FIXTURE_API_STATUS` makes the API answer 403 (rate limited) or 404; `ATOMIC_FIXTURE_WEB_FAIL=1` makes the
+ * github.com release page unreachable.
+ */
+function fixtureResponder(downloader: "curl" | "wget"): string[] {
+	const headers = [
+		`[ "$1" = 403 ] && [ "${shellExpansion("ATOMIC_FIXTURE_API_STATUS:-")}" = 403 ] && printf 'x-ratelimit-remaining: 0\\r\\n'`,
+	];
+	if (downloader === "curl")
+		return [
+			"respond() {",
+			'    if [ -n "$header_out" ]; then { printf \'HTTP/2 %s\\r\\n\' "$1"; ' + headers[0] + '; } > "$header_out"; fi',
+			'    case $1 in 2*) ;; *) if [ "$fail_mode" = 1 ]; then case $write_out in *http_code*) printf \'%s\' "$1" ;; esac; exit 22; fi ;; esac',
+			'    if [ -n "$output" ]; then printf \'%s\' "$2" > "$output"; else printf \'%s\' "$2"; fi',
+			'    case $write_out in *http_code*) printf \'%s\' "$1" ;; esac',
+			"    exit 0",
+			"}",
+		];
+	return [
+		"respond() {",
+		'    if [ "$server_response" = 1 ] || [ "$spider" = 1 ]; then { printf \'  HTTP/1.1 %s\\n\' "$1"; ' + headers[0] + '; } >&2; fi',
+		"    case $1 in 2*) ;; *) exit 8 ;; esac",
+		'    [ "$spider" = 1 ] && exit 0',
+		'    if [ -n "$output" ] && [ "$output" != - ]; then printf \'%s\' "$2" > "$output"; else printf \'%s\' "$2"; fi',
+		"    exit 0",
+		"}",
+	];
+}
+
+/** The GitHub release page and REST API routes of the fixture downloaders. */
+function fixtureGithubRoutes(downloader: "curl" | "wget"): string[] {
+	const networkFailure = downloader === "curl" ? 'case $write_out in *http_code*) printf 000 ;; esac; exit 6' : "exit 4";
+	const apiFailure = downloader === "curl" ? "exit 22" : "exit 1";
+	const apiStatus = [
+		`        case "${shellExpansion("ATOMIC_FIXTURE_API_STATUS:-")}" in`,
+		"            403) respond 403 '{\"message\":\"API rate limit exceeded for 203.0.113.7. (But here\\u0027s the good news: Authenticated requests get a higher rate limit.)\"}' ;;",
+		"            404) respond 404 '{\"message\":\"Not Found\"}' ;;",
+		"        esac",
+	];
+	return [
+		"    https://github.com/bastani-inc/atomic/releases/tag/*)",
+		`        [ "${shellExpansion("ATOMIC_FIXTURE_WEB_FAIL:-0")}" = 1 ] && { ${networkFailure}; }`,
+		`        tag=${shellExpansion("url##*/")}`,
+		'        if [ -d "$ATOMIC_FIXTURE_RELEASES/$tag" ]; then respond 200 \'<html></html>\'; else respond 404 \'Not Found\'; fi',
+		"        ;;",
+		"    https://api.github.com/repos/bastani-inc/atomic/releases/latest)",
+		`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && ${apiFailure}`,
+		...apiStatus,
+		`        respond 200 "$(printf '{"tag_name":"%s"}' "$ATOMIC_FIXTURE_LATEST_TAG")"`,
+		"        ;;",
+		"    https://api.github.com/repos/bastani-inc/atomic/releases/tags/*)",
+		`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && ${apiFailure}`,
+		...apiStatus,
+		`        tag=${shellExpansion("url##*/")}`,
+		`        respond 200 "$(printf '{"tag_name":"%s"}' "${shellExpansion("ATOMIC_FIXTURE_TAGS_TAG:-$tag")}")"`,
+		"        ;;",
+	];
+}
+
 const curlWrapper = [
 	"#!/bin/sh",
 	"output=",
 	"head=0",
 	"url=",
+	"write_out=",
+	"header_out=",
+	"fail_mode=0",
 	'for argument in "$@"; do printf \'ARGV %s\\n\' "$argument" >> "$ATOMIC_FIXTURE_LOG"; done',
+	...fixtureResponder("curl"),
 	'while [ "$#" -gt 0 ]; do',
+	"    case $1 in --*) ;; -*f*) fail_mode=1 ;; esac",
 	"    case $1 in",
 	"        -o) shift; output=$1 ;;",
-	"        -w) shift ;;",
+	"        -w) shift; write_out=$1 ;;",
+	"        -D) shift; header_out=$1 ;;",
 	`        -H) shift; header=$1; case $header in @*) header_file=${shellExpansion("header#@")}; mode=$($ATOMIC_FIXTURE_REAL_STAT -c '%a' "$header_file" 2>/dev/null || $ATOMIC_FIXTURE_REAL_STAT -f '%Lp' "$header_file"); printf 'AUTH_MODE %s\\n' "$mode" >> "$ATOMIC_FIXTURE_LOG"; while IFS= read -r header_line || [ -n "$header_line" ]; do printf 'HEADER %s\\n' "$header_line" >> "$ATOMIC_FIXTURE_LOG"; done < "$header_file" ;; *) printf 'HEADER %s\\n' "$header" >> "$ATOMIC_FIXTURE_LOG" ;; esac ;;`,
 	"        -*I*) head=1 ;;",
 	"        -*) ;;",
@@ -364,15 +431,7 @@ const curlWrapper = [
 	`        [ "${shellExpansion("ATOMIC_FIXTURE_REDIRECT_FAIL:-0")}" = 1 ] && exit 22`,
 	`        printf 'https://github.com/bastani-inc/atomic/releases/tag/%s' "$ATOMIC_FIXTURE_LATEST_TAG"`,
 	"        ;;",
-	"    https://api.github.com/repos/bastani-inc/atomic/releases/latest)",
-	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 22`,
-	`        printf '{"tag_name":"%s"}\\n' "$ATOMIC_FIXTURE_LATEST_TAG"`,
-	"        ;;",
-	"    https://api.github.com/repos/bastani-inc/atomic/releases/tags/*)",
-	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 22`,
-	`        tag=${shellExpansion("url##*/")}`,
-	`        printf '{"tag_name":"%s"}\\n' "${shellExpansion("ATOMIC_FIXTURE_TAGS_TAG:-$tag")}"`,
-	"        ;;",
+	...fixtureGithubRoutes("curl"),
 	`    https://github.com/bastani-inc/atomic/releases/download/*/*|${overrideReleaseBase}/*/*)`,
 	`        name=${shellExpansion("url##*/")}`,
 	`        rest=${shellExpansion("url%/*")}`,
@@ -402,8 +461,10 @@ const wgetWrapper = [
 	"#!/bin/sh",
 	"output=",
 	"spider=0",
+	"server_response=0",
 	"url=",
 	'for argument in "$@"; do printf \'ARGV %s\\n\' "$argument" >> "$ATOMIC_FIXTURE_LOG"; done',
+	...fixtureResponder("wget"),
 	`if [ "${shellExpansion("1:-")}" = --version ]; then`,
 	`    case "${shellExpansion("ATOMIC_FIXTURE_WGET_KIND:-gnu")}" in`,
 	"        gnu) printf '%s\\n' 'GNU Wget 1.21.3'; exit 0 ;;",
@@ -419,6 +480,8 @@ const wgetWrapper = [
 	"    case $1 in",
 	"        -O) shift; output=$1 ;;",
 	"        --spider) spider=1 ;;",
+	"        -S) server_response=1 ;;",
+	"        -q) ;;",
 	`        --header=*) printf 'HEADER %s\\n' "${shellExpansion("1#--header=")}" >> "$ATOMIC_FIXTURE_LOG" ;;`,
 	"        -*) ;;",
 	"        *) url=$1 ;;",
@@ -432,15 +495,7 @@ const wgetWrapper = [
 	`        [ "${shellExpansion("ATOMIC_FIXTURE_REDIRECT_FAIL:-0")}" = 1 ] && exit 1`,
 	`        printf '  Location: https://github.com/bastani-inc/atomic/releases/tag/%s [following]\\n' "$ATOMIC_FIXTURE_LATEST_TAG" >&2`,
 	"        ;;",
-	"    https://api.github.com/repos/bastani-inc/atomic/releases/latest)",
-	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 1`,
-	`        printf '{"tag_name":"%s"}\\n' "$ATOMIC_FIXTURE_LATEST_TAG"`,
-	"        ;;",
-	"    https://api.github.com/repos/bastani-inc/atomic/releases/tags/*)",
-	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 1`,
-	`        tag=${shellExpansion("url##*/")}`,
-	`        printf '{"tag_name":"%s"}\\n' "${shellExpansion("ATOMIC_FIXTURE_TAGS_TAG:-$tag")}"`,
-	"        ;;",
+	...fixtureGithubRoutes("wget"),
 	`    https://github.com/bastani-inc/atomic/releases/download/*/*|${overrideReleaseBase}/*/*)`,
 	`        name=${shellExpansion("url##*/")}`,
 	`        rest=${shellExpansion("url%/*")}`,
@@ -869,10 +924,7 @@ unixTest(
 			assert.equal(readlinkSync(join(fixture.binDir, "atomic")), launcherTarget);
 			assert.equal(readlinkSync(join(fixture.installRoot, "current")), currentTarget);
 			const requests = requestsSince(fixture, offset);
-			assert.match(
-				requests,
-				/GET https:\/\/api\.github\.com\/repos\/bastani-inc\/atomic\/releases\/tags\/1\.0\.0\n/u,
-			);
+			assert.match(requests, /(GET|HEAD) https:\/\/github\.com\/bastani-inc\/atomic\/releases\/tag\/1\.0\.0\n/u);
 			assertNoArtifactRequests(requests);
 
 			const upgrade = fixture.run({ args: ["--ref", "2.0.0"], environment: { SHELL: "/usr/local/bin/fish" } });
@@ -1365,7 +1417,7 @@ unixTest("ATOMIC_RELEASE_BASE_URL redirects only the asset and checksum download
 		assertSuccess(result);
 		assert.equal(currentVersion(fixture), "1.0.0");
 		const requests = readFileSync(fixture.requestLog, "utf8");
-		assert.match(requests, /GET https:\/\/api\.github\.com\/repos\/bastani-inc\/atomic\/releases\/tags\/1\.0\.0\n/u);
+		assert.match(requests, /GET https:\/\/github\.com\/bastani-inc\/atomic\/releases\/tag\/1\.0\.0\n/u);
 		assert.match(
 			requests,
 			new RegExp(`HEAD ${overrideReleaseBaseQuoted}\\/1\\.0\\.0\\/atomic-linux-x64\\.tar\\.gz\n`, "u"),
@@ -1420,7 +1472,12 @@ unixTest("shell installer supports curl and wget fallback, API fallback, every r
 	for (const args of [["--ref", "1.0.0"], ["--ref=1.0.0"], ["-r", "1.0.0"]]) {
 		const fixture = createFixture();
 		try {
-			assertSuccess(fixture.run({ args, environment: { ATOMIC_VERSION: "2.0.0", GH_TOKEN: "gh-token" } }));
+			assertSuccess(
+				fixture.run({
+					args,
+					environment: { ATOMIC_VERSION: "2.0.0", GH_TOKEN: "gh-token", ATOMIC_FIXTURE_WEB_FAIL: "1" },
+				}),
+			);
 			assert.equal(currentVersion(fixture), "1.0.0");
 			const requests = readFileSync(fixture.requestLog, "utf8");
 			assert.match(requests, /releases\/tags\/1\.0\.0/u);
@@ -1639,12 +1696,117 @@ unixTest("shell installer accepts only Atomic stable and alpha release tag gramm
 	}
 });
 
+unixTest("shell installer installs an exact tag through github.com while the GitHub API is rate limited", () => {
+	for (const downloader of ["curl", "wget"] as const) {
+		for (const tokenEnvironment of [{}, { GITHUB_TOKEN: "github-token" }]) {
+			const fixture = createFixture();
+			try {
+				const result = fixture.run({
+					downloader,
+					environment: { ATOMIC_VERSION: "1.0.0", ATOMIC_FIXTURE_API_STATUS: "403", ...tokenEnvironment },
+				});
+				assertSuccess(result);
+				assert.equal(currentVersion(fixture), "1.0.0");
+				const requests = readFileSync(fixture.requestLog, "utf8");
+				assert.match(requests, /(GET|HEAD) https:\/\/github\.com\/bastani-inc\/atomic\/releases\/tag\/1\.0\.0/u);
+				assert.doesNotMatch(requests, /api\.github\.com|Authorization|AUTH_MODE/u);
+				assert.match(requests, /releases\/download\/1\.0\.0\/SHA256SUMS/u);
+				assertNoTemporaryState(fixture);
+			} finally {
+				fixture.cleanup();
+			}
+		}
+	}
+});
+
+unixTest("shell installer reports a missing exact tag as not found without asking the API", () => {
+	for (const downloader of ["curl", "wget"] as const) {
+		const fixture = createFixture();
+		try {
+			const result = fixture.run({ downloader, args: ["--ref", "9.9.9"] });
+			assert.notEqual(result.exitCode, 0);
+			assert.match(output(result), /release 9\.9\.9 not found/u);
+			const requests = readFileSync(fixture.requestLog, "utf8");
+			assert.doesNotMatch(requests, /api\.github\.com|releases\/download\//u);
+			assert.ok(!existsSync(fixture.installRoot));
+			assertNoTemporaryState(fixture);
+		} finally {
+			fixture.cleanup();
+		}
+	}
+});
+
+unixTest("shell installer explains a GitHub API rate limit and names GITHUB_TOKEN", () => {
+	for (const downloader of ["curl", "wget"] as const) {
+		for (const environment of [
+			{ ATOMIC_FIXTURE_REDIRECT_FAIL: "1" },
+			{ ATOMIC_VERSION: "1.0.0", ATOMIC_FIXTURE_WEB_FAIL: "1" },
+		]) {
+			const fixture = createFixture();
+			try {
+				const result = fixture.run({
+					downloader,
+					environment: { ...environment, ATOMIC_FIXTURE_API_STATUS: "403" },
+				});
+				assert.notEqual(result.exitCode, 0);
+				const text = output(result);
+				assert.match(text, /GitHub's API rate limit was reached for this network/u);
+				assert.match(text, /GITHUB_TOKEN=\$\(gh auth token\)/u);
+				assertNoTemporaryState(fixture);
+			} finally {
+				fixture.cleanup();
+			}
+
+			const tokenFixture = createFixture();
+			try {
+				const result = tokenFixture.run({
+					downloader,
+					environment: { ...environment, ATOMIC_FIXTURE_API_STATUS: "403", GH_TOKEN: "gh-secret-token" },
+				});
+				assert.notEqual(result.exitCode, 0);
+				const text = output(result);
+				assert.match(text, /GitHub's API rate limit was reached for this token/u);
+				assert.doesNotMatch(text, /gh-secret-token/u);
+				assert.doesNotMatch(downloaderArgv(readFileSync(tokenFixture.requestLog, "utf8")), /gh-secret-token/u);
+				assertNoTemporaryState(tokenFixture);
+			} finally {
+				tokenFixture.cleanup();
+			}
+		}
+	}
+
+	const missing = createFixture();
+	try {
+		const result = missing.run({
+			args: ["--ref", "1.0.0"],
+			environment: { ATOMIC_FIXTURE_WEB_FAIL: "1", ATOMIC_FIXTURE_API_STATUS: "404" },
+		});
+		assert.notEqual(result.exitCode, 0);
+		assert.match(output(result), /release 1\.0\.0 not found/u);
+	} finally {
+		missing.cleanup();
+	}
+});
+
+unixTest("shell installer still resolves the latest release through the github.com redirect", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ environment: { ATOMIC_FIXTURE_API_STATUS: "403" } }));
+		assert.equal(currentVersion(fixture), "2.0.0");
+		const requests = readFileSync(fixture.requestLog, "utf8");
+		assert.match(requests, /GET https:\/\/github\.com\/bastani-inc\/atomic\/releases\/latest/u);
+		assert.doesNotMatch(requests, /api\.github\.com|releases\/tag\//u);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
 unixTest("shell installer fails closed when the exact-tag API response names a different release", () => {
 	const fixture = createFixture();
 	try {
 		const result = fixture.run({
 			args: ["--ref", "1.0.0"],
-			environment: { ATOMIC_FIXTURE_TAGS_TAG: "2.0.0" },
+			environment: { ATOMIC_FIXTURE_TAGS_TAG: "2.0.0", ATOMIC_FIXTURE_WEB_FAIL: "1" },
 		});
 		assert.notEqual(result.exitCode, 0);
 		assert.match(output(result), /returned release 2\.0\.0 for requested tag 1\.0\.0/u);
@@ -2394,7 +2556,7 @@ unixTest("shell installer restricts owner-only modes to temporary state and inst
 			tokenFixture.run({
 				args: ["--ref", "1.0.0"],
 				umask: "022",
-				environment: { ATOMIC_FIXTURE_REDIRECT_FAIL: "1", GITHUB_TOKEN: "github-token" },
+				environment: { ATOMIC_FIXTURE_WEB_FAIL: "1", GITHUB_TOKEN: "github-token" },
 			}),
 		);
 		assert.match(readFileSync(tokenFixture.requestLog, "utf8"), /AUTH_MODE 600/u);
