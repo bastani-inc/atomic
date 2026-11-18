@@ -64,9 +64,10 @@ test.each(cases)(
 	STDIN_HANDOFF_TIMEOUT_MS,
 );
 
-/** `cmd /s /c` drops the first and last quote of its command, so a line of quoted arguments is quoted once more. */
-function windowsShellLine(line: string): string {
-	return process.platform === "win32" ? `"${line}"` : line;
+/** The PTY passes its command to the shell as one argument, whose quoting `cmd` does not undo: no part may need any. */
+function unquotedCommandLine(parts: readonly string[]): string {
+	for (const part of parts) assert.doesNotMatch(part, /["\s%^&|<>]/, `an argument that needs quoting: ${part}`);
+	return parts.join(" ");
 }
 
 const terminalCases = (["bun", "node"] as const).flatMap((runtime) =>
@@ -80,9 +81,7 @@ test.each(terminalCases)(
 		const command = runtime === "node" ? [process.execPath, await bundledNodeFixture()] : [bunExecutable(), FIXTURE];
 		let screen = "";
 		const child = startPty({
-			command: windowsShellLine(
-				[...command, dir, "terminal", String(input.length)].map((part) => `"${part}"`).join(" "),
-			),
+			command: unquotedCommandLine([...command, dir, "terminal", String(input.length)]),
 			cwd: dir,
 			env: { ...process.env } as Record<string, string>,
 			timeoutMs: STDIN_HANDOFF_TIMEOUT_MS / 2,
