@@ -1123,6 +1123,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	): void {
 		const action = result.whenSingleClick;
 		if (action === undefined || clickCount !== 1 || start === undefined) return;
+		// A dialog that takes focus before the click settles takes the click away from what is behind it.
+		const modal = this.getModalOverlay();
 		const waiting = {
 			start,
 			timer: setTimeout(
@@ -1130,6 +1132,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					const index = this.waitingSingleClicks.indexOf(waiting);
 					if (index === -1) return;
 					this.waitingSingleClicks.splice(index, 1);
+					if (this.getModalOverlay() !== modal) return;
 					action();
 					this.requestRender();
 				},
