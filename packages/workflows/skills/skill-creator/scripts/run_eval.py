@@ -90,33 +90,27 @@ def run_single_query(
             env=env,
         )
 
-        triggered = False
-        start_time = time.time()
-        buffer = ""
-        # Track state for stream event detection
-        pending_tool_name = None
-        accumulated_json = ""
+        deadline = time.monotonic() + timeout
 
-        try:
-            while time.time() - start_time < timeout:
-                if process.poll() is not None:
-                    remaining = process.stdout.read()
-                    if remaining:
-                        buffer += remaining.decode("utf-8", errors="replace")
-                    break
-
-                ready, _, _ = select.select([process.stdout], [], [], 1.0)
-                if not ready:
+        def read_trigger():
+            triggered = False
+            buffer = b""
+            pending_tool_name = None
+            accumulated_json = ""
+            while (remaining_time := deadline - time.monotonic()) > 0:
+                ready, _, _ = select.select([process.stdout], [], [], remaining_time)
+                if not ready or time.monotonic() >= deadline:
                     continue
 
                 chunk = os.read(process.stdout.fileno(), 8192)
-                if not chunk:
+                if not chunk and not buffer:
                     break
-                buffer += chunk.decode("utf-8", errors="replace")
+                # EOF completes the last line even if the producer omitted its newline.
+                buffer += chunk or b"\n"
 
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    line = line.decode("utf-8", errors="replace").strip()
                     if not line:
                         continue
 
@@ -169,13 +163,18 @@ def run_single_query(
 
                     elif event.get("type") == "result":
                         return triggered
+            return False
+
+        try:
+            triggered = read_trigger()
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out after {timeout}s waiting for a skill trigger")
+            return triggered
         finally:
             # Clean up process on any exit path (return, exception, timeout)
             if process.poll() is None:
                 process.kill()
                 process.wait()
-
-        return triggered
     finally:
         if command_file.exists():
             command_file.unlink()

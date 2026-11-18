@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -136,6 +136,70 @@ describe.skipIf(process.platform === "win32")("bundled tmux skill helper scripts
 		assert.equal(late.exitCode, 1);
 		assert.match(late.stderr, /^Timed out after 01s waiting for pattern: ready$/mu);
 		assert.doesNotMatch(late.stderr, /unbound variable|value too great/u);
+	});
+
+	test("wait-for-text times out when a pending capture delivers a late marker (#5566)", () => {
+		const socketDir = mkdtempSync("/tmp/ats-");
+		socketDirs.push(socketDir);
+		const socket = join(socketDir, "server");
+		const realTmux = spawnSyncCollect(["bash", "-c", "command -v tmux"]).stdout.toString().trim();
+		const tmux = (...args: string[]) => spawnSyncCollect([realTmux, "-S", socket, ...args]);
+		try {
+			if (realTmux) {
+				const pane = tmux(
+					"-f",
+					"/dev/null",
+					"new-session",
+					"-d",
+					"-s",
+					"probe",
+					"tmux wait-for release; printf 'late-marker\\n'; tmux wait-for -S printed; exec cat",
+				);
+				assert.equal(pane.exitCode, 0, pane.stderr.toString());
+			}
+			// The producer cannot print until two seconds into the first capture. On hosts without
+			// tmux the stand-in delivers the same marker, still through the real wait script.
+			writeFileSync(
+				join(stubBin, "tmux"),
+				`#!/usr/bin/env bash
+sleep 2
+if [[ -z "$REAL_TMUX" ]]; then echo late-marker; exit 0; fi
+"$REAL_TMUX" -S "$SOCKET" wait-for -S release
+"$REAL_TMUX" -S "$SOCKET" wait-for printed
+exec "$REAL_TMUX" -S "$SOCKET" "$@"
+`,
+			);
+			const result = run("wait-for-text.sh", ["-t", "probe:0.0", "-p", "late-marker", "-T", "1"], {
+				REAL_TMUX: realTmux,
+				SOCKET: socket,
+			});
+			assert.equal(result.exitCode, 1, result.stderr);
+			assert.match(result.stderr, /^Timed out after 1s waiting for pattern: late-marker$/mu);
+		} finally {
+			if (realTmux) tmux("kill-server");
+		}
+	});
+
+	test("wait-for-text does not capture even a matching pane with a zero timeout (#5566)", () => {
+		writeFileSync(join(stubBin, "tmux"), '#!/usr/bin/env bash\ntouch "$HOME/probed"\necho ready\n');
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "0"]);
+		assert.equal(result.exitCode, 1);
+		assert.match(result.stderr, /Timed out after 0s/u);
+		assert.equal(existsSync(join(dir, "probed")), false);
+	});
+
+	test("wait-for-text times out with the last capture when the next one stalls (#5566)", () => {
+		writeFileSync(
+			join(stubBin, "tmux"),
+			`#!/usr/bin/env bash
+if [[ -f "$HOME/probed" ]]; then exec sleep 60; fi
+touch "$HOME/probed"
+echo working
+`,
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "1", "-i", "0.01"]);
+		assert.equal(result.exitCode, 1);
+		assert.match(result.stderr, /Timed out after 1s[\s\S]*Last 1000 lines from s:\nworking/u);
 	});
 
 	test("wait-for-text never counts a failed pane capture as a match", () => {

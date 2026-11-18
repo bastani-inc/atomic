@@ -5,7 +5,8 @@ usage() {
   cat <<'USAGE'
 Usage: wait-for-text.sh -t target -p pattern [options]
 
-Poll a tmux pane for text and exit when found.
+Poll a tmux pane for text and exit when found before the deadline. A zero
+second timeout does not inspect the pane.
 
 The search includes echoed input and scrollback. For command completion, use a
 unique marker whose full text does not appear in the command sent to tmux.
@@ -70,31 +71,76 @@ if ! command -v tmux >/dev/null 2>&1; then
   exit 1
 fi
 
-# End time in epoch seconds (integer, good enough for polling)
-start_epoch=$(date +%s)
-deadline=$((start_epoch + 10#$timeout))
-
-while true; do
-  # -J joins wrapped lines, -S uses negative index to read last N lines
-  if pane_text="$(tmux capture-pane -p -J -t "$target" -S "-${lines}" 2>/dev/null)" &&
-    printf '%s\n' "$pane_text" | grep $grep_flag -- "$pattern" >/dev/null 2>&1; then
-    exit 0
+# /proc/uptime gives hundredths of a second. Use the system monotonic clock on
+# hosts without it; wall time can jump backwards while a capture is pending.
+monotonic_cs() {
+  if [[ -r /proc/uptime ]]; then
+    local seconds fraction rest
+    IFS='. ' read -r seconds fraction rest </proc/uptime
+    printf '%s%s\n' "$seconds" "${fraction:0:2}"
+  else
+    perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%.0f\n", int(100 * clock_gettime(CLOCK_MONOTONIC))'
   fi
+}
 
-  now=$(date +%s)
-  if (( now >= deadline )); then
-    echo "Timed out after ${timeout}s waiting for pattern: $pattern" >&2
-    echo "Last ${lines} lines from $target:" >&2
-    printf '%s\n' "$pane_text" >&2
-    exit 1
-  fi
+if ! start=$(monotonic_cs); then
+  echo 'A monotonic clock is required: enable /proc/uptime or install Perl with Time::HiRes.' >&2
+  exit 1
+fi
+deadline=$((10#$start + 100 * 10#$timeout))
+before_deadline() {
+  local now
+  now=$(monotonic_cs) && (( 10#$now < deadline ))
+}
 
-  # Sleep no longer than the time left, so the last probe happens at the deadline
-  # instead of up to a full interval past it. Sleep still rejects invalid intervals.
-  wait_interval="$interval"
-  if [[ "$interval" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]; then
-    wait_interval=$(awk -v interval="$interval" -v remaining="$((deadline - now))" \
-      'BEGIN { print (interval + 0 > remaining ? remaining : interval) }')
+scratch=$(mktemp -d)
+worker=""
+stop_worker() {
+  if [[ -n "$worker" ]]; then
+    kill -KILL -- "-$worker" 2>/dev/null || :
+    worker=""
   fi
-  sleep "$wait_interval"
-done
+}
+trap 'stop_worker; rm -rf -- "$scratch"' EXIT
+trap 'exit 1' HUP INT TERM
+: >"$scratch/pane"
+
+poll() {
+  local pane_text
+  while before_deadline; do
+    if pane_text=$(tmux capture-pane -p -J -t "$target" -S "-${lines}" 2>/dev/null); then
+      printf '%s\n' "$pane_text" >"$scratch/pane"
+      if before_deadline && grep "$grep_flag" -- "$pattern" "$scratch/pane" >/dev/null 2>&1 && before_deadline; then
+        return 0
+      fi
+    fi
+    sleep "$interval" || return "$?"
+  done
+  return 124
+}
+
+# Keep the entire poll (including stuck captures and long sleeps) in its own
+# process group. Only the parent waits on the deadline; it never waits on tmux.
+exec 3< <(
+  set -m
+  (set +m; poll) &
+  pid=$!
+  echo "$pid"
+  status=0
+  wait "$pid" 2>/dev/null || status=$?
+  echo "$status"
+)
+IFS= read -r worker <&3
+now=$(monotonic_cs)
+remaining=$((deadline - 10#$now))
+printf -v wait_time '%d.%02d' "$((remaining / 100))" "$((remaining % 100))"
+if (( remaining > 0 )) && IFS= read -r -t "$wait_time" status <&3 && [[ "$status" != 124 ]]; then
+  worker=""
+  exit "$status"
+fi
+
+stop_worker
+echo "Timed out after ${timeout}s waiting for pattern: $pattern" >&2
+echo "Last ${lines} lines from $target:" >&2
+cat "$scratch/pane" >&2
+exit 1

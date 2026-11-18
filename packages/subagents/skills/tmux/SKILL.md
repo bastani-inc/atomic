@@ -216,7 +216,7 @@ If a tmux-compatible implementation does not support a specific format variable 
 ## Helpers
 
 - `scripts/find-sessions.sh`: discover sessions.
-- `scripts/wait-for-text.sh`: wait until captured pane contents contain text.
+- `scripts/wait-for-text.sh`: wait for a match observed before `-T` seconds elapse. A late capture is a timeout, even if it contains the text. `-T 0` times out without inspecting the pane.
 
 `wait-for-text.sh` searches echoed input and scrollback as well as process output. For command completion, use a unique marker whose full text is split across arguments in the command sent to tmux:
 
