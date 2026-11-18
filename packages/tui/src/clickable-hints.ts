@@ -107,29 +107,40 @@ export function hintKeyId(name: string): KeyId | undefined {
  * after it, so the parts read as the text did, and names the key a click on it presses.
  */
 export function hintKeyParts(text: string): HintKeyPart[] {
+	return parseHintKeys(text, false).parts;
+}
+
+function hintTokenAt(text: string, start: number): string {
+	if (ARROW_GLYPHS.has(text[start]!)) return text[start]!;
+	let token = "";
+	for (let index = start; index < text.length; index++) {
+		const char = text[index]!;
+		const expectsKey = token.length > 1 && token.endsWith("+") && !token.endsWith("++");
+		if (char === " " || (ARROW_GLYPHS.has(char) && !expectsKey)) break;
+		if (char === "/" && token !== "" && !expectsKey) break;
+		token += char;
+	}
+	return token;
+}
+
+const DIGIT_RANGE = /^[1-9]-[1-9]$/;
+
+function parseHintKeys(text: string, hasLabel: boolean): { parts: HintKeyPart[]; label: string } {
 	const parts: HintKeyPart[] = [];
 	let index = 0;
+	let afterSlash = false;
 	while (index < text.length) {
-		let token = "";
-		if (ARROW_GLYPHS.has(text[index]!)) {
-			token = text[index]!;
-			index++;
-		} else {
-			while (index < text.length) {
-				const char = text[index]!;
-				const expectsKey = token.length > 1 && token.endsWith("+") && !token.endsWith("++");
-				if (char === " " || (ARROW_GLYPHS.has(char) && !expectsKey)) break;
-				if (char === "/" && token !== "" && !expectsKey) break;
-				token += char;
-				index++;
-			}
-		}
-		// A separator can have spaces on either side. Leave a second slash for the next key, as in `esc / /`.
+		const start = index;
+		let token = hintTokenAt(text, index);
+		index += token.length;
 		const end = index;
 		while (text[index] === " ") index++;
 		if (token !== "" && text[index] === "/") {
-			index++;
-			while (text[index] === " ") index++;
+			let next = index + 1;
+			while (text[next] === " ") next++;
+			// In `esc / enter` this slash separates keys; in `esc /` the final slash is a key itself.
+			const following = index === end ? undefined : hintTokenAt(text, next);
+			if (following === undefined || DIGIT_RANGE.test(following) || hintKeyId(following) !== undefined) index = next;
 		}
 		const separator = text.slice(end, index);
 		if (token === "") {
@@ -142,14 +153,25 @@ export function hintKeyParts(text: string): HintKeyPart[] {
 			continue;
 		}
 		// In a numbered picker, `1-4` shows two keys: the dash belongs to the first, the label to the last.
-		if (/^[1-9]-[1-9]$/.test(token)) {
+		if (DIGIT_RANGE.test(token)) {
 			parts.push({ text: token.slice(0, 2), key: token[0] as KeyId });
 			token = token[2]!;
+		} else if (
+			hasLabel &&
+			/^\d+$/.test(token) &&
+			!afterSlash &&
+			!separator.includes("/") &&
+			(start === 0 || text[start - 1] === " ")
+		) {
+			// A standalone number, such as the count in `2 shells`, is not a shortcut.
+			return { parts, label: text.slice(start) };
 		}
 		const key = hintKeyId(token);
+		if (hasLabel && key === undefined) return { parts, label: text.slice(start) };
+		afterSlash = separator.includes("/");
 		parts.push(key === undefined ? { text: token + separator } : { text: token + separator, key });
 	}
-	return parts;
+	return { parts, label: "" };
 }
 
 /** A hint for `keyText`, such as `pgup/pgdn`, and `label`, each key running when its text is clicked. */
@@ -169,28 +191,8 @@ export function clickableHintText(text: string): string {
 			const lead = /^\s*/.exec(segment)?.[0] ?? "";
 			const body = segment.slice(lead.length);
 			if (/^\/[\w:-]+(?:\s|$)/.test(body)) return lead + slashCommandHint(body);
-			const words = body.split(" ");
-			const keyParts: HintKeyPart[] = [];
-			let index = 0;
-			for (; index < words.length; index++) {
-				if (words[index] === "/" && keyParts.length > 0 && index + 1 < words.length) {
-					const previous = keyParts[keyParts.length - 1]!;
-					keyParts[keyParts.length - 1] = { ...previous, text: `${previous.text}/ ` };
-					continue;
-				}
-				// A number, such as the count in `2 shells`, is not a key a hint names.
-				if (/^\d+$/.test(words[index]!)) break;
-				const parts = hintKeyParts(words[index]!);
-				if (parts.length === 0 || parts.some((part) => part.key === undefined)) break;
-				keyParts.push(
-					...parts.map((part, at) => (at === parts.length - 1 ? { ...part, text: `${part.text} ` } : part)),
-				);
-			}
-			if (keyParts.length === 0) return segment;
-			const last = keyParts[keyParts.length - 1]!;
-			keyParts[keyParts.length - 1] = { ...last, text: last.text.slice(0, -1) };
-			const label = words.slice(index).join(" ");
-			return lead + clickableKeysHint(keyParts, label ? ` ${label}` : "");
+			const { parts, label } = parseHintKeys(body, true);
+			return lead + clickableKeysHint(parts, label);
 		})
 		.join(" · ");
 }

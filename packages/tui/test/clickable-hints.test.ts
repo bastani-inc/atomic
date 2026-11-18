@@ -2,6 +2,7 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import {
 	clickableHint,
+	clickableHintText,
 	clickableKeysHint,
 	clickableKeyTextHint,
 	commandHintAction,
@@ -157,6 +158,35 @@ describe("a click on a key hint runs its key", () => {
 			await click(4, 0); // separator between esc and enter
 			await click(6, 1); // literal slash after the separator
 			assert.deepStrictEqual(keysOf(view, "escape", "/"), ["escape", "/"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("a hint written as text presses the same final slash as one with an explicit label (#5528)", async () => {
+		const { view, click, tui } = await mount([
+			clickableHintText("esc / / pick"),
+			clickableKeyTextHint("esc / /", " pick"),
+		]);
+		try {
+			for (const x of [4, 6, 9]) {
+				for (const y of [0, 1]) await click(x, y);
+			}
+			assert.deepStrictEqual(keysOf(view, "escape", "/"), ["escape", "escape", "/", "/", "/", "/"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("a trailing slash in a space-separated key list remains a literal binding (#5528)", async () => {
+		const { view, click, tui } = await mount([
+			clickableKeyTextHint("esc /", " pick"),
+			clickableHintText("esc / pick"),
+			clickableHintText("esc /enter pick"),
+		]);
+		try {
+			for (const row of [0, 1, 2]) await click(4, row);
+			assert.deepStrictEqual(keysOf(view, "escape", "/"), ["/", "/", "escape"]);
 		} finally {
 			tui.stop();
 		}
