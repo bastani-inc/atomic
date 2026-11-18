@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { latestWorkflowAttempt } from "../../packages/workflows/src/durable/attempt-identity.js";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -14,6 +17,18 @@ import { testRunId } from "../helpers/run-id.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 afterEach(closeMemoryTestBackends);
+
+/**
+ * Runs start outside any Git checkout. A run started on a branch records it, and the reference catalog predates that
+ * field, so the ambient checkout's branch must not reach the comparison.
+ */
+let invocationCwd = "";
+beforeAll(async () => {
+	invocationCwd = await mkdtemp(join(tmpdir(), "atomic-attempt-compat-"));
+});
+afterAll(async () => {
+	await rm(invocationCwd, { recursive: true, force: true });
+});
 
 type Point = "s1" | "t1" | "s2" | "child";
 type Ending =
@@ -155,6 +170,7 @@ async function runSequence(endings: readonly Ending[], label: string, older: boo
 			{},
 			{
 				runId,
+				cwd: invocationCwd,
 				store,
 				registry: createRegistry([parent, child]),
 				durableBackend,

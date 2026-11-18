@@ -7,6 +7,7 @@ import { ENV_CLIPBOARD_OSC52, getEnvNames } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { isWaylandSession } from "./clipboard-image.ts";
 import { type ClipboardModule, clipboard } from "./clipboard-native.ts";
+import { windowsPowerShellEnvironment } from "./windows-powershell.ts";
 import { isWSL } from "./wsl.ts";
 
 type NativeClipboardExecOptions = {
@@ -117,7 +118,7 @@ async function copyViaWindowsClipboard(text: string): Promise<boolean> {
 		const script = `Set-Clipboard -Value ([System.IO.File]::ReadAllText('${winPath.replaceAll("'", "''")}', [System.Text.Encoding]::UTF8))`;
 		await runClipboardExecFile("powershell.exe", ["-NoProfile", "-Command", script], {
 			timeout: 5000,
-			env,
+			env: windowsPowerShellEnvironment(env),
 			cwd: CLIPBOARD_CWD,
 		});
 		return true;

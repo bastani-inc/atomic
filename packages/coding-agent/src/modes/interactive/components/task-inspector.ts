@@ -8,6 +8,7 @@ import {
 	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import {
@@ -15,6 +16,7 @@ import {
 	agentPanelItemReadAt,
 	promptAnswerOptionsOf,
 } from "../../../core/tasks/agent-panel-source.ts";
+import { supersededReleasedAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import {
 	liveElapsedFromRead,
@@ -444,7 +446,10 @@ export class TaskInspector implements Component {
 		if (this.cachedNativeRows?.sections !== sections) {
 			const rows: Extract<TaskBoardRow, { kind: "task" }>[] = [];
 			for (const section of sections) {
+				// A released attempt whose subagent woke is listed as its later attempt, not as waiting.
+				const superseded = supersededReleasedAttempts(section.tasks);
 				for (const task of section.tasks) {
+					if (superseded.size > 0 && superseded.has(task.ref.taskId)) continue;
 					const id = task.ref.taskId;
 					let row = this.taskRowById.get(id);
 					if (row === undefined || row.task !== task) {
@@ -1519,7 +1524,7 @@ export class TaskInspector implements Component {
 		});
 		const hint = renderNavHintLine(chatKeys, width, style, chatKeybindings);
 		const footer = [
-			...(notes ? [fitWidth(theme.fg("dim", notes))] : []),
+			...wrapNotes(notes, width).map((line) => fitWidth(theme.fg("dim", line))),
 			...(transcript.handlesBack() ? [] : [hint]),
 		];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
@@ -1573,7 +1578,8 @@ export class TaskInspector implements Component {
 		);
 		this.scroll = Math.min(this.scroll, Math.max(0, rows.length - height));
 		const view = rows.slice(this.scroll, this.scroll + height);
-		const stopLabel = current?.execution.kind === "settled" ? "dismiss" : "stop";
+		const stopLabel =
+			current?.execution.kind === "settled" && waitingReleasedTools(current) === undefined ? "dismiss" : "stop";
 		const keys = detailKeys()
 			.filter(
 				(key) => current !== undefined || key.keys?.startsWith("esc") === true || key.action === "app.keys.help",
@@ -1778,7 +1784,8 @@ export class TaskInspector implements Component {
 								if (key.action === "app.list.stop") {
 									const finished =
 										selected?.kind === "task"
-											? selected.task.execution.kind === "settled"
+											? selected.task.execution.kind === "settled" &&
+												waitingReleasedTools(selected.task) === undefined
 											: selected !== undefined && rowFinished(selected);
 									return [{ ...key, label: finished ? "dismiss" : "stop" }];
 								}
@@ -1883,4 +1890,33 @@ export class TaskInspector implements Component {
 			taskDisplayText(this.status),
 		];
 	}
+}
+
+/** The most rows a transcript's notes take, so the transcript itself keeps its room. */
+const MAX_NOTE_ROWS = 6;
+
+/**
+ * A transcript's notes on as many rows as they need, up to {@link MAX_NOTE_ROWS}: each ` · ` part stays whole on a row
+ * where it fits, so what a released subagent waits on, that it wakes by itself, and where its shell is all stay
+ * readable at narrow widths.
+ */
+export function wrapNotes(notes: string, width: number): string[] {
+	if (!notes) return [];
+	const room = Math.max(1, width);
+	if (visibleWidth(notes) <= room) return [notes];
+	const rows: string[] = [];
+	let row = "";
+	for (const part of notes.split(" · ")) {
+		const joined = row ? `${row} · ${part}` : part;
+		if (visibleWidth(joined) <= room) {
+			row = joined;
+			continue;
+		}
+		if (row) rows.push(row);
+		const wrapped = wrapTextWithAnsi(part, room);
+		row = wrapped.pop() ?? "";
+		rows.push(...wrapped);
+	}
+	if (row) rows.push(row);
+	return rows.slice(0, MAX_NOTE_ROWS);
 }

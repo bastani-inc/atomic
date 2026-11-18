@@ -1,12 +1,22 @@
 import { inspect, types } from "node:util";
 import { sanitizeTerminalText } from "../../utils/terminal-text.ts";
 import type { ExtensionError } from "../extensions/runtime-types.ts";
+import { waitingReleasedTools, withoutSupersededAttempts } from "./completion.js";
 import type { TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.js";
 import { getOwnerTaskStore, isTaskTurnInterrupted, watchOwnerTaskStoreBinding } from "./owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "./task-view-source.js";
 
-export type AgentPanelState = "running" | "queued" | "input" | "paused" | "stopping" | "done" | "failed" | "stopped";
+export type AgentPanelState =
+	| "running"
+	| "queued"
+	| "input"
+	| "paused"
+	| "stopping"
+	| "waiting"
+	| "done"
+	| "failed"
+	| "stopped";
 
 export interface AgentPanelItem {
 	readonly id: string;
@@ -21,6 +31,8 @@ export interface AgentPanelItem {
 	readonly choices?: readonly string[];
 	readonly promptId?: string;
 	readonly reason?: string;
+	/** What a `waiting` row waits on: the tools of the calls a released subagent wakes from. */
+	readonly waitingOn?: string;
 	readonly queued?: number;
 	readonly endedAt?: number;
 	readonly viewed?: boolean;
@@ -243,6 +255,7 @@ export function taskPanelState(task: TaskRecord): AgentPanelState {
 			return isTaskTurnInterrupted(task) ? "stopped" : "running";
 		case "settled": {
 			const result = task.execution.result;
+			if (waitingReleasedTools(task) !== undefined) return "waiting";
 			if (result.kind === "completed") return "done";
 			if (result.kind === "failed") return "failed";
 			return "stopped";
@@ -313,6 +326,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed"
 			? (task.execution.result.message.split("\n")[0] ?? "")
 			: undefined;
+	const waitingOn = waitingReleasedTools(task);
 	if (
 		cached !== undefined &&
 		cached.clocks === clocks &&
@@ -325,7 +339,8 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		cached.item.elapsedMs === task.metrics?.elapsedMs &&
 		cached.item.tokens === task.metrics?.tokenCount &&
 		cached.item.question === question &&
-		cached.item.reason === reason
+		cached.item.reason === reason &&
+		cached.item.waitingOn === waitingOn
 	)
 		return cached.item;
 	const item: AgentPanelItem = {
@@ -338,6 +353,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		...(task.metrics?.tokenCount === undefined ? {} : { tokens: task.metrics.tokenCount }),
 		...(question ? { question } : {}),
 		...(reason === undefined ? {} : { reason }),
+		...(waitingOn === undefined ? {} : { waitingOn }),
 	};
 	if (interrupted) markInterruptedPanelTask(item);
 	if (clocks !== undefined) bindTaskClock(item, clocks);
@@ -367,6 +383,9 @@ export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedCl
 		get task() {
 			return taskPanelItem(task, sourceClocks).task;
 		},
+		get waitingOn() {
+			return taskPanelItem(task, sourceClocks).waitingOn;
+		},
 	};
 	if (interrupted) markInterruptedPanelTask(item);
 	lazyTaskItems.set(task, { state, clocks: sourceClocks, interrupted, item });
@@ -388,7 +407,7 @@ export function taskPanelItems(
 	const hasDismissed = dismissed.size > 0;
 	const sourceClocks = taskClockOf(source);
 	const items: AgentPanelItem[] = [];
-	for (const task of source.backgroundTasks) {
+	for (const task of withoutSupersededAttempts(source.backgroundTasks)) {
 		if (topLevelOnly && task.parentTaskId !== undefined) continue;
 		const finishedState = task.execution.kind === "settled";
 		if (finishedState && hasDismissed && dismissed.has(task.ref.taskId)) continue;
@@ -751,6 +770,8 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	drainThenable(promptId);
 	const reason = row.reason;
 	drainThenable(reason);
+	const waitingOn = row.waitingOn;
+	drainThenable(waitingOn);
 	const viewed = row.viewed;
 	drainThenable(viewed);
 	const queued = row.queued;
@@ -769,6 +790,7 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 			state !== "input" &&
 			state !== "paused" &&
 			state !== "stopping" &&
+			state !== "waiting" &&
 			state !== "done" &&
 			state !== "failed" &&
 			state !== "stopped") ||
@@ -781,6 +803,7 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 		(question !== undefined && typeof question !== "string") ||
 		(promptId !== undefined && typeof promptId !== "string") ||
 		(reason !== undefined && typeof reason !== "string") ||
+		(waitingOn !== undefined && typeof waitingOn !== "string") ||
 		(viewed !== undefined && typeof viewed !== "boolean") ||
 		progress === false ||
 		choices === false
@@ -802,6 +825,7 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	if (choices !== undefined) item.choices = choices;
 	if (promptId !== undefined) item.promptId = promptId;
 	if (reason !== undefined) item.reason = reason;
+	if (waitingOn !== undefined) item.waitingOn = waitingOn;
 	if (queued !== undefined) item.queued = queued;
 	if (endedAt !== undefined) item.endedAt = endedAt;
 	if (viewed !== undefined) item.viewed = viewed;

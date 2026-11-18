@@ -60,3 +60,61 @@ describe.each(["local", "isolated"] as const)(
 		});
 	},
 );
+
+test("a typed message sent again while the host still shows the stopped run working is shown once, with no echo left behind (#5135)", async () => {
+	const rig = await createRig("isolated", "quiet", {});
+	rigs.push(rig);
+	const pair = rig.pair;
+	assert.ok(pair);
+	await pair.runtime.waitUntilResourcesReady();
+	const chat = showUserMessagesInChat(rig.host);
+	const session = rig.engine.session;
+	const otherProcess = await SessionManager.open(
+		session.sessionManager.getSessionStore(),
+		session.sessionManager.getSessionId(),
+	);
+	const repeated = "repeated unsaved input";
+	let conflicts = 0;
+	session.subscribe((event) => {
+		if (event.type === "agent_end" && session.getPersistenceFailure()?.conflict !== undefined) conflicts += 1;
+	});
+	const stopOnOtherWriter = async (attempt: number, submit: () => Promise<void> | void): Promise<void> => {
+		await otherProcess.appendMessage({ role: "user", content: `other ${attempt}`, timestamp: Date.now() });
+		rig.engine.setResponses([fauxAssistantMessage("never requested")]);
+		const failuresBefore = conflicts;
+		const submitted = submit();
+		await waitFor(
+			"the engine to stop the run on the other writer's entries",
+			() => conflicts > failuresBefore && !session.isStreaming,
+		);
+		return submitted;
+	};
+
+	await stopOnOtherWriter(0, () => rig.host.defaultEditor.onSubmit?.(repeated));
+	await pair.drain();
+	// The engine ends the next run while its agent_end is still on the way, so the host still shows the agent
+	// working and sends the message typed now as one typed during a run.
+	pair.holdHostTrafficFrom((record) => record.type === "agent_end");
+	await stopOnOtherWriter(1, () => rig.host.defaultEditor.onSubmit?.(repeated));
+	await pair.drain();
+	assert.equal(rig.host.session.isStreaming, true, "the host must not have seen the run end yet");
+	let submitted: Promise<void> | undefined;
+	await stopOnOtherWriter(2, () => {
+		submitted = Promise.resolve(rig.host.defaultEditor.onSubmit?.(repeated));
+	});
+	await pair.releaseHostTraffic();
+	await submitted;
+	await pair.drain();
+
+	assert.ok(session.getPersistenceFailure()?.conflict instanceof SessionConflictError);
+	assert.deepEqual(
+		chat().filter((line) => line === repeated),
+		[repeated],
+		"the chat must show the message once",
+	);
+	assert.deepEqual(
+		Reflect.get(rig.host, "deferredRenderedUserInputs"),
+		[],
+		"no echo of the message may be left to show again",
+	);
+});
