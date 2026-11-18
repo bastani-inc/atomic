@@ -14,9 +14,16 @@ import { afterEach, beforeEach, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
-import { SNAPSHOT_COLLECTION_SESSION_REFS } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
-import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
-import { assertLag, measureLag } from "../helpers/event-loop-lag.js";
+import {
+	SNAPSHOT_COLLECTION_BATCH,
+	SNAPSHOT_COLLECTION_SESSION_REFS,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
+import {
+	collectSnapshotGarbage,
+	resetSnapshotCollectionScheduleForTesting,
+	scheduleSnapshotCollection,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
+import { assertLag, MAIN_THREAD_LAG_LIMIT_MS, measureLag } from "../helpers/event-loop-lag.js";
 import {
 	ageBlobs,
 	createSession,
@@ -25,6 +32,8 @@ import {
 	openSharedSnapshotDatabase,
 	type SharedSnapshotDatabase,
 	snapshotEntry,
+	startRun,
+	statusEvent,
 	syntheticSnapshot,
 	textBlob,
 } from "../helpers/snapshot-reference-index.js";
@@ -34,12 +43,15 @@ const SESSIONS = 24;
 const SNAPSHOT_ENTRIES_PER_SESSION = 2_000;
 /** Seeding 48,000 indexed session entries is structural cost, not a slow collection. */
 const LARGE_STORE_TEST_TIMEOUT_MS = 120_000;
+/** Aged blobs that one workflow run retains on the store of the retained-pages test (#5530). */
+const RUN_RETAINED_BLOBS = 100_000;
 
 let directory: string;
 let path: string;
 let shared: SharedSnapshotDatabase;
 const others: SharedSnapshotDatabase[] = [];
 beforeEach(async () => {
+	resetSnapshotCollectionScheduleForTesting();
 	directory = mkdtempSync(join(tmpdir(), "snapshot-collection-turns-"));
 	path = join(directory, "shared.sqlite");
 	shared = await openSharedSnapshotDatabase(path);
@@ -150,6 +162,75 @@ test(
 		assertLag("snapshot collection over a large session index", lag());
 		assert.deepEqual([...deleted].sort(), [...dropped].sort());
 		assert.deepEqual([...(await shared.journal.snapshotBlobs.listBlobHashes())].sort(), [...kept].sort());
+	},
+	LARGE_STORE_TEST_TIMEOUT_MS,
+);
+
+/**
+ * {@link RUN_RETAINED_BLOBS} aged one-byte blobs, every one referenced by the checkpoints of one running workflow run:
+ * pages that a collection keeps whole, without walking a session or deleting anything.
+ */
+async function seedRunRetainedBlobs(): Promise<void> {
+	const runId = "retaining-run";
+	const lease = await startRun(shared.journal, runId);
+	await shared.journal.append(lease, statusEvent(runId, { status: "running" }, "RunStarted"));
+	const blobs = shared.journal.snapshotBlobs.table;
+	await shared.database.run(
+		`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+		INSERT INTO ${blobs} (hash, bytes, data, created_at, chunks) SELECT printf('%064x', i), 1, x'00', 1, 0 FROM n`,
+		RUN_RETAINED_BLOBS,
+	);
+	// The references the run's checkpoints index, written at once rather than through 100,000 snapshot records.
+	await shared.database.run(`INSERT INTO snapshot_run_refs (run_id, hash) SELECT ?, hash FROM ${blobs}`, runId);
+}
+
+test.each<[string, () => Promise<readonly string[]>]>([
+	[
+		"a collection",
+		async () => (await collectSnapshotGarbage(shared.journal.snapshotBlobs, { graceSeconds: 0 })).deleted,
+	],
+	[
+		"an automatic collection",
+		async () => {
+			const outcome = await scheduleSnapshotCollection(shared.journal.snapshotBlobs, {
+				autoCollect: true,
+				collectIntervalSeconds: 3_600,
+				graceSeconds: 0,
+			});
+			if (outcome.status !== "collected") assert.fail(`the collection ended ${JSON.stringify(outcome)}`);
+			return outcome.deleted;
+		},
+	],
+])(
+	"%s gives the event loop a turn after every page, also pages a run retains whole, with no session to walk and nothing to delete (#5530)",
+	async (_collection, collect) => {
+		await seedRunRetainedBlobs();
+		const pages = Math.ceil(RUN_RETAINED_BLOBS / SNAPSHOT_COLLECTION_BATCH);
+
+		const turns = countTurns();
+		const startedAt = performance.now();
+		let firstTimerAfterMs: number | undefined;
+		const timer = setTimeout(() => {
+			firstTimerAfterMs = performance.now() - startedAt;
+		}, 1);
+		const deleted = await collect();
+		const counted = turns();
+		const wallMs = performance.now() - startedAt;
+		clearTimeout(timer);
+
+		assert.ok(
+			counted >= pages - 1,
+			`the collection read ${pages} pages of retained blobs in ${counted} turns of the event loop over ${Math.round(wallMs)} ms`,
+		);
+		assert.ok(
+			firstTimerAfterMs !== undefined && firstTimerAfterMs < MAIN_THREAD_LAG_LIMIT_MS,
+			`a 1 ms timer set as the collection started ran after ${firstTimerAfterMs ?? "the whole collection"} ms; the collection took ${Math.round(wallMs)} ms`,
+		);
+		assert.deepEqual(deleted, []);
+		const { blobs } = (await shared.database.get<{ blobs: number }>(
+			`SELECT count(*) AS blobs FROM ${shared.journal.snapshotBlobs.table}`,
+		))!;
+		assert.equal(blobs, RUN_RETAINED_BLOBS);
 	},
 	LARGE_STORE_TEST_TIMEOUT_MS,
 );

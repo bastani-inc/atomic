@@ -122,7 +122,11 @@ describe("the pace of a background collection (#4355)", () => {
 			const pace = new RecordedPace();
 
 			await store.completeIndex({ pace });
-			assert.deepEqual(pace.waits, [0, 0], "three backfill batches of the events, two waits between them");
+			assert.deepEqual(
+				pace.waits,
+				[0, 0, 0],
+				"three backfill batches of the events and one of the runs, a wait between each two (#5530)",
+			);
 			pace.waits.length = 0;
 			const deleted = await store.sweep({ graceSeconds: 0, pace });
 

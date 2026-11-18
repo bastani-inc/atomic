@@ -354,9 +354,9 @@ function sessionGroups(costs: ReadonlyMap<string, number>): string[][] {
 }
 
 /**
- * The turns of the event loop between the steps of a sweep that hold it, such as a statement that walks sessions or a
- * delete batch: {@link next} gives the loop a turn when a step has held it since the last turn, then checks the
- * sweep's abort signal.
+ * The turns of the event loop between the steps of a sweep that hold it, such as a statement that walks sessions, a
+ * delete batch or a page: {@link next} gives the loop a turn when a step has held it since the last turn, then checks
+ * the sweep's abort signal.
  */
 class SweepTurns {
 	private readonly signal?: AbortSignal;
@@ -1318,16 +1318,17 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Indexes the rows that referencing tables held before their triggers were installed, in transactions of
 	 * {@link SNAPSHOT_INDEX_BACKFILL_BATCH} rows, so that the index covers every reference. A one-time cost in the number
 	 * of existing rows, paid in the background by the first collection; resumes where it stopped. Does nothing once the
-	 * index is complete. Yields to the event loop between batches, and checks `signal` before each batch and rejects
-	 * with its reason.
+	 * index is complete. Yields to the event loop between every two batches, of one table or of two, and checks
+	 * `signal` before each batch and rejects with its reason.
 	 */
 	async completeIndex(options: SnapshotIndexOptions = {}): Promise<void> {
+		let batches = 0;
 		for (const { source, backfilled } of await this.installIndex(options.pace, true)) {
 			if (backfilled) continue;
-			for (;;) {
+			for (let done = false; !done; batches++) {
+				if (batches > 0) await this.betweenBatches(options.pace);
 				options.signal?.throwIfAborted();
-				if (await this.backfillBatch(source, options)) break;
-				await this.betweenBatches(options.pace);
+				done = await this.backfillBatch(source, options);
 			}
 		}
 	}
@@ -1456,6 +1457,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				return deleted;
 			}
 			cursor = page.at(-1);
+			// Every page holds the event loop, also one whose blobs runs, carried work or sessions this sweep walked
+			// already retain, which walks no session and deletes nothing: the next page starts after a turn (#5530).
+			turns.held();
 		}
 	}
 
@@ -1609,7 +1613,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Stamps every blob of unknown age with the database clock, in hash order, in write transactions of at most
 	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} of blobs. Moves every in-row blob larger than
 	 * {@link SNAPSHOT_BLOB_CHUNK_BYTES} to chunks regardless of age. Chunk writes have the same byte bound;
-	 * publishing also frees the old in-row value, whose cost grows with its size.
+	 * publishing also frees the old in-row value, whose cost grows with its size. Every stamp and every move ends with a
+	 * turn of the event loop, whatever it found, so every page does too.
 	 */
 	private async stampLegacyAges(options: SnapshotIndexOptions): Promise<void> {
 		const oversized = `chunks = 0 AND length(data) > ${SNAPSHOT_BLOB_CHUNK_BYTES}`;
@@ -1668,6 +1673,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} per transaction while readers retain the in-row value. Publishing stamps
 	 * only an unknown age and frees the old value under the writer, with time proportional to the freed size. It marks the
 	 * journal as requiring chunk support, as {@link putBlobs} does. A stopped move leaves chunks the next move reuses.
+	 * Gives the event loop a turn after every transaction and before it returns, also when another host moved or
+	 * deleted the blob first (#5530).
 	 */
 	private async moveLegacyBlobToChunks(hash: string, options: SnapshotIndexOptions): Promise<void> {
 		const t = this.tables;
@@ -1676,7 +1683,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			`SELECT data FROM ${t.blobs} WHERE ${unmoved}`,
 			hash,
 		);
-		if (legacy === undefined) return;
+		if (legacy === undefined) return this.betweenBatches(options.pace);
 		const { data } = legacy;
 		const chunks = Math.ceil(data.byteLength / SNAPSHOT_BLOB_CHUNK_BYTES);
 		const perTransaction = SNAPSHOT_LEGACY_STAMP_BYTES / SNAPSHOT_BLOB_CHUNK_BYTES;
@@ -1698,8 +1705,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				}
 				return true;
 			});
-			if (!pending) return;
 			await this.betweenBatches(options.pace);
+			if (!pending) return;
 		}
 		options.signal?.throwIfAborted();
 		const journal = await import("../storage/journal-adoption.js");
