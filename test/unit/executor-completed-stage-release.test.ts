@@ -9,11 +9,13 @@ import {
 	type StageControlRegistry,
 	stageControlRegistry,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowUIAdapter } from "../../packages/workflows/src/shared/types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { type CollectionCount, collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
+import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import {
 	assert,
 	createStageControlRegistry,
@@ -274,6 +276,104 @@ describe("completed stage session release", () => {
 				unregisterSuccessor?.();
 			}
 		});
+
+		test("a resume that takes the failed stage's own id before the failed run's cleanup keeps its stage and open question, and the cleanup still disposes the old session (#5499)", async () => {
+			const backend = await createMemoryTestBackend();
+			const store = createStore();
+			const stageUiBroker = new StageUiBroker(store);
+			const resumedPromptStarted = Promise.withResolvers<void>();
+			const finishResumedPrompt = Promise.withResolvers<void>();
+			let prompts = 0;
+			const fixture = createPersistedStageFixture({
+				reply: () => "done",
+				async onPrompt(_text, record) {
+					prompts += 1;
+					if (prompts === 1) throw new Error("first attempt failed");
+					// The resumed stage asks the user a question and waits for the answer.
+					record.emit({
+						type: "tool_execution_start",
+						toolCallId: "resumed-question",
+						toolName: "ask_user_question",
+						args: {
+							questions: [
+								{
+									question: "Which way should the resumed stage go?",
+									header: "Direction",
+									options: [
+										{ label: "Left", description: "Go left." },
+										{ label: "Right", description: "Go right." },
+									],
+								},
+							],
+						},
+					});
+					resumedPromptStarted.resolve();
+					await finishResumedPrompt.promise;
+				},
+			});
+			const def = workflow({
+				name: "failed-run-same-stage-resume",
+				description: "",
+				inputs: {},
+				outputs: {},
+				async run(ctx) {
+					await ctx.task("last", { prompt: "try" });
+					return {};
+				},
+			});
+			// The failed run's end is recorded before its cleanup runs. Resume it with the same id right then, and let
+			// the cleanup go on only once the resumed stage, under the same stage id, is running.
+			const commitStatus = backend.commitWorkflowStatus.bind(backend);
+			let resumed: ReturnType<typeof run> | undefined;
+			const commits = vi.spyOn(backend, "commitWorkflowStatus").mockImplementation(async (...args) => {
+				await commitStatus(...args);
+				if (args[1] !== "failed" || resumed !== undefined) return;
+				resumed = run(
+					def,
+					{},
+					{ runId: args[0], durableBackend: backend, store, stageUiBroker, adapters: fixture.adapters },
+				);
+				await Promise.race([
+					resumedPromptStarted.promise,
+					resumed.then(() => {
+						throw new Error("the resume ended before its stage started");
+					}),
+				]);
+			});
+			try {
+				const failed = await run(
+					def,
+					{},
+					{ durableBackend: backend, store, stageUiBroker, adapters: fixture.adapters },
+				);
+				assert.equal(failed.status, "failed");
+				assert.ok(resumed, "the failed run was resumed under its own id");
+				assert.equal(fixture.sessions.length, 2);
+				assert.equal(fixture.sessions[0]!.disposals, 1, "the failed run disposed its own session");
+				assert.equal(fixture.sessions[1]!.disposals, 0, "the resumed stage's session is still open");
+				const [handle] = stageControlRegistry.forRun(failed.runId);
+				assert.equal(handle?.stageName, "last", "the resumed stage stays registered");
+				const resumedStage = store.run(failed.runId)?.stages.find((stage) => stage.name === "last");
+				assert.notEqual(
+					resumedStage?.attachable,
+					false,
+					"the failed run's cleanup must not detach the resumed stage",
+				);
+				assert.ok(
+					resumedStage?.awaitingInputSince !== undefined && resumedStage.inputRequest !== undefined,
+					"the resumed stage's open question survives the failed run's cleanup",
+				);
+
+				finishResumedPrompt.resolve();
+				assert.equal((await resumed).status, "completed");
+			} finally {
+				finishResumedPrompt.resolve();
+				await resumed?.catch(() => {});
+				commits.mockRestore();
+				await stageControlRegistry.clear();
+				await closeMemoryTestBackends();
+			}
+		}, 15_000);
 
 		test("a failed run started without a stage registry releases every stage, and its resume replays them and asks its question again (#5499)", async () => {
 			const store = createStore();

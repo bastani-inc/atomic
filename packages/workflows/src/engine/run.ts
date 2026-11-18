@@ -757,7 +757,7 @@ async function executeRun(
 	 * The stage handles this execution registered. A resume can take the run's id before this execution's cleanup
 	 * runs, so its end releases only these and leaves a successor's handles alone (#5499).
 	 */
-	const ownStageHandles = new WeakSet<StageControlHandle>();
+	const ownStageHandles = new Set<StageControlHandle>();
 	const stageRegistry = recordStageRegistrations(sharedStageRegistry, ownStageHandles);
 	const stageUiBroker = opts.stageUiBroker ?? currentStageUiBroker();
 	const sourceToContinuationNodeIds = new Map<string, string>();
@@ -2065,17 +2065,21 @@ async function executeRun(
 	}
 }
 
-/** `registry`, recording in `own` every handle registered through it. */
-function recordStageRegistrations(
-	registry: StageControlRegistry,
-	own: WeakSet<StageControlHandle>,
-): StageControlRegistry {
+/**
+ * `registry`, recording in `own` every handle registered through it until that handle is unregistered. A handle
+ * another registration displaced stays recorded: only this execution can still release it.
+ */
+function recordStageRegistrations(registry: StageControlRegistry, own: Set<StageControlHandle>): StageControlRegistry {
 	return new Proxy(registry, {
 		get(target, key) {
 			if (key === "register") {
 				return (handle: StageControlHandle) => {
 					own.add(handle);
-					return target.register(handle);
+					const unregister = target.register(handle);
+					return () => {
+						own.delete(handle);
+						unregister();
+					};
 				};
 			}
 			const value: unknown = Reflect.get(target, key, target);
@@ -2085,22 +2089,22 @@ function recordStageRegistrations(
 }
 
 /**
- * Release the stage handles an ended execution registered under `runId`: all of the run's when every one is its own,
- * otherwise only its own, so a resume that took the id meanwhile, or a chat opened on a stage, keeps its handles.
+ * Release the stage handles an ended execution registered under `runId`: all of the run's when every registered one
+ * is its own, otherwise only its own, so a resume that took the id meanwhile, or a chat opened on a stage, keeps its
+ * handles. Its handles a resume displaced by registering the same stage are no longer registered; they are released
+ * too, since nothing else will.
  */
 async function releaseOwnStageHandles(
 	registry: StageControlRegistry,
 	runId: string,
-	own: WeakSet<StageControlHandle>,
+	own: ReadonlySet<StageControlHandle>,
 ): Promise<void> {
-	const handles = registry.forRun(runId);
-	if (handles.every((handle) => own.has(handle))) {
-		await registry.clear(runId);
-		return;
-	}
-	const results = await Promise.allSettled(
-		handles.filter((handle) => own.has(handle)).map((handle) => handle.dispose?.()),
-	);
-	for (const result of results)
+	const registered = registry.forRun(runId);
+	const displaced = [...own].filter((handle) => !registered.includes(handle));
+	const disposals: Promise<unknown>[] = [];
+	if (registered.every((handle) => own.has(handle))) disposals.push(registry.clear(runId));
+	else for (const handle of registered) if (own.has(handle)) disposals.push(Promise.resolve(handle.dispose?.()));
+	for (const handle of displaced) disposals.push(Promise.resolve(handle.dispose?.()));
+	for (const result of await Promise.allSettled(disposals))
 		if (result.status === "rejected") console.warn("atomic-workflows: stage session release failed", result.reason);
 }
