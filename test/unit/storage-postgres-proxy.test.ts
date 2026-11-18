@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer, type Server, type Socket } from "node:net";
 import { describe, test } from "vitest";
+import { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import {
 	authorityOf,
 	noProxyMatches,
@@ -11,6 +12,7 @@ import {
 	postgresTransport,
 	proxySetting,
 } from "../../packages/storage-postgres/proxy.js";
+import { closedPort } from "../helpers/http-connect-proxy.js";
 
 /**
  * Which proxy a PostgreSQL connection uses, and the tunnel it asks the proxy for (#5473). The adapter's integration
@@ -295,5 +297,68 @@ describe("PostgreSQL proxy tunnel (#5473)", () => {
 		assert.equal(error.code, "proxy-unreachable");
 		assert.equal(error.permanent, false);
 		assert.match(error.message, /could not be reached for the tunnel to db\.example\.com:5432 \(ECONNREFUSED\)/);
+	});
+});
+
+describe("PostgreSQL retry warnings through a proxy (#5473)", () => {
+	test("the warning an open's retries print names the proxy that failed, and a direct failure the database server (#5473)", async () => {
+		const warnings: string[] = [];
+		const onWarning = (warning: Error) => warnings.push(warning.message);
+		const upstream = await fakeProxy((socket) => socket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"));
+		const unreachablePort = await closedPort();
+		const serverPort = await closedPort();
+		const opening = (url: string, proxy?: string) =>
+			openPostgresDatabase({ url, password: "fixture-password", ...(proxy === undefined ? {} : { proxy }) }).then(
+				async (database) => {
+					await database.close();
+					assert.fail(`${url} opened`);
+				},
+				(error: Error) => error,
+			);
+		process.on("warning", onWarning);
+		try {
+			const failures = await Promise.all([
+				opening(
+					"postgresql://atomic@unreachable.example.test:5432/atomic",
+					`http://agent:fixture-proxy-secret@127.0.0.1:${unreachablePort}`,
+				),
+				opening("postgresql://atomic@upstream.example.test:5432/atomic", `http://127.0.0.1:${upstream.port}`),
+				opening(`postgresql://atomic@127.0.0.1:${serverPort}/atomic`),
+			]);
+			assert.equal(failures.length, 3);
+		} finally {
+			process.off("warning", onWarning);
+			upstream.server.close();
+		}
+		const warningFor = (host: string) => {
+			const found = warnings.filter((warning) => warning.includes(`@${host}`));
+			assert.equal(found.length, 1, `one warning for ${host}: ${warnings.join("\n")}`);
+			return found[0]!;
+		};
+		const unreachable = warningFor("unreachable.example.test");
+		assert.ok(
+			unreachable.includes(
+				`: the proxy http://127.0.0.1:${unreachablePort} could not be reached for the tunnel to unreachable.example.test:5432 (ECONNREFUSED) on attempt 1 (connection-refused). Check that the proxy http://127.0.0.1:${unreachablePort} is reachable and`,
+			),
+			unreachable,
+		);
+		assert.equal(unreachable.includes("fixture-proxy-secret"), false, unreachable);
+		const failed = warningFor("upstream.example.test");
+		assert.ok(
+			failed.includes(
+				`: the proxy http://127.0.0.1:${upstream.port} could not open the tunnel to upstream.example.test:5432 (502 Bad Gateway) on attempt 1 (connection-refused). Check that the proxy http://127.0.0.1:${upstream.port} is reachable and`,
+			),
+			failed,
+		);
+		// A server that is not there is still reported as the database server.
+		const direct = warningFor(`127.0.0.1:${serverPort}`);
+		assert.ok(
+			direct.includes(
+				": the database server call failed on attempt 1 (connection-refused). Check that the database server is reachable and",
+			),
+			direct,
+		);
+		for (const warning of [unreachable, failed])
+			assert.equal(warning.includes("the database server"), false, warning);
 	});
 });

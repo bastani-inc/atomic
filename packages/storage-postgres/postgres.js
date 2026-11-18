@@ -570,7 +570,8 @@ const TRANSIENT_SQLSTATES = new Map([
 
 /**
  * The failure, as one that passes, read from the server's SQLSTATE when the server answered, else from whether a
- * connection could be had or broke during the call; never from a message.
+ * connection could be had or broke during the call; never from a message. A connection a proxy did not open names the
+ * proxy as the hop that failed (#5473).
  * @param {typeof import("pg").DatabaseError} DatabaseError
  * @returns {(failure: StorageFailureCause) => SqliteDriverTransientFailure | undefined}
  */
@@ -578,18 +579,26 @@ function transientFailureOf(DatabaseError) {
 	return (failure) => {
 		/** @type {PostgresConnectionFailure | undefined} */
 		let connection;
+		/** @type {ProxyTunnelError | undefined} */
+		let tunnel;
 		/** @type {unknown} */
 		let current = failure;
 		for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
 			if (current instanceof DatabaseError) return TRANSIENT_SQLSTATES.get(current.code ?? "");
 			if (current instanceof PostgresConnectionFailure) connection ??= current;
+			else if (current instanceof ProxyTunnelError) tunnel ??= current;
 			else if (current instanceof StorageError) return undefined;
 			current = /** @type {{ readonly cause?: unknown }} */ (current).cause;
 		}
 		if (connection === undefined) return undefined;
-		return connection.phase === "connect"
+		if (connection.phase === "lost") return { code: "connection-lost", outcome: "unknown" };
+		return tunnel === undefined
 			? { code: "connection-refused", outcome: "not-applied" }
-			: { code: "connection-lost", outcome: "unknown" };
+			: {
+					code: "connection-refused",
+					outcome: "not-applied",
+					hop: { name: `the proxy ${tunnel.proxy}`, failure: tunnel.message },
+				};
 	};
 }
 

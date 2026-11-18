@@ -38,8 +38,9 @@ export interface PostgresDatabaseOptions {
 	 * sent as `Proxy-Authorization` when it has them, or `"none"` for direct connections. It overrides the environment
 	 * and applies to this machine too: without it, a connection to a host other than this machine tunnels through
 	 * `HTTPS_PROXY` (or `ALL_PROXY`, then `HTTP_PROXY`) unless `NO_PROXY` exempts the host. A socket directory is always
-	 * reached directly. TLS still runs end to end with the server; with `sslmode` `prefer`, `allow` or `disable`, a
-	 * proxy can read the traffic.
+	 * reached directly. TLS still runs end to end with the server. A proxy can read the traffic with `sslmode` `prefer`,
+	 * `allow` or `disable`, and with `verify-ca` when it holds a certificate from the CA the connection trusts, for any
+	 * host: `verify-full` (the default) checks the certificate's host name.
 	 */
 	proxy?: string;
 	/**

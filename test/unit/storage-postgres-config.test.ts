@@ -120,6 +120,36 @@ test("the Postgres adapter module declares its password as a live secret (#4793)
 	assert.deepEqual(adapter.liveSecrets, ["password"]);
 });
 
+test("Postgres refuses a proxy with a socket factory, a socket factory that is not a function, and a proxy that is not an http(s) URL, without connecting (#5473)", async () => {
+	const url = "postgres://atomic@db.invalid/atomic";
+	let opened = 0;
+	const socket = () => {
+		opened += 1;
+		throw new Error("the socket factory was called");
+	};
+	for (const proxy of ["http://127.0.0.1:1", "none"])
+		await assertRefused(() => openPostgresDatabase({ url, proxy, socket }), "proxy", "conflicting-transport");
+	assert.equal(opened, 0);
+	for (const invalid of ["net.connect", {}, 5])
+		await assertRefused(
+			() => openPostgresDatabase({ url, socket: invalid as unknown as () => never }),
+			"socket",
+			"invalid-socket-factory",
+		);
+	await assertRefused(
+		() => openPostgresDatabase({ url, proxy: "socks5://agent:fixture-secret@127.0.0.1:1080" }),
+		"proxy",
+		"unsupported-proxy",
+		["fixture-secret"],
+	);
+	// A value that is not a string, as settings could hold one.
+	await assertRefused(
+		() => adapter.openDatabase({ url, proxy: 3128 }, { agentDir: "/nonexistent", domain: "journal" }),
+		"proxy",
+		"unsupported-proxy",
+	);
+});
+
 test("the Postgres adapter requires a URL option (#4793)", async () => {
 	for (const url of [undefined, "", 5])
 		await assertRefused(
