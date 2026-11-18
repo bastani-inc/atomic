@@ -56,6 +56,14 @@ export function openReleasedChildRelaunch(key: string): void {
 	if (active.has(key)) relaunches.set(key, Promise.withResolvers());
 }
 
+/**
+ * Settles once the active wake of this child, if any, has relaunched it, its new run's record written, or decided not
+ * to: never later than that, so a caller does not wait for the woken run itself (#5485).
+ */
+export function releasedChildWakeDecided(key: string): Promise<void> {
+	return relaunches.get(key)?.promise ?? Promise.resolve();
+}
+
 /** Whether a pause or quit of this child is in flight, so its wake must hold what it carries instead (#4845). */
 export function isReleasedChildStopPending(key: string): boolean {
 	return pendingStops.has(key);
@@ -70,7 +78,7 @@ export function isReleasedChildStopPending(key: string): boolean {
 export function beginReleasedChildStop(key: string): { readonly decided: Promise<void>; end(): void } {
 	pendingStops.set(key, (pendingStops.get(key) ?? 0) + 1);
 	return {
-		decided: relaunches.get(key)?.promise ?? Promise.resolve(),
+		decided: releasedChildWakeDecided(key),
 		end() {
 			const left = (pendingStops.get(key) ?? 0) - 1;
 			if (left > 0) pendingStops.set(key, left);

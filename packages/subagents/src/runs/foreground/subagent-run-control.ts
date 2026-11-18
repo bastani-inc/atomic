@@ -12,7 +12,12 @@ import { subagentChildIdOfPath } from "../inprocess/control-registry.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { isLiveOwnerlessChild, isQueuedOwnerlessChild, stopOwnerlessChild } from "./ownerless-children.js";
 import { releasedChildReservation, reserveReleasedChildren } from "./released-child-reservations.js";
-import { beginReleasedChildStop, isReleasedChildWakeActive, resumeReleasedChild } from "./released-child-resume.js";
+import {
+	beginReleasedChildStop,
+	isReleasedChildWakeActive,
+	releasedChildWakeDecided,
+	resumeReleasedChild,
+} from "./released-child-resume.js";
 import { subagentWakeKey } from "./released-children.js";
 import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import { indexSubagentChildOwner, observedSubagentRunIds } from "./subagent-child-card-state.js";
@@ -462,7 +467,16 @@ async function resumeChild(
 	const resolved = resolveRecord(records, request.id);
 	if (typeof resolved === "string") return errorResult(action, resolved);
 	if (!resolved) return errorResult(action, `Unknown subagent '${request.id}': this session launched no such child.`);
-	const record = resolved;
+	const ownerSessionId = subagentChildOwner(ctx).sessionId;
+	const wakeKey = subagentWakeKey(ownerSessionId, resolved.childId);
+	let record = resolved;
+	if (isReleasedChildWakeActive(wakeKey)) {
+		// A wake may be reopening the child right now. Wait only until it has, or has decided not to, never for the run
+		// it starts: a woken child is running, and resume refuses it as it refuses any running child (#5485).
+		await releasedChildWakeDecided(wakeKey);
+		await subagentChildRecordsAppended(ownerSessionId);
+		record = ownedRecords(ctx).get(resolved.childId) ?? resolved;
+	}
 	const terminalReason =
 		record.state === "terminal" ? NON_RESUMABLE_STATUSES.get(record.terminalStatus ?? "") : undefined;
 	if (terminalReason)
@@ -470,10 +484,7 @@ async function resumeChild(
 			action,
 			`${label(record)} is terminal and cannot be resumed: ${terminalReason}. Launch a fresh subagent if its work is still needed.`,
 		);
-	const ownerSessionId = subagentChildOwner(ctx).sessionId;
-	const waking = isReleasedChildWakeActive(subagentWakeKey(ownerSessionId, record.childId));
 	if (
-		!waking &&
 		record.taskId !== undefined &&
 		(liveTaskIds(ctx.getAgentTaskHost?.()).has(record.taskId) || isLiveOwnerlessChild(record.taskId))
 	)
@@ -481,6 +492,8 @@ async function resumeChild(
 			action,
 			`${label(record)} is already running as task ${record.taskId}; pause or quit it first.`,
 		);
+	// A wake that did not reopen the child may still be finishing: the resume is queued behind it, not dropped.
+	const waking = isReleasedChildWakeActive(wakeKey);
 	const message = request.message?.trim() ? request.message : undefined;
 	const interrupted = record.state === "running" || INTERRUPTED_STATUSES.has(record.terminalStatus ?? "");
 	const resumeRequest =
