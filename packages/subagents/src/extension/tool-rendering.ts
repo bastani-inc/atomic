@@ -21,7 +21,7 @@ import {
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { Message } from "@bastani/atomic-ai/compat";
 import { type Component, getKeybindings, Text, truncateToWidth } from "@bastani/atomic-tui";
-import type { WaitOutcome } from "../../../coding-agent/src/core/tasks/contracts.js";
+import type { TaskResult, WaitOutcome } from "../../../coding-agent/src/core/tasks/contracts.js";
 import {
 	clearSubagentChildTranscriptCache,
 	type SubagentChildToolCallEntry,
@@ -683,6 +683,17 @@ function buildExpandedDetails(input: {
 	]);
 }
 
+/** A released child's status words: what it waits on, by tool name, as `/tasks` and the agent panel name it. */
+function waitingText(tools: string | undefined): string {
+	return `Waiting on ${displayText(tools ?? "a tool call")}`;
+}
+
+/** The tools a released child waits on, by name and once each; undefined for any other result. */
+function releasedWaitingTools(result: TaskResult): string | undefined {
+	if (result.kind !== "cancelled" || result.released === undefined) return undefined;
+	return [...new Set(result.released.waitingOn.map((call) => call.toolName))].join(", ") || undefined;
+}
+
 function buildOutcomeToolBlock(input: {
 	readonly outcome:
 		| Extract<NonNullable<Details["taskResponse"]>, { kind: "admitted" | "unstarted" }>
@@ -814,8 +825,8 @@ function buildOutcomeToolBlock(input: {
 				const reason = firstDisplayLine(taskSettled.message || "");
 				statusLine = theme.fg("error", ["Failed", elapsedText, reason].filter(Boolean).join(" · "));
 			} else if (taskSettled.released) {
-				status = "paused";
-				statusLine = statJoin(theme, ["Released · waiting", elapsedText]);
+				status = "waiting";
+				statusLine = statJoin(theme, [waitingText(releasedWaitingTools(taskSettled)), elapsedText]);
 			} else if (subagentTaskResultLabel(taskSettled) === "paused · awaiting resume") {
 				status = "paused";
 				statusLine = statJoin(theme, ["Paused · awaiting resume", elapsedText]);
@@ -869,8 +880,11 @@ function buildOutcomeToolBlock(input: {
 								: "Paused · awaiting resume";
 					statusLine = statJoin(theme, [label, elapsedText]);
 				} else if (terminal === SUBAGENT_CHILD_RELEASED_STATUS) {
-					status = "paused";
-					statusLine = statJoin(theme, ["Released · waiting", elapsedText]);
+					status = "waiting";
+					statusLine = statJoin(theme, [
+						waitingText(taskSettled === undefined ? undefined : releasedWaitingTools(taskSettled)),
+						elapsedText,
+					]);
 				} else {
 					status = "stopped";
 					statusLine = statJoin(theme, ["Stopped", elapsedText]);
@@ -895,8 +909,8 @@ function buildOutcomeToolBlock(input: {
 			const reason = firstDisplayLine(observation.result.message || "");
 			statusLine = theme.fg("error", ["Failed", elapsedText, reason].filter(Boolean).join(" · "));
 		} else if (observation.result.released) {
-			status = "paused";
-			statusLine = statJoin(theme, ["Released · waiting", elapsedText]);
+			status = "waiting";
+			statusLine = statJoin(theme, [waitingText(releasedWaitingTools(observation.result)), elapsedText]);
 		} else if (subagentTaskResultLabel(observation.result) === "paused · awaiting resume") {
 			status = "paused";
 			statusLine = statJoin(theme, ["Paused · awaiting resume", elapsedText]);
