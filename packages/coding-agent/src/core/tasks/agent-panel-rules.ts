@@ -77,17 +77,23 @@ export function countPanelRow(counts: PanelRowCounts, kind: PanelRowKind, state:
 	};
 }
 
+/** What the counts read of a listed row. */
+export interface PanelCountedRow {
+	readonly kind: PanelRowKind;
+	readonly state: PanelRowState;
+}
+
 /** The counts of a list of listed rows. */
-export function panelCounts(
-	rows: readonly { readonly kind: PanelRowKind; readonly state: PanelRowState }[],
-): PanelRowCounts {
+export function panelCounts(rows: readonly PanelCountedRow[]): PanelRowCounts {
 	let counts = NO_PANEL_ROWS;
-	for (const row of rows) counts = countPanelRow(counts, row.kind, row.state);
+	for (const row of rows) {
+		counts = countPanelRow(counts, row.kind, row.state);
+	}
 	return counts;
 }
 
 /** Where the hint line points for background work the panel does not list. */
-export type PanelTasksHint = "none" | "manage" | "subagents";
+export type PanelTasksHint = "hidden" | "manage" | "subagents";
 
 /** The parts of the hint line about background work, before they are worded. */
 export interface PanelHintParts {
@@ -115,12 +121,12 @@ export function panelHintParts(
 ): PanelHintParts {
 	const focusable = focusBound && counts.total > 0;
 	const tasks: PanelTasksHint = focusable
-		? "none"
+		? "hidden"
 		: shells > 0
 			? "manage"
 			: counts.total === 0 && subagents > 0
 				? "subagents"
-				: "none";
+				: "hidden";
 	return {
 		agents: focusBound ? counts.agents : 0,
 		needsInput: counts.needsInput,
