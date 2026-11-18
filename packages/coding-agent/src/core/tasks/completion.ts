@@ -248,6 +248,22 @@ export function waitingReleasedTools(task: Pick<TaskRecord, "execution" | "ref">
 	return tools === undefined || taskStoppedForResume(task.ref.taskId) ? undefined : tools;
 }
 
+/**
+ * The shells an agent released while it waits launched that still run, oldest first: what it waits on keeps running
+ * there. Empty for any task that is not waiting.
+ */
+export function waitingReleasedShells(task: TaskRecord, ownerTasks: readonly TaskRecord[]): TaskRecord[] {
+	if (task.kind !== "agent" || waitingReleasedTools(task) === undefined) return [];
+	return ownerTasks
+		.filter(
+			(candidate) =>
+				candidate.parentTaskId === task.ref.taskId &&
+				candidate.kind === "command" &&
+				candidate.execution.kind !== "settled",
+		)
+		.sort((a, b) => a.launchOrdinal - b.launchOrdinal);
+}
+
 /** The tools an agent released while it waited waits on, by name and once each, as a task row names them. */
 export function releasedWaitingTools(result: TaskResult): string | undefined {
 	if (result.kind !== "cancelled" || result.released === undefined) return undefined;
