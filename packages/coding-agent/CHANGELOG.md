@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Listing sessions through `history://sessions` on a large SQLite session store no longer holds up the interface for up to seconds at a time when the store's pages are not cached. The listing reads at most 256 sessions per step and lets the interface run between steps ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
+- `history://sessions` no longer freezes Atomic for up to seconds at a time on a large SQLite session store. Listing one project's sessions read the first message and summary of every stored session, of every project, up to 8,192 sessions per step, which took seconds per step when the store's pages were not cached. The listing now reads other projects' sessions only far enough to skip them, reads at most 256 sessions per step, and lets the interface run between steps. On a store of 70,000 sessions it finishes in a third to a quarter of the time ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
 
 ## [0.9.89] - 2026-11-18
 

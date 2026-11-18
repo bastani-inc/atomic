@@ -271,6 +271,8 @@ const LISTING_CWD_PAGE = 2_000;
  * seconds. A database server's statements do not hold the event loop, so listings over one keep larger statements.
  */
 const LISTING_SCAN_ROWS = 256;
+/** Stored project spellings a paced listing resolves at once; each is a chain of file system calls. */
+const LISTING_CWD_MATCHES = 64;
 const STUB_ENTRY: SessionEntry = {
 	type: "custom",
 	id: "",
@@ -1122,8 +1124,20 @@ export class SqlSessionStore implements SessionStore {
 		let projectCwds: string[] | undefined;
 		if (matchesCwd) {
 			const distinct = await this.distinctCwds(paced, query);
-			const matched = await Promise.all(distinct.map(async (cwd) => ((await matchesCwd(cwd)) ? cwd : undefined)));
-			projectCwds = matched.filter((cwd): cwd is string => cwd !== undefined);
+			// A paced listing resolves a few spellings at a time, with a turn of the event loop between them: resolving
+			// each of a store's thousands of projects at once filled turns with their file system callbacks (#5480).
+			const slice = paced ? LISTING_CWD_MATCHES : Math.max(1, distinct.length);
+			projectCwds = [];
+			for (let start = 0; start < distinct.length; start += slice) {
+				const matched = await Promise.all(
+					distinct.slice(start, start + slice).map(async (cwd) => ((await matchesCwd(cwd)) ? cwd : undefined)),
+				);
+				projectCwds.push(...matched.filter((cwd): cwd is string => cwd !== undefined));
+				if (paced && start + slice < distinct.length) {
+					this.assertListing(query);
+					await yieldTurn();
+				}
+			}
 			this.assertListing(query);
 			if (projectCwds.length === 0) return undefined;
 		}

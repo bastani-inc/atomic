@@ -600,6 +600,34 @@ test("SQL light listing of a project reads only the keys of other projects' sess
 	});
 });
 
+/** Stored project spellings a paced listing resolves at once: each can be a chain of file system calls. */
+const PROJECT_SPELLINGS_AT_ONCE = 64;
+
+test("SQL light listing resolves other projects' spellings a few at a time (#5480)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		let resolving = 0;
+		let mostAtOnce = 0;
+		const store = await SqlSessionStore.open(database, {
+			cwdMatcher: (cwd) => async (candidate) => {
+				resolving++;
+				mostAtOnce = Math.max(mostAtOnce, resolving);
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				resolving--;
+				return candidate === cwd;
+			},
+		});
+		await database.exec("PRAGMA synchronous=OFF");
+		await store.create(header, []);
+		for (let index = 0; index < PROJECT_SPELLINGS_AT_ONCE * 3; index++)
+			await store.create({ ...header, id: `other-${index}`, cwd: `/other-${index}` }, []);
+		const listed: string[] = [];
+		for await (const summary of store.list({ cwd: header.cwd, withoutSearchText: true })) listed.push(summary.id);
+		assert.deepEqual(listed, [header.id]);
+		assert.ok(mostAtOnce <= PROJECT_SPELLINGS_AT_ONCE, `the listing resolved ${mostAtOnce} spellings at once`);
+		await store.close();
+	});
+});
+
 for (let seed = 1; seed <= 16; seed++) {
 	test(`SQL incremental summaries match full history after reopen for random sequence ${seed} (#3645)`, async () => {
 		const directory = makeTempDirectory("atomic-summary-property-");
