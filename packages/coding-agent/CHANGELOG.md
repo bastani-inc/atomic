@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `AgentTaskHost.observeAgentLaunch` takes only `{ kind: "background" }` or no policy, and always returns once the launch's observation is registered, because every subagent now runs in the background; wait for a task with `waitForTask`. `TaskViewSource.foregroundTask`, which no view used, was removed.
+
+### Added
+
+- `AgentTaskHost.waitForTask` takes an optional `AbortSignal` as its fourth argument. Aborting it ends the wait at once with `ObserverCancelled` and leaves the task running.
+
 ### Changed
 
 - The agent panel below the prompt drops a subagent as soon as it finishes. Stopped, paused or interrupted subagents stay only while another subagent, workflow run or background shell is still running, then the whole panel closes, and a resumed subagent is listed once. `↓ N agents` counts only the subagents the panel lists, not workflow runs, so a running workflow alone no longer shows `↓ 1 agent`; `N needs input` still counts a workflow run's question. When the panel lists nothing but `/tasks` lists subagents, the hint shows `/tasks to see subagents`, or `N shells · /tasks to manage` while background shells run.

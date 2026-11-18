@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Every `subagent` launch now runs in the background. The call returns once each child is admitted, with its task id, and the child reports by its completion notice. A subagent the agent needs next is therefore listed below the prompt and in `/tasks` like any other, where you can open its chat, message it or stop it. The launch `wait` option is gone: a call that still passes `wait: { kind: "foreground" }`, as an older saved prompt, agent or workflow may, runs in the background, and the first line of its result says so. To use a child's result in the same turn, wait for it with `subagent({ action: "wait", id })`. A subagent's `contact_supervisor` decision or interview now always waits for the supervisor's reply in the same child, instead of ending a single child with a fresh-subagent handoff; only an SDK session without a task host, which still runs its subagents directly, keeps that handoff.
+
+### Fixed
+
+- Pressing Esc while the agent waits for a subagent with `subagent({ action: "wait", id })` ends the wait and the turn at once, instead of holding the turn until the wait's budget runs out. The subagent keeps running, and its completion notice still arrives.
+
 ## [0.9.89] - 2026-11-18
 
 ### Breaking Changes

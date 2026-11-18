@@ -75,7 +75,7 @@ Run `/tasks` to inspect work without stopping it:
 - Paused workflow runs remain in Working with a `‖ paused` status. Their elapsed time stays frozen, and `x` twice stops them rather than dismissing them as finished.
 - Detail and transcript pages use the full screen. A shell's input stays in the sheet, under `Input to <command>`, with `enter send · ← back to list`.
 - Escape returns to the picker with your selection preserved, then to chat.
-- Completed background work remains available, including after a later foreground wait. Foreground-only commands are excluded.
+- Completed background work remains available, including after a later wait for it. A shell command its tool call still waits on is excluded.
 - Updates never open or close the inspector automatically. Closing it does not stop tasks.
 
 Results and failures remain in completion notices and `/tasks` after leaving the agent panel. The command appears in workflow-stage slash suggestions even when skill commands are disabled.
@@ -86,7 +86,7 @@ Opening `/tasks` is navigation, not approval. It does not mark the agent blocked
 
 ## Choose how long to wait
 
-The agent can choose foreground-first or background observation for each authorized shell or subagent call. Choosing a mode does not require a separate user confirmation and does not relax tool permissions or task ownership.
+The agent can choose foreground-first or background observation for each authorized shell call. Every subagent runs in the background; the agent waits for one with `subagent({ action: "wait", id })` when it needs the result next. Neither choice requires a separate user confirmation or relaxes tool permissions or task ownership.
 
 For ordinary shell commands, leave `wait` out rather than routinely requesting one-second waits. Short waits can background otherwise brief commands and add follow-up calls without speeding up execution. Use explicit background observation when you have independent work to do, and a short budget only when you need control back sooner. Explicit budgets remain supported on every platform.
 
@@ -95,12 +95,13 @@ Keep immediately blocking work local unless a specialist, isolated context, or y
 | Call | Observation behavior |
 | --- | --- |
 | `bash` or `powershell` without `wait` | Waits for the owner's command observation budget, normally 10 seconds, then automatically returns if still running. |
-| `subagent` without `wait` | Returns after admission; the child runs in the background by default. |
-| Any of these tools with `wait: { kind: "background" }` | Explicitly returns after admission without waiting for execution to finish. |
-| Any of these tools with `wait: { kind: "foreground" }` | Waits for the owner's observation budget, normally 10 seconds for shells and 30 seconds for agents. |
-| Any of these tools with `wait: { kind: "foreground", budgetMs: 1000 }` | Waits up to one second, then automatically yields if the original task is still running. |
+| `subagent` launch | Returns after admission; the child always runs in the background. A `wait` the call still passes is ignored, and a foreground one is noted in the result. |
+| `subagent({ action: "wait", id })` | Waits for the owner's agent wait budget, normally 30 seconds, or for its `budgetMs`. Esc ends it at once. |
+| `bash` or `powershell` with `wait: { kind: "background" }` | Explicitly returns after admission without waiting for execution to finish. |
+| `bash` or `powershell` with `wait: { kind: "foreground" }` | Waits for the owner's command observation budget, normally 10 seconds. |
+| `bash` or `powershell` with `wait: { kind: "foreground", budgetMs: 1000 }` | Waits up to one second, then automatically yields if the original task is still running. |
 
-If the task finishes during observation, the call returns its terminal result instead. Automatic backgrounding is **observation expiry**, not a slow-task failure, a restart, or a second execution. Use foreground-first observation for a dependency and background observation for independent work. If a dependency yields, wait for its actual completion before using the result.
+If the task finishes during observation, the call returns its terminal result instead. Automatic backgrounding is **observation expiry**, not a slow-task failure, a restart, or a second execution. Wait for a dependency and let independent work run in the background. If a wait for a dependency ends early, wait for its actual completion before using the result.
 
 Shell `budgetMs` accepts finite non-negative milliseconds; zero means no observation delay. On command launches it belongs inside a foreground `wait`; existing-task `action: "wait"` calls take it at the top level. A trusted SDK host can override the usual budgets or select `tasks.wait.kind: "until-settled"`; omitted foreground budgets then wait until settlement. Explicit per-call budgets still take precedence.
 
@@ -115,13 +116,12 @@ Have a codebase-analyzer trace the authentication flow in the background.
 Keep working with me here while it runs.
 ```
 
-For tool callers, owner-bound launches default to background observation. Explicit examples:
+For tool callers, every launch runs in the background. Examples:
 
 ```ts
 subagent({
   agent: "codebase-analyzer",
   task: "Trace the authentication flow. Do not edit files.",
-  wait: { kind: "background" },
 })
 
 subagent({
@@ -130,40 +130,32 @@ subagent({
     { agent: "codebase-pattern-finder", task: "Find authorization test patterns." },
   ],
   concurrency: 2,
-  wait: { kind: "background" },
 })
 ```
 
 Parallel tasks have independent identities. Accepted work beyond the concurrency limit stays queued. Use `/agents` to browse available definitions before choosing an agent.
 
-Intercom communication does not cancel a parallel batch. An `intercom` ask returns at delivery and its reply arrives as a message in the requesting child; a supervisor decision waits only in the requesting child and resumes that same execution after the matching reply. Sends and progress updates remain nonblocking. Foreground observations may yield so the parent can reply; execution concurrency, queued siblings, and task identities are preserved. Stop a selected task explicitly, or close its owner to cancel all owned work.
+Intercom communication does not cancel a parallel batch. An `intercom` ask returns at delivery and its reply arrives as a message in the requesting child; a supervisor decision waits only in the requesting child and resumes that same execution after the matching reply. Sends and progress updates remain nonblocking. A parent's `action: "wait"` ends so the parent can reply; execution concurrency, queued siblings, and task identities are preserved. Stop a selected task explicitly, or close its owner to cancel all owned work.
 
 A launch result says **Launched in background**. This records what happened at launch; it is not a permanently live status label. The agent panel and `/tasks` show the current state.
 
 ### Waiting is not restarting
 
-When specialist delegation is useful and its result is needed next, use foreground observation:
+When specialist delegation is useful and its result is needed next, launch the child and wait for the task ID the launch returned:
 
 ```ts
-subagent({
-  agent: "codebase-analyzer",
-  task: "Trace the authentication flow.",
-  wait: { kind: "foreground", budgetMs: 30000 },
-})
-```
-
-If that observation budget expires, the same child continues in the background. It is not an execution timeout. Observe the task ID returned by the original call:
-
-```ts
-subagent({ action: "wait", id: taskId })
+subagent({ agent: "codebase-analyzer", task: "Trace the authentication flow." })
+subagent({ action: "wait", id: taskId, budgetMs: 120000 })
 subagent({ action: "status", id: taskId })
 ```
+
+If the wait's budget runs out, or you press Esc while it waits, the same child continues in the background. Neither is an execution timeout or a stop: wait again, or let its completion notice arrive.
 
 To stop, hold, or continue a child, use `pause`, `quit`, and `resume`; see [Run control](/subagents#run-control).
 
 Do not launch a duplicate just to retrieve its result. Use the task ID returned at launch. IDs are scoped to the session or workflow stage that owns them.
 
-Foreground subagent launches and explicit `action: "wait"` calls also yield when user steering or an Intercom ask/send is admitted to the waiting parent, in main chat or a live workflow stage. The message stays in the normal delivery queue so the parent can handle it and reply. This releases only observation: children keep running under the same task IDs, and other owners' waits are unaffected.
+An `action: "wait"` call also ends when user steering or an Intercom ask/send is admitted to the waiting parent, in main chat or a live workflow stage. The message stays in the normal delivery queue so the parent can handle it and reply. This releases only observation: children keep running under the same task IDs, and other owners' waits are unaffected.
 
 ### Completion messages
 
