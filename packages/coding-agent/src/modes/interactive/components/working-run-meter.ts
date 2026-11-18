@@ -226,6 +226,14 @@ export class WorkingRunMeter {
 		return this.endedRun?.attemptFailed === true;
 	}
 
+	/**
+	 * The turn of the run {@link stop} ended last is over: its retry or model switch ended without a next attempt. No
+	 * later attempt continues it; the next request starts a turn of its own.
+	 */
+	endTurn(): void {
+		this.endedRun = undefined;
+	}
+
 	/** The run {@link stop} ended last, counted up to now: a turn that ends while it waits to retry ends now. */
 	endedRunSnapshot(): WorkingRunSnapshot | undefined {
 		const run = this.endedRun;

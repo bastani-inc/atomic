@@ -804,7 +804,7 @@ export class PooledStageHandle implements StageControlHandle {
 		this.currentStatus = snapshot.status;
 		this.streamingNow = snapshot.isStreaming;
 		this.waitingToRetry = snapshot.waitingToRetry === true;
-		this.turnStart = new StageTurnStart(snapshot.turnStartedAt, snapshot.isStreaming);
+		this.turnStart = new StageTurnStart(snapshot.turn);
 		this.seq = snapshot.seq;
 		this.toolExecutions = new StageToolExecutionBuffer();
 		for (const event of snapshot.pendingToolExecutionEvents) this.toolExecutions.record(event);

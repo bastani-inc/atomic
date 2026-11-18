@@ -127,6 +127,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		get turnStartedAt() {
 			return turnStart.turnStartedAt();
 		},
+		turnState() {
+			return turnStart.state();
+		},
 		get agentSession() {
 			return runtime.innerCtx.__agentSession();
 		},

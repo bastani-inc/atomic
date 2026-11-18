@@ -289,6 +289,38 @@ describe("the working line counts a turn from its start through its retries (#55
 			}
 		});
 
+		test(`${name}: after a retry cancelled during its wait, a model switch before the next turn's first request leaves that turn its own count (#5535)`, async () => {
+			const chat = open();
+			try {
+				await failFirstAttempt(chat);
+				now = 6_000;
+				await chat.emit({
+					type: "auto_retry_end",
+					success: false,
+					attempt: 1,
+					finalError: "Retry cancelled",
+				} as AgentSessionEvent);
+				now = 60_000;
+				await chat.emit({ ...FALLBACK_START, reason: "No API key found for anthropic" } as AgentSessionEvent);
+				await chat.emit({ type: "agent_start" } as AgentSessionEvent);
+				await chat.emit({ type: "turn_start" } as AgentSessionEvent);
+				await chat.emit({ type: "message_start", message: assistant("", "stop") } as AgentSessionEvent);
+				now = 63_000;
+				await chat.emit({
+					type: "message_update",
+					message: assistant("Next.", "stop"),
+					assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Next." },
+				} as unknown as AgentSessionEvent);
+				const working = chat.status();
+				assert.ok(
+					working.some((line) => / \(3s · /.test(line)),
+					`the new turn counts from its own start: ${working.join(" | ")}`,
+				);
+			} finally {
+				chat.dispose();
+			}
+		});
+
 		test(`${name}: a model switch before a turn's first request leaves the turn its own count (#5535)`, async () => {
 			const chat = open();
 			try {

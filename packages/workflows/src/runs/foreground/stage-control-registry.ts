@@ -37,6 +37,7 @@ import { createSessionScopedSingleton } from "../../shared/session-scoped-single
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageQueuedTextOptions, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
+import type { StageTurnState } from "./stage-turn-start.js";
 
 export type StageControlStatus =
 	| "pending"
@@ -110,6 +111,8 @@ export interface StageControlHandle {
 	 * turns, and from a handle that does not know it (a stage on an older worker).
 	 */
 	readonly turnStartedAt?: number;
+	/** The stage's turn while it may still go on, for a local worker's watch to hand to the root. */
+	turnState?(): StageTurnState | undefined;
 	inFlightAttemptUsage?(): import("../../shared/types.js").WorkflowModelUsage | undefined;
 	/** Set when the stage's session runs in another process. */
 	readonly placement?: StagePlacement;

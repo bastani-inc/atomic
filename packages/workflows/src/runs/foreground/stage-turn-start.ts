@@ -33,6 +33,18 @@ function isFailedAnswer(message: AnswerLike): boolean {
 	return !Array.isArray(content) || !content.some((block) => isContentBlock(block) && blockHasContent(block));
 }
 
+/** A stage's turn as a local worker's watch hands it to the root: what {@link StageTurnStart} knows about it. */
+export interface StageTurnState {
+	/** When the turn's first request started. */
+	readonly startedAt: number;
+	/** A request of the turn runs. */
+	readonly running: boolean;
+	/** A retry or a model switch announced the turn's next request. */
+	readonly pending: boolean;
+	/** The turn's last answer failed: the stage may still move it to its next model. */
+	readonly lastAnswerFailed: boolean;
+}
+
 /**
  * When the stage's current turn sent its first request, while the turn is under way: a request runs, or a retry or a
  * model switch announced the next one. The stage moves a failed request to its next model in a new session, which
@@ -41,9 +53,10 @@ function isFailedAnswer(message: AnswerLike): boolean {
  *
  * It reads the stage's events. A turn starts at an `agent_start` that no retry or model switch announced. A retry
  * (`auto_retry_start`), or a model switch after a failed answer (`model_fallback_start`), announces the next request of
- * the same turn; the turn ends with a request that nothing follows, or when the retry or switch ends without one
- * (`auto_retry_end`, `model_fallback_end`). A switch before a turn's first request (no key for the model) announces
- * nothing: that request starts its own turn.
+ * the same turn. The turn ends with an answer that nothing follows, or when a switch ends without its request
+ * (`model_fallback_end`); a retry that ends without one (`auto_retry_end`) still leaves the stage free to move the failed
+ * request to its next model. A switch before a turn's first request (no key for the model) announces nothing: that
+ * request starts its own turn.
  */
 export class StageTurnStart {
 	private startedAt: number | undefined;
@@ -53,15 +66,13 @@ export class StageTurnStart {
 	private pending = false;
 	private lastAnswerFailed = false;
 
-	/**
-	 * Take up a turn read elsewhere (a stage on a local worker): one under way since `turnStartedAt`, with a request
-	 * running when `streaming`, and its next one announced otherwise.
-	 */
-	constructor(turnStartedAt?: number, streaming = false) {
-		if (turnStartedAt === undefined) return;
-		this.startedAt = turnStartedAt;
-		this.running = streaming;
-		this.pending = !streaming;
+	/** Take up a turn read elsewhere: a stage on a local worker, as its watch's snapshot hands it over. */
+	constructor(state?: StageTurnState) {
+		if (state === undefined) return;
+		this.startedAt = state.startedAt;
+		this.running = state.running;
+		this.pending = state.pending;
+		this.lastAnswerFailed = state.lastAnswerFailed;
 	}
 
 	record(event: AgentSessionEvent, now = Date.now()): void {
@@ -85,8 +96,14 @@ export class StageTurnStart {
 				if (this.startedAt !== undefined && this.lastAnswerFailed && !this.running) this.pending = true;
 				return;
 			case "auto_retry_end":
-			case "model_fallback_end":
+				// The session stops retrying. The stage may still move the failed request to its next model.
 				if (!event.success) this.pending = false;
+				return;
+			case "model_fallback_end":
+				// The switch ends without its next request: the turn is over, and nothing after it continues it.
+				if (event.success) return;
+				this.pending = false;
+				this.lastAnswerFailed = false;
 				return;
 		}
 	}
@@ -94,5 +111,19 @@ export class StageTurnStart {
 	/** When the turn under way sent its first request; undefined between turns. */
 	turnStartedAt(): number | undefined {
 		return this.running || this.pending ? this.startedAt : undefined;
+	}
+
+	/**
+	 * The turn, while it may still go on: under way, or ended on a failed answer the stage may yet move to its next
+	 * model. Undefined otherwise.
+	 */
+	state(): StageTurnState | undefined {
+		if (this.startedAt === undefined || !(this.running || this.pending || this.lastAnswerFailed)) return undefined;
+		return {
+			startedAt: this.startedAt,
+			running: this.running,
+			pending: this.pending,
+			lastAnswerFailed: this.lastAnswerFailed,
+		};
 	}
 }

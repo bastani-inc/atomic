@@ -9,6 +9,7 @@ import {
 	createStageControlRegistry,
 	type StageControlHandle,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { StageTurnStart } from "../../packages/workflows/src/runs/foreground/stage-turn-start.js";
 import {
 	openPooledStageHandle,
 	type PooledStageTransport,
@@ -17,7 +18,15 @@ import type { WorkerRequest } from "../../packages/workflows/src/workers/protoco
 import { WorkerStageWatches } from "../../packages/workflows/src/workers/stage-watch.js";
 import type { PooledStageWatchMessage, WatchId } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { sleep } from "../helpers/runtime.js";
-import { createStore, deriveGraphTheme, makeTestTui, StageChatView, setupRun } from "./stage-chat-view-helpers.js";
+import {
+	createStore,
+	deriveGraphTheme,
+	fakeFooterAgentSession,
+	makeHandle,
+	makeTestTui,
+	StageChatView,
+	setupRun,
+} from "./stage-chat-view-helpers.js";
 import {
 	type AgentSession,
 	type AgentSessionAdapter,
@@ -149,6 +158,9 @@ function stageWithFallback(options: {
 					}
 					streaming = false;
 					emit({ type: "agent_end", messages: [] });
+					// Out of retries, the session says so; the stage then moves the request to its next model.
+					if (model === PRIMARY && options.primaryRetryWait !== undefined)
+						emit({ type: "auto_retry_end", success: false, attempt: 1, finalError: "404 model not found" });
 				},
 				getLastAssistantText() {
 					return model === FALLBACK ? "Fixed the picker." : undefined;
@@ -398,6 +410,30 @@ describe("a stage chat opened after the stage moved its turn to the fallback mod
 		}
 	});
 
+	test("a turn whose retries ran out before the stage moved it to its next model counts from its start (#5535)", async () => {
+		const retry = Promise.withResolvers<void>();
+		const stage = stageWithFallback({ primaryMs: 3_000, fallbackMs: 200, primaryRetryWait: retry.promise });
+		const chat = openStageChat(stage.handle);
+		const turn = stage.ctx.prompt("Fix the picker");
+		try {
+			await stage.primaryWaiting;
+			now += 1_000;
+			retry.resolve();
+			assert.equal(await turn, "Fixed the picker.");
+			// 3 s on the first request, 1 s of wait, 3 s on the retry, 0.2 s on the fallback.
+			const rows = chat.rows();
+			assert.ok(
+				rows.some((row) => / for 7s/.test(row)),
+				`the finished turn counts from its start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
+			);
+		} finally {
+			retry.resolve();
+			await turn.catch(() => undefined);
+			chat.dispose();
+			await stage.dispose();
+		}
+	});
+
 	test("on a local worker, a watch opened after the switch carries the turn's start (#5535)", async () => {
 		const release = Promise.withResolvers<void>();
 		const stage = stageWithFallback({ primaryMs: 6_400, fallbackMs: 200, holdFallback: release.promise });
@@ -455,6 +491,41 @@ describe("a stage chat opened after the stage moved its turn to the fallback mod
 			release.resolve();
 			await turn.catch(() => undefined);
 			await stage.dispose();
+		}
+	});
+
+	test("on a local worker, a watch opened after a failed request, before the stage moves to its next model, keeps the turn's start (#5535)", async () => {
+		// The worker's stage: its first request, sent at 1 s, failed, and the stage has not yet announced its next model.
+		const { handle, state, emit } = makeHandle(undefined, [], "running", fakeFooterAgentSession(false));
+		state.isStreaming = false;
+		const turn = new StageTurnStart();
+		turn.record({ type: "agent_start" } as AgentSessionEvent, 1_000);
+		turn.record({
+			type: "message_end",
+			message: { role: "assistant", content: [], stopReason: "error", errorMessage: "404 model not found" },
+		} as unknown as AgentSessionEvent);
+		turn.record({ type: "agent_end", messages: [] } as unknown as AgentSessionEvent);
+		Object.assign(handle, { turnState: () => turn.state() });
+		now = 7_000;
+		const worker = await workerStageHandle(handle);
+		try {
+			emit({
+				type: "model_fallback_start",
+				from: PRIMARY,
+				to: FALLBACK,
+				reason: "404 model not found",
+				attempt: 1,
+			} as AgentSessionEvent);
+			await sleep(120);
+			const switching = openedStageChat(worker.handle);
+			assert.ok(
+				switching.some((row) => row.includes("switching model")),
+				`the chat shows the switch: ${switching.filter((row) => row.includes("∀")).join(" | ")}`,
+			);
+			assert.equal(worker.handle.turnStartedAt, 1_000);
+		} finally {
+			worker.handle.dispose();
+			worker.close();
 		}
 	});
 

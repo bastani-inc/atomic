@@ -697,6 +697,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				const failedTurn = this.workingRunMeter.endedOnFailedAttempt();
 				mountEndedTurn(this, event.success || !failedTurn ? undefined : this.workingRunMeter.endedRunSnapshot());
 			}
+			if (!event.success) this.workingRunMeter.endTurn();
 			this.ui.requestRender();
 			break;
 		}
@@ -720,6 +721,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			// Show error only on final failure (success shows normal response)
 			if (!event.success) {
 				this.workingRunMeter.stop();
+				this.workingRunMeter.endTurn();
 				this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 			}
 			this.ui.requestRender();

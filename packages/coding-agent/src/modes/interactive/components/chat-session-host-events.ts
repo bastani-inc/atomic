@@ -428,6 +428,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			if (!fallback.success) {
 				endRetriedTurn(state);
 				state.workingRunMeter.stop();
+				state.workingRunMeter.endTurn();
 				state.sdkBusy = false;
 				state.compacting = false;
 				state.compactionStartedAt = undefined;
@@ -443,6 +444,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			if (!retry.success) {
 				endRetriedTurn(state);
 				state.workingRunMeter.stop();
+				state.workingRunMeter.endTurn();
 				state.sdkBusy = false;
 				state.compacting = false;
 				state.compactionStartedAt = undefined;
