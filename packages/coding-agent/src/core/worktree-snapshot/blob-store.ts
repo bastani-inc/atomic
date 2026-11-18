@@ -1379,7 +1379,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				`SELECT watermark, backfilled_through FROM ${t.sources} WHERE source = ?`,
 				source.name,
 			);
-			if (progress === undefined || progress.backfilled_through >= progress.watermark) return true;
+			// A source marked for a rebuild meanwhile keeps its mark, which no build reads as complete: its rows are removed
+			// and indexed again by the next collection (#5553).
+			if (progress === undefined || progress.watermark < 0 || progress.backfilled_through >= progress.watermark)
+				return true;
 			const { upper: lastRow } = (await transaction.get<SqliteRow & { upper: number | null }>(
 				`SELECT MAX(${row}) AS upper FROM (SELECT ${row} FROM ${source.table} WHERE ${row} > ? AND ${row} <= ? ORDER BY ${row} LIMIT ?)`,
 				progress.backfilled_through,
