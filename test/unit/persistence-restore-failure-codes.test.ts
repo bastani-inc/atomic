@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
+import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowFailureCode } from "../../packages/workflows/src/shared/store-types.js";
 import { WORKFLOW_INFRASTRUCTURE_FAULTS } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
@@ -89,6 +90,7 @@ describe("a restored session keeps every recorded failure code", () => {
 		]);
 		assert.ok(run.blockedAt !== undefined);
 		assert.equal(run.failureCode, code);
+		assert.equal(effectiveRunStatus(run), "blocked", "it reads as blocked after the restart too");
 	});
 
 	test("a code this version does not know is still dropped", () => {
