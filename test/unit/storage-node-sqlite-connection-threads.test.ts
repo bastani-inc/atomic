@@ -137,15 +137,14 @@ test("a closed connection that stays referenced keeps nothing its closer held (#
 	await assert.rejects(database.run("INSERT INTO t VALUES (1)"), /closed/);
 });
 
-test("a connection's thread raises only its own scheduling priority, never the caller's (#5376)", async () => {
+test("on Windows, the thread that opens a connection on a thread of its own waits for it at above-normal priority (#5376)", async () => {
 	const { currentThreadPriority } = createRequire(import.meta.url)("@bastani/atomic-natives") as {
 		currentThreadPriority(): number;
 	};
-	const before = currentThreadPriority();
 	const database = await open(databasePath());
 	await database.transaction((transaction) => transaction.run("CREATE TABLE t(v)"));
-	assert.equal(currentThreadPriority(), before, "the calling thread keeps its priority");
-	assert.equal(before, 0, "at normal priority");
+	// 1 is above normal; elsewhere the priority is not changed, and reads 0.
+	assert.equal(currentThreadPriority(), process.platform === "win32" ? 1 : 0);
 });
 
 /** The kinds of the requests every adapter connection sends its thread while `work` runs. */
