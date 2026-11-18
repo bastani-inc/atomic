@@ -317,6 +317,10 @@ export function createPostMortemStageHandle(
 					(context.__sessionMeta().sessionId === undefined || context.__idleForRelease())
 				);
 			},
+			chatHolds: holds,
+			get chatTurnBusy() {
+				return context.isStreaming || context.__turnLoopBusy?.() === true;
+			},
 			holdsTaken: () => holds.holdsTaken,
 			onHoldLifted: (listener: () => void) => holds.onLifted(listener),
 		},

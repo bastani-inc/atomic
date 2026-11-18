@@ -2,6 +2,7 @@ import type { SessionStore } from "@bastani/atomic";
 import { createPostMortemStageHandle } from "../runs/foreground/postmortem-stage-chat.js";
 import {
 	stageControlRegistry as defaultStageControlRegistry,
+	disposeAfterStageHolds,
 	type StageControlHandle,
 	type StageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
@@ -122,15 +123,9 @@ function registerCompletedChatHandles(
 	for (const stage of snapshot.stages) {
 		if (stage.sessionId === undefined) continue;
 		const key = completedChatKey(snapshot.id, stage.id);
-		const registration = registrations.get(key)?.deref();
 		const existing = registry.peek(snapshot.id, stage.id);
 		if (existing?.sessionId === stage.sessionId && existing.sessionStore === sessionStore && !existing.isDisposed)
 			continue;
-		if (registration !== undefined) {
-			removeCompletedChatRegistration(registrations, key);
-		} else if (existing !== undefined) {
-			disposeCompletedChatHandle(existing);
-		}
 		const handle = createPostMortemStageHandle(
 			snapshot.id,
 			stage,
@@ -155,11 +150,7 @@ function removeCompletedChatRegistration(registrations: Map<string, WeakRef<Stag
 	registrations.delete(key);
 	if (handle === undefined) return;
 	completedChatUnregisters.get(handle)?.();
-	disposeCompletedChatHandle(handle);
-}
-
-function disposeCompletedChatHandle(handle: StageControlHandle): void {
-	void Promise.resolve(handle.dispose?.()).catch((error: Error) => {
+	void Promise.resolve(disposeAfterStageHolds(handle)).catch((error: Error) => {
 		console.warn("atomic-workflows: completed chat handle dispose failed", error);
 	});
 }

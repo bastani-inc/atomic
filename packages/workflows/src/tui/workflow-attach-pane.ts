@@ -82,6 +82,8 @@ export class WorkflowAttachPane implements Component {
 	private attachmentGeneration = 0;
 	private graphView: GraphView;
 	private chatView: StageChatView | null = null;
+	private mountedHandle?: StageControlHandle;
+	private stopWatchingReplacements?: () => void;
 	/** Where the attached pooled prompt stage sits in its run, and the attempt that published it. */
 	private attachedPromptPosition: { readonly index: number; readonly generation: number } | null = null;
 	/** The attachment whose pooled view may remount the chat when it reconnects. */
@@ -128,6 +130,13 @@ export class WorkflowAttachPane implements Component {
 		this.setToolsExpanded = opts.setToolsExpanded;
 		this.footerData = opts.footerData;
 		this.now = opts.now ?? Date.now;
+		this.stopWatchingReplacements = this.registry?.onStageReplaced?.((previous, next) => {
+			if (!this.chatView || this.mountedHandle !== previous) return;
+			const { runId, stageId } = next;
+			this.composerDrafts.capture(runId, stageId, this.chatView._inputBuffer);
+			this._disposeChatView();
+			this._mountChatView(runId, stageId, next, undefined);
+		});
 		this.unsubscribeStore = subscribeStoreInvalidation(this.store, () => {
 			this.storeChangedAt = this.now();
 		});
@@ -301,7 +310,9 @@ export class WorkflowAttachPane implements Component {
 		// starting): the chat says so, and opens the view by itself once the worker serves it.
 		this.awaitingPooledView = pooledLive && release === undefined;
 		this.pooledViewRetryAt = this.now();
-		this._mountChatView(runId, stageId, handle, postMortemUnavailableReason);
+		// A local chat resolver can yield while a resume registers a successor.
+		const current = release === undefined ? this.registry?.peek(runId, stageId) : undefined;
+		this._mountChatView(runId, stageId, current ?? handle, postMortemUnavailableReason);
 	}
 	/** Opens the live view an open chat of a stage on a local worker is waiting for, once the worker serves it. */
 	private _retryPooledStageView(stage: StageSnapshot | undefined): void {
@@ -378,11 +389,13 @@ export class WorkflowAttachPane implements Component {
 				this._isStageMarkedAttached(candidateRunId, candidateStageId),
 		});
 		this.chatView = chatView;
+		this.mountedHandle = handle;
 		this.mode = "stage-chat";
 		this.store.recordStageAttached(runId, stageId, this.visible);
 		this.hostRequestRender?.();
 	}
 	private _disposeChatView(): void {
+		this.mountedHandle = undefined;
 		this.pooledAttachment = undefined;
 		this.awaitingPooledView = false;
 		this.chatView?.dispose();
@@ -724,6 +737,8 @@ export class WorkflowAttachPane implements Component {
 		if (this.mode !== "stage-chat" || !this.chatView) this.graphView.invalidate();
 	}
 	dispose(): void {
+		this.stopWatchingReplacements?.();
+		this.stopWatchingReplacements = undefined;
 		this.attachmentGeneration += 1;
 		this.unsubscribeStore?.();
 		this.unsubscribeStore = null;
