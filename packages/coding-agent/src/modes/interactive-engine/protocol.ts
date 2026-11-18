@@ -11,6 +11,7 @@ import type {
 } from "../../core/extensions/ui-types.js";
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
 import type { KeyId } from "../../core/keybindings.ts";
+import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { parseHostSessionPickerRows } from "../../core/workflow-resume.ts";
 import type { ToolGroupFamily, ToolGroupRole } from "../interactive/components/tool-block.ts";
 
@@ -68,6 +69,7 @@ export type InteractiveEngineMessage =
 	| { type: "engine_ready"; protocolVersion: typeof INTERACTIVE_ENGINE_PROTOCOL_VERSION; pid: number }
 	| { type: "engine_bound" }
 	| { type: "engine_project_trust_resolved" }
+	| { type: "engine_trust_decision"; scope: keyof SessionTrustDecisions; path: string; trusted: boolean }
 	/** The child recorded `engine_explicit_quit`; it is safe for the host to stop it. */
 	| { type: "engine_explicit_quit_ack" }
 	| { type: "engine_resources_ready" }
@@ -559,6 +561,12 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				: undefined;
 		case "engine_bound":
 			return { type: value.type };
+		case "engine_trust_decision":
+			return (value.scope === "projects" || value.scope === "extensionSources") &&
+				typeof value.path === "string" &&
+				typeof value.trusted === "boolean"
+				? { type: value.type, scope: value.scope, path: value.path, trusted: value.trusted }
+				: undefined;
 		case "engine_project_trust_resolved":
 		case "engine_explicit_quit_ack":
 		case "engine_extension_ui_reset":
