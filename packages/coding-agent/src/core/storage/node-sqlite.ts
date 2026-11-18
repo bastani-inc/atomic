@@ -561,8 +561,8 @@ function processAlive(pid: number): boolean {
  * its first attempt, which waits for the record to be written), when it took the lock, and that it is free once it
  * lets go or gives up; only its connection writes a record, so records never race. Nothing reads them until a writer
  * gives up: the live record taken most recently names the holder. A holder whose record does not yet say it took the
- * lock, stopped or starved right after taking it, still says it was trying for it, and the record trying the longest
- * of the other connections names it then. A connection removes the records
+ * lock, stopped or starved right after taking it, still says it was trying for it; it is then one of the candidates the
+ * writer that gives up lists, not named. A connection removes the records
  * of exited processes when it creates its own, so the killed ones do not pile up. Recording is a diagnostic: a
  * record that cannot be created, written or cleaned up never fails a transaction. The failure is recorded as a
  * degradation instead, and a writer that gives up waiting may then name no holder.
@@ -609,8 +609,8 @@ class SqliteHolderRecord {
 		return this.write(`free ${"0".repeat(15)}\n`);
 	}
 
-	/** The process, this one or another, whose record says it took the write lock most recently. */
-	latestHolder(): Promise<{ readonly pid: number; readonly heldMs: number } | undefined> {
+	/** The process, this one or another, whose record says it took the write lock most recently; see `writeLockHolder`. */
+	latestHolder(): Promise<WriteLockHolder | undefined> {
 		return writeLockHolder(this.directory, basename(this.path));
 	}
 
@@ -905,25 +905,26 @@ async function liveHolderRecords(directory: string): Promise<LiveHolderRecord[]>
 	return live;
 }
 
+/** Who holds the write lock, as far as the records prove it. */
+type WriteLockHolder = { readonly pid: number; readonly heldMs: number } | { readonly candidates: readonly number[] };
+
 /**
- * The live process whose record says it took the write lock most recently, and for how long it has held it. When no
- * record says so, the holder took the lock before its record could say it: the record of another connection, not
- * `own`, that has been trying for the lock the longest names it, held since it started trying.
+ * The live process whose record says it took the write lock most recently, and for how long it has held it. A record
+ * that says a connection is only trying for the lock proves nothing: a waiter stopped in the queue keeps saying so while
+ * a later writer takes the lock past it. So when no record says it took the lock, as for a holder stopped before its
+ * record could say so, no process is named; the processes of the other connections trying for the lock, not `own`, are
+ * the candidates, one of which may hold it.
  */
-async function writeLockHolder(
-	directory: string,
-	own: string,
-): Promise<{ readonly pid: number; readonly heldMs: number } | undefined> {
+async function writeLockHolder(directory: string, own: string): Promise<WriteLockHolder | undefined> {
 	let held: { pid: number; since: number } | undefined;
-	let trying: { pid: number; since: number } | undefined;
+	const candidates = new Set<number>();
 	for (const record of await liveHolderRecords(directory)) {
 		const { pid, heldSince, tryingSince } = record;
 		if (heldSince !== undefined && (held === undefined || heldSince > held.since)) held = { pid, since: heldSince };
-		if (record.name !== own && tryingSince !== undefined && (trying === undefined || tryingSince < trying.since))
-			trying = { pid, since: tryingSince };
+		if (record.name !== own && tryingSince !== undefined) candidates.add(pid);
 	}
-	const holder = held ?? trying;
-	return holder === undefined ? undefined : { pid: holder.pid, heldMs: Math.max(0, Date.now() - holder.since) };
+	if (held !== undefined) return { pid: held.pid, heldMs: Math.max(0, Date.now() - held.since) };
+	return candidates.size === 0 ? undefined : { candidates: [...candidates].sort((a, b) => a - b) };
 }
 
 interface TransactionGates {
@@ -1387,8 +1388,10 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				timeoutMs: lockWaitMs,
 				elapsedMs: Math.round(stalledMs),
 				phase: behind ? "queued" : "acquiring",
-				holderPid: holder?.pid,
-				holderHeldMs: holder?.heldMs,
+				...(holder !== undefined && "pid" in holder ? { holderPid: holder.pid, holderHeldMs: holder.heldMs } : {}),
+				...(holder !== undefined && "candidates" in holder
+					? { holderCandidates: holder.candidates.join(", ") }
+					: {}),
 			},
 			lastCause as StorageFailureCause,
 		);

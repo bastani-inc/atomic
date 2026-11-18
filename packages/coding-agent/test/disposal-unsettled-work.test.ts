@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import { SESSION_WORK_DRAIN_MS, SessionWorkUnsettledError } from "../src/core/session-lifecycle-work.js";
 import { persistedManager } from "./helpers/detached-tools.js";
@@ -7,6 +8,8 @@ import { createHarness, type Harness } from "./suite/harness.js";
 const NOTICE = { customType: "subagent-notify", content: "child finished", display: true } as const;
 /** Bound on the event-loop turns until disposal has cancelled the session's work and started waiting for it. */
 const UNTIL_DRAINING_TURNS = 10_000;
+/** Bound on the 1 ms waits until the turn's message has reached its save. */
+const UNTIL_SAVING_TURNS = 5_000;
 
 const harnesses: Harness[] = [];
 afterEach(async () => {
@@ -42,5 +45,44 @@ test("disposal stops waiting for a session save that never settles after SESSION
 		.find((cause): cause is SessionWorkUnsettledError => cause instanceof SessionWorkUnsettledError);
 	assert.ok(unsettled, `the shutdown names the unsettled work: ${error.errors.map(String).join("; ")}`);
 	assert.equal(unsettled.pending, 1);
+	assert.equal(unsettled.waitedMs, SESSION_WORK_DRAIN_MS);
+});
+
+test("disposal stops waiting after SESSION_WORK_DRAIN_MS for a turn whose message save never settles, though the wait is on the event queue, not on tracked work", async () => {
+	const { manager } = await persistedManager();
+	const harness = await createHarness({ sessionManager: manager });
+	harnesses.push({ ...harness, cleanup: () => harness.cleanup().catch(() => {}) });
+	harness.setResponses([fauxAssistantMessage("the reply that is never saved")]);
+	const append = manager.appendMessage.bind(manager);
+	let saving = false;
+	manager.appendMessage = ((...args: Parameters<typeof append>) => {
+		if (args[0].role !== "assistant") return append(...args);
+		saving = true;
+		return new Promise(() => {});
+	}) as typeof manager.appendMessage;
+	const prompt = harness.session.prompt("say something");
+	void prompt.catch(() => {});
+	for (let turn = 0; !saving && turn < UNTIL_SAVING_TURNS; turn++)
+		await new Promise((resolve) => setTimeout(resolve, 1));
+	assert.ok(saving, "the reply reached its save");
+
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const outcome = harness.session.dispose().then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	for (let turn = 0; vi.getTimerCount() === 0 && turn < UNTIL_DRAINING_TURNS; turn++)
+		await new Promise((resolve) => setImmediate(resolve));
+	assert.ok(vi.getTimerCount() > 0, "the shutdown's bound is running");
+	await vi.advanceTimersByTimeAsync(SESSION_WORK_DRAIN_MS);
+	vi.useRealTimers();
+
+	const error = await outcome;
+	assert.ok(error instanceof AggregateError, String(error));
+	assert.equal((error as AggregateError & { code?: string }).code, "ShutdownFailed");
+	const unsettled = error.errors
+		.map((entry: Error) => entry.cause)
+		.find((cause): cause is SessionWorkUnsettledError => cause instanceof SessionWorkUnsettledError);
+	assert.ok(unsettled, `the shutdown names the step it stopped waiting at: ${error.errors.map(String).join("; ")}`);
 	assert.equal(unsettled.waitedMs, SESSION_WORK_DRAIN_MS);
 });

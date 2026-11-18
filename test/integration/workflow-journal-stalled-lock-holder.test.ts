@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -282,7 +282,7 @@ test.skipIf(process.platform === "win32")(
 const SLOW_RECORD_MS = 4 * LOCK_WAIT_MS;
 
 test.skipIf(process.platform === "win32")(
-	"a writer that gives up on a write lock names the process holding it even when that process stopped before it recorded taking the lock",
+	"a writer that gives up on a write lock lists, without naming it, a process that took the lock and stopped before it recorded so",
 	async () => {
 		const directory = makeTempDirectory("journal-stalled-holder-unrecorded-");
 		const path = join(directory, "journal.sqlite");
@@ -298,11 +298,68 @@ test.skipIf(process.platform === "win32")(
 					(cause: unknown) => cause,
 				);
 			assert.ok(error instanceof StorageWriteLockTimeoutError, String(error));
-			assert.equal(error.holderPid, holder.pid);
-			assert.ok((error.holderHeldMs ?? -1) >= 0);
+			assert.equal(error.holderPid, undefined);
+			assert.equal(error.holderCandidates, String(holder.pid));
+			assert.match(error.message, new RegExp(`processes trying for it: ${holder.pid}\\)`));
 			await holder.release();
 		} finally {
 			await holder?.kill();
+			await database.close();
+			removeTempDirectory(directory);
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+const QUEUE_WRITER = fileURLToPath(new URL("../fixtures/sqlite-queue-writer.mjs", import.meta.url));
+
+test.skipIf(process.platform === "win32")(
+	"a writer that gives up never names a waiter stopped in the queue when a later writer took the lock past it without recording so",
+	async () => {
+		const directory = makeTempDirectory("journal-stalled-holder-stopped-waiter-");
+		const path = join(directory, "journal.sqlite");
+		const database = await openNodeSqliteDatabase(path, { busyTimeoutMs: 0, lockWaitMs: LOCK_WAIT_MS });
+		const children: SpawnedProcess[] = [];
+		let first: Awaited<ReturnType<typeof stallingHolder>> | undefined;
+		let later: Awaited<ReturnType<typeof stallingHolder>> | undefined;
+		try {
+			await database.exec("CREATE TABLE probe(x); CREATE TABLE writes(writer TEXT, seq INTEGER, payload BLOB)");
+			first = await stallingHolder(path, "stopped");
+			const waiter = spawnProcess(
+				[process.execPath, QUEUE_WRITER, path, JSON.stringify({ label: "waiter", lockWaitMs: 60_000 })],
+				{ stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+			);
+			children.push(waiter);
+			assert.equal(await readLine(waiter), "ready");
+			waiter.stdin?.end("go\n");
+			const queued = () => readdirSync(`${path}-writers`).some((name) => name.split("-")[1] === String(waiter.pid));
+			while (!existsSync(`${path}-writers`) || !queued()) await sleep(5);
+			waiter.kill("SIGSTOP");
+			await first.kill();
+			first = undefined;
+			// Takes the lock past the stopped waiter's ticket once that goes stale, and stops before it records so.
+			later = await stallingHolder(path, "stopped", [`slow-record:${SLOW_RECORD_MS}`]);
+			const error = await database
+				.transaction((tx) => tx.run("INSERT INTO probe VALUES (1)"))
+				.then(
+					() => assert.fail("write succeeded under a held lock"),
+					(cause: unknown) => cause,
+				);
+			assert.ok(error instanceof StorageWriteLockTimeoutError, String(error));
+			assert.equal(
+				error.holderPid,
+				undefined,
+				`named process ${error.holderPid}; the waiter is ${waiter.pid}, the holder ${later.pid}`,
+			);
+			assert.deepEqual(error.holderCandidates?.split(", ").map(Number).sort(), [waiter.pid, later.pid].sort());
+		} finally {
+			await first?.kill();
+			await later?.kill();
+			for (const child of children) {
+				child.kill("SIGCONT");
+				child.kill("SIGKILL");
+				await child.exited;
+			}
 			await database.close();
 			removeTempDirectory(directory);
 		}
