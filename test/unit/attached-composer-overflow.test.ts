@@ -6,7 +6,7 @@ import { applyAttachedComposer } from "../../packages/coding-agent/src/modes/int
 const style = { accent: (text: string) => text, text: (text: string) => text, dim: (text: string) => text };
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 
-test("attached composer preserves its label and heavy rules when the draft overflows below (#5239)", () => {
+test("attached composer preserves its label and rules when the draft overflows below (#5239)", () => {
 	const width = 80;
 	const overflow = `${"─".repeat(33)} ↓ 12 more ${"─".repeat(36)}`;
 	assert.equal(visibleWidth(overflow), width);
@@ -17,8 +17,8 @@ test("attached composer preserves its label and heavy rules when the draft overf
 		overflow,
 		"autocomplete result",
 	]);
-	assert.match(plain(lines[0]!), /^━.*worker · fixing a race.*━$/u);
-	assert.match(plain(lines[3]!), /^━.*↓ 12 more.*━$/u);
+	assert.match(plain(lines[0]!), /^─+ worker · fixing a race ─$/u);
+	assert.match(plain(lines[3]!), /^─+ ↓ 12 more ─+$/u);
 	assert.equal(visibleWidth(lines[3]!), width);
 	assert.equal(lines[4], "autocomplete result");
 });

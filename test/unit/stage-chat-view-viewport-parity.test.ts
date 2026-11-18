@@ -18,7 +18,10 @@ const WHEEL_UP = "\x1b[<64;10;10M";
 const ALT_WHEEL_UP = "\x1b[<72;10;10M";
 
 /** A running stage chat with enough exchanged messages to scroll, inheriting `settings` from its host. */
-async function scrollableStageChat(settings: ReturnType<NonNullable<StageChatViewOpts["getChatRenderSettings"]>>) {
+async function scrollableStageChat(
+	settings: ReturnType<NonNullable<StageChatViewOpts["getChatRenderSettings"]>>,
+	rows = 20,
+) {
 	const previous = getKeybindings();
 	const keys = new KeybindingsManager();
 	setKeybindings(keys);
@@ -34,7 +37,7 @@ async function scrollableStageChat(settings: ReturnType<NonNullable<StageChatVie
 		handle,
 		onDetach: () => {},
 		onClose: () => {},
-		piTui: makeTestTui(20),
+		piTui: makeTestTui(rows),
 		piKeybindings: keys,
 		getChatRenderSettings: () => settings,
 	});
@@ -108,7 +111,9 @@ test("a stage chat scrolled up shows the shared jump-to-latest row and still rea
 });
 
 test("a stage chat jumps between its prompts with ctrl+up and ctrl+down (#4521)", async () => {
-	const chat = await scrollableStageChat({});
+	// One row taller than the others, so the live end still starts on a prompt's text row above the blank row the
+	// session-less composer keeps.
+	const chat = await scrollableStageChat({}, 21);
 	try {
 		const firstVisible = () => {
 			const match = chat
