@@ -1142,24 +1142,20 @@ describe("cleaning up after a failed restore", () => {
 
 	test("a file changed after the worktree was set aside is kept, and so is the directory holding it (#4748)", async () => {
 		const reason = new Error("stop");
-		let changed = false;
+		let changed = "";
 		const { error, warnings, staging } = await failedRestore(reason, (path) => {
-			faults.lock = async (file, options, real) => {
-				const release = await real(file, options);
-				return async () => {
-					await release();
-					const aside = asideOf(path);
-					if (!changed && existsSync(join(aside, ".git"))) {
-						changed = true;
-						writeFileSync(join(aside, ".git"), "gitdir: changed after the check\n");
-					}
-				};
+			const link = join(asideOf(path), ".git");
+			// Once the worktree is set aside, someone rewrites its .git file before the deletion reaches it.
+			faults.lstat = (inspected) => {
+				if (changed !== "" || inspected !== link) return;
+				writeFileSync(link, "gitdir: changed after the check\n");
+				changed = link;
 			};
 		});
 
 		assert.equal(error, reason);
-		assert.equal(changed, true);
-		assert.equal(readFileSync(join(asideOf(staging), ".git"), "utf8"), "gitdir: changed after the check\n");
+		assert.notEqual(changed, "");
+		assert.equal(readFileSync(changed, "utf8"), "gitdir: changed after the check\n");
 		assert.deepEqual(retainedWarnings(warnings), [warning(asideOf(staging))]);
 	});
 
