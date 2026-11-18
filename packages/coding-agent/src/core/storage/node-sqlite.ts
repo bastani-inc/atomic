@@ -52,6 +52,7 @@ import {
 	type ConnectionFailure,
 	ConnectionLoadError,
 	type ConnectionMemberOutcome,
+	ConnectionRefusedError,
 	type ConnectionRequest,
 	type ConnectionStatement,
 	type ConnectionTransactionValue,
@@ -993,6 +994,32 @@ function gateTransaction<T>(identity: string | object, operation: () => Promise<
 	return result;
 }
 
+function gateTail(identity: string | object): Promise<void> | undefined {
+	return typeof identity === "string" ? gates.files.get(identity) : gates.connections.get(identity);
+}
+
+/** A connection's turn at its file's transaction gate, held until `release`; `awaited` once a call waits behind it. */
+interface GateTurn {
+	release(): void;
+	awaited(): boolean;
+}
+
+/** Waits for a turn at the transaction gate of `identity`, as `gateTransaction` does, and keeps it until released. */
+function takeGateTurn(identity: string | object): Promise<GateTurn> {
+	return new Promise((resolve) => {
+		let release!: () => void;
+		const held = new Promise<void>((done) => {
+			release = done;
+		});
+		let ours: Promise<void> | undefined;
+		void gateTransaction(identity, () => {
+			resolve({ release, awaited: () => gateTail(identity) !== ours });
+			return held;
+		});
+		ours = gateTail(identity);
+	});
+}
+
 /** Copies binary parameters so queued work binds the bytes the caller passed, not later buffer contents. */
 function snapshotParams(params: readonly SqliteValue[]): SqliteValue[] {
 	return params.map((value) => (value instanceof Uint8Array ? new Uint8Array(value) : value));
@@ -1071,15 +1098,40 @@ interface QueuedTransaction {
 }
 
 /**
- * Transactions committed together. `position` is the connection operation that commits them; a batch directly behind
- * it (`position + 1`, so no statement between) is absorbed when this one first takes the lock. A waiting batch takes
- * new transactions until a statement is queued after it.
+ * Transactions committed together. While it is the last call in its connection's line it takes new transactions; a
+ * batch directly behind it in line (no statement between) is absorbed when this one first takes the lock.
  */
 interface PendingBatch {
 	readonly members: QueuedTransaction[];
-	position: number;
-	open: boolean;
 }
+
+/**
+ * A call waiting in a connection's line: one statement's request; a batch of transactions, which goes as one request
+ * when all of them are `commitStatements` calls and no writer of another process waits for the lock (`alone` once it
+ * found one waiting); or the connection's close.
+ */
+type LineEntry =
+	| {
+			readonly kind: "request";
+			readonly request: ConnectionRequest;
+			readonly resolve: (value: ConnectionValue) => void;
+			readonly reject: (error: unknown) => void;
+	  }
+	| { readonly kind: "batch"; readonly batch: PendingBatch; readonly alone?: boolean }
+	| { readonly kind: "close"; readonly run: () => Promise<void> };
+
+/** A request sent from a connection's line: the epoch it was sent in, and its place among the requests sent. */
+interface Flight {
+	readonly epoch: number;
+	readonly order: number;
+}
+
+/**
+ * Most requests a connection on a thread of its own sends without waiting for their answers (#5376). Its thread runs
+ * them back to back instead of waiting, between two, for the answer to reach this thread and the next request to
+ * come back; a connection on the calling thread runs each one as it is sent, so it sends one at a time.
+ */
+const MAX_PIPELINED_REQUESTS = 32;
 
 type TransactionOutcome =
 	| { readonly ok: true; readonly value: unknown }
@@ -1378,11 +1430,29 @@ class CallerThreadChannel implements ConnectionChannel {
 class NodeSqliteDatabase implements SqliteDatabase {
 	readonly descriptor: StorageDescriptor;
 	private readonly channel: ConnectionChannel;
-	private tail: Promise<void> = Promise.resolve();
-	/** Operations queued on this connection so far; a batch's `position` is the one that commits it. */
-	private enqueued = 0;
-	/** Batches whose commit has not started, in order; the last one takes new transactions while it is open. */
-	private readonly waitingBatches: PendingBatch[] = [];
+	/** Calls not sent yet, in the order they were made; refused calls go back in front. */
+	private readonly line: LineEntry[] = [];
+	/** Requests sent from the line and not answered yet, counted by the epoch they were sent in. */
+	private readonly flights = new Map<number, number>();
+	private inFlight = 0;
+	private sent = 0;
+	/**
+	 * The epoch requests are sent in. A one-request transaction answered busy starts the next one: the thread refuses
+	 * every request of an earlier epoch, and the line sends nothing until each of them was answered (#5376).
+	 */
+	private epoch = 1;
+	/** Calls the thread refused, with the order they were sent in, to go back in line once nothing older is in flight. */
+	private readonly refused: { readonly order: number; readonly entry: LineEntry }[] = [];
+	/** Work that needs the connection to itself runs: a transaction taking the lock by attempts, or the close. */
+	private alone = false;
+	/** A batch is being made ready to send (its look at the writers' queue, its turn at the transaction gate). */
+	private preparing = false;
+	private pumpScheduled = false;
+	/** How many requests the line sends without waiting for their answers. */
+	private readonly depth: number;
+	/** One-request transactions in flight, and this connection's turn at its file's transaction gate while they are. */
+	private transactionsInFlight = 0;
+	private gateTurn?: GateTurn;
 	private closing = false;
 	private closePromise?: Promise<void>;
 	private readonly executor: ConnectionExecutor;
@@ -1416,6 +1486,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		this.descriptor = descriptor;
 		this.openLock = openLock;
 		this.executor = this.createExecutor(() => true);
+		this.depth = channel instanceof ThreadConnection ? MAX_PIPELINED_REQUESTS : 1;
 		if (typeof transactionIdentity === "string") {
 			this.writeQueue = new SqliteWriteQueue(
 				transactionIdentity,
@@ -1437,12 +1508,21 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		return this.lockUse.stats(this.queueOp(() => this.writeQueue?.liveTickets().length ?? 0));
 	}
 
-	/** Runs one request on the connection; a failure is a typed storage failure carrying the driver's error. */
+	/**
+	 * Runs one request on the connection, outside the line: work that has the connection to itself, and the writers'
+	 * queue's clock. A failure is a typed storage failure carrying the driver's error. A request the thread refused,
+	 * having found a transaction sent before it refused by the lock, ran nothing and goes again in the next epoch.
+	 */
 	private async call(request: ConnectionRequest): Promise<ConnectionValue> {
-		try {
-			return await this.channel.request(request);
-		} catch (cause) {
-			throw unavailable(this.descriptor, cause);
+		for (;;) {
+			const epoch = this.epoch;
+			try {
+				return await this.channel.request({ ...request, epoch });
+			} catch (cause) {
+				if (!(cause instanceof ConnectionRefusedError)) throw unavailable(this.descriptor, cause);
+				// The busy answer that started the next epoch arrived first; it is handled by the time this one is.
+				if (this.epoch === epoch) await new Promise<void>((resolve) => setImmediate(resolve));
+			}
 		}
 	}
 
@@ -1686,41 +1766,29 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		};
 	}
 
-	private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+	/** Puts a statement's request in line; a connection that is closing takes no new call. */
+	private enqueueRequest(request: ConnectionRequest): Promise<ConnectionValue> {
 		if (this.closing) return Promise.reject(new StoreClosedError(this.descriptor));
-		this.enqueued += 1;
-		const result = this.tail.then(operation);
-		this.tail = result.then(
-			() => {},
-			() => {},
-		);
-		return result;
-	}
-
-	/** A statement queued after open transactions runs after them, so later transactions start a new batch. */
-	private enqueueStatement<T>(operation: () => Promise<T>): Promise<T> {
-		const last = this.waitingBatches.at(-1);
-		if (last !== undefined) last.open = false;
-		return this.enqueue(operation);
+		return new Promise<ConnectionValue>((resolve, reject) => {
+			this.line.push({ kind: "request", request, resolve, reject });
+			this.schedulePump();
+		});
 	}
 
 	exec(sql: string): Promise<void> {
-		return this.enqueueStatement(() => this.executor.exec(sql));
+		return this.enqueueRequest({ kind: "exec", sql }).then(() => undefined);
 	}
 
-	run(sql: string, ...params: readonly SqliteValue[]) {
-		const bound = snapshotParams(params);
-		return this.enqueueStatement(() => this.executor.run(sql, ...bound));
+	run(sql: string, ...params: readonly SqliteValue[]): Promise<SqliteRunResult> {
+		return this.enqueueRequest({ kind: "run", sql, params: snapshotParams(params) }) as Promise<SqliteRunResult>;
 	}
 
 	get<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T | undefined> {
-		const bound = snapshotParams(params);
-		return this.enqueueStatement(() => this.executor.get<T>(sql, ...bound));
+		return this.enqueueRequest({ kind: "get", sql, params: snapshotParams(params) }) as Promise<T | undefined>;
 	}
 
 	all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> {
-		const bound = snapshotParams(params);
-		return this.enqueueStatement(() => this.executor.all<T>(sql, ...bound));
+		return this.enqueueRequest({ kind: "all", sql, params: snapshotParams(params) }) as Promise<T[]>;
 	}
 
 	/**
@@ -1780,27 +1848,253 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		if (this.closing) return Promise.reject(new StoreClosedError(this.descriptor));
 		return new Promise<unknown>((resolve, reject) => {
 			const queued: QueuedTransaction = { ...work, resolve, reject, lockWaitMs };
-			const last = this.waitingBatches.at(-1);
-			if (last?.open === true && last.members.length < MAX_GROUP_COMMIT_TRANSACTIONS) {
-				last.members.push(queued);
-				return;
-			}
-			this.startBatch([queued]);
+			// Nothing is queued behind the last call in line, so a transaction can join it.
+			const last = this.line.at(-1);
+			if (last?.kind === "batch" && last.batch.members.length < MAX_GROUP_COMMIT_TRANSACTIONS)
+				last.batch.members.push(queued);
+			else this.line.push({ kind: "batch", batch: { members: [queued] } });
+			this.schedulePump();
 		});
 	}
 
-	private startBatch(members: QueuedTransaction[]): void {
-		const batch: PendingBatch = { members, position: 0, open: true };
-		this.waitingBatches.push(batch);
-		void this.enqueue(() => this.commitBatch(batch));
-		batch.position = this.enqueued;
+	/**
+	 * Sends the calls at the head of the line that can go now, in the order they were made (#5376). A call that is one
+	 * request (a statement, or a batch of `commitStatements` calls) goes without waiting for the answers of the calls
+	 * before it, up to `depth` in flight; the connection's thread runs them in the order they arrive. Work that needs the
+	 * connection to itself (a transaction whose body awaits, one that waits behind writers of other processes, the
+	 * close) waits first in line until every request before it was answered, and nothing is sent while it runs. When a
+	 * one-request transaction finds the lock busy, the thread refuses everything sent behind it, in that epoch: nothing
+	 * is sent until each of them was answered and that transaction committed, then they go again, first, in order.
+	 */
+	private pump(): void {
+		while (!this.preparing && !this.stopped()) {
+			if (this.refused.length > 0) {
+				const back = this.refused.splice(0).sort((a, b) => a.order - b.order);
+				this.line.unshift(...back.map((refused) => refused.entry));
+			}
+			const next = this.line[0];
+			if (next === undefined) return;
+			if (
+				next.kind === "close" ||
+				(next.kind === "batch" && (next.alone === true || !committable(next.batch.members)))
+			) {
+				if (this.inFlight > 0) return;
+				this.line.shift();
+				this.goAlone(
+					next.kind === "close"
+						? next.run
+						: () => gateTransaction(this.transactionIdentity, () => this.runBatch(next.batch, true)),
+				);
+				return;
+			}
+			if (this.inFlight >= this.depth) return;
+			// Another connection to the file waits at the transaction gate: this one's transactions in flight finish,
+			// then its next one waits its turn behind it.
+			if (next.kind === "batch" && this.gateTurn?.awaited() === true) return;
+			this.line.shift();
+			if (next.kind === "request") this.send(next);
+			else this.prepare(next.batch);
+		}
 	}
 
-	private commitBatch(batch: PendingBatch): Promise<void> {
-		// The batch ahead of it took its transactions along when it got the lock.
-		if (this.waitingBatches[0] !== batch) return Promise.resolve();
-		this.waitingBatches.shift();
-		return gateTransaction(this.transactionIdentity, () => this.runBatch(batch, true));
+	/**
+	 * Sends what can go once the calls made in this turn are in line, so transactions requested together commit as one
+	 * group, as they did when each call waited for the one before it.
+	 */
+	private schedulePump(): void {
+		if (this.pumpScheduled) return;
+		this.pumpScheduled = true;
+		queueMicrotask(() => {
+			this.pumpScheduled = false;
+			this.pump();
+		});
+	}
+
+	/**
+	 * Whether the line sends nothing now: work that needs the connection to itself runs, or requests the thread refuses
+	 * await their answers. Refused calls then go back in line, ahead of everything not sent yet.
+	 */
+	private stopped(): boolean {
+		return this.alone || this.olderInFlight();
+	}
+
+	/** Runs work that needs the connection to itself; the line goes on once it ended. */
+	private goAlone(work: () => Promise<void>): void {
+		this.alone = true;
+		void work().finally(() => {
+			this.alone = false;
+			this.pump();
+		});
+	}
+
+	private takeOff(): Flight {
+		const flight = { epoch: this.epoch, order: ++this.sent };
+		this.inFlight += 1;
+		this.flights.set(flight.epoch, (this.flights.get(flight.epoch) ?? 0) + 1);
+		return flight;
+	}
+
+	private land(flight: Flight): void {
+		this.inFlight -= 1;
+		const left = (this.flights.get(flight.epoch) ?? 1) - 1;
+		if (left === 0) this.flights.delete(flight.epoch);
+		else this.flights.set(flight.epoch, left);
+	}
+
+	/** Whether a request of an earlier epoch awaits its answer: the thread refuses it, and it goes before anything else. */
+	private olderInFlight(): boolean {
+		for (const epoch of this.flights.keys()) if (epoch < this.epoch) return true;
+		return false;
+	}
+
+	/** Sends a statement's request; the thread refusing it puts it back in line. */
+	private send(entry: Extract<LineEntry, { readonly kind: "request" }>): void {
+		const params = "params" in entry.request ? entry.request.params : [];
+		const invalidIndex = params.findIndex((value) => typeof value === "string" && value.includes("\0"));
+		if (invalidIndex !== -1) {
+			entry.reject(new StorageInvalidTextError(invalidIndex));
+			return;
+		}
+		const flight = this.takeOff();
+		this.channel.request({ ...entry.request, epoch: flight.epoch }).then(
+			(value) => {
+				this.land(flight);
+				entry.resolve(value);
+				this.pump();
+			},
+			(cause: unknown) => {
+				this.land(flight);
+				if (cause instanceof ConnectionRefusedError) this.refused.push({ order: flight.order, entry });
+				else entry.reject(unavailable(this.descriptor, cause));
+				this.pump();
+			},
+		);
+	}
+
+	/**
+	 * Makes a batch of `commitStatements` calls ready to go as one request, sending nothing meanwhile: no writer of
+	 * another process may wait for the lock, as for a writer's first attempt (#3978), and the connection takes its turn
+	 * at its file's transaction gate, kept while its one-request transactions are in flight. A batch that found a writer
+	 * waiting goes back in front of the line, to take the lock by attempts once every request before it was answered.
+	 */
+	private prepare(batch: PendingBatch): void {
+		this.preparing = true;
+		void (async () => {
+			const contended = await this.othersWaiting();
+			if (!contended && this.gateTurn === undefined) this.gateTurn = await takeGateTurn(this.transactionIdentity);
+			return contended;
+		})().then((contended) => {
+			this.preparing = false;
+			// A busy answer that came meanwhile sends this batch after the calls it refused, which were sent before it.
+			if (contended || this.stopped() || this.refused.length > 0) {
+				this.line.unshift(contended ? { kind: "batch", batch, alone: true } : { kind: "batch", batch });
+				this.releaseGateTurn();
+			} else this.sendBatch(batch);
+			this.pump();
+		});
+	}
+
+	/**
+	 * Whether a writer of another process waits for the lock: only a live ticket of a writer already waiting sends a
+	 * batch to the queue. A queue directory that contention left empty does not; one that cannot be read does, and
+	 * `begin` reports it.
+	 */
+	private async othersWaiting(): Promise<boolean> {
+		const queue = this.writeQueue;
+		if (queue === undefined) return false;
+		queue.observe();
+		try {
+			if (!(await queue.contendedOffLoop())) return false;
+			return (await queue.liveTicketsOffLoop()).length > 0;
+		} catch {
+			return true;
+		}
+	}
+
+	/**
+	 * A batch of `commitStatements` calls as one request to the connection's thread: the lock attempt, each call's
+	 * statements in a savepoint of its own, and the commit (#5376). A busy lock runs nothing: the batch then takes the
+	 * lock by attempts, as a transaction does, and the calls the thread refused behind it go again once it committed.
+	 */
+	private sendBatch(batch: PendingBatch): void {
+		const flight = this.takeOff();
+		this.transactionsInFlight += 1;
+		const sentAt = performance.now();
+		this.channel
+			.request({
+				kind: "transaction",
+				members: batch.members.map((queued) => queued.statements!),
+				begin: true,
+				epoch: flight.epoch,
+			})
+			.then(
+				(answer) => this.batchAnswered(batch, flight, sentAt, answer as ConnectionTransactionValue),
+				(cause: unknown) => this.batchFailed(batch, flight, cause),
+			);
+	}
+
+	private batchAnswered(
+		batch: PendingBatch,
+		flight: Flight,
+		sentAt: number,
+		answer: ConnectionTransactionValue,
+	): void {
+		this.landTransaction(flight);
+		if ("busy" in answer) {
+			this.epoch += 1;
+			this.goAlone(() => gateTransaction(this.transactionIdentity, () => this.runBatch(batch, true)));
+			return;
+		}
+		// Only the request that took the lock accounts a hold, and its hold ended before its answer: the connection's
+		// lock record is left to the transactions that hold the lock across this thread's turns.
+		this.lockUse.acquired(sentAt);
+		this.lockUse.released(answer.commitFailure === undefined && answer.abandoned === undefined);
+		void this.wakeNextWriter();
+		if (answer.abandoned !== undefined) {
+			// The thread rolled it back and refuses what was sent behind it: the members that did not run go first.
+			this.epoch += 1;
+			this.rejectAbandoned(batch, answer.outcomes, answer.abandoned);
+			if (batch.members.length > 0)
+				this.goAlone(() => gateTransaction(this.transactionIdentity, () => this.runBatch(batch, false)));
+			else this.pump();
+			return;
+		}
+		this.settleMembers(batch, answer);
+		this.pump();
+	}
+
+	private batchFailed(batch: PendingBatch, flight: Flight, cause: unknown): void {
+		this.landTransaction(flight);
+		if (cause instanceof ConnectionRefusedError)
+			this.refused.push({ order: flight.order, entry: { kind: "batch", batch } });
+		else {
+			// The lock attempt failed for another reason than a busy lock, or the thread is gone: nothing committed.
+			const failure = unavailable(this.descriptor, cause);
+			for (const queued of batch.members.splice(0)) queued.reject(failure);
+		}
+		this.pump();
+	}
+
+	private landTransaction(flight: Flight): void {
+		this.land(flight);
+		this.transactionsInFlight -= 1;
+		this.releaseGateTurn();
+	}
+
+	/** Gives up the connection's turn at the transaction gate once none of its one-request transactions is in flight. */
+	private releaseGateTurn(): void {
+		if (this.transactionsInFlight > 0 || this.gateTurn === undefined) return;
+		this.gateTurn.release();
+		this.gateTurn = undefined;
+	}
+
+	/** Hands the lock's turn to the oldest writer waiting in another process, as `released` does. */
+	private async wakeNextWriter(): Promise<void> {
+		try {
+			await this.writeQueue?.wakeNext();
+		} catch (cause) {
+			this.degraded("wake-failed", cause);
+		}
 	}
 
 	/**
@@ -1810,9 +2104,6 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * connections to the file wait for at most one batch of this one's.
 	 */
 	private async runBatch(batch: PendingBatch, firstAcquisition: boolean): Promise<void> {
-		// Nothing queued directly behind it to take along once it holds the lock.
-		const followed = this.waitingBatches[0]?.position === batch.position + 1;
-		if (firstAcquisition && !followed && committable(batch.members) && (await this.commitAtOnce(batch))) return;
 		try {
 			await this.begin(this.lockWait(batch.members));
 		} catch (cause) {
@@ -1825,54 +2116,21 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	}
 
 	/**
-	 * Moves the transactions of the batches queued directly behind this one (no statement between them) into this one,
-	 * up to the batch size limit. They run after this batch's own, in the order they were requested.
+	 * Moves the transactions of the batches at the head of the line (no statement between them) into this one, up to
+	 * the batch size limit. They run after this batch's own, in the order they were requested. Calls the thread refused
+	 * behind this batch, or is yet to refuse, come before them, so nothing is moved then.
 	 */
 	private absorbNext(batch: PendingBatch): void {
-		for (let next = this.waitingBatches[0]; next?.position === batch.position + 1; next = this.waitingBatches[0]) {
-			batch.members.push(...next.members.splice(0, MAX_GROUP_COMMIT_TRANSACTIONS - batch.members.length));
-			if (next.members.length > 0) return;
-			this.waitingBatches.shift();
-			batch.position = next.position;
+		if (this.refused.length > 0 || this.olderInFlight()) return;
+		for (let next = this.line[0]; next?.kind === "batch"; next = this.line[0]) {
+			batch.members.push(...next.batch.members.splice(0, MAX_GROUP_COMMIT_TRANSACTIONS - batch.members.length));
+			if (next.batch.members.length > 0) return;
+			this.line.shift();
 		}
 	}
 
 	private lockWait(batch: readonly QueuedTransaction[]): number {
 		return Math.max(...batch.map((queued) => queued.lockWaitMs ?? this.lockWaitMs));
-	}
-
-	/**
-	 * A batch of `commitStatements` calls as one request to the connection's thread: the lock attempt, each call's
-	 * statements in a savepoint of its own, and the commit (#5376). False, with nothing run, when writers of other
-	 * processes wait for the lock or it is busy: the batch then waits for it as a transaction does.
-	 */
-	private async commitAtOnce(batch: PendingBatch): Promise<boolean> {
-		const queue = this.writeQueue;
-		queue?.observe();
-		// As a writer's first attempt does: only a live ticket of a writer already waiting sends it to the queue. A queue
-		// directory that contention left empty, or that cannot be read (`begin` reports that), does not.
-		if (queue !== undefined && (await queue.contendedOffLoop())) {
-			const waiting = await queue.liveTicketsOffLoop().catch(() => undefined);
-			if (waiting === undefined || waiting.length > 0) return false;
-		}
-		const waitStarted = performance.now();
-		let answer: ConnectionTransactionValue;
-		try {
-			answer = (await this.call({
-				kind: "transaction",
-				members: batch.members.map((queued) => queued.statements!),
-				begin: true,
-			})) as ConnectionTransactionValue;
-		} catch (cause) {
-			// The lock attempt failed for another reason than a busy lock, or the thread is gone: nothing committed.
-			for (const queued of batch.members.splice(0)) queued.reject(cause);
-			return true;
-		}
-		// Nothing ran: the batch queues for the lock as a transaction refused by it does.
-		if ("busy" in answer) return false;
-		this.acquired(waitStarted);
-		await this.settleTransaction(batch, answer);
-		return true;
 	}
 
 	/** A batch of `commitStatements` calls whose write lock is held: their statements and the commit in one request. */
@@ -1906,30 +2164,57 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		batch: PendingBatch,
 		answer: Exclude<ConnectionTransactionValue, { readonly busy: ConnectionFailure }>,
 	): Promise<void> {
-		const failed = (failure: ConnectionFailure) => unavailable(this.descriptor, connectionFailure(failure));
 		const { outcomes, abandoned, commitFailure } = answer;
 		if (abandoned !== undefined) {
 			await this.rollbackQuietly();
 			await this.released(false);
-			const rollbackCause = failed(abandoned.rollbackFailure);
-			const ran = batch.members.splice(0, outcomes.length + 1);
-			ran.slice(0, outcomes.length).forEach((queued, index) => {
-				const outcome = outcomes[index]!;
-				queued.reject("rows" in outcome ? rollbackCause : failed(outcome.failure));
-			});
-			ran[outcomes.length]!.reject(
-				new StorageRollbackError(failed(abandoned.failure), rollbackCause as StorageFailureCause),
-			);
+			this.rejectAbandoned(batch, outcomes, abandoned);
 			if (batch.members.length > 0) await this.runBatch(batch, false);
 			return;
 		}
 		await this.released(commitFailure === undefined);
+		this.settleMembers(batch, answer);
+	}
+
+	private connectionFailed(failure: ConnectionFailure) {
+		return unavailable(this.descriptor, connectionFailure(failure));
+	}
+
+	/**
+	 * Settles the members a `transaction` request ran, from its answer: each committed member with its rows, each
+	 * rolled-back member with its failure, every member with the commit's failure when the commit failed.
+	 */
+	private settleMembers(
+		batch: PendingBatch,
+		answer: Exclude<ConnectionTransactionValue, { readonly busy: ConnectionFailure }>,
+	): void {
+		const { outcomes, commitFailure } = answer;
 		batch.members.splice(0, outcomes.length).forEach((queued, index) => {
 			const outcome = outcomes[index]!;
-			if (!("rows" in outcome)) queued.reject(failed(outcome.failure));
-			else if (commitFailure !== undefined) queued.reject(failed(commitFailure));
+			if (!("rows" in outcome)) queued.reject(this.connectionFailed(outcome.failure));
+			else if (commitFailure !== undefined) queued.reject(this.connectionFailed(commitFailure));
 			else queued.resolve(outcome.rows);
 		});
+	}
+
+	/**
+	 * A group stopped by a savepoint that could not be rolled back: what ran is lost, the failing member reports both
+	 * causes, and the members after it stay in the batch to run again in a transaction of their own.
+	 */
+	private rejectAbandoned(
+		batch: PendingBatch,
+		outcomes: readonly ConnectionMemberOutcome[],
+		abandoned: { readonly failure: ConnectionFailure; readonly rollbackFailure: ConnectionFailure },
+	): void {
+		const rollbackCause = this.connectionFailed(abandoned.rollbackFailure);
+		const ran = batch.members.splice(0, outcomes.length + 1);
+		ran.slice(0, outcomes.length).forEach((queued, index) => {
+			const outcome = outcomes[index]!;
+			queued.reject("rows" in outcome ? rollbackCause : this.connectionFailed(outcome.failure));
+		});
+		ran[outcomes.length]!.reject(
+			new StorageRollbackError(this.connectionFailed(abandoned.failure), rollbackCause as StorageFailureCause),
+		);
 	}
 
 	/** A transaction with nobody queued with it commits on its own, without savepoints. */
@@ -2038,20 +2323,26 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	close(): Promise<void> {
 		if (!this.closePromise) {
 			this.closing = true;
-			this.closePromise = this.tail.then(async () => {
-				try {
-					await this.holderRecord?.close();
-					try {
-						await this.channel.close();
-					} catch (cause) {
-						throw unavailable(this.descriptor, cause);
-					}
-				} finally {
-					await releaseOpenLock(this.openLock);
-				}
+			// Last in line: every call made before it was answered first.
+			this.closePromise = new Promise<void>((resolve, reject) => {
+				this.line.push({ kind: "close", run: () => this.closeConnection().then(resolve, reject) });
+				this.schedulePump();
 			});
 		}
 		return this.closePromise;
+	}
+
+	private async closeConnection(): Promise<void> {
+		try {
+			await this.holderRecord?.close();
+			try {
+				await this.channel.close();
+			} catch (cause) {
+				throw unavailable(this.descriptor, cause);
+			}
+		} finally {
+			await releaseOpenLock(this.openLock);
+		}
 	}
 }
 
