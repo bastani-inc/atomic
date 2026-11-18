@@ -11,16 +11,22 @@ import type { TaskRecord } from "./contracts.js";
  */
 
 type TaskListOwner = { readonly backgroundTasks: readonly TaskRecord[] };
-const listOwners = new WeakMap<readonly TaskRecord[], WeakRef<TaskListOwner>>();
+const scopeKey = Symbol("task-list-scope");
+const scopes = new WeakMap<TaskListOwner, object>();
 
-/** Keep a projected list attributable to its chat without keeping the chat alive. */
+/** Each chat has one scope. Its snapshot carries the token, not a reference back to the chat. */
 export function scopedBackgroundTasks(owner: TaskListOwner, tasks: TaskRecord[]): TaskRecord[] {
-	listOwners.set(tasks, new WeakRef(owner));
+	let scope = scopes.get(owner);
+	if (scope === undefined) {
+		scope = {};
+		scopes.set(owner, scope);
+	}
+	Object.defineProperty(tasks, scopeKey, { value: scope });
 	return tasks;
 }
 
-export function backgroundTaskOwner(tasks: readonly TaskRecord[]): TaskListOwner | undefined {
-	return listOwners.get(tasks)?.deref();
+export function backgroundTaskScope(tasks: readonly TaskRecord[]): object | undefined {
+	return (tasks as readonly TaskRecord[] & { readonly [scopeKey]?: object })[scopeKey];
 }
 
 /** The session key of a task: the subagent session that launched it, or `undefined` for the owner's own session. */

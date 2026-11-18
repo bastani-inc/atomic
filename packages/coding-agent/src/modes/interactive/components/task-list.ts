@@ -21,7 +21,7 @@ import {
 	taskClockRunning,
 	taskClocksFor,
 } from "../../../core/tasks/live-elapsed.js";
-import { backgroundTaskOwner } from "../../../core/tasks/session-scope.js";
+import { backgroundTaskScope } from "../../../core/tasks/session-scope.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_IDLE_ROWS, AgentPanelModel, renderAgentPanelRows } from "./agent-panel.ts";
@@ -94,7 +94,7 @@ export function isActiveBackgroundTask(task: TaskRecord): boolean {
 }
 
 /** Sibling chats share elapsed clocks but retire only their own rows. */
-const footerRetired = new WeakMap<Pick<TaskViewSource, "backgroundTasks">, AgentPanelModel>();
+const footerRetired = new WeakMap<object, AgentPanelModel>();
 
 /**
  * A chat's own background tasks below its prompt, listed by the main chat's agent panel rules: subagents as rows, and
@@ -110,7 +110,7 @@ export function renderTaskFooter(
 ): string[] {
 	const tasks = "backgroundTasks" in view ? view.backgroundTasks : view;
 	if ("backgroundTasks" in view) clocks ??= taskClocksFor(view);
-	const owner = clocks && (backgroundTaskOwner(tasks) ?? ("backgroundTasks" in view ? view : undefined));
+	const owner = clocks && (backgroundTaskScope(tasks) ?? ("backgroundTasks" in view ? view : undefined));
 	let memory = owner && footerRetired.get(owner);
 	if (!memory) {
 		memory = new AgentPanelModel();
