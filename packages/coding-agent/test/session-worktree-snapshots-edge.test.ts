@@ -714,7 +714,7 @@ describe("restore notices", () => {
 		);
 		assert.equal(
 			formatWorktreeRestoreWarning({ code: "stale-restore-retained", path: "/work/unfinished", kind: "worktree" }),
-			"A restore interrupted earlier left /work/unfinished; remove it with removeRestoredWorktree or delete the directory",
+			"A restore interrupted earlier left /work/unfinished, which may hold your files; check them, then delete the directory yourself",
 		);
 		assert.equal(
 			formatWorktreeRestoreWarning({

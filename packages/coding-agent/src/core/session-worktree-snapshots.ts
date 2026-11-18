@@ -1421,7 +1421,7 @@ export function formatWorktreeRestoreWarning(warning: WorktreeRestoreWarning): s
 		case "stale-restore-retained":
 			switch (warning.kind) {
 				case "worktree":
-					return `A restore interrupted earlier left ${warning.path}; remove it with removeRestoredWorktree or delete the directory`;
+					return `A restore interrupted earlier left ${warning.path}, which may hold your files; check them, then delete the directory yourself`;
 				case "record":
 					return `A restore interrupted earlier left the crash record ${warning.path}, which cannot be read; delete the file`;
 				case "records-directory":

@@ -2721,13 +2721,17 @@ export async function removeRestoredWorktree(
 			if (options.onWarning) options.onWarning(warning);
 			else
 				process.emitWarning(
-					`A restore interrupted earlier left ${warning.path}; remove the directory and retry cleanup.`,
+					`A restore interrupted earlier left ${warning.path}, which may hold your files; check them, then delete the directory yourself.`,
 				);
 		},
 		options.signal,
 	);
 	const entry = await statIfPresent(target);
 	if (entry === undefined) return;
+	// A staging or set-aside directory is only ever what a cleanup kept, which may hold a user's files (#4748).
+	if (isRestoreScratchName(basename(target)) || (await namedByRestoreRecord(storeDir, target))) {
+		throw new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target, reason: "not-restored" });
+	}
 	const repositories = join(storeDir, "repositories");
 	const common = entry.isDirectory()
 		? await runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], {
@@ -2748,6 +2752,32 @@ export async function removeRestoredWorktree(
 	await withRepositoryLock(store, null, options.signal, () =>
 		removeWorktree({ cwd: repositories, env: { GIT_DIR: store }, signal: options.signal }, target),
 	);
+}
+
+/**
+ * Whether `name` is one a restore gives the directory it stages its worktree in, or sets it aside in to delete it: never
+ * the name of a worktree a restore returned. Earlier versions named staging `.staging-<id>` and `.<target>.atomic-restore-<id>`.
+ */
+function isRestoreScratchName(name: string): boolean {
+	return (
+		/^(?:\.[sd]|\..+\.[sd])-[0-9a-f]{12}$/.test(name) ||
+		/^\.staging-[0-9a-f-]{36}$/.test(name) ||
+		/\.atomic-restore-[0-9a-f-]{36}$/.test(name)
+	);
+}
+
+/** Whether a crash record under `storeDir` names `path` as its staging directory. */
+async function namedByRestoreRecord(storeDir: string, path: string): Promise<boolean> {
+	const recordsDir = join(storeDir, "restores");
+	const names = await readdir(recordsDir).catch(() => [] as string[]);
+	for (const name of names) {
+		if (!name.endsWith(".json")) continue;
+		const record = await readFile(join(recordsDir, name), "utf8")
+			.then((text) => JSON.parse(text) as { staging?: unknown })
+			.catch(() => undefined);
+		if (typeof record?.staging === "string" && includesPath([record.staging], path)) return true;
+	}
+	return false;
 }
 
 function isWithin(parent: string, child: string): boolean {
