@@ -20,7 +20,9 @@ import { runSync } from "../../packages/subagents/src/runs/foreground/execution.
 import {
 	INTERCOM_CONNECTED_EVENT,
 	type ReleasedChildReservation,
+	releasedChildReservation,
 	reserveReleasedChildren,
+	reserveReleasedChildrenOf,
 	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
@@ -29,6 +31,7 @@ import {
 	SUBAGENT_RELEASED_WAKE_PROMPT,
 	subagentWakeKey,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
+import { subagentChildRecordForTarget } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import { SUBAGENT_RESERVE_RESTORING_CHILD_EVENT } from "../../packages/subagents/src/runs/foreground/subagent-child-hold.js";
 import {
 	createSubagentChildRecordSink,
@@ -541,6 +544,232 @@ async function ownerClient(name: string): Promise<Client> {
 	brokerFixture.onCleanup(() => client.disconnect().catch(() => undefined));
 	return client;
 }
+
+const HOLD_NOTICE_LABEL = "Released subagent reservation";
+
+/** The subagents a reservation failure notice names. */
+function namedIn(summary: string): string | undefined {
+	return /^Sends to released subagents? (.+?) cannot be held/.exec(summary)?.[1];
+}
+
+/**
+ * An owner session that keeps its released subagents addressable on its own broker connection, as Intercom does for it,
+ * with the reservation failure notices it receives. `record` writes a child's latest record: by default released by
+ * the run of task `task-1` while it waits on a call.
+ */
+async function reservingOwner(label: string) {
+	const client = await ownerClient(label);
+	const sessionManager = SessionManager.inMemory(repoRoot);
+	const ctx = { sessionManager } as unknown as ExtensionContext;
+	const events = eventBus();
+	const notices: string[] = [];
+	events.on(SUBAGENT_COMPLETE_EVENT, (payload) => {
+		const notice = payload as { readonly noticeLabel?: string; readonly summary?: string };
+		if (notice.noticeLabel === HOLD_NOTICE_LABEL) notices.push(notice.summary ?? "");
+	});
+	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
+		const request = payload as ObservedReservation;
+		request.completion = client.reserveReleasedChildren(request.children);
+	});
+	const sink = createSubagentChildRecordSink(
+		{ appendEntry: async (customType, data) => void (await sessionManager.appendCustomEntry(customType, data)) },
+		ctx,
+	);
+	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+	brokerFixture.onCleanup(stop);
+	const record = (
+		childName: string,
+		taskId = "task-1",
+		state: "running" | "terminal" = "terminal",
+		terminalStatus: string = SUBAGENT_CHILD_RELEASED_STATUS,
+	) =>
+		sink.record({
+			agent: "worker",
+			runId: childName,
+			index: 0,
+			cwd: repoRoot,
+			state,
+			terminalStatus,
+			taskId,
+			intercomTarget: childName,
+			waitingOn: [{ toolCallId: "ci", toolName: "bash" }],
+		});
+	/** What the owner asks the broker for this child now, as a reconnect would: from its latest record. */
+	const reservationOf = (childName: string): ReleasedChildReservation => {
+		const latest = subagentChildRecordForTarget(sessionManager.getSessionId(), childName);
+		const reservation = latest === undefined ? undefined : releasedChildReservation(latest);
+		assert.ok(reservation, `${childName} is held`);
+		return reservation;
+	};
+	return { client, events, notices, record, reservationOf, ownerSessionId: sessionManager.getSessionId() };
+}
+
+/** Hold back the outcome of the next reservation request on `events` until `release` is called. */
+function holdNextReservationOutcome(events: ReturnType<typeof eventBus>) {
+	const refused = Promise.withResolvers<string | undefined>();
+	const allowed = Promise.withResolvers<void>();
+	let armed = true;
+	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
+		if (!armed) return;
+		armed = false;
+		const request = payload as ObservedReservation;
+		request.completion = request.completion?.then(
+			async () => {
+				refused.resolve(undefined);
+				await allowed.promise;
+			},
+			async (error: Error & { readonly code?: string }) => {
+				refused.resolve(error.code);
+				await allowed.promise;
+				throw error;
+			},
+		);
+	});
+	return { refusedWith: refused.promise, release: () => allowed.resolve() };
+}
+
+test(
+	"a refused reservation names the one subagent the broker refused, and the others it was asked with stay held (#5551)",
+	async () => {
+		const owner = await reservingOwner("frames-owner");
+		const rival = await ownerClient("frames-rival");
+		const names = Array.from({ length: 501 }, (_, index) => `subagent-frames-${index}-1`);
+		const lastRefused = names[500] as string;
+		const middle = ["subagent-frames-a-1", "subagent-frames-b-1", "subagent-frames-c-1"];
+		const middleRefused = middle[1] as string;
+		await rival.reserveReleasedChildren([
+			{ childName: lastRefused, aliases: [], wake: true },
+			{ childName: middleRefused, aliases: [], wake: true },
+		]);
+		for (const name of [...names, ...middle]) owner.record(name);
+
+		// The 501st is another session's: the broker takes the first 500 and refuses the last.
+		await reserveReleasedChildren(
+			owner.events,
+			names.map((name) => owner.reservationOf(name)),
+		);
+		// The second of these three is another session's: the broker refuses all three at once.
+		await reserveReleasedChildren(
+			owner.events,
+			middle.map((name) => owner.reservationOf(name)),
+		);
+
+		assert.deepEqual(owner.notices.map(namedIn), [lastRefused, middleRefused]);
+		// The broker confirms the owner holds every other one.
+		for (const held of [names[0], names[499], middle[0], middle[2]])
+			await owner.client.acknowledgeReleasedChildWake(held as string);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a refusal that answers a subagent's earlier release is not reported once its next release is reserved (#5551)",
+	async () => {
+		const owner = await reservingOwner("release-owner");
+		const rival = await ownerClient("release-rival");
+		const name = "subagent-release-a-1";
+		await rival.reserveReleasedChildren([{ childName: name, aliases: [], wake: true }]);
+		owner.record(name, "task-1");
+		const held = holdNextReservationOutcome(owner.events);
+		const earlier = reserveReleasedChildren(owner.events, [owner.reservationOf(name)]);
+		assert.equal(await held.refusedWith, "not_owner", "the broker really refused the earlier release");
+
+		// The other session lets go; the child runs again, is released by its next run and reserved for that release.
+		await rival.dropReleasedChildren([name]);
+		owner.record(name, "task-2", "running");
+		owner.record(name, "task-2");
+		await reserveReleasedChildren(owner.events, [owner.reservationOf(name)]);
+		await owner.client.acknowledgeReleasedChildWake(name);
+		held.release();
+		await earlier;
+
+		assert.deepEqual(owner.notices, [], "the earlier release's refusal is not a failure of the reserved one");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a refusal overtaken by a later reservation of the same release is not reported (#5551)",
+	async () => {
+		const owner = await reservingOwner("renewal-owner");
+		const rival = await ownerClient("renewal-rival");
+		const name = "subagent-renewal-a-1";
+		await rival.reserveReleasedChildren([{ childName: name, aliases: [], wake: true }]);
+		owner.record(name);
+		const held = holdNextReservationOutcome(owner.events);
+		const earlier = reserveReleasedChildren(owner.events, [owner.reservationOf(name)]);
+		assert.equal(await held.refusedWith, "not_owner");
+
+		// As at a reconnect, the same release is asked for again once the other session let go, and the broker takes it.
+		await rival.dropReleasedChildren([name]);
+		await reserveReleasedChildrenOf(owner.events, owner.ownerSessionId);
+		await owner.client.acknowledgeReleasedChildWake(name);
+		held.release();
+		await earlier;
+
+		assert.deepEqual(owner.notices, [], "the broker holds the child: the overtaken refusal is not reported");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a refusal for a subagent's earlier release is not reported after it was released again, before that release is reserved (#5551)",
+	async () => {
+		const owner = await reservingOwner("rereleased-owner");
+		const rival = await ownerClient("rereleased-rival");
+		const name = "subagent-rereleased-a-1";
+		await rival.reserveReleasedChildren([{ childName: name, aliases: [], wake: true }]);
+		owner.record(name, "task-1");
+		const held = holdNextReservationOutcome(owner.events);
+		const earlier = reserveReleasedChildren(owner.events, [owner.reservationOf(name)]);
+		assert.equal(await held.refusedWith, "not_owner");
+		owner.record(name, "task-2", "running");
+		owner.record(name, "task-2");
+		held.release();
+		await earlier;
+		assert.deepEqual(owner.notices, [], "the refusal answered the run before");
+
+		// The new release is refused in its turn: that failure is its own, and is reported.
+		await reserveReleasedChildren(owner.events, [owner.reservationOf(name)]);
+		assert.deepEqual(owner.notices.map(namedIn), [name]);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a refusal that stays unresolved is announced once, whatever other subagents' reservations do meanwhile (#5551)",
+	async () => {
+		const owner = await reservingOwner("episode-owner");
+		const rival = await ownerClient("episode-rival");
+		const [failing, healthy, alsoFailing] = [
+			"subagent-episode-a-1",
+			"subagent-episode-b-1",
+			"subagent-episode-c-1",
+		] as const;
+		await rival.reserveReleasedChildren([
+			{ childName: failing, aliases: [], wake: true },
+			{ childName: alsoFailing, aliases: [], wake: true },
+		]);
+		for (const name of [failing, healthy, alsoFailing]) owner.record(name);
+
+		await reserveReleasedChildren(owner.events, [owner.reservationOf(failing)]);
+		await reserveReleasedChildren(owner.events, [owner.reservationOf(healthy)]);
+		await owner.client.acknowledgeReleasedChildWake(healthy);
+		await reserveReleasedChildren(owner.events, [owner.reservationOf(failing)]);
+		assert.deepEqual(owner.notices.map(namedIn), [failing], "the same refusal of the same release, told once");
+
+		// Another subagent's own refusal is a failure of its own, and is told although the first is unresolved.
+		await reserveReleasedChildren(owner.events, [owner.reservationOf(alsoFailing)]);
+		assert.deepEqual(owner.notices.map(namedIn), [failing, alsoFailing]);
+
+		// The first runs again and its next run releases it: the refusal of that release is that release's own.
+		owner.record(failing, "task-2", "running");
+		owner.record(failing, "task-2");
+		await reserveReleasedChildren(owner.events, [owner.reservationOf(failing)]);
+		assert.deepEqual(owner.notices.map(namedIn), [failing, alsoFailing, failing]);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
 
 test(
 	"another owner's reservation of a child does not take over a hold that is not dormant (#4326)",

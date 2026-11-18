@@ -19,6 +19,7 @@ import {
 	isHeldChildRecord,
 	markEndedChildrenOf,
 	type ReleasedChildHoldFailure,
+	type ReleasedChildHoldRecovery,
 	releasedChildReservation,
 	reserveReleasedChildrenOf,
 	SUBAGENT_HOLD_FAILURE_EVENT,
@@ -107,47 +108,82 @@ export function bindReleasedChildWakes(
 ): () => void {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const namespace = subagentWakeNamespace(ownerSessionId);
-	let holdFailureNotified = false;
+	/**
+	 * #5551: the children whose reservation failure the owner was told of and whose reservation has not succeeded since,
+	 * each with the task of the release it failed for: told once per child and release. Only children that failed.
+	 */
+	const holdFailuresTold = new Map<string, string | undefined>();
 	const unsubscribeHoldFailure = events.on(SUBAGENT_HOLD_FAILURE_EVENT, (payload) => {
 		const failure = payload as ReleasedChildHoldFailure;
 		indexSubagentChildOwner(ctx);
 		const recordsByName = new Map<string, SubagentChildRecord>();
 		for (const record of subagentChildRecordsOf(ownerSessionId))
 			if (record.intercomTarget !== undefined) recordsByName.set(record.intercomTarget, record);
+		// A child told of that runs again, has ended or was released by another run since has nothing left to tell.
+		for (const [childName, taskId] of holdFailuresTold) {
+			const record = recordsByName.get(childName);
+			if (record === undefined || !isHeldChildRecord(record) || record.taskId !== taskId)
+				holdFailuresTold.delete(childName);
+		}
+		const untold: Array<{ readonly childName: string; readonly record: SubagentChildRecord }> = [];
 		for (const childName of failure.childNames) {
 			const record = recordsByName.get(childName);
 			if (record === undefined) continue;
 			failure.handled = true;
 			// #5551: a child that runs again or has ended is not released any more: there is nothing to hold for it.
 			if (!isHeldChildRecord(record)) continue;
-			const error = new ReleasedChildError(
-				"hold-failed",
-				{ ownerSessionId, childId: record.childId, childName, reason: "Intercom reservation request failed" },
-				{ cause: failure.error },
+			// #5551: a failure of an earlier release of a child that another run has released since is not this one's.
+			const taskId = failure.taskIds?.get(childName);
+			if (taskId !== undefined && taskId !== record.taskId) continue;
+			observeChildRecordFailure(
+				ownerSessionId,
+				new ReleasedChildError(
+					"hold-failed",
+					{ ownerSessionId, childId: record.childId, childName, reason: "Intercom reservation request failed" },
+					{ cause: failure.error },
+				),
 			);
-			observeChildRecordFailure(ownerSessionId, error);
-			if (holdFailureNotified) continue;
-			holdFailureNotified = true;
-			void deliverLocalCompletionNotification(
-				events,
-				{
-					id: record.runId,
-					runId: record.runId,
-					agent: record.agent,
-					status: "error",
-					// The message already names the code and the hint.
-					summary: error.message,
-					timestamp: Date.now(),
-					noticeLabel: "Released subagent reservation",
-				},
-				`released-hold-failure-${ownerSessionId}-${randomUUID()}`,
-			).catch((cause: Error) => {
-				observeChildRecordFailure(ownerSessionId, new ReleasedChildError("hold-failed", error.fields, { cause }));
-			});
+			if (holdFailuresTold.has(childName)) continue;
+			holdFailuresTold.set(childName, record.taskId);
+			untold.push({ childName, record });
 		}
+		const [told] = untold;
+		if (told === undefined) return;
+		const first = told.record;
+		// One notice for every child this failure leaves newly without a hold.
+		const childNames = untold.map((child) => child.childName);
+		const error = new ReleasedChildError(
+			"hold-failed",
+			{
+				ownerSessionId,
+				childId: first.childId,
+				childName: told.childName,
+				...(childNames.length > 1 ? { childNames } : {}),
+				reason: "Intercom reservation request failed",
+			},
+			{ cause: failure.error },
+		);
+		void deliverLocalCompletionNotification(
+			events,
+			{
+				id: first.runId,
+				runId: first.runId,
+				agent: first.agent,
+				status: "error",
+				// The message already names the code and the hint.
+				summary: error.message,
+				timestamp: Date.now(),
+				noticeLabel: "Released subagent reservation",
+			},
+			`released-hold-failure-${ownerSessionId}-${randomUUID()}`,
+		).catch((cause: Error) => {
+			observeChildRecordFailure(ownerSessionId, new ReleasedChildError("hold-failed", error.fields, { cause }));
+		});
 	});
-	const unsubscribeHoldRecovered = events.on(SUBAGENT_HOLD_RECOVERED_EVENT, () => {
-		holdFailureNotified = false;
+	const unsubscribeHoldRecovered = events.on(SUBAGENT_HOLD_RECOVERED_EVENT, (payload) => {
+		// Only these children's reservations succeeded: another child's failure stays told (#5551).
+		for (const childName of (payload as Partial<ReleasedChildHoldRecovery> | undefined)?.childNames ?? [])
+			holdFailuresTold.delete(childName);
 	});
 	const reserveAll = () => {
 		indexSubagentChildOwner(ctx);
@@ -202,7 +238,8 @@ export function bindReleasedChildWakes(
 				if (refuseRelaunch(record)() !== undefined) return;
 				// #5551: only a released child is reserved; one that ended on its own and is woken for a late result is not.
 				const reservation = releasedChildReservation(record);
-				if (reservation?.wake === true) void acknowledgeReleasedChildWake(events, reservation.childName);
+				if (reservation?.wake === true)
+					void acknowledgeReleasedChildWake(events, reservation.childName, reservation.taskId);
 				await restore(
 					record,
 					{

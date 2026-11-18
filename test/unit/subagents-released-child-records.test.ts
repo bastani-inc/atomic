@@ -193,6 +193,36 @@ test("a wake that fails with no reason of its own shows its code and hint once i
 	assert.equal(status.split(failure.hint).length - 1, 1, status);
 });
 
+test("a wake failure that crossed a JSON boundary shows its code and hint once in status, with or without its subject (#5551)", async () => {
+	for (const keepSubject of [true, false]) {
+		const { ctx, pi, failing, ownerSessionId } = owner();
+		const sink = createSubagentChildRecordSink(pi, ctx);
+		sink.record({
+			...launch,
+			state: "terminal",
+			terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+			waitingOn: [{ toolCallId: "ci-1", toolName: "wait_for_ci" }],
+		});
+		await sink.flushed?.();
+		failing.enabled = true;
+		const failure = await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [RESULT]).then(
+			() => assert.fail("the write was refused"),
+			(error: ReleasedChildError) => error,
+		);
+		failing.enabled = false;
+		// The copy another realm or process sees; an older copy carries no subject of its own.
+		const copy = JSON.parse(JSON.stringify(failure)) as Record<string, unknown>;
+		if (!keepSubject) delete copy.subject;
+		assert.ok(isReleasedChildError(copy));
+		await recordSubagentChildWakeFailure(pi, ownerSessionId, "run:0", [RESULT], copy);
+
+		const status = subagentChildrenAwaitingResume(ctx).join("\n");
+		assert.equal(status.split("(record-append-failed)").length - 1, 1, status);
+		assert.equal(status.split(failure.hint).length - 1, 1, status);
+		assert.ok(status.includes(`Its last wake failed: ${failure.message}`), status);
+	}
+});
+
 test("a failure that knows a subagent only by its Intercom name names it so in status, never as undefined (#5551)", async () => {
 	const { ctx, ownerSessionId } = owner();
 	observeChildRecordFailure(

@@ -11,6 +11,8 @@ export type ReleasedChildErrorCode =
 export interface ReleasedChildErrorFields {
 	readonly childId?: string;
 	readonly childName?: string;
+	/** Every subagent one failure covers when it covers several, by Intercom name (#5551). */
+	readonly childNames?: readonly string[];
 	readonly ownerSessionId?: string;
 	readonly reason?: string;
 	readonly state?: string;
@@ -54,12 +56,27 @@ function hintFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFields)
 		case "record-append-failed":
 			return "Check the session store the owning session writes to; until it is saved, a restart would not know this state of the child.";
 		case "hold-failed":
-			return "Check that Intercom is connected; until the reservation exists, sends to this subagent are answered as not found.";
+			return `Check that Intercom is connected; until the reservation exists, sends to ${several(fields) ? "these subagents" : "this subagent"} are answered as not found.`;
 		case "completion-not-held":
-			return "Nothing to do: the session that launched the subagent receives the task's completion notice instead.";
+			// #5551: the parent's task owner keeps a refused notice for the child's next run, never for the launching session.
+			return "Nothing to do: the task's completion notice waits for the subagent's next run; the session that launched the subagent never receives it.";
 		case "wake-failed":
 			return `Its results are kept: resume it with { action: "resume", id: "${describeChild(fields)}", message? } to try again.`;
 	}
+}
+
+function several(fields: ReleasedChildErrorFields): boolean {
+	return (fields.childNames?.length ?? 0) > 1;
+}
+
+const LISTED_NAMES = 3;
+
+/** "a, b and c", or the first few and how many more. */
+function listed(names: readonly string[]): string {
+	const shown = names.slice(0, names.length > LISTED_NAMES + 1 ? LISTED_NAMES : names.length);
+	const more = names.length - shown.length;
+	if (more > 0) return `${shown.join(", ")} and ${more} more`;
+	return `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}`;
 }
 
 /** "subagent <id>" by its child id, else its Intercom name; "the subagent" when the failure names neither (#5551). */
@@ -81,6 +98,7 @@ function subjectFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFiel
 		case "record-append-failed":
 			return `The ${fields.state === undefined ? "" : `${fields.state} `}record of ${named} could not be saved`;
 		case "hold-failed": {
+			if (several(fields)) return `Sends to released subagents ${listed(fields.childNames ?? [])} cannot be held`;
 			const target = fields.childName ?? fields.childId;
 			return `Sends to ${target === undefined ? "a released subagent" : `released subagent ${target}`} cannot be held`;
 		}
@@ -94,6 +112,7 @@ function subjectFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFiel
 export interface SerializedReleasedChildError {
 	readonly name: string;
 	readonly code: ReleasedChildErrorCode;
+	readonly subject: string;
 	readonly message: string;
 	readonly hint: string;
 	readonly retryable: boolean;
@@ -128,6 +147,7 @@ export class ReleasedChildError extends Error {
 		return {
 			name: this.name,
 			code: this.code,
+			subject: this.subject,
 			message: this.message,
 			hint: this.hint,
 			retryable: this.retryable,
@@ -146,4 +166,13 @@ export function isReleasedChildError(error: Error | object | null | undefined): 
 		typeof candidate.code === "string" &&
 		RELEASED_CHILD_ERROR_CODES.has(candidate.code)
 	);
+}
+
+/**
+ * What failed, without the code and the hint the message ends with: the error's own subject, or for a structural copy
+ * that carries none, as one serialized before it had one, the subject its code and fields name (#5551).
+ */
+export function releasedChildErrorSubject(error: ReleasedChildError): string {
+	const subject = (error as { readonly subject?: unknown }).subject;
+	return typeof subject === "string" ? subject : subjectFor(error.code, error.fields ?? {});
 }
