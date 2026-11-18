@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { test, vi } from "vitest";
 import {
 	DecisionRequestError,
@@ -6,6 +7,7 @@ import {
 } from "../../packages/coding-agent/src/core/decision/errors.js";
 import { InMemorySettingsStorage, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { decisionSettingScopes } from "../../packages/coding-agent/src/modes/interactive/components/settings-selector-items.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import {
 	autoAdvanceAfterSteerSetting,
@@ -24,11 +26,10 @@ import {
 	type StageReadinessDecision,
 } from "../../packages/workflows/src/runs/foreground/readiness-decision.js";
 import type { StageNotice, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import {
 	noticeRow,
 	noticeSummary,
-	stageNoticeCard,
+	stageNoticeLine,
 } from "../../packages/workflows/src/tui/stage-chat-view-transcript.js";
 import { decisionChatModel } from "../helpers/structured-output.js";
 
@@ -218,28 +219,25 @@ test("stage status lists the readiness decision, and the transcript shows it as 
 	);
 });
 
-test("the connect view renders each readiness outcome as a stage readiness card", () => {
-	const theme = deriveGraphTheme({});
+test("the connect view renders each readiness outcome as a readiness notice", () => {
+	initTheme("dark");
 	const render = (decision: StageReadinessDecision): string => {
 		const notice = decisionNotice(decision);
-		return noticeRow(
-			{
-				role: "notice",
-				noticeId: notice.id,
-				kind: notice.kind,
-				value: notice.to,
-				...(notice.from === undefined ? {} : { from: notice.from }),
-				...(notice.meta === undefined ? {} : { meta: notice.meta }),
-				text: noticeSummary(notice),
-			},
-			theme,
-		)
+		return noticeRow({
+			role: "notice",
+			noticeId: notice.id,
+			kind: notice.kind,
+			value: notice.to,
+			...(notice.from === undefined ? {} : { from: notice.from }),
+			...(notice.meta === undefined ? {} : { meta: notice.meta }),
+			text: noticeSummary(notice),
+		})
 			.render(120)
+			.map((row) => stripVTControlCharacters(row))
 			.join("\n");
 	};
 	const advanced = render(ADVANCED);
-	assert.match(advanced, /STAGE READINESS/);
-	assert.match(advanced, /✓/);
+	assert.match(advanced, /^ ● Decision model advanced the stage/);
 	assert.match(advanced, /Decision model advanced the stage \(p=0\.93/);
 	assert.match(advanced, /typesafe\/jev-latest/);
 	const stayed = render({
@@ -248,10 +246,10 @@ test("the connect view renders each readiness outcome as a stage readiness card"
 		probabilities: { advance: 0.1, stay: 0.9, addressed: 0.2 },
 	});
 	assert.match(stayed, /Decision model kept the stage open \(p=0\.90\)/);
-	assert.match(stayed, /◆/);
+	assert.match(stayed, /^ › /);
 	const asked = render({ outcome: "asked", at: 1, error: { name: "DecisionTimeoutError", code: "timeout" } });
 	assert.match(asked, /Decision model failed \(timeout\); asked whether to move on/);
-	assert.match(asked, /\?/);
+	assert.match(asked, /^ ! /);
 	assert.equal(
 		noticeSummary(decisionNotice(ADVANCED)),
 		"~ Decision model advanced the stage (p=0.93, addressed p=0.91)",
@@ -294,9 +292,9 @@ test("/settings saves each decision setting where the project already sets it, o
 	assert.deepEqual(decisionSettingScopes({ workflows: { paths: [] } }).autoAdvanceAfterSteerScope, "global");
 });
 
-test("each readiness outcome gets its own card in the connect view", () => {
-	const card = (value: string, meta?: string, from?: string) =>
-		stageNoticeCard({
+test("each readiness outcome gets its own notice in the connect view", () => {
+	const line = (value: string, meta?: string, from?: string) =>
+		stageNoticeLine({
 			role: "notice",
 			noticeId: "n",
 			kind: "decision",
@@ -305,21 +303,15 @@ test("each readiness outcome gets its own card in the connect view", () => {
 			...(meta === undefined ? {} : { meta }),
 			...(from === undefined ? {} : { from }),
 		});
-	assert.deepEqual(card("advanced", "Decision model advanced the stage (p=0.93)", "typesafe/jev-latest"), {
-		title: "STAGE READINESS",
-		glyph: "✓",
-		headline: "Decision model advanced the stage (p=0.93)",
-		tone: "success",
-		fields: [
-			{ label: "outcome", value: "advanced", tone: "text" },
-			{ label: "model", value: "typesafe/jev-latest", tone: "muted" },
-		],
+	assert.deepEqual(line("advanced", "Decision model advanced the stage (p=0.93)", "typesafe/jev-latest"), {
+		status: "success",
+		label: "Decision model advanced the stage (p=0.93)",
+		outcome: "",
+		meta: ["typesafe/jev-latest"],
 	});
-	assert.deepEqual(
-		[card("stayed").glyph, card("stayed").tone, card("asked").glyph, card("asked").tone],
-		["◆", "info", "?", "warning"],
-	);
-	assert.equal(card("asked").headline, "Decision model judged the stage's readiness");
+	assert.deepEqual([line("stayed").status, line("asked").status], ["info", "warning"]);
+	assert.equal(line("asked").label, "Decision model judged the stage's readiness");
+	assert.deepEqual(line("asked").meta, ["asked"]);
 });
 
 test("a record without probabilities still describes itself", () => {
