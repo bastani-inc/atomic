@@ -2012,6 +2012,7 @@ export class SubagentControlRuntime {
 		let eventLog: EventLog | undefined;
 		let skillReport: AttemptSkillReport = {};
 		let retryableStart = false;
+		let finalProgress: AgentProgress | undefined;
 		const terminate = async (cause: TerminationCauseName): Promise<void> => {
 			if (terminating) {
 				if (!terminationWasKill) this.killedChildren.delete(admitted.identity.path);
@@ -2391,6 +2392,7 @@ export class SubagentControlRuntime {
 				durationMs: 0,
 				lastActivityAt: Date.now(),
 			};
+			finalProgress = progressState;
 			const activityPrefix = randomUUID();
 			let lastProgressEmit = 0;
 			const reportMetrics = (now: number) => {
@@ -2750,7 +2752,7 @@ export class SubagentControlRuntime {
 			};
 		} finally {
 			// Release, stop and completion precede session disposal. A stalled start still has a retry to decide.
-			if (!retryableStart) finishElapsedSpan(elapsedSpan, taskHooks);
+			if (!retryableStart) finishElapsedSpan(elapsedSpan, taskHooks, finalProgress);
 			startBudget.end();
 			// End reply capability before asynchronous cleanup or extension invalidation.
 			executionEnded.abort();
