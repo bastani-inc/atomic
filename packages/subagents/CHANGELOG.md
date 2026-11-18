@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The bundled tmux skill's helper scripts carry the upstream fixes since they were adopted. `find-sessions.sh` shows each session's attached state and start time (it printed a literal `\t`, an empty time and "detached" for every session), counts a session with several clients as attached, matches `-q` literally against session names, and scans hidden sockets with `-A`. `wait-for-text.sh` accepts a zero-padded timeout such as `-T 08`, no longer reports a match when the pane capture fails, rejects an invalid pattern at once instead of waiting out the timeout, and stops checking at the deadline. The skill also shows how to wait for a command's completion marker without matching the echoed command line.
+
 ## [0.9.89] - 2026-11-18
 
 ### Breaking Changes
