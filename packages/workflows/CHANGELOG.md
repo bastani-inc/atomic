@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled `unslop` and `teach` skills to the current cursor/plugins pstack text. `unslop` keeps the same rule numbers but states each rule in one line, and `teach` drops repeated wording from its steps. `unslop` stays available to the model.
+
 ## [0.9.89] - 2026-11-18
 
 ### Breaking Changes

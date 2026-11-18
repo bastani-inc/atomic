@@ -430,6 +430,37 @@ describe("synced upstream skill trees", () => {
 		);
 	});
 
+	test("ships the pstack teach, unslop and bro bodies of cursor/plugins main 35a90942", () => {
+		// Body SHA-256 of cursor/plugins pstack/skills/<name>/SKILL.md at that commit, after the frontmatter. The pstack
+		// skills record the upstream commit in github-tree-sha. how and why are Atomic adaptations and are not pinned here.
+		const pstack: ReadonlyArray<readonly [name: string, bodySha256: string, userInvokedOnly: boolean]> = [
+			["teach", "e8d8607040e6824f0fcd20c168b416b2f835c0611079d22a281b4447c04dc4b6", true],
+			["unslop", "4e2c21fbdfcdec160e3249bc433e7bf6d500f9269449bec14dcd8161bb16a563", false],
+			["bro", "638186a185a29dbaa188e976ab505c0e0e630d83ebc37b0ec83feba342aecb1f", true],
+		];
+		for (const [name, bodySha256, userInvokedOnly] of pstack) {
+			const skillRoot = join(workflowSkills, name);
+			const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
+			assert.equal(sha256(body.replace(/^\n/u, "")), bodySha256, `${name} body drifted from upstream`);
+			assert.match(frontmatter, new RegExp(`^name: ${name}$`, "mu"));
+			assert.equal(/^disable-model-invocation: true$/mu.test(frontmatter), userInvokedOnly, name);
+			for (const [key, value] of [
+				["github-repo", "https://github.com/cursor/plugins"],
+				["github-path", `pstack/skills/${name}`],
+				["github-ref", "refs/heads/main"],
+				["github-tree-sha", "35a90942a7f02e1ebbc2443643179815f2147954"],
+			] as const) {
+				assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`), `${name} ${key}`);
+			}
+			assert.deepEqual(collectFiles(skillRoot, [], skillRoot), ["LICENSE.txt", "SKILL.md"]);
+		}
+		// Atomic keeps unslop model-invocable, so its description keeps the phrase upstream dropped with the flag.
+		assert.match(
+			readFileSync(join(workflowSkills, "unslop/SKILL.md"), "utf8"),
+			/^description: Cut AI tells from any writing\. Must always apply\.\r?$/mu,
+		);
+	});
+
 	test("tracks the skill-creator scripts with the modes of anthropics/skills tree 3cf9a8db", () => {
 		const skillCreatorRoot = "packages/workflows/skills/skill-creator/";
 		const executableScripts = new Set(
