@@ -1,10 +1,10 @@
-import type { Component } from "@bastani/atomic-tui";
+import { type Component, truncateToWidth } from "@bastani/atomic-tui";
 import { agentPanelTaskId, taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
 import { supersededReleasedAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { theme } from "../theme/theme.js";
-import { AGENT_PANEL_IDLE_ROWS, renderAgentPanelRows } from "./agent-panel.ts";
+import { AGENT_PANEL_IDLE_ROWS, panelShellHintSegments, renderAgentPanelRows } from "./agent-panel.ts";
 import { countTasksBy, TaskRow, taskLabel, taskSiblings, taskTitle } from "./task-row.js";
 
 const labelAndTitle = (task: TaskRecord): string => JSON.stringify([taskLabel(task), taskTitle(task)]);
@@ -73,15 +73,24 @@ export function isActiveBackgroundTask(task: TaskRecord): boolean {
 	);
 }
 
+/**
+ * A chat's own active tasks below its prompt, as the main chat's agent panel shows them: subagents as rows, and running
+ * shells, which are not rows, counted on a line of their own in the main chat's hint wording.
+ */
 export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
 	const input: TaskRecord[] = [];
 	const running: TaskRecord[] = [];
 	const other: TaskRecord[] = [];
 	let total = 0;
+	let shells = 0;
 	const superseded = supersededReleasedAttempts(tasks);
 	for (let index = tasks.length - 1; index >= 0; index--) {
 		const task = tasks[index]!;
 		if (!isActiveBackgroundTask(task) || superseded.has(task.ref.taskId)) continue;
+		if (task.kind === "command") {
+			shells++;
+			continue;
+		}
 		total++;
 		if (task.execution.kind === "running") {
 			if (task.attention.kind === "none") {
@@ -93,7 +102,17 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 			other.push(task);
 		}
 	}
-	if (total === 0) return [];
+	const shellHint = panelShellHintSegments(shells, total > 0);
+	const shellLine =
+		shellHint.length === 0
+			? []
+			: [
+					truncateToWidth(
+						`  ${shellHint.map((segment) => theme.fg("muted", segment)).join(theme.fg("dim", " · "))}`,
+						Math.max(1, width),
+					),
+				];
+	if (total === 0) return shellLine;
 	const shownTasks = [...input, ...running, ...other].slice(0, AGENT_PANEL_IDLE_ROWS);
 	const now = Date.now();
 	const items = taskPanelItems({ backgroundTasks: shownTasks }, new Set(), { topLevelOnly: false }).map((row) => {
@@ -106,7 +125,7 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 			? row
 			: { ...row, elapsedMs };
 	});
-	return renderAgentPanelRows(
+	const rows = renderAgentPanelRows(
 		items,
 		width,
 		{
@@ -122,4 +141,5 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 		},
 		{ hiddenBelow: total - items.length },
 	);
+	return [...rows, ...shellLine];
 }
