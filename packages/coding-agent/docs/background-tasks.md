@@ -206,13 +206,13 @@ A shell or subagent that keeps running sends its chat a **task heartbeat** every
 - If it looks runaway, stale or stuck, the model inspects it (`/tasks`, or a shell or subagent `wait` on its task ID), steers it (an Intercom message to a subagent, or pausing it and resuming it with a message), or stops it (`kill({ id })` for a shell, `subagent({ action: "quit", id })` for a subagent).
 - It does not relaunch a task that is still running.
 
-A heartbeat never stops, restarts or relaunches a task by itself. The card in chat lists each task; expand it for the status line and output:
+A heartbeat never stops, restarts or relaunches a task by itself. In chat it is a notice that lists each task, up to five, and counts the rest; expand it (Ctrl+O) for each task's status line and output:
 
 ```text
 ♥ Task heartbeat · 2 tasks still running
-  shell task-1-0-3 npm run e2e · 45m
-  subagent task-1-0-4 Trace the authentication flow · 30m
-(ctrl+o Expand) · periodic check · /tasks to inspect
+  ⎿  shell task-1-0-3 npm run e2e · 45m
+  ⎿  subagent task-1-0-4 Trace the authentication flow · 30m
+     /tasks to inspect · ctrl+o to expand
 ```
 
 The model receives one entry per task, followed by the guidance above:
