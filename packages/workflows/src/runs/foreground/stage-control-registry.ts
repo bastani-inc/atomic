@@ -33,7 +33,7 @@ import type {
 	SessionStore,
 	TaskViewSource,
 } from "@bastani/atomic";
-import { sessionWaitsToRetry } from "@bastani/atomic";
+import { retryStatusUpdate, sessionWaitsToRetry } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
@@ -331,6 +331,14 @@ export interface ReleasedStage {
 	readonly stageId: string;
 	readonly stageName: string;
 	readonly sessionId: string;
+}
+
+/** A stage can switch sessions between attempts. Follow its own events even when there is no session to read. */
+export type StageRetryWait = "backoff" | StageControlHandle["modelSwitch"];
+export function stageRetryWaitAfter(wait: StageRetryWait, event: AgentSessionEvent): StageRetryWait {
+	const update = retryStatusUpdate(event);
+	if (update === undefined) return wait;
+	return update?.type === "auto_retry_start" ? "backoff" : (update ?? undefined);
 }
 
 /** Whether the stage's session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */

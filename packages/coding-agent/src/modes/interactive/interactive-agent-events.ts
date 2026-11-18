@@ -144,11 +144,7 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 	});
 	// A rebind can miss the start of a wait. Subscribe and read it in one turn; don't restart its countdown.
 	const wait = session.retryStatus;
-	if (wait) {
-		void this.handleEvent(
-			wait.type === "auto_retry_start" ? { ...wait, delayMs: Math.max(0, wait.retryAt - Date.now()) } : wait,
-		);
-	}
+	if (wait) void this.handleEvent(wait);
 	// Workflow runs execute outside the main agent loop, so their activity feeds the status separately.
 	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
 		if (this.session === session) this.programStatus.handleWorkflowActivity(frame);
@@ -646,19 +642,22 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			// Show retry indicator
 			this.statusContainer.clear();
 			this.retryCountdown?.dispose();
+			const pending = this.session.retryStatus;
+			const now = Date.now();
+			const until = pending?.type === "auto_retry_start" ? pending.retryAt : now + event.delayMs;
 			const retryMessage = (seconds: number) =>
 				`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyText("app.interrupt")} Cancel)`;
 			this.retryLoader = new AtomicWorkingLoader(
 				this.ui,
 				undefined,
 				(text) => theme.fg("muted", text),
-				retryMessage(Math.ceil(event.delayMs / 1000)),
+				retryMessage(Math.max(0, Math.ceil((until - now) / 1000))),
 			);
 			this.retryCountdown =
-				event.delayMs <= 0
+				until <= now
 					? undefined
 					: new CountdownTimer(
-							event.delayMs,
+							{ until },
 							this.ui,
 							(seconds) => {
 								this.retryLoader?.setMessage(retryMessage(seconds));

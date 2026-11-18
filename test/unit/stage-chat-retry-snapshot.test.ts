@@ -1,6 +1,8 @@
+import type { AgentSessionEvent } from "@bastani/atomic";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
+import { createStageControlHandle } from "../../packages/workflows/src/runs/foreground/executor-stage-control.js";
 import {
 	assert,
 	createStore,
@@ -11,6 +13,31 @@ import {
 	setupRun,
 	stripAnsi,
 } from "./stage-chat-view-helpers.js";
+
+test("a stage publishes a model switch it announced between two sessions, and clears it on the next request (#5572)", () => {
+	let emit: ((event: AgentSessionEvent) => void) | undefined;
+	const handle = createStageControlHandle({
+		innerCtx: {
+			__agentSession: () => undefined,
+			subscribe(listener: (event: AgentSessionEvent) => void) {
+				emit = listener;
+				return () => {};
+			},
+		},
+	} as never);
+	const switchModel = {
+		type: "model_fallback_start",
+		from: "primary",
+		to: "fallback",
+		reason: "not found",
+		attempt: 1,
+	} as const;
+	assert.ok(emit);
+	emit(switchModel);
+	assert.equal(handle.modelSwitch, switchModel);
+	emit({ type: "agent_start" });
+	assert.equal(handle.modelSwitch, undefined);
+});
 
 for (const [failure, eventType, expected] of [
 	["529 overloaded_error: Overloaded", "auto_retry_start", "retrying…"],

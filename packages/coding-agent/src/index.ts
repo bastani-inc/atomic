@@ -841,6 +841,7 @@ export {
 } from "./core/session-manager-classification.ts";
 export {
 	type PublishedChatActivity,
+	retryStatusUpdate,
 	type SessionRetryStatus,
 	sessionWaitsToRetry,
 } from "./core/session-retry-status.js";

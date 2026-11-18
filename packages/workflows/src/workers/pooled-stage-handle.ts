@@ -6,11 +6,13 @@ import type {
 	SessionCommandCatalog,
 	TaskViewSource,
 } from "@bastani/atomic";
-import type {
-	AgentSessionEventListener,
-	StageControlHandle,
-	StageControlStatus,
-	StagePlacement,
+import {
+	type AgentSessionEventListener,
+	type StageControlHandle,
+	type StageControlStatus,
+	type StagePlacement,
+	type StageRetryWait,
+	stageRetryWaitAfter,
 } from "../runs/foreground/stage-control-registry.js";
 import { StageQueuedUserMessageBuffer } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
@@ -155,7 +157,7 @@ export class PooledStageHandle implements StageControlHandle {
 	private streaming: StreamingMessage;
 	private currentStatus: StageControlStatus = "running";
 	private streamingNow = false;
-	private pendingRetry: "backoff" | PooledStageChatSnapshot["modelSwitch"];
+	private pendingRetry: StageRetryWait;
 	publishedActivity?: PooledStageChatSnapshot["publishedActivity"];
 	private seq = 0;
 	private attempt: { readonly workId: string; readonly generation: number };
@@ -853,27 +855,14 @@ export class PooledStageHandle implements StageControlHandle {
 	private applyEvent(event: AgentSessionEvent): void {
 		this.toolExecutions.record(event);
 		this.queued.record(event);
+		this.pendingRetry = stageRetryWaitAfter(this.pendingRetry, event);
 		switch (event.type) {
 			case "agent_start":
 				// A turn only starts on a running stage, including one resumed after it paused.
 				this.streamingNow = true;
-				this.pendingRetry = undefined;
 				this.currentStatus = "running";
 				return;
-			case "auto_retry_start":
-				this.pendingRetry = "backoff";
-				return;
-			case "model_fallback_start":
-				this.pendingRetry = event;
-				return;
-			case "auto_retry_end":
-			case "model_fallback_end":
-			case "agent_continue_error":
-			case "session_released":
-				this.pendingRetry = undefined;
-				return;
 			case "agent_end":
-				this.pendingRetry = undefined;
 				this.streamingNow = false;
 				this.streaming = undefined;
 				return;

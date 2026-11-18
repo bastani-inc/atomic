@@ -98,11 +98,14 @@ test("a main chat bound during a backoff shows the remaining countdown, not a ne
 			errorMessage: "busy",
 		},
 	});
-	for (let bind = 0; bind < 2; bind++) {
-		InteractiveMode.prototype.subscribeToAgent.call(mode as never);
-		assert.match(rendered(mode), /Retrying \(1\/3\) in 3s/);
-		mode.unsubscribe();
-	}
+	InteractiveMode.prototype.subscribeToAgent.call(mode as never);
+	vi.advanceTimersByTime(600);
+	mode.unsubscribe();
+	InteractiveMode.prototype.subscribeToAgent.call(mode as never);
+	assert.match(rendered(mode), /Retrying \(1\/3\) in 3s/);
+	vi.advanceTimersByTime(400);
+	assert.match(rendered(mode), /Retrying \(1\/3\) in 2s/, "reattaching between ticks retains the same deadline");
+	mode.unsubscribe();
 	await emit(mode, { type: "auto_retry_end", success: true, attempt: 1 });
 	assert.equal(mode.defaultEditor.onEscape, onEscape);
 	assert.equal(vi.getTimerCount(), 0);
