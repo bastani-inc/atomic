@@ -4,6 +4,7 @@
 
 ### Added
 
+- A storage driver's `transientFailure` can return `hop: { name, failure }` for a call that failed before it reached the database server, such as at a proxy. `StorageTransientError`, and the warning printed while the call is retried, then say what happened at that hop instead of "the database server call failed", and the hint asks to check that hop; the error carries it as `hop` and `hopFailure`. The PostgreSQL adapter uses it to name the proxy ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
 - SDK: `createForkedSession` forks a session at an entry append-only: the new session holds the source's branch unchanged, followed by one result for each tool call the source's last turn left open. `appendForkToolResults`, `unansweredToolCalls`, `forkToolResults` and `forkPointEntryId` expose its steps. Subagent forks and forked workflow stages use it ([#5481](https://github.com/bastani-inc/atomic/issues/5481))
 
 ### Changed
