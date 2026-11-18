@@ -31,9 +31,9 @@ Below the main chat's prompt, the **agent panel** lists the session's active bac
 - **Finished subagents** leave the panel as soon as they finish; `/tasks` still lists them. A stopped, paused or interrupted subagent stays while another subagent, workflow run or background shell is still running, and leaves once nothing is running. It does not come back when new work starts, unless you resume it; a resumed subagent is one row. A stopped row, and a finished workflow run, read dim after 30 seconds. A finished workflow run stays until you have opened it. Narrow terminals drop the token count and the stage bar.
 - **Up to four rows** show while the prompt has focus, then `+N more`; the focused panel shows eight at a time. The main row does not count toward either.
 
-The main footer shows `↓ N agents` for the subagent rows the panel lists. Workflow runs are not agents: a panel that lists only workflow runs shows no `↓` count, though **↓** still focuses it. `N needs input` counts every row that waits for an answer, workflow runs included. These counts include rows folded into `+N more` and use the current chat's tasks. When the panel lists nothing but `/tasks` lists subagents of this chat, the footer shows `/tasks to see subagents`; while background shells run, `N shells · /tasks to manage` takes its place.
+The main footer shows `↓ N agents` for the subagent rows the panel lists. Workflow runs are not agents: a panel that lists only workflow runs shows no `↓` count, though **↓** still focuses it. `N needs input` counts every row that waits for an answer, workflow runs included. These counts include rows folded into `+N more` and use the current chat's tasks. When the panel lists nothing but `/tasks` lists subagents of this chat, the footer shows `/tasks to see subagents`; while background shells or searches run, `N shells · N searches · /tasks to manage` takes its place.
 
-Background shells are not panel rows. The footer counts the running ones, for example `2 shells`; with no rows in the panel it adds `/tasks to manage`. Open, read and stop shells in [`/tasks`](#open-the-task-inspector).
+Background shells are not panel rows. The footer counts the running ones, for example `2 shells`; with no rows in the panel it adds `/tasks to manage`. Open, read and stop shells in [`/tasks`](#open-the-task-inspector). Background searches are not rows either: the footer counts them on their own, for example `1 search`, and unlike a shell a running search does not keep stopped subagents in the panel.
 
 Press **↓** on an empty prompt to focus the panel. It then works like every list:
 
@@ -48,7 +48,7 @@ In fullscreen mode you can also click a row, focused or not, to open it as Enter
 
 Going back from what you opened returns to the main chat with the panel focused on the same row. The subagent chat's hint reads `← main chat`; press **←** on its empty prompt. A workflow graph uses **Esc** to return.
 
-A workflow stage chat or a subagent's chat lists its own active subagents below its prompt in the same row format, and counts its running shells on the line under them, for example `2 shells`, adding `/tasks to manage` when it has no subagent rows. Attached subagent chats identify the sender with `› from main` and echo the initial prompt. Their heavy composer rules name the recipient, task and state. Stage chats use `stage · <name>` labels. **?** on an empty prompt shows the chat's live keys. **Esc** interrupts without navigating away.
+A workflow stage chat or a subagent's chat lists its own active subagents below its prompt in the same row format, and counts its running shells and searches on the line under them, for example `2 shells · 1 search`, adding `/tasks to manage` when it has no subagent rows. Attached subagent chats identify the sender with `› from main` and echo the initial prompt. Their heavy composer rules name the recipient, task and state. Stage chats use `stage · <name>` labels. **?** on an empty prompt shows the chat's live keys. **Esc** interrupts without navigating away.
 
 If the panel warns that an extension source failed, its invalid rows are hidden while the other rows and chat remain usable. A source that cannot list its rows is hidden entirely. The warning appears once per source, including during startup. Fix or update the extension, then use `/reload` to register it again; new rows continue updating without reopening the panel. If a reload closes the focused panel, press ↓ on the empty prompt to open it again. A failed stop or answer reports the source's error without closing the chat.
 
@@ -311,7 +311,7 @@ Completed, failed, and stopped tasks retain inspection but do not offer executio
 
 ## Background searches
 
-A `search` of `history://` runs like a shell command: after the automatic observation budget it goes on as a background task, listed under **Searches** in `/tasks`, with heartbeats, one completion notice, `search({ action: "wait", id })` and `kill({ id })`. It runs in Atomic's own process, so it has no process ID, input or terminal. See [Searching history in the background](sessions.md#searching-history-in-the-background).
+A `search` of `history://` runs like a shell command: after the automatic observation budget it goes on as a background task, listed under **Searches** in `/tasks` and counted in the footer as `1 search`, with heartbeats, one completion notice, `search({ action: "wait", id })` and `kill({ id })`. It runs in Atomic's own process, so it has no process ID, input or terminal. See [Searching history in the background](sessions.md#searching-history-in-the-background).
 
 ## Background shells
 

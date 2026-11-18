@@ -60,6 +60,8 @@ export interface AgentPanelCounts {
 	readonly needsInput: number;
 	/** Running background shells: counted in the hint line, listed in /tasks rather than the panel. */
 	readonly shells?: number;
+	/** Running background searches: counted in the hint line with their own noun, listed in /tasks. */
+	readonly searches?: number;
 	/** The chat's subagents in /tasks, listed in the panel or not: the hint points there once the panel lists none. */
 	readonly subagents?: number;
 }
@@ -76,6 +78,7 @@ type PanelRankCache = {
 	readonly total: number;
 	readonly needsInput: number;
 	readonly shells: number;
+	readonly searches: number;
 	readonly subagents: number;
 	readonly agents: number;
 	readonly main: boolean;
@@ -86,6 +89,7 @@ interface PanelRanking {
 	readonly total: number;
 	readonly needsInput: number;
 	readonly shells: number;
+	readonly searches: number;
 	readonly subagents: number;
 	readonly agents: number;
 	readonly main: boolean;
@@ -97,6 +101,7 @@ function rankingOf(cache: PanelRankCache, rows: AgentPanelRow[] = cache.rows): P
 		total: cache.total,
 		needsInput: cache.needsInput,
 		shells: cache.shells,
+		searches: cache.searches,
 		subagents: cache.subagents,
 		agents: cache.agents,
 		main: cache.main,
@@ -281,11 +286,12 @@ function rankPanelSession(
 	if (!active) {
 		for (const task of tasks) {
 			if (task.parentTaskId !== undefined || (superseded.size > 0 && superseded.has(task.ref.taskId))) continue;
-			// Background work that is not a row (a shell) is active while it runs.
+			// Background work that is not a row is active while it runs if it is a shell; a search is a tool call's work.
+			const role = taskPanelRole(task);
 			if (
-				taskPanelRole(task) === "agent"
+				role === "agent"
 					? isActivePanelRow({ state: taskPanelState(task) })
-					: task.execution.kind !== "settled"
+					: role === "shell" && task.execution.kind !== "settled"
 			) {
 				active = true;
 				break;
@@ -300,6 +306,7 @@ function rankPanelSession(
 	const finishedRows: AgentPanelRow[] = [];
 	let counts = NO_PANEL_ROWS;
 	let shells = 0;
+	let searches = 0;
 	let subagents = 0;
 	const room = () => inputRows.length + runningRows.length + otherRows.length + finishedRows.length < cap;
 	/** Whether the panel lists a row, by the shared rules; a finished row it lists starts fading. */
@@ -352,10 +359,13 @@ function rankPanelSession(
 			const task = tasks[i]!;
 			if (superseded.size > 0 && superseded.has(task.ref.taskId)) continue;
 			if (task.parentTaskId !== undefined) continue;
-			// Only subagents are rows. A shell is counted on the hint line and listed in /tasks.
+			// Only subagents are rows. A shell or a search is counted on the hint line and listed in /tasks.
 			const role = taskPanelRole(task);
 			if (role !== "agent") {
-				if (role === "shell" && task.execution.kind !== "settled") shells++;
+				if (task.execution.kind !== "settled") {
+					if (role === "shell") shells++;
+					else searches++;
+				}
 				continue;
 			}
 			subagents++;
@@ -403,11 +413,12 @@ function rankPanelSession(
 		total,
 		needsInput,
 		shells,
+		searches,
 		subagents,
 		agents,
 		main,
 	});
-	return { rows, total, needsInput, shells, subagents, agents, main };
+	return { rows, total, needsInput, shells, searches, subagents, agents, main };
 }
 
 export function agentPanelRows(
@@ -517,6 +528,7 @@ export function bindAgentPanel(
 	let lastTotal = -1;
 	let lastNeedsInput = -1;
 	let lastShells = -1;
+	let lastSearches = -1;
 	let lastSubagents = -1;
 	let lastAgents = -1;
 	let scheduled = false;
@@ -536,11 +548,13 @@ export function bindAgentPanel(
 	let cachedLines: string[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
 
-	const publishCounts = (total: number, needsInput: number, shells: number, subagents: number, agents: number) => {
+	const publishCounts = (counts: Required<AgentPanelCounts>) => {
+		const { total, needsInput, shells, searches, subagents, agents } = counts;
 		if (
 			total === lastTotal &&
 			needsInput === lastNeedsInput &&
 			shells === lastShells &&
+			searches === lastSearches &&
 			subagents === lastSubagents &&
 			agents === lastAgents
 		)
@@ -548,10 +562,11 @@ export function bindAgentPanel(
 		lastTotal = total;
 		lastNeedsInput = needsInput;
 		lastShells = shells;
+		lastSearches = searches;
 		lastSubagents = subagents;
 		lastAgents = agents;
 		try {
-			onCounts?.({ total, agents, needsInput, shells, subagents });
+			onCounts?.({ total, agents, needsInput, shells, searches, subagents });
 		} catch {}
 		return true;
 	};
@@ -573,7 +588,7 @@ export function bindAgentPanel(
 		const wasMounted = mounted;
 		mounted = false;
 		stopTimer();
-		if (resetCounts) publishCounts(0, 0, 0, 0, 0);
+		if (resetCounts) publishCounts({ total: 0, agents: 0, needsInput: 0, shells: 0, searches: 0, subagents: 0 });
 		if (wasMounted) {
 			try {
 				ui.setWidget(WIDGET_KEY, undefined);
@@ -606,15 +621,16 @@ export function bindAgentPanel(
 			unmount(false);
 			return;
 		}
-		const { rows, total, needsInput, shells, subagents, agents, main } = idleRows();
+		const { rows, total, needsInput, shells, searches, subagents, agents, main } = idleRows();
 		if (rows.length === 0) {
-			// Counts go out before the panel closes; the hint line still counts running shells and points to /tasks.
-			const changed = publishCounts(0, 0, shells, subagents, 0);
+			// Counts go out before the panel closes; the hint line still counts running shells and searches and points
+			// to /tasks.
+			const changed = publishCounts({ total: 0, agents: 0, needsInput: 0, shells, searches, subagents });
 			unmount(false);
 			if (changed) ui.requestRender();
 			return;
 		}
-		publishCounts(total, needsInput, shells, subagents, agents);
+		publishCounts({ total, agents, needsInput, shells, searches, subagents });
 		currentHiddenBelow = Math.max(0, total - rows.length);
 		currentMain = main;
 		if (!mounted || !sameUnfocusedRows(currentRows, rows, state.model)) {
@@ -671,8 +687,8 @@ export function bindAgentPanel(
 									dirty = false;
 									refreshes++;
 									try {
-										const { rows, total, needsInput, shells, subagents, agents, main } = idleRows();
-										publishCounts(total, needsInput, shells, subagents, agents);
+										const { rows, total, needsInput, shells, searches, subagents, agents, main } = idleRows();
+										publishCounts({ total, agents, needsInput, shells, searches, subagents });
 										currentHiddenBelow = Math.max(0, total - rows.length);
 										currentMain = main;
 										if (!sameUnfocusedRows(currentRows, rows, state.model)) {
@@ -1135,17 +1151,17 @@ export function setAgentPanelVisible(session: object, visible: boolean): void {
 
 export function agentPanelCounts(session: AgentPanelSession & object): AgentPanelCounts {
 	try {
-		const { total, agents, needsInput, shells, subagents } = rankPanelSession(session, {
+		const { total, agents, needsInput, shells, searches, subagents } = rankPanelSession(session, {
 			start: 0,
 			limit: 0,
 			cap: 1,
 		});
-		return { total, agents, needsInput, shells, subagents };
+		return { total, agents, needsInput, shells, searches, subagents };
 	} catch (error) {
 		const state = panelState(session);
 		if (state.reportOnce !== undefined) state.reportOnce(error);
 		else state.onSourceError?.(sourceError(error));
-		return { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
+		return { total: 0, agents: 0, needsInput: 0, shells: 0, searches: 0, subagents: 0 };
 	}
 }
 

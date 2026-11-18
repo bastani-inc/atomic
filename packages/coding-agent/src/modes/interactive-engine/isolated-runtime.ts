@@ -132,6 +132,7 @@ export function engineAgentPanelCounts(
 		agents: message.agents ?? message.total,
 		needsInput: message.needsInput,
 		shells: message.shells ?? 0,
+		searches: message.searches ?? 0,
 		subagents: message.subagents ?? 0,
 	};
 }
@@ -145,7 +146,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private mirroringPersistedModelDefault = false;
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
-	private panelCounts: AgentPanelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
+	private panelCounts: AgentPanelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, searches: 0, subagents: 0 };
 	private compacting = false;
 	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
 	private retrying = false;
@@ -270,7 +271,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.onGenerationEnded((event) => {
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
-				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
+				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, searches: 0, subagents: 0 };
 				this.updateResources({});
 			}
 			// A first child that never became ready failed startup; initialStart reports it instead of a restart.
@@ -294,7 +295,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				return;
 			}
 			if (message.type === "engine_extension_ui_reset") {
-				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
+				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, searches: 0, subagents: 0 };
 				this.hostExtensionUIReset?.();
 				return;
 			}

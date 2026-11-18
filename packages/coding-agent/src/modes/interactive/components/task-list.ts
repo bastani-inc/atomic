@@ -112,6 +112,7 @@ const footerRetired = new WeakMap<TaskElapsedClocks, AgentPanelModel>();
  */
 export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
 	let shells = 0;
+	let searches = 0;
 	const candidates: TaskRecord[] = [];
 	const superseded = supersededSettledAttempts(tasks);
 	for (let index = tasks.length - 1; index >= 0; index--) {
@@ -119,7 +120,10 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 		if (superseded.has(task.ref.taskId)) continue;
 		const role = taskPanelRole(task);
 		if (role !== "agent") {
-			if (role === "shell" && isActiveBackgroundTask(task)) shells++;
+			if (isActiveBackgroundTask(task)) {
+				if (role === "shell") shells++;
+				else searches++;
+			}
 			continue;
 		}
 		if (task.observation.kind === "background" || task.wasBackground === true) candidates.push(task);
@@ -148,7 +152,7 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 	const listed = [...input, ...running, ...other, ...finished];
 	const total = listed.length;
 	// The chat's own key hint already offers ↓ to its task list, so this line never adds the subagents pointer.
-	const hint = panelHintText(panelHintParts({ total, agents: 0, needsInput: 0 }, shells, 0, true), "");
+	const hint = panelHintText(panelHintParts({ total, agents: 0, needsInput: 0 }, { shells, searches }, 0, true), "");
 	const shellLine =
 		hint.length === 0
 			? []
