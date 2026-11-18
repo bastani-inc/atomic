@@ -200,6 +200,11 @@ export {
 export { createToolSearchExtension } from "./extensions/tool-search/index.js";
 export { createToolSearchToolDefinition, type ToolSearchToolOptions } from "./extensions/tool-search/tool.js";
 export {
+	HeartbeatBlock,
+	type HeartbeatBlockSpec,
+	type HeartbeatRow,
+} from "./modes/interactive/components/heartbeat-block.ts";
+export {
 	isNavHelpKey,
 	NAV_CONFIRM_WINDOW_MS,
 	type NavKey,
@@ -1294,6 +1299,7 @@ export {
 	getMarkdownTheme,
 	getSelectListTheme,
 	getSettingsListTheme,
+	hexColorAnsi,
 	highlightCode,
 	initTheme,
 	Theme,

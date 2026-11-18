@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	formatUndeliveredStageMessageNoticeText,
 	installUndeliveredStageMessageNotifications,
@@ -104,42 +105,45 @@ test("the parent session's renderer is registered once per host and draws a card
 	assert.equal(registered.length, 1);
 	assert.equal(registered[0]!.event, UNDELIVERED_STAGE_MESSAGE_CUSTOM_TYPE);
 	assert.equal(registered[0]!.renderer({}, {}, undefined), undefined);
-	const component = registered[0]!.renderer(
-		{
-			details: {
-				runId: "run-1",
-				workflowName: "review",
-				stageId: "s",
-				stageName: "agent",
-				text: "check the tests",
-				noticeId: "n",
-			},
-		},
-		{},
-		undefined,
-	) as { render(width: number): string[] };
-	const card = component
-		.render(100)
-		.join("\n")
-		.replace(/\x1b\[[0-9;]*m/g, "");
-	assert.deepEqual(
-		card.split("\n").map((line) => line.replace(/[│╭╰─╮╯]/g, "").trim()),
-		[
-			"MESSAGE NOT DELIVERED",
-			'✗ Stage "agent" finished before this message was delivered',
-			"workflow  review",
-			"run       run-1",
-			"stage     agent",
-			"message   check the tests",
-			"Send it to another stage if it still matters.",
-			"",
-		],
-	);
-	assert.match(
-		component.render(20).join(" ").replace(/\s+/g, " "),
-		/finished before this message was delivered/,
-		"a narrow chat falls back to the notice text",
-	);
+	initTheme("dark");
+	const render = (expanded: boolean, width: number, outputPad?: number) =>
+		(
+			registered[0]!.renderer(
+				{
+					details: {
+						runId: "run-1",
+						workflowName: "review",
+						stageId: "s",
+						stageName: "agent",
+						text: "check the tests",
+						noticeId: "n",
+					},
+				},
+				{ expanded, ...(outputPad === undefined ? {} : { outputPad }) },
+				undefined,
+			) as { render(width: number): string[] }
+		)
+			.render(width)
+			.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+	const collapsed = render(false, 100);
+	assert.equal(collapsed[0], ' ! Stage "agent" finished before this message was delivered · review');
+	assert.match(collapsed[1] ?? "", /^ {3}⎿ {2}… \+3 lines(?: \(.+ to expand\))?$/, "hidden details are counted");
+	assert.equal(collapsed.length, 2);
+	assert.deepEqual(render(true, 100), [
+		' ! Stage "agent" finished before this message was delivered · review',
+		"   ⎿  run run-1",
+		"      message check the tests",
+		"      Send it to another stage if it still matters.",
+	]);
+	for (const line of render(true, 20)) assert.ok(line.length <= 20, "a narrow chat shortens the notice");
+	for (const outputPad of [0, 1, 4]) {
+		const lines = render(true, 100 + outputPad, outputPad);
+		assert.match(lines[0] ?? "", new RegExp(`^ {${outputPad}}! Stage`), "the notice starts at the output pad");
+		assert.deepEqual(
+			lines.map((line) => line.slice(outputPad)),
+			render(true, 100, 0),
+		);
+	}
 });
 
 test("the stage chat shows an undelivered message as a warning card naming it (#4884)", () => {
