@@ -20,7 +20,7 @@
 - An extension tool whose call renders a `waiting` or `heartbeat` block keeps its own title once its result arrives, instead of falling back to the tool's label ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 
 - Under Node, each workflow run that finishes no longer keeps the session that wrote its summary, and the run text it summarized, in memory for the rest of the process. A long session that runs many workflows, and an SDK host that disposes such sessions, now release them ([#5487](https://github.com/bastani-inc/atomic/issues/5487))
-- With the event-loop diagnostic enabled, collecting an initial stack no longer pauses the main thread while its debugger metadata is still loading ([#5544](https://github.com/bastani-inc/atomic/issues/5544)).
+- The opt-in event-loop diagnostic prepares its stack sampler before interactive startup and reuses it, instead of activating the debugger during a stall and making that stall longer ([#5544](https://github.com/bastani-inc/atomic/issues/5544)).
 
 ## [0.9.89] - 2026-11-18
 

@@ -176,63 +176,75 @@ const state = new Int32Array(workerData.state);
 const readStamp = () => Number(Atomics.load(stamp, 0));
 const nowUs = () => (performance.timeOrigin + performance.now()) * 1000;
 let block;
-function begin(sinceUs) {
-	const session = new Session();
-	session.connectToMainThread();
-	Atomics.store(state, ${WatchdogState.Attached}, 1);
-	const urls = new Map();
-	const current = { sinceUs, session, samples: [], ready: false, pausing: false, nextPauseUs: 0 };
-	session.on("Debugger.scriptParsed", ({ params }) => urls.set(params.scriptId, params.url));
-	session.on("Debugger.paused", ({ params }) => {
-		session.post("Debugger.resume");
-		if (block === current && readStamp() === sinceUs) {
-			current.samples.push(params.callFrames.map((frame) => [
-				frame.functionName,
-				frame.url || urls.get(frame.location.scriptId) || "",
-				frame.location.lineNumber,
-				frame.location.columnNumber ?? 0,
-				frame.functionLocation?.lineNumber ?? frame.location.lineNumber,
-				frame.functionLocation?.columnNumber ?? frame.location.columnNumber ?? 0,
-			]));
-		}
-		current.pausing = false;
-		current.nextPauseUs = nowUs() + sampleIntervalMs * 1000;
-	});
-	// Initial script notifications precede this response. Pausing sooner can leave the main thread waiting for
-	// this worker to drain those notifications before it can resume it. The next poll also rechecks the heartbeat.
-	session.post("Debugger.enable", (error) => { current.ready = !error; });
-	return current;
-}
-function detach() {
-	block.session.disconnect();
+let pauseRequest;
+let ready = false;
+const session = new Session();
+const urls = new Map();
+Atomics.store(state, ${WatchdogState.Attached}, 1);
+if (Atomics.load(state, ${WatchdogState.Exiting}) === 1) {
 	Atomics.store(state, ${WatchdogState.Attached}, 0);
-	const ended = block;
-	block = undefined;
-	return ended;
+	process.exit(0);
 }
+session.connectToMainThread();
+session.on("Debugger.scriptParsed", ({ params }) => urls.set(params.scriptId, params.url));
+session.on("Debugger.paused", ({ params }) => {
+	const current = pauseRequest;
+	if (current === undefined) return;
+	pauseRequest = undefined;
+	session.post("Debugger.resume");
+	if (block === current && readStamp() === current.sinceUs) {
+		current.samples.push(params.callFrames.map((frame) => [
+			frame.functionName,
+			frame.url || urls.get(frame.location.scriptId) || "",
+			frame.location.lineNumber,
+			frame.location.columnNumber ?? 0,
+			frame.functionLocation?.lineNumber ?? frame.location.lineNumber,
+			frame.functionLocation?.columnNumber ?? frame.location.columnNumber ?? 0,
+		]));
+	}
+	current.pausing = false;
+	current.nextPauseUs = nowUs() + sampleIntervalMs * 1000;
+});
+// Enabling the debugger walks every loaded script and can itself hold the main thread. Do it once during
+// diagnostic startup, not in response to a stall. Do not retain source for scripts the runtime has collected.
+session.post("Debugger.enable", { maxScriptsCacheSize: 0 }, (error) => {
+	ready = !error;
+	parentPort.postMessage({ initialized: true });
+});
 setInterval(() => {
 	if (Atomics.load(state, ${WatchdogState.Exiting}) === 1) {
-		if (block !== undefined) detach();
+		if (Atomics.load(state, ${WatchdogState.Attached}) === 1) session.disconnect();
+		Atomics.store(state, ${WatchdogState.Attached}, 0);
 		return;
 	}
+	if (!ready) return;
 	const sinceUs = readStamp();
 	if (block !== undefined && sinceUs !== block.sinceUs) {
-		const ended = detach();
+		const ended = block;
+		block = undefined;
 		parentPort.postMessage({ sinceUs: ended.sinceUs, samples: ended.samples });
 	}
 	if (block === undefined) {
 		if (sinceUs === 0 || (nowUs() - sinceUs) / 1000 - heartbeatMs < thresholdMs) return;
-		block = begin(sinceUs);
+		block = { sinceUs, samples: [], pausing: false, nextPauseUs: 0 };
 	}
-	if (block.ready && !block.pausing && block.samples.length < maxSamples && nowUs() >= block.nextPauseUs) {
-		block.pausing = true;
-		block.session.post("Debugger.pause");
+	if (pauseRequest === undefined && !block.pausing && block.samples.length < maxSamples && nowUs() >= block.nextPauseUs) {
+		const current = block;
+		current.pausing = true;
+		pauseRequest = current;
+		session.post("Debugger.pause", (error) => {
+			if (error && pauseRequest === current) {
+				pauseRequest = undefined;
+				current.pausing = false;
+			}
+		});
 	}
 }, pollMs);
 `;
 
 interface StackSampler {
 	readonly source: EventLoopStackSource;
+	readonly ready?: Promise<void>;
 	stacksOf(sinceUs: number, untilUs: number): Promise<readonly (readonly string[])[]>;
 	beat(nowUs: number): void;
 	exit(): void;
@@ -240,12 +252,15 @@ interface StackSampler {
 
 class DebuggerSampler implements StackSampler {
 	readonly source = "debugger";
+	readonly ready: Promise<void>;
 	private readonly stamp = new BigInt64Array(new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT));
 	private readonly state = new Int32Array(new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT));
 	private readonly arrived = new Map<number, readonly (readonly string[])[]>();
 	private readonly waiting = new Map<number, (stacks: readonly (readonly string[])[]) => void>();
 
 	constructor(thresholdMs: number) {
+		const initialized = Promise.withResolvers<void>();
+		this.ready = initialized.promise;
 		const worker = new Worker(WATCHDOG_SOURCE, {
 			eval: true,
 			workerData: {
@@ -258,7 +273,16 @@ class DebuggerSampler implements StackSampler {
 				maxSamples: MAX_STACK_SAMPLES,
 			},
 		});
-		worker.on("message", ({ sinceUs, samples }: WorkerBlockSamples) => {
+		const finishInitialization = () => {
+			worker.unref();
+			initialized.resolve();
+		};
+		worker.on("message", (message: WorkerBlockSamples | { readonly initialized: true }) => {
+			if ("initialized" in message) {
+				finishInitialization();
+				return;
+			}
+			const { sinceUs, samples } = message;
 			const stacks = samples.map((frames) => {
 				const stack = trimStack(
 					frames.map(([name, url, line, column]) => formatStackFrame(name, url, line, column)),
@@ -273,8 +297,12 @@ class DebuggerSampler implements StackSampler {
 			if (waiter === undefined) this.arrived.set(sinceUs, stacks);
 			else waiter(stacks);
 		});
-		worker.on("error", () => {});
-		worker.unref();
+		const ended = () => {
+			Atomics.store(this.state, WatchdogState.Attached, 0);
+			finishInitialization();
+		};
+		worker.on("error", ended);
+		worker.on("exit", ended);
 	}
 
 	beat(nowUs: number): void {
@@ -424,6 +452,10 @@ class EventLoopMonitor {
 		});
 	}
 
+	whenReady(): Promise<void> {
+		return this.sampler.ready ?? Promise.resolve();
+	}
+
 	enter(next: EventLoopPhase): void {
 		if (PHASES.indexOf(next) <= PHASES.indexOf(this.phase)) return;
 		const lateMs = this.beat();
@@ -513,6 +545,11 @@ export function startEventLoopMonitor(role: EventLoopProcessRole, env: NodeJS.Pr
 	if (env[EVENT_LOOP_BLOCK_LOG_ENV]?.trim()) env[EVENT_LOOP_BLOCK_LOG_ENV] = logPath;
 	monitor = new EventLoopMonitor(role, thresholdMs, logPath);
 	return true;
+}
+
+/** Finish opt-in diagnostic setup before the CLI exposes its interactive input surface. */
+export function waitForEventLoopMonitorReady(): Promise<void> {
+	return monitor?.whenReady() ?? Promise.resolve();
 }
 
 export function markEventLoopStartupComplete(): void {
