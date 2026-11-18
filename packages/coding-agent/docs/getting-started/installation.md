@@ -84,7 +84,7 @@ Pins use Atomic's `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION` rele
 
 #### Rerunning the installer
 
-If the release you ask for (or the latest release, when you pin nothing) is already installed and healthy, the installer prints `atomic <tag> is already installed; skipping download (use --force to reinstall)` and stops there. It still looks up the release tag and prints `Installed to <path>` and any PATH guidance, but it downloads nothing and leaves the installed files alone. On Windows it also adds the bin directory to your User PATH if it went missing.
+If the release you ask for (or the latest release, when you pin nothing) is already installed and healthy, the installer prints `atomic <tag> is already installed; skipping download (use --force to reinstall)` and stops there. It prints `Installed to <path>` and any PATH guidance, but it downloads nothing and leaves the installed files alone. With a pinned version it makes no network request at all, so a rerun also works while GitHub is unavailable; with no pin it still looks up the latest release tag. Healthy means the launcher and payload are in place and the launcher still matches the hash the installer recorded when it installed it: an empty or changed launcher is reinstalled. On Windows it also adds the bin directory to your User PATH if it went missing.
 
 An install counts as healthy when `current` points at that release's version directory inside the install root (a `current` that points at a versions directory somewhere else is repaired) and the launcher resolves to it. On macOS/Linux that means the launcher link resolves to an executable `current/atomic`; the installer never runs the installed binary to decide. On Windows it means `current\atomic.exe --version` reports the release and the `atomic.cmd` shim and `atomic-current` junction match what the installer creates. On both platforms the version directory must still hold the files Atomic needs to start: `package.json`, `app.js`, `native-modifiers.js`, `native-module-path.js`, `native-platform.js`, and the `builtin` and `node_modules` directories. A different version, or a missing or broken launcher or payload, installs exactly as before and repairs the install.
 
@@ -110,7 +110,7 @@ Override the launcher directory (default `~/.local/bin` on macOS/Linux, `%LOCALA
 
 #### GITHUB_TOKEN / GH_TOKEN
 
-Optional; raises GitHub API limits on shared networks. Curl and GNU Wget keep the token in a protected temporary file instead of process arguments. BusyBox Wget remains supported without a token, and with a token when the latest-release redirect avoids the API; if an authenticated API fallback is needed, install curl or GNU Wget rather than exposing the token.
+Optional. The installer finds the latest release and confirms a pinned `ATOMIC_VERSION` through github.com, so most installs make no GitHub API request. It asks the API only when github.com gives no clear answer, and without a token the API allows 60 requests an hour per network address. If the installer reports that GitHub's API rate limit was reached, set a token (for example `GITHUB_TOKEN=$(gh auth token)`) or try again later. Curl and GNU Wget keep the token in a protected temporary file instead of process arguments. BusyBox Wget remains supported without a token, and with a token when the latest-release redirect avoids the API; if an authenticated API fallback is needed, install curl or GNU Wget rather than exposing the token.
 
 ### Which runtime runs your workflows
 

@@ -197,6 +197,46 @@ function Test-AtomicInstalledPayloadComplete {
     return $true
 }
 
+# Whether the installed atomic.exe matches the hash recorded at install time. False when the
+# record is missing (an install from an older installer) or the launcher changed since.
+function Test-AtomicLauncherMatchesRecord {
+    param([string]$CurrentPath)
+
+    $recordPath = Join-Path $CurrentPath ".atomic-launcher.sha256"
+    if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) {
+        return $false
+    }
+    $recorded = ([IO.File]::ReadAllText($recordPath)).Trim()
+    if ($recorded -cnotmatch '^[0-9a-f]{64}\z') {
+        return $false
+    }
+    $launcherPath = Join-Path $CurrentPath "atomic.exe"
+    try {
+        return ((Get-AtomicFileSha256 $launcherPath).ToLowerInvariant() -ceq $recorded)
+    }
+    catch {
+        return $false
+    }
+}
+
+# A healthy install whose launcher hash was recorded and still matches: it can be kept without
+# asking GitHub anything. An install without the record resolves over the network.
+function Test-AtomicInstallVerified {
+    param(
+        [AllowNull()][string]$InstalledVersion,
+        [string]$ReleaseTag,
+        [string]$InstallRoot,
+        [string]$BinDir,
+        [string]$ExpectedShimContent
+    )
+
+    $recordPath = Join-Path (Join-Path $InstallRoot "current") ".atomic-launcher.sha256"
+    if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) {
+        return $false
+    }
+    return (Test-AtomicInstallIntact $InstalledVersion $ReleaseTag $InstallRoot $BinDir $ExpectedShimContent)
+}
+
 function Test-AtomicInstallIntact {
     param(
         [AllowNull()][string]$InstalledVersion,
@@ -222,6 +262,15 @@ function Test-AtomicInstallIntact {
         return $false
     }
     if (-not (Test-AtomicInstalledPayloadComplete (Join-Path $InstallRoot "current"))) {
+        return $false
+    }
+    $currentRoot = Join-Path $InstallRoot "current"
+    $launcherItem = Get-Item -LiteralPath (Join-Path $currentRoot "atomic.exe") -Force -ErrorAction SilentlyContinue
+    if ($null -eq $launcherItem -or $launcherItem.PSIsContainer -or $launcherItem.Length -eq 0) {
+        return $false
+    }
+    if ((Test-Path -LiteralPath (Join-Path $currentRoot ".atomic-launcher.sha256") -PathType Leaf) -and
+        -not (Test-AtomicLauncherMatchesRecord $currentRoot)) {
         return $false
     }
     $shimItem = Get-AtomicDirectoryEntry (Join-Path $BinDir "atomic.cmd")
@@ -274,7 +323,7 @@ function Test-AtomicReleaseTag {
         return $false
     }
 
-    return $Tag -cmatch '^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-alpha\.(?:[1-9][0-9]*))?$'
+    return $Tag -cmatch '^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-alpha\.(?:[1-9][0-9]*))?\z'
 }
 
 function Get-AtomicRedirectTag {
@@ -363,10 +412,92 @@ function Get-AtomicRedirectTag {
     return $null
 }
 
+# The HTTP response of a failed Invoke-WebRequest (WebException on Windows PowerShell,
+# HttpResponseException on PowerShell 7), or $null when no response arrived.
+function Get-AtomicErrorResponse {
+    param($ErrorRecord)
+
+    $exception = $ErrorRecord.Exception
+    while ($null -ne $exception) {
+        $responseProperty = $exception.PSObject.Properties["Response"]
+        if ($null -ne $responseProperty -and $null -ne $responseProperty.Value) {
+            return $responseProperty.Value
+        }
+        $exception = $exception.InnerException
+    }
+    return $null
+}
+
+function Get-AtomicErrorStatusCode {
+    param($ErrorRecord)
+
+    $response = Get-AtomicErrorResponse $ErrorRecord
+    if ($null -eq $response) {
+        return 0
+    }
+    $statusProperty = $response.PSObject.Properties["StatusCode"]
+    if ($null -eq $statusProperty -or $null -eq $statusProperty.Value) {
+        return 0
+    }
+    try {
+        return [int]$statusProperty.Value
+    }
+    catch {
+        return 0
+    }
+}
+
+# GitHub answers a rate-limited API request with 403 (or 429) and `X-RateLimit-Remaining: 0`
+# or a message that names the rate limit.
+function Test-AtomicRateLimitError {
+    param($ErrorRecord, [int]$StatusCode)
+
+    if ($StatusCode -eq 429) {
+        return $true
+    }
+    if ($StatusCode -ne 403) {
+        return $false
+    }
+
+    $remaining = $null
+    $response = Get-AtomicErrorResponse $ErrorRecord
+    if ($null -ne $response) {
+        $headersProperty = $response.PSObject.Properties["Headers"]
+        if ($null -ne $headersProperty -and $null -ne $headersProperty.Value) {
+            $headers = $headersProperty.Value
+            try {
+                if ($null -ne $headers.PSObject.Methods["TryGetValues"]) {
+                    $headerValues = $null
+                    if ($headers.TryGetValues("X-RateLimit-Remaining", [ref]$headerValues)) {
+                        $remaining = [string](@($headerValues)[0])
+                    }
+                }
+                else {
+                    $remaining = [string]$headers["X-RateLimit-Remaining"]
+                }
+            }
+            catch {
+                $remaining = $null
+            }
+        }
+    }
+    if ($remaining -eq "0") {
+        return $true
+    }
+
+    $text = [string]$ErrorRecord.Exception.Message
+    $detailsProperty = $ErrorRecord.PSObject.Properties["ErrorDetails"]
+    if ($null -ne $detailsProperty -and $null -ne $detailsProperty.Value) {
+        $text += " " + [string]$detailsProperty.Value.Message
+    }
+    return $text -match 'rate limit'
+}
+
 function Invoke-AtomicApiRequest {
     param(
         [string]$Uri,
-        [hashtable]$Headers
+        [hashtable]$Headers,
+        [string]$RequestedTag
     )
 
     try {
@@ -374,8 +505,52 @@ function Invoke-AtomicApiRequest {
         return ($response.Content | ConvertFrom-Json)
     }
     catch {
+        $statusCode = Get-AtomicErrorStatusCode $_
+        if ($statusCode -eq 404 -and -not [string]::IsNullOrWhiteSpace($RequestedTag)) {
+            throw "release $RequestedTag not found."
+        }
+        if (Test-AtomicRateLimitError $_ $statusCode) {
+            if ($Headers.ContainsKey("Authorization")) {
+                throw "Failed to query GitHub release API at ${Uri}: GitHub's API rate limit was reached for this token; try again later."
+            }
+            throw "Failed to query GitHub release API at ${Uri}: GitHub's API rate limit was reached for this network. Set GITHUB_TOKEN (for example `$env:GITHUB_TOKEN = gh auth token) or try again later."
+        }
         throw "Failed to query GitHub release API at ${Uri}: $_"
     }
+}
+
+# Whether the requested release exists: github.com's own answer to a HEAD request for the
+# release's SHA256SUMS, without following its redirect to the file storage. A 2xx or 3xx
+# means "found", 404 "missing" (also for a tag with no published release), anything else
+# "unknown". github.com is not subject to the REST API's 60-requests-an-hour limit for
+# unauthenticated clients.
+function Get-AtomicReleasePageStatus {
+    param([string]$EncodedTag)
+
+    $statusCode = 0
+    try {
+        $probeErrors = $null
+        $response = Invoke-WebRequest -Uri "https://github.com/bastani-inc/atomic/releases/download/$EncodedTag/SHA256SUMS" -Method Head -MaximumRedirection 0 -UseBasicParsing -ErrorAction SilentlyContinue -ErrorVariable probeErrors
+        if ($null -ne $response) {
+            $statusProperty = $response.PSObject.Properties["StatusCode"]
+            if ($null -ne $statusProperty -and $null -ne $statusProperty.Value) {
+                $statusCode = [int]$statusProperty.Value
+            }
+        }
+        if ($statusCode -eq 0 -and $null -ne $probeErrors -and @($probeErrors).Count -gt 0) {
+            $statusCode = Get-AtomicErrorStatusCode @($probeErrors)[0]
+        }
+    }
+    catch {
+        $statusCode = Get-AtomicErrorStatusCode $_
+    }
+    if ($statusCode -ge 200 -and $statusCode -lt 400) {
+        return "found"
+    }
+    if ($statusCode -eq 404) {
+        return "missing"
+    }
+    return "unknown"
 }
 
 function Invoke-AtomicDownload {
@@ -1329,7 +1504,30 @@ if ([string]::IsNullOrWhiteSpace($requestedRef)) {
 }
 else {
     $encodedRequestedRef = [Uri]::EscapeDataString($requestedRef)
-    $release = Invoke-AtomicApiRequest "$tagsApiBase/$encodedRequestedRef" $apiHeaders
+    $pinnedInstalledVersion = $null
+    if (-not $forceInstall) {
+        $pinnedInstalledVersion = Get-AtomicInstalledVersion (Join-Path (Join-Path $installRoot "current") "atomic.exe")
+    }
+    $releasePageStatus = $null
+    if (-not [string]::IsNullOrWhiteSpace($pinnedInstalledVersion) -and
+        (Test-AtomicInstallVerified $pinnedInstalledVersion $requestedRef $installRoot $binDir $shimContent)) {
+        # The pinned release is already installed and healthy: it needs no network request.
+        $releasePageStatus = "installed"
+    }
+    # An exact tag is confirmed on github.com by its release's SHA256SUMS; the REST API, limited to 60 requests an
+    # hour per address without a token, is asked only when github.com cannot tell.
+    if ($null -eq $releasePageStatus) {
+        $releasePageStatus = Get-AtomicReleasePageStatus $encodedRequestedRef
+    }
+    if ($releasePageStatus -eq "found" -or $releasePageStatus -eq "installed") {
+        $releaseTag = $requestedRef
+    }
+    elseif ($releasePageStatus -eq "missing") {
+        throw "release $requestedRef not found."
+    }
+    else {
+        $release = Invoke-AtomicApiRequest "$tagsApiBase/$encodedRequestedRef" $apiHeaders $requestedRef
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($releaseTag)) {
@@ -1422,6 +1620,10 @@ try {
     if ($stagedExitCode -ne 0) {
         throw "Staged atomic.exe --version failed with exit code $stagedExitCode."
     }
+    # The launcher's hash, recorded beside it, lets a later run confirm the installed payload
+    # without the network (see Test-AtomicInstallVerified).
+    $launcherSha256 = (Get-AtomicFileSha256 $stagedAtomic).ToLowerInvariant()
+    [IO.File]::WriteAllText((Join-Path $payloadPath ".atomic-launcher.sha256"), $launcherSha256 + "`n")
     Write-AtomicMuted "Verified SHA256, extracted, and checked atomic --version"
 
     $versionsDir = Join-Path $installRoot "versions"
