@@ -2,6 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import type { ImageContent } from "@bastani/atomic-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
+import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import type { BashOutputChannel } from "../../core/tools/bash.js";
 import { removeOwnedInteractiveEngineBootstrapAsync } from "../../utils/interactive-engine-bootstrap.ts";
 import { sleep } from "../../utils/sleep.ts";
@@ -72,6 +73,11 @@ export interface RpcClientOptions {
 		 * bootstrap file, never through the child's environment or argv.
 		 */
 		apiKey?: string;
+		/**
+		 * Trust decisions the engine starts with, delivered through the bootstrap file. A restart replaces them with the
+		 * decisions it is given.
+		 */
+		trustDecisions?: SessionTrustDecisions;
 	};
 }
 
@@ -153,7 +159,10 @@ export class RpcClient extends RpcClientApi {
 		let preparedBootstrap: Awaited<ReturnType<typeof prepareRpcClientBootstrap>> | undefined;
 		try {
 			preparedBootstrap = this.options.interactiveEngine
-				? await prepareRpcClientBootstrap(this.options.interactiveEngine.apiKey)
+				? await prepareRpcClientBootstrap(
+						this.options.interactiveEngine.apiKey,
+						this.options.interactiveEngine.trustDecisions,
+					)
 				: undefined;
 			if (this.stopPromise) {
 				await this.stopPromise.catch(() => {});
@@ -464,17 +473,29 @@ export class RpcClient extends RpcClientApi {
 	 * window is always observed; cancellation throws rather than returning
 	 * quietly, because callers go on to initialize against the new child.
 	 */
-	async restart(sessionId: string | undefined, options?: { sessionDirectory?: string; cwd?: string }): Promise<void> {
+	async restart(
+		sessionId: string | undefined,
+		options?: {
+			sessionDirectory?: string;
+			cwd?: string;
+			/** Trust decisions of the host session, which the new engine starts with instead of asking again. */
+			trustDecisions?: SessionTrustDecisions;
+		},
+	): Promise<void> {
 		const permit = this.restartRevision;
 		await this.stopCurrentGeneration();
 		// Join an in-flight stop before the permit check: waiting after it would
 		// reopen the window this fence exists to close.
 		if (this.stopPromise) await this.stopPromise;
 		if (permit !== this.restartRevision) throw rpcTransportError(RESTART_CANCELLED_MESSAGE);
+		const interactiveEngine = this.options.interactiveEngine;
 		this.options = {
 			...this.options,
 			cwd: options?.cwd ?? this.options.cwd,
 			args: restartCliArgs(this.options.args, sessionId, options?.sessionDirectory),
+			...(interactiveEngine && options?.trustDecisions
+				? { interactiveEngine: { ...interactiveEngine, trustDecisions: options.trustDecisions } }
+				: {}),
 		};
 		await this.start(permit);
 		await this.waitForInteractiveEngineBound();
