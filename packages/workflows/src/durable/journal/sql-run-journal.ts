@@ -90,10 +90,10 @@ const EVENT_COLUMNS = [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at] 
 const APPEND_SAVEPOINT = "journal_append";
 
 /**
- * Events one statement of `snapshotTail` walks past at most (#5480). A statement reads each event it passes, about a
- * millisecond per thousand with the pages cached, and up to tens of milliseconds per thousand when they are not.
+ * Events one statement of `snapshotTail` walks past at most, as many as one page of a run's read (#5480). A statement
+ * reads each event it passes: a few microseconds each with the pages cached, and a disk read each when they are not.
  */
-const SNAPSHOT_TAIL_WINDOW = 2_048;
+const SNAPSHOT_TAIL_WINDOW = JOURNAL_READ_PAGE_SIZE;
 
 /** The column a read selects the journal's schema version as, so that it checks the version in its own statement. */
 const META_VERSION = "meta_version";
