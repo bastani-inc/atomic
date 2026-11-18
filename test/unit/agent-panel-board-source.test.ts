@@ -15,7 +15,6 @@ import {
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { bindOwnerTaskStore, type OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
-	AGENT_PANEL_DROP_MS,
 	AGENT_PANEL_FOCUSED_ROWS,
 	AGENT_PANEL_IDLE_ROWS,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
@@ -413,7 +412,7 @@ test("showAgentPanel does not mark a workflow row viewed when open returns false
 		assert.deepEqual(notices, ["Could not open refused-wf.", "Could not open throwing-wf."]);
 		assert.equal(errors.length, 1);
 
-		now += AGENT_PANEL_DROP_MS + 1;
+		now += 24 * 60 * 60_000;
 		assert.deepEqual(
 			agentPanelRows(session).map((row) => row.id),
 			["run:throw", "run:false"],
