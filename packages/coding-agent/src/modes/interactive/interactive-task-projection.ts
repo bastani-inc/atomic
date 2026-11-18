@@ -3,6 +3,7 @@ import type { TaskId, TaskRecord } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../core/tasks/owner-store.js";
 import { messageComponents } from "./chat-message-count.ts";
 import { countTasksBy, TaskRow, taskNameAndTitle, taskSiblings } from "./components/task-row.js";
+import { type ClickExpandableBlock, rowsFrom } from "./components/transcript-block-clicks.ts";
 
 function taskSnapshot(tasks: readonly TaskRecord[]) {
 	const siblings = taskSiblings(tasks);
@@ -53,13 +54,21 @@ export function refreshInteractiveTasks(mode: InteractiveTaskHost): void {
 		for (const task of snapshot.siblings) {
 			const anchor = mounted.get(task.ref.taskId);
 			if (anchor && attached?.has(anchor)) continue;
-			const component: Component = {
+			// Ctrl+O sets every row's expansion; a click sets one row's.
+			let expanded = mode.toolOutputExpanded;
+			const component: ClickExpandableBlock = {
+				expandsOnClick: true,
+				isExpanded: () => expanded,
+				setExpanded(next: boolean) {
+					expanded = next;
+				},
+				clickArea: (width: number) => rowsFrom(0, component.render(width).length),
 				invalidate() {},
 				render(width: number) {
 					const current = snapshot.byId.get(task.ref.taskId) ?? task;
 					const duplicate = (snapshot.copies.get(taskNameAndTitle(current)) ?? 0) > 1;
 					return new TaskRow(current, {
-						expanded: mode.toolOutputExpanded,
+						expanded,
 						duplicate,
 						siblings: snapshot.siblings,
 						activity: store.recentActivity(current.ref.taskId),

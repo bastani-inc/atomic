@@ -17,7 +17,7 @@ function block(name: string): ClickExpandableBlock {
 		setExpanded: (value) => {
 			expanded = value;
 		},
-		headerRows: () => [0],
+		clickArea: () => ({ start: 0, end: 1 }),
 		render: () => [`● ${name}`, `  ${name} output 1`, `  ${name} output 2`],
 		invalidate: () => {},
 	};

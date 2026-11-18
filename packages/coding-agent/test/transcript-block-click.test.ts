@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import {
 	Container,
+	MULTI_CLICK_INTERVAL_MS,
 	resetCapabilitiesCache,
 	ScrollView,
 	setCapabilities,
@@ -13,14 +14,22 @@ import {
 	WindowedContainer,
 } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
+import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js";
+import type { MessageRenderer } from "../src/core/extensions/types.js";
 import type { SessionEntry } from "../src/core/session-manager.js";
 import type { TaskCompletionEnvelope } from "../src/core/tasks/completion.js";
 import { taskCompletionMessage } from "../src/core/tasks/completion-message.js";
-import type { ClickExpandableBlock } from "../src/modes/interactive/components/transcript-block-clicks.js";
+import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.js";
+import { CustomEntryComponent } from "../src/modes/interactive/components/custom-entry.js";
+import {
+	type ClickExpandableBlock,
+	clickableBlocksView,
+} from "../src/modes/interactive/components/transcript-block-clicks.js";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.js";
 import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { isChatMessageComponent } from "../src/modes/interactive/interactive-mode-base.js";
+import { ExpandableText } from "../src/modes/interactive/interactive-mode-helpers.js";
 import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -40,7 +49,11 @@ afterEach(() => {
 	resetCapabilitiesCache();
 });
 
-function makeMode(requestRender: () => void, transcriptView: () => ScrollView | undefined) {
+function makeMode(
+	requestRender: () => void,
+	transcriptView: () => ScrollView | undefined,
+	messageRenderers: Readonly<Record<string, MessageRenderer>> = {},
+) {
 	const chatContainer = new StartupChatContainer(isChatMessageComponent, transcriptView);
 	chatContainer.releaseStartupOutput();
 	const entries = (): SessionEntry[] => [];
@@ -73,7 +86,7 @@ function makeMode(requestRender: () => void, transcriptView: () => ScrollView | 
 		session: {
 			extensionRunner: {
 				getMarkdownTransformers: () => [],
-				getMessageRenderer: () => undefined,
+				getMessageRenderer: (customType: string) => messageRenderers[customType],
 				getEntryRenderer: () => undefined,
 			},
 			modelRuntime: { getModel: () => undefined },
@@ -161,7 +174,11 @@ const lines = (count: number, label: string) =>
  * The main chat as production lays it out: the transcript document in a following scroll view above a dock, rendered
  * by Atomic's fullscreen renderer and driven by SGR mouse reports.
  */
-async function mountChat(columns: number, rows: number, outputs: { readonly second?: string } = {}) {
+async function mountChat(
+	columns: number,
+	rows: number,
+	outputs: { readonly second?: string; readonly messageRenderers?: Readonly<Record<string, MessageRenderer>> } = {},
+) {
 	const terminal = new RecordingTerminal();
 	terminal.columns = columns;
 	terminal.rows = rows;
@@ -177,6 +194,7 @@ async function mountChat(columns: number, rows: number, outputs: { readonly seco
 	const mode = makeMode(
 		() => tui.requestRender(),
 		() => transcript,
+		outputs.messageRenderers,
 	);
 	const document = new WindowedContainer();
 	document.addChild(mode.chatContainer);
@@ -233,13 +251,21 @@ async function mountChat(columns: number, rows: number, outputs: { readonly seco
 	};
 	const press = (column: number, row: number) => terminal.input(`\x1b[<0;${column + 1};${row + 1}M`);
 	const release = (column: number, row: number) => terminal.input(`\x1b[<0;${column + 1};${row + 1}m`);
-	const click = (column: number, row: number) => {
+	/** A click whose second press, if any, comes fast enough to make a double-click: nothing has settled yet. */
+	const quickClick = (column: number, row: number) => {
 		press(column, row);
 		release(column, row);
-	};
-	const clickAndPaint = (column: number, row: number) => {
-		click(column, row);
 		tui.renderNow();
+	};
+	/** Lets the multi-click interval pass, so a click with no second press is a single click, and paints. */
+	const settle = () => {
+		vi.advanceTimersByTime(MULTI_CLICK_INTERVAL_MS + 1);
+		tui.renderNow();
+	};
+	/** A single click: pressed and released, with no second press within the multi-click interval. */
+	const click = (column: number, row: number) => {
+		quickClick(column, row);
+		settle();
 	};
 	const transcriptText = () =>
 		mode.chatContainer.render(columns).map((line) => stripTerminalSequences(line).trimEnd());
@@ -255,7 +281,9 @@ async function mountChat(columns: number, rows: number, outputs: { readonly seco
 		columnOf,
 		press,
 		release,
-		click: clickAndPaint,
+		click,
+		quickClick,
+		settle,
 		transcriptText,
 		expanded,
 	};
@@ -303,7 +331,7 @@ describe("clicking transcript blocks in the main chat", () => {
 		}
 	});
 
-	test("only a block's header toggles it: output rows, even ones that read like an expand hint, do not", async () => {
+	test("a click on any row of a tool block toggles it: its output, the row standing in for hidden output, and rows that read like an expand hint", async () => {
 		const tail = [
 			"... 12 more lines",
 			"ctrl+o to see more",
@@ -315,18 +343,85 @@ describe("clicking transcript blocks in the main chat", () => {
 			second: [...Array.from({ length: 15 }, (_, index) => `second output ${index + 1}`), ...tail].join("\n"),
 		});
 		try {
-			for (const pattern of [/second output 18$/, /\.\.\. 12 more lines$/, /ctrl\+o to see more$/]) {
-				const row = chat.rowOf(pattern);
-				chat.click(chat.columnOf(row, chat.screen()[row]!.trim().slice(0, 4)), row);
-				assert.ok(!chat.expanded("second"), `${pattern} toggled the block:\n${chat.transcriptText().join("\n")}`);
-				vi.advanceTimersByTime(1_000);
-			}
-
 			const header = chat.rowOf(/Bash\(first-command\)/);
 			const hidden = chat.screen().findIndex((line, row) => row > header && /\+15 earlier lines/.test(line));
 			assert.notEqual(hidden, -1, chat.screen().join("\n"));
 			chat.click(chat.columnOf(hidden, "+15"), hidden);
-			assert.ok(!chat.expanded("first"), "the row standing in for hidden output is not the header");
+			assert.ok(chat.expanded("first"), "the row standing in for hidden output expands the block");
+
+			const output = chat.rowOf(/first output 9$/);
+			chat.click(chat.columnOf(output, "output"), output);
+			assert.ok(!chat.expanded("first"), "a row of its output collapses it again");
+
+			for (const pattern of [/second output 18$/, /\.\.\. 12 more lines$/, /ctrl\+o to see more$/]) {
+				const row = chat.rowOf(pattern);
+				chat.click(chat.columnOf(row, chat.screen()[row]!.trim().slice(0, 4)), row);
+				assert.ok(
+					chat.expanded("second"),
+					`${pattern} did not expand the block:\n${chat.transcriptText().join("\n")}`,
+				);
+				const again = chat.rowOf(/Bash\(second-command\)/);
+				chat.click(chat.columnOf(again, "Bash"), again);
+				assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
+			}
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("the blank row between two blocks toggles neither of them", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const header = chat.rowOf(/Bash\(second-command\)/);
+			assert.equal(chat.screen()[header - 1]?.trim(), "", chat.screen().join("\n"));
+			chat.click(4, header - 1);
+			const text = chat.transcriptText();
+			assert.ok(!chat.expanded("second"), text.join("\n"));
+			assert.ok(!text.some((line) => line.includes("Read(alpha.ts)")), text.join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a click toggles a block only once it cannot become a double-click", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const output = chat.rowOf(/first output 18$/);
+			chat.quickClick(chat.columnOf(output, "output"), output);
+			assert.ok(!chat.expanded("first"), "right after the release a second press could still make a double-click");
+			vi.advanceTimersByTime(MULTI_CLICK_INTERVAL_MS / 2);
+			chat.tui.renderNow();
+			assert.ok(!chat.expanded("first"));
+			chat.settle();
+			assert.ok(chat.expanded("first"), chat.transcriptText().join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a click on a block with nothing to expand changes nothing, and the chat keeps following its end", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			await toolTurn(
+				mode(chat),
+				fauxAssistantMessage([fauxToolCall("bash", { command: "short-command" }, { id: "short" })], {
+					stopReason: "toolUse",
+				}),
+				() => "only line",
+			);
+			chat.tui.renderNow();
+			assert.equal(chat.transcript.isFollowingEnd, true);
+			const before = chat.transcriptText();
+			for (const pattern of [/Bash\(short-command\)/, /only line$/]) {
+				const row = chat.rowOf(pattern);
+				chat.click(chat.columnOf(row, chat.screen()[row]!.trim().slice(0, 4)), row);
+				assert.deepEqual(chat.transcriptText(), before);
+				assert.equal(chat.transcript.isFollowingEnd, true, `${pattern} held the view`);
+			}
+			const block = mode(chat).chatContainer.children.find((child) =>
+				child.render(100).some((line) => line.includes("short-command")),
+			) as ClickExpandableBlock;
+			assert.equal(block.isExpanded(), false, "the block keeps its state");
 		} finally {
 			chat.tui.stop();
 		}
@@ -406,8 +501,9 @@ describe("clicking transcript blocks in the main chat", () => {
 
 			const output = chat.rowOf(/first output 17$/);
 			const word = chat.columnOf(output, "output") + 2;
-			chat.click(word, output);
-			chat.click(word, output);
+			chat.quickClick(word, output);
+			chat.quickClick(word, output);
+			chat.settle();
 			assert.ok(!chat.expanded("first"), chat.transcriptText().join("\n"));
 			assert.equal(chat.copied.mock.calls.length, 2);
 			assert.equal(chat.copied.mock.calls[1]?.[0], "output");
@@ -440,8 +536,6 @@ describe("clicking transcript blocks in the main chat", () => {
 			assert.equal(chat.rowOf(/Bash\(second-command\)/), header, chat.screen().join("\n"));
 			assert.equal(chat.transcript.isFollowingEnd, false, "new output waits behind the jump-to-latest pill");
 
-			// A second click on the same spot right away is a double-click, which selects instead.
-			vi.advanceTimersByTime(1_000);
 			chat.click(chat.columnOf(header, "second-command"), header);
 			assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
 			assert.equal(chat.transcript.isFollowingEnd, true, "folding it back returns to the live end");
@@ -478,7 +572,7 @@ describe("clicking transcript blocks in the main chat", () => {
 		}
 	});
 
-	test("a click on a finished-agent card's header expands it and a second click collapses it", async () => {
+	test("a click on a finished-agent card expands it and a click on its expanded result collapses it", async () => {
 		const chat = await mountChat(100, 60);
 		try {
 			const envelope = {
@@ -508,9 +602,8 @@ describe("clicking transcript blocks in the main chat", () => {
 			chat.click(chat.columnOf(header, "worker"), header);
 			assert.ok(shown(), chat.screen().join("\n"));
 
-			vi.advanceTimersByTime(1_000);
-			const again = chat.rowOf(/worker finished/);
-			chat.click(chat.columnOf(again, "worker"), again);
+			const result = chat.rowOf(/worker result line 2$/);
+			chat.click(chat.columnOf(result, "result"), result);
 			assert.ok(!shown(), chat.screen().join("\n"));
 		} finally {
 			chat.tui.stop();
@@ -531,7 +624,7 @@ describe("clicking transcript blocks in the main chat", () => {
 				setExpanded: () => {
 					toggled = true;
 				},
-				headerRows: () => [1],
+				clickArea: (width) => ({ start: 1, end: original.render(width).length }),
 				render: (width) => original.render(width),
 				invalidate: () => {},
 			};
@@ -547,13 +640,12 @@ describe("clicking transcript blocks in the main chat", () => {
 		}
 	});
 
-	test("a fast second click is a double-click even when an overlay opened elsewhere between the clicks", async () => {
+	test("a fast second click is a double-click, which toggles nothing, even when an overlay opened elsewhere between the clicks", async () => {
 		const chat = await mountChat(100, 60);
 		try {
 			const header = chat.rowOf(/Bash\(first-command\)/);
 			const column = chat.columnOf(header, "first-command");
-			chat.click(column, header);
-			assert.ok(chat.expanded("first"));
+			chat.quickClick(column, header);
 			chat.tui.showOverlay(
 				{ render: () => ["note"], invalidate: () => {} },
 				{ row: 0, col: 90, width: 8, nonCapturing: true },
@@ -561,8 +653,9 @@ describe("clicking transcript blocks in the main chat", () => {
 			chat.tui.renderNow();
 			const again = chat.rowOf(/Bash\(first-command\)/);
 			assert.equal(again, header);
-			chat.click(column, again);
-			assert.ok(chat.expanded("first"), "the second click inside the double-click window does not toggle back");
+			chat.quickClick(column, again);
+			chat.settle();
+			assert.ok(!chat.expanded("first"), "a double-click selects; neither of its clicks toggles the block");
 		} finally {
 			chat.tui.stop();
 		}
@@ -610,15 +703,17 @@ describe("clicking transcript blocks in the main chat", () => {
 		}
 	});
 
-	test("two fast clicks on a header past its title are a double-click, not two toggles", async () => {
+	test("two fast clicks on a header past its title are a double-click, which toggles nothing", async () => {
 		const chat = await mountChat(100, 60);
 		try {
 			const header = chat.rowOf(/Bash\(first-command\)/);
 			const empty = (chat.screen()[header] ?? "").trimEnd().length + 10;
+			chat.quickClick(empty, header);
+			chat.quickClick(empty, header);
+			chat.settle();
+			assert.ok(!chat.expanded("first"), "neither click of a double-click toggles the block");
 			chat.click(empty, header);
-			assert.ok(chat.expanded("first"), "the first click toggles");
-			chat.click(empty, header);
-			assert.ok(chat.expanded("first"), "the second click in the double-click window does not toggle back");
+			assert.ok(chat.expanded("first"), "a single click there does");
 		} finally {
 			chat.tui.stop();
 		}
@@ -644,6 +739,258 @@ describe("clicking transcript blocks in the main chat", () => {
 			assert.ok(chat.expanded("first"), chat.transcriptText().join("\n"));
 		} finally {
 			chat.tui.stop();
+		}
+	});
+});
+
+/** An Intercom message as the main chat receives it, from a peer session. */
+function intercomMessage(text: string, options: { readonly expectsReply?: boolean } = {}) {
+	const from = {
+		id: "f996d39d-5efd-41f7-8b01-22769b77873f",
+		name: "worker-2",
+		cwd: "/workspace",
+		model: "fixture/model",
+		pid: 1,
+		startedAt: 1,
+		lastActivity: 1,
+	};
+	const message = {
+		id: `message-${text.length}`,
+		timestamp: 5_000_000,
+		content: { text },
+		...(options.expectsReply ? { expectsReply: true } : {}),
+	};
+	return {
+		role: "custom",
+		customType: "intercom_message",
+		content: text,
+		display: true,
+		details: { from, message, bodyText: text },
+		timestamp: 5_000_000,
+	};
+}
+
+describe("clicking Intercom message cards in the main chat", () => {
+	const intercom = { messageRenderers: { intercom_message: renderIntercomCustomMessage } };
+
+	test("a click on any row of an Intercom message card expands it and a second click collapses it", async () => {
+		const chat = await mountChat(100, 60, intercom);
+		try {
+			const custom = intercomMessage(lines(12, "peer line"), { expectsReply: true });
+			await emit(chat.mode, { type: "message_start", message: custom });
+			await emit(chat.mode, { type: "message_end", message: custom });
+			chat.tui.renderNow();
+			const shown = () => chat.screen().some((line) => line.trimEnd().endsWith("peer line 12"));
+			assert.ok(!shown(), chat.screen().join("\n"));
+
+			const more = chat.rowOf(/… \+9 lines/);
+			chat.click(chat.columnOf(more, "+9"), more);
+			assert.ok(shown(), `the collapsed-lines row expands the card:\n${chat.screen().join("\n")}`);
+
+			const body = chat.rowOf(/peer line 7$/);
+			chat.click(chat.columnOf(body, "peer"), body);
+			assert.ok(!shown(), `a body row collapses it:\n${chat.screen().join("\n")}`);
+
+			const header = chat.rowOf(/Message from worker-2/);
+			chat.click(chat.columnOf(header, "worker-2"), header);
+			assert.ok(shown(), `the header expands it:\n${chat.screen().join("\n")}`);
+
+			const reply = chat.rowOf(/Reply with intercom reply/);
+			chat.click(chat.columnOf(reply, "Reply"), reply);
+			assert.ok(!shown(), `the reply hint row collapses it:\n${chat.screen().join("\n")}`);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a double-click in an Intercom message body selects a word and leaves the card as it was", async () => {
+		const chat = await mountChat(100, 60, intercom);
+		try {
+			const custom = intercomMessage(lines(12, "peer line"));
+			await emit(chat.mode, { type: "message_start", message: custom });
+			await emit(chat.mode, { type: "message_end", message: custom });
+			chat.tui.renderNow();
+			const body = chat.rowOf(/peer line 2$/);
+			const word = chat.columnOf(body, "peer") + 1;
+			chat.quickClick(word, body);
+			chat.quickClick(word, body);
+			chat.settle();
+			assert.ok(!chat.screen().some((line) => line.trimEnd().endsWith("peer line 12")), chat.screen().join("\n"));
+			assert.equal(chat.copied.mock.calls.at(-1)?.[0], "peer");
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a click on a short Intercom message, with nothing to expand, changes nothing and keeps following the end", async () => {
+		const chat = await mountChat(100, 60, intercom);
+		try {
+			const custom = intercomMessage("all of it fits");
+			await emit(chat.mode, { type: "message_start", message: custom });
+			await emit(chat.mode, { type: "message_end", message: custom });
+			chat.tui.renderNow();
+			const before = chat.transcriptText();
+			const body = chat.rowOf(/all of it fits$/);
+			chat.click(chat.columnOf(body, "fits"), body);
+			assert.deepEqual(chat.transcriptText(), before);
+			assert.equal(chat.transcript.isFollowingEnd, true);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+});
+
+describe("clicking other blocks Ctrl+O expands in the main chat", () => {
+	test("a click anywhere on a branch summary expands it, and a double-click on it toggles nothing", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			mode(chat).addMessageToChat({
+				role: "branchSummary",
+				summary: "Explored the cache layer before branching.",
+				fromId: "entry-1",
+				timestamp: 1,
+			} as never);
+			chat.tui.renderNow();
+			const shown = () => chat.screen().some((line) => line.includes("Explored the cache layer"));
+			assert.ok(!shown(), chat.screen().join("\n"));
+			const row = chat.rowOf(/Branch summary/);
+			chat.quickClick(chat.columnOf(row, "summary"), row);
+			chat.quickClick(chat.columnOf(row, "summary"), row);
+			chat.settle();
+			assert.ok(!shown(), `a double-click selects a word:\n${chat.screen().join("\n")}`);
+			chat.click(chat.columnOf(row, "Branch"), row);
+			assert.ok(shown(), chat.screen().join("\n"));
+			const body = chat.rowOf(/Explored the cache layer/);
+			chat.click(chat.columnOf(body, "cache"), body);
+			assert.ok(!shown(), chat.screen().join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a click on a section of the startup resource list, drawn inside its own container, expands that section", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const disclosure = new Container();
+			disclosure.addChild(
+				new ExpandableText(
+					() => "[Skills]\n  release, review",
+					() => "[Skills]\n  release  /skills/release/SKILL.md\n  review  /skills/review/SKILL.md",
+				),
+			);
+			mode(chat).chatContainer.children.unshift(disclosure);
+			chat.tui.renderNow();
+			const shown = () => chat.screen().some((line) => line.includes("/skills/review/SKILL.md"));
+			assert.ok(!shown(), chat.screen().join("\n"));
+			const row = chat.rowOf(/release, review/);
+			chat.click(chat.columnOf(row, "review"), row);
+			assert.ok(shown(), chat.screen().join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a click anywhere on an extension's custom entry toggles the expansion its renderer draws", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const entry = {
+				type: "custom",
+				customType: "status-card",
+				data: { state: "green" },
+				id: "e1",
+				parentId: null,
+				timestamp: "",
+			};
+			mode(chat).chatContainer.addChild(
+				new CustomEntryComponent(
+					entry as never,
+					(_entry, { expanded }) =>
+						new Text(expanded ? "Status card\n  state: green\n  checked: 12 suites" : "Status card", 1, 0),
+				),
+			);
+			chat.tui.renderNow();
+			const shown = () => chat.screen().some((line) => line.includes("checked: 12 suites"));
+			const row = chat.rowOf(/Status card/);
+			chat.click(chat.columnOf(row, "card"), row);
+			assert.ok(shown(), chat.screen().join("\n"));
+			const detail = chat.rowOf(/state: green/);
+			chat.click(chat.columnOf(detail, "green"), detail);
+			assert.ok(!shown(), chat.screen().join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a click anywhere on a task heartbeat shows each task's status and last output", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const heartbeat = {
+				role: "custom",
+				customType: "task-heartbeat",
+				content: "♥ Task heartbeat",
+				display: true,
+				details: {
+					scheduledAt: 1,
+					tasks: [1, 2].map((index) => ({
+						taskId: `task-shell-${index}`,
+						kind: "command",
+						title: `npm run build:${index}`,
+						elapsedMs: 45 * 60_000,
+						intervalMs: 15 * 60_000,
+						lastActivityAgoMs: 12_000,
+						output: { bytes: 4096, tail: [`compiling ${index}/900`] },
+					})),
+					more: [],
+					moreCount: 0,
+				},
+				timestamp: 1,
+			};
+			await emit(chat.mode, { type: "message_start", message: heartbeat });
+			await emit(chat.mode, { type: "message_end", message: heartbeat });
+			chat.tui.renderNow();
+			const shown = () => chat.screen().some((line) => line.includes("compiling 2/900"));
+			assert.ok(!shown(), chat.screen().join("\n"));
+			const row = chat.rowOf(/npm run build:2/);
+			chat.click(chat.columnOf(row, "build"), row);
+			assert.ok(shown(), chat.screen().join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a click on a shell command that waits in the pending area below the chat expands it there", async () => {
+		const terminal = new RecordingTerminal();
+		terminal.columns = 100;
+		terminal.rows = 40;
+		const tui = createFullscreenTui({ showHardwareCursor: false, logDirectory: tmpdir(), terminal }) as TuiAltScreen;
+		try {
+			const pending = new Container();
+			const bash = new BashExecutionComponent("pending-command", tui, false, 1);
+			bash.appendOutput(lines(30, "pending output"));
+			bash.setComplete(0, false);
+			pending.addChild(bash);
+			const preview = clickableBlocksView(pending, () => false);
+			tui.setLayoutRoot(
+				new VStack([
+					{ component: new Text("transcript", 0, 0), basis: 0, grow: 1, shrink: 1, minSize: 1 },
+					{ component: preview, basis: "auto", grow: 0, shrink: 1, minSize: 0 },
+				]),
+			);
+			tui.start();
+			tui.renderNow();
+			const screen = () => tui.getScreenLines().map((line) => stripTerminalSequences(line));
+			const shown = () => screen().some((line) => line.trimEnd().endsWith("pending output 1"));
+			assert.ok(!shown(), screen().join("\n"));
+			const row = screen().findIndex((line) => line.trimEnd().endsWith("pending output 29"));
+			assert.notEqual(row, -1, screen().join("\n"));
+			const column = screen()[row]!.indexOf("output");
+			terminal.input(`\x1b[<0;${column + 1};${row + 1}M`);
+			terminal.input(`\x1b[<0;${column + 1};${row + 1}m`);
+			vi.advanceTimersByTime(MULTI_CLICK_INTERVAL_MS + 1);
+			tui.renderNow();
+			assert.ok(shown(), screen().join("\n"));
+		} finally {
+			tui.stop();
 		}
 	});
 });

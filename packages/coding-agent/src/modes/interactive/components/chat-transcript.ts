@@ -14,7 +14,7 @@ import {
 import { colorEnvironment } from "../theme/color-utils.ts";
 import { isUserPromptRow } from "./jump-to-latest.ts";
 import { disposeRenderer as disposeComponent } from "./renderer-disposal.js";
-import { clickedBlocks } from "./transcript-block-clicks.ts";
+import { type ClickExpandableBlock, clickedBlocks } from "./transcript-block-clicks.ts";
 import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**
@@ -282,13 +282,19 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 
 	/**
 	 * The entries whose blocks a single click on row `row` of the transcript, as last laid out at `width`, expands or
-	 * collapses, and whether it expands them. Undefined unless the row is a block's header; only a windowed transcript,
-	 * one built with a cache key, can tell.
+	 * collapses, those blocks as drawn, and whether it expands them. Undefined unless the row is one a block draws;
+	 * only a windowed transcript, one built with a cache key, can tell.
 	 */
 	clickedEntries(
 		width: number,
 		row: number,
-	): { readonly entries: readonly TEntry[]; readonly expand: boolean } | undefined {
+	):
+		| {
+				readonly entries: readonly TEntry[];
+				readonly blocks: readonly ClickExpandableBlock[];
+				readonly expand: boolean;
+		  }
+		| undefined {
 		const painted = this.paintedLayout;
 		if (!this.supportsRowWindow || row < 0 || painted === undefined || painted.width !== width) return undefined;
 		// The rows as last drawn, which is what the reader saw: entries that arrived since are not drawn yet.
@@ -307,7 +313,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 			const entry = entryOf.get(component);
 			return entry === undefined ? [] : [entry];
 		});
-		return { entries, expand: !unit[0]!.isExpanded() };
+		return { entries, blocks: unit, expand: !unit[0]!.isExpanded() };
 	}
 
 	requestEntryRender(entry: TEntry): void {

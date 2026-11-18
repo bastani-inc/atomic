@@ -34,6 +34,7 @@ import {
 	type ToolGroupRole,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
+import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
@@ -279,9 +280,9 @@ export class ToolExecutionComponent extends Container {
 		return this.groupRole;
 	}
 
-	/** The block's title row, which `render` draws right after the blank row it leads with. */
-	headerRows(width: number): readonly number[] {
-		return this.render(width).length > 1 ? [1] : [];
+	/** Every row of the block, below the blank row it leads with. */
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(1, this.render(width).length);
 	}
 
 	setExpanded(expanded: boolean): void {

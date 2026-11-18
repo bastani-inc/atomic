@@ -1,5 +1,11 @@
-import { type ChatMessageEntry, NoticeLine, type NoticeLineSpec } from "@bastani/atomic";
-import type { Component } from "@bastani/atomic-tui";
+import {
+	type ChatMessageEntry,
+	type ClickExpandableBlock,
+	NoticeLine,
+	type NoticeLineSpec,
+	type RowRange,
+	rowsFrom,
+} from "@bastani/atomic";
 import type { StageNotice } from "../shared/store-types.js";
 import type { NoticeEntry, TranscriptDebugEntry, TranscriptEntry } from "./stage-chat-view-types.js";
 
@@ -31,13 +37,25 @@ export interface StageNoticeRenderSettings {
 	readonly outputPad?: number;
 }
 
-/** A stage notice in the shared notice anatomy, read from `settings` on every render so ctrl+o and the pad apply. */
+/**
+ * A stage notice in the shared notice anatomy, read from `settings` on every render so ctrl+o and the pad apply. A
+ * click anywhere on it shows or hides its detail: `expanded` is the expansion a click chose, over the chat's setting.
+ */
 export function noticeRow(
 	entry: NoticeEntry,
 	settings: () => StageNoticeRenderSettings | undefined = () => undefined,
-): Component {
+	expanded?: boolean,
+): ClickExpandableBlock {
 	const spec = stageNoticeLine(entry);
-	return {
+	let clicked = expanded;
+	const isExpanded = () => clicked ?? settings()?.expanded === true;
+	const row: ClickExpandableBlock = {
+		expandsOnClick: true,
+		isExpanded,
+		setExpanded(next: boolean) {
+			clicked = next;
+		},
+		clickArea: (width: number): RowRange | undefined => rowsFrom(0, row.render(width).length),
 		render(width: number): string[] {
 			const current = settings();
 			return new NoticeLine(
@@ -46,13 +64,14 @@ export function noticeRow(
 					countHiddenDetail: true,
 					...(current?.outputPad === undefined ? {} : { outputPad: current.outputPad }),
 				},
-				current?.expanded === true,
+				isExpanded(),
 			).render(width);
 		},
 		invalidate() {
 			/* notice entries are immutable */
 		},
 	};
+	return row;
 }
 
 export function transcriptDebugEntries(entry: TranscriptEntry): TranscriptDebugEntry[] {

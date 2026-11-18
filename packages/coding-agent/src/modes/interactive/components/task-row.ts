@@ -10,6 +10,7 @@ import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
+import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 const EMOJI_OR_IGNORABLE_PATTERN = String.raw`(\p{RGI_Emoji}|\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*(?:\u200d\p{Extended_Pictographic}(?:\ufe0f|\p{Emoji_Modifier})*)+|[\p{Extended_Pictographic}\p{Emoji_Presentation}]\ufe0f)|\p{Default_Ignorable_Code_Point}`;
 const EMOJI_OR_IGNORABLE = new RegExp(EMOJI_OR_IGNORABLE_PATTERN, "gv");
@@ -185,13 +186,26 @@ function taskDisplayLabel(task: TaskRecord, width: number): string {
 }
 
 export class TaskRow implements Component {
+	/** A click anywhere on the row shows or hides its details, as Ctrl+O does. */
+	readonly expandsOnClick = true;
 	private readonly task: TaskRecord;
 	private readonly options: TaskRowOptions;
+	private expanded: boolean;
 	constructor(task: TaskRecord, options: TaskRowOptions = {}) {
 		this.task = task;
 		this.options = options;
+		this.expanded = options.expanded === true;
 	}
 	invalidate(): void {}
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+	setExpanded(expanded: boolean): void {
+		this.expanded = expanded;
+	}
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(0, this.render(width).length);
+	}
 	render(width: number): string[] {
 		const task = this.task;
 		const siblings = this.options.siblings;
@@ -228,7 +242,7 @@ export class TaskRow implements Component {
 		const tools = task.metrics?.toolCount === undefined ? "" : ` · ${task.metrics.toolCount} tool uses`;
 		const duration = task.metrics?.elapsedMs === undefined ? "" : ` · ${formatPanelElapsed(task.metrics.elapsedMs)}`;
 		lines.push(theme.fg("dim", truncateToWidth(`  ${state}${badge}${tools}${duration}${action}`, width)));
-		if (this.options.expanded) {
+		if (this.expanded) {
 			lines.push(theme.fg("dim", truncateToWidth(`  ${task.ref.taskId} · owner ${task.ref.ownerId}`, width)));
 			if (task.metrics?.tokenCount !== undefined) lines.push(theme.fg("dim", `  ${task.metrics.tokenCount} tokens`));
 			lines.push("  Activity");
@@ -270,7 +284,7 @@ export class TaskRow implements Component {
 			);
 		}
 		if (this.options.hint !== false && (!grouped || position === group.length - 1)) {
-			const hint = keyHint("app.tools.expand", this.options.expanded ? "collapse" : "expand");
+			const hint = keyHint("app.tools.expand", this.expanded ? "collapse" : "expand");
 			if (hint) rendered.push(theme.fg("dim", hint));
 		}
 		return rendered.map((line) => truncateToWidth(line, width));

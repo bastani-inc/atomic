@@ -28,8 +28,10 @@ import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
+import { disposeRenderer } from "./renderer-disposal.js";
 import { taskDisplayText } from "./task-row.js";
 import { toolGroupRoleKey } from "./tool-group-tracker.ts";
+import { sameRows } from "./transcript-block-clicks.ts";
 import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
@@ -390,16 +392,20 @@ export function setExpandedOverride<TExtraEntry extends ChatTranscriptEntryLike>
 	else state.expandedOverrides.set(key, expanded);
 }
 
+/**
+ * Draws `entry`. `expanded` is the expansion a click chose for it, which then differs from the chat's tool-output
+ * setting; it defaults to the one the chat keeps for the entry.
+ */
 export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	entry: ChatSessionHostEntry<TExtraEntry>,
+	expanded = expandedOverride(state, entry),
 ): Component {
 	if (state.extraEntries.includes(entry as TExtraEntry)) {
-		return state.renderExtraEntry?.(entry as TExtraEntry) ?? new Text("", 0, 0);
+		return state.renderExtraEntry?.(entry as TExtraEntry, expanded) ?? new Text("", 0, 0);
 	}
 	if (isChatMessageEntry(entry)) {
 		const isStreaming = isChatSessionStreaming(state) && state.liveChat.isStreamingAssistantEntry(entry);
-		const expanded = expandedOverride(state, entry);
 		const options =
 			expanded === undefined
 				? chatMessageRenderOptions(state, isStreaming)
@@ -422,7 +428,7 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 	if (!state.renderExtraEntry) {
 		return new Text("", 0, 0);
 	}
-	return state.renderExtraEntry(entry);
+	return state.renderExtraEntry(entry, expanded);
 }
 
 /**
@@ -628,4 +634,21 @@ function pendingMessageLine<TExtraEntry extends ChatTranscriptEntryLike>(
 ): string[] {
 	const text = `${label}: ${message}`;
 	return new Text(state.style.dim(truncateToWidth(text, Math.max(1, width - 2))), 1, 0).render(width);
+}
+
+/** Whether `entry` draws other rows at `width` expanded than collapsed: whether it has anything to expand. */
+export function entryExpands<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ChatSessionHostEntry<TExtraEntry>,
+	width: number,
+): boolean {
+	const rows = (expanded: boolean): string[] => {
+		const component = renderChatSessionEntry(state, entry, expanded);
+		try {
+			return component.render(width);
+		} finally {
+			disposeRenderer(component);
+		}
+	};
+	return !sameRows(rows(false), rows(true));
 }
