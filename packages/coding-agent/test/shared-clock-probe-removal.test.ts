@@ -1,0 +1,64 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import * as fsPromises from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, test, vi } from "vitest";
+import { sharedClockOffset } from "../src/core/worktree-snapshot/shared-clock.js";
+
+vi.mock("node:fs/promises", async (original) => {
+	const actual = await original<typeof fsPromises>();
+	return { ...actual, unlink: vi.fn(actual.unlink) };
+});
+
+const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+let directory: string;
+
+beforeEach(() => {
+	directory = mkdtempSync(join(tmpdir(), "shared-clock-probe-"));
+	Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+});
+afterEach(() => {
+	Object.defineProperty(process, "platform", platform);
+	vi.mocked(fsPromises.unlink).mockReset();
+	rmSync(directory, { recursive: true, force: true });
+});
+
+/** The probe files of the filesystem's clock in `directory`. */
+const probes = () => readdirSync(directory).filter((name) => name.startsWith(".clock-"));
+
+/**
+ * Has Windows refuse deletes of probe files while `refuses(n)` says so for the `n`th such delete, with EPERM, EACCES and
+ * EBUSY in turn, as when another program (an antivirus scan, the indexer) has the new file open for a moment.
+ */
+async function refuseProbeDeletes(refuses: (attempt: number) => boolean): Promise<void> {
+	const { unlink } = await vi.importActual<typeof fsPromises>("node:fs/promises");
+	const codes = ["EPERM", "EACCES", "EBUSY"];
+	let attempt = 0;
+	vi.mocked(fsPromises.unlink).mockImplementation(async (path) => {
+		if (!/\.clock-[0-9a-f]{16}\.probe$/.test(String(path)) || !refuses(++attempt)) return unlink(path);
+		const code = codes[attempt % codes.length]!;
+		throw Object.assign(new Error(`${code}: unlink '${String(path)}'`), { code });
+	});
+}
+
+test("a clock probe whose delete Windows refuses for a moment is still removed (#5605)", async () => {
+	await refuseProbeDeletes((attempt) => attempt <= 6);
+
+	const offset = await sharedClockOffset(directory);
+
+	assert.equal(Number.isFinite(offset), true);
+	assert.deepEqual(probes(), []);
+});
+
+test("a clock probe whose delete Windows keeps refusing is removed by the next probe in its directory (#5605)", async () => {
+	let refusing = true;
+	await refuseProbeDeletes(() => refusing);
+
+	assert.equal(Number.isFinite(await sharedClockOffset(directory)), true);
+	assert.equal(probes().length, 1);
+	refusing = false;
+	await sharedClockOffset(directory);
+
+	assert.deepEqual(probes(), []);
+});
