@@ -12,6 +12,7 @@ interface SqlCatalogReadOptions {
 	readonly key: string;
 	readonly size: string;
 	readonly signal?: AbortSignal;
+	readonly pageRows?: number;
 }
 
 /**
@@ -26,7 +27,7 @@ export async function* readSqlCatalogPages<Row extends SqliteRow>(
 ): AsyncIterable<Row[]> {
 	const { sql, key, size, signal, params = [] } = options;
 	let after: SqliteValue | undefined;
-	let limit = CATALOG_PAGE_ROWS;
+	let limit = options.pageRows ?? CATALOG_PAGE_ROWS;
 	for (;;) {
 		signal?.throwIfAborted();
 		let page: (Row & { catalog_chars: number | bigint; catalog_row: number | bigint })[];

@@ -13,6 +13,34 @@ import { storageBackends } from "../helpers/storage-backends.js";
 
 for (const backend of storageBackends) {
 	describe.skipIf(backend.skipReason !== undefined)(`run catalog size: ${backend.name}`, () => {
+		it("bounds version-catalog responses by run-id size, not only row count (#5537)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const database = await scope.connect();
+				const journal = await SqlRunJournal.open(database, { prefix: scope.prefix });
+				try {
+					const suffix = "x".repeat(4_000);
+					await database.run(
+						`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3000)
+						INSERT INTO ${runJournalTables(scope.prefix).runs}(run_id, name, cwd, created_at, status, header_json)
+						SELECT 'run-' || i || ?, 'run', '/project', 1, 'running',
+						'{"runId":"run-' || i || ? || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`,
+						suffix,
+						suffix,
+					);
+					const versions = await journal.runVersions();
+					expect([...versions.keys()].sort()).toEqual(
+						Array.from({ length: 3_000 }, (_, i) => `run-${i + 1}${suffix}`).sort(),
+					);
+					expect([...versions.values()].every((version) => version.seq === 0 && version.at === 0)).toBe(true);
+				} finally {
+					await journal.close();
+				}
+			} finally {
+				await scope.close();
+			}
+		});
+
 		it("exports and compares one run whose event history exceeds a response limit (#5537)", async () => {
 			const scope = await backend.openScope();
 			const directory = makeTempDirectory("atomic-large-run-export-");

@@ -615,6 +615,7 @@ export class SqlRunJournal implements RunJournal {
 				key: c.runId,
 				size: `length(${c.headerJson}) + length(${c.runId}) + length(${c.status})`,
 				signal: options?.signal,
+				pageRows: this.database.descriptor.adapter === "node-sqlite" ? 128 : 4_096,
 			}))
 				add(page);
 			if (listed.length === 0) await this.assertVersion(this.database);
@@ -645,19 +646,26 @@ export class SqlRunJournal implements RunJournal {
 		});
 	}
 
-	async runVersions(): Promise<ReadonlyMap<string, RunVersion>> {
+	async runVersions(stop?: AbortSignal): Promise<ReadonlyMap<string, RunVersion>> {
 		this.assertOpen();
 		return this.operation(async () => {
-			const rows = await this.database.all<RunVersionRow>(
-				`SELECT runs.${c.runId}, ${latestEventColumns(this.tables.events, "runs")} FROM ${this.tables.runs} AS runs`,
-			);
-			const legacy = (await this.legacy?.versions(this.database)) ?? [];
-			return new Map(
-				[...rows, ...legacy].map((row) => [
-					row[c.runId],
-					{ seq: journalCounter(row[c.runId], "seq", row[c.seq]), at: Number(row[c.at]) },
-				]),
-			);
+			const versions = new Map<string, RunVersion>();
+			const add = (row: RunVersionRow) =>
+				versions.set(row[c.runId], {
+					seq: journalCounter(row[c.runId], "seq", row[c.seq]),
+					at: Number(row[c.at]),
+				});
+			for await (const page of readSqlCatalogPages<RunVersionRow>(this.database, {
+				sql: `SELECT runs.${c.runId}, ${latestEventColumns(this.tables.events, "runs")} FROM ${this.tables.runs} AS runs`,
+				key: c.runId,
+				size: `length(${c.runId})`,
+				signal: stop,
+				pageRows: this.database.descriptor.adapter === "node-sqlite" ? 128 : 4_096,
+			})) {
+				for (const row of page) add(row);
+			}
+			for (const row of (await this.legacy?.versions(this.database, stop)) ?? []) add(row);
+			return versions;
 		});
 	}
 
