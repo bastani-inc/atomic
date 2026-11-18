@@ -580,6 +580,15 @@ test("a send whose recipient quits before its receipt wait ends is told to keep 
 		if (socket === sender.socket) toSender.push({ type: frame.type, at: Date.now() });
 		return write(socket, frame);
 	});
+	const dispatch = a!.dispatch.bind(a!);
+	let dispatched!: (messageId: string) => void;
+	const sentId = new Promise<string>((resolveSent) => {
+		dispatched = resolveSent;
+	});
+	const dispatchSpy = vi.spyOn(a!, "dispatch").mockImplementation((socket, clientMessage, senderId) => {
+		dispatched((clientMessage.message as Message).id);
+		return dispatch(socket, clientMessage, senderId);
+	});
 	try {
 		b!.leave(recipient);
 		const sentAt = Date.now();
@@ -587,6 +596,9 @@ test("a send whose recipient quits before its receipt wait ends is told to keep 
 			(result) => ({ result, at: Date.now() }),
 			(error: Error) => ({ error, at: Date.now() }),
 		);
+		// The send crosses a real socket to its broker, which queues it in the shared outbox and starts its receipt wait.
+		// Fake time moves on only once that real I/O is done, so the broker's wait and the sender's own start together.
+		await untilOutboxHas(a!, await sentId);
 		await advance(RECIPIENT_RECEIPT_TIMEOUT_MS - 500);
 		recordQuit();
 		await advance(RECIPIENT_RECEIPT_TIMEOUT_MS + PRESENCE_READ_STALL_MS);
@@ -605,11 +617,18 @@ test("a send whose recipient quits before its receipt wait ends is told to keep 
 		);
 	} finally {
 		vi.useRealTimers();
+		dispatchSpy.mockRestore();
 		writeSpy.mockRestore();
 		readSpy.mockRestore();
 		releaseSpy.mockRestore();
 	}
 });
+
+/** Waits, without stepping fake time, until `node` has the message in the shared outbox. */
+async function untilOutboxHas(node: Node, messageId: string): Promise<void> {
+	while ((await node.opened.state.outbox.read(messageId)).status !== "found") await settleFileIo();
+	await settleFileIo();
+}
 
 test("a target no presence lease and no known session names is not found, as on a single node", async () => {
 	const [a] = await cluster(1);
