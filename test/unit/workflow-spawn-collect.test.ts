@@ -66,6 +66,8 @@ const GENEROUS_TIMEOUT_MS = 20_000;
 const ROOT_EXIT_DELAY_MS = 300;
 /** Real child startup and exit, independent of the timeout that the scenario triggers only after exit. */
 const ROOT_EXIT_BOUND_MS = 5_000;
+/** Keep inherited pipes open past the whole real exit wait, with headroom, until the test drives the timeout. */
+const DESCENDANT_HOLD_MS = ROOT_EXIT_BOUND_MS * 2;
 
 function errorCode(error: Error | undefined): string | undefined {
 	return (error as (Error & { readonly code?: string }) | undefined)?.code;
@@ -312,7 +314,7 @@ test("uses process-tree containment to terminate descendants when root already e
 			}
 		};
 		const rootExitedTimeout = await collectAfterRootExit(
-			`const { spawn } = require('node:child_process'); const g = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000);"], { stdio: 'inherit', detached: true }); process.stdout.write(String(g.pid)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${ROOT_EXIT_DELAY_MS}); process.exit(0);`,
+			`const { spawn } = require('node:child_process'); const g = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setTimeout(() => {}, ${DESCENDANT_HOLD_MS});"], { stdio: 'inherit', detached: true }); process.stdout.write(String(g.pid)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${ROOT_EXIT_DELAY_MS}); process.exit(0);`,
 		);
 		grandchildPid = Number(rootExitedTimeout.stdout.trim());
 		if (grandchildPid > 0 && process.platform !== "win32") {
@@ -330,7 +332,7 @@ test("uses process-tree containment to terminate descendants when root already e
 		Object.defineProperty(process, "platform", { value: "win32", configurable: true });
 		try {
 			const winNoJobExited = await collectAfterRootExit(
-				`const { spawn } = require('node:child_process'); const g = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit', detached: true }); process.stdout.write(String(g.pid)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${ROOT_EXIT_DELAY_MS}); process.exit(0);`,
+				`const { spawn } = require('node:child_process'); const g = spawn(process.execPath, ['-e', 'setTimeout(() => {}, ${DESCENDANT_HOLD_MS})'], { stdio: 'inherit', detached: true }); process.stdout.write(String(g.pid)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${ROOT_EXIT_DELAY_MS}); process.exit(0);`,
 			);
 			const orphanPid = Number(winNoJobExited.stdout.trim());
 			if (orphanPid > 0 && originalPlatform !== "win32") {
