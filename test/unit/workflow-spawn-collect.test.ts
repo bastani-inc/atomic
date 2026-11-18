@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as realSleep } from "node:timers/promises";
 import { test, vi } from "vitest";
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
 const containment = vi.hoisted(() => ({
 	events: [] as string[],
@@ -55,9 +62,38 @@ import { toJsLiteral } from "../helpers/js-literal.js";
 
 const node = process.execPath;
 const GENEROUS_TIMEOUT_MS = 20_000;
+/** Deliberately longer than the old 150 ms assumption that a newly spawned root had already exited. */
+const ROOT_EXIT_DELAY_MS = 300;
+/** Real child startup and exit, independent of the timeout that the scenario triggers only after exit. */
+const ROOT_EXIT_BOUND_MS = 5_000;
 
 function errorCode(error: Error | undefined): string | undefined {
 	return (error as (Error & { readonly code?: string }) | undefined)?.code;
+}
+
+async function collectAfterRootExit(script: string) {
+	const deadline = AbortSignal.timeout(ROOT_EXIT_BOUND_MS);
+	let child: ReturnType<typeof spawn> | undefined;
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const collected = spawnCollect(node, ["-e", script], {
+			cwd: process.cwd(),
+			env: process.env,
+			timeout: GENEROUS_TIMEOUT_MS,
+			maxBuffer: 1024,
+		});
+		child = vi.mocked(spawn).mock.results.at(-1)?.value;
+		assert.ok(child, "the real root child was spawned");
+		await once(child, "exit", { signal: deadline });
+		assert.equal(child.exitCode, 0, "the root exited normally before its timeout");
+		await vi.advanceTimersByTimeAsync(GENEROUS_TIMEOUT_MS);
+		return await collected;
+	} finally {
+		child?.kill("SIGKILL");
+		child?.stdout?.destroy();
+		child?.stderr?.destroy();
+		vi.useRealTimers();
+	}
 }
 
 test("collects a process's output and exit status, as spawnSync reports them", async () => {
@@ -252,7 +288,7 @@ test("settles promptly on timeout and maxBuffer when a background grandchild hol
 	}
 });
 
-test("uses process-tree containment to terminate descendants when root already exited and releases on normal exit (#5377)", async () => {
+test("uses process-tree containment to terminate descendants when root already exited and releases on normal exit (#5377, #5533)", async () => {
 	containment.enabled = true;
 	containment.events = [];
 	containment.onTerminate = undefined;
@@ -275,13 +311,8 @@ test("uses process-tree containment to terminate descendants when root already e
 				} catch {}
 			}
 		};
-		const rootExitedTimeout = await spawnCollect(
-			node,
-			[
-				"-e",
-				"const { spawn } = require('node:child_process'); const g = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000);\"], { stdio: 'inherit', detached: true }); process.stdout.write(String(g.pid)); process.exit(0);",
-			],
-			{ cwd: process.cwd(), env: process.env, timeout: 150, maxBuffer: 1024 },
+		const rootExitedTimeout = await collectAfterRootExit(
+			`const { spawn } = require('node:child_process'); const g = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000);"], { stdio: 'inherit', detached: true }); process.stdout.write(String(g.pid)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${ROOT_EXIT_DELAY_MS}); process.exit(0);`,
 		);
 		grandchildPid = Number(rootExitedTimeout.stdout.trim());
 		if (grandchildPid > 0 && process.platform !== "win32") {
@@ -298,13 +329,8 @@ test("uses process-tree containment to terminate descendants when root already e
 		const originalPlatform = process.platform;
 		Object.defineProperty(process, "platform", { value: "win32", configurable: true });
 		try {
-			const winNoJobExited = await spawnCollect(
-				node,
-				[
-					"-e",
-					"const { spawn } = require('node:child_process'); const g = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit', detached: true }); process.stdout.write(String(g.pid)); process.exit(0);",
-				],
-				{ cwd: process.cwd(), env: process.env, timeout: 150, maxBuffer: 1024 },
+			const winNoJobExited = await collectAfterRootExit(
+				`const { spawn } = require('node:child_process'); const g = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit', detached: true }); process.stdout.write(String(g.pid)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${ROOT_EXIT_DELAY_MS}); process.exit(0);`,
 			);
 			const orphanPid = Number(winNoJobExited.stdout.trim());
 			if (orphanPid > 0 && originalPlatform !== "win32") {
