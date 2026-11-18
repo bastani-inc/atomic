@@ -60,7 +60,7 @@ async function countingBackend(options: { failTransaction?: () => boolean } = {}
 	cleanups.push(async () => {
 		await backend.close();
 		await journal.close();
-		database.close();
+		await database.close();
 	});
 	await backend.commitWorkflowRegistration({
 		workflowId: "run",
