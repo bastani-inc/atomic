@@ -103,8 +103,24 @@ export class ReleasedChildResumeInterruptedError extends Error {
 	}
 }
 
-/** Resume wakes delivered that no wake handler has taken yet: until it is taken, a resume can be withdrawn (#5485). */
-const untaken = new Set<string>();
+/**
+ * A queued resume refused because a wake relaunched its child first: it would otherwise wait for that whole run
+ * (#5485). The child runs as task `taskId`, and resume refuses a running child.
+ */
+export class ReleasedChildResumeRunningError extends Error {
+	readonly taskId: string;
+	constructor(childId: string, taskId: string) {
+		super(`${childId} is already running as task ${taskId}`);
+		this.name = "ReleasedChildResumeRunningError";
+		this.taskId = taskId;
+	}
+}
+
+/**
+ * Resume wakes delivered that no wake handler has taken yet, by id, with the wake key they wait on: until it is taken,
+ * a resume can be withdrawn (#5485).
+ */
+const untaken = new Map<string, string>();
 
 /**
  * Take the resume wake `id` for handling: false when its caller withdrew it, so the handler leaves it out. Once taken
@@ -131,7 +147,7 @@ export function resumeReleasedChild(
 	const id = `resume:${randomUUID()}`;
 	const waiter = Promise.withResolvers<SubagentChildRestoreOutcome>();
 	waiters.set(id, waiter);
-	untaken.add(id);
+	untaken.set(id, subagentWakeKey(owner, child));
 	if (signal !== undefined) {
 		const interrupt = () => {
 			if (!waiters.delete(id)) return;
@@ -161,6 +177,21 @@ export function resumeReleasedChild(
 		}
 	});
 	return waiter.promise;
+}
+
+/**
+ * A wake relaunched the child of `key` as task `taskId`: every resume still queued on that key would wait for the whole
+ * run, so each is refused now, as resume refuses any running child, and never runs (#5485).
+ */
+export function refuseQueuedResumes(key: string, childId: string, taskId: string): void {
+	for (const [id, queuedOn] of untaken) {
+		if (queuedOn !== key) continue;
+		untaken.delete(id);
+		const waiter = waiters.get(id);
+		if (waiter === undefined) continue;
+		waiters.delete(id);
+		waiter.reject(new ReleasedChildResumeRunningError(childId, taskId));
+	}
 }
 
 export function settleResumeWake(id: string, outcome: SubagentChildRestoreOutcome): void {

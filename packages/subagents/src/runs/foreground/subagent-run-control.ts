@@ -16,6 +16,7 @@ import {
 	beginReleasedChildStop,
 	isReleasedChildWakeActive,
 	ReleasedChildResumeInterruptedError,
+	ReleasedChildResumeRunningError,
 	releasedChildWakeDecided,
 	resumeReleasedChild,
 } from "./released-child-resume.js";
@@ -559,6 +560,12 @@ async function resumeChild(
 	} catch (error) {
 		if (error instanceof ReleasedChildResumeInterruptedError)
 			return interruptedResume(record, error.withdrawn, message);
+		// A wake relaunched the child before it took this resume: it runs, so resume refuses it.
+		if (error instanceof ReleasedChildResumeRunningError)
+			return errorResult(
+				action,
+				`${label(record)} is already running as task ${error.taskId}; pause or quit it first.`,
+			);
 		throw error;
 	}
 	if (outcome === INTERRUPTED) return interruptedResume(record, false, message);
