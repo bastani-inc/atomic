@@ -32,6 +32,7 @@ import {
 	legacyDefaultJournalPath,
 	openNodeSqliteDatabase,
 	StorageSchemaVersionError,
+	stopSpareConnectionThread,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test } from "vitest";
 import { ShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
@@ -785,8 +786,11 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(report.moved, 4);
 		};
 		await cycle("warm");
+		// The connection thread kept for the next open is not a file or database the cycle left open.
+		await stopSpareConnectionThread();
 		const before = descriptors();
 		await cycle("measured");
+		await stopSpareConnectionThread();
 		assert.equal(descriptors(), before);
 	},
 );

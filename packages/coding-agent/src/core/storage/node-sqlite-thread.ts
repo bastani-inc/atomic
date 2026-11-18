@@ -554,6 +554,8 @@ export class ThreadConnection {
 				else reject(connectionFailure(reply.failure));
 			};
 		});
+		// `open` hears of a failure; a thread lost after an open that never reached it rejects nobody else.
+		this.opened.catch(() => undefined);
 		this.worker = worker;
 		this.worker.on("message", (reply: ConnectionReply) => this.receive(reply));
 		this.worker.on("error", (error: Error) => this.lose(error));
