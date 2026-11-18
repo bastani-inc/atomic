@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
@@ -224,4 +225,17 @@ test("committed statements that waited for the lock run and commit in one reques
 	assert.ok(tookLock >= 0, `the call waited for the lock: ${kinds.join(", ")}`);
 	assert.deepEqual(kinds.slice(tookLock + 1), ["statements"], "then ran and committed in one request");
 	assert.deepEqual(await rows(database), ["waited"]);
+});
+
+test("committed statements are one request again once contention has left the writers' queue empty (#5376)", async () => {
+	const path = databasePath();
+	const database = await open(path);
+	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
+	// The queue directory a contended moment leaves behind, with no writer waiting in it.
+	mkdirSync(`${path}-writers`, { recursive: true });
+	const { kinds } = await requestKinds(() =>
+		database.commitStatements!([{ sql: "INSERT INTO items VALUES (?)", params: ["after contention"] }]),
+	);
+	assert.deepEqual(kinds, ["transaction"]);
+	assert.deepEqual(await rows(database), ["after contention"]);
 });

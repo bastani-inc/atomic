@@ -1771,7 +1771,12 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private async commitAtOnce(queued: QueuedTransaction, statements: readonly ConnectionStatement[]): Promise<boolean> {
 		const queue = this.writeQueue;
 		queue?.observe();
-		if (queue !== undefined && (await queue.contendedOffLoop())) return false;
+		// As a writer's first attempt does: only a live ticket of a writer already waiting sends it to the queue. A queue
+		// directory that contention left empty, or that cannot be read (`begin` reports that), does not.
+		if (queue !== undefined && (await queue.contendedOffLoop())) {
+			const waiting = await queue.liveTicketsOffLoop().catch(() => undefined);
+			if (waiting === undefined || waiting.length > 0) return false;
+		}
 		const waitStarted = performance.now();
 		let outcome: ConnectionTransactionValue;
 		try {
