@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	HIL_ANSWER_NOTICE_CUSTOM_TYPE,
 	installWorkflowHilAnswerNotifications,
@@ -291,7 +292,8 @@ describe("installWorkflowHilAnswerNotifications", () => {
 		unsubscribe();
 	});
 
-	test("registers HiL answer renderer once per host and returns a notice card", () => {
+	test("registers HiL answer renderer once per host and returns a notice", () => {
+		initTheme("dark");
 		const host = {};
 		const registered: RegisteredRenderer[] = [];
 		registerHilAnswerNoticeRenderer({
@@ -330,15 +332,61 @@ describe("installWorkflowHilAnswerNotifications", () => {
 		assert.equal(typeof rendered, "object");
 		assert.notEqual(rendered, null);
 		const lines = (rendered as CardComponent).render(80);
-		const text = lines.join("\n");
-		assert.match(text, /╭ HIL ANSWERED/);
-		assert.match(text, /✓ Workflow "release" received the user's response/);
-		assert.match(text, /stage\s+review/);
-		assert.match(text, /answer\s+swordfish/);
+		const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+		assert.match(text, /● Workflow "release" received the user's response/);
+		assert.match(text, /· review/);
 		for (const width of [80, 40, 24]) {
 			for (const line of (rendered as CardComponent).render(width)) {
 				assert.ok(line.length === 0 || line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "").length <= width);
 			}
 		}
 	});
+});
+
+test("the answered-question notice is one ● line in the shared notice anatomy, with its details when expanded", () => {
+	initTheme("dark");
+	let renderer: ((raw: unknown, options?: { expanded: boolean; outputPad?: number }) => unknown) | undefined;
+	registerHilAnswerNoticeRenderer({
+		rendererHost: {},
+		registerMessageRenderer(
+			_type: string,
+			value: (raw: unknown, options?: { expanded: boolean; outputPad?: number }) => unknown,
+		) {
+			renderer = value;
+		},
+	} as never);
+	const details = {
+		kind: "hil_answered",
+		scope: "stage",
+		runId: "run-1",
+		workflowName: "release",
+		stageId: "stage-1",
+		stageName: "review",
+		promptMessage: "Secret passphrase?",
+		answeredAt: 1,
+		answerAvailable: true,
+		answerIncluded: true,
+		answerSummary: "swordfish",
+	};
+	const render = (expanded: boolean, outputPad = 1) =>
+		(renderer!({ details }, { expanded, outputPad }) as { render(width: number): string[] })
+			.render(99 + outputPad)
+			.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+	const collapsed = render(false);
+	assert.equal(collapsed[0], ` ● Workflow "release" received the user's response · review`);
+	assert.match(collapsed[1] ?? "", /^ {3}⎿ {2}… \+4 lines(?: \(.+ to expand\))?$/, "hidden details are counted");
+	assert.equal(collapsed.length, 2);
+	const expanded = render(true);
+	assert.equal(expanded[1], "   ⎿  run run-1");
+	assert.equal(expanded[2], "      prompt Secret passphrase?");
+	assert.equal(expanded[3], "      answer swordfish");
+	assert.doesNotMatch(expanded.join("\n"), /[╭╮╰╯]|HIL ANSWERED/);
+	for (const outputPad of [0, 4]) {
+		const padded = render(true, outputPad);
+		assert.match(padded[0] ?? "", new RegExp(`^ {${outputPad}}● Workflow`), "the notice starts at the output pad");
+		assert.deepEqual(
+			padded.map((line) => line.slice(outputPad)),
+			expanded.map((line) => line.slice(1)),
+		);
+	}
 });

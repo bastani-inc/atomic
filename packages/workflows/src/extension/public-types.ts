@@ -58,6 +58,8 @@ export interface PiMessageRenderComponent {
 
 export interface PiMessageRenderOptions {
 	expanded: boolean;
+	/** Columns before the output, from the host's outputPad setting. */
+	outputPad?: number;
 }
 
 export type PiMessageRendererResult = string | PiMessageRenderComponent | null | undefined;

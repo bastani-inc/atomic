@@ -1,7 +1,7 @@
 import { renderNavKeyOverlay } from "@bastani/atomic";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
-import { fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
+import { colorLevelKey, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
 import { GRAPH_HEADER_ROWS, GraphViewLayout, graphLayoutNaturalHeight } from "./graph-view-layout.js";
 import { toolExpandKey } from "./graph-view-render-helpers.js";
@@ -44,6 +44,8 @@ interface ToolDetailFrame {
 	readonly leftPad: number;
 	readonly lines: readonly string[];
 	readonly selectedRow?: number;
+	/** The color level the lines were painted in; see {@link colorLevelKey}. */
+	readonly colorLevel: string;
 }
 
 /** Overlay/widget rendering orchestration for GraphView. */
@@ -194,13 +196,15 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	private _toolDetailFrame(node: NonNullable<GraphViewRenderer["toolDetail"]>, width: number): ToolDetailFrame {
 		const safeWidth = Math.max(1, Math.floor(width));
 		const cached = this.detailFrame;
-		if (cached !== null && cached.width === safeWidth) return cached;
+		const colorLevel = colorLevelKey();
+		if (cached !== null && cached.width === safeWidth && cached.colorLevel === colorLevel) return cached;
 		// Span the same columns as the header/footer bars. Main-chat tool
 		// blocks are full width; only the Box(1,1) pad insets the `$` text.
 		const frame: ToolDetailFrame = {
 			width: safeWidth,
 			blockWidth: safeWidth,
 			leftPad: 0,
+			colorLevel,
 			lines: renderToolDetailLines(node, {
 				theme: this.graphTheme,
 				width: safeWidth,
@@ -223,9 +227,11 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			this.store.run(this.stageDetail.runId)?.stages.find((candidate) => candidate.id === this.stageDetail?.stageId)
 				?.modelAttempts;
 		const cached = this.stageDetailFrame;
+		const colorLevel = colorLevelKey();
 		if (
 			cached !== null &&
 			cached.frame.width === safeWidth &&
+			cached.frame.colorLevel === colorLevel &&
 			cached.stage === stage &&
 			cached.modelAttempts === fullAttempts &&
 			cached.logs === this.stageDetail.logs
@@ -239,6 +245,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			width: safeWidth,
 			blockWidth: safeWidth,
 			leftPad: 0,
+			colorLevel,
 			lines: renderStageFailureDetailLines(detailStage, {
 				theme: this.graphTheme,
 				width: safeWidth,
@@ -259,9 +266,11 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const elapsedMs = elapsedRunMs(run, Date.now());
 		const elapsedSecond = Math.floor(elapsedMs / 1000);
 		const cached = this.runDetailFrame;
+		const colorLevel = colorLevelKey();
 		if (
 			cached !== null &&
 			cached.frame.width === safeWidth &&
+			cached.frame.colorLevel === colorLevel &&
 			cached.run === run &&
 			cached.outcome === outcome &&
 			cached.logs === detail.logs &&
@@ -277,6 +286,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			width: safeWidth,
 			blockWidth: safeWidth,
 			leftPad: 0,
+			colorLevel,
 			lines: rendered.lines,
 			...(rendered.selectedRow === undefined ? {} : { selectedRow: rendered.selectedRow }),
 		};
