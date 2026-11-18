@@ -234,6 +234,8 @@ interface ParkedDiscovery {
 	readonly items: { readonly summary: SessionSummary; readonly key: SessionKey }[];
 	pending?: Promise<IteratorResult<SessionSummary>>;
 	timer?: ReturnType<typeof setTimeout>;
+	/** A call is reading it: another call for the same listing lists afresh rather than share its iterator. */
+	busy: boolean;
 }
 
 function closeDiscovery(discovery: ParkedDiscovery): void {
@@ -1353,7 +1355,8 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					readonly reason: BudgetStop;
 					readonly scanned: number;
 					readonly cursor: string;
-					readonly listing: number;
+					/** Omitted when every place for a parked listing was taken: the chain lists afresh next time. */
+					readonly listing?: number;
 				};
 		  }
 	> {
@@ -1370,37 +1373,48 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const byKey = parkedHere;
 		const requestKey = target.listing === undefined ? undefined : keyOf(target.listing);
 		let parked = requestKey === undefined ? undefined : byKey.get(requestKey);
-		if (parked && requestKey !== undefined) {
-			clearTimeout(parked.timer);
-			byKey.delete(requestKey);
-		}
-		if (!parked) {
+		if (parked?.busy) parked = undefined;
+		if (parked) clearTimeout(parked.timer);
+		else {
 			const controller = new AbortController();
 			const iterable = store.list({ ...scope, withoutSearchText: true, signal: controller.signal });
-			parked = { iterator: iterable[Symbol.asyncIterator](), controller, items: [], serial: ++listingSerial };
+			parked = {
+				iterator: iterable[Symbol.asyncIterator](),
+				controller,
+				items: [],
+				serial: ++listingSerial,
+				busy: false,
+			};
 		}
 		const active = parked;
+		active.busy = true;
+		const key = keyOf(active.serial);
+		// The listing ended: it gives up its place.
+		const release = () => {
+			active.busy = false;
+			if (byKey.get(key) === active) byKey.delete(key);
+		};
+		// A parked listing keeps its place until its listing ends or it expires; a newer one never takes it. One that
+		// finds every place taken is not parked and its chain lists afresh next time. So each parked listing reads at
+		// least one more session per call and ends, freeing its place, and every chain gets one in turn: evicting the
+		// oldest instead would let more chains than places evict each other's listings and start again forever.
 		const park = (reason: BudgetStop) => {
 			const position = positionCursor(target);
 			const cursor = position ?? `0.${active.items.length}`;
-			const key = keyOf(active.serial);
-			const replaced = byKey.get(key);
-			if (replaced && replaced !== active) closeDiscovery(replaced);
-			byKey.delete(key);
-			while (byKey.size >= MAX_PARKED_DISCOVERIES) {
-				const oldestKey = byKey.keys().next().value;
-				if (oldestKey === undefined) break;
-				const oldest = byKey.get(oldestKey)!;
-				byKey.delete(oldestKey);
-				closeDiscovery(oldest);
+			active.busy = false;
+			if (byKey.get(key) !== active) {
+				if (byKey.size >= MAX_PARKED_DISCOVERIES) {
+					closeDiscovery(active);
+					return { stopped: { reason, scanned: active.items.length, cursor } };
+				}
+				byKey.set(key, active);
 			}
 			active.timer = setTimeout(() => {
-				if (byKey.get(key) !== active) return;
+				if (byKey.get(key) !== active || active.busy) return;
 				byKey.delete(key);
 				closeDiscovery(active);
 			}, DISCOVERY_TTL_MS);
 			active.timer.unref?.();
-			byKey.set(key, active);
 			return { stopped: { reason, scanned: active.items.length, cursor, listing: active.serial } };
 		};
 		let progressed = false;
@@ -1420,9 +1434,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			}
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) return park("time");
+			release();
 			closeDiscovery(parked);
 			throw error;
 		}
+		release();
 		await budget.pace();
 		parked.items.sort((a, b) => compareSessionKeys(a.key, b.key));
 		return { sessions: parked.items.map((item) => item.summary), keys: parked.items.map((item) => item.key) };

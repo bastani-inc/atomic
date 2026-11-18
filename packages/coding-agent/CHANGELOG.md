@@ -10,6 +10,7 @@
 ### Fixed
 
 - Following the `continue with` URLs of a `history://` search no longer skips or repeats what it covers: a session that got new activity before the search reached it, a workflow run removed or started between calls, matches already shown when the store was slow right after a stop inside an entry, and a session created before a search began that another search's unfinished listing left out. Continuations saved by earlier versions start again from the newest record and say so ([#5479](https://github.com/bastani-inc/atomic/pull/5479))
+- When more than 16 `history://` searches stopped while listing sessions at the same time, their continuations could restart each other's listings forever and never finish. A stopped listing now keeps its place until it finishes or expires after a minute ([#5479](https://github.com/bastani-inc/atomic/pull/5479))
 
 ## [0.9.89] - 2026-11-18
 

@@ -212,6 +212,38 @@ describe("history:// continuation chains cover each entry once", () => {
 		});
 	}
 
+	it("more chains than the store parks listings for each still finish listing the sessions", async () => {
+		const store = new MemorySessionStore();
+		for (let n = 1; n <= 3; n++)
+			await store.create(
+				{ id: `s${n}`, version: SESSION_FORMAT_VERSION, createdAt: new Date(BASE + n).toISOString(), cwd: PROJECT },
+				[message(`s${n}-e1`, `needle s${n}`, BASE + n)],
+			);
+		// One session per call: each chain's listing stops, and is parked, after every session it reads.
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: () => undefined,
+			budget: { rows: 1 },
+		});
+		// One more chain than the store parks listings for, each following its own continuations in turn.
+		const chains = 17;
+		const next: (string | undefined)[] = Array.from({ length: chains }, () => "history://sessions");
+		const listed: string[] = [];
+		for (let round = 0; round < 12 && listed.length < chains; round++) {
+			for (let chain = 0; chain < chains; chain++) {
+				const url = next[chain];
+				if (url === undefined) continue;
+				const out = await router.read!(url);
+				next[chain] = continuation(out);
+				if (next[chain] === undefined) listed.push(out);
+			}
+		}
+		assert.equal(listed.length, chains, next.filter((url) => url !== undefined).join("\n"));
+		for (const out of listed)
+			for (const id of ["s1", "s2", "s3"]) assert.match(out, new RegExp(`history://sessions/${id}\\b`));
+	});
+
 	it("a chain never adopts a session listing another chain started before a session was created", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "history-chain-listing-"));
 		const project = mkdtempSync(join(tmpdir(), "history-chain-project-"));
