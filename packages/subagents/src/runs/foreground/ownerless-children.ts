@@ -39,7 +39,11 @@ interface OwnerlessLaunch {
 	dispatched: boolean;
 }
 
-const liveLaunches = new Map<string, OwnerlessLaunch>();
+// An SDK launch stays live across extension evaluation; its stop and settlement remove it from this same table.
+const LIVE_LAUNCHES = Symbol.for("@bastani/subagents/live-sdk-launches@1");
+const processLaunches = globalThis as { [LIVE_LAUNCHES]?: Map<string, OwnerlessLaunch> };
+const liveLaunches = processLaunches[LIVE_LAUNCHES] ?? new Map<string, OwnerlessLaunch>();
+processLaunches[LIVE_LAUNCHES] = liveLaunches;
 
 export interface OwnerlessChildLaunch {
 	/** Stands in for the host's task id in the child's records. */

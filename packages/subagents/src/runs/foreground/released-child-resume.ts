@@ -9,16 +9,29 @@ export interface ReleasedChildResumeWake extends AgentWake {
 	readonly resume: SubagentChildResumeRequest;
 }
 
-const dispatchers = new Map<string, { readonly dispatcher: AgentWakeDispatcher }>();
-const waiters = new Map<string, PromiseWithResolvers<SubagentChildRestoreOutcome>>();
-const active = new Set<string>();
-/** Pause and quit calls in flight per wake key: while one is, a wake of that child does not relaunch it (#4845). */
-const pendingStops = new Map<string, number>();
-/**
- * Per active wake: settles once the wake has relaunched the child, its new run's record written, or decided not to.
- * Until then a pause or quit could not tell a child about to run again from a released one.
- */
-const relaunches = new Map<string, PromiseWithResolvers<void>>();
+interface ResumeWaiter extends PromiseWithResolvers<SubagentChildRestoreOutcome> {
+	/** Use the waiting caller's own error class, also when a replacement extension reports admission. */
+	refuse(taskId: string): void;
+}
+
+// A workflow stage keeps its owner across /reload. A replacement handler must join its in-flight wake, not race it.
+function newResumeState() {
+	return {
+		dispatchers: new Map<string, { readonly dispatcher: AgentWakeDispatcher }>(),
+		waiters: new Map<string, ResumeWaiter>(),
+		untaken: new Map<string, string>(),
+		active: new Set<string>(),
+		pendingStops: new Map<string, number>(),
+		relaunches: new Map<string, PromiseWithResolvers<void>>(),
+		checking: new Map<string, Set<(taskId: string) => void>>(),
+		admissions: new WeakMap<object, AdmittedSubagentChild>(),
+	};
+}
+const RESUME_STATE = Symbol.for("@bastani/subagents/child-resume-state@1");
+const processState = globalThis as { [RESUME_STATE]?: ReturnType<typeof newResumeState> };
+const state = processState[RESUME_STATE] ?? newResumeState();
+processState[RESUME_STATE] = state;
+const { dispatchers, waiters, untaken, active, pendingStops, relaunches, checking, admissions } = state;
 
 export function bindResumeDispatcher(owner: string, dispatcher: AgentWakeDispatcher): () => void {
 	const binding = { dispatcher };
@@ -117,12 +130,6 @@ export class ReleasedChildResumeRunningError extends Error {
 }
 
 /**
- * Resume wakes delivered that no wake handler has taken yet, by id, with the wake key they wait on: until it is taken,
- * a resume can be withdrawn (#5485).
- */
-const untaken = new Map<string, string>();
-
-/**
  * Take the resume wake `id` for handling: false when its caller withdrew it, so the handler leaves it out. Once taken
  * it can no longer be withdrawn.
  */
@@ -146,7 +153,10 @@ export function resumeReleasedChild(
 	if (signal?.aborted) return Promise.reject(new ReleasedChildResumeInterruptedError(child, true));
 	const id = `resume:${randomUUID()}`;
 	const waiter = Promise.withResolvers<SubagentChildRestoreOutcome>();
-	waiters.set(id, waiter);
+	waiters.set(id, {
+		...waiter,
+		refuse: (taskId) => waiter.reject(new ReleasedChildResumeRunningError(child, taskId)),
+	});
 	untaken.set(id, subagentWakeKey(owner, child));
 	if (signal !== undefined) {
 		const interrupt = () => {
@@ -180,7 +190,6 @@ export function resumeReleasedChild(
 }
 
 type ResumeCheck = "readable" | "interrupted" | { readonly taskId: string };
-const checking = new Map<string, Set<(taskId: string) => void>>();
 
 /** A pending resume can stop checking records as soon as the child has a live task, or its caller presses Esc. */
 export async function awaitResumeCheck(
@@ -214,9 +223,6 @@ export interface AdmittedSubagentChild {
 	readonly intercomTarget?: string;
 }
 
-// A hosted task lease or SDK launch owns this identity; no session, transcript or ended handle is kept here.
-const admissions = new WeakMap<object, AdmittedSubagentChild>();
-
 export function admittedSubagentChild(handle: object, ownerSessionId: string): AdmittedSubagentChild | undefined {
 	const child = admissions.get(handle);
 	return child?.ownerSessionId === ownerSessionId ? child : undefined;
@@ -234,7 +240,7 @@ export function recordSubagentAdmission(handle: object, child: AdmittedSubagentC
 		const waiter = waiters.get(id);
 		if (waiter === undefined) continue;
 		waiters.delete(id);
-		waiter.reject(new ReleasedChildResumeRunningError(childId, taskId));
+		waiter.refuse(taskId);
 	}
 }
 
