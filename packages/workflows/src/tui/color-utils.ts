@@ -47,6 +47,14 @@ export function hexBg(hex: string): string {
 	return hexColorAnsi(hex, "bg");
 }
 
+/**
+ * Names the color level colors are painted in: it changes whenever NO_COLOR or FORCE_COLOR turn color off, limit it to
+ * 256 colors or restore true color. A cache of painted rows keys on it so it never serves rows painted at another level.
+ */
+export function colorLevelKey(): string {
+	return hexColorAnsi("#000000", "fg");
+}
+
 /** Unpainted canvas, matching main chat and attached stage chat. */
 export const DEFAULT_BG = "\x1b[49m";
 

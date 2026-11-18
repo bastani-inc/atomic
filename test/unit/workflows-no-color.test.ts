@@ -10,7 +10,7 @@ import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
-import { makeTestTui as makeGraphTui, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
+import { makeTestTui as makeGraphTui, makeRun, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 import { makeHandle, makeTestTui as makeStageTui } from "./stage-chat-view-helpers.js";
 
 /** An SGR sequence that sets a color (not one that restores the default with 39 or 49). */
@@ -187,4 +187,50 @@ test("painting workflow colors never reads NO_COLOR or FORCE_COLOR", () => {
 		process.env = original;
 	}
 	assert.equal(reads, 0);
+});
+
+test("an open detail view repaints in the new color level after the color environment changes", () => {
+	colorEnv({});
+	const failed = {
+		...makeStage("build"),
+		status: "failed" as const,
+		startedAt: 1_000,
+		endedAt: 9_000,
+		error: "build failed",
+	};
+	const run = {
+		...makeRun([failed]),
+		status: "failed" as const,
+		startedAt: 1_000,
+		endedAt: 9_000,
+		error: "build failed",
+	};
+	const view = new GraphView({
+		piKeybindings: makeFakeKeybindings(),
+		mode: "overlay",
+		runId: run.id,
+		store: makeStore({ runs: [run], notices: [], version: 1 }),
+		graphTheme: deriveGraphTheme({}),
+		piTui: makeGraphTui(24),
+	});
+	try {
+		for (const open of ["o", "enter"] as const) {
+			colorEnv({});
+			view.handleInput(open === "o" ? "o" : "\r");
+			const colored = view.render(100);
+			assert.match(colored.join("\n"), TRUECOLOR_SGR, `${open}: detail painted in true color first`);
+			colorEnv({ NO_COLOR: "1" });
+			view.invalidate();
+			const plain = view.render(100);
+			assert.doesNotMatch(plain.join("\n"), COLOR_SGR, `${open}: detail painted after NO_COLOR`);
+			assert.deepEqual(
+				plain.map((line) => stripVTControlCharacters(line)),
+				colored.map((line) => stripVTControlCharacters(line)),
+				`${open}: same text`,
+			);
+			view.handleInput("\x1b");
+		}
+	} finally {
+		view.dispose();
+	}
 });
