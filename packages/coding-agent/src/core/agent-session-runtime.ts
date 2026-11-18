@@ -18,6 +18,7 @@ import type {
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
+import type { SessionTrustDecisions } from "./project-trust-state.ts";
 import type { AuthStatus } from "./provider-composer.ts";
 import { blueprintBuildsRunning, stopBlueprintBuilds } from "./resume/blueprint/barrier.ts";
 import type { ResumeEntryPoint } from "./resume/errors.ts";
@@ -245,6 +246,28 @@ export class AgentSessionRuntime {
 			await complete(this.projectTrustContextFactory(this.services.cwd));
 			return true;
 		});
+	}
+
+	/** Whether the current session's project trust decision is still to be made, so it is neither trusted nor untrusted yet. */
+	isProjectTrustPending(): boolean {
+		return this.services.projectTrust?.pending === true;
+	}
+
+	/**
+	 * Startup failed before `completeStartup` decided the project's trust, for example because an extension failed to
+	 * start. No decision is coming, so the session stays as untrusted as its settings read.
+	 */
+	abandonStartupTrust(): void {
+		this.services.projectTrust?.abandon();
+	}
+
+	/** The trust decisions made in this process: projects and `-e` extension sources. They are never saved. */
+	trustDecisions(): SessionTrustDecisions {
+		const trust = this.services.projectTrust;
+		return {
+			projects: Object.fromEntries(trust?.decisions ?? []),
+			extensionSources: Object.fromEntries(trust?.extensionSourceDecisions ?? []),
+		};
 	}
 
 	private declare _session: AgentSession;

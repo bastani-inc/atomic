@@ -234,6 +234,11 @@ export function onInteractiveEngineResourceExtensionsChanged(
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onResourceExtensionsChanged(listener) : () => {};
 }
 
+/** Called when the isolated host's trust for its session, or whether its engine has decided it, changes. */
+export function onInteractiveEngineProjectTrustChanged(runtime: AgentSessionRuntime, listener: () => void): () => void {
+	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onProjectTrustChanged(listener) : () => {};
+}
+
 /** Evaluate an engine-child command's live argument completions. */
 export function getInteractiveEngineRemoteCommandCompletions(
 	runtime: AgentSessionRuntime,
