@@ -129,6 +129,7 @@ export function _refreshToolRegistry(
 					this.sessionManager.getWorktreeRootMappings(),
 					() => tool.execute(...args),
 					this._outerWorktreeRootMappings,
+					this.sessionManager.getWorktreePathContinuations(),
 				),
 		};
 		const guarded = rejectMalformedToolArguments(scoped, () => this.agent.state.messages);
@@ -245,6 +246,7 @@ export function syncSessionHistoryTool(session: AgentSession, toolNames: readonl
 							session.sessionManager.getWorktreeRootMappings(),
 							() => tool.execute(...args),
 							session._outerWorktreeRootMappings,
+							session.sessionManager.getWorktreePathContinuations(),
 						),
 				};
 				const guarded = rejectMalformedToolArguments(scoped, () => session.agent.state.messages);

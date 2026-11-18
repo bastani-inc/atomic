@@ -206,6 +206,12 @@ export interface WorktreeDegradedWork {
 	readonly reason?: string;
 }
 
+/** Paths under `from`, a working directory the session left, continue under `to`, where it went on instead (#5379). */
+export interface PathContinuation {
+	readonly from: string;
+	readonly to: string;
+}
+
 /**
  * A checkout a resume continued without (#4733): nothing of its snapshot could be restored on this host, so the
  * session went on in `continuedIn`, as it was.
@@ -215,6 +221,11 @@ export interface WorktreeUnrestored {
 	readonly continuedIn: string;
 	/** Whether `continuedIn` is the session's recorded working directory, or the directory the resume started in. */
 	readonly place: "recorded" | "launch";
+	/**
+	 * For the checkout the session worked in, when it continued in the directory the resume started in instead: the
+	 * working directory in this checkout that it left. The session's file tools follow paths under it to `continuedIn`.
+	 */
+	readonly from?: string;
 	readonly cause: string;
 	readonly causeReason?: string;
 	readonly detail: string;

@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
 	captureWorktreeSnapshot,
+	isWorkspaceRestoreError,
 	MemorySnapshotBlobStore,
 	removeRestoredWorktree,
 	restoreWorktree,
@@ -143,6 +144,58 @@ const siblingStaging = (target: string, id: string) =>
 	join(dirname(target), `.${basename(target)}.s-${id.replaceAll("-", "").slice(0, 12)}`);
 
 describe("sweeping the records an interrupted restore left", () => {
+	test("a staging directory the sweep kept, holding the user's files, is refused by removeRestoredWorktree (#4748)", async () => {
+		const host = await makeHost();
+		const id = randomUUID();
+		const staging = await stage(host.store, defaultStaging(host, id));
+		mkdirSync(join(staging, "src"));
+		writeFileSync(join(staging, "src", "notes.txt"), "the user's notes\n");
+		const target = join(host.storeDir, "worktrees", "kept-final");
+		writeRecord(host, id, { staging, target, store: host.store, createdTarget: true });
+
+		assert.deepEqual(await sweep(host), [{ code: "stale-restore-retained", path: staging, kind: "worktree" }]);
+		assert.equal(readFileSync(join(staging, "src", "notes.txt"), "utf8"), "the user's notes\n");
+
+		await assert.rejects(
+			removeRestoredWorktree(staging, { storeDir: host.storeDir, onWarning: () => {} }),
+			(error) => {
+				assert.ok(isWorkspaceRestoreError(error), String(error));
+				assert.equal(error.code, "unsafe-target");
+				assert.equal(error.reason, "not-restored");
+				return true;
+			},
+		);
+		assert.equal(readFileSync(join(staging, "src", "notes.txt"), "utf8"), "the user's notes\n");
+	});
+
+	test("without the directory's identity, a file that is only a beginning of the checkout's is kept (#4748)", async () => {
+		const host = await makeHost();
+		const id = randomUUID();
+		const staging = await stage(host.store, defaultStaging(host, id));
+		writeFileSync(join(staging, "README.md"), "hel");
+		const target = join(host.storeDir, "worktrees", "partial-final");
+		writeRecord(host, id, { staging, target, store: host.store, createdTarget: true });
+
+		assert.deepEqual(await sweep(host), [{ code: "stale-restore-retained", path: staging, kind: "worktree" }]);
+		assert.equal(readFileSync(join(staging, "README.md"), "utf8"), "hel");
+	});
+
+	test("so is the directory a cleanup set aside (#4748)", async () => {
+		const host = await makeHost();
+		const aside = await stage(
+			host.store,
+			join(host.storeDir, "worktrees", `.d-${randomUUID().replaceAll("-", "").slice(0, 12)}`),
+		);
+		writeFileSync(join(aside, "keep.txt"), "kept\n");
+
+		await assert.rejects(removeRestoredWorktree(aside, { storeDir: host.storeDir, onWarning: () => {} }), (error) => {
+			assert.ok(isWorkspaceRestoreError(error), String(error));
+			assert.equal(error.code, "unsafe-target");
+			return true;
+		});
+		assert.equal(readFileSync(join(aside, "keep.txt"), "utf8"), "kept\n");
+	});
+
 	test("a default restore whose lock went stale is removed: staging, registration, record and lock, with nothing reported", async () => {
 		const host = await makeHost();
 		const id = randomUUID();
@@ -345,7 +398,9 @@ describe("sweeping the records an interrupted restore left", () => {
 			emit.mockRestore();
 		}
 		assert.deepEqual(emitted, [
-			[`A restore interrupted earlier left ${restores}; remove the directory and retry cleanup.`],
+			[
+				`A restore interrupted earlier left ${restores}, which may hold your files; check them, then delete the directory yourself.`,
+			],
 		]);
 	});
 

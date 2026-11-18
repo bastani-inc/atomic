@@ -145,11 +145,13 @@ export function unrestoredRecord(
 	continuedIn: string,
 	place: WorktreeUnrestored["place"],
 	at = new Date().toISOString(),
+	from?: string,
 ): WorktreeUnrestored {
 	return {
 		snapshotId: snapshot.id,
 		continuedIn,
 		place,
+		...(from === undefined ? {} : { from }),
 		cause: isWorkspaceError(reason) || isGitUnavailableError(reason) ? reason.code : "error",
 		...(isWorkspaceRestoreError(reason) && reason.reason !== undefined ? { causeReason: String(reason.reason) } : {}),
 		...unrestoredReason(snapshot, reason),
