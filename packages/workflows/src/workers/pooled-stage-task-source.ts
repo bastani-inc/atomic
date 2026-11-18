@@ -1,5 +1,6 @@
 import {
 	rehydrateTaskMessageError,
+	scopedBackgroundTasks,
 	sessionTasks,
 	type TaskActivity,
 	type TaskCommandCatalog,
@@ -65,7 +66,7 @@ export class PooledStageTaskSource implements TaskViewSource {
 		return sessionTasks(this.records, undefined);
 	}
 	get backgroundTasks(): readonly TaskRecord[] {
-		return sessionTasks(this.backgroundRecords, undefined);
+		return scopedBackgroundTasks(this, sessionTasks(this.backgroundRecords, undefined));
 	}
 	get ownerTasks(): readonly TaskRecord[] {
 		return this.records;

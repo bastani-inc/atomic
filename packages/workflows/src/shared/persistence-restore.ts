@@ -222,6 +222,7 @@ export function restoreOnSessionStart(
 				stages,
 				toolNodes: [],
 				startedAt: run.startTs,
+				runGeneration: blockedMeta.runGeneration ?? (runMeta.runGeneration ?? 0) + 1,
 				...(blockedMeta.endedAt !== undefined ? { endedAt: blockedMeta.endedAt } : {}),
 				...(runMeta.parentRunId !== undefined ? { parentRunId: runMeta.parentRunId } : {}),
 				...(runMeta.parentStageId !== undefined ? { parentStageId: runMeta.parentStageId } : {}),
@@ -236,8 +237,7 @@ export function restoreOnSessionStart(
 				...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
 				...(blockedMeta.budgetState !== undefined ? { budgetState: blockedMeta.budgetState } : {}),
 			};
-			store.recordRunStart(runSnapshot);
-			store.recordRunBlocked(run.runId, blockedMeta.error, {
+			store.restoreActiveBlockedRun(runSnapshot, blockedMeta.error, {
 				failureKind: blockedMeta.failureKind,
 				...(blockedMeta.failureCode !== undefined ? { failureCode: blockedMeta.failureCode } : {}),
 				failureRecoverability: "recoverable",
@@ -260,6 +260,7 @@ export function restoreOnSessionStart(
 			// Re-hydrate the run into the store as "running"
 			const runSnapshot: RunSnapshot = {
 				id: run.runId,
+				runGeneration: runMeta.runGeneration,
 				name: run.name,
 				inputs: run.inputs,
 				status: "running",
@@ -285,6 +286,7 @@ export function restoreOnSessionStart(
 			// "ask" or "never": mark as crashed in store, surface to caller
 			const runSnapshot: RunSnapshot = {
 				id: run.runId,
+				runGeneration: runMeta.runGeneration,
 				name: run.name,
 				inputs: run.inputs,
 				status: "failed",

@@ -15,7 +15,14 @@ import {
 } from "../../../core/tasks/agent-panel-source.ts";
 import { supersededSettledAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
-import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
+import {
+	type TaskElapsedClocks,
+	taskClockOf,
+	taskClockRunning,
+	taskClocksFor,
+} from "../../../core/tasks/live-elapsed.js";
+import { backgroundTaskOwner } from "../../../core/tasks/session-scope.js";
+import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_IDLE_ROWS, AgentPanelModel, renderAgentPanelRows } from "./agent-panel.ts";
 import { countTasksBy, TaskRow, taskLabel, taskSiblings, taskTitle } from "./task-row.js";
@@ -86,18 +93,29 @@ export function isActiveBackgroundTask(task: TaskRecord): boolean {
 	);
 }
 
-/** The stopped subagents each task footer retired, kept per task source by its shared clocks. */
-const footerRetired = new WeakMap<TaskElapsedClocks, AgentPanelModel>();
+/** Sibling chats share elapsed clocks but retire only their own rows. */
+const footerRetired = new WeakMap<Pick<TaskViewSource, "backgroundTasks">, AgentPanelModel>();
 
 /**
  * A chat's own background tasks below its prompt, listed by the main chat's agent panel rules: subagents as rows, and
  * running shells, which are not rows, counted on a line of their own in the main chat's hint wording. A finished
  * subagent is not listed; a stopped or interrupted one only while other work is active, and not again once it left
- * until it runs again; a resumed one only as its latest attempt. Pass the task source's shared clocks
- * (`taskClocksFor(source)`): they keep the elapsed times and remember across renders which stopped subagents left.
- * Without them, each render decides on its own.
+ * until it runs again; a resumed one only as its latest attempt. Pass the chat's task view to remember rows across
+ * paints. An owner's projected background list with clocks also identifies that chat; a bare array renders once.
  */
-export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
+export function renderTaskFooter(
+	view: Pick<TaskViewSource, "backgroundTasks"> | readonly TaskRecord[],
+	width: number,
+	clocks?: TaskElapsedClocks,
+): string[] {
+	const tasks = "backgroundTasks" in view ? view.backgroundTasks : view;
+	if ("backgroundTasks" in view) clocks ??= taskClocksFor(view);
+	const owner = clocks && (backgroundTaskOwner(tasks) ?? ("backgroundTasks" in view ? view : undefined));
+	let memory = owner && footerRetired.get(owner);
+	if (!memory) {
+		memory = new AgentPanelModel();
+		if (owner) footerRetired.set(owner, memory);
+	}
 	let shells = 0;
 	const candidates: TaskRecord[] = [];
 	const superseded = supersededSettledAttempts(tasks);
@@ -112,11 +130,6 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 		if (task.observation.kind === "background" || task.wasBackground === true) candidates.push(task);
 	}
 	const active = shells > 0 || candidates.some((task) => isActivePanelState(taskPanelState(task)));
-	let memory = clocks === undefined ? undefined : footerRetired.get(clocks);
-	if (memory === undefined) {
-		memory = new AgentPanelModel();
-		if (clocks !== undefined) footerRetired.set(clocks, memory);
-	}
 	const { pass } = memory.beginPass();
 	const input: TaskRecord[] = [];
 	const running: TaskRecord[] = [];

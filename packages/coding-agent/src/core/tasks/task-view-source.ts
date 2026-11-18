@@ -9,6 +9,7 @@ import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
 import { isTaskTurnInterrupted, type OwnerTaskStore, type TaskActivity } from "./owner-store.js";
+import { scopedBackgroundTasks } from "./session-scope.js";
 import {
 	loadTaskOwnTranscriptEntries,
 	type TaskMessageDelivery,
@@ -156,7 +157,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 			return launched(root.ownerTasks ?? root.tasks);
 		},
 		get backgroundTasks() {
-			return launched(root.ownerBackgroundTasks ?? root.backgroundTasks);
+			return scopedBackgroundTasks(view, launched(root.ownerBackgroundTasks ?? root.backgroundTasks));
 		},
 		get settlementOrder() {
 			return root.settlementOrder;

@@ -10,6 +10,19 @@ import type { TaskRecord } from "./contracts.js";
  * never sees a subagent's shells, and a subagent never sees the owner's.
  */
 
+type TaskListOwner = { readonly backgroundTasks: readonly TaskRecord[] };
+const listOwners = new WeakMap<readonly TaskRecord[], WeakRef<TaskListOwner>>();
+
+/** Keep a projected list attributable to its chat without keeping the chat alive. */
+export function scopedBackgroundTasks(owner: TaskListOwner, tasks: TaskRecord[]): TaskRecord[] {
+	listOwners.set(tasks, new WeakRef(owner));
+	return tasks;
+}
+
+export function backgroundTaskOwner(tasks: readonly TaskRecord[]): TaskListOwner | undefined {
+	return listOwners.get(tasks)?.deref();
+}
+
 /** The session key of a task: the subagent session that launched it, or `undefined` for the owner's own session. */
 export function taskSessionKey(task: Pick<TaskRecord, "launchedBy">): string | undefined {
 	return task.launchedBy;

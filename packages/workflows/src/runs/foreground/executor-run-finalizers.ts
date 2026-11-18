@@ -107,6 +107,7 @@ export function createRunFinalizers(input: {
 		const recorded = input.activeStore.recordRunEnd(input.runId, signal.status, outputs, undefined, metadata);
 		await appendRunEndWhenRecorded(input.opts.persistence, recorded, {
 			runId: input.runId,
+			runGeneration: input.runSnapshot.runGeneration,
 			status: signal.status,
 			result: outputs,
 			exited: true,
