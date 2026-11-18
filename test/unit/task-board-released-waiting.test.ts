@@ -13,6 +13,7 @@ import {
 	taskBoardGroups,
 	taskBoardState,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
+import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskRecord } from "../helpers/task-record.js";
 
@@ -103,4 +104,12 @@ test("the agent panel shows a released subagent as waiting, kept among unfinishe
 	assert.match(text, /◌ worker/);
 	assert.match(text, /waiting on bash · 12m/);
 	assert.doesNotMatch(text, /∀/);
+});
+
+test("a chat's task footer lists a released subagent as waiting, beside its running shells", () => {
+	const shell = { ...taskRecord("s", "command"), title: "npm run build" };
+	const footer = stripVTControlCharacters(renderTaskFooter([released("r"), shell], 80).join("\n"));
+	assert.match(footer, /◌ worker .*waiting on bash · 12m/);
+	assert.match(footer, /npm run build/);
+	assert.doesNotMatch(footer, /∀ worker/);
 });
