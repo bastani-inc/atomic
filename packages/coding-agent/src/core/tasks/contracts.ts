@@ -280,7 +280,7 @@ export type SettlementReceipt = {
 export type SettlementTiming = { readonly elapsedMs?: number };
 export type CancelReceipt = {
 	taskId: TaskId;
-	decision: "already-settled" | "cancellation-requested";
+	decision: "already-settled" | "already-finishing" | "cancellation-requested";
 	execution: Execution;
 	cleanup: Cleanup;
 };

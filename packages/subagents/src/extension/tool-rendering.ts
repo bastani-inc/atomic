@@ -1210,7 +1210,7 @@ export function renderSubagentToolResult(
 					? theme.fg("success", `✓ Resumed · ${displayText(child.agent)}`)
 					: theme.fg(
 							"muted",
-							`${child.state === "paused" ? "⏸ Paused" : "◼ Quit (resumable)"} · ${displayText(child.agent)}`,
+							`${child.state === "finishing" ? "Finishing worktree cleanup" : child.state === "paused" ? "⏸ Paused" : "◼ Quit (resumable)"} · ${displayText(child.agent)}`,
 						);
 			const identity = theme.fg(
 				"dim",

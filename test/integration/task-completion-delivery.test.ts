@@ -78,6 +78,69 @@ test("completion intent precedes admission and retries a lost acknowledgement wi
 	await host.close("session-close");
 });
 
+test("a finishing task journals its notice before cleanup but admits it only once afterwards (#5600)", async () => {
+	const session = SessionManager.inMemory();
+	const admitted: string[] = [];
+	const outbox = new TaskCompletionOutbox(
+		session,
+		() => true,
+		async (envelope) => {
+			admitted.push(envelope.completionId);
+		},
+	);
+	const release = Promise.withResolvers<void>();
+	const gate = Promise.withResolvers<void>();
+	const host = new AgentTaskHost({
+		scope: { kind: "session", sessionId: session.getSessionId() },
+		authorizeLaunch() {},
+		onTaskFinishing: (ref, receipt, until) => outbox.saveFinishing(ref.ownerId, receipt, until),
+		onTaskSettled: (ref, receipt) => outbox.record(ref.ownerId, receipt, "agent"),
+	});
+	const started = await host.startAgentTask(
+		{ kind: "agent", agent: "worker", task: "finish" },
+		"finishing" as OperationId,
+		(context) => {
+			const answer: TaskResult = { kind: "failed", code: "fixture", message: "original failure" };
+			return {
+				result: gate.promise.then(async () => {
+					await context.markFinishing?.(answer, release.promise);
+					await release.promise;
+					return answer;
+				}),
+				cleanup: release.promise.then(() => ({ kind: "reaped" })),
+			};
+		},
+	);
+	assert.ok(started.ok);
+	try {
+		gate.resolve();
+		await vi.waitFor(() =>
+			assert.ok(
+				session
+					.getEntries()
+					.some((entry) => entry.type === "custom" && entry.customType === "task-completion-intent"),
+			),
+		);
+		outbox.adoptSavedIntents();
+		await outbox.flushRestored();
+		await outbox.flush();
+		assert.deepEqual(admitted, []);
+		release.resolve();
+		await host.waitForTask(started.value.taskId);
+		await outbox.flush();
+		assert.equal(admitted.length, 1);
+		const entries = session.getEntries().filter((entry) => entry.type === "custom");
+		assert.deepEqual(
+			entries.map((entry) => entry.customType),
+			["task-completion-intent", "task-completion-ack"],
+		);
+		assert.equal((entries[0]!.data as { completionId: string }).completionId, admitted[0]);
+	} finally {
+		release.resolve();
+		await host.close("session-close");
+	}
+});
+
 // PR #2906: restored terminal intents must not wait for another task to settle.
 test("restored completion intents wait for resume recovery, then deliver without a new settlement (#3760)", async () => {
 	const session = SessionManager.inMemory();

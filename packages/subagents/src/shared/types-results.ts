@@ -262,7 +262,7 @@ export interface SubagentRunControlChild {
 	readonly index: number;
 	readonly agent: string;
 	/** The child's state once the action returned. */
-	readonly state: "paused" | "quit" | "running";
+	readonly state: "paused" | "quit" | "running" | "finishing";
 	/** The task now running the child (`resume`), or the task that was stopped (`pause`, `quit`). */
 	readonly taskId?: string;
 	readonly intercomTarget?: string;

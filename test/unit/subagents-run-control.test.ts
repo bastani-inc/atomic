@@ -3708,7 +3708,9 @@ test(
 					reply.details.results.map((child) => child.finalOutput),
 					[index ? "answer beta" : "answer alpha"],
 				);
-				assert.match(text(reply), /^1\/1 succeeded/);
+				// The first child released its hold while its sibling ran. Only the last child's
+				// public result is still pending when this observation hits its cleanup deadline.
+				assert.match(text(reply), index ? /^0\/1 succeeded/ : /^1\/1 succeeded/);
 				assert.match(text(reply), /worktree cleanup continues in the background/i);
 				assert.match(text(reply), index ? /answer beta/ : /answer alpha/);
 				assert.doesNotMatch(text(reply), index ? /answer alpha/ : /answer beta/);
@@ -3752,6 +3754,8 @@ test("an SDK foreground batch reports when its child's worktree sweep is still r
 		const [reply, stopped] = await Promise.all([batch, quitting]);
 		assert.match(text(stopped), /worktree cleanup.*background/i);
 		assert.match(text(reply), /worktree cleanup.*background/i);
+		assert.equal(reply.details.results[0]?.status, "continued");
+		assert.equal(h.latest(child.childId)?.state, "running");
 	} finally {
 		proceed.resolve();
 		gate.mockRestore();
@@ -3810,13 +3814,69 @@ function holdGitFilter(cwd: string, pattern: string) {
 	gitOutput(cwd, [
 		"config",
 		"filter.hold.clean",
-		`touch '${marker}'; while ! test -f '${release}'; do sleep 0.1; done; cat`,
+		`printf '%s' "$ATOMIC_SUBAGENT_WORKTREE_PHASE" > '${marker}'; while ! test -f '${release}'; do sleep 0.1; done; cat`,
 	]);
 	return {
 		started: () => vi.waitFor(() => assert.ok(existsSync(marker)), { timeout: RECORD_WAIT_MS, interval: 10 }),
+		phase: () => readFileSync(marker, "utf8"),
 		release: () => writeFileSync(release, "release"),
 	};
 }
+
+test("a filter helper can use finishing without waiting for the child's completed task (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const done = Promise.withResolvers<void>();
+	h.finishOn.set("filtered", done);
+	const [child] = await launchWorktreeRun(h, ["filtered"]);
+	assert.ok(child?.taskId);
+	const taskId = child.taskId;
+	await h.waitForLatest(child.childId, (record) => !!record.childSessionId);
+	const filter = holdGitFilter(h.cwd, "*.slow");
+	writeFileSync(join(child.cwd, "deliverable.slow"), "preserve this edit\n");
+	const phases: unknown[] = [];
+	const events = h.deps.pi.events;
+	const emit = events.emit.bind(events);
+	const observer = vi.spyOn(events, "emit").mockImplementation((channel, data) => {
+		emit(channel, data);
+		if (channel === "subagent:finishing") phases.push(data);
+	});
+	const completion = settled(h, taskId);
+	done.resolve();
+	try {
+		await filter.started();
+		assert.deepEqual(phases, [{ runId: child.runId, index: child.index, taskId, cwd: child.cwd, status: "ok" }]);
+		assert.equal(filter.phase(), "finishing");
+		const saved = h.sessionManager
+			.getEntries()
+			.filter(isSubagentChildRecord)
+			.findLast((entry) => entry.data?.taskId === taskId);
+		assert.equal(
+			saved?.data?.terminalStatus,
+			"ok",
+			"a restart has the original outcome and never relaunches the child",
+		);
+		assert.notEqual(taskExecutionKind(h, taskId), "settled");
+		assert.equal(h.latest(child.childId)?.state, "running");
+		const lateStop = h.host.cancelTask(taskId as TaskId, "user");
+		filter.release();
+		await completion;
+		assert.equal(existsSync(child.cwd), false);
+		const stopped = await lateStop;
+		assert.ok(
+			stopped.ok && stopped.value.decision !== "cancellation-requested",
+			"a finished runner cannot be killed during Git",
+		);
+		const published = await h.host.waitForTask(taskId as TaskId);
+		assert.ok(published.ok && published.value.kind === "settled" && published.value.result.kind === "completed");
+		assert.match(readFileSync(savedPatches(child)[0]!, "utf8"), /\+preserve this edit/);
+	} finally {
+		filter.release();
+		await completion;
+		await waitForWorktreeCleanup(h, child);
+		observer.mockRestore();
+	}
+});
 
 function rejectChildInput(h: Harness, prepare?: (cwd: string) => void) {
 	const refused = Promise.withResolvers<{ childId: string; error: Error; span: RunSyncOptions["elapsedSpan"] }>();
@@ -4048,6 +4108,71 @@ for (const action of ["pause", "quit"] as const)
 		}
 	});
 
+test.each(["acknowledged", "pending"] as const)(
+	"pause-all starts a %s reservation at finishing, without bypassing its acknowledgement (#5600)",
+	async (ack) => {
+		const h = harness();
+		initGitRepository(h.cwd);
+		const first = Promise.withResolvers<void>();
+		const second = Promise.withResolvers<void>();
+		h.finishOn.set("managed-first", first);
+		h.finishOn.set("plain-peer", second);
+		const [managed] = await launchWorktreeRun(h, ["managed-first"]);
+		assert.ok(managed?.taskId);
+		const a = await h.waitForLatest(managed.childId, (record) => !!record.childSessionId);
+		await h.call({ agent: "worker", task: "plain-peer" });
+		const b = await vi.waitFor(
+			() => {
+				const plain = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+					(record) => record.childId !== a.childId && record.childSessionId,
+				);
+				assert.ok(plain?.taskId);
+				return plain;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		const seed = join(a.cwd, "seed.txt");
+		writeFileSync(seed, readFileSync(seed, "utf8").replace("seed", "tide"));
+		utimesSync(seed, 0, 0);
+		const filter = holdGitFilter(h.cwd, "seed.txt");
+		const phase = Promise.withResolvers<void>(),
+			broker = Promise.withResolvers<void>();
+		let requested = false;
+		const events = h.deps.pi.events,
+			emit = events.emit.bind(events);
+		const watcher = vi.spyOn(events, "emit").mockImplementation((channel, data) => {
+			emit(channel, data);
+			if (channel === "subagent:finishing" && (data as { taskId: string }).taskId === a.taskId) phase.resolve();
+			if (channel !== SUBAGENT_RESERVE_RESTORING_CHILD_EVENT) return;
+			const request = data as SubagentReserveRestoringChildRequest;
+			if (request.holdMs !== undefined || !request.aliases.includes(a.childSessionId!)) return;
+			requested = true;
+			request.completion = Promise.all([phase.promise, broker.promise]).then(() => {});
+		});
+		const stopping = h.call({ action: "pause", all: true });
+		try {
+			await filter.started();
+			await vi.waitFor(() => assert.ok(requested), { timeout: RECORD_WAIT_MS });
+			if (ack === "acknowledged") {
+				broker.resolve();
+				await vi.waitFor(() => assert.notEqual(taskExecutionKind(h, b.taskId!), "running"));
+			}
+			second.resolve();
+			const result = await h.waitForLatest(b.childId, (r) => r.state === "terminal");
+			assert.equal(result.terminalStatus, ack === "acknowledged" ? "paused" : "ok");
+			assert.notEqual(taskExecutionKind(h, managed.taskId), "settled");
+		} finally {
+			phase.resolve();
+			broker.resolve();
+			filter.release();
+			first.resolve();
+			second.resolve();
+			await stopping;
+			watcher.mockRestore();
+		}
+	},
+);
+
 test("pausing after an SDK handoff preserves local settings and staged and unstaged edits in the retained worktree (#5600)", async () => {
 	const h = harness({ ownerless: true });
 	initGitRepository(h.cwd);
@@ -4165,6 +4290,12 @@ for (const waiting of ["Esc", "deadline"] as const)
 			assert.match(text(reply), /worktree cleanup.*background/i);
 			assert.equal(reply.isError === true, waiting === "Esc");
 			assert.equal(existsSync(child.cwd), true);
+			assert.notEqual(taskExecutionKind(h, child.taskId), "settled");
+			assert.equal(h.latest(child.childId)?.state, "running");
+			if (waiting === "deadline") {
+				assert.equal(reply.details.runControl?.children[0]?.state, "finishing");
+				assert.doesNotMatch(text(reply), /^Paused /m);
+			}
 		} finally {
 			proceed.resolve();
 			gate.mockRestore();

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
+import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,7 +15,6 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "@bastani/atomic";
-import { errorCode } from "../../shared/exclusive-file-publication.js";
 import { pathExists } from "../../shared/path-exists.js";
 import { performPostCreationSetup } from "./worktree-post-create.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
@@ -238,20 +238,24 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
  */
 const STALLED_CHECK_GIT_TIMEOUT_MS = 10_000;
 const stalledCheck = new AsyncLocalStorage<() => void>();
+const finishing = new AsyncLocalStorage<boolean>();
 
-export async function runGit(
-	cwd: string,
-	args: string[],
-	env: NodeJS.ProcessEnv = {},
-	input?: string,
-): Promise<GitResult> {
+/** A filter invoked by a child’s directory cleanup must not wait for that child's terminal notification. */
+export function withFinishingWorktree<T>(work: () => T): T {
+	return finishing.run(true, work);
+}
+
+export async function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<GitResult> {
 	const onStall = stalledCheck.getStore();
-	const gitEnv = createGitEnvironment({ ...env, GIT_OPTIONAL_LOCKS: "0" }, createChildProcessEnvironment());
-	// Never inherit a caller's index. Only patch capture selects an alternative to this worktree's own index.
-	if (env.GIT_INDEX_FILE) gitEnv.GIT_INDEX_FILE = env.GIT_INDEX_FILE;
+	const gitEnv = createGitEnvironment(
+		onStall ? { ...env, GIT_OPTIONAL_LOCKS: "0" } : env,
+		createChildProcessEnvironment(),
+	);
+	// Never inherit a phase from an enclosing filter; it describes only this Git invocation.
+	if (finishing.getStore()) gitEnv.ATOMIC_SUBAGENT_WORKTREE_PHASE = "finishing";
+	else delete gitEnv.ATOMIC_SUBAGENT_WORKTREE_PHASE;
 	const result = await spawnCollect("git", ["-C", cwd, ...args], {
 		env: gitEnv,
-		input,
 		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
 		...(onStall && { timeout: STALLED_CHECK_GIT_TIMEOUT_MS }),
 	});
@@ -645,7 +649,7 @@ async function createSingleWorktree(
 /**
  * Recreate a removed child worktree at its path: on its branch when that still exists, else on a new branch from the
  * run's base commit. An existing worktree is kept, and the setup that is safe to repeat (copied settings, the
- * `node_modules` link, included files) is re-applied only where it is missing.
+ * `node_modules` link, included files) is re-applied where it is missing: capturing the worktree's diff removes it.
  * Returns the worktree as it now is.
  */
 export async function recreateWorktree(
@@ -738,6 +742,46 @@ export async function worktreeHasUnsavedWork(
 	const ahead = await runGit(worktree.path, ["rev-list", "--count", `${setup.baseCommit}..HEAD`], C_GIT_LOCALE_ENV);
 	return ahead.status !== 0 || ahead.stdout.trim() !== "0";
 }
+async function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): Promise<void> {
+	const resolved = path.resolve(worktree.path, syntheticPath);
+	const relative = path.relative(worktree.path, resolved);
+	if (
+		!relative ||
+		relative === "." ||
+		relative === ".." ||
+		relative.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(relative)
+	) {
+		return;
+	}
+	let stat: Stats;
+	try {
+		stat = await fs.lstat(resolved);
+	} catch (error) {
+		const code =
+			error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+		if (code === "ENOENT") return;
+		throw error;
+	}
+	if (stat.isSymbolicLink()) {
+		await fs.unlink(resolved);
+		return;
+	}
+	if (stat.isDirectory()) {
+		await fs.rm(resolved, { recursive: true, force: true });
+		return;
+	}
+	await fs.rm(resolved, { force: true });
+}
+async function removeSyntheticPathsBeforeDiff(worktree: WorktreeInfo): Promise<void> {
+	if (worktree.syntheticPaths.length === 0) return;
+	const seen = new Set<string>();
+	for (const syntheticPath of worktree.syntheticPaths) {
+		if (seen.has(syntheticPath)) continue;
+		seen.add(syntheticPath);
+		await removeSyntheticPath(worktree, syntheticPath);
+	}
+}
 function emptyDiff(worktree: WorktreeInfo, agent: string, patchPath: string): WorktreeDiff {
 	return {
 		index: worktree.index,
@@ -775,57 +819,26 @@ async function captureWorktreeDiff(
 	agent: string,
 	patchPath: string,
 ): Promise<WorktreeDiff> {
-	const gitDir = (await runGitChecked(worktree.path, ["rev-parse", "--absolute-git-dir"])).trimEnd();
-	const index = path.join(gitDir, "index");
-	// Another Git operation is editing this checkout: keep it and retry capture on a later sweep.
-	if (await pathExists(`${index}.lock`)) throw new Error(`Worktree index is locked: ${index}.lock`);
-	const scratch = await fs.mkdtemp(path.join(gitDir, "atomic-capture-"));
-	try {
-		const snapshot = path.join(scratch, "index");
-		try {
-			await fs.copyFile(index, snapshot);
-		} catch (error) {
-			// Git treats a missing index as empty. Let add create only the temporary one in that case.
-			if (errorCode(error) !== "ENOENT") throw error;
-		}
-		const git = (args: string[]) => runGitChecked(worktree.path, args, { GIT_INDEX_FILE: snapshot });
-		if (worktree.syntheticPaths.length) {
-			// Setup files, including edits to the child's local settings, stay in the checkout but never in its patch.
-			const paths = worktree.syntheticPaths.map(
-				(entry) => `./${normalizeSyntheticPath(worktree.path, entry).split(path.sep).join("/")}`,
-			);
-			const specs = path.join(scratch, "paths");
-			const fromFile = [`--pathspec-from-file=${specs}`, "--pathspec-file-nul"];
-			const names = `${paths.join("\0")}\0`;
-			await fs.writeFile(specs, names);
-			await git(["--literal-pathspecs", "rm", "-rqf", "--cached", "--ignore-unmatch", ...fromFile]);
-			// Git rejects an explicit pathspec for an ignored file even if it is an exclusion. Such files
-			// are already excluded from add after removing their entries from the scratch index.
-			const ignored = await runGit(worktree.path, ["check-ignore", "--no-index", "--stdin", "-z"], {}, names);
-			if (ignored.status !== 0 && ignored.status !== 1) throw new Error(ignored.stderr || "git check-ignore failed");
-			const skipped = new Set(ignored.stdout.split("\0"));
-			const exclusions = paths.filter((entry) => !skipped.has(entry)).map((entry) => `:(exclude,literal)${entry}`);
-			await fs.writeFile(specs, [".", ...exclusions, ""].join("\0"));
-			await git(["add", "-A", ...fromFile]);
-		} else await git(["add", "-A"]);
-		const diffStat = (await git(["diff", "--cached", "--stat", setup.baseCommit])).trim();
-		const numstat = await git(["diff", "--cached", "--numstat", setup.baseCommit]);
-		await writePatchFile(patchPath, (partialPath) =>
-			git(["diff", "--cached", "--binary", `--output=${partialPath}`, setup.baseCommit]),
-		);
-		return {
-			index: worktree.index,
-			agent,
-			branch: worktree.branch,
-			diffStat,
-			...parseNumstat(numstat),
-			patchPath,
-			worktreePath: worktree.path,
-			...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
-		};
-	} finally {
-		await fs.rm(scratch, { recursive: true, force: true });
-	}
+	await removeSyntheticPathsBeforeDiff(worktree);
+	await runGitChecked(worktree.path, ["add", "-A"]);
+	const diffStat = (await runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit])).trim();
+	const numstat = await runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
+	await writePatchFile(patchPath, (partialPath) =>
+		runGitChecked(worktree.path, ["diff", "--cached", "--binary", `--output=${partialPath}`, setup.baseCommit]),
+	);
+	const parsed = parseNumstat(numstat);
+	return {
+		index: worktree.index,
+		agent,
+		branch: worktree.branch,
+		diffStat,
+		filesChanged: parsed.filesChanged,
+		insertions: parsed.insertions,
+		deletions: parsed.deletions,
+		patchPath,
+		worktreePath: worktree.path,
+		...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
+	};
 }
 /**
  * Have git write the patch to a file of its own, so no output buffer caps it, and put it at `patchPath` only once it

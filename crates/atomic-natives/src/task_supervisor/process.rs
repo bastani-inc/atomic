@@ -430,6 +430,7 @@ impl Actor {
 			},
 			record: record.clone(),
 			claimed: true,
+			finishing: false,
 			activities: VecDeque::new(),
 			terminal: None,
 			settlement: None,

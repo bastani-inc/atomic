@@ -59,6 +59,7 @@ import {
 	currentChildWorktreeNote,
 	observeChildWorktreeAtReply,
 	parkRunWorktree,
+	pendingChildWorktreeRelease,
 	runWorktreeRecord,
 	unparkRunWorktree,
 } from "./run-worktrees.js";
@@ -90,6 +91,36 @@ import {
 } from "./task-output-retention.js";
 
 export { INLINE_TASK_OUTPUT_MAX_BYTES } from "./task-output-retention.js";
+
+function terminalTaskResult(
+	child: SingleResult,
+	ref: TaskRecord["ref"],
+	byteCount: number,
+	released: boolean,
+	cause: Extract<TaskResult, { kind: "cancelled" }>["cause"],
+): TaskResult {
+	const output = {
+		ownerId: ref.ownerId,
+		taskId: ref.taskId,
+		artifactId: `output:${ref.taskId}`,
+		byteCount: String(byteCount),
+		omittedRanges: [],
+	};
+	if (child.status === "killed") return { kind: "cancelled", cause: "user", output };
+	if (released)
+		return {
+			kind: "cancelled",
+			cause: "pause",
+			output,
+			released: {
+				waitingOn: (child.released?.waitingOn ?? []).map(({ toolCallId, toolName }) => ({ toolCallId, toolName })),
+			},
+		};
+	if (child.interrupted) return { kind: "cancelled", cause, output };
+	return child.status === "ok"
+		? { kind: "completed", output }
+		: { kind: "failed", code: "AgentFailed", message: child.error ?? child.envelope ?? "Agent failed", output };
+}
 
 /** Project explicit user stops without changing the shared host cancellation record. */
 export function subagentTaskResultLabel(result: TaskResult): string {
@@ -426,14 +457,14 @@ export function isQueuedSubagentChild(taskId: string): boolean {
  * Call after cancelling a task: whether it was still queued. A cancelled task is never dispatched, so nothing records
  * how it stopped; the caller records it, and {@link takeStoppedQueuedSubagentChild} later starts it.
  */
-export async function stopQueuedSubagentChild(taskId: string): Promise<boolean> {
+export function stopQueuedSubagentChild(taskId: string, status: string): boolean {
 	const queued = queuedChildren.get(taskId);
 	if (queued?.stopped !== false) return false;
 	queued.stopped = true;
 	// The host will skip this dispatch. Don't hold the batch until a scheduler slot eventually opens.
 	const finish = queued.finishWorktree;
 	queued.finishWorktree = undefined;
-	if (finish) await finish();
+	if (finish) void finish(status);
 	return true;
 }
 
@@ -655,7 +686,11 @@ export async function runAgentTask(input: {
 		const events = input.options.intercomEvents;
 		if (input.recordChild !== undefined && events !== undefined) {
 			const ended = endedChildMark({ ...record, childId: subagentChildId(record.runId, record.index) });
-			if (ended !== undefined) void markEndedChildren(events, [ended]);
+			if (ended !== undefined) {
+				const pending = pendingChildWorktreeRelease(record);
+				if (pending) void pending.then(() => markEndedChildren(events, [ended]));
+				else void markEndedChildren(events, [ended]);
+			}
 		}
 	};
 	let dispatched = false;
@@ -697,7 +732,13 @@ export async function runAgentTask(input: {
 	// Every dispatch holds the run's worktrees with a hold of its own, released once that dispatch drains: a cancelled
 	// dispatch the host skips never releases the hold of a later execution of the same child.
 	const schedule = (dispatch: () => Promise<void>) => {
-		finishWorktree = beginWorktreeExecution(runId, index);
+		finishWorktree = beginWorktreeExecution(
+			runId,
+			index,
+			childCwd,
+			() => admittedTaskId,
+			input.options.intercomEvents,
+		);
 		const drained = () => {
 			if (admittedTaskId) finishingWorktreeTasks.delete(admittedTaskId);
 			void finishWorktree?.();
@@ -753,6 +794,7 @@ export async function runAgentTask(input: {
 					ticket?.release();
 					throw error;
 				});
+	const managed = input.schedule && runWorktreeRecord(runId, index);
 	const started = await input.host
 		.startAgentTask(
 			{
@@ -932,6 +974,25 @@ export async function runAgentTask(input: {
 						if (endedForGood || child.status === "killed") forgetRunMembership(runId, index);
 						if (released) forgetChildSchedule(runId, index);
 						let worktreeOutput: string | undefined;
+						const settled = released || !ownerClosed();
+						const status = released
+							? SUBAGENT_CHILD_RELEASED_STATUS
+							: stoppedByControl
+								? stopped
+								: stoppedByStagePause
+									? SUBAGENT_CHILD_STAGE_PAUSED_STATUS
+									: child.status;
+						const cause = stoppedByControl
+							? stopped === "quit"
+								? "quit"
+								: "pause"
+							: stoppedByStagePause
+								? "pause"
+								: input.options.interruptSignal?.aborted
+									? "parent-handoff"
+									: "owner-close";
+						let swept: Promise<void> | undefined;
+						let prepared: TaskResult | undefined;
 						if (finishWorktree) {
 							finishingWorktreeTasks.add(context.ref.taskId);
 							worktreeOutput = getSingleResultOutput(child);
@@ -939,7 +1000,16 @@ export async function runAgentTask(input: {
 							const saved = released
 								? undefined
 								: retainTaskOutput(child, worktreeOutput, context.ref, lease, { runId, index });
-							child.worktreeNote = await finishWorktree(Promise.all([executionCleanup, saved]));
+							prepared = terminalTaskResult(
+								child,
+								context.ref,
+								Buffer.byteLength(worktreeOutput),
+								released,
+								cause,
+							);
+							const journal = Promise.withResolvers<void>();
+							swept = finishWorktree(status, Promise.allSettled([executionCleanup, saved, journal.promise]));
+							Promise.resolve(context.markFinishing?.(prepared, swept)).then(journal.resolve, journal.resolve);
 						}
 						if (released && child.released) {
 							// The record goes first: a result forwarded before it would find the child still recorded running.
@@ -950,6 +1020,20 @@ export async function runAgentTask(input: {
 								child.released.waitingOn,
 								child.released.intercomId,
 							);
+						} else if (settled) {
+							recordChild(
+								"terminal",
+								status,
+								stoppedByControl || stoppedByStagePause ? pendingMessagesOfResult(child) : undefined,
+							);
+						} else if (endedForGood) recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+						else if (child.pendingMessages?.length)
+							recordChild("running", undefined, pendingMessagesOfResult(child));
+						if (swept) {
+							await swept;
+							child.worktreeNote = currentChildWorktreeNote(runId, index);
+						}
+						if (released && child.released) {
 							if (ownerSessionId !== undefined) {
 								const dispatcher = input.wakeDispatcher ?? agentWakeDispatcher();
 								const wakeKey = subagentWakeKey(ownerSessionId, childId);
@@ -972,22 +1056,7 @@ export async function runAgentTask(input: {
 									childId,
 									input.wakeDispatcher ?? agentWakeDispatcher(),
 								);
-						} else if (!ownerClosed())
-							recordChild(
-								"terminal",
-								stoppedByControl
-									? stopped
-									: stoppedByStagePause
-										? SUBAGENT_CHILD_STAGE_PAUSED_STATUS
-										: child.status,
-								// A child that stays resumable keeps what it had queued and not read, for its resume.
-								stoppedByControl || stoppedByStagePause ? pendingMessagesOfResult(child) : undefined,
-							);
-						else if (endedForGood) recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
-						// Its owner closed, which ends nothing: it stays restorable, with what it had queued and not read.
-						else if (child.pendingMessages?.length)
-							recordChild("running", undefined, pendingMessagesOfResult(child));
-						const settled = released || !ownerClosed();
+						}
 						if (settled && (released || child.status === "ok")) void clearDelivered(wokenWith);
 						else if (settled && (stoppedByControl || stoppedByStagePause))
 							void clearDelivered(wokenWith.filter((toolCallId) => !answeredByTurn.has(toolCallId)));
@@ -1016,63 +1085,26 @@ export async function runAgentTask(input: {
 							reportId: "terminal-output",
 							change: { kind: "output", offset: "0", bytesBase64: bytes.toString("base64") },
 						});
-						const output = {
-							ownerId: context.ref.ownerId,
-							taskId: context.ref.taskId,
-							artifactId: `output:${context.ref.taskId}`,
-							byteCount: String(bytes.length),
-							omittedRanges: [],
-						};
-						if (child.status === "killed") return { kind: "cancelled", cause: "user", output };
-						// The task host's resumable stop: the child is not running and not ended, and nothing of it stays live.
-						// It was released, not paused: its parent is told what it waits on, and that it wakes by itself (#5031).
-						if (released)
-							return {
-								kind: "cancelled",
-								cause: "pause",
-								output,
-								released: {
-									waitingOn: (child.released?.waitingOn ?? []).map(({ toolCallId, toolName }) => ({
-										toolCallId,
-										toolName,
-									})),
-								},
-							};
-						if (child.interrupted)
-							return {
-								kind: "cancelled",
-								// Pause and quit are typed resumable stops; a fresh-start handoff stays parent-handoff.
-								cause: stoppedByControl
-									? stopped === "quit"
-										? "quit"
-										: "pause"
-									: stoppedByStagePause
-										? "pause"
-										: input.options.interruptSignal?.aborted
-											? "parent-handoff"
-											: "owner-close",
-								output,
-							};
-						return child.status === "ok"
-							? { kind: "completed", output }
-							: {
-									kind: "failed",
-									code: "AgentFailed",
-									message: child.error ?? child.envelope ?? "Agent failed",
-									output,
-								};
+						return prepared ?? terminalTaskResult(child, context.ref, bytes.length, released, cause);
 					} catch (error) {
 						elapsedSpan.endedAt ??= Date.now();
 						if (takeSubagentChildStop(context.ref.taskId) !== undefined) unparkRunWorktree(runId, index);
+						let swept: Promise<void> | undefined;
 						if (finishWorktree) {
 							finishingWorktreeTasks.add(context.ref.taskId);
-							await finishWorktree(executionCleanup);
+							const journal = Promise.withResolvers<void>();
+							swept = finishWorktree("error", Promise.allSettled([executionCleanup, journal.promise]));
+							Promise.resolve(context.markFinishing?.({ rejected: error }, swept)).then(
+								journal.resolve,
+								journal.resolve,
+							);
 						}
 						if (!ownerClosed()) recordChild("terminal", "error");
 						else if (input.recordChild?.ownerEndedForGood?.()) {
 							forgetRunMembership(runId, index);
 							recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
 						}
+						if (swept) await swept;
 						throw error;
 					} finally {
 						ticket?.onEntered();
@@ -1084,6 +1116,20 @@ export async function runAgentTask(input: {
 				return { result, cleanup: cleaned.promise, elapsedSpan };
 			},
 			schedule,
+			managed && !managed.named
+				? async (taskId, cause, journal) => {
+						const status =
+							cause === "quit" ? "quit" : cause === "pause" ? "paused" : cause === "user" ? "killed" : cause;
+						if (cause !== "user") parkRunWorktree(runId, index);
+						const swept = finishWorktree?.(status, journal);
+						if (cause === "user") {
+							queuedChildren.delete(taskId);
+							forgetRunMembership(runId, index);
+							recordChildTask(taskId, "terminal", "killed");
+						}
+						await swept;
+					}
+				: undefined,
 		)
 		.catch((error: unknown) => {
 			ticket?.release();

@@ -455,6 +455,18 @@ export interface TaskCompletionOutboxOptions {
  * ended between saving it and its acknowledgement, is acknowledged without a second admission.
  */
 export class TaskCompletionOutbox {
+	/** In-process only. After a crash an old-format saved intent replays exactly as before. */
+	private static readonly finishing = new Set<string>();
+
+	async saveFinishing(ownerId: OwnerId, receipt: SettlementReceipt, released: Promise<void>): Promise<void> {
+		if (TaskCompletionOutbox.finishing.has(receipt.completionId)) return;
+		TaskCompletionOutbox.finishing.add(receipt.completionId);
+		const release = () => {
+			TaskCompletionOutbox.finishing.delete(receipt.completionId);
+		};
+		void released.then(release, release);
+		await this.session.appendCustomEntry("task-completion-intent", taskCompletionEnvelope(ownerId, receipt, "agent"));
+	}
 	private readonly entries = new Map<string, TaskCompletionEnvelope>();
 	private readonly restored = new Set<string>();
 	/** Admitted intents whose notice waits to be saved before they are acknowledged. */
@@ -486,6 +498,7 @@ export class TaskCompletionOutbox {
 		this.restoredDelivered = restoredDelivered;
 		this.admitBatch = options.admitBatch;
 		for (const envelope of pendingTaskCompletionIntents(session)) {
+			if (TaskCompletionOutbox.finishing.has(envelope.completionId)) continue;
 			this.entries.set(envelope.completionId, envelope);
 			this.restored.add(envelope.completionId);
 		}
@@ -493,7 +506,8 @@ export class TaskCompletionOutbox {
 	/** Take in, as restored, the intents saved in the session since this outbox opened it (#5079). */
 	adoptSavedIntents(): void {
 		for (const envelope of pendingTaskCompletionIntents(this.session)) {
-			if (this.entries.has(envelope.completionId)) continue;
+			if (this.entries.has(envelope.completionId) || TaskCompletionOutbox.finishing.has(envelope.completionId))
+				continue;
 			this.entries.set(envelope.completionId, envelope);
 			this.restored.add(envelope.completionId);
 		}

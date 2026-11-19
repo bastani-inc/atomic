@@ -379,7 +379,9 @@ export async function runParallelPath(
 				details,
 			};
 		}
-		const detachedIndex = results.findIndex((result) => result.detached);
+		const detachedIndex = results.findIndex(
+			(result) => result.detached && result.detachedReason !== "worktree-cleanup",
+		);
 		const detached = detachedIndex >= 0 ? results[detachedIndex] : undefined;
 		if (detached) {
 			return {

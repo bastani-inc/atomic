@@ -351,6 +351,36 @@ impl NapiTaskSupervisor {
 	pub fn claim_task_runner(&self, env: Env, task: &TaskLease) -> DoorValue<RunnerLease> {
 		DoorValue(self.check(&env, "RunnerUnavailable").and_then(|()| self.actor.claim(task)))
 	}
+	/// Claim responsibility for cleanup at admission without marking a queued task as started.
+	#[napi(ts_return_type = "{ok:true,value:RunnerLease}|{ok:false,error:TaskFailure}")]
+	pub fn reserve_task_runner(&self, env: Env, task: &TaskLease) -> DoorValue<RunnerLease> {
+		DoorValue(
+			self
+				.check(&env, "RunnerUnavailable")
+				.and_then(|()| self.actor.claim_or_reserve(task, true)),
+		)
+	}
+	#[napi(ts_return_type = "{ok:true,value:undefined}|{ok:false,error:TaskFailure}")]
+	pub fn dispatch_reserved_runner(&self, env: Env, runner: &RunnerLease) -> DoorValue<()> {
+		DoorValue(
+			self.check(&env, "RunnerUnavailable").and_then(|()| self.actor.dispatch_reserved(runner)),
+		)
+	}
+	/// Reserve the notice identity without publishing settlement. The cursor identifies this observation,
+	/// not a terminal event: watchers and waits receive the final cursor only after cleanup.
+	#[napi(ts_return_type = "{ok:true,value:SettlementReceipt}|{ok:false,error:TaskFailure}")]
+	pub fn mark_runner_finishing(
+		&self,
+		env: Env,
+		runner: &RunnerLease,
+		result: TaskResult,
+	) -> DoorValue<SettlementReceipt> {
+		DoorValue(
+			self
+				.check(&env, "StaleAttempt")
+				.and_then(|()| self.actor.runner_finishing(runner, result)),
+		)
+	}
 	#[napi(ts_return_type = "{ok:true,value:NativeTaskRef}|{ok:false,error:TaskFailure}")]
 	pub fn task_reference(&self, env: Env, task: &TaskLease) -> DoorValue<NativeTaskRef> {
 		DoorValue(self.check(&env, "UnknownTask").and_then(|()| self.actor.task_ref(task)))

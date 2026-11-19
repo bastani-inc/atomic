@@ -30,11 +30,14 @@ import {
 } from "./released-child-resume.js";
 import { subagentWakeKey } from "./released-children.js";
 import {
-	childWorktreeSweepStart,
+	childWorktreeFinishing,
+	finishingWorktreeStatus,
 	observeChildWorktreeAtReply,
 	parkRunWorktree,
+	pendingChildWorktreeRelease,
 	unparkRunWorktree,
 	WORKTREE_REPLY_WAIT_MS,
+	worktreePublicationRevision,
 } from "./run-worktrees.js";
 import { indexSubagentChildOwner, observedSubagentRunIds } from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
@@ -156,6 +159,7 @@ interface OwnedRecordsRead {
 	readonly lastSeq: number;
 	readonly leafId: string | null;
 	readonly fullHistory: boolean;
+	readonly publicationRevision: number;
 	readonly records: ReadonlyMap<string, SubagentChildRecord>;
 }
 
@@ -181,6 +185,7 @@ function ownedRecords(ctx: ExtensionContext): ReadonlyMap<string, SubagentChildR
 		lastSeq: manager.getLastSeq(),
 		leafId: manager.getLeafId(),
 		fullHistory: manager.hasFullHistory(),
+		publicationRevision: worktreePublicationRevision(),
 	};
 	const read = ownedRecordReads.get(manager);
 	if (
@@ -189,7 +194,8 @@ function ownedRecords(ctx: ExtensionContext): ReadonlyMap<string, SubagentChildR
 		read.owner === state.owner &&
 		read.lastSeq === state.lastSeq &&
 		read.leafId === state.leafId &&
-		read.fullHistory === state.fullHistory
+		read.fullHistory === state.fullHistory &&
+		read.publicationRevision === state.publicationRevision
 	)
 		return read.records;
 	const records = readSubagentChildRecords(manager.getEntries(), owner);
@@ -293,39 +299,38 @@ async function stopHostChild(
 	host: AgentTaskHost,
 	record: SubagentChildRecord,
 	status: SubagentChildStopStatus,
-	onRequested?: () => void,
-): Promise<{ readonly failure?: string; readonly neverStarted?: boolean }> {
+	finishing?: Promise<string | undefined>,
+): Promise<{ readonly failure?: string; readonly neverStarted?: boolean; readonly outcome?: string }> {
 	const taskId = record.taskId as TaskId;
 	if (isFinishingWorktreeTask(taskId)) {
-		onRequested?.(); // Already finishing: there is no cancel to issue.
-		await waitForSettlement(host, taskId);
-		return {};
+		// The child chose its outcome before the stop reached it. It is not cancellable during Git.
+		return { outcome: await (finishing ?? waitForSettlement(host, taskId).then(() => undefined)) };
 	}
 	requestSubagentChildStop(taskId, status);
 	// It stays resumable: its worktree is kept if it has unsaved work when its run's worktrees are removed.
 	parkRunWorktree(record.runId, record.index);
 	// A typed resumable stop: its parent is told it is paused and awaiting resume, never that it ended.
 	const cancelled = await host.cancelTask(taskId, status === "quit" ? "quit" : "pause");
-	onRequested?.();
 	if (!cancelled.ok) {
 		takeSubagentChildStop(taskId);
 		void unparkRunWorktree(record.runId, record.index);
 		return { failure: cancelled.error.message };
 	}
 	// It settled on its own before the stop reached it: nothing takes the stop, and its worktree is not stopped (#5172).
-	if (cancelled.value.decision === "already-settled") {
+	if (cancelled.value.decision !== "cancellation-requested") {
 		takeSubagentChildStop(taskId);
 		void unparkRunWorktree(record.runId, record.index);
 		return {};
 	}
 	// A child cancelled while still queued never starts, so nothing else records how it stopped.
-	const queued = await stopQueuedSubagentChild(taskId);
-	await waitForSettlement(host, taskId);
+	const queued = stopQueuedSubagentChild(taskId, status);
+	const outcome = finishing ? await finishing : undefined;
+	if (!outcome) await waitForSettlement(host, taskId);
 	if (queued) {
 		takeSubagentChildStop(taskId);
 		await recordSubagentChildStatus(deps.pi, record, status);
 	}
-	return { neverStarted: queued };
+	return { neverStarted: queued, outcome };
 }
 
 type LiveChildStop =
@@ -344,16 +349,18 @@ async function stopLiveChild(
 	host: AgentTaskHost | undefined,
 	record: SubagentChildRecord,
 	status: SubagentChildStopStatus,
-	onRequested?: () => void,
 ): Promise<LiveChildStop> {
+	const finishing = childWorktreeFinishing(record);
+	let outcome: string | undefined;
 	let neverStarted = false;
 	if (record.taskId !== undefined && isLiveOwnerlessChild(record.taskId)) {
 		neverStarted = isQueuedOwnerlessChild(record.taskId);
 		const settled = stopOwnerlessChild(record.taskId, status);
-		onRequested?.();
-		await settled;
+		if (finishing) outcome = await finishing;
+		if (!outcome) await settled;
 	} else if (host) {
-		const stop = await stopHostChild(deps, host, record, status, onRequested);
+		const stop = await stopHostChild(deps, host, record, status, finishing);
+		outcome = stop.outcome;
 		if (stop.failure) return { kind: "failed", reason: stop.failure };
 		neverStarted = stop.neverStarted === true;
 	} else return { kind: "failed", reason: "it is not running in this process" };
@@ -361,10 +368,13 @@ async function stopLiveChild(
 	const key = childHoldKey(ownerSessionId, record.childId);
 	await subagentChildRecordsAppended(ownerSessionId);
 	const settled = ownedRecords(ctx).get(record.childId);
-	if (settled?.state === "terminal" && settled.taskId === record.taskId && settled.terminalStatus !== status) {
+	if (
+		(outcome && outcome !== status) ||
+		(settled?.state === "terminal" && settled.taskId === record.taskId && settled.terminalStatus !== status)
+	) {
 		// It is not paused, so nothing sent to it waits for a resume.
 		releasePausedChildHold(key);
-		return { kind: "settled", status: settled.terminalStatus ?? "settled" };
+		return { kind: "settled", status: outcome ?? settled?.terminalStatus ?? "settled" };
 	}
 	if (status === "paused") {
 		const hold = await holdChildTargets(
@@ -412,7 +422,9 @@ async function stopChildren(
 	const live = liveTaskIds(host);
 	const records = ownedRecords(ctx);
 	const isLive = (record: SubagentChildRecord) =>
-		record.taskId !== undefined && (live.has(record.taskId) || isLiveOwnerlessChild(record.taskId));
+		!finishingWorktreeStatus(record) &&
+		record.taskId !== undefined &&
+		(live.has(record.taskId) || isLiveOwnerlessChild(record.taskId));
 	const isQueued = (record: SubagentChildRecord) =>
 		record.taskId !== undefined && (isQueuedSubagentChild(record.taskId) || isQueuedOwnerlessChild(record.taskId));
 	let targets: SubagentChildRecord[];
@@ -438,8 +450,8 @@ async function stopChildren(
 		children: [] as SubagentRunControlChild[],
 		lines: [] as string[],
 		failures: [] as string[],
+		live: undefined as { record: SubagentChildRecord; outcome: LiveChildStop } | undefined,
 	}));
-	const finishing: Promise<void>[] = [];
 	const reportLive = (
 		{ children, lines, failures }: (typeof rows)[number],
 		record: SubagentChildRecord,
@@ -469,22 +481,12 @@ async function stopChildren(
 		const { children, lines, failures } = row;
 		const notRunning = (child: SubagentChildRecord) =>
 			failures.push(
-				`${label(child)} is not running (${child.state === "terminal" ? (child.terminalStatus ?? "settled") : "not live in this process"}); there is nothing to ${action}.`,
+				`${label(child)} is not running (${finishingWorktreeStatus(child) ?? (child.state === "terminal" ? (child.terminalStatus ?? "settled") : "not live in this process")}); there is nothing to ${action}.`,
 			);
 		const stopLive = async (child: SubagentChildRecord) => {
-			const sweep = index + 1 < targets.length && childWorktreeSweepStart(child.runId, child.index);
-			if (!sweep) {
-				reportLive(row, child, await stopLiveChild(deps, ctx, host, child, status));
-				return;
-			}
-			// Only Git can overlap the next stop. A native cancel must first be acknowledged, and an
-			// earlier running, released or queued child takes its normal turn before a later one.
-			const requested = Promise.withResolvers<void>();
-			const stopped = stopLiveChild(deps, ctx, host, child, status, requested.resolve).then((outcome) =>
-				reportLive(row, child, outcome),
-			);
-			finishing.push(stopped);
-			await Promise.race([stopped, Promise.all([requested.promise, sweep])]);
+			// Stop confirmations, including the actual Intercom reservation, stay ordered.
+			// For a managed child only its directory work can overlap the next stop.
+			row.live = { record: child, outcome: await stopLiveChild(deps, ctx, host, child, status) };
 		};
 		if (isLive(record)) {
 			await stopLive(record);
@@ -525,10 +527,6 @@ async function stopChildren(
 			`${action === "pause" ? "Paused" : "Quit"} released ${label(latest)}: it is not woken any more, and results of the calls it waited on are kept for its resume. Resume it with { action: "resume", id: "${latest.childId}", message? }.`,
 		);
 	}
-	await Promise.all(finishing);
-	const children = rows.flatMap((row) => row.children);
-	const lines = rows.flatMap((row) => row.lines);
-	const failures = rows.flatMap((row) => row.failures);
 	// Broker acknowledgements and later targets can yield while a sibling starts the batch sweep.
 	const notes = trees.length
 		? await Promise.all(
@@ -538,6 +536,17 @@ async function stopChildren(
 				}),
 			)
 		: [];
+	for (const row of rows) {
+		if (!row.live) continue;
+		const { record, outcome } = row.live;
+		if (outcome.kind !== "failed" && childWorktreeFinishing(record)) {
+			row.children.push(childDetails(record, "finishing"));
+			row.lines.push(`${label(record)} is finishing; check status before removing its worktree.`);
+		} else reportLive(row, record, outcome);
+	}
+	const children = rows.flatMap((row) => row.children);
+	const lines = rows.flatMap((row) => row.lines);
+	const failures = rows.flatMap((row) => row.failures);
 	const worktreeNotes = notes.filter((note) => note !== undefined);
 	const text = [...lines, ...failures, ...worktreeNotes].join("\n");
 	return controlResult(
@@ -620,7 +629,28 @@ async function resumeChild(
 	);
 	if (typeof resolved === "string") return errorResult(action, resolved);
 	if (!resolved) return errorResult(action, `Unknown subagent '${request.id}': this session launched no such child.`);
-	if ("ownerSessionId" in resolved) return alreadyRunning(resolved, resolved.taskId);
+	if ("ownerSessionId" in resolved) {
+		const saved = ownedRecords(ctx).get(resolved.childId);
+		const closing = saved && saved.taskId === resolved.taskId && pendingChildWorktreeRelease(saved);
+		if (!saved || !closing) return alreadyRunning(resolved, resolved.taskId);
+		// This execution already stopped. A resume is still accepted, but cannot reuse its checkout
+		// until the old execution releases it. Recheck live admissions in case another resume won.
+		const host = ctx.getAgentTaskHost?.();
+		const joined = closing.then(() =>
+			!signal?.aborted && host
+				? host.waitForTask(resolved.taskId as TaskId, undefined, undefined, signal)
+				: undefined,
+		);
+		if (
+			(await unlessInterrupted(
+				joined.then(() => undefined),
+				signal,
+			)) === INTERRUPTED ||
+			signal?.aborted
+		)
+			return interruptedResume(saved, true, request.message);
+		return resumeChild(deps, ctx, request, signal);
+	}
 	const wakeKey = subagentWakeKey(ownerSessionId, resolved.childId);
 	let record = resolved;
 	// A wake or another resume may be reopening the child right now. Wait only until it has, or has given up, never for

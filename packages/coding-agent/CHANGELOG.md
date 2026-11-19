@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Task hosts can return the cancel decision `already-finishing`: the runner's outcome can no longer change, but cleanup has not yet finished. Wait for task settlement before removing its temporary worktree ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
+
 ## [0.9.90] - 2026-11-19
 
 Every subagent now runs in the background, a click runs key hints and expands blocks in fullscreen mode, and large stores, retries and interrupts no longer stall Atomic.
