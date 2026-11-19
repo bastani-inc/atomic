@@ -138,6 +138,10 @@ export function trackSessionWork<T>(session: object, operation: () => Promise<T>
 	return result;
 }
 
+export function isSessionQuitting(session: object): boolean {
+	return quitSignals.get(session)?.signal.aborted === true;
+}
+
 export function sessionQuitSignal(session: object): AbortSignal {
 	let controller = quitSignals.get(session);
 	if (!controller) {

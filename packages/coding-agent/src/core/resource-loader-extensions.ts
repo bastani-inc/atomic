@@ -22,6 +22,7 @@ export async function loadExtensionPaths(
 	workflowResourceProvider: WorkflowResourceProvider,
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
 	runtime?: ExtensionRuntime,
+	startupSessionQuit?: () => boolean,
 ): Promise<LoadExtensionsResult> {
 	const state = resourceInternals(loader);
 	const result = await loadExtensionsCached(
@@ -34,6 +35,8 @@ export async function loadExtensionPaths(
 		state.agentDir,
 	);
 	for (const path of paths.filter((path) => path.startsWith(BUILTIN_PATH_PREFIX))) {
+		// The previous file or builtin factory may have yielded while the interactive session quit.
+		if (startupSessionQuit?.()) break;
 		const builtin = state.extensionFactories.find(
 			(input) =>
 				typeof input !== "function" && input.builtin && input.name === path.slice(BUILTIN_PATH_PREFIX.length),
@@ -70,6 +73,7 @@ export async function loadFinalExtensionSet(
 	preTrustExtensions: LoadExtensionsResult | undefined,
 	workflowResourceProvider: WorkflowResourceProvider,
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
+	startupSessionQuit?: () => boolean,
 ): Promise<LoadExtensionsResult> {
 	if (!preTrustExtensions) {
 		const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
@@ -120,6 +124,7 @@ export async function loadFinalExtensionSet(
 		workflowResourceProvider,
 		inheritanceSnapshotProvider,
 		preTrustExtensions.runtime,
+		startupSessionQuit,
 	);
 	endTimingSpan(loadExtensionsSpan);
 	const loadedByPath = new Map(preloadedByPath);
