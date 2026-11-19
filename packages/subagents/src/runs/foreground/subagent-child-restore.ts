@@ -56,7 +56,7 @@ import {
 	SUBAGENT_OWNER_GENERATION,
 	savedToolResultIds,
 } from "./released-children.js";
-import { resumeRunWorktree } from "./run-worktrees.js";
+import { boundedWorktreeReply, resumeRunWorktree, WORKTREE_REPLY_WAIT_MS } from "./run-worktrees.js";
 import { indexSubagentChildOwner, readableSubagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
@@ -1056,7 +1056,21 @@ export async function restoreSubagentChild(
 			},
 		},
 	);
-	let releaseWorktree: (() => void) | undefined;
+	let releaseWorktree: ((failed?: boolean) => Promise<void>) | undefined;
+	// The resume reports only once its run's worktrees are swept, so nothing of Atomic still runs in the child's worktree
+	// when it does (#5589). A sweep that fails leaves the worktree to the next one; it never changes how the resume ends.
+	const worktreeReleased = (failed: boolean) => boundedWorktreeReply(record.runId, releaseWorktree?.(failed));
+	const failedRestore = async (reason: string, deadline: number) => {
+		await markGone(reason);
+		// The broker acknowledgement yields: the last sibling may have begun sweeping this worktree meanwhile.
+		const note = await boundedWorktreeReply(record.runId, undefined, deadline);
+		return {
+			kind: "unrestorable" as const,
+			childId: record.childId,
+			record,
+			reason: note ? `${reason.replace(/\.$/, "")}. ${note.replace(/\.$/, "")}` : reason,
+		};
+	};
 	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {
 		releaseWorktree = await worktreeResume;
 		// Hold sends to the child before anything can fail, so no sender is told `Session not found` meanwhile.
@@ -1086,14 +1100,16 @@ export async function restoreSubagentChild(
 				registered.settled = outcome;
 				registered.knownPreviousIntercomId = knownPreviousIntercomId;
 			}
-			releaseWorktree?.();
-			if (outcome.kind === "unrestorable") await markGone(outcome.reason);
-			else if (outcome.kind !== "restored") release();
+			const deadline = Date.now() + WORKTREE_REPLY_WAIT_MS;
+			await worktreeReleased(outcome.kind === "unrestorable");
+			if (outcome.kind === "unrestorable") return failedRestore(outcome.reason, deadline);
+			if (outcome.kind !== "restored") release();
 			return outcome;
 		},
 		async (error: Error) => {
 			previousIntercomId.resolve(undefined);
-			releaseWorktree?.();
+			const deadline = Date.now() + WORKTREE_REPLY_WAIT_MS;
+			await worktreeReleased(true);
 			// A failure that passes, such as a read of its history that ran out of file descriptors (#4502), leaves the
 			// child as it was, for a later wake or resume; only a lasting one makes it gone.
 			if (isRetryableStorageError(error)) {
@@ -1101,8 +1117,7 @@ export async function restoreSubagentChild(
 				await hold?.release();
 				throw error;
 			}
-			await markGone(error.message);
-			return { kind: "unrestorable", childId: record.childId, record, reason: error.message };
+			return failedRestore(error.message, deadline);
 		},
 	);
 	activeRestorations.set(key, {

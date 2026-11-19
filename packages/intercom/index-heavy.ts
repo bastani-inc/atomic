@@ -63,7 +63,7 @@ import { RECIPIENT_SAVING_REPORT_INTERVAL_MS } from "./retry-policy.js";
 import { IntercomRuntimeInactiveError } from "./runtime-inactive-error.js";
 import { renderIntercomCustomMessage } from "./ui/inline-message.js";
 import { defaultConfig, loadConfigAsync, type IntercomConfig } from "./config.js";
-import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement, WorkflowRunParentAnnouncement } from "./types.js";
+import type { SessionInfo, Message } from "./types.js";
 import { ReplyTracker, restorePendingInboundAsks } from "./reply-tracker.js";
 import { DEFAULT_REPLY_TIMEOUT_MS, ReplyWaiterRegistry } from "./reply-waiter.ts";
 import { frameOutboundAskReply, OutboundAsks, type OutboundAskRecord, recipientClosedAskEntry } from "./outbound-asks.js";
@@ -130,6 +130,7 @@ import {
 import { IntercomClientDisconnectedError, isIntercomBrokerRetiring, isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { registerWithBrokerSuccessor } from "./broker-successor-retry.js";
 import { isOwnerMissingRefusal, LIVE_ROUTE_OWNER_WAIT_MS, liveRouteOwnerRetryDelayMs } from "./live-route-refusal.js";
+import { PendingStagePublication, type PendingStageRoute } from "./pending-stage-publication.js";
 import { RouteRetryWaiters, scheduledRetryFailure } from "./route-retry-waiters.js";
 import { createConcurrencyGate, ROUTE_CLIENT_CONNECT_CONCURRENCY } from "./route-connect-gate.js";
 import { isReleasedStageAnnouncement, RELEASED_STAGE_EVENT, ReleasedStagePeers } from "./released-stage-peers.js";
@@ -182,22 +183,14 @@ const PENDING_STAGE_ROUTE_REVOKED_EVENT = "atomic:workflow-pending-stage-route-r
 /** Workflows → Intercom: a finished run's route is withdrawn; its connection closes once no route uses it (#5492). */
 const PENDING_STAGE_ROUTE_RETIRED_EVENT = "atomic:workflow-pending-stage-route-retired";
 
-interface PendingStageRouteRegistrationEvent {
+interface PendingStageRouteRegistrationEvent extends PendingStageRoute {
 	readonly runId: string;
-	readonly group: string;
-	readonly capability: string;
-	readonly stages?: WorkflowStageRosterAnnouncement[];
-	readonly possibleStages?: WorkflowPossibleStageAnnouncement[];
-	readonly parent?: WorkflowRunParentAnnouncement;
-	/** An interrupted run's restarted owner queues for it before resume; the resuming process takes it over. */
-	readonly dormant?: true;
 	completion?: Promise<void>;
 }
 
-type PendingStageRouteRegistration = Pick<
-	PendingStageRouteRegistrationEvent,
-	"group" | "capability" | "stages" | "possibleStages" | "parent" | "dormant"
->;
+interface PendingStageRouteRegistration extends PendingStageRoute {
+	readonly publication: PendingStagePublication;
+}
 
 interface PendingStageRouteClientState {
 	route: PendingStageRouteRegistration;
@@ -267,7 +260,7 @@ function isPendingStageRouteRegistrationEvent(value: unknown): value is PendingS
   );
 }
 
-function isPendingStageRouteRetiredEvent(value: unknown): value is { readonly runId: string } {
+function isPendingStageRouteRetiredEvent(value: unknown): value is { readonly runId: string; completion?: Promise<void> } {
   if (typeof value !== "object" || value === null) return false;
   const runId = (value as { readonly runId?: unknown }).runId;
   return typeof runId === "string" && runId.length > 0;
@@ -1518,9 +1511,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     left: PendingStageRouteRegistration | undefined,
     right: PendingStageRouteRegistration,
   ): boolean {
-    return left !== undefined
-      && normalizeGroup(left.group) === normalizeGroup(right.group)
-      && left.capability === right.capability;
+    return left?.publication === right.publication && left.capability === right.capability;
   }
   function pendingStageRouteClientIsCurrent(
     runId: string,
@@ -1702,6 +1693,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const contextAtStart = getLiveContext();
     const generationAtStart = runtimeGeneration;
     if (!contextAtStart) throw new Error("Intercom runtime not initialized");
+    if (!samePendingStageRoute(pendingStageRoutes.get(runId), route)) throw new IntercomClientDisconnectedError();
 
     let existing = pendingStageRouteClients.get(runId);
     let retired: Promise<void> | undefined;
@@ -1728,17 +1720,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 	if (state.client?.isConnected()) {
 		// Route completion must observe broker processing, not merely enqueue a write.
 		// A list on another session's socket can overtake this roster update.
-		await state.client
-			.registerPendingStageRouteAcknowledged(
-				runId,
-				normalizeGroup(route.group),
-				route.capability,
-				route.stages,
-				route.possibleStages,
-				route.parent,
-				route.dormant === true,
-				launcherCapabilityFor(runId),
-			)
+		await route.publication.register(state.client, runId, route, launcherCapabilityFor(runId))
 			.catch((error: Error) => {
 				if (error instanceof IntercomPendingStageRouteRefusedError) {
 					if (!error.connectionKept) state.isolated = true;
@@ -1770,16 +1752,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         throw supersededPendingStageRouteError(contextAtStart, generationAtStart);
       }
       state.client = nextClient;
-      await nextClient.registerPendingStageRouteAcknowledged(
-        runId,
-        normalizeGroup(route.group),
-        route.capability,
-        route.stages,
-        route.possibleStages,
-        route.parent,
-        route.dormant === true,
-        launcherCapabilityFor(runId),
-      );
+      await route.publication.register(nextClient, runId, route, launcherCapabilityFor(runId));
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
         throw supersededPendingStageRouteError(contextAtStart, generationAtStart);
       }
@@ -1828,14 +1801,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     // #5492: a route retired while the main client was connecting is not registered, and opens no connection.
     if (!samePendingStageRoute(pendingStageRoutes.get(runId), route)) return;
     if (registersOnMainClient(route)) {
-      await activeClient.registerPendingStageRouteAcknowledged(
-        runId,
-        normalizeGroup(route.group),
-        route.capability,
-        route.stages,
-        route.possibleStages,
-        route.parent,
-      );
+      await route.publication.register(activeClient, runId, route);
       return;
     }
     await ensurePendingStageRouteClient(runId, { ...route, group: normalizeGroup(route.group) });
@@ -2098,43 +2064,52 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   }
   pi.events.on(PENDING_STAGE_ROUTE_EVENT, (payload) => {
     if (!isPendingStageRouteRegistrationEvent(payload)) return;
-	pendingStageRoutes.set(payload.runId, {
-		group: payload.group,
+	const previous = pendingStageRoutes.get(payload.runId);
+	const group = normalizeGroup(payload.group);
+	const sameConnection = previous?.group === group && previous.dormant === payload.dormant;
+	const publication = previous === undefined ? new PendingStagePublication()
+		: !sameConnection ? new PendingStagePublication(retireRoute(payload.runId, previous))
+		: previous.publication; // A capability update on the same connection does not end this run's route.
+	const route = {
+		publication,
+		group,
 		capability: payload.capability,
 		...(payload.stages === undefined ? {} : { stages: payload.stages }),
 		...(payload.possibleStages === undefined ? {} : { possibleStages: payload.possibleStages }),
 		...(payload.parent === undefined ? {} : { parent: payload.parent }),
 		...(payload.dormant === true ? { dormant: true as const } : {}),
-	});
+	};
+	pendingStageRoutes.set(payload.runId, route);
     const completion = ensureConnected("background").then((activeClient) =>
-      registerPendingStageRoute(activeClient, payload.runId, payload),
+      registerPendingStageRoute(activeClient, payload.runId, route),
     );
     payload.completion = completion;
     void completion.catch(() => {});
   });
-  // #5492: the workflows bridge withdrew a finished run's route. It is no longer registered again on a reconnect, and the
-  // connection that carried it closes once no other run's route uses it.
-  pi.events.on(PENDING_STAGE_ROUTE_RETIRED_EVENT, (payload) => {
-    if (!isPendingStageRouteRetiredEvent(payload)) return;
-    const { runId } = payload;
-    const route = pendingStageRoutes.get(runId);
-    if (route === undefined) return;
+  async function retireRoute(runId: string, route: PendingStageRouteRegistration): Promise<void> {
     pendingStageRoutes.delete(runId);
     const state = pendingStageRouteClients.get(runId);
     if (state !== undefined) {
       pendingStageRouteClients.delete(runId);
       endPendingStageRouteBackoff(state, new IntercomClientDisconnectedError());
     }
-    // A route on the main connection stays with the broker until that connection ends; only a route connection closes.
-    if (registersOnMainClient(route)) return;
     launchedRunClaims.delete(runId);
     launcherCapabilities.delete(runId);
-    const key = state?.isolated === true ? runId : normalizeGroup(route.group);
-    void (async () => {
-      try { await state?.promise; } catch {}
+    const key = state?.isolated === true ? runId : route.group;
+    try {
+      await route.publication.withdraw(runId);
+    } finally {
       if (state !== undefined) state.client = null;
       await closeUnusedPendingStageRouteConnection(key);
-    })().catch(() => {});
+    }
+  }
+  pi.events.on(PENDING_STAGE_ROUTE_RETIRED_EVENT, (payload) => {
+    if (!isPendingStageRouteRetiredEvent(payload)) return;
+    const route = pendingStageRoutes.get(payload.runId);
+    if (route === undefined) return;
+    const completion = retireRoute(payload.runId, route);
+    payload.completion = completion;
+    return completion;
   });
   pi.events.on(RELEASED_STAGE_EVENT, (payload) => {
     // A released stage keeps a peer only while the host session that ran it is live.

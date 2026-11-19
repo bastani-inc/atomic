@@ -1,5 +1,5 @@
 import { getAgentDir, hasTrustRequiringProjectResourcesAsync, ProjectTrustStore } from "@bastani/atomic";
-import type { DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "../durable/backend.js";
+import type { CatalogReadOptions, DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import {
 	type OpenCompletedDurableResult,
@@ -17,7 +17,7 @@ import {
 	resumeDurableWorkflow as resumeDurableWorkflowAdapter,
 } from "../durable/resume-runtime.js";
 import { hasActiveLiveRun } from "../durable/run-claims.js";
-import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
+import { availableRunDurableBackend, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { canonicalDirectoryAsync } from "../durable/sdk-recovery-scope.js";
 import { bindStoreDurableBackend, DurableBackendNotInitializedError } from "../durable/store-backend.js";
 import { inspectTargetedDurableWorkflow, type TargetedDurableInspection } from "../durable/targeted-inspection.js";
@@ -100,7 +100,8 @@ export interface DurableResumeRuntime {
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
 	listDurableResumable(): readonly ResumableWorkflowEntry[];
 	prepareDurableResumable(workflowId?: string): Promise<readonly ResumableWorkflowEntry[]>;
-	prepareDurableCatalog?(): Promise<DurableWorkflowCatalogEntries>;
+	/** The stored resumable and completed runs; a caller whose `signal` aborts stops the read once nobody else waits. */
+	prepareDurableCatalog?(options?: CatalogReadOptions): Promise<DurableWorkflowCatalogEntries>;
 	/** Refresh a bounded set of known workflow ids. */
 	prepareDurableResumableForIds?(workflowIds: readonly string[]): Promise<readonly ResumableWorkflowEntry[]>;
 	prepareCompletedDurable?(): Promise<readonly ResumableWorkflowEntry[]>;
@@ -152,12 +153,20 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		bindStoreDurableBackend(deps.store, backend);
 		return backend;
 	};
-	const hydrateStoredWorkflowCandidates = async (backend: DurableWorkflowBackend, target?: string): Promise<void> => {
-		const ids = deps.store
-			.runs()
-			.map((run) => run.id)
-			.filter((id) => target === undefined || id === target);
-		for (const id of ids) await (availableRunDurableBackend(deps.store, id) ?? backend).hydrateWorkflow(id);
+	const hydrateStoredWorkflowCandidates = async (
+		backend: DurableWorkflowBackend,
+		target?: string,
+		known?: ReadonlySet<string>,
+	): Promise<void> => {
+		// Nested runs live in the root's journal row. Hydrating their IDs would mark a healthy child as deleted.
+		const roots = new Set<string>();
+		for (const run of deps.store.runs()) {
+			if (target === undefined || run.id === target) roots.add(durableRootRunIdForRun(deps.store, run.id) ?? run.id);
+		}
+		for (const id of roots) {
+			const owner = availableRunDurableBackend(deps.store, id) ?? backend;
+			if (owner !== backend || !known?.has(id)) await owner.hydrateWorkflow(id);
+		}
 	};
 	let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
 	const discover = async (name: string, cwd: string, projectTrusted: boolean | undefined) =>
@@ -320,20 +329,18 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				}
 			});
 		},
-		async prepareDurableCatalog() {
+		async prepareDurableCatalog(options) {
 			return withRecovery(async () => {
 				const backend = await ensureReady();
 				try {
-					const catalog = await backend.prepareWorkflowCatalog();
+					const catalog = await backend.prepareWorkflowCatalog(options);
 					for (const unavailable of catalog.unavailableShards ?? [])
 						deps.reportWarning?.(`${unavailable.message} ${unavailable.hint}`);
 					const known = new Set(
 						catalog.inspectableIds ??
 							[...catalog.resumable, ...catalog.completed].map((entry) => entry.workflowId),
 					);
-					for (const run of deps.store.runs())
-						if (!known.has(run.id))
-							await (availableRunDurableBackend(deps.store, run.id) ?? backend).hydrateWorkflow(run.id);
+					await hydrateStoredWorkflowCandidates(backend, undefined, known);
 					preparedCatalog = catalog.resumable;
 					return catalog;
 				} finally {

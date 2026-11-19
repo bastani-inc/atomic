@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
@@ -22,6 +21,7 @@ import { showTaskInspector } from "../../packages/coding-agent/src/modes/rpc/tas
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const flush = async () => {
 	for (let i = 0; i < 4; i++) await new Promise<void>((resolve) => setImmediate(resolve));
