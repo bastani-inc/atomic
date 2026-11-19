@@ -14,7 +14,7 @@ export function chatLineDrawnLive(view: object, id: string): void {
 	currentLayouts.get(view)?.deref()?.live.add(id);
 }
 type Span = { first: Component; last: Component };
-type StoredSpan = { first: WeakRef<Component>; last: WeakRef<Component> };
+type StoredSpan = { first: WeakRef<Component>; last: WeakRef<Component>; trailing?: boolean };
 type Position = ChatPosition & { group?: number; orderTarget?: string };
 type WindowConsumer = ((child: Component) => void) & { paint: (data: ChatPageDecorations) => void };
 // A stalled optional read retains the requested IDs, not the chat, its component tree, or a stale scroll view.
@@ -22,6 +22,9 @@ function deliver(read: Promise<ChatPageDecorations | undefined>, consumer: WeakR
 	void read.then((data) => {
 		if (data) consumer.deref()?.paint(data);
 	});
+}
+function discoverWindow(present: Promise<boolean>, token: WeakRef<{ ready: (found: boolean) => void }>): void {
+	void present.then((found) => token.deref()?.ready(found));
 }
 
 /** A paint records where each contributing source occurrence ended. A late decoration uses those exact rows,
@@ -31,6 +34,7 @@ export class ChatReaderLayout {
 	private tokens = new WeakMap<object, number>();
 	private nextToken = 0;
 	private spans = new Map<number, StoredSpan>();
+	private trailing = new WeakSet<object>();
 	private atComponent = new WeakMap<Component, number>();
 	private byId?: Map<string, Position>;
 	private original?: readonly SessionEntry[];
@@ -69,7 +73,24 @@ export class ChatReaderLayout {
 	anchors(): string[] {
 		return [...(this.hasRoot ? [""] : []), ...this.index().keys()];
 	}
-	observeWindow(chat: StartupChatContainer, mount: ChatMount, request: () => void): void {
+	observeWindowWhenPresent(chat: StartupChatContainer, mount: ChatMount, request: () => void): void {
+		if (typeof mount.present === "boolean") {
+			if (mount.present) this.observeWindow(chat, mount, request);
+			return;
+		}
+		// No fullscreen frame waits. Closing or switching clears this receiver; an unresponsive adapter
+		// cannot keep the old chat alive, and a slow positive answer can still decorate a mounted chat.
+		const receiver = Object.assign(() => {}, {
+			ready: (found: boolean) => {
+				if (chat.onVisibleChild !== receiver) return;
+				if (found) this.observeWindow(chat, mount, request);
+				else chat.onVisibleChild = undefined;
+			},
+		});
+		chat.onVisibleChild = receiver;
+		discoverWindow(mount.present, new WeakRef(receiver));
+	}
+	private observeWindow(chat: StartupChatContainer, mount: ChatMount, request: () => void): void {
 		const groups = new Map<number, string[]>();
 		const leading: string[] = this.hasRoot ? [""] : [];
 		for (const p of this.index().values()) {
@@ -123,6 +144,14 @@ export class ChatReaderLayout {
 		if (first === undefined) submit(leading); // A cancelled empty chat has no primary row to paint.
 		request();
 	}
+	/** A billing component follows the boundary row if the reader chose to show costs. If no component is drawn,
+	 * the boundary's own last row remains its anchor. */
+	extendGroup(id: string, end: object): void {
+		const token = this.groups.get(id);
+		if (token === undefined) this.bind(id, end);
+		else this.tokens.set(end, token);
+		this.trailing.add(end);
+	}
 	bind(id: string, last: object | undefined): void {
 		if (!last) return;
 		let token = this.tokens.get(last);
@@ -138,7 +167,13 @@ export class ChatReaderLayout {
 		const first = chat.children[start],
 			last = chat.children.at(-1);
 		if (!first || !last) return;
-		this.spans.set(token, { first: new WeakRef(first), last: new WeakRef(last) });
+		const previous = this.spans.get(token),
+			trailing = this.trailing.has(group);
+		this.spans.set(token, {
+			first: trailing && previous ? previous.first : new WeakRef(first),
+			last: !trailing && previous?.trailing ? previous.last : new WeakRef(last),
+			trailing: trailing || previous?.trailing,
+		});
 		this.atComponent.set(last, token);
 		const preceding = this.pendingMoves.get(token);
 		if (preceding) {

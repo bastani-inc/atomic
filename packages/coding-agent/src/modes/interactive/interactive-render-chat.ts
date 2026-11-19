@@ -958,7 +958,11 @@ function planTranscript(
 					options.suppressCompactionBoundary !== undefined &&
 					entry.summary === options.suppressCompactionBoundary.compactedText &&
 					entry.tokensBefore === options.suppressCompactionBoundary.tokensBefore;
-				if (!suppressedLiveBoundary) steps.push({ kind: "cost", type: entry.type, usage: entry.usage });
+				if (!suppressedLiveBoundary) {
+					const cost: TranscriptStep = { kind: "cost", type: entry.type, usage: entry.usage };
+					steps.push(cost);
+					layout?.extendGroup(entry.id, cost);
+				}
 			}
 		}
 	}
@@ -1014,7 +1018,7 @@ function buildHistoryInSlices(
 				scratch.children = [preceding];
 				const step = history[--remaining]!;
 				addTranscriptStep(mode, step, false);
-				if (layout && step.kind !== "cost") layout.deref()?.paint(step.entry, scratch, 1);
+				layout?.deref()?.paint(step.kind === "cost" ? step : step.entry, scratch, 1);
 				built.push(scratch.children.slice(1));
 				if (performance.now() >= deadline) break;
 			}
@@ -1078,19 +1082,11 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		const step = steps[index]!;
 		const start = chat.children.length;
 		addTranscriptStep(this, step);
-		if (layout && step.kind !== "cost") layout.paint(step.entry, chat, start);
+		layout?.paint(step.kind === "cost" ? step : step.entry, chat, start);
 	}
 	if (mount && layout) {
 		if (!regular && chat instanceof StartupChatContainer) {
-			chat.awaitChatRecords(
-				Promise.resolve(mount.present),
-				(present) => {
-					if (present) layout?.observeWindow(chat, mount, () => this.ui.requestRender());
-					layout = undefined;
-				},
-				false,
-				CHAT_RECORD_FIRST_PAINT_MS,
-			);
+			layout.observeWindowWhenPresent(chat, mount, () => this.ui.requestRender());
 		} else {
 			const page = readMountedAnchors(mount, () => layout?.anchors() ?? []);
 			const apply = (data?: ChatPageDecorations) => {

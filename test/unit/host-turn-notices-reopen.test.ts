@@ -100,6 +100,125 @@ test.each(["in-process", "isolated"])(
 	},
 );
 
+test("an older compacted tail without the previous thinking count neither invents a warning nor reloads discarded history (#5681)", async () => {
+	const h = await createHarness({});
+	cleanups.push(() => h.cleanup());
+	const manager = h.sessionManager;
+	const reply = (text: string, n: number) => {
+		const m = fauxAssistantMessage(text);
+		m.diagnostics = [
+			{ type: "anthropic_input_transformations", timestamp: m.timestamp, details: { droppedBlockCount: n } },
+		];
+		return m;
+	};
+	// The first assistant of a model is retained as a model-selection record; the next ordinary reply is not.
+	await manager.appendMessage(reply("selected model", 0));
+	const old = await manager.appendMessage(reply("discarded reply", 1));
+	await manager.appendCompaction("retained summary", null, 100, {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "test" },
+		stats: {
+			linesBefore: 2,
+			linesDeleted: 1,
+			linesKept: 1,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 50,
+			percentReduction: 50,
+		},
+		form: "compacted",
+	});
+	await manager.appendMessage(reply("Visible reply after summary", 2));
+	const store = manager.getSessionStore();
+	const tail = await SessionManager.open(store, manager.getSessionId(), undefined, { history: "tail" });
+	assert.equal(tail.getEntry(old), undefined);
+	const other = await createHarness({ sessionManager: tail, settings: { showCacheMissNotices: true } });
+	cleanups.push(() => other.cleanup());
+	const mode = chat(other.session);
+	const full = vi.spyOn(store, "load"),
+		range = vi.spyOn(store, "readRange");
+	mode.renderInitialMessages();
+	const painted = rows(mode);
+	assert.ok(painted.some((l) => l.includes("Visible reply after summary")));
+	assert.ok(!painted.some((l) => l.includes("Anthropic dropped")));
+	assert.equal(full.mock.calls.length, 0);
+	assert.equal(range.mock.calls.length, 0);
+});
+
+test("a saved warning follows the cost row owned by its compaction boundary (#5649)", async () => {
+	const h = await createHarness({ settings: { showCacheMissNotices: true } });
+	cleanups.push(() => h.cleanup());
+	const m = h.sessionManager;
+	const id = await m.appendCompaction(
+		"retained boundary",
+		null,
+		50,
+		{
+			strategy: "verbatim-lines",
+			promptVersion: 7,
+			parameters: { query: "test" },
+			stats: {
+				linesBefore: 1,
+				linesDeleted: 1,
+				linesKept: 0,
+				rangeCount: 1,
+				tokensBefore: 50,
+				tokensAfter: 10,
+				percentReduction: 80,
+			},
+			form: "compacted",
+		},
+		{
+			input: 49,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 50,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	);
+	const s = m.chatRecordScope();
+	assert.ok(s);
+	await s.store.append(s.owner, id, { kind: "line", level: "warning", text: "Warning: after the boundary" });
+	const mode = chat(h.session);
+	mode.renderInitialMessages();
+	await vi.waitFor(() =>
+		assert.deepEqual(
+			rows(mode).filter((l) => l.includes("tokens billed") || l.includes("after the boundary")),
+			["Compaction: 50 tokens billed", "Warning: after the boundary"],
+		),
+	);
+});
+
+test("ordinary model, tree and catalog operations never probe chat records; a quiet chat mounts one lookup (#5649)", async () => {
+	const h = await createHarness({});
+	cleanups.push(() => h.cleanup());
+	const manager = h.sessionManager;
+	await manager.appendMessage({ role: "user", content: "seed", timestamp: 1 });
+	const scope = manager.chatRecordScope();
+	assert.ok(scope);
+	const has = vi.spyOn(scope.store, "has"),
+		read = vi.spyOn(scope.store, "read"),
+		append = vi.spyOn(scope.store, "append");
+	h.setResponses([fauxAssistantMessage("ordinary answer")]);
+	await h.session.prompt("ordinary prompt");
+	const store = manager.getSessionStore();
+	for await (const _ of store.list({})) {
+	}
+	const reopened = await SessionManager.open(store, manager.getSessionId());
+	reopened.getTree();
+	reopened.buildSessionContext();
+	reopened.getBranch();
+	assert.deepEqual([has.mock.calls.length, read.mock.calls.length, append.mock.calls.length], [0, 0, 0]);
+	const mode = chat(h.session);
+	mode.renderInitialMessages();
+	await new Promise<void>((r) => setImmediate(r));
+	mode.rebuildChatFromMessages();
+	mode.rebuildChatFromMessages();
+	assert.deepEqual([has.mock.calls.length, read.mock.calls.length, append.mock.calls.length], [1, 0, 0]);
+});
+
 test("a refused display reader never masks the ordinary synchronous chat render (#5649)", async () => {
 	const h = await createHarness({});
 	cleanups.push(() => h.cleanup());
@@ -205,6 +324,29 @@ test("a refused second cancellation record never hides the earlier saved line at
 	assert.equal(count(), 2);
 	mode.rebuildChatFromMessages();
 	await vi.waitFor(() => assert.equal(count(), 1));
+});
+
+test("fullscreen shows its primary rows immediately and still accepts a late discovery without holding a frame (#5649)", async () => {
+	const h = await createHarness({});
+	cleanups.push(() => h.cleanup());
+	const m = h.sessionManager;
+	const id = await m.appendMessage({ role: "user", content: "Visible during discovery", timestamp: 1 });
+	const scope = m.chatRecordScope();
+	assert.ok(scope);
+	await scope.store.append(scope.owner, id, { kind: "line", level: "error", text: "Discovered late" });
+	const held = Promise.withResolvers<boolean>();
+	vi.spyOn(scope.store, "has").mockReturnValue(held.promise);
+	const mode = chat(h.session);
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		mode.renderInitialMessages();
+		assert.ok(rows(mode).some((l) => l.includes("Visible during discovery")));
+		await vi.advanceTimersByTimeAsync(200);
+	} finally {
+		vi.useRealTimers();
+	}
+	held.resolve(true);
+	await vi.waitFor(() => assert.equal(rows(mode).filter((l) => l.includes("Discovered late")).length, 1));
 });
 
 test("a main chat reopened after a notice overtakes its admitted prompt keeps live order (#5668)", async () => {
