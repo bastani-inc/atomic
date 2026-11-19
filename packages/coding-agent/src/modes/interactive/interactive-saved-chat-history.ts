@@ -852,7 +852,10 @@ class SavedChatHistory {
 		const from = this.chat.windowRowSpan(first),
 			to = this.chat.windowRowSpan(last);
 		if (!from || !to) return true;
-		return from.top < this.view.scrollTop + this.view.viewportHeight && to.bottom > this.view.scrollTop;
+		// The rows the last frame showed keep their place in the next one, so a page holding them is still on screen.
+		const now = this.view.scrollTop,
+			shown = now - (this.view.scrolledSinceLayout ?? 0);
+		return from.top < Math.max(now, shown) + this.view.viewportHeight && to.bottom > Math.min(now, shown);
 	}
 	private drop(page: MountedPage): void {
 		for (const child of page.children) {

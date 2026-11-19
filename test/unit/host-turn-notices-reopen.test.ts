@@ -820,10 +820,14 @@ test.each(["in-process", "isolated"])(
 				if (shown.length === notices) seen.add(label);
 			}
 		};
+		const screen = () => tui.getScreenLines().join("\n");
 		const walk = async (step: number, done: () => boolean) => {
 			for (let i = 0; i < 400 && !done(); i++) {
+				const before = screen();
 				transcript.scrollBy(step);
-				for (let turn = 0; turn < 30; turn++) {
+				// A step at the edge of the pages read so far shows the next page once the store answers, however slow.
+				const until = Date.now() + 5_000;
+				for (let turn = 0; turn < 30 || (screen() === before && Date.now() < until); turn++) {
 					tui.renderNow();
 					await new Promise<void>((resolve) => setImmediate(resolve));
 				}
