@@ -105,6 +105,107 @@ describe("a history:// search gives what the single call it replaces gave (#5479
 		assert.equal(textOf(await page(470)), first);
 	});
 
+	it("keeps the entire first page inline with all its SDK locations and its skip hint (#5479)", async () => {
+		const ids = Array.from({ length: 21 }, (_, i) => `inline${i}`);
+		const texts = Array.from({ length: 5 }, (_, i) => `needle ${i} ${"a".repeat(430)}`);
+		const paths = ids.map((id) => `history://sessions/${id}`);
+		const router = sessionsRouter(await storeWith(ids.map((id) => ({ id, day: 1, texts }))));
+		const result = await search(router, { paths, pattern: "needle" });
+		const expected = `${paths
+			.slice(0, 20)
+			.map((p) => texts.map((t, i) => `${p}:${i + 1}: ${t}`).join("\n"))
+			.join("\n\n")}\n\n[20 matching files shown. Use skip=20 to view more.]`;
+		assert.equal(Buffer.byteLength(textOf(result)), 47_122);
+		assert.equal(textOf(result), expected);
+		assert.equal(result.details?.displayContent, expected);
+		assert.deepEqual(result.details?.files, paths.slice(0, 20));
+	});
+
+	it("a workflow beyond the lookahead cannot replace the first page with its budget stop (#5479)", async () => {
+		const paths = Array.from({ length: 22 }, (_, i) => `history://workflows/r${i}`);
+		const runs = paths.map(
+			(_, i): WorkflowRunSummary => ({
+				runId: `r${i}`,
+				name: `r${i}`,
+				status: "completed",
+				startedAt: 1,
+				elapsedMs: 1,
+				activeStages: [],
+				awaitingInput: [],
+				awaitingInputCount: 0,
+			}),
+		);
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => undefined,
+			workflows: () => ({
+				listRuns: async () => runs,
+				listProjectRuns: async () => runs,
+				getRun: async (runId) => ({
+					...runs.find((r) => r.runId === runId)!,
+					inputs: {},
+					stages: [],
+					summary:
+						runId === "r21"
+							? Array.from({ length: 85 }, (_, i) => `needle ${i} ${"a".repeat(490)}`).join("\n")
+							: "needle",
+				}),
+			}),
+		});
+		const result = await search(router, { paths, pattern: "needle" });
+		assert.deepEqual(result.details?.files, paths.slice(0, 20));
+		assert.equal(
+			textOf(result),
+			`${paths
+				.slice(0, 20)
+				.map((p) => `${p}:5: summary: needle`)
+				.join("\n\n")}\n\n[20 matching files shown. Use skip=20 to view more.]`,
+		);
+	});
+
+	it("a budget stop beyond the selected skip page is not followed (#5479)", async () => {
+		const paths = Array.from({ length: 24 }, (_, i) => `history://sessions/s${i}`);
+		const calls: string[] = [];
+		const result = await search(
+			{
+				search: async (url) => {
+					calls.push(url);
+					return url === paths.at(-1)
+						? `${url}:0: [the byte budget ran out; continue with ${url}?cursor=1]`
+						: `${url}:1: needle`;
+				},
+			},
+			{ paths, pattern: "needle", skip: 1 },
+		);
+		assert.deepEqual(calls, paths);
+		assert.deepEqual(result.details?.files, paths.slice(1, 21));
+	});
+
+	it("a repeated target needs only the first matching lookahead (#5479)", async () => {
+		const path = "history://sessions/s";
+		const router = sessionsRouter(await storeWith([{ id: "s", day: 1, texts: ["needle"] }]));
+		const calls: InternalSearchRequest[] = [];
+		await search(
+			{
+				search: (url, request) => {
+					calls.push(request);
+					return router.search!(url, request);
+				},
+			},
+			{ paths: Array(470).fill(path), pattern: "needle" },
+		);
+		assert.equal(calls.length, 21);
+		assert.ok(calls.every((request) => request.timeBudgetMs === undefined));
+	});
+
+	it("a large direct answer uses the ordinary combined output limit (#5479)", async () => {
+		const path = "history://workflows/r";
+		const rows = Array.from({ length: 15 }, (_, i) => `${path}:${i + 1}: needle ${"z".repeat(5_000)}`);
+		const result = await search({ search: async () => rows.join("\n") }, { paths: path, pattern: "needle" });
+		assert.equal(textOf(result), `${rows.slice(0, 10).join("\n")}\n\n[50.0KB combined output limit reached]`);
+		assert.equal(result.details?.truncation?.totalBytes, Buffer.byteLength(rows.join("\n")));
+	});
+
 	it("removes repeated rows across partially overlapping target blocks (#5479)", async () => {
 		const path = "history://sessions/c";
 		const router = sessionsRouter(await storeWith([{ id: "c", day: 1, texts: ["needle 0", "needle 1"] }]));

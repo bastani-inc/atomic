@@ -2115,10 +2115,10 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		const { read } = historyOver(slowListStore, { timeMs: 35 });
 		const next = (text: string) => /continue with (history:\/\/sessions\?\S+?)\]/.exec(text)?.[1] ?? "";
 		const first = await read("history://sessions");
-		assert.match(first, /continue with history:\/\/sessions\?cursor=0\.0&listing=\d+/);
+		assert.equal(next(first), "history://sessions?cursor=0.0");
 		await new Promise((r) => setTimeout(r, 100));
 		const second = await read(next(first));
-		assert.match(second, /continue with history:\/\/sessions\?cursor=0\.1&listing=\d+/);
+		assert.equal(next(second), "history://sessions?cursor=0.1");
 		await new Promise((r) => setTimeout(r, 120));
 		const third = await historyOver(slowListStore, { timeMs: 500 }).read(next(second));
 		assert.match(third, /# sessions 1-3 of 3/);

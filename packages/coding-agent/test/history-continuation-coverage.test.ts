@@ -8,8 +8,10 @@ import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION, type SessionStore } from "../src/core/storage/session/types.js";
+import { AgentTaskHost } from "../src/core/tasks/agent-adapter.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
-import type { InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
+import type { InternalResourceRouter, InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
+import { createSearchToolDefinition } from "../src/core/tools/search.js";
 
 /**
  * Following every `continue with` URL a history:// search hands back covers each entry exactly once: nothing is
@@ -37,6 +39,39 @@ const request = (pattern: string): InternalSearchRequest => ({
 	contextAfter: 0,
 });
 const continuation = (text: string) => /continue with (history:\/\/\S+?)\]?$/m.exec(text)?.[1];
+
+function ownedSearch(cwd: string) {
+	const owner = new AgentTaskHost({
+		scope: { kind: "session", sessionId: crypto.randomUUID() },
+		authorizeLaunch() {},
+	});
+	const tool = createSearchToolDefinition(cwd, { taskOwner: owner.ownerBinding, contextBefore: 0, contextAfter: 0 });
+	return {
+		owner,
+		async launch(router: InternalResourceRouter) {
+			const ctx = { cwd, internalResourceRouter: router } as never;
+			const result = await tool.execute(
+				"launch",
+				{ pattern: "needle", paths: "history://sessions", wait: { kind: "background" } },
+				undefined,
+				undefined,
+				ctx,
+			);
+			const { observation } = result.details as { observation: { kind: string; taskId: string } };
+			assert.equal(observation.kind, "yielded");
+			return async () => {
+				const waited = await tool.execute(
+					"wait",
+					{ action: "wait", id: observation.taskId, budgetMs: 20_000 },
+					undefined,
+					undefined,
+					ctx,
+				);
+				return waited.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+			};
+		},
+	};
+}
 
 describe("history:// continuation chains cover each entry once", () => {
 	for (const first of ["history://sessions/s1", "history://sessions"]) {
@@ -97,6 +132,42 @@ describe("history:// continuation chains cover each entry once", () => {
 		);
 	}
 
+	it("abandoned listings do not stall the next cursor (#5479)", async () => {
+		const store = new MemorySessionStore();
+		for (let n = 0; n < 3; n++) await addSession(store, `s${n}`, BASE + n, ["needle"]);
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: () => undefined,
+			budget: { rows: 1 },
+		});
+		const base = "history://sessions";
+		for (let abandoned = 0; abandoned < 16; abandoned++) await router.read!(base);
+		let url: string | undefined = base,
+			output = "";
+		for (let i = 0; i < 4 && url; i++) {
+			output = String(await router.read!(url));
+			url = continuation(output);
+		}
+		assert.equal(url, undefined, output);
+		for (let n = 0; n < 3; n++) assert.ok(output.includes(`${base}/s${n}`), output);
+	});
+
+	it("keeps a resumable cursor when the listing note just fits (#5479)", async () => {
+		const store = new MemorySessionStore();
+		await addSession(store, "s0", BASE, ["needle"]);
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: () => undefined,
+			budget: { rows: 1, bytes: 144 },
+		});
+		const first = await router.search!("history://sessions", request("needle"));
+		const next = continuation(first!);
+		assert.equal(next, "history://sessions?cursor=0.1", first);
+		assert.match((await router.search!(next, request("needle")))!, /:1: needle/);
+	});
+
 	it("a session created after a search chain started is left out of it", async () => {
 		const store = new MemorySessionStore();
 		for (let n = 1; n <= 4; n++) await addSession(store, `s${n}`, BASE + n * 60_000, [`needle s${n}`]);
@@ -127,22 +198,30 @@ describe("history:// continuation chains cover each entry once", () => {
 			workflows: () => undefined,
 			budget: { rows: 1 },
 		});
-		// One more chain than the store parks listings for, each following its own continuations in turn.
 		const chains = 17;
-		const next: (string | undefined)[] = Array.from({ length: chains }, () => "history://sessions");
-		const listed: string[] = [];
-		for (let round = 0; round < 12 && listed.length < chains; round++) {
-			for (let chain = 0; chain < chains; chain++) {
-				const url = next[chain];
-				if (url === undefined) continue;
-				const out = await router.read!(url);
-				next[chain] = continuation(out);
-				if (next[chain] === undefined) listed.push(out);
-			}
+		const { owner, launch } = ownedSearch(PROJECT);
+		const barrier = Promise.withResolvers<void>();
+		try {
+			const waits = await Promise.all(
+				Array.from({ length: chains }, () =>
+					launch({
+						search: async (url, q) => {
+							if (url !== "history://sessions") await barrier.promise;
+							return router.search!(url, q);
+						},
+					}),
+				),
+			);
+			barrier.resolve();
+			const listed = await Promise.all(waits.map((wait) => wait()));
+			assert.equal(listed.length, chains);
+			for (const out of listed)
+				for (const id of ["s1", "s2", "s3"])
+					assert.match(out, new RegExp(`history://sessions/${id}:1: needle ${id}\\b`));
+		} finally {
+			barrier.resolve();
+			await owner.close("session-close");
 		}
-		assert.equal(listed.length, chains, next.filter((url) => url !== undefined).join("\n"));
-		for (const out of listed)
-			for (const id of ["s1", "s2", "s3"]) assert.match(out, new RegExp(`history://sessions/${id}\\b`));
 	});
 
 	it("a chain never adopts a session listing another chain started before a session was created", async () => {
@@ -150,6 +229,7 @@ describe("history:// continuation chains cover each entry once", () => {
 		const project = mkdtempSync(join(tmpdir(), "history-chain-project-"));
 		const database = await openNodeSqliteDatabase(join(dir, "sessions.sqlite"));
 		const store = await SqlSessionStore.open(database);
+		const { owner, launch } = ownedSearch(project);
 		try {
 			const add = (id: string, at: number) =>
 				store.create({ id, version: SESSION_FORMAT_VERSION, createdAt: new Date(at).toISOString(), cwd: project }, [
@@ -193,29 +273,40 @@ describe("history:// continuation chains cover each entry once", () => {
 				workflows: () => undefined,
 				budget: { timeMs: 40 },
 			});
-			const search = async (url: string) => (await router.search!(url, request("needle"))) ?? "";
+			const aResume = gate(),
+				bResume = gate(),
+				aAdvanced = gate();
+			const gated = (
+				resume: ReturnType<typeof gate>,
+				advanced?: ReturnType<typeof gate>,
+			): InternalResourceRouter => ({
+				search: async (url, q) => {
+					if (url !== "history://sessions") await resume.opened;
+					const result = await router.search!(url, { ...q, timeBudgetMs: 40 });
+					if (url !== "history://sessions") advanced?.open();
+					return result;
+				},
+			});
 			// Chain A: its listing waits before item 1.
 			holds[0] = new Map([[1, gate()]]);
-			const aNext = continuation(await search("history://sessions"))!;
+			const waitA = await launch(gated(aResume, aAdvanced));
 			// A session is created after chain A started and before chain B starts.
 			await add("x", BASE + 100 * 60_000);
 			// Chain B: its own listing waits before item 2.
 			holds[1] = new Map([[2, gate()]]);
-			const bNext = continuation(await search("history://sessions"))!;
+			const waitB = await launch(gated(bResume));
 			// Chain A goes on: its listing moves one item on and waits before item 2.
 			holds[0]!.set(2, gate());
 			holds[0]!.get(1)!.open();
-			await search(aNext);
+			aResume.open();
+			await aAdvanced.opened;
 			for (const hold of holds) for (const opened of hold?.values() ?? []) opened.open();
-			const rows: string[] = [];
-			let url: string | undefined = bNext;
-			for (let call = 0; url !== undefined && call < 20; call++) {
-				const out = await search(url);
-				rows.push(...[...out.matchAll(/: (needle \w+)$/gm)].map((match) => match[1]!));
-				url = continuation(out);
-			}
+			bResume.open();
+			const [, out] = await Promise.all([waitA(), waitB()]);
+			const rows = [...out.matchAll(/: (needle \w+)$/gm)].map((match) => match[1]!);
 			assert.deepEqual([...rows].sort(), ["needle s1", "needle s2", "needle s3", "needle s4", "needle x"]);
 		} finally {
+			await owner.close("session-close");
 			await store.close();
 			await database.close();
 			rmSync(dir, { recursive: true, force: true });

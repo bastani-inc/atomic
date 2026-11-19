@@ -367,7 +367,7 @@ describe("history:// continuations resume where a call stopped (#5250)", () => {
 		const stopped = (await router.search!("history://sessions?session=s2&cursor=3", request("needle"))) ?? "";
 		assert.match(
 			stopped,
-			/after scanning 1 sessions; continue with history:\/\/sessions\?session=s2&cursor=3&listing=\d+\]$/m,
+			/after scanning 1 sessions; continue with history:\/\/sessions\?session=s2&cursor=3\]$/m,
 			stopped,
 		);
 		await store.create(

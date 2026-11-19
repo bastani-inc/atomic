@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFindToolDefinition } from "../src/core/tools/find.js";
 import { createGrepToolDefinition } from "../src/core/tools/grep.js";
 import { createToolDefinition } from "../src/core/tools/index.js";
@@ -119,6 +121,40 @@ describe("find/search edge parity", () => {
 		}).execute("custom-find-real-trunc", { paths: ["a.txt", "d2"], limit: 1 });
 		expect(textOutput(truncated)).toContain("1 results limit reached");
 		expect(truncated.details?.resultLimitReached).toBe(1);
+	});
+
+	it("searching a tar member reads the archive no more than three times (#5479)", async () => {
+		const archive = join(testDir, "sample.tar");
+		const writer = createToolDefinition("write", testDir);
+		await writer.execute(
+			"member",
+			{ path: "sample.tar:inner.txt", content: "needle\n" },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		await writer.execute(
+			"padding",
+			{ path: "sample.tar:padding", content: "a".repeat(8 * 1024 * 1024) },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		const reads = vi.spyOn(fsPromises, "readFile");
+		syncBuiltinESMExports();
+		try {
+			const result = await createSearchToolDefinition(testDir).execute("member-search", {
+				pattern: "needle",
+				paths: "sample.tar:inner.txt",
+			});
+			expect(textOutput(result)).toContain("needle");
+			const count = reads.mock.calls.filter(([file]) => file === archive).length;
+			expect(count).toBeGreaterThan(0);
+			expect(count).toBeLessThanOrEqual(3);
+		} finally {
+			reads.mockRestore();
+			syncBuiltinESMExports();
+		}
 	});
 
 	it("splits delimiter-joined ranged archive searches", async () => {

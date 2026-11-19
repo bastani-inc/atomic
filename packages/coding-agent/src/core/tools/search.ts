@@ -1,6 +1,6 @@
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import { join, relative, resolve as resolvePath, sep } from "node:path";
-import type { AgentTool } from "@bastani/atomic-agent-core";
+import type { AgentTool, AgentToolResult } from "@bastani/atomic-agent-core";
 import { Text } from "@bastani/atomic-tui";
 import { type Static, Type } from "typebox";
 import { isPathInside } from "../../utils/path-inside.ts";
@@ -13,7 +13,8 @@ import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { runHistorySearch, waitForHistorySearch } from "./history-search-run.ts";
-import type { HistoryTargetSpan } from "./history-search-task.ts";
+import { historySearchScope } from "./history-search-scope.ts";
+import type { HistorySearchStep } from "./history-search-task.ts";
 import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
 import {
@@ -315,12 +316,6 @@ function isResourceSelector(value: string): boolean {
 	);
 }
 
-async function normalizeSearchTargets(pathsValue: string | string[] | undefined, cwd: string): Promise<SearchTarget[]> {
-	const targets: SearchTarget[] = [];
-	for (const searchPath of await normalizePaths(pathsValue, cwd))
-		targets.push(await normalizeSearchTarget(searchPath, cwd));
-	return targets;
-}
 async function normalizeSearchTarget(searchPath: string, cwd: string): Promise<SearchTarget> {
 	const directSqlite = await sqliteSelectorForPath(searchPath, cwd);
 	if (directSqlite?.rowId) return { path: searchPath, sqlite: directSqlite };
@@ -561,6 +556,11 @@ function formatSearchGroups(groups: SearchOutputGroup[], limit: number, perFileL
 		.join("\n");
 }
 
+/** After a positive skip window fills, later targets can establish its hint but cannot extend this page. */
+function contributesToHistoryPage(skip: number, groupsBefore: number, limit: number): boolean {
+	return skip === 0 || groupsBefore < skip + limit;
+}
+
 /** Consume one virtual target's groups from the first page's remaining file slots. */
 function firstTargetPage(text: string, groups: SearchOutputGroup[], remaining: number, limit: number) {
 	if (groups.length === 0) {
@@ -601,47 +601,6 @@ function historySkipPage(
 		content += `\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]`;
 	}
 	return { text: content, details: buildSearchDetails(details, content, cwd, scopePath) };
-}
-
-/** Page a completed, one-step-per-target history search at the same boundaries as other virtual targets. */
-function historyTargetPage(
-	text: string,
-	spans: readonly HistoryTargetSpan[],
-	paths: string[],
-	skip: number,
-	cwd: string,
-	scope: string,
-) {
-	const groups: SearchOutputGroup[] = [];
-	const blocks: string[] = [];
-	let remaining = DEFAULT_LIMIT,
-		more = false,
-		leftToSkip = skip;
-	for (const [start, end] of spans) {
-		const answer = text.slice(start, end);
-		const outputGroups = groupSearchOutput(answer);
-		if (skip > 0) {
-			const drop = Math.min(leftToSkip, outputGroups.length);
-			leftToSkip -= drop;
-			groups.push(...outputGroups.slice(drop, drop + DEFAULT_LIMIT + 1 - groups.length));
-			if (groups.length > DEFAULT_LIMIT) break;
-		} else if (remaining > 0) {
-			const page = firstTargetPage(answer, outputGroups, remaining, DEFAULT_LIMIT);
-			blocks.push(page.text);
-			remaining -= page.used;
-			more ||= page.more;
-		} else if (outputGroups.length > 0) {
-			more = true;
-			break;
-		}
-	}
-	if (skip > 0) return historySkipPage(groups, skip, cwd, scope);
-	if (blocks.length === 1) return { text: blocks[0]! };
-	const output = blocks.map((block, index) => (block === "No matches found" ? `# ${paths[index]}\n${block}` : block));
-	return {
-		text: dedupeRenderedSearchOutput(output.join("\n\n") + (more ? `\n\n${continuationHint(DEFAULT_LIMIT, 0)}` : "")),
-		details: more ? fileLimitDetails(DEFAULT_LIMIT) : undefined,
-	};
 }
 
 function filterTargetLineRanges(
@@ -745,236 +704,277 @@ export function createSearchToolDefinition(
 			const contextBefore = options?.contextBefore ?? 1,
 				contextAfter = options?.contextAfter ?? 3,
 				searchContext = Math.max(contextBefore, contextAfter);
-			// A search of history:// alone runs to its end, observed like a shell command; other targets search here.
 			const rawPaths = await normalizePaths(params.paths, executionCwd);
-			if (rawPaths.length > 0 && rawPaths.every((path) => path.startsWith("history://"))) {
-				// Its URLs and skip are checked, and its result named and paged, as a single search call does.
-				const historyTargets: SearchTarget[] = [];
-				for (const path of rawPaths) historyTargets.push(await normalizeSearchTarget(path, executionCwd));
-				const skip = normalizeSkip(params.skip);
-				validateBashWait(params.wait, owner?.startToolTask !== undefined);
-				const paths = historyTargets.map((target) => target.path);
-				const scopePath = paths.join(", ");
-				let targetSpans: readonly HistoryTargetSpan[] | undefined;
-				return runHistorySearch({
-					urls: rawPaths,
-					pattern: params.pattern,
-					ignoreCase,
-					contextBefore,
-					contextAfter,
-					cwd: executionCwd,
-					resources: resourceCtx,
-					timeoutSeconds: historySearchTimeoutSeconds(params.timeout),
-					...(params.wait === undefined ? {} : { wait: params.wait }),
-					...(signal === undefined ? {} : { signal }),
-					owner,
-					tempDir,
-					onTargetsComplete: (spans) => {
-						targetSpans = spans;
-					},
-					shape: {
-						cwd: executionCwd,
-						scopePath,
-						skip,
-						page: (text) =>
-							targetSpans
-								? historyTargetPage(text, targetSpans, paths, skip, executionCwd, scopePath)
-								: skip > 0
-									? historySkipPage(
-											groupSearchOutput(text).slice(skip, skip + DEFAULT_LIMIT + 1),
-											skip,
-											executionCwd,
-											scopePath,
-										)
-									: undefined,
-					},
-					...(onUpdate === undefined
-						? {}
-						: {
-								onUpdate: (text: string) => onUpdate({ content: [{ type: "text", text }], details: undefined }),
-							}),
-				}) as never;
-			}
-			const targets = await normalizeSearchTargets(params.paths, executionCwd);
-			const isSingleFileSearch =
-				targets.length === 1 &&
-				(await fsStat(await resolveToCwdAsync(targets[0]!.path, executionCwd))
-					.then((stat) => stat.isFile())
-					.catch(() => false));
-			const limit = isSingleFileSearch ? SINGLE_FILE_MATCHES : DEFAULT_LIMIT;
-			let skip = normalizeSkip(params.skip);
-			const singleFileSkipIgnored = skip > 0 && isSingleFileSearch;
-			if (singleFileSkipIgnored) skip = 0;
-			for (const target of targets) {
-				if (target.archive || target.sqlite || target.internal) continue;
-				if (
-					target.lineRanges &&
-					!(await fsStat(await resolveToCwdAsync(target.path, executionCwd))
-						.then((stat) => stat.isFile())
-						.catch(() => false))
-				) {
-					throw new Error("Line-range search selectors are only supported for single files");
-				}
-			}
-			const results: Awaited<ReturnType<typeof grepDefinition.execute>>[] = [];
-			const groups: PagedSearchOutputGroup[] = [];
-			const skippedMissingPaths: string[] = [];
+			const targets: SearchTarget[] = [];
+			for (const path of rawPaths) targets.push(await normalizeSearchTarget(path, executionCwd));
 			const scopePath = targets.map((target) => target.path).join(", ") || ".";
-			let pageFullWithMore = false,
-				internalSearchCapped = false;
-			let remaining = limit;
-			const targetHasMatch = async (target: SearchTarget): Promise<boolean> => {
-				if (target.archive || target.sqlite || target.internal) {
-					const archive = target.archive ? await resolveArchiveSelector(target.archive, executionCwd) : undefined;
-					const text = archive
-						? await searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
-						: target.sqlite
-							? await searchSqliteSelector(
-									target.sqlite,
-									params.pattern,
-									ignoreCase,
-									contextBefore,
-									contextAfter,
-								)
-							: await searchInternalSelector(
-									target.internal!,
-									executionCwd,
+			const searchPage = async (
+				signal: AbortSignal | undefined,
+				first?: HistorySearchStep[],
+			): Promise<AgentToolResult<SearchToolDetails | undefined>> => {
+				const isSingleFileSearch =
+					targets.length === 1 &&
+					(await fsStat(await resolveToCwdAsync(targets[0]!.path, executionCwd))
+						.then((stat) => stat.isFile())
+						.catch(() => false));
+				const limit = isSingleFileSearch ? SINGLE_FILE_MATCHES : DEFAULT_LIMIT;
+				let skip = normalizeSkip(params.skip);
+				const singleFileSkipIgnored = skip > 0 && isSingleFileSearch;
+				if (singleFileSkipIgnored) skip = 0;
+				for (const target of targets) {
+					if (target.archive || target.sqlite || target.internal) continue;
+					if (
+						target.lineRanges &&
+						!(await fsStat(await resolveToCwdAsync(target.path, executionCwd))
+							.then((stat) => stat.isFile())
+							.catch(() => false))
+					) {
+						throw new Error("Line-range search selectors are only supported for single files");
+					}
+				}
+				const results: Awaited<ReturnType<typeof grepDefinition.execute>>[] = [];
+				const groups: PagedSearchOutputGroup[] = [];
+				const skippedMissingPaths: string[] = [];
+				let pageFullWithMore = false,
+					internalSearchCapped = false;
+				let remaining = limit;
+				const targetHasMatch = async (target: SearchTarget): Promise<boolean> => {
+					if (target.archive || target.sqlite || target.internal) {
+						const archive = target.archive
+							? await resolveArchiveSelector(target.archive, executionCwd)
+							: undefined;
+						const text = archive
+							? await searchArchiveSelector(
+									archive,
 									params.pattern,
 									ignoreCase,
 									false,
-									resourceCtx,
 									contextBefore,
 									contextAfter,
-									{
-										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
-										...(signal === undefined ? {} : { signal }),
-									},
-								);
-					return groupSearchOutput(filterTargetLineRanges(text, target, contextBefore, contextAfter)).length > 0;
-				}
-				const ranged = await searchFileLineRanges(
-					target,
-					executionCwd,
-					params.pattern,
-					ignoreCase,
-					contextBefore,
-					contextAfter,
-				);
-				if (ranged !== undefined) return groupSearchOutput(ranged).length > 0;
-				const probe = await grepDefinition.execute(
-					toolCallId,
-					{
-						pattern: params.pattern,
-						path: target.path,
-						glob: target.glob,
+								)
+							: target.sqlite
+								? await searchSqliteSelector(
+										target.sqlite,
+										params.pattern,
+										ignoreCase,
+										contextBefore,
+										contextAfter,
+									)
+								: await searchInternalSelector(
+										target.internal!,
+										executionCwd,
+										params.pattern,
+										ignoreCase,
+										false,
+										resourceCtx,
+										contextBefore,
+										contextAfter,
+										{
+											...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
+											...(signal === undefined ? {} : { signal }),
+										},
+									);
+						return (
+							groupSearchOutput(filterTargetLineRanges(text, target, contextBefore, contextAfter)).length > 0
+						);
+					}
+					const ranged = await searchFileLineRanges(
+						target,
+						executionCwd,
+						params.pattern,
 						ignoreCase,
-						literal: false,
-						context: 0,
-						limit: 1,
-						gitignore: params.gitignore,
-					},
-					signal,
-					undefined,
-					ctx as never,
-				);
-				return probe.content.some((item) => item.type === "text" && item.text && item.text !== "No matches found");
-			};
-			for (const target of targets) {
-				if (skip === 0 && remaining <= 0) {
+						contextBefore,
+						contextAfter,
+					);
+					if (ranged !== undefined) return groupSearchOutput(ranged).length > 0;
+					const probe = await grepDefinition.execute(
+						toolCallId,
+						{
+							pattern: params.pattern,
+							path: target.path,
+							glob: target.glob,
+							ignoreCase,
+							literal: false,
+							context: 0,
+							limit: 1,
+							gitignore: params.gitignore,
+						},
+						signal,
+						undefined,
+						ctx as never,
+					);
+					return probe.content.some(
+						(item) => item.type === "text" && item.text && item.text !== "No matches found",
+					);
+				};
+				let firstError: Error | undefined;
+				let successes = 0;
+				for (const [index, target] of targets.entries()) {
+					if (first) signal?.throwIfAborted();
+					if (skip === 0 && remaining <= 0) {
+						if (
+							!target.archive &&
+							!target.sqlite &&
+							!target.internal &&
+							targets.length > 1 &&
+							(await fsStat(await resolveToCwdAsync(target.path, executionCwd))
+								.then(() => false)
+								.catch(() => true))
+						) {
+							skippedMissingPaths.push(target.path);
+							continue;
+						}
+						if (await targetHasMatch(target)) {
+							pageFullWithMore = true;
+							break;
+						}
+						continue;
+					}
+					if (target.archive || target.sqlite || target.internal) {
+						const archive = target.archive
+							? await resolveArchiveSelector(target.archive, executionCwd)
+							: undefined;
+						const read = async () =>
+							archive
+								? await searchArchiveSelector(
+										archive,
+										params.pattern,
+										ignoreCase,
+										false,
+										contextBefore,
+										contextAfter,
+									)
+								: target.sqlite
+									? await searchSqliteSelector(
+											target.sqlite,
+											params.pattern,
+											ignoreCase,
+											contextBefore,
+											contextAfter,
+										)
+									: await searchInternalSelector(
+											target.internal!,
+											executionCwd,
+											params.pattern,
+											ignoreCase,
+											false,
+											resourceCtx,
+											contextBefore,
+											contextAfter,
+											{
+												...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
+												...(signal === undefined ? {} : { signal }),
+											},
+										);
+						let text: string;
+						if (first) {
+							const scope = {},
+								url = rawPaths[index]!;
+							try {
+								text = await historySearchScope.run(scope, read);
+								successes++;
+							} catch (error) {
+								signal?.throwIfAborted();
+								firstError ??= error instanceof Error ? error : new Error(String(error));
+								const message = (error instanceof Error ? error.message : String(error))
+									.replace(/\s+/g, " ")
+									.trim();
+								text = `${url}:0: [not searched: ${message}; continue with ${url}]`;
+							}
+							if (contributesToHistoryPage(skip, groups.length, limit)) first.push({ url, scope, answer: text });
+						} else text = await read();
+						if (archive && target.archive)
+							text = text.split(archive.archivePath).join(target.archive.archivePath);
+						if (target.sqlite)
+							text = text
+								.split(target.sqlite.databasePath)
+								.join(target.path.match(/^(.+?\.(?:sqlite3?|db3?))/i)?.[1] ?? target.sqlite.databasePath);
+						text = text || "No matches found";
+						text = filterTargetLineRanges(text, target, contextBefore, contextAfter);
+						const outputGroups = groupSearchOutput(text);
+						if (skip > 0)
+							groups.push(
+								...outputGroups.map((group) => ({
+									targetPath: target.path,
+									virtual: isVirtualSearchTarget(target),
+									group,
+								})),
+							);
+						else {
+							const page = firstTargetPage(text, outputGroups, remaining, limit);
+							text = page.text;
+							remaining -= page.used;
+							pageFullWithMore ||= page.more;
+						}
+						if (skip === 0) results.push({ content: [{ type: "text" as const, text }], details: undefined });
+						continue;
+					}
 					if (
-						!target.archive &&
-						!target.sqlite &&
-						!target.internal &&
 						targets.length > 1 &&
 						(await fsStat(await resolveToCwdAsync(target.path, executionCwd))
 							.then(() => false)
 							.catch(() => true))
 					) {
 						skippedMissingPaths.push(target.path);
+						results.push({ content: [{ type: "text" as const, text: "No matches found" }], details: undefined });
 						continue;
 					}
-					if (await targetHasMatch(target)) {
-						pageFullWithMore = true;
-						break;
+					const rangedText = await searchFileLineRanges(
+						target,
+						executionCwd,
+						params.pattern,
+						ignoreCase,
+						contextBefore,
+						contextAfter,
+					);
+					if (rangedText !== undefined) {
+						let text = applyDefaultSearchContext(rangedText, contextBefore, contextAfter) || "No matches found";
+						const result = {
+							content: [{ type: "text" as const, text }],
+							details: undefined as SearchToolDetails | undefined,
+						};
+						results.push(result);
+						const outputGroups = groupSearchOutput(text);
+						if (skip > 0)
+							groups.push(...outputGroups.map((group) => ({ targetPath: target.path, virtual: false, group })));
+						else if (!isSingleFileSearch && outputGroups.length > 0) {
+							const hadMore = outputGroups.length > remaining;
+							text = formatSearchGroups(outputGroups, remaining);
+							if (hadMore) {
+								result.details = fileLimitDetails(limit);
+								pageFullWithMore = true;
+							}
+							remaining -= Math.min(remaining, outputGroups.length);
+							result.content = [{ type: "text", text }];
+						}
+						continue;
 					}
-					continue;
-				}
-				if (target.archive || target.sqlite || target.internal) {
-					const archive = target.archive ? await resolveArchiveSelector(target.archive, executionCwd) : undefined;
-					let text = archive
-						? await searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
-						: target.sqlite
-							? await searchSqliteSelector(
-									target.sqlite,
-									params.pattern,
-									ignoreCase,
-									contextBefore,
-									contextAfter,
-								)
-							: await searchInternalSelector(
-									target.internal!,
-									executionCwd,
-									params.pattern,
-									ignoreCase,
-									false,
-									resourceCtx,
-									contextBefore,
-									contextAfter,
-									{
-										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
-										...(signal === undefined ? {} : { signal }),
-									},
-								);
-					if (archive && target.archive) text = text.split(archive.archivePath).join(target.archive.archivePath);
-					if (target.sqlite)
-						text = text
-							.split(target.sqlite.databasePath)
-							.join(target.path.match(/^(.+?\.(?:sqlite3?|db3?))/i)?.[1] ?? target.sqlite.databasePath);
-					text = text || "No matches found";
-					text = filterTargetLineRanges(text, target, contextBefore, contextAfter);
-					const outputGroups = groupSearchOutput(text);
-					if (skip > 0)
-						groups.push(
-							...outputGroups.map((group) => ({
-								targetPath: target.path,
-								virtual: isVirtualSearchTarget(target),
-								group,
-							})),
-						);
-					else {
-						const page = firstTargetPage(text, outputGroups, remaining, limit);
-						text = page.text;
-						remaining -= page.used;
-						pageFullWithMore ||= page.more;
-					}
-					if (skip === 0) results.push({ content: [{ type: "text" as const, text }], details: undefined });
-					continue;
-				}
-				if (
-					targets.length > 1 &&
-					(await fsStat(await resolveToCwdAsync(target.path, executionCwd))
-						.then(() => false)
-						.catch(() => true))
-				) {
-					skippedMissingPaths.push(target.path);
-					results.push({ content: [{ type: "text" as const, text: "No matches found" }], details: undefined });
-					continue;
-				}
-				const rangedText = await searchFileLineRanges(
-					target,
-					executionCwd,
-					params.pattern,
-					ignoreCase,
-					contextBefore,
-					contextAfter,
-				);
-				if (rangedText !== undefined) {
-					let text = applyDefaultSearchContext(rangedText, contextBefore, contextAfter) || "No matches found";
-					const result = {
-						content: [{ type: "text" as const, text }],
-						details: undefined as SearchToolDetails | undefined,
-					};
+					const result = await grepDefinition.execute(
+						toolCallId,
+						{
+							pattern: params.pattern,
+							path: target.path,
+							glob: target.glob,
+							ignoreCase,
+							literal: false,
+							context: searchContext,
+							maxCountPerFile: isSingleFileSearch ? SINGLE_FILE_MATCHES : MULTI_FILE_PER_FILE_MATCHES,
+							limit: INTERNAL_SKIP_LIMIT,
+							gitignore: params.gitignore,
+						},
+						signal,
+						onUpdate,
+						ctx as never,
+					);
 					results.push(result);
+					if (result.details?.matchLimitReached) internalSearchCapped = true;
+					let text = result.content
+						.map((item) => (item.type === "text" ? item.text : undefined))
+						.filter((text): text is string => typeof text === "string")
+						.join("\n");
+					text = filterSearchOutputByLineRange(text, target.lineRanges, contextBefore, contextAfter);
+					if (text !== "No matches found")
+						text = applyDefaultSearchContext(text, contextBefore, contextAfter) || "No matches found";
 					const outputGroups = groupSearchOutput(text);
 					if (skip > 0)
 						groups.push(...outputGroups.map((group) => ({ targetPath: target.path, virtual: false, group })));
@@ -982,176 +982,183 @@ export function createSearchToolDefinition(
 						const hadMore = outputGroups.length > remaining;
 						text = formatSearchGroups(outputGroups, remaining);
 						if (hadMore) {
-							result.details = fileLimitDetails(limit);
+							result.details = { ...(result.details ?? {}), ...fileLimitDetails(limit) };
 							pageFullWithMore = true;
 						}
 						remaining -= Math.min(remaining, outputGroups.length);
-						result.content = [{ type: "text", text }];
 					}
-					continue;
+					result.content = [{ type: "text", text }];
 				}
-				const result = await grepDefinition.execute(
-					toolCallId,
-					{
-						pattern: params.pattern,
-						path: target.path,
-						glob: target.glob,
-						ignoreCase,
-						literal: false,
-						context: searchContext,
-						maxCountPerFile: isSingleFileSearch ? SINGLE_FILE_MATCHES : MULTI_FILE_PER_FILE_MATCHES,
-						limit: INTERNAL_SKIP_LIMIT,
-						gitignore: params.gitignore,
-					},
-					signal,
-					onUpdate,
-					ctx as never,
-				);
-				results.push(result);
-				if (result.details?.matchLimitReached) internalSearchCapped = true;
-				let text = result.content
-					.map((item) => (item.type === "text" ? item.text : undefined))
-					.filter((text): text is string => typeof text === "string")
-					.join("\n");
-				text = filterSearchOutputByLineRange(text, target.lineRanges, contextBefore, contextAfter);
-				if (text !== "No matches found")
-					text = applyDefaultSearchContext(text, contextBefore, contextAfter) || "No matches found";
-				const outputGroups = groupSearchOutput(text);
-				if (skip > 0)
-					groups.push(...outputGroups.map((group) => ({ targetPath: target.path, virtual: false, group })));
-				else if (!isSingleFileSearch && outputGroups.length > 0) {
-					const hadMore = outputGroups.length > remaining;
-					text = formatSearchGroups(outputGroups, remaining);
-					if (hadMore) {
-						result.details = { ...(result.details ?? {}), ...fileLimitDetails(limit) };
-						pageFullWithMore = true;
+
+				if (firstError && !successes) throw firstError;
+				const details: SearchToolDetails = {};
+				for (const result of results) {
+					if (result.details?.truncation) details.truncation = result.details.truncation;
+					if (result.details?.matchLimitReached) details.matchLimitReached = result.details.matchLimitReached;
+					if (hasFileLimit(result.details)) markFileLimit(details, limit);
+					if (result.details?.linesTruncated) details.linesTruncated = true;
+				}
+
+				if (skip > 0) {
+					const renderedPages: string[] = [];
+					let remainingMatches = limit;
+					for (const item of groups.slice(skip)) {
+						if (remainingMatches <= 0) break;
+						const raw = formatSearchGroups([item.group], 1);
+						remainingMatches--;
+						if (raw)
+							renderedPages.push(
+								item.virtual ? raw : await cwdRelativeSearchOutput(raw, executionCwd, item.targetPath),
+							);
 					}
-					remaining -= Math.min(remaining, outputGroups.length);
+					const hasMorePages = groups.slice(skip + limit).length > 0;
+					const cappedBeforeRequestedPage = internalSearchCapped && skip >= groups.length;
+					const capNotice = internalSearchCapped && !hasMorePages ? `\n\n${internalCapHint()}` : "";
+					const output = `${renderedPages.join("\n\n") || `No more results (skip=${skip})`}${hasMorePages ? `\n\n${continuationHint(limit, skip)}` : ""}${capNotice}`;
+					if (hasMorePages || cappedBeforeRequestedPage || capNotice) markFileLimit(details, limit);
+					const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
+					let content = truncation.content;
+					if (truncation.truncated) {
+						details.truncation = truncation;
+						content += `\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]`;
+					}
+					return {
+						content: [{ type: "text", text: content }],
+						details: buildSearchDetails(details, content, executionCwd, scopePath, skippedMissingPaths),
+					};
 				}
-				result.content = [{ type: "text", text }];
-			}
 
-			const details: SearchToolDetails = {};
-			for (const result of results) {
-				if (result.details?.truncation) details.truncation = result.details.truncation;
-				if (result.details?.matchLimitReached) details.matchLimitReached = result.details.matchLimitReached;
-				if (hasFileLimit(result.details)) markFileLimit(details, limit);
-				if (result.details?.linesTruncated) details.linesTruncated = true;
-			}
-
-			if (skip > 0) {
-				const renderedPages: string[] = [];
-				let remainingMatches = limit;
-				for (const item of groups.slice(skip)) {
-					if (remainingMatches <= 0) break;
-					const raw = formatSearchGroups([item.group], 1);
-					remainingMatches--;
-					if (raw)
-						renderedPages.push(
-							item.virtual ? raw : await cwdRelativeSearchOutput(raw, executionCwd, item.targetPath),
-						);
-				}
-				const hasMorePages = groups.slice(skip + limit).length > 0;
-				const cappedBeforeRequestedPage = internalSearchCapped && skip >= groups.length;
-				const capNotice = internalSearchCapped && !hasMorePages ? `\n\n${internalCapHint()}` : "";
-				const output = `${renderedPages.join("\n\n") || `No more results (skip=${skip})`}${hasMorePages ? `\n\n${continuationHint(limit, skip)}` : ""}${capNotice}`;
-				if (hasMorePages || cappedBeforeRequestedPage || capNotice) markFileLimit(details, limit);
-				const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
-				let content = truncation.content;
-				if (truncation.truncated) {
-					details.truncation = truncation;
-					content += `\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]`;
-				}
-				return {
-					content: [{ type: "text", text: content }],
-					details: buildSearchDetails(details, content, executionCwd, scopePath, skippedMissingPaths),
-				};
-			}
-
-			if (results.length === 1) {
-				const result = results[0]!;
-				let text = result.content
-					.map((item) => (item.type === "text" ? item.text : undefined))
-					.filter((value): value is string => typeof value === "string")
-					.join("\n");
-				text = filterTargetLineRanges(text, targets[0], contextBefore, contextAfter);
-				if (!isVirtualSearchTarget(targets[0]) && text !== "No matches found")
-					text = applyDefaultSearchContext(text, contextBefore, contextAfter) || "No matches found";
-				const skipNotice = singleFileSkipIgnored
-					? "\n\n[skip is ignored for single-file search; refine the pattern/path or search a directory to page matching files.]"
-					: "";
-				if (isSingleFileSearch && text !== "No matches found")
-					text = formatSearchGroups(groupSearchOutput(text), limit, limit);
-				if (text && text !== "No matches found") {
-					const renderedText = isVirtualSearchTarget(targets[0])
-						? text
-						: await cwdRelativeSearchOutput(text, executionCwd, targets[0]?.path ?? ".");
-					const pagedText = `${hasFileLimit(result.details) ? `${renderedText}\n\n${continuationHint(limit, skip)}` : renderedText}${skipNotice}`;
-					const truncation = truncateHead(pagedText, { maxLines: Number.MAX_SAFE_INTEGER });
-					if (truncation.truncated)
+				if (results.length === 1) {
+					const result = results[0]!;
+					let text = result.content
+						.map((item) => (item.type === "text" ? item.text : undefined))
+						.filter((value): value is string => typeof value === "string")
+						.join("\n");
+					text = filterTargetLineRanges(text, targets[0], contextBefore, contextAfter);
+					if (!isVirtualSearchTarget(targets[0]) && text !== "No matches found")
+						text = applyDefaultSearchContext(text, contextBefore, contextAfter) || "No matches found";
+					const skipNotice = singleFileSkipIgnored
+						? "\n\n[skip is ignored for single-file search; refine the pattern/path or search a directory to page matching files.]"
+						: "";
+					if (isSingleFileSearch && text !== "No matches found")
+						text = formatSearchGroups(groupSearchOutput(text), limit, limit);
+					if (text && text !== "No matches found") {
+						const renderedText = isVirtualSearchTarget(targets[0])
+							? text
+							: await cwdRelativeSearchOutput(text, executionCwd, targets[0]?.path ?? ".");
+						const pagedText = `${hasFileLimit(result.details) ? `${renderedText}\n\n${continuationHint(limit, skip)}` : renderedText}${skipNotice}`;
+						const truncation = truncateHead(pagedText, { maxLines: Number.MAX_SAFE_INTEGER });
+						if (truncation.truncated)
+							return {
+								...result,
+								content: [
+									{
+										type: "text",
+										text: `${truncation.content}\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]`,
+									},
+								],
+								details: buildSearchDetails(
+									{ ...(result.details ?? {}), truncation },
+									truncation.content,
+									executionCwd,
+									scopePath,
+									skippedMissingPaths,
+								),
+							};
 						return {
 							...result,
-							content: [
-								{
-									type: "text",
-									text: `${truncation.content}\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]`,
-								},
-							],
+							content: [{ type: "text", text: pagedText }],
 							details: buildSearchDetails(
-								{ ...(result.details ?? {}), truncation },
-								truncation.content,
+								result.details,
+								pagedText,
 								executionCwd,
 								scopePath,
 								skippedMissingPaths,
 							),
 						};
+					}
 					return {
 						...result,
-						content: [{ type: "text", text: pagedText }],
-						details: buildSearchDetails(result.details, pagedText, executionCwd, scopePath, skippedMissingPaths),
+						details: buildSearchDetails(
+							result.details,
+							text || "No matches found",
+							executionCwd,
+							scopePath,
+							skippedMissingPaths,
+						),
 					};
 				}
-				return {
-					...result,
-					details: buildSearchDetails(
-						result.details,
-						text || "No matches found",
-						executionCwd,
-						scopePath,
-						skippedMissingPaths,
-					),
-				};
-			}
 
-			const renderedResults = await Promise.all(
-				results.map(async (result, index) => {
-					let text = result.content
-						.map((item) => (item.type === "text" ? item.text : undefined))
-						.filter((value): value is string => typeof value === "string" && value.length > 0)
-						.join("\n");
-					text = filterTargetLineRanges(text, targets[index], contextBefore, contextAfter);
-					if (!isVirtualSearchTarget(targets[index]) && text !== "No matches found")
-						text = applyDefaultSearchContext(text, contextBefore, contextAfter);
-					if (!text || text === "No matches found") return `# ${targets[index]?.path ?? "."}\n${text}`;
-					return isVirtualSearchTarget(targets[index])
-						? text
-						: await cwdRelativeSearchOutput(text, executionCwd, targets[index]?.path ?? ".");
-				}),
-			);
-			const content = dedupeRenderedSearchOutput(
-				`${renderedResults.join("\n\n")}${skippedMissingPaths.length > 0 ? `\n\n[Skipped missing paths: ${skippedMissingPaths.join(", ")}]` : ""}${pageFullWithMore ? `\n\n${continuationHint(limit, skip)}` : ""}${internalSearchCapped && !pageFullWithMore ? `\n\n${internalCapHint()}` : ""}`,
-			);
-			if (pageFullWithMore || internalSearchCapped) markFileLimit(details, limit);
-			const truncation = truncateHead(content, { maxLines: Number.MAX_SAFE_INTEGER });
-			let output = truncation.content;
-			if (truncation.truncated) {
-				details.truncation = truncation;
-				output += `\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]`;
-			}
-			return {
-				content: [{ type: "text", text: output }],
-				details: buildSearchDetails(details, output, executionCwd, scopePath, skippedMissingPaths),
+				const renderedResults = await Promise.all(
+					results.map(async (result, index) => {
+						let text = result.content
+							.map((item) => (item.type === "text" ? item.text : undefined))
+							.filter((value): value is string => typeof value === "string" && value.length > 0)
+							.join("\n");
+						text = filterTargetLineRanges(text, targets[index], contextBefore, contextAfter);
+						if (!isVirtualSearchTarget(targets[index]) && text !== "No matches found")
+							text = applyDefaultSearchContext(text, contextBefore, contextAfter);
+						if (!text || text === "No matches found") return `# ${targets[index]?.path ?? "."}\n${text}`;
+						return isVirtualSearchTarget(targets[index])
+							? text
+							: await cwdRelativeSearchOutput(text, executionCwd, targets[index]?.path ?? ".");
+					}),
+				);
+				const content = dedupeRenderedSearchOutput(
+					`${renderedResults.join("\n\n")}${skippedMissingPaths.length > 0 ? `\n\n[Skipped missing paths: ${skippedMissingPaths.join(", ")}]` : ""}${pageFullWithMore ? `\n\n${continuationHint(limit, skip)}` : ""}${internalSearchCapped && !pageFullWithMore ? `\n\n${internalCapHint()}` : ""}`,
+				);
+				if (pageFullWithMore || internalSearchCapped) markFileLimit(details, limit);
+				const truncation = truncateHead(content, { maxLines: Number.MAX_SAFE_INTEGER });
+				let output = truncation.content;
+				if (truncation.truncated) {
+					details.truncation = truncation;
+					output += `\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]`;
+				}
+				return {
+					content: [{ type: "text", text: output }],
+					details: buildSearchDetails(details, output, executionCwd, scopePath, skippedMissingPaths),
+				};
 			};
+			if (!targets.every((target) => target.internal?.startsWith("history://"))) return searchPage(signal);
+			const skip = normalizeSkip(params.skip);
+			validateBashWait(params.wait, owner?.startToolTask !== undefined);
+			return runHistorySearch({
+				urls: rawPaths,
+				pattern: params.pattern,
+				ignoreCase,
+				contextBefore,
+				contextAfter,
+				cwd: executionCwd,
+				resources: resourceCtx,
+				timeoutSeconds: historySearchTimeoutSeconds(params.timeout),
+				owner,
+				tempDir,
+				...(params.wait === undefined ? {} : { wait: params.wait }),
+				...(signal === undefined ? {} : { signal }),
+				firstPage: async (signal, first) => {
+					const result = await searchPage(signal, first);
+					return {
+						text: result.content.map((b) => (b.type === "text" ? b.text : "")).join("\n"),
+						details: result.details,
+					};
+				},
+				shape: {
+					cwd: executionCwd,
+					scopePath,
+					page: (text) =>
+						skip > 0
+							? historySkipPage(
+									groupSearchOutput(text).slice(skip, skip + DEFAULT_LIMIT + 1),
+									skip,
+									executionCwd,
+									scopePath,
+								)
+							: undefined,
+				},
+				...(onUpdate === undefined
+					? {}
+					: { onUpdate: (text: string) => onUpdate({ content: [{ type: "text", text }], details: undefined }) }),
+			}) as never;
 		},
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);

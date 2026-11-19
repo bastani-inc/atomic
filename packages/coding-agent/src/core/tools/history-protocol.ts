@@ -30,6 +30,7 @@ import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionRecordHeader, SessionStore, SessionSummary } from "../storage/session/types.js";
 import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.js";
 import { matchLinesInWorker } from "./history-regex-worker.js";
+import { historySearchScope } from "./history-search-scope.ts";
 import {
 	type BudgetStop,
 	cutTextToUtf8Bytes,
@@ -108,9 +109,9 @@ const WHOLE_SESSION_ENTRY_LIMIT = 2_000;
 const DISCOVERY_TTL_MS = 60_000;
 const MAX_PARKED_DISCOVERIES = 16;
 const QUERY_KEYS: Readonly<Record<"sessions" | "workflows" | "root", readonly string[]>> = {
-	sessions: ["limit", "offset", "project", "cursor", "session", "after", "listing"],
+	sessions: ["limit", "offset", "project", "cursor", "session", "after"],
 	workflows: ["limit", "offset", "cursor", "run"],
-	root: ["limit", "offset", "project", "cursor", "listing"],
+	root: ["limit", "offset", "project", "cursor"],
 };
 const CURSOR = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?$/;
 
@@ -126,8 +127,6 @@ interface HistoryTarget {
 	readonly run?: string;
 	readonly after?: SessionKey;
 	readonly cursor?: HistoryCursor;
-	/** The session listing a stopped discovery parked for this chain (`listing=<n>`); only this chain adopts it. */
-	readonly listing?: number;
 }
 
 interface SessionKey {
@@ -172,19 +171,12 @@ function positionCursor(target: HistoryTarget): string | undefined {
 	return target.cursor !== undefined && target.cursor.first > 0 ? cursorText(target.cursor) : undefined;
 }
 
-/** Numbers each parked session listing, so a continuation names the one listing its chain started. */
-let listingSerial = 0;
-
 interface ParkedDiscovery {
-	/** The number a continuation names this listing by (`listing=<n>`). */
-	readonly serial: number;
 	readonly iterator: AsyncIterator<SessionSummary>;
 	readonly controller: AbortController;
 	readonly items: { readonly summary: SessionSummary; readonly key: SessionKey }[];
 	pending?: Promise<IteratorResult<SessionSummary>>;
 	timer?: ReturnType<typeof setTimeout>;
-	/** A call is reading it: another call for the same listing lists afresh rather than share its iterator. */
-	busy: boolean;
 }
 
 function closeDiscovery(discovery: ParkedDiscovery): void {
@@ -194,6 +186,7 @@ function closeDiscovery(discovery: ParkedDiscovery): void {
 }
 
 const parkedDiscoveries = new WeakMap<SessionStore, Map<string, ParkedDiscovery>>();
+const searchDiscoveries = new WeakMap<object, typeof parkedDiscoveries>();
 
 interface ParkedRunListing {
 	readonly runs: Promise<readonly WorkflowRunSummary[]>;
@@ -251,10 +244,6 @@ function parseTarget(url: string): HistoryTarget {
 	const afterId = afterMatch?.[3] ?? session;
 	if (afterText !== null && (!afterMatch || afterId === undefined))
 		throw new Error(`history after must be the position a session search gave: ${afterText}`);
-	const listingText = params.get("listing");
-	const listing = listingText === null ? undefined : Number(listingText);
-	if (listingText !== null && (!/^\d+$/.test(listingText) || !Number.isSafeInteger(listing)))
-		throw new Error(`history listing must be the number a search that stopped early gave it: ${listingText}`);
 	const cursorText = params.get("cursor");
 	const cursorMatch = cursorText === null ? undefined : CURSOR.exec(cursorText);
 	if (cursorText !== null && !cursorMatch)
@@ -269,7 +258,6 @@ function parseTarget(url: string): HistoryTarget {
 		...(project === undefined ? {} : { project }),
 		...(session === undefined ? {} : { session }),
 		...(run === undefined ? {} : { run }),
-		...(listing === undefined ? {} : { listing }),
 		...(afterMatch && afterId !== undefined
 			? { after: { activeMs: Number(afterMatch[1]), createdMs: Number(afterMatch[2]), id: afterId } }
 			: {}),
@@ -320,7 +308,6 @@ function pageUrl(
 	ranges?: readonly SeqRange[],
 	pinned?: string,
 	after?: SessionKey,
-	listing?: number,
 ): string {
 	const params = new URLSearchParams();
 	if (offset > 0) params.set("offset", String(offset));
@@ -329,7 +316,6 @@ function pageUrl(
 	if (pinned !== undefined) params.set(domain === "sessions" ? "session" : "run", pinned);
 	if (cursor !== undefined) params.set("cursor", cursor);
 	if (after !== undefined) params.set("after", sessionKeyText(after, pinned));
-	if (listing !== undefined) params.set("listing", String(listing));
 	const query = params.toString();
 	return `history://${domain}${query ? `?${query}` : ""}${ranges && ranges.length > 0 ? `:${rangeText(ranges)}` : ""}`;
 }
@@ -1276,71 +1262,61 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		| { readonly sessions: SessionSummary[]; readonly keys: SessionKey[]; readonly stopped?: undefined }
 		| {
 				readonly sessions?: undefined;
-				readonly stopped: {
-					readonly reason: BudgetStop;
-					readonly scanned: number;
-					readonly cursor: string;
-					/** Omitted when every place for a parked listing was taken: the chain lists afresh next time. */
-					readonly listing?: number;
-				};
+				readonly stopped: { readonly reason: BudgetStop; readonly scanned: number; readonly cursor: string };
 		  }
 	> {
 		const store = requireStore();
 		const scope = projectScope(target);
-		// A parked listing belongs to the chain that started it: a chain adopts only the one its URL names, so it never
-		// takes another chain's listing, which may have started before it and miss sessions created since (#history).
-		const keyOf = (listing: number) => JSON.stringify([scope.cwd ?? null, listing, pin ?? null]);
-		let parkedHere = parkedDiscoveries.get(store);
+		const keyOf = (cursor: string) => JSON.stringify([scope.cwd ?? null, cursor, pin ?? null]);
+		const chain = historySearchScope.getStore();
+		const firstRequest = chain !== undefined && !searchDiscoveries.has(chain);
+		let cache = parkedDiscoveries;
+		if (chain) {
+			cache = searchDiscoveries.get(chain) ?? new WeakMap();
+			searchDiscoveries.set(chain, cache);
+		}
+		let parkedHere = cache.get(store);
 		if (!parkedHere) {
 			parkedHere = new Map<string, ParkedDiscovery>();
-			parkedDiscoveries.set(store, parkedHere);
+			cache.set(store, parkedHere);
 		}
 		const byKey = parkedHere;
-		const requestKey = target.listing === undefined ? undefined : keyOf(target.listing);
-		let parked = requestKey === undefined ? undefined : byKey.get(requestKey);
-		if (parked?.busy) parked = undefined;
-		if (parked) clearTimeout(parked.timer);
-		else {
+		const requestKey = target.cursor === undefined ? undefined : keyOf(cursorText(target.cursor));
+		// The first URL can have come from an ordinary read. Subsequent stops belong to this chain.
+		const source = firstRequest ? parkedDiscoveries.get(store) : byKey;
+		let parked = requestKey === undefined ? undefined : source?.get(requestKey);
+		if (parked && requestKey !== undefined) {
+			clearTimeout(parked.timer);
+			source!.delete(requestKey);
+		}
+		if (!parked) {
 			const controller = new AbortController();
 			const iterable = store.list({ ...scope, withoutSearchText: true, signal: controller.signal });
-			parked = {
-				iterator: iterable[Symbol.asyncIterator](),
-				controller,
-				items: [],
-				serial: ++listingSerial,
-				busy: false,
-			};
+			parked = { iterator: iterable[Symbol.asyncIterator](), controller, items: [] };
 		}
 		const active = parked;
-		active.busy = true;
-		const key = keyOf(active.serial);
-		// The listing ended: it gives up its place.
-		const release = () => {
-			active.busy = false;
-			if (byKey.get(key) === active) byKey.delete(key);
-		};
-		// A parked listing keeps its place until its listing ends or it expires; a newer one never takes it. One that
-		// finds every place taken is not parked and its chain lists afresh next time. So each parked listing reads at
-		// least one more session per call and ends, freeing its place, and every chain gets one in turn: evicting the
-		// oldest instead would let more chains than places evict each other's listings and start again forever.
 		const park = (reason: BudgetStop) => {
 			const position = positionCursor(target);
 			const cursor = position ?? `0.${active.items.length}`;
-			active.busy = false;
-			if (byKey.get(key) !== active) {
-				if (byKey.size >= MAX_PARKED_DISCOVERIES) {
-					closeDiscovery(active);
-					return { stopped: { reason, scanned: active.items.length, cursor } };
-				}
-				byKey.set(key, active);
+			const key = keyOf(position ?? cursorText({ first: 0, second: active.items.length, third: 0, fourth: 0 }));
+			const replaced = byKey.get(key);
+			if (replaced && replaced !== active) closeDiscovery(replaced);
+			byKey.delete(key);
+			while (byKey.size >= MAX_PARKED_DISCOVERIES) {
+				const oldestKey = byKey.keys().next().value;
+				if (oldestKey === undefined) break;
+				const oldest = byKey.get(oldestKey)!;
+				byKey.delete(oldestKey);
+				closeDiscovery(oldest);
 			}
 			active.timer = setTimeout(() => {
-				if (byKey.get(key) !== active || active.busy) return;
+				if (byKey.get(key) !== active) return;
 				byKey.delete(key);
 				closeDiscovery(active);
 			}, DISCOVERY_TTL_MS);
 			active.timer.unref?.();
-			return { stopped: { reason, scanned: active.items.length, cursor, listing: active.serial } };
+			byKey.set(key, active);
+			return { stopped: { reason, scanned: active.items.length, cursor } };
 		};
 		let progressed = false;
 		try {
@@ -1359,11 +1335,9 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			}
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) return park("time");
-			release();
 			closeDiscovery(parked);
 			throw error;
 		}
-		release();
 		await budget.pace();
 		parked.items.sort((a, b) => compareSessionKeys(a.key, b.key));
 		return { sessions: parked.items.map((item) => item.summary), keys: parked.items.map((item) => item.key) };
@@ -1437,7 +1411,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const discovered = await discoverSessions(target, budget);
 		if (discovered.stopped !== undefined) {
 			const suffix = positionCursor(target) === undefined ? lineSuffix(selection) : exactLineSuffix(selection);
-			const contUrl = `${pageUrl("sessions", target, target.offset, discovered.stopped.cursor, undefined, undefined, undefined, discovered.stopped.listing)}${suffix}`;
+			const contUrl = `${pageUrl("sessions", target, target.offset, discovered.stopped.cursor)}${suffix}`;
 			return {
 				text: `# sessions in ${scope}\n[scanned ${discovered.stopped.scanned} sessions so far; ${stopText(discovered.stopped.reason)}; continue with ${contUrl}]`,
 				preselected: true,
@@ -1738,7 +1712,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				request.ranges,
 				pin,
 				target.after,
-				discovered.stopped.listing,
 			);
 			const lines = [
 				charged(

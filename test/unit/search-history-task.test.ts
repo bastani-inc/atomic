@@ -564,14 +564,16 @@ test("a cut history search result still shows what could not be read or searched
 			{ pattern: "needle", paths: "history://workflows" },
 			{
 				internalResourceRouter: {
-					search: async () =>
-						[
-							`history://workflows/r1:1: needle ${"x".repeat(45_000)}`,
-							unreadable,
-							skipped,
-							nextPage,
-							`history://workflows/r2:1: needle ${"y".repeat(30_000)}`,
-						].join("\n"),
+					search: async (url: string) =>
+						url === "history://workflows"
+							? "history://workflows:0: [the byte budget ran out; continue with history://workflows?cursor=1]"
+							: [
+									`history://workflows/r1:1: needle ${"x".repeat(45_000)}`,
+									unreadable,
+									skipped,
+									nextPage,
+									`history://workflows/r2:1: needle ${"y".repeat(30_000)}`,
+								].join("\n"),
 				},
 			},
 		);
@@ -818,6 +820,32 @@ test("a task's output read page by page never joins the bytes on the two sides o
 		omittedRanges: [],
 	});
 	assert.equal(before + after + decoder.end(), "\uFFFD\n[Output omitted: bytes 2-10]\n\uFFFDAB");
+});
+
+test("explicit background delivers an already complete page without querying again (#5479)", async () => {
+	const owner = host(10_000);
+	const calls: string[] = [];
+	const paths = Array.from({ length: 21 }, (_, i) => `history://sessions/s${i}`);
+	const row = (url: string) => `${url}:1: needle ${"a".repeat(2_100)}`;
+	const ctx = scriptedRouter((url) => {
+		calls.push(url);
+		return row(url);
+	});
+	try {
+		const tool = searchTool(owner).search;
+		const launched = await run(tool, { pattern: "needle", paths, wait: { kind: "background" } }, ctx);
+		const { observation } = launched.details as { observation: { kind: string; taskId: string } };
+		assert.equal(observation.kind, "yielded");
+		const expected = `${paths.slice(0, 20).map(row).join("\n\n")}\n\n[20 matching files shown. Use skip=20 to view more.]`;
+		for (let read = 0; read < 2; read++) {
+			const waited = await run(tool, { action: "wait", id: observation.taskId, budgetMs: 10_000 }, ctx);
+			assert.equal(text(waited), expected);
+			assert.deepEqual(waited.details?.files, paths.slice(0, 20));
+		}
+		assert.deepEqual(calls, paths);
+	} finally {
+		await owner.close("session-close");
+	}
 });
 
 test("a background history search's skip pages what it found once a wait sees it end (#5479)", async () => {

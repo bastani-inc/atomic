@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { TOOL_TASK_OUTPUT_MAX_BYTES } from "../tasks/supervisor.js";
+import { historySearchScope } from "./history-search-scope.ts";
 import { type InternalResourceContext, searchInternalSelector } from "./resource-selectors.ts";
 import { splitLineRangeSelector } from "./search-line-ranges.ts";
 import type { ToolTaskWork } from "./tool-task.ts";
@@ -56,7 +57,12 @@ export function historyContinuation(line: string): string | undefined {
 	return CONTINUATION.exec(`[${note[2]}]`)?.[1];
 }
 
-export type HistoryTargetSpan = readonly [start: number, end: number];
+export interface HistorySearchStep {
+	readonly url: string;
+	readonly scope: object;
+	/** Already read in the foreground. A lookahead is never passed here. */
+	readonly answer?: string;
+}
 
 export interface HistorySearchRun {
 	/** The `history://` URLs to search, each with its `:N-M` selection if it has one. */
@@ -69,8 +75,6 @@ export interface HistorySearchRun {
 	readonly resources: InternalResourceContext | undefined;
 	/** Step budget override, for tests; omitted, {@link HISTORY_SEARCH_STEP_MS}. */
 	readonly stepMs?: number;
-	/** One range in the decoded output per requested target, if none failed or needed a continuation. */
-	readonly onTargetsComplete?: (spans: readonly HistoryTargetSpan[]) => void;
 }
 
 /**
@@ -98,32 +102,27 @@ export function followedStopNote(line: string): string | undefined {
  * so the chain covers each entry once. A step that fails is noted with where to continue from, and the rest goes on.
  * When the work is stopped (its timeout, a stop from `/tasks`, or the call's abort) it prints where to continue.
  */
-export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
+export function historySearchWork(run: HistorySearchRun, first?: readonly HistorySearchStep[]): ToolTaskWork {
 	return async (write, signal) => {
-		const pending = [...run.urls];
+		const pending: HistorySearchStep[] = first ? [...first] : run.urls.map((url) => ({ url, scope: {} }));
 		let printedAny = false;
 		let printedBytes = 0;
-		let printedChars = 0;
-		let targetSpans: HistoryTargetSpan[] | undefined = run.onTargetsComplete ? [] : undefined;
 		let full = false;
 		let failure: Error | undefined;
 		let succeeded = false;
-		const print = (text: string): HistoryTargetSpan => {
-			if (text.length === 0) return [printedChars, printedChars];
-			const start = printedChars + (printedAny ? 1 : 0);
+		const print = (text: string) => {
+			if (text.length === 0) return;
 			const chunk = `${printedAny ? "\n" : ""}${text}`;
 			write(chunk);
-			printedChars += chunk.length;
 			printedBytes += Buffer.byteLength(chunk, "utf8");
 			printedAny = true;
-			return [start, printedChars];
 		};
 		// What the latest steps answered, by digest: an answer the search already had prints nothing again. Its stops at
 		// the byte or row budget made no progress, so the chain does not follow them again (a source that hands back the
 		// page it was asked for must not loop forever). Its stops at the time budget are still waiting, for a store that
 		// has not answered yet: the chain follows them again, at most once a step, until the store answers or the
 		// search's timeout or a stop ends it.
-		const answered = new Map<string, HistoryTargetSpan>();
+		const answered = new Set<string>();
 		while (pending.length > 0) {
 			// A turn of the event loop before each step: a source that answers without waiting on anything would
 			// otherwise keep the loop in microtasks, where no timeout, stop or abort can ever run.
@@ -132,9 +131,10 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 				full = true;
 				break;
 			}
-			const url = pending.shift()!;
+			const step = pending.shift()!;
+			const { url, scope } = step;
 			if (signal.aborted) {
-				pending.unshift(url);
+				pending.unshift(step);
 				break;
 			}
 			const stepMs = run.stepMs ?? HISTORY_SEARCH_STEP_MS;
@@ -143,23 +143,26 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 			try {
 				// A router gets the URL and its `:N-M` selection apart, as a single search call hands them over.
 				const { path, lineRanges } = splitLineRangeSelector(url);
-				text = await searchInternalSelector(
-					path,
-					run.cwd,
-					run.pattern,
-					run.ignoreCase,
-					false,
-					run.resources,
-					run.contextBefore,
-					run.contextAfter,
-					{ ...(lineRanges === undefined ? {} : { ranges: lineRanges }), signal, timeBudgetMs: stepMs },
-				);
+				text =
+					step.answer ??
+					(await historySearchScope.run(scope, () =>
+						searchInternalSelector(
+							path,
+							run.cwd,
+							run.pattern,
+							run.ignoreCase,
+							false,
+							run.resources,
+							run.contextBefore,
+							run.contextAfter,
+							{ ...(lineRanges === undefined ? {} : { ranges: lineRanges }), signal, timeBudgetMs: stepMs },
+						),
+					));
 			} catch (error) {
 				if (signal.aborted) {
-					pending.unshift(url);
+					pending.unshift(step);
 					break;
 				}
-				targetSpans = undefined;
 				// One source failing does not lose the others: say which, and where it could continue, and go on.
 				failure ??= error instanceof Error ? error : new Error(String(error));
 				const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
@@ -169,10 +172,7 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 			succeeded = true;
 			const lines = text.split("\n");
 			const digest = createHash("sha256").update(text).digest("hex");
-			const previous = answered.get(digest);
-			if (previous) {
-				// Identical answers need only one copy in task output, but each requested target counts for skip.
-				targetSpans?.push(previous);
+			if (answered.has(digest)) {
 				const stuck: string[] = [];
 				const waiting: string[] = [];
 				for (const line of lines) {
@@ -184,7 +184,7 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 				// No progress: keep where it stopped, so the caller can continue from there, and follow it no more.
 				if (stuck.length > 0) print(stuck.join("\n"));
 				if (waiting.length > 0) {
-					pending.unshift(...waiting);
+					pending.unshift(...waiting.map((url) => ({ url, scope })));
 					// A source that answers at once still gets asked only once a step.
 					const rest = stepMs - (performance.now() - startedAt);
 					if (rest > 0) await delay(rest, undefined, { signal }).catch(() => undefined);
@@ -199,29 +199,25 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 				const note = followedStopNote(line);
 				return note === undefined ? [] : [note];
 			});
-			if (next.length > 0) targetSpans = undefined;
-			// Keep direct answers intact. For a continuation remove only the blank lines around what is left.
-			const shown = targetSpans ? text : kept.join("\n").replace(/^\n+|\n+$/g, "");
-			const span = print(shown !== "No matches found" && (targetSpans || shown.trim()) ? shown : "");
-			targetSpans?.push(span);
-			answered.set(digest, span);
+			const shown = kept.join("\n").replace(/^\n+|\n+$/g, "");
+			if (shown !== "No matches found" && shown.trim()) print(shown);
+			answered.add(digest);
 			if (answered.size > REMEMBERED_ANSWERS) answered.delete(answered.keys().next().value!);
 			// What this step stopped at is searched before anything queued after it, so results stay in order.
-			pending.unshift(...next);
+			pending.unshift(...next.map((url) => ({ url, scope })));
 		}
 		if (full) {
 			// It found as much as one result holds: it ends here, and a new search continues from where it stopped.
 			const printed = formatSize(printedBytes);
-			print(pending.map((url) => `[search stopped after printing ${printed}; continue with ${url}]`).join("\n"));
+			print(pending.map(({ url }) => `[search stopped after printing ${printed}; continue with ${url}]`).join("\n"));
 			return "finished";
 		}
 		if (pending.length > 0) {
-			print(pending.map((url) => `[search stopped before it finished; continue with ${url}]`).join("\n"));
+			print(pending.map(({ url }) => `[search stopped before it finished; continue with ${url}]`).join("\n"));
 			return "stopped";
 		}
 		// Nothing could be searched at all: the search failed, as a single call would.
 		if (failure !== undefined && !succeeded) throw failure;
-		if (targetSpans && printedBytes <= TOOL_TASK_OUTPUT_MAX_BYTES) run.onTargetsComplete?.(targetSpans);
 		if (!printedAny) print("No matches found");
 		return "finished";
 	};
