@@ -37,6 +37,7 @@ export function parseHostSessionPickerRow(value: HostSessionPickerRowCandidate):
 		title,
 		detail,
 		canDelete,
+		resumeSelection,
 	} = value;
 	if (
 		typeof path !== "string" ||
@@ -57,6 +58,13 @@ export function parseHostSessionPickerRow(value: HostSessionPickerRowCandidate):
 	if (title !== undefined && typeof title !== "string") return undefined;
 	if (detail !== undefined && typeof detail !== "string") return undefined;
 	if (canDelete !== undefined && typeof canDelete !== "boolean") return undefined;
+	let selection: HostSessionPickerRow["resumeSelection"];
+	if (resumeSelection !== undefined) {
+		if (!isCandidateObject(resumeSelection)) return undefined;
+		const { updatedAt } = resumeSelection;
+		if (typeof updatedAt !== "number" || !Number.isFinite(updatedAt)) return undefined;
+		selection = { updatedAt };
+	}
 	if (
 		messageColor !== undefined &&
 		(typeof messageColor !== "string" ||
@@ -80,6 +88,7 @@ export function parseHostSessionPickerRow(value: HostSessionPickerRowCandidate):
 		...(title !== undefined ? { title } : {}),
 		...(detail !== undefined ? { detail } : {}),
 		...(canDelete !== undefined ? { canDelete } : {}),
+		...(selection === undefined ? {} : { resumeSelection: selection }),
 	};
 }
 
@@ -120,11 +129,15 @@ export async function listWorkflowResumeEntries(
 	return validateWorkflowResumeEntries(await control.listResumeEntries(target));
 }
 
-export async function resumeWorkflowFromPicker(session: WorkflowResumeSession, target: string): Promise<boolean> {
+export async function resumeWorkflowFromPicker(
+	session: WorkflowResumeSession,
+	target: string,
+	selection?: HostSessionPickerRow["resumeSelection"],
+): Promise<boolean> {
 	const runner = session.extensionRunner;
 	const control = runner?.getWorkflowRunControl();
 	if (!runner || typeof control?.resumeFromPicker !== "function") return false;
-	await control.resumeFromPicker(target, runner.createCommandContext());
+	await control.resumeFromPicker(target, runner.createCommandContext(), selection);
 	return true;
 }
 

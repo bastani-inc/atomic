@@ -95,7 +95,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		// A submission that resolves without starting an agent turn (e.g. a
 		// handled slash command) never emits `agent_end`, so clear the pre-shown
 		// spinner here when idle to avoid a lingering indicator.
-		if (!this.session.isStreaming && this.workingRunMeter.snapshot() === undefined) {
+		if (!turnStarted && !this.session.isStreaming && this.workingRunMeter.snapshot() === undefined) {
 			this.workingRunMeter.stop();
 			this.stopWorkingLoader();
 		}

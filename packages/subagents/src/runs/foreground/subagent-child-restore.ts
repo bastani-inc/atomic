@@ -60,6 +60,7 @@ import { boundedWorktreeReply, resumeRunWorktree, WORKTREE_REPLY_WAIT_MS } from 
 import { indexSubagentChildOwner, readableSubagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
+import { type ChildOwnerAPI, subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
 	clearSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
@@ -134,7 +135,8 @@ export {
 	type WorkflowDormantRunSubagentHoldRequest,
 } from "./subagent-child-hold.js";
 
-export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "pi" | "config" | "discoverAgents" | "runtime"> & {
+export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "config" | "discoverAgents" | "runtime"> & {
+	readonly pi: ChildOwnerAPI;
 	/** The owner's own Intercom identity, which a relaunched child's bridge names as its supervisor. */
 	readonly state?: Pick<ExecutorDeps["state"], "ownIntercomSession">;
 };
@@ -552,6 +554,7 @@ async function relaunchChild(
 		const supervisorAuthorization = record.intercomTarget ? hold?.authorization : undefined;
 		if (!supervisorAuthorization) await hold?.release();
 		const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
+		const intercomGroup = launchIntercomGroup(record, ctx);
 		const launched = queuedOwnerless({
 			recordChild,
 			...(ownerSignal ? { ownerSignal } : {}),
@@ -559,7 +562,16 @@ async function relaunchChild(
 			...(supervisorAuthorization ? { supervisorAuthorization } : {}),
 		});
 		return startedFresh(
-			await ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx),
+			await ownerlessRelaunched(
+				deps,
+				record,
+				launched,
+				recordChild,
+				release,
+				hold,
+				supervisorAuthorization,
+				intercomGroup,
+			),
 		);
 	}
 	// A child that never started has no session to reopen; its records say how its launch starts it fresh.
@@ -808,7 +820,7 @@ async function relaunchChild(
 			release,
 			hold,
 			supervisorAuthorization,
-			ctx,
+			intercomGroup,
 		);
 		return fresh ? startedFresh(outcome) : outcome;
 	}
@@ -886,6 +898,7 @@ async function startQueuedChild(
 	if (!supervisorAuthorization) await hold?.release();
 	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
+	const intercomGroup = launchIntercomGroup(record, ctx);
 	const response = await queued.start({
 		host,
 		recordChild,
@@ -896,15 +909,7 @@ async function startQueuedChild(
 			void hold?.release();
 		},
 	});
-	return relaunched(
-		deps,
-		record,
-		response,
-		recordChild,
-		release,
-		supervisorAuthorization,
-		launchIntercomGroup(record, ctx),
-	);
+	return relaunched(deps, record, response, recordChild, release, supervisorAuthorization, intercomGroup);
 }
 
 /**
@@ -919,7 +924,7 @@ async function ownerlessRelaunched(
 	release: () => void,
 	hold: ChildTargetHold | undefined,
 	supervisorAuthorization: ChildTargetHold["authorization"] | undefined,
-	ctx: ExtensionContext,
+	intercomGroup: string | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
 	void launched.result
 		.then(
@@ -945,7 +950,6 @@ async function ownerlessRelaunched(
 		});
 	// Pause or quit right after this returns must find the child under its new launch id.
 	await recordChild.flushed?.();
-	const intercomGroup = launchIntercomGroup(record, ctx);
 	const intercomLive =
 		record.intercomTarget && supervisorAuthorization
 			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup)
@@ -998,6 +1002,9 @@ export async function restoreSubagentChild(
 	resume?: SubagentChildResumeRequest,
 	refuseRelaunch?: () => SubagentChildRecord | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
+	const owner = subagentChildOwnerOperations(deps.pi, ctx);
+	deps = { ...deps, pi: owner.pi };
+	ctx = owner.ctx;
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	indexSubagentChildOwner(ctx);
 	// The owner's own session when the index's latest record is in a copy of it that is no longer open.

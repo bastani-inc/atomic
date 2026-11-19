@@ -21,7 +21,7 @@ import { RemoteToolExecutionComponent } from "../interactive-engine/remote-rende
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import { messageComponents, statusComponents } from "./chat-message-count.ts";
 import { type AtomicWorkingLoader, DEFAULT_WORKING_MESSAGE } from "./components/atomic-working-status.ts";
-import { mainComposerHintSegments } from "./components/main-composer-keys.ts";
+import { mainComposerHints } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
 import { WidgetContainer } from "./components/scroll-widget.js";
@@ -787,7 +787,7 @@ export class InteractiveModeBase {
 			undefined,
 			() => this.navigationInlineCustomUiDepth > 0,
 			undefined,
-			() => mainComposerHintSegments(this.keybindings),
+			() => mainComposerHints(this.keybindings),
 		);
 		this.footerContainer = new Container();
 		this.footerContainer.addChild(this.footer);
