@@ -384,8 +384,6 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 		"/background-tasks",
 		"/guides/intercom",
 		"/guides/team-setup",
-		"/guides/worker-hosts",
-		"/guides/worker-fleets-postgres",
 		"/computer-use",
 		"/verification",
 	],
@@ -662,7 +660,7 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			51,
+			49,
 			"migration routes, additions, and the storage API have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");

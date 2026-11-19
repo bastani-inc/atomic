@@ -16,16 +16,17 @@ Atomic supports package-manager installs and standalone archives. Keep an archiv
 
 Turn on debug mode with **Debug mode** in `/settings` (the [`debug` setting](/settings#debug-mode)), with `--debug`, or with `ATOMIC_DEBUG=1`. The footer shows a `debug` badge while it is on.
 
-In debug mode, every area below appends one JSON line per event to `~/.atomic/agent/atomic-debug.log`, the file `/debug` shows: `{"at", "pid", "area", "event", "data"}`. Each area's own variable still turns on just that area, and still writes where it always has, not to the debug log.
+In debug mode, every area below appends one JSON line per event to `~/.atomic/agent/atomic-debug.log`, the file `/debug` shows: `{"at", "pid", "area", "event", "data"}`.
 
-| Area | Own variable | What it shows | Own variable writes to |
-|------|--------------|---------------|------------------------|
-| `decision` | None | A [classifier decision](/settings#decisionmodel) that failed and fell back to the current chat model | — |
-| `storage` | None | Each [writers' queue degradation](/storage) of a SQLite database, once per reason: its code, reason, adapter, database path and error code, never the error message | — |
+| Area | What it shows |
+|------|---------------|
+| `decision` | A [classifier decision](/settings#decisionmodel) that failed and fell back to the current chat model |
+| `engine` | Interactive engine recovery and detached tool calls dropped because the conversation moved past them (`stale-detached-call`) |
+| `storage` | Each [writers' queue degradation](/storage) of a SQLite database, once per reason: its code, reason, adapter, database path and error code, never the error message |
 
 Debug output holds only what each area already reports, such as ids, names, counts and error messages. It never includes prompts or message text. Credentials in common forms are replaced with `[redacted]`: bearer tokens, JWTs, GitHub tokens, private key blocks, `sk-…` style API keys, and `key: value` or `key=value` pairs whose name is a key, token, secret or password. Other credential formats can pass through, so review the log before sharing it. Long text is cut to 2,000 characters.
 
-Pool workers, pool coordinators, the Intercom broker and other child processes started while debug mode is on inherit it, and subagents follow it at once. A pool that is already running passes a change on to the workers it starts next. Processes that are already running keep the state they started with until their next start. If the debug log cannot be written, Atomic shows one warning and keeps running.
+The Intercom broker and other child processes started while debug mode is on inherit it, and subagents follow it at once. Processes that are already running keep the state they started with until their next start. If the debug log cannot be written, Atomic shows one warning and keeps running.
 
 Extensions and SDK code can check and write debug output with the [debug output API](/sdk/reference#debug-output).
 

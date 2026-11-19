@@ -28,7 +28,7 @@ For work that continues while you chat, follow [Background tasks](/background-ta
 ## More guides and references
 
 - [Plan a task with subagents](/guides/orchestration) shows how the parent can distribute a review and verify the results.
-- [Team and CI setup](/guides/team-setup) connects Intercom through a shared database while sessions stay private.
+- [Team and CI setup](/guides/team-setup) shares Intercom with a team through one database while sessions stay private, and sets up CI runners from environment variables.
 - [Computer use](/computer-use) covers desktop apps, browsers, and terminals across macOS, Linux, and Windows.
 - [Environment variables](/environment-variables) lists Atomic/Pi aliases, provider credentials, and bash session metadata.
 - [Settings](/settings) lists global and project settings.

@@ -450,8 +450,7 @@ describe("FooterComponent debug indicator (#4360)", () => {
 	it("shows a debug badge only while debug mode is on", () => {
 		vi.stubEnv("ATOMIC_DEBUG", undefined);
 		vi.stubEnv("ATOMIC_EXPERIMENTAL", undefined);
-		vi.stubEnv("ATOMIC_WORKFLOW_DEBUG", "1");
-		assert.doesNotMatch(stripAnsi(render()), /debug/, "an area variable alone is not debug mode");
+		assert.doesNotMatch(stripAnsi(render()), /debug/);
 		setDebugSetting(true);
 		assert.match(render(), new RegExp(`${escapeRegExp(theme.fg("warning", "debug"))}$`));
 		setDebugSetting(false);

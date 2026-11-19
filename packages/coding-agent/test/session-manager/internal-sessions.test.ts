@@ -3,9 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { findMostRecentSession, type SessionHeader, SessionManager } from "../../src/core/session-manager.ts";
-import { WORKFLOW_SESSION_METADATA_ENV } from "../../src/core/session-manager-classification.ts";
 import { isInternalHeader, readSessionHeader } from "../../src/core/session-manager-storage.ts";
-import { applyInheritedWorkflowSessionClassification } from "../../src/main-session.ts";
 
 /**
  * Regression tests for issue #1504: workflow-created (internal) sessions must
@@ -260,35 +258,6 @@ describe("malformed internal session markers remain visible", () => {
 			internal: true,
 			workflow: { runId: "r", stageId: "s", stageName: "n" },
 		});
-	});
-
-	it("classifies and persists a fresh workflow subagent session from inherited metadata", async () => {
-		const path = join(dir, "fresh-subagent.jsonl");
-		const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
-		const session = await SessionManager.open(path, dir, cwd);
-		applyInheritedWorkflowSessionClassification(session, {
-			[WORKFLOW_SESSION_METADATA_ENV]: JSON.stringify(workflow),
-		});
-		await session.appendMessage({ role: "user", content: "task", timestamp: Date.now() });
-		await session.appendMessage({
-			role: "assistant",
-			content: [{ type: "text", text: "done" }],
-			api: "openai-responses",
-			provider: "openai",
-			model: "gpt-5.4",
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: Date.now(),
-		});
-
-		expect(readSessionHeader(path)).toMatchObject({ internal: true, workflow });
 	});
 });
 
