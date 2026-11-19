@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
+
 ### Fixed
 
+- `generateStructuredOutput()` and the `structured_output` tool no longer send a provider backoff retry after their timeout when the process is busy ([#5627](https://github.com/bastani-inc/atomic/issues/5627)).
 - Buttons in extension messages, saved entries and custom tool output receive clicks again when the fullscreen chat runs in the terminal UI process. A click the renderer leaves unhandled still opens or folds the block, and tool titles still toggle first. Separate-engine sessions are unchanged ([#5696](https://github.com/bastani-inc/atomic/issues/5696)).
 
 ## [0.9.90] - 2026-11-19
