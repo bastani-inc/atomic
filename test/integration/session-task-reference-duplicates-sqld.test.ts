@@ -378,7 +378,8 @@ describe("task-reference duplicate candidates through the legacy store (#5593)",
 	it("forwards to the wrapped store's index", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-task-reference-duplicates-"));
 		directories.push(directory);
-		const inner = await SqlSessionStore.open(await openNodeSqliteDatabase(join(directory, "sessions.sqlite")));
+		const database = await openNodeSqliteDatabase(join(directory, "sessions.sqlite"));
+		const inner = await SqlSessionStore.open(database);
 		const { store } = legacyStore(inner);
 		try {
 			const { epoch, lastSeq } = await created(store, "s", [entry("A"), entry("B"), entry("A")]);
@@ -392,6 +393,7 @@ describe("task-reference duplicate candidates through the legacy store (#5593)",
 			);
 		} finally {
 			await store.close();
+			await database.close();
 		}
 	});
 
@@ -415,7 +417,8 @@ describe("task-reference duplicate candidates through the legacy store (#5593)",
 	it("answers `undefined` for a legacy session without converting it", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-task-reference-duplicates-"));
 		directories.push(directory);
-		const inner = await SqlSessionStore.open(await openNodeSqliteDatabase(join(directory, "sessions.sqlite")));
+		const database = await openNodeSqliteDatabase(join(directory, "sessions.sqlite"));
+		const inner = await SqlSessionStore.open(database);
 		const { store, legacyDirectory } = legacyStore(inner);
 		const legacy = await JsonlSessionStore.open(legacyDirectory);
 		try {
@@ -433,6 +436,7 @@ describe("task-reference duplicate candidates through the legacy store (#5593)",
 		} finally {
 			await legacy.close();
 			await store.close();
+			await database.close();
 		}
 	});
 });
