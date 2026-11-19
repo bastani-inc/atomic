@@ -7,9 +7,11 @@ import {
 	type StageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import { continueStageRecord, ownsStageRecord, stageRecordOwner } from "../shared/stage-record-owner.js";
 import { stageSessionStore } from "../shared/stage-session-store.js";
+import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { publishRunForOwner, runAttachmentOwner } from "../shared/workflow-run-ownership.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { completedWorkflowRunSnapshots, resolveCompletedWorkflow } from "./completed-catalog.js";
@@ -31,6 +33,7 @@ export interface OpenCompletedDurableDeps {
 	readonly store: Store;
 	readonly adapters?: StageAdapters;
 	readonly stageControlRegistry?: StageControlRegistry;
+	readonly stageUiBroker?: StageUiBroker;
 	readonly cwd?: string;
 	readonly defaultSessionDir?: string;
 	readonly sessionStore?: SessionStore;
@@ -91,7 +94,15 @@ export async function openCompletedDurableWorkflow(
 	deps.beforeRestore?.(snapshots);
 	for (const restored of snapshots) {
 		const previous = deps.store.run(restored.id);
-		if (previous !== undefined) deps.store.removeRun(previous.id);
+		if (previous !== undefined) {
+			keepInspectedChatOwners(
+				previous,
+				restored,
+				deps.stageControlRegistry ?? defaultStageControlRegistry,
+				selectedStore,
+			);
+			deps.store.removeRun(previous.id);
+		}
 		let run = restored;
 		if (restored.id === snapshot.id) {
 			run = { ...restored, finishSequence: finishSequence ?? restored.endedAt };
@@ -112,6 +123,37 @@ export async function openCompletedDurableWorkflow(
 
 function failure(reason: "not_found" | "malformed" | "stale" | "active", message: string): OpenCompletedDurableResult {
 	return { ok: false, reason, message };
+}
+
+function sameStoredChat(
+	handle: StageControlHandle | undefined,
+	stage: StageSnapshot,
+	store: SessionStore,
+): handle is StageControlHandle {
+	return (
+		handle !== undefined &&
+		!handle.isDisposed &&
+		stage.sessionId !== undefined &&
+		handle.sessionId === stage.sessionId &&
+		handle.sessionStore === store
+	);
+}
+
+function keepInspectedChatOwners(
+	previous: RunSnapshot,
+	restored: RunSnapshot,
+	registry: StageControlRegistry,
+	store: SessionStore,
+): void {
+	if (!registry.has(previous.id)) return;
+	const prior = new Map(previous.stages.map((stage) => [stage.id, stage]));
+	for (const stage of restored.stages) {
+		const held = registry.peek(previous.id, stage.id);
+		if (!sameStoredChat(held, stage, store) || !held.stageRecord) continue;
+		const row = prior.get(stage.id);
+		const source = registry.registrationSource?.(held)?.record ?? stageRecordOwner(held.stageRecord);
+		if (row && ownsStageRecord(source, row)) continueStageRecord(row, stage);
+	}
 }
 
 function registerCompletedChatHandles(
@@ -136,7 +178,10 @@ function registerCompletedChatHandles(
 		if (stage.sessionId === undefined) continue;
 		const key = completedChatKey(snapshot.id, stage.id);
 		const existing = registry.peek(snapshot.id, stage.id);
-		if (existing?.sessionId === stage.sessionId && existing.sessionStore === sessionStore && !existing.isDisposed)
+		if (
+			sameStoredChat(existing, stage, sessionStore) &&
+			(!existing.stageRecord || ownsStageRecord(stageRecordOwner(existing.stageRecord), stage))
+		)
 			continue;
 		const handle = createPostMortemStageHandle(
 			snapshot.id,
@@ -146,6 +191,7 @@ function registerCompletedChatHandles(
 			deps.cwd,
 			deps.defaultSessionDir,
 			sessionStore,
+			{ store: deps.store, record: stage, stageUiBroker: deps.stageUiBroker ?? currentStageUiBroker() },
 		);
 		completedChatUnregisters.set(handle, registry.register(handle));
 		registrations.set(key, new WeakRef(handle));

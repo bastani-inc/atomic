@@ -1,6 +1,7 @@
+import { resumableEntryFromHandle } from "../durable/backend.js";
 import { durableForkTarget } from "../durable/fork-run.js";
-import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
-import { hasActiveLiveRun, withResumeAdmissionMark } from "../durable/run-claims.js";
+import { isWorkflowRunResumable, workflowRunHasPausedState } from "../durable/resume-eligibility.js";
+import { bindResumeAdmission, hasActiveLiveRun, withResumeAdmissionMark } from "../durable/run-claims.js";
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
 import { type QuitRunResult, quitRun } from "../runs/background/quit.js";
 import { pauseRun, resumeRun } from "../runs/background/status.js";
@@ -155,6 +156,16 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 				return failure(error);
 			}
 		},
+		canResumeRun(runId) {
+			const run = owner.store.run(runId);
+			if (run === undefined || run.resumable === false || run.status === "completed" || run.status === "killed")
+				return false;
+			if (workflowRunHasPausedState(run)) return true;
+			if (!isWorkflowRunResumable({ ...run, budgetSystemOwnedStop: run.budgetState?.systemOwnedStop })) return false;
+			const backend = availableStoreDurableBackend(owner.store, runId);
+			if (backend === undefined) return run.exited === true && run.status === "failed" && run.resumable === true;
+			return isWorkflowRunResumable(workflowRunResumeCandidate(run, owner.store.runs(), backend));
+		},
 		resumeRun(runId) {
 			return withResumeAdmissionMark(runId, undefined, async (admissionMark) => {
 				const run = owner.store.run(runId);
@@ -163,6 +174,7 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 				const hadPausedStageState = workflowHasPausedStages(owner.store, runId);
 				const isPaused = workflowHasPausedState(owner.store, runId);
 				const backend = availableStoreDurableBackend(owner.store, runId);
+				if (backend !== undefined) bindResumeAdmission(admissionMark, backend, runId);
 				const isDurableAuthorExit = run.exited === true && run.status === "failed" && run.resumable === true;
 				const isResumableContinuation =
 					!isPaused &&
@@ -171,11 +183,20 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 						(backend !== undefined &&
 							isWorkflowRunResumable(workflowRunResumeCandidate(run, owner.store.runs(), backend))));
 				if (isDurableAuthorExit) {
+					// Pin this attempt's saved version, even if it finishes saving while resources load.
+					const savedHandle = () => backend?.getWorkflow(runId);
+					const selection = owner.jobs.get(runId)?.promise.then(savedHandle) ?? savedHandle();
 					await ensureWorkflowResourcesVisible();
 					const runtime = deps.runtime();
 					if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 					const policy = workflowPolicyFromContext(deps.context());
-					const resumed = await runtime.resumeDurableWorkflow(runId, { policy, actor: "user", admissionMark });
+					const handle = await selection;
+					const resumed = await runtime.resumeDurableWorkflow(runId, {
+						policy,
+						actor: "user",
+						admissionMark,
+						...(handle === undefined ? {} : { selectedEntry: resumableEntryFromHandle(handle) }),
+					});
 					return resumed.ok
 						? { ok: true, message: resumed.message, runId: resumed.runId }
 						: { ok: false, message: resumed.message };

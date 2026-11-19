@@ -30,70 +30,95 @@ export function hasResumeClaim(backend: DurableWorkflowBackend, runId: string): 
 
 export type ResumeAdmissionMark = (backend: DurableWorkflowBackend, runId: string) => boolean;
 
-/** All requests for one exact ID or one short selector. A start stamps the resolved (ID, journal) once,
- * without visiting any callers, including callers whose journal is not known until after their first read. */
-class ResumeWatch {
-	private latest = 0n;
-	private readonly readers = new Set<bigint>();
-	private readonly starts = new Map<string, { latest: bigint; journals: WeakMap<DurableWorkflowBackend, bigint> }>();
+type Observer = (journal: DurableWorkflowBackend, row: object) => void;
+// These indexes route only current callers. In particular the cold index owns no journal, run or start history.
+const cold = new Map<string, Set<Observer>>();
+const journals = new WeakMap<DurableWorkflowBackend, Map<string, Set<Observer>>>();
 
-	enter(): bigint {
-		const ticket = ++this.latest;
-		this.readers.add(ticket);
-		return ticket;
+function subscribe(backend: DurableWorkflowBackend | undefined, target: string, observe: Observer): () => void {
+	let routes = backend === undefined ? cold : journals.get(backend);
+	if (routes === undefined) {
+		routes = new Map();
+		journals.set(backend!, routes);
 	}
-
-	start(backend: DurableWorkflowBackend, id: string): void {
-		const journals = this.starts.get(id)?.journals ?? new WeakMap<DurableWorkflowBackend, bigint>();
-		journals.set(backend, this.latest);
-		// Keep IDs in order of last start so retirement only walks entries it can discard.
-		this.starts.delete(id);
-		this.starts.set(id, { latest: this.latest, journals });
-	}
-
-	observed(ticket: bigint, backend: DurableWorkflowBackend, id: string): boolean {
-		return (this.starts.get(id)?.journals.get(backend) ?? 0n) >= ticket;
-	}
-
-	leave(ticket: bigint): boolean {
-		this.readers.delete(ticket);
-		const oldest = this.readers.values().next().value;
-		if (oldest === undefined) return true;
-		// Even when short-ID requests overlap continuously, keep only IDs a current request could have seen start.
-		for (const [id, start] of this.starts) {
-			if (start.latest >= oldest) break;
-			this.starts.delete(id);
+	const bucket = routes.get(target) ?? new Set<Observer>();
+	routes.set(target, bucket);
+	bucket.add(observe);
+	return () => {
+		bucket.delete(observe);
+		if (bucket.size === 0) {
+			routes.delete(target);
+			if (backend !== undefined && routes.size === 0) journals.delete(backend);
 		}
-		return false;
-	}
+	};
 }
 
-const watching = new Map<string, ResumeWatch>();
+const bindings = new WeakMap<ResumeAdmissionMark, (backend: DurableWorkflowBackend, target: string) => void>();
 
-/** Only outstanding requests need to remember replacements. The outer caller watches from before its first await;
- * nested resume paths share its mark. A prefix can watch several runs, but only the resolved journal and id count. */
+/** Narrow a pending selector as soon as its journal or canonical ID becomes known, without losing a start it saw. */
+export function bindResumeAdmission(mark: ResumeAdmissionMark, backend: DurableWorkflowBackend, target: string): void {
+	bindings.get(mark)?.(backend, target);
+}
+
+/** The caller owns its receipts, weakly keyed by the actual journal row. Leaving drops them all in one operation;
+ * retiring a row invalidates only its own receipts, without visiting even another caller sharing its prefix. */
 export async function withResumeAdmissionMark<T>(
 	target: string,
 	inherited: ResumeAdmissionMark | undefined,
 	request: (resumed: ResumeAdmissionMark) => Promise<T>,
 	signal?: AbortSignal,
+	backend?: DurableWorkflowBackend,
 ): Promise<T> {
-	if (inherited !== undefined) return request(inherited);
-	const selector = target.toLowerCase();
-	let watch = watching.get(selector);
-	if (watch === undefined) {
-		watch = new ResumeWatch();
-		watching.set(selector, watch);
+	if (inherited !== undefined) {
+		if (backend !== undefined) bindResumeAdmission(inherited, backend, target);
+		return request(inherited);
 	}
-	const ticket = watch.enter();
+	let selected = target.toLowerCase();
+	let receipts: WeakMap<DurableWorkflowBackend, WeakSet<object>> | undefined = new WeakMap();
+	const observe: Observer = (journal, row) => {
+		if (!receipts) return;
+		let rows = receipts.get(journal);
+		if (!rows) {
+			rows = new WeakSet();
+			receipts.set(journal, rows);
+		}
+		rows.add(row);
+	};
+	const mark: ResumeAdmissionMark = (journal, id) => {
+		const rows = receipts?.get(journal);
+		if (!rows) return false;
+		const row = journal.resumeObservationKey(id);
+		return row !== undefined && rows.has(row);
+	};
+	let unsubscribe: (() => void) | undefined = subscribe(backend, selected, observe);
+	bindings.set(mark, (journal, id) => {
+		// A nested adapter may still receive the original prefix after its outer lookup resolved it.
+		const requested = id.toLowerCase();
+		const selector = selected.startsWith(requested) ? selected : requested;
+		if (!unsubscribe || (journal === backend && selector === selected)) return;
+		const rows = receipts?.get(journal);
+		unsubscribe();
+		receipts = new WeakMap();
+		if (rows && selector === selected) receipts.set(journal, rows);
+		else if (rows) {
+			const row = journal.resumeObservationKey(id);
+			if (row && rows.has(row)) observe(journal, row);
+		}
+		backend = journal;
+		selected = selector;
+		unsubscribe = subscribe(journal, selector, observe);
+	});
 	const release = (): void => {
-		if (watch?.leave(ticket)) watching.delete(selector);
-		watch = undefined;
+		unsubscribe?.();
+		unsubscribe = undefined;
+		receipts = undefined;
+		backend = undefined;
+		bindings.delete(mark);
 	};
 	if (signal?.aborted) release();
 	else signal?.addEventListener("abort", release, { once: true });
 	try {
-		return await request((backend, id) => watch?.observed(ticket, backend, id) === true);
+		return await request(mark);
 	} finally {
 		signal?.removeEventListener("abort", release);
 		release();
@@ -102,9 +127,16 @@ export async function withResumeAdmissionMark<T>(
 
 /** A pending claim excludes competitors but is not a replacement until an executor actually starts. */
 export function recordResumeStart(backend: DurableWorkflowBackend, runId: string): void {
+	const row = backend.resumeObservationKey(runId);
+	if (!row) return;
 	const id = runId.toLowerCase();
-	watching.get(id)?.start(backend, runId);
-	watching.get(id.slice(0, RUN_ID_PREFIX_LENGTH))?.start(backend, runId);
+	const prefix = id.slice(0, RUN_ID_PREFIX_LENGTH);
+	for (const routes of [journals.get(backend), cold]) {
+		for (const selector of [id, prefix]) {
+			const observers = routes?.get(selector);
+			if (observers) for (const observe of observers) observe(backend, row);
+		}
+	}
 }
 
 export function hasForkClaim(backend: DurableWorkflowBackend, runId: string): boolean {

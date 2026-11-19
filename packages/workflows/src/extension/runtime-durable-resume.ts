@@ -1,5 +1,5 @@
 import { getAgentDir, hasTrustRequiringProjectResourcesAsync, ProjectTrustStore } from "@bastani/atomic";
-import type { DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "../durable/backend.js";
+import type { CatalogReadOptions, DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import {
 	type OpenCompletedDurableResult,
@@ -15,20 +15,27 @@ import {
 	type ResumeDurableDeps,
 	type ResumeDurableResult,
 	resumeDurableWorkflow as resumeDurableWorkflowAdapter,
+	selectedResumeEntry,
 } from "../durable/resume-runtime.js";
-import { hasActiveLiveRun, type ResumeAdmissionMark, withResumeAdmissionMark } from "../durable/run-claims.js";
+import {
+	bindResumeAdmission,
+	hasActiveLiveRun,
+	type ResumeAdmissionMark,
+	withResumeAdmissionMark,
+} from "../durable/run-claims.js";
 import { availableRunDurableBackend, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { canonicalDirectoryAsync } from "../durable/sdk-recovery-scope.js";
 import { bindStoreDurableBackend, DurableBackendNotInitializedError } from "../durable/store-backend.js";
 import { inspectTargetedDurableWorkflow, type TargetedDurableInspection } from "../durable/targeted-inspection.js";
 import type { DurableWorkflowHandle, ResumableWorkflowEntry, WorkflowForkedFrom } from "../durable/types.js";
 import type { ToolControlRegistry } from "../engine/run-tool-control-registry.js";
-import type { JobTracker } from "../runs/background/job-tracker.js";
+import { currentJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { WorkflowBudget } from "../shared/budget.js";
 import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
+import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
@@ -71,6 +78,8 @@ export interface ForkDurableWorkflowOptions {
 
 export interface DurableResumeRuntime {
 	durableBackend(): DurableWorkflowBackend;
+	/** The journal this runtime would select now, without opening a cold journal. */
+	readyResumeBackend?(workflowId: string): DurableWorkflowBackend | undefined;
 	/**
 	 * Fork a durable run into this session's directory with `forkRun` semantics and resume the fork in
 	 * the background. A fork failure is reported as its typed `ForkError`; the source run is never written.
@@ -100,14 +109,24 @@ export interface DurableResumeRuntime {
 			 * admitted after it already resumed what the request saw (#5534). Taken on entry when absent.
 			 */
 			readonly admissionMark?: ResumeAdmissionMark;
+			/** The attempt selected before the caller loaded its workflow resources. */
+			readonly selectedEntry?: ResumableWorkflowEntry;
+			readonly expectedUpdatedAt?: number;
 		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
 	listDurableResumable(): readonly ResumableWorkflowEntry[];
 	prepareDurableResumable(workflowId?: string): Promise<readonly ResumableWorkflowEntry[]>;
-	prepareDurableCatalog?(): Promise<DurableWorkflowCatalogEntries>;
+	/** The stored resumable and completed runs; a caller whose `signal` aborts stops the read once nobody else waits. */
+	prepareDurableCatalog?(
+		options?: CatalogReadOptions,
+		onJournalReady?: () => void,
+	): Promise<DurableWorkflowCatalogEntries>;
 	/** Refresh a bounded set of known workflow ids. */
-	prepareDurableResumableForIds?(workflowIds: readonly string[]): Promise<readonly ResumableWorkflowEntry[]>;
+	prepareDurableResumableForIds?(
+		workflowIds: readonly string[],
+		onJournalReady?: () => void,
+	): Promise<readonly ResumableWorkflowEntry[]>;
 	prepareCompletedDurable?(): Promise<readonly ResumableWorkflowEntry[]>;
 	openCompletedDurableWorkflow?(
 		workflowId: string,
@@ -119,6 +138,7 @@ export interface DurableResumeRuntimeDeps {
 	readonly registry: WorkflowRegistry;
 	readonly store: Store;
 	readonly stageControlRegistry?: StageControlRegistry;
+	readonly stageUiBroker?: StageUiBroker;
 	readonly toolControlRegistry?: ToolControlRegistry;
 	readonly adapters?: StageAdapters;
 	readonly runtimeCwd: string;
@@ -169,7 +189,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		}
 		for (const id of roots) {
 			const owner = availableRunDurableBackend(deps.store, id) ?? backend;
-			if (owner !== backend || !known?.has(id)) await owner.hydrateWorkflow(id);
+			if (owner !== backend || !known?.has(id)) await owner.hydrateWorkflow(id, { checkHeader: true });
 		}
 	};
 	let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
@@ -204,6 +224,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			deps.registry.get(name) ?? (await discoverDefinition(name, cwd, confirmProjectTrust));
 	const runtime: DurableResumeRuntime = {
 		durableBackend: selectedBackend,
+		readyResumeBackend: (id) => availableRunDurableBackend(deps.store, id) ?? backendRef.current,
 		async forkDurableWorkflow(sourceRunId, options) {
 			options.signal?.throwIfAborted();
 			const backend = await withRecovery(
@@ -271,29 +292,37 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		},
 		async resumeDurableWorkflow(workflowId, options): Promise<ResumeDurableResult> {
 			options?.signal?.throwIfAborted();
-			// What this request resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
+			const jobs = deps.jobs ?? currentJobTracker();
+			const selected = selectedResumeEntry(
+				workflowId,
+				options?.selectedEntry === undefined ? preparedCatalog : [options.selectedEntry],
+				deps.store,
+				jobs,
+			);
 			const request = (admissionMark: ResumeAdmissionMark) =>
 				withWorkflowResumeAdmission(deps.store, async (dormantWrites) => {
-					const backend = await withRecovery(async () => {
+					const { backend, catalog } = await withRecovery(async () => {
 						const backend =
 							options?.durableBackend ??
 							availableRunDurableBackend(deps.store, workflowId) ??
 							(await ensureReady());
+						bindResumeAdmission(admissionMark, backend, workflowId);
 						options?.signal?.throwIfAborted();
 						// A message queued for an interrupted run before resume changed its journal, so a
 						// catalog read before that write would make the resume claim stale (#3760).
-						if (dormantWrites.size > 0 || resolveCatalogEntry(workflowId, preparedCatalog) === undefined)
-							preparedCatalog = isFullRunId(workflowId)
-								? await prepareTargetedDurableResumable(backend, [workflowId])
-								: await prepareRuntimeDurableResumable(() => backend, workflowId);
+						let catalog: readonly ResumableWorkflowEntry[] | undefined =
+							dormantWrites.size === 0 && selected !== undefined ? [selected] : undefined;
+						if (isFullRunId(workflowId) && backend.getWorkflow(workflowId) !== undefined) {
+							if (catalog !== undefined) await backend.hydrateWorkflow(workflowId, { checkHeader: true });
+							else catalog = await prepareTargetedDurableResumable(backend, [workflowId]);
+						}
 						options?.signal?.throwIfAborted();
-						const resolved = resolveCatalogEntry(workflowId, preparedCatalog);
-						if (resolved !== undefined) await backend.hydrateWorkflow(resolved.workflowId);
-						return backend;
+						return { backend, catalog: catalog ?? [] };
 					});
 					const adapterDeps: ResumeDurableDeps = {
 						registry: deps.registry,
 						admissionMark,
+						expectedUpdatedAt: options?.expectedUpdatedAt,
 						signal: options?.signal,
 						onRunAccepted: options?.onRunAccepted,
 						onBeforeResume: options?.onBeforeResume,
@@ -311,12 +340,16 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 							options?.definition === undefined
 								? (name, cwd) => discoverDefinition(name, cwd, options?.confirmProjectTrust)
 								: async () => options.definition,
-						...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
+						jobs,
 					};
-					return await resumeDurableWorkflowAdapter(workflowId, adapterDeps, preparedCatalog);
+					return await resumeDurableWorkflowAdapter(workflowId, adapterDeps, catalog);
 				});
-			return withResumeAdmissionMark(workflowId, options?.admissionMark, (mark) =>
-				raceWorkflowRequestAbort(request(mark), options?.signal),
+			return withResumeAdmissionMark(
+				workflowId,
+				options?.admissionMark,
+				(mark) => raceWorkflowRequestAbort(request(mark), options?.signal),
+				options?.signal,
+				options?.durableBackend ?? availableRunDurableBackend(deps.store, workflowId) ?? backendRef.current,
 			);
 		},
 		listDurableResumable(): readonly ResumableWorkflowEntry[] {
@@ -336,11 +369,12 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				}
 			});
 		},
-		async prepareDurableCatalog() {
+		async prepareDurableCatalog(options, onJournalReady) {
 			return withRecovery(async () => {
 				const backend = await ensureReady();
+				onJournalReady?.();
 				try {
-					const catalog = await backend.prepareWorkflowCatalog();
+					const catalog = await backend.prepareWorkflowCatalog(options);
 					for (const unavailable of catalog.unavailableShards ?? [])
 						deps.reportWarning?.(`${unavailable.message} ${unavailable.hint}`);
 					const known = new Set(
@@ -355,9 +389,10 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				}
 			});
 		},
-		async prepareDurableResumableForIds(workflowIds) {
+		async prepareDurableResumableForIds(workflowIds, onJournalReady) {
 			return withRecovery(async () => {
 				const backend = await ensureReady();
+				onJournalReady?.();
 				try {
 					preparedCatalog = (
 						await Promise.all(
@@ -379,7 +414,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					await backend.hydrateResumableWorkflows();
 					await hydrateStoredWorkflowCandidates(backend);
 					// The catalog lists a run from its latest snapshot; checking that it opens reads its checkpoints (#3892).
-					for (const entry of backend.listCompletedWorkflows()) await backend.hydrateWorkflow(entry.workflowId);
+					for (const entry of backend.listCompletedWorkflows())
+						await backend.hydrateWorkflow(entry.workflowId, { checkHeader: true });
 					return await listOpenableCompletedWorkflows(backend, deps.adapters?.sessionStore);
 				} finally {
 					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
@@ -393,7 +429,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				const entry = resolveCatalogEntry(workflowId, catalog ?? backend.listCompletedWorkflows());
 				const id = entry?.workflowId ?? workflowId;
 				// The catalog lists a run from its latest snapshot; opening it reads its checkpoints (#3892).
-				if (entry !== undefined || isFullRunId(workflowId)) await backend.hydrateWorkflow(id);
+				if (entry !== undefined || isFullRunId(workflowId))
+					await backend.hydrateWorkflow(id, { checkHeader: true });
 				const handle = backend.getWorkflow(id);
 				return await openCompletedSnapshot(
 					workflowId,
@@ -401,6 +438,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						durableBackend: backend,
 						store: deps.store,
 						stageControlRegistry: deps.stageControlRegistry,
+						stageUiBroker: deps.stageUiBroker,
 						adapters: deps.adapters,
 						sessionStore: deps.adapters?.sessionStore,
 						cwd: handle?.workflowCwd ?? handle?.invocationCwd ?? deps.runtimeCwd,

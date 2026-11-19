@@ -1,40 +1,49 @@
-/**
- * Reusable countdown timer for dialog components.
- */
-
+/** Reusable countdown timer for dialog and retry indicators. */
 import type { TUI } from "@bastani/atomic-tui";
 
 export class CountdownTimer {
-	private intervalId: ReturnType<typeof setInterval> | undefined;
-	private remainingSeconds: number;
+	private stop: (() => void) | undefined;
 
-	private declare tui: TUI | undefined;
-	private declare onTick: (seconds: number) => void;
-	private declare onExpire: () => void;
+	constructor(
+		timeout: number | { until: number },
+		tui: TUI | undefined,
+		onTick: (seconds: number) => void,
+		onExpire: () => void,
+	) {
+		if (typeof timeout === "number") {
+			let seconds = Math.ceil(timeout / 1000);
+			onTick(seconds);
+			const timer = setInterval(() => {
+				onTick(--seconds);
+				tui?.requestRender();
+				if (seconds <= 0) {
+					this.dispose();
+					onExpire();
+				}
+			}, 1000);
+			this.stop = () => clearInterval(timer);
+			return;
+		}
 
-	constructor(timeoutMs: number, tui: TUI | undefined, onTick: (seconds: number) => void, onExpire: () => void) {
-		this.tui = tui;
-		this.onTick = onTick;
-		this.onExpire = onExpire;
-		this.remainingSeconds = Math.ceil(timeoutMs / 1000);
-		this.onTick(this.remainingSeconds);
-
-		this.intervalId = setInterval(() => {
-			this.remainingSeconds--;
-			this.onTick(this.remainingSeconds);
-			this.tui?.requestRender();
-
-			if (this.remainingSeconds <= 0) {
-				this.dispose();
-				this.onExpire();
+		// An existing wait keeps its second boundaries even when the view reopens partway through one.
+		const tick = () => {
+			const remaining = Math.max(0, timeout.until - Date.now());
+			const seconds = Math.ceil(remaining / 1000);
+			onTick(seconds);
+			tui?.requestRender();
+			if (seconds === 0) {
+				this.stop = undefined;
+				onExpire();
+				return;
 			}
-		}, 1000);
+			const timer = setTimeout(tick, remaining - (seconds - 1) * 1000);
+			this.stop = () => clearTimeout(timer);
+		};
+		tick();
 	}
 
 	dispose(): void {
-		if (this.intervalId) {
-			clearInterval(this.intervalId);
-			this.intervalId = undefined;
-		}
+		this.stop?.();
+		this.stop = undefined;
 	}
 }

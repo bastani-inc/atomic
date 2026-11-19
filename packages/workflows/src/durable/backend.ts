@@ -268,6 +268,13 @@ class PendingStageReceiptIndex {
 		this.workflows.delete(workflowId);
 	}
 
+	/** Takes `staged`'s receipts of `workflowId` in place of this index's. */
+	adopt(workflowId: string, staged: PendingStageReceiptIndex): void {
+		const workflow = staged.workflows.get(workflowId);
+		if (workflow === undefined) this.workflows.delete(workflowId);
+		else this.workflows.set(workflowId, workflow);
+	}
+
 	clear(): void {
 		this.workflows.clear();
 	}
@@ -291,10 +298,17 @@ export type DurableInactiveDeleteResult =
 	| { readonly ok: true }
 	| { readonly ok: false; readonly reason: "not_found" | "running" };
 
+/** How long a caller of a catalog read waits: until `signal` aborts, when it rejects with the signal's reason. */
+export interface CatalogReadOptions {
+	readonly signal?: AbortSignal;
+}
+
 /** Await mutations before observing their persisted result. */
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
 	readonly persistent: boolean;
+	/** Process-local identity of a resumable journal row. It survives refresh, but not completion or removal. */
+	resumeObservationKey(workflowId: string): object | undefined;
 	/** The root journal used for snapshot blobs and full-sequence frontier reads, when available. */
 	readonly snapshotJournal?: RunJournal;
 	workflowOwnership(
@@ -500,8 +514,8 @@ export interface DurableWorkflowBackend {
 	listResumableWorkflows(): readonly ResumableWorkflowEntry[];
 	/** List successful completed root workflows with durable checkpoint progress. */
 	listCompletedWorkflows(): readonly ResumableWorkflowEntry[];
-	/** Current resumable and completed catalog. */
-	prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries>;
+	/** Current resumable and completed catalog. A caller whose `signal` aborts stops waiting for it. */
+	prepareWorkflowCatalog(options?: CatalogReadOptions): Promise<DurableWorkflowCatalogEntries>;
 
 	/** Current run metadata. */
 	toMetadata(workflowId: string): Omit<DurableWorkflowMetadata, "promptReservationEpoch"> | undefined;
@@ -517,10 +531,10 @@ export interface DurableWorkflowBackend {
 	/** Clear all state (for tests). */
 	commitReset(): Promise<void>;
 
-	/** Hydrate one workflow from persistent storage. */
-	hydrateWorkflow(workflowId: string): Promise<void>;
-	/** Hydrate all catalog candidates from persistent storage. */
-	hydrateResumableWorkflows(): Promise<void>;
+	/** Hydrate one workflow. A targeted lookup checks its header before reading the history. */
+	hydrateWorkflow(workflowId: string, options?: { readonly checkHeader?: boolean }): Promise<void>;
+	/** Hydrate all catalog candidates from persistent storage. A caller whose `signal` aborts stops waiting for it. */
+	hydrateResumableWorkflows(options?: CatalogReadOptions): Promise<void>;
 	promptReservationScope(workflowId: string): { readonly rootWorkflowId: string; readonly scope: string };
 	pendingPromptToken(
 		workflowId: string,
@@ -692,6 +706,32 @@ interface JournalWorkflowRecord {
 	released: number;
 	/** The highest attempt record folded, kept or only counted (#4874). */
 	attempt: number;
+	/**
+	 * Keys of locally acknowledged checkpoints whose journal events this reader has not folded, in receipt order.
+	 * A lost reply can delay a receipt past its checkpoint's shipment and past another checkpoint's receipt.
+	 */
+	noted?: Set<string>;
+	/** The last pending receipt in that order, so folding FIFO shipments need not scan the remaining receipts. */
+	lastNotedKey?: string;
+	/** Receipts in order and the journal's best completion-time candidate before applying those receipts. */
+	notedByLookup?: Map<string, { keys: Set<string>; folded?: DurableToolCheckpoint | DurableStageCheckpoint }>;
+}
+
+function checkpointLookupGroup(c: DurableCheckpoint): string {
+	return c.kind === "stage" ? `stage:${c.replayKey}` : c.kind === "tool" ? `tool:${c.argsHash}` : `ui:${c.promptHash}`;
+}
+
+function removeNoted(rec: JournalWorkflowRecord, key: string, c: DurableCheckpoint): boolean {
+	if (!rec.noted?.delete(key)) return false;
+	if (rec.lastNotedKey === key) {
+		rec.lastNotedKey = undefined;
+		for (const pending of rec.noted) rec.lastNotedKey = pending;
+	}
+	const identity = checkpointLookupGroup(c);
+	const group = rec.notedByLookup!.get(identity)!;
+	group.keys.delete(key);
+	if (group.keys.size === 0) rec.notedByLookup!.delete(identity);
+	return true;
 }
 
 export function checkpointKey(c: DurableCheckpoint): string {
@@ -831,7 +871,7 @@ class JournalProjection {
 					: {}),
 			...(handle.ownerLiveness !== undefined ? { ownerLiveness: handle.ownerLiveness } : {}),
 		};
-		if (existing) existing.handle = full;
+		if (existing) this.publishHandle(existing, full);
 		else
 			this.workflows.set(handle.workflowId, {
 				handle: full,
@@ -848,10 +888,10 @@ class JournalProjection {
 	applyWorkflowSnapshot(handle: DurableWorkflowHandle): void {
 		if (!this.workflows.has(handle.workflowId)) this.registerWorkflow(handle, true);
 		const record = this.workflows.get(handle.workflowId)!;
-		record.handle = {
+		this.publishHandle(record, {
 			...handle,
 			completedCheckpoints: Math.max(handle.completedCheckpoints, record.checkpoints.size + record.released),
-		};
+		});
 	}
 
 	async archivePendingStageMessage(workflowId: string, entry: PendingStageMessage): Promise<void> {
@@ -940,17 +980,70 @@ class JournalProjection {
 	recordCheckpoint(recorded: DurableCheckpoint): void {
 		const rec = this.workflows.get(recorded.workflowId);
 		if (!rec) return;
-		const checkpoint = this.index(rec, recorded);
+		const key = checkpointKey(recorded);
+		// The event of a noted checkpoint: the run holds it and counts it already, and from here on the journal orders it.
+		const noted = rec.noted;
+		let shipped: DurableCheckpoint | undefined;
+		if (noted?.has(key)) {
+			// A retry after a lost reply can note an already shipped event after a newer unshipped receipt.
+			const group = rec.notedByLookup!.get(checkpointLookupGroup(recorded))!;
+			const outOfOrder = group.keys.size > 1 && group.keys.values().next().value !== key;
+			// A re-recorded checkpoint may carry the replay's clock. Restore the durable time winner before replacing
+			// that provisional value: even a checkpoint folded before any receipt can now be the winner again.
+			const retimed = rec.checkpoints.get(key)!.completedAt !== recorded.completedAt;
+			if (retimed && recorded.kind === "stage") {
+				if (group.folded?.kind === "stage") rec.stageSessionByReplayKey.set(recorded.replayKey, group.folded);
+				else rec.stageSessionByReplayKey.delete(recorded.replayKey);
+			} else if (retimed && recorded.kind === "tool") {
+				if (group.folded?.kind === "tool") rec.toolByHash.set(recorded.argsHash, group.folded);
+				else rec.toolByHash.delete(recorded.argsHash);
+			}
+			removeNoted(rec, key, recorded);
+			shipped = normalizedCheckpoint(recorded);
+			// Use the journal's payload: a snapshot whose blobs were collected before shipping is no longer in it.
+			rec.checkpoints.delete(key);
+			rec.checkpoints.set(key, shipped);
+			rec.sortedCheckpoints = undefined;
+			rec.nestedSnapshotVersion.record(shipped);
+			this.indexLookups(rec, shipped, false);
+			// The folded event belongs before the remaining receipts, including ones it had displaced at note time.
+			// In-order shipments with an unchanged completion time need no replay.
+			if (outOfOrder || retimed) for (const id of group.keys) this.indexLookups(rec, rec.checkpoints.get(id)!, true);
+		}
+		const checkpoint = shipped ?? this.index(rec, recorded);
+		if (checkpoint !== undefined) {
+			// A shipment precedes every receipt still waiting, even when their clocks disagree.
+			const last = shipped && rec.lastNotedKey !== undefined ? rec.checkpoints.get(rec.lastNotedKey) : undefined;
+			this.recordInHandle(rec, checkpoint, last?.completedAt);
+		}
+	}
+
+	/**
+	 * Records a pooled worker's locally accepted checkpoint before the reader folds its journal event (#4768). Until
+	 * that event is folded, pending receipts follow the folded prefix in receipt order. The event then places the
+	 * checkpoint at its journal position without counting it again, including after a lost reply and retry.
+	 */
+	noteCheckpoint(recorded: DurableCheckpoint): void {
+		const rec = this.workflows.get(recorded.workflowId);
+		if (!rec) return;
+		const identity = checkpointLookupGroup(recorded);
+		const folded =
+			recorded.kind === "stage"
+				? rec.stageSessionByReplayKey.get(recorded.replayKey)
+				: recorded.kind === "tool"
+					? rec.toolByHash.get(recorded.argsHash)
+					: undefined;
+		const checkpoint = this.index(rec, recorded, true);
 		if (checkpoint === undefined) return;
-		// A run still `running` that recorded its definition completed in its current attempt is completed: the store
-		// refused its terminal status write (#5133).
-		const completed = rec.handle.status === "running" && completedRunAttempt(checkpoint) === rec.attempt;
-		rec.handle = {
-			...rec.handle,
-			completedCheckpoints: rec.checkpoints.size + rec.released,
-			updatedAt: checkpoint.completedAt,
-			...(completed ? { status: "completed" as const } : {}),
-		};
+		const key = checkpointKey(checkpoint);
+		rec.noted ??= new Set();
+		rec.noted.add(key);
+		rec.lastNotedKey = key;
+		rec.notedByLookup ??= new Map();
+		const group = rec.notedByLookup.get(identity);
+		if (group) group.keys.add(key);
+		else rec.notedByLookup.set(identity, { keys: new Set([key]), folded });
+		this.recordInHandle(rec, checkpoint);
 	}
 
 	/**
@@ -963,20 +1056,39 @@ class JournalProjection {
 		if (!rec) return;
 		rec.attempt = Math.max(rec.attempt, workflowAttemptOf(recorded) ?? 0);
 		rec.released++;
-		const completed = rec.handle.status === "running" && completedRunAttempt(recorded) === rec.attempt;
-		rec.handle = {
-			...rec.handle,
-			completedCheckpoints: rec.checkpoints.size + rec.released,
-			updatedAt: recorded.completedAt,
-			...(completed ? { status: "completed" as const } : {}),
-		};
+		this.recordInHandle(rec, recorded);
 	}
 
-	/** Drops every checkpoint of a run from memory; they stay counted, and `restoreCheckpoint` brings one back. */
-	releaseCheckpoints(workflowId: string): void {
+	/** Sets the run's handle as recording `checkpoint`, the run's latest, sets it. */
+	private recordInHandle(
+		rec: JournalWorkflowRecord,
+		checkpoint: DurableCheckpoint,
+		updatedAt = checkpoint.completedAt,
+	): void {
+		// A run still `running` that recorded its definition completed in its current attempt is completed: the store
+		// refused its terminal status write (#5133).
+		const completed = rec.handle.status === "running" && completedRunAttempt(checkpoint) === rec.attempt;
+		this.publishHandle(rec, {
+			...rec.handle,
+			completedCheckpoints: rec.checkpoints.size + rec.released,
+			updatedAt,
+			...(completed ? { status: "completed" as const } : {}),
+		});
+	}
+
+	/**
+	 * Drops the held checkpoints so `restoreCheckpoint` can restore the selected journal prefix. Pending receipts
+	 * have no journal entry to restore: return them in order so the caller can keep those still selected.
+	 */
+	releaseCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
 		const rec = this.workflows.get(workflowId);
-		if (!rec) return;
-		rec.released += rec.checkpoints.size;
+		if (!rec) return [];
+		const pending = Array.from(rec.noted ?? [], (key) => rec.checkpoints.get(key)!);
+		rec.released += rec.checkpoints.size - pending.length;
+		if (pending.length) rec.handle = { ...rec.handle, completedCheckpoints: rec.released };
+		rec.noted = undefined;
+		rec.lastNotedKey = undefined;
+		rec.notedByLookup = undefined;
 		rec.checkpoints.clear();
 		rec.sortedCheckpoints = undefined;
 		rec.toolByHash.clear();
@@ -984,6 +1096,7 @@ class JournalProjection {
 		rec.stageOutputByReplayKey.clear();
 		rec.stageSessionByReplayKey.clear();
 		rec.nestedSnapshotVersion = new NestedSnapshotVersion(workflowId);
+		return pending;
 	}
 
 	/**
@@ -991,17 +1104,19 @@ class JournalProjection {
 	 * name every checkpoint a run kept under one child boundary scope, whose lookup identities (tool args hash, prompt
 	 * hash, replay key) are all that scope's, so their lookups go with them: a lookup of another scope or of the run's
 	 * own checkpoints finds what it found before, and the run's nested snapshot version does not change. The version's
-	 * replay group summaries keep the scope's entries; they are read only for the run's own replay records.
+	 * replay group summaries keep the scope's entries; they are read only for the run's own replay records. A noted
+	 * checkpoint is counted once its event is folded instead.
 	 */
 	forgetCheckpoints(workflowId: string, keys: readonly string[]): void {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return;
+		const pendingBefore = rec.noted?.size;
 		for (const key of keys) {
 			const checkpoint = rec.checkpoints.get(key);
 			if (checkpoint === undefined) continue;
 			rec.checkpoints.delete(key);
 			rec.sortedCheckpoints = undefined;
-			rec.released++;
+			if (!removeNoted(rec, key, checkpoint)) rec.released++;
 			if (checkpoint.kind === "tool") rec.toolByHash.delete(checkpoint.argsHash);
 			else if (checkpoint.kind === "ui") rec.uiByHash.delete(checkpoint.promptHash);
 			else {
@@ -1009,6 +1124,8 @@ class JournalProjection {
 				rec.stageSessionByReplayKey.delete(checkpoint.replayKey);
 			}
 		}
+		if (rec.noted?.size !== pendingBefore)
+			rec.handle = { ...rec.handle, completedCheckpoints: rec.checkpoints.size + rec.released };
 	}
 
 	/**
@@ -1020,8 +1137,15 @@ class JournalProjection {
 		if (rec !== undefined && this.index(rec, recorded) !== undefined && rec.released > 0) rec.released--;
 	}
 
-	/** Adds a checkpoint to its run's indexes; the normalized checkpoint, or undefined when the run already has it. */
-	private index(rec: JournalWorkflowRecord, recorded: DurableCheckpoint): DurableCheckpoint | undefined {
+	/**
+	 * Adds a checkpoint to its run's indexes; the normalized checkpoint, or undefined when the run already has it. A
+	 * checkpoint being noted (`noteCheckpoint`) is the latest of its lookups.
+	 */
+	private index(
+		rec: JournalWorkflowRecord,
+		recorded: DurableCheckpoint,
+		noting = false,
+	): DurableCheckpoint | undefined {
 		const currentCheckpoint = normalizedCheckpoint(recorded);
 		const key = checkpointKey(currentCheckpoint);
 		if (rec.checkpoints.has(key)) return undefined;
@@ -1029,27 +1153,45 @@ class JournalProjection {
 		rec.sortedCheckpoints = undefined;
 		rec.attempt = Math.max(rec.attempt, workflowAttemptOf(currentCheckpoint) ?? 0);
 		rec.nestedSnapshotVersion.record(currentCheckpoint);
-		if (currentCheckpoint.kind === "tool") {
-			const existing = rec.toolByHash.get(currentCheckpoint.argsHash);
-			if (
-				currentCheckpoint.throwingFailureError === undefined &&
-				(existing === undefined || currentCheckpoint.completedAt >= existing.completedAt)
-			) {
-				rec.toolByHash.set(currentCheckpoint.argsHash, currentCheckpoint);
-			}
-		} else if (currentCheckpoint.kind === "ui") {
-			rec.uiByHash.set(currentCheckpoint.promptHash, currentCheckpoint);
-		} else {
-			if ("output" in currentCheckpoint)
-				rec.stageOutputByReplayKey.set(currentCheckpoint.replayKey, currentCheckpoint);
-			if (currentCheckpoint.sessionId !== undefined) {
-				const existing = rec.stageSessionByReplayKey.get(currentCheckpoint.replayKey);
-				if (existing === undefined || currentCheckpoint.completedAt >= existing.completedAt) {
-					rec.stageSessionByReplayKey.set(currentCheckpoint.replayKey, currentCheckpoint);
-				}
-			}
-		}
+		this.indexLookups(rec, currentCheckpoint, noting);
 		return currentCheckpoint;
+	}
+
+	/**
+	 * Points the lookups of `checkpoint` at it where it is the latest: a tool's or a stage session's lookup keeps the
+	 * checkpoint completed last, and the later of two completed at once; the others keep the later checkpoint. A noted
+	 * checkpoint whose event is not recorded yet is later than `checkpoint`, unless `checkpoint` is being noted after it.
+	 */
+	private indexLookups(rec: JournalWorkflowRecord, checkpoint: DurableCheckpoint, noting: boolean): void {
+		if (
+			!noting &&
+			rec.notedByLookup?.size &&
+			((checkpoint.kind === "stage" && checkpoint.sessionId !== undefined) ||
+				(checkpoint.kind === "tool" && checkpoint.throwingFailureError === undefined))
+		) {
+			const group = rec.notedByLookup.get(checkpointLookupGroup(checkpoint));
+			if (group && (!group.folded || checkpoint.completedAt >= group.folded.completedAt)) group.folded = checkpoint;
+		}
+		const later = (existing: DurableCheckpoint | undefined): boolean =>
+			!noting && existing !== undefined && rec.noted?.has(checkpointKey(existing)) === true;
+		const completedLater = (existing: DurableCheckpoint | undefined): boolean =>
+			existing === undefined ||
+			checkpoint.completedAt > existing.completedAt ||
+			(checkpoint.completedAt === existing.completedAt && !later(existing));
+		if (checkpoint.kind === "tool") {
+			if (checkpoint.throwingFailureError === undefined && completedLater(rec.toolByHash.get(checkpoint.argsHash)))
+				rec.toolByHash.set(checkpoint.argsHash, checkpoint);
+		} else if (checkpoint.kind === "ui") {
+			if (!later(rec.uiByHash.get(checkpoint.promptHash))) rec.uiByHash.set(checkpoint.promptHash, checkpoint);
+		} else {
+			if ("output" in checkpoint && !later(rec.stageOutputByReplayKey.get(checkpoint.replayKey)))
+				rec.stageOutputByReplayKey.set(checkpoint.replayKey, checkpoint);
+			if (
+				checkpoint.sessionId !== undefined &&
+				completedLater(rec.stageSessionByReplayKey.get(checkpoint.replayKey))
+			)
+				rec.stageSessionByReplayKey.set(checkpoint.replayKey, checkpoint);
+		}
 	}
 
 	getToolOutput(workflowId: string, argsHash: string): WorkflowSerializableValue | undefined {
@@ -1093,19 +1235,26 @@ class JournalProjection {
 		};
 	}
 
+	/** The folded prefix followed by pending local receipts, including when both finished in the same millisecond. */
+	private inRecordOrder(rec: JournalWorkflowRecord): DurableCheckpoint[] {
+		if (!rec.noted?.size) return [...rec.checkpoints.values()];
+		const ordered: DurableCheckpoint[] = [];
+		for (const [key, checkpoint] of rec.checkpoints) if (!rec.noted.has(key)) ordered.push(checkpoint);
+		for (const key of rec.noted) ordered.push(rec.checkpoints.get(key)!);
+		return ordered;
+	}
+
 	recordedCheckpoints(workflowId: string): readonly DurableCheckpoint[] | undefined {
 		const rec = this.workflows.get(workflowId);
 		if (rec === undefined || rec.released > 0) return undefined;
-		return [...rec.checkpoints.values()];
+		return this.inRecordOrder(rec);
 	}
 
 	listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return [];
 		if (rec.sortedCheckpoints === undefined) {
-			rec.sortedCheckpoints = Object.freeze(
-				[...rec.checkpoints.values()].sort((a, b) => a.completedAt - b.completedAt),
-			);
+			rec.sortedCheckpoints = Object.freeze(this.inRecordOrder(rec).sort((a, b) => a.completedAt - b.completedAt));
 		}
 		return rec.sortedCheckpoints;
 	}
@@ -1135,6 +1284,29 @@ class JournalProjection {
 	getStageCheckpoint(workflowId: string, checkpointId: string): DurableStageCheckpoint | undefined {
 		const checkpoint = this.workflows.get(workflowId)?.checkpoints.get(`stage:${checkpointId}`);
 		return checkpoint?.kind === "stage" ? checkpoint : undefined;
+	}
+
+	private publishHandle(row: JournalWorkflowRecord, handle: DurableWorkflowHandle): void {
+		// Pending resumes have only weak references to the unfinished row. Completion retires it, not any other row.
+		if (handle.status === "completed" && row.handle.status !== "completed")
+			this.workflows.set(handle.workflowId, { ...row, handle });
+		else row.handle = handle;
+	}
+
+	resumeObservationKey(workflowId: string): JournalWorkflowRecord | undefined {
+		const row = this.workflows.get(workflowId);
+		return row?.handle.status === "completed" ? undefined : row;
+	}
+
+	/** Keep the same unfinished row across a refresh. Move the rebuilt fields, not the contents of its checkpoint maps. */
+	preserveRefreshedRow(workflowId: string, previous: JournalWorkflowRecord | undefined): void {
+		const rebuilt = this.resumeObservationKey(workflowId);
+		if (!previous || !rebuilt || previous.handle.createdAt !== rebuilt.handle.createdAt) return;
+		for (const field of ["sortedCheckpoints", "noted", "lastNotedKey", "notedByLookup"] as const) {
+			if (previous[field] !== undefined && rebuilt[field] === undefined) delete previous[field];
+		}
+		Object.assign(previous, rebuilt);
+		this.workflows.set(workflowId, previous);
 	}
 
 	getWorkflow(workflowId: string): DurableWorkflowHandle | undefined {
@@ -1170,7 +1342,7 @@ class JournalProjection {
 	): void {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return;
-		rec.handle = {
+		this.publishHandle(rec, {
 			...rec.handle,
 			error: undefined,
 			exited: undefined,
@@ -1191,7 +1363,7 @@ class JournalProjection {
 			...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
 			...(resumable !== undefined ? { resumable } : {}),
 			...(status === "failed" ? (failure ?? {}) : {}),
-		};
+		});
 	}
 
 	listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
@@ -1269,6 +1441,28 @@ class JournalProjection {
 
 	isWorkflowLoadable(workflowId: string): boolean {
 		return !this.deletedWorkflowIds.has(workflowId);
+	}
+
+	/**
+	 * Takes `staged`'s state of `workflowId` in place of this projection's, as deleting the workflow here and folding its
+	 * events again would leave it: a journal backend folds a long history into a staging projection over several turns
+	 * of the event loop, and readers of this one see the workflow change in one step (#5480).
+	 */
+	adoptWorkflow(workflowId: string, staged: JournalProjection): void {
+		const take = <Value>(into: Map<string, Value>, from: Map<string, Value>) => {
+			const value = from.get(workflowId);
+			if (value === undefined) into.delete(workflowId);
+			else into.set(workflowId, value);
+		};
+		// A direct rebuild removes the old catalog entry and appends the rebuilt one.
+		this.workflows.delete(workflowId);
+		take(this.workflows, staged.workflows);
+		take(this.pendingReceipts, staged.pendingReceipts);
+		this.stickyReceipts.adopt(workflowId, staged.stickyReceipts);
+		take(this.stickyDeliveryCounts, staged.stickyDeliveryCounts);
+		this.bumpDeliveryCountVersion(workflowId);
+		if (this.workflows.has(workflowId)) this.deletedWorkflowIds.delete(workflowId);
+		else this.deletedWorkflowIds.add(workflowId);
 	}
 
 	reset(): void {
