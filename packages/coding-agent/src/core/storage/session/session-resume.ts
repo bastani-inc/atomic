@@ -37,7 +37,7 @@ const DELIVERY_OP_TYPE = "atomic-pooled-delivery-op";
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
 /** Rebuild older projections once to recover prior task aliases and the exact records named by active checkouts. */
-const RESUME_INDEX_VERSION = 10;
+const RESUME_INDEX_VERSION = 11;
 
 type SnapshotHead = readonly [seq: number, snapshotId: string];
 /**
@@ -103,6 +103,12 @@ export interface SessionResumeIndex {
 	readonly snapshotRecords: Readonly<Record<string, number>>;
 	readonly totals: SessionHistoryTotals;
 	readonly latestAssistantSeq?: number;
+	/**
+	 * Every entry an extension saved with `pi.appendEntry` (see {@link isExtensionCustomState}), on any branch. They
+	 * remain history; a subagent fork copies those on its branch. Absent from an index an earlier build saved or
+	 * extended, which a fork then compensates for by scanning.
+	 */
+	readonly extensionState?: readonly number[];
 }
 
 const ZERO_USAGE: SessionUsageTotals = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
@@ -207,6 +213,47 @@ const BRANCH_CUSTOM_STATE_TYPES = new Set([
 ]);
 export function isBranchCustomState(customType: string | undefined): boolean {
 	return customType !== undefined && BRANCH_CUSTOM_STATE_TYPES.has(customType);
+}
+/**
+ * Custom entry types that Atomic and its bundled extensions write, or still read from older sessions. Every other
+ * type is state an extension saved with `pi.appendEntry`, which a subagent fork copies from its branch as the
+ * complete-branch copy did (#5500). A type missing here is copied too, so the list only limits what a fork copies.
+ */
+const ATOMIC_CUSTOM_TYPES = new Set([
+	...BRANCH_CUSTOM_STATE_TYPES,
+	LEAF_MOVE_TYPE,
+	TASK_COMPLETION_INTENT_TYPE,
+	TASK_COMPLETION_ACK_TYPE,
+	DELIVERY_OP_TYPE,
+	"atomic.fork-anchor",
+	"atomic.share",
+	"atomic.tool-output",
+	"intercom_ask",
+	"intercom_ask_settled",
+	"intercom_control_error",
+	"intercom_inbox",
+	"intercom_inbox_handled",
+	"intercom_received",
+	"intercom_reply_wait",
+	"intercom_result_error",
+	"intercom_sent",
+	"intercom_session_identity",
+	"intercom_session_memberships",
+	"resume_timings",
+	"subagent-child",
+	"subagent-slash-final-snapshot",
+	"web-search-results",
+	"workflow-stage-parked-tasks",
+	"workflow.run.blocked",
+	"workflow.run.end",
+	"workflow.run.start",
+	"workflow.stage.end",
+	"workflow.stage.progress",
+	"workflow.stage.start",
+	"workspace_binding",
+]);
+export function isExtensionCustomState(customType: string | undefined): boolean {
+	return !!customType && !ATOMIC_CUSTOM_TYPES.has(customType);
 }
 export function isSessionHistoryEntry(entry: SessionEntry): boolean {
 	if (entry.type === "message") return entry.message?.role !== "system";
@@ -610,10 +657,15 @@ function addStatePosition(positions: StatePositions, entry: SessionEntry, seq: n
 		positions.snapshotRecords[entry.snapshotId] = seq;
 	if (isSessionHistoryEntry(entry)) return;
 	if (entry.type === "custom" && entry.customType.startsWith("event_subscription")) positions.universal.push(seq);
+	// Model/effort history can be compacted to its effective settings. Every system loadout change
+	// stays branch state: extensions synchronously restore their tool inventory from it on open.
 	if (
 		entry.type === "model_change" ||
 		entry.type === "thinking_level_change" ||
-		(entry.type === "message" && entry.message.role === "system")
+		(entry.type === "message" &&
+			entry.message.role === "system" &&
+			!entry.message.toolsAdded &&
+			!entry.message.toolsRemoved)
 	) {
 		const delta = (seq - positions.lastSettingSeq).toString(36);
 		positions.settingsHistory = positions.settingsHistory === "" ? delta : `${positions.settingsHistory}.${delta}`;
@@ -661,6 +713,8 @@ export function foldSessionResume(
 	const positions = statePositions(previous);
 	let totals = previous?.totals ?? EMPTY_SESSION_HISTORY_TOTALS;
 	let latestAssistantSeq = previous?.latestAssistantSeq;
+	// An index an earlier build saved does not list extension state, so extending it cannot either.
+	const extensionState = previous === undefined ? [] : previous.extensionState && [...previous.extensionState];
 	let needsBranchRebuild = previous?.needsBranchRebuild ?? false;
 	const own = new Map<string, number>(lastId === null ? [] : [[lastId, seq]]);
 	const resolve = (id: string | null | undefined): number =>
@@ -700,6 +754,7 @@ export function foldSessionResume(
 		}
 		applyBranchState(protocols, assistants, entry, seq, branchActive, modelTransition);
 		addStatePosition(positions, entry, seq);
+		if (entry.type === "custom" && isExtensionCustomState(entry.customType)) extensionState?.push(seq);
 		totals = addEntryToHistoryTotals(totals, entry);
 		if (entry.type === "message" && entry.message?.role === "assistant" && countedUsage(entry.message.usage)) {
 			latestAssistantSeq = seq;
@@ -724,6 +779,7 @@ export function foldSessionResume(
 		...positions,
 		totals,
 		...(latestAssistantSeq !== undefined ? { latestAssistantSeq } : {}),
+		...(extensionState ? { extensionState } : {}),
 	};
 }
 
@@ -733,7 +789,7 @@ const UPGRADABLE_RESUME_INDEX_VERSION = 5;
  * The format `sessionResumeUpgrade` produces. Any other current version disables the upgrade (a full rebuild
  * follows) until the upgrade is checked against that version's fold.
  */
-const UPGRADED_RESUME_INDEX_VERSION = 10;
+const UPGRADED_RESUME_INDEX_VERSION = 11;
 
 /** A version-5 index: admissions are keys, and the fields an upgrade derives are absent or in an older form. */
 export type UpgradableSessionResumeIndex = Omit<
@@ -793,7 +849,9 @@ const UPGRADED_CUSTOM_TYPES = new Set(["subagent-child", "workflow.run.start", "
  */
 export const RESUME_UPGRADE_SOURCES = {
 	types: [...SESSION_STATE_TYPES],
-	customTypes: [...BRANCH_CUSTOM_STATE_TYPES, ...UPGRADED_CUSTOM_TYPES],
+	omittedCustomTypes: [...ATOMIC_CUSTOM_TYPES].filter(
+		(key) => !BRANCH_CUSTOM_STATE_TYPES.has(key) && !UPGRADED_CUSTOM_TYPES.has(key),
+	),
 } as const;
 
 function upgradeSource(entry: SessionEntry): boolean {
@@ -830,11 +888,13 @@ export function sessionResumeUpgrade(previous: UpgradableSessionResumeIndex): {
 		snapshotPins: [],
 	});
 	const positions = statePositions();
+	const extensionState: number[] = [];
 	let lastSeq = 0;
 	return {
 		add(entry, seq) {
 			if (seq <= lastSeq || seq > previous.seq) throw new RangeError(`Resume upgrade source ${seq} out of order`);
 			lastSeq = seq;
+			if (entry.type === "custom" && isExtensionCustomState(entry.customType)) extensionState.push(seq);
 			if (!upgradeSource(entry)) return;
 			// None of the sources is an assistant message or a protocol record the carried fields fold.
 			applyBranchState(protocols, [], entry, seq, ranges === undefined || onBranch(ranges, seq), false);
@@ -855,6 +915,7 @@ export function sessionResumeUpgrade(previous: UpgradableSessionResumeIndex): {
 				...(previous.nameSeq !== undefined ? { nameSeq: previous.nameSeq } : {}),
 				...(previous.summarySeq !== undefined ? { summarySeq: previous.summarySeq } : {}),
 				...positions,
+				extensionState,
 				totals: previous.totals,
 				...(previous.latestAssistantSeq !== undefined ? { latestAssistantSeq: previous.latestAssistantSeq } : {}),
 			};
@@ -891,7 +952,9 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 		typeof index.snapshotRecords === "object" &&
 		index.snapshotRecords !== null &&
 		typeof index.totals === "object" &&
-		index.totals !== null
+		index.totals !== null &&
+		Array.isArray(index.extensionState) &&
+		index.extensionState.every((seq) => Number.isSafeInteger(seq) && seq > 0 && seq <= lastSeq)
 	);
 }
 
@@ -1039,6 +1102,10 @@ export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number, wind
 		...snapshotSeqs(index),
 	];
 	const seqs = new Set(retained.filter((seq): seq is number => seq !== undefined && seq < fromSeq));
+	for (const at of index.extensionState ?? []) {
+		if (at >= fromSeq) break;
+		if (onBranch(ranges, at)) seqs.add(at);
+	}
 	let seq = 0;
 	if (index.state !== "") {
 		for (const delta of index.state.split(".")) {

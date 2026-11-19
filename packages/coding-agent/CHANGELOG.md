@@ -62,6 +62,7 @@
 - Long-lived Node.js 22 hosts no longer accumulate an async context store for each closed or released session that called tools through codemode or `ctx.executeTool()`.
 - A hidden chat releases the rendered rows of a replaced transcript without waiting to be shown again ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
 - A compaction while you are scrolled up in the main chat or a live subagent chat keeps the rows you are reading, your selection and the unread count where they were, releases the rest of the earlier conversation, and reads it again page by page on either side as you scroll. A stateful extension card keeps its instance when a compaction keeps or retires it ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
+- A subagent launched with `context: "fork"` after a clear or compaction keeps what its branch recorded before the boundary, as a full copy of the branch did: the entries extensions saved with `pi.appendEntry`, and the system messages that record which tools were added or removed. Extensions in the child can restore their saved state, and tool restores see the same history as in the parent. Atomic's own records are not copied. For a session last indexed by an earlier Atomic version, the fork reads the branch before the boundary to find those entries, which takes longer in a long session ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
 
 ## [0.9.90] - 2026-11-19
 

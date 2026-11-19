@@ -338,7 +338,9 @@ function* project(
 					? { role: true, provider: true, model: true, usage: true, content: "tools" }
 					: role === "toolResult"
 						? { role: true, toolCallId: true, usage: "usage" }
-						: { role: "short" };
+						: role === "system"
+							? { role: "short", toolsAdded: "truth", toolsRemoved: "truth" }
+							: { role: "short" };
 			break;
 		case "compaction":
 			fields.firstKeptEntryId = true;
@@ -407,6 +409,7 @@ export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uin
 			},
 		};
 	const m = object(e.message);
+	if (type === "message" && m.role === "system") return { seq, type, ...link, system: true };
 	if (type === "message" && m.role === "assistant")
 		return {
 			seq,

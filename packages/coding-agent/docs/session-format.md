@@ -552,6 +552,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `readEntry(id)` - Read one entry by ID, including one outside the window, or return `undefined` if it is missing
 - `getOmittedHistoryTotals()` - Usage and message counts of the entries the window open left out, or `undefined` when every entry is held
 - `getLastSeq()` - The session's last stored sequence, including entries not in memory
+- System messages recording tool changes and entries extensions saved with `pi.appendEntry` on the selected branch remain synchronously available in `getBranch()` and `getEntries()` after a clear or resume. Extension state entries stay in memory; large extension payloads count toward session memory. Ordinary retired turns stay in the archive.
 - `getEntrySeq(id)` - A held entry's sequence, or `undefined` when it is not held. A subagent launch on an older manager can look up the exact sequence through the manager, its store or its paged archive. If a partial manager provides none of these, the launch keeps the entry ID and omits the optional sequence rather than treating a window offset as an archive position or loading the parent. A complete legacy manager can still locate its entry in `getEntries()`.
 - `findEntrySeq(id)` - Look up an entry's sequence in the store without loading the earlier transcript
 - `forEachStoredEntry(fromSeq, visit)` - Visit every stored entry from `fromSeq` on in store order, reading the ones the manager does not hold in pages and keeping none of them. Resolves with the last sequence visited

@@ -2557,8 +2557,16 @@ export class SessionManager {
 				sessionId = this.sessionId,
 				epoch = this.historyEpoch,
 				through = this.lastSeq;
+			// Capture the append-order row references before the asynchronous backing check. A source may switch
+			// sessions or clear while its captured copy is being written. Never load a partial manager for this.
+			const held =
+				this.hasFullHistory() && this.fileEntries.length === through + 1 ? this.fileEntries.slice() : undefined;
 			const relation = await resolveForkStoreRelation(source, store);
 			const a = forkScope(source);
+			const captured =
+				relation !== "different" && held && a && forkScope(store) && store.readEntrySizes
+					? await (await import("./storage/session/resident-fork-rows.js")).residentForkRows(held, through)
+					: undefined;
 			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: sessionId });
 			const receipts = new Map<string, OversizedSessionEntry>();
 			const data =
@@ -2582,6 +2590,32 @@ export class SessionManager {
 				{ store: reader, sessionId, epoch, hashes, receipts },
 				manager.sessionFile,
 			);
+			if (captured && created.epoch !== undefined && created.lastSeq === captured.length && store.readEntrySizes) {
+				const head = await store.readEntrySizes(manager.sessionId, 1, 0);
+				if (head.epoch !== created.epoch)
+					throw new SessionConflictError(manager.sessionId, created.lastSeq, head.lastSeq);
+				if (head.lastSeq === created.lastSeq) {
+					const { windowFromSnapshot } = await import("./storage/session/snapshot-history.js");
+					manager.restoreOpened(
+						{
+							resume: windowFromSnapshot(
+								{
+									header: manager.recordHeader(),
+									entries: captured,
+									lastSeq: created.lastSeq,
+									epoch: created.epoch,
+								},
+								undefined,
+								undefined,
+								undefined,
+								isProxy,
+							),
+						},
+						manager.sessionFile,
+					);
+					return manager;
+				}
+			}
 			const opened = await readStoredSession(store, manager.sessionId, undefined);
 			const stamp =
 				opened.resume.archiveOnlyEpoch && !("read" in data)

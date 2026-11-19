@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
+import { collectGarbage } from "../../../../test/helpers/collect-garbage.js";
 import { useTemporaryAgentDir } from "../../../../test/helpers/temporary-agent-dir.js";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.js";
@@ -12,6 +13,62 @@ import { SqlSessionStore } from "../../src/core/storage/session/sql-session-stor
 import type { SessionStore } from "../../src/core/storage/session/types.js";
 
 useTemporaryAgentDir();
+
+test("a whole clone isolates edits to its resident rows without retaining a second copy of their text (#5594)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "fork-held-window-"));
+	const path = join(dir, "session.sqlite");
+	const a = await openNodeSqliteDatabase(path),
+		b = await openNodeSqliteDatabase(path);
+	const src = await SqlSessionStore.open(a),
+		dest = await SqlSessionStore.open(b);
+	try {
+		const parent = await SessionManager.create(src, dir);
+		await parent.forkTo(dir, dest); // Warm the same publication and restore path before measuring it.
+		for (let i = 0; i < 128; i++)
+			await parent.appendMessage({ role: "user", content: `${i}:${"x".repeat(256 * 1024)}`, timestamp: i });
+		const id = await parent.appendCustomEntry("fixture", { nested: { value: "original" }, list: [1, 2] });
+		await collectGarbage(3);
+		const baseline = process.memoryUsage().heapUsed;
+		const child = await parent.forkTo(dir, dest);
+		await collectGarbage(3);
+		const added = process.memoryUsage().heapUsed - baseline;
+		assert.ok(
+			added < 5 * 1024 * 1024,
+			`the child retained ${added} more bytes while both copies of a 32 MiB window were open`,
+		);
+		const own = parent.getEntry(id),
+			copy = child.getEntry(id);
+		assert.ok(own?.type === "custom" && copy?.type === "custom");
+		const original = own.data as { nested: { value: string }; list: number[] },
+			cloned = copy.data as typeof original;
+		cloned.nested.value = "child";
+		original.list.push(3);
+		assert.equal(original.nested.value, "original");
+		assert.deepEqual(cloned.list, [1, 2]);
+		assert.equal(child.getEntries().length, 129);
+		assert.equal(parent.getEntries().length, 129);
+		Object.defineProperty(original.nested, "value", {
+			enumerable: true,
+			get() {
+				throw new Error("must not invoke an SDK accessor while forking");
+			},
+		});
+		const guarded = await parent.forkTo(dir, dest);
+		const fromStore = guarded.getEntry(id);
+		assert.ok(fromStore?.type === "custom");
+		assert.deepEqual(
+			fromStore.data,
+			{ nested: { value: "original" }, list: [1, 2] },
+			"an accessor uses the saved view",
+		);
+	} finally {
+		await src.close();
+		await dest.close();
+		await a.close();
+		await b.close();
+		await rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
 
 test("a snapshot-only SDK store can clone or branch a large retired entry without repeating its compatibility load (#5594)", async () => {
 	const inner = new MemorySessionStore();

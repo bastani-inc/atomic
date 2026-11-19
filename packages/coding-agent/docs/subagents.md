@@ -396,7 +396,7 @@ Subagents can run with fresh or forked context:
 
 A new fork does not own the parent's subagents, pending deliveries, task notices or workflow state. Its chat does not show the parent's subagent and Intercom cards. If a card contributed text or an image to the model's input, the child still receives that content as context without replaying the delivery. Reopening the **same** saved child is not a new fork.
 
-Every child of a launch forks at the same settled entry, even if it waits for a slot while the parent keeps working. A turn with unanswered tool calls is still in progress and stays with the parent. The child inherits the context at the launch entry, including the model and thinking settings recorded before the most recent clear. Earlier turns stay in the parent's saved history.
+Every child of a launch forks at the same settled entry, even if it waits for a slot while the parent keeps working. A turn with unanswered tool calls is still in progress and stays with the parent. The child inherits the context at the launch entry, including the model, thinking settings, tool changes and entries extensions saved on its branch with `pi.appendEntry` before the most recent clear. System messages recording earlier tool changes remain available for restoring its tool selection. Earlier conversation turns stay in the parent's saved history.
 To read earlier turns, follow the boundary's history link or open the parent session. A saved tool output named by the retained context is also copied to the child; unrelated retired turns are not.
 
 For adversarial review or research, prefer fresh context so the specialist inspects the repository directly. Use forked context when a writer needs the parent conversation history in a separate branch.
