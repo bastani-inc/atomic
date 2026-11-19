@@ -30,6 +30,7 @@ export interface AgentPanelItem {
 	readonly name: string;
 	readonly task: string;
 	readonly elapsedMs?: number;
+	readonly elapsedSpan?: TaskRecord["elapsedSpan"];
 	readonly tokens?: number;
 	readonly progress?: { readonly done: number; readonly total: number };
 	readonly question?: string;
@@ -392,6 +393,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 		name,
 		task: title,
 		...(task.metrics?.elapsedMs === undefined ? {} : { elapsedMs: task.metrics.elapsedMs }),
+		...(task.elapsedSpan === undefined ? {} : { elapsedSpan: task.elapsedSpan }),
 		...(task.metrics?.tokenCount === undefined ? {} : { tokens: task.metrics.tokenCount }),
 		...(question ? { question } : {}),
 		...(reason === undefined ? {} : { reason }),

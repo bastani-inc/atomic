@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import {
 	agentWakeDispatcher,
 	currentWorktreeRootMappings,
@@ -66,11 +67,12 @@ import {
 } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
+import { runAgentTask, taskToolResult } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { cleanupWorktrees, createWorktrees } from "../../packages/subagents/src/runs/shared/worktree.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
 import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { subagentLaunchCard } from "../helpers/subagent-launch-card.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
@@ -428,6 +430,38 @@ async function releasedChild(h: Harness, runId: string): Promise<SubagentChildRe
 	await settled(h, await h.admit(runId));
 	return h.waitForLatest(`${runId}:0`, (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
 }
+
+test("a stage's original launch card opened during a wake counts from the new dispatch (#5570)", async () => {
+	const h = harness({ stage: true });
+	h.original = "released";
+	h.originalGate = Promise.withResolvers<void>();
+	const first = await h.admit("elapsed-wake");
+	const launch = await h.host.observeAgentLaunch(first, { kind: "background" });
+	assert.ok(launch.ok);
+	const receipt = taskToolResult({ kind: "admitted", observation: launch.value }, h.host);
+	h.originalGate.resolve();
+	await settled(h, first);
+	const old = await h.waitForLatest("elapsed-wake:0", (r) => r.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	h.wokenGate = { at: "before-start", gate: Promise.withResolvers<void>(), held: Promise.withResolvers<void>() };
+	const woken = await restoreSubagentChild(h.deps, h.ctx, old.childId, { prompt: "continue" });
+	assert.ok(woken.kind === "restored");
+	await h.wokenGate.held!.promise;
+	const row = () => h.host.taskRecords().find((task) => task.ref.taskId === woken.taskId);
+	const origin = row()?.elapsedSpan?.dispatchedAt;
+	assert.ok(origin !== undefined);
+	const clock = vi.spyOn(Date, "now").mockReturnValue(origin + 7400);
+	const card = subagentLaunchCard(h.cwd, { agent: agent.name, task: ORIGINAL_TASK });
+	try {
+		card.updateResult({ ...receipt, isError: false });
+		assert.equal(row()?.metrics?.elapsedMs, 7400);
+		assert.match(stripVTControlCharacters(card.render(120).join("\n")), /Running[^\n]*7s/);
+	} finally {
+		card.dispose();
+		clock.mockRestore();
+		h.wokenGate.gate.resolve();
+		await settled(h, woken.taskId);
+	}
+});
 
 async function endSessionOnPendingCall(
 	record: SubagentChildRecord,

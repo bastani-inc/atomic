@@ -3,6 +3,7 @@ import {
 	isKeyRelease,
 	type OverlayHandle,
 	type OverlayOptions,
+	runAsHintActivation,
 	type Terminal,
 	type TUI,
 	TuiMainScreen,
@@ -108,6 +109,7 @@ class RemoteComponentTui extends TuiMainScreen {
 }
 
 class RemoteTerminal implements Terminal {
+	colorDepth?: number;
 	columns = 80;
 	rows = 24;
 	kittyProtocolActive = false;
@@ -439,6 +441,7 @@ export class EngineCustomUiService {
 					// A component that caches its lines by width alone would keep the old mode's layout.
 					if (laidOutFor !== command.hostMode) record.tui.invalidate();
 				}
+				if (command.colorDepth !== undefined) record.terminal.colorDepth = command.colorDepth;
 				record.terminal.columns = Math.max(1, command.width);
 				record.terminal.rows = Math.max(1, command.rows);
 				const { componentId, requestId } = command;
@@ -465,7 +468,8 @@ export class EngineCustomUiService {
 						const handleInput = record.component.handleInput as
 							| ((data: string) => boolean | undefined)
 							| undefined;
-						return handleInput?.call(record.component, command.data) === true;
+						const handle = () => handleInput?.call(record.component, command.data) === true;
+						return command.hint === true ? runAsHintActivation(handle) : handle();
 					});
 				} catch {
 					handled = false;

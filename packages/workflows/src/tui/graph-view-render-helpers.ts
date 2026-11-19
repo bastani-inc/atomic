@@ -1,4 +1,12 @@
-import { type NavKey, type NavKeybindings, type NavKeyStyle, navEntryKeys, sliceHead } from "@bastani/atomic";
+import {
+	type NavKey,
+	type NavKeybindings,
+	type NavKeyStyle,
+	navEntryKeyParts,
+	navEntryKeys,
+	sliceHead,
+} from "@bastani/atomic";
+import { clickableKeysHint } from "@bastani/atomic-tui";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { boldOn, DEFAULT_BG, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
@@ -265,12 +273,9 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const stop = this._focusedStageStoppable(focused) ? [this._stopNavKey(stopText)] : [];
 		const pauseText = mode === "full" ? "pause run" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "pause";
 		const resumeText = mode === "full" ? "resume run" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "resume";
-		const pauseOrResume: NavKey[] =
-			this._runPausable(run) && !this._keyShadowed("p")
-				? [{ keys: "p", label: pauseText }]
-				: this._runResumable(run) && !this._keyShadowed("r")
-					? [{ keys: "r", label: resumeText }]
-					: [];
+		const pauseOrResume: NavKey[] = [];
+		if (this._runPausable(run) && !this._keyShadowed("p")) pauseOrResume.push({ keys: "p", label: pauseText });
+		if (this._runResumable(run) && !this._keyShadowed("r")) pauseOrResume.push({ keys: "r", label: resumeText });
 		const quitRunName = sanitizeToolTitleText(sliceHead(run.name, 24)).trim() || run.id;
 		const quitNameBudget =
 			mode === "full" ? 12 : mode === "compact" ? 10 : mode === "tight" ? 7 : mode === "minimal" ? 6 : 0;
@@ -410,13 +415,15 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			const styledParts: string[] = [];
 			for (const entry of entries) {
 				if (entry.keys === "o" && entry.label === "run details" && !includeRunDetails) continue;
-				const keys = navEntryKeys(keybindings, entry, taken);
+				const parts = navEntryKeyParts(keybindings, entry, taken);
+				const keys = parts.map((part) => part.text).join("");
 				if (!keys) continue;
 				plainParts.push(entry.label.length > 0 ? `${keys} ${entry.label}` : keys);
 				styledParts.push(
-					entry.label.length > 0
-						? `${text}${boldOn()}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`
-						: `${text}${boldOn()}${keys}${RESET}${chromeBg}`,
+					clickableKeysHint(
+						parts.map((part) => ({ ...part, text: `${text}${boldOn()}${part.text}${RESET}${chromeBg}` })),
+						entry.label.length > 0 ? ` ${muted}${entry.label}${RESET}${chromeBg}` : "",
+					),
 				);
 			}
 			return {
@@ -636,7 +643,8 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				out += `${bg}${this._edgeSegment(edgeRow, cursor, card.startCol)}`;
 				cursor = card.startCol;
 			}
-			out += card.line;
+			// Column slicing can drop the closing reset. Keep the card's style inside its border.
+			out += `${card.line}${RESET}`;
 			cursor += card.width;
 		}
 		// Trailing edge tail — same bg re-priming.
