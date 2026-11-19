@@ -92,9 +92,10 @@ test("a boundary that failed, was resumed and then skipped by ctx.exit stays rea
 	}
 });
 
-test("a failed child resumed and ended by ctx.exit keeps the run's nested history readable and forkable (#4863)", async () => {
+test("a failed child resumed and ended by ctx.exit keeps the run's nested history readable and forkable (#4863, #5616)", async () => {
 	const backend = await createMemoryTestBackend();
 	let attempt = 0;
+	const secondStarted = Promise.withResolvers<void>();
 	const child = workflow({
 		name: "flaky-child",
 		description: "",
@@ -104,6 +105,7 @@ test("a failed child resumed and ended by ctx.exit keeps the run's nested histor
 			await ctx.tool("child-step", {}, async () => "done");
 			if (attempt === 1) throw new Error("child failed on its first attempt");
 			// Later attempts run until the parent's ctx.exit ends them.
+			secondStarted.resolve();
 			await new Promise(() => {});
 			return {};
 		},
@@ -127,9 +129,9 @@ test("a failed child resumed and ended by ctx.exit keeps the run's nested histor
 			await ctx.workflow(sibling);
 			await Promise.all([
 				ctx.workflow(child),
-				new Promise((resolve) => setTimeout(resolve, 20)).then(() => {
-					if (attempt > 1) ctx.exit({ status: "skipped", reason: "stop" });
-				}),
+				attempt === 2
+					? secondStarted.promise.then(() => ctx.exit({ status: "skipped", reason: "stop" }))
+					: undefined,
 			]);
 			return {};
 		},
@@ -141,6 +143,12 @@ test("a failed child resumed and ended by ctx.exit keeps the run's nested histor
 	};
 
 	assert.equal((await runAttempt()).status, "failed");
+	assert.ok(
+		durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!).some(
+			(snapshot) => snapshot.name === "flaky-child" && snapshot.status === "failed",
+		),
+		"inspect the child that ran before the boundary failed (#5616)",
+	);
 	const exited = await runAttempt();
 	assert.equal(exited.status, "skipped", exited.error);
 
@@ -155,8 +163,12 @@ test("a failed child resumed and ended by ctx.exit keeps the run's nested histor
 		["workflow:steady-child", "completed"],
 		["workflow:flaky-child", "skipped"],
 	]);
-	assert.deepEqual(nestedRuns(nested, runId), [["steady-child", "completed"]]);
-	assert.deepEqual(nestedRuns(durableNestedRunSnapshots(backend, runId), runId), [["steady-child", "completed"]]);
+	const expectedChildren = [
+		["steady-child", "completed"],
+		["flaky-child", "cancelled"],
+	];
+	assert.deepEqual(nestedRuns(nested, runId), expectedChildren);
+	assert.deepEqual(nestedRuns(durableNestedRunSnapshots(backend, runId), runId), expectedChildren);
 
 	// Running the exited run once more refuses the skipped child as it would one that never failed. That attempt ends
 	// before it reaches the child's boundary, so its history, durable as live, holds only what it reached (#4874).
@@ -180,6 +192,55 @@ test("a failed child resumed and ended by ctx.exit keeps the run's nested histor
 	assert.equal(forkRoot?.id, forkId);
 	assert.deepEqual(boundaries(forkRoot), boundaries(latest));
 	assert.deepEqual(nestedRuns(forkNested, forkId), [["steady-child", "completed"]]);
+});
+
+test("replaying a completed child restores the failed grandchild it handled, without rerunning it (#5616)", async () => {
+	const backend = await createMemoryTestBackend();
+	let calls = 0;
+	const leaf = workflow({
+		name: "handled-failure",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run() {
+			calls++;
+			throw new Error("handled by parent");
+		},
+	});
+	const middle = workflow({
+		name: "handles-failure",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await ctx.workflow(leaf).catch(() => {});
+			return {};
+		},
+	});
+	const root = workflow({
+		name: "replay-handled",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await ctx.workflow(middle);
+			return {};
+		},
+	});
+	const runId = testRunId("replay-handled");
+	for (const store of [createStore(), createStore()]) {
+		const result = await run(root, {}, { runId, store, durableBackend: backend });
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(
+			store.runs().map((r) => [r.name, r.status]),
+			[
+				[root.name, "completed"],
+				[middle.name, "completed"],
+				[leaf.name, "failed"],
+			],
+		);
+		assert.equal(calls, 1);
+	}
 });
 
 type TerminalStatus = "completed" | "failed" | "skipped";

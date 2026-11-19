@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A session that keeps running workflows no longer holds an Intercom connection for every run it has finished. Only the 32 most recently finished invocations keep their pending-stage routes, so a message to one of their stages still gets that run's own answer; an older finished invocation's routes are withdrawn and its connection closes, and an invocation that runs again is routed again ([#5492](https://github.com/bastani-inc/atomic/issues/5492))
 - The `/workflows` graph marks a stage suspended with its session released with the dim `◌` waiting mark, the same mark a released subagent has in the chat, `/tasks` and the agent panel, in node cards, the stage switcher, the stage strip and the header's count. It used `◷`. A paused stage keeps `❚❚` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - Restoring a blocked workflow keeps it blocked in the agent panel without briefly showing it as running. A new block gets its own notice even if it happens in the same millisecond as the previous block ([#5567](https://github.com/bastani-inc/atomic/issues/5567)).
+- Nested workflows that finish or fail on a worker now appear with their final state in the parent graph, even if they finish before the first progress update. A failed or skipped workflow call keeps the stages and tools of the child it actually started inspectable ([#5616](https://github.com/bastani-inc/atomic/issues/5616)).
 
 ## [0.9.89] - 2026-11-18
 

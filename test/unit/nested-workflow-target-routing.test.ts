@@ -259,6 +259,32 @@ describe("nested workflow stage target routing", () => {
 		}
 	});
 
+	test("a failed boundary that started an empty child cannot route to a previous child's pooled stage (#5616)", () => {
+		const rootId = fixtureRunId("changed-child");
+		const current = fixtureRunId("new-child");
+		const old = fixtureRunId("previous-child");
+		const boundary = { ...stage("call"), status: "failed" as const, startedChildRunId: current };
+		store.recordRunStart(run({ id: rootId, name: "root", stages: [boundary] }));
+		const parents = { parentRunId: rootId, parentStageId: boundary.id, rootRunId: rootId };
+		store.recordRunStart(run({ id: current, name: "current", stages: [], ...parents }));
+		store.recordRunStart(
+			run({
+				id: old,
+				name: "previous",
+				stages: [
+					{
+						...stage("previous-stage"),
+						workerExecution: { worker: "worker", generation: 1, renewedAt: 1, expiresAt: 2 },
+					},
+				],
+				...parents,
+			}),
+		);
+		const target = resolveStageTarget(rootId, "previous-stage", store);
+		assert.ok(!target.ok);
+		assert.equal(target.code, "stage_not_found");
+	});
+
 	test("duplicate child-local stage IDs are ambiguous instead of first-matched", () => {
 		const result = resolveStageTarget(fixtureRunId("root-run"), "shared");
 

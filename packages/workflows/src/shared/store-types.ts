@@ -485,6 +485,8 @@ export interface StageSnapshot {
 	replayed?: boolean;
 	/** Live child workflow run metadata used to expand nested workflow graphs while the child is running. */
 	workflowChildRun?: WorkflowChildRunRef;
+	/** The child that actually started under a failed or skipped boundary. Not a replayable result. */
+	startedChildRunId?: string;
 	/** Snapshot-safe child workflow result metadata for continuation replay of import boundaries. */
 	workflowChild?: WorkflowChildReplaySnapshot;
 	readonly toolEvents: ToolEvent[];

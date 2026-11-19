@@ -24,6 +24,7 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { type Store, store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunSnapshot, RunStatus } from "../shared/store-types.js";
+import { failedBoundaryChildRuns } from "../shared/workflow-run-ownership.js";
 import type { OverlayPiSurface } from "../tui/overlay-adapter.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { PiUISurface } from "./wiring.js";
@@ -190,15 +191,12 @@ function collapsedPooledStages(
 	const runs = readGraphStoreSnapshot(activeStore).runs;
 	return graph.stages.flatMap((boundary) => {
 		if (boundary.status !== "failed") return [];
-		// A failed boundary drops its child reference; the child run still names its boundary.
 		const { runId, stageId } = boundary.workflowGraphTarget;
-		return runs
-			.filter((run) => run.parentRunId === runId && run.parentStageId === stageId)
-			.flatMap((run) =>
-				run.stages
-					.filter((stage) => stage.workerExecution !== undefined && (stage.id === target || stage.name === target))
-					.map((stage) => ({ runId: run.id, stageId: stage.id })),
-			);
+		return failedBoundaryChildRuns(runs, runId, stageId, boundary.startedChildRunId).flatMap((run) =>
+			run.stages
+				.filter((stage) => stage.workerExecution !== undefined && (stage.id === target || stage.name === target))
+				.map((stage) => ({ runId: run.id, stageId: stage.id })),
+		);
 	});
 }
 

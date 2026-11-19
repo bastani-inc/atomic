@@ -552,8 +552,6 @@ export function sameExpandedWorkflowTopology(left: StoreSnapshot, right: StoreSn
 				x.id !== y.id ||
 				x.executionOrder !== y.executionOrder ||
 				x.nodeKind !== y.nodeKind ||
-				// The authoritative id becomes undefined at failed/skipped boundaries,
-				// so this comparison also catches a terminal-boundary flip.
 				xChildRunId !== yChildRunId ||
 				!sameIds(x.parentIds, y.parentIds)
 			)

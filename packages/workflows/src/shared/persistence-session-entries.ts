@@ -113,6 +113,7 @@ export interface StageEndPayload {
 	readonly replayedFromStageId?: string;
 	readonly replayed?: boolean;
 	readonly workflowChild?: WorkflowChildReplayPayload;
+	readonly startedChildRunId?: string;
 }
 
 export interface RunEndPayload {
@@ -248,6 +249,9 @@ export async function appendStageEnd(
 		...(payload.replayKey !== undefined ? { replayKey: payload.replayKey } : {}),
 		...(payload.replayedFromStageId !== undefined ? { replayedFromStageId: payload.replayedFromStageId } : {}),
 		...(payload.replayed !== undefined ? { replayed: payload.replayed } : {}),
+		...((payload.status === "failed" || payload.status === "skipped") && payload.startedChildRunId !== undefined
+			? { startedChildRunId: payload.startedChildRunId }
+			: {}),
 		...(payload.status === "completed" && payload.workflowChild !== undefined
 			? { workflowChild: payload.workflowChild }
 			: {}),
