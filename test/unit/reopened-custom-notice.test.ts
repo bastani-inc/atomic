@@ -5,6 +5,7 @@ import { test, vi } from "vitest";
 import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.ts";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
+import { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { getEditorTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -105,6 +106,26 @@ function mount(host: Host, message: CustomMessage, settings: Partial<ChatMessage
 	};
 }
 
+test("repainting an ordinary task completion does not register fresh card identities (#5690)", () => {
+	const card = new CustomMessageComponent({
+		role: "custom",
+		customType: "task-completion",
+		display: true,
+		details: finished,
+		content: title,
+		timestamp: 1,
+	});
+	const registrations = vi.spyOn(WeakSet.prototype, "add");
+	try {
+		for (let i = 0; i < 4; i++) card.invalidate();
+		assert.equal(registrations.mock.calls.length, 0);
+		assert.match(stripVTControlCharacters(card.render(120).join("")), /● worker finished/u);
+	} finally {
+		registrations.mockRestore();
+		card.dispose();
+	}
+});
+
 test("an extension completion repaints and expands without revealing its component prototype (#5690)", () => {
 	const message: CustomMessage = {
 		role: "custom",
@@ -140,6 +161,24 @@ test("an extension completion repaints and expands without revealing its compone
 		card.setExpanded(true);
 		assert.deepEqual(rows(), ["Extension: edited (expanded)"]);
 		assert.equal(probes, 0);
+	} finally {
+		card.dispose();
+	}
+});
+
+test("an extension can return a completion card through a forwarding proxy (#5690)", () => {
+	const card = new CustomMessageComponent(
+		{ role: "custom", customType: "task-completion", display: true, details: {}, content: title, timestamp: 1 },
+		(_message, { expanded }) =>
+			new Proxy(
+				new TaskCompletionMessage({ title, taskId: "child", status: "completed", preview: "" }, expanded),
+				{},
+			),
+	);
+	try {
+		card.invalidate();
+		card.setExpanded(true);
+		assert.match(stripVTControlCharacters(card.render(120).join("")), /● worker finished/u);
 	} finally {
 		card.dispose();
 	}

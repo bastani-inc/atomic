@@ -678,7 +678,6 @@ function extractEntriesExpansion(
 }
 
 export class TaskCompletionMessage implements Component {
-	static readonly #cards = new WeakSet<Component>();
 	readonly expandsOnClick = true;
 	private readonly notices: readonly TaskCompletionNotice[];
 	private expanded: boolean;
@@ -693,7 +692,7 @@ export class TaskCompletionMessage implements Component {
 
 	/** Recognize our own cards without asking an extension component for its prototype. */
 	static isCard(component: Component | undefined): component is TaskCompletionMessage {
-		return component !== undefined && TaskCompletionMessage.#cards.has(component);
+		return component !== undefined && #reuseHeader in component;
 	}
 
 	static fromMessage(
@@ -707,11 +706,7 @@ export class TaskCompletionMessage implements Component {
 		if (!read) return undefined;
 		const notice = Array.isArray(read) ? read[0] : read;
 		const card = new TaskCompletionMessage(notice, expanded, options);
-		// A repaint of this mounted message keeps its header decision, not its old render or transcript state.
-		if (previous?.notices[0] === notice) {
-			card.stoppedName = previous.stoppedName;
-			return card;
-		}
+		if (card.#reuseHeader(previous, notice)) return card;
 		const evidence = stopEvidence.get(notice);
 		if (evidence) {
 			// A surviving body rules out recovery before we scan the independent name. Never invoke a body getter.
@@ -730,12 +725,18 @@ export class TaskCompletionMessage implements Component {
 		return card;
 	}
 
+	// A repaint of this mounted message keeps its header decision, not its old render or transcript state.
+	#reuseHeader(previous: TaskCompletionMessage | undefined, notice: TaskCompletionNotice): boolean {
+		if (previous?.notices[0] !== notice) return false;
+		this.stoppedName = previous.stoppedName;
+		return true;
+	}
+
 	constructor(
 		notices: TaskCompletionNotice | readonly TaskCompletionNotice[],
 		expanded: boolean,
 		options?: TaskCompletionMessageOptions,
 	) {
-		TaskCompletionMessage.#cards.add(this);
 		this.notices = Array.isArray(notices) ? notices : [notices as TaskCompletionNotice];
 		this.expanded = expanded;
 		this.options = options;
