@@ -4,7 +4,6 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, test } from "vitest";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
@@ -246,53 +245,53 @@ test("an intentional identical send after a successful result gets a fresh ident
 });
 
 // #2840: an accepted send may have been delivered even when cancellation stops recovery.
-test("stage closure after acceptance and acknowledgement loss stops retries with unknown outcome", async () => {
+test("cancellation after acceptance and acknowledgement loss stops retries with unknown outcome", async () => {
 	const recipient = await connect("recipient");
 	recipient.on("message", (_from: SessionInfo, message: Message) => received.push(message));
 	const sender = await connect("sender");
 	const tool = registerTool(sender);
-	const boundary = new WorkflowStageAdmissionBoundary();
+	const cancel = new AbortController();
 	beforeAcknowledgement = () => {
-		void boundary.close();
+		cancel.abort();
 	};
 	dropNextSenderAcknowledgement = true;
 
 	const first = await tool.execute(
-		"stage-send",
+		"cancelled-send",
 		{ action: "send", to: "recipient", message: "accepted before closure" },
-		boundary.closeSignal,
+		cancel.signal,
 		undefined,
 		context,
 	);
-	assert.equal(boundary.closeSignal.aborted, true);
+	assert.equal(cancel.signal.aborted, true);
 	assert.equal(first.isError, true);
 	assert.match(first.content[0]?.text ?? "", /Cancelled/);
 	assert.match(first.content[0]?.text ?? "", /Delivery may already have occurred/);
 	assert.match(first.content[0]?.text ?? "", /Do not repeat this operation automatically/);
 	assert.deepEqual(first.details, { error: true, terminal: true, automaticRetries: 0, outcome: "unknown" });
 	assert.doesNotMatch(JSON.stringify(first), /retryToken/);
-	assert.equal(attemptedIds.length, 1, "stage cancellation must prevent internal retries");
+	assert.equal(attemptedIds.length, 1, "cancellation must prevent internal retries");
 	assert.equal(received.length, 1, "cancellation cannot undo the already accepted delivery");
 });
 
-// #2840: a receipt still describes transport acceptance when the stage closes.
-test("stage closure before acknowledgement preserves a successful transport receipt", async () => {
+// #2840: a receipt still describes transport acceptance when the call is cancelled.
+test("cancellation before acknowledgement preserves a successful transport receipt", async () => {
 	const recipient = await connect("recipient");
 	recipient.on("message", (_from: SessionInfo, message: Message) => received.push(message));
 	const sender = await connect("sender");
 	const tool = registerTool(sender);
-	const boundary = new WorkflowStageAdmissionBoundary();
+	const cancel = new AbortController();
 	beforeAcknowledgement = () => {
-		void boundary.close();
+		cancel.abort();
 	};
 	const result = await tool.execute(
-		"stage-send",
+		"cancelled-send",
 		{ action: "send", to: "recipient", message: "accepted before closure" },
-		boundary.closeSignal,
+		cancel.signal,
 		undefined,
 		context,
 	);
-	assert.equal(boundary.closeSignal.aborted, true);
+	assert.equal(cancel.signal.aborted, true);
 	assert.equal(result.isError, false);
 	assert.equal(result.details?.delivered, true);
 	assert.equal(result.details?.messageId, attemptedIds[0]);
@@ -304,14 +303,14 @@ test("cancellation during internal retry target resolution stops with unknown ou
 	const recipient = await connect("recipient");
 	recipient.on("message", (_from: SessionInfo, message: Message) => received.push(message));
 	const sender = await connect("sender");
-	const boundary = new WorkflowStageAdmissionBoundary();
+	const cancel = new AbortController();
 	let resolutions = 0;
 	const tool = registerTool(sender, () => {
-		if (++resolutions === 2) void boundary.close();
+		if (++resolutions === 2) cancel.abort();
 	});
 	const params = { action: "send", to: "recipient", message: "retry after cancelled resolution" };
 	dropNextSenderAcknowledgement = true;
-	const cancelled = await tool.execute("single-call", params, boundary.closeSignal, undefined, context);
+	const cancelled = await tool.execute("single-call", params, cancel.signal, undefined, context);
 	assert.equal(cancelled.isError, true);
 	assert.equal(resolutions, 2, "cancellation happens during the internal retry's resolution");
 	assert.deepEqual(cancelled.details, { error: true, terminal: true, automaticRetries: 1, outcome: "unknown" });

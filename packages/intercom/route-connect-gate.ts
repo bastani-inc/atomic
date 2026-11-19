@@ -1,9 +1,4 @@
-/**
- * Route clients that open sockets to a saturated broker at once only deepen its backlog. The gate lets
- * a bounded number of attempts run and queues the rest in arrival order.
- */
-export const ROUTE_CLIENT_CONNECT_CONCURRENCY = 4;
-
+/** A gate that lets a bounded number of operations run at once and queues the rest in arrival order. */
 export interface ConcurrencyGate {
 	run<T>(operation: () => Promise<T>): Promise<T>;
 }

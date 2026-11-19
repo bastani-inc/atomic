@@ -1,21 +1,21 @@
 /**
  * Regression: a *recoverable* Intercom broker disconnect must not be rendered
- * as a stage-facing failure while lazy re-initialization can still recover.
+ * as a session-facing failure while lazy re-initialization can still recover.
  *
- * Two boundaries actually reached the workflow-stage UI during Goal run
+ * Two boundaries reached a running session's UI during Goal run
  * 16a9f7ed-e55a-44b4-b89f-3b63ef9197a2:
  *
  *  1. The host extension-error boundary. `packages/intercom/index.ts` eagerly
- *     awaits `loadHeavy(ctx)` inside its `session_start` handler when the stage
- *     carries a `pendingStageDelivery`. A rejection escaped the handler, so the
- *     host's `runGenericHandlers` caught it and pushed it through
- *     `ExtensionRunner.emitError` to `showExtensionError` (interactive) and
- *     `console.error("Extension error ...")` (print) — painting
- *     "Client disconnected" over a stage that was still running.
+ *     awaits `loadHeavy(ctx)` inside its `session_start` handler for a session
+ *     that must connect at once (now an admitted subagent child). A rejection
+ *     that escaped the handler was caught by the host's `runGenericHandlers`
+ *     and pushed through `ExtensionRunner.emitError` to `showExtensionError`
+ *     (interactive) and `console.error("Extension error ...")` (print) —
+ *     painting "Client disconnected" over a session that was still running.
  *
- *  2. The lazy event-relay boundary. The `subagent:*` / pending-stage relays
- *     logged `Intercom event relay failed (<event>): Client disconnected`
- *     straight into the stage output for work the user never initiated.
+ *  2. The lazy event-relay boundary. The `subagent:*` relays logged
+ *     `Intercom event relay failed (<event>): Client disconnected` straight
+ *     into the session output for work the user never initiated.
  *
  * `d3910c0818` only silenced Intercom's own "heavy initialization failed" log,
  * which is neither of these channels. These tests drive the real boundaries.
@@ -38,30 +38,15 @@ import type {
 	ExtensionError,
 } from "../../packages/coding-agent/src/core/extensions/types.js";
 import intercom from "../../packages/intercom/index.js";
-import { IntercomLiveRouteRefusedError } from "../../packages/intercom/live-route-refusal.js";
 import {
 	IntercomBrokerTimeoutError,
 	IntercomClientDisconnectedError,
 } from "../../packages/intercom/recoverable-disconnect.js";
-import { IntercomWarmUpExhaustedError } from "../../packages/intercom/warm-up-exhaustion.js";
 import { requestSupervisorAuthorization } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
-import { sleep } from "../helpers/runtime.js";
 
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
-const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
-const ROUTE_RETRY_OUTCOME_EVENT = "atomic:intercom-route-retry-outcome";
 const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
-const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 const EXTENSION_PATH = "<intercom>";
-
-/** Poll until `predicate` holds, so a timer-driven retry is awaited rather than slept through. */
-async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (!predicate()) {
-		if (Date.now() > deadline) throw new Error("timed out waiting for the expected condition");
-		await sleep(5);
-	}
-}
 
 type HeavyModule = { default: (pi: ExtensionAPI) => void | Promise<void> };
 type ImportResult = { error: unknown } | { module: HeavyModule } | { pending: Promise<HeavyModule> };
@@ -84,94 +69,25 @@ afterEach(() => {
 	console.error = originalConsoleError;
 });
 
-/** Console output the workflow stage would have shown for an Intercom relay. */
+/** Console output the session would have shown for an Intercom relay. */
 function relayFailureLogs(): ConsoleErrorCall[] {
 	return consoleErrorCalls.filter(
 		([message]) => typeof message === "string" && message.startsWith("Intercom event relay failed"),
 	);
 }
 
-/**
- * A `pendingStageDelivery` modeled on the real contract in
- * `packages/workflows/src/runs/foreground/pending-stage-delivery.ts`: `ready()`
- * returns a promise that a successful `deliverPending()` resolves and a
- * terminal `fail()` rejects, and the only production caller of
- * `deliverPending()` is the heavy module's `session_start` replay. A stage that
- * owns queued messages parks on that promise inside `stage-runner-controller`,
- * with no timeout, so the terminal signal is the only thing that can unpark it
- * when recovery runs out.
- */
-function pendingStageDeliveryWithQueuedMessages() {
-	let resolveReady: (() => void) | undefined;
-	let rejectReady: ((error: Error) => void) | undefined;
-	let settled: "pending" | "delivered" | "failed" = "pending";
-	const readyPromise = new Promise<void>((resolve, reject) => {
-		resolveReady = resolve;
-		rejectReady = reject;
-	});
-	// Not every test awaits `ready()`; an unobserved terminal rejection must not
-	// become a process-level unhandled rejection, exactly as production does.
-	readyPromise.catch(() => {});
-	const delivery = {
-		routeCapability: "test-capability",
-		deliverPending: async () => {
-			delivery.deliverPendingCalls += 1;
-			settled = "delivered";
-			resolveReady?.();
-		},
-		ready: () => readyPromise,
-		fail: (reason: Error) => {
-			delivery.failReasons.push(reason);
-			if (settled !== "pending") return;
-			settled = "failed";
-			rejectReady?.(reason);
-		},
-		deliverPendingCalls: 0,
-		failReasons: [] as Error[],
-		get readySettled() {
-			return settled !== "pending";
-		},
-		get readyOutcome() {
-			return settled;
-		},
-	};
-	return delivery;
-}
-
-type PendingStageDelivery = ReturnType<typeof pendingStageDeliveryWithQueuedMessages>;
-
-/** A workflow-stage `session_start` context carrying a pending stage delivery. */
-function workflowStageContext(pendingStageDelivery?: PendingStageDelivery): ExtensionContext {
+/** A `session_start` context of an admitted subagent child, which connects to Intercom at session start. */
+function admittedChildContext(): ExtensionContext {
 	return {
 		cwd: process.cwd(),
 		hasUI: true,
-		orchestrationContext: {
-			kind: "workflow-stage",
-			workflowStageName: "implementation",
-			pendingStageDelivery: pendingStageDelivery ?? {
-				routeCapability: "test-capability",
-				deliverPending: async () => {},
-				ready: () => undefined,
-				fail: () => {},
-			},
-		},
+		subagentPolicy: { intercom: { orchestratorTarget: "parent", runId: "run", agent: "worker", index: 0 } },
 	} as never;
 }
 
-type StageContext = {
-	orchestrationContext?: { pendingStageDelivery?: { deliverPending: (deliver: () => void) => Promise<void> } };
-};
-
-function successfulHeavyModule(onSessionStart?: (ctx: unknown) => void): HeavyModule {
+function successfulHeavyModule(): HeavyModule {
 	return {
 		default(heavyPi) {
-			// Mirrors `packages/intercom/index-heavy.ts`, which drains the stage's
-			// pending deliveries from its own `session_start` handler.
-			heavyPi.on("session_start", async (_event, ctx) => {
-				onSessionStart?.(ctx);
-				const delivery = (ctx as StageContext).orchestrationContext?.pendingStageDelivery;
-				if (delivery) await delivery.deliverPending(() => {});
-			});
 			heavyPi.registerTool({
 				name: "intercom",
 				label: "Intercom",
@@ -185,7 +101,7 @@ function successfulHeavyModule(onSessionStart?: (ctx: unknown) => void): HeavyMo
 	};
 }
 
-function fixture(importResults: ImportResult[], warmUpRetryDelaysMs?: readonly number[]) {
+function fixture(importResults: ImportResult[]) {
 	const handlers = new Map<string, ExtensionEventHandler[]>();
 	const eventListeners = new Map<string, PiEventListener[]>();
 	const tools = new Map<string, ToolDefinition>();
@@ -222,7 +138,6 @@ function fixture(importResults: ImportResult[], warmUpRetryDelaysMs?: readonly n
 			if ("pending" in result) return await result.pending;
 			return result.module;
 		},
-		...(warmUpRetryDelaysMs ? { warmUpRetryDelaysMs } : {}),
 	});
 
 	/**
@@ -262,14 +177,14 @@ function fixture(importResults: ImportResult[], warmUpRetryDelaysMs?: readonly n
 		/** The same event bus `requestSupervisorAuthorization` is handed in production. */
 		piEvents: pi.events as never,
 		/** Drives `session_start` through the host boundary and returns what the UI would show. */
-		async emitSessionStart(ctx: ExtensionContext = workflowStageContext()): Promise<ExtensionError[]> {
+		async emitSessionStart(ctx: ExtensionContext = admittedChildContext()): Promise<ExtensionError[]> {
 			const reported: ExtensionError[] = [];
 			const event: SessionStartEvent = { type: "session_start", reason: "startup" };
 			await runGenericHandlers([hostExtension()], ctx, event as never, (error) => reported.push(error));
 			return reported;
 		},
 		/** Drives `session_shutdown` the way the host runner does. */
-		async emitSessionShutdown(ctx: ExtensionContext = workflowStageContext()): Promise<ExtensionError[]> {
+		async emitSessionShutdown(ctx: ExtensionContext = admittedChildContext()): Promise<ExtensionError[]> {
 			const reported: ExtensionError[] = [];
 			const event = { type: "session_shutdown", reason: "quit" };
 			await runGenericHandlers([hostExtension()], ctx, event as never, (error) => reported.push(error));
@@ -288,49 +203,7 @@ function fixture(importResults: ImportResult[], warmUpRetryDelaysMs?: readonly n
 	};
 }
 
-describe("Intercom recoverable disconnect at the workflow-stage UI boundary", () => {
-	test("keeps a recoverable stage warm-up disconnect out of the host extension-error channel", async () => {
-		const current = fixture([{ error: new IntercomClientDisconnectedError() }]);
-
-		const reported = await current.emitSessionStart();
-
-		assert.deepEqual(reported, []);
-		assert.deepEqual(consoleErrorCalls, []);
-	});
-
-	test("stays healthy and reconnects on the next call without a restart", async () => {
-		const replayedContexts: unknown[] = [];
-		const current = fixture([
-			{ error: new IntercomClientDisconnectedError() },
-			{ module: successfulHeavyModule((ctx) => replayedContexts.push(ctx)) },
-		]);
-
-		const reported = await current.emitSessionStart();
-		const result = await current.executeIntercomTool();
-
-		assert.deepEqual(reported, []);
-		assert.deepEqual(consoleErrorCalls, []);
-		assert.equal(current.imports, 2, "the next call retries initialization on its own");
-		assert.deepEqual(result, { content: [{ type: "text", text: "connected" }], details: {} });
-		assert.equal(
-			replayedContexts.length,
-			1,
-			"the captured session_start is replayed into the recovered heavy module",
-		);
-	});
-
-	test("still reports a non-recoverable initialization failure to the host", async () => {
-		const importError = new Error("Cannot import Intercom heavy module");
-		const current = fixture([{ error: importError }]);
-
-		const reported = await current.emitSessionStart();
-
-		assert.equal(reported.length, 1);
-		assert.equal(reported[0]?.event, "session_start");
-		assert.equal(reported[0]?.extensionPath, EXTENSION_PATH);
-		assert.equal(reported[0]?.error, "Cannot import Intercom heavy module");
-	});
-
+describe("Intercom recoverable disconnect at the session-start UI boundary", () => {
 	test("does not reclassify an identically worded plain error as recoverable", async () => {
 		const lookalike = new Error("Client disconnected");
 		const current = fixture([{ error: lookalike }]);
@@ -350,7 +223,7 @@ describe("Intercom recoverable disconnect at the workflow-stage UI boundary", ()
 });
 
 describe("Intercom recoverable disconnect at the lazy event-relay boundary", () => {
-	test("keeps 'Intercom event relay failed' out of the stage output while acknowledging the relay", async () => {
+	test("keeps 'Intercom event relay failed' out of the session output while acknowledging the relay", async () => {
 		const current = fixture([{ error: new IntercomClientDisconnectedError() }]);
 
 		current.emitPiEvent(SUBAGENT_RESULT_INTERCOM_EVENT, { requestId: "req-1", to: "peer", message: "hi" });
@@ -398,66 +271,13 @@ describe("Intercom recoverable disconnect at the lazy event-relay boundary", () 
 			[`Intercom event relay failed (${SUBAGENT_RESULT_INTERCOM_EVENT}):`, terminal],
 		]);
 	});
-
-	test("keeps a recoverable pending-stage undeliverable relay silent and unhandled", async () => {
-		const current = fixture([{ error: new IntercomClientDisconnectedError() }]);
-		const payload: {
-			handled?: boolean;
-			completion?: Promise<boolean>;
-			runId: string;
-			senderId: string;
-			messageId: string;
-			notificationId: string;
-			reason: string;
-		} = {
-			runId: "run-1",
-			senderId: "sender-1",
-			messageId: "message-1",
-			notificationId: "notification-1",
-			reason: "stage_never_started",
-		};
-
-		current.emitPiEvent(PENDING_STAGE_UNDELIVERABLE_EVENT, payload);
-		assert.ok(payload.completion, "the relay claims the event and exposes a completion");
-
-		assert.equal(await payload.completion, false);
-		assert.deepEqual(relayFailureLogs(), []);
-	});
-
-	test("still reports a terminal pending-stage undeliverable relay failure", async () => {
-		const terminal = new Error("Intercom heavy module is unavailable");
-		const current = fixture([{ error: terminal }]);
-		const payload: {
-			handled?: boolean;
-			completion?: Promise<boolean>;
-			runId: string;
-			senderId: string;
-			messageId: string;
-			notificationId: string;
-			reason: string;
-		} = {
-			runId: "run-2",
-			senderId: "sender-2",
-			messageId: "message-2",
-			notificationId: "notification-2",
-			reason: "stage_never_started",
-		};
-
-		current.emitPiEvent(PENDING_STAGE_UNDELIVERABLE_EVENT, payload);
-		assert.ok(payload.completion);
-
-		assert.equal(await payload.completion, false);
-		assert.deepEqual(relayFailureLogs(), [
-			[`Intercom event relay failed (${PENDING_STAGE_UNDELIVERABLE_EVENT}):`, terminal],
-		]);
-	});
 });
 
 describe("Intercom recoverable disconnect at the supervisor-authorization channel", () => {
 	// This is the channel that actually leaked in Goal run
 	// 16a9f7ed-e55a-44b4-b89f-3b63ef9197a2: the `subagent` tool returned the bare
 	// string "Client disconnected" as its entire result, four times, while the
-	// stage kept running. `requestSupervisorAuthorization` rethrows every
+	// session kept running. `requestSupervisorAuthorization` rethrows every
 	// non-stale error, and `subagent-executor-single.ts` awaits it inside the run
 	// `try`, so the message became the run result.
 	test("resolves undefined so a recoverable disconnect never becomes the subagent run result", async () => {
@@ -486,253 +306,6 @@ describe("Intercom recoverable disconnect at the supervisor-authorization channe
 	});
 });
 
-describe("Intercom bounded warm-up retry for a parked workflow stage", () => {
-	// A stage carrying queued pending messages parks on
-	// `pendingStageDelivery.ready()` in `stage-runner-controller`, with no
-	// timeout. Only a successful heavy-module replay calls `deliverPending()`, so
-	// silently discarding the warm-up failure would leave that stage waiting with
-	// no owner and no signal.
-	test("retries after a recoverable warm-up disconnect and unparks the stage", async () => {
-		const delivery = pendingStageDeliveryWithQueuedMessages();
-		const current = fixture(
-			[{ error: new IntercomClientDisconnectedError() }, { module: successfulHeavyModule() }],
-			[1],
-		);
-
-		const reported = await current.emitSessionStart(workflowStageContext(delivery));
-		assert.deepEqual(reported, [], "the stage is not shown an error while recovery is still ahead");
-		assert.equal(delivery.readySettled, false, "the stage is parked until a replay delivers");
-
-		await delivery.ready();
-
-		assert.equal(current.imports, 2, "the wrapper owns the retry; no explicit Intercom call was needed");
-		assert.equal(delivery.deliverPendingCalls, 1);
-		assert.deepEqual(consoleErrorCalls, []);
-	});
-
-	test("hands the stage a terminal signal when the bounded attempts run out, with no console diagnostic", async () => {
-		const delivery = pendingStageDeliveryWithQueuedMessages();
-		const current = fixture(
-			[
-				{ error: new IntercomClientDisconnectedError() },
-				{ error: new IntercomClientDisconnectedError() },
-				{ error: new IntercomClientDisconnectedError() },
-			],
-			[1, 1],
-		);
-
-		const reported = await current.emitSessionStart(workflowStageContext(delivery));
-		await waitFor(() => delivery.failReasons.length > 0);
-
-		assert.deepEqual(reported, []);
-		assert.equal(current.imports, 3, "one warm-up attempt plus the two scheduled retries");
-		assert.deepEqual(consoleErrorCalls, [], "no raw extension text is written into the root transcript");
-		assert.equal(delivery.failReasons.length, 1, "exactly one terminal signal, not one per attempt");
-		const reason = delivery.failReasons[0];
-		assert.ok(reason instanceof IntercomWarmUpExhaustedError, "the terminal reason is typed, not a message string");
-		assert.equal(reason.attempts, 2);
-		assert.match(String(reason?.message), /after 2 warm-up attempts/);
-		assert.equal(
-			(reason?.cause as Error | undefined)?.name,
-			"IntercomClientDisconnectedError",
-			"the last recoverable failure is preserved as the cause",
-		);
-		assert.equal(delivery.readyOutcome, "failed", "the parked stage is settled instead of waiting forever");
-		await assert.rejects(delivery.ready(), (error: Error) => error === reason);
-	});
-
-	test("contains a delivery whose fail() throws instead of letting it escape the process", async () => {
-		// `fail` is part of the delivery contract, so a delivery that throws from it
-		// is a host violating that contract. The exhaustion branch runs from a timer
-		// callback and from the retry chain's rejection handler, so an escaping throw
-		// becomes an uncaughtException or an unhandled rejection — neither of which a
-		// misbehaving host may inflict on the session. Nothing may reach the
-		// transcript on this path either.
-		const delivery = pendingStageDeliveryWithQueuedMessages();
-		const hostile = {
-			...delivery,
-			fail: (reason: Error) => {
-				delivery.fail(reason);
-				throw new Error("hostile delivery implementation");
-			},
-		};
-		const escaped: unknown[] = [];
-		const onEscape = (error: unknown): void => {
-			escaped.push(error);
-		};
-		process.on("uncaughtException", onEscape);
-		process.on("unhandledRejection", onEscape);
-		const current = fixture(
-			[
-				{ error: new IntercomClientDisconnectedError() },
-				{ error: new IntercomClientDisconnectedError() },
-				{ error: new IntercomClientDisconnectedError() },
-			],
-			[1, 1],
-		);
-
-		try {
-			const reported = await current.emitSessionStart(workflowStageContext(hostile as never));
-			await waitFor(() => delivery.failReasons.length > 0);
-			await sleep(50);
-
-			assert.deepEqual(reported, []);
-			assert.deepEqual(consoleErrorCalls, []);
-			assert.deepEqual(escaped, [], "the contract violation stays inside the extension");
-			assert.equal(delivery.failReasons.length, 1, "the reason is still handed over exactly once");
-		} finally {
-			process.off("uncaughtException", onEscape);
-			process.off("unhandledRejection", onEscape);
-		}
-	});
-
-	test("keeps the warm-up retry for the current session when a stale session's warm-up fails first (#5096)", async () => {
-		// A replaced session's warm-up and the current session's warm-up share one
-		// in-flight import. When it fails, the stale session's handler runs first; it
-		// must not take the only retry slot, or the current stage parks on ready().
-		let rejectImport: ((error: unknown) => void) | undefined;
-		const sharedImport = new Promise<HeavyModule>((_resolve, reject) => {
-			rejectImport = reject;
-		});
-		const staleDelivery = pendingStageDeliveryWithQueuedMessages();
-		const currentDelivery = pendingStageDeliveryWithQueuedMessages();
-		const current = fixture([{ pending: sharedImport }, { module: successfulHeavyModule() }], [1]);
-
-		const staleStart = current.emitSessionStart(workflowStageContext(staleDelivery));
-		await waitFor(() => current.imports === 1);
-		const currentStart = current.emitSessionStart(workflowStageContext(currentDelivery));
-		await sleep(10);
-		rejectImport?.(new IntercomClientDisconnectedError());
-		assert.deepEqual(await staleStart, []);
-		assert.deepEqual(await currentStart, []);
-
-		await waitFor(() => currentDelivery.readySettled);
-
-		assert.equal(current.imports, 2, "the current session schedules its own retry");
-		assert.equal(currentDelivery.readyOutcome, "delivered", "the current stage resumes");
-		assert.equal(currentDelivery.deliverPendingCalls, 1);
-		assert.equal(staleDelivery.deliverPendingCalls, 0, "the stale session does not retry");
-		assert.deepEqual(consoleErrorCalls, []);
-	});
-
-	test("stops a replaced session's in-flight warm-up retry without failing its stage (#5096)", async () => {
-		// The replaced session's retry is still loading when the current session
-		// starts. When that shared load fails, the replaced chain must stop quietly,
-		// not run out its attempts and fail a stage that no longer exists, while the
-		// current session retries and resumes its own stage.
-		let rejectRetry: ((error: unknown) => void) | undefined;
-		const retryImport = new Promise<HeavyModule>((_resolve, reject) => {
-			rejectRetry = reject;
-		});
-		const staleDelivery = pendingStageDeliveryWithQueuedMessages();
-		const currentDelivery = pendingStageDeliveryWithQueuedMessages();
-		const current = fixture(
-			[
-				{ error: new IntercomClientDisconnectedError() },
-				{ pending: retryImport },
-				{ module: successfulHeavyModule() },
-			],
-			[1],
-		);
-
-		assert.deepEqual(await current.emitSessionStart(workflowStageContext(staleDelivery)), []);
-		await waitFor(() => current.imports === 2);
-		const currentStart = current.emitSessionStart(workflowStageContext(currentDelivery));
-		await sleep(10);
-		rejectRetry?.(new IntercomClientDisconnectedError());
-		assert.deepEqual(await currentStart, []);
-
-		await waitFor(() => currentDelivery.readySettled);
-		await sleep(20);
-
-		assert.equal(currentDelivery.readyOutcome, "delivered", "the current stage resumes");
-		assert.deepEqual(staleDelivery.failReasons, [], "the replaced stage is not handed a terminal failure");
-		assert.equal(current.imports, 3);
-	});
-
-	test("cancels the retry on session shutdown without another attempt", async () => {
-		const delivery = pendingStageDeliveryWithQueuedMessages();
-		const current = fixture(
-			[{ error: new IntercomClientDisconnectedError() }, { module: successfulHeavyModule() }],
-			[40],
-		);
-
-		await current.emitSessionStart(workflowStageContext(delivery));
-		const shutdownReported = await current.emitSessionShutdown();
-		await sleep(120);
-
-		assert.deepEqual(shutdownReported, []);
-		assert.equal(current.imports, 1, "the cancelled retry never fires a second import");
-		assert.deepEqual(consoleErrorCalls, []);
-	});
-
-	test("does not retry a non-recoverable warm-up failure", async () => {
-		const delivery = pendingStageDeliveryWithQueuedMessages();
-		const current = fixture([{ error: new Error("Cannot import Intercom heavy module") }], [1]);
-
-		const reported = await current.emitSessionStart(workflowStageContext(delivery));
-		await sleep(30);
-
-		assert.equal(reported.length, 1, "a non-recoverable failure stays immediately actionable");
-		assert.equal(current.imports, 1, "and is not retried");
-	});
-
-	// Regression for #3163: the broker ends the socket on every live-route refusal, but
-	// only a refusal whose condition can clear on its own may share the warm-up retry.
-	test("retries a transient live-route refusal (owner reconnecting) and unparks the stage (#3163)", async () => {
-		const delivery = pendingStageDeliveryWithQueuedMessages();
-		const current = fixture(
-			[{ error: new IntercomLiveRouteRefusedError("owner_missing") }, { module: successfulHeavyModule() }],
-			[1],
-		);
-
-		const reported = await current.emitSessionStart(workflowStageContext(delivery));
-		assert.deepEqual(reported, [], "an owner still re-registering is not a stage startup failure");
-
-		await delivery.ready();
-
-		assert.equal(current.imports, 2);
-		assert.equal(delivery.deliverPendingCalls, 1);
-		assert.deepEqual(consoleErrorCalls, []);
-	});
-
-	test("keeps refusing a genuine duplicate live owner and settles the stage once retries run out (#3163)", async () => {
-		const delivery = pendingStageDeliveryWithQueuedMessages();
-		const current = fixture(
-			[
-				{ error: new IntercomLiveRouteRefusedError("duplicate_live_owner") },
-				{ error: new IntercomLiveRouteRefusedError("duplicate_live_owner") },
-			],
-			[1],
-		);
-
-		const reported = await current.emitSessionStart(workflowStageContext(delivery));
-		await waitFor(() => delivery.failReasons.length > 0);
-
-		assert.deepEqual(reported, []);
-		assert.equal(current.imports, 2, "the retry never grants ownership; it only re-asks the broker");
-		const reason = delivery.failReasons[0];
-		assert.ok(reason instanceof IntercomWarmUpExhaustedError);
-		assert.equal(
-			(reason?.cause as Error | undefined)?.message,
-			"Live workflow-stage route is owned by another active session",
-			"the terminal reason still names the genuine duplicate owner",
-		);
-	});
-
-	test("does not retry a live-route refusal that repeats identically, and reports its actual condition (#3163)", async () => {
-		const delivery = pendingStageDeliveryWithQueuedMessages();
-		const current = fixture([{ error: new IntercomLiveRouteRefusedError("capability_mismatch") }], [1]);
-
-		const reported = await current.emitSessionStart(workflowStageContext(delivery));
-		await sleep(30);
-
-		assert.equal(reported.length, 1);
-		assert.equal(reported[0]?.error, "Live workflow-stage route capability does not match the workflow owner");
-		assert.equal(current.imports, 1, "a configuration mismatch is not retried");
-	});
-});
-
 describe("Intercom broker registration timeout at the lazy event-relay boundary", () => {
 	const PERSISTENT_OUTAGE_MS = 60_000;
 	const OUTAGE_REPORT = /^Intercom broker has not answered for over 60s/;
@@ -741,55 +314,24 @@ describe("Intercom broker registration timeout at the lazy event-relay boundary"
 		return consoleErrorCalls.filter(([message]) => typeof message === "string" && OUTAGE_REPORT.test(message));
 	}
 
-	async function relayRouteUpdate(current: ReturnType<typeof fixture>): Promise<void> {
-		current.emitPiEvent(PENDING_STAGE_ROUTE_EVENT, {
-			runId: "run-1",
-			group: "workflow:run-1",
-			capability: "capability",
-		});
+	async function relayResult(current: ReturnType<typeof fixture>): Promise<void> {
+		current.emitPiEvent(SUBAGENT_RESULT_INTERCOM_EVENT, { requestId: "req-1", to: "parent", message: "done" });
 		await tick();
 	}
 
-	test("keeps a burst of route updates that all time out out of the stage output", async () => {
+	test("keeps a burst of relays that all time out out of the session output", async () => {
 		const current = fixture([{ error: new IntercomBrokerTimeoutError("Connection timeout") }]);
 
 		for (let update = 0; update < 50; update += 1) {
-			current.emitPiEvent(PENDING_STAGE_ROUTE_EVENT, { runId: `run-${update}`, group: `workflow:run-${update}` });
+			current.emitPiEvent(SUBAGENT_RESULT_INTERCOM_EVENT, {
+				requestId: `req-${update}`,
+				to: "parent",
+				message: "done",
+			});
 		}
 		await tick();
 
 		assert.deepEqual(consoleErrorCalls, []);
-	});
-
-	test("reports a broker that stays silent through repeated failed route retries with no further publications", async () => {
-		const current = fixture([]);
-		vi.useFakeTimers({ toFake: ["Date"] });
-		try {
-			const outageStart = Date.UTC(2026, 0, 1);
-			const failRetry = async (at: number): Promise<void> => {
-				vi.setSystemTime(at);
-				current.emitPiEvent(ROUTE_RETRY_OUTCOME_EVENT, {
-					runId: "run-1",
-					error: new IntercomBrokerTimeoutError("Connection timeout"),
-				});
-				await tick();
-			};
-			await failRetry(outageStart);
-			await failRetry(outageStart + PERSISTENT_OUTAGE_MS - 1);
-			assert.equal(outageReports().length, 0, "retries that have not failed for long enough are not an outage");
-
-			await failRetry(outageStart + PERSISTENT_OUTAGE_MS);
-			await failRetry(outageStart + 2 * PERSISTENT_OUTAGE_MS);
-			assert.equal(outageReports().length, 1, "repeated failed retries report one outage");
-
-			current.emitPiEvent(ROUTE_RETRY_OUTCOME_EVENT, { runId: "run-1" });
-			await failRetry(outageStart + 3 * PERSISTENT_OUTAGE_MS);
-			await failRetry(outageStart + 4 * PERSISTENT_OUTAGE_MS);
-			assert.equal(outageReports().length, 2, "a retry that succeeded ended the outage");
-			assert.deepEqual(relayFailureLogs(), []);
-		} finally {
-			vi.useRealTimers();
-		}
 	});
 
 	test("reports a broker that stays silent once per outage, and again only after a relay succeeds", async () => {
@@ -798,7 +340,7 @@ describe("Intercom broker registration timeout at the lazy event-relay boundary"
 			{
 				module: {
 					default(heavyPi) {
-						heavyPi.events.on(PENDING_STAGE_ROUTE_EVENT, () => {
+						heavyPi.events.on(SUBAGENT_RESULT_INTERCOM_EVENT, () => {
 							if (broker.silent) throw new IntercomBrokerTimeoutError("Connection timeout");
 						});
 					},
@@ -809,33 +351,33 @@ describe("Intercom broker registration timeout at the lazy event-relay boundary"
 		try {
 			const outageStart = Date.UTC(2026, 0, 1);
 			vi.setSystemTime(outageStart);
-			await relayRouteUpdate(current);
+			await relayResult(current);
 			vi.setSystemTime(outageStart + PERSISTENT_OUTAGE_MS - 1);
-			await relayRouteUpdate(current);
+			await relayResult(current);
 			assert.equal(outageReports().length, 0, "a timeout that has not persisted is not an outage");
 
 			vi.setSystemTime(outageStart + PERSISTENT_OUTAGE_MS);
-			await relayRouteUpdate(current);
+			await relayResult(current);
 			assert.equal(outageReports().length, 1);
 			vi.setSystemTime(outageStart + 3 * PERSISTENT_OUTAGE_MS);
-			await relayRouteUpdate(current);
-			await relayRouteUpdate(current);
+			await relayResult(current);
+			await relayResult(current);
 			assert.equal(outageReports().length, 1, "one outage is reported once, however many relays it times out");
 			assert.deepEqual(relayFailureLogs(), []);
 
 			broker.silent = false;
-			await relayRouteUpdate(current);
+			await relayResult(current);
 			broker.silent = true;
 			const nextOutageStart = outageStart + 4 * PERSISTENT_OUTAGE_MS;
 			vi.setSystemTime(nextOutageStart);
-			await relayRouteUpdate(current);
+			await relayResult(current);
 			assert.equal(
 				outageReports().length,
 				1,
 				"a relay that succeeded ended the outage; a new timeout starts a fresh one",
 			);
 			vi.setSystemTime(nextOutageStart + PERSISTENT_OUTAGE_MS);
-			await relayRouteUpdate(current);
+			await relayResult(current);
 			assert.equal(outageReports().length, 2);
 		} finally {
 			vi.useRealTimers();

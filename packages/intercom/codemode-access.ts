@@ -2,7 +2,7 @@ import type { ToolScriptAccess } from "@bastani/atomic";
 import type { JsonValue } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { normalizeGroups } from "./group.js";
-import type { SessionInfo, WorkflowStageRosterEntry } from "./types.js";
+import type { SessionInfo } from "./types.js";
 
 /** #5087: the Intercom actions codemode scripts may call. The rest stay model-only. */
 export const INTERCOM_SCRIPT_ACTIONS = ["list", "status", "pending", "send"] as const;
@@ -18,21 +18,12 @@ const sessionEntrySchema = Type.Object({
 	self: Type.Boolean(),
 });
 
-const workflowStageSchema = Type.Object({
-	target: Type.String(),
-	stageName: Type.String(),
-	lifecycle: Type.Union([Type.Literal("pending"), Type.Literal("running")]),
-	group: Type.String(),
-	sessionId: Type.Optional(Type.String()),
-});
-
 export const intercomScriptOutputSchema = Type.Union([
 	Type.Object({
 		action: Type.Literal("list"),
 		groups: Type.Array(Type.String()),
 		peekGroup: Type.Optional(Type.String()),
 		sessions: Type.Array(sessionEntrySchema),
-		workflowStages: Type.Array(workflowStageSchema),
 	}),
 	Type.Object({
 		action: Type.Literal("status"),
@@ -83,17 +74,17 @@ export function refuseIntercomScriptCall(params: { action: string; to?: string; 
 	}
 	const to = params.to?.trim() ?? "";
 	if (to.includes("*") || to.startsWith("subagents:")) {
-		return `Scripts may send only to an exact target: a live session name, a full session id or unique 8-hex prefix, or a workflow stage path without "*" or "**". "${to}" is a pattern; send to each recipient by its exact name, or call the intercom tool directly to send to a pattern.`;
+		return `Scripts may send only to an exact target: a live session name, or a full session id or unique 8-hex prefix. "${to}" is a pattern; send to each recipient by its exact name, or call the intercom tool directly to send to a pattern.`;
 	}
 	return undefined;
 }
 
 export const intercomScriptAccess: ToolScriptAccess<{ action: string; to?: string; replyTo?: string }> = {
 	description: `Coordinate with other local agent sessions that share an intercom group. Scripts may use these actions; the others (ask, reply, cancel, join, leave, groups) are model-only.
-- { action: "list", group? }: sessions visible through your groups, or one group's sessions with group, as { sessionId, name?, cwd, state, activity?, groups, replyCapability?, self }, plus workflow stages.
+- { action: "list", group? }: sessions visible through your groups, or one group's sessions with group, as { sessionId, name?, cwd, state, activity?, groups, replyCapability?, self }.
 - { action: "status", group? }: your session id, groups, the visible sessions, and how many of your asks await a reply.
 - { action: "pending" }: unanswered asks sent to you (inbound) and your asks awaiting a reply (outbound).
-- { action: "send", to, message, attachments?, delivery? }: send to one exact target: a live session name, a full session id or unique 8-hex prefix, or a workflow stage path without "*" or "**". Globs, "*" and "subagents:" targets are refused. Resolves to { target, outcome, messageId?, reason? }, where outcome is "delivered", "queued", "refused", "unknown" (do not resend automatically) or "cancelled".`,
+- { action: "send", to, message, attachments?, delivery? }: send to one exact target: a live session name, or a full session id or unique 8-hex prefix. Globs, "*" and "subagents:" targets are refused. Resolves to { target, outcome, messageId?, reason? }, where outcome is "delivered", "queued", "refused", "unknown" (do not resend automatically) or "cancelled".`,
 	outputSchema: intercomScriptOutputSchema,
 	refuse: refuseIntercomScriptCall,
 };
@@ -111,16 +102,6 @@ export function scriptSessionEntry(session: SessionInfo, selfId: string | null |
 	if (session.replyCapability !== undefined) entry.replyCapability = session.replyCapability;
 	entry.self = session.id === selfId;
 	return entry;
-}
-
-export function scriptWorkflowStage(stage: WorkflowStageRosterEntry): JsonValue {
-	return {
-		target: stage.target,
-		stageName: stage.stageName,
-		lifecycle: stage.lifecycle,
-		group: stage.group,
-		...(stage.sessionId === undefined ? {} : { sessionId: stage.sessionId }),
-	};
 }
 
 /** The delivery outcome of one exact-target send, from its result. */

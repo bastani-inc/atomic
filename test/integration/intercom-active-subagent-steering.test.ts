@@ -3,12 +3,7 @@ import type { AgentTool } from "@bastani/atomic-agent-core";
 import { type FauxResponseFactory, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
-import type {
-	ExtensionContext,
-	ExtensionFactory,
-	OrchestrationContext,
-} from "../../packages/coding-agent/src/core/extensions/index.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
+import type { ExtensionContext, ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { createHarness, getMessageText } from "../../packages/coding-agent/test/suite/harness.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import type { IntercomExtensionTestOverrides } from "../../packages/intercom/intercom-test-seams.js";
@@ -35,7 +30,6 @@ async function childHarness(
 	tools: AgentTool[] = [],
 	extensions: ExtensionFactory[] = [],
 	stopAfterTurn?: () => boolean,
-	orchestrationContext?: OrchestrationContext,
 ) {
 	const ended = new AbortController();
 	let inbound!: Parameters<NonNullable<IntercomExtensionTestOverrides["captureInboundHandler"]>>[0];
@@ -50,7 +44,6 @@ async function childHarness(
 					return stopAfterTurn() ? ({ action: "end" } as const) : undefined;
 				}
 			: undefined,
-		orchestrationContext,
 		subagentPolicy: {
 			managementActions: "restricted",
 			fanoutAuthorized: false,
@@ -466,55 +459,5 @@ test("an explicit native stop holds child steering instead of spinning or restar
 		release.resolve();
 		await execution;
 		await current.close();
-	}
-});
-
-test("a workflow-owned child's steering and terminal lifetime stay separate from the parent's stage generation", async () => {
-	const boundary = new WorkflowStageAdmissionBoundary();
-	const started = Promise.withResolvers<void>();
-	const release = Promise.withResolvers<void>();
-	const stage: OrchestrationContext = {
-		kind: "workflow-stage",
-		workflowRunId: "parent-run",
-		workflowStageId: "parent-stage",
-		workflowStageName: "parent",
-		constraints: { disableWorkflowTool: true },
-		messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() },
-	};
-	const current = await childHarness([], [], undefined, stage);
-	let amended = false;
-	current.setResponses([
-		async () => {
-			started.resolve();
-			await release.promise;
-			return fauxAssistantMessage("original result");
-		},
-		(context) => {
-			amended = context.messages.some((message) => getMessageText(message).includes(amendment.content.text));
-			return fauxAssistantMessage("amended result");
-		},
-	]);
-	const execution = current.session.prompt("original child task");
-	try {
-		await started.promise;
-		await current.deliver();
-		release.resolve();
-		await execution;
-		assert.equal(amended, true);
-		assert.equal(boundary.isOpen(), true, "child settlement must not seal the parent generation");
-		const parentDelivery = boundary.admit(
-			`intercom:${amendment.id}`,
-			() => {},
-			() => {
-				throw new Error("parent closed");
-			},
-		);
-		assert.equal(parentDelivery.decision, "admitted", "child delivery must not consume the parent's dedup identity");
-		await parentDelivery.completion;
-	} finally {
-		release.resolve();
-		await execution;
-		await current.close();
-		await boundary.close();
 	}
 });

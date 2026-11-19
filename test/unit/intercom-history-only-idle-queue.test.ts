@@ -14,12 +14,10 @@ import {
 	INTERCOM_DETACH_REQUEST_EVENT,
 	INTERCOM_DETACH_RESPONSE_EVENT,
 } from "../../packages/intercom/foreground-detach-handoff.js";
-import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.js";
 import { createIncomingMessageSender } from "../../packages/intercom/incoming-message-delivery.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import type { IntercomExtensionTestOverrides } from "../../packages/intercom/intercom-test-seams.js";
 import { SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT } from "../../packages/intercom/intercom-utils.js";
-import { registerLateStageMessageRouter } from "../../packages/intercom/late-stage-message-router.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 
@@ -401,56 +399,5 @@ test("a history-only card reaching a delivery chokepoint on its own starts no tu
 		{ id: "gone-card", triggerTurn: false },
 		{ id: "live-card", triggerTurn: true },
 	]);
-	assert.deepEqual(replyContexts, ["live-card"]);
-
-	// The closed-stage batch router: reply context comes from the live card, never the history card ahead of it,
-	// and a batch of history cards alone starts no turn.
-	replyContexts = [];
-	const events = createEventBus();
-	const recorded: string[] = [];
-	const tracker = new ReplyTracker();
-	const record = tracker.recordIncomingMessage.bind(tracker);
-	tracker.recordIncomingMessage = (from, incoming, receivedAt) => {
-		recorded.push(incoming.id);
-		return record(from, incoming, receivedAt);
-	};
-	const batches: Array<{ ids: string[]; triggerTurn: boolean }> = [];
-	registerLateStageMessageRouter(
-		{
-			events,
-			sendMessages: (messages: Array<{ details: { message: Message } }>, options?: { triggerTurn?: boolean }) => {
-				batches.push({
-					ids: messages.map((shownMessage) => shownMessage.details.message.id),
-					triggerTurn: options?.triggerTurn === true,
-				});
-			},
-		} as never,
-		new InboundMessageAdmission(),
-		() => tracker,
-	);
-	const toMessage = (entry: typeof liveCard) => ({
-		customType: "intercom_message",
-		content: entry.bodyText,
-		display: true,
-		details: entry,
-	});
-	const route = async (messages: object[]) => {
-		const event = { handled: false, batch: true, messages, options: { triggerTurn: true } } as {
-			handled: boolean;
-			batch: boolean;
-			messages: object[];
-			options: object;
-			completion?: Promise<void>;
-		};
-		events.emit("atomic:workflow-stage-late-message", event);
-		await event.completion;
-	};
-	await route([toMessage(historyCard), toMessage(liveCard)]);
-	await route([toMessage({ ...historyCard, message: message("gone-alone") })]);
-	assert.deepEqual(batches, [
-		{ ids: ["gone-card", "live-card"], triggerTurn: true },
-		{ ids: ["gone-alone"], triggerTurn: false },
-	]);
-	assert.deepEqual(recorded, ["live-card"]);
 	assert.deepEqual(replyContexts, ["live-card"]);
 });

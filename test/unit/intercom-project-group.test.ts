@@ -231,10 +231,6 @@ describe("project groups (#4320)", () => {
 		);
 		assert.equal(resolveHomeGroup({}, null), DEFAULT_GROUP);
 		assert.equal(resolveHomeGroup({ group: "config-group" }, null, fallback), "config-group");
-		assert.equal(
-			resolveHomeGroup({}, { orchestrationContext: { intercomGroup: "workflow:run" } }, fallback),
-			"workflow:run",
-		);
 		assert.equal(resolveHomeGroup({}, { subagentPolicy: { intercomGroup: "child" } }, fallback), "child");
 		vi.stubEnv("ATOMIC_INTERCOM_GROUP", " env-group ");
 		assert.equal(resolveHomeGroup({ group: "config-group" }, null, fallback), "env-group");
@@ -261,11 +257,11 @@ interface IntercomTool {
 function sessionContext(
 	cwd: string,
 	notices: string[],
-	extra: { hasUI?: boolean; orchestrationContext?: { intercomGroup: string } } = {},
+	extra: { hasUI?: boolean; subagentPolicy?: { intercomGroup: string } } = {},
 ): ExtensionContext {
 	return {
 		hasUI: extra.hasUI ?? true,
-		...(extra.orchestrationContext === undefined ? {} : { orchestrationContext: extra.orchestrationContext }),
+		...(extra.subagentPolicy === undefined ? {} : { subagentPolicy: extra.subagentPolicy }),
 		cwd,
 		isIdle: () => true,
 		ui: { notify: (message: string, level: string) => notices.push(`${level}: ${message}`), setStatus() {} },
@@ -387,17 +383,17 @@ describe("a session's home group (#4320)", () => {
 		assert.deepEqual(notices, []);
 	});
 
-	test("a workflow stage whose group is default warns on stderr, and a stage in another group does not (#4320)", async () => {
+	test("a subagent whose group is default warns on stderr, and a subagent in another group does not (#4320)", async () => {
 		const alpha = repository("alpha", "https://github.com/acme/alpha.git");
 		selectSharedStorage();
 		recordRegistrations();
 		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
 		for (const [group, writes] of [
-			["workflow:run-1", 0],
+			["team-a", 0],
 			["default", 1],
 		] as const) {
 			const extension = loadExtension();
-			const ctx = sessionContext(alpha, [], { hasUI: false, orchestrationContext: { intercomGroup: group } });
+			const ctx = sessionContext(alpha, [], { hasUI: false, subagentPolicy: { intercomGroup: group } });
 			await extension.fire("session_start", "startup", ctx);
 			await extension.run({ action: "status" }, ctx);
 			await extension.fire("session_shutdown", "quit", ctx);

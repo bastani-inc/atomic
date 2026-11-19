@@ -56,6 +56,34 @@ test("a client resolves a send to a gone subagent with the typed error the broke
 	assert.deepEqual(result.error.fields, FIELDS);
 });
 
+test("a 0.9.x broker's released-stage refusal settles the send with its reason, never ending the connection", async () => {
+	const { client, frames, receive } = connectedClient();
+	const sent = client.send("subagent-chat-released", { text: "are you there?", messageId: "m1" });
+	const reason =
+		'Workflow stage "subagent-chat-released" was released and the session that answered for it has gone away';
+	assert.doesNotThrow(() =>
+		receive({
+			type: "delivery_failed",
+			messageId: "m1",
+			attemptId: frames[0]!.attemptId,
+			reason,
+			recipientError: {
+				name: "StageRecipientReleasedError",
+				code: "recipient_stage_released",
+				message: reason,
+				hint: "Send to its workflow stage target.",
+				retryable: false,
+				fields: { target: "subagent-chat-released", childName: "subagent-chat-released" },
+			},
+		}),
+	);
+	const result = await sent;
+	assert.equal(result.delivered, false);
+	assert.equal(result.reason, reason);
+	assert.equal(result.reasonCode, undefined);
+	assert.equal(result.error, undefined);
+});
+
 test("a client refuses a delivery failure whose gone-recipient error is malformed or comes with another code (#4639)", () => {
 	const { receive } = connectedClient();
 	const serialized = serializeIntercomRecipientGoneError(new SubagentRecipientDisconnectedError(FIELDS));
