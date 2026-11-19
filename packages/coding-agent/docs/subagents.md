@@ -20,7 +20,7 @@ Every subagent runs in the background. See [Background tasks](/background-tasks)
 Subagents are focused child agents you delegate bounded work to. Read this page for natural-language use and execution behavior, then continue:
 
 - [Custom subagents](/subagents/authoring) — define, scope, and configure your own.
-- [Subagent reference](/subagents/reference) — fallback model resolution and reasoning levels.
+- [Subagent reference](/subagents/reference) — agent discovery, fallback model resolution, and reasoning levels.
 
 ## Start with natural language
 
@@ -42,7 +42,7 @@ Atomic decides whether delegation adds value, which specialist fits each bounded
 
 ## Browse agents
 
-Open `/agents` to browse project, user, and built-in agents:
+Open `/agents` to browse project, user, package, and built-in agents:
 
 - Type to filter by name, description, or source. `/agents <query>` starts with a filter.
 - Use arrows to select an agent and Enter to inspect its description, model and fallbacks, tools, definition path, and system prompt.
