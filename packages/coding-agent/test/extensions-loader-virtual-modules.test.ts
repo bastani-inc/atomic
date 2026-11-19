@@ -62,7 +62,7 @@ describe("extension loader pi-ai compat aliases", () => {
 
 	it("maps the llama.cpp classifier API before the broad pi-ai compat alias", async () => {
 		// The llama.cpp provider imports this subpath, and jiti re-evaluates host sources when a
-		// workflow imports `@bastani/atomic`; without its own key it resolves as compat.js/api/...
+		// loaded extension imports `@bastani/atomic`; without its own key it resolves as compat.js/api/...
 		const aliases = await extensionLoaderTestHooks.getAliases();
 		const target = aliases["@bastani/atomic-ai/api/llama-cpp-classify.lazy"];
 
@@ -71,23 +71,10 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(target).not.toBe(aliases["@bastani/atomic-ai"]);
 	});
 
-	it("shares the image provider catalog with binary extensions and workflow workers (#4590)", async () => {
+	it("shares the image provider catalog with binary extensions (#4590)", async () => {
 		const modules = await extensionLoaderTestHooks.loadVirtualModules();
 		const providers = await import("@bastani/atomic-ai/providers/all");
-		const { getWorkflowHostModules } = await import("../src/core/extensions/loader-host-modules.js");
-		const workflowModules = await getWorkflowHostModules();
 		assert.equal(modules["@bastani/atomic-ai/providers/all"], providers);
-		assert.equal(workflowModules["@bastani/atomic-ai/providers/all"], providers);
-		const { createBrokerHostModulePlugin } = await import("../src/bun/internal-intercom-broker.js");
-		const { WORKER_HOST_MODULE_SPECIFIERS } = await import("../src/bun/internal-workflow-worker.js");
-		const registered = new Map<string, () => Promise<{ exports: object; loader: "object" }>>();
-		createBrokerHostModulePlugin(
-			async () => ({ loadHostModule: async (specifier) => modules[specifier]! }),
-			WORKER_HOST_MODULE_SPECIFIERS,
-		).setup({ module: (specifier, callback) => registered.set(specifier, callback) });
-		const loadProviderCatalog = registered.get("@bastani/atomic-ai/providers/all");
-		assert.ok(loadProviderCatalog);
-		assert.equal((await loadProviderCatalog()).exports, providers);
 	});
 
 	it("registers provider environment helpers for binary extension imports", async () => {
