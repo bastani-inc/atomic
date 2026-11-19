@@ -231,18 +231,21 @@ async function reserveFrame(
 	let asked = frame;
 	while (asked.length > 0) {
 		const order = ++ledger.order;
+		let confirmed = false;
 		let error: Error | undefined;
 		try {
 			// The task id stays in this process: the broker holds a child by name and ids.
 			const children = asked.map(({ taskId: _taskId, ...child }) => child);
-			await emitIntercomRequest(events, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children });
+			const request: { children: typeof children; completion?: Promise<void> } = { children };
+			await emitIntercomRequest(events, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, request);
+			confirmed = request.completion !== undefined;
 		} catch (caught) {
 			error = caught as Error;
 		}
 		if (error === undefined) {
 			const recovered = asked.filter(current);
 			if (recovered.length > 0) {
-				const pending = ledger.byBus.get(events);
+				const pending = confirmed ? ledger.byBus.get(events) : undefined;
 				if (pending?.size)
 					for (const child of recovered)
 						for (const ack of pending.get(child.childName) ?? [])
