@@ -13,6 +13,58 @@ import type { SessionStore } from "../../src/core/storage/session/types.js";
 
 useTemporaryAgentDir();
 
+test("a snapshot-only SDK store can clone or branch a large retired entry without repeating its compatibility load (#5594)", async () => {
+	const inner = new MemorySessionStore();
+	let reads = 0;
+	const store: SessionStore = {
+		descriptor: { adapter: "custom", location: "test" },
+		create: inner.create.bind(inner),
+		append: inner.append.bind(inner),
+		replace: inner.replace.bind(inner),
+		load: async (id) => {
+			if (id === "parent") reads++;
+			return inner.load(id);
+		},
+		readHeader: inner.readHeader.bind(inner),
+		list: inner.list.bind(inner),
+		delete: inner.delete.bind(inner),
+		findMostRecent: inner.findMostRecent.bind(inner),
+		close: inner.close.bind(inner),
+	};
+	try {
+		const p = await SessionManager.create(store, process.cwd(), { id: "parent" });
+		const old = await p.appendMessage({ role: "user", content: "x".repeat(2 * 1024 * 1024), timestamp: 0 });
+		await p.appendCompaction("clear", null, 100, {
+			strategy: "verbatim-lines",
+			form: "cleared",
+			promptVersion: 7,
+			parameters: { query: "clear" },
+			stats: {
+				linesBefore: 1,
+				linesDeleted: 1,
+				linesKept: 0,
+				rangeCount: 0,
+				tokensBefore: 100,
+				tokensAfter: 0,
+				percentReduction: 100,
+			},
+		});
+		const leaf = await p.appendMessage({ role: "user", content: "new", timestamp: 1 });
+		const original = await inner.load("parent");
+		for (const kind of ["clone", "branch"]) {
+			reads = 0;
+			let m = p;
+			if (kind === "clone") m = await p.forkTo(process.cwd(), store);
+			else await p.createBranchedSession(leaf);
+			assert.deepEqual((await inner.load(m.getSessionId())).entries, original.entries);
+			assert.equal(m.getEntry(old), undefined);
+			assert.equal(reads, 1);
+		}
+	} finally {
+		await inner.close();
+	}
+});
+
 test.each(["shared writer queue", "independent connections"])(
 	"forkTo publishes whole clones through unknown SQL handles without nesting their transactions (%s; #5594)",
 	async (mode) => {

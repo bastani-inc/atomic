@@ -794,6 +794,22 @@ export class SessionManager {
 		}
 	}
 
+	/** A snapshot-only adapter exposes exactly one observation. Use its own read epoch (or the
+	 * captured digest on a reopened legacy view), not a write receipt the reader never returned. */
+	private async legacyForkEntries(): Promise<SessionEntry[]> {
+		const snap = await this.store.load(this.sessionId);
+		if (snap.header.id !== this.sessionId) throw new SessionIdMismatchError(this.sessionId, snap.header.id);
+		const { assertSnapshotCut } = await import("./storage/session/snapshot-cut.js");
+		assertSnapshotCut(
+			snap,
+			this.archiveOnlyEpoch || snap.epoch !== undefined ? this.historyEpoch : undefined,
+			this.lastSeq,
+		);
+		if (this.lastSeq > 0 && snap.entries[this.lastSeq - 1]?.id !== this.lastEntryId)
+			throw new SessionConflictError(this.sessionId, this.lastSeq, snap.lastSeq);
+		return snap.entries.slice(0, this.lastSeq);
+	}
+
 	/** A compatible store takes a caller-owned array for a cross-store copy. Keep that input out of the live window,
 	 * including if the destination write fails. The source watermark belongs to the manager, not a later appender. */
 	private async compatibilityCopyEntries(): Promise<SessionEntry[]> {
@@ -2025,6 +2041,15 @@ export class SessionManager {
 					receipts,
 				);
 			}
+			if (
+				!this.store.readEntrySizes ||
+				!this.store.readRange ||
+				!this.store.readEntryChunk ||
+				!this.store.readBranchSpan
+			) {
+				const index = buildSessionIndex(await this.legacyForkEntries());
+				return this.installFork(leafId, getBranchPath(leafId, index.byId), new Map(), false, index);
+			}
 			const leaf = await this.findEntrySeq(leafId);
 			if (leaf === undefined) throw new SessionEntryError(leafId, "missing");
 			const { humanForkStream } = await import("./storage/session/branch-fork-source.js");
@@ -2074,6 +2099,7 @@ export class SessionManager {
 		path: SessionEntry[],
 		receipts = new Map<string, OversizedSessionEntry>(),
 		preserveReceiptLinks = true,
+		labels?: Pick<ReturnType<typeof buildSessionIndex>, "labelsById" | "labelTimestampsById">,
 	): Promise<string | undefined> {
 		const result = createBranchedSessionState({
 			leafId,
@@ -2082,8 +2108,8 @@ export class SessionManager {
 			workflow: classifiedWorkflowMetadata(this.getHeader()),
 			path,
 			preserveReceiptLinks,
-			labelsById: this.labelsById,
-			labelTimestampsById: this.labelTimestampsById,
+			labelsById: labels?.labelsById ?? this.labelsById,
+			labelTimestampsById: labels?.labelTimestampsById ?? this.labelTimestampsById,
 		});
 		const header = result.fileEntries[0] as SessionHeader;
 		const entries = getEntriesWithoutHeader(result.fileEntries);
@@ -2271,11 +2297,13 @@ export class SessionManager {
 			const data =
 				relation === "different"
 					? await this.forkWindow(this.getBranch(), this.getLeafId(), "session", receipts)
-					: (await import("./storage/session/branch-fork-source.js")).completeSessionForkStream(
-							sessionId,
-							epoch,
-							through,
-						);
+					: !source.readEntrySizes || !source.readRange || !source.readEntryChunk
+						? await this.legacyForkEntries()
+						: (await import("./storage/session/branch-fork-source.js")).completeSessionForkStream(
+								sessionId,
+								epoch,
+								through,
+							);
 			if (relation === "different") manager.markForkOrigin(source);
 			const hashes = "read" in data ? [] : sessionBlobHashes(source, data);
 			assertSessionBlobStore(store, manager.sessionId, hashes.length);
@@ -2288,7 +2316,15 @@ export class SessionManager {
 				manager.sessionFile,
 			);
 			const opened = await readStoredSession(store, manager.sessionId, undefined);
-			if (created.epoch !== undefined && opened.resume.epoch !== created.epoch)
+			const stamp =
+				opened.resume.archiveOnlyEpoch && !("read" in data)
+					? (await import("./storage/session/snapshot-cut.js")).snapshotStamp({
+							header: manager.recordHeader(),
+							entries: data,
+							lastSeq: created.lastSeq,
+						})
+					: created.epoch;
+			if (stamp !== undefined && opened.resume.epoch !== stamp)
 				throw new SessionConflictError(manager.sessionId, created.lastSeq, opened.resume.lastSeq);
 			manager.restoreOpened(opened, manager.sessionFile);
 			return manager;

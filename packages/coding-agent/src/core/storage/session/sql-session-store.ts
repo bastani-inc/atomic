@@ -720,10 +720,19 @@ export class SqlSessionStore implements SessionStore {
 		// Use the original connection's snapshot. A different handle may share its queue; never wait
 		// for a separately scheduled read from inside a write transaction on that queue.
 		if (this.create !== SqlSessionStore.prototype.create) return undefined;
-		if (source.store !== this)
-			return "read" in entries && entries.kind === "complete-session"
-				? this.createStagedFork(header, entries, source)
-				: undefined;
+		if (source.store !== this) {
+			if ("read" in entries)
+				return entries.kind === "complete-session" ? this.createStagedFork(header, entries, source) : undefined;
+			if (source.receipts.size < 2) return undefined;
+			// One receipt fits the compatibility copy. Never retain a list of decoded historical
+			// bodies waiting for create(): send the already selected rows through the same staging transport.
+			const selected: SessionForkStream = {
+				async *read() {
+					for (const entry of entries) yield { entry, reference: source.receipts.get(entry.id) };
+				},
+			};
+			return this.createStagedFork(header, selected, source);
+		}
 		if ("read" in entries) return this.createStreamedFork(header, entries, source);
 		this.assertOpen();
 		validateSessionHeader(header);
