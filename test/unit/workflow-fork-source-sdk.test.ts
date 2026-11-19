@@ -12,6 +12,7 @@ import {
 } from "../../packages/coding-agent/src/index.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { asAgentSession } from "../../packages/workflows/src/runs/foreground/stage-runner-session.js";
 import { createAgentSessionAdapter, run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
@@ -23,6 +24,7 @@ useTemporaryAgentDir();
 /** Run stages through SDK sessions; return the user turns sent in each actual model request. */
 async function requestsFor(
 	body: (ctx: WorkflowRunContext, source: () => SessionManager, cwd: string) => Promise<void>,
+	onSdkStageOpen?: (name: string, source: SessionManager) => Promise<void>,
 ): Promise<string[][]> {
 	const cwd = makeTempDirectory("workflow-sdk-fork-");
 	const backend = await JournalDurableBackend.open(await openSqlRunJournal(join(cwd, "run.sqlite")));
@@ -68,9 +70,15 @@ async function requestsFor(
 		});
 		let source: SessionManager | undefined;
 		const create = adapter.create.bind(adapter);
-		adapter.create = (...args) => {
-			source ??= args[0].sessionManager;
-			return create(...args);
+		adapter.create = async (stageOptions, meta) => {
+			const created = await create(stageOptions, meta);
+			if (meta?.stageName === "source") {
+				if (onSdkStageOpen) assert.equal(stageOptions.sessionManager, undefined);
+				source = asAgentSession("session" in created ? created.session : created)?.sessionManager;
+				assert.ok(source);
+			}
+			if (source && meta) await onSdkStageOpen?.(meta.stageName, source);
+			return created;
 		};
 		const definition = workflow({
 			name: "fork-source",
@@ -94,7 +102,7 @@ async function requestsFor(
 			{},
 			{
 				cwd,
-				defaultSessionDir: join(cwd, "sessions"),
+				defaultSessionDir: onSdkStageOpen === undefined ? join(cwd, "sessions") : undefined,
 				store: createStore(),
 				durableBackend: backend,
 				adapters: { agentSession: adapter },
@@ -154,6 +162,32 @@ test.each([false, true])(
 		assert.deepEqual(requests.at(-1), ["original", "committed before fork", "child"]);
 	},
 );
+
+test("queued children keep the original prefix when the SDK opened their source (#5631)", async () => {
+	const requests = await requestsFor(
+		async (ctx, _manager, cwd) => {
+			const location = { cwd, agentDir: join(cwd, "agent") };
+			const resident = ctx.stage("source", location);
+			await resident.prompt("original");
+			await ctx.parallel(
+				[
+					{ name: "left", prompt: "left" },
+					{ name: "right", prompt: "right" },
+				],
+				{
+					...location,
+					context: "fork",
+					forkFromSessionId: resident.sessionId,
+					concurrency: 1,
+				},
+			);
+		},
+		async (name, source) => {
+			if (name === "left") await source.appendMessage({ role: "user", timestamp: 2, content: "later source turn" });
+		},
+	);
+	assert.deepEqual(requests, [["original"], ["original", "left"], ["original", "right"]]);
+});
 
 test("one parallel can fork the same session ID in two different stores (#5481)", async () => {
 	const requests = await requestsFor(async (ctx, manager, cwd) => {

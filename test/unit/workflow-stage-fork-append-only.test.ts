@@ -19,6 +19,7 @@ import { forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js
 import {
 	FAN_OUT_FORK_SOURCES_SUFFIX,
 	FORK_SOURCE_CHECKPOINT_SUFFIX,
+	forkSourceCheckpointKey,
 	withLaunchForkPoint,
 } from "../../packages/workflows/src/durable/stage-fork-point.js";
 import {
@@ -452,6 +453,52 @@ describe("a parallel's launch fixes its steps' identities and fork point (#5481)
 		);
 		await source.appendMessage(userMessage("before the run resumes"));
 		assert.deepEqual(await stepConversation(store, launchStage(backend, run, source)), ["before launch"]);
+	});
+
+	test("a stage retry keeps a saved empty prefix after a lost write acknowledgement (#5632)", async () => {
+		const { backend, run, store, source } = await launchRun({ empty: true });
+		const unavailable = failForkRecordOnce(backend, { written: true });
+		const retry = () => stepConversation(store, launchStage(backend, run, source));
+		await assert.rejects(retry(), (error) => error === unavailable);
+		await source.appendMessage(userMessage("after the empty launch"));
+		assert.deepEqual(await retry(), []);
+	});
+
+	test("a stage retry recovers an unacknowledged fork point without the original source handle (#5632)", async () => {
+		const { backend, run, store } = await launchRun();
+		const replayKey = "stage:task:alone:1";
+		const key = forkSourceCheckpointKey(replayKey);
+		const unavailable = failForkRecordOnce(backend, { written: true });
+		// Seed what the original launch left in storage, without opening its source as a stage in the retrying host.
+		const sessionId = await (async () => {
+			const writer = await SessionManager.create(store, process.cwd());
+			const id = writer.getSessionId();
+			const entryId = await writer.appendMessage(userMessage("before launch"));
+			await assert.rejects(
+				backend.commitCheckpoint({
+					kind: "tool",
+					workflowId: run,
+					checkpointId: key,
+					name: key,
+					argsHash: key,
+					output: { sessionId: id, entryId },
+					completedAt: 1,
+				}),
+				(error) => error === unavailable,
+			);
+			await writer.appendMessage(userMessage("after launch"));
+			return id;
+		})();
+		assert.equal(backend.getToolCheckpoint(run, key), undefined, "the retry has not refreshed its projection");
+		const options = withLaunchForkPoint({
+			backend,
+			workflowId: run,
+			replayKey,
+			resuming: false,
+			options: { context: "fork" as const, forkFromSessionId: sessionId, sessionStore: store },
+		});
+		assert.ok(options);
+		assert.deepEqual(await stepConversation(store, options), ["before launch"]);
 	});
 
 	test.each([
