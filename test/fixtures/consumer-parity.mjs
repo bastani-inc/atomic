@@ -475,12 +475,16 @@ export default workflow({ name: "children", description: "children", inputs: {},
 			},
 		});
 		try {
-			const result = await call(session, "subagent", {
+			const launched = await call(session, "subagent", {
 				agent: "packed",
 				task: "reply once",
 				model: "packed-child/fixture",
 				context: "fresh",
-				wait: { kind: "foreground", budgetMs: 15_000 },
+			});
+			const result = await call(session, "subagent", {
+				action: "wait",
+				id: launched.details.taskResponse.observation.taskId,
+				budgetMs: 15_000,
 			});
 			assert.ok(childCalls > 0, `subagent did not use the in-process provider: ${JSON.stringify(result)}`);
 			assert.equal(result.details.taskResponse.observation.result.kind, "completed", JSON.stringify(result));

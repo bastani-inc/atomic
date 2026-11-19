@@ -88,6 +88,8 @@ export type FakeLibsqlFault =
 	| { readonly kind: "busy" }
 	| { readonly kind: "schema-changed" }
 	| { readonly kind: "missing-table"; readonly table: string }
+	/** A connection's schema predates a concurrent change; taking the write lock does not refresh it, a schema read does. */
+	| { readonly kind: "stale-schema"; readonly table: string }
 	| { readonly kind: "stream-busy" }
 	| { readonly kind: "result-error"; readonly code: string }
 	| { readonly kind: "timed-out-mid-batch" }
@@ -229,8 +231,19 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 	let schemaChanged = false;
 	let churning = false;
 	let missingTable: string | undefined;
+	let staleTable: string | undefined;
+	let schemaChangeAtLock: string | undefined;
 	const execute = (stream: Stream, stmt: HranaStmt): StmtResult => {
 		const sql = stmt.sql ?? stream.sqls.get(stmt.sql_id ?? -1);
+		if (sql === "BEGIN IMMEDIATE" && schemaChangeAtLock !== undefined) {
+			staleTable = schemaChangeAtLock;
+			schemaChangeAtLock = undefined;
+		}
+		if (staleTable !== undefined) {
+			if (sql?.startsWith("SELECT 1 FROM sqlite_schema")) staleTable = undefined;
+			else if (!/^(?:BEGIN|COMMIT|ROLLBACK)\b/.test(sql ?? ""))
+				throw Object.assign(new Error(`SQLite error: no such table: ${staleTable}`), { errstr: "unknown" });
+		}
 		// The read of `sqlite_schema` a kept stream sends before its statement takes no write lock, so the server never
 		// answers it busy.
 		if (busy && !sql?.startsWith("SELECT 1 FROM sqlite_schema")) {
@@ -415,6 +428,8 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		busy = fault?.kind === "busy";
 		schemaChanged = fault?.kind === "schema-changed";
 		missingTable = fault?.kind === "missing-table" ? fault.table : undefined;
+		staleTable = undefined;
+		schemaChangeAtLock = fault?.kind === "stale-schema" ? fault.table : undefined;
 		const results = body.requests.map((each) => {
 			if (fault?.kind === "timed-out-mid-batch" && each.type === "batch") {
 				const began: StmtResult = { cols: [], rows: [], affected_row_count: 0, last_insert_rowid: null };
