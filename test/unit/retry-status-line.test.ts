@@ -66,6 +66,24 @@ test("the line names the reason, the attempt and the countdown, in sentence case
 	assert.equal(retryWaitText(summary, 2), "Retrying summary · server error 503 · attempt 1/3 in 2s");
 });
 
+test("a reason too wide for the line is shortened by columns, so wide characters never overflow it", () => {
+	const wait = retryWaitFromEvent(
+		{ attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "内容被安全过滤器拦截请求因政策原因被拒绝" },
+		undefined,
+		0,
+	);
+	assert.equal(
+		retryWaitMessage(wait, 4, "esc cancel", 60),
+		"Retrying · 内容被安全过滤… · attempt 2/3 in 4s   esc cancel",
+		"seven wide characters and the ellipsis take 15 of the 16 columns left",
+	);
+	assert.equal(
+		retryWaitMessage(wait, 4, "esc cancel", 84),
+		"Retrying · 内容被安全过滤器拦截请求因政策原因被拒绝 · attempt 2/3 in 4s   esc cancel",
+		"a line that fits is unchanged",
+	);
+});
+
 test("a detail the retry does not carry is left out, down to the plain line", () => {
 	assert.equal(
 		retryWaitText(retryWaitFromEvent({ attempt: 1, maxAttempts: 3, delayMs: 2000 }), 2),
