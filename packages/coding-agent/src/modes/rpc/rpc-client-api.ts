@@ -255,8 +255,8 @@ export abstract class RpcClientApi {
 	async getTools(): Promise<ToolStatusReport> {
 		return this.data(await this.request({ type: "get_tools" }));
 	}
-	async exportHtml(outputPath?: string, options: { themeName?: string } = {}): Promise<{ path: string }> {
-		return this.data(await this.request({ type: "export_html", outputPath, ...options }));
+	async exportHtml(outputPath?: string): Promise<{ path: string }> {
+		return this.data(await this.request({ type: "export_html", outputPath }));
 	}
 	async switchSession(
 		sessionId: string,

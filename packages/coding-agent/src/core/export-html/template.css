@@ -484,11 +484,6 @@
       font-weight: bold;
     }
 
-    /* A header drawn by the tool's own renderer carries its own weight: a bold name, and arguments such as code in normal weight. */
-    .tool-header.ansi-rendered {
-      font-weight: normal;
-    }
-
     .tool-path {
       color: var(--accent);
       word-break: break-all;
@@ -550,28 +545,23 @@
       color: var(--text);
     }
 
-    .tool-output.expandable,
-    .tool-header.expandable {
+    .tool-output.expandable {
       cursor: pointer;
     }
 
-    .tool-output.expandable:hover,
-    .tool-header.expandable:hover {
+    .tool-output.expandable:hover {
       opacity: 0.9;
     }
 
-    .tool-output.expandable .output-full,
-    .tool-header.expandable .output-full {
+    .tool-output.expandable .output-full {
       display: none;
     }
 
-    .tool-output.expandable.expanded .output-preview,
-    .tool-header.expandable.expanded .output-preview {
+    .tool-output.expandable.expanded .output-preview {
       display: none;
     }
 
-    .tool-output.expandable.expanded .output-full,
-    .tool-header.expandable.expanded .output-full {
+    .tool-output.expandable.expanded .output-full {
       display: block;
     }
 

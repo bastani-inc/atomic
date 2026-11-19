@@ -191,9 +191,9 @@ The agent remembers earlier work through `history://`: it recalls this project's
 
 ## Exporting and Sharing Sessions
 
-Use `/export [file]` to write a session to HTML. In the exported page, press `T` to toggle thinking, `O` to toggle tool output, and `H` to show custom messages that are hidden in the terminal. Hidden messages stay hidden until you toggle them, and selecting one in the sidebar reveals them. Tool calls look as they do in the chat, a click opening one as `Ctrl+O` does; a subagent card lists the tool calls read from the subagent's own session.
+Use `/export [file]` to write a session to HTML. In the exported page, press `T` to toggle thinking, `O` to toggle tool output, and `H` to show custom messages that are hidden in the terminal. Hidden messages stay hidden until you toggle them, and selecting one in the sidebar reveals them.
 
-`atomic --export <session.jsonl> [file]` draws the built-in extension cards from the saved file without starting a session or loading project extensions. An expanded subagent card shows the prompt, tool calls and result recorded in the file. If a background child's history was stored separately, the card says so; the export does not open another session. Open **Recorded arguments and result** beneath a card to see what the summary omitted. A `codemode` call still shows its script and original output, and a tool without a shipped renderer shows its saved arguments and result.
+`atomic --export <session.jsonl> [file]` draws the built-in extension cards from the saved file without starting a session or loading project extensions. An expanded subagent card shows the prompt, tool calls and result recorded in the file. If a background child's history was stored separately, the card says so; the export does not open another session. Open **Recorded arguments and result** beneath a card to see what the summary omitted. Other tools keep their usual export format.
 
 Use `/share` to upload a private GitHub gist with a shareable link. The link opens the session in Atomic's viewer at `https://bastani.ai/session/`; set `ATOMIC_SHARE_VIEWER_URL` to use your own viewer instead.
 

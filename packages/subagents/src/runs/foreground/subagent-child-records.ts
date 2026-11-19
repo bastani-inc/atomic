@@ -684,7 +684,7 @@ export function watchWorkflowStageSubagentChildren(
 			// The copy of the stage's session that saved the latest record is not open in this process any more, but the
 			// index still knows where the child stands. One that runs ends when its task settles, and one that ended
 			// stays as it ended; any other ends from the record the stage's own session holds, as the index last saw it.
-			const known = subagentChildIndexEntry(owner.sessionId, childId);
+			const known = subagentChildIndexEntry(childId);
 			if (known === undefined || !endsWithStage(known)) return undefined;
 			if (persisted === undefined) throw error;
 			return { ...persisted, ...standingOf(known) };

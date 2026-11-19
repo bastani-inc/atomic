@@ -1,9 +1,7 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getExportTemplateDirAsync } from "../../config.js";
-import { codemodeRenderers, savedCodemodeRenderers } from "../../extensions/codemode/renderer.js";
 import { installHostModuleBridge } from "../extensions/host-module-bridge.ts";
-import type { ToolRenderers } from "../extensions/types.ts";
 import type { SessionEntry } from "../session-manager.ts";
 
 const extensionTools = new Set([
@@ -44,11 +42,5 @@ export async function savedSessionToolRenderers(entries: readonly SessionEntry[]
 					(extensionTools.has(block.name) || block.name.startsWith("mcp__")),
 			),
 	);
-	const extension = needsCards ? await loadExtensionCards() : undefined;
-	return {
-		getToolRenderers: (name: string): ToolRenderers | undefined =>
-			name === "codemode" ? savedCodemodeRenderers : extension?.(name),
-		getNestedToolRenderers: (name: string): ToolRenderers | undefined =>
-			name === "codemode" ? codemodeRenderers : extension?.(name),
-	};
+	return needsCards ? loadExtensionCards() : undefined;
 }

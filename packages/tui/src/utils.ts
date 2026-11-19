@@ -444,10 +444,9 @@ export function extractAnsiCode(str: string, pos: number): { code: string; lengt
 
 /**
  * Width of a string made of printable ASCII, tabs, and ANSI escape sequences, or -1 if it contains
- * anything else. Matches `visibleWidth` for those strings without allocating. With `maxWidth`, the scan stops
- * and returns -1 as soon as the width passes it, so a long string is read only up to that point.
+ * anything else. Matches `visibleWidth` for those strings without allocating.
  */
-function asciiVisibleWidth(str: string, maxWidth = Number.POSITIVE_INFINITY): number {
+function asciiVisibleWidth(str: string): number {
 	let width = 0;
 	let i = 0;
 	while (i < str.length) {
@@ -455,11 +454,9 @@ function asciiVisibleWidth(str: string, maxWidth = Number.POSITIVE_INFINITY): nu
 		if (code >= 0x20 && code <= 0x7e) {
 			width++;
 			i++;
-			if (width > maxWidth) return -1;
 		} else if (code === 0x09) {
 			width += 3;
 			i++;
-			if (width > maxWidth) return -1;
 		} else if (code === 0x1b) {
 			const length = ansiCodeLength(str, i);
 			if (length === 0) return -1;
@@ -1365,14 +1362,6 @@ export function truncateToWidth(
 		}
 		const targetWidth = maxWidth - ellipsisWidth;
 		return finalizeTruncatedResult(text.slice(0, targetWidth), targetWidth, ellipsis, ellipsisWidth, maxWidth, pad);
-	}
-
-	// Text of printable ASCII, tabs and escape sequences, such as a styled row of a tool's output, is measured in one
-	// scan that stops once it passes maxWidth; when it fits it is returned as it is, without segmenting it into
-	// graphemes.
-	const asciiWidth = asciiVisibleWidth(text, maxWidth);
-	if (asciiWidth !== -1) {
-		return pad ? text + " ".repeat(maxWidth - asciiWidth) : text;
 	}
 
 	const targetWidth = maxWidth - ellipsisWidth;

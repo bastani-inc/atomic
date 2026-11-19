@@ -223,11 +223,6 @@ export interface AdmittedSubagentChild {
 	readonly intercomTarget?: string;
 }
 
-/** The owner recorded for this exact task lease, to keep a launch receipt readable outside its task host. */
-export function subagentAdmissionOwner(handle: object): string | undefined {
-	return admissions.get(handle)?.ownerSessionId;
-}
-
 export function admittedSubagentChild(handle: object, ownerSessionId: string): AdmittedSubagentChild | undefined {
 	const child = admissions.get(handle);
 	return child?.ownerSessionId === ownerSessionId ? child : undefined;

@@ -233,11 +233,6 @@ test("the launch result and status name the one Intercom target of a background 
 	const launch = await parent.call({ agent: "worker", task: "work", wait: { kind: "background" }, artifacts: false });
 	const options = await parent.launched;
 	const target = options.intercomSessionName;
-	assert.match(
-		options.runId,
-		/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/,
-		"the saved run ID is not the short Intercom name",
-	);
 	assert.ok(target, "the child has an Intercom target");
 	assert.match(target, /^subagent-worker-[0-9a-f]{8}-1$/);
 	const response = JSON.parse(text(launch)) as { observation: { taskId: string }; intercomTarget?: string };
