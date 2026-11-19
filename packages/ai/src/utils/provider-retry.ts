@@ -1,13 +1,56 @@
+import type { RetryDeadline } from "../types.ts";
+import { wrapFetchPreservingAdmission } from "./request-admission.ts";
+import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "./retry-sleep.ts";
+
 export const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
 
 interface ProviderRetryOptions {
 	maxRetries?: number;
 	maxRetryDelayMs?: number;
+	/** Absolute performance.now() timestamp at or after which no retry may start. */
+	retryDeadline?: RetryDeadline;
 	signal?: AbortSignal;
 	/** HTTP statuses that fail at once although the default policy would retry them. */
 	noRetryStatuses?: readonly number[];
 	/** Failures that fail at once although the default policy would retry them, for example a 429 for exhausted quota. */
 	noRetry?: (error: Error) => boolean;
+}
+
+/** An SDK can queue for admission after its retry started. Guard its actual fetch as well. */
+export class ProviderRetryTransport {
+	readonly fetch: typeof globalThis.fetch;
+	retrying = false;
+	refusal?: RetryDeadlineError;
+
+	readonly deadline: RetryDeadline;
+
+	private constructor(deadline: RetryDeadline, fetch: typeof globalThis.fetch) {
+		this.deadline = deadline;
+		this.fetch = wrapFetchPreservingAdmission(fetch, (send) =>
+			Object.assign((...args: Parameters<typeof fetch>) => {
+				if (this.retrying && retryDeadlineReached(deadline)) {
+					this.refusal = new RetryDeadlineError();
+					throw this.refusal;
+				}
+				return send(...args);
+			}, send),
+		);
+	}
+
+	/** Guard even the first SDK fetch when the entire stream is already a retried assistant call. */
+	static forRetriedCall(deadline: RetryDeadline, fetch = globalThis.fetch): typeof globalThis.fetch {
+		const transport = new ProviderRetryTransport(deadline, fetch);
+		transport.retrying = true;
+		return transport.fetch;
+	}
+
+	static for(
+		options: { retryDeadline?: RetryDeadline; maxRetries?: number; fetch?: typeof globalThis.fetch } | undefined,
+	) {
+		return options?.retryDeadline !== undefined && options.maxRetries !== 0
+			? new ProviderRetryTransport(options.retryDeadline, options.fetch ?? globalThis.fetch)
+			: undefined;
+	}
 }
 
 interface ProviderError extends Error {
@@ -81,28 +124,6 @@ function createAbortError(): Error {
 	return error;
 }
 
-function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(createAbortError());
-			return;
-		}
-
-		const onAbort = () => {
-			clearTimeout(timeout);
-			reject(createAbortError());
-		};
-		const timeout = setTimeout(
-			() => {
-				signal?.removeEventListener("abort", onAbort);
-				resolve();
-			},
-			Math.max(0, ms),
-		);
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
-}
-
 /**
  * Reproduce the retry behavior used by the OpenAI and Anthropic SDKs while making
  * their backoff sleep interruptible. Their built-in retry timers ignore the
@@ -114,15 +135,22 @@ function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
 export async function retryProviderRequest<T>(
 	request: () => Promise<T>,
 	options: ProviderRetryOptions = {},
+	transport?: ProviderRetryTransport,
 ): Promise<T> {
 	const maxRetries = options.maxRetries ?? 0;
 	let retriesRemaining = maxRetries;
 
 	for (;;) {
 		try {
+			if (transport) {
+				transport.retrying = retriesRemaining < maxRetries;
+				transport.refusal = undefined;
+			}
 			// Each retry is a fresh SDK request, so X-Stainless-Retry-Count remains zero.
 			return await request();
 		} catch (error) {
+			// SDKs can wrap a refusal from fetch as a retryable connection error.
+			if (transport?.refusal) throw transport.refusal;
 			if (options.signal?.aborted) throw createAbortError();
 			if (retriesRemaining <= 0 || !isProviderError(error) || !isRetryableProviderError(error)) throw error;
 			if (error.status !== undefined && options.noRetryStatuses?.includes(error.status)) throw error;
@@ -130,7 +158,11 @@ export async function retryProviderRequest<T>(
 
 			const retryIndex = maxRetries - retriesRemaining;
 			retriesRemaining--;
-			await abortableSleep(getRetryDelayMs(error, retryIndex, options.maxRetryDelayMs), options.signal);
+			const delayMs = getRetryDelayMs(error, retryIndex, options.maxRetryDelayMs);
+			await sleepForRetry(Math.max(0, delayMs), options.signal, createAbortError);
+			if (retryDeadlineReached(transport?.deadline ?? options.retryDeadline)) throw new RetryDeadlineError();
+		} finally {
+			if (transport) transport.retrying = false;
 		}
 	}
 }
