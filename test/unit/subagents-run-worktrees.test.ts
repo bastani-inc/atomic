@@ -27,7 +27,6 @@ import {
 import {
 	cleanupWorktrees,
 	createWorktrees,
-	diffWorktrees,
 	runGitChecked,
 	type WorktreeSetup,
 } from "../../packages/subagents/src/runs/shared/worktree.js";
@@ -83,6 +82,24 @@ async function worktreeRun(repo: string): Promise<{ runId: string; setup: Worktr
 	return { runId, setup };
 }
 
+test("capturing a worktree with a synthetic ignore file keeps the ignored deliverable (#5600)", async () => {
+	const repo = await repositoryWithSetupSources();
+	const { runId, setup } = await worktreeRun(repo);
+	const tree = setup.worktrees[0]!;
+	tree.syntheticPaths.push(".gitignore");
+	writeFileSync(join(tree.path, ".gitignore"), "report.txt\n");
+	writeFileSync(join(tree.path, "report.txt"), "final report\n");
+	const diffsDir = join(repo, "..", "patches");
+	const run = registerRunWorktrees(runId, setup, { diffsDir, agents: ["worker"] });
+	await run.release();
+	await runGitChecked(repo, ["apply", join(diffsDir, "task-0-worker.patch")]);
+	assert.equal(readFileSync(join(repo, "report.txt"), "utf8"), "final report\n");
+	assert.equal(
+		existsSync(join(repo, ".gitignore")) && readFileSync(join(repo, ".gitignore"), "utf8").includes("report.txt"),
+		false,
+	);
+});
+
 function assertAtomicSetupPresent(worktreePath: string, why: string): void {
 	assert.equal(lstatSync(join(worktreePath, "node_modules")).isSymbolicLink(), true, `${why}: node_modules link`);
 	assert.equal(
@@ -92,21 +109,48 @@ function assertAtomicSetupPresent(worktreePath: string, why: string): void {
 	);
 }
 
-test("resuming a paused child in its kept worktree restores the node_modules link and settings its run's diff removed (#3784)", async () => {
+test("a kept checkout keeps its missing index, and its changes survive later removal (#5600)", async () => {
+	const repo = await repositoryWithSetupSources();
+	const { runId, setup } = await worktreeRun(repo);
+	const tree = setup.worktrees[0]!;
+	const index = join((await runGitChecked(tree.path, ["rev-parse", "--absolute-git-dir"])).trimEnd(), "index");
+	unlinkSync(index);
+	writeFileSync(join(tree.path, "draft.txt"), "include this draft\n");
+	const diffsDir = join(repo, "..", "diffs");
+	const run = registerRunWorktrees(runId, setup, { diffsDir, agents: ["worker"], onCaptured() {} });
+	parkRunWorktree(runId, 0);
+	await run.release();
+	assert.ok(existsSync(tree.path));
+	assert.equal(existsSync(index), false);
+	const release = holdRunWorktree(runId, 0);
+	claimRunWorktree(runId, 0);
+	await release();
+	assert.equal(existsSync(tree.path), false);
+	assert.match(readFileSync(join(diffsDir, "task-0-worker.patch"), "utf8"), /include this draft/);
+});
+
+test("resuming a paused child in its kept worktree restores missing setup without losing edits (#3784, #5600)", async () => {
 	const repo = await repositoryWithSetupSources();
 	const { runId, setup } = await worktreeRun(repo);
 	const worktree = setup.worktrees[0]!;
 	assertAtomicSetupPresent(worktree.path, "a new worktree");
-	const run = registerRunWorktrees(runId, setup);
+	const run = registerRunWorktrees(runId, setup, {
+		diffsDir: join(repo, "..", "diffs"),
+		agents: ["worker"],
+		onCaptured() {},
+	});
 	const execution = holdRunWorktree(runId, 0);
 	writeFileSync(join(worktree.path, "draft.md"), "unsaved work\n");
 	parkRunWorktree(runId, 0);
 	await execution();
-	// The run returns: it reports every worktree's changes, then lets go of its worktrees.
-	await diffWorktrees(setup, ["worker"], join(repo, "..", "diffs"));
+	// Aggregate patch reporting must not stage files or unlink setup in a retained checkout.
 	await run.release();
 	assert.equal(existsSync(worktree.path), true, "the paused child's worktree with unsaved work is kept");
-	assert.equal(existsSync(join(worktree.path, "node_modules")), false, "the diff removed the node_modules link");
+	assertAtomicSetupPresent(worktree.path, "patch capture keeps the checkout intact");
+	// Resume also supports worktrees left by older versions, which removed setup during capture.
+	unlinkSync(join(worktree.path, "node_modules"));
+	unlinkSync(join(worktree.path, ".atomic", "settings.local.json"));
+	assert.equal(existsSync(join(worktree.path, "node_modules")), false);
 
 	const releaseResume = await resumeRunWorktree({ runId, index: 0, cwd: worktree.agentCwd, agent: "worker" });
 	const resumedExecution = holdRunWorktree(runId, 0);
