@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `/resume` now lists sessions only. Workflow runs no longer appear in the agent panel, `/tasks`, terminal program status, `/settings` or `/config`. To continue work, resume the parent session and inspect its subagents in `/tasks`.
+- `history://` searches session transcripts only. Existing `history://workflows` links explain the removal; old workflow stores are left untouched. Use `history://sessions` to recall the conversation.
+
 ## [0.9.90] - 2026-11-19
 
 Every subagent now runs in the background, a click runs key hints and expands blocks in fullscreen mode, and large stores, retries and interrupts no longer stall Atomic.

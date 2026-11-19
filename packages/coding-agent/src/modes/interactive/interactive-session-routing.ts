@@ -1,13 +1,8 @@
 import { dirname } from "node:path";
 import type { Focusable } from "@bastani/atomic-tui";
 import { isResumeFailure } from "../../core/resume/failure.ts";
-import type { SessionInfo, SessionListProgress } from "../../core/session-manager.ts";
+import type { SessionInfo } from "../../core/session-manager.ts";
 import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts";
-import {
-	deleteWorkflowFromPicker,
-	listWorkflowResumeEntries,
-	resumeWorkflowFromPicker,
-} from "../../core/workflow-resume.ts";
 import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
@@ -34,7 +29,7 @@ import type { MissingCwdForkSource } from "./interactive-mode-surface.ts";
 import { showQueueRestoreFailure } from "./interactive-queueing.ts";
 import { clearChatForRerender } from "./interactive-render-chat.ts";
 import { onPreliminaryCatalogWithdrawn } from "./interactive-startup-trust.ts";
-import { resolveResumeTarget, workflowResumeSession } from "./resume-catalog.ts";
+import { resolveResumeTarget } from "./resume-catalog.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
 InteractiveModeBase.prototype.handleCloneCommand = async function (this: InteractiveModeBase): Promise<void> {
@@ -332,65 +327,14 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 
 InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveModeBase): void {
 	this.showSelector((done) => {
-		let closed = false;
-		let refreshTimer: ReturnType<typeof setInterval> | undefined;
-		let workflowCatalog: Promise<SessionInfo[]> | undefined;
-		let lastWorkflowRows: SessionInfo[] = [];
-		let workflowEpoch = 0;
-		const invalidateWorkflowCatalog = () => {
-			workflowEpoch += 1;
-			workflowCatalog = undefined;
-		};
 		const close = () => {
-			closed = true;
-			invalidateWorkflowCatalog();
-			clearInterval(refreshTimer);
 			selector.dispose();
 			done();
 		};
-		const workflows = () => {
-			if (!workflowCatalog) {
-				const requestEpoch = ++workflowEpoch;
-				workflowCatalog = getResumeWorkflows(this).then(
-					(rows) => {
-						if (!closed && requestEpoch === workflowEpoch) {
-							lastWorkflowRows = rows;
-						}
-						return lastWorkflowRows;
-					},
-					(error) => {
-						if (!closed && requestEpoch === workflowEpoch) {
-							workflowCatalog = undefined;
-							selector.getSessionList().onError?.(error instanceof Error ? error.message : String(error));
-						}
-						return lastWorkflowRows;
-					},
-				);
-			}
-			return workflowCatalog;
-		};
-		const load = async (all: boolean, onProgress?: SessionListProgress): Promise<SessionInfo[]> => {
-			let partial: readonly SessionInfo[] = [];
-			const report = (loaded: number, total: number, sessions?: readonly SessionInfo[]) => {
-				if (sessions) partial = sessions;
-				onProgress?.(loaded + lastWorkflowRows.length, total + lastWorkflowRows.length, [
-					...partial,
-					...lastWorkflowRows,
-				]);
-			};
-			const runs = workflows().then(() => {
-				report(partial.length, partial.length);
-			});
-			const progress = this.runtimeHost ? report : onProgress;
-			const sessions = all
-				? SessionManager.listAll(this.sessionManager.getSessionStore(), progress)
-				: SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionStore(), progress);
-			const [sessionRows] = await Promise.all([sessions, runs]);
-			return [...sessionRows, ...lastWorkflowRows];
-		};
 		const selector = new SessionSelectorComponent(
-			(onProgress) => load(false, onProgress),
-			(onProgress) => load(true, onProgress),
+			(onProgress) =>
+				SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionStore(), onProgress),
+			(onProgress) => SessionManager.listAll(this.sessionManager.getSessionStore(), onProgress),
 			async (selected) => {
 				close();
 				await resumeCatalogSelection(this, selected);
@@ -407,17 +351,6 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 			{
 				variant: "mixed",
 				title: "Resume",
-				deleteWorkflow: async (runId) => {
-					if (this.runtimeHost instanceof IsolatedInteractiveRuntime)
-						await this.runtimeHost.deleteWorkflowFromPicker(runId);
-					else await deleteWorkflowFromPicker(this.session, runId);
-					if (closed) return;
-					invalidateWorkflowCatalog();
-					lastWorkflowRows = lastWorkflowRows.filter((row) => row.id !== runId);
-					void workflows().then((rows) => {
-						if (!closed) selector.updateWorkflowSessions(rows);
-					});
-				},
 				deleteSession:
 					this.sessionManager.getSessionStore().descriptor.adapter === "jsonl"
 						? undefined
@@ -451,62 +384,15 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 
 			{ id: this.sessionManager.getSessionId(), directory: this.sessionManager.getSessionDir() },
 		);
-		if (this.runtimeHost) {
-			let refreshing = false;
-			refreshTimer = setInterval(() => {
-				if (closed || refreshing) return;
-				refreshing = true;
-				invalidateWorkflowCatalog();
-				void workflows()
-					.then((rows) => {
-						if (!closed) selector.updateWorkflowSessions(rows);
-					})
-					.catch((error) => {
-						if (!closed)
-							selector.getSessionList().onError?.(error instanceof Error ? error.message : String(error));
-					})
-					.finally(() => {
-						refreshing = false;
-					});
-			}, 5_000);
-			refreshTimer.unref?.();
-		}
 		return {
 			component: selector,
 			focus: selector,
-			dispose: () => {
-				closed = true;
-				invalidateWorkflowCatalog();
-				clearInterval(refreshTimer);
-				selector.dispose();
-			},
+			dispose: () => selector.dispose(),
 		};
 	});
 };
 
-async function getResumeWorkflows(mode: InteractiveModeBase, target?: string): Promise<SessionInfo[]> {
-	if (!mode.runtimeHost) return [];
-	await mode.ensureDeferredStartupComplete();
-	const rows =
-		mode.runtimeHost instanceof IsolatedInteractiveRuntime
-			? await mode.runtimeHost.getWorkflowResumeEntries(target)
-			: await listWorkflowResumeEntries(mode.session, target);
-	return rows.map(workflowResumeSession);
-}
-
 async function resumeCatalogSelection(mode: InteractiveModeBase, selected: SessionInfo): Promise<void> {
-	if (selected.resumeKind === "workflow") {
-		try {
-			const handled =
-				mode.runtimeHost instanceof IsolatedInteractiveRuntime
-					? await mode.runtimeHost.resumeWorkflowFromPicker(selected.id, selected.resumeSelection)
-					: await resumeWorkflowFromPicker(mode.session, selected.id, selected.resumeSelection);
-			if (!handled) mode.showError("Workflow resume is unavailable. Reload Atomic and try again.");
-		} catch (error) {
-			mode.showError(error instanceof Error ? error.message : String(error));
-		}
-		return;
-	}
 	const directory =
 		mode.sessionManager.getSessionStore().descriptor.adapter === "jsonl" ? dirname(selected.path) : undefined;
 	await mode.handleResumeSession(selected.id, undefined, directory);
@@ -517,35 +403,21 @@ InteractiveModeBase.prototype.handleResumeTarget = async function (
 	target: string,
 ): Promise<void> {
 	if (/\s/.test(target) || target.startsWith("-")) {
-		this.showError("Usage: /resume [session-or-run-id].");
+		this.showError("Usage: /resume [session-id].");
 		return;
 	}
 	try {
-		const [sessions, runs] = await Promise.allSettled([
-			SessionManager.listAll(this.sessionManager.getSessionStore()),
-			getResumeWorkflows(this, target),
-		]);
-		if (sessions.status === "rejected") throw sessions.reason;
-		const resolution = resolveResumeTarget(target, [
-			...sessions.value,
-			...(runs.status === "fulfilled" ? runs.value : []),
-		]);
-		if (
-			runs.status === "rejected" &&
-			resolution.kind !== "ambiguous" &&
-			resolution.kind !== "invalid" &&
-			!(resolution.kind === "session" && resolution.session.id === target)
-		)
-			throw runs.reason;
-		if (resolution.kind === "session" || resolution.kind === "workflow") {
+		const sessions = await SessionManager.listAll(this.sessionManager.getSessionStore());
+		const resolution = resolveResumeTarget(target, sessions);
+		if (resolution.kind === "session") {
 			await resumeCatalogSelection(this, resolution.session);
 		} else if (resolution.kind === "ambiguous") {
 			this.showError(
-				`Resume id "${target}" is ambiguous: ${resolution.matches.map((entry) => `${entry.resumeKind === "workflow" ? "workflow" : "session"} ${entry.id}`).join(", ")}. Use /resume to choose an entry, or provide a unique full id.`,
+				`Resume id "${target}" is ambiguous: ${resolution.matches.map((entry) => `session ${entry.id}`).join(", ")}. Use /resume to choose an entry, or provide a unique full id.`,
 			);
 		} else {
 			this.showError(
-				`No session or resumable workflow matches "${target}". Use /resume to choose an entry, or provide a full id or unique 8-character hexadecimal prefix.`,
+				`No session matches "${target}". Use /resume to choose an entry, or provide a full id or unique 8-character hexadecimal prefix.`,
 			);
 		}
 	} catch (error) {

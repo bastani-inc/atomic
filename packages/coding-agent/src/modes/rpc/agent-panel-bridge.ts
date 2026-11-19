@@ -20,7 +20,6 @@ import {
 	taskPanelRole,
 	taskPanelState,
 	taskRunGeneration,
-	viewedAgentPanelItems,
 } from "../../core/tasks/agent-panel-source.ts";
 import { supersededSettledAttempts } from "../../core/tasks/completion.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
@@ -54,7 +53,7 @@ import { theme } from "../interactive/theme/theme.js";
 import { showTaskInspector, type TaskInspectorUi } from "./task-ui-bridge.js";
 
 export interface AgentPanelCounts {
-	/** Every row the panel lists, workflow runs included: ↓ focuses the panel while it is not 0. */
+	/** Every row the panel lists: ↓ focuses the panel while it is not 0. */
 	readonly total: number;
 	/** The subagent rows among them, folded rows included; the hint counts only these as agents. */
 	readonly agents?: number;
@@ -63,8 +62,6 @@ export interface AgentPanelCounts {
 	readonly shells?: number;
 	/** The chat's subagents in /tasks, listed in the panel or not: the hint points there once the panel lists none. */
 	readonly subagents?: number;
-	/** A paused or blocked run left the panel and can still be found in /workflows. */
-	readonly hiddenWorkflow?: boolean;
 }
 
 const EMPTY_PANEL_COUNTS: AgentPanelCounts = { ...NO_PANEL_ROWS, shells: 0, subagents: 0 };
@@ -76,7 +73,6 @@ type PanelRankCache = PanelRanking & {
 	readonly hub: AgentPanelSourceHub | undefined;
 	readonly generation: number;
 	readonly dismissed: ReadonlySet<string>;
-	readonly viewed: ReadonlySet<string>;
 };
 
 interface PanelRanking {
@@ -91,7 +87,6 @@ function rankingOf(cache: PanelRankCache, rows: AgentPanelRow[] = cache.rows): P
 
 interface PanelState {
 	readonly model: AgentPanelModel;
-	readonly viewed: Set<string>;
 	readonly reported: Set<string>;
 	rankCaches?: Map<number, PanelRankCache>;
 	hideCount: number;
@@ -118,7 +113,7 @@ function panelState(target: object): PanelState {
 			}
 		}
 	}
-	state ??= { model: new AgentPanelModel(), viewed: new Set(), reported: new Set(), hideCount: 0 };
+	state ??= { model: new AgentPanelModel(), reported: new Set(), hideCount: 0 };
 	states.set(target, state);
 	const store = getOwnerTaskStore(target);
 	if (store !== undefined) states.set(store, state);
@@ -129,18 +124,6 @@ function sameIds(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
 	if (a.size !== b.size) return false;
 	for (const id of a) if (!b.has(id)) return false;
 	return true;
-}
-
-function sameViewed(cached: ReadonlySet<string>, local: ReadonlySet<string>, shared: ReadonlySet<string>): boolean {
-	if (local.size === 0) return sameIds(cached, shared);
-	if (shared.size === 0) return sameIds(cached, local);
-	let unionSize = local.size;
-	for (const id of local) if (!cached.has(id)) return false;
-	for (const id of shared) {
-		if (!cached.has(id)) return false;
-		if (!local.has(id)) unionSize++;
-	}
-	return cached.size === unionSize;
 }
 
 function safeLabel(value: unknown): string {
@@ -202,7 +185,6 @@ function rankPanelSession(
 	options: { readonly start?: number; readonly limit?: number; readonly cap?: number } = {},
 ): PanelRanking {
 	const state = panelState(session);
-	const sharedViewed = viewedAgentPanelItems(session);
 	const dismissed = dismissedAgentPanelItems(session);
 	const store = getOwnerTaskStore(session);
 	const cap = options.cap ?? Number.POSITIVE_INFINITY;
@@ -224,8 +206,7 @@ function rankPanelSession(
 		cached.finishedRevision === state.model.finishedRevision &&
 		cached.hub === hub &&
 		cached.generation === generation &&
-		sameIds(cached.dismissed, dismissed) &&
-		sameViewed(cached.viewed, state.viewed, sharedViewed)
+		sameIds(cached.dismissed, dismissed)
 	) {
 		const end = Math.min(cached.rows.length, start + limit);
 		if (end <= start) return rankingOf(cached);
@@ -247,20 +228,15 @@ function rankPanelSession(
 		return rankingOf(cached, rows);
 	}
 	const extItems = agentPanelExtensionItems(session, state.onSourceError);
-	const liveWorkflowIds = new Set<string>();
-	for (const item of extItems) if (item.kind === "workflow") liveWorkflowIds.add(item.id);
-	for (const id of state.viewed) if (!liveWorkflowIds.has(id)) state.viewed.delete(id);
-	for (const id of sharedViewed) if (!liveWorkflowIds.has(id)) sharedViewed.delete(id);
-
 	const source = store === undefined ? undefined : ownerTaskViewSource(store);
 	const tasks = source?.backgroundTasks ?? [];
 	// A resumed or woken subagent is listed as its latest attempt only.
 	const superseded = tasks.length === 0 ? new Set<TaskId>() : supersededSettledAttempts(tasks);
-	// Resting rows, such as a stopped subagent or a paused workflow run, stay listed only while something is active: a
+	// Resting rows, such as a stopped subagent, stay listed only while something is active: a
 	// row, or a running shell, which is not one.
 	let active = false;
 	for (const item of extItems) {
-		if (isActivePanelRow(item)) {
+		if ((item.kind === "agent" || item.kind === "shell") && isActivePanelRow(item)) {
 			active = true;
 			break;
 		}
@@ -288,7 +264,6 @@ function rankPanelSession(
 	let counts = NO_PANEL_ROWS;
 	let shells = 0;
 	let subagents = 0;
-	let hiddenWorkflow = false;
 	const room = () => inputRows.length + runningRows.length + otherRows.length + finishedRows.length < cap;
 	/** Whether the panel lists a row, by the shared rules; a finished row it lists starts fading. */
 	const listed = (
@@ -302,7 +277,6 @@ function rankPanelSession(
 		run: string | undefined,
 	): boolean => {
 		const retired = isRestingPanelRow(kind, rowState) && state.model.retireResting(rowId, active, pass, run);
-		if (retired && kind === "workflow") hiddenWorkflow = true;
 		if (!panelRowListed(kind, rowState, finished, { active, retired, kept })) return false;
 		if (finished) state.model.keepFinished(fadeKey, true, now, pass, native);
 		counts = countPanelRow(counts, kind, rowState);
@@ -317,23 +291,16 @@ function rankPanelSession(
 			if (inputRows.length + runningRows.length < cap) runningRows.push(row());
 		} else if (inputRows.length + runningRows.length + otherRows.length < cap) otherRows.push(row());
 	};
-	const pushItem = (item: AgentPanelItem, keep: boolean) => {
+	const pushItem = (item: AgentPanelItem) => {
 		// Shells are counted on the hint line and listed in /tasks, not here.
 		if (item.kind === "shell") {
 			if (!isFinishedPanelRow(item)) shells++;
 			return;
 		}
 		const finished = isFinishedPanelRow(item);
-		if (!listed(item.id, item.kind, item.state, finished, finished && keep, item.id, false, item.runGeneration))
-			return;
+		if (!listed(item.id, item.kind, item.state, finished, false, item.id, false, item.runGeneration)) return;
 		place(item.state, finished, () => item);
 	};
-
-	for (let i = extItems.length - 1; i >= 0; i--) {
-		const item = extItems[i]!;
-		if (item.kind !== "workflow") continue;
-		pushItem(item, item.viewed !== true && !state.viewed.has(item.id) && !sharedViewed.has(item.id));
-	}
 
 	if (store !== undefined && source !== undefined) {
 		const taskDismissed = dismissedTasks(source);
@@ -371,10 +338,10 @@ function rankPanelSession(
 
 	for (let i = extItems.length - 1; i >= 0; i--) {
 		const item = extItems[i]!;
-		if (item.kind !== "workflow") pushItem(item, false);
+		if (item.kind === "agent" || item.kind === "shell") pushItem(item);
 	}
 
-	const panelCounts = { ...counts, shells, subagents, ...(hiddenWorkflow ? { hiddenWorkflow } : {}) };
+	const panelCounts = { ...counts, shells, subagents };
 	// The main row leads the panel whenever it lists a subagent.
 	const main = counts.agents > 0;
 	state.model.endPass(pass);
@@ -390,7 +357,6 @@ function rankPanelSession(
 		hub,
 		generation,
 		dismissed: new Set(dismissed),
-		viewed: new Set([...state.viewed, ...sharedViewed]),
 		rows,
 		counts: panelCounts,
 		main,
@@ -418,15 +384,6 @@ function withinRefreshBudget(refreshes: number, spent: number): boolean {
 
 function elapsedSecond(ms: number | undefined): number {
 	return ms === undefined ? -1 : Math.max(0, Math.floor(ms / 1000));
-}
-
-function sameProgress(
-	a: { readonly done: number; readonly total: number } | undefined,
-	b: { readonly done: number; readonly total: number } | undefined,
-): boolean {
-	if (a === b) return true;
-	if (a === undefined || b === undefined) return false;
-	return a.done === b.done && a.total === b.total;
 }
 
 function sliceFadedMask(rows: readonly AgentPanelRow[], start: number, count: number, model: AgentPanelModel): number {
@@ -457,9 +414,7 @@ function sameUnfocusedRows(
 			a.task !== b.task ||
 			a.tokens !== b.tokens ||
 			a.queued !== b.queued ||
-			a.viewed !== b.viewed ||
 			elapsedSecond(a.elapsedMs) !== elapsedSecond(b.elapsedMs) ||
-			!sameProgress(a.progress, b.progress) ||
 			model.faded(a) !== model.faded(b)
 		) {
 			return false;
@@ -527,8 +482,7 @@ export function bindAgentPanel(
 			counts.needsInput === lastCounts.needsInput &&
 			counts.shells === lastCounts.shells &&
 			counts.subagents === lastCounts.subagents &&
-			counts.agents === lastCounts.agents &&
-			counts.hiddenWorkflow === lastCounts.hiddenWorkflow
+			counts.agents === lastCounts.agents
 		)
 			return false;
 		lastCounts = counts;
@@ -782,8 +736,7 @@ export function bindAgentPanel(
 }
 
 /**
- * Open a panel row's view, as Enter on the focused row does: a subagent's chat, or the view its source opens, such as a
- * workflow run. Leaving that view returns to the focused panel with the row selected.
+ * Open a panel row's view. Leaving it returns to the focused panel with the row selected.
  */
 async function openPanelRow(
 	session: AgentPanelSession & object,
@@ -803,8 +756,7 @@ async function openPanelRow(
 			back().catch(report);
 		},
 	});
-	if (opened) panelState(session).viewed.add(item.id);
-	else ui.notify?.(`Could not open ${safeLabel(item.name)}.`, "warning");
+	if (!opened) ui.notify?.(`Could not open ${safeLabel(item.name)}.`, "warning");
 }
 
 export async function showAgentPanel(

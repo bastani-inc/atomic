@@ -231,7 +231,6 @@ export function syncSessionHistoryTool(session: AgentSession, toolNames: readonl
 							cwd: session._cwd,
 							currentSessionId: session.sessionManager.getSessionId(),
 							sessionStore: () => session.sessionManager.getSessionStore(),
-							workflows: () => undefined,
 						}),
 				}) as ToolDefinition,
 				sourceInfo: createSyntheticSourceInfo(`<builtin:${SESSION_HISTORY_TOOL_NAME}>`, { source: "builtin" }),

@@ -65,7 +65,7 @@ describe("indexed history searches find what an unindexed scan finds (#5250)", (
 			const store = await SqlSessionStore.open(database);
 			try {
 				await store.create(header("p"), [message("e1", text, BASE), message("e2", "another entry", BASE + 1000)]);
-				const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+				const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 				const scanned = (await router.search?.("history://sessions/p", request(pattern))) ?? "";
 				assert.match(scanned, /history:\/\/sessions\/p:1: /);
 				assert.equal((await store.searchIndex?.coverage("p", HISTORY_TEXT_FORMAT))?.indexedSeq, 2);

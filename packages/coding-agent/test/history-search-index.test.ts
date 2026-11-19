@@ -151,7 +151,7 @@ describe("history:// search index (#5250)", () => {
 				message("e1", "aɤb", BASE),
 				message("e2", "another entry", BASE + 1000),
 			]);
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 			const pattern = "(?i:aꟋb)";
 			const first = (await router.search?.("history://sessions/inline-case", request(pattern))) ?? "";
 			assert.match(first, /^history:\/\/sessions\/inline-case:1: aɤb$/m);
@@ -177,7 +177,7 @@ describe("history:// search index (#5250)", () => {
 					return message(`e${seq}`, text, BASE + index * 1000);
 				}),
 			);
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 			const first = (await router.search?.("history://sessions/nul", request("nul-needle"))) ?? "";
 			assert.match(first, new RegExp(`^history://sessions/nul:${NEEDLE_SEQ}: the nul-needle entry$`, "m"));
 			assert.equal(

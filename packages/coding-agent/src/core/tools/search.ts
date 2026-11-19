@@ -574,7 +574,7 @@ export function createSearchToolDefinition(
 		name: "search",
 		label: "search",
 		description:
-			"Search file contents with a regex across files, directories, globs, and internal URLs, including history:// for past sessions and workflow runs.",
+			"Search file contents with a regex across files, directories, globs, and internal URLs, including history:// for past sessions.",
 		promptSnippet: searchToolSystemPromptContribution.snippet,
 		...experimentalToolSamplingProperty(),
 		parameters: searchSchema,

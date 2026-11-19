@@ -17,7 +17,6 @@ export class SessionSelectorHeader implements Component {
 	private loadProgress: { loaded: number; total: number } | null = null;
 	private showPath = false;
 	private confirmingDeletePath: string | null = null;
-	private confirmingDeleteWorkflow = false;
 	private statusMessage: { type: "info" | "error"; message: string } | null = null;
 	private statusTimeout: ReturnType<typeof setTimeout> | null = null;
 	private variant: SessionListVariant = "sessions";
@@ -56,9 +55,8 @@ export class SessionSelectorHeader implements Component {
 		this.showPath = showPath;
 	}
 
-	setConfirmingDeletePath(path: string | null, isWorkflow = false): void {
+	setConfirmingDeletePath(path: string | null): void {
 		this.confirmingDeletePath = path;
-		this.confirmingDeleteWorkflow = path !== null && isWorkflow;
 	}
 
 	private clearStatusTimeout(): void {
@@ -92,7 +90,7 @@ export class SessionSelectorHeader implements Component {
 	/** The line under the list: the pending delete question, else a transient status. */
 	getNotice(): SessionListNotice | undefined {
 		if (this.confirmingDeletePath !== null) {
-			const target = this.variant === "runs" || this.confirmingDeleteWorkflow ? "this workflow run" : "this session";
+			const target = this.variant === "runs" ? "this run" : "this session";
 			return { text: `Delete ${target}?`, tone: "error" };
 		}
 		if (this.statusMessage) {
@@ -105,7 +103,7 @@ export class SessionSelectorHeader implements Component {
 		const inner = Math.max(1, width - 3);
 		const title =
 			this.title ??
-			(this.variant === "runs" ? "Resume workflow run" : this.variant === "mixed" ? "Resume" : "Resume session");
+			(this.variant === "runs" ? "Resume run" : this.variant === "mixed" ? "Resume" : "Resume session");
 		const facts: string[] = [];
 		const hasSessions = this.variant === "sessions" || this.variant === "mixed";
 		if (hasSessions) facts.push(this.scope === "current" ? "this folder" : "all folders");

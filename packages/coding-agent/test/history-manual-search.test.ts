@@ -40,7 +40,6 @@ test("following each printed history cursor reads each page once without opening
 				cwd,
 				currentSessionId: manager.getSessionId(),
 				sessionStore: () => manager.getSessionStore(),
-				workflows: () => undefined,
 				budget: { rows: 1 },
 			});
 			const calls: string[] = [];

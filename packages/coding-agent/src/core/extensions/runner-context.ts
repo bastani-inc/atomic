@@ -304,7 +304,6 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 				currentSessionId: manager.getSessionId(),
 				sessionStore: () => manager.getSessionStore(),
 				projectSessionStore: () => source.getProjectHistory().sessionStore(),
-				workflows: () => source.getProjectHistory().workflows(),
 			});
 			const sessionRouters = composeInternalRouters(
 				createToolOutputRouter({
