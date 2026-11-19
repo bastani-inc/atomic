@@ -231,6 +231,15 @@ test("a stopped subagent's title-only notice does not take its outcome from the 
 
 test.each([
 	{
+		notification: savedNotices.quit087,
+		title: "Subagent triage interrupted by a restart: paused · awaiting resume: Review docs",
+		expected: "⏸ triage interrupted by a restart: paused · awaiting resume",
+	},
+	{
+		title: "Subagent triage interrupted by a restart: released while waiting on bash (ci): Review docs",
+		expected: "◌ triage interrupted by a restart: is waiting on bash (ci)",
+	},
+	{
 		title: "Subagent triage stopped (QA): paused · awaiting resume: Review docs",
 		expected: "⏸ triage stopped (QA): paused · awaiting resume",
 	},
@@ -245,51 +254,60 @@ test.each([
 	},
 ])(
 	"main and detached stage chats reopen '$expected' from the saved title (#5690)",
-	async ({ title, expected, ...identity }) => {
-		await withNodeSqliteDatabase(async (db) => {
-			const writer = await SqlSessionStore.open(db.database);
-			const session = await SessionManager.create(writer, process.cwd());
-			const notification = { ...savedNotices.pause088, ...identity, title };
-			await session.appendCustomMessageEntry(TASK_COMPLETION_MESSAGE_TYPE, title, true, { notification });
-			const sessionId = session.getSessionId();
-			await writer.close();
-
-			const reader = await SqlSessionStore.open(await db.reopen());
-			const main = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
-			const store = createStore();
-			setupRun(store, "run-1", "stage-a", "completed");
-			store.recordStageSession("run-1", "stage-a", { sessionId });
-			const stage = new StageChatView({
-				store,
-				sessionStore: reader,
-				graphTheme: deriveGraphTheme({}),
-				runId: "run-1",
-				stageId: "stage-a",
-				workflowName: "review",
-				onDetach() {},
-				onClose() {},
-			});
-			try {
-				assert.equal(await main.loadSession(reader, sessionId), true);
-				const notice = (rows: string[]) =>
-					rows.map((row) => stripVTControlCharacters(row).trim()).find((row) => row.includes("triage"));
-				const stageRow = await vi.waitFor(() => {
-					const row = notice(stage.render(120));
-					assert.ok(row, "stage loads its archived notice");
-					return row;
-				});
-				assert.deepEqual(
-					{ main: notice(main.renderBody(120, 25)), stage: stageRow },
-					{ main: expected, stage: expected },
-				);
-			} finally {
-				stage.dispose();
-				main.dispose();
-				await reader.close();
-			}
-		});
-	},
+	({ title, expected, notification: fields = savedNotices.pause088, ...identity }) =>
+		expectReopenedNotice(title, { notification: { ...fields, ...identity, title } }, expected),
 );
+
+test.each([
+	["◌ triage stopped: is waiting on bash (ci)", savedNotices.releaseOrStop088.releasedBody],
+	["◼ triage stopped", savedNotices.releaseOrStop088.stoppedBody],
+])("main and detached stage chats use the original stop reason to reopen '%s' (#5690)", (expected, body) =>
+	expectReopenedNotice(body, savedNotices.releaseOrStop088.detailsWithoutResult, expected),
+);
+
+async function expectReopenedNotice(body: string, details: unknown, expected: string): Promise<void> {
+	await withNodeSqliteDatabase(async (db) => {
+		const writer = await SqlSessionStore.open(db.database);
+		const session = await SessionManager.create(writer, process.cwd());
+		await session.appendCustomMessageEntry(TASK_COMPLETION_MESSAGE_TYPE, body, true, details);
+		const sessionId = session.getSessionId();
+		await writer.close();
+
+		const reader = await SqlSessionStore.open(await db.reopen());
+		const main = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "completed");
+		store.recordStageSession("run-1", "stage-a", { sessionId });
+		const stage = new StageChatView({
+			store,
+			sessionStore: reader,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "review",
+			onDetach() {},
+			onClose() {},
+		});
+		try {
+			assert.equal(await main.loadSession(reader, sessionId), true);
+			const notice = (rows: string[]) =>
+				rows.map((row) => stripVTControlCharacters(row).trim()).find((row) => row.includes("triage"));
+			const stageRow = await vi.waitFor(() => {
+				const row = notice(stage.render(120));
+				assert.ok(row, "stage loads its archived notice");
+				return row;
+			});
+			assert.deepEqual(
+				{ main: notice(main.renderBody(120, 25)), stage: stageRow },
+				{ main: expected, stage: expected },
+			);
+		} finally {
+			stage.dispose();
+			main.dispose();
+			await reader.close();
+		}
+	});
+}
 
 test("the saved result distinguishes a release from punctuation and release wording in a name (#5563)", () => {
 	const released = completionNoticeFromDetails(savedNotices.punctuated088Details);
