@@ -34,7 +34,7 @@ pub fn remove_windows_file_older_than(path: String, before_ms: f64) -> crate::ta
 				let modified_ms =
 					(i128::from(meta.last_write_time()) - 116_444_736_000_000_000) as f64 / 10_000.0;
 				if modified_ms < before_ms {
-					dispose_by_handle(&file);
+					let _ = dispose_by_handle(&file);
 				}
 			}
 		}
@@ -58,7 +58,7 @@ impl WindowsTemporaryFile {
 		crate::task::blocking("temporary-file-close", (), move |_| {
 			#[cfg(windows)]
 			if let Some(file) = &file {
-				dispose_by_handle(file);
+				dispose_by_handle(file).map_err(|error| napi::Error::from_reason(error.to_string()))?;
 			}
 			drop(file);
 			Ok(())
@@ -67,7 +67,7 @@ impl WindowsTemporaryFile {
 }
 
 #[cfg(windows)]
-fn dispose_by_handle(file: &File) {
+fn dispose_by_handle(file: &File) -> std::io::Result<()> {
 	use std::os::windows::io::AsRawHandle;
 	use windows_sys::Win32::{
 		Foundation::{ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED},
@@ -93,22 +93,28 @@ fn dispose_by_handle(file: &File) {
 		)
 	} != 0
 	{
-		return;
+		return Ok(());
 	}
-	let code = std::io::Error::last_os_error().raw_os_error().map(|n| n as u32);
+	let error = std::io::Error::last_os_error();
+	let code = error.raw_os_error().map(|n| n as u32);
 	if !matches!(code, Some(ERROR_INVALID_FUNCTION | ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED))
 	{
-		return;
+		return Err(error);
 	}
 	let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
-	unsafe {
+	if unsafe {
 		SetFileInformationByHandle(
 			file.as_raw_handle(),
 			FileDispositionInfo,
 			(&raw const disposition).cast(),
 			std::mem::size_of_val(&disposition) as u32,
 		)
-	};
+	} != 0
+	{
+		Ok(())
+	} else {
+		Err(std::io::Error::last_os_error())
+	}
 }
 
 /// Opens an exclusive temporary file, pinning its name until close. A clock probe takes the rights granted by its
