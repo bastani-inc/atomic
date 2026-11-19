@@ -5,7 +5,8 @@ import { declaresHistoryReplayable, disposeRenderer, isChatFactoryProduct } from
 /** A renderer may keep widget state that is not in the stored row. Only these exceptions (not stock rows or
  * their page) survive eviction, keyed by the saved occurrence and sub-block within this session. */
 export class SavedRendererInstances {
-	private readonly source = Symbol();
+	/** The saved source that every saved row of this session is marked with. */
+	readonly source = Symbol();
 	private readonly kept = new Map<string, Component[]>();
 	private readonly owner = new WeakMap<Component, string>();
 	private readonly retired = new WeakSet<Component[]>();
@@ -13,6 +14,15 @@ export class SavedRendererInstances {
 		const group = this.kept.get(key);
 		if (group) this.retired.delete(group);
 		return group;
+	}
+	/** The instances kept for `key`, without returning them to use. */
+	peek(key: string): Component[] | undefined {
+		return this.kept.get(key);
+	}
+	/** Whether `component` is a kept instance, which a scratch drawing must not dispose. */
+	keeps(component: Component): boolean {
+		const key = this.owner.get(component);
+		return key !== undefined && this.kept.get(key)?.includes(component) === true;
 	}
 	private stateful(c: Component): boolean {
 		const remote = remoteHistoryRow(c);

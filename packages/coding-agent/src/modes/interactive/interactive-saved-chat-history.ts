@@ -1,9 +1,18 @@
-import { type Component, type ScrollView, Text, TuiAltScreen } from "@bastani/atomic-tui";
+import {
+	type Component,
+	type HistoryLeaf,
+	type HistoryRowsBlock,
+	type ScrollView,
+	Text,
+	TuiAltScreen,
+	WindowedContainer,
+} from "@bastani/atomic-tui";
 import type { SessionEntry, SessionManager } from "../../core/session-manager.ts";
-import type {
-	SessionHistoryItem,
-	SessionHistoryPage,
-	SessionHistoryReadOptions,
+import {
+	SESSION_HISTORY_PAGE_ENTRIES,
+	type SessionHistoryItem,
+	type SessionHistoryPage,
+	type SessionHistoryReadOptions,
 } from "../../core/storage/session/types.js";
 import { rowSource, savedRowKey, savedSeqOf } from "../../core/tasks/transcript-origin.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
@@ -24,7 +33,13 @@ type Draw = (
 	seqs: number[],
 	exceptions: SavedRendererInstances,
 	adjacent: { readonly older?: string; readonly newer?: string } | undefined,
+	record?: Map<Component, HistoryLeaf>,
 ) => Component[];
+
+/** A copy draws the entries it needs in chunks of this many, each with a page of entries on either side, as a tool
+ * call and its result are never further apart than a page edge needs. */
+const COPY_CHUNK_ENTRIES = 4 * SESSION_HISTORY_PAGE_ENTRIES;
+const COPY_CONTEXT_ENTRIES = SESSION_HISTORY_PAGE_ENTRIES;
 
 const exceptionsByHost = new WeakMap<
 	InteractiveModeBase,
@@ -330,7 +345,53 @@ class SavedChatHistory {
 		this.through = through;
 		this.counter = (mode.ui as typeof mode.ui & { newMessages?: NewMessageCounter }).newMessages;
 		chat.addChild(this.marker);
+		// A copy of a selection that holds saved entries never mounted while it was made draws just those entries.
+		const owner = new WeakRef(this);
+		WindowedContainer.markHistoryAnchor(this.marker, exceptions.source, {
+			last: through,
+			read: async (from, to, width) => {
+				const history = owner.deref();
+				if (!history) throw new Error("Saved history is closed");
+				return history.readRows(from, to, width);
+			},
+		});
 		view.setHistoryNavigation((action) => this.navigate(action));
+	}
+
+	/** Draw the saved rows of entries `from` through `to` at `width` for a copy: without mounting them or keeping new
+	 * renderer instances, a bounded chunk at a time, as the whole transcript draws them. */
+	async readRows(from: number, to: number, width: number): Promise<HistoryRowsBlock[]> {
+		if (this.mode.sessionManager !== this.manager || !this.chat.children.includes(this.marker))
+			throw new Error("Saved history is no longer shown");
+		const blocks: HistoryRowsBlock[] = [];
+		const last = Math.min(to, this.through);
+		for (let start = Math.max(1, from); start <= last; start += COPY_CHUNK_ENTRIES) {
+			const end = Math.min(last, start + COPY_CHUNK_ENTRIES - 1);
+			const items: SessionHistoryItem[] = [];
+			const read = this.manager.readHistory({
+				branchLeafSeq: this.leaf,
+				fromSeq: Math.max(1, start - COPY_CONTEXT_ENTRIES),
+				toSeq: Math.min(this.through, end + COPY_CONTEXT_ENTRIES),
+				direction: "forward",
+			});
+			for await (const page of read) items.push(...page.items);
+			const positions = new Map<Component, HistoryLeaf>();
+			const components = this.draw(
+				this.mode,
+				items.map(entryForDisplay),
+				items.map((item) => item.seq),
+				this.exceptions,
+				undefined,
+				positions,
+			);
+			for (const component of components) {
+				const position = positions.get(component);
+				if (position && position.seq >= start && position.seq <= end)
+					blocks.push({ position, lines: component.render(width) });
+				if (!this.exceptions.keeps(component)) disposeRenderer(component);
+			}
+		}
+		return blocks;
 	}
 
 	private navigate(direction: Direction): void {
@@ -406,6 +467,25 @@ class SavedChatHistory {
 	 */
 	park(parked: ParkedRows): void {
 		const children = [...parked.rows];
+		// They are saved rows now, marked as a drawn page marks them: a row without a saved source (a spacer, a
+		// decoration) belongs to the entry of the next row that has one, as it was drawn before that row, and rows
+		// after the last such row follow it.
+		const source = this.exceptions.source;
+		let pending: Component[] = [];
+		let at: { seq: number; block: number; parts: number } | undefined;
+		for (const row of children) {
+			pending.push(row);
+			const key = savedRowKey(row);
+			if (key === undefined) continue;
+			const [seq, block] = key.split(":");
+			at = { seq: Number(seq), block: block === "entry" ? 0 : Number(block), parts: pending.length };
+			for (let part = 0; part < pending.length; part++)
+				WindowedContainer.markHistoryComponent(pending[part]!, source, at.seq, at.block, part);
+			pending = [];
+		}
+		if (at)
+			for (let index = 0; index < pending.length; index++)
+				WindowedContainer.markHistoryComponent(pending[index]!, source, at.seq, at.block, at.parts + index);
 		this.chat.insertChildren(this.chat.children.indexOf(this.marker) + 1, children);
 		this.pages.push({ children, first: parked.first, last: parked.last, from: parked.first, to: parked.last });
 	}
