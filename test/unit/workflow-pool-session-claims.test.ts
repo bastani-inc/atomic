@@ -217,6 +217,11 @@ for (const [label, open] of [
 					(error: unknown) => {
 						assert.ok(error instanceof ForkSessionClaimError, what);
 						assert.ok(isForkSessionClaimError(error));
+						assert.equal(
+							failedCoordinatorReply(1, error).enqueueRefused,
+							true,
+							"the parent can rule out this child for chat",
+						);
 						assert.deepEqual(
 							[error.code, error.reason, error.retryable, error.cleanupCause],
 							["session-claim-refused", what, false, undefined],

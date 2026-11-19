@@ -1234,7 +1234,14 @@ export class SqlPoolQueue {
 					previous.fingerprint === fingerprint
 						? previous
 						: await this.rebind(tx, lease, previous, requested, JSON.parse(payload), fingerprint, options);
-				await this.claimSessions(tx, lease.runId, row.id, descriptor, options.claimSessions);
+				await this.claimSessions(
+					tx,
+					lease.runId,
+					row.id,
+					descriptor,
+					options.claimSessions,
+					row.epoch < lease.epoch,
+				);
 				if ((row.state !== "ready" && row.state !== "failed") || row.epoch >= lease.epoch)
 					return this.withInputs(tx, fromRow(row));
 				// Work of an earlier incarnation becomes claimable again once this root enqueues it (#3979), including
@@ -1442,6 +1449,7 @@ export class SqlPoolQueue {
 		work: string,
 		descriptor: Pick<PoolWorkDescriptor, "childRunId" | "scope">,
 		claims: readonly PoolSessionClaim[] | undefined,
+		canRuleOutCurrentWork = true,
 	): Promise<void> {
 		if (claims === undefined || claims.length === 0) return;
 		const { childRunId, scope } = descriptor;
@@ -1450,8 +1458,8 @@ export class SqlPoolQueue {
 		let primary: unknown;
 		try {
 			for (const claim of claims) {
-				const refuse = (reason: ForkSessionClaimReason) =>
-					new ForkSessionClaimError({
+				const refuse = (reason: ForkSessionClaimReason) => {
+					const error = new ForkSessionClaimError({
 						reason,
 						sessionId: claim.sessionId,
 						rootRunId: root,
@@ -1460,6 +1468,8 @@ export class SqlPoolQueue {
 						replayKey: claim.replayKey,
 						stageRunId: claim.runId,
 					});
+					return canRuleOutCurrentWork ? refusedPoolEnqueue(error) : error;
+				};
 				if (!claim.replayKey.startsWith(`${scope}:`)) throw refuse("outside-scope");
 				const owner = await tx.get(
 					`SELECT work, replay_key FROM ${prefix}session_owners WHERE session = ?`,
