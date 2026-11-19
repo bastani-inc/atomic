@@ -3,10 +3,18 @@ import { isModelType } from "@bastani/atomic-ai";
 import { getCapabilities, type SettingItem } from "@bastani/atomic-tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import { formatModelLabel } from "../../../core/model-label.ts";
+import type { Settings } from "../../../core/settings-schema.ts";
 import { keyDisplayText } from "./keybinding-hints.js";
 import { DEFAULT_PROJECT_TRUST_LABELS } from "./settings-selector-options.ts";
 import { SelectSubmenu, ThemeSubmenu, WarningSettingsSubmenu } from "./settings-selector-submenus.ts";
 import type { SettingsCallbacks, SettingsConfig } from "./settings-selector-types.ts";
+
+/** Keep editing a project override (including Automatic) when it already exists. */
+export function decisionSettingScopes(project: Pick<Settings, "decisionModel">): {
+	readonly decisionModelScope: "global" | "project";
+} {
+	return { decisionModelScope: project.decisionModel === undefined ? "global" : "project" };
+}
 
 /**
  * Sentinel row shown when no default-model catalog entry exists to configure.
