@@ -8,6 +8,9 @@ import type {
 	SessionSearchIndex,
 	SessionSearchText,
 } from "./types.js";
+import { yieldTurn } from "./yield-turn.js";
+
+export { yieldTurn };
 
 export const SESSION_SEARCH_DOMAIN = "session-search";
 export const SESSION_SEARCH_TABLES = Object.freeze({
@@ -50,13 +53,6 @@ interface SearchDoc {
 	readonly seq: number;
 	readonly part: number;
 	readonly text: string;
-}
-
-export function yieldTurn(): Promise<void> {
-	return new Promise((resolve) => {
-		if (typeof setImmediate === "function") setImmediate(resolve);
-		else setTimeout(resolve, 0);
-	});
 }
 
 function newGeneration(): string {

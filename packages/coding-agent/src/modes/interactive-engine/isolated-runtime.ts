@@ -308,12 +308,16 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// session/model/bash behavior do not need to implement unrelated transport
 		// surfaces.
 		this.client.onInteractiveEngineMessage?.((message) => {
+			if (message.type === "engine_project_resources_withheld") {
+				this.applyProjectPermissionWhilePending(message.path, false, true);
+				return;
+			}
 			if (message.type === "engine_trust_decision") {
 				this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, {
 					[message.scope]: { [message.path]: message.trusted },
 				});
 				if (message.scope === "projects" && !this.engineProjectTrustReported)
-					this.applyProjectDecisionWhilePending(message.path, message.trusted);
+					this.applyProjectPermissionWhilePending(message.path, message.trusted);
 				return;
 			}
 			if (message.type === "engine_deprecation_warning") {
@@ -395,7 +399,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 * project's resources load, or stay out, now instead of when startup has decided. It is no startup decision: the
 	 * warning still waits for that (#5693).
 	 */
-	private applyProjectDecisionWhilePending(path: string, trusted: boolean): void {
+	private applyProjectPermissionWhilePending(path: string, trusted: boolean, withheld = false): void {
 		const generation = this.client.getGeneration?.();
 		const apply = async () => {
 			const session = super.session;
@@ -406,6 +410,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				canonicalizePathAsync(session.sessionManager.getCwd()),
 			]);
 			if (decided !== current || session !== super.session || this.engineProjectTrustReported) return;
+			if (this.disposed || (generation !== undefined && !this.isCurrentResourceGeneration(generation))) return;
+			if (withheld) {
+				if (Object.hasOwn(this.knownTrust.projects, path)) return;
+				this.restrictedStartupCatalogs.add(session);
+			}
 			if (session.settingsManager.isProjectTrusted() === trusted) return;
 			await session.settingsManager.setProjectTrustedAsync(trusted);
 			// Withholding a folder did not invalidate user settings. The setter has loaded its project layer.

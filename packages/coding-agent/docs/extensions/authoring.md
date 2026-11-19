@@ -419,7 +419,7 @@ Inside `execute`, the context is an `ExtensionToolContext`. `ctx.tools` lists pe
 
 If your orchestrator invokes a tool with `concurrency: "exclusive"`, give the orchestrator `concurrency: "exclusive"` too. A shared orchestrator cannot safely upgrade its nested call to exclusive access and receives an error before that target executes. File mutation queues remain required for read-modify-write operations.
 
-Nested execution events include `parentToolCallId`. Nested calls do not create separate conversation messages; the parent reports their results. Its final result may carry bounded `nestedCalls` metadata for exports and file-operation tracking. Report only the parent's own usage: nested usage is aggregated automatically, including deeper calls.
+Nested execution events and the nested tool's `ctx` include `parentToolCallId`. Nested calls do not create separate conversation messages; the parent reports their results. Its final result may carry bounded `nestedCalls` metadata for exports and file-operation tracking. Report only the parent's own usage: nested usage is aggregated automatically, including deeper calls.
 
 ### Tool exposure
 
@@ -428,14 +428,14 @@ Nested execution events include `parentToolCallId`. Nested calls do not create s
 | Exposure | Model declaration | Callable from another tool |
 | --- | --- | --- |
 | `direct` | While active | While active |
-| `model-only` | While active | Never |
+| `model-only` | While active | Only its permitted `scriptAccess` subset while active |
 | `codemode` | Only if explicitly activated | When registered and permitted by the session |
 | `deferred` | Only if explicitly activated | When registered and permitted by the session |
 | `hidden` | Never | Never |
 
 Use `model-only` for interactive or orchestration tools that should not be called from scripts. `codemode` tools are advertised in the codemode tool's catalog; `deferred` tools are discoverable without occupying that inline catalog. Session allowlists and exclusions remain authoritative. Exposure cannot restore a suppressed tool.
 
-Atomic's workflow, subagent, Intercom/supervisor, and user-question tools are `model-only`: a script cannot launch agents, ask questions of other sessions, or request interactive input through them. Ordinary permitted file, shell, MCP, and web-data tools remain callable. Custom tools that perform interactive or orchestration work should use the same exposure.
+Atomic's workflow, subagent, Intercom/supervisor, and user-question tools are `model-only`: scripts can launch and control their session's subagents and send exact-target Intercom messages, but cannot edit agent definitions, ask questions of other sessions, or request interactive input through them. Ordinary permitted file, shell, MCP, and web-data tools remain callable. Custom tools that perform interactive or orchestration work should use the same exposure.
 
 A `model-only` tool can offer scripts part of its actions with `scriptAccess: { description, outputSchema?, refuse(params) }`. While the tool is active, scripts see it with `description` and receive its `structuredContent` as described by `outputSchema`. `refuse` runs after schema validation and before permission hooks, and returns why a script may not make the call, or `undefined` to run the tool's own `execute`. Direct calls are unaffected. Intercom uses it to let scripts list sessions and send to exact targets.
 
@@ -710,7 +710,7 @@ The same functions are available as `options.keyHint()` and `options.keyText()` 
 
 In renderers, use these instead of importing `keyHint()`, `keyHintIfBound()` or `keyText()` from `@bastani/atomic`. An extension can resolve its own copy of the package, for example from its own `node_modules`, and that copy does not see Atomic's configured keybindings: `app.*` ids then format as `""`. `rawKeyHint(key, description)` formats a literal key string and is safe to import.
 
-In fullscreen mode, a click on a hint from `keyHint()` or `rawKeyHint()` presses the key it names. The hint carries zero-width marks for this, which the renderer removes before writing to the terminal; use `keyText()` for key names you put in plain text, such as a notification or a log line. To make a hint you write as text clickable, pass it through `clickableHintText()` from `@bastani/atomic-tui`, for example `clickableHintText("↑↓ select · enter choose · esc cancel")`.
+In fullscreen mode, a click on a hint from `keyHint()` or `rawKeyHint()` presses the key it names. The hint carries zero-width marks for this, which the renderer removes before writing to the terminal; use `keyText()` for key names you put in plain text, such as a notification or a log line. To make a hint you write as text clickable, pass it through `clickableHintText()` from `@bastani/atomic-tui`, for example `clickableHintText("↑↓ select · enter choose · esc cancel")`. A named or modified key can be separated from its label by a tab or Unicode space. For bare keys with such spacing, use `clickableKeysHint([{ text: "a", key: "a" }], "\u00a0accept")` to mark the key explicitly. In `clickableHintText("esc / a destination")`, the slash and its label run `/`; pass `["a"]` as the second argument if `a` is another key instead. `clickableHintText("1/2 / esc pick", ["1", "2"])` marks all three keys. A plain ratio like `1 / 2` stays text.
 
 Use namespaced keybinding ids:
 - Coding-agent ids use the `app.*` namespace, for example `app.tools.expand`, `app.editor.external`, `app.session.rename`

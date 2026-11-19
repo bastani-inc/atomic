@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { isProxy } from "node:util/types";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
+import { reopenedCompletionName } from "../../core/tasks/reopened-completion.js";
 import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import { sameToolGroupRole, toolGroupRoleKey } from "../interactive/components/tool-group-tracker.ts";
@@ -392,6 +394,7 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 export class RemoteCustomMessageComponent extends RemoteRenderer {
 	readonly ownsLeadingSpacer = true;
 	private readonly message: CustomMessage<unknown>;
+	private readonly reopenedStopName?: string;
 	private contentDigest: string | undefined;
 	private outputPad: number;
 	constructor(
@@ -402,6 +405,7 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 	) {
 		super(runtime, requestRender);
 		this.message = message;
+		this.reopenedStopName = reopenedCompletionName(message, isProxy);
 		this.outputPad = outputPad;
 	}
 
@@ -420,8 +424,10 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 	}
 
 	protected command(requestId: number, width: number): RemoteRenderCommand {
+		const stopped = this.reopenedStopName;
 		return {
 			type: "engine_message_render",
+			...(stopped === undefined ? {} : { reopenedStopName: stopped }),
 			componentId: this.componentId,
 			requestId,
 			width,
@@ -436,6 +442,9 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 		this.contentDigest ??= createHash("sha1")
 			.update(JSON.stringify([this.message.content, this.message.details]) ?? "")
 			.digest("base64");
-		return JSON.stringify(["message", this.message.customType, this.contentDigest, this.expanded]);
+		const stopped = this.reopenedStopName;
+		return stopped === undefined
+			? JSON.stringify(["message", this.message.customType, this.contentDigest, this.expanded])
+			: JSON.stringify(["message", this.message.customType, this.contentDigest, this.expanded, stopped]);
 	}
 }

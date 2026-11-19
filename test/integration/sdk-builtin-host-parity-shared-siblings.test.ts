@@ -5,16 +5,16 @@ import { runBuiltNodeFixture } from "./sdk-builtin-host-parity-helpers.js";
 // Declared in-file: the duration guard resolves timeout expressions only from numeric consts in this file.
 const BUILT_NODE_HOST_PROCESS_TIMEOUT_MS = 60_000;
 
-// #3105: supported shared buses do not transfer workflow lifetime ownership.
+// #3105: supported shared buses do not transfer listener ownership.
 test.each(["bus", "loader", "facade", "subclass"])(
-	"built Node shared-%s sibling reload and disposal preserve a pending workflow and exit naturally",
+	"built Node shared-%s sibling reload and disposal preserve the other listener and exit naturally",
 	(shared) => {
 		const result = runBuiltNodeFixture("sdk-host-shared-bus.mjs", [shared]);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
 		assert.deepEqual(JSON.parse(result.stdout.toString().trim()), {
 			distinctOwners: true,
 			siblingReloadedAndClosed: true,
-			retained: "running",
+			retainedListener: true,
 		});
 	},
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS,

@@ -9,6 +9,7 @@ import {
 	SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
+import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { useFakeLibsqlServers } from "../helpers/fake-libsql-server.js";
 
 /**
@@ -75,7 +76,14 @@ describe("moving a 0.9.89 chunk table on a libSQL server (#5694)", () => {
 		assert.ok(Number(counted?.rows) * SNAPSHOT_BLOB_CHUNK_BYTES > SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES);
 
 		const store = await SqlSnapshotBlobStore.open(database);
-		assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), []);
+		assert.deepEqual(await collectSnapshotGarbage(store, { graceSeconds: 3_600 }), {
+			deleted: [],
+			pendingChunkMove: {
+				reason: "space-unknown",
+				remainingBytes: rows * SNAPSHOT_BLOB_CHUNK_BYTES,
+				automaticLimitBytes: SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES,
+			},
+		});
 		assert.equal(await layoutOf(database), "WITHOUT ROWID");
 		assert.deepEqual(await chunkTables(database), ["snapshot_blob_chunks"]);
 		await assertEveryBlobReads(store, stored);
