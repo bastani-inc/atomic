@@ -55,7 +55,6 @@ test("shared task clocks keep live owners and pooled sources across GC but relea
 				listeners.add(listener);
 				return () => listeners.delete(listener);
 			},
-			foregroundTask: async () => ({ ok: false, error: { message: "no" } }),
 			cancelTask: async () => ({ ok: false, error: { message: "no" } }),
 			stdinAvailable: () => false,
 			writeTaskInput: async () => ({ ok: false, error: { message: "no" } }),

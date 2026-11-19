@@ -249,7 +249,6 @@ test(
 					intercomGroup: "default",
 					intercomEvents: parent.events,
 				},
-				wait: { kind: "background" },
 				recordChild: createSubagentChildRecordSink(
 					{ appendEntry: parent.appendEntry },
 					{ sessionManager: parent.sessionManager, orchestrationContext: undefined },

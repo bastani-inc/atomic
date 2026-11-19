@@ -184,7 +184,7 @@
 			"type": "table",
 			"name": "snapshot_blob_chunks",
 			"tbl_name": "snapshot_blob_chunks",
-			"sql": "CREATE TABLE snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT, WITHOUT ROWID"
+			"sql": "CREATE TABLE snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT"
 		},
 		{
 			"type": "table",
@@ -328,7 +328,7 @@
 			"type": "table",
 			"name": "team_snapshot_blob_chunks",
 			"tbl_name": "team_snapshot_blob_chunks",
-			"sql": "CREATE TABLE team_snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT, WITHOUT ROWID"
+			"sql": "CREATE TABLE team_snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT"
 		},
 		{
 			"type": "table",
@@ -738,7 +738,7 @@
 			"type": "table",
 			"name": "snapshot_blob_chunks",
 			"tbl_name": "snapshot_blob_chunks",
-			"sql": "CREATE TABLE snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT, WITHOUT ROWID"
+			"sql": "CREATE TABLE snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT"
 		},
 		{
 			"type": "table",

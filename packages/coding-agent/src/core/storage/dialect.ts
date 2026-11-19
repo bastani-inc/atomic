@@ -99,6 +99,11 @@ export interface StorageDialect {
 	/** A query that returns one row when `table` exists in the current database (or schema). */
 	tableExists(table: string): SqliteStatement;
 	/**
+	 * A query that returns a row `{ name }` for each of `tables` that keeps its rows in its primary key's b-tree: a
+	 * SQLite `WITHOUT ROWID` table. None on Postgres, whose tables are heaps with indexes of their own.
+	 */
+	withoutRowidTables(tables: readonly string[]): SqliteStatement;
+	/**
 	 * An aggregate: the values of `expression` joined by `separator` (SQL text), in `orderBy` order. SQLite's
 	 * `group_concat` takes the order of its input, so callers also feed it rows already ordered by `orderBy`.
 	 */
@@ -265,6 +270,10 @@ export const sqliteDialect: StorageDialect = Object.freeze({
 	tableExists: (table: string) => ({
 		sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
 		params: [table],
+	}),
+	withoutRowidTables: (tables: readonly string[]) => ({
+		sql: `SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'table' AND wr = 1 AND name IN (${namedPlaceholders(tables)})`,
+		params: [...tables],
 	}),
 	orderedConcat: (expression: string, separator: string, _orderBy: string) =>
 		`group_concat(${expression}, ${separator})`,
@@ -470,6 +479,10 @@ export const postgresDialect: StorageDialect = Object.freeze({
 		// must not take an existing table for one to create (#5218).
 		sql: "SELECT c.relname AS name FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND c.relname = ?",
 		params: [postgresIdentifier(table)],
+	}),
+	withoutRowidTables: (_tables: readonly string[]) => ({
+		sql: "SELECT relname AS name FROM pg_catalog.pg_class WHERE false",
+		params: [],
 	}),
 	orderedConcat: (expression: string, separator: string, orderBy: string) =>
 		`string_agg(${expression}, ${separator} ORDER BY ${orderBy})`,

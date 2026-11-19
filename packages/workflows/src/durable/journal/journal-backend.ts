@@ -1151,8 +1151,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
+		runGeneration?: number,
 	): Promise<void> {
-		return this.serialize(runId, () => this.setStatus(runId, status, pendingPrompts, resumable, failure));
+		return this.serialize(runId, () =>
+			this.setStatus(runId, status, pendingPrompts, resumable, failure, runGeneration),
+		);
 	}
 	private *setStatus(
 		runId: string,
@@ -1160,9 +1163,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
+		runGeneration?: number,
 	): Operation<void> {
 		const draft = yield* this.draft(runId);
-		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable, failure);
+		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable, failure, runGeneration);
 		const handle = draft.getWorkflow(runId);
 		if (handle) yield* this.snapshot(handle);
 	}
@@ -1175,6 +1179,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
 		releasedModelOwner?: string | null,
+		runGeneration?: number,
 	): Promise<boolean> {
 		return await this.serialize(runId, () =>
 			this.transition(
@@ -1186,6 +1191,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				expectedUpdatedAt,
 				modelOwner,
 				releasedModelOwner,
+				runGeneration,
 			),
 		);
 	}
@@ -1198,6 +1204,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
 		releasedModelOwner?: string | null,
+		runGeneration?: number,
 	): Operation<boolean> {
 		yield* this.refresh(runId);
 		const current = this.projection.getWorkflow(runId);
@@ -1226,7 +1233,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		)
 			return false;
 		const seq = this.sequences.get(runId) ?? 0;
-		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable);
+		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable, undefined, runGeneration);
 		const { releasedModelOwner: _oldRelease, ...handle } = draft.getWorkflow(runId)!;
 		// A run written running from another status is taken up here; a run leaving running is no longer run here. A write
 		// that keeps a running run running (an answer, an adoption claim) takes nothing up.
