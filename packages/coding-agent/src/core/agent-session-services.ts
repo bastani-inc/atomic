@@ -284,9 +284,10 @@ export async function createAgentSessionFromServices(
 export function createUnstartedAgentSessionFromServices(
 	options: CreateAgentSessionFromServicesOptions,
 	persistInitialState = true,
+	recoverMissingModel = false,
 ): Promise<CreateAgentSessionResult> {
 	return createSessionFromServices(options, (sessionOptions) =>
-		createUnstartedAgentSession(sessionOptions, persistInitialState),
+		createUnstartedAgentSession(sessionOptions, persistInitialState, recoverMissingModel),
 	);
 }
 
