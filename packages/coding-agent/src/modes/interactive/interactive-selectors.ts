@@ -50,6 +50,15 @@ InteractiveModeBase.prototype.showSelector = function (
 
 InteractiveModeBase.prototype.showSettingsSelector = async function (this: InteractiveModeBase): Promise<void> {
 	const availableThemes = getAvailableThemes();
+	const readThemeChoices = this.runtimeHost?.isProjectTrustPending?.()
+		? () =>
+				this.isInitialized
+					? {
+							currentTheme: this.themeController.getThemeSelection() || "dark",
+							availableThemes: getAvailableThemes(),
+						}
+					: undefined
+		: undefined;
 	this.showSelector((done) => {
 		const readConfig = (): SettingsConfig => {
 			const project = this.settingsManager.getProjectSettings();
@@ -178,6 +187,7 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 			},
 			onThemePreview: (themeName) => this.themeController.preview(themeName),
 			onThemePreviewCancel: (themeName) => this.themeController.cancelPreview(themeName),
+			readThemeChoices,
 			onHideThinkingBlockChange: (hidden) => {
 				this.hideThinkingBlock = hidden;
 				this.settingsManager.setHideThinkingBlock(hidden);
@@ -288,9 +298,8 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 			return { config: next, callbacks: callbacksFor(next) };
 		};
 		if (this.deferredStartupPending && this.runtimeHost?.isProjectTrustPending?.()) {
-			// The in-process host publishes the catalog only when the other startup sources have finished too.
+			// The folder settings can be ready before all the themes. Read each owner just as a new form would.
 			component.readSubmenusOnOpen(() => {
-				if (this.deferredStartupPending) return { config, callbacks };
 				availableThemes.splice(0, availableThemes.length, ...getAvailableThemes());
 				return readNextSubmenu();
 			});

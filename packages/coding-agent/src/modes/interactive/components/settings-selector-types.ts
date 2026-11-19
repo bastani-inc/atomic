@@ -90,6 +90,8 @@ export interface SettingsCallbacks {
 	onThemeChange: (theme: string) => void;
 	onThemePreview?: (theme: string) => void;
 	onThemePreviewCancel?: (originalTheme: string) => void;
+	/** The eligible themes and configured pair when a further picker opens inside the theme form. */
+	readThemeChoices?: () => { currentTheme: string; availableThemes: string[] } | undefined;
 	onHideThinkingBlockChange: (hidden: boolean) => void;
 	onMermaidRenderingModeChange: (mode: MermaidRenderingMode) => void;
 	onLatexRenderingEnabledChange: (enabled: boolean) => void;

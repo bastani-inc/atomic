@@ -669,6 +669,17 @@ export class SettingsManager {
 	/** An explicit change to a setting replaces its override; overrides of other settings and keys stay. */
 	private dropOverride(field: keyof Settings, nestedKey?: string): void {
 		if (isPrototypeKey(field) || (nestedKey !== undefined && isPrototypeKey(nestedKey))) return;
+		if (this.approvedProjectEdits) {
+			// A later explicit save uses its offered scope and the ordinary layer order, even for the same value.
+			for (const key of this.approvedProjectEdits) {
+				if (
+					key === field ||
+					(nestedKey === undefined ? key.startsWith(`${field}\0`) : key === `${field}\0${nestedKey}`)
+				)
+					this.approvedProjectEdits.delete(key);
+			}
+			if (!this.approvedProjectEdits.size) this.approvedProjectEdits = undefined;
+		}
 		for (const overrides of this.overrides) {
 			if (!Object.hasOwn(overrides, field)) continue;
 			const value: unknown = overrides[field];
@@ -712,15 +723,6 @@ export class SettingsManager {
 	private markProjectModified(field: keyof Settings, nestedKey?: string): void {
 		this.assertProjectTrustedForWrite();
 		this.dropOverride(field, nestedKey);
-		if (this.approvedProjectEdits) {
-			for (const key of this.approvedProjectEdits) {
-				if (
-					key === field ||
-					(nestedKey === undefined ? key.startsWith(`${field}\0`) : key === `${field}\0${nestedKey}`)
-				)
-					this.approvedProjectEdits.delete(key);
-			}
-		}
 		this.modifiedProjectFields.add(field);
 		if (nestedKey) {
 			if (!this.modifiedProjectNestedFields.has(field)) {

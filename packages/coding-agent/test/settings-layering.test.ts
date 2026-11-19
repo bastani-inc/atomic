@@ -75,6 +75,10 @@ test("approval preserves only the settings the user edited that the project actu
 	await manager.reload();
 	assert.equal(manager.getTreeFilterMode(), "user-only", "a later reload is not a setting applied at approval");
 	expectAfterApproval();
+	manager.setShowImages(false); // A later explicit save to global uses normal project-over-global layering.
+	await manager.flush();
+	assert.equal(manager.getShowImages(), true);
+	assert.equal((readJson(globalPath).terminal as { showImages: boolean }).showImages, false);
 	function expectAfterApproval() {
 		assert.equal(manager.getShowImages(), false);
 		assert.equal(manager.getImageWidthCells(), 80);

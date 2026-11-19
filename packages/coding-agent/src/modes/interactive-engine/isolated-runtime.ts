@@ -231,7 +231,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			true,
 		);
 		this.adoptSessionStores(localRuntime);
-		localRuntime.session.settingsManager.trackEditsWhileProjectTrustPending(true);
 		this.client = client;
 		this.remoteCommands = new RemoteCommandCatalog(client);
 		this.remoteModelCatalog = new RemoteModelCatalog(client);

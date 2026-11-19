@@ -271,15 +271,29 @@ export class ThemeSubmenu extends Container {
 		this.inputComponent = inputComponent;
 	}
 
+	/** Switching modes opens a new form. Seed unedited slots from the eligible pair; a previous draft still wins. */
+	private loadPairForModeChange(): void {
+		if (this.editedMode) return;
+		const fresh = this.callbacks.readThemeChoices?.();
+		if (!fresh) return;
+		const pair = defaultAutomaticThemes(fresh.currentTheme, fresh.availableThemes);
+		if (!this.editedLight) this.lightTheme = pair.lightTheme;
+		if (!this.editedDark) this.darkTheme = pair.darkTheme;
+	}
+
 	private showSingleMenu(): void {
 		this.mode = "single";
 		const menu = new SelectSubmenu(
 			"Theme",
 			"Select a theme, or choose Automatic to follow terminal appearance.",
-			singleModeThemeItems(this.availableThemes, this.singleTheme),
+			singleModeThemeItems(
+				this.callbacks.readThemeChoices?.()?.availableThemes ?? this.availableThemes,
+				this.singleTheme,
+			),
 			this.singleTheme,
 			(value) => {
 				if (value === AUTOMATIC_THEME_VALUE) {
+					this.loadPairForModeChange();
 					this.editedMode = true;
 					this.mode = "automatic";
 					this.callbacks.onThemePreview?.(this.getThemeSetting());
@@ -309,6 +323,7 @@ export class ThemeSubmenu extends Container {
 				currentValue: this.lightTheme,
 				submenu: (currentValue, done) =>
 					this.createThemeSelect(
+						"lightTheme",
 						"Light Theme",
 						"Select the theme to use for light terminal appearance",
 						currentValue,
@@ -328,6 +343,7 @@ export class ThemeSubmenu extends Container {
 				currentValue: this.darkTheme,
 				submenu: (currentValue, done) =>
 					this.createThemeSelect(
+						"darkTheme",
 						"Dark Theme",
 						"Select the theme to use for dark terminal appearance",
 						currentValue,
@@ -361,6 +377,7 @@ export class ThemeSubmenu extends Container {
 			(id) => {
 				switch (id) {
 					case "single-mode":
+						this.loadPairForModeChange();
 						this.editedMode = true;
 						this.mode = "single";
 						this.singleTheme = this.getActiveAutomaticTheme();
@@ -383,17 +400,22 @@ export class ThemeSubmenu extends Container {
 	}
 
 	private createThemeSelect(
+		slot: "lightTheme" | "darkTheme",
 		title: string,
 		description: string,
 		currentValue: string,
 		done: (selectedValue?: string) => void,
 		onSelect: (value: string) => void,
 	): SelectSubmenu {
+		const fresh = this.callbacks.readThemeChoices?.();
+		const available = fresh?.availableThemes ?? this.availableThemes;
+		const edited = this.editedMode || (slot === "lightTheme" ? this.editedLight : this.editedDark);
+		const offered = fresh && !edited ? defaultAutomaticThemes(fresh.currentTheme, available)[slot] : currentValue;
 		return new SelectSubmenu(
 			title,
 			description,
-			themeItems(this.availableThemes, currentValue),
-			currentValue,
+			themeItems(available, offered),
+			offered,
 			onSelect,
 			() => {
 				this.callbacks.onThemePreview?.(this.getThemeSetting());

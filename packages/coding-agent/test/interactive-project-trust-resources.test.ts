@@ -179,6 +179,59 @@ test(
 	3 * STARTUP_TIMEOUT_MS,
 );
 
+test.each(["isolated", "in-process"] as const)(
+	"a newly opened light-theme picker in an existing automatic-theme form reads the %s host's eligible themes (#5693)",
+	(host) =>
+		withPendingProject(
+			async (cli, approveProject, settleSource) => {
+				cli.write("/settings\r");
+				await cli.waitForScreen((s) => s.includes("Search settings"), STARTUP_TIMEOUT_MS, "Settings");
+				cli.write("theme");
+				await cli.waitForScreen((s) => s.includes("⌕ theme"), STARTUP_TIMEOUT_MS, "the theme setting");
+				cli.write("\r");
+				await cli.waitForScreen((s) => /❯ Light theme +light/.test(s), STARTUP_TIMEOUT_MS, "the automatic pair");
+				await approveProject();
+				if (host === "in-process") {
+					settleSource();
+					await cli.waitForScreen(
+						(s) => s.includes("/projectapproved"),
+						STARTUP_TIMEOUT_MS,
+						"the theme inventory",
+					);
+				}
+				assert.match(cli.screen(), /❯ Light theme +light/);
+				cli.write("\r");
+				await cli.waitForScreen(
+					(s) => s.includes("Select the theme to use for light terminal appearance"),
+					STARTUP_TIMEOUT_MS,
+					"the light-theme picker",
+				);
+				assert.match(cli.screen(), /❯ ● catppuccin-latte/);
+				assert.match(cli.screen(), /○ folder-extra/);
+			},
+			(project, agentDir) => {
+				const settingsFile = join(agentDir, "settings.json");
+				write(
+					settingsFile,
+					JSON.stringify({ ...JSON.parse(readFileSync(settingsFile, "utf8")), theme: "light/dark" }),
+				);
+				write(
+					join(project, ".atomic/settings.json"),
+					JSON.stringify({ theme: "catppuccin-latte/catppuccin-mocha" }),
+				);
+				const theme = JSON.parse(
+					readFileSync(new URL("../src/modes/interactive/theme/dark.json", import.meta.url), "utf8"),
+				);
+				write(
+					join(project, ".atomic/themes/folder-extra.json"),
+					JSON.stringify({ ...theme, name: "folder-extra" }),
+				);
+			},
+			host,
+		),
+	3 * STARTUP_TIMEOUT_MS,
+);
+
 test(
 	"an already open theme picker keeps its choices and selection when the project is approved (#5693)",
 	() =>
@@ -570,9 +623,9 @@ test(
 	3 * STARTUP_TIMEOUT_MS,
 );
 
-test(
-	"a new child of a still-mounted in-process Settings form uses the settled folder (#5693)",
-	() =>
+test.each(["cwd decision", "startup settlement"])(
+	"a new child of a still-mounted in-process Settings form uses the folder setting at %s (#5693)",
+	(cut) =>
 		withPendingProject(
 			async (cli, approveProject, settleSource) => {
 				cli.write("/settings\r");
@@ -584,8 +637,16 @@ test(
 					"the original parent",
 				);
 				await approveProject();
-				settleSource();
-				await cli.waitForScreen((s) => s.includes("/projectapproved"), STARTUP_TIMEOUT_MS, "startup publication");
+				if (cut === "startup settlement") {
+					settleSource();
+					await cli.waitForScreen(
+						(s) => s.includes("/projectapproved"),
+						STARTUP_TIMEOUT_MS,
+						"startup publication",
+					);
+				} else {
+					assert.doesNotMatch(cli.screen(), /\/projectapproved/);
+				}
 				assert.match(cli.screen(), /❯ Decision model +Automatic/);
 				cli.write("\r");
 				await cli.waitForScreen((s) => s.includes("A classifier answers"), STARTUP_TIMEOUT_MS, "the new child");

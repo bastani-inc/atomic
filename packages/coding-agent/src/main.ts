@@ -826,7 +826,12 @@ export async function main(argv: string[], options?: MainOptions) {
 			!isolateInteractiveHost &&
 			(trustPromptMode === "interactive" || engineEnv.child === "1") &&
 			(shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0);
-		if (deferStartupTrust && shouldResolveProjectTrust)
+		// Only the CLI that prepared these settings owns startup edits. An unbound engine transport need not have
+		// any local settings to deliver trust-prompt events.
+		if (
+			(isolateInteractiveHost && sessionStartEvent === undefined) ||
+			(deferStartupTrust && shouldResolveProjectTrust)
+		)
 			runtimeSettingsManager.trackEditsWhileProjectTrustPending(true);
 		let completeStartupReload: (() => Promise<void>) | undefined;
 		let startupTrustContext: typeof projectTrustContext;

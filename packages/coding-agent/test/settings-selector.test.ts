@@ -102,6 +102,40 @@ test("keeps the configured fixed theme marked while browsing", () => {
 	expect(output).toContain("❯ ○ light");
 });
 
+test("opening automatic mode reads the eligible pair without changing the existing fixed-theme menu (#5693)", () => {
+	const availableThemes = ["dark", "light", "latte", "mocha"];
+	let currentTheme = "dark";
+	const submenu = openThemeSubmenu(settingsConfig({ currentTheme, availableThemes, terminalTheme: "dark" }), {
+		readThemeChoices: () => ({ currentTheme, availableThemes }),
+	} as SettingsCallbacks);
+	currentTheme = "latte/mocha";
+	expect(render(submenu)).toContain("❯ ● dark");
+	submenu.handleInput?.("\x1b[A");
+	expect(render(submenu)).toContain("❯ ○ Automatic");
+	submenu.handleInput?.("\r");
+	expect(render(submenu)).toMatch(/Light theme\s+latte/);
+	expect(render(submenu)).toMatch(/Dark theme\s+mocha/);
+});
+
+test("a new appearance picker keeps its edited slot but reads a newly eligible unedited slot (#5693)", () => {
+	const availableThemes = ["dark", "light", "latte", "mocha"];
+	let currentTheme = "light/dark";
+	const submenu = openThemeSubmenu(settingsConfig({ currentTheme, availableThemes, terminalTheme: "dark" }), {
+		readThemeChoices: () => ({ currentTheme, availableThemes }),
+	} as SettingsCallbacks);
+	submenu.handleInput?.("\r");
+	submenu.handleInput?.("\x1b[B");
+	submenu.handleInput?.("\r");
+	expect(render(submenu)).toMatch(/Light theme\s+latte/);
+	currentTheme = "mocha/mocha";
+	submenu.handleInput?.("\r");
+	expect(render(submenu)).toContain("❯ ● latte");
+	submenu.handleInput?.("\x1b");
+	submenu.handleInput?.("\x1b[B");
+	submenu.handleInput?.("\r");
+	expect(render(submenu)).toContain("❯ ● mocha");
+});
+
 test("keeps a configured automatic theme marked while browsing", () => {
 	const config = settingsConfig({
 		currentTheme: "light/dark",
