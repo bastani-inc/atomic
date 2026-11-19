@@ -28,6 +28,7 @@ import {
 import type { PackageMcpServerSource, ResourceLoaderInheritanceSnapshotProvider } from "./loader-resources.ts";
 import { boundExtensionRuntimes } from "./loader-runtime.ts";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./stale-context.ts";
+import { projectTrustHandlerRegistered } from "./startup-trust-inventory.ts";
 import type {
 	EntryRenderer,
 	Extension,
@@ -206,7 +207,10 @@ export function createExtensionAPI(
 			}
 			const list = extension.handlers.get(event) ?? [];
 			list.push(registeredHandler);
-			extension.handlers.set(event, list);
+			const handlers = extension.handlers;
+			handlers.set(event, list);
+			if (event === "project_trust")
+				projectTrustHandlerRegistered(resolveInvocationRuntime(originalRuntime), handlers);
 			return () => {
 				const handlers = extension.handlers.get(event);
 				if (!handlers) return;

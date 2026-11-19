@@ -302,33 +302,6 @@ function isLeftMouseSequence(data: string): boolean {
 }
 
 /**
- * Replay a chunk one report at a time because pi-tui parses one report per
- * call. Only a chunk whose every byte is a mouse report is split; anything else
- * is replayed verbatim.
- *
- * **Probe, pi 0.84.2 (upstream `2a95ef70`, `06ed8716`):** neither the
- * lone-ESC timeout scope nor the split-`Alt+Enter` reassembly is affected by
- * this replay. Both land in `StdinBuffer`/`ProcessTerminal`
- * (`dist/stdin-buffer.js:process`, `dist/terminal.js:48`), which assemble
- * complete sequences before any listener runs; Atomic builds pi-tui's own
- * `ProcessTerminal` in `createFullscreenTui`/`createInteractiveTui` below and
- * overrides neither the buffer nor its escape timeout. A reassembled `\x1b` or
- * `\x1b\r` reaches this function as one chunk, fails `parseMouseSequences`, and
- * is handed on unsplit — so a viewport action bound to `escape` or `alt+enter`
- * still matches after a decline.
- * Outcome: no breakage, no fix needed — covered by the replay probes in
- * `test/pi-0.84.2-overlay-viewport-deferral.test.ts`.
- */
-function replayMouseInput(viewportListener: TuiInputListener, data: string): void {
-	const sequences = parseMouseSequences(data);
-	if (!sequences) {
-		viewportListener(data);
-		return;
-	}
-	for (const sequence of sequences) viewportListener(sequence.data);
-}
-
-/**
  * The first `addInputListener` call is load-bearing: pi-tui 0.84.2 registers
  * its viewport listener from `TuiAltScreen`'s constructor
  * (`dist/tui-alt-screen.js:85`). Keep the viewport wrapper first so mouse,
@@ -495,10 +468,15 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	}
 
 	/** Keep pi-tui's selection state in sync while an overlay handles a left gesture. */
-	private forwardSelectionMouseInput(viewportListener: TuiInputListener, data: string, focused: Component): void {
+	private forwardSelectionMouseInput(
+		viewportListener: TuiInputListener,
+		data: string,
+		focused: Component,
+		receivedAt?: number,
+	): void {
 		if (this.getFocusedComponent() !== focused || !isLeftMouseSequence(data)) return;
 		for (const sequence of parseMouseSequences(data) ?? []) {
-			if (isLeftMouseButton(sequence)) viewportListener(sequence.data);
+			if (isLeftMouseButton(sequence)) this.replayViewportReport(viewportListener, sequence.data, receivedAt);
 		}
 		overlayOwnedSelections.add(this);
 	}
@@ -507,14 +485,23 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	 * deferral is suppressed for the duration, because this chunk has already
 	 * been offered to the overlay it would defer to.
 	 */
-	private replayViewportInput(viewportListener: TuiInputListener, data: string): void {
+	private replayViewportInput(viewportListener: TuiInputListener, data: string, receivedAt?: number): void {
 		viewportInputReplays.add(this);
 		try {
-			replayMouseInput(viewportListener, data);
+			const sequences = parseMouseSequences(data);
+			if (sequences) {
+				for (const sequence of sequences) this.replayViewportReport(viewportListener, sequence.data, receivedAt);
+			} else viewportListener(data);
 		} finally {
 			viewportInputReplays.delete(this);
 		}
 	}
+	private replayViewportReport(viewportListener: TuiInputListener, data: string, receivedAt?: number): void {
+		if (receivedAt !== undefined && receivedAt !== this.overlayVisibilityVersion)
+			this.handleViewportInput(data, receivedAt);
+		else viewportListener(data);
+	}
+
 	/** Dispatch a declined chunk to the host action the gated route owns. */
 	private handleOverlayUnhandledInput(data: string, focused: Component | null): boolean {
 		if (this.getFocusedComponent() !== focused || !this.isFocusedOverlay()) return false;
@@ -536,13 +523,18 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	 * The focus guard stays: input that moved focus while the promise was
 	 * pending belongs to whatever holds focus now, not to the transcript.
 	 */
-	private declineAsyncViewportInput(viewportListener: TuiInputListener, data: string, focused: Component): void {
+	private declineAsyncViewportInput(
+		viewportListener: TuiInputListener,
+		data: string,
+		focused: Component,
+		receivedAt?: number,
+	): void {
 		if (this.getFocusedComponent() !== focused) return;
 		if (this.handleOverlayUnhandledInput(data, focused)) {
 			(this as unknown as TuiOverlayInternals).requestImmediateRender();
 			return;
 		}
-		this.replayViewportInput(viewportListener, data);
+		this.replayViewportInput(viewportListener, data, receivedAt);
 	}
 
 	private routeViewportInput(viewportListener: TuiInputListener, data: string): ReturnType<TuiInputListener> {
@@ -553,6 +545,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		// Returning `consume` below skips pi-tui's post-listener phase. Mirror its
 		// overlay-focus repair before reading the focused component so a resize
 		// cannot send a gated key to an invisible overlay.
+		const receivedAt = isMouseInput ? this.overlayVisibilityVersion : undefined;
 		this.repairOverlayFocus();
 		const focused = this.getFocusedComponent();
 		const tui = this as unknown as TuiOverlayInternals;
@@ -565,18 +558,18 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 				void result.then(
 					(handled) => {
 						if (handled === true) {
-							this.forwardSelectionMouseInput(viewportListener, data, focused);
+							this.forwardSelectionMouseInput(viewportListener, data, focused, receivedAt);
 							tui.requestImmediateRender();
 							return;
 						}
-						this.declineAsyncViewportInput(viewportListener, data, focused);
+						this.declineAsyncViewportInput(viewportListener, data, focused, receivedAt);
 					},
-					() => this.declineAsyncViewportInput(viewportListener, data, focused),
+					() => this.declineAsyncViewportInput(viewportListener, data, focused, receivedAt),
 				);
 				return { consume: true };
 			}
 			if (result === true) {
-				this.forwardSelectionMouseInput(viewportListener, data, focused);
+				this.forwardSelectionMouseInput(viewportListener, data, focused, receivedAt);
 				tui.requestImmediateRender();
 				return { consume: true };
 			}
@@ -586,7 +579,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			tui.requestImmediateRender();
 			return { consume: true };
 		}
-		this.replayViewportInput(viewportListener, data);
+		this.replayViewportInput(viewportListener, data, receivedAt);
 		return { consume: true };
 	}
 }

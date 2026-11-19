@@ -119,7 +119,6 @@ export const REQUIRED_STARTUP_TOOLS = [
 	"bash",
 	"edit",
 	"write",
-	"workflow",
 	"subagent",
 	"intercom",
 	"web_search",

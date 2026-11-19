@@ -360,7 +360,25 @@ type OverlayStackEntry = {
 	hidden: boolean;
 	focusOrder: number;
 	bounds?: OverlayBounds;
+	/** Shared by presses during this visible occurrence. Holds no reference to the overlay or its component. */
+	press?: { revoked: boolean };
+	lastHiddenAt?: number;
 };
+
+const REVOKED_OVERLAY_PRESS = { revoked: true };
+
+function endOverlayPresses(entry: OverlayStackEntry, version: number): void {
+	entry.lastHiddenAt = version;
+	if (entry.press) entry.press.revoked = true;
+	// The previous paint may still hit this entry before another frame is drawn.
+	entry.press = REVOKED_OVERLAY_PRESS;
+}
+
+interface OverlayMouseHit {
+	hit: boolean;
+	result?: TuiMouseDispatchResult;
+	press?: { readonly revoked: boolean };
+}
 
 type RenderedOverlayLayout = {
 	entry: OverlayStackEntry;
@@ -586,6 +604,8 @@ export abstract class TuiBase extends Container implements TUI {
 
 	// Overlay stack for modal components rendered on top of base content
 	private focusOrderCounter = 0;
+	/** A host offering raw mouse input to a dialog can remember when that input arrived, before its reply. */
+	protected overlayVisibilityVersion = 0;
 	private overlayStack: OverlayStackEntry[] = [];
 	private renderedOverlayLayouts: RenderedOverlayLayout[] = [];
 
@@ -824,6 +844,7 @@ export abstract class TuiBase extends Container implements TUI {
 			hide: () => {
 				const index = this.overlayStack.indexOf(entry);
 				if (index !== -1) {
+					endOverlayPresses(entry, ++this.overlayVisibilityVersion);
 					this.clearOverlayFocusRestoreFor(entry);
 					this.retargetOverlayPreFocus(entry);
 					this.overlayStack.splice(index, 1);
@@ -841,6 +862,7 @@ export abstract class TuiBase extends Container implements TUI {
 				entry.hidden = hidden;
 				// Update focus when hiding/showing
 				if (hidden) {
+					endOverlayPresses(entry, ++this.overlayVisibilityVersion);
 					this.clearOverlayFocusRestoreFor(entry);
 					// If this overlay had focus, move focus to next visible or preFocus
 					if (this.focusedComponent === component) {
@@ -848,6 +870,7 @@ export abstract class TuiBase extends Container implements TUI {
 						this.setFocus(topVisible?.component ?? entry.preFocus);
 					}
 				} else {
+					delete entry.press;
 					// Restore focus to this overlay when showing (if it's actually visible)
 					if (!options?.nonCapturing && this.isOverlayVisible(entry)) {
 						entry.focusOrder = ++this.focusOrderCounter;
@@ -906,6 +929,7 @@ export abstract class TuiBase extends Container implements TUI {
 	hideOverlay(): void {
 		const overlay = this.overlayStack[this.overlayStack.length - 1];
 		if (!overlay) return;
+		endOverlayPresses(overlay, ++this.overlayVisibilityVersion);
 		this.clearOverlayFocusRestoreFor(overlay);
 		this.retargetOverlayPreFocus(overlay);
 		this.overlayStack.pop();
@@ -962,7 +986,7 @@ export abstract class TuiBase extends Container implements TUI {
 		return undefined;
 	}
 
-	protected dispatchMouseToOverlay(event: TuiMouseEvent): { hit: boolean; result?: TuiMouseDispatchResult } {
+	protected dispatchMouseToOverlay(event: TuiMouseEvent, pressAt?: number): OverlayMouseHit {
 		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
 			const layout = this.renderedOverlayLayouts[index]!;
 			if (
@@ -973,6 +997,15 @@ export abstract class TuiBase extends Container implements TUI {
 			) {
 				continue;
 			}
+			// Snapshot before dispatch: the component can hide and show its own overlay inside the handler.
+			const hit: OverlayMouseHit = { hit: true };
+			if (pressAt !== undefined) {
+				if ((layout.entry.lastHiddenAt ?? 0) > pressAt) hit.press = REVOKED_OVERLAY_PRESS;
+				else {
+					layout.entry.press ??= { revoked: false };
+					hit.press = layout.entry.press;
+				}
+			}
 			const result = dispatchMouseEvent(layout.entry.component, {
 				...event,
 				x: event.screenX - layout.col,
@@ -980,12 +1013,8 @@ export abstract class TuiBase extends Container implements TUI {
 				width: layout.width,
 				height: layout.height,
 			});
-			return result
-				? {
-						hit: true,
-						result: result.focus ? { ...result, focusTarget: layout.entry.component } : result,
-					}
-				: { hit: true };
+			if (result) hit.result = result.focus ? { ...result, focusTarget: layout.entry.component } : result;
+			return hit;
 		}
 		return { hit: false };
 	}

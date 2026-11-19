@@ -1,5 +1,6 @@
 import { setCapabilityOverrides } from "@bastani/atomic-tui";
-import type { SessionRecoveryReport } from "../../core/agent-session-types.js";
+import type { ExtensionBindings, SessionRecoveryReport } from "../../core/agent-session-types.js";
+import { cancelInitialBinding, initialBindScope, registerInitialBindings } from "../../core/extension-startup-close.ts";
 import type { SessionRecoveryReason, ToolRenderers } from "../../core/extensions/types.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
@@ -15,7 +16,9 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 	const uiContext = this.createExtensionUIContext();
 	const session = this.session;
 	this.runtimeHost?.setProjectTrustContextFactory?.((cwd) => this.createProjectTrustContext(cwd));
-	await this.session.bindExtensions({
+	const target = this.session;
+	const bind = target.bindExtensions;
+	const bindings: ExtensionBindings = {
 		onUIPrompt: (event) => {
 			if (!(this.runtimeHost instanceof IsolatedInteractiveRuntime) && this.session === session) {
 				this.programStatus.handleUIPrompt(event);
@@ -90,7 +93,15 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 		},
 		// A user works in this session: a failing startup handler is shown like any other extension error.
 		reportStartupErrors: true,
-	});
+	};
+	const initial = registerInitialBindings(this, session, bindings);
+	const binding = Reflect.apply(bind, target, [bindings]);
+	try {
+		await binding;
+	} catch (error) {
+		if (!cancelInitialBinding(initial, binding, error)) throw error;
+		return;
+	}
 
 	setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
 	this.setupAutocompleteProvider();
@@ -144,6 +155,8 @@ InteractiveModeBase.prototype.rebindCurrentSession = async function (this: Inter
 	this.applyRuntimeSettings();
 	await this.bindCurrentSessionExtensions();
 
+	const initial = initialBindScope.getStore()?.deref();
+	if (initial?.cancelled && initial.mode === this && initial.session === session) return;
 	if (this.session !== session) {
 		// A newer rebind owns the current session; it subscribes and finishes the
 		// remaining runtime updates itself.

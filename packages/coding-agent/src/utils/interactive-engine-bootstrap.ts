@@ -40,6 +40,8 @@ export interface InteractiveEngineBootstrap {
 	apiKey?: string;
 	/** Trust decisions the host session already made; never saved to trust.json. */
 	trustDecisions?: SessionTrustDecisions;
+	/** The host accepts a pending withdrawal, distinct from a settled trust decision. */
+	projectResourceWithdrawals?: true;
 }
 
 /**
@@ -165,6 +167,7 @@ export function readInteractiveEngineBootstrap(path: string): InteractiveEngineB
 			guardFile: parsed.guardFile,
 			...(typeof parsed.apiKey === "string" ? { apiKey: parsed.apiKey } : {}),
 			...(trustDecisions ? { trustDecisions } : {}),
+			...(parsed.projectResourceWithdrawals === true ? { projectResourceWithdrawals: true } : {}),
 		};
 	} catch {
 		return undefined;

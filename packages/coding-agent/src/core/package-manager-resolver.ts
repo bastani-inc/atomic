@@ -37,6 +37,7 @@ import type {
 } from "./package-manager-types.ts";
 import { RESOURCE_TYPES } from "./package-manager-types.ts";
 import type { PackageSource } from "./settings-manager.ts";
+import { legacyWorkflowFilePaths } from "./settings-manager-internals.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 
 export async function resolvePackages(
@@ -86,7 +87,7 @@ export async function resolvePackages(
 
 	for (const scope of ["project", "user"] as const) {
 		await resolveConfiguredLocalEntries(
-			context.settingsManager.getLegacyWorkflowFilePaths(scope === "project" ? "project" : "global"),
+			legacyWorkflowFilePaths(context.settingsManager, scope === "project" ? "project" : "global"),
 			"legacyWorkflowFiles",
 			accumulator.legacyWorkflowFiles,
 			scope,

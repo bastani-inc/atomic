@@ -1,4 +1,5 @@
 import { APP_NAME, detectInstallChangeAsync, VERSION } from "../../config.js";
+import { sessionCloseReason } from "../../core/agent-session-events.ts";
 import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
@@ -14,6 +15,7 @@ import { mountIdleStatus } from "./components/idle-status.ts";
 import { toolResultGroupState } from "./components/tool-group-tracker.ts";
 import { compactionMeta, runInProgress, type WorkingRunSnapshot } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
+import { type EventStartup, eventStartupScope } from "./interactive-initial-session-binding.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type AgentSessionEvent,
@@ -148,18 +150,48 @@ function createToolComponent(
 			);
 }
 
+type StartupEvent = AgentSessionEvent | JsonAgentSessionEvent;
+interface EventForwarding {
+	mode: InteractiveModeBase;
+	session: object;
+	event?: StartupEvent;
+	startup?: EventStartup;
+	stock?: Promise<void>;
+}
+// The subscriber owns one synchronous dispatch frame, not a receipt per streamed event.
+// Only a handler that actually starts the UI needs to distinguish fire-and-forget delivery
+// from an SDK handler that catches startup failure and runs its own recovery operation.
+let forwarding: EventForwarding | undefined;
+function deliverAgentEvent(frame: EventForwarding, event: StartupEvent): Promise<void> {
+	const call: EventForwarding = frame.event === undefined ? frame : { mode: frame.mode, session: frame.session };
+	const previous = forwarding;
+	try {
+		forwarding = call;
+		call.event = event;
+		const delivery = call.mode.handleEvent(event);
+		if (call.startup) call.startup.strict = call.stock !== delivery;
+		return delivery; // Do not observe this promise; the runtime owns unhandled-rejection reporting.
+	} finally {
+		call.event = undefined;
+		call.startup = undefined;
+		call.stock = undefined;
+		forwarding = previous;
+	}
+}
+
 InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveModeBase): void {
 	refreshInteractiveTasks(this);
 	const session = this.session;
+	const frame: EventForwarding = { mode: this, session };
 	const unsubscribe = session.subscribe(async (event) => {
-		await this.handleEvent(event);
+		await deliverAgentEvent(frame, event);
 	});
 	// A rebind can miss the start of a wait. Subscribe and read it in one turn; don't restart its countdown.
 	const wait = session.retryStatus;
 	if (wait) {
 		if (session.turnStartedAt !== undefined)
 			this.workingRunMeter.awaitRetry(session.turnStartedAt, runInProgress(session.messages).settledTokens);
-		void this.handleEvent(wait);
+		void deliverAgentEvent(frame, wait);
 	}
 	const panelUi = this.runtimeHost instanceof IsolatedInteractiveRuntime ? undefined : this.createExtensionUIContext();
 	const disposeAgentPanel =
@@ -196,13 +228,25 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 	};
 };
 
-InteractiveModeBase.prototype.handleEvent = async function (
-	this: InteractiveModeBase,
-	event: AgentSessionEvent | JsonAgentSessionEvent,
-): Promise<void> {
+InteractiveModeBase.prototype.handleEvent = function (this: InteractiveModeBase, event: StartupEvent): Promise<void> {
+	const call = forwarding?.mode === this && forwarding.event === event ? forwarding : undefined;
+	const result = handleAgentEvent.call(this, event, call);
+	if (call?.startup) call.stock = result;
+	return result;
+};
+
+async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, call?: EventForwarding): Promise<void> {
 	if ("parentToolCallId" in event && event.parentToolCallId && event.type.startsWith("tool_execution_")) return;
 	if (!this.isInitialized) {
-		await this.init();
+		// A caller awaiting handleEvent itself owns its error and may use it for recovery.
+		const startup: EventStartup = { mode: new WeakRef(this), strict: true };
+		if (call) {
+			call.startup = startup;
+			if (sessionCloseReason(call.session) === undefined) startup.open = new WeakRef(call.session);
+		}
+		const sessionStartup = this.sessionStartup;
+		await eventStartupScope.run(startup, () => this.init());
+		if (sessionStartup?.cancelled || this.sessionStartup?.cancelled) return;
 	}
 
 	this.footer.invalidate();
@@ -760,7 +804,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 		}
 	}
-};
+}
 
 InteractiveModeBase.prototype.getUserMessageText = function (this: InteractiveModeBase, message: Message): string {
 	if (message.role !== "user") return "";
