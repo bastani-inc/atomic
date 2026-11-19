@@ -56,6 +56,7 @@ interface PendingInput {
 }
 
 class RemoteComponent implements Component {
+	hostColorDepth?: number;
 	private scrollRequest: WidgetScrollRequest | undefined;
 	getScrollRequest(): WidgetScrollRequest | undefined {
 		return this.scrollRequest;
@@ -241,6 +242,7 @@ class RemoteComponent implements Component {
 		this.runtime.sendEngineCommand({
 			type: "engine_custom_render",
 			componentId: this.componentId,
+			...(this.requestId === 0 && this.hostColorDepth !== undefined ? { colorDepth: this.hostColorDepth } : {}),
 			requestId: ++this.requestId,
 			width,
 			rows,
@@ -606,6 +608,7 @@ export class RemoteComponentController {
 			this.ui.setWidget(
 				widgetKey,
 				(tui) => {
+					component.hostColorDepth = tui.terminal?.colorDepth;
 					getRows = () => tui.terminal.rows;
 					paintNow = () => tui.requestImmediateRender();
 					return component;
@@ -628,6 +631,7 @@ export class RemoteComponentController {
 						() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 						() => tui.requestImmediateRender(),
 					);
+					component.hostColorDepth = tui.terminal?.colorDepth;
 					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
 					this.mounted.set(componentId, mounted);
 					// Bind this component to the real host terminal so a buffered
