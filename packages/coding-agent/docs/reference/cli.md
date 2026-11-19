@@ -121,89 +121,34 @@ Once the complete credential reaches stdout, the command has succeeded. If the s
 atomic storage status [--json]                                       # Selection, source, adapter and connection per domain
 atomic storage join <url> [--token-file <path>] [--prefix <prefix>]  # Use a shared libSQL / Turso database
 atomic storage join <postgres-url> --password-file <path>|--token-file <path>|--auth azure|aws|gcp [--prefix <prefix>]  # Use a shared PostgreSQL database
-atomic team join <url> [--token-file <path>] [--prefix <prefix>]     # Share workflow runs and Intercom; sessions stay local
+atomic team join <url> [--token-file <path>] [--prefix <prefix>]     # Share Intercom; sessions stay local
 atomic team status [--json]                                          # Profile in effect plus the storage report
 atomic team leave                                                    # Remove what team join wrote
-atomic storage adopt <path>... [--no-discover]                       # Register existing journal files in place
-atomic storage consolidate                                           # Move finished runs of adopted files into the store
-atomic storage export <dir> [--sessions] [--workflows] [--run <id>]... [--unfinished] [--limit <n>] [--since <time>]
-                    [--storage <json> | --storage-file <path>]       # Write sessions and workflow runs as JSONL files
-atomic storage import <dir> [--sessions] [--workflows] [--storage <json> | --storage-file <path>]
-                                                                     # Restore sessions and workflow runs from them
+atomic storage migrate [--db <url> [--password-file <path> | --token-file <path> | --auth azure|aws|gcp]] [--prefix <prefix>]
+atomic storage export <dir> [--sessions] [--limit <n>] [--since <time>] [--storage <json> | --storage-file <path>]
+atomic storage import <dir> [--sessions] [--storage <json> | --storage-file <path>]
 atomic intercom status                                               # This machine's Intercom broker and multi-node state
 atomic intercom restart                                              # Replace the broker so it reads the current selection
 atomic intercom upgrade                                              # Replace a broker an older Atomic started, when safe
 ```
 
-`atomic storage status` reports, for sessions, workflow runs, and Intercom, the selected storage, where the selection comes from (an environment variable, project or global settings, or the default) and the outranked selections, whether the adapter loads, and whether the database answers a `SELECT 1`. It also shows the running Intercom broker: whether it uses the current selection, its multi-node routing state, and the other brokers live in the shared database. It creates and changes nothing, and exits `1` when a selection is invalid, an adapter cannot load, a database does not answer, or the journal store has a shard file that is missing or cannot be opened.
+`atomic storage status` reports, for sessions and Intercom, the selected storage, where the selection comes from (an environment variable, project or global settings, or the default) and the outranked selections, whether the adapter loads, and whether the database answers a `SELECT 1`. It also shows the running Intercom broker: whether it uses the current selection, its multi-node routing state, and the other brokers live in the shared database. It creates and changes nothing, and exits `1` when a selection is invalid, an adapter cannot load, or a database does not answer.
 
 `atomic storage join` checks the token and the connection with `@bastani/atomic-storage-libsql`, stores the trimmed token in a new `storage-token.<id>` file in the agent directory with mode 600, writes only the global `storage` setting, and lists the environment variables and settings that override it. Previous token files are never overwritten; a settings-write failure removes only the new token. It creates no tables. `--token-file` is required except for absolute `file:` URLs; relative file URLs and URLs that contain the token itself (a user name, a password, or an `authToken` parameter) are refused. When the package is not installed, it prints the install command. A `postgres://` or `postgresql://` URL selects `@bastani/atomic-storage-postgres` and takes exactly one of `--password-file` (copied to a `storage-token.<id>` file, mode 600), `--token-file` (referenced where it is and read again for every new connection) or `--auth azure|aws|gcp`; a password in the URL is refused, and settings hold only a file reference. See [Storage](/storage#joining-a-machine-to-a-shared-database).
 
 `atomic team join` runs the same checks and token handling as `atomic storage join`, then writes the global `storage` setting (the team database) and `sessions.storage` (the local default store) in one update, restarts the Intercom broker, and prints the profile and the `atomic storage status` report. Nothing is written when a check fails. `atomic team status` adds the profile in effect (`individual`, `team`, `ci`, or `custom`) and the current project's Intercom group to that report. `atomic team leave` removes only the values `team join` wrote, deletes their token file unless another setting references it, and restarts the broker. See [Team and CI setup](/guides/team-setup).
 
-`atomic storage adopt` registers journal files in the workflow journal store in place, without copying them, so their runs resolve by ID and resume where they are. Each path is a journal `.sqlite` file or a directory holding `journal.sqlite`; every path is checked before the first is registered. It also adopts the journal files the adopted runs were written to, unless `--no-discover` is given. `atomic storage consolidate` moves finished runs from adopted files into the store's own shards and reports the runs it left in place with the reason, and exits `1`, printing each distinct error's message and hint, when a run was left because of an error (a missing shard file, a different copy in the destination). Both also exit `1` with the error's message and hint when they cannot proceed. See [The workflow journal store](/storage#the-workflow-journal-store).
+`atomic storage migrate` creates or upgrades the session and Intercom tables in the selected shared database. Use `--db` to name another database. Run this as the database owner after joining or upgrading Atomic, so users with runtime-only privileges do not need to create tables.
 
-`atomic storage export` writes sessions to `<dir>/sessions/<sessionId>.jsonl` (format-4 session files, the format `atomic --import` reads) and workflow runs to `<dir>/workflows/<runId>.jsonl`, each written whole through a temporary file; it never deletes files. Both kinds are exported by default, and `--sessions` or `--workflows` limits it to one. `--run`, `--unfinished` and `--limit` select workflow runs; `--limit` also keeps the most recently modified sessions, and `--since <time>` keeps sessions modified at or after a date or date and time. `atomic storage import` reads only `<dir>/sessions` and `<dir>/workflows`, checks every file of both kinds before it writes anything, then adds new sessions and runs and the later entries of ones this machine has an earlier part of; importing again changes nothing. Both exit `1` with the file and line when they cannot proceed. An import that fails after writing part of its files exits `1` and lists what it imported and what it did not; running it again finishes it. A kind kept in a shared libSQL, Turso or PostgreSQL database is refused, or skipped with a note when neither `--sessions` nor `--workflows` was given. `--storage <json>` or `--storage-file <path>` names the storage to read or write instead, in the form of the `storage` setting; a shared database named this way is used, which moves runs and sessions between stores. See [Exporting and importing sessions and workflow runs](/storage#exporting-and-importing-sessions-and-workflow-runs).
+`atomic storage export` writes sessions to `<dir>/sessions/<sessionId>.jsonl` (format 4, also read by `atomic --import`). Each file is replaced whole; identical files are not rewritten and no files are deleted. `--limit <n>` keeps at most the `n` most recently modified sessions. `--since <time>` selects sessions modified at or after a date or date and time.
 
-The help text:
-
-```text
-  export   Write sessions to <dir>/sessions/<sessionId>.jsonl (session format version
-           4, the format `atomic --import` reads) and workflow runs to
-           <dir>/workflows/<runId>.jsonl (workflow run export version 1), one file per
-           session or run. Both kinds by default; --sessions or --workflows limits it to one. Each
-           file is replaced whole, one that already holds the same bytes is not rewritten, and no
-           file is deleted. A kind kept in a shared libSQL / Turso database is skipped (an error
-           when --sessions or --workflows asks for it): every machine joined to it reads it already.
-  import   Restore the sessions in <dir>/sessions and the workflow runs in <dir>/workflows into
-           this directory's storage; other files are ignored. Every file of both kinds is checked
-           first, so a malformed or unsupported file changes nothing. Importing again adds
-           nothing; a newer export of a session or run adds its later entries. Imported runs are
-           not owned by any process: an interrupted one can be resumed here. If the import fails
-           after writing part of it, it names what was and was not written; run it again to finish.
-
-  --sessions            export, import: sessions only (with --workflows too: both)
-  --workflows           export, import: workflow runs only (with --sessions too: both)
-  --run <id>            export: only this workflow run; repeat for more
-  --unfinished          export: only workflow runs that are not completed, failed or cancelled
-  --limit <n>           export: at most n workflow runs, newest first, and at most n sessions,
-                        most recently modified first
-  --since <time>        export: only sessions modified at or after <time>, a date such as
-                        2026-11-01 or a date and time such as 2026-11-01T09:30:00Z
-```
+`atomic storage import` checks every file in `<dir>/sessions` before writing. It adds new sessions and any newer entries in sessions this machine already has. Other directories are ignored. If importing fails partway through, the command lists what was and was not imported; repeat the import to finish. Both commands accept `--sessions`. To export or import a shared database, name it explicitly with `--storage <json>` or `--storage-file <path>` using the JSON form of the `storage` setting.
 
 `atomic intercom restart` asks the broker to shut down (an older broker gets SIGTERM), waits for it to exit, and then for a reconnecting session to start a new broker, whose state it prints. Without connected sessions, the next session that uses Intercom starts one.
 
 `atomic intercom upgrade` replaces a broker that an older Atomic started, when that is safe. With no session connected it stops the broker, and the next session starts this version's. With sessions connected it leaves the broker running, and the next session of this version hands it over without disconnecting them for longer than a reconnect. It does nothing when no broker runs or the broker is already this version's, leaves a broker too old to report its sessions running, and exits `1` only when stopping the broker fails. The installers and `atomic update` run it after a successful install when the installed version has the command, without passing it any input. See [Upgrading Atomic with sessions running](/intercom/operations#upgrading-atomic-with-sessions-running).
 
 See [Joining a machine to a shared database](/storage#joining-a-machine-to-a-shared-database) and [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
-
-## Worker Commands
-
-```bash
-atomic worker start [--db <url>] [--token-file <path> | --password-file <path> | --auth azure|aws|gcp] [--prefix <prefix>] [--slots <n>]
-                    [--label <key=value>]... [--host-id <id>] [--provider-id <id>] [--no-restore]
-                    [--idle-exit <ms>] [--json]
-atomic worker status [--db <url>] [--token-file <path> | --password-file <path> | --auth azure|aws|gcp] [--prefix <prefix>]
-                    [--min-hosts <n>] [--max-hosts <n>] [--workers-per-host <n>] [--json]
-atomic worker metrics [--listen <host:port>] [--db <url>] [--token-file <path> | --password-file <path> | --auth azure|aws|gcp] [--prefix <prefix>]
-                    [--min-hosts <n>] [--max-hosts <n>] [--workers-per-host <n>] [--json]
-atomic worker controller --provisioner <module|file.json> [--db <url>] [--token-file <path> | --password-file <path> | --auth azure|aws|gcp] [--prefix <prefix>]
-                    [--min-hosts <n>] [--max-hosts <n>] [--workers-per-host <n>] [--scale-up-queue-depth <n>]
-                    [--scale-up-delay <ms>] [--idle-drain <ms>] [--boot-timeout <ms>] [--json]
-```
-
-`atomic worker start` runs this machine as a worker host of a shared workflow database. It runs the pooled children of every root that started with shared placement on that database, at most `--slots` at once. `--db` names a libSQL or Turso database (`libsql://`, `https://`, `wss://`, or an absolute `file:` URL) or a PostgreSQL database (`postgres://` or `postgresql://`, with exactly one of `--password-file`, `--token-file` or `--auth azure|aws|gcp`) for this process only and writes nothing to settings. Without `--db`, it uses the journal this machine already selects, for example after `atomic team join`. `--token-file` names the file that holds the database token. Only the file's path is passed on: the token is never printed, logged, or put on a child process's command line. A token file that other users can read gets a warning. URLs that carry the token themselves are refused. `--slots` defaults to half the CPUs, from 1 to 16. `--label` adds a label that `atomic worker status` shows, and can be repeated. `--host-id` sets the host's id; by default the machine keeps one in its agent directory. `--provider-id` names the VM instance, pod or CI job the host runs on, so a fleet controller's drain also applies to a worker that restarts there; it defaults to `ATOMIC_PROVIDER_ID`, or on Kubernetes to the pod name in `HOSTNAME`. `--no-restore` takes only work whose repository tree is already on this machine. `--idle-exit <ms>` drains and exits once no child has run for that long.
-
-It prints one line per event: `ready host=… slots=… journal=…`, `claimed child=… root=… attempt=…`, `released …` when a child finished or went back to the queue, `degraded failures=… retry_in_ms=… error=…` when a poll of the database failed, `recovered failures=…`, `idle-exit`, `drain-requested` when a fleet controller asked it to drain, `draining`, `stopping`, and `drained` or `stopped`. `--json` prints the same events as one JSON object per line, each with `event` and `time`.
-
-SIGTERM or SIGINT drains the host: it takes no more children, lets the running ones finish, and exits `0`. A second signal stops the host at once. The children it held go back to the queue for other hosts, and the command exits `2`. It exits `1` when setup is incomplete (it lists every missing piece, such as the adapter, the token file, or process containment) or when the host fails. If the database becomes unreachable, the host keeps its running children, prints `degraded`, and polls again after 1 second, then twice as long after each further failure, up to 30 seconds.
-
-`atomic worker status` lists the worker hosts registered in the database, with their workers, labels, and when each last reported, and the queue of each running root they serve. It ends with the fleet's scaling signal: the hosts its autoscaling policy wants under `--min-hosts`, `--max-hosts` and `--workers-per-host` (defaults 0, 10 and 4), the queue, and busy and idle slots. `--json` prints it as `scaling`. See [Running workers on many machines](/guides/worker-hosts).
-
-`atomic worker metrics` serves that scaling signal over HTTP on `--listen` (default `127.0.0.1:9464`): `GET /metrics` in Prometheus text, and `GET /scaling` as JSON for a KEDA `metrics-api` trigger with `valueLocation: desiredHosts`. `/scaling` answers `503` while the database cannot be read. It serves counts only, reads the database at most once every 5 seconds, and never writes to it. It prints `listening address=… journal=…`, and `stopping` and `stopped` on SIGTERM or SIGINT (exit `0`). A setup error, or an address it cannot listen on, exits `1`. See [The scaling signal](/guides/worker-hosts#the-scaling-signal).
-
-`atomic worker controller` runs a fleet controller on the database: it adds worker hosts through the provisioner that `--provisioner` names when the queues of the database's shared roots grow, and drains and removes hosts that held no child for `--idle-drain` milliseconds. The module's default export is a provisioner, or a function that returns one. A path ending in `.json` instead configures a command provisioner (`"kind": "command"`), such as one of the presets for `az`, `aws`, `gcloud`, `kubectl` or `gh`. See [Command provisioners and presets](/guides/worker-hosts#command-provisioners-and-presets). The policy options default to 0 minimum hosts, 10 maximum hosts, 4 workers per host, a queue depth of `--workers-per-host`, a 20000 ms scale-up delay, a 300000 ms idle drain, and a 600000 ms boot timeout. Several controllers can run on one database; one is active at a time and another takes over within 30 seconds when it stops. It prints `controller holder=… journal=…` and then `active`, `standby`, `scale-up target=… desired=… live=…`, `drain-requested id=… host=…`, `removed id=… reason=…`, `degraded …` and `recovered …` lines. SIGTERM or SIGINT stops it and exits `0`; a setup error exits `1`. See [Scale the fleet automatically](/guides/worker-hosts#scale-the-fleet-automatically).
 
 ## Blueprint Commands
 
@@ -226,9 +171,9 @@ atomic blueprint prebuild [dir] [--park] [--approve]                 # Build the
 | `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](/rpc) |
 | `--export <in> [out]` | Export a session to HTML |
 
-Interactive sessions use fullscreen, with a scrolling transcript above the docked editor and status area. Wheel and trackpad input goes to a focused workflow graph or stage chat first, then the transcript when not consumed. Scrolling, scrollbar dragging, and selection remain available outside overlays.
+Interactive sessions use fullscreen, with a scrolling transcript above the docked editor and status area. Scrolling, scrollbar dragging, and selection remain available outside overlays.
 
-Adjust **Fullscreen wheel scroll lines** in `/settings`, or set `fullscreenWheelScrollLines` to `"auto"` or a number from 1 to 100. This also applies to fullscreen tool detail views, attached workflow chats, and `/tasks` transcripts.
+Adjust **Fullscreen wheel scroll lines** in `/settings`, or set `fullscreenWheelScrollLines` to `"auto"` or a number from 1 to 100. This also applies to fullscreen tool detail views and `/tasks` transcripts.
 
 Selection copies automatically unless `fullscreenCopyOnSelect` is false. Ctrl+X returns tool detail or stage chat to the graph, returns the graph to main chat, or clears a scoped-model selection. It does not copy; `/copy` copies the last assistant message.
 
@@ -242,7 +187,7 @@ cat README.md | atomic -p "Summarize this text"
 
 Atomic waits for piped input to end, however slowly it arrives once it has started. A pipe that sends nothing at all, not even its end, is a different case: a script, an agent's shell tool, or another program often starts Atomic with stdin open and never writes to it. If nothing arrives on such a pipe within 2 seconds, a run with a prompt argument (or `@file`) starts without stdin. If input arrives after that, Atomic warns that it was ignored. A run with no prompt argument keeps waiting for stdin, and says so on stderr. Set `ATOMIC_STDIN_TIMEOUT_MS` to change the wait, or to `0` to always wait for the end of piped input.
 
-When a print-mode turn correctly finishes by calling an opt-in terminating structured-output tool created with `createStructuredOutputTool` (for example from an extension, SDK caller, or workflow item with a schema), Atomic ends after that tool result without an extra follow-up assistant turn. Print-mode stdout contains the terminating structured JSON payload, so `atomic -p` remains script-friendly while the same value is also available through the SDK `capture` sink, tool `details`, a configured file sink, or workflow `result.structured`. This also works for custom factory names such as `final_decision`. Non-terminating or unrelated tool results are not printed as the final response.
+When a print-mode turn correctly finishes by calling an opt-in terminating structured-output tool created with `createStructuredOutputTool` (for example from an extension or SDK caller), Atomic ends after that tool result without an extra follow-up assistant turn. Print-mode stdout contains the terminating structured JSON payload, so `atomic -p` remains script-friendly while the same value is also available through the SDK `capture` sink, tool `details`, or a configured file sink. This also works for custom factory names such as `final_decision`. Non-terminating or unrelated tool results are not printed as the final response.
 
 ## Model Options
 
@@ -274,7 +219,7 @@ A model named with `--model` runs as named. It falls back only to the models `--
 | `--session-prefix <prefix>` | Use a non-default table prefix with `--session-store` |
 | `--name <name>`, `-n <name>` | Set the session display name |
 | `--no-session` | No resumable session; [released history may use disk](/sessions) |
-| `--storage <json>` | Select storage for this process's sessions and workflow runs, in the same JSON form as the shared `storage` setting; never saved. See [Selecting storage per process](/storage#selecting-storage-per-process) |
+| `--storage <json>` | Select shared storage for this process, in the same JSON form as the shared `storage` setting; never saved. See [Selecting storage per process](/storage#selecting-storage-per-process) |
 | `--storage-file <path>` | Read the `--storage` selection from a JSON file; cannot be combined with `--storage` |
 
 See [Choosing a store](/sessions#choosing-a-store) for precedence, prefix rules, and conflicts.
@@ -386,10 +331,9 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `AI_AGENT` | Set to `atomic` by the CLI, RPC, and compiled binary entry points and in every Atomic-owned child-process environment so generic tooling can identify Atomic processes; child environments override caller-supplied values without mutating the caller's environment object |
 | `ATOMIC_CODING_AGENT_DIR` | Override config directory; default is `~/.atomic/agent`. Bundled intercom runtime/config files live under its `intercom/` subdirectory |
 | `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session storage directory; overridden by `--session-dir` |
-| `ATOMIC_STORAGE` | Storage selection JSON for this process's sessions and workflow runs; overridden by `--storage` and the domain variables |
+| `ATOMIC_STORAGE` | Shared storage selection JSON for sessions and Intercom; `--storage` takes precedence, and sessions may select their own store |
 | `ATOMIC_SESSIONS_STORAGE` | Session-only storage selection JSON; cannot be combined with `ATOMIC_CODING_AGENT_SESSION_DIR` |
-| `ATOMIC_WORKFLOWS_JOURNAL` | Workflow-run-only storage selection JSON; cannot be combined with `ATOMIC_WORKFLOW_JOURNAL_PATH` |
-| `ATOMIC_PROFILE` | `ci`: sessions, workflow runs, and Intercom use the team database from the variables below, without settings. See [Team and CI setup](/guides/team-setup#ci-and-swarms) |
+| `ATOMIC_PROFILE` | `ci`: sessions and Intercom use the team database from the variables below, without settings. See [Team and CI setup](/guides/team-setup#ci-and-swarms) |
 | `ATOMIC_TEAM_URL` | Team database URL for `ATOMIC_PROFILE=ci` |
 | `ATOMIC_TEAM_TOKEN` | Team database token for `ATOMIC_PROFILE=ci`; cannot be combined with `ATOMIC_TEAM_TOKEN_FILE` |
 | `ATOMIC_TEAM_TOKEN_FILE` | File holding the team database token for `ATOMIC_PROFILE=ci` |
@@ -416,6 +360,6 @@ Every bash execution receives one execution-time snapshot of the active session.
 | `ATOMIC_MODEL` | `PI_MODEL` | Active model ID; omitted when no model is selected |
 | `ATOMIC_REASONING_LEVEL` | `PI_REASONING_LEVEL` | Active reasoning level |
 
-The snapshot is taken when the command executes, not when the tool is created, so resumed sessions, workflow stages, isolated sessions, model changes, and concurrent sessions cannot reuse stale metadata. Atomic preserves all unrelated inherited and caller-supplied environment variables; only the ten names above are cleared and overlaid. Factory-created bash tools expose the same metadata by default and can set `exposeSessionEnvironment: false` to omit it.
+The snapshot is taken when the command executes, not when the tool is created, so resumed sessions, isolated sessions, model changes, and concurrent sessions cannot reuse stale metadata. Atomic preserves all unrelated inherited and caller-supplied environment variables; only the ten names above are cleared and overlaid. Factory-created bash tools expose the same metadata by default and can set `exposeSessionEnvironment: false` to omit it.
 
-`PI_*` aliases are also supported for app-specific `ATOMIC_*` variables for legacy compatibility. For example, [Intercom](/intercom) honors `PI_CODING_AGENT_DIR` when `ATOMIC_CODING_AGENT_DIR` is unset and still reads legacy `~/.pi/agent/intercom/config.json` when the Atomic config is absent. Long prompt-cache retention is the default for main chat, workflow stages, and subagents where supported; use `ATOMIC_CACHE_RETENTION=short atomic` to opt back into shorter caching. See [Prompt-cache retention](/environment-variables#prompt-cache-retention) for overrides and pricing tradeoffs. Intercom's default broker starter works across Node-based installs, Bun source checkouts, and standalone Atomic binaries without requiring `npx`, `tsx`, or `bun` to be present on `PATH`; custom broker commands remain explicit opt-in overrides.
+`PI_*` aliases are also supported for app-specific `ATOMIC_*` variables for legacy compatibility. For example, [Intercom](/intercom) honors `PI_CODING_AGENT_DIR` when `ATOMIC_CODING_AGENT_DIR` is unset and still reads legacy `~/.pi/agent/intercom/config.json` when the Atomic config is absent. Long prompt-cache retention is the default for main chat and subagents where supported; use `ATOMIC_CACHE_RETENTION=short atomic` to opt back into shorter caching. See [Prompt-cache retention](/environment-variables#prompt-cache-retention) for overrides and pricing tradeoffs. Intercom's default broker starter works across Node-based installs, Bun source checkouts, and standalone Atomic binaries without requiring `npx`, `tsx`, or `bun` to be present on `PATH`; custom broker commands remain explicit opt-in overrides.

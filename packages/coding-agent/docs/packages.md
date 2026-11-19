@@ -1,13 +1,13 @@
 ---
 title: "Atomic packages"
-description: "Install, manage, and share Atomic packages that bundle extensions, skills, prompt templates, themes, workflows, MCP servers, and storage adapters."
+description: "Install, manage, and share Atomic packages that bundle extensions, skills, prompt templates, themes, MCP servers, and storage adapters."
 ---
 
 > Atomic can help you create packages. Ask it to bundle your extensions, skills, prompt templates, or themes.
 
 # Atomic Packages
 
-Atomic packages bundle extensions, skills, prompt templates, themes, workflow definitions, MCP servers, and [storage adapters](/storage#adapters-from-atomic-packages) so you can share them through npm or git. Declare resources in `package.json` under the `atomic` key, or use conventional directories.
+Atomic packages bundle extensions, skills, prompt templates, themes, MCP servers, and [storage adapters](/storage#adapters-from-atomic-packages) so you can share them through npm or git. Declare resources in `package.json` under the `atomic` key, or use conventional directories.
 
 ## Where to go next
 
@@ -82,9 +82,7 @@ atomic -e git:github.com/user/repo
 
 Atomic caches `-e` packages in an `extensions` directory that only the current user owns and can access: under `$XDG_RUNTIME_DIR/atomic` when that is set, else under `cache/tmp` in the agent directory, else under `atomic-<uid>` in the system temporary directory. A candidate directory that is a symlink, owned by another account, or open to other accounts is not used and checks them on every start and `/reload`. An npm package is reinstalled when the registry has a newer version that matches the specification. A version pinned to an exact number, such as `@1.2.3`, is not checked. A git package is fetched and reset to the remote branch or ref. A ref that is a commit hash already checked out is not fetched. If the check fails or offline mode is on, Atomic loads the cached copy.
 
-For local directories, `-e <dir>` also borrows project-local Atomic resources under `<dir>/.atomic`, legacy `<dir>/.pi`, and `<dir>/.agents/skills` when present. Because borrowed extensions and workflows can execute code, Atomic resolves trust for that extension source before loading those borrowed project-local resources.
-
-Workflow stages launched through `-e` inherit the same trusted resources, including package tools, extensions, agent definitions, skills, prompts, themes, and workflows. An explicit stage `resourceLoader` overrides that inheritance.
+For local directories, `-e <dir>` also borrows project-local Atomic resources under `<dir>/.atomic`, legacy `<dir>/.pi`, and `<dir>/.agents/skills` when present. Because borrowed extensions can execute code, Atomic resolves trust for that extension source before loading those borrowed project-local resources.
 
 ## Package Sources
 
@@ -176,7 +174,7 @@ Moved to [Package reference](/packages/reference#package-filtering).
 
 ## Enable and Disable Resources
 
-Use `atomic config` to enable or disable extensions, skills, prompt templates, and themes. It starts in global settings (`~/.atomic/agent/settings.json`); press Tab to switch global/project scope. Use `atomic config -l` to start in project overrides (`.atomic/settings.json`) with inherited global resources dimmed. Workflow package filters can be configured with `workflows` patterns.
+Use `atomic config` to enable or disable extensions, skills, prompt templates, and themes. It starts in global settings (`~/.atomic/agent/settings.json`); press Tab to switch global/project scope. Use `atomic config -l` to start in project overrides (`.atomic/settings.json`) with inherited global resources dimmed.
 
 For Atomic's inline llama.cpp, codemode, and tool-search extensions, use the symbolic `builtin:<name>` resources in extension settings rather than an installation path. See [built-in extension resources](/extensions#built-in-extension-resources) for exclusions, explicit loading, and replacement diagnostics. These are not npm/git package sources.
 

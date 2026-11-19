@@ -35,7 +35,8 @@ export interface ResolvedPaths {
 	skills: ResolvedResource[];
 	prompts: ResolvedResource[];
 	themes: ResolvedResource[];
-	workflows: ResolvedResource[];
+	/** Read-only recipe candidates for migration. Never load these as extensions or other resources. */
+	legacyWorkflowFiles: ResolvedResource[];
 	mcpServers: ResolvedMcpServer[];
 	/** Configured packages that were skipped because installing them failed. */
 	installFailures?: PackageInstallFailure[];
@@ -183,23 +184,27 @@ export interface PiManifest {
 	skills?: string[];
 	prompts?: string[];
 	themes?: string[];
-	workflows?: string[];
-	workflow?: string[];
+	/** From the removed workflows/workflow manifest keys, for recipe discovery only. */
+	legacyWorkflowFiles?: string[];
 	mcpServers?: string | Record<string, McpServerConfig>;
 	/** Storage adapter modules, relative to the package root, that `storage.adapter` can select by package name. */
 	storageAdapters?: string[];
 }
 
-export type ResourceType = "extensions" | "skills" | "prompts" | "themes" | "workflows";
+export type ResourceType = "extensions" | "skills" | "prompts" | "themes";
 
-export const RESOURCE_TYPES: ResourceType[] = ["extensions", "skills", "prompts", "themes", "workflows"];
+export const RESOURCE_TYPES: ResourceType[] = ["extensions", "skills", "prompts", "themes"];
 
-export const FILE_PATTERNS: Record<ResourceType, RegExp> = {
+/** File discovery is also shared by the read-only migration catalog. */
+export const FILE_KINDS = [...RESOURCE_TYPES, "legacyWorkflowFiles"] as const;
+export type FileKind = (typeof FILE_KINDS)[number];
+
+export const FILE_PATTERNS: Record<FileKind, RegExp> = {
 	extensions: /\.(ts|js)$/,
 	skills: /\.md$/,
 	prompts: /\.md$/,
 	themes: /\.json$/,
-	workflows: /\.(ts|js|mjs|cjs)$/,
+	legacyWorkflowFiles: /\.(ts|js|mjs|cjs)$/,
 };
 
 export type ResourceEntry = { metadata: PathMetadata; enabled: boolean };
@@ -210,7 +215,7 @@ export interface ResourceAccumulator {
 	skills: ResourceMap;
 	prompts: ResourceMap;
 	themes: ResourceMap;
-	workflows: ResourceMap;
+	legacyWorkflowFiles: ResourceMap;
 	/** Keyed by declaring file and server name; the first resolution of a package wins. */
 	mcpServers: Map<string, ResolvedMcpServer>;
 }
@@ -221,7 +226,6 @@ export interface PackageFilter {
 	skills?: string[];
 	prompts?: string[];
 	themes?: string[];
-	workflows?: string[];
 	mcpServers?: string[];
 }
 

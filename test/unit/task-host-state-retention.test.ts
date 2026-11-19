@@ -292,7 +292,7 @@ test(
 				const { session } = await createAgentSession({
 					cwd: root,
 					agentDir: root,
-					builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+					builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 					sessionManager: SessionManager.inMemory(root),
 					settingsManager: SettingsManager.inMemory(),
 					resourceLoader: createTestResourceLoader(),

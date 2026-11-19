@@ -224,6 +224,7 @@ Specify which tools to expose by name:
 - Built-in tool names enabled by default: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`
 - `find` discovers filesystem paths by glob; `search` searches file contents with regex patterns across files, directories, globs, and internal URLs.
 - `builtins` selects shipped packages independently of tools: keys are `subagents`, `mcp`, `web-access`, and `intercom`. Omitted, `{}`, and omitted keys enable packages. A `false` value removes that package's extensions and resources, including on reload; `true` enables it.
+- The `subagents` builtin ships `bro`, `create-spec`, `how`, `impeccable`, `prompt-engineer`, `research-codebase`, `show-me`, `skill-creator`, `teach`, `unslop`, and `why`. If you want the skills but not the delegation tool, leave the package enabled and set `excludedTools: ["subagent"]`. If you disable the whole package, install independent copies of the skills you need in your [skills directory](/skills#locations).
 - `tools` accepts an allowlist of coding, extension, and custom tool names or `*` patterns. `tools: []` exposes none, including Intercom. A list containing only `+name`/`-name` entries instead changes the resolved defaults, for example `tools: ["+codemode", "-write"]`. Modifiers take exact names, cannot be mixed with plain entries, and apply to reloaded defaults too. Invalid lists throw. Extension/custom tools and MCP exposure retain their default behavior with modifiers.
 - `excludedTools` removes matching names from the registry and active selection. Exclusions win over `tools`; unknown names are ignored.
 - `noTools: "all"` exposes no tools, even with a nonempty `tools` allowlist or modifiers. It does not remove package resources or authorize services.
@@ -920,6 +921,28 @@ const contextFiles = loader.getAgentsFiles().agentsFiles;
 
 Package MCP servers from `DefaultResourceLoader` remain available through the session's `mcp` tool when the factory adds the shipped MCP extension. Custom loaders can provide `getMcpServerContributions()` returning `McpServerContribution[]`; return only contributions allowed by your loader's trust policy. Normal MCP configuration overrides still apply. See [MCP servers](/mcp-servers) for connection and tool invocation.
 
+### Copying extension handlers in `extensionsOverride`
+
+If your override rebuilds a discovered extension without changing its `resources_discover` handler, keep the callback supplied by the loader on **that load**. You can copy the handler map without wrapping its functions:
+
+```typescript
+const loader = new DefaultResourceLoader({
+  cwd,
+  agentDir: getAgentDir(),
+  extensionsOverride: (base) => ({
+    ...base,
+    extensions: base.extensions.map((extension) => ({
+      ...extension,
+      handlers: new Map(extension.handlers),
+    })),
+  }),
+});
+```
+
+During interactive startup, deferred resource loading can run discovery twice. Both calls run, but if the same registration reports the same error, the terminal shows it once. A later `/reload` reports the failure again.
+
+Creating `(...args) => handler(...args)` on every load registers a new callback each time, so you can see two startup errors. Keep separate callbacks when your override changes the handler, adds a step that can fail, or forwards on behalf of separate installations. Don't cache a previous load's handler or share a forwarder by extension name.
+
 ## Return Value
 
 `createAgentSession()` returns:
@@ -1087,11 +1110,11 @@ if (startError && isRetryableSessionStartError(startError)) {
 
 These helpers let extensions and SDK code follow [debug mode](/development#debugging):
 
-- `isDebugEnabled(area?, env?)` returns whether debug output is on: in debug mode for every area, and for `area` also while its own variable is set. Without `area`, only debug mode counts. `env` defaults to `process.env`.
-- `reportDebug(area, event, fields, ownOutput?, env?)` records one event. In debug mode it appends a JSON line to the debug log, with credentials redacted and long text cut to 2,000 characters. `fields` holds strings, numbers, booleans, `null` or lists of strings and numbers, never objects. While the area's own variable is set, `ownOutput` is called with the variable's value to write the event where that variable always has.
+- `isDebugEnabled(area?, env?)` returns whether debug mode is on. The same setting applies to every area. `env` defaults to `process.env`.
+- `reportDebug(area, event, fields, ownOutput?, env?)` records one event. In debug mode it appends a JSON line to the debug log, with credentials redacted and long text cut to 2,000 characters. `fields` holds strings, numbers, booleans, `null` or lists of strings and numbers, never objects. The optional `ownOutput` callback is not used by any current area.
 - `appendDebugRecord(path, record)` appends one redacted JSON line to another debug file, such as a trace file. It and `reportDebug()` retain their synchronous write and immediate failure-reporting behavior.
 - `appendDebugRecordAsync(path, record)` and `reportDebugAsync(area, event, fields, ownOutput?, env?)` provide the same redaction and reporting without blocking the host. Await their promises to observe the completed write, or call `flushDebugLog()` to wait for all queued debug records.
-- `DEBUG_AREA_VARIABLES` maps each area (`workflow`, `decision`, `pooled-watch`, `pool`, `storage`) to its own environment variable, or `undefined`. `decision`, `pool` and `storage` have none; they write only in debug mode.
+- `DEBUG_AREA_VARIABLES` lists `decision`, `storage` and `engine`. All have value `undefined`: there are no separate environment switches for these areas.
 - `getDebugLogFailure()` returns the first `DebugLogUnwritableError` of this process, if writing a debug log ever failed.
 - `setDebugSetting(enabled)` turns debug mode on or off for this process and for child processes it starts afterwards. It does not save the `debug` setting.
 - `onDebugSettingChange(listener)` calls `listener` with each change of that value and returns a function that unsubscribes.

@@ -60,7 +60,7 @@ test.for(["approval", "nested", "cancelled", "invalid", "missing", "stay"] as co
 import { workflow } from "@bastani/atomic/workflows";
 import { appendFileSync } from "node:fs";
 const child = workflow({ name: ${JSON.stringify(scenario === "nested" ? "stage-child" : "stage-host")}, description: "stage host fixture", inputs: {}, outputs: {}, run: async (ctx) => {
-  await ctx.stage("reviewer", { sessionDir: ${JSON.stringify(join(cwd, "stage-sessions"))}, builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false }, model: "host-questionnaire-fixture/fixture", cwd: ${JSON.stringify(cwd)}, agentDir: ${JSON.stringify(join(cwd, "agent"))}, tools: ["ask_user_question"] }).prompt(${JSON.stringify(`questionnaire ${JSON.stringify(params)}`)});
+  await ctx.stage("reviewer", { sessionDir: ${JSON.stringify(join(cwd, "stage-sessions"))}, builtins: { subagents: false, mcp: false, intercom: false, "web-access": false }, model: "host-questionnaire-fixture/fixture", cwd: ${JSON.stringify(cwd)}, agentDir: ${JSON.stringify(join(cwd, "agent"))}, tools: ["ask_user_question"] }).prompt(${JSON.stringify(`questionnaire ${JSON.stringify(params)}`)});
   await ctx.tool("counted-effect", {}, async () => { appendFileSync(${JSON.stringify(effect)}, "accepted\\n"); return true; });
   return {};
 } });

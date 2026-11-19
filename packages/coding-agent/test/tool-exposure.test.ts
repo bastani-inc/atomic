@@ -39,7 +39,7 @@ test("tool exposure preserves activation and prevents hidden tools from being ac
 		resourceLoader,
 		settingsManager,
 		// Exercise inline extension exposure without loading unrelated shipped packages.
-		builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+		builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 		model: getModel("openai-codex", "gpt-6-sol"),
 		sessionManager: SessionManager.inMemory(),
 	});

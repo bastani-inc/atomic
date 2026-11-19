@@ -63,7 +63,7 @@ if (mode === "borrowed") {
 		agentDir: dir,
 		cwd: dir,
 		modelRuntime: runtime,
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		sessionManager: SessionManager.inMemory(dir),
 		settingsManager: SettingsManager.inMemory({ defaultProvider: provider, defaultModel: id }),
 	});

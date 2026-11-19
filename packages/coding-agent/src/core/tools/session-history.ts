@@ -113,7 +113,7 @@ function parseTarget(
 
 /**
  * Read-only access to this session's own history, for an agent whose tools do not include `read` and `search`. It
- * reaches only `history://sessions/<own id>`: no other session, workflow run, file or project.
+ * reaches only `history://sessions/<own id>`: no other session, file or project.
  */
 export function createSessionHistoryToolDefinition(
 	name: string,

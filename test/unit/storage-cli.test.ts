@@ -90,6 +90,23 @@ function storage(args: string[]) {
 	return run((log, error) => runStorageCommand(args, { cwd: project, agentDir, log, error }));
 }
 
+test("storage migrate initializes sessions and Intercom without the workflow runtime", async () => {
+	const path = join(root, "shared.sqlite");
+	writeSettings({
+		storage: { adapter: resolve(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"), options: { path } },
+	});
+	const result = await storage(["migrate"]);
+	assert.equal(result.code, 0, result.err);
+	const database = await openNodeSqliteDatabase(path);
+	try {
+		const tables = (await database.all("SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) => row.name);
+		assert.ok(tables.includes("session_sessions"));
+		assert.ok(tables.includes("intercom_known_sessions"));
+	} finally {
+		await database.close();
+	}
+});
+
 describe("atomic storage and atomic intercom arguments", () => {
 	test("parse the storage subcommands and their options (#3857)", () => {
 		assert.deepEqual(parseStorageCommand([]), { kind: "help" });
@@ -194,7 +211,7 @@ describe("storage status sources (#3856)", () => {
 		const settingsOnly = await collectStorageStatus({ cwd: project, agentDir, probe: false });
 		assert.deepEqual(sources(settingsOnly), {
 			sessions: "global settings: sessions.storage",
-			journal: "global settings: workflows.journal",
+			journal: "global settings: storage",
 			intercom: "global settings: storage",
 		});
 		assert.deepEqual(domain(settingsOnly, "sessions").overridden, ["global settings: storage"]);
@@ -207,10 +224,7 @@ describe("storage status sources (#3856)", () => {
 			intercom: "ATOMIC_STORAGE",
 		});
 		assert.equal(domain(shared, "intercom").selection, `SQLite ${join(root, "env.sqlite")}`);
-		assert.deepEqual(domain(shared, "journal").overridden, [
-			"global settings: workflows.journal",
-			"global settings: storage",
-		]);
+		assert.deepEqual(domain(shared, "journal").overridden, ["global settings: storage"]);
 
 		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", JSON.stringify({ dir: join(root, "sessions") }));
 		vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", join(root, "legacy-journal.sqlite"));

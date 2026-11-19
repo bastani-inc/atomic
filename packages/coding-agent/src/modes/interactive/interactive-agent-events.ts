@@ -4,7 +4,6 @@ import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
-import { observeLocalWorkflowActivity } from "../interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
@@ -162,10 +161,6 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 			this.workingRunMeter.awaitRetry(session.turnStartedAt, runInProgress(session.messages).settledTokens);
 		void this.handleEvent(wait);
 	}
-	// Workflow runs execute outside the main agent loop, so their activity feeds the status separately.
-	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
-		if (this.session === session) this.programStatus.handleWorkflowActivity(frame);
-	});
 	const panelUi = this.runtimeHost instanceof IsolatedInteractiveRuntime ? undefined : this.createExtensionUIContext();
 	const disposeAgentPanel =
 		panelUi === undefined
@@ -196,7 +191,6 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 			this.fallbackLoader.stop();
 			this.fallbackLoader = undefined;
 		}
-		disposeWorkflowActivity();
 		disposeAgentPanel();
 		disposeInteractiveTasks(this);
 	};

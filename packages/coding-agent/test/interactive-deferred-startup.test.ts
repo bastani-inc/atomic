@@ -951,7 +951,7 @@ describe("retryDeferredModelRestore", () => {
 });
 
 describe("deferred startup thinking level (#5247)", () => {
-	const noBuiltins = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false };
+	const noBuiltins = { subagents: false, mcp: false, "web-access": false, intercom: false };
 	let root: string;
 	beforeAll(() => {
 		root = mkdtempSync(join(tmpdir(), "atomic-deferred-thinking-"));

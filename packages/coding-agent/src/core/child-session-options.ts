@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { BUILTIN_PACKAGE_DIR_NAMES } from "./builtin-install-layout.ts";
 import type { CreateAgentSessionOptions } from "./sdk-types.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { createToolNameMatcher, isMcpToolName } from "./tool-selection.ts";
@@ -28,7 +29,7 @@ export function inheritChildSessionOptionsWithDefaults(
 	defaultToolNames: readonly string[],
 ): CreateAgentSessionOptions {
 	const builtins = { ...parent.builtins, ...definedOptions(child.builtins) };
-	for (const name of ["subagents", "mcp", "web-access", "intercom"] as const) {
+	for (const name of BUILTIN_PACKAGE_DIR_NAMES) {
 		if (parent.builtins?.[name] === false) builtins[name] = false;
 	}
 	const ceiling = parent.noTools === "all" ? [] : parent.tools;

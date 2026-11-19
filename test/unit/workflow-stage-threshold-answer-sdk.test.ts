@@ -9,7 +9,7 @@ import { createAgentSessionAdapter, run, workflow } from "../../packages/workflo
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
-const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 const CONTEXT_WINDOW = 10_000;
 const RESERVE_TOKENS = 1_000;
 /** About 9,500 tokens: the faux provider reports usage from what it was sent, so the answer crosses the trigger. */

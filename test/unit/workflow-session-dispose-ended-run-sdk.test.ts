@@ -96,7 +96,7 @@ test(
 			agentDir,
 			modelRuntime,
 			model: decisionChatModel,
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			settingsManager,
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(project),

@@ -1,4 +1,4 @@
-import { basename, join, relative, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import { isProxy } from "node:util/types";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@bastani/atomic-agent-core";
 import { getOpenCodeSessionHeaders } from "@bastani/atomic-ai";
@@ -426,30 +426,21 @@ async function constructAgentSession(
 
 	if (workspace !== undefined && persistInitialState) await recordSessionWorkspace(sessionManager, workspace);
 
-	const disableWorkflowExtension = options.subagentPolicy !== undefined;
 	if (!resourceLoader) {
 		resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir,
 			settingsManager,
-			builtinPackagePaths: getBuiltinPackagePaths(options.builtins).map((source) =>
-				disableWorkflowExtension && basename(source) === "workflows" ? { source, extensions: [] } : source,
-			),
+			builtinPackagePaths: getBuiltinPackagePaths(options.builtins),
 		});
 		await resourceLoader.reload();
 		time("resourceLoader.reload");
 	}
 	if (
-		(options.resourceLoader || options.builtins || disableWorkflowExtension) &&
-		(!isMandatoryResourceLoader(resourceLoader) || options.builtins || disableWorkflowExtension)
+		(options.resourceLoader || options.builtins) &&
+		(!isMandatoryResourceLoader(resourceLoader) || options.builtins)
 	) {
-		resourceLoader = await withBuiltinResourceLoader(
-			resourceLoader,
-			cwd,
-			agentDir,
-			options.builtins,
-			disableWorkflowExtension,
-		);
+		resourceLoader = await withBuiltinResourceLoader(resourceLoader, cwd, agentDir, options.builtins);
 	}
 	if (options.builtins?.intercom !== false) {
 		resourceLoader = await withMandatoryResourceLoader(resourceLoader, cwd, agentDir);

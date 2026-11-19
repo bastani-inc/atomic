@@ -21,12 +21,13 @@ Trusting a project allows Atomic to load trust-gated project inputs, including:
 
 - `.atomic/settings.json` (or legacy `.pi/settings.json`)
 - `.atomic`/`.pi` resources such as extensions, skills, prompt templates, themes, and system prompt files
-- project workflows (`.atomic/workflows` and the workflows named by `.atomic/extensions/workflow/config.json`) and project subagent definitions and agent overrides
+- project subagent definitions and agent overrides
+- paths to earlier workflow files, which the agent may read as text to [convert them to skills](/orchestration/migrating-workflows) on request; it never imports, executes, modifies, or deletes the old files
 - the project MCP server config (`.atomic/mcp.json`) and blueprint builds (`.atomic/blueprint.yaml`)
 - missing project packages configured through project settings
 - project-local extensions and project package-managed extensions
 
-Declining trust skips protected resources, including project-local discovery of `AGENTS.override.md`, `AGENTS.md`, and `CLAUDE.md`. Global context and explicitly supplied CLI resources remain available. Interactive sessions in an untrusted project show a warning that project resources are ignored; use `/trust` to save a decision, then restart Atomic.
+Declining trust skips protected resources, including project-local discovery of `AGENTS.override.md`, `AGENTS.md`, and `CLAUDE.md`. No legacy workflows are listed or converted in an untrusted project. Global context and explicitly supplied CLI resources remain available. Interactive sessions in an untrusted project show a warning that project resources are ignored; use `/trust` to save a decision, then restart Atomic.
 
 Trust belongs to the folder a session works in, not the one Atomic was started from. Resuming a session in interactive mode (`--resume`, `--continue`, `--session` or `/resume`) applies the decision for the folder the session continues in and asks about it when it has none. An answer for this session only lasts until Atomic exits: switching back to that folder with `/resume` uses it again, Atomic keeps it when it restarts its engine, and it is never saved to `trust.json`. The same holds for each `-e` extension source: if the engine restarts while you are answering several trust questions, it asks only about paths that still need a decision. A Git worktree outside its repository's folder is a separate folder with its own decision, because it can check out different `.atomic` content; to cover several worktrees kept in one directory, choose **Trust parent folder** for one of them, when asked or in `/trust`.
 
@@ -34,7 +35,7 @@ Atomic loads user/global extensions and explicit CLI `-e` package-level extensio
 
 This check does not change startup before that first report: a saved trust may already have selected project settings, including the `sessions.storage` store used by `--continue`. A handler registered only after the first report does not retroactively hide an already-listed project; its decline still takes effect. Approval reads the current folder resources from disk. Because resource discovery refreshes the combined catalog, a global prompt renamed during the check can also appear under its new name before `/reload`.
 
-If `-e <dir>` discovers resources borrowed from that directory's `.atomic`, legacy `.pi`, or `.agents/skills`, Atomic resolves trust for that source before loading them. Borrowed extensions and workflows can execute code with the Atomic process permissions.
+If `-e <dir>` discovers resources borrowed from that directory's `.atomic`, legacy `.pi`, or `.agents/skills`, Atomic resolves trust for that source before loading them. Borrowed extensions can execute code with the Atomic process permissions.
 
 Non-interactive modes (`-p`, `--mode json`, and `--mode rpc`) do not show a trust prompt. Without an applicable saved trust decision, `defaultProjectTrust: "ask"` and `"never"` ignore such resources, while `"always"` trusts them. Use `--approve`/`-a` or `--no-approve`/`-na` to override project trust for one run.
 

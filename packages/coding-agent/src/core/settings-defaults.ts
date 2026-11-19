@@ -43,9 +43,6 @@ export const SETTINGS_DEFAULTS = {
 	},
 	hideThinkingBlock: false,
 	showCacheMissNotices: false,
-	workflows: {
-		autoAdvanceAfterSteer: true,
-	},
 	quietStartup: false,
 	defaultProjectTrust: "ask",
 	search: {
@@ -90,15 +87,11 @@ export const SETTINGS_DEFAULTS = {
 	warnings: {
 		anthropicExtraUsage: true,
 	},
-	intercom: {
-		showUnknownTargetWarnings: false,
-	},
 	httpIdleTimeoutMs: 600_000,
 	cacheWarming: "idle",
 	tasks: {
-		/** Same 15-minute default as workflow heartbeats. */
 		heartbeatMs: 15 * 60_000,
-		/** A task or workflow heartbeat starts a turn in an idle chat, including after an interrupt. */
+		/** A task heartbeat starts a turn in an idle chat, including after an interrupt. */
 		heartbeatWakesIdleSession: true,
 	},
 } as const;

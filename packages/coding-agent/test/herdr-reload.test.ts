@@ -117,7 +117,11 @@ else {
 			await writeFile(allowFailure, "");
 			await failedReport.promise;
 			assert.deepEqual(diagnostics, [{ kind: "protocol_rejected" }]);
-			if (!queuedDuringFlight) await runner.emit({ type: established ? "agent_start" : "agent_settled" });
+			if (!queuedDuringFlight) {
+				// The diagnostic runs inside the report flight. Exercise a refresh after that flight has settled.
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				await runner.emit({ type: established ? "agent_start" : "agent_settled" });
+			}
 			await fake.waitFor(3);
 			await runner.emit({ type: "session_shutdown", reason: "reload" });
 			const reports = (await fake.calls()).filter(

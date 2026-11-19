@@ -51,13 +51,12 @@
           {
             "group": "Running work for you",
             "pages": [
+              "guides/orchestration",
               "guides/workflows",
               "guides/subagents",
               "background-tasks",
               "guides/intercom",
               "guides/team-setup",
-              "guides/worker-hosts",
-              "guides/worker-fleets-postgres",
               "computer-use"
             ]
           },
@@ -113,6 +112,9 @@
           {
             "group": "Orchestrate work",
             "pages": [
+              "orchestration",
+              "orchestration/patterns",
+              "orchestration/migrating-workflows",
               {
                 "group": "Workflows",
                 "pages": [

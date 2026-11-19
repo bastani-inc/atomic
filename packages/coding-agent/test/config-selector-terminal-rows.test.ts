@@ -44,7 +44,6 @@ describe("atomic config follows the terminal's height", () => {
 			skills: [],
 			prompts: [],
 			themes: [],
-			workflows: [],
 		};
 		const settingsManager = {
 			getTheme: () => "dark",

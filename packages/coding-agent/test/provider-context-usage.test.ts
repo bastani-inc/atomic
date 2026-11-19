@@ -12,7 +12,7 @@ import { getLatestCompactionBoundaryEntry, SessionManager } from "../src/core/se
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";

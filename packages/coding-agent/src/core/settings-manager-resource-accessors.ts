@@ -1,7 +1,6 @@
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals, stringEntries } from "./settings-manager-internals.ts";
-import type { Settings } from "./settings-schema.ts";
 import type { DefaultProjectTrust, PackageSource, QuietStartup, ThinkingBudgetsSettings } from "./settings-types.ts";
 
 interface SettingsManagerResourceAccessors {
@@ -45,12 +44,6 @@ interface SettingsManagerResourceAccessors {
 	getThemePaths(): string[];
 	setThemePaths(paths: string[]): void;
 	setProjectThemePaths(paths: string[]): void;
-	getWorkflowPaths(): string[];
-	setWorkflowPaths(paths: string[]): void;
-	setProjectWorkflowPaths(paths: string[]): void;
-	/** `workflows.autoAdvanceAfterSteer`: whether the decision model may decide a stage's readiness after a steer. */
-	getAutoAdvanceAfterSteer(): boolean;
-	setAutoAdvanceAfterSteer(enabled: boolean, scope?: "global" | "project"): void;
 	getEnableSkillCommands(): boolean;
 	setEnableSkillCommands(enabled: boolean): void;
 	getThinkingBudgets(): ThinkingBudgetsSettings | undefined;
@@ -295,53 +288,6 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 		projectSettings.themes = paths;
 		state.markProjectModified("themes");
 		state.saveProjectSettings(projectSettings);
-	},
-
-	getWorkflowPaths() {
-		const workflows = settingsInternals(this).settings.workflows;
-		return [...(Array.isArray(workflows) ? workflows : (workflows?.paths ?? []))];
-	},
-
-	setWorkflowPaths(paths) {
-		const state = settingsInternals(this);
-		const workflows = state.globalSettings.workflows;
-		state.globalSettings.workflows =
-			Array.isArray(workflows) || workflows === undefined ? paths : { ...workflows, paths };
-		state.markModified("workflows", "paths");
-		state.save();
-	},
-
-	setProjectWorkflowPaths(paths) {
-		const state = settingsInternals(this);
-		const projectSettings = structuredClone(state.projectSettings);
-		const workflows = projectSettings.workflows;
-		projectSettings.workflows = Array.isArray(workflows) || workflows === undefined ? paths : { ...workflows, paths };
-		state.markProjectModified("workflows", "paths");
-		state.saveProjectSettings(projectSettings);
-	},
-
-	getAutoAdvanceAfterSteer() {
-		const workflows = settingsInternals(this).settings.workflows;
-		const value = Array.isArray(workflows) ? undefined : workflows?.autoAdvanceAfterSteer;
-		return value ?? SETTINGS_DEFAULTS.workflows.autoAdvanceAfterSteer;
-	},
-
-	setAutoAdvanceAfterSteer(enabled, scope) {
-		const state = settingsInternals(this);
-		const withSetting = (workflows: Settings["workflows"]): Settings["workflows"] =>
-			Array.isArray(workflows)
-				? { paths: [...workflows], autoAdvanceAfterSteer: enabled }
-				: { ...workflows, autoAdvanceAfterSteer: enabled };
-		if (scope === "project") {
-			const projectSettings = structuredClone(state.projectSettings);
-			projectSettings.workflows = withSetting(projectSettings.workflows);
-			state.markProjectModified("workflows", "autoAdvanceAfterSteer");
-			state.saveProjectSettings(projectSettings);
-			return;
-		}
-		state.globalSettings.workflows = withSetting(state.globalSettings.workflows);
-		state.markModified("workflows", "autoAdvanceAfterSteer");
-		state.save();
 	},
 
 	getEnableSkillCommands() {

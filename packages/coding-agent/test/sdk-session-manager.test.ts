@@ -17,7 +17,7 @@ import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { StoreClosedError } from "../src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 const missingApiKeyEnv = "ATOMIC_SDK_SESSION_MANAGER_MISSING_KEY";
 const testModel = (id: string) => ({

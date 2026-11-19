@@ -229,7 +229,7 @@ describe("DefaultPackageManager", () => {
 			expect(enabledRels(result.themes)).toEqual(
 				expect.arrayContaining([".atomic/themes/atomic.json", ".pi/themes/legacy.json"]),
 			);
-			expect(enabledRels(result.workflows)).toEqual(
+			expect(enabledRels(result.legacyWorkflowFiles)).toEqual(
 				expect.arrayContaining([".atomic/workflows/atomic.ts", ".pi/workflows/legacy.ts"]),
 			);
 
