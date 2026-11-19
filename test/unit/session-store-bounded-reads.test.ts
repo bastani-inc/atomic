@@ -6,12 +6,14 @@ import { afterEach, describe, it, vi } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import { SessionSpillError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
+import { LegacySessionStore } from "../../packages/coding-agent/src/core/storage/session/legacy-session-store.js";
 import {
 	MemorySessionStore,
 	type SessionHistoryDirectory,
 	type SessionHistoryFiles,
 } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import {
+	readSessionRange,
 	sessionCompactionOf,
 	sessionResumeOf,
 	sessionTailOf,
@@ -142,6 +144,35 @@ function temporaryDirectory(): string {
 	directories.push(directory);
 	return directory;
 }
+
+it("a legacy-store wrapper names a missing bounded reader instead of loading the whole custom store (#5554)", async () => {
+	const directory = temporaryDirectory();
+	const backing = new MemorySessionStore();
+	await backing.create(header, compacted(4));
+	const inner: SessionStore = Object.assign(Object.create(backing) as SessionStore, {
+		readResume: undefined,
+		readTail: undefined,
+		readRange: undefined,
+		findLatestCompaction: undefined,
+		findEntrySeq: undefined,
+		load: () => {
+			throw new Error("whole session was read");
+		},
+	});
+	const store = new LegacySessionStore(inner, {
+		legacyDirectory: directory,
+		databasePath: join(directory, "deletions.sqlite"),
+	});
+	try {
+		await assert.rejects(store.readResume(header.id), /must implement readResume/);
+		await assert.rejects(store.readTail(header.id, 1), /must implement readTail/);
+		await assert.rejects(readSessionRange(inner, header.id, 1, 1), /must implement readRange/);
+		await assert.rejects(store.findLatestCompaction(header.id), /must implement findLatestCompaction/);
+		await assert.rejects(store.findEntrySeq(header.id, "kept"), /must implement findEntrySeq/);
+	} finally {
+		await store.close();
+	}
+});
 
 function spillFiles(): {
 	readonly historyFiles: SessionHistoryFiles;

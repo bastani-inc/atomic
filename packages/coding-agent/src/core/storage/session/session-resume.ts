@@ -14,7 +14,6 @@ import type {
 	SessionTail,
 	SessionUsageTotals,
 } from "./types.js";
-import { validateSessionText } from "./validation.js";
 
 const LEAF_MOVE_TYPE = "atomic.leaf";
 const TASK_COMPLETION_INTENT_TYPE = "task-completion-intent";
@@ -830,9 +829,8 @@ export function sessionCompactionOf(
 }
 
 export async function readSessionTail(store: SessionStore, sessionId: string, fromSeq: number): Promise<SessionTail> {
-	if (store.readTail !== undefined) return store.readTail(sessionId, fromSeq);
-	const { header, entries } = await store.load(sessionId);
-	return sessionTailOf(header, entries, fromSeq);
+	if (!store.readTail) throw new TypeError(`Session store ${store.descriptor.adapter} must implement readTail`);
+	return store.readTail(sessionId, fromSeq);
 }
 
 export async function readSessionRange(
@@ -841,8 +839,8 @@ export async function readSessionRange(
 	startSeq: number,
 	endSeq: number,
 ): Promise<SessionEntryRange> {
-	if (store.readRange !== undefined) return store.readRange(sessionId, startSeq, endSeq);
-	return sessionRangeOf((await store.load(sessionId)).entries, startSeq, endSeq);
+	if (!store.readRange) throw new TypeError(`Session store ${store.descriptor.adapter} must implement readRange`);
+	return store.readRange(sessionId, startSeq, endSeq);
 }
 
 export async function findSessionCompaction(
@@ -850,9 +848,9 @@ export async function findSessionCompaction(
 	sessionId: string,
 	leafId?: string,
 ): Promise<SessionCompactionPoint | undefined> {
-	if (store.findLatestCompaction !== undefined) return store.findLatestCompaction(sessionId, leafId);
-	if (leafId !== undefined) validateSessionText("entry.id", leafId);
-	return sessionCompactionOf((await store.load(sessionId)).entries, leafId);
+	if (!store.findLatestCompaction)
+		throw new TypeError(`Session store ${store.descriptor.adapter} must implement findLatestCompaction`);
+	return store.findLatestCompaction(sessionId, leafId);
 }
 
 export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.leafSeq) {
