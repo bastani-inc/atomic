@@ -2,6 +2,8 @@ import { describe } from "vitest";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import type { RuntimeDispatchOptions } from "../../packages/workflows/src/extension/runtime.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { createGraphStageActions } from "../../packages/workflows/src/extension/workflow-graph-stage-actions.js";
+import type { WorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
 import {
 	createJobTracker,
 	type JobEntry,
@@ -247,6 +249,38 @@ describe("two resumes of the same block start one replacement (#5534)", () => {
 		const runtime = createExtensionRuntime({ registry: createRegistry([root, child]), jobs, store });
 		return { attempts, store, jobs, runId, runtime, holdNextRead };
 	}
+
+	test("stage Retry during resource loading cannot resume a replacement that blocked again (#5661)", async () => {
+		const { attempts, store, jobs, runId, runtime } = await recordedBlock();
+		const stageId = store.run(runId)?.failedStageId;
+		assert.ok(stageId);
+		const loading = Promise.withResolvers<void>();
+		const loaded = Promise.withResolvers<void>();
+		const actions = createGraphStageActions({
+			owner: { store, jobs } as WorkflowOwnerResources,
+			runtime: () => runtime,
+			context: () => undefined,
+			ensureWorkflowResourcesLoaded: () => {
+				loading.resolve();
+				return loaded.promise;
+			},
+		});
+		const retry = actions.retry!(runId, stageId);
+		try {
+			await loading.promise;
+			const first = await runtime.resumeFailedRun(runId);
+			assert.ok(first.ok, first.message);
+			await jobs.get(runId)?.promise;
+			assert.equal(effectiveRunStatus(store.run(runId)!), "blocked");
+		} finally {
+			loaded.resolve();
+		}
+		const result = await retry;
+		await jobs.get(runId)?.promise;
+		assert.equal(attempts.count, 2, result.message);
+		assert.equal(result.ok, false);
+		assert.match(result.message, /already resumed/);
+	});
 
 	test("the graph's resume of a block, its journal read held until another resume's replacement blocked again, resumes nothing", async () => {
 		const { attempts, store, jobs, runId, runtime, holdNextRead } = await recordedBlock();

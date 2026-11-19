@@ -84,19 +84,17 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 				return failure(error);
 			}
 		},
-		async retry(runId, stageId) {
-			try {
+		retry(runId, stageId) {
+			return withResumeAdmissionMark(runId, undefined, async (admissionMark) => {
 				await ensureWorkflowResourcesVisible();
 				const runtime = deps.runtime();
 				if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 				const policy = workflowPolicyFromContext(deps.context());
-				const result = await runtime.resumeFailedRun(runId, stageId, { policy, actor: "user" });
+				const result = await runtime.resumeFailedRun(runId, stageId, { policy, actor: "user", admissionMark });
 				return result.ok
 					? { ok: true, message: result.message, runId: result.runId }
 					: { ok: false, message: result.message };
-			} catch (error) {
-				return failure(error);
-			}
+			}).catch(failure);
 		},
 		async forkTarget(rootRunId, stageId) {
 			try {
