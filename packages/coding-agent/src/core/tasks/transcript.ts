@@ -66,6 +66,17 @@ export function taskTranscriptPage(
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor?: string,
 ): Result<TaskTranscriptPage, Failure<TranscriptError>> {
+	return taskTranscriptPageWithCuts(taskId, sessionId, entries, cursor);
+}
+
+/** A task view also needs the source rows crossing the two boundaries of the same indexed page. */
+export function taskTranscriptPageWithCuts(
+	taskId: string,
+	sessionId: string,
+	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
+	cursor: string | undefined,
+	onSplitEntries?: (fromEarlier: string | undefined, intoLater: string | undefined) => void,
+): Result<TaskTranscriptPage, Failure<TranscriptError>> {
 	const scope = `${taskId}\n${sessionId}\n`;
 	let before: string | undefined;
 	if (cursor !== undefined) {
@@ -136,6 +147,15 @@ export function taskTranscriptPage(
 	const end = found < 0 ? items.length : found;
 	const start = Math.max(0, end - PAGE_ITEMS);
 	const page = items.slice(start, end);
+	// Use the existing index: ignored content blocks are not page boundaries.
+	if (onSplitEntries && (start > 0 || end < items.length) && page.length > 0) {
+		const first = page[0]!.source.entryId;
+		const last = page[page.length - 1]!.source.entryId;
+		onSplitEntries(
+			items[start - 1]?.source.entryId === first ? first : undefined,
+			items[end]?.source.entryId === last ? last : undefined,
+		);
+	}
 	return {
 		ok: true,
 		value: {

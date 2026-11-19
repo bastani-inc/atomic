@@ -923,6 +923,17 @@ test("a row that finishes between the two x presses is not dismissed by the seco
 	assert.deepEqual(calls, ["dismiss task:a"], "a later press dismisses it");
 });
 
+test("short task titles keep whole characters and count the ellipsis inside 60 units (#5654)", () => {
+	const prefix = "x".repeat(58);
+	for (const cluster of ["😀", "e\u0301", "👩‍💻"]) {
+		assert.equal(shortTaskTitle(`${prefix}${cluster}more`), `${prefix}…`);
+	}
+	assert.equal(shortTaskTitle(`${"x".repeat(57)}😀more`), `${"x".repeat(57)}😀…`);
+	assert.equal(shortTaskTitle("a".repeat(61)), `${"a".repeat(59)}…`);
+	assert.equal(shortTaskTitle(`${prefix}😀`), `${prefix}😀`);
+	assert.equal(shortTaskTitle(`${"w".repeat(40)}\u0600 ${"v".repeat(30)}`), `${"w".repeat(40)}…`);
+});
+
 test("a row names a task by a short title, not the subagent's whole prompt (#5224)", () => {
 	assert.equal(
 		shortTaskTitle(

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { ModelsRefreshOptions } from "@bastani/atomic-ai";
 import type { ExtensionBindings } from "./agent-session-types.js";
 
 /** Internal factory context; never inherited by independently admitted child sessions. */
@@ -8,6 +9,10 @@ export interface SessionLifecycleContext {
 	claimed?: boolean;
 	/** Runtime retains lineage if an unpublished replacement rolls back. */
 	replacement?: boolean;
+	/** Only the SDK's own cache-only refresh can authorize recovery on its later first prompt. */
+	catalogRestore?: ModelsRefreshOptions;
+	catalogRuntime?: object;
+	copilotObservation?: "restoring" | "absent" | "confirmed";
 }
 export const sessionLifecycleCreation = new AsyncLocalStorage<SessionLifecycleContext>();
 export const sessionLifecycleScopes = new WeakMap<object, object>();

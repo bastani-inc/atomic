@@ -2,6 +2,7 @@ import { rmSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TaskLease } from "../../../../coding-agent/src/core/tasks/supervisor.js";
 import type { SingleResult } from "../../shared/types.js";
 import { utf8Head } from "../../shared/types-output.js";
 
@@ -24,7 +25,9 @@ export type RetainedTaskOutput = {
 	readonly worktree?: { readonly runId: string; readonly index: number };
 };
 
-const retained = new Map<string, RetainedTaskOutput>();
+// Neither a private copy nor its eviction record should keep the task alive.
+const retained = new Map<string, { output: RetainedTaskOutput; lease?: WeakRef<TaskLease> }>();
+const evictedCopies = new WeakSet<TaskLease>();
 let copyRoot: Promise<string> | undefined;
 
 function retentionKey(ownerId: string, taskId: string): string {
@@ -85,31 +88,41 @@ export async function retainTaskOutput(
 	child: SingleResult,
 	text: string,
 	ref: { readonly ownerId: string; readonly taskId: string },
+	lease?: WeakRef<TaskLease>,
 	worktree?: RetainedTaskOutput["worktree"],
 ): Promise<void> {
 	const path = await writePrivateCopy(ref.ownerId, ref.taskId, await fullOutputText(child, text));
 	const key = retentionKey(ref.ownerId, ref.taskId);
-	await removeCopy(retained.get(key));
+	await removeCopy(retained.get(key)?.output);
 	retained.delete(key);
 	retained.set(key, {
-		...(path ? { path } : {}),
-		...(child.outputReference ? { requestedPath: child.outputReference.path } : {}),
-		...(child.outputSaveError ? { saveError: child.outputSaveError } : {}),
-		...(worktree ? { worktree } : {}),
-		head: utf8Head(text, INLINE_TASK_OUTPUT_MAX_BYTES),
-		totalBytes: Buffer.byteLength(text, "utf-8"),
+		lease: path ? lease : undefined,
+		output: {
+			...(path ? { path } : {}),
+			...(child.outputReference ? { requestedPath: child.outputReference.path } : {}),
+			...(child.outputSaveError ? { saveError: child.outputSaveError } : {}),
+			...(worktree ? { worktree } : {}),
+			head: utf8Head(text, INLINE_TASK_OUTPUT_MAX_BYTES),
+			totalBytes: Buffer.byteLength(text, "utf-8"),
+		},
 	});
 	while (retained.size > MAX_RETAINED_TASK_OUTPUTS) {
 		const oldest = retained.keys().next().value;
 		if (oldest === undefined) break;
 		const evicted = retained.get(oldest);
 		retained.delete(oldest);
-		await removeCopy(evicted);
+		const task = evicted?.lease?.deref();
+		if (task) evictedCopies.add(task);
+		await removeCopy(evicted?.output);
 	}
 }
 
+export function wasTaskOutputEvicted(lease: TaskLease): boolean {
+	return evictedCopies.has(lease);
+}
+
 export function retainedTaskOutput(ownerId: string, taskId: string): RetainedTaskOutput | undefined {
-	return retained.get(retentionKey(ownerId, taskId));
+	return retained.get(retentionKey(ownerId, taskId))?.output;
 }
 
 /** Task outputs retained now; counted by tests and the benchmark. */

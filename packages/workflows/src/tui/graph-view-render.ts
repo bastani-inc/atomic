@@ -1,4 +1,5 @@
 import { renderNavKeyOverlay } from "@bastani/atomic";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { colorLevelKey, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
@@ -54,6 +55,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	private lastOverlayFrameHeight = 0;
 	private hasReportedViewportRows = false;
 	private renderRun: RunSnapshot | null | undefined;
+	private headerRun?: RunSnapshot;
 	private detailFrame: ToolDetailFrame | null = null;
 
 	private stageDetailFrame: {
@@ -89,9 +91,14 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	/** Render to string lines. width = terminal columns. */
 	render(width: number): string[] {
 		this._syncLayout();
-		if (this.mode === "widget") return this._renderWidget(width);
-		this._refreshQueuedNodeHeights();
-		return this._renderOverlay(width);
+		try {
+			if (this.mode === "widget") return this._renderWidget(width);
+			this._refreshQueuedNodeHeights();
+			return this._renderOverlay(width);
+		} finally {
+			this.displayBlock = undefined;
+			this.headerRun = undefined;
+		}
 	}
 
 	override dispose(): void {
@@ -99,14 +106,29 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		super.dispose();
 	}
 
+	private _headerSnapshot(run: RunSnapshot, stages: StageSnapshot[]): RunSnapshot {
+		const header = { ...run, stages };
+		// The header samples enumerable fields. Share its marker with the footer and switcher for this paint.
+		this.displayBlock = { run, marker: "blockedAt" in header ? header : run };
+		return header;
+	}
+
+	private _renderRunHeader(run: RunSnapshot, header: RunSnapshot, width: number): string[] {
+		return renderHeader(header, {
+			width,
+			theme: this.graphTheme,
+			displayStatus: () => this._runDisplayStatus(run, effectiveRunStatus(header)),
+		});
+	}
+
 	protected _renderWidget(width: number): string[] {
 		const run = this._getCurrentRun();
 		if (!run) return [`${hexToAnsi(this.graphTheme.dim)}no active workflow${RESET}`];
 		const displayStages = this._displayStages(run);
-		const headerLines = renderHeader({ ...run, stages: displayStages }, { width, theme: this.graphTheme });
+		const headerLines = this._renderRunHeader(run, this._headerSnapshot(run, displayStages), width);
 		const counts = this._counts(displayStages);
 		const dim = hexToAnsi(this.graphTheme.dim);
-		const runState = runStateIndicator(run);
+		const runState = runStateIndicator(run, () => this._runDisplayStatus(run));
 		const runStateLead =
 			runState === undefined
 				? ""
@@ -130,6 +152,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		// still advance between frames.
 		this.detailFrame = null;
 		try {
+			if (run) this.headerRun = this._headerSnapshot(run, this._displayStages(run));
 			const frameHeight = this._overlayFrameHeight(run);
 			const layoutFrame = this.graphLayout.render(frameWidth, frameHeight);
 			const lines = this._normalizeLayoutLines(
@@ -361,8 +384,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	}
 
 	private _renderHeader(width: number): string[] {
-		const run = this._currentRenderRun();
-		if (run) return renderHeader({ ...run, stages: this._displayStages(run) }, { width, theme: this.graphTheme });
+		if (this.headerRun && this.renderRun) return this._renderRunHeader(this.renderRun, this.headerRun, width);
 
 		const t = this.graphTheme;
 		const muted = hexToAnsi(t.textMuted);
@@ -441,7 +463,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const switcherLines = renderSwitcher(this._displayStages(run), this.switcherState, {
 			width: switcherWidth,
 			theme: this.graphTheme,
-			runState: runStateIndicator(run),
+			runState: runStateIndicator(run, () => this._runDisplayStatus(run)),
 			canOpenStageChat: (stage) => this._stageChatTarget(stage) !== undefined,
 		});
 		const insertAt = Math.max(bodyStart, bodyStart + Math.min(2, Math.floor((bodyRows - switcherLines.length) / 3)));

@@ -153,10 +153,14 @@ describe("a run blocked on a stage whose session store stays unreachable (#5490)
 				model.rows([blocked, stoppedAgent]).map((row) => row.id),
 				[],
 			);
-			assert.deepEqual(mainComposerHintSegments(keybindings, panel.session), ["? keys"], "in process");
+			assert.deepEqual(
+				mainComposerHintSegments(keybindings, panel.session),
+				["/workflows to see runs", "? keys"],
+				"in process",
+			);
 			assert.deepEqual(
 				mainComposerHintSegments(keybindings, () => hostCounts),
-				["? keys"],
+				["/workflows to see runs", "? keys"],
 				"isolated host",
 			);
 		} finally {
