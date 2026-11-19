@@ -1698,6 +1698,17 @@ export class SessionManager {
 			.map((held) => held.entry);
 	}
 
+	private markForkOrigin(source: SessionStore): void {
+		if (
+			source === this.store ||
+			(source instanceof JsonlSessionStore &&
+				this.store instanceof JsonlSessionStore &&
+				pathsEqual(source.descriptor.location, this.store.descriptor.location))
+		)
+			return;
+		this.fileEntries[0] = { ...this.getHeader()!, parentInOtherStore: true };
+	}
+
 	async forkTo(cwd: string, sessionDir?: string | SessionStore, options?: NewSessionOptions): Promise<SessionManager> {
 		const store =
 			typeof sessionDir === "string"
@@ -1705,9 +1716,9 @@ export class SessionManager {
 				: (sessionDir ?? (await resolveSessionStore(cwd)));
 		const directory = store instanceof JsonlSessionStore ? store.descriptor.location : "";
 		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
-			await this.loadFullHistory();
-			const source = { store: this.store, sessionId: this.sessionId, entries: this.getEntries() };
+			const source = { store: this.store, sessionId: this.sessionId, entries: forkContextPath(this.getBranch()) };
 			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: source.sessionId });
+			manager.markForkOrigin(source.store);
 			const hashes = sessionBlobHashes(source.store, source.entries);
 			assertSessionBlobStore(store, manager.sessionId, hashes.length);
 			manager.fileEntries.push(...source.entries);
@@ -1929,13 +1940,16 @@ export class SessionManager {
 			exactDirectory: true,
 			scanExisting: false,
 		});
-		let source: SessionSnapshot;
+		let source: SessionResume;
 		try {
-			source = await sourceStore.loadFile(resolvePath(sourcePath));
+			source = await sourceStore.readFileWindow(resolvePath(sourcePath));
 		} finally {
 			await sourceStore.close();
 		}
-		const { entries, blobs } = takeInlineToolOutput(source.entries, source.header.id);
+		const selected = [...source.state.filter(({ onBranch }) => onBranch), ...source.branch]
+			.sort((a, b) => a.seq - b.seq)
+			.map(({ entry }) => entry);
+		const { entries, blobs } = takeInlineToolOutput(forkContextPath(selected), source.header.id);
 		const store =
 			typeof sessionDir === "string"
 				? await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false })
@@ -1951,6 +1965,7 @@ export class SessionManager {
 				...options,
 				parentSession: source.header.id,
 			});
+			manager.markForkOrigin(sourceStore);
 			assertSessionBlobStore(store, manager.sessionId, blobs.length);
 			manager.fileEntries.push(...entries);
 			await manager.initialize();

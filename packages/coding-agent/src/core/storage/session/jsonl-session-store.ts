@@ -1038,6 +1038,22 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
+	/** Read the window of this exact export file, not another file in the directory with the same session ID.
+	 * An export is an input: do not create or rewrite a sidecar beside it. */
+	readFileWindow(file: string): Promise<SessionResume> {
+		return this.run(async () => {
+			const path = resolve(file);
+			const stored = await this.readFirstLine(path);
+			if (!isCurrentSessionHeader(stored)) {
+				const imported = await this.readSnapshot(path, stored);
+				return sessionResumeOf(imported.header, imported.entries);
+			}
+			const header = await this.readHeaderAt(path, stored);
+			const jsonl = await this.buildIndex(path, JSON.stringify(header), await stat(path, { bigint: true }));
+			return this.windowFromIndex(path, header, jsonl);
+		});
+	}
+
 	readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
 		return this.run(async () => {
 			if (leafId !== undefined) validateSessionText("entry.id", leafId);
@@ -1049,16 +1065,20 @@ export class JsonlSessionStore implements SessionStore {
 				const entries = read.map((held) => held.entry);
 				return { ...sessionResumeOf(header, entries, leafId), epoch: jsonl.index.epoch };
 			}
-			const index = jsonl.index;
-			const plan = sessionResumePlan(index);
-			const branchSeqs = plan.branch.flatMap(([low, high]) => seqRange(low, high));
-			const read = await this.entriesAt(path, jsonl, [...branchSeqs, ...plan.state]);
-			const inBranch = new Set(branchSeqs);
-			const branch = read.filter((held) => inBranch.has(held.seq));
-			const state = read.filter((held) => !inBranch.has(held.seq));
-			const leaf = leafSeq > 0 ? (branch.find((held) => held.seq === leafSeq)?.entry.id ?? null) : null;
-			return sessionResumeFrom(index, header, branch, state, leaf);
+			return this.windowFromIndex(path, header, jsonl);
 		});
+	}
+
+	private async windowFromIndex(path: string, header: SessionRecordHeader, jsonl: JsonlIndex): Promise<SessionResume> {
+		const index = jsonl.index;
+		const plan = sessionResumePlan(index);
+		const branchSeqs = plan.branch.flatMap(([low, high]) => seqRange(low, high));
+		const read = await this.entriesAt(path, jsonl, [...branchSeqs, ...plan.state]);
+		const inBranch = new Set(branchSeqs);
+		const branch = read.filter((held) => inBranch.has(held.seq));
+		const state = read.filter((held) => !inBranch.has(held.seq));
+		const leaf = index.leafSeq > 0 ? (branch.find((held) => held.seq === index.leafSeq)?.entry.id ?? null) : null;
+		return sessionResumeFrom(index, header, branch, state, leaf);
 	}
 
 	findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {

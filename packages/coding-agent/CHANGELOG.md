@@ -12,6 +12,8 @@
 - `AgentTaskHost.observeAgentLaunch` takes only `{ kind: "background" }` or no policy, and always returns once the launch's observation is registered, because every subagent now runs in the background; wait for a task with `waitForTask`. Its `onRegistered` callback no longer receives a function that yields the observation. A JavaScript caller that still passes `{ kind: "foreground" }` gets the default background observation, with reason `default-background`. `TaskViewSource.foregroundTask`, which no view used, was removed.
 - Set `ATOMIC_EVENT_LOOP_BLOCK_STACKS=0` alongside the event-loop diagnostic threshold to record delays without a stack sampler changing the process's latency. Stack collection remains the diagnostic's default ([#5544](https://github.com/bastani-inc/atomic/issues/5544)).
 
+- Forking a session into another store now copies only the current context and keeps the parent ID, without copying private historical turns into the destination. For a complete independent copy, use `atomic storage export` and `atomic storage import` ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
+
 ### Added
 
 - Agent panel sources can set `runGeneration` on an item, an identity of its latest run, so a stopped or paused row that left the panel and ran again, however briefly, is listed again while other work runs ([#5504](https://github.com/bastani-inc/atomic/issues/5504))

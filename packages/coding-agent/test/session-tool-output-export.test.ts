@@ -101,6 +101,14 @@ async function exported(directory: string, options?: { readonly toolOutputConten
 	await manager.appendMessage({ role: "user", content: "run the report", timestamp: Date.now() });
 	const kept = await sessionBlobOutput(manager, "call-1")!(OUTPUT);
 	assert.equal(kept.location, `tool-output://${HASH}`);
+	await manager.appendMessage({
+		role: "toolResult",
+		toolCallId: "call-1",
+		toolName: "report",
+		content: [{ type: "text", text: kept.location }],
+		isError: false,
+		timestamp: Date.now(),
+	});
 	const path = await harness.session.exportToJsonl(join(directory, "export.jsonl"), options);
 	return { path, sessionId: manager.getSessionId(), harness };
 }

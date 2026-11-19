@@ -17,6 +17,7 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import type { SqliteExecutor, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import { forkStageSession, STAGE_FORK_TOOL_RESULT } from "../../packages/workflows/src/shared/stage-session-store.js";
@@ -304,6 +305,31 @@ test("a delayed stage fork reads the saved launch window after the parent has ad
 		rows <= FORK_ENTRY_BUDGET * 3,
 		`the delayed stage decoded ${rows} stored payloads for a ${expected.messages.length}-message window`,
 	);
+});
+
+test("a cross-store fork keeps the current context without archiving its private parent or its store location (#5594)", async () => {
+	class PrivateStore extends MemorySessionStore {
+		override get descriptor() {
+			return { adapter: "private-fixture", location: "private-location-marker" };
+		}
+	}
+	const source = new PrivateStore();
+	const target = new MemorySessionStore();
+	cleanups.push(() => target.close());
+	const parent = await SessionManager.create(source, process.cwd());
+	const old = await parent.appendMessage({ role: "user", content: "retired private message", timestamp: 1 });
+	await parent.appendCompaction("cleared", null, 100, cleared);
+	await parent.appendMessage({ role: "user", content: "public current request", timestamp: 2 });
+	const expected = parent.buildSessionContext().messages;
+	const forked = await parent.forkTo(process.cwd(), target);
+	await source.close();
+	const child = await SessionManager.open(target, forked.getSessionId());
+	assert.deepEqual(child.buildSessionContext().messages, expected);
+	assert.equal(await child.findEntrySeq(old), undefined, "private old history was copied into the destination");
+	const header = child.getHeader();
+	assert.equal(header?.parentSessionId, parent.getSessionId());
+	assert.equal(header?.parentInOtherStore, true);
+	assert.equal(JSON.stringify(header).includes("private-location-marker"), false);
 });
 
 test("forks retain edited tool content without copying the superseded payload (#5594)", async () => {

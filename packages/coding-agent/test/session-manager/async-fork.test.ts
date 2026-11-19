@@ -24,12 +24,11 @@ test("streamed forks retain history and can append without replacing it (#3577)"
 		const source = join(dir, "source.jsonl");
 		const header = { type: "session", version: 4, id: "source", createdAt: new Date().toISOString(), cwd: dir };
 		const entry = {
-			type: "custom",
+			type: "message",
 			id: "history",
 			parentId: null,
 			timestamp: header.createdAt,
-			customType: "saved",
-			data: "日本語".repeat(100_000),
+			message: { role: "user", content: "日本語".repeat(100_000), timestamp: 1 },
 		};
 		const content = `${JSON.stringify(header)}\n${JSON.stringify(entry)}`;
 		await writeFile(source, content);
@@ -71,6 +70,52 @@ test("streamed forks retain history and can append without replacing it (#3577)"
 		const reopened = await SessionManager.open(fork.getSessionFile()!);
 		assert.deepEqual(reopened.getEntries(), fork.getEntries());
 		assert.equal(await readFile(source, "utf8"), content);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("forking an exported file leaves retired messages in the source file (#5594)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "session-windowed-fork-"));
+	try {
+		const file = join(dir, "export.jsonl");
+		const timestamp = new Date().toISOString();
+		const branch = [
+			{ type: "session", version: 4, id: "source", cwd: dir, createdAt: timestamp },
+			{
+				type: "message",
+				id: "old",
+				parentId: null,
+				timestamp,
+				message: { role: "user", content: "retired private data", timestamp: 1 },
+			},
+			{
+				type: "compaction",
+				id: "boundary",
+				parentId: "old",
+				timestamp,
+				firstKeptEntryId: null,
+				summary: "cleared",
+				tokensBefore: 100,
+				details: { strategy: "verbatim-lines" },
+			},
+			{
+				type: "message",
+				id: "now",
+				parentId: "boundary",
+				timestamp,
+				message: { role: "user", content: "current", timestamp: 2 },
+			},
+		];
+		await writeFile(file, branch.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+		const child = await SessionManager.forkFrom(file, dir, join(dir, "dest"));
+		assert.equal(await child.findEntrySeq("old"), undefined);
+		assert.deepEqual(
+			child.getBranch().map((entry) => entry.id),
+			["boundary", "now"],
+		);
+		assert.equal(child.getHeader()?.parentInOtherStore, true);
+		await child.getSessionStore().close();
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

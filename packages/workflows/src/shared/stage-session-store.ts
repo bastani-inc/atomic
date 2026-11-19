@@ -72,6 +72,7 @@ export async function forkStageSession(
 			createdAt: new Date().toISOString(),
 			cwd,
 			parentSessionId: sessionId,
+			...(store !== destination ? { parentInOtherStore: true as const } : {}),
 			...(options.internal === true ? { internal: true } : {}),
 			...(options.workflow === undefined ? {} : { workflow: options.workflow }),
 		},

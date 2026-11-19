@@ -288,7 +288,7 @@ The chat, the tree's current marker, `/session`, and the context indicator switc
 | Typical use | Explore alternatives in place | Start a new session from an earlier prompt | Duplicate current work before continuing |
 | Summary | Optional branch summary | None | None |
 
-Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone` when you want a separate session.
+Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone` when you want a separate session. Forking into another store copies the current context, not the parent's retired turns or private task records. The fork records its parent ID, but the parent history stays in the original store and may no longer be available if that store was temporary. For a complete, independent copy, use `atomic storage export` and `atomic storage import` instead.
 
 `/fork` opens **Fork from message** with the newest user message selected. Type to filter the messages by their text, use ↑ and ↓ to choose, and press Enter to copy the conversation up to that message into a new session. Esc clears the search, then closes the picker.
 

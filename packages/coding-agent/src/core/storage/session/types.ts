@@ -21,6 +21,8 @@ export interface SessionRecordHeader {
 	readonly createdAt: string;
 	readonly cwd: string;
 	readonly parentSessionId?: string;
+	/** The parent ID refers to the source store, not necessarily a session that can be opened in this store. */
+	readonly parentInOtherStore?: true;
 	readonly internal?: true;
 	readonly workflow?: SessionWorkflowMetadata;
 }

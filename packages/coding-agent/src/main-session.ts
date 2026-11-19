@@ -16,6 +16,7 @@ import { checkResumeStoragePreconditions, type ResumePreflightIo } from "./core/
 import {
 	type DirtyCheckoutChoice,
 	type DirtyCheckoutPrompt,
+	parentHistoryNotices,
 	prepareSessionResume,
 	type ResumeNotice,
 	sessionResumeOptions,
@@ -713,7 +714,10 @@ export async function openCliSession(
 		await release();
 		return "cancelled";
 	}
-	return { sessionManager: prepared.sessionManager, notices: prepared.notices };
+	return {
+		sessionManager: prepared.sessionManager,
+		notices: [...prepared.notices, ...parentHistoryNotices(prepared.sessionManager)],
+	};
 }
 
 /** The progress of opening a session that an interactive host shows on its terminal before the TUI paints (#4660). */
