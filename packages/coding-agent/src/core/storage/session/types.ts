@@ -282,6 +282,19 @@ export interface SessionChildReadCut {
 	readonly seqs: readonly number[];
 	readonly aliases: Readonly<Record<string, SessionChildAliases>>;
 }
+
+/** Where a session's `worktree_snapshot` entries are, as the store's index of its history locates them (#5554). */
+export interface SessionSnapshotCut {
+	readonly epoch: string;
+	readonly lastSeq: number;
+	/** The latest entry carrying each snapshot record, by snapshot id, on any branch. */
+	readonly records: Readonly<Record<string, number>>;
+	/**
+	 * In ascending order, every entry that can be a `worktree_snapshot` entry, on the requested branch when one was: a
+	 * superset, so a reader keeps the entries whose type is.
+	 */
+	readonly seqs: readonly number[];
+}
 export interface SessionResume {
 	readonly header: SessionRecordHeader;
 	readonly lastSeq: number;
@@ -539,7 +552,29 @@ export interface SessionStore {
 	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
 	readResume?(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume>;
 	readChildCatalogCut?(sessionId: string): Promise<SessionChildReadCut>;
-	readSelectedPage?(sessionId: string, seqs: readonly number[], epoch: string): Promise<SessionHistoryPage>;
+	/**
+	 * Where the session's snapshot entries are, from the index the store keeps of its history, without reading an entry:
+	 * with `leafSeq`, only those on the branch from that sequence to the root. Undefined when that index does not cover
+	 * the session's history as it stands; a reader then reads the history itself. A store with it reads
+	 * `readSelectedPage` with its `limit` and `backward` options.
+	 */
+	readSnapshotCut?(
+		sessionId: string,
+		options?: { readonly leafSeq?: number },
+	): Promise<SessionSnapshotCut | undefined>;
+	/**
+	 * The entries at `seqs`, ascending, of generation `epoch`, in ascending order: the longest prefix of them (with
+	 * `backward`, suffix) of at most `SESSION_HISTORY_PAGE_ENTRIES` entries (or `limit`, up to
+	 * `SESSION_HISTORY_SCAN_ENTRIES`) and `SESSION_HISTORY_PAGE_BYTES` bytes, or its first (last) entry alone as an
+	 * oversized reference when that is larger. Rejects with `SessionConflictError` when the session is of another
+	 * generation or holds no entry at one of them.
+	 */
+	readSelectedPage?(
+		sessionId: string,
+		seqs: readonly number[],
+		epoch: string,
+		options?: { readonly limit?: number; readonly backward?: boolean },
+	): Promise<SessionHistoryPage>;
 	/** A local navigation from a stale manager may select a branch as of its original sequence watermark. */
 	/** Read the branch a forked child needs at its captured entry, with the current labels for copied targets. */
 	readForkWindow?(

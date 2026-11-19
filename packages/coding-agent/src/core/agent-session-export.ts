@@ -332,11 +332,9 @@ function capturedBranch(sessionManager: SessionManager, store: SessionStore, con
 			if (cut.leafId === null) return;
 			if (leafSeq === undefined) throw new SessionEntryError(cut.leafId, "missing");
 			if (before > 0)
-				for await (const { items } of cut.pages({
-					branchLeafSeq: leafSeq,
-					toSeq: before,
-					pageEntries: SESSION_HISTORY_SCAN_ENTRIES,
-				})) {
+				for await (const { items } of readAhead(
+					cut.pages({ branchLeafSeq: leafSeq, toSeq: before, pageEntries: SESSION_HISTORY_SCAN_ENTRIES }),
+				)) {
 					for (const item of items)
 						yield cut.held.get(item.seq) ?? ("entry" in item ? item.entry : await entryOf(cut, item));
 				}
@@ -367,6 +365,29 @@ async function* withSnapshotContent(branch: CapturedBranch): AsyncGenerator<Sess
 }
 
 type ArchiveCut = ReturnType<SessionManager["captureArchive"]>;
+
+/**
+ * `pages`, each read while the one before it is written: the store's read and the file's writes overlap instead of
+ * waiting on each other. At most two pages are held. A read that fails is thrown where its page would have been.
+ */
+async function* readAhead<T>(pages: AsyncGenerator<T, void>): AsyncGenerator<T, void> {
+	const ahead = () => {
+		const next = pages.next();
+		next.catch(() => {});
+		return next;
+	};
+	let next = ahead();
+	try {
+		for (;;) {
+			const page = await next;
+			if (page.done) return;
+			next = ahead();
+			yield page.value;
+		}
+	} finally {
+		await pages.return(undefined);
+	}
+}
 
 /** A stored entry too large for a history page, from its exact bytes. */
 async function entryOf(cut: ArchiveCut, item: OversizedSessionEntry): Promise<SessionEntry> {

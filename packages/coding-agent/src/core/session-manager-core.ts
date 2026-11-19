@@ -121,6 +121,7 @@ import {
 import {
 	findWorktreeSnapshotRecords,
 	type StoredWorktreeSnapshotEntry,
+	storeSnapshotIndex,
 	worktreeSnapshotPages,
 } from "./storage/session/snapshot-records.js";
 import type {
@@ -667,15 +668,46 @@ export class SessionManager {
 
 	/** @internal The host of an unsaved isolated session owns an independent private backend. These positions
 	 * let it combine the live (possibly locally mutated) rows with the same generation's archived bytes. */
-	getPrivateMirrorArchive(
-		entries: readonly SessionEntry[],
-	): { sessionId: string; cursor: string; seqs: number[] } | undefined {
-		if (this.isPersisted() || entries.length === this.lastSeq || this.historyEpoch === undefined) return undefined;
+	getPrivateMirrorArchive(entries: readonly SessionEntry[], previous?: { epoch?: string; lastSeq: number }) {
+		if (this.isPersisted() || (!previous && entries.length === this.lastSeq) || this.historyEpoch === undefined)
+			return undefined;
+		const epoch = this.historyEpoch,
+			lastSeq = this.lastSeq;
+		const fromSeq =
+			previous?.epoch === epoch &&
+			Number.isSafeInteger(previous.lastSeq) &&
+			previous.lastSeq >= 0 &&
+			previous.lastSeq <= lastSeq
+				? previous.lastSeq + 1
+				: 1;
 		return {
 			sessionId: this.sessionId,
-			cursor: firstHistoryCursor(this.sessionId, this.historyEpoch, this.lastSeq),
+			cursor: firstHistoryCursor(this.sessionId, epoch, lastSeq, fromSeq),
 			seqs: entries.map((e) => this.entrySeqs.get(e.id)!),
+			...(previous && {
+				epoch,
+				lastSeq,
+				fromSeq,
+				summary:
+					this.store instanceof MemorySessionStore
+						? this.store.mirrorSummary(this.sessionId, epoch, lastSeq)
+						: undefined,
+			}),
 		};
+	}
+	/** @internal Select the live SDK objects whose serialized form differs from this cut's immutable bytes. */
+	getPrivateMirrorChanges(entries: readonly SessionEntry[], seqs: readonly number[]) {
+		if (!(this.store instanceof MemorySessionStore) || !this.historyEpoch) return undefined;
+		const indexed = function* () {
+			for (let i = 0; i < entries.length; i++) yield [seqs[i]!, entries[i]!] as const;
+		};
+		return this.store.liveMirrorOverrides(this.sessionId, this.historyEpoch, this.lastSeq, indexed());
+	}
+	/** @internal Encoded bootstrap pages are only available from a memory store at its captured cut. */
+	readPrivateMirrorBytes(cut: import("./storage/session/memory-session-store.js").PrivateMirrorCut) {
+		return this.sessionId === cut.sessionId && this.store instanceof MemorySessionStore
+			? this.store.readMirrorBytes(cut)
+			: undefined;
 	}
 	getSessionRecoveryState(): SessionRecoveryState {
 		return shareCompletionEvidence(this.recoveryState, {
@@ -2094,6 +2126,8 @@ export class SessionManager {
 				historyPages(store, sessionId, historyEpoch, lastSeq, options),
 			chunks: (ref: OversizedSessionEntry, signal?: AbortSignal) =>
 				historyChunks(store, sessionId, historyEpoch, ref, { signal }),
+			// Where the store's index places the snapshot entries of this cut, read without the rest of the history (#5554).
+			snapshotIndex: storeSnapshotIndex(store, sessionId, historyEpoch, lastSeq),
 			async *bytes(seq: number, signal?: AbortSignal): AsyncGenerator<Uint8Array, void> {
 				if (seq < 1 || seq > lastSeq) throw new RangeError("Entry is outside the captured session");
 				if (store.readEntrySizes && store.readEntryChunk) {
@@ -2730,6 +2764,26 @@ export class SessionManager {
 			return parent && !this.byId.has(entry.parentId ?? "") ? { ...entry, parentId: parent } : entry;
 		});
 		return SessionManager.inMemory(cwd, undefined, [header, ...path]);
+	}
+
+	/** @internal Install a complete linear private window and its native recovery evidence without
+	 * re-decoding the same displayed rows through a second resume projection. */
+	static async openLinearPrivateMirror(
+		store: MemorySessionStore,
+		sessionId: string,
+		cwd: string,
+		changes: ReadonlyMap<number, SessionEntry>,
+		decoded?: SessionEntry[],
+	) {
+		const complete = await store.readPrivateLinearWindow(sessionId, changes, decoded);
+		if (!complete) return undefined;
+		const manager = new SessionManager(store, cwd, "");
+		manager.restore(complete.snapshot);
+		const { workflowStarts, admissionDigests, ...recovery } = complete.recovery;
+		manager.workflowStarts = { ...workflowStarts };
+		manager.admissionKeys = new SessionKeyDigests(admissionDigests);
+		manager.recoveryState = { ...recovery, admissionDigests: "" };
+		return manager;
 	}
 
 	static inMemory(cwd?: string, options?: NewSessionOptions): SessionManager;

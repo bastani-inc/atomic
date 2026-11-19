@@ -58,10 +58,12 @@ import {
 	readEarlierCompletionIntents,
 	resumeIndexNeedsRefold,
 	type SessionResumeIndex,
+	selectedPagePlan,
 	selectResumeLeaf,
 	sessionResumeFrom,
 	sessionResumePlan,
 	sessionTailFrom,
+	snapshotCutOf,
 	stateSeqsBefore,
 	transcriptBranchSpan,
 } from "./session-resume.js";
@@ -84,10 +86,12 @@ import type {
 	SessionEntrySizes,
 	SessionForkRow,
 	SessionForkSeed,
+	SessionHistoryPage,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
 	SessionSnapshot,
+	SessionSnapshotCut,
 	SessionStore,
 	SessionStoredEntry,
 	SessionSummary,
@@ -1504,16 +1508,15 @@ export class JsonlSessionStore implements SessionStore {
 					{
 						descriptor: this.descriptor,
 						readEntrySizes: reading(async (_id: string, from: number, to: number, limit?: number) => {
-							const sizes: { seq: number; bytes: number }[] = [];
-							let total = 0;
 							const end = Math.min(lastSeq, to, from + entrySizeLimit(limit) - 1);
-							for (let seq = from; seq <= end; seq++) {
-								const bytes = spanEnd(jsonl, seq) - spanStart(jsonl, seq);
-								sizes.push({ seq, bytes });
-								total += bytes;
-								if (total >= SESSION_HISTORY_PAGE_BYTES) break;
-							}
-							return { epoch, lastSeq, sizes };
+							return {
+								epoch,
+								lastSeq,
+								sizes: seqRange(from, end).map((seq) => ({
+									seq,
+									bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+								})),
+							};
 						}),
 						readEntryChunk: reading((ref: OversizedSessionEntry, offset: number) =>
 							readFrom(
@@ -1613,6 +1616,41 @@ export class JsonlSessionStore implements SessionStore {
 
 	readChildCatalogCut(sessionId: string) {
 		return this.run(async () => childCatalogCut((await this.indexed(sessionId)).jsonl.index));
+	}
+	/** The snapshot entries the session's index locates; no line of the file is read (#5554). */
+	readSnapshotCut(
+		sessionId: string,
+		options: { readonly leafSeq?: number } = {},
+	): Promise<SessionSnapshotCut | undefined> {
+		return this.run(async () => {
+			const { index } = (await this.indexed(sessionId)).jsonl;
+			if (options.leafSeq !== undefined && options.leafSeq > index.seq) return undefined;
+			return snapshotCutOf(index, options.leafSeq);
+		});
+	}
+	/** The lines at `seqs`, each read from where the index places it, without reading the lines between them. */
+	readSelectedPage(
+		sessionId: string,
+		seqs: readonly number[],
+		epoch: string,
+		options: { readonly limit?: number; readonly backward?: boolean } = {},
+	): Promise<SessionHistoryPage> {
+		return this.run(async () => {
+			const limit = entrySizeLimit(options.limit);
+			const wanted = options.backward ? seqs.slice(-limit) : seqs.slice(0, limit);
+			if (!wanted.length) return { items: [] };
+			const { path, jsonl } = await this.indexed(sessionId);
+			if (jsonl.index.epoch !== epoch) throw new SessionConflictError(sessionId, wanted.at(-1)!, jsonl.index.seq);
+			const plan = selectedPagePlan(
+				sessionId,
+				wanted,
+				jsonl.index.seq,
+				(seq) => spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+				options.backward,
+			);
+			if ("oversized" in plan) return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized }] };
+			return { items: await this.entriesAt(path, jsonl, plan.seqs) };
+		});
 	}
 	readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
 		return this.run(async () => {

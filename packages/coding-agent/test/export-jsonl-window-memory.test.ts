@@ -326,7 +326,7 @@ describe.each(["memory", "jsonl", "sqlite"] as const)("a JSONL export from a %s 
 		);
 	});
 
-	test("carries a snapshot record and content recorded only off the selected branch, as main does, reading the rest of the session once (#5554)", async () => {
+	test("carries a snapshot record and content recorded only off the selected branch, as main does, reading the rest of the session at most once (#5554)", async () => {
 		const directory = temporaryDirectory();
 		const store = await openStore(kind, directory);
 		await seed(kind, store, { crossBranch: true });
@@ -348,7 +348,8 @@ describe.each(["memory", "jsonl", "sqlite"] as const)("a JSONL export from a %s 
 		assert.ok(s2?.type === "worktree_snapshot");
 		assert.equal(s2.snapshot?.id, "S2");
 		assert.deepEqual(s2.blobs, { [sha256(PATCH_B)]: base64(PATCH_B) });
-		assert.equal(siblingReads, 1, "the rest of the session was read once for every lookup");
+		// At most once for all three lookups; a store that indexes its snapshot entries reads none of the sibling's.
+		assert.ok(siblingReads <= 1, `the rest of the session was read ${siblingReads} times`);
 		assert.equal(reads.loads, 0);
 		assert.equal(manager.hasFullHistory(), false);
 		assert.equal(manager.getEntries().length, held);
