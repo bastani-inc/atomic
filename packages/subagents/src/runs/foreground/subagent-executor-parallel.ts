@@ -30,7 +30,7 @@ import { formatParallelResultContent } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
 import { formatWorktreeDiffSummary, type WorktreeSetup } from "../shared/worktree.js";
-import { boundedWorktreeReply, registerRunWorktrees } from "./run-worktrees.js";
+import { currentChildWorktreeNote, registerRunWorktrees } from "./run-worktrees.js";
 import { createSubagentChildRecordSink } from "./subagent-child-records.js";
 import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.js";
 import {
@@ -40,6 +40,7 @@ import {
 	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
 import {
+	BURST_ANSWERS,
 	BURST_PREPARED_TASKS,
 	type ExecutionContextData,
 	type ResolvedExecutorDeps,
@@ -331,11 +332,11 @@ export async function runParallelPath(
 					),
 			);
 		}
-		// A child's note was read when it finished, while a sibling may still have held the batch: every child has
-		// finished now, so read the batch's worktree state again, without waiting.
-		if (runWorktrees && results.some((result) => result.worktreeNote)) {
-			const note = await boundedWorktreeReply(runId, undefined, Date.now());
-			for (const result of results) if (result.worktreeNote) result.worktreeNote = note;
+		// A sibling may have released the batch since this child finished. Report only its own current worktree.
+		if (runWorktrees) {
+			for (const [index, result] of results.entries()) {
+				if (result.worktreeNote) result.worktreeNote = currentChildWorktreeNote(runId, index);
+			}
 		}
 		for (let i = 0; i < results.length; i++) {
 			const run = results[i]!;
@@ -405,26 +406,28 @@ export async function runParallelPath(
 			};
 		}
 
-		const childContent = formatParallelResultContent(
-			results.map((result) => ({
-				agent: result.agent,
-				output: [result.worktreeNote, result.truncation?.text || getSingleResultOutput(result)]
-					.filter(Boolean)
-					.join("\n\n"),
-				status: result.status,
-				error: result.error,
-				...(result.cause ? { cause: result.cause } : {}),
-			})),
-			// A child that ran on another model than its launch asked for says so (#4188).
-			(i, agent) => {
-				const ranOn = resultRanOnLine(results[i] ?? {});
-				return `=== Task ${i + 1}: ${agent} ===${ranOn ? `\n${ranOn}` : ""}`;
-			},
-		);
-		const fullContent = worktreeSuffix ? `${childContent}\n\n${worktreeSuffix}` : childContent;
+		const renderAnswers = (children: SingleResult[]) => {
+			const childContent = formatParallelResultContent(
+				children.map((result) => ({
+					agent: result.agent,
+					output: [result.worktreeNote, result.truncation?.text || getSingleResultOutput(result)]
+						.filter(Boolean)
+						.join("\n\n"),
+					status: result.status,
+					error: result.error,
+					...(result.cause ? { cause: result.cause } : {}),
+				})),
+				(i, agent) => {
+					const ranOn = resultRanOnLine(children[i]!);
+					return `=== Task ${i + 1}: ${agent} ===${ranOn ? `\n${ranOn}` : ""}`;
+				},
+			);
+			return worktreeSuffix ? `${childContent}\n\n${worktreeSuffix}` : childContent;
+		};
+		params[BURST_ANSWERS]?.((start, length) => renderAnswers(results.slice(start, start + length)));
 
 		return {
-			content: [{ type: "text", text: fullContent }],
+			content: [{ type: "text", text: renderAnswers(results) }],
 			details,
 			// #4697: the call fails only when no child started; even then each child's error is listed.
 			...(results.every((result) => result.taskResponse?.kind === "unstarted") ? { isError: true } : {}),

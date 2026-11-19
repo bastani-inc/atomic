@@ -255,15 +255,17 @@ export async function boundedWorktreeReply(
 	}
 }
 
-export function observeChildWorktreeAtReply(
+export async function observeChildWorktreeAtReply(
 	runId: string,
 	index: number,
 	deadline?: number,
 	signal?: AbortSignal,
 ): Promise<string | undefined> {
 	const run = runs.get(runId);
-	if (!run?.setup.worktrees.some((tree) => tree.index === index)) return Promise.resolve(undefined);
-	return boundedWorktreeReply(runId, run.finishing.get(index), deadline, signal);
+	if (!run || run.removed.has(index) || !run.setup.worktrees.some((tree) => tree.index === index)) return undefined;
+	await boundedWorktreeReply(runId, run.finishing.get(index), deadline, signal);
+	// The sweep may have removed this child's worktree while a sibling kept the run registered.
+	return currentChildWorktreeNote(runId, index);
 }
 
 /** The execution's hold ends after session cleanup, even when the reply's deadline expires first. */

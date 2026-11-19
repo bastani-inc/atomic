@@ -15,6 +15,7 @@ import { withForkContext } from "./subagent-executor-input.js";
 import { getLiveResultIndices } from "./subagent-executor-live-update.js";
 import { getParentAskHandoff } from "./subagent-executor-parent-ask-projection.js";
 import {
+	BURST_ANSWERS,
 	BURST_PREPARED_TASKS,
 	BURST_TASK_DISCOVERY_CWD,
 	BURST_TASK_INPUT_INDEX,
@@ -273,27 +274,22 @@ function projectParentAskContent(
 
 function projectParallelContent(
 	result: SubagentToolResult,
-	sharedResults: SingleResult[],
 	projectedResults: SingleResult[],
 	route: ResultRoute,
 	live: boolean,
+	answer?: string,
 ): SubagentToolResult["content"] {
-	const projectedText = formatStandardParallelContent(projectedResults);
-	if (live) return [{ type: "text", text: projectedText }];
-	const parentAskContent = projectParentAskContent(result, route, projectedResults);
-	if (parentAskContent) return parentAskContent;
-	if (result.content.length !== 1 || result.content[0]?.type !== "text") return result.content;
-	const originalItem = result.content[0];
-	const originalText = originalItem.text;
-	const sharedText = formatStandardParallelContent(sharedResults);
-	if (originalText === sharedText) return [{ ...originalItem, text: projectedText }];
-	if (originalText.startsWith(`${sharedText}\n\n`)) {
-		return [{ ...originalItem, text: `${projectedText}${originalText.slice(sharedText.length)}` }];
-	}
-	return result.content;
+	if (live) return [{ type: "text", text: formatStandardParallelContent(projectedResults) }];
+	if (answer !== undefined) return [{ type: "text", text: answer }];
+	return projectParentAskContent(result, route, projectedResults) ?? result.content;
 }
 
-function projectResult(result: SubagentToolResult, route: ResultRoute, live = false): SubagentToolResult {
+function projectResult(
+	result: SubagentToolResult,
+	route: ResultRoute,
+	live = false,
+	answer?: string,
+): SubagentToolResult {
 	const sharedDetails = result.details;
 	if (!sharedDetails || (!live && sharedDetails.results.length === 0)) return result;
 
@@ -315,7 +311,7 @@ function projectResult(result: SubagentToolResult, route: ResultRoute, live = fa
 	const artifactFiles = results.flatMap((child) => (child.artifactPaths ? [child.artifactPaths] : []));
 
 	return {
-		content: projectParallelContent(result, sharedDetails.results, results, route, live),
+		content: projectParallelContent(result, results, route, live, answer),
 		...(result.isError !== undefined ? { isError: result.isError } : {}),
 		details: {
 			mode: "parallel",
@@ -484,6 +480,10 @@ export function createExecutionBurstDispatcher(input: {
 		// gets its own error, and the others, none of which started, run once without it. An error no launch has on its
 		// own, such as too many tasks altogether, stays the error of every launch.
 		let retry: BurstItem[] | undefined;
+		let answers: string[] | undefined;
+		merged.params![BURST_ANSWERS] = (render) => {
+			answers = merged.routes!.map(({ start, length }) => render(start, length));
+		};
 		let preparedTasks: TaskParam[] | undefined;
 		merged.params![BURST_PREPARED_TASKS] = (tasks) => {
 			preparedTasks = tasks;
@@ -503,7 +503,7 @@ export function createExecutionBurstDispatcher(input: {
 					items.map(
 						async (item, index) =>
 							(await projectOwnerResult(result, merged.routes![index]!, item, first.ctx)) ??
-							projectResult(result, merged.routes![index]!),
+							projectResult(result, merged.routes![index]!, false, answers?.[index]),
 					),
 				);
 				for (let index = 0; index < items.length; index++) {
