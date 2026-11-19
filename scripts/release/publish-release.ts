@@ -62,7 +62,7 @@ async function run(args: string[], interrupted: AbortSignal) {
 	if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > max)
 		throw new Error(`--timeout-ms must be between 1 and ${max}.`);
 	const signal = AbortSignal.any([interrupted, AbortSignal.timeout(timeout)]);
-	const boundary = createReleaseBoundary(cwd);
+	const boundary = createReleaseBoundary(cwd, { requiredCheckTimeoutMs: timeout, publishTimeoutMs: timeout });
 	try {
 		if (command === "check-changelog-diff") return await checkChangelogDiff(cwd, baseRef, signal);
 		if (command === "merge-exact-head")
@@ -73,6 +73,7 @@ async function run(args: string[], interrupted: AbortSignal) {
 				release: flags.version === undefined ? undefined : validated(),
 				dryRun: flags["dry-run"] === true,
 				signal,
+				syncSignal: interrupted,
 			});
 		const release = validated();
 		if (command === "inspect-preparation") {
@@ -86,13 +87,15 @@ async function run(args: string[], interrupted: AbortSignal) {
 				? await boundary.waitForPublish({ release, releaseSha: sha(arg("sha")), signal })
 				: await boundary.waitForRequiredChecks({ release, baseRef, pullRequest: pullRequest(), signal });
 		if (result.status !== "passed")
-			throw new ReleaseBlocked([result.summary, result.evidenceUrl].filter(Boolean).join(" "));
+			throw new ReleaseBlocked(
+				[result.summary, result.evidenceUrl].filter(Boolean).join(" "),
+				result.lastObservation,
+			);
 		return result;
 	} catch (error) {
-		if (signal.aborted)
-			throw new ReleaseBlocked(
-				interrupted.aborted ? "Release gate interrupted." : `${command} timed out after ${timeout} ms.`,
-			);
+		if (interrupted.aborted) throw new ReleaseBlocked("Release gate interrupted.");
+		if (signal.aborted && error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))
+			throw new ReleaseBlocked(`${command} timed out after ${timeout} ms.`);
 		throw error;
 	}
 }

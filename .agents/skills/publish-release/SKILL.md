@@ -11,7 +11,7 @@ metadata:
 
 Each release subcommand prints JSON. Only exit 0 with `status: "passed"` authorizes continuation; exit 2 is blocked and exit 1 is an error. Neither a dry-run result nor a task receipt authorizes a real cut.
 
-At any failed check, command error, abort, timeout or ambiguous result, **stop**. Report the stage, version, evidence, and which actions have already happened. Never stash someone else's changes, reset a branch, force-push, replace a tag, bypass CI, or launch a second release. On resumption inspect Git and GitHub before acting; a lost response is not permission to repeat a mutation.
+At any failed check, command error, abort, timeout or ambiguous result, **stop**. The only intermediate timeout is the first read-only publish window in step 8; it can authorize one more observation, never a release action. Report the stage, version, evidence, and which actions have already happened. Never stash someone else's changes, reset a branch, force-push, replace a tag, bypass CI, or launch a second release. On resumption inspect Git and GitHub before acting; a lost response is not permission to repeat a mutation.
 
 1. **Identify the release.** Ask for a missing version; infer `kind=release` from `MAJOR.MINOR.PATCH`, `kind=prerelease` from `MAJOR.MINOR.PATCH-alpha.REVISION` (revision starts at 1). No leading `v`, leading zeroes, or `0.0.0` placeholder. Clarify invalid or conflicting inputs. Use the requested short base branch, default `main`. The release branch is `<kind>/<version>`. For a non-main base, confirm it is protected with the repository's required CI checks; do not make it releasable by changing its protection. The base must remain versionless: package manifests, lockfiles, Cargo files and generated version files stay at `0.0.0`. Run `bun run scripts/release/publish-release.ts validate --version "$version" --base "$base"`; include `--kind` if the requester specified a kind. Record the validated kind, branch, version and base.
 
@@ -21,7 +21,7 @@ At any failed check, command error, abort, timeout or ambiguous result, **stop**
    bun run scripts/release/publish-release.ts inspect-preparation --version "$version" --base "$base"
    ```
 
-   This requires a clean checkout, including untracked files. On `mode: "reuse"`, record the returned PR URL, number and full head SHA and skip straight to step 5. Reuse requires exactly one remote commit with the current remote base as its sole parent, only `CHANGELOG.md` paths (every file page; both sides of renames), any local release branch at the same SHA, and one matching open PR. A mismatch is not a request to repair the branch. Only `mode: "prepare"` permits step 3; record its `baseSha`.
+   This requires a clean checkout, including untracked files. On `mode: "reuse"`, record the returned PR URL, number and full head SHA and skip straight to step 5. Reuse requires exactly one commit unique to the release branch. Its sole parent must be on the selected remote base's history: if the base advances during CI, the release head need not be rebased. Require only `CHANGELOG.md` paths (every file page; both sides of renames), any local release branch at the same SHA, and one matching open PR. A mismatch is not a request to repair the branch. Only `mode: "prepare"` permits step 3; record its `baseSha`.
 
 3. **Prepare the notes without committing.** Fetch the selected base. Require its SHA still equals `baseSha`; create a **new** release branch at that exact commit. Read `AGENTS.md` → Changelog. Move every relevant package's `[Unreleased]` entries to `## [<version>] - YYYY-MM-DD`, dated today; never edit a previously released section. A stable release includes every entry of its preceding alphas and stands alone. Merge duplicate detailed entries without dropping content or links.
 
@@ -36,7 +36,7 @@ At any failed check, command error, abort, timeout or ambiguous result, **stop**
    ```js
    return await tools.bash({
      command: 'bun run scripts/release/publish-release.ts wait-required-checks --version "$VERSION" --base "$BASE" --pr "$PR_NUMBER" --head "$HEAD_SHA"',
-     env: load("release-inputs"), timeout: 2700, wait: {kind: "background"}
+     env: load("release-inputs"), timeout: 2760, wait: {kind: "background"}
    });
    ```
 
@@ -54,6 +54,11 @@ At any failed check, command error, abort, timeout or ambiguous result, **stop**
 
    Never run `bump-version.ts` directly or move the base to the stamped commit. Read the exact remote `refs/tags/<version>` back. Require it to resolve to the release commit, subject `Release <version>`, with the synchronized SHA as sole parent, `Release-base-ref: refs/heads/<base>` and `Release-base-sha: <synchronized SHA>` trailers and matching package version. Record the full release SHA. If resuming after a tag push, only proceed with that exact proof; do not cut again. A conflicting tag blocks, even if the build would pass.
 
-8. **Verify publication.** The tag push itself starts GitHub Actions. Run `bun run scripts/release/publish-release.ts wait-publish-run --version "$version" --sha "$release_sha"`. Use the same background codemode pattern with `timeout: 3600` and the verified release SHA. Missing or in-progress remains pending; wait at most **60 minutes** for one successful push run of `.github/workflows/publish.yml` in `bastani-inc/atomic`, matching the exact tag, SHA, name and display title `Publish <version>`. Duplicates, identity drift, non-success conclusions and API errors block. Do not dispatch or rerun publication during a normal release; see `docs/ci.md` for separately authorized recovery.
+8. **Verify publication.** The tag push itself starts GitHub Actions. Wait at most **60 minutes** for one successful push run of `.github/workflows/publish.yml` in `bastani-inc/atomic`, matching the exact tag, SHA, name and display title `Publish <version>`. Duplicates, identity drift, non-success conclusions and API errors block. Do not dispatch or rerun publication during a normal release; see `docs/ci.md` for separately authorized recovery.
+
+   Bash allows at most 3600 seconds. Use two **read-only** observations of the same version and SHA so each command has 60 seconds to print its result before bash stops it:
+
+   - Store the absolute 60-minute deadline and start `bun run scripts/release/publish-release.ts wait-publish-run --version "$version" --sha "$release_sha" --timeout-ms 3540000` as a background task with `timeout: 3600`. Wait for that task. Exit 0 and `passed` completes verification.
+   - **Only** if the first call exits 2 with `status: "blocked"` **and** `lastObservation: "pending"`, observe once more. This means the polling window ended with the run absent or still in progress, not that publication failed. Run the same command with `--timeout-ms 60000` and bash `timeout: 120`; shorten the 60000 ms to the remaining original deadline if necessary. If no time remains, stop. A passed second result completes verification. A still-pending second result blocks: **no third call**. Any other blocked, errored, interrupted or ambiguous result stops immediately.
 
 Report completion only after the last gate: kind, version, branch, PR URL/number and head, synchronized base ref/SHA, tag/release SHA, and successful publish-run URL.
