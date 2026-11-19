@@ -31,7 +31,6 @@ for (const suspension of ["beforeConnect", "spawn"] as const) {
 			vi.spyOn(IntercomClient.prototype, "connect").mockImplementation(async (registration) => {
 				registrations.push(structuredClone(registration));
 			});
-			vi.spyOn(IntercomClient.prototype, "registerLiveWorkflowStageRoute").mockResolvedValue();
 			vi.spyOn(IntercomClient.prototype, "disconnect").mockResolvedValue();
 			const pi = {
 				on(name: string, handler: (event: never, ctx: ExtensionContext) => void | Promise<void>) {
@@ -54,13 +53,10 @@ for (const suspension of ["beforeConnect", "spawn"] as const) {
 				isIdle: () => true,
 				ui: { notify() {} },
 				sessionManager: { getSessionId: () => "startup-terminal-child", getBranch: () => [] },
-				subagentPolicy: { executionEnded: execution.signal },
-				orchestrationContext: {
-					kind: "workflow-stage",
-					workflowRunId: "run",
-					workflowStageId: "stage",
-					workflowStageName: "stage",
-					pendingStageDelivery: { routeCapability: "capability", deliverPending: async () => {} },
+				subagentPolicy: {
+					executionEnded: execution.signal,
+					// An admitted child registers at session start.
+					intercom: { orchestratorTarget: "parent", runId: "run", agent: "worker", index: 0 },
 				},
 			} as unknown as ExtensionContext;
 			const fire = async (name: string) => {

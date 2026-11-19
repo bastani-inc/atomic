@@ -19,7 +19,7 @@ export interface WorkspaceOptions {
 	readonly label?: string;
 }
 
-/** A validated, unresolved workspace. Resolution happens when a session or child workflow binds to it. */
+/** A validated, unresolved workspace. Resolution happens when a session binds to it. */
 export interface Workspace {
 	readonly kind: "workspace";
 	readonly repo: string;
@@ -133,7 +133,7 @@ function freeze(spec: Omit<Workspace, "kind" | "readOnly">): Workspace {
 }
 
 /**
- * Declare the repository, branch and worktree a session or child workflow works in. Validates the options and throws
+ * Declare the repository, branch and worktree a session works in. Validates the options and throws
  * `WorkspaceConfigError` before any git or filesystem work; values are kept verbatim.
  */
 export function workspace(options: WorkspaceOptions): Workspace {

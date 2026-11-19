@@ -14,7 +14,6 @@ export type IncomingMessageSender = (
   generation?: number,
   trackReplyContext?: boolean,
   turnContext?: IntercomContext,
-  stageAdmissionBarrier?: () => Promise<void>,
 ) => Promise<void>;
 
 /** Creates generation-safe Intercom delivery into the Atomic custom-message API. */
@@ -24,7 +23,7 @@ export function createIncomingMessageSender(input: {
   canDeliver: (generation: number) => boolean;
   queueTurnContext: (context: IntercomContext) => void;
 }): IncomingMessageSender {
-  return (entry, requested, generation = input.currentGeneration(), trackReplyContext = true, turnContext, stageAdmissionBarrier) => {
+  return (entry, requested, generation = input.currentGeneration(), trackReplyContext = true, turnContext) => {
     if (!input.canDeliver(generation)) {
       return Promise.reject(new Error("Intercom session retired before inbound delivery"));
     }
@@ -37,7 +36,6 @@ export function createIncomingMessageSender(input: {
     const baseOptions = {
       stageAdmissionKey: `intercom:${entry.message.id}`,
       persistWhenStreaming: true,
-      ...(stageAdmissionBarrier ? { stageAdmissionBarrier } : {}),
     } as const;
     const options = delivery === "interrupt"
       ? { ...baseOptions, triggerTurn: true, deliverAs: "interrupt" } as const

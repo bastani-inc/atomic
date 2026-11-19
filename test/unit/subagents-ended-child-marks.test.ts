@@ -20,8 +20,6 @@ import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foregr
 import {
 	createSubagentChildRecordSink,
 	SUBAGENT_CHILD_RELEASED_STATUS,
-	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import type { SubagentChildRestoreDeps } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
@@ -80,16 +78,10 @@ test("a child whose last run ended is reported with why, its ids and the id resu
 		childId: "aabcf28b:0",
 	});
 	const outcomes = Object.fromEntries(
-		[
-			"ok",
-			"error",
-			"interrupted",
-			"paused",
-			"quit",
-			SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
-			"killed",
-			SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
-		].map((status) => [status, endedChildMark(record({ terminalStatus: status }))?.outcome]),
+		["ok", "error", "interrupted", "paused", "quit", "killed"].map((status) => [
+			status,
+			endedChildMark(record({ terminalStatus: status }))?.outcome,
+		]),
 	);
 	assert.deepEqual(outcomes, {
 		ok: "completed",
@@ -97,9 +89,7 @@ test("a child whose last run ended is reported with why, its ids and the id resu
 		interrupted: "stopped",
 		paused: "stopped",
 		quit: "stopped",
-		[SUBAGENT_CHILD_STAGE_PAUSED_STATUS]: "stopped",
 		killed: "cancelled",
-		[SUBAGENT_CHILD_STAGE_CLOSED_STATUS]: "cancelled",
 	});
 	assert.deepEqual(endedChildMark(record({ childSessionId: undefined }))?.aliases, []);
 	assert.equal("group" in (endedChildMark(record()) ?? {}), false, "no group key unless the record has one");

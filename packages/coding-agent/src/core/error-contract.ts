@@ -1,6 +1,6 @@
 /**
  * Shared shape of Atomic's typed errors when they cross a process boundary: an isolated interactive engine,
- * an RPC client, or a workflow worker relays `{ name, code, message, hint, fields, cause }` and the receiving
+ * or an RPC client relays `{ name, code, message, hint, fields, cause }` and the receiving
  * side rehydrates it into the same class with the family's `rehydrate…` function.
  */
 

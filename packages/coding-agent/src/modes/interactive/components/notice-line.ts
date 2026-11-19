@@ -20,12 +20,12 @@ export type NoticeStatus =
 	| "heartbeat";
 
 /**
- * One notice line: what finished, how it ended, and a few dim facts. Background commands, subagents, workflow runs
- * and stopped tasks all report through it, in the main chat, a workflow stage's chat and a subagent's view alike.
+ * One notice line: what finished, how it ended, and a few dim facts. Background commands, subagents and stopped
+ * tasks all report through it in the main chat and in a subagent's view.
  */
 export interface NoticeLineSpec {
 	readonly status: NoticeStatus;
-	/** What it is: `Background command`, `Agent`, `Workflow`, `Task`. */
+	/** What it is: `Background command`, `Agent`, `Task`. */
 	readonly label: string;
 	/** Its name, quoted after the label; shortened first when the line is too narrow. */
 	readonly subject?: string;

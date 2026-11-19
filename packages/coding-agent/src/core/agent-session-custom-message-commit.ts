@@ -1,4 +1,3 @@
-import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { keepRefusedInput } from "./agent-session-persistence-failures.ts";
@@ -16,7 +15,6 @@ import { deliverQueuedInputIfIdle } from "./agent-session-prompt.ts";
 import { abortTurnRetries } from "./agent-session-retry.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
-import { TASK_COMPLETION_MESSAGE_TYPE } from "./tasks/completion.js";
 
 /**
  * Saves messages that nothing else holds. #5135: those that the halt after another writer's entries refuses stay
@@ -100,56 +98,7 @@ async function commitPriorityMessage(session: AgentSession, message: CustomMessa
 		session.agent.abort();
 	}
 	await queueProtectedStreamingCustomMessage(session, message, "steer", true);
-	if (
-		!session.isStreaming &&
-		session._activePromptCount === 0 &&
-		!session._queuedMessagesPaused &&
-		!session._subagentMessageAdmission
-	) {
-		// Idle stage chat has no original prompt awaiter. Start one owned drain,
-		// without replaying the stage task or a completed tool call.
-		const turn = session._runAgentPrompt([], undefined, undefined, false, message);
-		session._workflowStageAdmission?.trackAdmittedWork(turn);
-		void turn.catch(() => {});
-	}
 	startTurnAfterInterrupt(session, message);
-}
-
-/**
- * #3919: before a fresh stage's own prompt is submitted, turn-starting input is that prompt's startup context.
- * Once the prompt is in preflight, a run has started, or queued input is paused, the ordinary admission paths
- * own ordering. The stage's own task completions follow its own work, so they never precede its prompt.
- */
-function holdsForFirstStagePrompt<T>(
-	session: AgentSession,
-	message: CustomMessage<T>,
-	options: SendMessageOptions | undefined,
-): boolean {
-	return (
-		session._workflowStageAwaitingFirstPrompt &&
-		session._activePromptCount === 0 &&
-		!session._queuedMessagesPaused &&
-		message.customType !== TASK_COMPLETION_MESSAGE_TYPE &&
-		options?.triggerTurn === true &&
-		options.excludeFromContext !== true &&
-		options.deliverAs !== "nextTurn"
-	);
-}
-
-/**
- * #3919: once the stage prompt is submitted but before it owns a run (its input hooks), a turn-starting
- * message must not start a competing turn. It queues behind the pending prompt; interrupts keep their own path.
- */
-function queuesBehindFirstStagePrompt(session: AgentSession, options: SendMessageOptions | undefined): boolean {
-	return (
-		session._workflowStageAwaitingFirstPrompt &&
-		session._activePromptCount > 0 &&
-		!session._queuedMessagesPaused &&
-		options?.triggerTurn === true &&
-		options.excludeFromContext !== true &&
-		options.deliverAs !== "nextTurn" &&
-		options.deliverAs !== "interrupt"
-	);
 }
 
 /**
@@ -161,7 +110,6 @@ function startTurnIfPauseReleasedDuringAdmission(session: AgentSession, starter:
 	if (session._queuedMessagesPaused || session._subagentPolicy?.executionEnded !== undefined) return;
 	if (session.isStreaming || session._isPreparingRun || session._activePromptCount > 0) return;
 	const turn = session._runAgentPrompt([], undefined, undefined, false, starter);
-	session._workflowStageAdmission?.trackAdmittedWork(turn);
 	void turn.catch(() => {});
 }
 
@@ -180,7 +128,7 @@ function startTurnAfterInterrupt(session: AgentSession, starter: CustomMessage):
 /** Commit one delivery whose source generation already granted admission. */
 /** Starts a turn this commit awaits, so its preparation does not wait for the commit's own message delivery. */
 function startAwaitedTurn(session: AgentSession, start: () => Promise<void>): Promise<void> {
-	const boundary = session._subagentMessageAdmission ?? session._workflowStageAdmission;
+	const boundary = session._subagentMessageAdmission;
 	return boundary ? boundary.runAwaitedTurn(start) : start();
 }
 
@@ -189,9 +137,8 @@ export function commitAdmittedCustomMessage<T>(
 	appMessage: CustomMessage<T>,
 	options?: SendMessageOptions,
 ): Promise<void> {
-	const owner = resolveWorkflowStageDeliveryTarget(session);
-	const commit = () => commitCustomMessage(owner, appMessage, options);
-	return coalesceUncertainCustomMessageCommit(owner, [appMessage], commit) ?? commit();
+	const commit = () => commitCustomMessage(session, appMessage, options);
+	return coalesceUncertainCustomMessageCommit(session, [appMessage], commit) ?? commit();
 }
 
 async function commitCustomMessage<T>(
@@ -201,25 +148,15 @@ async function commitCustomMessage<T>(
 ): Promise<void> {
 	const recovery = recoverUncertainCustomMessage(self, appMessage);
 	if (recovery !== undefined && (await recovery)) return;
-	if (holdsForFirstStagePrompt(self, appMessage, options)) {
-		await appendDurableStageAdmission(self, appMessage);
-		return;
-	}
 	const useProtectedReconciliation =
 		options?.persistWhenStreaming === true &&
 		options.excludeFromContext !== true &&
 		(options.triggerTurn === true || options.stageAdmissionKey !== undefined);
-	if (queuesBehindFirstStagePrompt(self, options)) {
-		const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
-		if (useProtectedReconciliation) await queueProtectedStreamingCustomMessage(self, appMessage, delivery);
-		else self._queueAgentMessage(appMessage, delivery);
-		return;
-	}
 	if (
 		useProtectedReconciliation &&
 		options?.triggerTurn &&
 		options.deliverAs === "interrupt" &&
-		(self._subagentMessageAdmission || self._workflowStageAdmission)
+		self._subagentMessageAdmission
 	) {
 		await commitPriorityMessage(self, appMessage);
 		return;
@@ -249,7 +186,6 @@ async function commitCustomMessage<T>(
 		}
 	} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
 		const interrupt = self._enqueueInterruptCustomMessage(appMessage, options);
-		self._workflowStageAdmission?.trackAdmittedWork(interrupt);
 		void interrupt.catch(() => {});
 	} else if (
 		(self.isStreaming || self._isPreparingRun) &&
@@ -272,15 +208,6 @@ async function commitCustomMessage<T>(
 		await appendDurableStageAdmission(self, appMessage);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn !== false) {
 		self._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
-	} else if (useProtectedReconciliation && options?.triggerTurn === true && self._workflowStageAdmission) {
-		await queueProtectedStreamingCustomMessage(
-			self,
-			appMessage,
-			options?.deliverAs === "followUp" ? "followUp" : "steer",
-		);
-		const turn = self._runAgentPrompt([], undefined, undefined, false, appMessage);
-		self._workflowStageAdmission.trackAdmittedWork(turn);
-		void turn.catch(() => {});
 	} else if (options?.triggerTurn) {
 		const promptMessage = useProtectedReconciliation
 			? await admitProtectedStreamingCustomMessage(
@@ -328,10 +255,9 @@ export function commitAdmittedCustomMessages<T>(
 	appMessages: CustomMessage<T>[],
 	options?: SendMessagesOptions,
 ): Promise<void> {
-	const owner = resolveWorkflowStageDeliveryTarget(session);
 	appMessages = customMessageOccurrences(appMessages);
-	const commit = () => commitCustomMessages(owner, appMessages, options);
-	return coalesceUncertainCustomMessageCommit(owner, appMessages, commit) ?? commit();
+	const commit = () => commitCustomMessages(session, appMessages, options);
+	return coalesceUncertainCustomMessageCommit(session, appMessages, commit) ?? commit();
 }
 
 async function commitCustomMessages<T>(
@@ -353,7 +279,6 @@ async function commitCustomMessages<T>(
 	const usesHeldCards =
 		options?.triggerTurn === true &&
 		(holdsTurnsForDetachedResults(self) || (holdsTurn && options.excludeFromContext === true));
-	const holdsStartupCards = appMessages.every((item) => holdsForFirstStagePrompt(self, item, options));
 	const stored = new Set(
 		self.sessionManager
 			.getBranch()
@@ -361,7 +286,6 @@ async function commitCustomMessages<T>(
 				entry.type === "custom_message" &&
 				entry.stageAdmissionKey !== undefined &&
 				((entry.protectedReconciliation === undefined && entry.excludeFromContext !== true) ||
-					holdsStartupCards ||
 					(!useProtectedReconciliation && !usesHeldCards))
 					? [entry.stageAdmissionKey]
 					: [],
@@ -372,16 +296,7 @@ async function commitCustomMessages<T>(
 		return key === undefined || !stored.has(key) || hasUncertainCustomMessageWrite(self.sessionManager, key);
 	});
 	if (appMessages.length === 0) return;
-	if (holdsStartupCards) {
-		for (const item of appMessages) await appendDurableStageAdmission(self, item);
-		return;
-	}
 	const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
-	if (queuesBehindFirstStagePrompt(self, options)) {
-		if (useProtectedReconciliation) await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
-		else for (const item of appMessages) self._queueAgentMessage(item, delivery);
-		return;
-	}
 	if (options?.deliverAs === "nextTurn") {
 		self._pendingNextTurnMessages.push(...appMessages);
 	} else if (holdsTurn) {

@@ -39,7 +39,7 @@ function groups(count: number): ResourceGroup[] {
 }
 
 function emptyPaths(): ResolvedPaths {
-	return { extensions: [], skills: [], prompts: [], themes: [], workflows: [], mcpServers: [] };
+	return { extensions: [], skills: [], prompts: [], themes: [], mcpServers: [] };
 }
 
 function render(list: ResourceList, width = 100): string[] {
@@ -111,7 +111,6 @@ describe("package and resource picker on the shared look (#5224)", () => {
 				skills: [],
 				prompts: [],
 				themes: [],
-				workflows: [],
 			}) as never;
 		for (const rows of [8, 10, 11, 12, 14, 24]) {
 			const term = new VirtualTerminal(80, rows);
@@ -200,7 +199,6 @@ describe("package and resource picker on the shared look (#5224)", () => {
 			skills: [],
 			prompts: [],
 			themes: [],
-			workflows: [],
 		} as never;
 		const terminal = new VirtualTerminal(80, 24);
 		const ui = new TuiMainScreen(terminal);
@@ -256,7 +254,6 @@ describe("package and resource picker on the shared look (#5224)", () => {
 				skills: [],
 				prompts: [],
 				themes: [],
-				workflows: [],
 			}) as never;
 		for (const count of [0, 1, 43]) {
 			for (const width of [30, 80]) {
@@ -289,7 +286,7 @@ describe("package and resource picker on the shared look (#5224)", () => {
 	});
 
 	it("fits the complete config frame after a narrow resize (#5256)", () => {
-		const empty = { extensions: [], skills: [], prompts: [], themes: [], workflows: [] };
+		const empty = { extensions: [], skills: [], prompts: [], themes: [], mcpServers: [] };
 		const selector = new ConfigSelectorComponent(
 			{ global: empty, project: empty },
 			{} as SettingsManager,

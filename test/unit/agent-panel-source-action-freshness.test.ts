@@ -7,7 +7,7 @@ import {
 	openAgentPanelItem,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 
-const item: AgentPanelItem = { id: "run:release", kind: "workflow", state: "running", name: "release", task: "Build" };
+const item: AgentPanelItem = { id: "run:release", kind: "agent", state: "running", name: "release", task: "Build" };
 
 test("an emitted source removal cannot route an open through an old cached item (#5224)", () => {
 	const hub = new AgentPanelSourceHub();

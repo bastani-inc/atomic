@@ -189,12 +189,10 @@ Atomic reports its state with the [Program Status Protocol (OSC 7501)](https://w
 
 | State | When |
 |---|---|
-| `working` | An agent run, compaction, or [workflow](/workflows) run is in progress, even when the chat agent is idle. The message is the session name, or `Compacting context`. |
-| `blocked` | An extension dialog, login, or workflow run or stage waits for you, even while other stages of that run are still executing. The message is the dialog title, or `Workflow waiting for input` or `Workflow needs attention`. |
-| `done` | The agent run and workflow runs finished successfully. The message is the session name. |
-| `error` | A run ended with an error that is not retried, or a workflow run failed. The message is the first line of the error, or `Workflow failed`. |
+| `working` | An agent run or compaction is in progress. The message is the session name, or `Compacting context`. |
+| `blocked` | A dialog, question, or login waits for you. |
+| `done` | The agent run finished successfully. The message is the session name. |
+| `error` | A run ended with an error that is not retried. The message is the first line of the error. |
 | `idle` | Atomic started, or you cancelled the run. |
-
-After a workflow failure the status stays `error` until you send your next message, except while the chat agent replies to the run-end notice: it is `working` then, and returns to `error` when that reply finishes. While a workflow run is working or waiting for you, the chat agent finishing a turn does not report `done`.
 
 Reports never contain prompts or model output. Atomic sends them only after the terminal answers the protocol's support query; tmux and screen do not forward them. Set `ATOMIC_PROGRAM_STATUS=1` to send reports without asking, or `ATOMIC_PROGRAM_STATUS=0` to disable reports (`PI_PROGRAM_STATUS` is a legacy alias).

@@ -1,6 +1,6 @@
 # @bastani/atomic-storage-libsql
 
-A libSQL / [Turso](https://turso.tech) storage adapter for [Atomic](https://github.com/bastani-inc/atomic). It stores sessions, workflow journals, and Intercom multi-node routing in one shared database, so several machines can use the same state. It is a separate package: install it only where you want remote storage.
+A libSQL / [Turso](https://turso.tech) storage adapter for [Atomic](https://github.com/bastani-inc/atomic). It stores sessions and Intercom multi-node routing in one shared database, so several machines can use the same state. It is a separate package: install it only where you want remote storage.
 
 ## Install
 
@@ -49,7 +49,7 @@ import { openLibsqlDatabase } from "@bastani/atomic-storage-libsql";
 const database = await openLibsqlDatabase({ url: "libsql://<db>.turso.io", authToken });
 ```
 
-`openLibsqlDatabase` also accepts `namespace` and `headers` (extra request headers, redacted from errors), both for `libsql:`, `https:`, or `http:` URLs. The returned `SqliteDatabase` can be passed as SDK `sessionStore: { kind: "database", database }` or workflow `journal: { database }`; it sends a workflow journal's batch of appends to the database in one request.
+`openLibsqlDatabase` also accepts `namespace` and `headers` (extra request headers, redacted from errors), both for `libsql:`, `https:`, or `http:` URLs. The returned `SqliteDatabase` can be passed as SDK `sessionStore: { kind: "database", database }`; it sends a batch of statements to the database in one request.
 
 The package ships plain ESM JavaScript with TypeScript declarations. This import works in supported Node versions without a TypeScript loader.
 

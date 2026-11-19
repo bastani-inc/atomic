@@ -13,11 +13,7 @@ import type { Alias } from "vite";
 /** Repository root, with a trailing separator. */
 export const repositoryRoot = fileURLToPath(new URL(".", import.meta.url));
 
-/**
- * `@bastani/atomic` resolves to its unbuilt source under test. Without this,
- * packages/workflows/src/engine/workflow-activity.ts fails to resolve the host
- * entry and takes test/unit/executor-concurrency-limiter.test.ts down with it.
- */
+/** `@bastani/atomic` resolves to the same unbuilt host source in every test project. */
 export const atomicSrcIndex = fileURLToPath(
 	new URL("./packages/coding-agent/src/index.ts", import.meta.url),
 );
@@ -25,20 +21,6 @@ export const atomicSrcIndex = fileURLToPath(
 /** Every alias each vitest project shares. */
 export const sharedAliases: readonly Alias[] = [
 	{ find: /^@bastani\/atomic$/, replacement: atomicSrcIndex },
-	// The unpublished workflow workspace is still exercised by source-level tests. Installed-package
-	// tests run Node outside Vitest so they see the real package exports, not these fixture aliases.
-	{
-		find: /^@bastani\/atomic\/workflows$/,
-		replacement: fileURLToPath(new URL("./packages/workflows/src/index.ts", import.meta.url)),
-	},
-	{
-		find: /^@bastani\/atomic\/workflows\/builtin$/,
-		replacement: fileURLToPath(new URL("./packages/workflows/builtin/index.ts", import.meta.url)),
-	},
-	{
-		find: /^@bastani\/atomic\/workflows\/builtin\/(.+)$/,
-		replacement: fileURLToPath(new URL("./packages/workflows/builtin/$1.ts", import.meta.url)),
-	},
 	{
 		find: /^@bastani\/atomic\/storage$/,
 		replacement: fileURLToPath(new URL("./packages/coding-agent/src/core/storage/index.ts", import.meta.url)),

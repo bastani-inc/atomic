@@ -68,7 +68,7 @@
     },
     "decisionModel": {
       "type": "string",
-      "description": "The model every decision uses: structured_output calls without their own model, workflow stage predictions, readiness after a steer, and decide(). An exact provider/model selects a registered chat or classifier model; \"auto\" and an empty string use the current chat model.",
+      "description": "The model every decision uses: structured_output calls without their own model and decide(). An exact provider/model selects a registered chat or classifier model; \"auto\" and an empty string use the current chat model.",
       "default": ""
     },
     "compactionModel": {
@@ -207,7 +207,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Record worktree snapshots so sessions and workflow runs can resume with their repository state.",
+          "description": "Record worktree snapshots so sessions can resume with their repository state.",
           "default": true
         },
         "includeUntracked": {
@@ -238,7 +238,7 @@
         },
         "autoCollect": {
           "type": "boolean",
-          "description": "Delete snapshot blobs that no retained snapshot references, in the background of an interactive session, after a session closes, and when a workflow run finishes.",
+          "description": "Delete snapshot blobs that no retained snapshot references, in the background of an interactive session and after a session closes.",
           "default": true
         },
         "collectIntervalSeconds": {
@@ -519,12 +519,6 @@
                   "type": "string"
                 }
               },
-              "workflows": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
               "mcpServers": {
                 "type": "array",
                 "items": {
@@ -584,201 +578,6 @@
         "type": "string"
       },
       "description": "Local theme file paths or directories."
-    },
-    "workflows": {
-      "anyOf": [
-        {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        {
-          "type": "object",
-          "properties": {
-            "paths": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Workflow resource paths."
-            },
-            "autoAdvanceAfterSteer": {
-              "type": "boolean",
-              "description": "After you steer a stage that asked you a question, let the decision model advance the stage or keep it open without asking \"Are you ready to move on to the next stage?\". It asks when the decision is uncertain or fails. Default: true.",
-              "default": true
-            },
-            "journal": {
-              "$ref": "#/$defs/StorageSelection"
-            },
-            "localWorkers": {
-              "type": "object",
-              "required": [
-                "count",
-                "definitions"
-              ],
-              "properties": {
-                "count": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "description": "Number of local worker processes."
-                },
-                "definitions": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "required": [
-                      "path",
-                      "exportName"
-                    ],
-                    "properties": {
-                      "path": {
-                        "type": "string"
-                      },
-                      "exportName": {
-                        "type": "string"
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "description": "Importable child workflow definitions workers may run."
-                },
-                "startupTimeoutMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 2147483647,
-                  "description": "Milliseconds each worker process may take to become ready. Default: 30000, scaled up when workers plus load exceed CPU cores (at most 600000)."
-                },
-                "leaseMs": {
-                  "type": "integer",
-                  "minimum": 2000,
-                  "maximum": 2147483647,
-                  "description": "Milliseconds a live worker that has stopped responding keeps its child before the child is replayed elsewhere. Default: 30000."
-                },
-                "heartbeatMs": {
-                  "type": "integer",
-                  "minimum": 100,
-                  "maximum": 1073741823,
-                  "description": "Milliseconds between a worker's heartbeats, each renewing its child's lease, reporting usage and reading pause or quit, in one request. At most half of leaseMs. Default: leaseMs / 4."
-                },
-                "maxLoadPerCpu": {
-                  "type": "number",
-                  "minimum": 0,
-                  "description": "Load per CPU (1-minute load average / CPU cores) above which pooled stages start one at a time, at most one every 5 seconds. Default: 3. 0 turns it off."
-                },
-                "maxWorkerRssBytes": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 9007199254740991,
-                  "description": "Resident memory in bytes past which a local worker is replaced by a fresh one once its current child ends. A running child is never interrupted. Default: unset (never)."
-                }
-              },
-              "additionalProperties": false
-            },
-            "workers": {
-              "type": "object",
-              "required": [
-                "placement"
-              ],
-              "properties": {
-                "placement": {
-                  "type": "string",
-                  "const": "shared",
-                  "description": "\"shared\": the pooled children of roots started with the workflow tool also run on worker hosts (`atomic worker start`) that open the same shared journal. Requires localWorkers and a journal selected through a storage adapter such as libSQL / Turso."
-                },
-                "claimWindowMs": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "description": "Milliseconds bound work may wait unclaimed while no live host can restore its workspace, before the child fails. Default: 60000."
-                },
-                "checkpointShipping": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "const": "sync"
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "intervalMs": {
-                          "type": "integer",
-                          "minimum": 100,
-                          "maximum": 60000
-                        },
-                        "maxBatch": {
-                          "type": "integer",
-                          "minimum": 1,
-                          "maximum": 1000
-                        },
-                        "maxLagMs": {
-                          "type": "integer",
-                          "minimum": 1000,
-                          "maximum": 600000
-                        }
-                      },
-                      "additionalProperties": false
-                    }
-                  ],
-                  "description": "How worker hosts record the pooled children's checkpoints: \"sync\" (default) commits each to the shared journal before the step returns; { intervalMs, maxBatch, maxLagMs } records them in a local journal on the host first and ships them to the shared journal."
-                }
-              },
-              "additionalProperties": false
-            },
-            "admission": {
-              "type": "object",
-              "properties": {
-                "limits": {
-                  "type": "object",
-                  "properties": {
-                    "session": {
-                      "type": "integer",
-                      "minimum": 1
-                    },
-                    "process": {
-                      "type": "integer",
-                      "minimum": 1
-                    }
-                  },
-                  "additionalProperties": false
-                },
-                "userLimits": {
-                  "type": "object",
-                  "properties": {
-                    "session": {
-                      "type": "integer",
-                      "minimum": 1
-                    },
-                    "process": {
-                      "type": "integer",
-                      "minimum": 1
-                    }
-                  },
-                  "additionalProperties": false
-                },
-                "userDatabase": {
-                  "type": "string"
-                },
-                "host": {
-                  "type": "object",
-                  "properties": {
-                    "maxLoadPerCpu": {
-                      "type": "number",
-                      "minimum": 0
-                    },
-                    "minFreeMemoryBytes": {
-                      "type": "number",
-                      "minimum": 0
-                    }
-                  },
-                  "additionalProperties": false
-                }
-              },
-              "additionalProperties": false
-            }
-          }
-        }
-      ],
-      "description": "Local workflow paths, or an object with \"paths\", \"autoAdvanceAfterSteer\", \"journal\" storage, \"localWorkers\", \"workers\" and \"admission\" settings."
     },
     "enableSkillCommands": {
       "type": "boolean",
@@ -1099,16 +898,6 @@
         }
       }
     },
-    "intercom": {
-      "type": "object",
-      "properties": {
-        "showUnknownTargetWarnings": {
-          "type": "boolean",
-          "description": "Add a note to a queued workflow Intercom send whose target is outside the run's known and predicted stages. Delivery is the same either way.",
-          "default": false
-        }
-      }
-    },
     "tasks": {
       "type": "object",
       "properties": {
@@ -1128,7 +917,7 @@
         },
         "heartbeatWakesIdleSession": {
           "type": "boolean",
-          "description": "Whether a task or workflow heartbeat that arrives while the chat is idle after an interrupt starts a turn at once. When false, it waits for your next message.",
+          "description": "Whether a task heartbeat that arrives while the chat is idle after an interrupt starts a turn at once. When false, it waits for your next message.",
           "default": true
         }
       }

@@ -31,8 +31,8 @@ type MessageRenderCommand = Extract<InteractiveEngineCommand, { type: "engine_me
  * the seeding setters call `ui.requestRender()` each time, whose eventual
  * terminal write emitted `engine_custom_invalidate` back to the host, which
  * re-sent the render request — a self-sustaining host⇄engine render
- * ping-pong that presented as full-screen TUI flicker (quit/pause while a
- * workflow stage streams). Reuse plus idempotent seeding setters lets the
+ * ping-pong that presented as full-screen TUI flicker (a transcript update while a
+ * tool call streams). Reuse plus idempotent seeding setters lets the
  * loop converge after at most one round trip while still forwarding
  * legitimate async invalidations (e.g. image conversion). A record is rebuilt
  * once the session's extension runner changes, so rows rendered before

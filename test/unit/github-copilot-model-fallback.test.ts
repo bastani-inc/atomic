@@ -29,7 +29,6 @@ import {
 	isUnrecognizedModelFailure,
 	normalizeModelFailureSignal,
 } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
-import { WorkflowPromptModelFailure } from "../../packages/workflows/src/runs/foreground/stage-runner-messages.js";
 
 const context = { modelId: "gemini-4-argon", api: "openai-completions", status: 400 };
 
@@ -157,10 +156,7 @@ describe("typed GitHub Copilot failures drive retry and fallback (#4324)", () =>
 			wire,
 			decision.error,
 			new Error("wrapped", { cause: decision.error }),
-			// A workflow stage wraps the failed assistant message; its typed error rides in the message's diagnostics.
-			new WorkflowPromptModelFailure(misleading),
-			JSON.parse(JSON.stringify({ name: "WorkflowPromptModelFailure", message: "failed", cause: wire })),
-			new Error("subagent failed", { cause: new WorkflowPromptModelFailure(wire) }),
+			new Error("subagent failed", { cause: wire }),
 		];
 		for (const carrier of carriers) {
 			const signal = normalizeModelFailureSignal(carrier);
@@ -295,11 +291,11 @@ describe("typed GitHub Copilot failures drive retry and fallback (#4324)", () =>
 		}
 		const live = session();
 		for (const message of results) {
-			const signal = normalizeModelFailureSignal(new WorkflowPromptModelFailure(message));
+			const signal = normalizeModelFailureSignal(message);
 			assert.equal(signal.kind, kind);
 			assert.equal(signal.code, getGitHubCopilotError(message)?.code);
 			assert.equal(_isRetryableError.call(live as never, message), sameModel);
-			assert.equal(isRetryableSameModelFailure(new WorkflowPromptModelFailure(message)), sameModel);
+			assert.equal(isRetryableSameModelFailure(message), sameModel);
 			assert.equal(_isFallbackableError.call(live as never, message), true);
 		}
 		assert.equal(getGitHubCopilotError(results[1])?.providerCode, body.code);

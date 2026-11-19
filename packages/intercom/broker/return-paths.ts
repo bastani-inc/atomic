@@ -1,10 +1,8 @@
-import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
-import { parseWorkflowStageTarget } from "../workflow-stage-target.js";
 import { RETURN_PATH_MESSAGE_LIMIT, RETURN_PATH_WINDOW_MS } from "../group.js";
 
 export { RETURN_PATH_MESSAGE_LIMIT, RETURN_PATH_TOOL_NOTE, RETURN_PATH_WINDOW_MS, returnPathClosedReason } from "../group.js";
 
-/** Return paths, and the queued messages still to reach a stage, this broker keeps at once; the oldest goes first. */
+/** Return paths this broker keeps at once; the oldest goes first. */
 export const RETURN_PATH_MAX_ENTRIES = 10_000;
 /**
  * Inbound messages remembered as having opened a return path, so a retried, replayed or re-forwarded message never
@@ -42,16 +40,6 @@ interface ReturnPath {
 	used: Set<string>;
 }
 
-interface QueuedOpening {
-	readonly rootRunId: string;
-	readonly segments: readonly string[];
-	readonly senderIdentity: string;
-	readonly senderId: string;
-	readonly operationId: string;
-	/** The stage identities it already reached: it reaches each once, however often that stage takes its route. */
-	readonly reached: Set<string>;
-}
-
 /**
  * Response permissions across intercom groups, after NATS `allow_responses`: a session that received a message from
  * a sender outside its groups may send back to that sender, and only to it, with at most
@@ -65,7 +53,6 @@ export class ReturnPaths {
 	/** Path keys by responder identity, and by sender identity: a lookup costs the paths of one party, not all. */
 	private readonly byResponder = new Map<string, Set<string>>();
 	private readonly bySender = new Map<string, Set<string>>();
-	private readonly queued = new Map<string, QueuedOpening>();
 	/** The inbound messages that opened a path, per path: kept when the path itself is dropped. */
 	private readonly seen = new Map<string, true>();
 	/**
@@ -115,61 +102,6 @@ export class ReturnPaths {
 		}
 	}
 
-	/**
-	 * The inbound message `operationId` from `sender` was queued for the workflow stages `target` names. It reaches a
-	 * stage when that stage takes its route ({@link stageStarted}); queuing the same message again changes nothing.
-	 * `liveRoutes` are the stages that already hold a route when it is queued: a stage that went live while its host was
-	 * still answering for this message is handed it now, so it reaches them too.
-	 */
-	queue(
-		target: string,
-		sender: ReturnPathParty,
-		operationId: string,
-		liveRoutes: Iterable<{ readonly stage: ReturnPathParty; readonly target: string }> = [],
-		sharesGroup: (stage: ReturnPathParty, sender: ReturnPathSender) => boolean = () => false,
-	): void {
-		const parsed = parseWorkflowStageTarget(target);
-		if (parsed === undefined || sender.identity === undefined) return;
-		const key = `${parsed.rootRunId}\0${parsed.segments.join("/")}\0${sender.identity}\0${operationId}`;
-		if (this.queued.has(key)) return;
-		const opening: QueuedOpening = {
-			rootRunId: parsed.rootRunId,
-			segments: parsed.segments,
-			senderIdentity: sender.identity,
-			senderId: sender.sessionId,
-			operationId,
-			reached: new Set(),
-		};
-		this.queued.set(key, opening);
-		this.bound(this.queued);
-		for (const route of liveRoutes) this.reach(opening, route.stage, route.target, (from) => sharesGroup(route.stage, from));
-	}
-
-	/**
-	 * `stage` took the route `target`: every message queued for a path that names it reaches it now, and opens its
-	 * path back to that message's sender unless `sharesGroup` says the two can already reach each other.
-	 */
-	stageStarted(stage: ReturnPathParty, target: string, sharesGroup: (sender: ReturnPathSender) => boolean): void {
-		for (const opening of this.queued.values()) this.reach(opening, stage, target, sharesGroup);
-	}
-
-	/** `opening` reaches `stage`, which holds the route `target`, when the opening addresses it: once per stage. */
-	private reach(
-		opening: QueuedOpening,
-		stage: ReturnPathParty,
-		target: string,
-		sharesGroup: (sender: ReturnPathSender) => boolean,
-	): void {
-		const parsed = parseWorkflowStageTarget(target);
-		if (parsed === undefined || stage.identity === undefined) return;
-		if (opening.rootRunId !== parsed.rootRunId || !matchStagePathSegments(opening.segments, parsed.segments)) return;
-		if (opening.reached.has(stage.identity)) return;
-		opening.reached.add(stage.identity);
-		const sender = { identity: opening.senderIdentity, sessionId: opening.senderId };
-		if (sharesGroup(sender)) return;
-		this.open(stage, sender, opening.operationId);
-	}
-
 	/** Whether `responder` holds a return path to `sender`, open or closed: such a sender resolves by name. */
 	holds(responder: ReturnPathParty, sender: ReturnPathParty): boolean {
 		return this.path(responder, sender) !== undefined;
@@ -214,9 +146,6 @@ export class ReturnPaths {
 		for (const key of [...(this.byResponder.get(identity) ?? []), ...(this.bySender.get(identity) ?? [])]) {
 			this.deletePath(key);
 		}
-		for (const [key, opening] of this.queued) {
-			if (opening.senderIdentity === identity) this.queued.delete(key);
-		}
 		this.ended.delete(identity);
 		this.ended.set(identity, ++this.ends);
 		while (this.ended.size > this.maxEntries) {
@@ -234,13 +163,6 @@ export class ReturnPaths {
 	private endedSince(identity: string, mark: number): boolean {
 		const at = this.ended.get(identity);
 		return at === undefined ? mark < this.endsForgotten : at > mark;
-	}
-
-	/** A run ended: the messages still queued for its stages never reach them. */
-	forgetRun(rootRunId: string): void {
-		for (const [key, opening] of this.queued) {
-			if (opening.rootRunId === rootRunId) this.queued.delete(key);
-		}
 	}
 
 	private path(responder: ReturnPathParty, sender: ReturnPathParty): ReturnPath | undefined {

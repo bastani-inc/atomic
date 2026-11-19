@@ -144,7 +144,6 @@ function guardedContext(mode: ExtensionContext["mode"]) {
 			},
 		}),
 		getSubagentPolicy: () => undefined,
-		getOrchestrationContext: () => undefined,
 	} as ExtensionContextSource);
 	return {
 		ctx,
@@ -160,13 +159,7 @@ function guardedContext(mode: ExtensionContext["mode"]) {
 
 function runnerOwner(mode: ExtensionContext["mode"]) {
 	const notifications: Array<{ message: string; level?: string }> = [];
-	const runner = new ExtensionRunner(
-		[],
-		{ workflowActivityHub: { bindDispatcher() {} }, invalidate() {} } as never,
-		"/tmp",
-		{} as never,
-		{} as never,
-	);
+	const runner = new ExtensionRunner([], { invalidate() {} } as never, "/tmp", {} as never, {} as never);
 	runner.setUIContext(
 		mode === "tui" || mode === "rpc"
 			? ({ notify: (message: string, level?: string) => notifications.push({ message, level }) } as never)
@@ -342,10 +335,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 			true,
 		);
 		await current.fire("turn_start");
-		const payload: { completion?: Promise<void> } = {};
-		current.emit("atomic:workflow-pending-stage-route", payload);
-		assert.ok(payload.completion);
-		const rejected = assert.rejects(payload.completion, (error) => error === failure);
+		current.emit("subagent:control-intercom", {});
 		await entered.promise;
 		const replacement = {
 			hasUI: false,
@@ -358,15 +348,14 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 		};
 		await current.fire("session_start", replacement);
 		release.resolve();
-		await rejected;
-		await tick();
+		await vi.waitFor(() => assert.equal(current.notifications.length, 2));
 		assert.deepEqual(current.notifications, [
 			{
 				message: "Intercom heavy initialization failed; a later call will retry: Connection closen",
 				level: "warning",
 			},
 			{
-				message: "Intercom event relay failed (atomic:workflow-pending-stage-route): Connection closen",
+				message: "Intercom event relay failed (subagent:control-intercom): Connection closen",
 				level: "error",
 			},
 		]);
@@ -667,12 +656,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 			await current.fire("session_start", owner.ctx);
 			await current.fire("session_shutdown", owner.ctx);
 			owner.invalidate();
-			for (const eventName of [
-				"subagent:control-intercom",
-				"subagent:result-intercom",
-				"atomic:workflow-pending-stage-route",
-				"atomic:workflow-pending-stage-undeliverable",
-			]) {
+			for (const eventName of ["subagent:control-intercom", "subagent:result-intercom"]) {
 				const payload = {
 					completion: undefined as Promise<void> | Promise<boolean> | undefined,
 					runId: "run",
@@ -682,8 +666,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 					reason: "not_started",
 				};
 				current.emit(eventName, payload);
-				if (eventName.endsWith("undeliverable")) assert.equal(await payload.completion, false);
-				else if (eventName.endsWith("stage-route")) await assert.rejects(payload.completion!, /no active session/);
+				if (mode !== "tui") await vi.waitFor(() => assert.equal(consoleErrorCalls.length, 1));
 				await tick();
 				if (mode !== "tui") {
 					const args = consoleErrorCalls.shift();
@@ -697,12 +680,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 			assert.equal(current.imports, 0, "a diagnostic route cannot reactivate the retired lease");
 		});
 
-		for (const eventName of [
-			"subagent:control-intercom",
-			"subagent:result-intercom",
-			"atomic:workflow-pending-stage-route",
-			"atomic:workflow-pending-stage-undeliverable",
-		]) {
+		for (const eventName of ["subagent:control-intercom", "subagent:result-intercom"]) {
 			test(`retains ${mode} late ${eventName} diagnostics after real context invalidation`, async () => {
 				const entered = Promise.withResolvers<void>();
 				const release = Promise.withResolvers<void>();
@@ -737,17 +715,13 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 						reason: "stage_never_started",
 					};
 					current.emit(eventName, payload);
-					const settled = eventName.endsWith("undeliverable")
-						? payload.completion!.then((value) => assert.equal(value, false))
-						: eventName.endsWith("stage-route")
-							? assert.rejects(payload.completion!, (error) => error === failure)
-							: Promise.resolve();
 					await entered.promise;
 					await current.fire("session_shutdown", origin.ctx);
 					origin.invalidate(); // Runner invalidates only after awaited shutdown.
 					await current.fire("session_start", replacement.ctx);
 					release.resolve();
-					await settled;
+					if (mode !== "tui") await vi.waitFor(() => assert.equal(consoleErrorCalls.length, 1));
+					else await tick();
 					await tick();
 					assert.deepEqual(origin.notifications, []);
 					assert.deepEqual(replacement.notifications, []);
@@ -780,12 +754,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 		}
 	}
 
-	for (const eventName of [
-		"subagent:control-intercom",
-		"subagent:result-intercom",
-		"atomic:workflow-pending-stage-route",
-		"atomic:workflow-pending-stage-undeliverable",
-	]) {
+	for (const eventName of ["subagent:control-intercom", "subagent:result-intercom"]) {
 		test(`keeps ${eventName} diagnostics with the shutdown owner while cleanup drains`, async () => {
 			const entered = Promise.withResolvers<void>();
 			const drain = Promise.withResolvers<void>();
@@ -847,13 +816,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 					replaced = true;
 				});
 			try {
-				if (eventName.endsWith("undeliverable")) {
-					assert.ok(payload.completion);
-					assert.equal(await payload.completion, false);
-				} else if (eventName.endsWith("stage-route")) {
-					assert.ok(payload.completion);
-					await assert.rejects(payload.completion, /no active session/);
-				}
+				await vi.waitFor(() => assert.equal(current.notifications.length, 1));
 				await tick();
 				assert.equal(replaced, false, "replacement still awaits retired cleanup");
 				assert.equal(current.imports, 1, "relay cannot activate a retired lease");
@@ -975,12 +938,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 			assert.equal(current.imports, 2);
 		});
 
-		for (const eventName of [
-			"subagent:control-intercom",
-			"subagent:result-intercom",
-			"atomic:workflow-pending-stage-route",
-			"atomic:workflow-pending-stage-undeliverable",
-		]) {
+		for (const eventName of ["subagent:control-intercom", "subagent:result-intercom"]) {
 			test(`routes ${eventName} failure with hasUI=${hasUI} without changing its acknowledgement`, async () => {
 				const failure = new Error("Intercom protocol error: bad frame");
 				const current = fixture(
@@ -1015,14 +973,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 					reason: "stage_never_started",
 				};
 				current.emit(eventName, payload);
-				if (eventName === "atomic:workflow-pending-stage-route") {
-					assert.ok(payload.completion);
-					await assert.rejects(payload.completion, (error) => error === failure);
-				} else if (eventName === "atomic:workflow-pending-stage-undeliverable") {
-					assert.equal(payload.handled, true);
-					assert.ok(payload.completion);
-					assert.equal(await payload.completion, false);
-				}
+				await vi.waitFor(() => assert.equal(current.notifications.length + consoleErrorCalls.length, 1));
 				await tick();
 				const prefix = `Intercom event relay failed (${eventName}):`;
 				assert.deepEqual(
@@ -1036,7 +987,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 
 	test("retains console diagnostics for a relay with no lifecycle context", async () => {
 		const failure = new Error("relay before lifecycle");
-		const eventName = "atomic:workflow-pending-stage-undeliverable";
+		const eventName = "subagent:control-intercom";
 		const current = fixture([
 			{
 				module: {
@@ -1057,8 +1008,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 			completion: undefined as Promise<boolean> | undefined,
 		};
 		current.emit(eventName, payload);
-		assert.ok(payload.completion);
-		assert.equal(await payload.completion, false);
+		await vi.waitFor(() => assert.equal(consoleErrorCalls.length, 1));
 		assert.deepEqual(current.notifications, []);
 		assert.deepEqual(consoleErrorCalls, [[`Intercom event relay failed (${eventName}):`, failure]]);
 		assert.equal(consoleErrorCalls[0]?.[1], failure);
@@ -1066,9 +1016,9 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 
 	for (const mode of ["tui", "rpc", "print", "json"] as const) {
 		for (const cause of unprintableFailures) {
-			test(`preserves false relay acknowledgement and ${mode} diagnostics for ${cause.name}`, async () => {
+			test(`preserves ${mode} relay diagnostics for ${cause.name}`, async () => {
 				const failure = cause.create();
-				const eventName = "atomic:workflow-pending-stage-undeliverable";
+				const eventName = "subagent:control-intercom";
 				const current = fixture(
 					[
 						{
@@ -1094,8 +1044,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 					completion: undefined as Promise<boolean> | undefined,
 				};
 				current.emit(eventName, payload);
-				assert.ok(payload.completion);
-				assert.equal(await payload.completion, false);
+				await vi.waitFor(() => assert.equal(current.notifications.length + consoleErrorCalls.length, 1));
 				const prefix = `Intercom event relay failed (${eventName}):`;
 				assert.deepEqual(
 					current.notifications,

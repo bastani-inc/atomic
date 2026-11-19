@@ -19,10 +19,9 @@ import { registerSessionStoreConformance } from "../../packages/coding-agent/src
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { registerSqliteDatabaseConformance } from "../../packages/coding-agent/src/core/storage/testing.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
-import { registerRunJournalConformance } from "../../packages/workflows/src/durable/journal/conformance.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+
 import { registerBrokerLeaseStoreConformance } from "../helpers/intercom-multinode-contract.js";
-import { observeJournalRead } from "../helpers/journal-read-observation.js";
+
 import {
 	collectReleasedLibsqlStatements,
 	makeLibsqlDirectory,
@@ -90,24 +89,6 @@ registerSessionStoreConformance(
 			});
 		});
 	},
-);
-
-registerRunJournalConformance(
-	test,
-	"package-selected libSQL adapter journal (#3857)",
-	async () => {
-		const directory = makeLibsqlDirectory();
-		const database = await openPackageDatabase(pathToFileURL(join(directory, "journal.sqlite")).href, "journal");
-		const journal = await SqlRunJournal.open(database);
-		const close = journal.close.bind(journal);
-		journal.close = async () => {
-			await close();
-			await database.close();
-			await removeLibsqlDirectory(directory);
-		};
-		return journal;
-	},
-	observeJournalRead,
 );
 
 // A `file:` libSQL connection has no busy timeout, so two local connections would fail with SQLITE_BUSY under the
@@ -240,7 +221,7 @@ function observeForcedFullCollections(): { count(): Promise<number> } {
 test("closing a file database releases its files before close resolves (#4433)", async () => {
 	const directory = makeTempDirectory("storage-libsql-release-");
 	try {
-		const database = await openPackageDatabase(pathToFileURL(join(directory, "journal.sqlite")).href, "journal");
+		const database = await openPackageDatabase(pathToFileURL(join(directory, "sessions.sqlite")).href, "sessions");
 		await database.exec("CREATE TABLE entries(value INTEGER NOT NULL)");
 		await database.transaction(async (transaction) => {
 			await transaction.run("INSERT INTO entries VALUES (?)", 1);
@@ -283,7 +264,7 @@ test("a file database closed on a Bun host collects with Bun.gc(true) (#4433)", 
 	assert.equal(host.Bun, undefined);
 	const directory = makeTempDirectory("storage-libsql-release-");
 	try {
-		const database = await openPackageDatabase(pathToFileURL(join(directory, "journal.sqlite")).href, "journal");
+		const database = await openPackageDatabase(pathToFileURL(join(directory, "sessions.sqlite")).href, "sessions");
 		await database.get("SELECT 1");
 		const collect = v8Collection();
 		const forced: boolean[] = [];
@@ -339,7 +320,7 @@ async function withOpenedFileDatabases(
 	try {
 		const opened = [];
 		for (const directory of directories) {
-			const database = await openPackageDatabase(pathToFileURL(join(directory, "journal.sqlite")).href, "journal");
+			const database = await openPackageDatabase(pathToFileURL(join(directory, "sessions.sqlite")).href, "sessions");
 			await database.get("SELECT 1");
 			opened.push({ directory, database });
 		}
@@ -400,12 +381,12 @@ test("a failed collection fails only the close that waited for it (#4433)", asyn
 test("a failed open keeps its error and attaches a failure to close it (#4433)", async () => {
 	const directory = makeTempDirectory("storage-libsql-release-");
 	try {
-		const path = join(directory, "journal.sqlite");
+		const path = join(directory, "sessions.sqlite");
 		writeFileSync(path, "not a SQLite database\n".repeat(64));
-		const open = () => openPackageDatabase(pathToFileURL(path).href, "journal");
+		const open = () => openPackageDatabase(pathToFileURL(path).href, "sessions");
 		await withCountedCollections(async (collections) => {
 			// The client never opens: a file URL with a host names another machine.
-			await assert.rejects(openPackageDatabase("file://example.invalid/journal.sqlite", "journal"), (error) => {
+			await assert.rejects(openPackageDatabase("file://example.invalid/sessions.sqlite", "sessions"), (error) => {
 				assert.ok(error instanceof StorageUnavailableError);
 				assert.equal(error.cleanupCause, undefined);
 				return true;
@@ -441,7 +422,7 @@ test("closing a remote database runs no collection (#4433)", async () => {
 	try {
 		await withCountedCollections(async (collections) => {
 			await assert.rejects(
-				openPackageDatabase(server.url, "journal"),
+				openPackageDatabase(server.url, "sessions"),
 				(error) => error instanceof StorageUnavailableError && error.cleanupCause === undefined,
 			);
 			assert.ok(server.seen.length > 0);
@@ -475,11 +456,11 @@ async function recordingServer() {
 test("the namespace option reaches a namespaced sqld as x-namespace (#4083)", async () => {
 	const server = await recordingServer();
 	try {
-		const adapter = await packageAdapter("journal");
+		const adapter = await packageAdapter("sessions");
 		await assert.rejects(
 			adapter.openDatabase!(
 				{ url: server.url, namespace: "team-a" },
-				{ agentDir: await agentDirectory, domain: "journal" },
+				{ agentDir: await agentDirectory, domain: "sessions" },
 			),
 			StorageUnavailableError,
 		);

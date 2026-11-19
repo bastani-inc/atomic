@@ -50,7 +50,7 @@ export function toolOutputHashes(entries: readonly SessionEntry[]): string[] {
 }
 
 /**
- * Keeps a released stage's oversized output as a blob of its session, when the session's store holds blobs: the
+ * Keeps a released agent's oversized output as a blob of its session, when the session's store holds blobs: the
  * blob first, then an entry referencing it, as one mutation of the manager, so a session change cannot come between
  * them and a process that stops in between leaves only a blob of that session. Resolves with the `tool-output://`
  * URL the model reads it from. Undefined when the store holds no blobs.

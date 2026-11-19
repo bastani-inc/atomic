@@ -27,7 +27,7 @@ test("TaskEvictedError carries its code, task, retention and hint, and renders t
 	assert.equal(
 		error.message,
 		"Finished task is no longer kept: task-1-0-7 (task_evicted). Only the 256 most recently finished tasks of a " +
-			"session or workflow stage are kept. Its result stays where the conversation reported it and a subagent's " +
+			"session are kept. Its result stays where the conversation reported it and a subagent's " +
 			"transcript stays in its own saved session, but a shell command's full output is no longer available.",
 	);
 	assert.equal(error.message, `Finished task is no longer kept: ${taskId} (task_evicted). ${error.hint}.`);

@@ -428,8 +428,8 @@ describe("resume storage preconditions (#4329)", () => {
 		const problems = await storagePreconditionProblems(
 			[
 				{ domain: "sessions", selection: { kind: "sqlite", path: "/x.sqlite" } },
-				{ domain: "journal", selection: { kind: "jsonl", dir: "/x" } },
-				{ domain: "journal", selection: { kind: "memory" } },
+				{ domain: "sessions", selection: { kind: "jsonl", dir: "/x" } },
+				{ domain: "sessions", selection: { kind: "memory" } },
 			],
 			agentDir,
 			io,
@@ -488,7 +488,7 @@ describe("resume storage preconditions (#4329)", () => {
 		const problems = await storagePreconditionProblems(
 			[
 				{
-					domain: "journal",
+					domain: "sessions",
 					selection: libsql({
 						a: { file: "/abs/token" },
 						b: { env: "EMPTY_TOKEN" },
@@ -524,14 +524,14 @@ describe("resume storage preconditions (#4329)", () => {
 		assert.match(problem!.fix, /mode 600/);
 	});
 
-	test("each adapter loads once and each secret is read once across domains", async () => {
+	test("each adapter loads once and each secret is read once across targets", async () => {
 		const io = new CountingIo();
 		io.variables.set("TOKEN", "t");
 		const selection = libsql({ authToken: { env: "TOKEN" } });
 		const problems = await storagePreconditionProblems(
 			[
 				{ domain: "sessions", selection },
-				{ domain: "journal", selection },
+				{ domain: "sessions", selection },
 			],
 			agentDir,
 			io,
@@ -547,7 +547,7 @@ describe("resume storage preconditions (#4329)", () => {
 		const problems = await storagePreconditionProblems(
 			[
 				{ domain: "sessions", selection: { kind: "adapter", module: "./adapters/custom.mjs" } },
-				{ domain: "journal", selection: { kind: "adapter", module: "@acme/storage" } },
+				{ domain: "sessions", selection: { kind: "adapter", module: "@acme/storage" } },
 			],
 			agentDir,
 			io,
@@ -555,7 +555,7 @@ describe("resume storage preconditions (#4329)", () => {
 		assert.equal(problems[0]?.fix, `Make ./adapters/custom.mjs loadable from ${agentDir}.`);
 		assert.match(problems[0]!.why, /sessions recorded on other nodes/);
 		assert.equal(problems[1]?.fix, "Install it with `atomic install npm:@acme/storage`.");
-		assert.match(problems[1]!.why, /workflow runs recorded on other nodes/);
+		assert.match(problems[1]!.why, /sessions recorded on other nodes/);
 	});
 
 	test("a failure other than a load error is not mistaken for a missing adapter", async () => {
@@ -572,7 +572,7 @@ describe("resume storage preconditions (#4329)", () => {
 		io.files.set("/abs/token", "token\n");
 		await checkResumeStoragePreconditions(
 			"switch-session",
-			[{ domain: "journal", selection: libsql({ authToken: { file: "/abs/token" } }) }],
+			[{ domain: "sessions", selection: libsql({ authToken: { file: "/abs/token" } }) }],
 			agentDir,
 			io,
 		);
@@ -1006,7 +1006,7 @@ describe("resume glue: remaining edge cases (#4329)", () => {
 			const { defaultResumePreflightIo } = await import("../src/core/resume/preflight.ts");
 			const { setWorktreeSnapshotGit } = await import("../src/core/worktree-snapshot/git.ts");
 			const adapter = join(dirname(new URL(import.meta.url).pathname), "..", "..", "storage-libsql", "libsql.js");
-			await defaultResumePreflightIo.loadAdapter(adapter, "/home/u/.atomic/agent", "journal");
+			await defaultResumePreflightIo.loadAdapter(adapter, "/home/u/.atomic/agent", "sessions");
 			const previous = setWorktreeSnapshotGit(async () => ({ path: "/bin/false", env: {} }));
 			try {
 				await assert.rejects(defaultResumePreflightIo.probeGit(), (error: unknown) => {

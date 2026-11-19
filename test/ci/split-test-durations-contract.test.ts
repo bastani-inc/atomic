@@ -18,12 +18,7 @@ const PLATFORMS = ["linux", "win32"] as const;
 const SPLITS = [
 	{
 		replaced: "test/integration/sdk-builtin-host-parity-host-routing.test.ts",
-		files: [
-			"test/integration/sdk-builtin-host-parity-host-routing-prompt-nodes.test.ts",
-			"test/integration/sdk-builtin-host-parity-host-routing-stage-questionnaire.test.ts",
-			"test/integration/sdk-builtin-host-parity-host-routing-across-hosts.test.ts",
-			"test/integration/sdk-builtin-host-parity-host-routing-children.test.ts",
-		],
+		files: ["test/integration/sdk-builtin-host-parity-host-routing-children.test.ts"],
 	},
 	{
 		replaced: undefined,
@@ -31,14 +26,6 @@ const SPLITS = [
 			"packages/coding-agent/test/worktree-pool-claim.test.ts",
 			"packages/coding-agent/test/worktree-pool-claim-candidates.test.ts",
 			"packages/coding-agent/test/worktree-pool-claim-edges.test.ts",
-		],
-	},
-	{
-		replaced: "test/integration/waiting-stage-restart.test.ts",
-		files: [
-			"test/integration/waiting-stage-restart-evicted.test.ts",
-			"test/integration/waiting-stage-restart-finished.test.ts",
-			"test/integration/waiting-stage-restart-released.test.ts",
 		],
 	},
 ] as const;

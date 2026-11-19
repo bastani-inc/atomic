@@ -1,7 +1,7 @@
 /**
  * The one bounded same-target retry policy.
  *
- * Main chat and workflow stages both retry a failing model before spending a
+ * Sessions retry a failing model before spending a
  * fallback candidate. Keeping the gate and the backoff curve here means the two
  * cannot drift into different budgets for the same `settings.retry` values.
  *

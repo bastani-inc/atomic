@@ -16,7 +16,7 @@ Looking to extend or embed Atomic? Go to [Build with Atomic](/build). Looking up
 1. [Interactive use](/usage) — the interactive loop, slash commands, and context files.
 2. [Configure Atomic](/guides/configuration) — write a settings file and override it per project.
 3. [Sessions](/sessions) — save, resume, name, and branch sessions.
-4. [Resume on any machine](/guides/resume-on-any-machine) — continue a session or workflow run on another machine that shares your storage.
+4. [Resume on any machine](/guides/resume-on-any-machine) — continue a session on another machine that shares your storage.
 5. [Context and compaction](/compaction) — keep long sessions inside the context window.
 6. [Providers](/providers) — subscription logins, API keys, and provider-specific setup.
 7. [Local models](/llama-cpp) — run models locally with llama.cpp.
@@ -27,9 +27,8 @@ For work that continues while you chat, follow [Background tasks](/background-ta
 
 ## More guides and references
 
-- [Team and CI setup](/guides/team-setup) shares workflow runs and Intercom with a team through one database while sessions stay private, and sets up CI runners from environment variables.
-- [Running workers on many machines](/guides/worker-hosts) turns any machine into a worker host for shared workflow runs with `atomic worker start`, as a systemd service, from cloud-init, or in a container.
-- [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres) runs worker hosts and the fleet controller on Amazon RDS or Aurora, Google Cloud SQL, Azure Database for PostgreSQL, Neon or Supabase.
+- [Plan a task with subagents](/guides/orchestration) shows how the parent can distribute a review and verify the results.
+- [Team and CI setup](/guides/team-setup) shares Intercom with a team through one database while sessions stay private, and sets up CI runners from environment variables.
 - [Computer use](/computer-use) covers desktop apps, browsers, and terminals across macOS, Linux, and Windows.
 - [Environment variables](/environment-variables) lists Atomic/Pi aliases, provider credentials, and bash session metadata.
 - [Settings](/settings) lists global and project settings.

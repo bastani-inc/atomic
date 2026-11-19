@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+- Workflow stages no longer launch, hold, or resume subagents. Instead of nesting delegation through stages, launch children side by side from the parent session, directly or with codemode. Wait for a child by its task id and resume it by its child id. Reopening the parent session still restores its unfinished children; records left by former workflow stages are not resumed ([#5932](https://github.com/bastani-inc/atomic/pull/5932)).
 - A managed worktree child's terminal report now means Atomic has finished using its directory. Extensions that unblock Git filters or pause reservations must listen for `subagent:finishing` instead of waiting for the terminal report. Atomic's cleanup Git commands set `ATOMIC_SUBAGENT_WORKTREE_PHASE=finishing`. A filter that waits for terminal without switching can still stall; the tool reports pending cleanup, not a finished task ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 
 ### Added

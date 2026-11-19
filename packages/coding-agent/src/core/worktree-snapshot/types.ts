@@ -9,7 +9,7 @@ export interface WorkspaceBinding {
 	envHash: string;
 }
 
-/** Snapshot capture settings, from `snapshots.*` in settings.json, `createAgentSession`, or workflow run options. */
+/** Snapshot capture settings, from `snapshots.*` in settings.json or `createAgentSession`. */
 export interface WorktreeSnapshotSettings {
 	/** Record snapshots at all. Default true. */
 	readonly enabled: boolean;
@@ -22,8 +22,8 @@ export interface WorktreeSnapshotSettings {
 	/** Record a full delta against `head` after this many incremental snapshots. Default 10. */
 	readonly fullEvery: number;
 	/**
-	 * Delete unreferenced snapshot blobs automatically, in the background of an interactive session, after a session
-	 * closes, and when a root workflow run finishes. Default true.
+	 * Delete unreferenced snapshot blobs automatically, in the background of an interactive session and after a session
+	 * closes. Default true.
 	 */
 	readonly autoCollect: boolean;
 	/** Shortest time between two automatic collections of one database, in seconds, on the database's clock. Default 3600. */

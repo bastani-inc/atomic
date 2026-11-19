@@ -22,10 +22,7 @@ afterAll(() => {
 	else process.env.PI_INTERCOM_GROUP = previousLegacyIntercomGroup;
 });
 
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import intercom from "../../packages/intercom/index.js";
-import intercomHeavy from "../../packages/intercom/index-heavy.js";
-import type { IntercomExtensionTestOverrides } from "../../packages/intercom/intercom-test-seams.js";
 import { sleep } from "../helpers/runtime.js";
 
 type Handler = (event: Record<string, unknown>, ctx: Record<string, unknown>) => void | Promise<void>;
@@ -110,46 +107,6 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 		emitResult(requestId: string) {
 			pi.events.emit("subagent:result-intercom", { to: SELF_ALIAS, message: "grouped results", requestId });
 		},
-		emitLateStageMessage(batch = false) {
-			const details = {
-				from: {
-					id: "sender",
-					name: "reviewer",
-					cwd: "/repo",
-					model: "test",
-					pid: 1,
-					startedAt: 1,
-					lastActivity: 1,
-				},
-				message: { id: "late-message", timestamp: 1, content: { text: "late reviewer message" } },
-				bodyText: "late reviewer message",
-			};
-			const payload: {
-				handled: boolean;
-				completion?: Promise<void>;
-				batch: boolean;
-				messages: object[];
-				options: object;
-			} = {
-				handled: false,
-				batch,
-				messages: [
-					{
-						customType: "intercom_message",
-						content: "late reviewer message",
-						display: true,
-						details,
-					},
-				],
-				options: { triggerTurn: true, stageAdmissionKey: "intercom:late-message" },
-			};
-			pi.events.emit("atomic:workflow-stage-late-message", payload);
-			return payload;
-		},
-		routeLatePayload(payload: Record<string, unknown> & { completion?: Promise<void> }) {
-			pi.events.emit("atomic:workflow-stage-late-message", payload);
-			return payload.completion ?? Promise.resolve();
-		},
 	};
 }
 
@@ -182,139 +139,6 @@ describe("lazy relay lifecycle-context fallback", () => {
 		assert.deepEqual(current.entries, [], "no delivery-error entries are recorded");
 	});
 
-	test("lazy-loads parent Intercom before accepting a late stage route", async () => {
-		const current = fixture();
-		await current.fire("turn_start", { type: "turn_start" });
-		const payload = current.emitLateStageMessage();
-
-		assert.equal(payload.handled, true);
-		assert.ok(payload.completion);
-		await payload.completion;
-		assert.equal(current.inboundMessages.filter((message) => message.customType === "intercom_message").length, 1);
-	});
-
-	test("propagates a rejected main-chat route and permits the stable late message to retry once", async () => {
-		const current = fixture({ rejectLateRoutes: 1 });
-		await current.fire("turn_start", { type: "turn_start" });
-
-		const first = current.emitLateStageMessage();
-		assert.ok(first.completion);
-		await assert.rejects(first.completion, /injected main-chat route failure/);
-
-		const retry = current.emitLateStageMessage();
-		assert.ok(retry.completion);
-		await retry.completion;
-		assert.equal(current.inboundMessages.filter((message) => message.customType === "intercom_message").length, 1);
-	});
-
-	test("propagates a rejected main-chat batch and permits the stable batch to retry once", async () => {
-		const current = fixture({ rejectLateRoutes: 1 });
-		await current.fire("turn_start", { type: "turn_start" });
-
-		const first = current.emitLateStageMessage(true);
-		assert.ok(first.completion);
-		await assert.rejects(first.completion, /injected main-chat route failure/);
-
-		const retry = current.emitLateStageMessage(true);
-		assert.ok(retry.completion);
-		await retry.completion;
-		assert.equal(current.inboundMessages.filter((message) => message.customType === "intercom_message").length, 1);
-	});
-
-	test("closed-stage broker ingress crosses into a distinct parent admission instance and survives source retirement", async () => {
-		const parent = fixture({ rejectLateRoutes: 1 });
-		await parent.fire("turn_start", { type: "turn_start" });
-		const boundary = new WorkflowStageAdmissionBoundary();
-		boundary.registerOwnedSubagentRun("owned-stage-run");
-
-		await boundary.close();
-		const sourceHandlers = new Map<string, Handler[]>();
-		const sourceEvents = new Map<string, Array<(payload: unknown) => void>>();
-		let inbound: Parameters<NonNullable<IntercomExtensionTestOverrides["captureInboundHandler"]>>[0] | undefined;
-		const sourcePi = {
-			on(name: string, handler: Handler) {
-				const handlers = sourceHandlers.get(name) ?? [];
-				handlers.push(handler);
-				sourceHandlers.set(name, handlers);
-			},
-			registerTool() {},
-			registerCommand() {},
-			registerShortcut() {},
-			registerMessageRenderer() {},
-			async appendEntry() {},
-			getSessionName: () => undefined,
-			sendMessage(message: object, options?: { stageAdmissionKey?: string }) {
-				return boundary.admit(
-					options?.stageAdmissionKey,
-					() => {
-						throw new Error("closed stage accepted delivery");
-					},
-					() => {
-						return parent.routeLatePayload({ handled: false, batch: false, messages: [message], options });
-					},
-				).completion;
-			},
-			events: {
-				on(name: string, handler: (payload: unknown) => void) {
-					const handlers = sourceEvents.get(name) ?? [];
-					handlers.push(handler);
-					sourceEvents.set(name, handlers);
-					return () => {};
-				},
-				emit(name: string, payload: unknown) {
-					for (const handler of sourceEvents.get(name) ?? []) handler(payload);
-				},
-			},
-		};
-		intercomHeavy(sourcePi as never, {
-			captureInboundHandler: (handler) => {
-				inbound = handler;
-			},
-		});
-		const sourceContext = {
-			hasUI: false,
-			cwd: process.cwd(),
-			model: { id: "test-model" },
-			isIdle: () => true,
-			ui: { notify() {} },
-			sessionManager: { getSessionId: () => "closed-stage-source", getBranch: () => [] },
-			orchestrationContext: {
-				kind: "workflow-stage" as const,
-				messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() },
-			},
-		};
-		for (const handler of sourceHandlers.get("session_start") ?? [])
-			await handler({ type: "session_start", reason: "startup" }, sourceContext);
-		assert.ok(inbound);
-		const sender = {
-			id: "sender",
-			name: "reviewer",
-			cwd: "/repo",
-			model: "test",
-			pid: 1,
-			startedAt: 1,
-			lastActivity: 1,
-		};
-		const ownedChildMessage = {
-			id: "closed-late-owned-child",
-			timestamp: 1,
-			source: { subagentRunId: "owned-stage-run", subagentAgent: "worker", subagentIndex: 0 },
-			content: { text: "late from this stage's child" },
-		};
-		const unrelatedChildMessage = {
-			id: "closed-late-unrelated-child",
-			timestamp: 2,
-			source: { subagentRunId: "other-stage-run", subagentAgent: "worker", subagentIndex: 0 },
-			content: { text: "late from another stage's child" },
-		};
-		inbound(sourceContext as never, sender, ownedChildMessage);
-		inbound(sourceContext as never, sender, unrelatedChildMessage);
-		for (const handler of sourceHandlers.get("session_shutdown") ?? [])
-			await handler({ type: "session_shutdown", reason: "quit" }, sourceContext);
-		await settle(() => parent.inboundMessages.length === 1);
-		assert.equal(parent.inboundMessages.length, 1);
-		assert.equal(parent.inboundMessages[0]?.details?.message, unrelatedChildMessage);
-	});
 	test("still delivers locally on the normal session_start path", async () => {
 		const current = fixture();
 		await current.fire("session_start", { type: "session_start", reason: "startup" });

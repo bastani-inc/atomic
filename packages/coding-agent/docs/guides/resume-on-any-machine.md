@@ -1,11 +1,11 @@
 ---
 title: Resume on any machine
-description: "Continue a session or workflow run on another machine that shares your storage: what Atomic restores, when it asks, how blueprints set the environment up again, and what each error means."
+description: "Continue a session on another machine that shares your storage: what Atomic restores, when it asks, how blueprints set the environment up again, and what each error means."
 ---
 
 # Resume on any machine
 
-When several machines share one storage database, a session or workflow run started on one machine can continue on any of them. Atomic finds the session in the shared storage, rebuilds the repository state it was working against, and continues the conversation where it stopped.
+When several machines share one storage database, a session started on one machine can continue on any of them. Atomic finds the session in the shared storage, rebuilds the repository state it was working against, and continues the conversation where it stopped.
 
 ## Join each machine
 
@@ -16,7 +16,7 @@ atomic install npm:@bastani/atomic-storage-libsql
 atomic storage join <url> --token-file <path>
 ```
 
-`atomic storage join` keeps sessions and workflow runs in the shared database, so both resume on any joined machine. `atomic team join` shares workflow runs and Intercom but keeps sessions on each machine, so with it only workflow runs resume elsewhere; to share sessions on a machine joined that way, run `atomic team leave` and then `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens and `atomic storage status`.
+`atomic storage join` keeps sessions in the shared database, so they resume on any joined machine. `atomic team join` shares Intercom but keeps sessions on each machine; to share sessions on a machine joined that way, run `atomic team leave` and then `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens and `atomic storage status`.
 
 Keep snapshots on (`snapshots.enabled`, the default). A session records the state of each Git checkout it changes at the end of every turn that ran a file-writing tool, including uncommitted edits, untracked files and commits that were never pushed. That record lives in the shared storage, so a joined machine needs nothing else. Work inside submodules and in untracked repositories nested in the checkout is not recorded. A resume names each such path in a warning (`nested-repository`, `submodule-changes`, `unpushed-submodule-commit`); commit and push that work to bring it along. See [What is left out](/worktree-snapshots#what-is-left-out).
 
@@ -51,21 +51,7 @@ Interactive mode prints the same message before it starts. When several resumes 
 
 ## Wake a released subagent
 
-A background subagent that was released while it waited keeps its session in the shared storage when it was launched with `context: "fork"`, so it can be woken on another machine. The wake maps its recorded directory through the restores of the session that owns it. The subagent's own session is then prepared as a woken session is: each checkout it worked in on this machine stays as it is, and every other checkout is restored from its snapshots into a worktree on this machine, with its blueprints built. Its tools resolve the earlier machine's absolute paths there, and follow the restores of the session or run it was launched in. A subagent started without `context: "fork"` keeps a session file on the machine that launched it, which another machine cannot reopen; it is reported as unrestorable.
-
-## Resume a workflow run
-
-Resume a run from `/resume`, with the `workflow` tool's `resume` action, or from the SDK with `run(definition, inputs, { runId })`. A run restores its checkouts from the snapshots on its checkpoints, once, before it continues; see [Worktree snapshots](/worktree-snapshots):
-
-- Each checkout gets its latest recorded state. Completed `ctx.tool` calls are not run again; the step that was interrupted runs again in the restored worktree.
-- A child workflow bound to a repository with `workspace({ repo, branch })` continues in its restored worktree, also when its repository or branch exists only on the machine that recorded it.
-- A run bound to an input worktree (`worktreeFromInputs`, as `goal` and `ralph` use) continues in the worktree restored for it.
-- Children of a pooled run restore their worktree on whichever host claims them, and only hosts that can restore it claim them. A worker host builds the blueprints below, from its own agent directory, in each worktree it restores, before the child starts there; a host given its own `restore` function builds none. See [Workers on other hosts](/workflows/operations#workers-on-other-hosts).
-- `forkRun` on another machine materializes the worktrees recorded where the fork starts, not the source run's latest state.
-
-Each checkout the run restores gets its blueprints built, as below, before the run continues, and absolute paths from the earlier machine resolve in the restored worktrees for the run's tools. A missing Git is reported before anything is restored or claimed. A blueprint never stops a run or a pooled child: a step that fails is reported as a warning, and the run continues in the restored worktree.
-
-`run()` with the id of a run in shared storage stops after 15 seconds with a retryable `ResumeCatalogTimeoutError` when the storage does not answer; once it answers, listing the journal's runs is not bounded, and a retry opens the journal again. Resuming a run id this machine cannot find fails with the journal's `run-not-found` error, which tells a machine on local storage only to join the shared storage. `run()` with a run id its journal does not hold starts a new run under that id, so check with `atomic storage status` that the machine uses the shared storage before resuming a run from the SDK. If the machine that ran it stopped without releasing it, another machine can take the run over two minutes after its last heartbeat; until then the resume reports that another execution owns it before it restores or sets up anything, and resuming again later continues it.
+A background subagent that was released while it waited keeps its session in the shared storage when it was launched with `context: "fork"`, so it can be woken on another machine. The wake maps its recorded directory through the restores of the session that owns it. The subagent's own session is then prepared as a woken session is: each checkout it worked in on this machine stays as it is, and every other checkout is restored from its snapshots into a worktree on this machine, with its blueprints built. Its tools resolve the earlier machine's absolute paths there, and follow the restores of the session it was launched in. A subagent started without `context: "fork"` keeps a session file on the machine that launched it, which another machine cannot reopen; it is reported as unrestorable.
 
 ## Set the environment up with a blueprint
 
@@ -129,7 +115,7 @@ A step fails when its command exits non-zero, a PowerShell error is raised, it t
 
 On Windows, if you stop a step after its command has exited and Windows could not put the command in a Job object, Atomic warns that descendants may still be running. Check for processes the step started before retrying it. Atomic does not reuse the exited command’s PID to stop them.
 
-Every step writes a log under `~/.atomic/agent/worktree-snapshots/blueprint-logs` with the step's name, command, start and finish times, duration, exit status or timeout and output; the warning gives the path. The fix is to read the log, fix the environment and the blueprint, and resume: a worktree whose last build failed or never finished is built again on its next resume, whether you resume a session or a workflow run, and an edited blueprint is rebuilt. Builds that run at the same time, for example several pooled children restoring on one host, take turns writing the build record.
+Every step writes a log under `~/.atomic/agent/worktree-snapshots/blueprint-logs` with the step's name, command, start and finish times, duration, exit status or timeout and output; the warning gives the path. The fix is to read the log, fix the environment and the blueprint, and resume: a worktree whose last build failed or never finished is built again on its next resume, and an edited blueprint is rebuilt. Builds that run at the same time, for example several sessions restoring on one machine, take turns writing the build record.
 
 ### Start the first turn while the build runs
 
@@ -147,7 +133,7 @@ To start the first turn early in the TUI as well, set it to `"tools"`.
 
 ### What the agent sees
 
-The first turn of a resumed session carries each applicable blueprint's `maintenance` steps and `knowledge` items, labelled with what happened: ran in this build, not yet run on this machine (skipped or untrusted), or not run or partial with the failing step and its log. The same holds for the stages of a resumed workflow run and for pooled children that start in a restored worktree: their sessions get that worktree's context and its `$ENVRC` variables. The agent re-runs `maintenance` itself when it finds that dependencies changed. Atomic's default system prompt also asks the agent to keep `.atomic/blueprint.yaml` current as part of normal work: to write one when a repository has none, to update it in the same change that adds a dependency, tool or workspace, to record hard-won commands in `knowledge`, to leave secrets out, and to fix it after a Partial build. It edits `~/.atomic/agent/blueprint.yaml` only when you ask.
+The first turn of a resumed session carries each applicable blueprint's `maintenance` steps and `knowledge` items, labelled with what happened: ran in this build, not yet run on this machine (skipped or untrusted), or not run or partial with the failing step and its log. The agent re-runs `maintenance` itself when it finds that dependencies changed. Atomic's default system prompt also asks the agent to keep `.atomic/blueprint.yaml` current as part of normal work: to write one when a repository has none, to update it in the same change that adds a dependency, tool or workspace, to record hard-won commands in `knowledge`, to leave secrets out, and to fix it after a Partial build. It edits `~/.atomic/agent/blueprint.yaml` only when you ask.
 
 ### Caches for runners
 
@@ -224,19 +210,19 @@ Missing setup is checked in one pass before anything is restored: the storage ad
 | Error | Code | When it happens | What to do |
 |---|---|---|---|
 | `ResumeNotFoundError` | `not-found` | The session id matches nothing this machine can read. With reason `local-storage-not-joined`, this machine uses local storage only. | Join the machine's sessions with `atomic storage join <url> --token-file <path>`. `atomic team join` keeps sessions on each machine: on a machine joined that way, run `atomic team leave` first. With reason `shared-miss`, check the id and that every machine uses the same storage and prefix. |
-| `ResumePreconditionError` | `preconditions-unmet` | Setup the resume needs is missing. Every missing piece is listed in `problems`: `adapter-not-installed`, `credential-missing`, `credential-unreadable`, `git-unavailable`; a piece that belongs to one checkout names it in `checkout`. With `git-unavailable` (workflow runs; a session continues without its checkouts instead), its `cause` is the `GitUnavailableError` that says why. | Run each listed fix, for example `atomic install npm:@bastani/atomic-storage-libsql`, write the token file, or unset offline mode or install Git. |
-| `GitUnavailableError` | `not-installed`, `unsupported-platform`, `offline`, `checksum-mismatch`, `download-failed`, `install-failed` | A workflow run's checkout must be verified or restored and no Git can be started or provisioned. A session continues without its checkouts instead. | Do what its hint says, for example unset `ATOMIC_OFFLINE` or install Git with the command it names. |
-| `ResumeCatalogUnavailableError` | `catalog-unavailable` | The shared storage could not be reached while looking the session or run up, for example because the connection was refused or broke. Retryable. Any other storage failure, such as a missing token file, is reported as that storage error itself. | Check connectivity with `atomic storage status` and resume again. |
-| `ResumeCatalogTimeoutError` | `catalog-timeout` | The shared storage did not answer the lookup within 15 seconds, for example during a network partition. `subject` is `session` or `run`. Retryable. A partition that starts later in the resume is reported when the connection gives up. | Check connectivity with `atomic storage status` and resume again. |
-| `WorkspaceDriftError` | `tree-drift` | A workflow run's recorded state cannot be rebuilt, for example because unpushed commits touch files that are never recorded (`.env`, keys), a snapshot blob is missing, or the disk is full. The message names what the restore could not do (the commits, blob, remote or full volume) and the fix. A session resume does not stop for these; it restores what it can, with a notice. | Do what the message says; for unpushed commits, push them from the original machine, or continue there. |
+| `ResumePreconditionError` | `preconditions-unmet` | Setup the resume needs is missing. Every missing piece is listed in `problems`: `adapter-not-installed`, `credential-missing`, `credential-unreadable`, `git-unavailable`; a piece that belongs to one checkout names it in `checkout`. With `git-unavailable`, its `cause` is the `GitUnavailableError` that says why. | Run each listed fix, for example `atomic install npm:@bastani/atomic-storage-libsql`, write the token file, or unset offline mode or install Git. |
+| `GitUnavailableError` | `not-installed`, `unsupported-platform`, `offline`, `checksum-mismatch`, `download-failed`, `install-failed` | A checkout must be verified or restored and no Git can be started or provisioned. A session continues without its checkouts instead, with a notice that carries this error. | Do what its hint says, for example unset `ATOMIC_OFFLINE` or install Git with the command it names. |
+| `ResumeCatalogUnavailableError` | `catalog-unavailable` | The shared storage could not be reached while looking the session up, for example because the connection was refused or broke. Retryable. Any other storage failure, such as a missing token file, is reported as that storage error itself. | Check connectivity with `atomic storage status` and resume again. |
+| `ResumeCatalogTimeoutError` | `catalog-timeout` | The shared storage did not answer the lookup within 15 seconds, for example during a network partition. `subject` names what was being looked up. Retryable. A partition that starts later in the resume is reported when the connection gives up. | Check connectivity with `atomic storage status` and resume again. |
+| `WorkspaceDriftError` | `tree-drift` | A checkout's recorded state cannot be rebuilt exactly, for example because unpushed commits touch files that are never recorded (`.env`, keys), a snapshot blob is missing, or the disk is full. The message names what the restore could not do (the commits, blob, remote or full volume) and the fix. A session resume does not stop for these; it restores what it can, with a notice. | Do what the message says; for unpushed commits, push them from the original machine, or continue there. |
 | `WorkspaceRestoreError` | `path-too-long` | On Windows, a worktree root or its Git directory under the agent directory would be longer than Git for Windows accepts. Nothing is written. | Set `ATOMIC_CODING_AGENT_DIR` to a shorter directory. See [Long paths on Windows](#long-paths-on-windows). |
-| `WorkspaceRestoreError` | `invalid-snapshot` | A snapshot record names a remote with credentials, a Git remote helper (`ext::`), another scheme than `https`, `http`, `ssh`, `git` or `file`, or holds a value Atomic never writes. Nothing is fetched or run. | Resume only sessions and runs from storage you trust, or export the session again on the machine that recorded it. |
+| `WorkspaceRestoreError` | `invalid-snapshot` | A snapshot record names a remote with credentials, a Git remote helper (`ext::`), another scheme than `https`, `http`, `ssh`, `git` or `file`, or holds a value Atomic never writes. Nothing is fetched or run. | Resume only sessions from storage you trust, or export the session again on the machine that recorded it. |
 
 Secret values never appear in these messages; they name the environment variable or file instead. The classes, their codes and the `isResume…Error` guards are exported from `@bastani/atomic`.
 
 ## Windows
 
-Sessions and workflow runs resume on Windows as they do elsewhere. Local workers are not available on Windows, because Atomic cannot contain their tool processes there: a run with `localWorkers` fails with `SharedPoolSetupError` (code `process-containment-unavailable`) before it starts, so resume pooled runs on Linux or macOS.
+Sessions resume on Windows as they do elsewhere.
 
 ### Long paths on Windows
 

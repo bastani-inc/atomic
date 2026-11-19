@@ -285,7 +285,6 @@ describe("session search index on a PostgreSQL role that cannot install pg_trgm 
 						const router = createHistoryRouter({
 							cwd: "/project",
 							sessionStore: () => store,
-							workflows: () => undefined,
 							budget: { rows: SCAN_ROWS },
 						});
 						const found: string[] = [];

@@ -1044,8 +1044,6 @@ export const SHIPPED_SOURCE_ROOTS: readonly string[] = [
 	"packages/subagents/src",
 	"packages/telemetry/src",
 	"packages/tui/src",
-	"packages/workflows/src",
-	"packages/workflows/builtin",
 	"packages/intercom",
 	"packages/mcp",
 	"packages/web-access",

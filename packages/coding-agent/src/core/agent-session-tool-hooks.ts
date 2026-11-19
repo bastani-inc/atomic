@@ -182,7 +182,7 @@ export interface ToolResultToFinalize {
 	readonly isError: boolean;
 	/** The tool call this one is nested in, when a tool called it; its output then stays uncapped. */
 	readonly parentToolCallId: string | undefined;
-	/** The result arrived after the stage was released, so its spill is kept as a blob of the session when it can be. */
+	/** The result arrived after the agent was released, so its spill is kept as a blob of the session when it can be. */
 	readonly releasedStage?: boolean;
 }
 

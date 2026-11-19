@@ -1,5 +1,5 @@
 {
-  "$comment": "Authoritative map for two generated README feature tables in one fixed 6+32 order: six featured rows under Atomic Verifiable Runtime, then the other 32 after the complete Get started section. Together they cover all 27 core crash-course lessons, three distinct workflow-use paths, and the remaining Extras between A.1 and A.10. Each row binds its public Atomic docs link, crash-course link and lesson title, capture source, interactions, and media; display_title may override only the visible README title. validate.mjs checks README.md, capture sources, assets/feature-wall/, and .gitattributes against this file.",
+  "$comment": "The first six recorded capabilities appear above Get started in README.md; the remaining capabilities follow it. Each row binds its docs and crash-course links, capture, and media.",
   "course": {
     "name": "Atomic crash course",
     "url": "https://github.com/bastani-inc/atomic-crash-course",
@@ -55,163 +55,8 @@
   },
   "lessons": [
     {
-      "id": "A.8",
-      "order": 1,
-      "capture_source": "scripts/readme-feature-wall/tapes/A.8.tape",
-      "slug": "38-natural-language-workflow-authoring",
-      "part": "Extras",
-      "lesson": "A.8 Natural-language workflow authoring",
-      "anchor": "#a8-natural-language-workflow-authoring",
-      "title": "Natural-language workflow authoring",
-      "blurb": "Describe inputs, parallel stages, synthesis, and outputs in prose; Atomic writes and reloads the runnable TypeScript graph.",
-      "alt": "Atomic turning a prose review-changes graph contract into a project workflow file and reloading it in the installed product",
-      "interactions": [
-        "Create a reusable Atomic workflow called review-changes.",
-        "!!sed -n '1,160p' .atomic/workflows/review-changes.ts"
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. The generated source is shown only after the real agent writes it.",
-      "media": {
-        "gif": "assets/feature-wall/38-natural-language-workflow-authoring.gif",
-        "jpg": "assets/feature-wall/38-natural-language-workflow-authoring.jpg"
-      },
-      "render": {
-        "start": 22,
-        "end": 173.3,
-        "segments": [
-          {
-            "start": 22,
-            "end": 31
-          },
-          {
-            "start": 171.6,
-            "end": 173.3
-          }
-        ],
-        "speed": 1.2,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 173,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      },
-      "display_title": "Create a workflow in plain English"
-    },
-    {
-      "id": "6.2",
-      "order": 2,
-      "capture_source": "scripts/readme-feature-wall/tapes/6.2.tape",
-      "slug": "23-steer-a-live-run",
-      "part": "Part 6 - Workflows",
-      "lesson": "6.2 Steer and control a live run",
-      "anchor": "#62-steer-and-control-a-live-run",
-      "title": "Steer and control a live run",
-      "blurb": "Attach to a running stage, watch it stream, and steer, pause, or abort it mid-flight.",
-      "alt": "The Atomic workflow graph with a live stage streaming, receiving a steering message from the operator",
-      "interactions": [
-        "ask the agent to run fan-out-and-synthesize with two live branches",
-        "list the running branch stages",
-        "send an exact <keepContext> steering message to each live stage"
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked.",
-      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
-      "media": {
-        "gif": "assets/feature-wall/23-steer-a-live-run.gif",
-        "jpg": "assets/feature-wall/23-steer-a-live-run.jpg"
-      },
-      "render": {
-        "start": 38,
-        "end": 64,
-        "speed": 2.167,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 60,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
-      "id": "6.5",
-      "order": 3,
-      "capture_source": "scripts/readme-feature-wall/tapes/6.5.tape",
-      "slug": "26-durability-and-resume",
-      "part": "Part 6 - Workflows",
-      "lesson": "6.5 Durability and resume",
-      "anchor": "#65-durability-and-resume",
-      "title": "Durability and resume",
-      "blurb": "Runs checkpoint as they go, so killing the process leaves them retained and resumable instead of lost.",
-      "alt": "The Atomic resume picker after a killed run, listing retained workflow runs with their checkpoint counts",
-      "interactions": [
-        "ask the agent to run fan-out-and-synthesize on demo-app/server.js",
-        "kill the Atomic process mid-run",
-        "atomic",
-        "/resume"
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. Retained run names from this machine are shown by the picker and are allowed by the repository owner's narrowed privacy scope.",
-      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
-      "media": {
-        "gif": "assets/feature-wall/26-durability-and-resume.gif",
-        "jpg": "assets/feature-wall/26-durability-and-resume.jpg"
-      },
-      "render": {
-        "start": 6,
-        "end": 42,
-        "speed": 3,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 34,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
-      "id": "6.4",
-      "order": 4,
-      "capture_source": "scripts/readme-feature-wall/tapes/6.4.tape",
-      "slug": "25-human-in-the-loop-gates",
-      "part": "Part 6 - Workflows",
-      "lesson": "6.4 Human-in-the-loop gates",
-      "anchor": "#64-human-in-the-loop-gates",
-      "title": "Human-in-the-loop gates",
-      "blurb": "Put an approval gate anywhere in the graph and the run waits for a person before it proceeds.",
-      "alt": "A workflow run pausing at a human approval gate and waiting for the operator's decision",
-      "interactions": [
-        "/reload",
-        "ask the agent to run the project-local release-gate-demo workflow",
-        "/workflows",
-        "open the awaiting ctx.ui.select node and leave the real risk-choice gate waiting for the operator"
-      ],
-      "privacy_notes": "Graph- and stage-view-only window with no statusline, so the band pass is skipped like A.9; the OCR pass and finished-media gate still run.",
-      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
-      "media": {
-        "gif": "assets/feature-wall/25-human-in-the-loop-gates.gif",
-        "jpg": "assets/feature-wall/25-human-in-the-loop-gates.jpg"
-      },
-      "render": {
-        "start": 1.7,
-        "end": 27,
-        "speed": 2.11,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 14,
-        "mask": false
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
       "id": "5.3",
-      "order": 5,
+      "order": 1,
       "capture_source": "scripts/readme-feature-wall/tapes/5.3.tape",
       "slug": "18-planner-worker-intercom",
       "part": "Part 5 - Subagents and intercom",
@@ -245,153 +90,8 @@
       }
     },
     {
-      "id": "6.6",
-      "order": 6,
-      "capture_source": "scripts/readme-feature-wall/tapes/6.6.tape",
-      "slug": "27-security-review-repair-loop",
-      "part": "Part 6 - Workflows",
-      "lesson": "6.6 Security review with a repair loop",
-      "anchor": "#66-security-review-with-a-repair-loop",
-      "title": "Security review with a repair loop",
-      "blurb": "Executable checks and fresh reviewers produce evidence; failures route into bounded repair until the gate passes.",
-      "alt": "Atomic security-review workflow graph with the hardcoded API key audit finding, repair-1 running, and the header reaching four-of-four complete",
-      "interactions": [
-        "/reload",
-        "ask the agent to run the project-local security-review-demo workflow",
-        "/workflows",
-        "approve its human repair gate and watch audit, repair-1, and verify-2 run as real tracked nodes"
-      ],
-      "privacy_notes": "Graph-only window with no statusline, so the band pass is skipped like A.9; the OCR pass and finished-media gate still run. The planted demo secret is fictional seed data from the crash course; the selected window shows only the graph view, not the finding detail or prompt text.",
-      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
-      "media": {
-        "gif": "assets/feature-wall/27-security-review-repair-loop.gif",
-        "jpg": "assets/feature-wall/27-security-review-repair-loop.jpg"
-      },
-      "render": {
-        "start": 7.5,
-        "end": 22.5,
-        "speed": 1.25,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 21.5,
-        "mask": false
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      },
-      "display_title": "Verification built in"
-    },
-    {
-      "id": "W.1",
-      "order": 7,
-      "capture_source": "scripts/readme-feature-wall/tapes/W.1.tape",
-      "slug": "28-launch-workflow-plain-english",
-      "part": "Part 6 - Workflows",
-      "lesson": "W.1 Launch a workflow in plain English",
-      "anchor": "#part-6--workflows",
-      "title": "Launch a workflow in plain English",
-      "blurb": "Ask in normal chat and Atomic routes the request through its workflow tool into a real registered run - no command syntax required.",
-      "alt": "Atomic receiving a normal chat request and launching the registered plain-english-demo workflow through the real workflow tool",
-      "interactions": [
-        "Launch the registered plain-english-demo workflow in the background with topic set to src-client.ts. Use the workflow tool now, then tell me the run status."
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. The project workflow is seeded off camera, then discovered and launched by the installed product.",
-      "media": {
-        "gif": "assets/feature-wall/28-launch-workflow-plain-english.gif",
-        "jpg": "assets/feature-wall/28-launch-workflow-plain-english.jpg"
-      },
-      "render": {
-        "start": 14,
-        "end": 40,
-        "speed": 2.167,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 32,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
-      "id": "A.10",
-      "order": 8,
-      "capture_source": "scripts/readme-feature-wall/tapes/A.10.tape",
-      "slug": "40-autonomous-implementation-loops",
-      "part": "Extras",
-      "lesson": "A.10 Autonomous implementation loops",
-      "anchor": "#a10-autonomous-implementation-loops",
-      "title": "Autonomous implementation loops",
-      "blurb": "<code>ralph</code> refines, researches, implements, reviews, and repairs against a bounded loop contract.",
-      "alt": "An earlier Atomic session inspecting the ralph contract, launching a one-loop validation task, and opening its live research-first workflow graph",
-      "interactions": [
-        "What inputs does the ralph workflow take?",
-        "Run ralph with the workflow tool, with prompt 'Add input validation to demo-app/server.js and prove it with a test' and max_loops 1.",
-        "/workflows"
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. create_pr is not enabled; the run stays inside the clean clone.",
-      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
-      "media": {
-        "gif": "assets/feature-wall/40-autonomous-implementation-loops.gif",
-        "jpg": "assets/feature-wall/40-autonomous-implementation-loops.jpg"
-      },
-      "render": {
-        "start": 18,
-        "end": 60,
-        "speed": 3.5,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 56,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
-      "id": "W.3",
-      "order": 9,
-      "capture_source": "scripts/readme-feature-wall/tapes/W.3.tape",
-      "slug": "30-inspect-control-workflows",
-      "part": "Part 6 - Workflows",
-      "lesson": "W.3 Inspect and control workflows",
-      "anchor": "#61-touring-the-builtins",
-      "title": "Inspect and control workflows",
-      "blurb": "Browse running and completed workflows with <code>/workflows</code>, then pause, resume or quit a run from its graph.",
-      "alt": "An earlier Atomic session listing workflows, inspecting inputs and status, and opening the live control-demo graph",
-      "interactions": [
-        "Which workflows are installed?",
-        "What inputs does control-demo take?",
-        "Run control-demo with the workflow tool, with subject src-client.ts.",
-        "/workflows",
-        "p pauses the run and r resumes it from its graph"
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. The recorded run picker contains only throwaway lesson runs.",
-      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
-      "media": {
-        "gif": "assets/feature-wall/30-inspect-control-workflows.gif",
-        "jpg": "assets/feature-wall/30-inspect-control-workflows.jpg"
-      },
-      "render": {
-        "start": 15,
-        "end": 57,
-        "speed": 3.5,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 50,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
       "id": "5.2",
-      "order": 10,
+      "order": 2,
       "capture_source": "scripts/readme-feature-wall/tapes/5.2.tape",
       "slug": "17-worktree-parallel-work",
       "part": "Part 5 - Subagents and intercom",
@@ -425,7 +125,7 @@
     },
     {
       "id": "5.4",
-      "order": 11,
+      "order": 3,
       "capture_source": "scripts/readme-feature-wall/tapes/5.4.tape",
       "slug": "19-escalate-to-supervisor",
       "part": "Part 5 - Subagents and intercom",
@@ -461,45 +161,8 @@
       }
     },
     {
-      "id": "A.9",
-      "order": 12,
-      "capture_source": "scripts/readme-feature-wall/tapes/A.9.tape",
-      "slug": "39-nesting-builtin-workflows",
-      "part": "Extras",
-      "lesson": "A.9 Nesting builtin workflows",
-      "anchor": "#a9-nesting-builtin-workflows",
-      "title": "Nesting builtin workflows",
-      "blurb": "Compose imported workflow definitions with <code>ctx.workflow(...)</code>; child stages flatten into one inspectable parent graph.",
-      "alt": "Atomic showing nested fan-out builtin stages flattened into the live research-and-verify parent workflow graph",
-      "interactions": [
-        "!!sed -n '1,160p' .atomic/workflows/research-and-verify.ts",
-        "/reload",
-        "Run the research-and-verify workflow with the workflow tool, with topic 'how the session store works'.",
-        "/workflows"
-      ],
-      "privacy_notes": "The selected window stays inside the graph viewer, where no chat statusline is present; moving private text would still be found and painted by the OCR pass.",
-      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
-      "media": {
-        "gif": "assets/feature-wall/39-nesting-builtin-workflows.gif",
-        "jpg": "assets/feature-wall/39-nesting-builtin-workflows.jpg"
-      },
-      "render": {
-        "start": 55,
-        "end": 85,
-        "speed": 2.5,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 75,
-        "mask": false
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
       "id": "5.5",
-      "order": 13,
+      "order": 4,
       "capture_source": "scripts/readme-feature-wall/tapes/5.5.tape",
       "slug": "20-intercom-context-handoff",
       "part": "Part 5 - Subagents and intercom",
@@ -534,7 +197,7 @@
     },
     {
       "id": "5.1",
-      "order": 14,
+      "order": 5,
       "capture_source": "scripts/readme-feature-wall/tapes/5.1.tape",
       "slug": "16-bundled-specialists",
       "part": "Part 5 - Subagents and intercom",
@@ -567,115 +230,8 @@
       }
     },
     {
-      "id": "6.3",
-      "order": 15,
-      "capture_source": "scripts/readme-feature-wall/tapes/6.3.tape",
-      "slug": "24-write-your-own-workflow",
-      "part": "Part 6 - Workflows",
-      "lesson": "6.3 Writing your own workflow",
-      "anchor": "#63-writing-your-own-workflow",
-      "title": "Writing your own workflow",
-      "blurb": "Stages, schemas, and gates are versioned TypeScript you review, not per-run improvisation.",
-      "alt": "A project-local workflow defined in TypeScript with stages and an output schema, then run by Atomic",
-      "interactions": [
-        "seed and display .atomic/workflows/explain-file.ts",
-        "/reload",
-        "Run the explain-file workflow with the workflow tool, with path src-client.ts."
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked.",
-      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
-      "media": {
-        "gif": "assets/feature-wall/24-write-your-own-workflow.gif",
-        "jpg": "assets/feature-wall/24-write-your-own-workflow.jpg"
-      },
-      "render": {
-        "start": 18,
-        "end": 44,
-        "speed": 2.167,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 41,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
-      "id": "6.1",
-      "order": 16,
-      "capture_source": "scripts/readme-feature-wall/tapes/6.1.tape",
-      "slug": "22-touring-the-builtins",
-      "part": "Part 6 - Workflows",
-      "lesson": "6.1 Touring the builtins",
-      "anchor": "#61-touring-the-builtins",
-      "title": "Touring the builtins",
-      "blurb": "Bundled workflows for research, planning, implementation, and review, ready before you write one.",
-      "alt": "An earlier Atomic session's workflow picker listing the bundled workflows and their stages",
-      "interactions": [
-        "Which workflows are installed? List each one with its description.",
-        "Which bundled workflow should I use to independently prove a change is correct, and why?"
-      ],
-      "privacy_notes": "Statusline model segment masked.",
-      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
-      "media": {
-        "gif": "assets/feature-wall/22-touring-the-builtins.gif",
-        "jpg": "assets/feature-wall/22-touring-the-builtins.jpg"
-      },
-      "render": {
-        "start": 23.75,
-        "end": 49.75,
-        "speed": 2.167,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 43.25,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
-      "id": "W.2",
-      "order": 17,
-      "capture_source": "scripts/readme-feature-wall/tapes/W.2.tape",
-      "slug": "29-workflow-typed-inputs",
-      "part": "Part 6 - Workflows",
-      "lesson": "W.2 Run a workflow with typed inputs",
-      "anchor": "#61-touring-the-builtins",
-      "title": "Run a workflow with typed inputs",
-      "blurb": "Ask for a workflow by name; the workflow tool validates its typed inputs against TypeBox before the run starts.",
-      "alt": "An earlier Atomic session showing the typed-input-demo input contract, launching it with a string path and integer depth, and listing its live run status",
-      "interactions": [
-        "What inputs does the typed-input-demo workflow take?",
-        "Run typed-input-demo with the workflow tool, with path src-client.ts and depth 2.",
-        "/workflows"
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. The typed workflow is seeded off camera and run by installed Atomic.",
-      "capture_note": "The shipped recording predates the removal of /workflow and shows the earlier commands; interactions and the capture script are the current recipe and have not been re-recorded.",
-      "media": {
-        "gif": "assets/feature-wall/29-workflow-typed-inputs.gif",
-        "jpg": "assets/feature-wall/29-workflow-typed-inputs.jpg"
-      },
-      "render": {
-        "start": 14,
-        "end": 40,
-        "speed": 2.167,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 34,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
       "id": "2.2",
-      "order": 18,
+      "order": 6,
       "capture_source": "scripts/readme-feature-wall/tapes/2.2.tape",
       "slug": "06-verbatim-compaction",
       "part": "Part 2 - Session mastery",
@@ -710,7 +266,7 @@
     },
     {
       "id": "1.3",
-      "order": 19,
+      "order": 7,
       "capture_source": "scripts/readme-feature-wall/tapes/1.3.tape",
       "slug": "03-agent-interviews-you",
       "part": "Part 1 - Core interactive experience",
@@ -744,7 +300,7 @@
     },
     {
       "id": "A.2",
-      "order": 20,
+      "order": 8,
       "capture_source": "scripts/readme-feature-wall/tapes/A.2.tape",
       "slug": "32-permission-gate-extension",
       "part": "Extras",
@@ -778,7 +334,7 @@
     },
     {
       "id": "3.2",
-      "order": 21,
+      "order": 9,
       "capture_source": "scripts/readme-feature-wall/tapes/3.2.tape",
       "slug": "09-block-a-dangerous-command",
       "part": "Part 3 - Customization",
@@ -812,7 +368,7 @@
     },
     {
       "id": "3.3",
-      "order": 22,
+      "order": 10,
       "capture_source": "scripts/readme-feature-wall/tapes/3.3.tape",
       "slug": "10-full-screen-tui-tool",
       "part": "Part 3 - Customization",
@@ -846,7 +402,7 @@
     },
     {
       "id": "4.3",
-      "order": 23,
+      "order": 11,
       "capture_source": "scripts/readme-feature-wall/tapes/4.3.tape",
       "slug": "15-embed-with-the-sdk",
       "part": "Part 4 - Platform",
@@ -880,7 +436,7 @@
     },
     {
       "id": "3.1",
-      "order": 24,
+      "order": 12,
       "capture_source": "scripts/readme-feature-wall/tapes/3.1.tape",
       "slug": "08-build-an-extension",
       "part": "Part 3 - Customization",
@@ -914,7 +470,7 @@
     },
     {
       "id": "3.4",
-      "order": 25,
+      "order": 13,
       "capture_source": "scripts/readme-feature-wall/tapes/3.4.tape",
       "slug": "11-write-a-skill",
       "part": "Part 3 - Customization",
@@ -948,7 +504,7 @@
     },
     {
       "id": "4.2",
-      "order": 26,
+      "order": 14,
       "capture_source": "scripts/readme-feature-wall/tapes/4.2.tape",
       "slug": "14-local-models",
       "part": "Part 4 - Platform",
@@ -982,7 +538,7 @@
     },
     {
       "id": "4.1",
-      "order": 27,
+      "order": 15,
       "capture_source": "scripts/readme-feature-wall/tapes/4.1.tape",
       "slug": "13-headless-print-and-json",
       "part": "Part 4 - Platform",
@@ -1017,7 +573,7 @@
     },
     {
       "id": "2.1",
-      "order": 28,
+      "order": 16,
       "capture_source": "scripts/readme-feature-wall/tapes/2.1.tape",
       "slug": "05-branching-tree-fork-clone",
       "part": "Part 2 - Session mastery",
@@ -1052,7 +608,7 @@
     },
     {
       "id": "2.3",
-      "order": 29,
+      "order": 17,
       "capture_source": "scripts/readme-feature-wall/tapes/2.3.tape",
       "slug": "07-sessions-are-jsonl",
       "part": "Part 2 - Session mastery",
@@ -1087,7 +643,7 @@
     },
     {
       "id": "1.1",
-      "order": 30,
+      "order": 18,
       "capture_source": "scripts/readme-feature-wall/tapes/1.1.tape",
       "slug": "01-first-session",
       "part": "Part 1 - Core interactive experience",
@@ -1122,7 +678,7 @@
     },
     {
       "id": "1.4",
-      "order": 31,
+      "order": 19,
       "capture_source": "scripts/readme-feature-wall/tapes/1.4.tape",
       "slug": "04-file-based-todos",
       "part": "Part 1 - Core interactive experience",
@@ -1157,7 +713,7 @@
     },
     {
       "id": "5.6",
-      "order": 32,
+      "order": 20,
       "capture_source": "scripts/readme-feature-wall/tapes/5.6.tape",
       "slug": "21-your-own-handoff-command",
       "part": "Part 5 - Subagents and intercom",
@@ -1193,7 +749,7 @@
     },
     {
       "id": "A.7",
-      "order": 33,
+      "order": 21,
       "capture_source": "scripts/readme-feature-wall/tapes/A.7.tape",
       "slug": "37-intercom-group-isolation",
       "part": "Extras",
@@ -1228,7 +784,7 @@
     },
     {
       "id": "A.4",
-      "order": 34,
+      "order": 22,
       "capture_source": "scripts/readme-feature-wall/tapes/A.4.tape",
       "slug": "34-prompt-templates-arguments",
       "part": "Extras",
@@ -1261,7 +817,7 @@
     },
     {
       "id": "A.3",
-      "order": 35,
+      "order": 23,
       "capture_source": "scripts/readme-feature-wall/tapes/A.3.tape",
       "slug": "33-runtime-system-prompt",
       "part": "Extras",
@@ -1296,7 +852,7 @@
     },
     {
       "id": "A.1",
-      "order": 36,
+      "order": 24,
       "capture_source": "scripts/readme-feature-wall/tapes/A.1.tape",
       "slug": "31-keybindings-hot-reload",
       "part": "Extras",
@@ -1331,7 +887,7 @@
     },
     {
       "id": "3.5",
-      "order": 37,
+      "order": 25,
       "capture_source": "scripts/readme-feature-wall/tapes/3.5.tape",
       "slug": "12-custom-theme",
       "part": "Part 3 - Customization",

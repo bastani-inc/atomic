@@ -4,7 +4,7 @@
  * line call these, so every path lists the same rows and counts them the same way.
  */
 
-export type PanelRowKind = "agent" | "shell" | "workflow";
+export type PanelRowKind = "agent" | "shell";
 export type PanelRowState =
 	| "running"
 	| "queued"
@@ -22,12 +22,10 @@ export function isActivePanelState(state: PanelRowState): boolean {
 }
 
 /**
- * Work that stopped but can be resumed: a subagent stopped, paused, or with its turn interrupted, or a workflow run
- * paused or blocked on a failed stage. It is listed while something in the panel is active, and leaves for good once
+ * Work that stopped but can be resumed: a subagent stopped, paused, or with its turn interrupted. It is listed while something in the panel is active, and leaves for good once
  * nothing is, until it runs again.
  */
 export function isRestingPanelRow(kind: PanelRowKind, state: PanelRowState): boolean {
-	if (kind === "workflow") return state === "paused";
 	return kind === "agent" && (state === "stopped" || state === "paused");
 }
 
@@ -37,14 +35,14 @@ export interface PanelRowContext {
 	readonly active: boolean;
 	/** The row is resting and already left the panel, because nothing was active, and has not run since. */
 	readonly retired: boolean;
-	/** A finished workflow run's owner keeps it: nobody has opened it yet. Ignored for every other row. */
+	/** Whether the panel marked the row to be kept. */
 	readonly kept: boolean;
 }
 
 /**
  * Whether the panel lists a row. `finished` is true for a row that is done, failed or stopped, and not merely
  * interrupted. Shells are never rows; a resting row stays only while something is active and it has not left yet; a
- * finished subagent leaves at once; a finished workflow run stays while it is kept; everything else is listed.
+ * finished subagent leaves at once; everything else is listed.
  */
 export function panelRowListed(
 	kind: PanelRowKind,
@@ -54,17 +52,16 @@ export function panelRowListed(
 ): boolean {
 	if (kind === "shell") return false;
 	if (isRestingPanelRow(kind, state)) return context.active && !context.retired;
-	if (finished) return kind === "workflow" && context.kept;
-	return true;
+	return !finished;
 }
 
 /** The counts the hint line shows for the rows the panel lists. */
 export interface PanelRowCounts {
-	/** Every listed row, workflow runs included: ↓ focuses the panel while this is not 0. */
+	/** Every listed row: ↓ focuses the panel while this is not 0. */
 	readonly total: number;
-	/** The listed subagent rows: `↓ N agents`. Workflow runs are not agents. */
+	/** The listed subagent rows: `↓ N agents`. */
 	readonly agents: number;
-	/** The listed rows that wait for an answer, workflow runs included: `N needs input`. */
+	/** The listed rows that wait for an answer: `N needs input`. */
 	readonly needsInput: number;
 }
 
@@ -111,8 +108,7 @@ export interface PanelHintParts {
 
 /**
  * The hint line's background-work parts. `focusBound`: a key focuses the panel. `subagents`: the chat's subagents in
- * /tasks, listed or not. Only subagent rows count as agents; with none there is no ↓ segment, even when workflow runs
- * are listed. A question waiting anywhere in the panel is counted. Without rows to focus, running shells point to
+ * /tasks, listed or not. Only subagent rows count as agents; with none there is no ↓ segment. A question waiting anywhere in the panel is counted. Without rows to focus, running shells point to
  * /tasks, and otherwise subagents the panel no longer lists do.
  */
 export function panelHintParts(

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveRunJournal } from "../../workflows/src/durable/journal/resolution.ts";
+
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -114,26 +114,37 @@ describe("createAgentSession session manager defaults", () => {
 		await assert.rejects(session.sessionManager.getSessionStore().load(session.sessionId), StoreClosedError);
 	});
 
-	it("uses merged SDK settings before choosing the default session database's legacy home (#5242)", async () => {
-		vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", "");
-		writeFileSync(join(tempDir, "legacy-workflows.sqlite"), "");
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir,
-			settingsManager: SettingsManager.inMemory({ workflows: { journal: { path: "legacy-workflows.sqlite" } } }),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
-			builtins: NO_BUILTINS,
-		});
-		try {
-			assert.deepEqual(session.sessionManager.getSessionStore().descriptor, {
-				adapter: "node-sqlite",
-				location: join(tempDir, "workflows", "journal.sqlite"),
+	it.each(["SDK storage selection", "legacy journal path on disk"])(
+		"keeps the default session database's legacy home from a %s (#5242)",
+		async (hint) => {
+			vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", "");
+			const path = "existing.sqlite";
+			writeFileSync(join(tempDir, path), "");
+			if (hint === "legacy journal path on disk") {
+				writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ workflows: { journal: { path } } }));
+			}
+			const settingsManager =
+				hint === "SDK storage selection"
+					? SettingsManager.inMemory({ storage: { path }, sessions: { storage: {} } })
+					: SettingsManager.create(cwd, agentDir);
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir,
+				settingsManager,
+				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				builtins: NO_BUILTINS,
 			});
-			assert.equal(existsSync(join(agentDir, "workflows", "journal.sqlite")), false);
-		} finally {
-			await session.dispose();
-		}
-	});
+			try {
+				assert.deepEqual(session.sessionManager.getSessionStore().descriptor, {
+					adapter: "node-sqlite",
+					location: join(tempDir, "workflows", "journal.sqlite"),
+				});
+				assert.equal(existsSync(join(agentDir, "workflows", "journal.sqlite")), false);
+			} finally {
+				await session.dispose();
+			}
+		},
+	);
 
 	it("rejects an unavailable default database without choosing memory", async () => {
 		mkdirSync(agentDir, { recursive: true });
@@ -203,7 +214,7 @@ describe("createAgentSession session manager defaults", () => {
 		}
 	});
 
-	it("keeps other SDK acquisitions and the shared journal alive during disposal", async () => {
+	it("keeps other SDK session acquisitions alive during disposal", async () => {
 		const path = join(tempDir, "shared.sqlite");
 		const modelRuntime = await createSelectionRuntime();
 		const options = {
@@ -216,7 +227,6 @@ describe("createAgentSession session manager defaults", () => {
 		};
 		const first = (await createAgentSession(options)).session;
 		const second = (await createAgentSession(options)).session;
-		const journal = await resolveRunJournal({ journal: { path } });
 		try {
 			await first.dispose();
 			await assert.rejects(first.sessionManager.getSessionStore().load(first.sessionId), StoreClosedError);
@@ -225,15 +235,10 @@ describe("createAgentSession session manager defaults", () => {
 				(await second.sessionManager.getSessionStore().load(second.sessionId)).header.id,
 				second.sessionId,
 			);
-			await journal.createRun({ runId: "shared", name: "shared", cwd, createdAt: 1, status: "running" });
 			await second.dispose();
-			assert.equal((await journal.getRun("shared"))?.name, "shared");
-			await journal.createRun({ runId: "after-disposal", name: "after", cwd, createdAt: 2, status: "running" });
-			assert.equal((await journal.getRun("after-disposal"))?.name, "after");
 		} finally {
 			await first.dispose();
 			await second.dispose();
-			await journal.close();
 		}
 	});
 
@@ -529,35 +534,6 @@ describe("createAgentSession session manager defaults", () => {
 
 		expect(modelFallbackMessage).toContain("No models available");
 		expect(modelFallbackReason).toBe("no-models-available");
-		await session.dispose();
-	});
-
-	it("marks workflow-stage sessions internal with their orchestration identity", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5");
-		expect(model).toBeTruthy();
-		const sessionManager = SessionManager.inMemory(cwd);
-
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir,
-			model: model!,
-			sessionManager,
-			orchestrationContext: {
-				kind: "workflow-stage",
-				workflowRunId: "run-42",
-				workflowStageId: "stage-7",
-				workflowStageName: "build",
-				constraints: { disableWorkflowTool: true },
-			},
-			builtins: NO_BUILTINS,
-		});
-
-		expect(sessionManager.getHeader()?.internal).toBe(true);
-		expect(sessionManager.getHeader()?.workflow).toEqual({
-			runId: "run-42",
-			stageId: "stage-7",
-			stageName: "build",
-		});
 		await session.dispose();
 	});
 

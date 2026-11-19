@@ -32,7 +32,7 @@ initTheme("dark");
 
 const healthyRow: AgentPanelItem = {
 	id: "run:healthy",
-	kind: "workflow",
+	kind: "agent",
 	state: "running",
 	name: "ralph",
 	task: "stage build",
@@ -741,7 +741,7 @@ test("resetExtensionUI while the focused panel is open releases the single-fligh
 	}
 });
 
-test("workflow onReturn catches and reports a rejecting back() navigation (#5224, #5239)", async () => {
+test("extension row onReturn catches and reports a rejecting back() navigation (#5224, #5239)", async () => {
 	const hub = new AgentPanelSourceHub();
 	let onReturnCallback: (() => void) | undefined;
 	let brokenOnReturn = false;
