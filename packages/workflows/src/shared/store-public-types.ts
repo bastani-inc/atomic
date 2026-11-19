@@ -32,6 +32,8 @@ import type {
 import type { WorkflowOutputValues } from "./types.js";
 
 export interface RunEndMetadata {
+	/** The recorded occurrence when restoring an ending rather than observing it live. */
+	readonly runGeneration?: number;
 	/** Set when replaying a recorded end rather than finishing a new attempt. */
 	readonly finishSequence?: number;
 	readonly failureKind?: WorkflowFailureKind;

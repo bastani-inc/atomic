@@ -126,6 +126,7 @@ import { coercePossibleStages } from "../shared/possible-stages.js";
 import { assertRecordedParentsMaterialised } from "../shared/replay-topology-failure.js";
 import { parseEvictWhenWaiting, type RunEvictionPolicy } from "../shared/run-eviction.js";
 import { RunEvictedError, RunEvictionConfigError, RunReplayError } from "../shared/run-eviction-errors.js";
+import { generationAtPause } from "../shared/run-generation.js";
 import { currentStageUiBroker } from "../shared/stage-ui-broker.js";
 import { stageWaitToolResults } from "../shared/stage-wait.js";
 import { store as defaultStore } from "../shared/store.js";
@@ -616,8 +617,14 @@ async function executeRun(
 	const freshLaunchBranch =
 		initialBranch === undefined && isFreshLaunch ? resolveInvocationGitBranch(opts.cwd ?? process.cwd()) : undefined;
 	const keepsCopiedParent = (parentId: string): boolean => keepsForkCopiedParent(copiedByFork, runSnapshot, parentId);
+	const priorGeneration = Math.max(
+		existingRootHandle?.runGeneration ?? 0,
+		activeStore.run(runId)?.runGeneration ?? 0,
+		opts.continuation?.source.id === runId ? (opts.continuation.source.runGeneration ?? 0) : 0,
+	);
 	const runSnapshot: RunSnapshot = {
 		id: runId,
+		...(priorGeneration > 0 ? { runGeneration: priorGeneration } : {}),
 		name: def.name,
 		inputs: Object.freeze(resolvedInputs),
 		status: "running" as const,
@@ -1161,7 +1168,15 @@ async function executeRun(
 		let resumable: boolean | undefined;
 		if (durable?.status === "running") {
 			resumable = isDurableWorkflowResumable({ ...durable, status: "paused", resumable: true });
-			await transitionDurableWorkflowStatus(durableBackend, runId, ["running"], "paused", undefined, resumable);
+			await transitionDurableWorkflowStatus(
+				durableBackend,
+				runId,
+				["running"],
+				"paused",
+				undefined,
+				resumable,
+				generationAtPause(runSnapshot),
+			);
 			await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
 		}
 		activeStore.recordRunPaused(runId, undefined, {
@@ -1545,6 +1560,7 @@ async function executeRun(
 		if (opts.parentRun !== undefined) return;
 		if (!durableRootAdmitted || durableBackend.getWorkflow(runId) === undefined) return;
 		const previous = controlSettlements;
+		const runGeneration = runSnapshot.runGeneration;
 		const control = ++latestControl;
 		const settlement = (async () => {
 			await previous;
@@ -1557,6 +1573,7 @@ async function executeRun(
 					status,
 					undefined,
 					true,
+					runGeneration,
 				))
 			) {
 				throw new WorkflowRunControlError(runId, status, "transition-refused");
@@ -1657,6 +1674,7 @@ async function executeRun(
 		if (opts.persistence && !rebuilt) {
 			await appendRunStart(opts.persistence, {
 				runId,
+				runGeneration: runSnapshot.runGeneration,
 				name: def.name,
 				inputs: resolvedInputs,
 				...(runSnapshot.parentRunId !== undefined ? { parentRunId: runSnapshot.parentRunId } : {}),
@@ -1727,6 +1745,7 @@ async function executeRun(
 				const { branch: _invocationBranch, ...invocationPaths } = invocationMetadata;
 				const registration = {
 					...durableRootRegistration,
+					...(runSnapshot.runGeneration !== undefined ? { runGeneration: runSnapshot.runGeneration } : {}),
 					...(definitionSource === undefined ? {} : { definitionSource }),
 					modelOwner: runSnapshot.modelOwner,
 					...invocationPaths,
@@ -1838,11 +1857,13 @@ async function executeRun(
 			undefined,
 			returned.metadata?.resumable,
 			undefined,
+			runSnapshot.runGeneration,
 			runSnapshot.finishSequence,
 		);
 		terminalStatusCommitted = true;
 		await appendRunEndWhenRecorded(opts.persistence, recorded, runSnapshot, {
 			runId,
+			runGeneration: runSnapshot.runGeneration,
 			status: returned.status,
 			result,
 			...(returned.error !== undefined ? { error: returned.error } : {}),

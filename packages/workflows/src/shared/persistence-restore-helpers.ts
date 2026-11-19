@@ -25,6 +25,7 @@ import {
 } from "./workflow-failures.js";
 
 interface RestoredRunBlockedMetadata {
+	readonly runGeneration?: number;
 	readonly failedStageId?: string;
 	readonly error: string;
 	readonly failureKind: WorkflowFailureKind;
@@ -369,6 +370,10 @@ function numericTimestamp(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+function restoredGeneration(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
 function numericDuration(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
@@ -440,6 +445,7 @@ export function findRunBlockedMetadata(
 		)
 			continue;
 		latest = {
+			runGeneration: restoredGeneration(entry.payload.runGeneration),
 			...(typeof failedStageId === "string" ? { failedStageId } : {}),
 			error,
 			failureKind,
@@ -530,6 +536,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 			toolNodes:
 				typeof failedToolNodeId === "string" && failedToolNode?.id === failedToolNodeId ? [failedToolNode] : [],
 			startedAt: start.startTs,
+			runGeneration: runMeta.runGeneration,
 			...(runMeta.parentRunId !== undefined ? { parentRunId: runMeta.parentRunId } : {}),
 			...(runMeta.parentStageId !== undefined ? { parentStageId: runMeta.parentStageId } : {}),
 			...(runMeta.rootRunId !== undefined ? { rootRunId: runMeta.rootRunId } : {}),
@@ -556,6 +563,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 		const restoredEndedAt = numericTimestamp(end.endedAt);
 		const restoredDurationMs = numericDuration(end.durationMs);
 		store.recordRunEnd(runId, status, result, typeof error === "string" ? error : undefined, {
+			runGeneration: restoredGeneration(end.runGeneration),
 			finishSequence: sequences.get(runId),
 			...(typeof failureKind === "string" && isWorkflowFailureKind(failureKind) ? { failureKind } : {}),
 			...(typeof failureCode === "string" && isWorkflowFailureCode(failureCode) ? { failureCode } : {}),
@@ -615,6 +623,7 @@ export function findRunStartMetadata(
 	entries: readonly SessionEntry[],
 	runId: string,
 ): {
+	readonly runGeneration?: number;
 	readonly parentRunId?: string;
 	readonly parentStageId?: string;
 	readonly rootRunId?: string;
@@ -641,6 +650,7 @@ export function findRunStartMetadata(
 		const budgetState = restoreBudgetState(entry.payload.budgetState);
 		const origin = entry.payload.origin;
 		return {
+			runGeneration: restoredGeneration(entry.payload.runGeneration),
 			...(typeof parentRunId === "string" ? { parentRunId } : {}),
 			...(typeof parentStageId === "string" ? { parentStageId } : {}),
 			...(typeof rootRunId === "string" ? { rootRunId } : {}),

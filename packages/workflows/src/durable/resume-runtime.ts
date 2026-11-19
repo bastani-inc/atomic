@@ -450,6 +450,7 @@ async function resumeDurableWorkflowClaimed(
 			handle.pendingPrompts,
 			handle.resumable,
 			sourceFailure,
+			undefined,
 			finishSequence,
 		);
 		onRestored?.();
@@ -554,6 +555,7 @@ async function resumeDurableWorkflowClaimed(
 							handle.pendingPrompts,
 							handle.resumable,
 							sourceFailure,
+							undefined,
 							finishSequence,
 						);
 						if (

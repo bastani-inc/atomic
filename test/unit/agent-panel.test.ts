@@ -774,12 +774,11 @@ test("a burst of source changes rebuilds the mounted panel's rows once, then fol
 		reads = 0;
 		for (let change = 0; change < 200; change++) for (const listener of listeners) listener();
 		assert.equal(reads, 0, "nothing is rebuilt inside the burst");
-		await Promise.resolve();
+		await vi.waitFor(() => assert.ok(reads > 0, "the burst reached the mounted panel"));
 		assert.ok(reads <= 2, `one rebuild for the burst, read ${reads} times`);
 		items = [];
 		for (const listener of listeners) listener();
-		await Promise.resolve();
-		assert.equal(widget, undefined, "the next change still reaches the panel");
+		await vi.waitFor(() => assert.equal(widget, undefined, "the next change still reaches the panel"));
 	} finally {
 		dispose();
 	}

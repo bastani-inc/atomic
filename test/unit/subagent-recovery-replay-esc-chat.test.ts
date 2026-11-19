@@ -158,8 +158,6 @@ test.each(wakes)(
 						transcript.resolve({ source, session });
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		});

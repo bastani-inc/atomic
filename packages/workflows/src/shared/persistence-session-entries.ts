@@ -40,6 +40,7 @@ export interface PersistenceAPI {
 // ---------------------------------------------------------------------------
 
 export interface RunStartPayload {
+	readonly runGeneration?: number;
 	readonly runId: string;
 	readonly name: string;
 	readonly inputs: Readonly<WorkflowInputValues>;
@@ -115,6 +116,7 @@ export interface StageEndPayload {
 }
 
 export interface RunEndPayload {
+	readonly runGeneration?: number;
 	readonly runId: string;
 	readonly finishSequence?: number;
 	readonly status: string;
@@ -138,6 +140,7 @@ export interface RunEndPayload {
 }
 
 export interface RunBlockedPayload {
+	readonly runGeneration?: number;
 	readonly runId: string;
 	readonly failedStageId?: string;
 	readonly error: string;
@@ -165,6 +168,7 @@ export interface RunBlockedPayload {
 export async function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): Promise<void> {
 	if (typeof api.appendEntry !== "function") return;
 	const entryId = await api.appendEntry("workflow.run.start", {
+		...(payload.runGeneration !== undefined ? { runGeneration: payload.runGeneration } : {}),
 		runId: payload.runId,
 		name: payload.name,
 		inputs: payload.inputs,
@@ -278,6 +282,7 @@ export async function appendRunEnd(api: PersistenceAPI, payload: RunEndPayload):
 	if (typeof api.appendEntry !== "function") return;
 	const terminalPayload = sanitizeTerminalRunEndPayload(payload);
 	await api.appendEntry("workflow.run.end", {
+		...(terminalPayload.runGeneration !== undefined ? { runGeneration: terminalPayload.runGeneration } : {}),
 		runId: terminalPayload.runId,
 		status: terminalPayload.status,
 		...(terminalPayload.finishSequence === undefined ? {} : { finishSequence: terminalPayload.finishSequence }),
@@ -309,6 +314,7 @@ export async function appendRunEnd(api: PersistenceAPI, payload: RunEndPayload):
 export async function appendRunBlocked(api: PersistenceAPI, payload: RunBlockedPayload): Promise<void> {
 	if (typeof api.appendEntry !== "function") return;
 	await api.appendEntry("workflow.run.blocked", {
+		...(payload.runGeneration !== undefined ? { runGeneration: payload.runGeneration } : {}),
 		runId: payload.runId,
 		...(payload.failedStageId !== undefined ? { failedStageId: payload.failedStageId } : {}),
 		error: payload.error,

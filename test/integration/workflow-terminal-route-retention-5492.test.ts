@@ -396,6 +396,7 @@ test("a refused resume keeps the original finishers reachable after reopening th
 			createdAt: 1,
 			updatedAt: i + 10,
 			finishSequence: i + 10,
+			runGeneration: 3,
 			resumable: true,
 		});
 	const refused = await resumeDurableWorkflow(oldest!, {
@@ -426,6 +427,7 @@ test("a refused resume keeps the original finishers reachable after reopening th
 	assert.match(await observer.probe(`workflow:${oldest}/future`), /not found/i);
 	assert.match(await observer.probe(`workflow:${next}/future`), /terminated with status failed/);
 	assert.equal(reopened.getWorkflow(oldest!)?.finishSequence, 10);
+	assert.equal(reopened.getWorkflow(oldest!)?.runGeneration, 3, "a refused claim is not a new block or pause");
 });
 
 test("a successor takes a nested route without disconnecting the parent on the shared connection (#5561)", async () => {
