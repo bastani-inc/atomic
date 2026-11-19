@@ -41,6 +41,7 @@ export class StartupChatContainer extends WindowedContainer {
 					const view = this.transcriptView();
 					if (expanded && view?.isFollowingEnd) view.scrollTo(view.scrollTop, { disableFollow: true });
 				},
+				true,
 			);
 			if (handled) return handled;
 		}

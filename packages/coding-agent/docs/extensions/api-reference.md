@@ -850,7 +850,7 @@ mode and would not execute if sent via `prompt`.
 
 ### pi.registerMessageRenderer(customType, renderer)
 
-Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. A click on the message in fullscreen mode toggles `expanded` for it, as Ctrl+O does, when that changes what the renderer draws. See [Custom UI](/extensions/ui#custom-ui).
+Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. A click on the message in fullscreen mode toggles `expanded` for it, as Ctrl+O does, when that changes what the renderer draws. In a session running in the terminal UI process, the returned component can handle its own click instead. See [Custom UI](/extensions/ui#custom-ui).
 
 ### pi.registerMarkdownTransformer(transformer)
 

@@ -142,7 +142,7 @@ export class WindowedContainer extends Container {
 	 * children took. A nested container answers from the layout of the container that laid it out, so its own mouse
 	 * handler sees the rows that were painted. Without a layout at `width`, the children are rendered to measure them.
 	 */
-	override childAtRow(width: number, row: number): { component: Component; row: number; height: number } | undefined {
+	override childAtRow(width: number, row: number): ReturnType<Container["childAtRow"]> {
 		const window = this.windowAt(width);
 		if (!window) return super.childAtRow(width, row);
 		const { host, first, end } = window;
@@ -162,7 +162,9 @@ export class WindowedContainer extends Container {
 		const start = host.offsets[span.first] ?? 0;
 		const stop = host.offsets[span.end] ?? start;
 		if (absolute < start || absolute >= stop) return undefined;
-		return { component: child, row: absolute - start, height: stop - start };
+		// Only a directly drawn entry has rows from this window. A later off-screen measurement is not a paint.
+		const windowRows = child === entry.component && entry.renderedIn === host.layouts ? entry.lines : undefined;
+		return { component: child, row: absolute - start, height: stop - start, windowRows };
 	}
 
 	private windowAt(width: number): { host: WindowedContainer; first: number; end: number } | undefined {
@@ -308,16 +310,16 @@ export class WindowedContainer extends Container {
 		for (; index < this.laidOut.length && (this.offsets[index] ?? 0) < Math.max(end, 1); index++) {
 			const entry = this.laidOut[index];
 			if (!entry || entry.renderedIn === layout) continue;
-			entry.renderedIn = layout;
-			if (this.renderEntry(entry, width)) changed = true;
+			if (this.renderEntry(entry, width, layout)) changed = true;
 		}
 		this.windowStart = first;
 		this.windowEnd = index;
 		return changed;
 	}
 
-	private renderEntry(entry: Entry, width: number): boolean {
+	private renderEntry(entry: Entry, width: number, layout = 0): boolean {
 		const lines = entry.component.render(width);
+		entry.renderedIn = layout;
 		if (entry.width === 0) {
 			this.measuredRows += lines.length;
 			this.measuredChildren++;

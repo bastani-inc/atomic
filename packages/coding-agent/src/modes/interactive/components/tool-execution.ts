@@ -25,6 +25,7 @@ import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { clickableKeyTextHint } from "./nav-keys.ts";
 import { STATUS_MARKERS } from "./notice-line.ts";
+import { rendererRows } from "./renderer-click-area.ts";
 import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
 import {
 	collapseToolBlockLines,
@@ -296,7 +297,18 @@ export class ToolExecutionComponent extends Container {
 
 	/** Every row of the block, below the blank row it leads with. */
 	clickArea(width: number): RowRange | undefined {
-		return rowsFrom(1, this.render(width).length);
+		const rows = this.render(width);
+		if (!this.toolDefinition || (!this.expanded && this.groupRole.kind === "head")) return rowsFrom(1, rows.length);
+		return rendererRows(
+			1,
+			rows,
+			this.contentContainer,
+			[
+				this.toolDefinition.renderCall && this.callRendererComponent,
+				this.toolDefinition.renderResult && this.resultRendererComponent,
+			],
+			{ top: 1, title: 1 },
+		);
 	}
 
 	setExpanded(expanded: boolean): void {

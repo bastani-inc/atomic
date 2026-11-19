@@ -9,6 +9,8 @@ export type ContainerMouseResult = ReturnType<Container["handleMouse"]>;
 export interface RowRange {
 	readonly start: number;
 	readonly end: number;
+	/** A local renderer may take a click before this block toggles. */
+	readonly clickRenderer?: (event: TuiMouseEvent, windowRows: readonly string[]) => ContainerMouseResult;
 }
 
 /**
@@ -174,18 +176,21 @@ function clickUnitAt(
 	container: Container,
 	width: number,
 	row: number,
-): (() => readonly ClickExpandableBlock[] | undefined) | undefined {
+	event?: TuiMouseEvent,
+): (() => readonly ClickExpandableBlock[] | undefined) | ContainerMouseResult {
 	const hit = container.childAtRow(width, row);
 	if (!hit || !container.children.includes(hit.component)) return undefined;
 	if (isClickExpandableBlock(hit.component)) {
 		const area = hit.component.clickArea(width);
 		if (!area || hit.row < area.start || hit.row >= area.end) return undefined;
-		return () => clickUnit(container.children, container.children.indexOf(hit.component));
+		const handled =
+			event && hit.windowRows && area.clickRenderer?.({ ...event, y: hit.row, height: hit.height }, hit.windowRows);
+		return handled ?? (() => clickUnit(container.children, container.children.indexOf(hit.component)));
 	}
 	const nested = hit.component as Container;
 	if (!nested.children || !nested.childAtRow) return undefined;
-	const unit = clickUnitAt(nested, width, hit.row);
-	return unit && (() => (container.children.includes(nested) ? unit() : undefined));
+	const unit = clickUnitAt(nested, width, hit.row, event);
+	return typeof unit === "function" ? () => (container.children.includes(nested) ? unit() : undefined) : unit;
 }
 
 // A global expansion supersedes only transcript toggles, not other controls' single-click actions.
@@ -204,6 +209,7 @@ export function handleTranscriptBlockClick(
 	event: TuiMouseEvent,
 	currentWidth: () => number | undefined,
 	onToggled?: (expanded: boolean) => void,
+	allowRendererClick = false,
 ): ContainerMouseResult {
 	if (event.type !== "press" && !isSingleLeftClick(event)) return undefined;
 	let scope = clickScopes.get(container);
@@ -219,8 +225,8 @@ export function handleTranscriptBlockClick(
 	pressedScopes.delete(container);
 	if (signal.aborted) return undefined;
 	// The click names its blocks where it lands; it toggles them once it settles, so each single click toggles once.
-	const unit = clickUnitAt(container, event.width, event.y);
-	if (!unit) return undefined;
+	const unit = clickUnitAt(container, event.width, event.y, allowRendererClick ? event : undefined);
+	if (typeof unit !== "function") return unit;
 	return {
 		handled: true,
 		whenSingleClick: () => {
