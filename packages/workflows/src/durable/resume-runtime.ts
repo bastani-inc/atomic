@@ -40,8 +40,8 @@ import {
 	pendingResumes,
 	type ResumeAdmissionMark,
 	recordResumeStart,
-	resumeAdmissionMark,
 	unsettledResumeClaims,
+	withResumeAdmissionMark,
 } from "./run-claims.js";
 import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
 import { availableRunDurableBackend } from "./run-owner-backend.js";
@@ -93,7 +93,7 @@ export interface ResumeDurableDeps {
 	readonly confirmCrossProjectFork?: (cwd: string) => Promise<boolean>;
 	readonly forkModelOwner?: string;
 	/**
-	 * The request's {@link resumeAdmissionMark}, taken when it saw the run, before any await of its own: a caller that
+	 * The request's {@link ResumeAdmissionMark}, taken when it saw the run, before any await of its own: a caller that
 	 * reads the run and awaits before it calls passes its mark, so a resume admitted meanwhile answers its request
 	 * (#5534). Taken on entry when absent.
 	 */
@@ -163,9 +163,19 @@ export async function resumeDurableWorkflow(
 	deps: ResumeDurableDeps,
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
+	return withResumeAdmissionMark(workflowId, deps.admissionMark, (resumed) =>
+		resumeAtMark(workflowId, deps, resumed, catalog),
+	);
+}
+
+async function resumeAtMark(
+	workflowId: string,
+	deps: ResumeDurableDeps,
+	resumed: ResumeAdmissionMark,
+	catalog?: readonly ResumableWorkflowEntry[],
+): Promise<ResumeDurableResult> {
 	resolveWorktreeSnapshotSettings(deps.baseRunOpts.snapshots, "sdk", "snapshots");
 	const backend = resumeBackend(deps, workflowId);
-	using mark = resumeAdmissionMark(workflowId, deps.admissionMark);
 	const target = resolveDurableEntry(workflowId, catalog ?? backend.listResumableWorkflows());
 	const id = target !== undefined && !("kind" in target) ? target.workflowId : workflowId;
 	let handle = backend.getWorkflow(id);
@@ -179,7 +189,7 @@ export async function resumeDurableWorkflow(
 		// is that replacement, or will be, not the attempt that failed or blocked, and the run reads as that attempt only
 		// until the replacement starts. The request waits for nothing and starts nothing (#5534).
 		if (hasResumeClaim(backend, id)) return pendingResumeResult(id);
-		if (mark.resumed(backend, id)) return alreadyResumedResult(handle?.name ?? live?.name ?? id, id);
+		if (resumed(backend, id)) return alreadyResumedResult(handle?.name ?? live?.name ?? id, id);
 		// The failure or block can reach a caller before the old attempt finishes its persistence and releases its
 		// lease: a blocked run's journal still says `running` until then. Wait for that attempt before admitting a
 		// replacement, then discard its now-stale catalog version.
@@ -213,7 +223,7 @@ export async function resumeDurableWorkflow(
 		return pendingResumeResult(id);
 	// Exactly one replacement per block or failure (#5534): of the requests that saw it, the first one here is admitted,
 	// in this turn, and every other one is told it was resumed, however long its own reads took.
-	if (mark.resumed(backend, id)) return alreadyResumedResult(handle?.name ?? id, id);
+	if (resumed(backend, id)) return alreadyResumedResult(handle?.name ?? id, id);
 	pending.add(id);
 	// #5149: an abort releases the caller only until the executor is admitted; from then on the resume has succeeded.
 	let admitted = false;

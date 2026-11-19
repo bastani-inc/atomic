@@ -1,6 +1,6 @@
 import { resumableEntryFromHandle } from "../durable/backend.js";
 import { isDurableWorkflowResumable, isWorkflowRunResumable } from "../durable/resume-eligibility.js";
-import { type ResumeAdmissionMark, resumeAdmissionMark } from "../durable/run-claims.js";
+import { type ResumeAdmissionMark, withResumeAdmissionMark } from "../durable/run-claims.js";
 import { runNotFoundResumeResult } from "../durable/run-not-found.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
@@ -59,7 +59,7 @@ export interface WorkflowControlActionDeps {
 	/** Model-tool boundary only; slash/internal callers retain their explicit exception. */
 	authorize?: (runId: string) => void | Promise<void>;
 	/**
-	 * A resume only: the mark (`resumeAdmissionMark`) the request took when it resolved its run, before its own awaits
+	 * A resume only: the mark (`ResumeAdmissionMark`) the request took when it resolved its run, before its own awaits
 	 * (#5534). Taken on entry when absent.
 	 */
 	admissionMark?: ResumeAdmissionMark;
@@ -560,6 +560,7 @@ async function resolveExplicitDurableTarget(
 		| "onRunAccepted"
 		| "owner"
 		| "authorize"
+		| "admissionMark"
 	>,
 	liveRuns: readonly RunSnapshot[] = [],
 ): Promise<WorkflowToolResult> {
@@ -645,33 +646,36 @@ async function resolveExplicitDurableTarget(
 	return runNotFoundResumeResult(runtime.durableBackend(), target);
 }
 
+type ResumeActionDeps = Pick<
+	WorkflowControlActionDeps,
+	| "getRuntime"
+	| "policy"
+	| "ensureWorkflowResourcesLoaded"
+	| "signal"
+	| "beforeResume"
+	| "onRunAccepted"
+	| "owner"
+	| "authorize"
+	| "admissionMark"
+>;
+
 export async function workflowResumeAction(
 	args: WorkflowToolArgs,
-	deps: Pick<
-		WorkflowControlActionDeps,
-		| "getRuntime"
-		| "policy"
-		| "ensureWorkflowResourcesLoaded"
-		| "signal"
-		| "beforeResume"
-		| "onRunAccepted"
-		| "owner"
-		| "authorize"
-		| "admissionMark"
-	>,
+	deps: ResumeActionDeps,
 ): Promise<WorkflowToolResult> {
 	const owner = deps.owner ?? captureWorkflowOwnerResources();
 	deps = { ...deps, owner };
-	const { store, toolControlRegistry } = owner;
+	const { store } = owner;
 	deps.signal?.throwIfAborted();
 	const explicitTarget = args.runId?.trim();
-	// What this request resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
-	using explicit = explicitTarget ? resumeAdmissionMark(explicitTarget, deps.admissionMark) : undefined;
-	if (explicit !== undefined) deps = { ...deps, admissionMark: explicit.resumed };
+	const resumeExplicit = (id: string, liveRuns?: readonly RunSnapshot[]) =>
+		withResumeAdmissionMark(id, deps.admissionMark, (admissionMark) =>
+			resolveExplicitDurableTarget(id, args, { ...deps, admissionMark }, liveRuns),
+		);
 	if (explicitTarget !== undefined && isRunIdPrefix(explicitTarget)) {
 		// #2603: resume prefixes must see both live and durable candidates before
 		// local precedence can select a run.
-		return await resolveExplicitDurableTarget(explicitTarget, args, deps, topLevelWorkflowRuns(store.runs()));
+		return resumeExplicit(explicitTarget, topLevelWorkflowRuns(store.runs()));
 	}
 	const target = resolveToolRunTarget(args, "No active run to resume.", store);
 	if (target.kind === "all")
@@ -681,12 +685,22 @@ export async function workflowResumeAction(
 	}
 	if (target.kind === "not_found") {
 		if (explicitTarget !== undefined && explicitTarget.length > 0) {
-			return await resolveExplicitDurableTarget(explicitTarget, args, deps);
+			return resumeExplicit(explicitTarget);
 		}
 		return { action: "resume", runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	}
-	using local = resumeAdmissionMark(target.runId, deps.admissionMark);
-	deps = { ...deps, admissionMark: local.resumed };
+	return withResumeAdmissionMark(target.runId, deps.admissionMark, (admissionMark) =>
+		resumeLiveTarget(target, args, { ...deps, admissionMark }, owner),
+	);
+}
+
+async function resumeLiveTarget(
+	target: { runId: string },
+	args: WorkflowToolArgs,
+	deps: ResumeActionDeps,
+	owner: WorkflowOwnerResources,
+): Promise<WorkflowToolResult> {
+	const { store, toolControlRegistry } = owner;
 	await deps.authorize?.(target.runId);
 	// Any exact id or unique prefix has been normalized to the canonical full id,
 	// so it cannot disagree with the resolved run; the old re-resolution branch

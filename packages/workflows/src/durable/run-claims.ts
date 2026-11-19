@@ -32,20 +32,23 @@ const watching = new Set<(backend: DurableWorkflowBackend, runId: string) => voi
 
 /** Only outstanding requests need to remember replacements. The outer caller watches from before its first await;
  * nested resume paths share its mark. A prefix can watch several runs, but only the resolved journal and id count. */
-export function resumeAdmissionMark(target: string, inherited?: ResumeAdmissionMark) {
-	if (inherited !== undefined) return { resumed: inherited, [Symbol.dispose]() {} };
+export async function withResumeAdmissionMark<T>(
+	target: string,
+	inherited: ResumeAdmissionMark | undefined,
+	request: (resumed: ResumeAdmissionMark) => Promise<T>,
+): Promise<T> {
+	if (inherited !== undefined) return request(inherited);
 	const replaced: ClaimSet = new WeakMap();
 	const selector = target.toLowerCase();
 	const observe = (backend: DurableWorkflowBackend, runId: string): void => {
 		if (runId.toLowerCase().startsWith(selector)) claimsOf(replaced, backend).add(runId);
 	};
 	watching.add(observe);
-	return {
-		resumed: (backend: DurableWorkflowBackend, runId: string) => replaced.get(backend)?.has(runId) === true,
-		[Symbol.dispose]() {
-			watching.delete(observe);
-		},
-	};
+	try {
+		return await request((backend, runId) => replaced.get(backend)?.has(runId) === true);
+	} finally {
+		watching.delete(observe);
+	}
 }
 
 /** A pending claim excludes competitors but is not a replacement until an executor actually starts. */

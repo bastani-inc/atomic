@@ -1,6 +1,6 @@
 import { durableForkTarget } from "../durable/fork-run.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
-import { hasActiveLiveRun, resumeAdmissionMark } from "../durable/run-claims.js";
+import { hasActiveLiveRun, withResumeAdmissionMark } from "../durable/run-claims.js";
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
 import { type QuitRunResult, quitRun } from "../runs/background/quit.js";
 import { pauseRun, resumeRun } from "../runs/background/status.js";
@@ -157,11 +157,8 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 				return failure(error);
 			}
 		},
-		async resumeRun(runId) {
-			try {
-				// What `r` resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
-				using mark = resumeAdmissionMark(runId);
-				const admissionMark = mark.resumed;
+		resumeRun(runId) {
+			return withResumeAdmissionMark(runId, undefined, async (admissionMark) => {
 				const run = owner.store.run(runId);
 				if (run === undefined) return { ok: false, message: "That run is gone." };
 				const hadPausedRunState = run.status === "paused";
@@ -224,9 +221,7 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 					runId: result.runId,
 					message: result.message ?? `Resumed ${name}`,
 				};
-			} catch (error) {
-				return failure(error);
-			}
+			}).catch(failure);
 		},
 		async quitRun(runId) {
 			try {
