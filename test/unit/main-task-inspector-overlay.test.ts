@@ -669,7 +669,6 @@ for (const isolated of [false, true]) {
 		test(`${isolated ? "isolated engine" : "in-process"} aborting the ${abortOlder ? "older" : "newer"} approval restores its live sibling then /tasks`, async () => {
 			const previous = getKeybindings();
 			const host = await mountMainInspector(isolated, false);
-			const source = host.service ?? host.mode;
 			const custom: ExtensionUIContext["custom"] = host.service
 				? host.service.custom.bind(host.service)
 				: host.mode.showExtensionCustom.bind(host.mode);

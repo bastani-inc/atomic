@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-
 import { inspect } from "node:util";
 import type { SqliteDatabase, SqliteExecutor } from "@bastani/atomic/storage";
 import { describe, test, vi } from "vitest";
@@ -12,7 +11,6 @@ import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/se
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 import { dumpLegacyWorkflowTables, LEGACY_STORE, seedLegacyStore } from "../helpers/legacy-store-0990.js";
-
 import {
 	openPostgresAdmin,
 	type PostgresScope,
@@ -23,26 +21,17 @@ import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/ru
 
 /**
  * PostgreSQL with two roles (#5218): an owner role that sets up and migrates Atomic's schema, and a runtime role with
- * only the privileges docs/storage.md ("PostgreSQL roles") grants it, which must run worker hosts and roots without DDL.
+ * only the privileges docs/storage.md ("PostgreSQL roles") grants it, which must open sessions and Intercom without DDL.
  */
 
 const postgresPackage = resolve(moduleDir(import.meta.url), "../../packages/storage-postgres");
 /** The Intercom broker state as main shipped it before #5218, vendored: an earlier release's broker. */
 const earlierBroker = resolve(moduleDir(import.meta.url), "../fixtures/intercom-pre-5218/broker/open-broker-state.ts");
 const PREFIX = "r5218_";
-
-/** Root A's pool and worker host B: two pools cold-start. */
-
-/**
- * How long a running host's fenced pool write, and another host's open of the pool, may take while a stalled transaction
- * holds a pool table: far below the 30 s statement timeout a DDL lock wait used to run into.
- */
-
 /** Hosts that start together on a new database in the concurrent setup test. */
 const CONCURRENT_HOSTS = 16;
 /** Each host opens every store; they set the schema up one after another under its lock, then open it as it is. */
 const CONCURRENT_HOSTS_TIMEOUT_MS = 120_000;
-/** How long a committed pool write's wake-up may take to reach a listening runtime-role connection. */
 
 interface Roles {
 	readonly owner: string;
@@ -216,10 +205,14 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 		"a runtime role with only the documented grants reads sessions and receives Intercom notifications without using the public tables (#5218)",
 		async () => {
 			await withRoles(async (scope, roles) => {
+				// The owner sets the schema up, as `atomic storage migrate` or the first host joined as the owner does.
 				await openEveryStore(() => roles.open("owner"), PREFIX);
 				const schema = await grantRuntime(await roles.open("owner"), roles);
 				assert.equal(schema, "atomic");
+				// A decoy of every table in public, which neither role may touch: a statement that ran outside the schema
+				// would fail, or write there.
 				const decoys = await addDecoys(scope, schema);
+				assert.ok(decoys.tables.length > 20, decoys.tables.join(", "));
 				const runtime = () => roles.open("runtime");
 				const sessions = await SqlSessionStore.open(await runtime(), { prefix: PREFIX });
 				const listener = await openDatabaseWakeUpBus({
@@ -377,12 +370,7 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 				const recorded = await database.all(
 					`SELECT domain, count(*) AS n FROM ${PREFIX}atomic_migrations WHERE domain LIKE 'schema:%' GROUP BY domain`,
 				);
-				assert.ok(
-					recorded.some(
-						(row) => row.domain === "schema:sessions" || String(row.domain).startsWith("schema:intercom"),
-					),
-					JSON.stringify(recorded),
-				);
+				assert.ok(recorded.length > 10, JSON.stringify(recorded));
 				for (const row of recorded) assert.equal(Number(row.n), 1, JSON.stringify(row));
 			});
 		},

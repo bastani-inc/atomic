@@ -4,6 +4,7 @@ import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interacti
 import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.ts";
 import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";
+import "../../packages/coding-agent/src/modes/interactive/interactive-extension-runtime.ts";
 import assert from "node:assert/strict";
 import type { AgentSessionEvent } from "@bastani/atomic";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";

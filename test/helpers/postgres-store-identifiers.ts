@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
-import { describe, it, test } from "vitest";
+import { describe, test } from "vitest";
 import {
 	postgresDialect,
 	type StorageDialect,
@@ -17,16 +17,15 @@ import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-rele
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import { physicalIdentifiers } from "../../packages/storage-postgres/postgres.js";
-
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-
+import { seedLegacyWorkflowTables } from "./legacy-store-0990.js";
 import { storageBackends } from "./storage-backends.js";
 
 /**
  * Every store on PostgreSQL under long prefixes (#4793): the longest one PostgreSQL accepts, and a longer one the
  * prefix check would refuse, which these tests pass to the stores directly. Every name a store gives the server
  * reaches it as `postgresDialect.identifier` of it, in creation, use and catalog probes alike, so each store opens
- * again cleanly, and no two names become one identifier.
+ * again cleanly, and no two names become one identifier. The database holds an earlier release's workflow tables, as an
+ * upgraded one does: the snapshot index's triggers on them are the names past 63 bytes under the longest prefix.
  */
 
 const postgres = storageBackends.find((backend) => backend.name === "Postgres")!;
@@ -103,7 +102,7 @@ function recordingNames(database: SqliteDatabase, asked: Set<string>, made = new
 	});
 }
 
-/** Opens every store Atomic keeps on a database under `prefix`: sessions, and Intercom. */
+/** Opens every store Atomic keeps on a database under `prefix`: sessions and Intercom. */
 async function openEveryStore(
 	database: SqliteDatabase,
 	prefix: string,
@@ -207,6 +206,7 @@ describe.skipIf(postgres.skipReason !== undefined)(
 					const asked = new Set<string>();
 					const made = new Set<string>();
 					const connect = async () => recordingNames(await scope.connect(), asked, made);
+					await seedLegacyWorkflowTables(await scope.connect(), { prefix });
 					await openEveryStore(await connect(), prefix, connect);
 					// A second host opening the same stores finds every object and changes nothing.
 					await openEveryStore(await connect(), prefix, connect);
@@ -244,22 +244,18 @@ describe.skipIf(postgres.skipReason !== undefined)(
 				}
 			});
 
-		test("no two names any store asks for map to one Postgres identifier, under any prefix or pool sub-prefix", async () => {
-			const asked = new Set<string>();
+		test("no two names any store asks for map to one Postgres identifier, under any prefix", async () => {
+			const names = new Set<string>();
 			for (const prefix of ["", LONG_PREFIX, OVERLONG_PREFIX]) {
 				const scope = await postgres.openScope();
 				try {
-					const connect = async () => recordingNames(await scope.connect(), asked);
+					const connect = async () => recordingNames(await scope.connect(), names);
+					await seedLegacyWorkflowTables(await scope.connect(), { prefix });
 					await openEveryStore(await connect(), prefix, connect);
-					// The snapshot store indexes the pool's tables once they exist, as the next journal to open finds them.
-					await (await SqlRunJournal.open(recordingNames(await scope.connect(), asked), { prefix })).close();
 				} finally {
 					await scope.close();
 				}
 			}
-			// The same names under the pool's other session sub-prefix, the one it uses where identifiers are unlimited.
-			const names = new Set(asked);
-			for (const name of asked) if (name.includes("wf_ps_")) names.add(name.replace("wf_ps_", "wf_runs_pool_"));
 			assert.ok(
 				[...names].some((name) => name.length > 63),
 				"some names were long enough to be hashed",

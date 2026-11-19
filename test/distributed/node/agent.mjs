@@ -143,8 +143,17 @@ async function facts() {
 }
 
 async function capabilities() {
-	const workflows = await importFromRef("@bastani/atomic/workflows");
 	const atomic = await importFromRef("@bastani/atomic");
+	const require = createRequire(join(flag("ref-dir"), "package.json"));
+	let workflowEntry;
+	try {
+		workflowEntry = require.resolve("@bastani/atomic/workflows");
+	} catch (error) {
+		if (!(error instanceof Error && Reflect.get(error, "code") === "ERR_PACKAGE_PATH_NOT_EXPORTED")) throw error;
+	}
+	// Only an absent export is expected. An exported module that fails to load is a broken deployment.
+	const workflows =
+		workflowEntry === undefined ? [] : Object.keys(await import(pathToFileURL(workflowEntry).href)).sort();
 	/** @type {Record<string, string[]>} */
 	const members = {};
 	for (const name of ["AgentSessionRuntime", "AgentSession"]) {
@@ -155,7 +164,7 @@ async function capabilities() {
 			].sort();
 	}
 	print({
-		workflows: Object.keys(workflows).sort(),
+		workflows,
 		atomic: Object.keys(atomic).sort(),
 		members,
 		artifact: JSON.parse(readFileSync(join(flag("ref-dir"), ".atomic-distributed-artifact.json"), "utf8")),
