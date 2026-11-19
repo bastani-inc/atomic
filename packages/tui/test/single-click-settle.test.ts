@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
 import { type Component, Container, type TuiMouseEventResult } from "../src/tui.ts";
 import { MULTI_CLICK_INTERVAL_MS, TuiAltScreen } from "../src/tui-alt-screen.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
@@ -7,6 +7,12 @@ import { VirtualTerminal } from "./virtual-terminal.ts";
 const press = (x: number, y: number) => `\x1b[<0;${x + 1};${y + 1}M`;
 const release = (x: number, y: number) => `\x1b[<0;${x + 1};${y + 1}m`;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function mockClickClock(t: TestContext): void {
+	t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100_000 });
+	// Node's mock timers advance Date and timeouts, but not performance.now().
+	t.mock.method(performance, "now", Date.now.bind(Date));
+}
 
 /**
  * A renderer that copies what a double-click selects, over rows whose single click acts only once it is known not to
@@ -64,6 +70,23 @@ describe("a single click's action waits until it cannot become a double-click", 
 		tui.stop();
 	});
 
+	for (const rollback of [2_000, 60_000]) {
+		it(`a wall-clock step back by ${rollback} ms does not delay a pending single click`, async (t) => {
+			const { terminal, tui, acted, click } = settleFixture();
+			tui.start();
+			t.after(() => tui.stop());
+			await terminal.waitForRender();
+			mockClickClock(t);
+			click(1, 0);
+			t.mock.timers.tick(50);
+			t.mock.method(Date, "now", () => performance.now() - rollback);
+			t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS - 50);
+			assert.deepStrictEqual(acted, []);
+			t.mock.timers.tick(1);
+			assert.deepStrictEqual(acted, ["first"]);
+		});
+	}
+
 	it("never runs for a double- or triple-click, which still select a word and a line", async () => {
 		const { terminal, tui, copied, acted, click } = settleFixture();
 		tui.start();
@@ -105,7 +128,7 @@ describe("a single click's action waits until it cannot become a double-click", 
 		tui.start();
 		t.after(() => tui.stop());
 		await terminal.waitForRender();
-		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+		mockClickClock(t);
 		click(1, 0);
 		list.children.unshift(row("inserted", "first"));
 		list.invalidate();
@@ -140,7 +163,7 @@ describe("a single click's action waits until it cannot become a double-click", 
 		tui.start();
 		t.after(() => tui.stop());
 		await terminal.waitForRender();
-		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+		mockClickClock(t);
 
 		terminal.sendInput(press(1, 0));
 		t.mock.timers.tick(10);
@@ -158,7 +181,7 @@ describe("a single click's action waits until it cannot become a double-click", 
 		tui.start();
 		t.after(() => tui.stop());
 		await terminal.waitForRender();
-		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+		mockClickClock(t);
 		terminal.sendInput(press(1, 0));
 		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
 		assert.deepStrictEqual(acted, []);
@@ -177,7 +200,7 @@ describe("a single click's action waits until it cannot become a double-click", 
 			tui.start();
 			t.after(() => tui.stop());
 			await terminal.waitForRender();
-			t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+			mockClickClock(t);
 
 			click(8, 0);
 			options.capture = !captureFirst;
@@ -198,7 +221,7 @@ describe("a single click's action waits until it cannot become a double-click", 
 			tui.start();
 			t.after(() => tui.stop());
 			await terminal.waitForRender();
-			t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+			mockClickClock(t);
 			const wheel = () => terminal.sendInput("\x1b[<65;2;1M");
 			click(1, 0);
 			wheel();
@@ -216,7 +239,7 @@ describe("a single click's action waits until it cannot become a double-click", 
 		tui.start();
 		t.after(() => tui.stop());
 		await terminal.waitForRender();
-		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+		mockClickClock(t);
 		click(1, 0);
 		terminal.sendInput(press(1, 1));
 		terminal.sendInput("\x1b[O");
@@ -232,7 +255,7 @@ describe("a single click's action waits until it cannot become a double-click", 
 		tui.start();
 		t.after(() => tui.stop());
 		await terminal.waitForRender();
-		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+		mockClickClock(t);
 		terminal.sendInput(press(6, 0));
 		terminal.sendInput("\x1b[<32;9;1M");
 		terminal.sendInput(release(8, 0));
@@ -250,7 +273,7 @@ describe("a single click's action waits until it cannot become a double-click", 
 		tui.start();
 		t.after(() => tui.stop());
 		await terminal.waitForRender();
-		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+		mockClickClock(t);
 		terminal.sendInput(press(6, 0));
 		terminal.sendInput("\x1b[<32;9;1M");
 		terminal.sendInput(release(8, 0));

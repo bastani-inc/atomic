@@ -88,6 +88,12 @@ const EXIT_PREPARE_ROWS = 512;
 const EXIT_SLICE_BUDGET_MS = 8;
 /** How soon a second press on the same spot must follow the first to make a double- or triple-click. */
 export const MULTI_CLICK_INTERVAL_MS = 500;
+
+/** Whole elapsed milliseconds: clock corrections must not move an outstanding click's deadline. */
+function clickTime(): number {
+	return Math.floor(performance.now());
+}
+
 const COPY_ERROR_FLASH_DURATION_MS = 5000;
 // Regular mode delegates double-click selection to the terminal emulator. Fullscreen owns mouse selection,
 // so it uses iTerm2's default "characters considered part of a word" set:
@@ -1108,7 +1114,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.singleClickTimer = undefined;
 				try {
 					for (const [press, result] of this.waitingSingleClicks) {
-						if (Date.now() - press.timestamp <= MULTI_CLICK_INTERVAL_MS) break;
+						if (clickTime() - press.timestamp <= MULTI_CLICK_INTERVAL_MS) break;
 						this.waitingSingleClicks.delete(press);
 						result.whenSingleClick?.();
 						this.requestRender();
@@ -1117,7 +1123,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					this.scheduleSingleClickTimer();
 				}
 			},
-			Math.max(0, first.timestamp + MULTI_CLICK_INTERVAL_MS + 1 - Date.now()),
+			Math.max(0, first.timestamp + MULTI_CLICK_INTERVAL_MS + 1 - clickTime()),
 		);
 		this.singleClickTimer.unref?.();
 	}
@@ -1158,7 +1164,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					? "move"
 					: "drag"
 				: "press";
-		const timestamp = Date.now();
+		const timestamp = clickTime();
 		const previous = this.lastClick;
 		// A press taken by a scrollbar, search button or another gesture also breaks the click sequence.
 		if (type === "press") this.lastClick = undefined;

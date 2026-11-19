@@ -10,7 +10,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Fixed
 
-- Holding the second press of a double-click no longer runs single-click actions on components that take their own presses. A wheel turn, drag or loss of terminal focus breaks the click sequence. A single click that clears a text selection still acts on the item, and clicking two different items painted at the same cell runs both single-click actions ([#5562](https://github.com/bastani-inc/atomic/issues/5562)).
+- Holding the second press of a double-click no longer runs single-click actions on components that take their own presses. A system clock adjustment does not delay a pending single click. A wheel turn, drag or loss of terminal focus breaks the click sequence. A single click that clears a text selection still acts on the item, and clicking two different items painted at the same cell runs both single-click actions ([#5562](https://github.com/bastani-inc/atomic/issues/5562)).
 
 ## [0.9.89] - 2026-11-18
 
