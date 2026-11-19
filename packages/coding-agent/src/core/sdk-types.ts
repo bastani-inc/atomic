@@ -51,6 +51,8 @@ export interface CreateAgentSessionOptions {
 	 */
 	storage?: SessionStorageOption;
 
+	/** Cancel the first prompt's optional lookup of a missing Copilot model. Local selection is unchanged. */
+	signal?: AbortSignal;
 	/** Canonical model/auth runtime. Defaults to agentDir/auth.json and models.json. */
 	modelRuntime?: ModelRuntime;
 

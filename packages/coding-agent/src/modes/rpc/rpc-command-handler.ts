@@ -99,6 +99,16 @@ function trustDecisionsState(decisions: SessionTrustDecisions | undefined): Pick
 	return count > 0 ? { trustDecisions: decisions } : {};
 }
 
+/** Older hosts treat even an explicit false in projectTrusted as a settled decision. */
+function projectTrustState(
+	runtimeHost: AgentSessionRuntime,
+	session: AgentSession,
+): Pick<RpcSessionState, "projectTrusted" | "pendingProjectResourcesTrusted"> {
+	return runtimeHost.isProjectTrustPending?.()
+		? { pendingProjectResourcesTrusted: runtimeHost.pendingProjectResourcesTrusted?.() === true }
+		: { projectTrusted: session.settingsManager.isProjectTrusted?.() === true };
+}
+
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 	switch (command.type) {
 		case "abort":
@@ -350,10 +360,7 @@ export function createRpcCommandHandler({
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					queuedMessagesPaused: session.queuedMessagesPaused,
-					// No report while startup is still deciding: the settings read untrusted until then (see isProjectTrustPending).
-					...(runtimeHost.isProjectTrustPending?.()
-						? {}
-						: { projectTrusted: session.settingsManager.isProjectTrusted?.() === true }),
+					...projectTrustState(runtimeHost, session),
 					...trustDecisionsState(runtimeHost.trustDecisions?.()),
 					resourceOverlaps: extensionResult.overlaps ?? [],
 					resourceErrors: extensionResult.errors,

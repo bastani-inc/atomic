@@ -3,6 +3,7 @@ import { panelHintParts, panelHintSegments } from "../../../core/tasks/agent-pan
 import type { AgentPanelSession } from "../../../core/tasks/agent-panel-source.ts";
 import { type AgentPanelCounts, agentPanelCounts } from "../../rpc/agent-panel-bridge.ts";
 import { theme } from "../theme/theme.js";
+import type { FooterHints } from "./footer.ts";
 import {
 	isNavHelpKey,
 	type NavKey,
@@ -22,11 +23,12 @@ export interface MainComposerKeyState {
 	readonly shells?: number;
 	/** The chat's subagents in /tasks, listed in the panel or not. */
 	readonly subagents?: number;
+	readonly hiddenWorkflow?: boolean;
 	readonly working: boolean;
 }
 
 export type MainComposerHintSource =
-	| Pick<MainComposerKeyState, "agentRows" | "agents" | "needsInput" | "shells" | "subagents">
+	| Pick<MainComposerKeyState, "agentRows" | "agents" | "needsInput" | "shells" | "subagents" | "hiddenWorkflow">
 	| (AgentPanelSession & object)
 	| (() => AgentPanelCounts);
 
@@ -49,6 +51,7 @@ function resolveAgentCounts(
 				needsInput: source.needsInput ?? 0,
 				shells: source.shells ?? 0,
 				subagents: source.subagents ?? 0,
+				hiddenWorkflow: source.hiddenWorkflow,
 			};
 		}
 		return agentPanelCounts(source as AgentPanelSession & object);
@@ -81,6 +84,13 @@ export function mainComposerHintSegments(
  * the `/tasks` segment runs the command.
  */
 export function mainComposerHints(keybindings: NavKeybindings | undefined, state?: MainComposerHintSource): string[] {
+	return mainComposerFooterHints(keybindings, state).segments;
+}
+
+export function mainComposerFooterHints(
+	keybindings: NavKeybindings | undefined,
+	state?: MainComposerHintSource,
+): FooterHints {
 	const counts = resolveAgentCounts(keybindings, state);
 	const promptKeys = promptKeybindings(keybindings);
 	const focusKeys = navEntryKeyParts(promptKeys, { action: "app.agents.focus", label: "" });
@@ -97,9 +107,11 @@ export function mainComposerHints(keybindings: NavKeybindings | undefined, state
 		if (segment.kind === "tasks") return slashCommandHint(segment.text);
 		return segment.text;
 	});
+	const optionalIndex = counts.hiddenWorkflow ? segments.length : undefined;
+	if (counts.hiddenWorkflow) segments.push(slashCommandHint("/workflows to see runs"));
 	const helpKeys = navEntryKeyParts(promptKeys, { action: "app.keys.help", label: "" });
 	if (helpKeys.length > 0) segments.push(clickableKeysHint(helpKeys, " keys"));
-	return segments;
+	return { segments, optionalIndex };
 }
 
 function finiteCount(value: number): number {

@@ -1,4 +1,5 @@
 import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
+import { hasLiveBlockMarker } from "../shared/display-run-status.js";
 import {
 	type ExpandedWorkflowGraph,
 	type ExpandedWorkflowStage,
@@ -731,14 +732,24 @@ export abstract class GraphViewState {
 		return effectiveRunStatus(run);
 	}
 
+	/** Only shared within one synchronous paint/key event. Never use an earlier frame to dispatch a key. */
+	protected displayBlock?: { run: RunSnapshot; marker: Pick<RunSnapshot, "blockedAt">; live?: boolean };
+
+	protected _runDisplayStatus(run: RunSnapshot, status = effectiveRunStatus(run)): RunSnapshot["status"] {
+		if (status !== "running") return status;
+		if (this.displayBlock?.run !== run) this.displayBlock = { run, marker: run };
+		this.displayBlock.live ??= run.status === "running" && hasLiveBlockMarker(run, this.displayBlock.marker);
+		return this.displayBlock.live ? "blocked" : status;
+	}
+
 	protected _runPausable(run: RunSnapshot | null = this._getCurrentRun()): boolean {
 		if (this.stageActions?.pauseRun === undefined || run === null || run.endedAt !== undefined) return false;
-		return effectiveRunStatus(run) === "running";
+		return this._runDisplayStatus(run) === "running";
 	}
 
 	protected _runResumable(run: RunSnapshot | null = this._getCurrentRun()): boolean {
 		if (this.stageActions?.resumeRun === undefined || run === null || run.resumable === false) return false;
-		const status = effectiveRunStatus(run);
+		const status = this._runDisplayStatus(run);
 		return status === "paused" || status === "blocked" || this.stageActions.canResumeRun?.(run.id) === true;
 	}
 

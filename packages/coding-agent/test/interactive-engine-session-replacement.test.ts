@@ -223,7 +223,8 @@ test("isolated host applies authoritative trust once per change", async () => {
 	}
 });
 
-test("isolated host keeps its trust and reports the decision pending until the engine decides", async () => {
+// The engine reports nothing while it decides a saved "trust" that no project_trust hook can overturn.
+test("isolated host keeps its trust and reports the decision pending until the engine decides, when nothing can decline it", async () => {
 	const harness = await createHarness();
 	try {
 		harness.settingsManager.setProjectTrusted(true);
@@ -253,6 +254,43 @@ test("isolated host keeps its trust and reports the decision pending until the e
 		await runtime.initializeFromEngine();
 		expect(runtime.isProjectTrustPending()).toBe(false);
 		expect(harness.settingsManager.isProjectTrusted()).toBe(false);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+// Resource permission is not a settled decision: the host drops the project's resources but does not warn (#5693).
+test("isolated host loads no project resources while the engine's decision can still decline, and does not warn yet (#5693)", async () => {
+	const harness = await createHarness();
+	try {
+		harness.settingsManager.setProjectTrusted(true);
+		const probe = createUnresponsiveEngineClient();
+		let report: { projectTrusted?: boolean; pendingProjectResourcesTrusted?: boolean } = {
+			pendingProjectResourcesTrusted: false,
+		};
+		probe.client.getState = async () => ({ ...createState(), ...report });
+		const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness) as never, async () => {
+			throw new Error("unused runtime factory");
+		});
+		const runtime = new IsolatedInteractiveRuntime(
+			localRuntime,
+			async () => {
+				throw new Error("unexpected replacement");
+			},
+			probe.client as never,
+		);
+		const reload = vi.spyOn(harness.session.resourceLoader, "reload").mockResolvedValue();
+
+		await runtime.initializeFromEngine();
+		expect(harness.settingsManager.isProjectTrusted()).toBe(false);
+		expect(reload).toHaveBeenCalledTimes(1);
+		expect(runtime.isProjectTrustPending()).toBe(true);
+
+		report = { projectTrusted: false };
+		await runtime.initializeFromEngine();
+		expect(runtime.isProjectTrustPending()).toBe(false);
+		expect(harness.settingsManager.isProjectTrusted()).toBe(false);
+		expect(reload).toHaveBeenCalledTimes(1);
 	} finally {
 		harness.cleanup();
 	}

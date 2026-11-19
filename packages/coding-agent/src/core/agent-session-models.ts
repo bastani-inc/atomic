@@ -5,6 +5,7 @@ import { clampThinkingLevel, getSupportedThinkingLevels, modelsAreEqual } from "
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { type ModelCycleResult, type ModelMutationOptions, THINKING_LEVELS } from "./agent-session-types.js";
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
+import { cancelFirstPromptModel } from "./first-prompt-model.ts";
 import { requestedThinkingLevelForModelSwitch } from "./model-switch-thinking-level.ts";
 import { assertSessionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
 import type { SessionEntry, ThinkingLevelChangeEntry } from "./session-manager-types.ts";
@@ -92,6 +93,7 @@ export function _emitModelChanged(
 	source: "set" | "cycle" | "restore" | "fallback",
 ): void {
 	if (modelsAreEqual(previousModel, nextModel)) return;
+	cancelFirstPromptModel(this);
 	this._emit({
 		type: "model_changed",
 		model: nextModel,

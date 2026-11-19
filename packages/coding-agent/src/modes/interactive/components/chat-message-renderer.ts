@@ -28,6 +28,7 @@ import { CustomMessageComponent } from "./custom-message.ts";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 import type { TaskCompletionMessageOptions } from "./task-completion-message.js";
 import { countTasksBy, TaskRow, taskNameAndTitle, taskSiblings } from "./task-row.js";
+import { pagedNotices } from "./task-transcript-notices.ts";
 import type { ToolGroupRole } from "./tool-block.ts";
 import { ToolExecutionComponent } from "./tool-execution.ts";
 import {
@@ -429,6 +430,7 @@ export class LiveChatEntriesController {
 			}
 		}
 		this.entries.splice(0, this.entries.length, ...entries, ...preservedEntries);
+		pagedNotices.get(this.entries)?.reset();
 		if (preservedEntries.length > 0) {
 			this.tracker.break();
 			this.carriedToolBreak = false;
@@ -781,6 +783,14 @@ export function applyToolEntryState(component: ToolEntryStateTarget, entry: Tool
 	if (entry.groupRole) component.setGroupRole(entry.groupRole);
 }
 export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMessageRenderOptions): Component {
+	return renderHostedChatEntry(entry, options);
+}
+
+export function renderHostedChatEntry(
+	entry: ChatMessageEntry,
+	options: ChatMessageRenderOptions,
+	AssistantCard = AssistantMessageComponent,
+): Component {
 	const messageEntry = entry as ChatMessageEntry;
 	const markdownTheme = options.markdownTheme ?? getMarkdownTheme();
 	switch (messageEntry.kind) {
@@ -793,7 +803,7 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				activityOmitted: messageEntry.activityOmitted,
 			});
 		case "assistant":
-			return new AssistantMessageComponent(
+			return new AssistantCard(
 				messageEntry.message,
 				options.hideThinkingBlock ?? false,
 				markdownTheme,

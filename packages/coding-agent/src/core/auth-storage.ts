@@ -33,6 +33,9 @@ export {
 
 export type AuthStorageData = Record<string, Credential>;
 
+/** Internal snapshot check for optional account discovery. Never open a changed file just to check an account. */
+export const accountSnapshotVersion = Symbol("accountSnapshotVersion");
+
 export class AuthStorage implements CredentialStore {
 	private data: AuthStorageData = {};
 	private loadedVersion: string | undefined;
@@ -170,6 +173,13 @@ export class AuthStorage implements CredentialStore {
 		this.data = next;
 		this.generation++;
 		return true;
+	}
+
+	[accountSnapshotVersion](): string | null | undefined {
+		if (this.storage instanceof InMemoryAuthStorageBackend) return undefined;
+		if (!(this.storage instanceof FileAuthStorageBackend)) return null;
+		const version = this.readStorageVersion();
+		return version !== undefined && version === this.loadedVersion ? version : null;
 	}
 
 	/** Read the current in-memory credential snapshot without triggering refresh or I/O. */

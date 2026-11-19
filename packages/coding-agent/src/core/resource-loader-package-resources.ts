@@ -15,6 +15,7 @@ export function emptyResolvedPaths(): ResolvedPaths {
 export async function resolvePackageResourcePaths(
 	loader: DefaultResourceLoader,
 	options?: {
+		useLoadedSettings?: true;
 		includeCliProjectLocalResources?: boolean;
 		trustedBorrowedProjectLocalSources?: Set<string>;
 	},
@@ -24,7 +25,7 @@ export async function resolvePackageResourcePaths(
 	builtinPackagePaths: ResolvedPaths;
 }> {
 	const state = resourceInternals(loader);
-	await state.settingsManager.reload();
+	if (!options?.useLoadedSettings) await state.settingsManager.reload();
 	const resolvedPaths = await state.packageManager.resolve();
 	const includeCliProjectLocalResources = options?.includeCliProjectLocalResources ?? true;
 	let cliExtensionPaths = await state.packageManager.resolveExtensionSources(state.additionalExtensionPaths, {

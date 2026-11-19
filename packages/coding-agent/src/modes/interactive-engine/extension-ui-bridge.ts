@@ -229,13 +229,16 @@ export function getInteractiveEngineResourceIssues(runtime: AgentSessionRuntime)
 
 export function onInteractiveEngineResourceExtensionsChanged(
 	runtime: AgentSessionRuntime,
-	listener: (extensions: readonly RpcResourceExtension[]) => void,
+	listener: (extensions: readonly RpcResourceExtension[], forNextView?: true) => void,
 ): () => void {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onResourceExtensionsChanged(listener) : () => {};
 }
 
 /** Called when the isolated host's trust for its session, or whether its engine has decided it, changes. */
-export function onInteractiveEngineProjectTrustChanged(runtime: AgentSessionRuntime, listener: () => void): () => void {
+export function onInteractiveEngineProjectTrustChanged(
+	runtime: AgentSessionRuntime,
+	listener: (resourcesChanged: boolean) => void,
+): () => void {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onProjectTrustChanged(listener) : () => {};
 }
 
@@ -253,7 +256,7 @@ export function getInteractiveEngineRemoteCommandCompletions(
 /** Subscribe to engine-child command catalog changes. No-op when not isolated. */
 export function onInteractiveEngineRemoteCommandsChanged(
 	runtime: AgentSessionRuntime,
-	listener: (commands: readonly RpcSlashCommand[]) => void,
+	listener: (commands: readonly RpcSlashCommand[], forNextView?: true) => void,
 ): () => void {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onRemoteCommandsChanged(listener) : () => {};
 }
