@@ -41,6 +41,7 @@ import {
 	type ReleasedStageSource,
 	type StageControlHandle,
 	type StageControlRegistry,
+	stageContextMeter,
 } from "./stage-control-registry.js";
 import { StageQueuedUserMessageBuffer, stageQueuedUserMessageCount } from "./stage-queued-user-messages.js";
 import { createStageContext, type StageAdapters } from "./stage-runner.js";
@@ -340,6 +341,9 @@ export function createPostMortemStageHandle(
 		},
 		get messages() {
 			return context.__residentMessages();
+		},
+		contextMeter(displayed) {
+			return stageContextMeter(context.__agentSession(), displayed);
 		},
 		get agentSession() {
 			return context.__agentSession();
