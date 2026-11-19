@@ -150,7 +150,43 @@ function point(screen: string, label: string, offset = 0): string {
 	return `${lines[i]!.indexOf(label) + 1};${i + offset + 1}`;
 }
 
+test(
+	"engine: a non-capturing preview leaves shell output clickable (#5532)",
+	async () => {
+		await runCli("engine", {}, async (pty) => {
+			const command = 'node -e "for(let i=1;i<=36;i++) console.log(i)"';
+			pty.write(`!${command}\r`);
+			await pty.waitForScreen((s) => s.includes("more lines ("), input, "folded shell output");
+			pty.write("/sample-menu preview\r");
+			await pty.waitForScreen((s) => s.includes("Passive preview"), input, "non-capturing preview");
+			const cell = point(pty.screen(), `$ ${command}`);
+			pty.write(`\x1b[<0;${cell}M\x1b[<0;${cell}m`);
+			await pty.waitForScreen((s) => /^\s*6\s*$/m.test(s), input, "expanded shell output");
+			assert.ok(pty.screen().includes("Passive preview"));
+		});
+	},
+	startup + 60_000,
+);
+
 for (const host of ["local", "engine"]) {
+	test(
+		`${host}: clicking the second occurrence of an item navigates from that row (#5532)`,
+		async () => {
+			await runCli(host, {}, async (pty, changes) => {
+				pty.write("/sample-menu repeated\r");
+				await pty.waitForScreen((s) => s.includes("Delta"), input, "four choices");
+				const second = point(pty.screen(), "Repeat");
+				pty.write(`\x1b[<0;${second}M\x1b[<0;${second}m`);
+				await pty.waitForScreen(() => readFileSync(changes, "utf8").includes("choose Repeat"), input, "activation");
+				pty.write("\x1b[B");
+				await pty.waitForScreen((s) => /❯ (Bravo|Delta)/.test(s), input, "selection after Down");
+				assert.match(pty.screen(), /❯ Delta/);
+				assert.equal(readFileSync(changes, "utf8"), "move Repeat\nchoose Repeat\nmove Delta\n");
+			});
+		},
+		startup + 60_000,
+	);
+
 	for (const binding of ["newline", "F6"]) {
 		test(
 			`${host}: a clicked slash completion ${binding === "newline" ? "does not replay the newline binding" : "publishes the completed draft with only F6 bound"} (#5532)`,

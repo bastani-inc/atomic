@@ -179,7 +179,9 @@ function serializableOverlayOptions(
 ): SerializableOverlayOptions | undefined {
 	const value = typeof options === "function" ? options() : options;
 	if (!value) return undefined;
-	const { anchor, col, margin, maxHeight, minWidth, modal, offsetX, offsetY, row, width } = value;
+	const { anchor, col, margin, maxHeight, minWidth, offsetX, offsetY, row, width } = value;
+	// Let clicks through a passive preview without changing which component receives raw wheel input.
+	const modal = value.nonCapturing ? false : value.modal;
 	return { anchor, col, margin, maxHeight, minWidth, modal, offsetX, offsetY, row, width };
 }
 

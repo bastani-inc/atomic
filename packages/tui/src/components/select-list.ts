@@ -43,8 +43,8 @@ export class SelectList implements Component {
 	private items: SelectItem[] = [];
 	private filteredItems: SelectItem[] = [];
 	private selectedIndex: number = 0;
-	/** The row each item was drawn on in the last render. */
-	private readonly clickableRows = new ClickableRows<SelectItem>();
+	/** The list position drawn on each row, even when two positions contain the same item. */
+	private readonly clickableRows = new ClickableRows<{ index: number; item: SelectItem }>();
 	private maxVisible: number = 5;
 	private theme: SelectListTheme;
 	private layout: SelectListLayoutOptions;
@@ -98,7 +98,7 @@ export class SelectList implements Component {
 
 			const isSelected = i === this.selectedIndex;
 			const descriptionSingleLine = item.description ? normalizeToSingleLine(item.description) : undefined;
-			this.clickableRows.add(lines.length, item, `${i}\u0000${item.value}`);
+			this.clickableRows.add(lines.length, { index: i, item }, `${i}\u0000${item.value}`);
 			lines.push(this.renderItem(item, isSelected, width, descriptionSingleLine, primaryColumnWidth));
 		}
 
@@ -123,10 +123,9 @@ export class SelectList implements Component {
 			return { handled: true, render: this.selectedIndex !== previousIndex };
 		}
 		return this.clickableRows.handleMouse(event, {
-			activate: (item) => {
-				// The item drawn under the pointer, wherever it is in the list now.
-				const index = this.filteredItems.indexOf(item);
-				if (index === -1) return;
+			activate: ({ index, item }) => {
+				// Don't activate a replacement if the list changed since this row was painted.
+				if (this.filteredItems[index] !== item) return;
 				if (this.selectedIndex !== index) {
 					this.selectedIndex = index;
 					this.notifySelectionChange();
