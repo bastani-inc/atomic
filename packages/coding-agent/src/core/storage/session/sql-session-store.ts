@@ -65,7 +65,12 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import {
+	entrySizeLimit,
+	SESSION_HISTORY_CHUNK_BYTES,
+	SESSION_HISTORY_PAGE_BYTES,
+	SESSION_HISTORY_PAGE_ENTRIES,
+} from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 /**
@@ -2075,7 +2080,12 @@ export class SqlSessionStore implements SessionStore {
 		}, SESSION_TRANSACTION);
 	}
 
-	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
+	async readEntrySizes(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		limit?: number,
+	): Promise<SessionEntrySizes> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		return this.transaction(async (tx) => {
@@ -2087,7 +2097,7 @@ export class SqlSessionStore implements SessionStore {
 				sessionId,
 				startSeq,
 				endSeq,
-				SESSION_HISTORY_PAGE_ENTRIES,
+				entrySizeLimit(limit),
 			);
 			return {
 				...head,

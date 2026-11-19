@@ -22,7 +22,12 @@ import {
 import { inlineToolOutput, withoutCarriedToolOutput } from "./session-tool-output.ts";
 import { sessionSnapshotBlobs, snapshotBlobInliner } from "./session-worktree-snapshots.ts";
 import { attachCleanupCause } from "./storage/cleanup.js";
-import type { OversizedSessionEntry, SessionStore } from "./storage/session/types.js";
+import { worktreeSnapshotPages } from "./storage/session/snapshot-records.js";
+import {
+	type OversizedSessionEntry,
+	SESSION_HISTORY_SCAN_ENTRIES,
+	type SessionStore,
+} from "./storage/session/types.js";
 import { lastAssistantAnswer } from "./storage/session/window-answer.js";
 import { addHistoryUsageToTotals, addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 import type { SnapshotBlobStore, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
@@ -303,6 +308,19 @@ function capturedBranch(sessionManager: SessionManager, store: SessionStore, con
 	}
 	const cut = sessionManager.captureArchive();
 	const leafSeq = cut.leafId === null ? undefined : sessionManager.getEntrySeq(cut.leafId);
+	// The window the manager holds ends the branch: its line of descent is read from memory, only what precedes it from
+	// the store. Every ancestor of an entry was stored before it, so the stored ancestry before the window is the part
+	// of the branch below the window's first sequence.
+	const descent: SessionEntry[] = [];
+	const seqOf = new Map([...cut.held].map(([seq, entry]) => [entry.id, seq]));
+	for (let seq = leafSeq; seq !== undefined; ) {
+		const entry = cut.held.get(seq)!;
+		descent.push(entry);
+		seq = entry.parentId === null ? undefined : seqOf.get(entry.parentId);
+	}
+	descent.reverse();
+	const first = descent[0];
+	const before = first === undefined || first.parentId === null ? 0 : seqOf.get(first.id)! - 1;
 	const primary = store.snapshotBlobs;
 	const session = sessionSnapshots(cut);
 	const seen = new Map<string, WorktreeSnapshot>();
@@ -312,10 +330,16 @@ function capturedBranch(sessionManager: SessionManager, store: SessionStore, con
 		async *read() {
 			if (cut.leafId === null) return;
 			if (leafSeq === undefined) throw new SessionEntryError(cut.leafId, "missing");
-			for await (const { items } of cut.pages({ branchLeafSeq: leafSeq })) {
-				for (const item of items)
-					yield cut.held.get(item.seq) ?? ("entry" in item ? item.entry : await entryOf(cut, item));
-			}
+			if (before > 0)
+				for await (const { items } of cut.pages({
+					branchLeafSeq: leafSeq,
+					toSeq: before,
+					pageEntries: SESSION_HISTORY_SCAN_ENTRIES,
+				})) {
+					for (const item of items)
+						yield cut.held.get(item.seq) ?? ("entry" in item ? item.entry : await entryOf(cut, item));
+				}
+			yield* descent;
 		},
 		async record(entry) {
 			const record = entry.snapshot ?? seen.get(entry.snapshotId) ?? (await session.record(entry.snapshotId));
@@ -358,19 +382,22 @@ function carriedBlob(entry: SessionEntry, hash: string): Uint8Array | undefined 
 /**
  * The session's snapshot records and inline snapshot content at `cut`, each the last the session has, as a full load
  * gives them. The first lookup reads the session's snapshot entries once, keeping only where each record and blob is;
- * each lookup then reads that one entry.
+ * each lookup then reads that one entry, so a session missing many blobs is still read once, not once a blob.
  */
 function sessionSnapshots(cut: ArchiveCut) {
 	let located: Promise<{ records: Map<string, number>; blobs: Map<string, number> }> | undefined;
 	const locate = async () => {
 		const records = new Map<string, number>();
 		const blobs = new Map<string, number>();
-		for await (const { items } of cut.pages()) {
-			for (const item of items) {
-				const entry = cut.held.get(item.seq) ?? ("entry" in item ? item.entry : await entryOf(cut, item));
-				if (entry.type !== "worktree_snapshot") continue;
-				if (entry.snapshot) records.set(entry.snapshotId, item.seq);
-				for (const hash of Object.keys(entry.blobs ?? {})) blobs.set(hash, item.seq);
+		// Every page of the session is consumed at once, so it is read as a scan: more entries a page, never more bytes.
+		const scan = {
+			...cut,
+			pages: (options = {}) => cut.pages({ ...options, pageEntries: SESSION_HISTORY_SCAN_ENTRIES }),
+		};
+		for await (const page of worktreeSnapshotPages(scan)) {
+			for (const { seq, entry } of page) {
+				if (entry.snapshot) records.set(entry.snapshotId, seq);
+				for (const hash of Object.keys(entry.blobs ?? {})) blobs.set(hash, seq);
 			}
 		}
 		return { records, blobs };

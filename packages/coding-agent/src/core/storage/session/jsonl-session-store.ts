@@ -88,7 +88,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import { entrySizeLimit, matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 interface SessionFileState {
@@ -992,11 +992,11 @@ export class JsonlSessionStore implements SessionStore {
 		return this.run(async () => transcriptBranchSpan(sessionId, (await this.indexed(sessionId)).jsonl.index, cut));
 	}
 
-	readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
+	readEntrySizes(sessionId: string, startSeq: number, endSeq: number, limit?: number): Promise<SessionEntrySizes> {
 		return this.run(async () => {
 			const { jsonl } = await this.indexed(sessionId);
 			const start = Math.max(1, startSeq);
-			const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq, start + SESSION_HISTORY_PAGE_ENTRIES - 1));
+			const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq, start + entrySizeLimit(limit) - 1));
 			return {
 				epoch: jsonl.index.epoch,
 				lastSeq: jsonl.index.seq,

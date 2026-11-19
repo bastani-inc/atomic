@@ -30,7 +30,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import { entrySizeLimit, matchesSessionIdPrefix } from "./types.js";
 
 const DELETED_TABLE = "session_legacy_deleted";
 
@@ -180,9 +180,17 @@ export class LegacySessionStore implements SessionStore {
 		return (await import("./snapshot-history.js")).snapshotBranchSpan(this.inner, sessionId, cut);
 	}
 
-	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
+	async readEntrySizes(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		limit?: number,
+	): Promise<SessionEntrySizes> {
 		await this.convert(sessionId);
-		if (this.inner.readEntrySizes) return this.inner.readEntrySizes(sessionId, startSeq, endSeq);
+		if (this.inner.readEntrySizes)
+			return limit === undefined
+				? this.inner.readEntrySizes(sessionId, startSeq, endSeq)
+				: this.inner.readEntrySizes(sessionId, startSeq, endSeq, limit);
 		const snapshot = await this.inner.load(sessionId);
 		const { snapshotStamp } = await import("./snapshot-history.js");
 		const start = Math.max(startSeq, 1);
@@ -190,7 +198,7 @@ export class LegacySessionStore implements SessionStore {
 			epoch: snapshotStamp(snapshot),
 			lastSeq: snapshot.lastSeq,
 			sizes: snapshot.entries
-				.slice(start - 1, Math.min(endSeq, start - 1 + SESSION_HISTORY_PAGE_ENTRIES))
+				.slice(start - 1, Math.min(endSeq, start - 1 + entrySizeLimit(limit)))
 				.map((entry, i) => ({ seq: start + i, bytes: Buffer.byteLength(JSON.stringify(entry)) })),
 		};
 	}
