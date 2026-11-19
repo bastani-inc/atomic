@@ -1,5 +1,5 @@
 import { inspect, types } from "node:util";
-import { sanitizeTerminalText } from "../../utils/terminal-text.ts";
+import { graphemeAt, sanitizeTerminalText } from "../../utils/terminal-text.ts";
 import type { ExtensionError } from "../extensions/runtime-types.ts";
 import { waitingReleasedTools, withoutSupersededAttempts } from "./completion.js";
 import type { TaskId, TaskRecord } from "./contracts.js";
@@ -299,7 +299,10 @@ export function shortTaskTitle(title: string): string {
 	if (line.length <= SHORT_TITLE_CHARS) return line;
 	const cut = line.slice(0, SHORT_TITLE_CHARS);
 	const space = cut.lastIndexOf(" ");
-	return `${(space > SHORT_TITLE_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+	const end = cut.slice(0, space > SHORT_TITLE_CHARS / 2 ? space : SHORT_TITLE_CHARS - 1).trimEnd().length;
+	// The next code point is enough to tell whether this cut (including a word break) splits a grapheme.
+	const boundary = graphemeAt(line.slice(0, end + 2), end)!;
+	return `${line.slice(0, boundary.index)}…`;
 }
 
 const cachedTaskItems = new WeakMap<
