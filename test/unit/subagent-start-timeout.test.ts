@@ -1175,8 +1175,6 @@ test(
 			reportActivity() {},
 			reportStart: (progress) => reports.push(progress),
 			onExecution() {},
-			yieldTaskWait() {},
-			isParentObserving: () => false,
 		};
 		const reload = DefaultResourceLoader.prototype.reload;
 		DefaultResourceLoader.prototype.reload = async function (this: DefaultResourceLoader) {
@@ -1277,8 +1275,6 @@ test(
 						if (progress?.awaitingRelease) firstStart.release();
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			});
 			assert.equal(disposing, true, "the abandoned session reached its held shutdown");

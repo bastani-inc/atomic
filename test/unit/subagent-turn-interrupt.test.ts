@@ -47,8 +47,6 @@ function launch(root: string, signal: AbortSignal) {
 			source = bound;
 		},
 		onExecution() {},
-		yieldTaskWait() {},
-		isParentObserving: () => false,
 	};
 	let settled = false;
 	const result = runSingleInProcess(root, agent(), "fix the picker", {
@@ -204,8 +202,6 @@ test(
 				source = bound;
 			},
 			onExecution() {},
-			yieldTaskWait() {},
-			isParentObserving: () => false,
 		};
 		let settled = false;
 		const run = runSingleInProcess(env.root, agent(), "run until stopped", {
@@ -254,8 +250,6 @@ test.each(["background work", "a queued message"] as const)(
 						source = bound;
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		}).finally(() => {
@@ -321,8 +315,6 @@ test(
 						source = bound;
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		}).finally(() => {
@@ -406,8 +398,6 @@ test(
 						});
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		}).finally(() => {
@@ -561,8 +551,6 @@ test.each(["initial", "woken", "fallback-end"] as const)(
 						});
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		}).finally(() => {

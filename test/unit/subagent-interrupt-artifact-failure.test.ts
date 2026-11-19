@@ -78,8 +78,6 @@ test.each(["unwritable", "writable"] as const)(
 						});
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		}).finally(() => {

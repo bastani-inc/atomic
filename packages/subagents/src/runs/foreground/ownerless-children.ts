@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentSource } from "../../agents/agent-types.js";
 import type { RunSyncOptions, SingleResult } from "../../shared/types.js";
 import { isExecutionTicket } from "../shared/parallel-utils.js";
+import { type AdmittedSubagentChild, admittedSubagentChild, recordSubagentAdmission } from "./released-child-resume.js";
 import {
 	claimRunWorktree,
 	holdRunWorktree,
@@ -17,6 +18,7 @@ import {
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
 	type SubagentChildStopStatus,
+	subagentChildId,
 	subagentChildInheritance,
 	subagentChildLaunch,
 	subagentChildModelChoice,
@@ -37,7 +39,11 @@ interface OwnerlessLaunch {
 	dispatched: boolean;
 }
 
-const liveLaunches = new Map<string, OwnerlessLaunch>();
+// An SDK launch stays live across extension evaluation; its stop and settlement remove it from this same table.
+const LIVE_LAUNCHES = Symbol.for("@bastani/subagents/live-sdk-launches@1");
+const processLaunches = globalThis as { [LIVE_LAUNCHES]?: Map<string, OwnerlessLaunch> };
+const liveLaunches = processLaunches[LIVE_LAUNCHES] ?? new Map<string, OwnerlessLaunch>();
+processLaunches[LIVE_LAUNCHES] = liveLaunches;
 
 export interface OwnerlessChildLaunch {
 	/** Stands in for the host's task id in the child's records. */
@@ -56,6 +62,14 @@ export type OwnerlessQueuedStart = (launch: {
 }) => OwnerlessChildLaunch;
 
 const stoppedQueued = new Map<string, OwnerlessQueuedStart>();
+
+/** The SDK children still live for this owner, including a launch whose first record has not been saved. */
+export function* liveOwnerlessAdmissions(ownerSessionId: string): Iterable<AdmittedSubagentChild> {
+	for (const launch of liveLaunches.values()) {
+		const admitted = admittedSubagentChild(launch, ownerSessionId);
+		if (admitted) yield admitted;
+	}
+}
 
 /** Whether this process runs the launch, queued or started. */
 export function isLiveOwnerlessChild(launchId: string): boolean {
@@ -272,6 +286,15 @@ export function runOwnerlessChild(input: {
 		undefined,
 		schedule ? subagentChildLaunch(input.task, undefined, input.options) : undefined,
 	);
+	if (input.recordChild.ownerSessionId !== undefined)
+		recordSubagentAdmission(launch, {
+			ownerSessionId: input.recordChild.ownerSessionId,
+			childId: subagentChildId(runId, index),
+			runId,
+			agent: input.agent,
+			taskId: launchId,
+			intercomTarget: input.options.intercomSessionName,
+		});
 	if (schedule) rememberSubagentChildSchedule(runId, index, schedule);
 	const result = (
 		schedule
