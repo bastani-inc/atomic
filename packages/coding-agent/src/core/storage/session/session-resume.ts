@@ -174,9 +174,12 @@ const BRANCH_CUSTOM_STATE_TYPES = new Set([
 	"event_subscription_child",
 	"intercom_released_reply_wait",
 ]);
+export function isBranchCustomState(customType: string | undefined): boolean {
+	return customType !== undefined && BRANCH_CUSTOM_STATE_TYPES.has(customType);
+}
 export function isSessionHistoryEntry(entry: SessionEntry): boolean {
 	if (entry.type === "message") return entry.message?.role !== "system";
-	if (entry.type === "custom") return !BRANCH_CUSTOM_STATE_TYPES.has(entry.customType);
+	if (entry.type === "custom") return !isBranchCustomState(entry.customType);
 	return !SESSION_STATE_TYPES.has(entry.type);
 }
 

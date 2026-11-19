@@ -1,5 +1,5 @@
 import { jsonParser, type Token } from "stream-json/core/parser.js";
-import type { SessionEntry } from "../../session-manager-types.js";
+import type { SessionEntry } from "../../session-manager-types.ts";
 import type { SqliteRow, SqliteValue } from "../database.js";
 import type { ForkMetadata } from "./fork-window.js";
 import type { SessionTreeOutlineEntry } from "./types.js";

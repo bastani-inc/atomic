@@ -1,4 +1,4 @@
-import { convertToLlm } from "./messages.js";
+import { convertToLlm } from "./messages.ts";
 import {
 	applyContextEdit,
 	buildContextEntries,

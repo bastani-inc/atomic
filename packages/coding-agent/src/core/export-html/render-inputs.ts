@@ -1,7 +1,7 @@
 import type { ToolCall, ToolResultMessage } from "@bastani/atomic-ai/compat";
-import type { SessionEntry } from "../session-manager.js";
+import type { SessionEntry } from "../session-manager.ts";
 import type { SessionHistoryPage } from "../storage/session/types.js";
-import type { ToolHtmlRenderer } from "./index.js";
+import type { ToolHtmlRenderer } from "./index.ts";
 
 const TEMPLATE_RENDERED_TOOLS = new Set(["bash", "read", "write", "edit", "ls"]);
 

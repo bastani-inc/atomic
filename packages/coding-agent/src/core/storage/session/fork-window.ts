@@ -1,7 +1,7 @@
-import { convertToLlm, VERBATIM_COMPACTION_PREFIX, verbatimRecallHint } from "../../messages.js";
+import { convertToLlm, VERBATIM_COMPACTION_PREFIX, verbatimRecallHint } from "../../messages.ts";
 import { buildSessionProjection, getBranchPath } from "../../session-manager-history.ts";
 import type { LabelEntry, ModelChangeEntry, SessionEntry } from "../../session-manager-types.ts";
-import { branchRanges, latestCompactionOf, type SessionResumeIndex } from "./session-resume.js";
+import { branchRanges, isBranchCustomState, latestCompactionOf, type SessionResumeIndex } from "./session-resume.js";
 import type { SessionForkWindow, SessionRecordHeader, SessionSnapshot, SessionStoredEntry } from "./types.js";
 
 export interface ForkMetadata {
@@ -100,9 +100,14 @@ async function modelPosition(index: SessionResumeIndex, before: readonly Range[]
 	return last?.[0];
 }
 
-/** A released memory session may not yet have rebuilt its branch index. Walk the captured watermark
- * backwards once; keep only the jumps and compaction links on this fork's path, never a decoded archive. */
-export async function locateMemoryFork(index: SessionResumeIndex, entryId: string, metadata: ReadMetadata) {
+/** A memory session or a concurrent database writer may not have rebuilt its branch index yet. Walk the
+ * captured watermark backwards once. When no index exists, also recover the setting positions on that path. */
+export async function locateFork(
+	index: SessionResumeIndex,
+	entryId: string,
+	metadata: ReadMetadata,
+	unindexed = false,
+) {
 	if (!index.needsBranchRebuild && index.lastId === entryId) return { index, leaf: index.seq };
 	let leaf = 0,
 		previous = 0,
@@ -111,12 +116,26 @@ export async function locateMemoryFork(index: SessionResumeIndex, entryId: strin
 		first = -1,
 		covered = -1;
 	const jumps: Array<readonly [number, number, number]> = [];
-	for (let end = index.seq; end > 0 && next !== null; ) {
+	const states: number[] = [];
+	let labels = false,
+		bindings = false;
+	for (let end = index.seq; end > 0 && (next !== null || unindexed); ) {
 		const start = Math.max(1, end - 63);
 		const page = await metadata(Array.from({ length: end - start + 1 }, (_, i) => start + i));
-		for (let i = page.length - 1; i >= 0 && next !== null; i--) {
+		for (let i = page.length - 1; i >= 0; i--) {
 			const m = page[i]!;
-			if (m.id !== next) continue;
+			if (unindexed && m.type === "label") labels = true;
+			if (next === null || m.id !== next) continue;
+			if (unindexed) {
+				if (m.type === "custom" && m.customType === "workspace_binding") bindings = true;
+				if (
+					m.type === "thinking_level_change" ||
+					m.type === "model_change" ||
+					m.type === "worktree_snapshot" ||
+					(m.type === "custom" && isBranchCustomState(m.customType))
+				)
+					states.push(m.seq);
+			}
 			if (!leaf) {
 				leaf = m.seq;
 				if (!index.needsBranchRebuild) return { index, leaf };
@@ -132,7 +151,13 @@ export async function locateMemoryFork(index: SessionResumeIndex, entryId: strin
 	}
 	if (previous > 1) jumps.push([previous, previous, 0]);
 	const compactions: SessionResumeIndex["compactions"] = point ? [[point.seq, first, covered]] : [];
-	return { leaf, index: { ...index, leafSeq: leaf, jumps: jumps.reverse(), compactions } };
+	states.reverse();
+	const state = unindexed ? states.map((seq, i) => (seq - (states[i - 1] ?? 0)).toString(36)).join(".") : index.state;
+	return {
+		leaf,
+		index: { ...index, leafSeq: leaf, jumps: jumps.reverse(), compactions, state },
+		extras: { labels, bindings },
+	};
 }
 
 export function fullForkWindow(snapshot: SessionSnapshot, entryId: string): SessionForkWindow | undefined {
@@ -150,7 +175,7 @@ export async function indexedForkWindow(
 	readMany: (seqs: readonly number[]) => Promise<readonly SessionStoredEntry[]>,
 	metadata: ReadMetadata,
 	scan: ScanForkRecords,
-	options?: { readonly archivedReceipts: true },
+	options?: { readonly archivedReceipts?: true; readonly labels?: boolean; readonly bindings?: boolean },
 ): Promise<SessionForkWindow | undefined> {
 	if (leafSeq <= 0) return undefined;
 	const ranges = branchRanges(index, leafSeq).reverse();
@@ -186,7 +211,8 @@ export async function indexedForkWindow(
 		if (anchor) rows.unshift(anchor);
 		const onEarlierBranch = (seq: number) => before.some(([lo, hi]) => seq >= lo && seq <= hi);
 		const wanted = options?.archivedReceipts ? new Set<string>() : namedOutputs(rows, header.id);
-		const bindings = Object.keys(index.latest).some((key) => key.startsWith("workspace_binding:"));
+		const bindings =
+			options?.bindings || Object.keys(index.latest).some((key) => key.startsWith("workspace_binding:"));
 		const keep = new Set<number>();
 		if (bindings || wanted.size) {
 			for await (const meta of scan(before, [
@@ -258,7 +284,7 @@ export async function indexedForkWindow(
 		return linked;
 	});
 	const labels = new Map<string, LabelEntry>();
-	const targets = new Set(entries.filter((e) => index.latest[`label:${e.id}`]).map((e) => e.id));
+	const targets = new Set(entries.filter((e) => options?.labels || index.latest[`label:${e.id}`]).map((e) => e.id));
 	if (targets.size) {
 		// Labels may have been set or cleared on another branch after launch. A replacement keeps its
 		// original place in the map; clearing and later setting the same label gives it a new place.

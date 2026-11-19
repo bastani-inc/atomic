@@ -166,6 +166,44 @@ test("a fork of a branched, released memory session reads the original cut witho
 	}
 });
 
+for (const laterTurns of [1, 2])
+	test(`a concurrent SQLite writer can start another branch and add ${laterTurns} turn(s) before a delayed fork takes its snapshot (#5500)`, async () => {
+		const dir = await mkdtemp(join(tmpdir(), "fork-writer-"));
+		const path = join(dir, "test.db"),
+			reader = await openNodeSqliteDatabase(path),
+			peer = await openNodeSqliteDatabase(path);
+		const source = await SqlSessionStore.open(reader),
+			other = await SqlSessionStore.open(peer);
+		try {
+			const parent = await SessionManager.create(source, process.cwd());
+			const root = await parent.appendMessage({ role: "user", content: "retired", timestamp: 1 });
+			await parent.appendThinkingLevelChange("high");
+			await parent.appendCompaction("cleared", null, 300, cleared);
+			await parent.appendMessage({ role: "user", content: "launch point", timestamp: 2 });
+			const expected = parent.buildSessionContext();
+			const launch = createForkContextResolver(parent, "fork");
+			const writer = await SessionManager.open(other, parent.getSessionId());
+			await writer.branch(root);
+			const begin = reader.transaction.bind(reader);
+			reader.transaction = async (op, options) => {
+				reader.transaction = begin;
+				for (let i = 0; i < laterTurns; i++)
+					await writer.appendMessage({ role: "user", content: `other branch ${i}`, timestamp: 3 + i });
+				return begin(op, options);
+			};
+			const child = await launch.sessionManagerForIndex(0);
+			assert.ok(child);
+			assert.deepEqual(child.buildSessionContext(), expected);
+			assert.equal(child.getEntry(root), undefined);
+		} finally {
+			await source.close();
+			await other.close();
+			await reader.close();
+			await peer.close();
+			await rm(dir, { recursive: true, force: true, maxRetries: 10 });
+		}
+	});
+
 test("a mentioned pre-clear tool output keeps its original opaque receipt bytes without copying unrelated messages (#5500, #5594)", async () => {
 	const store = new MemorySessionStore();
 	const parent = await SessionManager.create(store, process.cwd());

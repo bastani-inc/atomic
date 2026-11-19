@@ -1,4 +1,4 @@
-import type { SessionManager } from "../session-manager.js";
+import type { SessionManager } from "../session-manager.ts";
 import { chunkedForkLink } from "../storage/session/chunked-resume-projection.js";
 import { SessionConflictError, SessionNotFoundError } from "../storage/session/errors.js";
 import { historyChunks, historyPages } from "../storage/session/history-pages.js";

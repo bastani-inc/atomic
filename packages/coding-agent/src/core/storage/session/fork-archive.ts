@@ -1,5 +1,5 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
-import { assertSessionBlobStore, copySessionBlobs, sessionBlobHashes } from "../../session-tool-output.js";
+import { assertSessionBlobStore, copySessionBlobs, sessionBlobHashes } from "../../session-tool-output.ts";
 import { SessionConflictError } from "./errors.js";
 import { JsonlSessionStore } from "./jsonl-session-store.js";
 import type {

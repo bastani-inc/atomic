@@ -1,4 +1,4 @@
-import { createLabelEntry } from "../../session-manager-entries.js";
+import { createLabelEntry } from "../../session-manager-entries.ts";
 import { SessionEntryError } from "../../session-manager-errors.js";
 import { historyPages, readSessionHistoryChunks } from "./history-pages.js";
 import type { SessionForkRow, SessionForkStream, SessionHistoryItem, SessionStore } from "./types.js";
