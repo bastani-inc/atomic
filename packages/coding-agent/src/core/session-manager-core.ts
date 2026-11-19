@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { isProxy } from "node:util/types";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
@@ -96,6 +96,7 @@ import {
 	StorageUnavailableError,
 } from "./storage/session/errors.js";
 import { createForkArchive } from "./storage/session/fork-archive.js";
+import { forkScope, forkStoreRelation } from "./storage/session/fork-store-scope.js";
 import { firstHistoryCursor, historyChunks, historyPages } from "./storage/session/history-pages.js";
 import { bindSessionFile, JsonlSessionStore, withForkFileWindow } from "./storage/session/jsonl-session-store.js";
 import { SessionKeyDigests } from "./storage/session/key-digests.js";
@@ -145,7 +146,7 @@ async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 }
 
 type SelectedWindow = SessionResume & { readonly priorAnswer?: AssistantAnswer; readonly archiveOnlyEpoch?: true };
-type OpenedSession = { readonly resume: SelectedWindow };
+type OpenedSession = { readonly resume: SelectedWindow } | { readonly snapshot: SessionSnapshot };
 async function withPriorAnswer(store: SessionStore, resume: SelectedWindow): Promise<SelectedWindow> {
 	return Object.hasOwn(resume, "priorAnswer")
 		? resume
@@ -154,13 +155,20 @@ async function withPriorAnswer(store: SessionStore, resume: SelectedWindow): Pro
 async function readStoredSession(
 	store: SessionStore,
 	sessionId: string,
+	options: { readonly history?: "tail"; readonly leafId?: string } | undefined,
+): Promise<{ resume: SelectedWindow }>;
+async function readStoredSession(
+	store: SessionStore,
+	sessionId: string,
+	options: SessionOpenOptions | undefined,
+): Promise<OpenedSession>;
+async function readStoredSession(
+	store: SessionStore,
+	sessionId: string,
 	options: SessionOpenOptions | undefined,
 ): Promise<OpenedSession> {
-	if (options?.history !== undefined && options.history !== "tail") {
-		throw new TypeError(
-			'Session history: "full" has been removed. Use sessionManager.readHistory() to iterate older entries.',
-		);
-	}
+	// Kept for older SDK callers until the remaining built-in consumers have migrated to archive pages.
+	if (options?.history === "full") return { snapshot: await store.load(sessionId) };
 	if (!store.readResume || !store.readRange)
 		return {
 			resume: await (await import("./storage/session/snapshot-history.js")).snapshotWindow(
@@ -189,7 +197,7 @@ async function openSessionFileWindow(path: string, cwd: string | undefined, opti
 }
 
 function openedHeader(opened: OpenedSession): SessionRecordHeader {
-	return opened.resume.header;
+	return "snapshot" in opened ? opened.snapshot.header : opened.resume.header;
 }
 
 /** A custom entry written with a message, in the same store write (see `SessionManager.appendWithMessage`). */
@@ -315,6 +323,10 @@ export class SessionManager {
 	}
 
 	private restoreOpened(opened: OpenedSession, location?: string): void {
+		if ("snapshot" in opened) {
+			this.restore(opened.snapshot, location);
+			return;
+		}
 		const resume = opened.resume;
 		const held = [...resume.state, ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.restoreHistory(
@@ -648,9 +660,10 @@ export class SessionManager {
 			const { store, opened } = await openSessionFileWindow(path, this.cwd);
 			validateSessionFileEntries(
 				[
-					{ type: "session", ...opened.resume.header },
-					...opened.resume.state.map(({ entry }) => entry),
-					...opened.resume.branch.map(({ entry }) => entry),
+					{ type: "session", ...openedHeader(opened) },
+					...("snapshot" in opened
+						? opened.snapshot.entries
+						: [...opened.resume.state, ...opened.resume.branch].map(({ entry }) => entry)),
 				],
 				path,
 			);
@@ -803,11 +816,9 @@ export class SessionManager {
 			const result = await store.create(header, entries);
 			await copySessionBlobs(this.store, this.sessionId, store, this.sessionId, hashes);
 			const opened = await readStoredSession(store, this.sessionId, undefined);
-			if (
-				opened.resume.lastSeq !== result.lastSeq ||
-				(result.epoch !== undefined && opened.resume.epoch !== result.epoch)
-			)
-				throw new SessionConflictError(this.sessionId, result.lastSeq, opened.resume.lastSeq);
+			const restored = opened.resume;
+			if (restored.lastSeq !== result.lastSeq || (result.epoch !== undefined && restored.epoch !== result.epoch))
+				throw new SessionConflictError(this.sessionId, result.lastSeq, restored.lastSeq);
 			if (removeProvisionalRecord) await this.store.delete(this.sessionId);
 			this.store = store;
 			this.sessionDir = store instanceof JsonlSessionStore ? store.descriptor.location : "";
@@ -2224,25 +2235,54 @@ export class SessionManager {
 				: (sessionDir ?? (await resolveSessionStore(cwd)));
 		const directory = store instanceof JsonlSessionStore ? store.descriptor.location : "";
 		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
+			const source = this.store,
+				sessionId = this.sessionId,
+				epoch = this.historyEpoch,
+				through = this.lastSeq;
+			let relation = forkStoreRelation(source, store);
+			const a = forkScope(source),
+				b = forkScope(store);
+			if (relation === "unknown" && a?.kind === "jsonl" && b?.kind === "jsonl") {
+				const { realpath, stat } = await import("node:fs/promises");
+				try {
+					const [pa, pb] = await Promise.all([realpath(a.directory), realpath(b.directory)]);
+					const [sa, sb] = await Promise.all([stat(pa, { bigint: true }), stat(pb, { bigint: true })]);
+					if (sa.dev === sb.dev && sa.ino === sb.ino && sa.ino !== 0n)
+						relation = a.exact === b.exact ? "same" : "unknown";
+					else {
+						const outside = (p: string) => isAbsolute(p) || p === ".." || p.startsWith(`..${sep}`);
+						if ((a.exact && b.exact) || (outside(relative(pa, pb)) && outside(relative(pb, pa))))
+							relation = "different";
+					}
+				} catch {
+					/* A failed identity check is not evidence that private history belongs to another collection. */
+				}
+			}
+			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: sessionId });
 			const receipts = new Map<string, OversizedSessionEntry>();
-			const source = {
-				store: this.store,
-				sessionId: this.sessionId,
-				epoch: this.historyEpoch,
-				entries: await this.forkWindow(this.getBranch(), this.getLeafId(), "session", receipts),
-			};
-			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: source.sessionId });
-			manager.markForkOrigin(source.store);
-			const hashes = sessionBlobHashes(source.store, source.entries);
+			const data =
+				relation === "different"
+					? await this.forkWindow(this.getBranch(), this.getLeafId(), "session", receipts)
+					: (await import("./storage/session/branch-fork-source.js")).completeSessionForkStream(
+							sessionId,
+							epoch,
+							through,
+						);
+			if (relation === "different") manager.markForkOrigin(source);
+			const hashes = "read" in data ? [] : sessionBlobHashes(source, data);
 			assertSessionBlobStore(store, manager.sessionId, hashes.length);
-			await createForkArchive(
+			const reader = relation === "same" && a?.kind === "sql" ? store : source;
+			const created = await createForkArchive(
 				store,
 				manager.recordHeader(),
-				source.entries,
-				{ store: source.store, sessionId: source.sessionId, epoch: source.epoch, hashes, receipts },
+				data,
+				{ store: reader, sessionId, epoch, hashes, receipts },
 				manager.sessionFile,
 			);
-			manager.restoreOpened(await readStoredSession(store, manager.sessionId, undefined), manager.sessionFile);
+			const opened = await readStoredSession(store, manager.sessionId, undefined);
+			if (created.epoch !== undefined && opened.resume.epoch !== created.epoch)
+				throw new SessionConflictError(manager.sessionId, created.lastSeq, opened.resume.lastSeq);
+			manager.restoreOpened(opened, manager.sessionFile);
 			return manager;
 		});
 	}

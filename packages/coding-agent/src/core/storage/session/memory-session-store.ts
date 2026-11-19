@@ -12,13 +12,13 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { registerForkScope } from "./fork-store-scope.js";
 import { readSessionHistoryChunks } from "./history-pages.js";
 import {
 	foldSessionResume,
 	foreignResumeIds,
 	isSessionResumeIndex,
 	latestCompactionOf,
-	refoldSessionResume,
 	resumeIndexNeedsRefold,
 	type SessionResumeIndex,
 	selectResumeLeaf,
@@ -272,6 +272,7 @@ export class MemorySessionStore implements SessionStore {
 
 	constructor(cwdMatcher?: SessionCwdMatcher, historyFiles?: SessionHistoryFiles) {
 		this.cwdMatcher = cwdMatcher;
+		registerForkScope(this, () => ({ kind: "memory", backing: this.records }));
 		if (historyFiles !== undefined) this.spill = new SpillDirectory(historyFiles);
 	}
 
@@ -437,12 +438,41 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	private async resumeIndex(sessionId: string, record: StoredSession): Promise<SessionResumeIndex | undefined> {
-		if (isSessionResumeIndex(record.index, record.lastSeq)) return record.index;
-		const snapshot = await this.decode(sessionId, record);
-		if (snapshot === undefined || this.records.get(sessionId) !== record || record.lastSeq !== snapshot.lastSeq)
-			return undefined;
-		record.index = refoldSessionResume(record.index, snapshot.entries);
-		return record.index;
+		const previous = record.index;
+		if (isSessionResumeIndex(previous, record.lastSeq)) return previous;
+		const held = this.held(record),
+			epoch = record.index.epoch;
+		const rebuilt = await this.whileHeld(sessionId, record, held, async () => {
+			const source = this.resumeFields(sessionId, held);
+			let index = foldSessionResume(undefined, []),
+				extra = 0;
+			const positions = new Map<string, number>();
+			for await (const page of branchStatePages(held.lastSeq, source, (count) => {
+				extra += count;
+			})) {
+				index = foldSessionResume(
+					index,
+					page.map((row) => row.entry),
+					(id) => positions.get(id),
+					() => true,
+				);
+				for (const { seq, entry } of page) positions.set(entry.id, seq);
+			}
+			positions.clear();
+			if (index.jumps.length)
+				index = await selectResumeLeaf(index, index.leafSeq, branchStatePages(held.lastSeq, source));
+			return { ...index, epoch, totals: { ...index.totals, toolCalls: index.totals.toolCalls + extra } };
+		});
+		if (
+			!rebuilt ||
+			this.records.get(sessionId) !== record ||
+			record.lastSeq !== held.lastSeq ||
+			record.file !== held.file ||
+			record.index.epoch !== epoch
+		)
+			return;
+		record.index = rebuilt;
+		return rebuilt;
 	}
 
 	/** Add an append's chunk to the session's buffers. A merge that fails leaves them as they were. */
@@ -650,6 +680,26 @@ export class MemorySessionStore implements SessionStore {
 		}
 	}
 
+	private resumeFields(sessionId: string, held: HeldBytes): Parameters<typeof branchStatePages>[1] {
+		return {
+			bytes: (seq) => {
+				const [start, end] = this.spanOf(held, seq, seq);
+				return end - start;
+			},
+			read: async (seqs) => {
+				const [start, end] = this.spanOf(held, seqs[0]!, seqs.at(-1)!);
+				return this.parseRun(sessionId, held, await this.bytesOf(sessionId, held, start, end)).map((entry, i) => ({
+					seq: seqs[i]!,
+					entry,
+				}));
+			},
+			chunk: (seq, offset, length) => {
+				const start = this.spanOf(held, seq, seq)[0] + offset;
+				return this.bytesOf(sessionId, held, start, start + length);
+			},
+		};
+	}
+
 	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
 		for (;;) {
@@ -664,22 +714,7 @@ export class MemorySessionStore implements SessionStore {
 					throw new TypeError(
 						"A released session history directory must implement readRange to resume a historical branch",
 					);
-				const pages = branchStatePages(index.seq, {
-					bytes: (seq) => {
-						const [start, end] = this.spanOf(held, seq, seq);
-						return end - start;
-					},
-					read: async (seqs) => {
-						const [start, end] = this.spanOf(held, seqs[0]!, seqs.at(-1)!);
-						return this.parseRun(sessionId, held, await this.bytesOf(sessionId, held, start, end)).map(
-							(entry, i) => ({ seq: seqs[i]!, entry }),
-						);
-					},
-					chunk: (seq, offset, length) => {
-						const start = this.spanOf(held, seq, seq)[0] + offset;
-						return this.bytesOf(sessionId, held, start, start + length);
-					},
-				});
+				const pages = branchStatePages(index.seq, this.resumeFields(sessionId, held));
 				const base = index;
 				const selected = await this.whileHeld(sessionId, record, held, () =>
 					selectResumeLeaf(base, leafSeq, pages),

@@ -94,7 +94,7 @@ test.each(["memory", "sqlite", "jsonl"])(
 					);
 				return result;
 			};
-			const child = await parent.forkTo(dir, store);
+			const child = await parent.captureFork(parent.getLeafId()!)();
 			assert.equal(child.getEntry(receipt), undefined);
 			await store.delete(parent.getSessionId());
 			let found = false;
@@ -211,7 +211,7 @@ test("a fork keeps an archived receipt after its original settings, including wh
 			},
 		});
 		await parent.appendMessage({ role: "user", content: `Inspect ${saved.location}`, timestamp: 2 });
-		const child = await parent.forkTo(process.cwd(), store);
+		const child = await parent.captureFork(parent.getLeafId()!)();
 		const earlier = await SessionManager.open(store, child.getSessionId(), process.cwd(), { leafId: receipt });
 		assert.deepEqual(earlier.buildSessionContext().model, { provider: "anthropic", modelId: "chosen" });
 		assert.equal(earlier.buildSessionContext().thinkingLevel, "high");

@@ -5,6 +5,7 @@ import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 import type { SqliteDatabase } from "../database.js";
 import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
+import { inheritForkScope } from "./fork-store-scope.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
 import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
 import { findSessionCompaction, readSessionTail, sessionRangeOf } from "./session-resume.js";
@@ -65,6 +66,7 @@ export class LegacySessionStore implements SessionStore {
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
+		inheritForkScope(this, inner);
 		this.legacyDirectory = options.legacyDirectory;
 		this.databasePath = options.databasePath;
 		const { putBlob, getBlob, readForkWindow } = inner;

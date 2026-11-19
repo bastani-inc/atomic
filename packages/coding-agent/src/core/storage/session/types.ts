@@ -153,6 +153,8 @@ export interface SessionTreeOutlineEntry {
 	readonly type: SessionEntry["type"];
 	readonly role?: string;
 	readonly hideAssistant?: boolean;
+	/** Addresses only; the arguments for a visible result are read from its call on demand. */
+	readonly callIds?: readonly string[];
 	readonly leafMove?: boolean;
 	readonly labelTarget?: string;
 	readonly label?: string;
@@ -383,6 +385,8 @@ export interface SessionForkRow {
 	readonly inlineSnapshot?: true;
 }
 export interface SessionForkStream {
+	/** A whole saved session in append order, with sibling branches and labels unchanged. */
+	readonly kind?: "complete-session";
 	/** The reader is bound to the writing transaction when both sides use the same SQL connection. */
 	read(
 		reader: SessionStore,

@@ -45,11 +45,20 @@ test("RPC pages a compacted session's saved entries without putting them back in
 	});
 	try {
 		const held = manager.getEntryCount();
+		const window = await handle({ type: "get_entries" });
+		assert.ok(window?.success && window.command === "get_entries");
+		assert.deepEqual(window.data, { entries: manager.getEntries(), leafId: manager.getLeafId() });
+		const tree = await handle({ type: "get_tree" });
+		assert.ok(tree?.success && tree.command === "get_tree");
+		assert.deepEqual(tree.data, { tree: manager.getTree(), leafId: manager.getLeafId() });
+		const prompts = await handle({ type: "get_fork_messages" });
+		assert.ok(prompts?.success && prompts.command === "get_fork_messages");
+		assert.deepEqual(prompts.data, { messages: [] });
 		const received: string[] = [];
 		let cursor: string | undefined;
 		do {
-			const result = await handle({ type: "get_entries", cursor });
-			assert.ok(result?.success && result.command === "get_entries");
+			const result = await handle({ type: "get_history_page", cursor });
+			assert.ok(result?.success && result.command === "get_history_page");
 			assert.equal(manager.getEntryCount(), held, "the RPC reader hydrated old messages");
 			const { items, nextCursor } = result.data;
 			assert.ok(items.length > 0 && items.length <= SESSION_HISTORY_PAGE_ENTRIES);

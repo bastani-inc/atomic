@@ -302,7 +302,7 @@ describe("interactive engine resource readiness", () => {
 				type: "response",
 				command: "get_entries",
 				success: true,
-				data: { items: [], leafId: null },
+				data: { entries: [], leafId: null },
 			});
 			const view = await handle({ id: "window", type: "get_context_window" });
 			assert.ok(view?.success && view.command === "get_context_window");

@@ -1522,7 +1522,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				let last = 0;
 				let cursor: string | undefined = privateArchive.cursor;
 				do {
-					const page: RpcHistoryPage = await this.client.getEntries({ cursor });
+					const page: RpcHistoryPage = await this.client.getHistoryPage({ cursor });
 					const batch: SessionEntry[] = [];
 					for (const item of page.items) {
 						if (item.seq !== last + batch.length + 1) throw new Error("Incomplete unsaved engine history");

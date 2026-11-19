@@ -52,7 +52,7 @@ export interface NewSessionOptions {
 }
 
 export interface SessionOpenOptions {
-	readonly history?: "tail";
+	readonly history?: "tail" | "full";
 	/** The entry to resume from instead of the current leaf. */
 	readonly leafId?: string;
 }

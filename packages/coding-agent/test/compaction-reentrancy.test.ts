@@ -720,7 +720,8 @@ describe("manual compaction re-entrancy", () => {
 		expect(second.backend).toBe("extension");
 		expect(gate.calls).toEqual(["manual", "manual"]);
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(2);
-		expect(boundaryCount(harness)).toBe(2);
+		const saved = await harness.sessionManager.getSessionStore().load(harness.sessionManager.getSessionId());
+		expect(saved.entries.filter((entry) => entry.type === "compaction")).toHaveLength(2);
 	});
 	test("records and clears the active reason for manual and automatic compaction", async () => {
 		const manualGate = createGate();
@@ -804,7 +805,7 @@ describe("manual compaction re-entrancy", () => {
 		}
 		assert.equal((await navigation).cancelled, false);
 		// The first entry is a user message; navigation restores it to the editor.
-		assert.equal(harness.sessionManager.getLeafId(), harness.sessionManager.getEntry(targetId)?.parentId);
+		assert.equal(harness.sessionManager.getLeafId(), (await harness.sessionManager.readEntry(targetId))?.parentId);
 		assert.equal(harness.session.compactionReason, undefined);
 	});
 });

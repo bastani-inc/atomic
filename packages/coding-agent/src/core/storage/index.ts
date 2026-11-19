@@ -90,13 +90,28 @@ export {
 	type TeamStorageSelection,
 	teamProfileSelection,
 } from "./selection.js";
-export {
-	type ExpandedChildCall,
-	type ExpandedChildDetails,
-	readExpandedChildDetails,
-	readSavedChildLaunch,
-} from "./session/expanded-child-details.js";
-export { readSessionHistory, readSessionHistoryChunks } from "./session/history-pages.js";
+export type { ExpandedChildCall, ExpandedChildDetails } from "./session/expanded-child-details.js";
+export async function readExpandedChildDetails(
+	...args: Parameters<typeof import("./session/expanded-child-details.js").readExpandedChildDetails>
+) {
+	return (await import("./session/expanded-child-details.js")).readExpandedChildDetails(...args);
+}
+export async function readSavedChildLaunch(
+	...args: Parameters<typeof import("./session/expanded-child-details.js").readSavedChildLaunch>
+) {
+	return (await import("./session/expanded-child-details.js")).readSavedChildLaunch(...args);
+}
+// Ordinary storage setup does not open a transcript reader or import its encoders.
+export async function* readSessionHistory(
+	...args: Parameters<typeof import("./session/history-pages.js").readSessionHistory>
+) {
+	yield* (await import("./session/history-pages.js")).readSessionHistory(...args);
+}
+export async function* readSessionHistoryChunks(
+	...args: Parameters<typeof import("./session/history-pages.js").readSessionHistoryChunks>
+) {
+	yield* (await import("./session/history-pages.js")).readSessionHistoryChunks(...args);
+}
 export type {
 	OversizedSessionEntry,
 	SessionBlob,
@@ -122,11 +137,6 @@ export type {
 	SessionStoredEntry,
 	SessionTail,
 	SessionUsageTotals,
-} from "./session/types.js";
-export {
-	SESSION_HISTORY_CHUNK_BYTES,
-	SESSION_HISTORY_PAGE_BYTES,
-	SESSION_HISTORY_PAGE_ENTRIES,
 } from "./session/types.js";
 export * from "./sqlite-facade.js";
 export type {

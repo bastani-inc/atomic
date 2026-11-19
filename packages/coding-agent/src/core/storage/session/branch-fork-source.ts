@@ -9,6 +9,27 @@ async function forkRow(reader: SessionStore, item: SessionHistoryItem): Promise<
 	return { ...(await forkSeedFields(() => readSessionHistoryChunks(reader, item))), reference: item };
 }
 
+/** The SDK/CLI same-store clone keeps the original append log, including abandoned branches,
+ * raw labels and recorded leaf moves. Unlike an interactive /fork it never edits structural links. */
+export function completeSessionForkStream(id: string, epoch: string | undefined, through: number): SessionForkStream {
+	return {
+		kind: "complete-session",
+		async *read(reader, _hasWritten, inlineSnapshot) {
+			for await (const { items } of historyPages(reader, id, epoch, through, {}))
+				for (const item of items) {
+					if ("kind" in item && inlineSnapshot) {
+						const entry = await inlineSnapshot(item);
+						if (entry) {
+							yield { entry, reference: item, inlineSnapshot: true };
+							continue;
+						}
+					}
+					yield await forkRow(reader, item);
+				}
+		},
+	};
+}
+
 /** A human /fork is an archive of the complete selected path. Keep original IDs and chronological
  * order, remove historical label operations and append each copied target's latest label as main did. */
 export function humanForkStream(
