@@ -1,6 +1,6 @@
 import type {
+	PackageDiscovery,
 	PathMetadata,
-	ResolvedPaths,
 	ResolvedResource,
 	ResourceAccumulator,
 	ResourceMap,
@@ -33,7 +33,7 @@ export function createAccumulator(): ResourceAccumulator {
 	};
 }
 
-export async function toResolvedPaths(accumulator: ResourceAccumulator): Promise<ResolvedPaths> {
+export async function toResolvedPaths(accumulator: ResourceAccumulator): Promise<PackageDiscovery> {
 	const mapToResolved = async (entries: ResourceMap): Promise<ResolvedResource[]> => {
 		const resolved = Array.from(entries.entries()).map(([path, { metadata, enabled }]) => ({
 			path,
