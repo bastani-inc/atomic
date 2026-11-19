@@ -25,9 +25,9 @@ import {
 	scheduleSnapshotCollection,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/src/core/worktree-snapshot/settings.ts";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
 import { countingDatabase } from "../helpers/counting-database.js";
+import type { LegacyRunKey as Lease } from "../helpers/legacy-snapshot-rows.js";
+import { LegacySnapshotRows } from "../helpers/legacy-snapshot-rows.js";
 import {
 	ageBlobs,
 	checkpointEvent,
@@ -63,12 +63,11 @@ async function openDatabase(): Promise<SqliteDatabase> {
 /** The session store and run journal of `database`; both close with the test. */
 async function openStores(database: SqliteDatabase) {
 	const sessions = await SqlSessionStore.open(database);
-	const journal = await SqlRunJournal.open(database);
+	const journal = await LegacySnapshotRows.open(database);
 	let closed = false;
 	const close = async () => {
 		if (closed) return;
 		closed = true;
-		await journal.close();
 		await sessions.close();
 	};
 	closers.push(close);
@@ -342,9 +341,8 @@ test("stores under a storage prefix index and collect their own tables only (#43
 	const database = await openDatabase();
 	const plain = await openStores(database);
 	const sessions = await SqlSessionStore.open(database, { prefix: "team_" });
-	const journal = await SqlRunJournal.open(database, { prefix: "team_" });
+	const journal = await LegacySnapshotRows.open(database, { prefix: "team_" });
 	closers.push(async () => {
-		await journal.close();
 		await sessions.close();
 	});
 	// A checkpoint records its snapshots only while their blobs are stored (#5077).

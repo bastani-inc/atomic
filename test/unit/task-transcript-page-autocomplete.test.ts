@@ -16,9 +16,7 @@ import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/i
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createHarness, getUserTexts } from "../../packages/coding-agent/test/suite/harness.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
-import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
-import { runStageTaskAction, snapshotStageTasks } from "../../packages/workflows/src/workers/stage-watch-tasks.js";
-import type { PooledTaskAction, PooledTaskReply } from "../../packages/workflows/src/workers/stage-watch-types.js";
+
 import { writeFileEnsuringDir } from "../helpers/runtime.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
@@ -107,14 +105,6 @@ async function openChat(
 }
 
 /** The root's view of a stage's tasks on a local worker: every action crosses the process boundary as JSON. */
-function throughWorker(worker: TaskViewSource): TaskViewSource {
-	const root = new PooledStageTaskSource(async (taskId, action) => {
-		const crossed = JSON.parse(JSON.stringify(action)) as PooledTaskAction;
-		return JSON.parse(JSON.stringify(await runStageTaskAction(worker, taskId, crossed))) as PooledTaskReply;
-	});
-	root.apply(JSON.parse(JSON.stringify(snapshotStageTasks(worker))));
-	return root;
-}
 
 const screen = (page: TaskAgentTranscriptPage) =>
 	page
@@ -198,25 +188,6 @@ test("a subagent chat sends a command naming no skill of the subagent as typed (
 		page.handleInput(ENTER);
 		await vi.waitFor(() => assert.deepEqual(sent, ["/skill:not-a-skill check the notes"]));
 		assert.doesNotMatch(screen(page), /not-a-skill.*(?:not found|unknown)|Error/i);
-	} finally {
-		page.dispose();
-	}
-});
-
-test("a chat of a subagent launched by a stage on a local worker completes and expands from that subagent (#4755)", async () => {
-	const sent: string[] = [];
-	const page = await openChat(true, sent, childCommands, throughWorker);
-	try {
-		type(page, "/skill:de");
-		await vi.waitFor(() => assert.match(screen(page), /❯ skill:demo-skill\s+\[p\] Demo skill/));
-		page.handleInput(TAB);
-		await vi.waitFor(() => assert.match(screen(page), /^❯ \/skill:demo-skill\s*$/m));
-		type(page, "go");
-		page.handleInput(ENTER);
-		await vi.waitFor(() => assert.equal(sent.length, 1));
-		assert.match(sent[0]!, /^<skill name="demo-skill"[\s\S]*DEMO SKILL BODY\.[\s\S]*\n\ngo$/);
-		type(page, "@child-only");
-		await vi.waitFor(() => assert.match(screen(page), /child-only-notes\.txt/));
 	} finally {
 		page.dispose();
 	}

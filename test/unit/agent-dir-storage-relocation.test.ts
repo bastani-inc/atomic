@@ -21,7 +21,7 @@ import {
 	storagePathBaseDir,
 } from "../../packages/coding-agent/src/core/storage/file-identity.js";
 import { collectStorageStatus } from "../../packages/coding-agent/src/core/storage/storage-status.js";
-import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 let root: string;
@@ -636,18 +636,8 @@ test.each([
 	});
 	await sessions.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
 	await sessions.close();
-	const journal = await resolveRunJournal({
-		agentDir: agent,
-		journal: { path: join(original, "workflows", "journal.sqlite") },
-	});
-	await journal.createRun({
-		runId: "relative-jsonl-run",
-		name: "wf",
-		cwd: root,
-		createdAt: 1,
-		status: "completed",
-	});
-	await journal.close();
+	mkdirSync(join(original, "workflows"), { recursive: true });
+	writeFileSync(join(original, "workflows", "journal.sqlite"), "");
 	if (operation === "move-then-rename-after-other-profile") {
 		const sibling = join(original, "a2");
 		mkdirSync(sibling);
@@ -694,12 +684,6 @@ test.each([
 	} finally {
 		await restoredSessions.close();
 	}
-	const restoredJournal = await resolveRunJournal({ agentDir: current, settings });
-	try {
-		assert.equal((await restoredJournal.getRun("relative-jsonl-run"))?.runId, "relative-jsonl-run");
-	} finally {
-		await restoredJournal.close();
-	}
 });
 
 test("a copied-and-moved parent with outward relative targets still retains its default history (#5242)", () => {
@@ -724,7 +708,7 @@ test("a copied-and-moved parent with outward relative targets still retains its 
 });
 
 test.each(["copy-before-move", "copy-after-move"])(
-	"an adopter keeps session and workflow history with %s when its parent's filesystem identities change (#5242)",
+	"an adopter keeps session history with %s when its parent's filesystem identities change (#5242)",
 	async (operation) => {
 		const original = join(root, "cloned-parent");
 		const moved = join(root, "moved-cloned-parent");
@@ -737,12 +721,6 @@ test.each(["copy-before-move", "copy-after-move"])(
 		});
 		await sessions.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
 		await sessions.close();
-		const journal = await resolveRunJournal({
-			agentDir: agent,
-			journal: { path: join(original, "workflows", "journal.sqlite") },
-		});
-		await journal.createRun({ runId: "cloned-parent-run", name: "wf", cwd: root, createdAt: 1, status: "completed" });
-		await journal.close();
 		assert.equal(defaultSessionDatabasePath(agent, {}), join(original, "workflows", "journal.sqlite"));
 		if (operation === "copy-before-move") cpSync(agent, join(original, "a1-backup"), { recursive: true });
 		cpSync(original, moved, { recursive: true });
@@ -761,12 +739,6 @@ test.each(["copy-before-move", "copy-after-move"])(
 			assert.equal((await restoredSessions.readHeader(sessionId))?.id, sessionId);
 		} finally {
 			await restoredSessions.close();
-		}
-		const restoredJournal = await resolveRunJournal({ agentDir: current, settings: {} });
-		try {
-			assert.equal((await restoredJournal.getRun("cloned-parent-run"))?.runId, "cloned-parent-run");
-		} finally {
-			await restoredJournal.close();
 		}
 	},
 );
@@ -806,7 +778,7 @@ test.each(["copy-before-rename", "copy-after-rename", "copy-to-old-name"])(
 );
 
 test.each(["backup", "old-name"])(
-	"a moved adopter keeps session and workflow history after running, renaming and creating a %s copy (#5242)",
+	"a moved adopter keeps session history after running, renaming and creating a %s copy (#5242)",
 	async (copy) => {
 		const original = join(root, "move-rename-parent");
 		const moved = join(root, "moved-rename-parent");
@@ -819,12 +791,6 @@ test.each(["backup", "old-name"])(
 		});
 		await sessions.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
 		await sessions.close();
-		const journal = await resolveRunJournal({
-			agentDir: agent,
-			journal: { path: join(original, "workflows", "journal.sqlite") },
-		});
-		await journal.createRun({ runId: "move-rename-run", name: "wf", cwd: root, createdAt: 1, status: "completed" });
-		await journal.close();
 		assert.equal(defaultSessionDatabasePath(agent, {}), join(original, "workflows", "journal.sqlite"));
 		cpSync(original, moved, { recursive: true });
 		rmSync(original, { recursive: true });
@@ -845,12 +811,6 @@ test.each(["backup", "old-name"])(
 			assert.equal((await restoredSessions.readHeader(sessionId))?.id, sessionId);
 		} finally {
 			await restoredSessions.close();
-		}
-		const restoredJournal = await resolveRunJournal({ agentDir: renamed, settings: {} });
-		try {
-			assert.equal((await restoredJournal.getRun("move-rename-run"))?.runId, "move-rename-run");
-		} finally {
-			await restoredJournal.close();
 		}
 	},
 );

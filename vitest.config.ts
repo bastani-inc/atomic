@@ -5,22 +5,10 @@ import { TEST_TIMEOUT_MS } from "./test/helpers/test-timeout.js";
 
 export { TEST_TIMEOUT_MS };
 
-/**
- * `bunfig.toml`'s `[test] preload` moved here verbatim. The file registers one
- * `beforeEach` installing a fresh in-memory durable backend, and needs no edit:
- * its `beforeEach` import resolves through the `bun:test` alias.
- */
 const setupFiles = [
-	"./test/setup-workflow-durability.ts",
 	"./test/helpers/provider-rate-limit-isolation.ts",
 	"./test/helpers/checkout-snapshot-isolation.ts",
 ];
-
-/**
- * Integration tests start local workers from the shipped bundle, not by transpiling the workflow sources through jiti in
- * every coordinator and worker process; the file explains why. Unit tests keep the source loader.
- */
-const packagedWorkerSetup = "./test/setup-packaged-local-worker.ts";
 
 /**
  * Global setups run once per project in the orchestrator process, before any
@@ -33,9 +21,7 @@ const packagedWorkerSetup = "./test/setup-packaged-local-worker.ts";
  * credentials and endpoints, so a developer's shell cannot make a provider
  * available to tests that expect only their fixtures' providers.
  *
- * `global-setup-workflow-artifacts` creates the per-run workflow-artifact
- * directory that `setup-workflow-durability` points workers at, and removes it
- * in teardown. It runs for all three projects.
+ * `global-setup-test-directory` creates the per-run directory where workers keep isolated agent homes.
  *
  * `global-setup-natives` builds `@bastani/atomic-natives` only when no
  * compiled binding exists, because a missing binding no longer degrades
@@ -49,7 +35,7 @@ const lostWorkersSetup = "./test/global-setup-lost-workers.ts";
 const herdrSetup = "./test/global-setup-herdr-isolation.ts";
 const providerCredentialSetup = "./test/global-setup-provider-credential-isolation.ts";
 const debugSetup = "./test/global-setup-debug-isolation.ts";
-const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
+const directorySetup = "./test/global-setup-test-directory.ts";
 const nativeSetup = "./test/global-setup-natives.ts";
 
 const project = (
@@ -58,7 +44,6 @@ const project = (
 	options: {
 		readonly exclude?: readonly string[];
 		readonly groupOrder?: number;
-		readonly extraSetupFiles?: readonly string[];
 	} = {},
 ) => ({
 	resolve: { alias: sharedAliases },
@@ -73,28 +58,19 @@ const project = (
 		include: [include],
 		exclude: ["**/node_modules/**", ...(options.exclude ?? [])],
 		sequence: { groupOrder: options.groupOrder ?? 0 },
-		setupFiles: [...setupFiles, ...(options.extraSetupFiles ?? [])],
-		globalSetup: [lostWorkersSetup, herdrSetup, providerCredentialSetup, debugSetup, artifactSetup, nativeSetup],
+		setupFiles,
+		globalSetup: [lostWorkersSetup, herdrSetup, providerCredentialSetup, debugSetup, directorySetup, nativeSetup],
 		testTimeout: TEST_TIMEOUT_MS,
 		hookTimeout: TEST_TIMEOUT_MS,
 	},
 });
-
-/**
- * The pool load gate measures the root's main-thread lag under 150 busy workers against fixed bounds, so other files
- * running beside it would be measured too: with sharding's longest-first order it started beside about five other
- * pool files, and its p99 lag reached 105.6 ms of its 100 ms bound (run 40577049870). It is its own project with a
- * later `groupOrder`, so vitest runs it after every other integration file of the run (or shard) has finished, with
- * nothing beside it. `npm run test:integration` selects it with the integration and UI gate projects.
- */
-const loadGate = "test/integration/workflow-pool-load-gate.test.ts";
 
 const uiGate = "test/integration/interactive-event-loop-guard.test.ts";
 
 /**
  * One project per suite directory, so the CI job split and the
  * diagnostics artifact names all survive the move off `bun test <dir>`
- * unchanged, plus the two integration gates on their own (above).
+ * unchanged, plus the interactive event-loop gate on its own.
  *
  * All projects use native setup: the CI project now executes the minified
  * extension/native binary boundary instead of limiting itself to source inspection.
@@ -110,11 +86,9 @@ export default defineConfig({
 		projects: [
 			project("unit", "test/unit/**/*.test.ts"),
 			project("integration", "test/integration/**/*.test.ts", {
-				exclude: [loadGate, uiGate],
-				extraSetupFiles: [packagedWorkerSetup],
+				exclude: [uiGate],
 			}),
-			project("integration-load-gate", loadGate, { groupOrder: 1 }),
-			project("integration-ui-gate", uiGate, { groupOrder: 2 }),
+			project("integration-ui-gate", uiGate, { groupOrder: 1 }),
 			project("ci", "test/ci/**/*.test.ts"),
 		],
 	},

@@ -24,7 +24,7 @@ import {
 import { restoreWorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/restore.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/src/core/worktree-snapshot/settings.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
-import { snapshotRestore } from "../../packages/workflows/src/workers/snapshot-restore.ts";
+
 import { replaceEnvironmentVariable } from "../helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
@@ -70,11 +70,6 @@ async function recordedSnapshot(): Promise<{ snapshot: WorktreeSnapshot; clone: 
 }
 
 /** `env` without its unset variables, as a worker host's git carries it. */
-function definedEnv(env: Readonly<NodeJS.ProcessEnv> | undefined): Record<string, string> {
-	return Object.fromEntries(
-		Object.entries(env ?? {}).filter((entry): entry is [string, string] => entry[1] !== undefined),
-	);
-}
 
 /** The administrative directories Git keeps for the worktrees of the one object store under `storeDir`. */
 function worktreeGitDirs(storeDir: string): string[] {
@@ -103,30 +98,6 @@ test("a pooled session resume under a 120-character agent directory restores and
 		[true],
 	);
 	const lease = await acquireWorkspaceWriterLease({ worktree: root }, { owner: "resumed session" });
-	await lease.release();
-});
-
-test("a pooled workflow's restore under a 120-character agent directory restores and leases its worktree (#5139)", async () => {
-	const agentDir = agentDirOf(120);
-	const { snapshot } = await recordedSnapshot();
-	// The restore port a worker host on the shared pool runs, into worktrees under its agent directory.
-	const restore = snapshotRestore({
-		recorded: async () => [snapshot],
-		blobs: store.snapshotBlobs,
-		storeDir: join(agentDir, "worktree-snapshots"),
-		git: { path: sandbox.executable.path, env: definedEnv(sandbox.executable.env) },
-	});
-
-	const restored = await restore(
-		{ remotes: [...snapshot.remotes], head: snapshot.head, tree: snapshot.tree, envHash: snapshot.envHash },
-		{ signal: new AbortController().signal, snapshot },
-	);
-
-	const path = typeof restored === "string" ? restored : restored.path;
-	assert.equal(readFileSync(join(path, "file.txt"), "utf8"), "recorded\n");
-	// A workspace-write stage takes the worktree's writer lease, a SQLite database in its Git directory.
-	const lease = await acquireWorkspaceWriterLease({ worktree: path }, { owner: "run/stage" });
-	assert.ok(existsSync(lease.lockFile));
 	await lease.release();
 });
 

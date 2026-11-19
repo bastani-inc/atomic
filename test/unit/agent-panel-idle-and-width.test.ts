@@ -21,9 +21,6 @@ import {
 	bindAgentPanel,
 	setAgentPanelVisible,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 
 const plain: AgentPanelStyle = {
 	dim: (text) => text,
@@ -170,26 +167,6 @@ test("a finished workflow run that stays until viewed stops the panel's tick onc
 	}
 });
 
-test("a failed run's reason is cut at a whole character, never a lone surrogate (#5239)", () => {
-	const store = createStore();
-	store.recordRunStart({
-		id: "run-surrogate",
-		name: "release",
-		inputs: {},
-		status: "failed",
-		stages: [{ id: "build", name: "build", status: "failed", parentIds: [], toolEvents: [] } as StageSnapshot],
-		toolNodes: [],
-		startedAt: 1,
-		endedAt: 2,
-		error: `${"a".repeat(118)}😀 tail`,
-	});
-	const [item] = panelItemsFromSnapshot(store.runs(), 3);
-	assert.ok(item);
-	assert.equal(item.state, "failed");
-	assert.ok(item.task.isWellFormed(), `the reason is well formed: ${JSON.stringify(item.task.slice(-4))}`);
-	assert.match(item.task, /…$/);
-});
-
 test("between 40 and 56 columns a row keeps its state word whole instead of clipping the right column (#5239)", () => {
 	const row: AgentPanelRow = {
 		id: "task:debugger",
@@ -205,92 +182,6 @@ test("between 40 and 56 columns a row keeps its state word whole instead of clip
 		assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
 		assert.match(line, /needs input( · 1h 31m)?$/, `${width}: the right column ends whole: ${JSON.stringify(line)}`);
 	}
-});
-
-test("workflow panel rows aggregate stage tokens including nested child runs without double counting and render the stage bar without the stage name (#5239)", () => {
-	const stageWithUsage = (
-		id: string,
-		status: StageSnapshot["status"],
-		inputTokens?: number,
-		outputTokens?: number,
-		extra: Partial<StageSnapshot> = {},
-	): StageSnapshot => ({
-		id,
-		name: id,
-		status,
-		parentIds: [],
-		toolEvents: [],
-		...(inputTokens === undefined && outputTokens === undefined
-			? {}
-			: {
-					modelAttempts: [
-						{ model: "mock/model", success: true, usage: { input: inputTokens ?? 0, output: outputTokens ?? 0 } },
-					],
-				}),
-		...extra,
-	});
-	const runs: RunSnapshot[] = [
-		{
-			id: "root-wf",
-			name: "ralph",
-			inputs: {},
-			status: "running",
-			startedAt: 1_000,
-			toolNodes: [],
-			stages: [
-				stageWithUsage("plan", "completed", 5_000, 15_000),
-				stageWithUsage("delegate", "running", 50_000, 49_000, {
-					workflowChildRun: { runId: "child-wf", workflow: "child", alias: "child" },
-				}),
-				stageWithUsage("verify", "pending"),
-			],
-		},
-		{
-			id: "child-wf",
-			name: "child",
-			inputs: {},
-			status: "running",
-			parentRunId: "root-wf",
-			parentStageId: "delegate",
-			rootRunId: "root-wf",
-			startedAt: 2_000,
-			toolNodes: [],
-			stages: [
-				stageWithUsage("impl-a", "completed", 10_000, 15_000),
-				stageWithUsage("impl-b", "completed", 6_000, 10_000),
-				stageWithUsage("impl-c", "running"),
-			],
-		},
-	];
-	const [item] = panelItemsFromSnapshot(runs, 1_000 + 12 * 60_000);
-	assert.ok(item);
-	assert.equal(item.task, "stage impl-c");
-	assert.deepEqual(item.progress, { done: 3, total: 5 });
-	assert.equal(item.tokens, 61_000);
-
-	for (const width of [80, 160]) {
-		const [rendered] = renderAgentPanelRows([item], width, plain).map((text) => stripVTControlCharacters(text));
-		assert.ok(rendered);
-		assert.equal(visibleWidth(rendered), width);
-		assert.equal(
-			rendered.replace(/ {2,}/g, "  ").trimEnd(),
-			"  ∀ ralph  ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  3/5 stages  12m · ↓ 61.0k tokens",
-		);
-		assert.doesNotMatch(rendered, /impl-c/);
-	}
-
-	const store = createStore();
-	store.recordRunStart({
-		id: "published-token-run",
-		name: "ralph",
-		inputs: {},
-		status: "running",
-		startedAt: 1_000,
-		toolNodes: [],
-		stages: [stageWithUsage("plan", "completed", 20_000, 41_000), stageWithUsage("build", "running")],
-	});
-	const [publishedItem] = panelItemsFromSnapshot(store.graphSnapshot(), 1_000 + 12 * 60_000, store);
-	assert.equal(publishedItem?.tokens, 61_000);
 });
 
 test("bindAgentPanel reports cap-independent total and needsInput counts, deduplicates unchanged ticks, contains callback throws, preserves counts while hidden, and resets on empty or dispose (#5239)", () => {

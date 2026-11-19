@@ -29,9 +29,6 @@ import {
 	showAgentPanel,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { agentPanelBoardSource } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
 test("agentPanelBoardSource subscribes to the extension hub only and reads extension items without reading the task store (#5224)", async () => {
@@ -137,61 +134,6 @@ test("agentPanelBoardSource subscribes to the extension hub only and reads exten
 	} finally {
 		await fixture.dispose();
 	}
-});
-
-test("panelItemsFromSnapshot over store.graphSnapshot().runs does not walk settled stages as a long run advances (#4642)", () => {
-	const store = createStore();
-	const stages: StageSnapshot[] = Array.from({ length: 200 }, (_, index) => ({
-		id: `stage-${index}`,
-		name: `stage-${index}`,
-		status: "completed",
-		parentIds: index === 0 ? [] : [`stage-${index - 1}`],
-		toolEvents: [],
-	}));
-	const run: RunSnapshot = {
-		id: "run-long",
-		name: "long-run",
-		inputs: {},
-		status: "running",
-		stages,
-		toolNodes: [],
-		startedAt: 1_000,
-	};
-	store.recordRunStart(run);
-	assert.deepEqual(panelItemsFromSnapshot(store.graphSnapshot().runs, 5_000), [
-		{
-			id: "run:run-long",
-			kind: "workflow",
-			state: "running",
-			name: "long-run",
-			task: "",
-			elapsedMs: 4_000,
-			progress: { done: 200, total: 200 },
-		},
-	]);
-
-	store.recordStageStart("run-long", {
-		id: "stage-200",
-		name: "active-stage",
-		status: "running",
-		parentIds: ["stage-199"],
-		toolEvents: [],
-	});
-	const snap = store.graphSnapshot();
-	let settledStageReads = 0;
-	for (let i = 0; i < 200; i++) {
-		const settledStage = snap.runs[0]!.stages[i]!;
-		Object.defineProperty(snap.runs[0]!.stages, i, {
-			get() {
-				settledStageReads++;
-				return settledStage;
-			},
-		});
-	}
-	const items = panelItemsFromSnapshot(snap.runs, 6_000);
-	assert.equal(settledStageReads, 0, "panelItemsFromSnapshot must not scan settled stages");
-	assert.equal(items[0]?.task, "stage active-stage");
-	assert.deepEqual(items[0]?.progress, { done: 200, total: 201 });
 });
 
 test("bindAgentPanel skips row projection while hidden and budgets burst refreshes (#4009, #5224)", async () => {
