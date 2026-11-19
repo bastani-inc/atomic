@@ -104,6 +104,64 @@ test("branching to held state and pre-boundary kept messages restores their comp
 	}
 });
 
+test("the source window stays visible while a historical branch write is pending and after it fails (#5554)", async () => {
+	const { open, store } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
+	const session = await open();
+	const before = session.getEntries(),
+		leaf = session.getLeafId();
+	const started = Promise.withResolvers<void>(),
+		finish = Promise.withResolvers<void>();
+	const refusal = new Error("branch append refused");
+	const append = vi.spyOn(store, "append").mockImplementation(async () => {
+		started.resolve();
+		await finish.promise;
+		throw refusal;
+	});
+	try {
+		const switched = session.branchWithSummary("old", "summary");
+		const rejected = assert.rejects(switched, (error) => error === refusal);
+		await started.promise;
+		const during = session.getEntries(),
+			duringLeaf = session.getLeafId();
+		finish.resolve();
+		await rejected;
+		assert.equal(duringLeaf, leaf);
+		assert.deepEqual(during, before);
+		assert.equal(session.getLeafId(), leaf);
+		assert.deepEqual(session.getEntries(), before);
+	} finally {
+		finish.resolve();
+		append.mockRestore();
+	}
+});
+
+for (const tier of ["native", "paged", "legacy"] as const) {
+	test(`a stale local branch uses its original watermark with a ${tier} source (#5554)`, async () => {
+		const { store } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
+		const viewStore = Object.create(store) as import("../../src/core/storage/session/types.ts").SessionStore;
+		if (tier !== "native") viewStore.readResumeAt = undefined;
+		if (tier === "legacy") {
+			viewStore.readEntrySizes = undefined;
+			viewStore.readEntryChunk = undefined;
+		}
+		const read = vi.spyOn(viewStore, "load");
+		const view = await SessionManager.open(viewStore, "session");
+		const newer = await SessionManager.open(store, "session");
+		await newer.appendSessionInfo("new owner's title");
+		await view.branch("old");
+		assert.equal(view.getLastSeq(), 3);
+		assert.equal(view.getSessionName(), undefined, "newer metadata did not enter the old view");
+		assert.deepEqual(
+			view.getBranch().map((e) => e.id),
+			["old"],
+		);
+		assert.equal(read.mock.calls.length, tier === "legacy" ? 1 : 0);
+		await assert.rejects(view.appendMessage({ role: "user", content: "stale write", timestamp: 2 }), {
+			name: "SessionConflictError",
+		});
+	});
+}
+
 test("hydration rejects a same-length replacement instead of merging session generations (#5249)", async () => {
 	const entries = [user("u", null), user("kept", "u"), boundary("c", "kept", "kept")];
 	const { open, store, header } = await fixture(entries);

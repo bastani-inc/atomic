@@ -203,6 +203,19 @@ it("live stage and Intercom receipts survive repeated clears without retaining t
 	}
 });
 
+it("moving to an older branch restores that window but does not hydrate abandoned conversations (#5554)", async () => {
+	const store = await sqlStore();
+	const { id, firstPreTail } = await compactedSession(store, 100);
+	const session = await SessionManager.open(store, id),
+		otherLeaf = session.getLeafId();
+	await session.branchWithSummary(firstPreTail, "summary of the branch we left");
+	const summary = session.getLeafEntry();
+	expect(summary?.type === "branch_summary" && summary.fromId).toBe(otherLeaf);
+	expect(session.getEntryCount()).toBeLessThan(30);
+	expect(session.getBranch().at(-2)?.id).toBe(firstPreTail);
+	expect(await session.findEntrySeq(otherLeaf!)).toBeDefined();
+});
+
 it("a default open reads the same window as a tail open without reading the whole store (#5554)", async () => {
 	const store = await sqlStore();
 	const { id, firstPreTail } = await compactedSession(store);

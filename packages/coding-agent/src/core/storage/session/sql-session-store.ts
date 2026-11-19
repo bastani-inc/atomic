@@ -1405,6 +1405,7 @@ export class SqlSessionStore implements SessionStore {
 	private async prepareResume(
 		sessionId: string,
 		leafId?: string,
+		throughSeq?: number,
 	): Promise<{ index: SessionResumeIndex; revision: string }> {
 		attempts: for (let attempt = 0; attempt < 3; attempt++) {
 			const row = await this.database.get<ResumeRow>(
@@ -1419,9 +1420,16 @@ export class SqlSessionStore implements SessionStore {
 				: remembered?.revision === row.revision && isSessionResumeIndex(remembered.index, Number(row.last_seq))
 					? remembered.index
 					: undefined;
-			const requested =
+			const limit = throughSeq ?? Number(row.last_seq);
+			if (limit > Number(row.last_seq)) throw new SessionConflictError(sessionId, limit, Number(row.last_seq));
+			const selected =
 				leafId === undefined ? undefined : ((await this.seqOfEntry(this.database, sessionId, leafId)) ?? 0);
-			if (currentIndex && (requested === undefined || requested === currentIndex.leafSeq))
+			const requested = selected !== undefined && selected > limit ? 0 : selected;
+			if (
+				currentIndex &&
+				limit === currentIndex.seq &&
+				(requested === undefined || requested === currentIndex.leafSeq)
+			)
 				return { index: currentIndex, revision: row.revision };
 			let index: SessionResumeIndex | undefined;
 			const j = (...path: string[]) => this.dialect.jsonText("entry_json", ...path);
@@ -1558,7 +1566,7 @@ export class SqlSessionStore implements SessionStore {
 			let expectedSummary = this.database.readOnly || requested !== undefined ? undefined : row.summary_state;
 			index = checkpoint?.index;
 			for (let pass = topology === undefined ? 0 : 1; pass < 2; pass++) {
-				for (let after = index?.seq ?? 0; after < Number(row.last_seq); ) {
+				for (let after = index?.seq ?? 0; after < limit; ) {
 					const rows = await this.database.all<SqliteRow & { seq: number; entry_id: string; chunks: number }>(
 						`WITH page AS MATERIALIZED (
 							SELECT seq,entry_id,chunks,entry_json FROM ${this.tables.entries}
@@ -1566,7 +1574,7 @@ export class SqlSessionStore implements SessionStore {
 						) SELECT seq,entry_id,chunks,${select} FROM page ORDER BY seq`,
 						sessionId,
 						after,
-						row.last_seq,
+						limit,
 					);
 					if (rows.length === 0) break;
 					const batch: SessionEntry[] = [];
@@ -1844,12 +1852,18 @@ export class SqlSessionStore implements SessionStore {
 		if (!(await this.readHeader(sessionId))) throw new SessionNotFoundError(sessionId);
 		return this.seqOfEntry(this.database, sessionId, entryId);
 	}
-	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+	readResumeAt(sessionId: string, leafId: string, throughSeq: number): Promise<SessionResume> {
+		return this.resumeWindow(sessionId, leafId, throughSeq);
+	}
+	readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+		return this.resumeWindow(sessionId, leafId);
+	}
+	private async resumeWindow(sessionId: string, leafId?: string, throughSeq?: number): Promise<SessionResume> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
 		for (let attempt = 0; attempt < 3; attempt++) {
-			const { index, revision } = await this.prepareResume(sessionId, leafId);
+			const { index, revision } = await this.prepareResume(sessionId, leafId, throughSeq);
 			const resume = await this.transaction(async (tx) => {
 				const head = await tx.get<SqliteRow & { header_json: string; revision: string }>(
 					`SELECT header_json,revision FROM ${this.tables.sessions} WHERE id = ?${this.dialect.lockClause("share")}`,

@@ -216,7 +216,6 @@ export class SessionManager {
 	private readonly editedPayloads = new Map<string, number>();
 	private historyEpoch: string | undefined;
 	private lastEntryId: string | null = null;
-	private compactionSeq = 0;
 	private recoveryState: SessionRecoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
 	private admissionKeys = new SessionKeyDigests();
 	private workflowStarts: Record<string, number> = {};
@@ -284,7 +283,6 @@ export class SessionManager {
 		this.entrySeqs = new Map(held.map(({ seq, entry }) => [entry.id, seq]));
 		this.historyEpoch = resume.epoch;
 		this.lastEntryId = resume.lastEntryId;
-		this.compactionSeq = resume.compaction?.seq ?? 0;
 		const { workflowStarts, ...recovery } = resume.recovery;
 		this.recoveryState = { ...recovery, admissionDigests: "" };
 		this.workflowStarts = { ...workflowStarts };
@@ -325,7 +323,6 @@ export class SessionManager {
 		this.entrySeqs = new Map(entries.map((entry, i) => [entry.id, i + 1]));
 		this.lastEntryId = entries.at(-1)?.id ?? null;
 		this.historyEpoch = undefined;
-		this.compactionSeq = 0;
 		this.recoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
 		this.admissionKeys = new SessionKeyDigests();
 		this.workflowStarts = {};
@@ -794,23 +791,26 @@ export class SessionManager {
 		}
 	}
 
-	private _appendEntry(entry: SessionEntry): Promise<void> {
-		return this._appendEntries([entry]);
+	private _appendEntry(entry: SessionEntry, target?: SessionResume): Promise<void> {
+		return this._appendEntries([entry], target);
 	}
 
-	private async _appendEntries(entries: readonly SessionEntry[]): Promise<void> {
+	private async _appendEntries(entries: readonly SessionEntry[], target?: SessionResume): Promise<void> {
 		if (this.appendHalt !== undefined) throw this.appendHalt;
 		// #4971: the session was deleted from its store; that was reported once, and nothing more is saved.
-		if (this.deletedFromStore) return this.applyAppended(entries);
+		if (this.deletedFromStore) {
+			if (target) this.restoreOpened({ resume: target }, this.sessionFile);
+			return this.applyAppended(entries);
+		}
 		for (let attempt = 1; ; attempt++) {
 			const expectSeq = this.lastSeq;
 			try {
-				this.lastSeq = (
-					await this.store.append(this.sessionId, entries, {
-						expectSeq,
-						...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
-					})
-				).lastSeq;
+				const written = await this.store.append(this.sessionId, entries, {
+					expectSeq,
+					...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
+				});
+				if (target) this.restoreOpened({ resume: target }, this.sessionFile);
+				this.lastSeq = written.lastSeq;
 			} catch (error) {
 				if (error instanceof SessionNotFoundError) {
 					this.deletedFromStore = true;
@@ -818,7 +818,7 @@ export class SessionManager {
 				}
 				if (appendFailureWroteNothing(error) || attempt > MAX_APPEND_RECONCILES) throw error;
 				const unknown = isStorageTransientError(error) && error.outcome === "unknown";
-				if (await this.reconcileAppend(entries, error, unknown, expectSeq)) return;
+				if (await this.reconcileAppend(entries, error, unknown, expectSeq, target)) return;
 				continue;
 			}
 			this.applyAppended(entries);
@@ -900,7 +900,6 @@ export class SessionManager {
 			],
 		};
 		const keep = new Set([...resume.branch, ...resume.state].map(({ entry }) => entry.id));
-		const boundarySeq = this.entrySeqs.get(resume.compaction.entry.id)!;
 		const start = this.entrySeqs.get(resume.branch[0]!.entry.id)!;
 		const leaf = this.leafId;
 		const path = this.getBranch().filter((entry) => keep.has(entry.id));
@@ -925,7 +924,6 @@ export class SessionManager {
 				this.entrySeqs.delete(entry.id);
 			}
 		}
-		this.compactionSeq = boundarySeq;
 		this.fileEntries = retained;
 		if (keep.size < this.lastSeq) {
 			this.historyStartSeq = Math.max(2, start);
@@ -952,6 +950,7 @@ export class SessionManager {
 		error: unknown,
 		unknown: boolean,
 		expectSeq: number,
+		target?: SessionResume,
 	): Promise<boolean> {
 		// Entries of an append that failed for certain are never in the store, so marking them too changes nothing.
 		for (const entry of entries) this.unconfirmed.add(entry.id);
@@ -973,6 +972,15 @@ export class SessionManager {
 		const tail = (stored.slice(1) as SessionEntry[]).map((entry) => own.get(entry.id) ?? entry);
 		const saved = tail.some((entry) => own.has(entry.id));
 		const foreign = tail.some((entry) => !this.unconfirmed.has(entry.id));
+		if (target && saved) this.restoreOpened({ resume: target }, this.sessionFile);
+		if (target && !saved && tail.length > 0) {
+			const stop =
+				error instanceof SessionConflictError
+					? error
+					: new SessionConflictError(this.sessionId, expectSeq, read.lastSeq);
+			if (this.appendHaltPolicy?.() === true) this.appendHalt ??= stop;
+			throw stop;
+		}
 		const leafId = saved ? entries.at(-1)!.id : this.leafId;
 		for (const [i, entry] of tail.entries()) {
 			this.entrySeqs.set(entry.id, this.lastSeq + i + 1);
@@ -1499,28 +1507,62 @@ export class SessionManager {
 		return buildSessionTree(this.getEntries(), this.labelsById, this.labelTimestampsById);
 	}
 
-	private async requireBranchTarget(id: string): Promise<void> {
-		if (this.editedPayloads.size && id !== this.leafId && this.store.readResume) {
-			const resume = await this.store.readResume(this.sessionId, id);
-			if (resume.leafId !== id) throw new SessionEntryError(id, "missing");
+	private async prepareBranchTarget(id: string): Promise<SessionResume | undefined> {
+		if (!this.hasFullHistory() && id !== this.leafId) {
+			if (!this.store.readResume)
+				throw new TypeError(`Session store ${this.store.descriptor.adapter} must implement readResume`);
+			let resume: SessionResume;
+			if (this.store.readResumeAt) resume = await this.store.readResumeAt(this.sessionId, id, this.lastSeq);
+			else {
+				resume = await this.store.readResume(this.sessionId, id);
+				if (
+					resume.lastSeq > this.lastSeq &&
+					(this.historyEpoch === undefined || resume.epoch === this.historyEpoch)
+				) {
+					if (this.store.readEntrySizes && this.store.readEntryChunk) {
+						const { pinnedBranchResume } = await import("./storage/session/pinned-branch-resume.js");
+						resume = await pinnedBranchResume(
+							this.store,
+							this.recordHeader(),
+							this.historyEpoch ?? resume.epoch,
+							this.lastSeq,
+							id,
+						);
+					} else {
+						// A legacy custom store has neither a pinned index nor byte pages. Only this explicitly
+						// requested local navigation may borrow its snapshot; it never becomes the manager's history.
+						const snapshot = await this.store.load(this.sessionId);
+						const knownEpoch =
+							snapshot.epoch ??
+							(await this.store.readRange!(this.sessionId, 1, 0)).epoch ??
+							(await this.store.readResume(this.sessionId, id)).epoch;
+						if (
+							snapshot.lastSeq < this.lastSeq ||
+							snapshot.entries[this.lastSeq - 1]?.id !== this.lastEntryId ||
+							(this.historyEpoch !== undefined && knownEpoch !== this.historyEpoch)
+						)
+							throw new SessionConflictError(this.sessionId, this.lastSeq, snapshot.lastSeq);
+						resume = {
+							...sessionResumeOf(this.recordHeader(), snapshot.entries.slice(0, this.lastSeq), id),
+							epoch: snapshot.epoch ?? resume.epoch,
+						};
+					}
+				}
+			}
 			if (resume.lastSeq !== this.lastSeq || (this.historyEpoch !== undefined && resume.epoch !== this.historyEpoch))
 				throw new SessionConflictError(this.sessionId, this.lastSeq, resume.lastSeq);
-			this.restoreOpened({ resume }, this.sessionFile);
-			return;
+			if (resume.leafId !== id) throw new SessionEntryError(id, "missing");
+			return resume;
 		}
-		const seq = this.entrySeqs.get(id);
-		if (
-			!this.hasFullHistory() &&
-			(seq === undefined || seq < this.compactionSeq || !this.getBranch().some((entry) => entry.id === id))
-		)
-			await this.loadFullHistory();
 		await this.requireEntry(id);
+		return undefined;
 	}
 
 	/** Start a new branch from an earlier entry. */
 	branch(branchFromId: string): Promise<void> {
 		return this.runMutation(async () => {
-			await this.requireBranchTarget(branchFromId);
+			const target = await this.prepareBranchTarget(branchFromId);
+			if (target) this.restoreOpened({ resume: target }, this.sessionFile);
 			this.leafId = branchFromId;
 		});
 	}
@@ -1538,8 +1580,8 @@ export class SessionManager {
 	 */
 	recordBranch(branchFromId: string | null): Promise<void> {
 		return this.runMutation(async () => {
-			if (branchFromId !== null) await this.requireBranchTarget(branchFromId);
-			await this._appendEntry(createCustomEntry(LEAF_MOVE_ENTRY_TYPE, undefined, this.byId, branchFromId));
+			const target = branchFromId === null ? undefined : await this.prepareBranchTarget(branchFromId);
+			await this._appendEntry(createCustomEntry(LEAF_MOVE_ENTRY_TYPE, undefined, this.byId, branchFromId), target);
 			this.leafId = branchFromId;
 		});
 	}
@@ -1554,17 +1596,18 @@ export class SessionManager {
 		fromId?: string,
 	): Promise<string> {
 		return this.runMutation(async () => {
-			if (branchFromId !== null) await this.requireBranchTarget(branchFromId);
+			const previous = fromId ?? this.leafId ?? "root";
+			const target = branchFromId === null ? undefined : await this.prepareBranchTarget(branchFromId);
 			const entry: BranchSummaryEntry = createBranchSummaryEntry(
 				branchFromId,
-				fromId ?? this.leafId ?? "root",
+				previous,
 				summary,
 				details,
 				usage,
 				fromHook,
 				this.byId,
 			);
-			await this._appendEntry(entry);
+			await this._appendEntry(entry, target);
 			return entry.id;
 		});
 	}

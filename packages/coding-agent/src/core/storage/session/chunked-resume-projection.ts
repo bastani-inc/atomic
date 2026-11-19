@@ -230,10 +230,17 @@ function* discriminator(key: string, parent?: string): Reader<string> {
 	return "";
 }
 
-function* project(type: string, customType: string, role: string, branchStateOnly = false): Reader<Json> {
+function* project(
+	type: string,
+	customType: string,
+	role: string,
+	branchStateOnly = false,
+	includeId = false,
+): Reader<Json> {
 	const fields: Record<string, Shape> = branchStateOnly
 		? { type: true, id: true }
 		: { type: true, parentId: true, timestamp: true };
+	if (includeId) fields.id = true;
 	switch (type) {
 		case "custom": {
 			const data = field(customFields, customType);
@@ -378,6 +385,22 @@ export async function chunkedBranchState(chunks: () => AsyncIterable<Uint8Array>
 	const entry = object(await read(chunks(), project(type, customType, "", true)));
 	if (custom) entry.customType = customType;
 	return entry as unknown as SessionEntry;
+}
+
+/** Fold a pinned prefix that has no native resume index. Read the stored ID, ancestry and billing fields, never
+ * the message body. The tool-call count is kept separate so no array of dummy content blocks is allocated. */
+export async function chunkedPrefixFields(
+	chunks: () => AsyncIterable<Uint8Array>,
+): Promise<{ entry: SessionEntry; toolCalls: number }> {
+	const type = await read(chunks(), discriminator("type"));
+	const custom = type === "custom" || type === "custom_message";
+	const customType = custom ? await read(chunks(), discriminator("customType")) : "";
+	const role = type === "message" ? await read(chunks(), discriminator("role", "message")) : "";
+	const value = object(await read(chunks(), project(type, customType, role, false, true)));
+	if (custom) value.customType = customType;
+	if (type === "worktree_snapshot" && !value.snapshot) delete value.snapshot;
+	const count = object(value.message).content;
+	return { entry: value as unknown as SessionEntry, toolCalls: typeof count === "number" ? count : 0 };
 }
 
 /** Fill the inline projection of the stub with the streamed fields. No reconstructed value is sent back to SQL. */
