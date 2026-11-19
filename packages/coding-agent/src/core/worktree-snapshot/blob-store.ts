@@ -1428,7 +1428,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const tables = snapshotIndexTables(prefix);
 		const { withOfflineSnapshotFile } = await import("../storage/offline-snapshot-file.js");
 		await withOfflineSnapshotFile(file, async (database) => {
-			const store = new SqlSnapshotBlobStore(database, dialectOf(database), tables, [], "", prefix);
+			const store = new SqlSnapshotBlobStore(database, dialectOf(database), tables, []);
 			await store.checkOfflineLayout();
 			await store.moveChunksToRowTable({ graceSeconds: 0 }, true);
 		});
