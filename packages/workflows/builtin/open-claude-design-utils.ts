@@ -1,9 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { Type } from "typebox";
-import { createChildProcessEnvironment, ensurePrivateTempDirAsync } from "@bastani/atomic";
+import { createChildProcessEnvironment, ensurePrivateTempDirAsync, getRuntimeScratchDir } from "@bastani/atomic";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 
 
@@ -160,7 +159,7 @@ export async function prepareArtifactDir(cwd = process.cwd()): Promise<{
   // let downstream agents recreate parents using their Write tool.
   let fallback = join(cwd, "specs", "design", runId);
   try {
-    fallback = mkdtempSync(join(tmpdir(), `${TMP_ARTIFACT_DIR}-${runId}-`));
+    fallback = mkdtempSync(join(await getRuntimeScratchDir(), `${TMP_ARTIFACT_DIR}-${runId}-`));
   } catch {
     // keep the project path
   }

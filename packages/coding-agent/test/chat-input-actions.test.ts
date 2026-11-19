@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { getRuntimeScratchDir } from "../src/config.js";
 import { cleanupStaleClipboardFiles, openExternalEditorForText } from "../src/modes/interactive/chat-input-actions.ts";
 
 const createdDirs: string[] = [];
@@ -77,9 +78,10 @@ describeExternalEditor("openExternalEditorForText", () => {
 describe("cleanupStaleClipboardFiles", () => {
 	it("removes only stale atomic clipboard files", async () => {
 		const now = Date.now();
-		const oldFile = path.join(os.tmpdir(), "atomic-clipboard-old-test.png");
-		const freshFile = path.join(os.tmpdir(), "atomic-clipboard-fresh-test.png");
-		const oldDir = path.join(os.tmpdir(), "atomic-clipboard-old-test-dir");
+		const scratch = await getRuntimeScratchDir();
+		const oldFile = path.join(scratch, "atomic-clipboard-old-test.png");
+		const freshFile = path.join(scratch, "atomic-clipboard-fresh-test.png");
+		const oldDir = path.join(scratch, "atomic-clipboard-old-test-dir");
 		createdPaths.push(oldFile, freshFile, oldDir);
 
 		fs.writeFileSync(oldFile, "old");

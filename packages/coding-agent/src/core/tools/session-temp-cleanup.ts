@@ -663,6 +663,10 @@ function safeSessionsRoots(): readonly string[] {
 /** Run every sweep once. Each failure is swallowed: cleanup is housekeeping. */
 export async function runSessionTempCleanup(options: SessionTempCleanupOptions = {}): Promise<void> {
 	const { tempRoot, sessionsRoots, sessionDirs, ...sweepOptions } = options;
+	if (tempRoot === undefined) {
+		const { sweepRuntimeScratch } = await import("../../config-runtime-scratch.ts");
+		await sweepRuntimeScratch().catch(() => undefined);
+	}
 	try {
 		await sweepSessionTempRoot(tempRoot ?? getTempRootDir(), sweepOptions);
 	} catch {

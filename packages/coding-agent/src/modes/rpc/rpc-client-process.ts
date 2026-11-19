@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getRuntimeScratchDir } from "../../config.js";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { ENGINE_SESSION_STORAGE_FLAG } from "../../core/session-storage.js";
@@ -43,7 +43,10 @@ export async function prepareRpcClientBootstrap(
 	interactiveEngineApiKey?: string,
 	trustDecisions?: SessionTrustDecisions,
 ): Promise<PreparedRpcClientBootstrap> {
-	const guardianFile = join(tmpdir(), `atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`);
+	const guardianFile = join(
+		await getRuntimeScratchDir(),
+		`atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`,
+	);
 	const bootstrap = await writeInteractiveEngineBootstrapAsync({
 		hostPid: process.pid,
 		guardFile: guardianFile,
@@ -61,11 +64,8 @@ export function createRpcClientProcessEnvironment(
 }
 
 export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildProcess {
-	const guardianFile =
-		options.preparedBootstrap?.guardianFile ??
-		(options.interactiveEngine
-			? join(tmpdir(), `atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`)
-			: undefined);
+	// Only a bootstrapped engine has a guardian path to watch.
+	const guardianFile = options.preparedBootstrap?.guardianFile;
 	// The engine's startup metadata travels in a 0600 file rather than the
 	// environment: a Bun child spawned without an explicit `env` inherits the
 	// runtime's launch-time environment, so anything placed here would remain

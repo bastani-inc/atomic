@@ -48,10 +48,6 @@ function makeRepo(shared: boolean | "all" | "0001" | "0606" = false, umask?: "00
 	writeFileSync(join(repo, "README.md"), "hello\n");
 	git(repo, "add", "README.md");
 	git(repo, "commit", "-q", "-m", "init");
-	const common = realpathSync(join(repo, ".git"));
-	const key = process.platform === "win32" ? common.toLowerCase() : common;
-	const fallback = join(tmpdir(), `atomic-named-worktree-locks-${createHash("sha256").update(key).digest("hex")}`);
-	cleanups.push(() => rmSync(fallback, { recursive: true, force: true }));
 	return { root, repo };
 }
 
@@ -379,10 +375,7 @@ test.skipIf(process.platform === "win32")(
 		assert.doesNotMatch(git(repoInfoRo, "worktree", "list", "--porcelain"), /atomic-named-worktree-locks/);
 
 		const infoRoCommon = realpathSync(join(repoInfoRo, ".git"));
-		const infoRoFallbackDir = join(
-			tmpdir(),
-			`atomic-named-worktree-locks-${createHash("sha256").update(infoRoCommon).digest("hex")}`,
-		);
+		const infoRoFallbackDir = join(infoRoCommon, "refs", "atomic-named-worktrees.lock");
 		cleanups.push(() => rmSync(infoRoFallbackDir, { recursive: true, force: true }));
 		const recoveredTarget = join(rootInfoRo, "wt-info-recovered");
 		const recoveredPathLock = join(
@@ -448,10 +441,7 @@ test.skipIf(process.platform === "win32")(
 
 		const { root: rootUnsafeFallback, repo: repoUnsafeFallback } = makeRepo();
 		const unsafeCommon = realpathSync(join(repoUnsafeFallback, ".git"));
-		const unsafeFallbackDir = join(
-			tmpdir(),
-			`atomic-named-worktree-locks-${createHash("sha256").update(unsafeCommon).digest("hex")}`,
-		);
+		const unsafeFallbackDir = join(unsafeCommon, "refs", "atomic-named-worktrees.lock");
 		mkdirSync(unsafeFallbackDir, { recursive: true });
 		chmodSync(unsafeFallbackDir, 0o777);
 		cleanups.push(() => rmSync(unsafeFallbackDir, { recursive: true, force: true }));

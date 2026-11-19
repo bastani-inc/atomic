@@ -12,8 +12,8 @@ import {
 	utimes,
 	writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { getRuntimeScratchDir } from "../../config.js";
 import { pathExists } from "../../utils/path-exists.ts";
 import { renameWithRetry } from "../rename-retry.ts";
 import { snapshotBlobHashes } from "./blob-store.ts";
@@ -200,7 +200,7 @@ async function locateCheckoutStepwise(
 
 /** Runs `action` with a private directory that is removed afterwards; a removal failure never hides `action`'s. */
 export async function withScratchDirectory<T>(action: (directory: string) => Promise<T>): Promise<T> {
-	const directory = await mkdtemp(join(tmpdir(), "atomic-snapshot-"));
+	const directory = await mkdtemp(join(await getRuntimeScratchDir(), "atomic-snapshot-"));
 	let result: T;
 	try {
 		result = await action(directory);

@@ -1,7 +1,8 @@
 import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getRuntimeScratchDir } from "../config.js";
+import { getRuntimeScratchDirSync } from "../config-runtime-scratch.ts";
 import type { SessionTrustDecisions } from "../core/project-trust-state.ts";
 
 /**
@@ -31,7 +32,7 @@ export const INTERACTIVE_ENGINE_BOOTSTRAP_VERSION = 1;
  * The only argument of an engine child an interactive host starts before it knows the engine's arguments: the child
  * loads the application, then reads them from its first stdin line (see engine-prewarm.ts).
  */
-export const INTERACTIVE_ENGINE_PREWARM_FLAG = "--internal-engine-prewarm";
+export { INTERACTIVE_ENGINE_PREWARM_FLAG } from "./interactive-engine-prewarm-flag.ts";
 
 export interface InteractiveEngineBootstrap {
 	version: number;
@@ -61,7 +62,7 @@ export interface InteractiveEngineBootstrapHandle {
 export function writeInteractiveEngineBootstrap(
 	record: Omit<InteractiveEngineBootstrap, "version">,
 ): InteractiveEngineBootstrapHandle {
-	const directory = mkdtempSync(join(tmpdir(), "atomic-engine-bootstrap-"));
+	const directory = mkdtempSync(join(getRuntimeScratchDirSync(), "atomic-engine-bootstrap-"));
 	const path = join(directory, "bootstrap.json");
 	const tempPath = `${path}.tmp`;
 	const payload: InteractiveEngineBootstrap = { version: INTERACTIVE_ENGINE_BOOTSTRAP_VERSION, ...record };
@@ -85,7 +86,7 @@ export function removeOwnedInteractiveEngineBootstrap(handle: InteractiveEngineB
 export async function writeInteractiveEngineBootstrapAsync(
 	record: Omit<InteractiveEngineBootstrap, "version">,
 ): Promise<InteractiveEngineBootstrapHandle> {
-	const directory = await mkdtemp(join(tmpdir(), "atomic-engine-bootstrap-"));
+	const directory = await mkdtemp(join(await getRuntimeScratchDir(), "atomic-engine-bootstrap-"));
 	const path = join(directory, "bootstrap.json");
 	const tempPath = `${path}.tmp`;
 	const payload: InteractiveEngineBootstrap = { version: INTERACTIVE_ENGINE_BOOTSTRAP_VERSION, ...record };
