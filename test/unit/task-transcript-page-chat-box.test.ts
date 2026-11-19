@@ -618,27 +618,27 @@ describe("a live subagent's chat box (#4640)", () => {
 			isRunning: () => true,
 		});
 		try {
-			assert.match(text(page.render(100, 20)), /∀ switching model…/);
+			assert.match(text(page.render(100, 20)), /∀ Switching model…/);
 			for (const listener of live.listeners) listener({ type: "agent_start" });
-			assert.doesNotMatch(text(page.render(100, 20)), /switching model…/);
+			assert.doesNotMatch(text(page.render(100, 20)), /Switching model…/);
 		} finally {
 			page.dispose();
 		}
 	});
 
-	test("a chat opened while its subagent waits to retry shows `retrying…` on the usage row until the next attempt (#5483)", async () => {
+	test("a chat opened while its subagent waits to retry shows `Retrying…` on the usage row until the next attempt (#5483)", async () => {
 		// Between attempts the session is not streaming, but its retry has started and not ended.
 		const waiting = { ...(await liveChatSession()), retryAttempt: 1 } as ChatBoxSession;
 		const { page, live } = await livePage({ chatSession: waiting, isRunning: () => false });
 		for (const width of [80, 160]) {
 			const rows = plain(page.render(width, 20)).map((row) => row.trimEnd());
 			const label = rows.indexOf(labelRows(rows)[0] ?? "");
-			assert.match(rows[label - 2] ?? "", /^ ∀ retrying…$/u, `${width} columns: the retry is the working line`);
+			assert.match(rows[label - 2] ?? "", /^ ∀ Retrying…$/u, `${width} columns: the retry is the working line`);
 			assert.match(rows[label - 1] ?? "", /\(auto\)$/u, `${width} columns: right on the usage row`);
 		}
 		for (const listener of live.listeners) listener({ type: "agent_start" } as AgentSessionEvent);
 		const next = plain(page.render(100, 20));
-		assert.ok(!next.some((row) => row.includes("retrying…")), "the next attempt clears the retry");
+		assert.ok(!next.some((row) => row.includes("Retrying…")), "the next attempt clears the retry");
 		assert.ok(
 			next.some((row) => WORKING_LINE.test(row)),
 			"the next attempt is the working line",
@@ -649,7 +649,7 @@ describe("a live subagent's chat box (#4640)", () => {
 	test("a chat opened while its subagent waits to retry stops showing it when the retry ends (#5483)", async () => {
 		const waiting = { ...(await liveChatSession()), retryAttempt: 1 } as ChatBoxSession;
 		const { page, live } = await livePage({ chatSession: waiting, isRunning: () => false });
-		assert.ok(plain(page.render(100, 20)).some((row) => row.includes("retrying…")));
+		assert.ok(plain(page.render(100, 20)).some((row) => row.includes("Retrying…")));
 		for (const listener of live.listeners) {
 			listener({
 				type: "auto_retry_end",
@@ -658,7 +658,7 @@ describe("a live subagent's chat box (#4640)", () => {
 				finalError: "Retry cancelled",
 			} as AgentSessionEvent);
 		}
-		assert.ok(!plain(page.render(100, 20)).some((row) => row.includes("retrying…")));
+		assert.ok(!plain(page.render(100, 20)).some((row) => row.includes("Retrying…")));
 		page.dispose();
 	});
 

@@ -220,7 +220,8 @@ test(
 			inspector.openChat(child.taskId, "main chat");
 			await flush();
 			const opened = plain(inspector.renderViewport(100, 24));
-			assert.match(opened, /∀ retrying…/);
+			// The chat reads the wait from the subagent's session: its reason, attempt and countdown, and Esc cancels it.
+			assert.match(opened, /∀ Retrying · overloaded · attempt 1\/3 in (?:\d+m )?\d+s {3}esc cancel/);
 			assert.match(opened, /← main chat · esc interrupt/);
 
 			assert.equal(inspector.handleInput(ESC), true);

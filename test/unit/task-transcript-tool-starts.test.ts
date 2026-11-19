@@ -116,7 +116,7 @@ test("a subagent chat on a worker follows its published retry, model switch and 
 		};
 		pooled.apply(snapshotStageTasks(source));
 		await view.load();
-		assert.equal(line(), "∀ retrying…");
+		assert.equal(line(), "∀ Retrying…");
 		session.retryStatus = {
 			type: "model_fallback_start",
 			from: "primary",
@@ -125,7 +125,7 @@ test("a subagent chat on a worker follows its published retry, model switch and 
 			attempt: 1,
 		};
 		pooled.apply(snapshotStageTasks(source));
-		assert.equal(line(), "∀ switching model…");
+		assert.equal(line(), "∀ Switching model…");
 		session.retryStatus = undefined;
 		pooled.apply(snapshotStageTasks(source));
 		assert.equal(line(), "∀ Working…");
