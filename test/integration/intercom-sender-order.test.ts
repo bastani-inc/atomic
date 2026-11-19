@@ -69,26 +69,6 @@ function parent() {
 		async emit(name: string) {
 			for (const handler of lifecycle.get(name) ?? []) await handler({ type: name }, context);
 		},
-		/** A message a closed workflow stage hands to this owning session (the late-stage route). */
-		async deliverLate(from: SessionInfo, id: string) {
-			const event = {
-				handled: false,
-				batch: false,
-				messages: [
-					{
-						customType: "intercom_message",
-						content: id,
-						display: true,
-						details: { from, message: { id, timestamp: Date.now(), content: { text: id } }, bodyText: id },
-					},
-				],
-				options: { triggerTurn: true },
-				completion: undefined as Promise<void> | undefined,
-			};
-			pi.events.emit("atomic:workflow-stage-late-message", event);
-			assert.equal(event.handled, true);
-			await event.completion;
-		},
 		deliver(from: SessionInfo, id: string, channel?: "supervisor") {
 			return inbound(context, from, { id, timestamp: Date.now(), content: { text: id } }, channel);
 		},
@@ -150,19 +130,6 @@ test("messages from one sender admitted at once together never overtake its queu
 		current.state.idle = true;
 		await Promise.all([current.deliver(child, "third"), current.deliver(child, "fourth")]);
 		assert.deepEqual(current.admittedIds(), ["first", "second", "third", "fourth"]);
-	} finally {
-		await current.emit("session_shutdown");
-	}
-});
-
-test("a closed stage's message relayed to its owner follows the messages its sender left queued there", async () => {
-	const current = parent();
-	await current.emit("session_start");
-	try {
-		current.state.idle = false;
-		await current.deliver(child, "early-owner-message");
-		await current.deliverLate(child, "later-relayed-stage-message");
-		assert.deepEqual(current.admittedIds(), ["early-owner-message", "later-relayed-stage-message"]);
 	} finally {
 		await current.emit("session_shutdown");
 	}

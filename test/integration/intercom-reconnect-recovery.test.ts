@@ -66,10 +66,6 @@ const KILLED_BROKER_RECOVERY_TEST_TIMEOUT_MS =
 	2 * RECOVERY_TIMEOUT_MS + PROCESS_IDENTITY_QUERY_MS + KILLED_BROKER_EXIT_MS;
 const FORCED_FAILURE_MESSAGE = "forced first reconnect failure";
 
-interface OrchestrationContext {
-	intercomGroup: string;
-}
-
 interface ToolResult {
 	content: Array<{ type: string; text: string }>;
 	details: { delivered?: boolean; queued?: boolean; group?: string; error?: boolean };
@@ -90,7 +86,7 @@ interface CapturedTool {
 type LifecycleHandler = (event: Record<string, string>, ctx: unknown) => void | Promise<void>;
 type EventHandler = (payload: object) => void | Promise<void>;
 
-function extensionFixture(sessionId: string, name: string, orchestrationContext: OrchestrationContext) {
+function extensionFixture(sessionId: string, name: string) {
 	const lifecycleHandlers = new Map<string, LifecycleHandler[]>();
 	const eventHandlers = new Map<string, EventHandler[]>();
 	const eventCompletions = new Map<string, Promise<void>>();
@@ -105,7 +101,6 @@ function extensionFixture(sessionId: string, name: string, orchestrationContext:
 		cwd: repoRoot,
 		isIdle: () => true,
 		model: { id: "test-model" },
-		orchestrationContext,
 		sessionManager: { getSessionId: () => sessionId, getBranch: () => [] },
 		ui: { confirm: async () => true, notify() {} },
 	};
@@ -467,9 +462,7 @@ test(
 	"a failed background reconnect still recovers the session with no intercom tool call",
 	async () => {
 		const forced = failFirstConnectAttempt("background");
-		const session = extensionFixture("reconnect-recovery-session", "reconnect-recovery", {
-			intercomGroup: "default",
-		});
+		const session = extensionFixture("reconnect-recovery-session", "reconnect-recovery");
 		intercomHeavy(session.pi as never, forced.overrides);
 		try {
 			await session.start();
@@ -513,9 +506,7 @@ test(
 
 test("a failed explicit tool connect surfaces the error and still leaves a scheduled retry", async () => {
 	const forced = failFirstConnectAttempt("tool");
-	const session = extensionFixture("reconnect-tool-failure-session", "reconnect-tool-failure", {
-		intercomGroup: "default",
-	});
+	const session = extensionFixture("reconnect-tool-failure-session", "reconnect-tool-failure");
 	intercomHeavy(session.pi as never, forced.overrides);
 	try {
 		await session.start();
@@ -552,7 +543,7 @@ test("a failed explicit tool connect surfaces the error and still leaves a sched
 });
 
 test("a reconnect that fails after the broker accepted it leaves no second registration", async () => {
-	const session = extensionFixture("reconnect-orphan-session", "reconnect-orphan", { intercomGroup: "default" });
+	const session = extensionFixture("reconnect-orphan-session", "reconnect-orphan");
 	intercomHeavy(session.pi as never);
 	// `beforeConnectAttempt` fires before `spawnBrokerIfNeeded`, so it can only fail an attempt
 	// that never opened a socket. This failure has to land *after* `connect()` resolved — that is

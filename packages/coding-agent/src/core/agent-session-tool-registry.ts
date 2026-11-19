@@ -347,6 +347,7 @@ export function _buildRuntime(
 			this._cwd,
 			this.sessionManager,
 			new ModelRegistry(this._modelRuntime),
+			undefined,
 			this._subagentPolicy,
 			this._intercomPolicy,
 		);

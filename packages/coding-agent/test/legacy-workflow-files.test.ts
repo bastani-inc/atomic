@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fauxAssistantMessage, getCurrentSystemPrompt } from "@bastani/atomic-ai";
 import { afterEach, test } from "vitest";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -51,6 +52,57 @@ test("a large recipe inventory stays bounded in the parent's prompt and is not p
 	} finally {
 		await child.cleanup();
 	}
+});
+
+test("conversion instructions reach the parent model request", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-recipe-parent-"));
+	roots.push(root);
+	const agentDir = join(root, "agent");
+	const cwd = join(root, "project");
+	mkdirSync(cwd);
+	put(join(agentDir, "workflows", "old-triage.ts"), "export default {};");
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true });
+	await resourceLoader.reload();
+	const harness = await createHarness({
+		cwd,
+		resourceLoader,
+		settingsManager,
+	});
+	try {
+		let prompt: string | undefined;
+		harness.setResponses([
+			(context) => {
+				prompt = getCurrentSystemPrompt(context.messages);
+				return fauxAssistantMessage("Done");
+			},
+		]);
+		await harness.session.prompt("Report status");
+		assert.ok(prompt, "the provider received a system prompt");
+		assert.equal(prompt.includes("<legacy_workflow_files>"), true);
+		assert.equal(prompt.includes("old-triage.ts"), true);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("explicit workflow paths follow platform extension casing and exclude declaration files", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-recipe-case-"));
+	roots.push(root);
+	const cwd = join(root, "project");
+	const agentDir = join(root, "agent");
+	mkdirSync(cwd);
+	const upper = join(agentDir, "recipes", "Report.TS");
+	const declaration = join(agentDir, "recipes", "OnlyTypes.D.TS");
+	put(upper, "export default {};");
+	put(declaration, "export declare const sample: string;");
+	put(join(agentDir, "settings.json"), JSON.stringify({ workflows: [upper, declaration] }));
+	const loader = new DefaultResourceLoader({ cwd, agentDir, noExtensions: true });
+	await loader.reload();
+	assert.deepEqual(
+		loader.getLegacyWorkflowFiles()?.files.map((f) => f.path),
+		process.platform === "win32" ? [upper] : [],
+	);
 });
 
 test("helpers, old run artifacts, and declined projects do not advertise runnable recipes", async () => {

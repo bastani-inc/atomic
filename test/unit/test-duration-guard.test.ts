@@ -315,7 +315,7 @@ test("built Node MCP ownership is scored against its declared timeout expression
 test("built Node table cases retain their existing structural budgets", () => {
 	const cases = [
 		[
-			"built Node shared-subclass sibling reload and disposal preserve a pending workflow and exit naturally",
+			"built Node shared-subclass sibling reload and disposal preserve the other listener and exit naturally",
 			28_140,
 			60_000,
 		],

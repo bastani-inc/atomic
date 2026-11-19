@@ -306,6 +306,8 @@ export class ExtensionRunner {
 		cwd: string,
 		sessionManager: SessionManager,
 		modelRegistry: ModelRegistry,
+		// Keep the positions of both session policy arguments for existing SDK hosts.
+		_reserved?: undefined,
 		subagentPolicy?: SubagentChildPolicy,
 		intercomPolicy?: import("../intercom-policy.ts").IntercomPolicyView,
 	) {
