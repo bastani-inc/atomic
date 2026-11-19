@@ -1,12 +1,13 @@
+import { once } from "node:events";
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { ExtensionToolContext } from "../core/extensions/context-types.js";
+import type { ExtensionToolContext } from "../core/extensions/context-types.ts";
 import { openNodeSqliteDatabase } from "../core/storage/node-sqlite.js";
 import { renderStorageIdentifiers } from "../core/storage/prefix.js";
 import { SESSION_TABLES, SqlSessionStore } from "../core/storage/session/sql-session-store.js";
-import { createHistoryRouter } from "../core/tools/history-protocol.js";
-import type { InternalResourceRouter } from "../core/tools/resource-selectors.js";
-import { createSearchToolDefinition } from "../core/tools/search.js";
+import { createHistoryRouter } from "../core/tools/history-protocol.ts";
+import type { InternalResourceRouter } from "../core/tools/resource-selectors.ts";
+import { createSearchToolDefinition } from "../core/tools/search.ts";
 import type { StorageCommand } from "./storage-command.js";
 
 type Cursor = readonly [seq: number, match: number, line: number];
@@ -38,16 +39,11 @@ function budgetCursor(note: string, base: string): string | undefined {
 	return note.slice(end + link.length, -1);
 }
 
-function writePage(text: string): Promise<void> {
-	return new Promise((resolve, reject) =>
-		process.stdout.write(`${text}\n`, (error) => (error ? reject(error) : resolve())),
-	);
-}
-
 export async function searchStoredSession(
 	{ file, sessionId, pattern, cursor }: Extract<StorageCommand, { kind: "search-session" }>,
 	cwd: string,
-	write: (text: string) => void | Promise<void> = writePage,
+	log: (text: string) => void | Promise<void>,
+	stdout?: NodeJS.WriteStream,
 ): Promise<void> {
 	if (!sessionId || /[^A-Za-z0-9_-]/.test(sessionId))
 		throw new Error(
@@ -95,7 +91,10 @@ export async function searchStoredSession(
 					);
 				const text = page.content[0];
 				if (text?.type !== "text") throw new Error("Expected a text page from history search");
-				await write(text.text);
+				await log(text.text);
+				// Use the storage command's normal output route; don't read ahead of a full CLI pipe.
+				if (stdout?.errored) throw stdout.errored;
+				if (stdout?.writableNeedDrain) await once(stdout, "drain");
 				// Old rows have no revision until their next write. Their ordinary page and manual URL still work.
 				if (
 					typeof initial !== "string" ||
