@@ -365,6 +365,34 @@ function extracted(value: Json | undefined, postgres: boolean): Json {
 	return typeof value === "boolean" ? Number(value) : value;
 }
 
+/** Test the exact saved ID against caller-owned text without retaining the entry, even when the ID spans chunks. */
+export function chunkedEntryHasId(chunks: AsyncIterable<Uint8Array>, id: string): Promise<boolean> {
+	return read(
+		chunks,
+		(function* (): Reader<boolean> {
+			if ((yield).name !== "startObject") throw new SyntaxError("Expected a session entry");
+			let matched = false;
+			while ((yield).name !== "endObject") {
+				const key = yield* stringValue(3);
+				const first = yield;
+				if (key !== "id" || first.name !== "startString") {
+					if (key === "id") matched = false;
+					yield* skip(first);
+					continue;
+				}
+				let offset = 0;
+				matched = true;
+				for (let part = yield; part.name === "stringChunk"; part = yield) {
+					if (!id.startsWith(part.value, offset)) matched = false;
+					offset += part.value.length;
+				}
+				matched = matched && offset === id.length;
+			}
+			return matched;
+		})(),
+	);
+}
+
 /** Read an interrupted run's exact JSON string without decoding its unrelated start inputs or normalizing SQL text. */
 export async function readChunkedWorkflowRunId(chunks: AsyncIterable<Uint8Array>): Promise<string | undefined> {
 	const selected = await read(

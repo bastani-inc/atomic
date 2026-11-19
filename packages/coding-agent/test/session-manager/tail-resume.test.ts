@@ -273,6 +273,27 @@ it("an in-flight historical lookup never returns a different session's entry wit
 	}
 });
 
+it("labels a retired oversized entry without decoding it or accepting a different writer's future target (#5554)", async () => {
+	const store = new MemorySessionStore();
+	try {
+		const manager = await SessionManager.create(store, "/project");
+		const old = await manager.appendMessage({
+			role: "user",
+			content: "x".repeat(SESSION_HISTORY_PAGE_BYTES + 20),
+			timestamp: 1,
+		});
+		await manager.appendCompaction("cleared", null, 100, details);
+		await manager.appendLabelChange(old, "hello");
+		expect(manager.getLabel(old)).toBe("hello");
+		expect(manager.getEntry(old)).toBeUndefined();
+		const peer = await SessionManager.open(store, manager.getSessionId());
+		const future = await peer.appendMessage({ role: "user", content: "peer", timestamp: 2 });
+		expect(await manager.findEntrySeq(future)).toBeUndefined();
+	} finally {
+		await store.close();
+	}
+});
+
 it("a reader can stop after its first page without hydrating older messages into the manager (#5554)", async () => {
 	const store = await sqlStore();
 	const { id, firstPreTail } = await compactedSession(store, 120);
