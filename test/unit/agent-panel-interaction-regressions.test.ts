@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { matchesKey } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -26,6 +25,7 @@ import {
 	showAgentPanel,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
 import { taskFixture } from "../helpers/task-projection.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const plain: AgentPanelStyle = {
 	dim: (text) => text,

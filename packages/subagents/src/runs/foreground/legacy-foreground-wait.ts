@@ -9,8 +9,12 @@ export const LEGACY_FOREGROUND_WAIT_NOTE =
 /** How many entries back from its session's leaf a running call's assistant message is looked for. */
 const ISSUING_MESSAGE_SEARCH_DEPTH = 256;
 
+function waitOf(args: unknown): unknown {
+	return typeof args === "object" && args !== null ? (args as { wait?: unknown }).wait : undefined;
+}
+
 function asksForForeground(args: unknown): boolean {
-	const wait = typeof args === "object" && args !== null ? (args as { wait?: unknown }).wait : undefined;
+	const wait = waitOf(args);
 	return typeof wait === "object" && wait !== null && (wait as { kind?: unknown }).kind === "foreground";
 }
 
@@ -24,38 +28,42 @@ export function withoutLegacyWait<T extends object>(args: T): T {
 }
 
 /**
- * Whether the model's call `toolCallId` asked to wait in the foreground, read from the assistant message that issued
- * it: a session saves that message before it runs any of its calls, and it is the session's latest.
+ * The arguments of the model's call `toolCallId`, read from the assistant message that issued it: a session saves that
+ * message before it runs any of its calls, and it is the session's latest. Undefined when no such message is found.
  */
-function issuedCallAsksForeground(
+function issuedCallArguments(
 	sessionManager: Pick<ExtensionContext["sessionManager"], "getLeafId" | "getEntry">,
 	toolCallId: string,
-): boolean {
+): unknown {
 	let entryId = sessionManager.getLeafId();
 	for (let depth = 0; entryId !== null && depth < ISSUING_MESSAGE_SEARCH_DEPTH; depth++) {
 		const entry = sessionManager.getEntry(entryId);
-		if (entry === undefined) return false;
+		if (entry === undefined) return undefined;
 		if (entry.type === "message" && entry.message.role === "assistant") {
 			const call = entry.message.content.find((block) => block.type === "toolCall" && block.id === toolCallId);
-			return call?.type === "toolCall" && asksForForeground(call.arguments);
+			return call?.type === "toolCall" ? call.arguments : undefined;
 		}
 		entryId = entry.parentId;
 	}
-	return false;
+	return undefined;
 }
 
 /**
  * The launch to run, without the `wait` it may still pass, and whether this very call asked to wait in the foreground:
  * in the arguments an extension or SDK caller passed, or in the saved assistant message that issued a model's call.
- * Nothing is remembered between calls, so no other launch is ever told about it.
+ * Nothing is remembered between calls, so no other launch is ever told about it. `wait` is the value the call passed,
+ * from the same two places (undefined when it passed none): sibling calls that cannot launch together launch by it
+ * as separate runs, as they did before the launch `wait` was removed (#5686).
  */
 export function takeLegacyForegroundWait(
 	toolCallId: string,
 	params: SubagentParamsLike,
 	ctx: Pick<ExtensionContext, "sessionManager">,
-): { readonly params: SubagentParamsLike; readonly foreground: boolean } {
-	const foreground = asksForForeground(params) || issuedCallAsksForeground(ctx.sessionManager, toolCallId);
-	return { params: withoutLegacyWait(params), foreground };
+): { readonly params: SubagentParamsLike; readonly foreground: boolean; readonly wait: unknown } {
+	const passed = Object.hasOwn(params, "wait");
+	const issued = passed && asksForForeground(params) ? undefined : issuedCallArguments(ctx.sessionManager, toolCallId);
+	const foreground = asksForForeground(params) || asksForForeground(issued);
+	return { params: withoutLegacyWait(params), foreground, wait: passed ? waitOf(params) : waitOf(issued) };
 }
 
 /** The result with {@link LEGACY_FOREGROUND_WAIT_NOTE} as its first line. */

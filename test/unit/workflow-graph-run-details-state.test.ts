@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters as strip } from "node:util";
-import { TuiMainScreen } from "@bastani/atomic-tui";
+import { stripTerminalSequences as strip, TuiMainScreen } from "@bastani/atomic-tui";
 import { describe, it } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";

@@ -1,4 +1,4 @@
-import type { ChatMessageRenderOptions, ChatSessionViewportSettings } from "@bastani/atomic";
+import type { ChatMessageRenderOptions, ChatSessionViewportSettings, HostSessionPickerRow } from "@bastani/atomic";
 import type { TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 
 // ---------------------------------------------------------------------------
@@ -133,6 +133,7 @@ export interface PiCustomOverlayFactoryTui {
 	terminal?: {
 		rows?: number;
 		columns?: number;
+		readonly colorDepth?: number;
 		setAutowrap?: (enabled: boolean) => void;
 	};
 	setFocus?: (target: unknown) => void;
@@ -186,6 +187,7 @@ export interface PiHostSessionPickerRow {
 	path: string;
 	id: string;
 	cwd: string;
+	resumeSelection?: HostSessionPickerRow["resumeSelection"];
 	/** Creation time in epoch milliseconds. */
 	createdAt: number;
 	/** Last-modified time in epoch milliseconds. */

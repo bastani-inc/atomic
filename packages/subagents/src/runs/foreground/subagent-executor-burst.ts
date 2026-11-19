@@ -12,7 +12,6 @@ import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
 import { registerBurstDisplay, releaseBurstDisplay, updateBurstDisplay } from "./subagent-executor-burst-display.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
 import { withForkContext } from "./subagent-executor-input.js";
-import { getLiveResultIndices } from "./subagent-executor-live-update.js";
 import { getParentAskHandoff } from "./subagent-executor-parent-ask-projection.js";
 import {
 	BURST_PREPARED_TASKS,
@@ -34,6 +33,8 @@ interface BurstItem {
 	settled: boolean;
 	resolve: (result: SubagentToolResult) => void;
 	reject: (reason?: unknown) => void;
+	/** The `wait` the call passed, undefined when it passed none; see {@link byLegacyWait}. */
+	legacyWait?: unknown;
 }
 
 interface ResultRoute {
@@ -48,6 +49,30 @@ type ExecuteSubagent = (
 	onUpdate: ((result: SubagentToolResult) => void) | undefined,
 	ctx: ExtensionContext,
 ) => Promise<SubagentToolResult>;
+
+/** A launch into the burst, with the `wait` the call passed (undefined when none): see {@link byLegacyWait}. */
+export type ExecuteBurstLaunch = (
+	id: string,
+	params: SubagentParamsLike,
+	signal: AbortSignal,
+	onUpdate: ((result: SubagentToolResult) => void) | undefined,
+	ctx: ExtensionContext,
+	legacyWait?: unknown,
+) => Promise<SubagentToolResult>;
+
+/**
+ * The burst's calls by the `wait` each passed, in order of first appearance; calls that pass none form one group.
+ * Before every launch ran in the background, calls with different waits launched as separate runs (#5686).
+ */
+function byLegacyWait(items: BurstItem[]): BurstItem[][] {
+	const groups: BurstItem[][] = [];
+	for (const item of items) {
+		const group = groups.find((candidate) => isDeepStrictEqual(candidate[0]!.legacyWait, item.legacyWait));
+		if (group) group.push(item);
+		else groups.push([item]);
+	}
+	return groups;
+}
 
 type SharedField =
 	| "concurrency"
@@ -300,7 +325,7 @@ function projectResult(result: SubagentToolResult, route: ResultRoute, live = fa
 	const sharedDetails = result.details;
 	if (!sharedDetails || (!live && sharedDetails.results.length === 0)) return result;
 
-	const liveIndices = live ? getLiveResultIndices(result) : undefined;
+	const liveIndices = live ? sharedDetails.resultIndices : undefined;
 	const results = liveIndices
 		? sharedDetails.results.filter((_child, index) => {
 				const resultIndex = liveIndices[index];
@@ -325,6 +350,13 @@ function projectResult(result: SubagentToolResult, route: ResultRoute, live = fa
 			...(sharedDetails.runId !== undefined ? { runId: sharedDetails.runId } : {}),
 			...(sharedDetails.context !== undefined ? { context: sharedDetails.context } : {}),
 			results,
+			...(liveIndices
+				? {
+						resultIndices: liveIndices
+							.filter((i) => i >= route.start && i < route.start + route.length)
+							.map((i) => i - route.start),
+					}
+				: {}),
 			...(progress?.length ? { progress } : {}),
 			...(controlEvents?.length ? { controlEvents } : {}),
 			...(sharedDetails.totalSteps !== undefined ? { totalSteps: route.length } : {}),
@@ -414,7 +446,7 @@ export function createExecutionBurstDispatcher(input: {
 		ctx: ExtensionContext,
 		preparedTasks?: TaskParam[],
 	) => Promise<SubagentToolResult | undefined>;
-}): ExecuteSubagent {
+}): ExecuteBurstLaunch {
 	let queue: BurstItem[] = [];
 	let flushScheduled = false;
 
@@ -523,7 +555,20 @@ export function createExecutionBurstDispatcher(input: {
 
 	const runBurst = (items: BurstItem[]): void => {
 		input.setActive(true);
-		void run(items.length > 1 ? items.map(collectMixedCall) : items, () => input.setActive(false));
+		const burst = items.length > 1 ? items.map(collectMixedCall) : items;
+		const groups = byLegacyWait(burst);
+		// A burst whose calls merge runs as one, as every burst does. Only calls that passed different `wait` values and
+		// cannot merge launch by `wait` as separate runs, side by side, as they did before every launch ran in the
+		// background; otherwise a field they do not share would fail them all (#5686). Each keeps its collected task list,
+		// so a call with both `agent` and `tasks` launches all of its children also when it is alone in its group.
+		const runs = groups.length > 1 && mergeBurst(burst).error !== undefined ? groups : [burst];
+		// The last run to finish frees the executor in the same step, so a call made once its result arrives is not
+		// refused as a duplicate.
+		let remaining = runs.length;
+		const finish = (): void => {
+			if (--remaining === 0) input.setActive(false);
+		};
+		for (const items of runs) void run(items, finish);
 	};
 
 	const flush = (): void => {
@@ -533,10 +578,10 @@ export function createExecutionBurstDispatcher(input: {
 		void runBurst(items);
 	};
 
-	return (id, params, signal, onUpdate, ctx) => {
+	return (id, params, signal, onUpdate, ctx, legacyWait) => {
 		if (input.isActive()) return Promise.resolve(input.duplicateResult(params));
 		return new Promise<SubagentToolResult>((resolve, reject) => {
-			queue.push({ id, params, signal, onUpdate, ctx, settled: false, resolve, reject });
+			queue.push({ id, params, signal, onUpdate, ctx, settled: false, resolve, reject, legacyWait });
 			if (!flushScheduled) {
 				flushScheduled = true;
 				setImmediate(flush);
