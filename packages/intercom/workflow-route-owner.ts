@@ -101,7 +101,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 		void connection.client?.disconnect().catch(() => {});
 	}
 
-	async function retire(state: RouteState, keepConnection = false): Promise<void> {
+	async function retire(state: RouteState): Promise<void> {
 		const { runId } = state.route;
 		routes.delete(runId);
 		clearTimeout(state.retry);
@@ -109,7 +109,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 		const key = connectionKey(state);
 		const connection = connections.get(key);
 		connection?.routes.delete(runId);
-		const close = connection !== undefined && !keepConnection && connection.routes.size === 0;
+		const close = connection !== undefined && connection.routes.size === 0;
 		if (close) connections.delete(key);
 		try {
 			await state.publication.withdraw(runId);
@@ -278,11 +278,9 @@ export function createWorkflowRouteOwner(cwd: string) {
 	events.on("atomic:workflow-pending-stage-route", (payload) => {
 		const route = payload as Route;
 		let state = routes.get(route.runId);
-		if (state === undefined || state.route.group !== route.group || state.route.capability !== route.capability) {
-			const sameGroup = state?.route.group === route.group;
-			const isolated = sameGroup && state?.isolated === true;
-			const publication = new PendingStagePublication(state === undefined ? undefined : retire(state, sameGroup));
-			state = { route, publication, tail: Promise.resolve(), attempt: 0, registered: false, isolated, waiters: new Set() };
+		if (state === undefined || state.route.group !== route.group) {
+			const publication = new PendingStagePublication(state === undefined ? undefined : retire(state));
+			state = { route, publication, tail: Promise.resolve(), attempt: 0, registered: false, isolated: false, waiters: new Set() };
 			routes.set(route.runId, state);
 		}
 		state.route = route;

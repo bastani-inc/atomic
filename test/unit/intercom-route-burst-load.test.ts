@@ -251,6 +251,7 @@ function createHost(connectTimeoutMs: (returnAddress: string) => number | undefi
 		sessionId,
 		sessionName,
 		emittedEvents,
+		events: pi.events,
 		start: () => fire("session_start", { type: "session_start", reason: "startup" }),
 		shutdown: () => fire("session_shutdown", { type: "session_shutdown", reason: "quit" }),
 		/** Ends the context's session without shutting the extension down: its in-flight connects are left running. */
@@ -490,6 +491,61 @@ test("an older broker retires by connection and the host reports the fallback on
 		assert.ok(!proxy.toBroker.slice(framesBefore).some(({ frame }) => frame.type === "withdraw_pending_stage_route"));
 	});
 });
+
+for (const kind of ["extension", "standalone"] as const) {
+	test(`a stage's previous session name reaches its replacement after its ${kind} owner rotates the capability`, async () => {
+		const { createWorkflowRouteOwner } = await import("../../packages/intercom/workflow-route-owner.js");
+		const runId = runIdFor("55610003", kind === "extension" ? 1 : 2);
+		const group = runGroup(runId);
+		const target = `${group}/reviewer-1`;
+		const owner = kind === "extension" ? createHost() : createWorkflowRouteOwner(repoRoot);
+		if ("start" in owner) await owner.start();
+		owner.events.on("atomic:workflow-pending-stage-message", (payload) => {
+			const request = payload as { live?: boolean; handled: boolean; completion?: Promise<object> };
+			request.handled = true;
+			request.completion = Promise.resolve(
+				request.live ? { outcome: "forward", target } : { outcome: "queued", position: 1 },
+			);
+		});
+		const publish = async (capability: string) => {
+			const route = routePayload(runId, 1, capability);
+			owner.events.emit("atomic:workflow-pending-stage-route", route);
+			await route.completion;
+		};
+		const stage = async (name: string, capability: string) => {
+			const client = new IntercomClient(name);
+			openClients.add(client);
+			client.on("error", () => {});
+			await client.connect(registration(name, group));
+			await client.registerLiveWorkflowStageRoute(runId, ["reviewer-1"], capability);
+			return client;
+		};
+		try {
+			const sender = await connectObserver([group]);
+			const oldName = `first-stage-${kind}`;
+			await publish("first");
+			const first = await stage(oldName, "first");
+			const originalId = first.sessionId;
+			await first.disconnect();
+			await waitFor("the original stage session to leave", async () =>
+				(await sender.listSessions()).some((session) => session.id === originalId) ? undefined : true,
+			);
+			assert.equal((await sender.send(oldName, { text: "while suspended" })).queued, true);
+
+			await publish("second");
+			const replacement = await stage(`second-stage-${kind}`, "second");
+			const received: string[] = [];
+			replacement.on("message", (_from, message) => received.push(message.content.text));
+			const sent = await sender.send(oldName, { text: "after replacement" });
+			assert.equal(sent.delivered, true, sent.reason);
+			await vi.waitFor(() => assert.deepEqual(received, ["after replacement"]));
+			await replacement.disconnect();
+		} finally {
+			if ("shutdown" in owner) await owner.shutdown();
+			else await owner.closeGroup(group);
+		}
+	});
+}
 
 const HEALTHY_RUN_COUNT = 5;
 /** Runs whose route the broker refuses; only these may get a route connection of their own. */

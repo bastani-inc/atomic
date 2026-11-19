@@ -1511,7 +1511,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     left: PendingStageRouteRegistration | undefined,
     right: PendingStageRouteRegistration,
   ): boolean {
-    return left?.publication === right.publication;
+    return left?.publication === right.publication && left.capability === right.capability;
   }
   function pendingStageRouteClientIsCurrent(
     runId: string,
@@ -2069,8 +2069,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 	const sameConnection = previous?.group === group && previous.dormant === payload.dormant;
 	const publication = previous === undefined ? new PendingStagePublication()
 		: !sameConnection ? new PendingStagePublication(retireRoute(payload.runId, previous))
-		: previous.capability !== payload.capability ? new PendingStagePublication(previous.publication.withdraw(payload.runId))
-		: previous.publication;
+		: previous.publication; // A capability update on the same connection does not end this run's route.
 	const route = {
 		publication,
 		group,
