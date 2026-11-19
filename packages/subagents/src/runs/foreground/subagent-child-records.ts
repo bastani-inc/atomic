@@ -8,6 +8,7 @@ import {
 	SessionManager,
 	type SessionStore,
 	sliceHead,
+	type TaskElapsedSpan,
 	type WorktreeRootMapping,
 } from "@bastani/atomic";
 import type { AgentSource } from "../../agents/agent-types.js";
@@ -129,6 +130,10 @@ export interface SubagentChildRecord {
 	/** Whether the child was launched with `context: "fork"`, which shapes its Intercom bridge; absent means fresh. */
 	readonly forked?: boolean;
 	readonly state: "running" | "terminal";
+	/** Time of this execution at the record, retained for launch cards after the task host is gone. */
+	readonly elapsedMs?: number;
+	/** The span of this launch; null while queued, superseding any earlier launch of the same child. */
+	readonly elapsedSpan?: TaskElapsedSpan | null;
 	readonly cwd: string;
 	readonly owner: SubagentChildOwner;
 	readonly taskId?: string;
@@ -445,8 +450,18 @@ export function subagentChildOwner(
 
 const appendChains = new Map<string, Promise<void>>();
 
+// An Error's stack or cause can reach the entire session that failed to append. Keep the facts, not those frames.
+let lastFailure: (Pick<ReleasedChildError, "code" | "fields"> & ErrorOptions) | undefined;
+
 /** Failed appends of child records, counted so a record that could not be saved is not lost silently. */
-export const subagentChildRecordFailures: { count: number; last?: ReleasedChildError } = { count: 0 };
+export const subagentChildRecordFailures = {
+	count: 0,
+	get last(): ReleasedChildError | undefined {
+		if (!lastFailure) return undefined;
+		const { code, fields, cause } = lastFailure;
+		return new ReleasedChildError(code, fields, { cause: cause instanceof WeakRef ? cause.deref() : cause });
+	},
+};
 
 interface ChildRecordFailureNotice {
 	readonly childId?: string;
@@ -459,7 +474,12 @@ const pendingRecordFailures = new Map<string, ChildRecordFailureNotice>();
 /** Record one owner-scoped notice without retaining the error or its cause. */
 export function observeChildRecordFailure(ownerSessionId: string, error: ReleasedChildError): void {
 	subagentChildRecordFailures.count += 1;
-	subagentChildRecordFailures.last = error;
+	const { code, fields, cause } = error;
+	lastFailure = {
+		code,
+		fields,
+		cause: (typeof cause === "object" && cause !== null) || typeof cause === "function" ? new WeakRef(cause) : cause,
+	};
 	pendingRecordFailures.set(ownerSessionId, {
 		...(error.fields.childId === undefined ? {} : { childId: error.fields.childId }),
 		code: error.code,

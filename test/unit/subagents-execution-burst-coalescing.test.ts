@@ -960,7 +960,7 @@ test("flattens mixed SINGLE and tasks input in source order without deduplicatin
 	}
 });
 
-test("routes later-first aggregate live data to each sibling without leakage", async () => {
+test("routes later-first aggregate live data and elapsed time to each sibling without leakage (#5570)", async () => {
 	const allowFirstUpdate = Promise.withResolvers<void>();
 	const firstUpdated = Promise.withResolvers<void>();
 	const secondUpdated = Promise.withResolvers<void>();
@@ -980,7 +980,7 @@ test("routes later-first aggregate live data to each sibling without leakage", a
 				recentOutput: [`progress:${task}`],
 				toolCount: 0,
 				tokens: 0,
-				durationMs: 1,
+				durationMs: 7400,
 			};
 			const controlEvent = {
 				type: "needs_attention" as const,
@@ -1023,6 +1023,17 @@ test("routes later-first aggregate live data to each sibling without leakage", a
 		);
 
 		await secondUpdated.promise;
+		const partialContext = { toolCallId: "first", state: {}, invalidate() {} };
+		const partial = renderSubagentToolResult(
+			firstUpdates[0]!,
+			{ expanded: false, isPartial: true },
+			theme,
+			partialContext,
+		)
+			.render(120)
+			.join("\n");
+		assert.equal(partial.match(/7s/g)?.length, 1, "only the second child has reported its elapsed time");
+		assert.match(partial, /fast-second[^\n]*\n[^\n]*7s/);
 		assert.equal(firstUpdates.length, 1, "every aggregate update must reach the first callback");
 		assert.deepEqual(firstUpdates[0]?.details?.results, []);
 		assert.equal(firstUpdates[0]?.details?.progress, undefined);

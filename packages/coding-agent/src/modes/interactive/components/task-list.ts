@@ -16,6 +16,7 @@ import {
 import { supersededSettledAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import {
+	shownSpanMs,
 	type TaskElapsedClocks,
 	taskClockOf,
 	taskClockRunning,
@@ -165,8 +166,9 @@ export function renderTaskFooter(
 	const items = taskPanelItems({ backgroundTasks: shownTasks }, new Set(), { topLevelOnly: false }).map((row) => {
 		if (row.state === "queued") return row;
 		const itemClocks = taskClockOf(row) ?? clocks;
-		if (itemClocks === undefined) return row;
 		const taskId = agentPanelTaskId(row.id) ?? row.id;
+		if (row.elapsedSpan) return { ...row, elapsedMs: shownSpanMs(taskId, row.elapsedSpan, itemClocks, now) };
+		if (itemClocks === undefined) return row;
 		const elapsedMs = itemClocks.elapsedMs(taskId, row.elapsedMs, taskClockRunning(row.state), now);
 		return elapsedMs === undefined || elapsedMs === row.elapsedMs || (row.elapsedMs === undefined && elapsedMs < 1000)
 			? row

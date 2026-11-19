@@ -12,6 +12,7 @@ import type { TaskId } from "../../../core/tasks/contracts.js";
 import {
 	bindTaskClock,
 	liveElapsedFromRead,
+	shownSpanMs,
 	TaskElapsedClocks,
 	taskClockOf,
 	taskClockRunning,
@@ -244,6 +245,13 @@ export class AgentPanelModel {
 	withElapsed(row: AgentPanelRow, now = this.now(), state: AgentPanelState = row.state): AgentPanelRow {
 		row = this.baseOf(row);
 		if (state === "queued") return row;
+		if (row.elapsedSpan) {
+			const sourceClocks = taskClockOf(row);
+			if (sourceClocks === undefined) this.hasLocalClocks = true;
+			const taskId = agentPanelTaskId(row.id) ?? row.id;
+			const elapsedMs = shownSpanMs(taskId, row.elapsedSpan, sourceClocks ?? this.elapsedClocks, now);
+			return elapsedMs === row.elapsedMs ? row : this.copyOf(row, { ...row, elapsedMs });
+		}
 		const running = taskClockRunning(state);
 		if (row.kind === "workflow") {
 			if (!running || row.elapsedMs === undefined) return row;

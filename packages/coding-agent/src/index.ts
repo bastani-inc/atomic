@@ -118,11 +118,13 @@ export type {
 	Cleanup,
 	OperationId,
 	ResourceFailure,
+	TaskElapsedSpan,
 	TaskId,
 	TaskRecord,
 	TaskResult,
 	WaitPolicy,
 } from "./core/tasks/contracts.js";
+export { spanElapsedMs } from "./core/tasks/contracts.js";
 export {
 	FINISHED_TASK_RETENTION,
 	findTaskEvictedError,
