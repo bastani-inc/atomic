@@ -15,7 +15,10 @@ import {
 } from "./errors.js";
 import { SESSION_SUMMARY_TEXT_CHARS } from "./session-summary.js";
 import {
+	type OversizedSessionEntry,
 	SESSION_FORMAT_VERSION,
+	SESSION_HISTORY_CHUNK_BYTES,
+	SESSION_HISTORY_PAGE_BYTES,
 	type SessionHistoryTotals,
 	type SessionRecordHeader,
 	type SessionStore,
@@ -298,6 +301,25 @@ export function registerSessionStoreConformance(
 				assert.deepEqual(await store.load("session"), before);
 			});
 
+			check(
+				"bounds newly assigned session and entry ids by UTF-8 bytes before publishing them (#5554)",
+				async (store, reload) => {
+					const limit = 4096;
+					const fits = "漢".repeat(Math.floor(limit / 3)) + "x";
+					assert.equal(Buffer.byteLength(fits), limit);
+					const tooLong = fits + "a";
+					await assert.rejects(store.create(header(tooLong), []), /4096.*bytes/);
+					await store.create(header(fits), [message(fits, "kept")]);
+					await assert.rejects(
+						store.append(fits, [message(tooLong, "not stored")], { expectSeq: 1 }),
+						/4096.*bytes/,
+					);
+					store = await reload(store);
+					assert.equal((await store.load(fits)).lastSeq, 1);
+					assert.equal(await store.readHeader(tooLong), undefined);
+				},
+			);
+
 			check("admits only one of two writers using the same sequence", async (store, reload) => {
 				await store.create(header(), []);
 				const attempts = await Promise.allSettled([
@@ -312,6 +334,66 @@ export function registerSessionStoreConformance(
 				store = await reload(store);
 				assert.equal((await store.load("session")).lastSeq, 1);
 			});
+
+			check(
+				"a header-only change preserves every entry and fences earlier writers (#5554)",
+				async (store, reload) => {
+					const entries = [message("first", "一\u2028\u2029"), message("last", "e\u0301")];
+					const original = await store.create(header(), entries);
+					store = await reload(store);
+					assert.ok(store.updateHeader);
+					const updated = {
+						...header(),
+						internal: true,
+						workflow: { runId: "run", stageId: "stage", stageName: "Stage" },
+					} as const;
+					const result = await store.updateHeader(updated, { expectSeq: 2, epoch: original.epoch });
+					assert.equal(result.lastSeq, 2);
+					assert.notEqual(result.epoch, original.epoch);
+					await assert.rejects(
+						store.append("session", [message("stale", "no")], { expectSeq: 2, epoch: original.epoch }),
+						conflict("session", 2, 2),
+					);
+					store = await reload(store);
+					assert.deepEqual((await store.load("session")).entries, entries);
+					assert.deepEqual(await store.readHeader("session"), updated);
+				},
+			);
+
+			check(
+				"streams exact bytes of an oversized historical entry and rejects its reference after replacement (#5554)",
+				async (store, reload) => {
+					const entry = message("u", "abc漢😀\u0301".repeat(Math.ceil(SESSION_HISTORY_PAGE_BYTES / 10)));
+					const bytes = Buffer.from(JSON.stringify(entry));
+					assert.ok(bytes.length > SESSION_HISTORY_PAGE_BYTES);
+					await store.create(header(), [entry]);
+					store = await reload(store);
+					assert.ok(store.readEntrySizes && store.readEntryChunk && store.readRange);
+					const meta = await store.readEntrySizes("session", 1, 1);
+					assert.deepEqual(meta.sizes, [{ seq: 1, bytes: bytes.length }]);
+					const ref: OversizedSessionEntry = {
+						kind: "oversized",
+						sessionId: "session",
+						epoch: meta.epoch,
+						seq: 1,
+						bytes: bytes.length,
+					};
+					const digest = createHash("sha256");
+					for (let offset = 0; offset < bytes.length; ) {
+						const part = await store.readEntryChunk(ref, offset);
+						assert.ok(part.byteLength > 0 && part.byteLength <= SESSION_HISTORY_CHUNK_BYTES);
+						digest.update(part);
+						offset += part.byteLength;
+					}
+					assert.equal(digest.digest("hex"), createHash("sha256").update(bytes).digest("hex"));
+					await store.replace("session", header(), [message("other", "replacement")], {
+						expectSeq: 1,
+						epoch: meta.epoch,
+					});
+					await assert.rejects(store.readEntryChunk(ref, 1), conflict("session", 1, 1));
+					await assert.rejects(store.readRange("session", 1, 1, meta.epoch), conflict("session", 1, 1));
+				},
+			);
 
 			check("replaces header and entries including parent and workflow metadata", async (store, reload) => {
 				await store.create(header(), [message("old", "old")]);

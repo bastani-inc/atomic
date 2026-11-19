@@ -86,29 +86,28 @@ async function runtimeWithCompactedSessions(ids: readonly string[]) {
 
 const ids = (entries: readonly SessionEntry[]) => entries.map((entry) => entry.id);
 
-test("runtime.switchSession and rehydrate keep the whole history unless asked for the tail (#5249)", async () => {
+test("runtime.switchSession and rehydrate always keep the window, with history available on demand (#5554)", async () => {
 	const runtime = await runtimeWithCompactedSessions(["switched", "tail-switched", "woken", "tail-woken"]);
 
 	const woken = await runtime.rehydrate("woken");
-	assert.equal(woken.sessionManager.hasFullHistory(), true);
-	assert.deepEqual(ids(woken.sessionManager.getEntries()).slice(0, history.length), ids(history));
-	assert.deepEqual(
-		woken.getUserMessagesForForking().map((message) => message.entryId),
-		["early", "kept", "later"],
-	);
+	assert.equal(woken.sessionManager.hasFullHistory(), false);
+	assert.equal(woken.sessionManager.getEntry("early"), undefined);
+	assert.deepEqual(await woken.sessionManager.readEntry("early"), history[0]);
 
 	const tailWoken = await runtime.rehydrate("tail-woken", { history: "tail" });
 	assert.equal(tailWoken.sessionManager.hasFullHistory(), false);
 	assert.throws(() => tailWoken.getUserMessagesForForking(), SessionHistoryNotLoadedError);
-	await tailWoken.sessionManager.loadFullHistory();
-	assert.deepEqual(
-		tailWoken.getUserMessagesForForking().map((message) => message.entryId),
-		["early", "kept", "later"],
-	);
+	const stored: SessionEntry[] = [];
+	for await (const { items } of tailWoken.sessionManager.readHistory({ toSeq: history.length })) {
+		for (const item of items) if ("entry" in item) stored.push(item.entry);
+	}
+	assert.deepEqual(ids(stored), ids(history));
+	assert.equal(tailWoken.sessionManager.getEntry("early"), undefined);
 
 	await runtime.switchSession("switched");
-	assert.equal(runtime.session.sessionManager.hasFullHistory(), true);
-	assert.deepEqual(ids(runtime.session.sessionManager.getEntries()).slice(0, history.length), ids(history));
+	assert.equal(runtime.session.sessionManager.hasFullHistory(), false);
+	assert.equal(runtime.session.sessionManager.getEntry("early"), undefined);
+	assert.deepEqual(await runtime.session.sessionManager.readEntry("early"), history[0]);
 
 	await runtime.switchSession("tail-switched", { history: "tail" });
 	const manager = runtime.session.sessionManager;

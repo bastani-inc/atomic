@@ -5,27 +5,22 @@ import type {
 	ModelSingleResponse,
 	ModelUnstarted,
 } from "../../../../coding-agent/src/core/tasks/contracts.js";
-import { resolveTopLevelParallelConcurrency, type SingleResult, type SubagentToolResult } from "../../shared/types.js";
+import type { SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
-import {
-	createExecutionScheduler,
-	type ExecutionScheduler,
-	type ExecutionTicket,
-	formatParallelResultContent,
-} from "../shared/parallel-utils.js";
+import { formatParallelResultContent } from "../shared/parallel-utils.js";
 import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
-import { registerBurstDisplay, updateBurstDisplay } from "./subagent-executor-burst-display.js";
+import { registerBurstDisplay, releaseBurstDisplay, updateBurstDisplay } from "./subagent-executor-burst-display.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
 import { withForkContext } from "./subagent-executor-input.js";
 import { getLiveResultIndices } from "./subagent-executor-live-update.js";
 import { getParentAskHandoff } from "./subagent-executor-parent-ask-projection.js";
 import {
-	BURST_EXECUTION_SCHEDULE,
+	BURST_PREPARED_TASKS,
 	BURST_TASK_DISCOVERY_CWD,
+	BURST_TASK_INPUT_INDEX,
 	BURST_TASK_LAUNCH_CALL_ID,
 	type BurstTaskParam,
 	type SubagentParamsLike,
-	TASK_EXECUTION_TICKETS,
 	type TaskParam,
 } from "./subagent-executor-types.js";
 import { parallelTaskToolResultWithOutput, taskToolResultWithOutput } from "./task-execution.js";
@@ -39,8 +34,6 @@ interface BurstItem {
 	settled: boolean;
 	resolve: (result: SubagentToolResult) => void;
 	reject: (reason?: unknown) => void;
-	singleTicket?: ExecutionTicket;
-	taskTickets?: ExecutionTicket[][];
 }
 
 interface ResultRoute {
@@ -81,9 +74,15 @@ const SHARED_FIELDS: readonly SharedField[] = [
 	"agentScope",
 ];
 
-/** A named worktree belongs to its call's own children (#5202); only `worktree: true` is shared by the burst. */
+/** Shared fields that are off unless set to `true`: `false` and leaving them out ask for the same. */
+const OFF_UNLESS_TRUE: ReadonlySet<SharedField> = new Set(["worktree", "share", "includeProgress"]);
+
+/**
+ * The value a call gives a field its burst shares. A named worktree belongs to its call's own children (#5202); only
+ * `worktree: true` is shared by the burst.
+ */
 function sharedValue(params: SubagentParamsLike, field: SharedField): SubagentParamsLike[SharedField] {
-	return field === "worktree" && namedWorktree(params) ? undefined : params[field];
+	return OFF_UNLESS_TRUE.has(field) ? (params[field] === true ? true : undefined) : params[field];
 }
 
 /** The named worktree a call's top level gives each of its children without one of their own. */
@@ -149,7 +148,6 @@ function topLevelSingleTask(item: BurstItem): BurstTaskParam | undefined {
 		cwd: originatingTaskCwd(callCwd, undefined),
 		[BURST_TASK_DISCOVERY_CWD]: callCwd,
 		[BURST_TASK_LAUNCH_CALL_ID]: item.id,
-		...(item.singleTicket ? { [TASK_EXECUTION_TICKETS]: [item.singleTicket] } : {}),
 		...(namedWorktree(item.params) ? { worktree: namedWorktree(item.params) } : {}),
 		...(item.params.output !== undefined ? { output: item.params.output } : {}),
 		...(item.params.outputMode !== undefined ? { outputMode: item.params.outputMode } : {}),
@@ -162,14 +160,13 @@ function topLevelSingleTask(item: BurstItem): BurstTaskParam | undefined {
 	};
 }
 
-function existingParallelTask(item: BurstItem, task: TaskParam, taskIndex: number): BurstTaskParam {
+function existingParallelTask(item: BurstItem, task: TaskParam): BurstTaskParam {
 	const callCwd = originatingCallCwd(item);
 	return {
 		...task,
 		cwd: originatingTaskCwd(callCwd, task.cwd),
 		[BURST_TASK_DISCOVERY_CWD]: callCwd,
 		[BURST_TASK_LAUNCH_CALL_ID]: item.id,
-		...(item.taskTickets?.[taskIndex] ? { [TASK_EXECUTION_TICKETS]: item.taskTickets[taskIndex] } : {}),
 		...(task.worktree === undefined && namedWorktree(item.params) ? { worktree: namedWorktree(item.params) } : {}),
 		...(task.group === undefined && item.params.group !== undefined ? { group: item.params.group } : {}),
 		...(task.heartbeatMs === undefined && item.params.heartbeatMs !== undefined
@@ -178,24 +175,17 @@ function existingParallelTask(item: BurstItem, task: TaskParam, taskIndex: numbe
 	};
 }
 
-function reserveItemTickets(item: BurstItem, reserve: () => ExecutionTicket): void {
-	if (item.params.agent) {
-		item.singleTicket = reserve();
-	}
-	if ((item.params.tasks?.length ?? 0) > 0) {
-		item.taskTickets = item.params.tasks!.map((task) =>
-			Array.from({ length: taskExpandedLength(task) }, () => reserve()),
-		);
-	}
-}
-
-function releaseItemTickets(items: readonly BurstItem[]): void {
-	for (const item of items) {
-		item.singleTicket?.release();
-		for (const tickets of item.taskTickets ?? []) {
-			for (const ticket of tickets) ticket.release();
-		}
-	}
+/** A mixed call in a burst contributes its top-level child first. Keep that same task list for checks and retries. */
+function collectMixedCall(item: BurstItem): BurstItem {
+	if (!item.params.agent || !item.params.tasks?.length) return item;
+	const tasks = [
+		topLevelSingleTask(item)!,
+		...item.params.tasks.map((task, index) => ({
+			...existingParallelTask(item, task),
+			[BURST_TASK_INPUT_INDEX]: index,
+		})),
+	];
+	return { ...item, params: { ...item.params, agent: undefined, task: undefined, tasks } };
 }
 
 function mergeBurst(items: BurstItem[]): {
@@ -215,8 +205,8 @@ function mergeBurst(items: BurstItem[]): {
 		const start = tasks.reduce((total, task) => total + taskExpandedLength(task), 0);
 		const single = topLevelSingleTask(item);
 		if (single) tasks.push(single);
-		for (const [taskIndex, task] of (item.params.tasks ?? []).entries()) {
-			tasks.push(existingParallelTask(item, task, taskIndex));
+		for (const task of item.params.tasks ?? []) {
+			tasks.push(existingParallelTask(item, task));
 		}
 		const end = tasks.reduce((total, task) => total + taskExpandedLength(task), 0);
 		routes.push({ start, length: end - start });
@@ -227,7 +217,6 @@ function mergeBurst(items: BurstItem[]): {
 		params: {
 			...(commonCwd ? { cwd: commonCwd } : {}),
 			tasks,
-			wait: first.wait,
 			concurrency: first.concurrency,
 			worktree: first.worktree === true ? true : undefined,
 			context: first.context,
@@ -371,6 +360,15 @@ async function projectOwnerResult(
 	return withForkContext(projected, item.params.context ?? result.details?.context);
 }
 
+/** A run that failed before any of its children started, as an unknown agent or invalid input fails it. */
+function failedBeforeStart(result: SubagentToolResult): boolean {
+	return (
+		result.isError === true &&
+		result.details?.taskResponse === undefined &&
+		(result.details?.results.length ?? 0) === 0
+	);
+}
+
 function resolveItem(item: BurstItem, result: SubagentToolResult): void {
 	if (item.settled) return;
 	item.settled = true;
@@ -405,51 +403,57 @@ function observeLaterAbort(item: BurstItem): () => void {
 	return cleanup;
 }
 
-function groupByWait(items: BurstItem[]): BurstItem[][] {
-	const groups: BurstItem[][] = [];
-	for (const item of items) {
-		const group = groups.find((candidate) => isDeepStrictEqual(candidate[0]!.params.wait, item.params.wait));
-		if (group) group.push(item);
-		else groups.push([item]);
-	}
-	return groups;
-}
-
 export function createExecutionBurstDispatcher(input: {
 	execute: ExecuteSubagent;
 	isActive: () => boolean;
 	setActive: (active: boolean) => void;
 	duplicateResult: (params: SubagentParamsLike) => SubagentToolResult;
-	concurrencyLimit?: number;
+	/** The error a launch fails with on its own before any child starts, from the checks its own run makes. */
+	ownError: (
+		params: SubagentParamsLike,
+		ctx: ExtensionContext,
+		preparedTasks?: TaskParam[],
+	) => Promise<SubagentToolResult | undefined>;
 }): ExecuteSubagent {
 	let queue: BurstItem[] = [];
 	let flushScheduled = false;
 
-	const run = async (items: BurstItem[], finish: () => void, schedule?: ExecutionScheduler): Promise<void> => {
+	/**
+	 * Gives each launch that fails on its own its own error, and returns the others. A failure to check leaves the
+	 * launch with the others.
+	 */
+	const withoutOwnErrors = async (
+		items: BurstItem[],
+		routes: ResultRoute[],
+		preparedTasks?: TaskParam[],
+	): Promise<BurstItem[]> => {
+		const errors = await Promise.all(
+			items.map((item, index) => {
+				const { start, length } = routes[index]!;
+				return input
+					.ownError(item.params, item.ctx, preparedTasks?.slice(start, start + length))
+					.catch(() => undefined);
+			}),
+		);
+		items.forEach((item, index) => {
+			const error = errors[index];
+			if (error) resolveItem(item, error);
+		});
+		return items.filter((item, index) => errors[index] === undefined && !item.settled);
+	};
+
+	const run = async (items: BurstItem[], finish: () => void): Promise<void> => {
+		if (items.length === 0) {
+			finish();
+			return;
+		}
 		if (items.length === 1) {
 			const item = items[0]!;
-			const tasks =
-				item.params.tasks && item.taskTickets
-					? item.params.tasks.map((task, index) => ({
-							...task,
-							...(item.taskTickets![index] ? { [TASK_EXECUTION_TICKETS]: item.taskTickets![index] } : {}),
-						}))
-					: item.params.tasks;
-			const itemSchedule = item.singleTicket ?? schedule;
-			const params =
-				itemSchedule || tasks !== item.params.tasks
-					? {
-							...item.params,
-							...(tasks !== item.params.tasks ? { tasks } : {}),
-							...(itemSchedule ? { [BURST_EXECUTION_SCHEDULE]: itemSchedule } : {}),
-						}
-					: item.params;
 			try {
-				item.resolve(await input.execute(item.id, params, item.signal, item.onUpdate, item.ctx));
+				resolveItem(item, await input.execute(item.id, item.params, item.signal, item.onUpdate, item.ctx));
 			} catch (error) {
-				item.reject(error instanceof Error ? error : new Error(String(error)));
+				rejectItem(item, error instanceof Error ? error : new Error(String(error)));
 			} finally {
-				releaseItemTickets(items);
 				finish();
 			}
 			return;
@@ -461,13 +465,11 @@ export function createExecutionBurstDispatcher(input: {
 		};
 		const merged = mergeBurst(items);
 		if (merged.error) {
-			releaseItemTickets(items);
 			for (const item of items) resolveItem(item, merged.error);
 			cleanupLaterAborts();
 			finish();
 			return;
 		}
-		if (schedule) merged.params![BURST_EXECUTION_SCHEDULE] = schedule;
 
 		const first = items[0]!;
 		const display = registerBurstDisplay(
@@ -481,48 +483,47 @@ export function createExecutionBurstDispatcher(input: {
 				if (!item.settled) item.onUpdate?.(projectResult(update, merged.routes![index]!, true));
 			}
 		};
+		// A merged run fails as a whole, before any child starts, when one launch fails on its own. Each launch that does
+		// gets its own error, and the others, none of which started, run once without it. An error no launch has on its
+		// own, such as too many tasks altogether, stays the error of every launch.
+		let retry: BurstItem[] | undefined;
+		let preparedTasks: TaskParam[] | undefined;
+		merged.params![BURST_PREPARED_TASKS] = (tasks) => {
+			preparedTasks = tasks;
+		};
 		try {
 			const result = await input.execute(first.id, merged.params!, first.signal, onUpdate, first.ctx);
-			updateBurstDisplay(display, result);
-			const projections = await Promise.all(
-				items.map(
-					async (item, index) =>
-						(await projectOwnerResult(result, merged.routes![index]!, item, first.ctx)) ??
-						projectResult(result, merged.routes![index]!),
-				),
-			);
-			for (let index = 0; index < items.length; index++) resolveItem(items[index]!, projections[index]!);
+			if (failedBeforeStart(result)) {
+				const rest = await withoutOwnErrors(items, merged.routes!, preparedTasks);
+				if (rest.length < items.length) {
+					releaseBurstDisplay(display);
+					retry = rest;
+				}
+			}
+			if (retry === undefined) {
+				updateBurstDisplay(display, result);
+				const projections = await Promise.all(
+					items.map(
+						async (item, index) =>
+							(await projectOwnerResult(result, merged.routes![index]!, item, first.ctx)) ??
+							projectResult(result, merged.routes![index]!),
+					),
+				);
+				for (let index = 0; index < items.length; index++) resolveItem(items[index]!, projections[index]!);
+			}
 		} catch (error) {
 			const rejection = error instanceof Error ? error : new Error(String(error));
 			for (const item of items) rejectItem(item, rejection);
 		} finally {
-			releaseItemTickets(items);
 			cleanupLaterAborts();
-			finish();
+			if (retry === undefined) finish();
 		}
+		if (retry !== undefined) await run(retry, finish);
 	};
 
 	const runBurst = (items: BurstItem[]): void => {
-		const groups = groupByWait(items);
-		const schedule =
-			groups.length > 1
-				? createExecutionScheduler(
-						Math.min(
-							...items.map((item) =>
-								resolveTopLevelParallelConcurrency(item.params.concurrency, input.concurrencyLimit),
-							),
-						),
-					)
-				: undefined;
-		if (schedule?.reserve) {
-			for (const item of items) reserveItemTickets(item, schedule.reserve);
-		}
-		let remaining = groups.length;
 		input.setActive(true);
-		const finish = (): void => {
-			if (--remaining === 0) input.setActive(false);
-		};
-		for (const group of groups) void run(group, finish, schedule);
+		void run(items.length > 1 ? items.map(collectMixedCall) : items, () => input.setActive(false));
 	};
 
 	const flush = (): void => {

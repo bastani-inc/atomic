@@ -1,8 +1,9 @@
-import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
+import { yieldToEventLoop } from "../utils/event-loop.js";
+
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import { forkContextPath } from "./fork-context-path.js";
@@ -30,10 +31,12 @@ import {
 } from "./session-manager-entries.ts";
 import { SessionDeletedError, SessionEntryError } from "./session-manager-errors.js";
 import {
+	applyContextEdit,
 	buildContextEntries,
 	buildSessionIndex,
 	buildSessionProjection,
 	buildSessionTree,
+	collectContextEdits,
 	getBranchPath,
 	isLeafMoveEntry,
 	LEAF_MOVE_ENTRY_TYPE,
@@ -83,6 +86,7 @@ import {
 	type StorageFailureCause,
 	StorageRollbackError,
 } from "./storage/errors.js";
+import { validateSessionEntryStructure } from "./storage/session/entry-structure.js";
 import {
 	SessionConflictError,
 	SessionFormatVersionError,
@@ -91,11 +95,22 @@ import {
 	SessionNotFoundError,
 	StorageUnavailableError,
 } from "./storage/session/errors.js";
+import { historyChunks, historyPages } from "./storage/session/history-pages.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
+import { SessionKeyDigests } from "./storage/session/key-digests.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
-import { readSessionRange, sessionResumeOf } from "./storage/session/session-resume.js";
+import {
+	addEntryToHistoryTotals,
+	EMPTY_SESSION_HISTORY_TOTALS,
+	readSessionRange,
+	sessionResumeOf,
+	updateWorkflowStarts,
+} from "./storage/session/session-resume.js";
 import type {
+	OversizedSessionEntry,
 	SessionBlob,
+	SessionHistoryPage,
+	SessionHistoryReadOptions,
 	SessionHistoryTotals,
 	SessionRecordHeader,
 	SessionRecoveryState,
@@ -103,6 +118,8 @@ import type {
 	SessionSnapshot,
 	SessionStore,
 } from "./storage/session/types.js";
+import { SESSION_HISTORY_PAGE_ENTRIES } from "./storage/session/types.js";
+import { writeChunksAtomically } from "./storage/transfer-files.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type {
 	PathContinuation,
@@ -119,23 +136,46 @@ async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	return (await import("./session-storage.js")).resolveSessionStore(cwd);
 }
 
-type OpenedSession = { readonly snapshot: SessionSnapshot } | { readonly resume: SessionResume };
+type OpenedSession = { readonly resume: SessionResume };
 async function readStoredSession(
 	store: SessionStore,
 	sessionId: string,
 	options: SessionOpenOptions | undefined,
 ): Promise<OpenedSession> {
-	if (options?.history === "tail" && store.readResume)
-		return {
-			resume: await (options.leafId === undefined
-				? store.readResume(sessionId)
-				: store.readResume(sessionId, options.leafId)),
-		};
-	return { snapshot: await store.load(sessionId) };
+	if (options?.history !== undefined && options.history !== "tail") {
+		throw new TypeError(
+			'Session history: "full" has been removed. Use sessionManager.readHistory() to iterate older entries.',
+		);
+	}
+	if (!store.readResume || !store.readRange) {
+		throw new TypeError(
+			`Session store ${store.descriptor.adapter} must implement readResume and readRange for bounded history`,
+		);
+	}
+	return {
+		resume: await (options?.leafId === undefined
+			? store.readResume(sessionId)
+			: store.readResume(sessionId, options.leafId)),
+	};
+}
+
+async function openSessionFileWindow(path: string, cwd: string | undefined, options?: SessionOpenOptions) {
+	const store = await JsonlSessionStore.open(dirname(path), { exactDirectory: true, scanExisting: false });
+	let id: string;
+	try {
+		id = (await store.readHeaderFile(path)).id;
+	} catch (error) {
+		if (!(error instanceof StorageUnavailableError) || (error.cause as NodeJS.ErrnoException).code !== "ENOENT")
+			throw error;
+		const { type: _type, ...header } = createSessionHeader(createSessionId(), resolvePath(cwd ?? process.cwd()));
+		await store.create(header, [], path);
+		id = header.id;
+	}
+	return { store, opened: await readStoredSession(store, id, options) };
 }
 
 function openedHeader(opened: OpenedSession): SessionRecordHeader {
-	return "snapshot" in opened ? opened.snapshot.header : opened.resume.header;
+	return opened.resume.header;
 }
 
 /** A custom entry written with a message, in the same store write (see `SessionManager.appendWithMessage`). */
@@ -172,15 +212,19 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
-	private readonly historyIndex = new SessionHistoryIndex();
+	private historyIndex = new SessionHistoryIndex();
 
 	private historyStartSeq = 1;
 
 	private entrySeqs = new Map<string, number>();
+	/** Entries whose original payload is no longer in the live window; keep their original tool-call count for billing. */
+	private readonly editedPayloads = new Map<string, number>();
 	private historyEpoch: string | undefined;
 	private lastEntryId: string | null = null;
 	private compactionSeq = 0;
-	private recoveryState: SessionRecoveryState = { admissionKeys: [], intercomDeliveredIds: [] };
+	private recoveryState: SessionRecoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
+	private admissionKeys = new SessionKeyDigests();
+	private workflowStarts: Record<string, number> = {};
 
 	private omittedTotals: SessionHistoryTotals | undefined;
 
@@ -234,10 +278,6 @@ export class SessionManager {
 	}
 
 	private restoreOpened(opened: OpenedSession, location?: string): void {
-		if ("snapshot" in opened) {
-			this.restore(opened.snapshot, location);
-			return;
-		}
 		const resume = opened.resume;
 		const held = [...resume.state, ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.restoreHistory(
@@ -250,13 +290,21 @@ export class SessionManager {
 		this.historyEpoch = resume.epoch;
 		this.lastEntryId = resume.lastEntryId;
 		this.compactionSeq = resume.compaction?.seq ?? 0;
-		this.recoveryState = resume.recovery;
+		const { workflowStarts, ...recovery } = resume.recovery;
+		this.recoveryState = { ...recovery, admissionDigests: "" };
+		this.workflowStarts = { ...workflowStarts };
+		// An older custom store includes open workflow records in its state rows instead of their positions.
+		if (workflowStarts === undefined) {
+			for (const { entry, seq } of held) updateWorkflowStarts(this.workflowStarts, entry, seq);
+		}
+		this.admissionKeys = new SessionKeyDigests(resume.recovery.admissionDigests);
 		this.historyStartSeq = held.length < resume.lastSeq ? (resume.branch[0]?.seq ?? resume.lastSeq + 1) : 1;
 		if (held.length < resume.lastSeq && this.historyStartSeq === 1) this.historyStartSeq = 2;
 		this.omittedTotals = held.length < resume.lastSeq ? resume.omitted : undefined;
 		const path = [...resume.state.filter((e) => e.onBranch), ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.branchLinks = new Map(path.slice(1).map((held, i) => [held.entry.id, path[i]!.entry.id]));
 		this.leafId = resume.leafId;
+		if (held.some(({ entry }) => entry.type === "context_edit")) this.releaseEditedPayloads();
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
 
@@ -272,6 +320,7 @@ export class SessionManager {
 			readonly links: ReadonlyMap<string, string>;
 		},
 	): void {
+		this.editedPayloads.clear();
 		this.fileEntries = [{ type: "session", ...header }, ...entries];
 		this.sessionId = header.id;
 		this.lastSeq = lastSeq;
@@ -282,7 +331,10 @@ export class SessionManager {
 		this.lastEntryId = entries.at(-1)?.id ?? null;
 		this.historyEpoch = undefined;
 		this.compactionSeq = 0;
-		this.recoveryState = { admissionKeys: [], intercomDeliveredIds: [] };
+		this.recoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
+		this.admissionKeys = new SessionKeyDigests();
+		this.workflowStarts = {};
+		for (const [i, entry] of entries.entries()) updateWorkflowStarts(this.workflowStarts, entry, i + 1);
 		this.omittedTotals = partial?.omitted;
 		this.branchLinks = partial?.links;
 		this.historyLoad = undefined;
@@ -293,12 +345,12 @@ export class SessionManager {
 	}
 
 	hasFullHistory(): boolean {
-		return this.historyStartSeq <= 1;
+		return this.historyStartSeq <= 1 && this.editedPayloads.size === 0;
 	}
 
 	loadFullHistory(): Promise<void> {
-		if (this.historyStartSeq <= 1) return Promise.resolve();
-		this.historyLoad ??= this.readHistory().finally(() => {
+		if (this.hasFullHistory()) return Promise.resolve();
+		this.historyLoad ??= this.hydrateHistory().finally(() => {
 			this.historyLoad = undefined;
 		});
 		return this.historyLoad;
@@ -313,7 +365,7 @@ export class SessionManager {
 		const held = new Map<number, SessionEntry>();
 		for (const entry of this.getEntries()) {
 			const seq = this.entrySeqs.get(entry.id);
-			if (seq !== undefined) held.set(seq, entry);
+			if (seq !== undefined && !this.editedPayloads.has(entry.id)) held.set(seq, entry);
 		}
 		for (let start = Math.max(1, fromSeq); start <= watermark; ) {
 			const entry = held.get(start);
@@ -333,13 +385,28 @@ export class SessionManager {
 		return watermark;
 	}
 
-	private async readHistory(): Promise<void> {
+	/** Iterate the stored history in append order up to the watermark at the start of the read. Stopping iteration
+	 * stops further reads; none of the historical payloads are added to the live manager. */
+	readHistory(options: SessionHistoryReadOptions = {}): AsyncGenerator<SessionHistoryPage, void> {
+		return historyPages(this.store, this.sessionId, this.historyEpoch, this.lastSeq, options);
+	}
+
+	readHistoryChunks(
+		reference: OversizedSessionEntry,
+		options: { readonly offset?: number; readonly signal?: AbortSignal } = {},
+	): AsyncGenerator<Uint8Array, void> {
+		return historyChunks(this.store, this.sessionId, this.historyEpoch, reference, options);
+	}
+
+	private async hydrateHistory(): Promise<void> {
 		const { store, sessionId, historyEpoch } = this;
 		const held = new Map<number, SessionEntry>();
 		await this.forEachStoredEntry(1, (entry, seq) => held.set(seq, entry));
 		if (this.store !== store || this.sessionId !== sessionId || this.historyEpoch !== historyEpoch) return;
 		const leafId = this.leafId;
-		for (const entry of this.getEntries()) held.set(this.entrySeqs.get(entry.id)!, entry);
+		for (const entry of this.getEntries())
+			if (!this.editedPayloads.has(entry.id)) held.set(this.entrySeqs.get(entry.id)!, entry);
+		this.editedPayloads.clear();
 		const ordered = [...held].sort((a, b) => a[0] - b[0]);
 		this.fileEntries = [this.fileEntries[0]!, ...ordered.map(([, entry]) => entry)];
 		this.entrySeqs = new Map(ordered.map(([seq, entry]) => [entry.id, seq]));
@@ -382,14 +449,53 @@ export class SessionManager {
 		return this.lastSeq;
 	}
 	getSessionRecoveryState(): SessionRecoveryState {
-		return this.recoveryState;
+		return { ...this.recoveryState, admissionDigests: this.admissionKeys.serialize() };
+	}
+	/** Read the identities of interrupted runs from their saved starts only when recovery is requested. */
+	async readOpenWorkflowIds(): Promise<string[]> {
+		const { store, sessionId, historyEpoch, lastSeq } = this;
+		const ids: string[] = [];
+		for (const seq of Object.values(this.workflowStarts)) {
+			for await (const { items } of historyPages(store, sessionId, historyEpoch, lastSeq, {
+				fromSeq: seq,
+				toSeq: seq,
+			})) {
+				const item = items[0];
+				if (!item) continue;
+				if ("entry" in item) {
+					const { entry } = item;
+					if (entry.type === "custom" && entry.customType === "workflow.run.start") {
+						const data = entry.data as { runId?: string } | undefined;
+						if (typeof data?.runId === "string") ids.push(data.runId);
+					}
+				} else {
+					const { readChunkedWorkflowRunId } = await import("./storage/session/chunked-resume-projection.js");
+					const id = await readChunkedWorkflowRunId(historyChunks(store, sessionId, historyEpoch, item, {}));
+					if (id !== undefined) ids.push(id);
+				}
+			}
+			await yieldToEventLoop();
+		}
+		return ids;
+	}
+
+	getAdmissionKeys(): Pick<SessionKeyDigests, "has"> {
+		return this.admissionKeys;
 	}
 	async findEntrySeq(id: string): Promise<number | undefined> {
 		const held = this.entrySeqs.get(id);
 		if (held !== undefined) return held;
 		if (this.store.findEntrySeq) return this.store.findEntrySeq(this.sessionId, id);
-		await this.loadFullHistory();
-		return this.entrySeqs.get(id);
+		for await (const { items } of this.readHistory()) {
+			for (const item of items) {
+				if (!("entry" in item))
+					throw new TypeError(
+						`Session store ${this.store.descriptor.adapter} must implement findEntrySeq to locate an oversized entry`,
+					);
+				if (item.entry.id === id) return item.seq;
+			}
+		}
+		return undefined;
 	}
 
 	getHeldTail(): { readonly fromSeq: number; readonly entries: readonly SessionEntry[] } {
@@ -400,7 +506,11 @@ export class SessionManager {
 	}
 
 	getOmittedHistoryTotals(): SessionHistoryTotals | undefined {
-		return this.omittedTotals;
+		let difference = 0;
+		for (const [id, count] of this.editedPayloads) difference += count - this.storedCalls(this.byId.get(id));
+		if (!difference) return this.omittedTotals;
+		const totals = this.omittedTotals ?? EMPTY_SESSION_HISTORY_TOTALS;
+		return { ...totals, toolCalls: totals.toolCalls + difference };
 	}
 
 	/**
@@ -460,17 +570,18 @@ export class SessionManager {
 
 	setSessionFile(sessionFile: string): Promise<void> {
 		return this.runMutation(async () => {
-			const opened = await SessionManager.open(sessionFile, this.sessionDir, this.cwd);
-			this.store = opened.store;
-			this.restore(
-				{
-					header: opened.recordHeader(),
-					entries: opened.getEntries(),
-					lastSeq: opened.lastSeq,
-					epoch: opened.historyEpoch,
-				},
-				opened.sessionFile,
+			const path = resolvePath(sessionFile);
+			const { store, opened } = await openSessionFileWindow(path, this.cwd);
+			validateSessionFileEntries(
+				[
+					{ type: "session", ...opened.resume.header },
+					...opened.resume.state.map(({ entry }) => entry),
+					...opened.resume.branch.map(({ entry }) => entry),
+				],
+				path,
 			);
+			this.store = store;
+			this.restoreOpened(opened, path);
 		});
 	}
 
@@ -532,9 +643,10 @@ export class SessionManager {
 			if (classifiedWorkflowMetadata(previous)) return;
 			const validWorkflow = validSessionWorkflowMetadata(workflow);
 			if (!validWorkflow) return;
-			await this.loadFullHistory();
+			if (!this.store.updateHeader)
+				throw new TypeError(`Session store ${this.store.descriptor.adapter} must implement updateHeader`);
 			const header: SessionHeader = { ...previous, internal: true, workflow: validWorkflow };
-			const result = await this.store.replace(this.sessionId, this.recordHeader(header), this.getEntries(), {
+			const result = await this.store.updateHeader(this.recordHeader(header), {
 				expectSeq: this.lastSeq,
 				...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
 			});
@@ -545,6 +657,7 @@ export class SessionManager {
 	}
 
 	private _buildIndex(): void {
+		this.historyIndex = new SessionHistoryIndex();
 		validateSessionFileEntries(this.fileEntries, this.sessionFile ?? "in-memory session");
 		const index = buildSessionIndex(this.fileEntries);
 		this.byId = index.byId;
@@ -707,12 +820,102 @@ export class SessionManager {
 	private applyAppended(entries: readonly SessionEntry[]): void {
 		for (const [position, entry] of entries.entries()) {
 			this.entrySeqs.set(entry.id, this.lastSeq - entries.length + position + 1);
+			updateWorkflowStarts(this.workflowStarts, entry, this.lastSeq - entries.length + position + 1);
 			this.lastEntryId = entry.id;
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
 			this.historyIndex.appended(entry, this.byId);
 			this.leafId = entry.id;
 		}
+		if (entries.some((entry) => entry.type === "compaction")) this.releaseEarlierWindow();
+		if (entries.some((entry) => entry.type === "context_edit")) this.releaseEditedPayloads();
+	}
+
+	private storedCalls(entry: SessionEntry | undefined): number {
+		return entry?.type === "message" && entry.message.role === "assistant" && Array.isArray(entry.message.content)
+			? entry.message.content.filter((block) => block.type === "toolCall").length
+			: 0;
+	}
+
+	private releaseEditedPayloads(): void {
+		const edits = collectContextEdits(this.buildContextEntries());
+		if (!edits.size) return;
+		const leaf = this.leafId;
+		this.fileEntries = this.fileEntries.map((entry) => {
+			if (entry.type === "session") return entry;
+			if (
+				entry.type === "context_edit" &&
+				edits.has(entry.targetId) &&
+				edits.get(entry.targetId)?.id !== entry.id &&
+				entry.replacement !== null
+			) {
+				this.editedPayloads.set(entry.id, 0);
+				return { ...entry, replacement: null };
+			}
+			const edit = edits.get(entry.id);
+			if (!edit) return entry;
+			if (!this.editedPayloads.has(entry.id)) this.editedPayloads.set(entry.id, this.storedCalls(entry));
+			if (entry.type === "message")
+				return {
+					...entry,
+					message: applyContextEdit([entry.message], edit)[0] ?? { ...entry.message, content: [] },
+				};
+			if (entry.type === "custom_message")
+				return { ...entry, content: (edit.replacement?.content ?? []) as typeof entry.content };
+			return entry;
+		});
+		this._buildIndex();
+		this.leafId = leaf;
+	}
+
+	/** Retire the old window in the same mutation as the boundary. Never reread after a committed append: a read
+	 * could fail or observe another writer, neither of which changes what this append committed. */
+	private releaseEarlierWindow(): void {
+		const entries = this.getEntries();
+		const linked = this.branchLinks
+			? entries.map((entry) => {
+					const parentId = this.branchLinks?.get(entry.id);
+					return parentId !== undefined && parentId !== entry.parentId ? { ...entry, parentId } : entry;
+				})
+			: entries;
+		const resume = sessionResumeOf(this.recordHeader(), linked, this.leafId ?? undefined);
+		if (!resume.compaction) return;
+		this.admissionKeys.mergeEncoded(resume.recovery.admissionDigests);
+		const keep = new Set([...resume.branch, ...resume.state].map(({ entry }) => entry.id));
+		const boundarySeq = this.entrySeqs.get(resume.compaction.entry.id)!;
+		const start = this.entrySeqs.get(resume.branch[0]!.entry.id)!;
+		const leaf = this.leafId;
+		const path = this.getBranch().filter((entry) => keep.has(entry.id));
+		const retained: FileEntry[] = [this.fileEntries[0]!];
+		let totals = this.omittedTotals ?? EMPTY_SESSION_HISTORY_TOTALS;
+		for (const entry of entries) {
+			if (keep.has(entry.id)) retained.push(entry);
+			else {
+				totals = addEntryToHistoryTotals(totals, entry);
+				const original = this.editedPayloads.get(entry.id);
+				if (original !== undefined) {
+					totals = { ...totals, toolCalls: totals.toolCalls + original - this.storedCalls(entry) };
+					this.editedPayloads.delete(entry.id);
+				}
+				const seq = this.entrySeqs.get(entry.id)!;
+				if (
+					entry.type === "message" &&
+					entry.message.role === "assistant" &&
+					seq > (totals.latestAssistantSeq ?? 0)
+				)
+					totals = { ...totals, latestAssistantUsage: entry.message.usage, latestAssistantSeq: seq };
+				this.entrySeqs.delete(entry.id);
+			}
+		}
+		this.compactionSeq = boundarySeq;
+		this.fileEntries = retained;
+		if (keep.size < this.lastSeq) {
+			this.historyStartSeq = Math.max(2, start);
+			this.omittedTotals = totals;
+		}
+		this.branchLinks = new Map(path.slice(1).map((entry, i) => [entry.id, path[i]!.id]));
+		this._buildIndex();
+		this.leafId = leaf;
 	}
 
 	/**
@@ -753,7 +956,10 @@ export class SessionManager {
 		const saved = tail.some((entry) => own.has(entry.id));
 		const foreign = tail.some((entry) => !this.unconfirmed.has(entry.id));
 		const leafId = saved ? entries.at(-1)!.id : this.leafId;
-		for (const [i, entry] of tail.entries()) this.entrySeqs.set(entry.id, this.lastSeq + i + 1);
+		for (const [i, entry] of tail.entries()) {
+			this.entrySeqs.set(entry.id, this.lastSeq + i + 1);
+			updateWorkflowStarts(this.workflowStarts, entry, this.lastSeq + i + 1);
+		}
 		this.lastEntryId = tail.at(-1)?.id ?? this.lastEntryId;
 		this.fileEntries = [...this.fileEntries, ...tail];
 		this._buildIndex();
@@ -907,13 +1113,24 @@ export class SessionManager {
 	writeBackupSnapshot(label = "compact"): Promise<string | undefined> {
 		return this.runMutation(async () => {
 			if (!(this.store instanceof JsonlSessionStore) || !this.sessionFile) return undefined;
-			await this.loadFullHistory();
 			const path = `${this.sessionFile}.${new Date().toISOString().replace(/[:.]/g, "-")}.${label.replace(/[^a-z0-9_-]/gi, "-") || "backup"}.bak`;
+			const header = this.getHeader()!;
+			const history = this.readHistory();
+			const chunks = this.readHistoryChunks.bind(this);
+			async function* contents() {
+				yield `${JSON.stringify(header)}\n`;
+				for await (const { items } of history) {
+					for (const item of items) {
+						if ("entry" in item) yield `${JSON.stringify(item.entry)}\n`;
+						else {
+							yield* chunks(item);
+							yield "\n";
+						}
+					}
+				}
+			}
 			try {
-				await writeFile(
-					path,
-					`${[JSON.stringify({ type: "session", ...this.recordHeader() }), ...this.getEntries().map((entry) => JSON.stringify(entry))].join("\n")}\n`,
-				);
+				await writeChunksAtomically(path, contents());
 			} catch (cause) {
 				throw new StorageUnavailableError(this.store.descriptor, cause as Error);
 			}
@@ -1137,9 +1354,28 @@ export class SessionManager {
 		});
 	}
 
+	async readEntry(id: string): Promise<SessionEntry | undefined> {
+		const held = this.byId.get(id);
+		if (held && !this.editedPayloads.has(id)) return held;
+		const seq = await this.findEntrySeq(id);
+		if (seq !== undefined) {
+			for await (const { items } of this.readHistory({ fromSeq: seq, toSeq: seq })) {
+				const item = items[0];
+				if (item && !("entry" in item))
+					throw Object.assign(
+						new Error(
+							`Session entry ${seq} is ${item.bytes} bytes. Use readHistoryChunks(reference) to read it.`,
+						),
+						{ name: "OversizedSessionEntryError", reference: item },
+					);
+				if (item?.entry.id === id) return item.entry;
+			}
+		}
+		return undefined;
+	}
+
 	private async requireEntry(id: string): Promise<SessionEntry> {
-		if (!this.byId.has(id)) await this.loadFullHistory();
-		const entry = this.byId.get(id);
+		const entry = await this.readEntry(id);
 		if (entry === undefined) throw new SessionEntryError(id, "missing");
 		return entry;
 	}
@@ -1170,6 +1406,10 @@ export class SessionManager {
 	/** Get the label for an entry, if any. */
 	getLabel(id: string): string | undefined {
 		return this.labelsById.get(id);
+	}
+
+	getLabelTimestamp(id: string): string | undefined {
+		return this.labelTimestampsById.get(id);
 	}
 
 	/** Set or clear a label on an entry. */
@@ -1242,6 +1482,14 @@ export class SessionManager {
 	}
 
 	private async requireBranchTarget(id: string): Promise<void> {
+		if (this.editedPayloads.size && id !== this.leafId && this.store.readResume) {
+			const resume = await this.store.readResume(this.sessionId, id);
+			if (resume.leafId !== id) throw new SessionEntryError(id, "missing");
+			if (resume.lastSeq !== this.lastSeq || (this.historyEpoch !== undefined && resume.epoch !== this.historyEpoch))
+				throw new SessionConflictError(this.sessionId, this.lastSeq, resume.lastSeq);
+			this.restoreOpened({ resume }, this.sessionFile);
+			return;
+		}
 		const seq = this.entrySeqs.get(id);
 		if (
 			!this.hasFullHistory() &&
@@ -1577,21 +1825,7 @@ export class SessionManager {
 		}
 		const path = resolvePath(pathOrStore);
 		const directory = directoryOrId ?? dirname(path);
-		const store = await JsonlSessionStore.open(dirname(path), { exactDirectory: true, scanExisting: false });
-		let opened: OpenedSession;
-		try {
-			opened =
-				options?.history === "tail"
-					? await readStoredSession(store, (await store.readHeaderFile(path)).id, options)
-					: { snapshot: await store.loadFile(path) };
-		} catch (error) {
-			if (!(error instanceof StorageUnavailableError) || (error.cause as NodeJS.ErrnoException).code !== "ENOENT")
-				throw error;
-			const manager = new SessionManager(store, cwdOverride ?? process.cwd(), directory);
-			manager.lastSeq = (await store.create(manager.recordHeader(), [], path)).lastSeq;
-			manager.sessionFile = path;
-			return manager;
-		}
+		const { store, opened } = await openSessionFileWindow(path, cwdOverride, options);
 		const manager = new SessionManager(store, cwdOverride ?? openedHeader(opened).cwd, directory);
 		manager.restoreOpened(opened, path);
 		return manager;
@@ -1636,28 +1870,53 @@ export class SessionManager {
 		});
 	}
 
-	inMemoryBranch(cwd: string): SessionManager {
+	async inMemoryBranch(cwd: string): Promise<SessionManager> {
 		const header = this.getHeader();
 		if (!header) throw new Error("Session header is missing");
-		const manager = SessionManager.inMemory(cwd, undefined, [header, ...this.getBranch()]);
-		manager.branchLinks = this.branchLinks;
-		return manager;
+		const links = this.branchLinks;
+		const path = this.getBranch().map((entry) => {
+			const parent = links?.get(entry.id);
+			return parent && !this.byId.has(entry.parentId ?? "") ? { ...entry, parentId: parent } : entry;
+		});
+		return SessionManager.inMemory(cwd, undefined, [header, ...path]);
 	}
 
-	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
+	static inMemory(cwd?: string, options?: NewSessionOptions): SessionManager;
+	static inMemory(
+		cwd: string,
+		options: NewSessionOptions | undefined,
+		entries: readonly FileEntry[],
+	): Promise<SessionManager>;
+	static inMemory(
+		cwd: string = process.cwd(),
+		options?: NewSessionOptions,
+		entries?: readonly FileEntry[],
+	): SessionManager | Promise<SessionManager> {
 		const manager = new SessionManager(
 			markPrivateMemorySessionStore(new MemorySessionStore(createSessionCwdMatcherAsync)),
 			cwd,
 			"",
 			options,
 		);
-		if (entries?.length) {
-			manager.fileEntries = entries[0].type === "session" ? entries : [...manager.fileEntries, ...entries];
-			manager.sessionId = manager.getHeader()!.id;
-			manager._buildIndex();
-		}
+		if (entries !== undefined) return manager.seedPrivateSession(entries);
 		manager.mutation = manager.initialize();
 		return manager;
+	}
+
+	private async seedPrivateSession(entries: readonly FileEntry[]): Promise<SessionManager> {
+		const start = entries[0]?.type === "session" ? 1 : 0;
+		const header = start ? validateSessionFileEntries([entries[0]!], "in-memory session") : this.getHeader()!;
+		const record = this.recordHeader(header);
+		const created = await this.store.create(record, []);
+		let seq = 0;
+		for (let i = start; i < entries.length; i += SESSION_HISTORY_PAGE_ENTRIES) {
+			if (i > start) await yieldToEventLoop();
+			const page = entries.slice(i, i + SESSION_HISTORY_PAGE_ENTRIES) as SessionEntry[];
+			validateSessionEntryStructure(page, "in-memory session");
+			seq = (await this.store.append(record.id, page, { expectSeq: seq, epoch: created.epoch })).lastSeq;
+		}
+		this.restoreOpened(await readStoredSession(this.store, record.id, undefined));
+		return this;
 	}
 
 	static async forkFrom(

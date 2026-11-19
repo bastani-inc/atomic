@@ -32,6 +32,7 @@ import {
 	summarizeSession,
 } from "./session-summary.js";
 import type {
+	OversizedSessionEntry,
 	SessionBlob,
 	SessionCompactionPoint,
 	SessionCwdMatcher,
@@ -39,6 +40,7 @@ import type {
 	SessionEntriesQuery,
 	SessionEntryAt,
 	SessionEntryRange,
+	SessionEntrySizes,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
@@ -51,8 +53,13 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix } from "./types.js";
-import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
+import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import {
+	validateNewSessionId,
+	validateSessionEntries,
+	validateSessionHeader,
+	validateSessionText,
+} from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder();
@@ -72,7 +79,7 @@ const STUB_ENTRY: SessionEntry = {
 };
 
 interface StoredSession {
-	readonly header: Uint8Array;
+	header: Uint8Array;
 	/** The entries held in memory: everything after the bytes its spill file holds. */
 	entries: Uint8Array[];
 	summaryState: SessionSummaryState;
@@ -272,7 +279,8 @@ export class MemorySessionStore implements SessionStore {
 	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
-		validateSessionEntries(entries);
+		validateNewSessionId("header.id", header.id);
+		validateSessionEntries(entries, "new");
 		if (this.records.has(header.id)) throw new SessionExistsError(header.id);
 		const record = this.encodeSession(header, entries);
 		this.records.set(header.id, record);
@@ -285,7 +293,7 @@ export class MemorySessionStore implements SessionStore {
 		options: SessionWriteOptions,
 	): Promise<{ readonly lastSeq: number }> {
 		const record = this.forWrite(sessionId, options);
-		validateSessionEntries(entries);
+		validateSessionEntries(entries, "new");
 		if (entries.length === 0) return { lastSeq: record.lastSeq };
 		const index = this.appendedIndex(record, entries);
 		const encoded = this.encodeEntries(entries);
@@ -342,12 +350,20 @@ export class MemorySessionStore implements SessionStore {
 	): Promise<SessionWriteResult> {
 		const previous = this.forWrite(sessionId, options);
 		validateSessionHeader(header);
-		validateSessionEntries(entries);
+		validateSessionEntries(entries, "new");
 		if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 		const record = this.encodeSession(header, entries);
 		this.records.set(sessionId, record);
 		await this.removeSpillFile(sessionId, previous);
 		return { lastSeq: entries.length, epoch: record.index.epoch };
+	}
+
+	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
+		validateSessionHeader(header);
+		const record = this.forWrite(header.id, options);
+		record.header = this.encode(() => JSON.stringify(header));
+		record.index = { ...record.index, epoch: crypto.randomUUID() };
+		return { lastSeq: record.lastSeq, epoch: record.index.epoch };
 	}
 
 	async load(sessionId: string): Promise<SessionSnapshot> {
@@ -373,9 +389,52 @@ export class MemorySessionStore implements SessionStore {
 		}
 	}
 
-	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
+		const record = await this.settledRecord(sessionId);
+		const held = this.held(record);
+		const start = Math.max(1, startSeq);
+		const seqs = seqRange(start, Math.min(endSeq, held.lastSeq, start + SESSION_HISTORY_PAGE_ENTRIES - 1));
+		return {
+			epoch: record.index.epoch,
+			lastSeq: held.lastSeq,
+			sizes: seqs.map((seq) => {
+				const [from, to] = this.spanOf(held, seq, seq);
+				return { seq, bytes: to - from };
+			}),
+		};
+	}
+
+	async readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
+		for (;;) {
+			const record = await this.settledRecord(reference.sessionId);
+			if (record.index.epoch !== reference.epoch)
+				throw new SessionConflictError(reference.sessionId, reference.seq, record.lastSeq);
+			const held = this.held(record);
+			const [start, end] = this.spanOf(held, reference.seq, reference.seq);
+			if (held.directory && start < held.spilledBytes && !held.directory.readRange)
+				throw new TypeError("Session spill storage must implement readRange to read historical bytes");
+			const result = await this.whileHeld(reference.sessionId, record, held, () =>
+				this.bytesOf(
+					reference.sessionId,
+					held,
+					start + offset,
+					Math.min(end, start + offset + SESSION_HISTORY_CHUNK_BYTES),
+				),
+			);
+			if (result) return Uint8Array.from(result);
+		}
+	}
+
+	async readRange(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		expectedEpoch?: string,
+	): Promise<SessionEntryRange> {
 		for (;;) {
 			const record = await this.settledRecord(sessionId);
+			if (expectedEpoch !== undefined && expectedEpoch !== record.index.epoch)
+				throw new SessionConflictError(sessionId, endSeq, record.lastSeq);
 			const index = await this.resumeIndex(sessionId, record);
 			if (index === undefined) continue;
 			const start = Math.max(1, startSeq);

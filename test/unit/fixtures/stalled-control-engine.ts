@@ -40,6 +40,9 @@ lines.on("line", (line) => {
 			data = { commands: [] };
 			break;
 		case "get_entries":
+			data = { items: [], leafId: null };
+			break;
+		case "get_context_window":
 			data = { entries: [], leafId: null };
 			break;
 		case "prompt":

@@ -51,11 +51,8 @@ export interface NewSessionOptions {
 }
 
 export interface SessionOpenOptions {
-	readonly history?: "full" | "tail";
-	/**
-	 * With `history: "tail"`, the entry to open the session at instead of its leaf: the session holds what a resume at
-	 * that entry loads, and continues from it.
-	 */
+	readonly history?: "tail";
+	/** The entry to resume from instead of the current leaf. */
 	readonly leafId?: string;
 }
 
@@ -410,6 +407,11 @@ export type ReadonlySessionManager = Pick<
 	| "getOmittedHistoryTotals"
 	| "getEntrySeq"
 	| "findEntrySeq"
+	| "readEntry"
+	| "readHistory"
+	| "readHistoryChunks"
 	| "getLastSeq"
 	| "getSessionRecoveryState"
+	| "getAdmissionKeys"
+	| "readOpenWorkflowIds"
 >;

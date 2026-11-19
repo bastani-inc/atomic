@@ -267,7 +267,7 @@ describe("resuming a session whose snapshot cannot be restored", () => {
 });
 
 describe("snapshots recorded in a session", () => {
-	test("a recorded id whose record the session does not hold never hides the checkout's earlier snapshot", () => {
+	test("a recorded id whose record the session does not hold never hides the checkout's earlier snapshot", async () => {
 		const record = { id: "s1", root: "/work/a", tree: "t1", chain: [], omitted: [], filters: null, bundle: null };
 		const at = (id: string, parentId: string | null) => ({ id, parentId, timestamp: "2026-01-01T00:00:00.000Z" });
 		const entries: FileEntry[] = [
@@ -280,7 +280,7 @@ describe("snapshots recorded in a session", () => {
 			},
 			{ type: "worktree_snapshot", ...at("e2", "e1"), root: "/work/a", snapshotId: "ghost" },
 		];
-		const manager = SessionManager.inMemory("/work", undefined, entries);
+		const manager = await SessionManager.inMemory("/work", undefined, entries);
 		const latest = manager.getLatestWorktreeSnapshots();
 		assert.deepEqual([...latest.keys()], ["/work/a"]);
 		assert.equal(latest.get("/work/a")?.id, "s1");

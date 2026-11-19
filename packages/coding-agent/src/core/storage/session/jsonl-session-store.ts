@@ -65,11 +65,13 @@ import {
 	summarizeSession,
 } from "./session-summary.js";
 import type {
+	OversizedSessionEntry,
 	SessionCompactionPoint,
 	SessionEntriesPage,
 	SessionEntriesQuery,
 	SessionEntryAt,
 	SessionEntryRange,
+	SessionEntrySizes,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
@@ -82,8 +84,13 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix } from "./types.js";
-import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
+import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import {
+	validateNewSessionId,
+	validateSessionEntries,
+	validateSessionHeader,
+	validateSessionText,
+} from "./validation.js";
 
 interface SessionFileState {
 	readonly stamp: string;
@@ -581,7 +588,8 @@ export class JsonlSessionStore implements SessionStore {
 	): Promise<SessionWriteResult> {
 		return this.run(async () => {
 			validateSessionHeader(header);
-			validateSessionEntries(entries);
+			validateNewSessionId("header.id", header.id);
+			validateSessionEntries(entries, "new");
 			if (await this.claimed(header.id)) throw new SessionExistsError(header.id);
 			const payload = this.encode(header, entries);
 			const path = location === undefined ? this.locationFor(header) : resolve(location);
@@ -613,7 +621,7 @@ export class JsonlSessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		return this.run(async () => {
 			const { path, state } = await this.forWrite(sessionId, options);
-			validateSessionEntries(entries);
+			validateSessionEntries(entries, "new");
 			if (entries.length === 0) return { lastSeq: state.lastSeq };
 			if (state.torn) await truncate(path, state.size);
 			const lines = entries.map((entry) => JSON.stringify(entry));
@@ -668,9 +676,55 @@ export class JsonlSessionStore implements SessionStore {
 		return this.run(async () => {
 			const { path } = await this.forWrite(sessionId, options);
 			validateSessionHeader(header);
-			validateSessionEntries(entries);
+			validateSessionEntries(entries, "new");
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 			return { lastSeq: entries.length, epoch: await this.commit(path, header, entries) };
+		});
+	}
+
+	updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
+		return this.run(async () => {
+			validateSessionHeader(header);
+			const { path, state } = await this.forWrite(header.id, options);
+			const temporary = `${path}.${randomUUID()}.tmp`;
+			const output = await open(temporary, "wx+", 0o600);
+			try {
+				let witness: Buffer;
+				try {
+					await output.writeFile(this.encode(header, []));
+					let inHeader = true;
+					const source = createReadStream(path, { end: state.size - 1 });
+					for await (const chunk of source as AsyncIterable<Buffer>) {
+						if (!inHeader) await output.writeFile(chunk);
+						else {
+							const newline = chunk.indexOf(10);
+							if (newline >= 0) {
+								inHeader = false;
+								await output.writeFile(chunk.subarray(newline + 1));
+							}
+						}
+					}
+					witness = await witnessAt(output, (await output.stat()).size);
+					await output.chmod((await stat(path)).mode & 0o7777);
+				} finally {
+					await output.close();
+				}
+				await this.forgetIndex(path);
+				await rename(temporary, path);
+				const headerStamp = JSON.stringify(header);
+				const stats = await this.remember(path, {
+					...state,
+					headerStamp,
+					witness,
+					torn: false,
+					terminated: state.lastSeq === 0 || state.terminated,
+				});
+				return { lastSeq: state.lastSeq, epoch: epochOf(stats, headerStamp) };
+			} finally {
+				await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
+					if (cause.code !== "ENOENT") throw cause;
+				});
+			}
 		});
 	}
 
@@ -926,9 +980,34 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
-	readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+	readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
+		return this.run(async () => {
+			const { jsonl } = await this.indexed(sessionId);
+			const start = Math.max(1, startSeq);
+			const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq, start + SESSION_HISTORY_PAGE_ENTRIES - 1));
+			return {
+				epoch: jsonl.index.epoch,
+				lastSeq: jsonl.index.seq,
+				sizes: seqs.map((seq) => ({ seq, bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq) })),
+			};
+		});
+	}
+
+	readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
+		return this.run(async () => {
+			const { path, jsonl } = await this.indexed(reference.sessionId);
+			if (jsonl.index.epoch !== reference.epoch)
+				throw new SessionConflictError(reference.sessionId, reference.seq, jsonl.index.seq);
+			const start = spanStart(jsonl, reference.seq) + offset;
+			return readBytes(path, start, Math.min(SESSION_HISTORY_CHUNK_BYTES, spanEnd(jsonl, reference.seq) - start));
+		});
+	}
+
+	readRange(sessionId: string, startSeq: number, endSeq: number, expectedEpoch?: string): Promise<SessionEntryRange> {
 		return this.run(async () => {
 			const { path, jsonl } = await this.indexed(sessionId);
+			if (expectedEpoch !== undefined && expectedEpoch !== jsonl.index.epoch)
+				throw new SessionConflictError(sessionId, endSeq, jsonl.index.seq);
 			const start = Math.max(1, startSeq);
 			const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq));
 			const read = await this.entriesAt(path, jsonl, seqs);
@@ -1107,7 +1186,6 @@ export class JsonlSessionStore implements SessionStore {
 		let batch: SessionEntry[] = [];
 		const flush = () => {
 			if (batch.length === 0) return;
-			validateSessionEntryStructure(batch, path);
 			validateSessionEntries(batch);
 			index = foldSessionResume(index, batch, (id) => ids.get(id), activeSeq);
 			batch = [];
@@ -1116,6 +1194,7 @@ export class JsonlSessionStore implements SessionStore {
 			const text = line.toString("utf8");
 			if (!text.trim()) return;
 			const entry = JSON.parse(text) as SessionEntry;
+			validateSessionEntryStructure([entry], path);
 			spans.push(start, start + line.length);
 			hashes.push(idHash(entry.id));
 			batch.push(entry);
@@ -1156,6 +1235,7 @@ export class JsonlSessionStore implements SessionStore {
 			reportTornLine(path);
 			return { index, spans, ids: hashes, size: lineStart, terminated: true, torn: true };
 		}
+		validateSessionEntryStructure([unterminated], path);
 		spans.push(lineStart, position);
 		hashes.push(idHash(unterminated.id));
 		batch.push(unterminated);

@@ -19,11 +19,15 @@ import type {
 } from "../../core/extensions/workflow-run-control.js";
 import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
 import type { SaveCredentialOptions } from "../../core/model-runtime.js";
-import type { SessionEntry, SessionSummaryEntry, SessionTreeNode } from "../../core/session-manager.ts";
+import type { SessionEntry, SessionSummaryEntry } from "../../core/session-manager.ts";
+import type { OversizedSessionEntry } from "../../core/storage/session/types.js";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import type {
 	RpcAutocompleteItem,
 	RpcCommand,
+	RpcForkMessagePage,
+	RpcHistoryChunk,
+	RpcHistoryPage,
 	RpcLoginProviderResult,
 	RpcLogoutProviderResult,
 	RpcModelCatalog,
@@ -34,6 +38,7 @@ import type {
 	RpcSessionInfo,
 	RpcSessionState,
 	RpcSlashCommand,
+	RpcTreePage,
 } from "./rpc-types.ts";
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
@@ -271,16 +276,35 @@ export abstract class RpcClientApi {
 	async clone(): Promise<{ cancelled: boolean }> {
 		return this.data(await this.request({ type: "clone" }));
 	}
-	async getForkMessages(): Promise<Array<{ entryId: string; text: string }>> {
-		return this.data<{ messages: Array<{ entryId: string; text: string }> }>(
-			await this.request({ type: "get_fork_messages" }),
-		).messages;
+	async getForkMessages(cursor?: string): Promise<RpcForkMessagePage> {
+		return this.data(await this.request({ type: "get_fork_messages", cursor }));
 	}
-	async getEntries(since?: string): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
-		return this.data(await this.request({ type: "get_entries", since }));
+	async getEntries(options: {
+		readonly windowOnly: true;
+	}): Promise<{ entries: SessionEntry[]; leafId: string | null }>;
+	async getEntries(options?: {
+		readonly since?: string;
+		readonly cursor?: string;
+		readonly fromSeq?: number;
+		readonly toSeq?: number;
+	}): Promise<RpcHistoryPage>;
+	async getEntries(
+		options: {
+			readonly windowOnly?: true;
+			readonly since?: string;
+			readonly cursor?: string;
+			readonly fromSeq?: number;
+			readonly toSeq?: number;
+		} = {},
+	): Promise<RpcHistoryPage | { entries: SessionEntry[]; leafId: string | null }> {
+		if (options.windowOnly) return this.data(await this.request({ type: "get_context_window" }));
+		return this.data(await this.request({ type: "get_entries", ...options }));
 	}
-	async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
-		return this.data(await this.request({ type: "get_tree" }));
+	async getTree(cursor?: string): Promise<RpcTreePage> {
+		return this.data(await this.request({ type: "get_tree", cursor }));
+	}
+	async getHistoryChunk(reference: OversizedSessionEntry, offset = 0): Promise<RpcHistoryChunk> {
+		return this.data(await this.request({ type: "get_history_chunk", reference, offset }));
 	}
 	async getLastAssistantText(): Promise<string | null> {
 		return this.data<{ text: string | null }>(await this.request({ type: "get_last_assistant_text" })).text;

@@ -67,6 +67,7 @@ export function normalizeSessionEntries(entries: readonly SessionEntry[]): reado
 
 /** Structural type for pi's sessionManager (optional — degrades gracefully). */
 export interface SessionManager {
+	readOpenWorkflowIds?: () => Promise<string[]>;
 	getSessionStore?: () => import("@bastani/atomic").SessionStore;
 	getCwd?: () => string;
 	getEntries?: () => SessionEntry[] | readonly SessionEntry[];
@@ -204,11 +205,22 @@ export function restoreOnSessionStart(
 
 	const entries = getEntries.call(sessionManager) as readonly SessionEntry[];
 	const sessionEntries = normalizeSessionEntries(entries);
-	restoreTerminalRuns(sessionEntries, store);
-	const inFlight = scanInFlightRuns(sessionEntries);
-	if (inFlight.length === 0) return;
+	// A partial list also looks like a removal: publish every restored run before listeners or callbacks can paint.
+	const recovered = store.batch(() => restoreSessionRuns(sessionEntries, config.resumeInFlight, store));
+	for (const run of recovered) {
+		if (config.resumeInFlight === "auto") callbacks.onResume?.(run);
+		else callbacks.onCrashed?.(run);
+	}
+}
 
-	for (const run of inFlight) {
+function restoreSessionRuns(
+	sessionEntries: readonly NormalizedSessionEntry[],
+	mode: ResumeInFlight,
+	store: Store,
+): InFlightRun[] {
+	restoreTerminalRuns(sessionEntries, store);
+	const recovered: InFlightRun[] = [];
+	for (const run of scanInFlightRuns(sessionEntries)) {
 		const runMeta = findRunStartMetadata(sessionEntries, run.runId);
 		const blockedMeta = findRunBlockedMetadata(sessionEntries, run.runId);
 		const stages = _buildStageSnapshots(sessionEntries, run.runId, blockedMeta);
@@ -222,6 +234,7 @@ export function restoreOnSessionStart(
 				stages,
 				toolNodes: [],
 				startedAt: run.startTs,
+				runGeneration: blockedMeta.runGeneration ?? (runMeta.runGeneration ?? 0) + 1,
 				...(blockedMeta.endedAt !== undefined ? { endedAt: blockedMeta.endedAt } : {}),
 				...(runMeta.parentRunId !== undefined ? { parentRunId: runMeta.parentRunId } : {}),
 				...(runMeta.parentStageId !== undefined ? { parentStageId: runMeta.parentStageId } : {}),
@@ -236,8 +249,7 @@ export function restoreOnSessionStart(
 				...(runMeta.budget !== undefined ? { budget: runMeta.budget } : {}),
 				...(blockedMeta.budgetState !== undefined ? { budgetState: blockedMeta.budgetState } : {}),
 			};
-			store.recordRunStart(runSnapshot);
-			store.recordRunBlocked(run.runId, blockedMeta.error, {
+			store.restoreActiveBlockedRun(runSnapshot, blockedMeta.error, {
 				failureKind: blockedMeta.failureKind,
 				...(blockedMeta.failureCode !== undefined ? { failureCode: blockedMeta.failureCode } : {}),
 				failureRecoverability: "recoverable",
@@ -256,10 +268,11 @@ export function restoreOnSessionStart(
 			continue;
 		}
 
-		if (config.resumeInFlight === "auto") {
+		if (mode === "auto") {
 			// Re-hydrate the run into the store as "running"
 			const runSnapshot: RunSnapshot = {
 				id: run.runId,
+				runGeneration: runMeta.runGeneration,
 				name: run.name,
 				inputs: run.inputs,
 				status: "running",
@@ -280,11 +293,11 @@ export function restoreOnSessionStart(
 					: {}),
 			};
 			store.recordRunStart(runSnapshot);
-			callbacks.onResume?.(run);
 		} else {
 			// "ask" or "never": mark as crashed in store, surface to caller
 			const runSnapshot: RunSnapshot = {
 				id: run.runId,
+				runGeneration: runMeta.runGeneration,
 				name: run.name,
 				inputs: run.inputs,
 				status: "failed",
@@ -310,7 +323,8 @@ export function restoreOnSessionStart(
 			};
 			store.recordRunStart(runSnapshot);
 			store.recordRunEnd(run.runId, "failed");
-			callbacks.onCrashed?.(run);
 		}
+		recovered.push(run);
 	}
+	return recovered;
 }

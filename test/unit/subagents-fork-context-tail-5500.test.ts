@@ -278,6 +278,34 @@ test("a child waiting for a slot reads only its captured launch window after the
 	);
 });
 
+test("a delayed stage fork reads the saved launch window after the parent has advanced and been reopened (#5594)", async () => {
+	let rows = 0;
+	const store = await sqlStore((count) => {
+		rows += count;
+	});
+	const expected = await (async () => {
+		const manager = await longParent(store);
+		const point = manager.getLeafId()!;
+		const messages = manager.buildSessionContext().messages;
+		await manager.appendMessage({ role: "user", content: "parent moved on", timestamp: 1 });
+		return { id: manager.getSessionId(), point, messages };
+	})();
+	rows = 0;
+	const stage = await forkStageSession(
+		store,
+		expected.id,
+		process.cwd(),
+		{ workflow: { runId: "saved", stageId: "leaf", stageName: "leaf" } },
+		undefined,
+		expected.point,
+	);
+	assert.deepEqual(stage.buildSessionContext().messages.slice(0, expected.messages.length), expected.messages);
+	assert.ok(
+		rows <= FORK_ENTRY_BUDGET * 3,
+		`the delayed stage decoded ${rows} stored payloads for a ${expected.messages.length}-message window`,
+	);
+});
+
 test("forks retain edited tool content without copying the superseded payload (#5594)", async () => {
 	const store = await sqlStore();
 	const parent = await SessionManager.create(store, process.cwd());

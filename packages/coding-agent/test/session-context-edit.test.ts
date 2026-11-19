@@ -61,6 +61,35 @@ function projectedTexts(session: SessionManager): string[] {
 }
 
 describe("session context edits", () => {
+	it("releases tool output replaced by a context edit while its original bytes remain in history (#5554)", async () => {
+		const session = SessionManager.inMemory();
+		const make = async () => {
+			const block = { type: "text" as const, text: "old-output ".repeat(8192) };
+			const id = await session.appendMessage({
+				role: "toolResult",
+				toolCallId: "saved",
+				toolName: "read",
+				timestamp: 1,
+				isError: false,
+				content: [block],
+			});
+			return { id, weak: new WeakRef(block) };
+		};
+		const { id, weak } = await make();
+		await session.appendContextEdit(id, { content: "reduced" });
+		const { collectGarbage } = await import("../../../test/helpers/collect-garbage.js");
+		await collectGarbage();
+		expect(weak.deref() === undefined).toBe(true);
+		expect(projectedTexts(session)).toEqual(["reduced"]);
+		const raw = await session.readEntry(id);
+		expect(raw).toMatchObject({
+			type: "message",
+			message: { content: [{ type: "text", text: "old-output ".repeat(8192) }] },
+		});
+		await session.branch(id);
+		expect(projectedTexts(session)).toEqual(["old-output ".repeat(8192)]);
+	});
+
 	it("omits a target only from model projection", async () => {
 		const session = SessionManager.inMemory();
 		await session.appendMessage({ role: "user", content: "request", timestamp: Date.now() });
@@ -80,7 +109,7 @@ describe("session context edits", () => {
 
 		expect(session.getBranch().filter((entry) => entry.type === "message")).toHaveLength(3);
 		expect(session.buildSessionProjection().messages.map((message) => message.role)).toEqual(["user"]);
-		expect((session.getEntry(resultId) as { message: ToolResultMessage }).message).toBe(result);
+		expect(((await session.readEntry(resultId)) as { message: ToolResultMessage }).message).toEqual(result);
 	});
 
 	it("replaces only content and lets the latest edit win", async () => {
@@ -95,7 +124,7 @@ describe("session context edits", () => {
 		if (projected.role !== "assistant") throw new Error("expected assistant");
 		expect(text(projected)).toBe("restored");
 		expect(projected.usage.totalTokens).toBe(11);
-		expect(text((session.getEntry(targetId) as { message: AssistantMessage }).message)).toBe("original");
+		expect(text(((await session.readEntry(targetId)) as { message: AssistantMessage }).message)).toBe("original");
 	});
 
 	it("normalizes string replacements for array-only assistant and tool-result roles", async () => {

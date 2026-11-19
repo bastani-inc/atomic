@@ -3,6 +3,7 @@ import type { CompactionEntry, SessionEntry, SessionWorkflowMetadata } from "../
 import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
+export const SESSION_ID_MAX_BYTES = 4096;
 
 /** @internal Platform-owned stores inject filesystem identity without coupling portable adapters to it. */
 export type SessionCwdMatcher = (cwd: string) => (candidate: string | undefined) => boolean | Promise<boolean>;
@@ -62,6 +63,41 @@ export interface SessionStoredEntry {
 	readonly entry: SessionEntry;
 }
 
+export const SESSION_HISTORY_PAGE_BYTES = 1024 * 1024;
+export const SESSION_HISTORY_CHUNK_BYTES = 64 * 1024;
+export const SESSION_HISTORY_PAGE_ENTRIES = 64;
+
+/** A stored entry too large for a history page. Its exact bytes are available in chunks, not a truncated entry. */
+export interface OversizedSessionEntry {
+	readonly kind: "oversized";
+	readonly sessionId: string;
+	readonly epoch: string;
+	readonly seq: number;
+	readonly bytes: number;
+}
+
+export type SessionHistoryItem = SessionStoredEntry | OversizedSessionEntry;
+
+export interface SessionHistoryPage {
+	readonly items: readonly SessionHistoryItem[];
+	readonly nextCursor?: string;
+}
+
+export interface SessionHistoryReadOptions {
+	/** Order in which pages are visited. The entries within each page always remain chronological. */
+	readonly direction?: "forward" | "backward";
+	readonly fromSeq?: number;
+	readonly toSeq?: number;
+	readonly cursor?: string;
+	readonly signal?: AbortSignal;
+}
+
+export interface SessionEntrySizes {
+	readonly epoch: string;
+	readonly lastSeq: number;
+	readonly sizes: readonly { readonly seq: number; readonly bytes: number }[];
+}
+
 export interface SessionStateEntry extends SessionStoredEntry {
 	readonly onBranch: boolean;
 }
@@ -106,7 +142,9 @@ export interface SessionCompactionPoint {
 }
 
 export interface SessionRecoveryState {
-	readonly admissionKeys: readonly string[];
+	readonly workflowStarts?: Readonly<Record<string, number>>;
+	/** Sorted, packed 128-bit admission-key digests, encoded as base64. Does not expose original keys. */
+	readonly admissionDigests: string;
 	readonly intercomDeliveredIds: readonly string[];
 	readonly deliveryOpIds?: readonly string[];
 }
@@ -294,13 +332,19 @@ export interface SessionStore {
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
 	): Promise<SessionWriteResult>;
+	/** Change the header without materializing its existing entries. Existing readers see a new epoch. */
+	updateHeader?(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult>;
 	load(sessionId: string): Promise<SessionSnapshot>;
 	readEntryRange?(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage>;
 	readonly searchIndex?: SessionSearchIndex;
 
 	readTail?(sessionId: string, fromSeq: number): Promise<SessionTail>;
 
-	readRange?(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange>;
+	readRange?(sessionId: string, startSeq: number, endSeq: number, expectedEpoch?: string): Promise<SessionEntryRange>;
+	/** Metadata only; a historical page is sized before any entry is decoded. */
+	readEntrySizes?(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes>;
+	/** Read at most SESSION_HISTORY_CHUNK_BYTES, rejecting a reference to a replaced generation. */
+	readEntryChunk?(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array>;
 
 	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
 	readResume?(sessionId: string, leafId?: string): Promise<SessionResume>;

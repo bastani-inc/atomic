@@ -148,11 +148,11 @@ interface ResumedTranscript {
 	readonly transcript: ScrollView;
 }
 
-function openResumedSession(turns: number): ResumedTranscript {
+async function openResumedSession(turns: number): Promise<ResumedTranscript> {
 	const terminal = new RecordingTerminal();
 	terminal.columns = COLUMNS;
 	terminal.rows = ROWS;
-	const sessionManager = SessionManager.inMemory(tmpdir(), undefined, sessionEntries(turns));
+	const sessionManager = await SessionManager.inMemory(tmpdir(), undefined, sessionEntries(turns));
 	const mode = new InteractiveMode(runtimeHostFor(sessionManager), { terminal });
 	const tui = mode.ui as unknown as TuiAltScreen;
 	const transcript = new ScrollView(mode.documentContainer, { follow: "end", primary: true });
@@ -202,7 +202,7 @@ function assertHoldsEveryTurn(mode: InteractiveMode, turns: number): void {
 
 test("a frame after the first renders what the viewport shows, however long the resumed transcript", async () => {
 	for (const turns of TURNS) {
-		const { mode, tui, transcript } = openResumedSession(turns);
+		const { mode, tui, transcript } = await openResumedSession(turns);
 		mode.renderInitialMessages();
 		tui.renderNow();
 		await fillIn(mode, turns);
@@ -221,7 +221,7 @@ test("a frame after the first renders what the viewport shows, however long the 
 
 test("resuming a long transcript builds and renders it in bounded slices across event-loop turns", async () => {
 	for (const turns of TURNS) {
-		const { mode, tui } = openResumedSession(turns);
+		const { mode, tui } = await openResumedSession(turns);
 		const before = workDone(mode);
 		mode.renderInitialMessages();
 		tui.renderNow();

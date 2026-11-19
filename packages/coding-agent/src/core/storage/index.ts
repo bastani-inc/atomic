@@ -91,12 +91,17 @@ export {
 	teamProfileSelection,
 } from "./selection.js";
 export type {
+	OversizedSessionEntry,
 	SessionBlob,
 	SessionCompactionPoint,
 	SessionEntriesPage,
 	SessionEntriesQuery,
 	SessionEntryAt,
 	SessionEntryRange,
+	SessionEntrySizes,
+	SessionHistoryItem,
+	SessionHistoryPage,
+	SessionHistoryReadOptions,
 	SessionHistoryTotals,
 	SessionRecoveryState,
 	SessionResume,
@@ -109,6 +114,11 @@ export type {
 	SessionStoredEntry,
 	SessionTail,
 	SessionUsageTotals,
+} from "./session/types.js";
+export {
+	SESSION_HISTORY_CHUNK_BYTES,
+	SESSION_HISTORY_PAGE_BYTES,
+	SESSION_HISTORY_PAGE_ENTRIES,
 } from "./session/types.js";
 export * from "./sqlite-facade.js";
 export type {

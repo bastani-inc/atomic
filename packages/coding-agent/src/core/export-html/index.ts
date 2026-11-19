@@ -1,21 +1,22 @@
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { open, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import type { AgentState } from "@bastani/atomic-agent-core";
-import type { ToolCall } from "@bastani/atomic-ai/compat";
-import { existsSync, writeFileSync } from "fs";
-import { readFile, writeFile } from "fs/promises";
 import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDirAsync } from "../../config.js";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/interactive/theme/theme.js";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
-import type { SessionEntry } from "../session-manager.ts";
 import { SessionManager } from "../session-manager.ts";
 import { SessionNotFoundError } from "../storage/session/errors.js";
+import { encodeSessionData, sessionDataBytes } from "./session-data.js";
 
 /**
  * Interface for rendering custom tools to HTML.
  * Used by agent-session to pre-render extension tool output.
  */
 export interface ToolHtmlRenderer {
+	/** Discard transient renderer state for a call after its output has been written. */
+	releaseCall?(toolCallId: string): void;
 	/** Render a tool call to HTML. Returns undefined if tool has no custom renderer. */
 	renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined;
 	/** Render a tool result to HTML. Returns collapsed/expanded or undefined if tool has no custom renderer. */
@@ -26,13 +27,6 @@ export interface ToolHtmlRenderer {
 		details: unknown,
 		isError: boolean,
 	): { collapsed?: string; expanded?: string } | undefined;
-}
-
-/** Pre-rendered HTML for a custom tool call and result */
-interface RenderedToolHtml {
-	callHtml?: string;
-	resultHtmlCollapsed?: string;
-	resultHtmlExpanded?: string;
 }
 
 export interface ExportOptions {
@@ -130,20 +124,8 @@ function generateThemeVars(themeName?: string): string {
 	return lines.join("\n      ");
 }
 
-interface SessionData {
-	header: ReturnType<SessionManager["getHeader"]>;
-	entries: ReturnType<SessionManager["getEntries"]>;
-	leafId: string | null;
-	systemPrompt?: string;
-	tools?: Array<Pick<ToolDefinition, "name" | "description" | "parameters">>;
-	/** Pre-rendered HTML for custom tool calls/results, keyed by tool call ID */
-	renderedTools?: Record<string, RenderedToolHtml>;
-}
-
-/**
- * Core HTML generation logic shared by both export functions.
- */
-async function generateHtml(sessionData: SessionData, themeName?: string): Promise<string> {
+/** The fixed HTML before and after the streamed session data. */
+async function htmlTemplate(themeName?: string): Promise<readonly [string, string]> {
 	const templateDir = await getExportTemplateDirAsync();
 	const [template, templateCss, templateJs, markedJs, markedCjkFriendlyJs, hljsJs] = await Promise.all(
 		[
@@ -164,9 +146,6 @@ async function generateHtml(sessionData: SessionData, themeName?: string): Promi
 	const containerBg = themeExport.cardBg ?? derivedExportColors.cardBg;
 	const infoBg = themeExport.infoBg ?? derivedExportColors.infoBg;
 
-	// Base64 encode session data to avoid escaping issues
-	const sessionDataBase64 = Buffer.from(JSON.stringify(sessionData)).toString("base64");
-
 	// Build the CSS with theme variables injected
 	const css = templateCss
 		.replace("{{THEME_VARS}}", () => themeVars)
@@ -174,73 +153,17 @@ async function generateHtml(sessionData: SessionData, themeName?: string): Promi
 		.replace("{{CONTAINER_BG}}", () => containerBg)
 		.replace("{{INFO_BG}}", () => infoBg);
 
-	return template
-		.replace("{{CSS}}", () => css)
-		.replace("{{JS}}", () => templateJs)
-		.replace("{{SESSION_DATA}}", () => sessionDataBase64)
-		.replace("{{MARKED_JS}}", () => markedJs)
-		.replace("{{MARKED_CJK_FRIENDLY_JS}}", () => markedCjkFriendlyJs)
-		.replace("{{HIGHLIGHT_JS}}", () => hljsJs);
-}
-
-/** Tools rendered directly by the HTML template (not pre-rendered via TUI→ANSI→HTML pipeline) */
-const TEMPLATE_RENDERED_TOOLS = new Set(["bash", "read", "write", "edit", "ls"]);
-
-/**
- * Pre-render custom tools to HTML using their TUI renderers.
- */
-function preRenderCustomTools(
-	entries: SessionEntry[],
-	toolRenderer: ToolHtmlRenderer,
-): Record<string, RenderedToolHtml> {
-	const renderedTools: Record<string, RenderedToolHtml> = {};
-	const toolCalls = new Map<string, ToolCall>();
-
-	for (const entry of entries) {
-		if (entry.type !== "message") continue;
-		const msg = entry.message;
-
-		// Find tool calls in assistant messages
-		if (msg.role === "assistant" && Array.isArray(msg.content)) {
-			for (const block of msg.content) {
-				if (block.type === "toolCall" && !TEMPLATE_RENDERED_TOOLS.has(block.name)) {
-					toolCalls.set(block.id, block);
-					const callHtml = toolRenderer.renderCall(block.id, block.name, block.arguments);
-					if (callHtml) {
-						renderedTools[block.id] = { callHtml };
-					}
-				}
-			}
-		}
-
-		// Find tool results
-		if (msg.role === "toolResult" && msg.toolCallId) {
-			const toolName = msg.toolName || "";
-			// Only render if we have a pre-rendered call OR it's not template-rendered
-			const existing = renderedTools[msg.toolCallId];
-			if (existing || !TEMPLATE_RENDERED_TOOLS.has(toolName)) {
-				const rendered = toolRenderer.renderResult(
-					msg.toolCallId,
-					toolName,
-					msg.content,
-					msg.details,
-					msg.isError || false,
-				);
-				if (rendered) {
-					const call = toolCalls.get(msg.toolCallId);
-					const callHtml = call ? toolRenderer.renderCall(msg.toolCallId, call.name, call.arguments) : undefined;
-					renderedTools[msg.toolCallId] = {
-						...existing,
-						...(callHtml !== undefined ? { callHtml } : {}),
-						resultHtmlCollapsed: rendered.collapsed,
-						resultHtmlExpanded: rendered.expanded,
-					};
-				}
-			}
-		}
-	}
-
-	return renderedTools;
+	const [prefix, suffix] = template.split("{{SESSION_DATA}}");
+	if (prefix === undefined || suffix === undefined)
+		throw new Error("Session export template is missing its data slot");
+	const fill = (part: string) =>
+		part
+			.replace("{{CSS}}", () => css)
+			.replace("{{JS}}", () => templateJs)
+			.replace("{{MARKED_JS}}", () => markedJs)
+			.replace("{{MARKED_CJK_FRIENDLY_JS}}", () => markedCjkFriendlyJs)
+			.replace("{{HIGHLIGHT_JS}}", () => hljsJs);
+	return [fill(prefix), fill(suffix)];
 }
 
 /**
@@ -254,36 +177,9 @@ export async function exportSessionToHtml(
 ): Promise<string> {
 	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
 
-	const snapshot = await sm
-		.getSessionStore()
-		.load(sm.getSessionId())
-		.catch((error: Error) => {
-			if (error instanceof SessionNotFoundError)
-				throw new Error("Nothing to export yet - start a conversation first");
-			throw error;
-		});
-	const entries = [...snapshot.entries];
-
-	// Pre-render custom tools if a tool renderer is provided
-	let renderedTools: Record<string, RenderedToolHtml> | undefined;
-	if (opts.toolRenderer) {
-		renderedTools = preRenderCustomTools(entries, opts.toolRenderer);
-		// Only include if we actually rendered something
-		if (Object.keys(renderedTools).length === 0) {
-			renderedTools = undefined;
-		}
-	}
-
-	const sessionData: SessionData = {
-		header: { type: "session", ...snapshot.header },
-		entries,
-		leafId: sm.getLeafId(),
-		systemPrompt: state?.systemPrompt,
-		tools: state?.tools?.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
-		renderedTools,
-	};
-
-	const html = await generateHtml(sessionData, opts.themeName);
+	if (!(await sm.getSessionStore().readHeader(sm.getSessionId())))
+		throw new Error("Nothing to export yet - start a conversation first");
+	const [prefix, suffix] = await htmlTemplate(opts.themeName);
 
 	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
 	if (!outputPath) {
@@ -292,7 +188,29 @@ export async function exportSessionToHtml(
 		outputPath = `${APP_NAME}-session-${sessionBasename}.html`;
 	}
 
-	await writeFile(outputPath, html, "utf8");
+	const target = await realpath(outputPath).catch(() => outputPath);
+	const mode = await stat(target).then(
+		(s) => s.mode & 0o7777,
+		() => 0o600,
+	);
+	const partial = `${target}.${randomUUID()}.partial`;
+	try {
+		const output = await open(partial, "wx", 0o600);
+		try {
+			await output.writeFile(prefix);
+			for await (const encoded of encodeSessionData(sessionDataBytes(sm, state, opts.toolRenderer)))
+				await output.writeFile(encoded);
+			await output.writeFile(suffix);
+			await output.chmod(mode);
+		} finally {
+			await output.close();
+		}
+		await rename(partial, target);
+	} catch (error) {
+		await rm(partial, { force: true });
+		if (error instanceof SessionNotFoundError) throw new Error("Nothing to export yet - start a conversation first");
+		throw error;
+	}
 	return outputPath;
 }
 
@@ -310,22 +228,15 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 
 	const sm = await SessionManager.open(resolvedInputPath);
 
-	const sessionData: SessionData = {
-		header: sm.getHeader(),
-		entries: sm.getEntries(),
-		leafId: sm.getLeafId(),
-		systemPrompt: undefined,
-		tools: undefined,
-	};
-
-	const html = await generateHtml(sessionData, opts.themeName);
-
 	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
 	if (!outputPath) {
 		const inputBasename = basename(resolvedInputPath, ".jsonl");
 		outputPath = `${APP_NAME}-session-${inputBasename}.html`;
 	}
 
-	writeFileSync(outputPath, html, "utf8");
-	return outputPath;
+	try {
+		return await exportSessionToHtml(sm, undefined, { ...opts, outputPath });
+	} finally {
+		await sm.getSessionStore().close();
+	}
 }
