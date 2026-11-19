@@ -23,8 +23,8 @@ const DELIVERY_OP_TYPE = "atomic-pooled-delivery-op";
 
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
-/** Version 7 records where to look for open workflows instead of restoring their whole lifecycle. */
-const RESUME_INDEX_VERSION = 7;
+/** Version 8 carries snapshot record/restore presence when rebuilding from chunked session entries. */
+const RESUME_INDEX_VERSION = 8;
 
 export interface SessionResumeIndex {
 	readonly version: typeof RESUME_INDEX_VERSION;

@@ -91,6 +91,43 @@ for (const backend of storageBackends) {
 					id: `c${i}`,
 					parentId: i ? `c${i - 1}` : null,
 				}));
+				const root = "/checkout";
+				const snapshot = {
+					version: 1 as const,
+					id: "snapshot",
+					root,
+					remotes: [],
+					branch: null,
+					head: "head",
+					snapshot: "commit",
+					tree: "tree",
+					envHash: "env",
+					delta: { base: "head", patch: null, bytes: 0 },
+					chain: [],
+					bundle: null,
+					omitted: [],
+					filters: null,
+					capturedAt: timestamp,
+				};
+				entries.push({
+					type: "worktree_snapshot",
+					timestamp,
+					id: "snapshot-record",
+					parentId: entries.at(-1)!.id,
+					root,
+					snapshotId: snapshot.id,
+					captureMs: 42,
+					snapshot,
+				});
+				entries.push({
+					type: "worktree_snapshot",
+					timestamp,
+					id: "snapshot-restore",
+					parentId: "snapshot-record",
+					root,
+					snapshotId: snapshot.id,
+					restore: { from: root, to: "/restored", snapshotId: snapshot.id, tree: "tree", restoredAt: timestamp },
+				});
 				entries.push({
 					type: "custom_message",
 					timestamp,
