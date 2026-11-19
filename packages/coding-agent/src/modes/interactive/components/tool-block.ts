@@ -33,6 +33,31 @@ export interface ToolBlockSpec {
 	readonly outputPad?: number;
 }
 
+/** A script title keeps its source rows rather than flattening them into one header. */
+export interface ToolBlockTitleRows extends Component {
+	render(width: number, metadataWidth?: number, running?: boolean): string[];
+}
+
+/** Private transcript layout, not the public state object that an extension may keep or freeze. */
+export interface TranscriptTitleLayout<Cache = object> {
+	title?: ToolBlockTitleRows;
+	mounted?: ToolBlockTitleRows;
+	cache?: Cache;
+}
+
+// The host and the builtin tool may use separate module loaders. Recognize actual host contexts by identity,
+// without asking a third-party component or a forwarding extension's older context for a new capability.
+const contextsKey = Symbol.for("@bastani/atomic:transcript-title-layouts");
+const shared = globalThis as typeof globalThis & { [contextsKey]?: WeakMap<object, TranscriptTitleLayout> };
+export function transcriptRenderContext<T extends object>(context: T, layout: TranscriptTitleLayout): T {
+	shared[contextsKey] ??= new WeakMap();
+	shared[contextsKey].set(context, layout);
+	return context;
+}
+export function getTranscriptTitleLayout(context: object): TranscriptTitleLayout | undefined {
+	return shared[contextsKey]?.get(context);
+}
+
 export const TOOL_BLOCK_LIMITS = {
 	bash: 5,
 	search: 8,
@@ -187,25 +212,49 @@ export class ToolBlock implements Component {
 				availableTitle,
 			);
 		const header = truncateToWidth(`${glyph} ${title}${theme.fg("dim", metaText())}`, contentWidth, "…");
-		const rows = [header];
-		if (this.spec.body) {
-			const bodyWidth = Math.max(1, contentWidth - 2);
-			for (const line of this.spec.body.render(bodyWidth)) {
-				rows.push(truncateToWidth(`  ${line.trimEnd()}`, contentWidth, "…"));
-			}
-		}
-		if (this.spec.details) {
-			const records =
-				"toolBlockKind" in this.spec.details && this.spec.details.toolBlockKind === "records"
-					? this.spec.details
-					: new ToolBlockRecords([this.spec.details]);
-			for (const line of records.render(contentWidth)) rows.push(line);
-		}
-		return rows.map((line) => {
-			const result = `${" ".repeat(pad)}${line}`;
-			return noColor() ? stripTerminalSequences(result) : result;
-		});
+		return withBody(this.spec, [header], contentWidth, pad);
 	}
+}
+
+export function renderToolBlockTitleRows(spec: ToolBlockSpec, title: ToolBlockTitleRows, width: number): string[] {
+	if (width < 1) return [];
+	// Surrender the outside margins before squeezing a two-cell source character into one cell.
+	const pad = Math.max(0, Math.min(Math.floor(spec.outputPad ?? 1), Math.floor(width) - 2));
+	const contentWidth = Math.floor(width) - pad;
+	const indent = Math.min(2, Math.max(0, contentWidth - 2));
+	const available = contentWidth - indent;
+	const marker = STATUS_MARKERS[spec.status];
+	const glyph = spec.status === "running" && !noColor() ? atomicWorkingGlyph() : theme.fg(marker.color, marker.glyph);
+	const meta = (spec.meta ?? []).map((part) => ` · ${part}`).join("");
+	// Use the same eight-cell minimum as an ordinary component title, including multiline script titles.
+	const suffix = available - visibleWidth(meta) >= 8 ? meta : "";
+	const rows = title.render(available, visibleWidth(suffix), spec.status === "running");
+	const showSuffix = visibleWidth(rows.at(-1) ?? "") + visibleWidth(suffix) <= available;
+	const header = rows.map((row, i) => {
+		const text = `${i === 0 ? `${glyph} ` : " ".repeat(indent)}${row}${i === rows.length - 1 && showSuffix ? theme.fg("dim", suffix) : ""}`;
+		return i === 0 && indent < 2 ? truncateToWidth(text, contentWidth, "…") : text;
+	});
+	return withBody(spec, header, contentWidth, pad);
+}
+
+function withBody(spec: ToolBlockSpec, rows: string[], contentWidth: number, pad: number): string[] {
+	if (spec.body) {
+		const bodyWidth = Math.max(1, contentWidth - 2);
+		for (const line of spec.body.render(bodyWidth)) {
+			rows.push(truncateToWidth(`  ${line.trimEnd()}`, contentWidth, "…"));
+		}
+	}
+	if (spec.details) {
+		const records =
+			"toolBlockKind" in spec.details && spec.details.toolBlockKind === "records"
+				? spec.details
+				: new ToolBlockRecords([spec.details]);
+		for (const line of records.render(contentWidth)) rows.push(line);
+	}
+	return rows.map((line) => {
+		const result = `${" ".repeat(pad)}${line}`;
+		return noColor() ? stripTerminalSequences(result) : result;
+	});
 }
 
 export class ToolBlockGroup implements Component {
