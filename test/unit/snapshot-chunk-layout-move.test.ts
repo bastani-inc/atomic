@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -114,25 +114,6 @@ afterEach(async () => {
 	while (closers.length > 0) await closers.pop()?.();
 	rmSync(directory, { recursive: true, force: true });
 });
-
-/** Keep a snapshot on a second connection until the returned function releases it. */
-async function pinActivity(reader: SqliteDatabase) {
-	const ready = Promise.withResolvers<void>();
-	const ended = Promise.withResolvers<void>();
-	const reading = reader.transaction(
-		async (tx) => {
-			await tx.get("SELECT n FROM activity");
-			ready.resolve();
-			await ended.promise;
-		},
-		{ readOnly: true },
-	);
-	await Promise.race([ready.promise, reading]);
-	return async () => {
-		ended.resolve();
-		await reading;
-	};
-}
 
 /** Calls `afterCommit` after each transaction `database` commits, and waits for it. */
 function afterEachTransaction(database: SqliteDatabase, afterCommit: () => void | Promise<void>): SqliteDatabase {
@@ -817,128 +798,6 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				reportedFree.bytes = needed;
 				await store.collectGarbage({ graceSeconds: 3_600 });
 				assert.equal(await layoutOf(database), "rowid", "room enough: the move");
-			});
-
-			test("a file with room for one copy and a bounded write-ahead log moves the chunk table (#5700)", async () => {
-				const database = await release0989Store();
-				const large = blob(32 * SNAPSHOT_BLOB_CHUNK_BYTES, 77);
-				await (await release0989.SqlSnapshotBlobStore.open(database, prefix)).putBlobs([large]);
-				const row = await database.get<{ rows: number }>(`SELECT count(*) AS rows FROM ${chunks}`);
-				reportedFree.bytes =
-					SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES + (Number(row!.rows) + 16) * SNAPSHOT_BLOB_CHUNK_BYTES;
-				const store = await SqlSnapshotBlobStore.open(database, prefix);
-				assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), []);
-				assert.equal(await layoutOf(database), "rowid");
-				await assertEveryBlobReads(store, [large], "moved");
-			});
-
-			test("a reader holding the log pauses a tight-space move before it can copy the table into the log (#5700)", async () => {
-				const database = await release0989Store();
-				const large = blob(32 * SNAPSHOT_BLOB_CHUNK_BYTES, 78);
-				await (await release0989.SqlSnapshotBlobStore.open(database, prefix)).putBlobs([large]);
-				const row = await database.get<{ rows: number }>(`SELECT count(*) AS rows FROM ${chunks}`);
-				reportedFree.bytes =
-					SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES + (Number(row!.rows) + 16) * SNAPSHOT_BLOB_CHUNK_BYTES;
-				const file =
-					adapter === "libsql" ? fileURLToPath(database.descriptor.location) : database.descriptor.location;
-				assert.equal((await database.get("PRAGMA journal_mode=WAL"))?.journal_mode, "wal");
-				const reader = await openDatabase(file);
-				{
-					const store = await SqlSnapshotBlobStore.open(database, prefix);
-					await database.get("PRAGMA wal_checkpoint(TRUNCATE)");
-					await reader.transaction(
-						async (tx) => {
-							await tx.get(`SELECT hash FROM ${chunks} LIMIT 1`);
-							await store.collectGarbage({ graceSeconds: 3600 });
-							assert.equal(await layoutOf(database), "WITHOUT ROWID");
-							const log = await database.get<{ log: number }>("PRAGMA wal_checkpoint(PASSIVE)");
-							const page = await database.get<{ page_size: number }>("PRAGMA page_size");
-							assert.ok(Number(log!.log) * (Number(page!.page_size) + 24) <= 16 * SNAPSHOT_BLOB_CHUNK_BYTES);
-						},
-						{ readOnly: true },
-					);
-					await store.collectGarbage({ graceSeconds: 3600 });
-					assert.equal(await layoutOf(database), "rowid");
-					await assertEveryBlobReads(store, [large], "resumed");
-				}
-			});
-
-			test("successive tight-space collections do not extend a log held by overlapping readers", async () => {
-				const file = join(directory, "pinned.sqlite");
-				const db = await openDatabase(file);
-				const large = blob(64 * SNAPSHOT_BLOB_CHUNK_BYTES, 79);
-				await (await release0989.SqlSnapshotBlobStore.open(db, prefix)).putBlobs([large]);
-				await db.exec("CREATE TABLE activity (n INTEGER); INSERT INTO activity VALUES (0)");
-				await db.get("PRAGMA journal_mode=WAL");
-				const readers = [await openDatabase(file), await openDatabase(file)];
-				let index = 0;
-				let release: (() => Promise<void>) | undefined;
-				try {
-					const store = await SqlSnapshotBlobStore.open(
-						afterEachTransaction(db, async () => {
-							if (!release) return;
-							const previous = release;
-							index = 1 - index;
-							release = await pinActivity(readers[index]!);
-							await previous();
-						}),
-						prefix,
-					);
-					reportedFree.bytes = 160 * SNAPSHOT_BLOB_CHUNK_BYTES;
-					await db.get("PRAGMA wal_checkpoint(TRUNCATE)");
-					await db.exec("UPDATE activity SET n=1");
-					release = await pinActivity(readers[index]!);
-					const initial = statSync(`${file}-wal`).size;
-					assert.ok(initial > 0);
-					const sizes: number[] = [];
-					for (let pass = 0; pass < 4; pass++) {
-						assert.deepEqual(await store.collectGarbage({ graceSeconds: 3600 }), []);
-						sizes.push(statSync(`${file}-wal`).size);
-					}
-					assert.deepEqual(sizes, [initial, initial, initial, initial]);
-					await release();
-					release = undefined;
-					await store.collectGarbage({ graceSeconds: 3600 });
-					assert.equal(await layoutOf(db), "rowid");
-					await assertEveryBlobReads(store, [large], "resumed");
-				} finally {
-					await release?.();
-				}
-			});
-
-			test("resumed cleanup with room for the retired table does not wait on an unrelated WAL frame", async () => {
-				const file = join(directory, "retired.sqlite");
-				const db = await openDatabase(file);
-				await db.get("PRAGMA journal_mode=WAL");
-				await db.exec(
-					"CREATE TABLE unrelated (data BLOB); INSERT INTO unrelated VALUES (zeroblob(73400320)); CREATE TABLE activity (n INTEGER); INSERT INTO activity VALUES (0)",
-				);
-				const original = blob(4 * SNAPSHOT_BLOB_CHUNK_BYTES, 80);
-				await (await release0989.SqlSnapshotBlobStore.open(db, prefix)).putBlobs([original]);
-				const stop = new AbortController();
-				const first = await SqlSnapshotBlobStore.open(
-					afterEachTransaction(db, async () => {
-						if ((await chunkTables(db)).includes(`${chunks}_retired`)) stop.abort();
-					}),
-					prefix,
-				);
-				await assert.rejects(first.collectGarbage({ graceSeconds: 3600, signal: stop.signal }), {
-					name: "AbortError",
-				});
-				assert.equal(Number((await db.get(`SELECT count(*) AS n FROM ${chunks}_retired`))?.n), 4);
-				const store = await SqlSnapshotBlobStore.open(db, prefix);
-				const reader = await openDatabase(file);
-				await db.get("PRAGMA wal_checkpoint(TRUNCATE)");
-				const release = await pinActivity(reader);
-				try {
-					await db.exec("UPDATE activity SET n=1");
-					reportedFree.bytes = 106_700_800;
-					assert.deepEqual(await store.collectGarbage({ graceSeconds: 3600 }), []);
-					assert.deepEqual(await chunkTables(db), [chunks]);
-					await assertEveryBlobReads(store, [original], "resumed");
-				} finally {
-					await release();
-				}
 			});
 
 			test("a database whose free-space reading fails is collected as one whose disk Atomic cannot see (#5694)", async () => {

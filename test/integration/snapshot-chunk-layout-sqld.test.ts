@@ -118,34 +118,6 @@ for (const backend of storageBackends) {
 		);
 
 		test(
-			"the pending chunk move reports local free space or the server-side estimate without writing (#5700)",
-			async () => {
-				const scope = await backend.openScope();
-				try {
-					const db = await scope.connect();
-					const older = await release0989.SqlSnapshotBlobStore.open(db, scope.prefix);
-					const original = blob(SNAPSHOT_BLOB_CHUNK_BYTES + 2, 9);
-					await older.putBlobs([original]);
-					const space = await SqlSnapshotBlobStore.pendingChunkMove(db, scope.prefix);
-					if (dialectOf(db).name === "postgres") assert.equal(space, undefined);
-					else {
-						assert.equal(space?.remainingBytes, 2 * SNAPSHOT_BLOB_CHUNK_BYTES);
-						if (backend.name === "libSQL server (sqld)") {
-							assert.equal(space.availableFreeBytes, undefined);
-							assert.equal(space.requiredFreeBytes, 68 * SNAPSHOT_BLOB_CHUNK_BYTES);
-						} else assert.ok(Number(space.availableFreeBytes) > 0);
-						const clustered = dialectOf(db).withoutRowidTables([snapshotIndexTables(scope.prefix).blobChunks]);
-						assert.ok(await db.get(clustered.sql, ...clustered.params));
-					}
-					assert.deepEqual(await older.getBlob(original.hash), original.data);
-				} finally {
-					await scope.close();
-				}
-			},
-			SERVER_TIMEOUT_MS,
-		);
-
-		test(
 			"collection frees the copies of a blob 0.9.89 deleted during the move a few chunks per transaction (#5541)",
 			async () => {
 				const scope = await backend.openScope();

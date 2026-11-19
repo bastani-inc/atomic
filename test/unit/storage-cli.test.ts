@@ -185,23 +185,6 @@ describe("storage status sources (#3856)", () => {
 		assert.match(domain(status, "intercom").multiNode ?? "", /^on \(a local SQLite file/);
 	});
 
-	test("storage status reports a pending snapshot chunk move and its space requirement without starting it (#5700)", async () => {
-		const path = join(root, "pending.sqlite");
-		writeSettings({ storage: { path, prefix: "t_" } });
-		const db = await openNodeSqliteDatabase(path);
-		try {
-			await db.exec(
-				"CREATE TABLE t_snapshot_blob_chunks (hash TEXT, idx INTEGER, data BLOB, PRIMARY KEY(hash,idx)) WITHOUT ROWID; INSERT INTO t_snapshot_blob_chunks VALUES ('one',0,x'01')",
-			);
-			const status = await storage(["status"]);
-			assert.equal(status.code, 0);
-			assert.match(status.out, /snapshot chunk move pending.*[\d,]+ bytes free/i);
-			assert.equal((await db.get("SELECT wr FROM pragma_table_list WHERE name='t_snapshot_blob_chunks'"))?.wr, 1);
-		} finally {
-			await db.close();
-		}
-	});
-
 	test("each domain variable outranks settings, and ATOMIC_STORAGE outranks only settings", async () => {
 		writeSettings({
 			storage: { path: "shared.sqlite" },

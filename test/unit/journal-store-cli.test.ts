@@ -251,28 +251,6 @@ test("atomic storage status shows the journal store, its adopted and missing jou
 	]);
 });
 
-test("storage status names the adopted journal with a pending snapshot chunk move (#5700)", async () => {
-	const path = join(root, "adopted", "journal.sqlite");
-	await journalFile(path, [{ id: "77777777-7777-4777-8777-777777777777", status: "failed" }]);
-	assert.equal((await storage(["adopt", path])).code, 0);
-	const { DatabaseSync } = await import("node:sqlite");
-	const database = new DatabaseSync(path);
-	try {
-		database.exec(
-			"DROP TABLE snapshot_blob_chunks; CREATE TABLE snapshot_blob_chunks(hash TEXT, idx INTEGER, data BLOB, PRIMARY KEY(hash,idx)) WITHOUT ROWID",
-		);
-	} finally {
-		database.close();
-	}
-	const result = await storage(["status"]);
-	assert.ok(
-		result.out.some(
-			(line) => line.includes(path) && line.includes("snapshot chunk move pending") && line.includes("bytes free"),
-		),
-		result.out.join("\n"),
-	);
-});
-
 test("the journal store line counts shards, adopted journals and runs in the singular and plural (#4325)", () => {
 	const status = (counts: { shards: number; adopted: number; runs: number }) =>
 		formatStorageStatus({

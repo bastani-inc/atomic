@@ -67,7 +67,6 @@ import {
 	type TransferredIds,
 } from "../core/storage/transfer-files.js";
 import { importStorage, sessionsTransferDirectory, workflowsTransferDirectory } from "../core/storage-transfer.ts";
-import type { SnapshotChunkMoveSpace } from "../core/worktree-snapshot/blob-store.ts";
 import {
 	loadWorkerHostModule,
 	type WorkerDatabase,
@@ -469,10 +468,6 @@ const DOMAIN_LABELS: Record<DomainStatus["domain"], string> = {
 	intercom: "Intercom",
 };
 
-function describeChunkMove(move: SnapshotChunkMoveSpace): string {
-	return `snapshot chunk move pending; needs ${move.requiredFreeBytes} bytes free (${move.availableFreeBytes === undefined ? "free space unknown; only copies up to 64 MiB can move" : `${move.availableFreeBytes} available`}; ${move.remainingBytes} bytes left to copy)`;
-}
-
 /** The status as the lines `atomic storage status` prints. */
 export function formatStorageStatus(status: StorageStatus): string[] {
 	const lines = [
@@ -494,8 +489,6 @@ export function formatStorageStatus(status: StorageStatus): string[] {
 				);
 			}
 			lines.push(`  connection:  ${probe.connection.status} (${probe.connection.detail})`);
-			const move = probe.snapshotChunkMove;
-			if (move) lines.push(`  snapshots:   ${describeChunkMove(move)}`);
 		}
 		if (domain.multiNode !== undefined) lines.push(`  multi-node:  ${domain.multiNode}`);
 		if (domain.liveBrokers !== undefined) {
@@ -508,8 +501,6 @@ export function formatStorageStatus(status: StorageStatus): string[] {
 			lines.push(
 				`  journals:    ${store.shards} shard${store.shards === 1 ? "" : "s"}, ${store.adopted} adopted journal${store.adopted === 1 ? "" : "s"}, ${store.runs} run${store.runs === 1 ? "" : "s"}`,
 			);
-			for (const move of store.snapshotChunkMoves ?? [])
-				lines.push(`  snapshots:   ${move.path}: ${describeChunkMove(move.space)}`);
 			for (const shard of store.unavailable)
 				lines.push(
 					`  unavailable: ${shard.path} (${shard.kind}, ${shard.code === "shard-missing" ? "no longer exists" : "cannot be opened"}: ${shard.code}${shard.detail === undefined ? "" : `, ${shard.detail}`})`,
