@@ -105,6 +105,10 @@ describe("InteractiveMode assistant diagnostics", () => {
 		expect(output.match(/Anthropic dropped 1 thinking block \(details in session\)/g)).toHaveLength(1);
 		expect(output).not.toContain("prefix_binding_mismatch");
 		expect(output).not.toContain("messages.2.content.0");
+		mode.settingsManager.getShowCacheMissNotices = () => false;
+		chatContainer.clear();
+		renderSessionEntries.call(mode, [entry]);
+		expect(stripAnsi(chatContainer.render(120).join("\n"))).not.toContain("Anthropic dropped");
 	});
 	test("shows a saved reply's service tier warning once when the session is rebuilt (#3529)", () => {
 		initTheme("dark");

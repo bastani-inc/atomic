@@ -68,7 +68,7 @@ export function _refreshFinalizedContext(this: AgentSession): void {
 		// A store write may be visible before its acknowledgement. Don't append a second copy of that input.
 		const pending = new Set(unpersisted);
 		for (const message of projected) pending.delete(message);
-		projected.push(...pending);
+		for (const message of unpersisted) if (pending.has(message)) projected.push(message);
 	}
 	this.agent.state.messages = finalizeProjectedMessages(this, projected);
 }

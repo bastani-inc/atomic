@@ -430,7 +430,7 @@ describe("InteractiveMode compaction events", () => {
 		expect(text.match(/Compaction: 1,234 tokens billed/g)).toHaveLength(1);
 	});
 
-	it.each(["fullscreen", "inline"])(
+	it.each(["fullscreen", "regular"])(
 		"resuming the %s chat keeps cache misses and thinking drops beside their replies (#5681)",
 		(display) => {
 			const reply = (text: string, input: number, cacheRead: number, drops: number) => {
