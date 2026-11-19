@@ -223,7 +223,7 @@ describe.each(subjects)("snapshots dispatched work carries, on $name (#4503)", (
 	});
 
 	test("deleting the root run lets go of every snapshot its work and its binding carried", async () => {
-		const { database, hold, release, blobs } = await openRootPool(subject);
+		const { database, hold, blobs } = await openRootPool(subject);
 		const [first, second, bound] = blobsNamed("first", "second", "bound");
 		await blobs.putBlobs([first!, second!, bound!]);
 		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("s1", [first!.hash])));
@@ -238,7 +238,7 @@ describe.each(subjects)("snapshots dispatched work carries, on $name (#4503)", (
 	});
 
 	test("rows queued before their table had index triggers are indexed before a sweep deletes anything", async () => {
-		const { database, hold, release, blobs } = await openRootPool(subject, { indexed: false });
+		const { database, hold, blobs } = await openRootPool(subject, { indexed: false });
 		const [queued, bound, orphan] = blobsNamed("queued", "bound", "orphan");
 		await blobs.putBlobs([queued!, bound!, orphan!]);
 		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("s1", [queued!.hash])));
@@ -255,7 +255,7 @@ describe.each(subjects)("snapshots dispatched work carries, on $name (#4503)", (
 	});
 
 	test("an index an earlier build wrote, without carried references, is migrated forward on open and backfilled before a sweep deletes anything", async () => {
-		const { database, hold, release, blobs } = await openRootPool(subject);
+		const { database, hold, blobs } = await openRootPool(subject);
 		const [queued, later, bound, orphan] = blobsNamed("queued", "later", "bound", "orphan");
 		await blobs.putBlobs([queued!, later!, bound!, orphan!]);
 		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("s1", [queued!.hash])));
@@ -303,7 +303,7 @@ describe.each(subjects)("snapshots dispatched work carries, on $name (#4503)", (
 	});
 
 	test("references of rows deleted while the index triggers were missing do not outlive them once the triggers are installed again", async () => {
-		const { database, hold, release, blobs } = await openRootPool(subject);
+		const { database, hold, blobs } = await openRootPool(subject);
 		const [gone, kept, bound] = blobsNamed("gone", "kept", "bound");
 		await blobs.putBlobs([gone!, kept!, bound!]);
 		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("s1", [gone!.hash])));
@@ -323,7 +323,7 @@ describe.each(subjects)("snapshots dispatched work carries, on $name (#4503)", (
 	});
 
 	test("a database written before the reference index existed keeps what its pool carries through the first collection", async () => {
-		const { database, hold, release, blobs } = await openRootPool(subject);
+		const { database, hold, blobs } = await openRootPool(subject);
 		const [queued, bound, orphan] = blobsNamed("queued", "bound", "orphan");
 		await blobs.putBlobs([queued!, bound!, orphan!]);
 		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("s1", [queued!.hash])));

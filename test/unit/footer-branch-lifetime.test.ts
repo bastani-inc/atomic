@@ -7,6 +7,7 @@ import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { afterEach, test, vi } from "vitest";
 import { FooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import * as fsWatch from "../../packages/coding-agent/src/utils/fs-watch.js";
 import { fakeFooterAgentSession } from "../helpers/footer-session.js";
 import { writeFileEnsuringDir } from "../helpers/runtime.js";
@@ -69,6 +70,7 @@ const renderedUntil = async (render: () => string[], pattern: RegExp) =>
 
 // PR #2926: keep simultaneous viewers live, but release the final viewer's cwd.
 test("footer disposal and cwd replacement release only unused branch watchers", async () => {
+	initTheme("dark", false);
 	const directory = mkdtempSync(join(tmpdir(), "footer-lifetime-"));
 	const main = join(directory, "main");
 	const stage = join(directory, "stage");
