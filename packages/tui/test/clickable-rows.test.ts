@@ -589,29 +589,31 @@ describe("clickable list rows", () => {
 			}
 		});
 
-	it("a component that took a press does not receive a release behind a new modal", async () => {
-		const terminal = new VirtualTerminal(40, 12);
-		const tui = new TuiAltScreen(terminal);
-		const received: string[] = [];
-		tui.addChild({
-			render: () => ["button"],
-			invalidate() {},
-			handleMouse(event) {
-				received.push(event.type);
-				return { handled: true, capture: event.type === "press" };
-			},
-		});
-		tui.start();
-		try {
+	for (const capture of [false, true]) {
+		it(`behind a new modal, a ${capture ? "captured" : "non-captured"} press cannot click or take focus`, async (t) => {
+			const terminal = new VirtualTerminal(40, 12);
+			const tui = new TuiAltScreen(terminal);
+			const received: string[] = [];
+			tui.addChild({
+				render: () => ["button"],
+				invalidate() {},
+				handleMouse(event) {
+					received.push(event.type);
+					return { handled: true, capture: capture && event.type === "press", focus: event.type === "release" };
+				},
+			});
+			tui.start();
+			t.after(() => tui.stop());
 			await terminal.waitForRender();
 			terminal.sendInput(press(2, 0));
-			tui.showOverlay(new Text("Confirm?", 0, 0));
+			const modal = new Text("Confirm?", 0, 0);
+			tui.showOverlay(modal);
+			terminal.sendInput("\x1b[<32;3;1M");
 			terminal.sendInput(release(2, 0));
-			assert.deepStrictEqual(received, ["press"]);
-		} finally {
-			tui.stop();
-		}
-	});
+			assert.deepStrictEqual(received, capture ? ["press", "release"] : ["press"]);
+			assert.strictEqual(tui.getFocusedComponent(), modal);
+		});
+	}
 
 	it("a dialog shown between the press and the release takes the click away from what was pressed outside it", async () => {
 		const terminal = new VirtualTerminal(40, 12);
