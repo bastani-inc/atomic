@@ -54,8 +54,6 @@ export async function loadExtensionPaths(
 				path,
 				workflowResourceProvider,
 				inheritanceSnapshotProvider,
-				undefined,
-				state.factoryInstallations[state.extensionFactories.indexOf(builtin)],
 			);
 			extension.hidden = true;
 			extension.replaceable = builtin.replaceable === true;
@@ -180,8 +178,6 @@ export async function loadExtensionFactories(
 				extensionPath,
 				workflowResourceProvider,
 				inheritanceSnapshotProvider,
-				undefined,
-				state.factoryInstallations[index],
 			);
 			extension.hidden = descriptor?.hidden;
 			extension.replaceable = descriptor?.replaceable === true;

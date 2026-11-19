@@ -234,9 +234,58 @@ test(
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
 
+type DiscoveryHandler = (...args: unknown[]) => Promise<unknown>;
+
+function rebuildDiscovery(wrap: (handler: DiscoveryHandler) => DiscoveryHandler) {
+	return (base: LoadExtensionsResult): LoadExtensionsResult => ({
+		...base,
+		extensions: base.extensions.map((ext) => {
+			const discovered = ext.handlers.get("resources_discover");
+			if (!discovered) return ext;
+			const handlers = new Map(ext.handlers);
+			handlers.set("resources_discover", discovered.map(wrap));
+			return { ...ext, handlers };
+		}),
+	});
+}
+
 test(
-	"startup reports both installations when the loader switches between forwarders of the same factory (#5657)",
+	"startup reports both handlers when a factory changes the handler behind a rebuilt forwarder (#5501)",
 	async () => {
+		const calls: string[] = [];
+		function firstDirectory() {
+			calls.push("first");
+			throw new Error("directory unavailable");
+		}
+		function secondDirectory() {
+			calls.push("second");
+			throw new Error("directory unavailable");
+		}
+		const { mode } = await createMode(
+			(pi) => {
+				pi.on("resources_discover", calls.length === 0 ? firstDirectory : secondDirectory);
+			},
+			{
+				extensionsOverride: rebuildDiscovery(
+					(original) =>
+						(...args) =>
+							original(...args),
+				),
+			},
+		);
+		mode.deferredStartupPending = true;
+		await mode.completeDeferredStartup();
+		assert.deepEqual(calls, ["first", "second"]);
+		const chat = normalizeRenderedOutput(mode.chatContainer);
+		assert.equal(occurrences(chat, "at firstDirectory"), 1, chat);
+		assert.equal(occurrences(chat, "at secondDirectory"), 1, chat);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test.each(["its own", "the first"] as const)(
+	"startup reports both installations when each forwards to %s handler (#5501)",
+	async (delegate) => {
 		let calls = 0;
 		const factory: ExtensionFactory = (pi) => {
 			pi.on("resources_discover", () => {
@@ -244,10 +293,14 @@ test(
 				throw new Error("directory unavailable");
 			});
 		};
-		type Handler = (...args: unknown[]) => Promise<unknown>;
-		const originals = new Map<string, Handler>();
+		const originals = new Map<string, DiscoveryHandler>();
 		const paths = ["<inline:first>", "<inline:second>"];
-		const forwarders = new Map(paths.map((path) => [path, (...args: unknown[]) => originals.get(path)!(...args)]));
+		const forwarders = new Map(
+			paths.map((path) => [
+				path,
+				(...args: unknown[]) => originals.get(delegate === "the first" ? paths[0] : path)!(...args),
+			]),
+		);
 		let pass = 0;
 		const { mode } = await createMode(
 			[
@@ -258,7 +311,10 @@ test(
 				extensionsOverride(base) {
 					const path = paths[pass++];
 					const ext = base.extensions.find((entry) => entry.path === path)!;
-					originals.set(ext.path, ext.handlers.get("resources_discover")![0]!);
+					for (const entry of base.extensions) {
+						const handler = entry.handlers.get("resources_discover")?.[0];
+						if (handler) originals.set(entry.path, handler);
+					}
 					const handlers = new Map(ext.handlers);
 					handlers.set("resources_discover", [forwarders.get(ext.path)!]);
 					return { ...base, extensions: [{ ...ext, handlers }] };
@@ -274,85 +330,64 @@ test(
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
 
-test.each(["throw", "reject", "replace", "getter"] as const)(
-	"a rebuilt discovery callback reports the original failure once but a replacement separately (%s), and /reload reports again (#5657)",
-	async (failure) => {
-		let calls = 0;
-		let getterCalls = 0;
+test(
+	"startup reports both failures when rebuilt discovery callbacks replace the handler's error (#5501)",
+	async () => {
 		const { mode } = await createMode(
 			(pi) => {
 				pi.on("resources_discover", () => {
-					calls++;
-					if (failure === "getter") return { skillPaths: [] };
-					const error = new Error("directory unavailable");
-					if (failure === "reject") return Promise.reject(error);
-					throw error;
+					throw new Error("directory unavailable");
 				});
 			},
 			{
-				extensionsOverride: (base) => ({
-					...base,
-					extensions: base.extensions.map((ext) => {
-						const discovered = ext.handlers.get("resources_discover");
-						if (!discovered) return ext;
-						// Project public fields only, including a new map with new forwarding functions each time.
-						const {
-							path,
-							resolvedPath,
-							sourceInfo,
-							tools,
-							commands,
-							flags,
-							shortcuts,
-							messageRenderers,
-							entryRenderers,
-						} = ext;
-						const handlers = new Map(ext.handlers);
-						handlers.set(
-							"resources_discover",
-							discovered.map((original) => (...args) => {
-								if (failure === "getter") {
-									return Object.defineProperty(original(...args), "skillPaths", {
-										get() {
-											getterCalls++;
-											throw new Error("directory unavailable");
-										},
-									});
-								}
-								if (failure !== "replace") return original(...args);
-								try {
-									return original(...args);
-								} catch {
-									throw new Error("directory unavailable");
-								}
-							}),
-						);
-						return {
-							path,
-							resolvedPath,
-							sourceInfo,
-							tools,
-							commands,
-							flags,
-							shortcuts,
-							messageRenderers,
-							entryRenderers,
-							handlers,
-						};
-					}),
+				extensionsOverride: rebuildDiscovery((original) => (...args) => {
+					try {
+						return original(...args);
+					} catch {
+						throw new Error("directory unavailable");
+					}
 				}),
 			},
 		);
 		mode.deferredStartupPending = true;
 		await mode.completeDeferredStartup();
 		const row = 'Extension "<inline:1>" error: directory unavailable';
-		const startupRows = failure === "replace" || failure === "getter" ? 2 : 1;
-		assert.equal(calls, 2);
-		if (failure === "getter") assert.equal(getterCalls, 2);
-		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), startupRows);
+		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), 2);
 		await mode.handleReloadCommand();
-		assert.equal(calls, 3);
-		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), startupRows + 1);
+		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), 3);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test.each(["then", "skillPaths"])(
+	"startup reports each failing %s getter installed by a rebuilt discovery callback (#5501)",
+	async (property) => {
+		let getterCalls = 0;
+		const { mode } = await createMode(
+			(pi) => {
+				pi.on("resources_discover", () => ({ skillPaths: [] }));
+			},
+			{
+				extensionsOverride: rebuildDiscovery(
+					(original) =>
+						(...args) =>
+							Object.defineProperty(original(...args), property, {
+								get() {
+									getterCalls++;
+									throw new Error("directory unavailable");
+								},
+							}),
+				),
+			},
+		);
+		mode.deferredStartupPending = true;
+		await mode.completeDeferredStartup();
+		const row = 'Extension "<inline:1>" error: directory unavailable';
+		assert.equal(getterCalls, 2);
+		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), 2);
+		await mode.handleReloadCommand();
+		assert.equal(getterCalls, 3);
+		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), 3);
 	},
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );

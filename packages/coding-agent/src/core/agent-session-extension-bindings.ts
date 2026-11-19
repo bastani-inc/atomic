@@ -30,7 +30,7 @@ import {
 } from "./extensions/loader-rollback.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { bindExtensionContextPublication, runSynchronousExtensionContextEffect } from "./extensions/runner-context.ts";
-import { forwardedDiscoveryTokens, startupErrorHandlerTokens } from "./extensions/runner-events.ts";
+import { startupErrorHandlerTokens } from "./extensions/runner-events.ts";
 import type { ExtensionRuntime, ProviderConfig, RegisteredTool } from "./extensions/types.ts";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
@@ -235,16 +235,12 @@ const startupFailureReports = new WeakMap<AgentSession, Set<string>>();
 function recordStartupFailure(session: AgentSession, error: ExtensionError): boolean {
 	const token = startupErrorHandlerTokens.get(error);
 	if (token === undefined) return true;
-	const { event, error: message } = error;
-	const key = JSON.stringify([token, event, message]);
+	const key = JSON.stringify([token, error.event, error.error]);
 	const reported = startupFailureReports.get(session) ?? new Set<string>();
 	startupFailureReports.set(session, reported);
-	const forwarded = forwardedDiscoveryTokens.get(error);
-	const forwardedKey = forwarded === undefined ? undefined : JSON.stringify(["forwarded", forwarded, event, message]);
-	const duplicate = reported.has(key) || (forwardedKey !== undefined && reported.has(forwardedKey));
+	if (reported.has(key)) return false;
 	reported.add(key);
-	if (forwardedKey !== undefined) reported.add(forwardedKey);
-	return !duplicate;
+	return true;
 }
 
 function startExtensions(

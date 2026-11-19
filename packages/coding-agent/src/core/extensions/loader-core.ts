@@ -42,7 +42,6 @@ interface ExtensionSource {
 	identity: symbol;
 	factory: ExtensionFactory;
 	registrationSource: object | string;
-	installation: object | string;
 	workflowResourceProvider: WorkflowResourceProviderInput;
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider;
 }
@@ -112,7 +111,6 @@ export async function instantiateExtensions(target: LoadExtensionsResult, cwd: s
 				recipe.resourceLoaderInheritanceSnapshotProvider,
 				source,
 				recipe.registrationSource,
-				recipe.installation,
 			);
 			extensions.push(extension);
 			if (construction) {
@@ -237,7 +235,6 @@ export async function loadExtensionFromFactory(
 	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	source?: Pick<Extension, "resolvedPath" | "sourceInfo">,
-	installation?: object,
 ): Promise<Extension> {
 	return loadOwnedExtensionFromFactory(
 		[],
@@ -249,8 +246,6 @@ export async function loadExtensionFromFactory(
 		workflowResourceProvider,
 		resourceLoaderInheritanceSnapshotProvider,
 		source,
-		factory,
-		installation,
 	);
 }
 
@@ -266,7 +261,6 @@ async function loadOwnedExtensionFromFactory(
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	source?: Pick<Extension, "resolvedPath" | "sourceInfo">,
 	registrationSource: object | string = factory,
-	installation: object | string = typeof registrationSource === "string" ? registrationSource : {},
 ): Promise<Extension> {
 	const extension = createExtension(extensionPath, source?.resolvedPath ?? extensionPath);
 	if (source) extension.sourceInfo = source.sourceInfo;
@@ -279,7 +273,6 @@ async function loadOwnedExtensionFromFactory(
 		workflowResourceProvider,
 		resourceLoaderInheritanceSnapshotProvider,
 		registrationSource,
-		installation,
 	);
 	try {
 		if (subagentFactories.has(factory))
@@ -297,7 +290,6 @@ async function loadOwnedExtensionFromFactory(
 	}
 	rememberConstruction(extension, runtime, {
 		identity: Symbol(),
-		installation,
 		factory,
 		registrationSource,
 		workflowResourceProvider,

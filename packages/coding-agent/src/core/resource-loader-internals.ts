@@ -24,7 +24,6 @@ export interface ResourceLoaderInternals {
 	additionalThemePaths: string[];
 	builtinPackagePaths: PackageSource[];
 	extensionFactories: InlineExtension[];
-	factoryInstallations: object[];
 	noExtensions: boolean;
 	disabledBuiltinExtensions: Set<string>;
 	noSkills: boolean;
