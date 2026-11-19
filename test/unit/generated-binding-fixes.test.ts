@@ -29,6 +29,31 @@ test("generated binding corrections survive regeneration and are idempotent", as
 	assert.match(fixed.declarations, /export declare const __napiBindingTarget: [^\n]+ \| undefined/);
 });
 
+test("a Windows host can load native bindings without allowing new process properties (#5605)", async () => {
+	const { loader } = await artifacts();
+	const binding = {
+		WindowsTemporaryFile: class {
+			writeFile() {}
+		},
+		createWindowsTemporaryRecord() {},
+	};
+	const module = { exports: {} };
+	vm.runInNewContext(loader, {
+		module,
+		exports: module.exports,
+		process: new Proxy(
+			{ env: { NAPI_RS_NATIVE_LIBRARY_PATH: "test-override" }, platform: "win32", arch: "x64" },
+			{
+				set() {
+					throw new Error("host process is read-only");
+				},
+			},
+		),
+		require: (id: string) => (id === "fs" ? {} : binding),
+	});
+	assert.equal(module.exports, binding);
+});
+
 // PR #3131 / Greptile: do not clone frozen bindings merely to add metadata.
 for (const shape of ["extensible", "sealed", "frozen"] as const) {
 	test(`binding target declaration permits the actual ${shape} override result`, async () => {

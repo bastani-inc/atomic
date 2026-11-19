@@ -36,6 +36,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"TerminationCause",
 	"blockRangeAt",
 	"containProcessTree",
+	"createWindowsTemporaryRecord",
 	"glob",
 	"grep",
 	"hasMatch",

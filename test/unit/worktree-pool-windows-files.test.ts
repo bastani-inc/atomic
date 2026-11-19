@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFileSync, mkdirSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -38,6 +38,22 @@ test.each(["Node", "Bun"])("a cold %s lock does not load the native package (#56
 	});
 });
 
+test("a cold clock does not need a separate Windows module to acquire a lock (#5605)", async () => {
+	const script = `
+		import { registerHooks } from 'node:module';
+		registerHooks({load(url, context, next) {
+			if (url.endsWith('/windows-temporary.js')) throw Error('unexpected Windows helper read');
+			return next(url, context);
+		}});
+		const { lockShared } = await import(${JSON.stringify(clock)});
+		const release = await lockShared(process.env.LOCK_FILE, { realpath: false });
+		await release();
+	`;
+	await run(process.execPath, ["--input-type=module", "-e", script], {
+		env: { ...process.env, LOCK_FILE: join(root, "slot") },
+	});
+});
+
 test("a Bun clock reading does not ask a registry for missing optional bindings (#5674)", async () => {
 	const calls: string[] = [];
 	const server = createServer((request, response) => {
@@ -57,8 +73,7 @@ test("a Bun clock reading does not ask a registry for missing optional bindings 
 			join(root, "node_modules", "proper-lockfile"),
 			"junction",
 		);
-		for (const name of ["shared-clock.js", "windows-temporary.js"])
-			copyFileSync(new URL(name, modules), join(root, name));
+		copyFileSync(new URL("shared-clock.js", modules), join(root, "shared-clock.js"));
 		writeFileSync(join(root, "package.json"), '{"type":"module"}');
 		writeFileSync(
 			join(root, "bunfig.toml"),
@@ -87,6 +102,36 @@ test("a Bun clock reading does not ask a registry for missing optional bindings 
 		await new Promise<void>((done) => server.close(() => done()));
 	}
 });
+
+test.runIf(process.platform === "win32").each(["Node", "Bun"])(
+	"a held slot has the same write permissions as a mode-0600 file under %s (#5636)",
+	async (runtime) => {
+		const script = `
+			import assert from 'node:assert/strict';
+			import { closeSync, openSync, statSync, writeFileSync } from 'node:fs';
+			import { createRequire } from 'node:module';
+			import { join } from 'node:path';
+			createRequire(import.meta.url)('@bastani/atomic-natives');
+			const {admitPooledWorktree, releaseRestoredWorktree, repositoryIdOf} = await import(${JSON.stringify(pool)});
+			const storeDir = process.env.POOL_STORE, remotes = ['https://example.com/acme/repo.git'];
+			const state = {snapshotId:null, head:'a'.repeat(40), tree:'b'.repeat(40)};
+			const permissions = path => {
+				let error;
+				try { closeSync(openSync(path, 'r+')); } catch (e) { error = e.code; }
+				return [statSync(path).mode & 0o777, error];
+			};
+			process.umask(0o222);
+			const control = join(storeDir, 'control');
+			writeFileSync(control, '', {mode:0o600});
+			const lease = await admitPooledWorktree({storeDir,remotes,lastState:state,envHash:'env'}, {kind:'session',id:'owner'});
+			try { assert.deepEqual(permissions(join(storeDir,'pool',repositoryIdOf(remotes),'0.json')), permissions(control)); }
+			finally { await releaseRestoredWorktree(lease,state); }
+		`;
+		await run(runtime === "Node" ? process.execPath : bunExecutable(), ["--input-type=module", "-e", script], {
+			env: { ...process.env, POOL_STORE: root },
+		});
+	},
+);
 
 test.runIf(process.platform === "win32")(
 	"Bun can admit and release a slot when existing files cannot be reopened for writing (#5636)",
@@ -122,6 +167,28 @@ test.runIf(process.platform === "win32")(
 		assert.equal(await releaseRestoredWorktree(lease,state), true);
 	`;
 		await run(bunExecutable(), ["-e", script], { env: { ...process.env, POOL_STORE: root } });
+	},
+);
+
+test.runIf(process.platform === "win32")(
+	"old-probe cleanup uses the same fractional mtime as stat (#5605)",
+	async () => {
+		const probe = join(root, ".clock-0123456789abcdef.probe");
+		writeFileSync(probe, "abandoned");
+		await run(
+			"powershell.exe",
+			[
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				"[IO.File]::SetLastWriteTimeUtc($env:PROBE, [DateTime]::FromFileTimeUtc(134395436000000003L))",
+			],
+			{ env: { ...process.env, PROBE: probe } },
+		);
+		const before = 1_795_070_000_000.0005;
+		assert.ok(statSync(probe).mtimeMs < before);
+		await require("@bastani/atomic-natives").removeWindowsFileOlderThan(probe, before);
+		assert.deepEqual(readdirSync(root), []);
 	},
 );
 

@@ -14,14 +14,15 @@ pub fn remove_windows_file_older_than(path: String, before_ms: f64) -> crate::ta
 				os::windows::fs::{MetadataExt, OpenOptionsExt},
 			};
 			use windows_sys::Win32::Storage::FileSystem::{
-				DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-				FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+				DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+				FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+				FILE_SHARE_WRITE,
 			};
 			// Preserve unlink's sharing semantics. Check and dispose the same opened file, not its path.
 			let Ok(file) = OpenOptions::new()
 				.access_mode(DELETE | FILE_READ_ATTRIBUTES)
 				.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-				.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+				.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
 				.open(path)
 			else {
 				return Ok(());
@@ -30,9 +31,11 @@ pub fn remove_windows_file_older_than(path: String, before_ms: f64) -> crate::ta
 				&& meta.is_file()
 				&& meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
 			{
-				// FILETIME counts 100 ns from 1601; JavaScript timestamps count milliseconds from 1970.
-				let modified_ms =
-					(i128::from(meta.last_write_time()) - 116_444_736_000_000_000) as f64 / 10_000.0;
+				// Like Stats.mtimeMs, convert whole seconds and fractional nanoseconds separately. Casting
+				// epoch-sized FILETIME ticks to double first can round a tick across the cutoff.
+				let ticks = i128::from(meta.last_write_time()) - 116_444_736_000_000_000;
+				let modified_ms = ticks.div_euclid(10_000_000) as f64 * 1000.0
+					+ ticks.rem_euclid(10_000_000) as f64 / 10_000.0;
 				if modified_ms < before_ms {
 					let _ = dispose_by_handle(&file);
 				}
@@ -138,14 +141,33 @@ pub fn open_windows_temporary_file(
 	path: String,
 	clock_probe: Option<bool>,
 ) -> crate::task::Promise<Option<WindowsTemporaryFile>> {
+	open_temporary(path, clock_probe == Some(true), false, None)
+}
+
+/// Create and write a slot in one worker operation, before JavaScript has to run again.
+#[napi]
+pub fn create_windows_temporary_record(
+	path: String,
+	data: String,
+	read_only: bool,
+) -> crate::task::Promise<Option<WindowsTemporaryFile>> {
+	open_temporary(path, false, read_only, Some(data))
+}
+
+fn open_temporary(
+	path: String,
+	measuring: bool,
+	read_only: bool,
+	record: Option<String>,
+) -> crate::task::Promise<Option<WindowsTemporaryFile>> {
 	crate::task::blocking("temporary-file-open", (), move |_| {
 		#[cfg(windows)]
 		{
 			use std::{fs::OpenOptions, io::ErrorKind, os::windows::fs::OpenOptionsExt};
 			use windows_sys::Win32::Storage::FileSystem::{
-				DELETE, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+				DELETE, FILE_ATTRIBUTE_READONLY, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_WRITE,
+				FILE_SHARE_READ, FILE_SHARE_WRITE,
 			};
-			let measuring = clock_probe == Some(true);
 			let mut options = OpenOptions::new();
 			options.write(true).create_new(true).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
 			if measuring {
@@ -157,12 +179,28 @@ pub fn open_windows_temporary_file(
 			} else {
 				// Reserve delete access, not delete-on-close: that flag keeps the temporary name listed
 				// until every reader closes, even after a successful POSIX unlink on this handle.
-				options.access_mode(FILE_GENERIC_WRITE | DELETE);
+				options
+					.access_mode(FILE_GENERIC_WRITE | DELETE)
+					.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+				if read_only {
+					options.attributes(FILE_ATTRIBUTE_READONLY);
+				}
 			}
 			match options.open(path) {
-				Ok(file) => Ok(Some(WindowsTemporaryFile { file: Some(Arc::new(file)) })),
+				Ok(mut file) => {
+					if let Some(data) = record
+						&& let Err(error) = file.write_all(data.as_bytes())
+					{
+						let _ = dispose_by_handle(&file);
+						return Err(napi::Error::from_reason(error.to_string()));
+					}
+					Ok(Some(WindowsTemporaryFile { file: Some(Arc::new(file)) }))
+				},
 				Err(error) if error.kind() == ErrorKind::AlreadyExists => {
 					Err(napi::Error::from_reason("EEXIST"))
+				},
+				Err(error) if error.kind() == ErrorKind::NotFound => {
+					Err(napi::Error::from_reason("ENOENT"))
 				},
 				Err(error) if measuring => Err(napi::Error::from_reason(error.to_string())),
 				Err(_) => Ok(None),
@@ -170,7 +208,7 @@ pub fn open_windows_temporary_file(
 		}
 		#[cfg(not(windows))]
 		{
-			let _ = (path, clock_probe);
+			let _ = (path, measuring, read_only, record);
 			Ok(None)
 		}
 	})

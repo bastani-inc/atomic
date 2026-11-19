@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
@@ -12,10 +12,8 @@ import { isDeniedSnapshotPath } from "./policy.ts";
 import { HOST, holderRuns as processHolderRuns, thisProcess } from "./process-holder.js";
 import { type RepositoryId, sharedRepositoryIdOf, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./restore.ts";
-import { lockShared, sharedClockNow } from "./shared-clock.ts";
+import { lockShared, sharedClockNow, windowsTemporaryFiles } from "./shared-clock.ts";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
-
-import { openWindowsTemporary } from "./windows-temporary.ts";
 
 export { processStartToken } from "../process-start-token.js";
 
@@ -558,23 +556,39 @@ async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> 
 async function createRecord(file: string, record: PoolSlotRecord): Promise<boolean> {
 	const temporary = `${file}.${randomUUID()}.tmp`;
 	const windows = process.platform === "win32";
-	const reservation = windows ? await openWindowsTemporary(temporary, "record") : undefined;
+	const data = JSON.stringify(record);
+	const binding = windowsTemporaryFiles();
+	let reservation: Awaited<ReturnType<NonNullable<typeof binding>["createWindowsTemporaryRecord"]>>;
 	let created = false;
 	try {
-		const data = JSON.stringify(record);
-		if (reservation) {
-			await reservation.writeFile(data);
-		} else if (windows) {
-			// Without a native handle, distinguish a failed exclusive create from a later partial write.
-			const file = await open(temporary, "wx", 0o600);
-			created = true;
+		if (binding) {
+			// Windows Node's mode-0600 create sets READONLY when the CRT mask clears owner-write. Bun's does not.
+			const readOnly = !process.versions.bun && (process.umask() & 0o200) !== 0;
 			try {
-				await file.writeFile(data);
-			} finally {
-				await file.close();
+				reservation = await binding.createWindowsTemporaryRecord(temporary, data, readOnly);
+			} catch (error) {
+				if ((error as Error).message === "EEXIST") throw Object.assign(error as Error, { code: "EEXIST" });
+				if ((error as Error).message !== "ENOENT") throw error;
+				// Report the ordinary Windows open error without opening the missing path a second time.
+				const missing = new Error(`ENOENT: no such file or directory, open '${temporary}'`);
+				throw Object.assign(
+					missing,
+					process.versions.bun
+						? { code: "ENOENT", path: temporary, syscall: "open", errno: -4058 }
+						: { errno: -4058, code: "ENOENT", syscall: "open", path: temporary },
+				);
 			}
-		} else {
-			await writeFile(temporary, data, { mode: 0o600 });
+		}
+		if (!reservation) {
+			// Submit the complete write at once. An exclusive open failure gives us no name to clean up.
+			try {
+				await writeFile(temporary, data, { mode: 0o600, flag: windows ? "wx" : "w" });
+				created = true;
+			} catch (error) {
+				const { code, syscall } = error as NodeJS.ErrnoException;
+				created = code !== "EEXIST" && syscall !== "open";
+				throw error;
+			}
 		}
 		try {
 			await link(temporary, file);

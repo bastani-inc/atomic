@@ -3,7 +3,7 @@ import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, wr
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeAll, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, test, vi } from "vitest";
 import { sharedClockNow, sharedClockOffset } from "../src/core/worktree-snapshot/shared-clock.js";
 
 const names = vi.hoisted(() => [] as Buffer[]);
@@ -21,45 +21,40 @@ const io = vi.hoisted(() => ({
 	refusalClock: undefined as { now: number; stamp: number } | undefined,
 	stamp: 0,
 }));
-vi.mock("../src/core/worktree-snapshot/windows-temporary.ts", async (original) => {
-	const actual = await original<typeof import("../src/core/worktree-snapshot/windows-temporary.ts")>();
+vi.mock("node:fs", async (original) => {
+	const fs = await original<typeof import("node:fs")>();
 	return {
-		openWindowsTemporary: (path: string, kind: "record" | "clock") => {
-			const clock = io.refusalClock;
-			if (clock) {
-				if (kind !== "clock") {
-					clock.now += 150; // asking for delete-on-close at creation is refused
-					return undefined;
-				}
-				writeFileSync(path, "", { flag: "wx" });
-				clock.stamp = clock.now;
-				return {
-					close: async () => {
-						clock.now += 150;
-					},
-				}; // one refused disposition on the original handle
-			}
-			return io.withoutDeleteOnClose ? undefined : actual.openWindowsTemporary(path, kind);
+		...fs,
+		open: (path: string, flags: string, callback: (err: NodeJS.ErrnoException | null, fd: number) => void) => {
+			io.calls.push("open");
+			if (io.refusalClock) io.refusalClock.stamp = io.refusalClock.now;
+			fs.open(path, flags, callback);
 		},
-		sweepWindowsProbe: (path: string, before: number) =>
-			io.withoutDeleteOnClose ? undefined : actual.sweepWindowsProbe(path, before),
+		stat: (path: string, callback: (err: NodeJS.ErrnoException | null, stats?: import("node:fs").Stats) => void) => {
+			io.calls.push("stat");
+			fs.stat(path, (error, stats) => {
+				if (error) return callback(error);
+				io.onStat?.(path);
+				io.stamp = stats.mtimeMs;
+				callback(null, stats);
+			});
+		},
+		unlink: (path: string, callback: (err: NodeJS.ErrnoException | null) => void) => {
+			io.calls.push("unlink");
+			if (io.refusalClock) io.refusalClock.now += 150;
+			if (io.refuseDelete) return callback(Object.assign(new Error("sharing violation"), { code: "EBUSY" }));
+			fs.unlink(path, callback);
+		},
+		close: (fd: number, callback: (err: NodeJS.ErrnoException | null) => void) => {
+			io.calls.push("close");
+			fs.close(fd, callback);
+		},
 	};
 });
 vi.mock("node:fs/promises", async (original) => {
 	const fs = await original<typeof import("node:fs/promises")>();
 	return {
 		...fs,
-		open: async (...args: Parameters<typeof fs.open>) => {
-			io.calls.push("open");
-			const file = await fs.open(...args);
-			if (io.refusalClock) io.refusalClock.stamp = io.refusalClock.now;
-			const close = file.close.bind(file);
-			file.close = () => {
-				io.calls.push("close");
-				return close();
-			};
-			return file;
-		},
 		stat: async (path: string) => {
 			io.calls.push("stat");
 			const result = await fs.stat(path);
@@ -82,8 +77,42 @@ vi.mock("node:fs/promises", async (original) => {
 	};
 });
 
+const loadedKey = Symbol.for("@bastani/atomic/windows-temporary@2");
+let originalRegistration: PropertyDescriptor | undefined;
 beforeAll(() => {
-	if (process.platform === "win32") createRequire(import.meta.url)("@bastani/atomic-natives");
+	if (process.platform !== "win32") return;
+	const binding = createRequire(import.meta.url)("@bastani/atomic-natives");
+	originalRegistration = Object.getOwnPropertyDescriptor(process, loadedKey);
+	assert.ok(originalRegistration);
+	Object.defineProperty(process, loadedKey, {
+		configurable: true,
+		get: () =>
+			io.withoutDeleteOnClose
+				? undefined
+				: {
+						deref: () => ({
+							...binding,
+							openWindowsTemporaryFile: (path: string, measuring: boolean) => {
+								const clock = io.refusalClock;
+								if (!clock) return binding.openWindowsTemporaryFile(path, measuring);
+								if (!measuring) {
+									clock.now += 150;
+									return null;
+								}
+								writeFileSync(path, "", { flag: "wx" });
+								clock.stamp = clock.now;
+								return {
+									close: async () => {
+										clock.now += 150;
+									},
+								};
+							},
+						}),
+					},
+	});
+});
+afterAll(() => {
+	if (originalRegistration) Object.defineProperty(process, loadedKey, originalRegistration);
 });
 
 afterEach(() => {
@@ -195,12 +224,30 @@ test("filesystem time includes time spent sweeping probes after the measurement 
 	try {
 		let time = Date.now();
 		vi.spyOn(Date, "now").mockImplementation(() => time);
+		vi.spyOn(performance, "now").mockImplementation(() => time);
 		io.afterList = () => {
 			time += 1_000;
 		};
 		const now = await sharedClockNow(directory);
 		assert.equal(now, io.stamp + 1_000);
 		if (process.platform !== "win32") assert.deepEqual(io.calls, ["open", "close", "stat", "unlink", "readdir"]);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("stepping the reader's wall clock during cleanup does not age a fresh remote marker (#5674)", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "clock-step-"));
+	try {
+		const time = Date.now.bind(Date);
+		let step = 0;
+		vi.spyOn(Date, "now").mockImplementation(() => time() + step);
+		io.afterList = () => {
+			step = 180_000;
+		};
+		const now = await sharedClockNow(directory);
+		assert.equal(step, 180_000);
+		assert.ok(Math.abs(now - io.stamp) < 10_000, `filesystem time jumped by ${now - io.stamp} ms`);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}

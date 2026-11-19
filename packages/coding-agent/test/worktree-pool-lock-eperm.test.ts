@@ -102,45 +102,27 @@ vi.mock("../src/core/worktree-snapshot/shared-clock.ts", async (importOriginal) 
 				lockRefusals.onCompromised?.(path);
 			},
 		});
-	return { ...actual, lockShared };
-});
-
-vi.mock("../src/core/worktree-snapshot/windows-temporary.ts", async (original) => {
-	const actual = await original<typeof import("../src/core/worktree-snapshot/windows-temporary.ts")>();
 	return {
 		...actual,
-		openWindowsTemporary: (path: string, kind: "record" | "clock") => {
-			if (lockRefusals.deleteOnCloseUnavailable && kind === "record") return undefined;
-			const opening = actual.openWindowsTemporary(path, kind);
-			if (kind === "clock") return opening;
-			return opening?.then(
-				(file) =>
-					file && {
-						close: () => file.close(),
-						writeFile: async (data: string) => {
-							await lockRefusals.onRecordWrite?.(path, data);
-							await file.writeFile(data);
-							lockRefusals.afterWrite?.(path);
-						},
-					},
-			);
+		lockShared,
+		windowsTemporaryFiles: () => {
+			const binding = actual.windowsTemporaryFiles();
+			if (!binding || lockRefusals.deleteOnCloseUnavailable) return undefined;
+			return {
+				...binding,
+				createWindowsTemporaryRecord: async (path: string, data: string, readOnly: boolean) => {
+					await lockRefusals.onRecordWrite?.(path, data);
+					const handle = await binding.createWindowsTemporaryRecord(path, data, readOnly);
+					if (handle) lockRefusals.afterWrite?.(path);
+					return handle;
+				},
+			};
 		},
 	};
 });
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
-	const open: typeof actual.open = async (path, flags, mode) => {
-		const file = await actual.open(path, flags, mode);
-		if (String(path).endsWith(".tmp")) {
-			const write = file.writeFile.bind(file);
-			file.writeFile = async (data, options) => {
-				if (typeof data === "string") await lockRefusals.onRecordWrite?.(String(path), data);
-				return write(data, options);
-			};
-		}
-		return file;
-	};
 	const writeFile: typeof actual.writeFile = async (path, data, options) => {
 		if (typeof data === "string") await lockRefusals.onRecordWrite?.(String(path), data);
 		await actual.writeFile(path, data, options);
@@ -156,7 +138,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 			return stats;
 		return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { mtimeMs: Date.now() });
 	}) as typeof actual.stat;
-	return { ...actual, open, writeFile, rm, stat };
+	return { ...actual, writeFile, rm, stat };
 });
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -201,7 +183,16 @@ vi.mock("node:fs", async (importOriginal) => {
 		}
 		return (actual.mkdir as (...args: unknown[]) => void)(path, ...rest);
 	}) as typeof actual.mkdir;
-	return { ...actual, default: { ...actual, mkdir }, mkdir };
+	const stat = ((
+		path: import("node:fs").PathLike,
+		callback: (error: NodeJS.ErrnoException | null, stats: import("node:fs").Stats) => void,
+	) =>
+		actual.stat(path, (error, stats) => {
+			if (!error && pollClock.enabled && pollClock.filesystem && /\.clock-[0-9a-f]{16}\.probe$/.test(String(path)))
+				stats.mtimeMs = Date.now();
+			callback(error, stats);
+		})) as typeof actual.stat;
+	return { ...actual, default: { ...actual, mkdir, stat }, mkdir, stat };
 });
 
 useTemporaryAgentDir();

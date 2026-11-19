@@ -859,6 +859,7 @@ module.exports.CancelCause = nativeBinding.CancelCause
 module.exports.CommandOutputSink = nativeBinding.CommandOutputSink
 module.exports.CommandTaskKind = nativeBinding.CommandTaskKind
 module.exports.containProcessTree = nativeBinding.containProcessTree
+module.exports.createWindowsTemporaryRecord = nativeBinding.createWindowsTemporaryRecord
 module.exports.FileType = nativeBinding.FileType
 module.exports.glob = nativeBinding.glob
 module.exports.grep = nativeBinding.grep
@@ -884,6 +885,6 @@ module.exports.windowsDirectorySecurity = nativeBinding.windowsDirectorySecurity
 module.exports.windowsDirectorySecurityAsync = nativeBinding.windowsDirectorySecurityAsync
 module.exports.YieldReason = nativeBinding.YieldReason
 
-if (process.platform === 'win32' && module.exports.WindowsTemporaryFile?.prototype.writeFile) {
-  process[Symbol.for('@bastani/atomic/windows-temporary@1')] = module.exports
+if (process.platform === 'win32' && module.exports.createWindowsTemporaryRecord) {
+  try { process[Symbol.for('@bastani/atomic/windows-temporary@2')] = new WeakRef(module.exports) } catch { /* Optional on restricted hosts. */ }
 }

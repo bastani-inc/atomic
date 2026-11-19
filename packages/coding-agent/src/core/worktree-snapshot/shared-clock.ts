@@ -9,10 +9,17 @@
  */
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
-import { open, readdir, stat, unlink } from "node:fs/promises";
+import { readdir, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type * as native from "@bastani/atomic-natives";
 import lockfile, { type LockOptions } from "proper-lockfile";
-import { openWindowsTemporary, sweepWindowsProbe } from "./windows-temporary.ts";
+
+// A cold lock must not resolve the optional package. A loaded package can disappear when its host unloads it.
+const loadedKey = Symbol.for("@bastani/atomic/windows-temporary@2");
+const host = process as NodeJS.Process & { [loadedKey]?: WeakRef<typeof native> };
+export function windowsTemporaryFiles(): typeof native | undefined {
+	return process.platform === "win32" && loadedKey in host ? host[loadedKey]?.deref() : undefined;
+}
 
 const PROBE_NAME = /^\.clock-[0-9a-f]{16}\.probe$/;
 
@@ -26,11 +33,11 @@ export const LEFTOVER_PROBE_AGE_MS = 10 * 60_000;
 const sweptAt = new Map<string, number>();
 
 /** Removes the probes in `directory` older than {@link LEFTOVER_PROBE_AGE_MS}, at most once per that age. */
-async function removeLeftoverProbes(directory: string, offset: number): Promise<void> {
+async function removeLeftoverProbes(directory: string, offset: number, clock: () => number): Promise<void> {
 	const last = sweptAt.get(directory);
 	if (last !== undefined && Date.now() - last < LEFTOVER_PROBE_AGE_MS) return;
 	sweptAt.set(directory, Date.now());
-	const now = Date.now() + offset;
+	const now = clock() + offset;
 	for (const name of await readdir(directory).catch(() => [] as string[])) {
 		if (!PROBE_NAME.test(name)) continue;
 		const probe = join(directory, name);
@@ -40,10 +47,24 @@ async function removeLeftoverProbes(directory: string, offset: number): Promise<
 		);
 		if (age > LEFTOVER_PROBE_AGE_MS) {
 			// Only ask for deletion access to an old file. On Windows recheck its age on the handle we remove.
-			const sweep = process.platform === "win32" ? sweepWindowsProbe(probe, now - LEFTOVER_PROBE_AGE_MS) : undefined;
+			const sweep = windowsTemporaryFiles()?.removeWindowsFileOlderThan(probe, now - LEFTOVER_PROBE_AGE_MS);
 			await (sweep ?? unlink(probe)).catch(() => {});
 		}
 	}
+}
+
+/** The ordinary sampler needs only a descriptor, not a FileHandle. Keep the four I/O submissions in order. */
+function ordinaryProbe(probe: string, before: number, clock: () => number): Promise<number | undefined> {
+	return new Promise((resolve, reject) => {
+		fs.open(probe, "wx", (error, fd) => {
+			if (error) return reject(error);
+			const finish = (offset?: number) => fs.unlink(probe, () => resolve(offset));
+			fs.close(fd, (error) => {
+				if (error) return finish();
+				fs.stat(probe, (error, stats) => finish(error ? undefined : stats.mtimeMs - (before + clock()) / 2));
+			});
+		});
+	});
 }
 
 /**
@@ -53,44 +74,48 @@ async function removeLeftoverProbes(directory: string, offset: number): Promise<
  * Probes a process left when it stopped mid-probe are removed once they are {@link LEFTOVER_PROBE_AGE_MS} old by the
  * filesystem's clock.
  */
-export async function sharedClockOffset(directory: string): Promise<number> {
-	// Random bytes, not a UUID: the probe's name never takes a UUID the caller's own records draw.
-	for (let attempt = 0; attempt < 2; attempt++) {
-		const probe = join(directory, `.clock-${randomBytes(8).toString("hex")}.probe`);
-		let created = false;
-		let temporary: Awaited<ReturnType<typeof openWindowsTemporary>>;
-		let offset: number;
-		try {
-			const before = Date.now();
-			const opening = process.platform === "win32" ? openWindowsTemporary(probe, "clock") : undefined;
-			if (opening) {
-				temporary = await opening;
-				if (!temporary) return 0;
-				created = true;
-			} else {
-				const file = await open(probe, "wx");
-				created = true;
-				await file.close();
-			}
-			const { mtimeMs } = await stat(probe);
-			offset = mtimeMs - (before + Date.now()) / 2;
-		} catch (error) {
-			if (!created && (error as NodeJS.ErrnoException).code === "EEXIST") continue;
-			return 0;
-		} finally {
-			if (temporary) await temporary.close().catch(() => {});
-			else if (created) await unlink(probe).catch(() => {});
-		}
-		await removeLeftoverProbes(directory, offset);
-		return offset;
-	}
-	return 0;
+export function sharedClockOffset(directory: string): Promise<number> {
+	return sampleClock(directory, false);
 }
 
-/** The time now by the clock of the filesystem holding `directory`, which every host sharing it reads alike. */
-export async function sharedClockNow(directory: string): Promise<number> {
-	const offset = await sharedClockOffset(directory);
-	return Date.now() + offset;
+/** An absolute reading advances the filesystem's timestamp by elapsed time, independent of civil clock steps. */
+export function sharedClockNow(directory: string): Promise<number> {
+	return sampleClock(directory, true);
+}
+
+async function sampleClock(directory: string, absolute: boolean): Promise<number> {
+	const clock = absolute ? () => performance.now() : Date.now;
+	// Random bytes, not a UUID: the probe's name never takes a UUID the caller's own records draw.
+	const binding = windowsTemporaryFiles();
+	for (let attempt = 0; attempt < 2; attempt++) {
+		const probe = join(directory, `.clock-${randomBytes(8).toString("hex")}.probe`);
+		let temporary: native.WindowsTemporaryFile | null | undefined;
+		let offset: number | undefined;
+		try {
+			const before = clock();
+			if (binding) {
+				temporary = await binding.openWindowsTemporaryFile(probe, true);
+				if (!temporary) break;
+				const { mtimeMs } = await stat(probe);
+				offset = mtimeMs - (before + clock()) / 2;
+			} else {
+				offset = await ordinaryProbe(probe, before, clock);
+				if (offset === undefined) break;
+			}
+		} catch (error) {
+			if (
+				!temporary &&
+				((error as NodeJS.ErrnoException).code === "EEXIST" || (binding && (error as Error).message === "EEXIST"))
+			)
+				continue;
+			break;
+		} finally {
+			if (temporary) await temporary.close().catch(() => {});
+		}
+		await removeLeftoverProbes(directory, offset, clock);
+		return absolute ? clock() + offset : offset;
+	}
+	return absolute ? Date.now() : 0;
 }
 
 /**

@@ -321,6 +321,9 @@ export interface ContextLine {
   line: string
 }
 
+/** Create and write a slot in one worker operation, before JavaScript has to run again. */
+export declare function createWindowsTemporaryRecord(path: string, data: string, readOnly: boolean): Promise<WindowsTemporaryFile | undefined | null>
+
 export interface CurrentAction {
   tool: string
   text: string

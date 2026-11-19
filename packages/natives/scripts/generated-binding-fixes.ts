@@ -14,8 +14,8 @@ export function fixGeneratedBinding(loader: string, declarations: string) {
 		declarations = declarations.replace(marker, `${marker} | undefined`);
 	}
 	// A clock sample may use an already-loaded binding, but must never trigger package resolution or installation.
-	const loadedTemporaryFiles = `if (process.platform === 'win32' && module.exports.WindowsTemporaryFile?.prototype.writeFile) {
-  process[Symbol.for('@bastani/atomic/windows-temporary@1')] = module.exports
+	const loadedTemporaryFiles = `if (process.platform === 'win32' && module.exports.createWindowsTemporaryRecord) {
+  try { process[Symbol.for('@bastani/atomic/windows-temporary@2')] = new WeakRef(module.exports) } catch { /* Optional on restricted hosts. */ }
 }`;
 	if (!loader.includes(loadedTemporaryFiles)) loader = `${loader.trimEnd()}\n\n${loadedTemporaryFiles}\n`;
 	return { loader, declarations };
