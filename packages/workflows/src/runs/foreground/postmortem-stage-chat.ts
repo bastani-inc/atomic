@@ -244,6 +244,9 @@ export function createPostMortemStageHandle(
 		get isStreaming() {
 			return context.isStreaming;
 		},
+		get isTurnLoopBusy() {
+			return context.__turnLoopBusy?.() === true;
+		},
 		get isDisposed() {
 			return disposed;
 		},
@@ -317,6 +320,7 @@ export function createPostMortemStageHandle(
 					(context.__sessionMeta().sessionId === undefined || context.__idleForRelease())
 				);
 			},
+			chatHolds: holds,
 			holdsTaken: () => holds.holdsTaken,
 			onHoldLifted: (listener: () => void) => holds.onLifted(listener),
 		},

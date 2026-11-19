@@ -197,6 +197,40 @@ async function fixture() {
 	};
 }
 
+test.each([true, false])(
+	"a pane can change visibility after the same worker republishes its run (was visible: %s) (#5559)",
+	async (wasVisible) => {
+		const { WorkflowAttachPane } = await import("../../packages/workflows/src/tui/workflow-attach-pane.js");
+		const { deriveGraphTheme } = await import("../../packages/workflows/src/tui/graph-theme.js");
+		const f = await fixture();
+		let pane: InstanceType<typeof WorkflowAttachPane> | undefined;
+		const runId = descriptor.childRunId;
+		try {
+			const review = stage("review", { sessionId: "review-session" });
+			await f.handoff.publish(f.first, [childRun([review])]);
+			pane = new WorkflowAttachPane({
+				store: f.store,
+				graphTheme: deriveGraphTheme({}),
+				runId,
+				initialAttachStageId: review.id,
+				onClose() {},
+			});
+			await vi.waitFor(() => assert.ok(pane?._hasChatView));
+			const attached = () => f.store.run(runId)?.stages.find((s) => s.id === review.id)?.attached === true;
+			pane.setVisible(wasVisible);
+			const before = f.store.run(runId);
+			await f.handoff.publish(f.first, [childRun([review, stage("added")])]);
+			assert.notEqual(f.store.run(runId), before);
+			assert.equal(attached(), wasVisible);
+			pane.setVisible(!wasVisible);
+			assert.equal(attached(), !wasVisible);
+		} finally {
+			pane?.dispose();
+			await f.close();
+		}
+	},
+);
+
 test("a published child subtree appears once under the root and keeps root-owned queued messages (#3869)", async () => {
 	const f = await fixture();
 	try {
