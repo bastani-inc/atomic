@@ -67,6 +67,9 @@ const project = (
 		root: import.meta.dirname,
 		environment: "node" as const,
 		globals: true,
+		// Drop every mock's records (arguments, `this`, results) before each test: vitest 4's vi.restoreAllMocks() keeps
+		// them for the rest of the file, so files that spy on busy code grew by megabytes a test (#5552).
+		clearMocks: true,
 		include: [include],
 		exclude: ["**/node_modules/**", ...(options.exclude ?? [])],
 		sequence: { groupOrder: options.groupOrder ?? 0 },

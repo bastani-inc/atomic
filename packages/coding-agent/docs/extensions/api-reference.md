@@ -634,6 +634,8 @@ pi.registerTool({
 });
 ```
 
+Stop promptly when `signal` aborts: the user interrupted the turn, or its session is stopping. A call that has not returned 10 seconds after the abort (`ATOMIC_TOOL_ABORT_GRACE_MS`) gets an `Operation aborted` error result so the turn can end, and the next tool call no longer waits for it. Its promise may still settle, but its late return value or error is discarded, not added to the transcript or sent to the model. A call still waiting for an earlier call when the turn is interrupted never starts: it gets `Operation aborted` at once.
+
 ### pi.sendMessage(message, options?)
 
 Inject a custom message into the session. The call returns `void | Promise<void>` for compatibility with synchronous hosts; use `await Promise.resolve(pi.sendMessage(...))` when admission or routing failure must be observed. Atomic's AgentSession runtime returns an admission receipt: it settles after the message is accepted by the local queue or workflow late-message route, without waiting for the resulting model turn to finish.
@@ -1215,6 +1217,7 @@ Registered servers are the lowest-precedence MCP layer. They replace a same-name
 ## Error Handling
 
 - Extension errors are logged, agent continues
+- In the interactive terminal, a `session_start` or `resources_discover` handler that throws, at startup, with `-c`/`--resume`, on `/new`, `/resume`, `/fork` or `/reload`, is shown once with the extension's path and error, and the session keeps working. The extension stays loaded, so its commands, tools and other handlers still run. Print mode (`-p`), standalone RPC mode (`--mode rpc`), SDK sessions and workflow stages instead fail startup with `ExtensionStartupError`, which names each failing extension.
 - `tool_call` errors block the tool (fail-safe)
 - Tool `execute` errors must be signaled by throwing; the thrown error is caught, reported to the LLM with `isError: true`, and execution continues
 
