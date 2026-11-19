@@ -123,7 +123,7 @@ The bundled [Herdr skill](https://github.com/herdrdev/herdr/blob/v0.9.5/skills/h
 
 ### Report feedback
 
-Use `/skill:feedback <what happened or what you want to change>` to draft an Atomic bug report or enhancement. The bundled feedback skill runs one foreground debugger investigation for a bug and no subagent for an enhancement. It summarizes findings and unknowns rather than attaching files or transcripts.
+Use `/skill:feedback <what happened or what you want to change>` to draft an Atomic bug report or enhancement. The bundled feedback skill runs one debugger investigation for a bug, waiting for its result, and no subagent for an enhancement. It summarizes findings and unknowns rather than attaching files or transcripts.
 
 Review the Markdown draft and its `Privacy scrubbed:` summary. Ask for changes to get a revised, re-scrubbed draft, or say you want it posted. An unrelated request continues the conversation without creating an issue. Posting uses your own authenticated `gh` CLI login to create an issue in `bastani-inc/atomic`; install GitHub CLI and run `gh auth login` if needed. If posting fails, Atomic reports the error and keeps the draft in the conversation.
 

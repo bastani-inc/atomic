@@ -140,11 +140,9 @@ test("public observation and cancellation doors assign to the exact RFC signatur
 			budgetMs?: number,
 			designation?: S.HostSession,
 		): Promise<C.Result<C.WaitOutcome, C.WaitError>>;
-		foregroundTask(task: S.TaskLease, budgetMs?: number): Promise<C.Result<C.WaitOutcome, C.ForegroundError>>;
 		cancelTask(task: S.TaskLease, cause: C.CancelCause): Promise<C.Result<C.CancelReceipt, C.CancelError>>;
 	} = supervisor;
 	assert.equal(doors.waitForTask, supervisor.waitForTask);
-	assert.equal(doors.foregroundTask, supervisor.foregroundTask);
 	assert.equal(doors.cancelTask, supervisor.cancelTask);
 });
 

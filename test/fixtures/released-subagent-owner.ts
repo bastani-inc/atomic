@@ -260,7 +260,6 @@ if (phase === "launch") {
 			getChildSessionOptions,
 			...(supervisorAuthorization ? { supervisorAuthorization } : {}),
 		},
-		wait: { kind: "background" },
 		recordChild: createSubagentChildRecordSink({ appendEntry }, ctx),
 		runtime,
 	});
