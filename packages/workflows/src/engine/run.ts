@@ -77,6 +77,7 @@ import {
 	createGitWorktreeSetupCacheOwner,
 	inputsSelectGitWorktree,
 	resolveInvocationGitBranch,
+	stageOptionsWithInputDefaults,
 	workflowCwdWithInputWorktree,
 	workflowInvocationMetadata,
 } from "../runs/foreground/executor-direct-helpers.js";
@@ -120,7 +121,7 @@ import {
 	type StageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
 import { disposeStageIdleReleaser, settleReleasedStages } from "../runs/foreground/stage-idle-release.js";
-import { readReplayedStageMessages } from "../runs/foreground/stage-runner-options.js";
+import { readReplayedStageMessages, stageStoreOptions } from "../runs/foreground/stage-runner-options.js";
 import type { StageWaitHandoff } from "../runs/foreground/stage-wake-dispatcher.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
 import { prepareRunGit } from "../runs/shared/worktree-git-runner.js";
@@ -159,6 +160,7 @@ import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBo
 import { createChainPrimitive } from "./primitives/chain.js";
 import { createWorkflowExitManager } from "./primitives/exit.js";
 import { createParallelPrimitive } from "./primitives/parallel.js";
+import { captureParallelForks, readParallelForkLength } from "./primitives/parallel-fork.js";
 import { createWorkflowEventPrimitives } from "./primitives/subscribe.js";
 import { createSubscriberReports } from "./primitives/subscriber-report.js";
 import { createWorkflowTaskRunners } from "./primitives/task.js";
@@ -1522,7 +1524,25 @@ async function executeRun(
 		},
 		task: (...args) => rejectionScope.watch(gatedTask(...args)),
 		chain: (...args) => rejectionScope.watch(whenRunning(() => chain(...args))),
-		parallel: (...args) => rejectionScope.watch(whenRunning(() => parallel(...args))),
+		parallel: (steps, options) => {
+			// Capture only the source position before replay persistence. Leave all admission, prompt and key
+			// ordering inside the existing gate. A paused or aborted call still does nothing until released.
+			const capture = () =>
+				captureParallelForks(steps, options, async (source, id) => {
+					const selected = stageOptionsWithInputDefaults(source, inputRuntimeDefaults) ?? source;
+					if (selected.workspace !== undefined || selected.gitWorktreeDir !== undefined) return undefined;
+					const mapped = mapRestoredOptions === undefined ? selected : await mapRestoredOptions(selected);
+					return readParallelForkLength(
+						stageStoreOptions(mapped, { adapters: opts.adapters, defaultCwd: workflowInvocationCwd }),
+						id,
+						opts.defaultSessionDir,
+					);
+				}) ?? null;
+			const points = scheduler.isRunPaused() || ownController.signal.aborted ? undefined : capture();
+			return rejectionScope.watch(
+				whenRunning(() => parallel(steps, options, points === undefined ? capture() : points)),
+			);
+		},
 		workflow: (...args) =>
 			rejectionScope.watch(
 				whenRunning(() => {

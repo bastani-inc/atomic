@@ -11,18 +11,25 @@ import {
 import type { ParallelFailFastScope, ParallelFailFastStage } from "../../runs/foreground/executor-types.js";
 import { normalizeAutoGroupSentinel } from "../../shared/intercom-group.js";
 import { validateStepsReleaseWhenWaiting } from "../../shared/stage-wait.js";
-import type { WorkflowParallelOptions, WorkflowTaskResult, WorkflowTaskStep } from "../../shared/types.js";
+import type {
+	WorkflowParallelOptions,
+	WorkflowTaskOptions,
+	WorkflowTaskResult,
+	WorkflowTaskStep,
+} from "../../shared/types.js";
 import { WorkflowBudgetExceededError } from "../run-budget.js";
 import type { EngineRuntime } from "../runtime.js";
+import { captureParallelForks, readParallelForkLength } from "./parallel-fork.js";
 import type { WorkflowTaskPrimitive } from "./task.js";
 
 export function createParallelPrimitive(input: {
 	readonly runtime: EngineRuntime;
 	readonly task: WorkflowTaskPrimitive;
-}): (steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions) => Promise<WorkflowTaskResult[]> {
+}) {
 	return async (
 		steps: readonly WorkflowTaskStep[],
 		options: WorkflowParallelOptions = {},
+		applyFork: ((task: WorkflowTaskOptions, slot: number) => WorkflowTaskOptions) | null | undefined = undefined,
 	): Promise<WorkflowTaskResult[]> => {
 		input.runtime.exit.throwIfWorkflowExitSelected();
 		validateStepsReleaseWhenWaiting(steps, options.releaseWhenWaiting);
@@ -30,6 +37,8 @@ export function createParallelPrimitive(input: {
 		// whether this invocation needs one shared auto-group UUID.
 		const normalizeGroup = <T extends { group?: string | true }>(value: T): T =>
 			value.group === undefined ? value : { ...value, group: normalizeAutoGroupSentinel(value.group) };
+		const captured =
+			applyFork === undefined ? captureParallelForks(steps, options, readParallelForkLength) : applyFork;
 		const normalizedOptions = normalizeGroup(options);
 		const normalizedSteps = steps.map(normalizeGroup);
 		const needsAutoGroup = normalizedOptions.group === true || normalizedSteps.some((step) => step.group === true);
@@ -71,17 +80,14 @@ export function createParallelPrimitive(input: {
 			resolvedSteps,
 			resolvedOptions.concurrency,
 			resolvedOptions.failFast,
-			async (step) => {
+			async (step, index) => {
 				input.runtime.exit.throwIfWorkflowExitSelected();
 				const prompt = replaceTaskPlaceholder(
 					step.prompt ?? step.task ?? fallback,
 					resolvedOptions.task ?? fallback,
 				);
-				return await input.task(
-					step.name,
-					taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), resolvedOptions),
-					parallelScope,
-				);
+				const task = taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), resolvedOptions);
+				return await input.task(step.name, captured?.(task, index) ?? task, parallelScope);
 			},
 			async (error) => {
 				if (!failFastEnabled) return;

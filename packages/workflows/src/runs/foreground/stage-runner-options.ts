@@ -104,6 +104,7 @@ export async function stripWorkflowOnlyOptions(
 		context,
 		forkFromSessionId,
 		forkFromEntryId,
+		parallelForkLength,
 		resumeFromSessionId,
 		resumeFromLegacySessionFile,
 		resumeInsideCall: _resumeInsideCall,
@@ -151,6 +152,7 @@ export async function stripWorkflowOnlyOptions(
 			classification,
 			undefined,
 			forkFromEntryId,
+			parallelForkLength === undefined ? undefined : await parallelForkLength,
 		);
 	} else if (sessionOptions.sessionManager === undefined) {
 		if (sessionStore !== undefined) {
@@ -218,21 +220,28 @@ export function readReplayedStageMessages(
 	},
 	sessionId: string,
 ): Promise<ReturnType<SessionManager["buildSessionContext"]>["messages"]> {
+	return readStoredStageMessages(stageStoreOptions(options, run), run.defaultSessionDir, sessionId);
+}
+
+/** Select the same source store the stage will use, even when the SDK created the source manager. */
+export function stageStoreOptions(
+	options: StageOptions,
+	run: {
+		readonly adapters?: Partial<Pick<StageAdapters, "sessionStore" | "agentSession">>;
+		readonly defaultCwd: string;
+	},
+): StageOptions {
 	const ownStore =
 		options.sessionStore !== undefined || options.sessionDir !== undefined || options.sessionManager !== undefined;
 	const runStore = run.adapters?.sessionStore;
-	return readStoredStageMessages(
-		{
-			...(ownStore || runStore === undefined ? options : { ...options, sessionStore: runStore }),
-			cwd:
-				options.cwd ??
-				options.sessionManager?.getCwd() ??
-				agentSessionAdapterDefaultCwd(run.adapters?.agentSession) ??
-				run.defaultCwd,
-		},
-		run.defaultSessionDir,
-		sessionId,
-	);
+	return {
+		...(ownStore || runStore === undefined ? options : { ...options, sessionStore: runStore }),
+		cwd:
+			options.cwd ??
+			options.sessionManager?.getCwd() ??
+			agentSessionAdapterDefaultCwd(run.adapters?.agentSession) ??
+			run.defaultCwd,
+	};
 }
 
 /** Close `store` after `primary` failed: a failure to close is attached to `primary` as `cleanupCause`, never thrown. */

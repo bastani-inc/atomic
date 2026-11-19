@@ -44,11 +44,14 @@ export async function forkStageSession(
 	options: NewSessionOptions,
 	destination: SessionStore = store,
 	entryId?: string,
+	prefixLength?: number,
 ): Promise<SessionManager> {
 	const source = await store.load(sessionId);
 	const entries =
 		entryId === undefined
-			? source.entries
+			? prefixLength === undefined || prefixLength >= source.entries.length
+				? source.entries
+				: source.entries.slice(0, prefixLength)
 			: sessionBranchTo(source.entries, entryId, { sessionId, stageName: options.workflow?.stageName });
 	const id = randomUUID();
 	const hashes = sessionBlobHashes(store, entries);

@@ -219,6 +219,8 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	sessionManager?: SessionManager;
 	settingsManager?: SettingsManager;
 	sessionStore?: import("@bastani/atomic").SessionStore;
+	/** In-memory source prefix of this parallel; never part of a replay key or journal record. */
+	parallelForkLength?: Promise<number | undefined>;
 	/** Internal durable resume hook: reopen this ID in the selected store instead of forking. */
 	resumeFromSessionId?: string;
 	/**
