@@ -48,6 +48,13 @@ def run_single_query(
     stream events (content_block_start) rather than waiting for the
     full assistant message, which only arrives after tool execution.
     """
+    second_ns = 1_000_000_000
+    deadline_ns = time.monotonic_ns() + timeout * second_ns
+
+    def check_deadline():
+        if time.monotonic_ns() >= deadline_ns:
+            raise TimeoutError(f"Timed out after {timeout}s waiting for a skill trigger")
+
     unique_id = uuid.uuid4().hex[:8]
     clean_name = f"{skill_name}-skill-{unique_id}"
     project_commands_dir = Path(project_root) / ".claude" / "commands"
@@ -82,6 +89,7 @@ def run_single_query(
         # programmatic subprocess usage is safe.
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
+        check_deadline()
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -89,9 +97,6 @@ def run_single_query(
             cwd=project_root,
             env=env,
         )
-
-        second_ns = 1_000_000_000
-        deadline_ns = time.monotonic_ns() + timeout * second_ns
 
         def read_trigger():
             triggered = False
@@ -169,8 +174,7 @@ def run_single_query(
 
         try:
             triggered = read_trigger()
-            if time.monotonic_ns() >= deadline_ns:
-                raise TimeoutError(f"Timed out after {timeout}s waiting for a skill trigger")
+            check_deadline()
             return triggered
         finally:
             # Clean up process on any exit path (return, exception, timeout)

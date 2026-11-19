@@ -23,6 +23,8 @@ def start_producer(_command, **kwargs):
     ]}}
     record = json.dumps(message) + ("" if scenario == "exited" else "\n")
     child = spawn([sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", record], **kwargs)
+    if scenario == "slow-start":
+        time.sleep(1.1)  # Starting the producer already used up the query budget.
     if scenario == "exited":
         child.wait()  # stdout is buffered in the pipe, not in the live process.
     return child

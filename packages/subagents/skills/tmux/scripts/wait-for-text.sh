@@ -58,11 +58,6 @@ if ! [[ "$lines" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-if ! command -v tmux >/dev/null 2>&1; then
-  echo "tmux not found in PATH" >&2
-  exit 1
-fi
-
 # /proc/uptime gives hundredths of a second. Use the system monotonic clock on
 # hosts without it; wall time can jump backwards while a capture is pending.
 monotonic_cs() {
@@ -76,18 +71,21 @@ monotonic_cs() {
   fi
 }
 
-if ! LC_NUMERIC=C sleep 0.0 2>/dev/null; then
-  echo 'The wait timer requires a sleep command that accepts fractional seconds.' >&2
-  exit 1
-fi
 if ! start=$(monotonic_cs); then
   echo 'A monotonic clock is required: enable /proc/uptime or install Perl with Time::HiRes.' >&2
   exit 1
 fi
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "tmux not found in PATH" >&2
+  exit 1
+fi
+# A child created during group cancellation must also see that the wait ended.
+active() { [[ -d "$scratch" && ! -e "$scratch/stopped" ]]; }
 # Bound each timer sleep to a day, not the overall wait. Large decimal budgets
 # must not overflow shell arithmetic or the platform's sleep primitive.
 remaining_cs() {
   local now
+  active || return 1
   now=$(monotonic_cs) || return 1
   awk -v elapsed="$((10#$now - 10#$start))" -v timeout="$timeout" '
     BEGIN { left = timeout * 100 - elapsed; if (left <= 0) exit 1; printf "%.0f\n", (left > 8640000 ? 8640000 : left) }'
@@ -98,18 +96,22 @@ scratch=$(mktemp -d)
 worker=""
 stop_worker() {
   if [[ -n "$worker" ]]; then
+    : >"$scratch/stopped"
     kill -KILL -- "-$worker" 2>/dev/null || :
     worker=""
   fi
 }
 trap 'stop_worker; rm -rf -- "$scratch"' EXIT
-# A signal between the background launch and saving $! must not orphan the group.
+# Stop an owned group immediately, or remember the signal until its PID is saved.
+# A second interrupt must not cut off the first one's cleanup.
 cancelled=0
-trap 'cancelled=1' HUP INT TERM
+trap 'trap "" HUP INT TERM; cancelled=1; stop_worker' HUP INT TERM
 : >"$scratch/pane"
 
 poll() {
   local pane_text rc
+  active || return 124
+  LC_NUMERIC=C sleep 0.0 2>/dev/null || return 125
   # Check the pattern inside the timed worker: even the first grep can stall.
   grep "$grep_flag" -- "$pattern" </dev/null >/dev/null || {
     rc=$?
@@ -122,6 +124,7 @@ poll() {
         return 0
       fi
     fi
+    active || return 124
     sleep "$interval" || return "$?"
   done
   return 124
@@ -131,9 +134,10 @@ watch_deadline() {
   local remaining duration
   while remaining=$(remaining_cs); do
     printf -v duration '%d.%02d' "$((remaining / 100))" "$((remaining % 100))"
-    LC_NUMERIC=C sleep "$duration" || { echo 1; return; }
+    active || break
+    LC_NUMERIC=C sleep "$duration" 2>/dev/null || { echo 125 2>/dev/null; return; }
   done
-  echo 124
+  echo 124 2>/dev/null
 }
 
 # The poll and its timer share a private process group. The first status on the
@@ -142,18 +146,22 @@ set -m
 (
   set +m
   IFS= read -r result < <(
-    (status=0; poll || status=$?; echo "$status") &
+    (status=0; poll || status=$?; echo "$status" 2>/dev/null) &
     watch_deadline &
     wait
   )
   exit "$result"
 ) &
 worker=$!
-trap 'exit 1' HUP INT TERM
 (( ! cancelled )) || exit 1
 status=0
 wait "$worker" 2>/dev/null || status=$?
 stop_worker
+(( ! cancelled )) || exit 1
+if [[ "$status" == 125 ]]; then
+  echo 'The wait timer requires a sleep command that accepts fractional seconds.' >&2
+  exit 1
+fi
 if [[ "$status" != 124 ]]; then exit "$status"; fi
 
 echo "Timed out after ${timeout}s waiting for pattern: $pattern" >&2

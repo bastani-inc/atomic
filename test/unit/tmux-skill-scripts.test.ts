@@ -193,6 +193,16 @@ exec "$REAL_TMUX" -S "$SOCKET" "$@"
 		assert.ok(result.elapsedMs < 5_000, `took ${Math.round(result.elapsedMs)} ms`);
 	});
 
+	test("wait-for-text does not restart its timeout after a slow timer check (#5566)", () => {
+		const sleepPath = join(stubBin, "sleep");
+		writeFileSync(sleepPath, '#!/bin/sh\nif [ "$1" = 0.0 ]; then /bin/sleep 6; fi\nexec /bin/sleep "$@"\n');
+		chmodSync(sleepPath, 0o755);
+		const result = run("wait-for-text.sh", ["-t", "s", "-F", "-p", "ready", "-T", "1"], { STUB_PANE: "ready" });
+		assert.equal(result.exitCode, 1, result.stderr);
+		assert.match(result.stderr, /Timed out after 1s/u);
+		assert.ok(result.elapsedMs < 5_000, `took ${Math.round(result.elapsedMs)} ms`);
+	});
+
 	test("wait-for-text refuses to poll without a fractional sleep timer (#5566)", () => {
 		const sleepPath = join(stubBin, "sleep");
 		writeFileSync(sleepPath, '#!/bin/sh\ncase "$1" in *.*) exit 1 ;; esac\nexec /bin/sleep "$@"\n');
@@ -247,10 +257,43 @@ echo working
 
 	test("wait-for-text cancels its worker even if interrupted during launch (#5566)", () => {
 		const bashEnv = join(dir, "interrupt-launch");
-		// Interrupt this shell itself as soon as its first background job has been launched.
+		// Interrupt this shell at launch and again just before it stops its own worker.
 		writeFileSync(
 			bashEnv,
-			`interrupt() { if [[ $BASH_SUBSHELL == 0 && ! -f "$HOME/interrupted" && -n $(jobs -p) ]]; then touch "$HOME/interrupted"; kill -TERM "$$"; fi; }; trap interrupt DEBUG\n`,
+			`
+interrupt() { if [[ $BASH_SUBSHELL == 0 && ! -f "$HOME/interrupted" && -n $(jobs -p) ]]; then touch "$HOME/interrupted"; builtin kill -TERM "$$"; fi; }
+kill() {
+  if [[ $1 == -KILL && ! -f "$HOME/interrupted-again" ]]; then touch "$HOME/interrupted-again"; builtin kill -HUP "$$"; fi
+  builtin kill "$@"
+}
+trap interrupt DEBUG
+`,
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "missing", "-T", "8"], { BASH_ENV: bashEnv });
+		assert.ok(existsSync(join(dir, "interrupted")));
+		assert.ok(existsSync(join(dir, "interrupted-again")));
+		assert.notEqual(result.exitCode, 0);
+		assert.ok(result.elapsedMs < 6_000, `worker still held the pipes for ${Math.round(result.elapsedMs)} ms`);
+	});
+
+	test("wait-for-text does not poll after cancellation races worker startup (#5566)", () => {
+		const bashEnv = join(dir, "interrupt-launch");
+		// Hold the worker at startup until the signal has been delivered. Its new children
+		// therefore cannot receive that earlier signal: they must observe cancellation.
+		writeFileSync(
+			bashEnv,
+			`
+interrupt() {
+  if [[ $BASH_SUBSHELL == 0 && ! -f "$HOME/interrupted" && -n $(jobs -p) ]]; then
+    touch "$HOME/interrupted"; builtin kill -TERM "$$"
+  elif [[ $BASH_SUBSHELL == 1 && $BASH_COMMAND == 'set +m' ]]; then
+    while [[ ! -f "$HOME/delivered" ]]; do /bin/sleep .01; done
+  fi
+}
+kill() { if [[ $1 == -KILL ]]; then touch "$HOME/delivered"; return 0; fi; builtin kill "$@"; }
+set -T
+trap interrupt DEBUG
+`,
 		);
 		const result = run("wait-for-text.sh", ["-t", "s", "-p", "missing", "-T", "8"], { BASH_ENV: bashEnv });
 		assert.ok(existsSync(join(dir, "interrupted")));

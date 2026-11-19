@@ -22,6 +22,12 @@ describe.skipIf(process.platform === "win32")("bundled skill trigger evaluator",
 		assert.match(result.stderr.toString(), /timed out/iu);
 	});
 
+	test("counts producer startup against the query timeout (#5566)", () => {
+		const result = evaluate("slow-start", "1");
+		assert.notEqual(result.exitCode, 0, result.stdout.toString());
+		assert.match(result.stderr.toString(), /timed out/iu);
+	});
+
 	test("accepts a buffered trigger with a timeout larger than the platform timer (#5566)", () => {
 		const result = evaluate("exited", `1${"0".repeat(350)}`);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
