@@ -411,14 +411,16 @@ export class FooterComponent implements Component {
 			}
 			// Fit the optional hint around what survived, never the other way round.
 			const parts = statusText ? [statusText, ...kept] : kept;
+			const next =
+				optionalIndex === undefined ? -1 : parts.findIndex((part) => segments.indexOf(part) > optionalIndex);
+			if (parts.length === 1) parts[0] = truncateToWidth(parts[0]!, width, this.renderStyle.dim("..."));
 			let line = parts.join(hintSeparator);
 			if (optionalIndex !== undefined) {
 				const extra = segments[optionalIndex]!;
-				const next = parts.findIndex((part) => segments.indexOf(part) > optionalIndex);
 				const candidate = parts.toSpliced(next < 0 ? parts.length : next, 0, extra).join(hintSeparator);
 				if (visibleWidth(candidate) <= width) line = candidate;
 			}
-			if (line) lines.push(truncateToWidth(line, width, this.renderStyle.dim("...")));
+			if (line || parts.length > 0) lines.push(line);
 		}
 		const statusRow = renderExtensionStatusRow(this.footerData.getExtensionStatuses(), width, this.renderStyle);
 		if (statusRow !== undefined) lines.push(statusRow);

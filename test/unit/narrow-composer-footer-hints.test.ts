@@ -128,6 +128,29 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 		}
 	});
 
+	test("a workflow pointer can use the space after a clipped status when help is unbound (#5710)", () => {
+		// These spacing marks form one grapheme wider than the terminal. The footer cannot show part of it.
+		const model = { provider: "local", id: `a${"\u093e".repeat(100)}` };
+		const footer = new FooterComponent(
+			{ state: { model }, sessionManager: { getCwd: () => "/project" } } as never,
+			{
+				getGitBranch: () => null,
+				getExtensionStatuses: () => new Map(),
+				getAvailableProviderCount: () => 1,
+				onBranchChange: () => () => {},
+			},
+			undefined,
+			undefined,
+			undefined,
+			() =>
+				mainComposerFooterHints(
+					{ matches: () => false, getKeys: () => [] },
+					{ agentRows: 0, hiddenWorkflow: true },
+				),
+		);
+		assert.equal(stripTerminalSequences(footer.render(80)[0]!), "... · /workflows to see runs");
+	});
+
 	test("renderNavHintLine keeps one separator style and preserves way-out and ? keys on panel, /tasks, and attached chats (#5239)", () => {
 		const keys = new KeybindingsManager();
 		const runningRow: AgentPanelRow = {
