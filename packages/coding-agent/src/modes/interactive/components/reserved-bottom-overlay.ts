@@ -196,6 +196,10 @@ export class ReservedBottomOverlay implements Component {
 		this.handlesInternalUiAction = inner.handlesInternalUiAction === true;
 	}
 
+	get acceptsClickFocus(): boolean {
+		return typeof this.inner.handleInput === "function" && this.inner.acceptsClickFocus !== false;
+	}
+
 	/** Rows painted by the last `render`. Zero before the first frame. */
 	get renderedHeight(): number {
 		return this.height;

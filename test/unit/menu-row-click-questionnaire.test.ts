@@ -3,7 +3,7 @@
  * moving there and pressing Enter would, driven through Atomic's fullscreen renderer with SGR mouse reports.
  */
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, Input, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { buildItemsForQuestion } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.js";
@@ -37,6 +37,35 @@ function ask(ui: ClickScreen, params: QuestionParams): QuestionnaireResult[] {
 	ui.mount(new ReservedBottomOverlay(session.component, () => ui.terminal.rows));
 	return results;
 }
+
+test("#5532 clicking a reserved bottom card without a keyboard handler keeps typing in the composer", async () => {
+	const ui = makeClickScreen();
+	const composer = new Input();
+	let clicks = 0;
+	const card = new ReservedBottomOverlay(
+		{
+			render: () => ["Status card"],
+			invalidate() {},
+			handleMouse(event) {
+				if (event.type !== "click") return undefined;
+				clicks++;
+				return { handled: true };
+			},
+		},
+		() => ui.terminal.rows,
+	);
+	try {
+		ui.dock(composer);
+		ui.tui.showOverlay(card, { anchor: "bottom-right", width: 24, nonCapturing: true });
+		for (const key of "BEFORE-") ui.terminal.input(key);
+		await ui.click("Status card");
+		for (const key of "AFTER") ui.terminal.input(key);
+		assert.equal(clicks, 1);
+		assert.equal(composer.getValue(), "BEFORE-AFTER");
+	} finally {
+		ui.tui.stop();
+	}
+});
 
 const option = (label: string, description = `${label} details`) => ({ label, description });
 

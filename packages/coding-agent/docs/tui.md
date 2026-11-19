@@ -545,7 +545,7 @@ pi.registerCommand("pick", {
 
 Call the same action from your click and keyboard handlers. If you forward terminal input instead, `keyInput(key)` encodes a key returned by `getKeybindings().getKeys(action)`, including modified function keys.
 
-If you host your own fullscreen renderer and mount a dialog directly in its layout, pass `getInlineDialog: () => currentDialog` to `TuiAltScreen`. Return `undefined` when it is closed. The dialog owns clicks while it or one of its children has focus; capturing overlays work automatically. Use `modal: false` for an overlay that should take keyboard focus without blocking other panes. Use `nonCapturing: true` to leave keyboard focus where it is when the overlay opens. A single click on a keyboard-driven pane focuses it and acts on its row together.
+If you host your own fullscreen renderer and mount a dialog directly in its layout, pass `getInlineDialog: () => currentDialog` to `TuiAltScreen`. Return `undefined` when it is closed. The dialog owns clicks while it or one of its children has focus; capturing overlays work automatically. Use `modal: false` for an overlay that should take keyboard focus without blocking other panes. Use `nonCapturing: true` to leave keyboard focus where it is when the overlay opens. A single click on a keyboard-driven pane focuses it and acts on its row together. A non-capturing card without a keyboard handler can take a click without taking typing away from the composer, even when it reserves transcript rows.
 
 ```typescript
 import { ClickableRows, type Component, type TuiMouseEvent } from "@bastani/atomic-tui";
