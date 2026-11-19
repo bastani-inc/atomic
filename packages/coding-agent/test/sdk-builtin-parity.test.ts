@@ -88,7 +88,7 @@ test("default SDK creation returns an Atomic AgentSession with builtin tools and
 
 test.each([
 	{ loader: "default", defaultTools: ["+codemode"], codemodeActive: true },
-	{ loader: "default", defaultTools: undefined, codemodeActive: false },
+	{ loader: "default", defaultTools: undefined, codemodeActive: true },
 	{ loader: "caller-built", defaultTools: ["+codemode"], codemodeActive: true },
 ] as const)(
 	"SDK registers inline builtin tools for a $loader loader (defaultTools: $defaultTools)",
@@ -708,6 +708,12 @@ test.each<{
 	{
 		name: "omitted selection",
 		options: {},
+		expected: [...getDefaultToolNames(), "codemode", ...extensionToolNames, "custom_probe"],
+	},
+	{
+		name: "explicit codemode opt out",
+		options: {},
+		defaults: ["-codemode"],
 		expected: [...getDefaultToolNames(), ...extensionToolNames, "custom_probe"],
 	},
 	{ name: "empty allowlist", options: { tools: [] }, expected: [] },
