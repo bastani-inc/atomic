@@ -56,9 +56,18 @@ function textOf(message: object): string {
 		: (content ?? []).map((block) => (block.type === "text" ? (block.text ?? "") : "")).join("");
 }
 
-test.skipIf(process.platform === "win32")(
-	"a running pooled stage opens as a live watch whose stream continues right after its snapshot (#3996)",
-	async () => {
+test.skipIf(process.platform === "win32").each([
+	{
+		failPrimary: false,
+		name: "a running pooled stage opens as a live watch whose stream continues right after its snapshot (#3996)",
+	},
+	{
+		failPrimary: true,
+		name: "a live stage watch receives the switch between attempts from a separate worker process (#5535)",
+	},
+])(
+	"$name",
+	async ({ failPrimary }) => {
 		const directory = makeTempDirectory("pool-live-stage-");
 		const path = join(directory, "journal.sqlite");
 		const journal = await resolveRunJournal({ journal: { path } });
@@ -85,7 +94,7 @@ test.skipIf(process.platform === "win32")(
 					inputs: {},
 					outputs: {},
 					async run(ctx) {
-						await ctx.workflow(child, { inputs: { gatePath } });
+						await ctx.workflow(child, { inputs: { gatePath, failPrimary } });
 						return {};
 					},
 				}),
@@ -159,7 +168,16 @@ test.skipIf(process.platform === "win32")(
 					? [event.assistantMessageEvent.delta]
 					: [],
 			);
-			assert.equal(LIVE_STAGE_FIRST_DELTA + deltas.join(""), LIVE_STAGE_FIRST_DELTA + LIVE_STAGE_SECOND_DELTA);
+			if (failPrimary) {
+				assert.deepEqual(
+					stream
+						.map(({ event }) => event.type)
+						.filter((type) => type === "agent_end" || type === "model_fallback_start" || type === "agent_start"),
+					["agent_end", "model_fallback_start", "agent_start", "agent_end"],
+				);
+				assert.equal(deltas.join(""), LIVE_STAGE_FIRST_DELTA + LIVE_STAGE_SECOND_DELTA);
+			} else
+				assert.equal(LIVE_STAGE_FIRST_DELTA + deltas.join(""), LIVE_STAGE_FIRST_DELTA + LIVE_STAGE_SECOND_DELTA);
 		} finally {
 			await pool.close();
 			await backend.close();

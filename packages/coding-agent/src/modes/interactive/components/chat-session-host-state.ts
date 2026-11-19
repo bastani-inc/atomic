@@ -110,6 +110,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly newMessages = new NewMessageCounter();
 	compactionStartedAt: number | undefined;
 	readonly workingRunMeter = new WorkingRunMeter();
+	/** A retry or a model fallback this host saw start waits for the next attempt, which continues the turn's run. */
+	retryContinuesRun = false;
 	workingLifecycleActive: boolean;
 	workingLifecycleGeneration = 0;
 	disposed = false;

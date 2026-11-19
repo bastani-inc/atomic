@@ -260,6 +260,7 @@ export interface RpcSessionState {
 	isStreaming: boolean;
 	/** The pending automatic retry or fallback switch, if its next request has not started yet. */
 	retryStatus?: import("../../core/session-retry-status.js").SessionRetryStatus;
+	turnStartedAt?: number;
 	isCompacting: boolean;
 	compactionReason?: CompactionReason;
 	compactionStartedAt?: number;

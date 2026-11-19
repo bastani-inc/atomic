@@ -208,6 +208,7 @@ class AgentSessionBase {
 	protected _retryAbortController: AbortController | undefined = undefined;
 	protected _retryAttempt = 0;
 	protected _retryStatus?: import("./session-retry-status.js").SessionRetryStatus;
+	protected _turnStartedAt?: number;
 	/** Retries made after an attempt whose stream was cut after a long run, for the current model and turn. */
 	protected _longStreamCutRetries = 0;
 	protected _retryPromise: Promise<void> | undefined = undefined;

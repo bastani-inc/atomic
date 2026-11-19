@@ -132,6 +132,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly systemPrompt: string;
 	readonly retryAttempt: number;
 	readonly retryStatus?: import("./session-retry-status.js").SessionRetryStatus;
+	/** Time of the current turn's first request, including waits and later attempts; absent between turns. */
+	readonly turnStartedAt?: number;
 	readonly isCompacting: boolean;
 	readonly compactionReason?: import("./agent-session-types.js").CompactionReason;
 	readonly compactionStartedAt?: number;
@@ -475,6 +477,7 @@ export interface AgentSessionPublicSurface
 		| "systemPrompt"
 		| "retryAttempt"
 		| "retryStatus"
+		| "turnStartedAt"
 		| "isCompacting"
 		| "compactionReason"
 		| "compactionStartedAt"
@@ -645,6 +648,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_retryAbortController: AbortController | undefined;
 	_retryAttempt: number;
 	_retryStatus?: import("./session-retry-status.js").SessionRetryStatus;
+	_turnStartedAt?: number;
 	_longStreamCutRetries: number;
 	_retryPromise: Promise<void> | undefined;
 	_retryResolve: (() => void) | undefined;
