@@ -403,6 +403,54 @@ test("a redelivery its worker never answers does not hold the view: a fresh watc
 	assert.equal(await stuck, false, "the abandoned rebind settles");
 });
 
+test("a replacement watch that arrives after the stage finished cannot revive its retry (#5572)", async () => {
+	const fake = pool(() => []);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	const reply = Promise.withResolvers<Awaited<ReturnType<PooledStageTransport["watch"]>>>();
+	try {
+		fake.end("worker_exited");
+		const reconnect = reconnectPooledStageHandle(handle, { ...fake.transport, watch: () => reply.promise });
+		handle.receive({ kind: "ended", reason: "stage_finished" });
+		reply.resolve({
+			ok: true,
+			watch: {
+				id: "late" as WatchId,
+				attempt: { workId: "work", generation: 2 },
+				snapshot: { ...snapshot(), waitingToRetry: true },
+			},
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(handle.isWaitingToRetry, false);
+		assert.deepEqual(fake.unwatched, ["late"]);
+		assert.equal(await reconnect, false);
+	} finally {
+		handle.dispose();
+	}
+});
+
+test("a replacement watch whose terminal event precedes its reply does not report a live rebind (#5572)", async () => {
+	const fake = pool(() => []);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	try {
+		fake.end("worker_exited");
+		const bound = await reconnectPooledStageHandle(opened.handle, {
+			...fake.transport,
+			async watch(ref, listener) {
+				const result = await fake.transport.watch(ref, listener);
+				listener({ kind: "ended", reason: "stage_finished" });
+				return result;
+			},
+		});
+		assert.equal(opened.handle.endReason, "stage_finished");
+		assert.equal(bound, false);
+	} finally {
+		opened.handle.dispose();
+	}
+});
+
 test("a watch that opens after its reconnect was abandoned is closed, not bound (#3996)", async () => {
 	const fake = pool(() => []);
 	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
