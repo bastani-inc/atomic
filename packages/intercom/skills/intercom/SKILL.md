@@ -259,7 +259,7 @@ Use constructive quorum when several fresh-context reviewers judge the same arti
 3. Change a verdict only through evidence, never deference. Each reviewer emits its own final structured verdict and records whether the round changed it and which evidence caused the change.
 4. Let the deterministic reducer count final votes; this pattern does not change quorum counts or the `stop_review_loop` contract.
 
-Subagents launched in one parallel set share an Intercom group when Intercom is available, so sibling reviewers can coordinate without custom group wiring. See [adversarial verification](../../../coding-agent/docs/orchestration/patterns.md#adversarial-verification) for an example of checking a candidate independently.
+Subagents launched in one parallel set share an Intercom group when Intercom is available, so sibling reviewers can coordinate without custom group wiring. See [adversarial verification](https://docs.bastani.ai/orchestration/patterns#adversarial-verification) for an example of checking a candidate independently. Offline, read `docs/orchestration/patterns.md` under the Atomic documentation root shown in the session.
 
 ### Pattern 8: Peer Coordination Between Subagents and Workflow Stages
 
