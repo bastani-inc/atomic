@@ -171,8 +171,7 @@ describe("RpcClient request timeout policy", () => {
 	test.each([
 		{ command: { type: "resume_workflow_from_picker", target: "wf-123" } },
 		{ command: { type: "delete_workflow_from_picker", runId: "wf-123" } },
-		{ command: { type: "render_html" } },
-	] as const)("keeps $command.type pending until completion or engine exit (#5256, #5531)", async ({ command }) => {
+	] as const)("keeps $command.type pending until completion or engine exit (#5256)", async ({ command }) => {
 		const heldClient = new RpcClient({
 			cliPath: writeChildScript(HELD_OPEN_CHILD),
 			requestTimeoutMs: 20,

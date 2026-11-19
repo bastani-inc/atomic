@@ -77,15 +77,13 @@ class ToolBlockLines implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		return [...this.streamRows(width)];
-	}
-
-	*streamRows(width: number): Generator<string> {
-		if (width < 1) return;
-		for (const line of this.lines) {
-			if (!this.wrap) yield truncateToWidth(line, width, "…");
-			else for (const part of wrapTextWithAnsi(line, width)) yield truncateToWidth(part, width, "…");
+		if (width < 1 || this.lines.length === 0) return [];
+		if (!this.wrap) {
+			return this.lines.map((line) => truncateToWidth(line, width, "…"));
 		}
+		return this.lines.flatMap((line) =>
+			wrapTextWithAnsi(line, width).map((part) => truncateToWidth(part, width, "…")),
+		);
 	}
 }
 
@@ -107,33 +105,30 @@ class GutteredToolBlockLines implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		return [...this.streamRows(width)];
-	}
-
-	*streamRows(width: number): Generator<string> {
-		if (width < 1) return;
+		if (width < 1 || this.entries.length === 0) return [];
 		const prefixWidth = this.gutterWidth + 2;
 		if (width <= prefixWidth) {
-			for (const { lineNumber, body } of this.entries) {
+			return this.entries.flatMap(({ lineNumber, body }) => {
 				const gutter = this.activeTheme.fg("dim", String(lineNumber).padStart(this.gutterWidth, " "));
-				for (const part of wrapTextWithAnsi(`${gutter}  ${body}`, width)) yield truncateToWidth(part, width, "…");
-			}
-			return;
+				return wrapTextWithAnsi(`${gutter}  ${body}`, width).map((part) => truncateToWidth(part, width, "…"));
+			});
 		}
 		const bodyWidth = Math.max(1, width - prefixWidth);
 		const continuationPad = " ".repeat(prefixWidth);
+		const out: string[] = [];
 		for (const { lineNumber, body } of this.entries) {
 			const gutter = this.activeTheme.fg("dim", String(lineNumber).padStart(this.gutterWidth, " "));
 			const wrapped = wrapTextWithAnsi(body, bodyWidth);
 			if (wrapped.length === 0) {
-				yield truncateToWidth(`${gutter}  `, width, "…");
+				out.push(truncateToWidth(`${gutter}  `, width, "…"));
 				continue;
 			}
 			for (let index = 0; index < wrapped.length; index++) {
 				const prefix = index === 0 ? `${gutter}  ` : continuationPad;
-				yield truncateToWidth(`${prefix}${wrapped[index]!}`, width, "…");
+				out.push(truncateToWidth(`${prefix}${wrapped[index]!}`, width, "…"));
 			}
 		}
+		return out;
 	}
 }
 

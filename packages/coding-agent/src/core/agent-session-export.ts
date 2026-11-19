@@ -7,10 +7,7 @@ import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.js";
 import { resolvePath } from "../utils/paths.ts";
-import type {
-	AgentSessionInternalSurface as AgentSession,
-	AgentSessionPublicSurface,
-} from "./agent-session-methods.ts";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { SessionStats } from "./agent-session-types.js";
 import { calculateContextTokens, estimateProjectedContextTokens } from "./compaction/index.ts";
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
@@ -145,35 +142,27 @@ export async function exportToHtml(
 	outputPath?: string,
 	options: { themeName?: string } = {},
 ): Promise<string> {
-	const { writeHtmlExport } = await import("./export-html/index.ts");
-	const html = await renderAgentSessionHtml(this, options.themeName);
-	return writeHtmlExport(html, outputPath, this.sessionManager.getSessionFile(), this.sessionManager.getSessionId());
-}
-
-/** Render the current session without interpreting or writing a destination path. */
-export async function renderAgentSessionHtml(
-	session: AgentSessionPublicSurface,
-	requestedTheme?: string,
-): Promise<string> {
-	const themeName = [requestedTheme, session.settingsManager.getTheme()].find(
+	const themeName = [options.themeName, this.settingsManager.getTheme()].find(
 		(candidate) => candidate !== undefined && getThemeByName(candidate) !== undefined,
 	);
-	const [{ renderSessionToHtml }, { createToolHtmlRenderer }] = await Promise.all([
+	const [{ exportSessionToHtml }, { createToolHtmlRenderer }] = await Promise.all([
 		import("./export-html/index.ts"),
 		import("./export-html/tool-renderer.ts"),
 	]);
 
 	// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
 	const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({
-		getToolRenderers: (name) =>
-			session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
+		getToolRenderers: (name) => this.extensionRunner.resolveToolRenderers(name, () => this.getToolDefinition(name)),
 		theme,
-		sessionId: session.sessionManager.getSessionId(),
-		cwd: session.sessionManager.getCwd(),
+		cwd: this.sessionManager.getCwd(),
 	});
 
-	await session.sessionManager.loadFullHistory();
-	return renderSessionToHtml(session.sessionManager, session.state, { themeName, toolRenderer });
+	await this.sessionManager.loadFullHistory();
+	return await exportSessionToHtml(this.sessionManager, this.state, {
+		outputPath,
+		themeName,
+		toolRenderer,
+	});
 }
 
 /**

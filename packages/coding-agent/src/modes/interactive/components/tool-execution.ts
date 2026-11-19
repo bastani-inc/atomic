@@ -45,7 +45,6 @@ export interface ToolExecutionOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
 	outputPad?: number;
-	sessionId?: string;
 	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
 	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
 }
@@ -80,7 +79,6 @@ export class ToolExecutionComponent extends Container {
 	readonly expandsOnClick = true;
 	private contentContainer: Container;
 	private readonly codeHighlighter = new CodeHighlighter();
-	private readonly sessionId?: string;
 	private readonly taskRecordReader: ToolExecutionOptions["getTaskRecord"];
 	private readonly toolRendererReader: ToolExecutionOptions["getToolDefinition"];
 	private stopWorkingClock: (() => void) | undefined;
@@ -133,7 +131,6 @@ export class ToolExecutionComponent extends Container {
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.outputPad = options.outputPad ?? 1;
-		this.sessionId = options.sessionId;
 		this.taskRecordReader = options.getTaskRecord;
 		this.toolRendererReader = options.getToolDefinition;
 		this.ui = ui;
@@ -190,21 +187,18 @@ export class ToolExecutionComponent extends Container {
 				this.invalidate();
 				this.ui.requestRender();
 			},
-			requestRender: () => {
-				if (!this.disposed) this.ui.requestRender();
-			},
 			lastComponent,
 			state: this.rendererState,
 			cwd: this.cwd,
 			executionStarted: this.executionStarted,
 			argsComplete: this.argsComplete,
 			isPartial: this.isPartial,
+			isTranscript: true,
 			expanded: this.expanded,
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
 			durationMs: this.isPartial ? undefined : (this.result?.durationMs ?? this.elapsedMs),
 			outputPad: this.outputPad,
-			sessionId: this.sessionId,
 			getTaskRecord: this.taskRecordReader,
 			getElapsedMs: () => this.currentElapsedMs(),
 			getToolDefinition: this.toolRendererReader,

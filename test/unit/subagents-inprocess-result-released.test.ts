@@ -24,7 +24,6 @@ test("with nothing launched, every registry of the subagents extension is empty 
 		records: 0,
 		unsavedRecords: 0,
 		taskIds: 0,
-		otherCardIndexKeys: 0,
 		cardOwners: 0,
 		recordReaders: 0,
 		cardWatchers: 0,

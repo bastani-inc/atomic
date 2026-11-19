@@ -18,8 +18,6 @@ import { SessionNotFoundError } from "../storage/session/errors.js";
 export interface ToolHtmlRenderer {
 	/** Render a tool call to HTML. Returns undefined if tool has no custom renderer. */
 	renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined;
-	/** Render a tool call as Ctrl+O shows it, such as a long script in full. Returns undefined if there is nothing more. */
-	renderCallExpanded?(toolCallId: string, toolName: string, args: unknown): string | undefined;
 	/** Render a tool result to HTML. Returns collapsed/expanded or undefined if tool has no custom renderer. */
 	renderResult(
 		toolCallId: string,
@@ -28,18 +26,11 @@ export interface ToolHtmlRenderer {
 		details: unknown,
 		isError: boolean,
 	): { collapsed?: string; expanded?: string } | undefined;
-	/**
-	 * Waits, for a bounded time, for the reads that rendering a tool call started for what it shows, such as a subagent's
-	 * transcript. True when there were any: the result is then rendered again with what they read.
-	 */
-	settleLoads?(toolCallId: string): Promise<boolean>;
 }
 
 /** Pre-rendered HTML for a custom tool call and result */
 interface RenderedToolHtml {
 	callHtml?: string;
-	/** The call as Ctrl+O shows it, when that shows more than `callHtml`: a click on the call switches between them. */
-	callHtmlExpanded?: string;
 	resultHtmlCollapsed?: string;
 	resultHtmlExpanded?: string;
 }
@@ -145,8 +136,6 @@ interface SessionData {
 	leafId: string | null;
 	systemPrompt?: string;
 	tools?: Array<Pick<ToolDefinition, "name" | "description" | "parameters">>;
-	/** A file export draws codemode's saved text separately from its rendered nested activity. */
-	savedCodemode?: boolean;
 	/** Pre-rendered HTML for custom tool calls/results, keyed by tool call ID */
 	renderedTools?: Record<string, RenderedToolHtml>;
 }
@@ -194,32 +183,16 @@ async function generateHtml(sessionData: SessionData, themeName?: string): Promi
 		.replace("{{HIGHLIGHT_JS}}", () => hljsJs);
 }
 
-/** How many times a result is drawn again because drawing it started reads: a nested card can start one more. */
-const MAX_LOAD_ROUNDS = 3;
-
 /** Tools rendered directly by the HTML template (not pre-rendered via TUI→ANSI→HTML pipeline) */
 const TEMPLATE_RENDERED_TOOLS = new Set(["bash", "read", "write", "edit", "ls"]);
-
-/** The call as Ctrl+O shows it, or undefined when that is what `callHtml` already shows. */
-function expandedCallHtml(
-	toolRenderer: ToolHtmlRenderer,
-	toolCallId: string,
-	toolName: string,
-	args: unknown,
-	callHtml: string,
-): string | undefined {
-	if (!callHtml) return undefined;
-	const expanded = toolRenderer.renderCallExpanded?.(toolCallId, toolName, args);
-	return expanded && expanded !== callHtml ? expanded : undefined;
-}
 
 /**
  * Pre-render custom tools to HTML using their TUI renderers.
  */
-async function preRenderCustomTools(
+function preRenderCustomTools(
 	entries: SessionEntry[],
 	toolRenderer: ToolHtmlRenderer,
-): Promise<Record<string, RenderedToolHtml>> {
+): Record<string, RenderedToolHtml> {
 	const renderedTools: Record<string, RenderedToolHtml> = {};
 	const toolCalls = new Map<string, ToolCall>();
 
@@ -234,10 +207,7 @@ async function preRenderCustomTools(
 					toolCalls.set(block.id, block);
 					const callHtml = toolRenderer.renderCall(block.id, block.name, block.arguments);
 					if (callHtml) {
-						renderedTools[block.id] = {
-							callHtml,
-							callHtmlExpanded: expandedCallHtml(toolRenderer, block.id, block.name, block.arguments, callHtml),
-						};
+						renderedTools[block.id] = { callHtml };
 					}
 				}
 			}
@@ -249,30 +219,19 @@ async function preRenderCustomTools(
 			// Only render if we have a pre-rendered call OR it's not template-rendered
 			const existing = renderedTools[msg.toolCallId];
 			if (existing || !TEMPLATE_RENDERED_TOOLS.has(toolName)) {
-				const render = () =>
-					toolRenderer.renderResult(msg.toolCallId, toolName, msg.content, msg.details, msg.isError || false);
-				let rendered = render();
-				// A result that shows what a read brings, such as a subagent card's transcript, is kept once that read is done:
-				// the page is never left with the empty card drawn before it.
-				for (let round = 0; round < MAX_LOAD_ROUNDS && (await toolRenderer.settleLoads?.(msg.toolCallId)); round++)
-					rendered = render();
+				const rendered = toolRenderer.renderResult(
+					msg.toolCallId,
+					toolName,
+					msg.content,
+					msg.details,
+					msg.isError || false,
+				);
 				if (rendered) {
 					const call = toolCalls.get(msg.toolCallId);
 					const callHtml = call ? toolRenderer.renderCall(msg.toolCallId, call.name, call.arguments) : undefined;
 					renderedTools[msg.toolCallId] = {
 						...existing,
-						...(call && callHtml !== undefined
-							? {
-									callHtml,
-									callHtmlExpanded: expandedCallHtml(
-										toolRenderer,
-										msg.toolCallId,
-										call.name,
-										call.arguments,
-										callHtml,
-									),
-								}
-							: {}),
+						...(callHtml !== undefined ? { callHtml } : {}),
 						resultHtmlCollapsed: rendered.collapsed,
 						resultHtmlExpanded: rendered.expanded,
 					};
@@ -284,12 +243,17 @@ async function preRenderCustomTools(
 	return renderedTools;
 }
 
-/** Render the page in the process that owns the session and its tool renderers. */
-export async function renderSessionToHtml(
+/**
+ * Export session to HTML using SessionManager and AgentState.
+ * Used by TUI's /export command.
+ */
+export async function exportSessionToHtml(
 	sm: SessionManager,
 	state?: AgentState,
-	opts: Pick<ExportOptions, "toolRenderer" | "themeName"> = {},
+	options?: ExportOptions | string,
 ): Promise<string> {
+	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
+
 	const snapshot = await sm
 		.getSessionStore()
 		.load(sm.getSessionId())
@@ -303,7 +267,7 @@ export async function renderSessionToHtml(
 	// Pre-render custom tools if a tool renderer is provided
 	let renderedTools: Record<string, RenderedToolHtml> | undefined;
 	if (opts.toolRenderer) {
-		renderedTools = await preRenderCustomTools(entries, opts.toolRenderer);
+		renderedTools = preRenderCustomTools(entries, opts.toolRenderer);
 		// Only include if we actually rendered something
 		if (Object.keys(renderedTools).length === 0) {
 			renderedTools = undefined;
@@ -319,38 +283,17 @@ export async function renderSessionToHtml(
 		renderedTools,
 	};
 
-	return generateHtml(sessionData, opts.themeName);
-}
+	const html = await generateHtml(sessionData, opts.themeName);
 
-/** Where `/export` writes a session's HTML when no path is given: named after its session file, in the working directory. */
-export function defaultHtmlExportPath(sessionFile: string | undefined, sessionId: string): string {
-	return `${APP_NAME}-session-${sessionFile ? basename(sessionFile, ".jsonl") : sessionId}.html`;
-}
+	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
+	if (!outputPath) {
+		const sessionFile = sm.getSessionFile();
+		const sessionBasename = sessionFile ? basename(sessionFile, ".jsonl") : sm.getSessionId();
+		outputPath = `${APP_NAME}-session-${sessionBasename}.html`;
+	}
 
-/** Write from the caller's working directory, letting the filesystem resolve relative components and check access. */
-export async function writeHtmlExport(
-	html: string,
-	outputPath: string | undefined,
-	sessionFile: string | undefined,
-	sessionId: string,
-): Promise<string> {
-	const path = outputPath ? normalizePath(outputPath) : defaultHtmlExportPath(sessionFile, sessionId);
-	await writeFile(path, html, "utf8");
-	return path;
-}
-
-export async function exportSessionToHtml(
-	sm: SessionManager,
-	state?: AgentState,
-	options?: ExportOptions | string,
-): Promise<string> {
-	const opts = typeof options === "string" ? { outputPath: options } : (options ?? {});
-	return writeHtmlExport(
-		await renderSessionToHtml(sm, state, opts),
-		opts.outputPath,
-		sm.getSessionFile(),
-		sm.getSessionId(),
-	);
+	await writeFile(outputPath, html, "utf8");
+	return outputPath;
 }
 
 /**
@@ -366,31 +309,13 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 	}
 
 	const sm = await SessionManager.open(resolvedInputPath);
-	const entries = sm.getEntries();
-
-	// Without a running session, the tools Atomic ships still draw their calls as the chat does, a codemode call as its
-	// script; a tool an extension registered falls back to the page's own drawing.
-	const [{ createToolHtmlRenderer }, { savedSessionToolRenderers }, { getGlobalTheme, initTheme, theme }] =
-		await Promise.all([
-			import("./tool-renderer.ts"),
-			import("./saved-session-renderers.ts"),
-			import("../../modes/interactive/theme/global-theme.ts"),
-		]);
-	if (getGlobalTheme() === undefined) initTheme(opts.themeName);
-	const renderedTools = await preRenderCustomTools(
-		entries,
-		opts.toolRenderer ??
-			createToolHtmlRenderer({ getToolRenderers: savedSessionToolRenderers, theme, cwd: sm.getCwd() }),
-	);
 
 	const sessionData: SessionData = {
 		header: sm.getHeader(),
-		entries,
+		entries: sm.getEntries(),
 		leafId: sm.getLeafId(),
 		systemPrompt: undefined,
 		tools: undefined,
-		savedCodemode: !opts.toolRenderer,
-		...(Object.keys(renderedTools).length > 0 ? { renderedTools } : {}),
 	};
 
 	const html = await generateHtml(sessionData, opts.themeName);

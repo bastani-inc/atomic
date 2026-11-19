@@ -192,8 +192,7 @@ export type RpcCommand =
 	// Session
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "get_tools" }
-	| { id?: string; type: "render_html"; themeName?: string }
-	| { id?: string; type: "export_html"; outputPath?: string; themeName?: string }
+	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionId: string; cwdOverride?: string; sessionDirectory?: string }
 	| { id?: string; type: "import_session"; inputPath: string; cwdOverride?: string }
 	| { id?: string; type: "fork"; entryId: string }
@@ -504,7 +503,6 @@ export type RpcResponse =
 			success: true;
 			data: { cancelled: boolean; notices?: readonly RpcResumeNotice[] };
 	  }
-	| { id?: string; type: "response"; command: "render_html"; success: true; data: { html: string } }
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
 	| {
 			id?: string;

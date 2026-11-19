@@ -132,8 +132,7 @@ export class CustomMessageComponent extends Container {
 	override invalidate(): void {
 		if (this.disposed) return;
 		super.invalidate();
-		// The notice invalidates its own layout. Keep its owner-scoped transcript through a repaint.
-		if (!(this.customComponent instanceof TaskCompletionMessage)) this.rebuild();
+		this.rebuild();
 	}
 
 	private rebuild(): void {

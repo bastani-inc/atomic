@@ -1,11 +1,13 @@
 import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
-import type { TaskCompletionNotice } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskSession, getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
-import { hasTaskTranscript, loadTaskTranscript, noticeTranscriptQuery } from "../../../core/tasks/saved-transcripts.ts";
-import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
+import {
+	type ChatBoxSession,
+	loadTaskOwnTranscriptHistory,
+	taskTranscriptSource,
+} from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
 import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
@@ -502,12 +504,8 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 	isStreaming: boolean,
 ): ChatMessageRenderOptions {
 	const inherited = state.getChatRenderSettings?.();
-	const sessionId =
-		(state.getAgentSession?.() ?? state.getChatBoxSession?.())?.sessionManager?.getSessionId?.() ??
-		state.savedSessionId;
 	return {
 		...inherited,
-		sessionId,
 		ui: toolTui(state),
 		cwd:
 			state.getCwd?.() ??
@@ -542,15 +540,19 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);
 			return store?.getTask(taskId) ?? inherited?.getTaskRecord?.(taskId);
 		},
-		hasTaskTranscript: (taskId: TaskId, notice?: TaskCompletionNotice) => {
+		hasTaskTranscript: (taskId: TaskId) => {
 			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);
-			return hasTaskTranscript(store, noticeTranscriptQuery(taskId, notice, sessionId));
+			const lease = store?.resolveTask(taskId);
+			if (lease?.ok && taskTranscriptSource(lease.value).ok) return true;
+			return inherited?.hasTaskTranscript?.(taskId) ?? false;
 		},
-		loadTaskTranscript: async (taskId: TaskId, notice?: TaskCompletionNotice) => {
+		loadTaskTranscript: async (taskId: TaskId) => {
 			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);
-			return loadTaskTranscript(store, noticeTranscriptQuery(taskId, notice, sessionId));
+			const lease = store?.resolveTask(taskId);
+			if (lease?.ok) return loadTaskOwnTranscriptHistory(lease.value);
+			return inherited?.loadTaskTranscript?.(taskId);
 		},
 	};
 }

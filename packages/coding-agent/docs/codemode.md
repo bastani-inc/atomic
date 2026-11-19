@@ -11,6 +11,8 @@ The `codemode` tool lets the model write a JavaScript script that calls Atomic's
 
 The tool input is raw JavaScript source, not JSON and not a markdown code fence. It runs as the body of an async function in a QuickJS sandbox, so top-level `await` and `return` work. The sandbox has no Node APIs, file system, network, or timers; scripts reach the outside world only through tools and `models`.
 
+Chat and `/tasks` show the script as the argument to `codemode`. Scripts longer than ten lines show their first ten; press Ctrl+O to read the rest and wrap long lines.
+
 A script may start with an options line. It must be the first line; an options line anywhere else fails the call before the script runs:
 
 ```js
@@ -21,8 +23,6 @@ A script may start with an options line. It must be the first line; an options l
 - `timeout_ms` is a hard deadline for the whole script, including any wait for a free worker. It is unset by default. Image generation can take minutes, so do not set a short deadline for scripts that generate images.
 
 The result starts with `Script completed` or `Script failed`, the wall time, and the output. Text and image items appear in order. When output has multiple text items (from `text()` or `return`), each starts with a `==> text N/M <==` line. Console calls follow the other output in one `<console_output>` block, with one line per call. A failed script keeps its partial output, followed by `Script error:` and the error. Tool calls are real: calls made before a failure are not undone. Calls still running when the script ends are cancelled, and unawaited promises are discarded.
-
-In the chat, a `codemode` call shows the script it runs, highlighted as JavaScript, followed by the tool calls the script made and its output. A one-line script stays on the call's row, as `codemode(<script>)`. A longer script is shown indented under `codemode(` and closed by `)`. Scripts longer than 10 lines show their first 10 lines; press `Ctrl+O` to show the whole script and the arguments of each tool call. In a narrow terminal the script keeps every character: a wide character that does not fit at the end of a row starts the next one. In an [HTML export](/usage#exporting-and-sharing-sessions), including one made with `atomic --export <file>`, click the call to show the whole script. A page made with `--export` shows any other saved arguments below the script. You can copy a result such as a JSON record without adding line breaks where the page wraps.
 
 ## Globals
 

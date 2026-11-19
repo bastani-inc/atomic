@@ -102,6 +102,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		taskView: false,
 		transcriptRows: Number.POSITIVE_INFINITY,
 	};
+	private historyHydrated = false;
 	private readonly taskTranscriptEnvironment: () => TaskTranscriptEnvironment;
 
 	constructor(opts: ChatSessionHostOpts<TExtraEntry>) {
@@ -224,7 +225,6 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	resetFollowedSession(options?: { readonly preserveWorkedRun?: boolean }): void {
-		this.state.savedSessionId = undefined;
 		if (options?.preserveWorkedRun) {
 			if (this.state.workedRun === undefined) {
 				const snapshot = chatSessionWorkingMeta(this.state);
@@ -280,7 +280,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		inFlightToolCallIds?: ReadonlySet<string>,
 	): Promise<boolean> {
 		if (
-			this.state.savedSessionId !== undefined ||
+			this.historyHydrated ||
 			this.state.transcript.length > this.state.extraEntries.length ||
 			sessionId === undefined
 		)
@@ -296,9 +296,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			return false;
 		}
 		if (this.state.disposed) return false;
-		if (this.state.savedSessionId !== undefined || this.state.transcript.length > this.state.extraEntries.length)
-			return true;
-		this.state.savedSessionId = sessionId;
+		if (this.historyHydrated || this.state.transcript.length > this.state.extraEntries.length) return true;
+		this.historyHydrated = true;
 		const firstUser = firstRawUserExactText(messages);
 		this.state.seenFirstRawUser = firstUser.seenUser;
 		this.state.firstUserEntryExactText = firstUser.exactText;

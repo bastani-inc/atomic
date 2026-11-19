@@ -1,11 +1,4 @@
-import {
-	type CustomEntry,
-	type ExtensionContext,
-	type SavedTaskTranscripts,
-	type SessionEntry,
-	sliceHead,
-	type TaskTranscriptQuery,
-} from "@bastani/atomic";
+import { type CustomEntry, type ExtensionContext, type SessionEntry, sliceHead } from "@bastani/atomic";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
 import type { SubagentChildRecord } from "./subagent-child-records.js";
 import { reopenChildSession, type SessionStoreSource } from "./subagent-child-session.js";
@@ -19,9 +12,7 @@ export const SUBAGENT_CHILD_RECORD_TYPE = "subagent-child";
  */
 export const SUBAGENT_CHILD_RELEASED_STATUS = "released";
 
-export function isSubagentChildRecord(
-	value: SessionEntry,
-): value is CustomEntry<SubagentChildRecord> & { data: SubagentChildRecord } {
+export function isSubagentChildRecord(value: SessionEntry): value is CustomEntry<SubagentChildRecord> {
 	if (value.type !== "custom" || value.customType !== SUBAGENT_CHILD_RECORD_TYPE) return false;
 	const data = value.data as Partial<SubagentChildRecord> | undefined;
 	return (
@@ -75,11 +66,6 @@ const TRANSCRIPT_LINES = 12;
 const TRANSCRIPT_LINE_CHARS = 200;
 /** How often an expanded card of a running child, which keeps saving messages, reads its transcript again. */
 const RUNNING_TRANSCRIPT_REFRESH_MS = 1_000;
-/**
- * How long a card waits for its child's transcript before it says the transcript is unavailable rather than showing no
- * tool calls. A read that finishes later still replaces that.
- */
-export const SUBAGENT_TRANSCRIPT_READ_LIMIT_MS = 10_000;
 /** How far up from a session's leaf an entry this process just appended is looked for. */
 const APPENDED_ENTRY_SEARCH_DEPTH = 32;
 
@@ -102,12 +88,11 @@ function newChildIndex() {
 		}),
 	};
 }
-const INDEX = Symbol.for("@bastani/subagents/child-record-index@2");
+const INDEX = Symbol.for("@bastani/subagents/child-record-index@1");
 const processIndex = globalThis as { [INDEX]?: ReturnType<typeof newChildIndex> };
 processIndex[INDEX] ??= newChildIndex();
-const childIndex = processIndex[INDEX];
 const { entries, unsavedRecords, pendingWrites, readers, childIdsByTaskId, watchers, invalidators, collectedCards } =
-	childIndex;
+	processIndex[INDEX];
 
 export { pendingWrites as pendingSubagentChildWrites };
 export interface SubagentChildToolCallEntry {
@@ -139,14 +124,11 @@ interface TranscriptCache {
 	readonly key: string;
 	lines?: readonly string[];
 	details?: SubagentChildTranscriptDetails;
-	/** The read of the transcript while it is in flight; it settles once the read is done or took too long. */
-	loading?: Promise<void>;
 }
 /** Each card's transcripts, by child id: they are dropped with the card. */
 const transcripts = new WeakMap<object, Map<string, TranscriptCache>>();
 const transcriptGenerations = new WeakMap<object, number>();
-type SessionStore = ReturnType<SessionStoreSource["sessionManager"]["getSessionStore"]>;
-const loadedOwners = new Map<string, WeakRef<SessionStore> | undefined>();
+const loadedOwners = new Set<string>();
 /**
  * The session store cards read owners' records and children's transcripts from: the latest bound session's, never that
  * session itself, which ends while the process and its cards go on.
@@ -226,24 +208,6 @@ function projectionOf(
 	};
 }
 
-// Child ids include the run and parallel slot. Independent parent sessions have independent namespaces.
-function scopedKey(sessionId: string, id: string): string {
-	return JSON.stringify([sessionId, id]);
-}
-
-function matchesEntry(
-	record: SubagentChildRecord | undefined,
-	entry: SubagentChildIndexEntry,
-): record is SubagentChildRecord {
-	return (
-		record !== undefined &&
-		record.owner?.sessionId === entry.ownerSessionId &&
-		record.childId === entry.childId &&
-		record.runId === entry.runId &&
-		record.index === entry.index
-	);
-}
-
 function savedRecordOf(entry: SubagentChildIndexEntry): SubagentChildRecord {
 	const sessionId = entry.recordedIn ?? entry.ownerSessionId;
 	const entryId = entry.entryId;
@@ -251,7 +215,7 @@ function savedRecordOf(entry: SubagentChildIndexEntry): SubagentChildRecord {
 		for (const reader of readersOf(sessionId)) {
 			const saved = reader.getEntry(entryId);
 			const data = saved !== undefined && isSubagentChildRecord(saved) ? saved.data : undefined;
-			if (matchesEntry(data, entry)) return data;
+			if (data?.childId === entry.childId) return data;
 		}
 	}
 	throw new ReleasedChildError("child-record-unreadable", {
@@ -263,9 +227,7 @@ function savedRecordOf(entry: SubagentChildIndexEntry): SubagentChildRecord {
 }
 
 function fullRecordOf(entry: SubagentChildIndexEntry): SubagentChildRecord {
-	const sessionId = entry.ownerSessionId ?? entry.recordedIn;
-	const pending = sessionId === undefined ? undefined : unsavedRecords.get(scopedKey(sessionId, entry.childId));
-	return matchesEntry(pending, entry) ? pending : savedRecordOf(entry);
+	return unsavedRecords.get(entry.childId) ?? savedRecordOf(entry);
 }
 
 /**
@@ -302,30 +264,27 @@ export function observeSubagentChildRecord(
 	copied = false,
 	saved?: SubagentChildRecordLocation,
 ): SubagentChildRecord {
-	const sessionId = record.owner?.sessionId ?? saved?.sessionId;
-	if (sessionId === undefined) return record;
-	const key = scopedKey(sessionId, record.childId);
-	const existing = entries.get(key);
+	const existing = entries.get(record.childId);
 	if (!acceptsObservation(existing, copied)) return record;
-	const previous = existing !== undefined && matchesEntry(record, existing) ? readableRecordOf(existing) : undefined;
+	const sameOwner = existing?.ownerSessionId === record.owner?.sessionId;
+	const previous = existing === undefined || !sameOwner ? undefined : readableRecordOf(existing);
 	const merged = previous ? { ...previous, ...record } : record;
 	const complete = saved !== undefined && hasEveryKeyOf(record, merged);
-	if (complete) unsavedRecords.delete(key);
-	else unsavedRecords.set(key, merged);
-	entries.set(key, projectionOf(merged, copied, complete ? saved : undefined));
-	notify(key);
+	if (complete) unsavedRecords.delete(record.childId);
+	else unsavedRecords.set(record.childId, merged);
+	entries.set(record.childId, projectionOf(merged, copied, complete ? saved : undefined));
+	notify(record.childId);
 	indexTaskId(merged);
 	return merged;
 }
 
 /** A card finds a child by any task id it ran as; a released child's task is no longer one. */
 function indexTaskId(record: SubagentChildRecord): void {
-	if (record.taskId === undefined || record.owner === undefined) return;
-	const key = scopedKey(record.owner.sessionId, record.taskId);
+	if (record.taskId === undefined) return;
 	if (record.state === "terminal" && record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS) {
-		if (childIdsByTaskId.get(key) === record.childId) childIdsByTaskId.delete(key);
-	} else if (!childIdsByTaskId.has(key)) childIdsByTaskId.set(key, record.childId);
-	notify(key);
+		if (childIdsByTaskId.get(record.taskId) === record.childId) childIdsByTaskId.delete(record.taskId);
+	} else if (!childIdsByTaskId.has(record.taskId)) childIdsByTaskId.set(record.taskId, record.childId);
+	notify(record.taskId);
 }
 
 /**
@@ -353,16 +312,13 @@ export function settleSubagentChildRecord(record: SubagentChildRecord): void {
 	if (!isUnsavedSubagentChildRecord(record)) return;
 	const saved = findAppendedSubagentChildRecord(record);
 	if (saved === undefined) return;
-	const key = scopedKey(saved.sessionId, record.childId);
-	unsavedRecords.delete(key);
-	entries.set(key, projectionOf(record, false, saved));
+	unsavedRecords.delete(record.childId);
+	entries.set(record.childId, projectionOf(record, false, saved));
 }
 
 /** Whether `record` is the latest record of its child and is not saved as one entry yet. */
 export function isUnsavedSubagentChildRecord(record: SubagentChildRecord): boolean {
-	return (
-		record.owner !== undefined && unsavedRecords.get(scopedKey(record.owner.sessionId, record.childId)) === record
-	);
+	return unsavedRecords.get(record.childId) === record;
 }
 
 /**
@@ -395,15 +351,14 @@ function observeEntries(sessionEntries: readonly SessionEntry[], sessionId: stri
 	for (const entry of sessionEntries) {
 		if (!isSubagentChildRecord(entry)) continue;
 		const data = entry.data as SubagentChildRecord;
-		const key = scopedKey(data.owner?.sessionId ?? sessionId, data.childId);
-		const previous = folded.get(key);
+		const previous = folded.get(data.childId);
 		const record = previous === undefined ? data : { ...previous.record, ...data };
-		folded.set(key, { record, latest: data, entryId: entry.id });
-		if (acceptsObservation(entries.get(key), copiedInto(data, sessionId))) indexTaskId(record);
+		folded.set(data.childId, { record, latest: data, entryId: entry.id });
+		if (acceptsObservation(entries.get(data.childId), copiedInto(data, sessionId))) indexTaskId(record);
 	}
-	for (const [key, { record, latest, entryId }] of folded) {
+	for (const { record, latest, entryId } of folded.values()) {
 		// A preserving reload reads the previous durable row while this child's newer observation waits to append.
-		const pending = unsavedRecords.get(key);
+		const pending = unsavedRecords.get(record.childId);
 		if (pending !== undefined && pendingWrites.has(pending)) continue;
 		const copied = copiedInto(record, sessionId);
 		if (hasEveryKeyOf(latest, record)) observeSubagentChildRecord(latest, copied, { entryId, sessionId });
@@ -416,7 +371,7 @@ export function bindSubagentChildCards(ctx: Pick<ExtensionContext, "sessionManag
 	const store = ctx.sessionManager.getSessionStore();
 	source = { sessionManager: { getSessionStore: () => store } };
 	registerSubagentChildRecordReader(ctx.sessionManager, true);
-	loadedOwners.set(ctx.sessionManager.getSessionId(), store && new WeakRef(store));
+	loadedOwners.add(ctx.sessionManager.getSessionId());
 	observeEntries(ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId());
 }
 
@@ -428,14 +383,13 @@ export function indexSubagentChildOwner(ctx: Pick<ExtensionContext, "sessionMana
 	const ownerSessionId = ctx.sessionManager.getSessionId();
 	registerSubagentChildRecordReader(ctx.sessionManager);
 	if (loadedOwners.has(ownerSessionId)) return;
-	const store = ctx.sessionManager.getSessionStore?.();
-	loadedOwners.set(ownerSessionId, store && new WeakRef(store));
+	loadedOwners.add(ownerSessionId);
 	observeEntries(ctx.sessionManager.getEntries(), ownerSessionId);
 }
 
 function ownEntry(ownerSessionId: string, childId: string): SubagentChildIndexEntry | undefined {
-	const entry = entries.get(scopedKey(ownerSessionId, childId));
-	return entry?.ownerSessionId === ownerSessionId && entry.childId === childId ? entry : undefined;
+	const entry = entries.get(childId);
+	return entry?.ownerSessionId === ownerSessionId ? entry : undefined;
 }
 
 /**
@@ -522,11 +476,8 @@ export function subagentChildIndexSize(): number {
  * What the index keeps of a child, by its child id: where it stands even when its full record cannot be read, as a
  * closing workflow stage needs. Read by tests and the benchmark too.
  */
-export function subagentChildIndexEntry(sessionId: string, childId: string): SubagentChildIndexEntry | undefined {
-	const entry = entries.get(scopedKey(sessionId, childId));
-	return entry !== undefined && (entry.ownerSessionId ?? entry.recordedIn) === sessionId && entry.childId === childId
-		? entry
-		: undefined;
+export function subagentChildIndexEntry(childId: string): SubagentChildIndexEntry | undefined {
+	return entries.get(childId);
 }
 
 /**
@@ -534,15 +485,12 @@ export function subagentChildIndexEntry(sessionId: string, childId: string): Sub
  * entry, so its current task is found by walking the index.
  */
 export function subagentChildCardRecord(
-	ownerSessionId: string | undefined,
 	childId: string | undefined,
 	taskId: string,
 ): SubagentChildIndexEntry | undefined {
-	if (ownerSessionId === undefined) return undefined;
-	const id = childId ?? childIdsByTaskId.get(scopedKey(ownerSessionId, taskId));
-	if (id !== undefined) return ownEntry(ownerSessionId, id);
-	for (const entry of entries.values())
-		if (entry.ownerSessionId === ownerSessionId && entry.taskId === taskId) return entry;
+	const id = childId ?? childIdsByTaskId.get(taskId);
+	if (id !== undefined) return entries.get(id);
+	for (const entry of entries.values()) if (entry.taskId === taskId) return entry;
 	return undefined;
 }
 
@@ -560,11 +508,9 @@ export function observedSubagentRunIds(ownerSessionId: string): Set<string> {
 export function watchSubagentChildCard(
 	card: object,
 	invalidate: () => void,
-	id: string,
+	key: string,
 	ownerSessionId: string | undefined,
 ): void {
-	if (ownerSessionId === undefined) return;
-	const key = scopedKey(ownerSessionId, id);
 	invalidators.set(card, invalidate);
 	const cards = watchers.get(key) ?? new Set<WeakRef<object>>();
 	watchers.set(key, cards);
@@ -573,11 +519,11 @@ export function watchSubagentChildCard(
 		cards.add(ref);
 		collectedCards.register(card, { key, cards, ref });
 	}
-	if (loadedOwners.has(ownerSessionId) || !source) return;
-	const store = source.sessionManager.getSessionStore();
-	loadedOwners.set(ownerSessionId, store && new WeakRef(store));
+	if (ownerSessionId === undefined || loadedOwners.has(ownerSessionId) || !source) return;
+	loadedOwners.add(ownerSessionId);
+	const from = source;
 	void (async () => {
-		const snapshot = await store.load(ownerSessionId);
+		const snapshot = await from.sessionManager.getSessionStore().load(ownerSessionId);
 		observeEntries(snapshot.entries, ownerSessionId);
 	})().catch(() => undefined);
 }
@@ -724,7 +670,7 @@ async function resolveSavedRecord(
 	try {
 		const snapshot = await from.sessionManager.getSessionStore().load(sessionId);
 		const found = snapshot.entries.find((item) => item.id === entry.entryId);
-		return found && isSubagentChildRecord(found) && matchesEntry(found.data, entry) ? found.data : undefined;
+		return found && isSubagentChildRecord(found) ? found.data : undefined;
 	} catch {
 		return undefined;
 	}
@@ -808,15 +754,9 @@ export function clearSubagentChildTranscriptCache(card: object): void {
 	transcriptGenerations.set(card, (transcriptGenerations.get(card) ?? 0) + 1);
 }
 
-/**
- * The child's transcript as `card` shows it, read from the child's own session. The first call starts the read and
- * returns what the card had before, if anything; the card is redrawn once the read is done. `waitForLoad`, from a view
- * that draws the card once, such as an HTML export, receives that read so the view can draw the card again with it.
- */
 export function subagentChildTranscriptDetails(
 	card: object,
 	record: SubagentChildIndexEntry,
-	waitForLoad?: (load: Promise<unknown>) => void,
 ): SubagentChildTranscriptDetails | undefined {
 	if (record.childSessionId === undefined && record.childSessionFile === undefined) return undefined;
 	const running = record.state === "running";
@@ -824,30 +764,23 @@ export function subagentChildTranscriptDetails(
 	const key = `${record.taskId}:${record.state}:${record.terminalStatus}${refresh}`;
 	const cache = transcripts.get(card) ?? new Map<string, TranscriptCache>();
 	transcripts.set(card, cache);
-	const ownerSessionId = record.ownerSessionId ?? record.recordedIn;
-	if (ownerSessionId === undefined) return undefined;
-	const childKey = scopedKey(ownerSessionId, record.childId);
-	const cached = cache.get(childKey);
-	if (cached?.key === key) {
-		if (cached.loading !== undefined) waitForLoad?.(cached.loading);
-		return cached.details;
-	}
-	const store = loadedOwners.get(record.recordedIn ?? ownerSessionId)?.deref();
-	if (!store) return cached?.details;
-	const from = { sessionManager: { getSessionStore: () => store } };
+	const cached = cache.get(record.childId);
+	if (cached?.key === key) return cached.details;
+	const from = source;
+	if (!from) return cached?.details;
 	const gen = transcriptGenerations.get(card) ?? 0;
 	const entry: TranscriptCache = {
 		key,
 		...(cached?.lines ? { lines: cached.lines } : {}),
 		...(cached?.details ? { details: cached.details } : {}),
 	};
-	cache.set(childKey, entry);
-	const current = () =>
-		(transcriptGenerations.get(card) ?? 0) === gen && transcripts.get(card)?.get(childKey) === entry;
-	const read = (async () => {
+	cache.set(record.childId, entry);
+	void (async () => {
 		const reopened = await reopenChildSession(from, record);
 		if ("reason" in reopened) {
-			if (!current()) return;
+			if ((transcriptGenerations.get(card) ?? 0) !== gen || transcripts.get(card)?.get(record.childId) !== entry) {
+				return;
+			}
 			const details: SubagentChildTranscriptDetails = {
 				toolCalls: [],
 				lines: [],
@@ -856,83 +789,29 @@ export function subagentChildTranscriptDetails(
 			const changed = !sameDetails(entry.details, details);
 			entry.lines = details.lines;
 			entry.details = details;
-			if (changed) notify(childKey);
+			if (changed) notify(record.childId);
 			return;
 		}
 		const messages = await postLaunchMessages(from, record, reopened.sessionManager);
-		if (!current()) return;
+		if ((transcriptGenerations.get(card) ?? 0) !== gen || transcripts.get(card)?.get(record.childId) !== entry) {
+			return;
+		}
 		const details = extractTranscriptDetails(messages);
 		const changed = !sameDetails(entry.details, details);
 		entry.lines = details.lines;
 		entry.details = details;
-		if (changed) notify(childKey);
+		if (changed) notify(record.childId);
 		if (running) {
 			setTimeout(() => {
-				if ((transcriptGenerations.get(card) ?? 0) === gen) notify(childKey);
+				if ((transcriptGenerations.get(card) ?? 0) === gen) notify(record.childId);
 			}, RUNNING_TRANSCRIPT_REFRESH_MS).unref?.();
 		}
 	})().catch(() => undefined);
-	// A read that does not end in time leaves the card saying so, rather than listing no tool calls.
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const limit = new Promise<void>((resolve) => {
-		timer = setTimeout(() => {
-			if (current() && entry.details === undefined) {
-				entry.details = {
-					toolCalls: [],
-					lines: [],
-					unavailable: `Transcript unavailable · reading it took longer than ${SUBAGENT_TRANSCRIPT_READ_LIMIT_MS / 1000}s`,
-				};
-				notify(childKey);
-			}
-			resolve();
-		}, SUBAGENT_TRANSCRIPT_READ_LIMIT_MS);
-		timer.unref?.();
-	});
-	entry.loading = Promise.race([read, limit]).finally(() => {
-		clearTimeout(timer);
-		entry.loading = undefined;
-	});
-	waitForLoad?.(entry.loading);
 	return entry.details;
 }
 
 export function subagentChildTranscript(card: object, record: SubagentChildIndexEntry): readonly string[] | undefined {
 	return subagentChildTranscriptDetails(card, record)?.lines;
-}
-
-/**
- * The transcripts of finished subagents for their notices once the task that ran them is gone, as after a restart: the
- * child's own session, read as its launch card reads it. The notice keeps what it read only while it is expanded.
- */
-export function savedSubagentTranscripts(manager: ExtensionContext["sessionManager"]): SavedTaskTranscripts {
-	const store = manager.getSessionStore();
-	const from = { sessionManager: { getSessionStore: () => store } };
-	const ownerSessionId = manager.getSessionId();
-	const lookup = (task: TaskTranscriptQuery) => {
-		if (
-			task.ownerSessionId !== ownerSessionId ||
-			!/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}:\d+$/i.test(task.launchId)
-		)
-			return undefined;
-		const child = ownEntry(ownerSessionId, task.launchId);
-		return child !== undefined &&
-			task.launchId === `${child.runId}:${child.index}` &&
-			(child.childSessionId !== undefined || child.childSessionFile !== undefined)
-			? child
-			: undefined;
-	};
-	return {
-		ownerSessionId,
-		has: (task) => lookup(task) !== undefined,
-		async load(task) {
-			const child = lookup(task);
-			if (child === undefined) return undefined;
-			const reopened = await reopenChildSession(from, child);
-			if ("reason" in reopened) return { entries: [], unavailable: reopened.reason };
-			const messages = await postLaunchMessages(from, child, reopened.sessionManager);
-			return { entries: messages.map((message) => ({ type: "message", message })) as unknown as SessionEntry[] };
-		},
-	};
 }
 
 /** What the child index and the cards keep, by kind; counted by tests and the benchmark. */
@@ -943,19 +822,10 @@ export function subagentChildCardStateSizes(): {
 	readonly owners: number;
 	readonly readers: number;
 	readonly watchers: number;
-	readonly otherIndexKeys: number;
 } {
-	// Account for every strong map in the process index, including any not yet given its own diagnostic.
-	const named = new Set<unknown>([entries, unsavedRecords, childIdsByTaskId, readers, watchers]);
-	const otherIndexKeys = Object.values(childIndex).reduce<number>(
-		(count, value) => count + (value instanceof Map && !named.has(value) ? value.size : 0),
-		0,
-	);
 	return {
-		otherIndexKeys,
 		records: entries.size,
 		unsavedRecords: unsavedRecords.size,
-		// Legacy notice lookups use saved records and retain no separate task aliases.
 		taskIds: childIdsByTaskId.size,
 		owners: loadedOwners.size,
 		readers: readers.size,

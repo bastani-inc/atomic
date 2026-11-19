@@ -27,7 +27,6 @@ export function subagentRegistrySizes(): Readonly<Record<string, number>> {
 		records: card.records,
 		unsavedRecords: card.unsavedRecords,
 		taskIds: card.taskIds,
-		otherCardIndexKeys: card.otherIndexKeys,
 		cardOwners: card.owners,
 		recordReaders: card.readers,
 		cardWatchers: card.watchers,

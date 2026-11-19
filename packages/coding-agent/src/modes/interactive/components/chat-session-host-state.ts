@@ -83,8 +83,6 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	inputBuffer = "";
 	promptSearch: (Component & { handleInput(data: string): void }) | undefined;
 	transcript: ChatSessionHostEntry<TExtraEntry>[] = [];
-	/** The session a saved transcript was loaded from, when the chat has no live session. */
-	savedSessionId?: string;
 	extraEntries: TExtraEntry[] = [];
 	statusMessage = "";
 	/** A delivery notice belongs beside the transcript, independently of the turn's working line. */

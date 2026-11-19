@@ -8,7 +8,7 @@ import { codemodeRenderers, WIDE_CHARACTER_PLACEHOLDER } from "../src/extensions
 import type { CodemodeToolDetails } from "../src/extensions/codemode/tool.js";
 import { keyHint, keyText } from "../src/modes/interactive/components/keybinding-hints.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
-import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import { CodeHighlighter, initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 
 beforeAll(() => initTheme("dark"));
 afterEach(() => vi.useRealTimers());
@@ -104,8 +104,10 @@ test("codemode renderer shows model call costs and their total", () => {
 		[
 			"⎿  ● models.classify(scorer/judge) · $0.000013",
 			"       ⎿  scorer/judge",
+			"",
 			"     ● models.classify(scorer/judge) · $0.02",
 			"       ⎿  scorer/judge",
+			"",
 			"     ● models.classify(scorer/judge)",
 			"       ⎿  scorer/judge",
 			"  ⎿  Model calls: $0.02",
@@ -146,6 +148,20 @@ test("codemode collapsed script call stays on one bounded header row (#5350)", (
 	assert.deepEqual(lines, [`codemode(${"x".repeat(39)}…)`]);
 });
 
+test("codemode keeps blank lines, tabs and trailing spaces in the argument so error lines match (#5525)", () => {
+	const code = '\n// @options: {"timeout_ms":1000}\n\treturn "a\tb";  \n\n';
+	for (const expanded of [false, true]) {
+		const { raw } = codemodeBlock({ code }, { expanded });
+		assert.deepEqual(raw.slice(2, -1).map(stripVTControlCharacters), [
+			"     ",
+			'     // @options: {"timeout_ms":1000}',
+			'        return "a   b";  ',
+			"     ",
+			"     ",
+		]);
+	}
+});
+
 test("codemode call shows a one-line script inline as highlighted code", () => {
 	const { raw, plain } = codemodeBlock({ code: "return 1 + 1;" }, { output: "2" });
 	assert.deepEqual(plain, ["", " ● codemode(return 1 + 1;) · 1s", "   ⎿  2"]);
@@ -160,6 +176,7 @@ test("codemode call shows a multi-line script indented under codemode( and close
 		"     const a = 1;",
 		"     const b = 2;",
 		"     return a + b;",
+		"",
 		"   ) · 1s",
 		"   ⎿  3",
 	]);
@@ -182,6 +199,23 @@ test("codemode call collapses a long script to its first lines with the expand h
 	assert.deepEqual(expanded.slice(22), ["   ) · 1s", "   ⎿  done"]);
 });
 
+test("a folded codemode call highlights only the ten lines it displays (#5525)", () => {
+	const highlight = vi.spyOn(CodeHighlighter.prototype, "highlight");
+	try {
+		const code = Array.from({ length: 5_000 }, (_, i) => `const line${i} = ${i};`).join("\n");
+		const { plain } = codemodeBlock({ code });
+		assert.match(plain.join("\n"), /… \+4990 lines/);
+		const inputs = highlight.mock.calls.map(([source]) => source);
+		assert.ok(inputs.some((source) => source.includes("const line9 = 9;")));
+		assert.ok(
+			inputs.every((source) => !source.includes("const line10 = 10;")),
+			"highlighted hidden code",
+		);
+	} finally {
+		highlight.mockRestore();
+	}
+});
+
 test("codemode expanded result does not repeat the script the call shows", () => {
 	const { plain } = codemodeBlock(
 		{ code: "const unique = await tools.read({ path: 'a' });\nreturn unique;" },
@@ -200,7 +234,7 @@ test("codemode call shows the script while the model is still writing it", () =>
 	assert.deepEqual(partial.slice(2), ["     const a = 1;", "     const b = 'unfinished", "   )"]);
 });
 
-test("codemode nested calls follow each other without blank rows", () => {
+test("showing a script in the header leaves nested call rows unchanged (#5525)", () => {
 	const calls: CodemodeToolDetails["calls"] = [
 		{ id: "1", name: "read", args: '{"path":"a"}', status: "ok", durationMs: 5 },
 		{ id: "2", name: "read", args: '{"path":"b"}', status: "ok", durationMs: 5 },
@@ -211,12 +245,14 @@ test("codemode nested calls follow each other without blank rows", () => {
 		"",
 		` ● codemode(${code}) · 1s`,
 		"   ⎿  ● Read(a)",
+		"",
 		"      ● Read(b)",
+		"",
 		"      ● Read(c)",
 		"   ⎿  ok",
 	]);
 	const expanded = codemodeBlock({ code }, { calls, output: "ok", expanded: true }).plain;
-	assert.ok(!expanded.slice(1).includes(""), expanded.join("\n"));
+	assert.equal(expanded.slice(1).filter((line) => line === "").length, 2, expanded.join("\n"));
 });
 
 test("codemode script rows fit narrow terminals: collapsed lines are cut, expanded lines wrap", () => {
@@ -238,6 +274,13 @@ test("codemode script rows fit narrow terminals: collapsed lines are cut, expand
 	// Every m is still there: 60 in the string, one in each `message`, one in `codemode`.
 	assert.equal(expanded.join("").match(/m/g)?.length, 60 + 2 + 1);
 	assert.ok(expanded.includes("   ) · 1s"), expanded.join("\n"));
+});
+
+test("wrapping an expanded codemode argument preserves every space inside a string (#5525)", () => {
+	const code = 'const text = "a              b     c";   ';
+	const { raw } = codemodeBlock({ code }, { width: 18, expanded: true });
+	const chunks = raw.slice(2, -1).map((row, i) => stripVTControlCharacters(row).slice(i === 0 ? 5 : 7));
+	assert.equal(chunks.join(""), code);
 });
 
 test("codemode expanded script indents a wrapped line's continuation rows under the line", () => {

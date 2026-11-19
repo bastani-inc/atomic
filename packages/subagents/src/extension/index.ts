@@ -7,7 +7,6 @@ import {
 	initTheme,
 	keyHintIfBound,
 	publishExtensionContextEffect,
-	registerSavedTaskTranscripts,
 	type SessionEntry,
 	ToolBlock,
 	type ToolBlockStatus,
@@ -28,7 +27,7 @@ import { trackOwnIntercomSession } from "../intercom/own-intercom-session.js";
 import { answerIntercomChildrenRequests } from "../runs/foreground/intercom-children.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
 import { bindReleasedChildWakes } from "../runs/foreground/released-child-wakes.js";
-import { bindSubagentChildCards, savedSubagentTranscripts } from "../runs/foreground/subagent-child-card-state.js";
+import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
 import { bindSubagentChildOwner, subagentChildOwnerWriter } from "../runs/foreground/subagent-child-owner.js";
 import {
 	endWorkflowRunStageSubagentChildren,
@@ -434,14 +433,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		const unsubscribeControl = pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler);
 		eventUnsubscribes.push(unsubscribeControl);
 		registrationFailureCleanups.push(unsubscribeControl);
-		let unregisterTranscripts: (() => void) | undefined;
 		let cleaned = false;
 		const runtimeCleanup = () => {
 			if (cleaned) return;
 			cleaned = true;
 			const cleanupSteps: Array<() => void> = [
 				...eventUnsubscribes,
-				() => unregisterTranscripts?.(),
 				notifyCleanup,
 				stopMaintenance,
 				() => stopResultAnimations(),
@@ -485,16 +482,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			if (releaseStartupCleanup === undefined && !isSubagentChildSession(ctx))
 				releaseStartupCleanup = claimStartupCleanup(maintenance);
 			resetSessionState(ctx);
-			const transcriptsBound = publishExtensionContextEffect(
-				ctx,
-				() => {
-					unregisterTranscripts?.();
-					unregisterTranscripts = isSubagentChildSession(ctx)
-						? undefined
-						: registerSavedTaskTranscripts(savedSubagentTranscripts(ctx.sessionManager));
-				},
-				"commit",
-			);
 			stopReleasedChildWakes?.();
 			stopReleasedChildWakes = undefined;
 			// The children this session launched and a restart interrupted are addressable at once, not only after its
@@ -524,7 +511,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					taskResumer?.dispose();
 					taskResumer = bindSubagentTaskResumer(executorDeps, ctx);
 				});
-				await Promise.all([committed, started, transcriptsBound]);
+				await Promise.all([committed, started]);
 				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
 				if (opened)
 					void resumeAwaitingSubagentChildren(
@@ -533,7 +520,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 						config.resumeInFlight ?? "never",
 						lifecycle.isCurrent,
 					);
-			} else await transcriptsBound;
+			}
 		});
 		pi.on("session_recovery_restore", async (_event, ctx) => {
 			// Subagent children never own children; workflow stages carry a policy but do (#3760).

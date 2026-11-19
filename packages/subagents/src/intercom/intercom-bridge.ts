@@ -94,9 +94,7 @@ function sanitizeIntercomTargetPart(value: string): string {
 
 export function resolveSubagentIntercomTarget(runId: string, agent: string, index?: number): string {
 	const stepSuffix = index !== undefined ? `-${index + 1}` : "";
-	// Keep the familiar short Intercom name; saved child and task identities use the entire run id.
-	const namePart = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(runId) ? runId.slice(0, 8) : runId;
-	return `subagent-${sanitizeIntercomTargetPart(agent)}-${sanitizeIntercomTargetPart(namePart)}${stepSuffix}`;
+	return `subagent-${sanitizeIntercomTargetPart(agent)}-${sanitizeIntercomTargetPart(runId)}${stepSuffix}`;
 }
 
 export function resolveIntercomBridgeMode(value: unknown): IntercomBridgeMode {

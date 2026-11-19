@@ -86,13 +86,8 @@ function metricsHooks(signal: AbortSignal, reports: number[]): TaskExecutionHook
 	};
 }
 
-function paintLaunchCard(
-	cwd: string,
-	receipt: ReturnType<typeof taskToolResult>,
-	sessionId: string,
-	host?: AgentTaskHost,
-): string {
-	const card = subagentLaunchCard(cwd, { agent: "waiter", task: "watch CI" }, host, sessionId);
+function paintLaunchCard(cwd: string, receipt: ReturnType<typeof taskToolResult>, host?: AgentTaskHost): string {
+	const card = subagentLaunchCard(cwd, { agent: "waiter", task: "watch CI" }, host);
 	try {
 		card.updateResult({ ...receipt, isError: false });
 		return stripVTControlCharacters(card.render(120).join("\n"));
@@ -254,7 +249,7 @@ test.each(["completion", "pause"] as const)("an SDK handoff keeps the launch liv
 		{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
 		{ sessionManager: owner, orchestrationContext: undefined },
 	);
-	const card = subagentLaunchCard(env.root, { agent: agent.name, task: "stand by" }, undefined, owner.getSessionId());
+	const card = subagentLaunchCard(env.root, { agent: agent.name, task: "stand by" });
 	const detach = new AbortController();
 	const gate = Promise.withResolvers<void>();
 	const started = Promise.withResolvers<void>();
@@ -477,12 +472,12 @@ test("a launch card outside the task host freezes on turn interrupt and follows 
 		now += 2300;
 		await source()!.interruptTurn!();
 		now += 60_000;
-		assert.match(paintLaunchCard(env.root, receipt, owner.getSessionId()), /Stopped[^\n]*2s/);
+		assert.match(paintLaunchCard(env.root, receipt), /Stopped[^\n]*2s/);
 		assert.ok(prompt);
 		const resumed = prompt("continue");
 		await until(() => source()?.isRunning?.() === true);
 		now += 7400;
-		assert.match(paintLaunchCard(env.root, receipt, owner.getSessionId()), /Running[^\n]*7s/);
+		assert.match(paintLaunchCard(env.root, receipt), /Running[^\n]*7s/);
 		gate.resolve();
 		await resumed;
 	} finally {
@@ -666,11 +661,7 @@ test(
 			assert.equal(receiptElapsed, 2100, "notice replay without the live task record");
 			assert.equal(child?.progress?.durationMs, 2100);
 			assert.equal(child?.progressSummary?.durationMs, 2100);
-			assert.match(
-				paintLaunchCard(env.root, launchReceipt, owner.getSessionId()),
-				/Waiting[^\n]* · 2s/,
-				"replay has no live task host",
-			);
+			assert.match(paintLaunchCard(env.root, launchReceipt), /Waiting[^\n]* · 2s/, "replay has no live task host");
 			assert.equal(taskToolResult(response, host).details?.taskRecords?.[0]?.metrics?.elapsedMs, 2100);
 		} finally {
 			clock.mockRestore();
@@ -740,7 +731,7 @@ test(
 		assert.ok((notice.line?.elapsedMs ?? 0) >= HOLD_MS, `notice elapsed: ${notice.line?.elapsedMs} ms`);
 
 		// The parent's launch card reads the same time.
-		const text = paintLaunchCard(env.root, taskToolResult(response, host), owner.getSessionId(), host);
+		const text = paintLaunchCard(env.root, taskToolResult(response, host), host);
 		assert.match(text, /Waiting on wait_for_ci · [1-9]\d*s/, text);
 	},
 	LIVE_CHILD_TIMEOUT_MS,
