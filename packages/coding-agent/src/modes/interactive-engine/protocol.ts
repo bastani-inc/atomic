@@ -130,6 +130,8 @@ export type InteractiveEngineMessage =
 			componentId: string;
 			requestId: number;
 			lines: string[];
+			/** For a row's click check, whether changing only its expansion changes these rows. */
+			expansionChangesRows?: boolean;
 			scrollRequest?: WidgetScrollRequest;
 			/** The frame's number, counting the component's frames from 1; a click names the frame it landed on. */
 			frame?: number;
@@ -240,6 +242,8 @@ export type InteractiveEngineCommand =
 			rowKey?: string;
 			/** The click's number; an `engine_custom_click_settle` with it runs what the click does once it is single. */
 			clickId?: number;
+			/** The host explicitly cancels every deferred click it does not settle. */
+			cancelsClicks?: true;
 			x: number;
 			y: number;
 			width: number;
@@ -250,7 +254,7 @@ export type InteractiveEngineCommand =
 	 * What the component left for that moment, such as expanding a block, runs now. A click that became part of a
 	 * double- or triple-click is never settled.
 	 */
-	| { type: "engine_custom_click_settle"; componentId: string; clickId: number }
+	| { type: "engine_custom_click_settle" | "engine_custom_click_cancel"; componentId: string; clickId: number }
 	| { type: "engine_custom_copy_result"; componentId: string; requestId: number; error?: string }
 	| { type: "engine_custom_scroll"; componentId: string; state: WidgetScrollState }
 	| { type: "engine_custom_dispose"; componentId: string }
@@ -261,6 +265,7 @@ export type InteractiveEngineCommand =
 			width: number;
 			toolName: string;
 			toolCallId: string;
+			compareExpansion?: true;
 			rendererTaskId?: string;
 			args: JsonValue;
 			result?: JsonObject;
@@ -281,6 +286,7 @@ export type InteractiveEngineCommand =
 			width: number;
 			message: JsonObject;
 			expanded: boolean;
+			compareExpansion?: true;
 			outputPad: number;
 	  }
 	| { type: "engine_render_dispose"; componentId: string }
@@ -700,6 +706,9 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						componentId: value.componentId,
 						requestId: value.requestId,
 						lines: value.lines,
+						...(typeof value.expansionChangesRows === "boolean"
+							? { expansionChangesRows: value.expansionChangesRows }
+							: {}),
 						...(isCellCount(value.frame) ? { frame: value.frame } : {}),
 						...(Array.isArray(value.rowKeys) && value.rowKeys.every((key) => typeof key === "string")
 							? { rowKeys: value.rowKeys as string[] }
@@ -877,12 +886,16 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			frame: value.frame,
 			...(typeof value.rowKey === "string" ? { rowKey: value.rowKey } : {}),
 			...(isCellCount(value.clickId) ? { clickId: value.clickId } : {}),
+			...(value.cancelsClicks === true ? { cancelsClicks: true } : {}),
 			x: value.x,
 			y: value.y,
 			width: value.width,
 			height: value.height,
 		};
-	if (value.type === "engine_custom_click_settle" && isCellCount(value.clickId))
+	if (
+		(value.type === "engine_custom_click_settle" || value.type === "engine_custom_click_cancel") &&
+		isCellCount(value.clickId)
+	)
 		return { type: value.type, componentId: value.componentId, clickId: value.clickId };
 	if (
 		value.type === "engine_custom_copy_result" &&
@@ -942,6 +955,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			requestId: value.requestId,
 			width: value.width,
 			toolName: value.toolName,
+			...(value.compareExpansion === true ? { compareExpansion: true } : {}),
 			...(value.rendererTaskId === undefined ? {} : { rendererTaskId: value.rendererTaskId }),
 			toolCallId: value.toolCallId,
 			args: value.args,
@@ -974,6 +988,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			requestId: value.requestId,
 			width: value.width,
 			message: value.message,
+			...(value.compareExpansion === true ? { compareExpansion: true } : {}),
 			expanded: value.expanded,
 			outputPad: value.outputPad,
 		};
