@@ -5,8 +5,9 @@
  * One workflow runs `--stages` stages in `--lanes` parallel lanes through the SDK, as the interactive host runs them:
  * every stage is a real `AgentSession` with the bundled subagents and Intercom extensions, over a scripted model. Each
  * stage reads a large file `--reads` times, launches `--children` subagents in one `subagent` call (each child reads
- * the file and answers), and answers with a few kilobytes of text. Sessions and the run journal live in SQLite files,
- * as by default.
+ * the file and answers), waits for each of them with `subagent({ action: "wait" })`, and answers with a few kilobytes
+ * of text. Sessions and the run journal live in SQLite files, as by default. The report counts the children's model
+ * calls, so a soak that stopped exercising subagents shows it.
  *
  * Every `--sample-every` finished stages the lanes stop starting stages until every stage in flight has finished; the
  * process is then collected and sampled: heap in use, RSS, and how many finished stage sessions are still reachable.
@@ -45,6 +46,8 @@ const ANSWER_BYTES = 4_096;
 const PROVIDER = "faux-stage-memory-soak";
 const STAGE_MODEL = "stage-soak";
 const CHILD_MODEL = "child-soak";
+/** How long a stage waits for one child: the scripted children answer at once, so only a stuck one reaches it. */
+const CHILD_WAIT_BUDGET_MS = 600_000;
 
 const collect = globalThis.gc;
 if (typeof collect !== "function") throw new Error("run with node --expose-gc");
@@ -75,11 +78,14 @@ const { createAgentSessionAdapter, createStore, run, workflow } = await import("
 const { fauxAssistantMessage, fauxToolCall, registerFauxProvider } = await import("@bastani/atomic-ai/compat");
 
 const answer = (seed) => `${seed} `.repeat(Math.ceil(ANSWER_BYTES / (seed.length + 1))).slice(0, ANSWER_BYTES);
+const resultText = (message) => message.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+let childCalls = 0;
 
 function respond(context, _options, _state, model) {
 	const messages = context.messages;
 	const toolResults = messages.filter((message) => message.role === "toolResult").length;
 	if (model.id === CHILD_MODEL) {
+		childCalls += 1;
 		if (toolResults === 0)
 			return fauxAssistantMessage([fauxToolCall("read", { path: "big.ts" })], { stopReason: "toolUse" });
 		return fauxAssistantMessage(answer("child"));
@@ -97,16 +103,25 @@ function respond(context, _options, _state, model) {
 						agent: "soak-worker",
 						task: `Read part ${index}`,
 					})),
-					wait: { kind: "foreground" },
 				}),
 			],
 			{ stopReason: "toolUse" },
 		);
+	// The launch returns once its children are admitted: wait for each one before answering.
+	if (toolResults === READS + 1 && CHILDREN > 0) {
+		const launch = resultText(messages.filter((message) => message.role === "toolResult").at(-1));
+		const taskIds = [...new Set([...launch.matchAll(/"taskId":"([^"]+)"/g)].map((match) => match[1]))];
+		if (taskIds.length > 0)
+			return fauxAssistantMessage(
+				taskIds.map((id) => fauxToolCall("subagent", { action: "wait", id, budgetMs: CHILD_WAIT_BUDGET_MS })),
+				{ stopReason: "toolUse" },
+			);
+	}
 	return fauxAssistantMessage(answer("stage"));
 }
 
 const faux = registerFauxProvider({ provider: PROVIDER, models: [{ id: STAGE_MODEL }, { id: CHILD_MODEL }] });
-faux.setResponses(Array.from({ length: STAGES * (READS + CHILDREN * 2 + 4) + 1_000 }, () => respond));
+faux.setResponses(Array.from({ length: STAGES * (READS + CHILDREN * 2 + 5) + 1_000 }, () => respond));
 const authStorage = AuthStorage.inMemory();
 await authStorage.modify(PROVIDER, async () => ({ type: "api_key", key: "faux-key" }));
 const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
@@ -244,6 +259,7 @@ const report = {
 	lanes: LANES,
 	reads: READS,
 	children: CHILDREN,
+	childCalls,
 	seconds: +((performance.now() - started) / 1000).toFixed(1),
 	retainedKBPerStage: +(
 		((last.heapUsedMB - first.heapUsedMB) * 1024) /

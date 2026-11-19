@@ -140,6 +140,7 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 		let settled = false;
 		let exited = false;
 		let stopped = false;
+		let treeTerminated = false;
 		const finish = (status: number | null) => {
 			if (settled) return;
 			settled = true;
@@ -171,9 +172,9 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			if (!tree?.terminate()) {
-				killChildProcessTree(child, exited);
-			}
+			// Terminating the tree ends every process in it, and closing it ends any left: it is terminated at most once.
+			if (!treeTerminated) treeTerminated = tree?.terminate() === true;
+			if (!treeTerminated) killChildProcessTree(child, exited);
 			if (exited || child.pid === undefined) finish(null);
 		};
 		const timer =
