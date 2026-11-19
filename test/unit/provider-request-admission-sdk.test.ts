@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,6 +21,7 @@ import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.j
 import { wrapCodexFastRouteFetch } from "../../packages/coding-agent/src/core/fast-model-routing-transport.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import {
+	applyProviderRateLimitObservation,
 	configureProviderRequestBudget,
 	setProviderRequestGate,
 	tryAdmitProviderRequest,
@@ -48,8 +50,8 @@ afterEach(() => {
 });
 
 /**
- * A queued request takes its opened slot on the next turn, after every timer due by then, so a caller deadline due at
- * the same moment wins (#5604). Under fake timers that turn comes one tick after the slot opens.
+ * A queued caller with a signal takes its slot after due deadlines. Under fake timers, that turn comes one tick after
+ * the slot opens (#5604).
  */
 const takeOpenedSlot = (): Promise<unknown> => vi.advanceTimersByTimeAsync(1);
 
@@ -623,6 +625,55 @@ function keepProcessBusyUntil(until: number): void {
 	const blocked = new Int32Array(new SharedArrayBuffer(4));
 	while (Date.now() < until) Atomics.wait(blocked, 0, 0, until - Date.now());
 }
+
+test("an already queued request keeps its opened slot when a later request arrives in the same timer pass (#5604)", async () => {
+	vi.useRealTimers();
+	const received: string[] = [];
+	const server = createServer((request, response) => {
+		received.push(request.url!);
+		response.end("ok");
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	try {
+		const address = server.address();
+		assert.ok(address && typeof address !== "string");
+		const url = `http://127.0.0.1:${address.port}`;
+		const { options } = await admitProviderStream(model, {}, false);
+		const slotMs = 100;
+		configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: slotMs });
+		assert.equal(tryAdmitProviderRequest(model.provider), 0);
+		const queued = options.fetch!(`${url}/queued`, { signal: new AbortController().signal });
+		const newcomer = new Promise<Response>((resolve) =>
+			setTimeout(() => resolve(options.fetch!(`${url}/new`)), slotMs + 10),
+		);
+		// By the time timers run, the old caller's slot has opened and the later arrival is due too.
+		keepProcessBusyUntil(Date.now() + slotMs + 25);
+		await Promise.all([queued, newcomer].map(async (request) => (await request).text()));
+		assert.deepEqual(received, ["/queued", "/new"]);
+	} finally {
+		await server[Symbol.asyncDispose]();
+	}
+});
+
+test("a model's cooldown does not defer a request to an unrestricted sibling model (#5604)", async () => {
+	applyProviderRateLimitObservation({
+		provider: model.provider,
+		model: model.id,
+		kind: "cooldown",
+		untilEpochMs: Date.now() + 100,
+	});
+	const received: string[] = [];
+	const invoke = async (id: string, signal?: AbortSignal) => {
+		const admission = await admitProviderStream({ ...model, id }, { signal }, true);
+		admission.run(() => received.push(id));
+	};
+	const waiting = invoke(model.id, new AbortController().signal);
+	setTimeout(() => void invoke("other"), 100);
+	await vi.advanceTimersByTimeAsync(100);
+	assert.ok(received.includes("other"), "the unrestricted request should already have started");
+	await takeOpenedSlot();
+	await waiting;
+});
 
 test("a caller deadline that is due when a busy process reaches the freed slot wins over the slot (#5604)", async () => {
 	vi.useRealTimers();

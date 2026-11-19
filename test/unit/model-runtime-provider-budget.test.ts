@@ -15,8 +15,8 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 /**
- * A queued request takes its opened slot on the next turn, after every timer due by then, so a caller deadline due at
- * the same moment wins (#5604). Under fake timers that turn comes one tick after the slot opens.
+ * A queued caller with a signal takes its slot after due deadlines. Under fake timers, that turn comes one tick after
+ * the slot opens (#5604).
  */
 const takeOpenedSlot = (): Promise<unknown> => vi.advanceTimersByTimeAsync(1);
 
