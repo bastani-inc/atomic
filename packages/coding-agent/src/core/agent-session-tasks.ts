@@ -4,7 +4,7 @@ import { pendingCustomMessageSaved } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-custom-messages.ts";
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
-import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
+import { currentSessionReload, sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import { AgentTaskHost } from "./tasks/agent-adapter.js";
 import {
 	type ChildTaskCompletionRoute,
@@ -254,8 +254,17 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		resourceAdmission: this._resourceAdmission,
 		heartbeat,
 		authorizeLaunch: () => {
-			if (this._disposed || sessionGenerationClosing.has(this) || !admission.isOpen())
-				throw new Error("Task owner is closed");
+			if (this._disposed || !admission.isOpen()) throw new Error("Task owner is closed");
+			if (sessionGenerationClosing.has(this)) {
+				const error = new Error("Task owner is closed");
+				const reload = stageAdmission && currentSessionReload(this);
+				if (!reload) throw error;
+				// No task has been admitted. A preserving reload (including rollback) may reopen this very host.
+				const reopened = () => !this._disposed && stageAdmission.isOpen() && !stageAdmission.isParked();
+				throw Object.assign(error, {
+					[Symbol.for("atomic.tasks/stage-reload@1")]: reload.then(reopened, reopened),
+				});
+			}
 			if (isSubagentChildSession(this)) throw new Error("Subagent delegation is not available inside a subagent");
 		},
 		onTaskSettled: (

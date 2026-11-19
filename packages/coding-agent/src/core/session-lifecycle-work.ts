@@ -59,6 +59,10 @@ export function hasSessionReload(session: object): boolean {
 	return reloads.has(session);
 }
 
+export function currentSessionReload(session: object): Promise<void> | undefined {
+	return reloads.get(session);
+}
+
 export function trackSessionReload(session: object, operation: () => Promise<void>): Promise<void> {
 	const result = operation();
 	reloads.set(session, result);

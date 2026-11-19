@@ -181,6 +181,22 @@ test("dropping and acknowledging name the children, and a request to nobody chan
 	]);
 });
 
+test("a recovery of a different release never hides a current wake confirmation refusal (#5641)", async () => {
+	const { events, emitted } = bus();
+	const reply = Promise.withResolvers<void>();
+	events.on(SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, (data) => {
+		(data as { completion?: Promise<void> }).completion = reply.promise;
+	});
+	events.on(SUBAGENT_HOLD_FAILURE_EVENT, (data) => {
+		(data as ReleasedChildHoldFailure).handled = true;
+	});
+	const current = acknowledgeReleasedChildWake(events, "child", "task-2");
+	await reserveReleasedChildren(events, [{ childName: "child", taskId: "task-1", aliases: [], wake: true }]);
+	reply.reject(new Error("No hold for task-2"));
+	await current;
+	assert.equal(emitted.filter(({ channel }) => channel === SUBAGENT_HOLD_FAILURE_EVENT).length, 1);
+});
+
 test("a broker refusal of a released child's reservation appears in status and notifies the owner once (#4326)", async () => {
 	const { ctx } = await ownerWith([{ waitingOn: [] }]);
 	const { events, emitted } = bus();
