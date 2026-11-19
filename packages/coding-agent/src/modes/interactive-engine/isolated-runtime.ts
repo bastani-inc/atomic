@@ -1385,7 +1385,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private async openUnpersistedSessionView(current: SessionManager): Promise<SessionManager> {
 		const { entries, leafId } = await this.client.getEntries({ windowOnly: true });
 		const header = current.getHeader();
-		const view = SessionManager.inMemory(
+		const view = await SessionManager.inMemory(
 			current.getCwd(),
 			undefined,
 			header ? [{ ...header, id: this.remoteSessionId ?? header.id }, ...entries] : entries,

@@ -194,6 +194,40 @@ it("a giant historical entry is an exact byte stream, never one decoded entry (#
 	expect(manager.getEntry(id)).toBeUndefined();
 });
 
+it("a seeded private session yields while storing its input and initially owns only the current window (#5554)", async () => {
+	const timestamp = new Date(0).toISOString();
+	const history: SessionEntry[] = Array.from({ length: 400 }, (_, i) => ({
+		type: "message",
+		id: `old${i}`,
+		parentId: i ? `old${i - 1}` : null,
+		timestamp,
+		message: { role: "user", content: `saved-${i}`, timestamp: 0 },
+	}));
+	history.push({
+		type: "compaction",
+		id: "boundary",
+		parentId: history.at(-1)!.id,
+		timestamp,
+		details,
+		summary: "cleared",
+		tokensBefore: 1000,
+		firstKeptEntryId: null,
+	});
+	let yielded = false;
+	const turn = setImmediate(() => {
+		yielded = true;
+	});
+	try {
+		const manager = await SessionManager.inMemory("/project", undefined, history);
+		expect(manager.getEntryCount()).toBe(1);
+		expect(yielded).toBe(true);
+		expect(manager.isPersisted()).toBe(false);
+		expect(await manager.readEntry("old0")).toEqual(history[0]);
+	} finally {
+		clearImmediate(turn);
+	}
+});
+
 describe("SessionManager resume from the latest compaction (#5249)", () => {
 	it("resumes with the same context, name, labels, model, thinking level and usage as a whole read (#5249)", async () => {
 		const store = await sqlStore();

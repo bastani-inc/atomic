@@ -54,7 +54,12 @@ import type {
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
-import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
+import {
+	validateNewSessionId,
+	validateSessionEntries,
+	validateSessionHeader,
+	validateSessionText,
+} from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder();
@@ -274,7 +279,8 @@ export class MemorySessionStore implements SessionStore {
 	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
-		validateSessionEntries(entries);
+		validateNewSessionId("header.id", header.id);
+		validateSessionEntries(entries, "new");
 		if (this.records.has(header.id)) throw new SessionExistsError(header.id);
 		const record = this.encodeSession(header, entries);
 		this.records.set(header.id, record);
@@ -287,7 +293,7 @@ export class MemorySessionStore implements SessionStore {
 		options: SessionWriteOptions,
 	): Promise<{ readonly lastSeq: number }> {
 		const record = this.forWrite(sessionId, options);
-		validateSessionEntries(entries);
+		validateSessionEntries(entries, "new");
 		if (entries.length === 0) return { lastSeq: record.lastSeq };
 		const index = this.appendedIndex(record, entries);
 		const encoded = this.encodeEntries(entries);
@@ -344,7 +350,7 @@ export class MemorySessionStore implements SessionStore {
 	): Promise<SessionWriteResult> {
 		const previous = this.forWrite(sessionId, options);
 		validateSessionHeader(header);
-		validateSessionEntries(entries);
+		validateSessionEntries(entries, "new");
 		if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 		const record = this.encodeSession(header, entries);
 		this.records.set(sessionId, record);

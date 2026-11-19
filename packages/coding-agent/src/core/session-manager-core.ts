@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
+import { yieldToEventLoop } from "../utils/event-loop.js";
 
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
@@ -83,6 +84,7 @@ import {
 	type StorageFailureCause,
 	StorageRollbackError,
 } from "./storage/errors.js";
+import { validateSessionEntryStructure } from "./storage/session/entry-structure.js";
 import {
 	SessionConflictError,
 	SessionFormatVersionError,
@@ -112,6 +114,7 @@ import type {
 	SessionSnapshot,
 	SessionStore,
 } from "./storage/session/types.js";
+import { SESSION_HISTORY_PAGE_ENTRIES } from "./storage/session/types.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type {
 	PathContinuation,
@@ -1619,28 +1622,53 @@ export class SessionManager {
 		});
 	}
 
-	inMemoryBranch(cwd: string): SessionManager {
+	async inMemoryBranch(cwd: string): Promise<SessionManager> {
 		const header = this.getHeader();
 		if (!header) throw new Error("Session header is missing");
-		const manager = SessionManager.inMemory(cwd, undefined, [header, ...this.getBranch()]);
-		manager.branchLinks = this.branchLinks;
-		return manager;
+		const links = this.branchLinks;
+		const path = this.getBranch().map((entry) => {
+			const parent = links?.get(entry.id);
+			return parent && !this.byId.has(entry.parentId ?? "") ? { ...entry, parentId: parent } : entry;
+		});
+		return SessionManager.inMemory(cwd, undefined, [header, ...path]);
 	}
 
-	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
+	static inMemory(cwd?: string, options?: NewSessionOptions): SessionManager;
+	static inMemory(
+		cwd: string,
+		options: NewSessionOptions | undefined,
+		entries: readonly FileEntry[],
+	): Promise<SessionManager>;
+	static inMemory(
+		cwd: string = process.cwd(),
+		options?: NewSessionOptions,
+		entries?: readonly FileEntry[],
+	): SessionManager | Promise<SessionManager> {
 		const manager = new SessionManager(
 			markPrivateMemorySessionStore(new MemorySessionStore(createSessionCwdMatcherAsync)),
 			cwd,
 			"",
 			options,
 		);
-		if (entries?.length) {
-			manager.fileEntries = entries[0].type === "session" ? entries : [...manager.fileEntries, ...entries];
-			manager.sessionId = manager.getHeader()!.id;
-			manager._buildIndex();
-		}
+		if (entries !== undefined) return manager.seedPrivateSession(entries);
 		manager.mutation = manager.initialize();
 		return manager;
+	}
+
+	private async seedPrivateSession(entries: readonly FileEntry[]): Promise<SessionManager> {
+		const start = entries[0]?.type === "session" ? 1 : 0;
+		const header = start ? validateSessionFileEntries([entries[0]!], "in-memory session") : this.getHeader()!;
+		const record = this.recordHeader(header);
+		const created = await this.store.create(record, []);
+		let seq = 0;
+		for (let i = start; i < entries.length; i += SESSION_HISTORY_PAGE_ENTRIES) {
+			if (i > start) await yieldToEventLoop();
+			const page = entries.slice(i, i + SESSION_HISTORY_PAGE_ENTRIES) as SessionEntry[];
+			validateSessionEntryStructure(page, "in-memory session");
+			seq = (await this.store.append(record.id, page, { expectSeq: seq, epoch: created.epoch })).lastSeq;
+		}
+		this.restoreOpened(await readStoredSession(this.store, record.id, undefined));
+		return this;
 	}
 
 	static async forkFrom(

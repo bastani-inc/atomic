@@ -85,7 +85,12 @@ import type {
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
-import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
+import {
+	validateNewSessionId,
+	validateSessionEntries,
+	validateSessionHeader,
+	validateSessionText,
+} from "./validation.js";
 
 interface SessionFileState {
 	readonly stamp: string;
@@ -583,7 +588,8 @@ export class JsonlSessionStore implements SessionStore {
 	): Promise<SessionWriteResult> {
 		return this.run(async () => {
 			validateSessionHeader(header);
-			validateSessionEntries(entries);
+			validateNewSessionId("header.id", header.id);
+			validateSessionEntries(entries, "new");
 			if (await this.claimed(header.id)) throw new SessionExistsError(header.id);
 			const payload = this.encode(header, entries);
 			const path = location === undefined ? this.locationFor(header) : resolve(location);
@@ -615,7 +621,7 @@ export class JsonlSessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		return this.run(async () => {
 			const { path, state } = await this.forWrite(sessionId, options);
-			validateSessionEntries(entries);
+			validateSessionEntries(entries, "new");
 			if (entries.length === 0) return { lastSeq: state.lastSeq };
 			if (state.torn) await truncate(path, state.size);
 			const lines = entries.map((entry) => JSON.stringify(entry));
@@ -670,7 +676,7 @@ export class JsonlSessionStore implements SessionStore {
 		return this.run(async () => {
 			const { path } = await this.forWrite(sessionId, options);
 			validateSessionHeader(header);
-			validateSessionEntries(entries);
+			validateSessionEntries(entries, "new");
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 			return { lastSeq: entries.length, epoch: await this.commit(path, header, entries) };
 		});
@@ -1180,7 +1186,6 @@ export class JsonlSessionStore implements SessionStore {
 		let batch: SessionEntry[] = [];
 		const flush = () => {
 			if (batch.length === 0) return;
-			validateSessionEntryStructure(batch, path);
 			validateSessionEntries(batch);
 			index = foldSessionResume(index, batch, (id) => ids.get(id), activeSeq);
 			batch = [];
@@ -1189,6 +1194,7 @@ export class JsonlSessionStore implements SessionStore {
 			const text = line.toString("utf8");
 			if (!text.trim()) return;
 			const entry = JSON.parse(text) as SessionEntry;
+			validateSessionEntryStructure([entry], path);
 			spans.push(start, start + line.length);
 			hashes.push(idHash(entry.id));
 			batch.push(entry);
@@ -1229,6 +1235,7 @@ export class JsonlSessionStore implements SessionStore {
 			reportTornLine(path);
 			return { index, spans, ids: hashes, size: lineStart, terminated: true, torn: true };
 		}
+		validateSessionEntryStructure([unterminated], path);
 		spans.push(lineStart, position);
 		hashes.push(idHash(unterminated.id));
 		batch.push(unterminated);
