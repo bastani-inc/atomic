@@ -4,17 +4,45 @@ import { createEventBus } from "../src/core/event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.js";
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
-import type { WorkflowRootActivity } from "../src/core/extensions/workflow-events.js";
+import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import { arg, fakeHerdr } from "./helpers/herdr.js";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
+
+test("a fresh SDK session reports its idle identity without a workflow publisher", async () => {
+	const fake = await fakeHerdr();
+	try {
+		const extensionsResult = await createTestExtensionsResult(
+			[createHerdrExtension({ env: fake.env, enabled: () => true })],
+			fake.dir,
+		);
+		const { session } = await createAgentSession({
+			cwd: fake.dir,
+			agentDir: fake.dir,
+			sessionManager: SessionManager.inMemory(fake.dir),
+			settingsManager: SettingsManager.inMemory(),
+			resourceLoader: createTestResourceLoader({ extensionsResult }),
+			extensionBindings: { mode: "tui", uiContext: { ...noOpUIContext } },
+		});
+		try {
+			const [call] = await fake.waitFor(1);
+			assert.equal(call.args[1], "report-agent");
+			assert.equal(arg(call.args, "--state"), "idle");
+			assert.equal(arg(call.args, "--agent-session-id"), session.sessionId);
+		} finally {
+			await session.dispose();
+		}
+	} finally {
+		await fake.dispose();
+	}
+});
 
 // #2891: activation must not retain a previous session's approval wait.
-test("reactivating a reporter resets prompt state and retires the previous observation lease", async () => {
+test("reactivating a reporter resets prompt state", async () => {
 	const fake = await fakeHerdr();
 	const runtime = createExtensionRuntime();
-	const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-	publisher.publishSnapshot({ availability: "ready", roots: [] });
 	const extension = await loadExtensionFromFactory(
 		createHerdrExtension({ env: fake.env, enabled: () => true }),
 		fake.dir,
@@ -38,10 +66,6 @@ test("reactivating a reporter resets prompt state and retires the previous obser
 		await runner.emit({ type: "session_start", reason: "reload" });
 		const calls = await fake.waitFor(3);
 		assert.equal(arg(calls[2].args, "--state"), "idle");
-		assert.equal(
-			runtime.workflowActivityHub.diagnostics().filter((item) => item.kind === "ObserverDisposed").length,
-			1,
-		);
 	} finally {
 		await runner.emit({ type: "session_shutdown", reason: "quit" });
 		runner.invalidate();
@@ -50,10 +74,9 @@ test("reactivating a reporter resets prompt state and retires the previous obser
 });
 
 // #2891: reports follow semantic events, never prompt content or agent_end.
-test("real runner reports settled, prompt, workflow and recovery transitions with parent identity", async () => {
+test("real runner reports settled and prompt transitions with parent identity", async () => {
 	const fake = await fakeHerdr();
 	const runtime = createExtensionRuntime();
-	const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
 	const session = await SessionManager.create(fake.dir, fake.dir);
 	const extension = await loadExtensionFromFactory(
 		createHerdrExtension({ env: fake.env, enabled: () => true }),
@@ -77,15 +100,6 @@ test("real runner reports settled, prompt, workflow and recovery transitions wit
 		},
 		"tui",
 	);
-	const root: WorkflowRootActivity = {
-		rootRunId: "root",
-		ownerSessionId: session.getSessionId(),
-		state: "working",
-		reason: "executing",
-		activeExecutionCount: 1,
-		actionableBlockCount: 0,
-		needsAttention: false,
-	};
 	let completed = 0;
 	async function expectReport(state: string, message?: string) {
 		const calls = await fake.waitFor(++completed);
@@ -94,7 +108,8 @@ test("real runner reports settled, prompt, workflow and recovery transitions wit
 	}
 	try {
 		await runner.emit({ type: "session_start" });
-		// A retained workflow viewer must not change any of the semantic reports below.
+		await expectReport("idle");
+		// A retained navigation view must not change any of the semantic reports below.
 		const navigation = runner
 			.getUIContext()
 			.custom(() => ({ render: () => [], invalidate: () => {} }), { purpose: "navigation", overlay: true });
@@ -102,10 +117,6 @@ test("real runner reports settled, prompt, workflow and recovery transitions wit
 		await expectReport("working");
 		await runner.emit({ type: "agent_end", messages: [] });
 		await runner.emit({ type: "agent_settled" });
-		publisher.publishSnapshot({ availability: "recovering" });
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		assert.equal((await fake.calls()).filter((call) => call.phase === "start").length, completed);
-		publisher.publishSnapshot({ availability: "ready", roots: [] });
 		await expectReport("idle");
 		await runner.emit({
 			type: "ui_prompt_start",
@@ -114,23 +125,7 @@ test("real runner reports settled, prompt, workflow and recovery transitions wit
 			title: "secret prompt title and provider error body",
 		});
 		await expectReport("blocked", "Waiting for approval");
-		publisher.publishChanged({ ...root, needsAttention: true });
-		await expectReport("working", "Workflow needs attention");
 		await runner.emit({ type: "ui_prompt_end", reason: "ui_prompt", kind: "confirm" });
-		await expectReport("working", "Workflow needs attention");
-		await runner.emit({ type: "agent_settled" });
-		await expectReport("working", "Workflow needs attention");
-		publisher.publishChanged({
-			...root,
-			state: "blocked",
-			reason: "manual_intervention",
-			activeExecutionCount: 0,
-			needsAttention: true,
-		});
-		await expectReport("blocked", "Workflow needs attention");
-		publisher.publishChanged({ ...root, state: "idle", reason: "paused", activeExecutionCount: 0 });
-		await expectReport("idle");
-		publisher.publishRemoved(root.rootRunId);
 		await expectReport("idle");
 		await runner.emit({ type: "agent_start" });
 		await expectReport("working");
@@ -176,8 +171,9 @@ test("extension reload and engine replacement fence late predecessor callbacks a
 			runner.setUIContext({ ...noOpUIContext }, "tui");
 			runners.push(runner);
 			await runner.emit({ type: "session_start", reason: generation ? "reload" : "startup" });
+			await fake.waitFor(2 * generation + 1);
 			await runner.emit({ type: "agent_start" });
-			await fake.waitFor(generation + 1);
+			await fake.waitFor(2 * generation + 2);
 			const previous = runners[generation - 1];
 			if (previous) {
 				await previous.emit({ type: "agent_start" });
@@ -189,7 +185,19 @@ test("extension reload and engine replacement fence late predecessor callbacks a
 		const calls = (await fake.calls()).filter((call) => call.phase === "start");
 		assert.deepEqual(
 			calls.map((call) => call.args[1]),
-			["report-agent", "report-agent", "report-agent", "release-agent"],
+			[
+				"report-agent",
+				"report-agent",
+				"report-agent",
+				"report-agent",
+				"report-agent",
+				"report-agent",
+				"release-agent",
+			],
+		);
+		assert.deepEqual(
+			calls.slice(0, -1).map((call) => arg(call.args, "--state")),
+			["idle", "working", "idle", "working", "idle", "working"],
 		);
 		const seq = calls.map((call) => Number(arg(call.args, "--seq")));
 		// Every admitted command, release included, takes a strictly increasing sequence across reload and replacement.
@@ -198,58 +206,6 @@ test("extension reload and engine replacement fence late predecessor callbacks a
 	} finally {
 		await runners.at(-1)?.emit({ type: "session_shutdown", reason: "quit" });
 		for (const runner of runners) runner.invalidate();
-		await fake.dispose();
-	}
-});
-
-test("graph-only workflow activity changes do not re-report the pane (#3476)", async () => {
-	const fake = await fakeHerdr();
-	const runtime = createExtensionRuntime();
-	const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-	const session = SessionManager.inMemory();
-	const extension = await loadExtensionFromFactory(
-		createHerdrExtension({ env: fake.env, enabled: () => true }),
-		fake.dir,
-		createEventBus(),
-		runtime,
-		"herdr",
-	);
-	const runner = new ExtensionRunner([extension], runtime, fake.dir, session, {} as never);
-	runner.setUIContext({ ...noOpUIContext }, "tui");
-	const root: WorkflowRootActivity = {
-		rootRunId: "root",
-		ownerSessionId: session.getSessionId(),
-		state: "working",
-		reason: "executing",
-		activeExecutionCount: 1,
-		actionableBlockCount: 0,
-		needsAttention: false,
-	};
-	const node = {
-		kind: "stage",
-		id: "plan",
-		runId: "root",
-		nodeId: "plan",
-		name: "plan",
-		parentIds: [],
-		depth: 0,
-	} as const;
-	try {
-		await runner.emit({ type: "session_start" });
-		publisher.publishSnapshot({ availability: "ready", roots: [] });
-		await fake.waitFor(1);
-		publisher.publishChanged({ ...root, graph: { nodes: [{ ...node, status: "running" }] } });
-		const [, working] = await fake.waitFor(2);
-		assert.equal(arg(working!.args, "--state"), "working");
-		publisher.publishChanged({ ...root, graph: { nodes: [{ ...node, status: "completed" }] } });
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		assert.equal((await fake.calls()).filter((call) => call.phase === "start").length, 2);
-		publisher.publishChanged({ ...root, state: "idle", reason: "quiescent", activeExecutionCount: 0 });
-		const calls = await fake.waitFor(3);
-		assert.equal(arg(calls[2]!.args, "--state"), "idle");
-	} finally {
-		await runner.emit({ type: "session_shutdown", reason: "quit" });
-		runner.invalidate();
 		await fake.dispose();
 	}
 });

@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage, createHook } from "node:async_hooks";
 import { pbkdf2, pbkdf2Sync } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -255,7 +255,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		thinkingLevel: "medium",
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, defaultThinkingLevel: "medium" }),
 		sessionManager: await SessionManager.create(cwd, join(cwd, "parent-sessions")),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 		...(options.parentAdmission ? { resourceAdmission: options.parentAdmission } : {}),
 	});
@@ -855,31 +855,6 @@ test(
 		assert.ok(stall.reached(), "the child's recovery was held past its start budget");
 		assert.equal(result.status, "ok", JSON.stringify(result));
 		assert.equal(result.startError, undefined);
-	},
-	REAL_CHILD_SESSION_TIMEOUT_MS,
-);
-
-test(
-	"a workflow stage's child marks the session it reopens as that stage's (#4319)",
-	async () => {
-		const fixture = await startFixture();
-		const reopened = await SessionManager.create(fixture.cwd, join(fixture.cwd, "stage-sessions"));
-		const sessionFile = reopened.getSessionFile();
-		assert.ok(sessionFile);
-		const workflow = { runId: "run-4319", stageId: "stage-1", stageName: "review" };
-		const result = await fixture.launch("start-stage", undefined, {
-			sessionManager: reopened,
-			workflowSessionMetadata: workflow,
-			testSession: { output: "done" },
-		});
-
-		assert.equal(result.status, "ok", JSON.stringify(result));
-		const header = JSON.parse(readFileSync(sessionFile, "utf8").split("\n", 1)[0]!) as {
-			internal?: boolean;
-			workflow?: object;
-		};
-		assert.equal(header.internal, true);
-		assert.deepEqual(header.workflow, workflow);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );

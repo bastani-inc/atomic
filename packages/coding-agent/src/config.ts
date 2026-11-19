@@ -142,7 +142,7 @@ export function getPackageDir(): string {
 	}
 	// Node.js: walk up from __dirname to the Atomic app package. Prebundled
 	// companion extensions ship under dist/builtin/<name>/ with their own
-	// package.json; stopping at the first one made APP_NAME "workflows".
+	// package.json; stopping at the first one would name APP_NAME after a companion.
 	return modulePackageDir;
 }
 
@@ -415,7 +415,6 @@ export const ENV_CODEMODE_MAX_WORKERS = `${ENV_PREFIX}_CODEMODE_MAX_WORKERS`;
 export const ENV_SELF_UPDATE_COMMAND = `${ENV_PREFIX}_SELF_UPDATE_COMMAND`;
 export const ENV_STDIN_TIMEOUT_MS = `${ENV_PREFIX}_STDIN_TIMEOUT_MS`;
 export const ENV_DEBUG = `${ENV_PREFIX}_DEBUG`;
-export const WORKFLOW_STAGE_SUBAGENT_GUARD_ENV = `${ENV_PREFIX}_WORKFLOW_STAGE_SUBAGENT_GUARD`;
 export function getEnvNames(name: string): string[] {
 	if (ENV_PREFIX === LEGACY_ENV_PREFIX || !name.startsWith(`${ENV_PREFIX}_`)) return [name];
 	return [name, `${LEGACY_ENV_PREFIX}_${name.slice(ENV_PREFIX.length + 1)}`];

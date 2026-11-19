@@ -35,9 +35,7 @@ test("a subagent chat's per-frame child lookups fold the owner session once per 
 		...(state === "terminal" ? { terminalStatus: "killed" } : {}),
 	});
 	await manager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, record("task-1", "running"));
-	const ctx = { sessionManager: manager, orchestrationContext: undefined } as unknown as Parameters<
-		typeof subagentChildOfTask
-	>[0];
+	const ctx = { sessionManager: manager } as unknown as Parameters<typeof subagentChildOfTask>[0];
 	const reads = vi.spyOn(manager, "getEntries");
 
 	for (let frame = 0; frame < FRAMES; frame++) {
@@ -69,9 +67,7 @@ test("a session manager without sequence, leaf or history accessors still answer
 	});
 	const append = (data: SubagentChildRecord) =>
 		entries.push({ type: "custom", id: `entry-${entries.length}`, customType: SUBAGENT_CHILD_RECORD_TYPE, data });
-	const ctx = { sessionManager: manager, orchestrationContext: undefined } as unknown as Parameters<
-		typeof subagentChildOfTask
-	>[0];
+	const ctx = { sessionManager: manager } as unknown as Parameters<typeof subagentChildOfTask>[0];
 
 	append(record("task-1", "running"));
 	assert.deepEqual(subagentChildOfTask(ctx, "task-1"), { childId: "run-1:0" });

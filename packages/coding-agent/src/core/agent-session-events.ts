@@ -33,6 +33,8 @@ import {
 	isSingleGenericAbortTextContent,
 	replacementAbortContent,
 } from "./agent-session-types.js";
+import { recordPromptOrder } from "./chat-admission-order.js";
+import { bindChatReceipt } from "./chat-receipts.js";
 import { formatCodexProviderError } from "./codex-errors.ts";
 import { assignMissingToolCallIds } from "./context-tool-pairing.js";
 import {
@@ -54,6 +56,7 @@ import type {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./extensions/stale-context.ts";
 import type { SessionShutdownEvent } from "./extensions/types.ts";
+import { hostNoticeForEvent } from "./host-notices.js";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";
 import {
@@ -63,14 +66,16 @@ import {
 	hasCallingSessionWork,
 	ownedSessionPermits,
 	ownedSessionStores,
+	sessionGenerationClosing,
 	sessionLifetime,
 	shutdownDeadline,
 } from "./session-lifecycle-work.ts";
+import { physicalForkHeader } from "./session-manager-core.ts";
 import { retryStatusUpdate } from "./session-retry-status.js";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
+import { saveChatRecord } from "./storage/session/chat-records.js";
 import { observeToolExecutionTiming } from "./tool-execution-timing.ts";
 import { drainWindowsDirectorySecurityReads } from "./tools/windows-directory-security.ts";
-import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	if (event.type === "agent_start") {
@@ -80,6 +85,19 @@ export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	const status = retryStatusUpdate(event);
 	if (status !== undefined) this._retryStatus = status ?? undefined;
 	observeToolExecutionTiming(this, event);
+	const notice = hostNoticeForEvent(event, this._compactionReason);
+	if (notice && !this._disposed && !sessionGenerationClosing.has(this)) {
+		// Capture the branch position before listeners run. The event, not this best-effort record,
+		// owns the live line; persistence, subsequent prompts and model decisions never await it.
+		const manager = this.sessionManager;
+		const scope = manager.chatRecordScope();
+		if (scope) {
+			const anchor = manager.getLeafId() ?? "",
+				id = crypto.randomUUID();
+			const saved = saveChatRecord(scope, anchor, { kind: "line", id, ...notice });
+			bindChatReceipt(event, { anchor, id }, saved);
+		}
+	}
 	for (const l of this._eventListeners) {
 		l(event);
 	}
@@ -196,7 +214,11 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 		// The store can already hold the new row before its append promise returns. Pin the preceding leaf
 		// when this serialized save begins, not when it first joins the queue.
 		if (event.type === "message_end")
-			this._transcriptAppend = { message: event.message, previousLeaf: this.sessionManager.getLeafId() };
+			this._transcriptAppend = {
+				message: event.message,
+				previousLeaf: this.sessionManager.getLeafId(),
+				owner: event.message.role === "user" ? physicalForkHeader(this.sessionManager) : undefined,
+			};
 		return this._processAgentEvent(event, retryGeneration);
 	};
 	const processing = this._agentEventQueue.then(process, process);
@@ -391,6 +413,7 @@ export async function _processAgentEvent(
 			this._messagesAwaitingPersistence.delete(event.message);
 		}
 		if (entryId) {
+			if (event.message.role === "user") recordPromptOrder(this, entryId, event);
 			this._entryIdsByMessage.set(event.message, entryId);
 			noteMessageSaved(this, event.message);
 		}
@@ -825,7 +848,6 @@ export function closeAgentSession(
 				);
 			else resolveRetired();
 		}
-		await attempt("terminal workflow summaries", () => drainTerminalWorkflowSummaries(session));
 		await attempt("active work", () => drainSessionWork(session));
 		await attempt("detached calls", () => releaseDetachedCallHolds(session));
 		await attempt("events", async () => {
@@ -852,7 +874,6 @@ export function closeAgentSession(
 		await attempt("subscriptions", async () => {
 			session._disconnectFromAgent();
 			session._eventListeners = [];
-			await session._workflows?.disposeObservers(session._extensionRunner.getWorkflowActivitySnapshot());
 		});
 		// Empty stored IDs have no provider cache key; empty-key cleanup would close other sessions' caches.
 		if (session.sessionId !== "") await attempt("provider", () => cleanupSessionResources(session.sessionId));

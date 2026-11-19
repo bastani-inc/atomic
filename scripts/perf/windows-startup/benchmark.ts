@@ -285,7 +285,6 @@ async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal
 	let state: BenchmarkSample["state"] = "success";
 	const failures: string[] = [];
 	const marks: Record<string, string> = {};
-	let workflowListSucceeded = false;
 	let environmentDigest: string | undefined;
 	let commandLine = "";
 	const startedAt = new Date().toISOString();
@@ -360,20 +359,6 @@ async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal
 			"provider response",
 			nudgeRepaint,
 		);
-		child.write("/workflow list\r");
-		// The bundled workflow list is taller than the 40-row viewport, so its
-		// earliest (alphabetical) entries scroll off the visible screen. Assert
-		// on markers that remain in the settled viewport: a bundled workflow
-		// name near the end of the list and the command help footer.
-		await waitForScreen(
-			observeQueued,
-			(observation) =>
-				observation.text.includes("loop-until-done") && observation.text.includes("inspect input schema"),
-			options.timeoutMs,
-			"/workflow list",
-			nudgeRepaint,
-		);
-		workflowListSucceeded = true;
 		if (chunkError) throw new Error(`ConPTY output callback failed: ${chunkError.message}`);
 		child.write("/quit\r");
 		const exit = await timeout(child.exited, 5_000, "atomic exit");
@@ -431,7 +416,6 @@ async function runSample(options: BenchmarkOptions, target: BuildTarget, ordinal
 			toolNames: collector.requests[0]?.toolNames ?? [],
 			requestCount: collector.attempts.length,
 		},
-		workflowListSucceeded,
 	};
 	await persistSample(options.outputDirectory, sample, {
 		ptyOutput,

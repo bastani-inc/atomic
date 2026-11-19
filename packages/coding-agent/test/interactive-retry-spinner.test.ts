@@ -45,9 +45,16 @@ async function emit(mode: ReturnType<typeof makeMode>, event: AgentSessionEvent)
 	await InteractiveMode.prototype.handleEvent.call(mode as never, event);
 }
 
-function rendered(mode: ReturnType<typeof makeMode>): string {
+function rendered(mode: ReturnType<typeof makeMode>, width = 100): string {
 	// The clickable key hint's markers are terminal sequences too.
-	return stripVTControlCharacters(stripTerminalSequences(mode.statusContainer.render(100).join("\n")));
+	return stripVTControlCharacters(stripTerminalSequences(mode.statusContainer.render(width).join("\n")));
+}
+
+/** The status rows at `width` columns, without their padding. */
+function renderedRows(mode: ReturnType<typeof makeMode>, width: number): string[] {
+	return rendered(mode, width)
+		.split("\n")
+		.map((row) => row.trimEnd());
 }
 
 for (const success of [true, false]) {
@@ -214,4 +221,36 @@ test("the retry line names the key Esc's action is bound to, and Esc when that a
 		);
 		await emit(mode, { type: "auto_retry_end", success: true, attempt: 1 });
 	}
+});
+
+const refused = "Content blocked by the provider's safety filter: the request was refused";
+
+test("the main chat's retry line stays one row: the reason gives way first, then the key hint", async () => {
+	const mode = makeMode();
+	await emit(mode, { type: "auto_retry_start", attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: refused });
+	assert.deepEqual(renderedRows(mode, 80), [
+		"",
+		" ∀ Retrying · Content blocked by the provider… · attempt 2/3 in 4s   esc cancel",
+	]);
+	assert.deepEqual(renderedRows(mode, 40), ["", " ∀ Retrying · attempt 2/3 in 4s"]);
+	await emit(mode, { type: "auto_retry_end", success: true, attempt: 2 });
+});
+
+test("a summary retry line stays one row in a narrow terminal", async () => {
+	const mode = makeMode();
+	setSummaryCancellable(mode as never, true);
+	await emit(mode, {
+		type: "summarization_retry_scheduled",
+		attempt: 1,
+		maxAttempts: 3,
+		delayMs: 2000,
+		errorMessage: refused,
+	});
+	assert.deepEqual(renderedRows(mode, 80), [
+		"",
+		" ∀ Retrying summary · Content blocked by the… · attempt 1/3 in 2s   esc cancel",
+	]);
+	assert.deepEqual(renderedRows(mode, 40), ["", " ∀ Retrying summary · attempt 1/3 in 2s"]);
+	setSummaryCancellable(mode as never, false);
+	await emit(mode, { type: "summarization_retry_finished" });
 });

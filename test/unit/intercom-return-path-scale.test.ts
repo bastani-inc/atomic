@@ -97,12 +97,6 @@ test("a direct send stays linear in the sessions the broker serves and asks abou
 		undefined,
 		undefined,
 		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
 		authority,
 	);
 	assert.deepEqual(

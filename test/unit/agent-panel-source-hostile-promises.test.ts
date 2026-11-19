@@ -195,7 +195,6 @@ test("strict Bun child contains frozen species, non-configurable constructor get
 			openAgentPanelItem,
 			stopAgentPanelItem,
 		} = await import("./packages/coding-agent/src/core/tasks/agent-panel-source.ts");
-		const { openRunRejectionScope } = await import("./packages/workflows/src/engine/run-rejection-boundary.ts");
 
 		class Bad extends Promise {
 			static get [Symbol.species]() {
@@ -243,12 +242,6 @@ test("strict Bun child contains frozen species, non-configurable constructor get
 		};
 
 		if (mode === "contain_all") {
-			const failedRuns = [];
-			const scope = openRunRejectionScope({
-				runId: "r-delayed",
-				fail: (err) => failedRuns.push(String(err?.message ?? err)),
-			});
-			void scope.watch(Promise.reject(new Error("LEGIT_WORKFLOW_OWNED")));
 			for (const [name, make] of Object.entries(factories)) {
 				const hub = new AgentPanelSourceHub();
 				const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
@@ -286,42 +279,9 @@ test("strict Bun child contains frozen species, non-configurable constructor get
 				}
 			}
 			await new Promise((r) => setTimeout(r, 80));
-			if (!failedRuns.includes("LEGIT_WORKFLOW_OWNED")) {
-				throw new Error("Expected workflow boundary to receive LEGIT_WORKFLOW_OWNED");
-			}
 			console.log("CONTAINED_ALL");
 		} else if (mode === "unrelated_same_turn") {
 			void Promise.reject(new Error("UNRELATED_SAME_TURN"));
-			const hub = new AgentPanelSourceHub();
-			hub.register({
-				items: () => {
-					throw factories.frozen_species();
-				},
-				subscribe: () => () => {},
-			});
-			agentPanelItems({ extensionRunner: { getAgentPanelSourceHub: () => hub } });
-			await new Promise((r) => setTimeout(r, 80));
-		} else if (mode === "unrelated_with_boundary_both" || mode === "unrelated_with_boundary_order2") {
-			if (mode === "unrelated_with_boundary_both") {
-				openRunRejectionScope({ runId: "r1", fail: () => {} });
-			}
-			const hub = new AgentPanelSourceHub();
-			hub.register({
-				items: () => {
-					throw factories.frozen_species();
-				},
-				subscribe: () => () => {},
-			});
-			agentPanelItems({ extensionRunner: { getAgentPanelSourceHub: () => hub } });
-			if (mode === "unrelated_with_boundary_order2") {
-				openRunRejectionScope({ runId: "r1", fail: () => {} });
-			}
-			await new Promise((r) => setTimeout(r, 30));
-			void Promise.reject(new Error("UNRELATED_BOUNDARY_REJECTION"));
-			await new Promise((r) => setTimeout(r, 80));
-		} else if (mode === "unrelated_with_boundary_concurrent") {
-			openRunRejectionScope({ runId: "r1", fail: () => {} });
-			void Promise.reject(new Error("UNRELATED_CONCURRENT_BOUNDARY"));
 			const hub = new AgentPanelSourceHub();
 			hub.register({
 				items: () => {
@@ -498,19 +458,13 @@ test("strict Bun child contains frozen species, non-configurable constructor get
 	assert.equal(warnErrorCodeHostile.exitCode, 1, warnErrorCodeHostile.stderr.toString());
 	assert.match(warnErrorCodeHostile.stdout.toString(), /WARN_ERROR_CODE_HOSTILE_OK/u);
 
-	for (const unrelatedMode of [
-		"unrelated_same_turn",
-		"unrelated_with_boundary_both",
-		"unrelated_with_boundary_order2",
-		"unrelated_with_boundary_concurrent",
-		"generic_scoped_listener_unrelated",
-	]) {
+	for (const unrelatedMode of ["unrelated_same_turn", "generic_scoped_listener_unrelated"]) {
 		const res = spawnSyncCollect([bunExecutable(), "-e", script, unrelatedMode], { cwd: REPO_ROOT });
 		assert.notEqual(res.exitCode, 0, `expected non-zero exit for ${unrelatedMode}, stderr=${res.stderr.toString()}`);
 	}
 });
 
-test("strict Bun child contains rejected promises, species-hostile promises, and throwing getters in promptId, viewed, and every row field (#5239)", () => {
+test("strict Bun child contains rejected promises, species-hostile promises, and throwing getters in promptId and every row field (#5239)", () => {
 	const script = `
 		const {
 			AgentPanelSourceHub,
@@ -536,7 +490,6 @@ test("strict Bun child contains rejected promises, species-hostile promises, and
 			"choices",
 			"promptId",
 			"reason",
-			"viewed",
 			"queued",
 			"endedAt",
 		];
@@ -545,13 +498,12 @@ test("strict Bun child contains rejected promises, species-hostile promises, and
 			for (const kind of ["rejected", "species", "frozen_species", "getter_throws_promise"]) {
 				const base = {
 					id: "bad-" + field,
-					kind: "workflow",
+					kind: "agent",
 					state: "input",
 					name: "n",
 					task: "t",
 					question: "q?",
 					promptId: "p1",
-					viewed: false,
 				};
 				let badRow;
 				if (kind === "getter_throws_promise") {

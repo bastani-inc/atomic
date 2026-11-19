@@ -172,9 +172,10 @@ function subagentWokenElsewhere(source, woken) {
  * The scenario observations (including every requested fault). Each invariant carries only synthetic facts; no
  * credentials, storage selection or conversation content outside the fixture are reported.
  * @param {ResumeEvidence} evidence
+ * @param {boolean} [legacyWorkflows] The deployed ref can run workflow scenarios.
  * @returns {InvariantResult[]}
  */
-export function checkResumeInvariants(evidence) {
+export function checkResumeInvariants(evidence, legacyWorkflows = true) {
 	const {
 		source,
 		session,
@@ -265,117 +266,124 @@ export function checkResumeInvariants(evidence) {
 			expected: "provisioned Git, same tree and HEAD, continued session and one setup",
 			actual: gitless ?? null,
 		},
-		{
-			name: "two-worktrees-resume-without-repeating-effects",
-			passed:
-				twoKilled?.signal === "SIGKILL" &&
-				two?.status === "completed" &&
-				two.clean === true &&
-				typeof two.restoreRoot === "string" &&
-				children.length === 2 &&
-				children[0]?.repository === "alpha\n" &&
-				children[1]?.repository === "beta\n" &&
-				children.every(
-					(child) =>
-						typeof child.cwd === "string" &&
-						child.cwd.startsWith(`${two.restoreRoot}/`) &&
-						child.effects === "node-a\n" &&
-						child.notes === "uncommitted, written on node-a\n",
-				) &&
-				children[0]?.cwd !== children[1]?.cwd,
-			expected: "two correctly restored checkouts, each effect once, interrupted stage continued",
-			actual: { killed: twoKilled ?? null, resumed: two ?? null },
-		},
-		{
-			name: "run-lookup-partition-typed-before-restore",
-			passed:
-				timeout(runPartition?.error, "run") &&
-				runPartition?.code === 2 &&
-				runPartition.noWorktrees === true &&
-				(runPartition.dropped ?? 0) > 0,
-			expected: "retryable run catalog timeout and no worktree",
-			actual: runPartition ?? null,
-		},
-		{
-			name: "pooled-child-reclaimed-after-host-sigkill",
-			passed:
-				poolKilled?.signal === "SIGKILL" &&
-				poolKilled.marker === true &&
-				pool?.outcome?.status === "completed" &&
-				pooled.length === 1 &&
-				child?.status === "completed" &&
-				child.firstHost === "B" &&
-				publishedUnder(child.firstCwd, pool.restoreRoots?.B) &&
-				pool.first?.host === "B" &&
-				child.finalHost === "A" &&
-				pool.reclaimed?.host === "A" &&
-				(pool.work ?? []).length === 1 &&
-				(pool.work ?? []).every(
-					(row) =>
-						row.state === "completed" && (row.generation ?? 0) >= 2 && row.worker?.startsWith("A/") === true,
-				),
-			expected:
-				"the child began on n2's host, which was SIGKILLed holding it; it was claimed again and completed on n1's host, which replayed its completed first step",
-			actual: {
-				killed: poolKilled ?? null,
-				status: pool?.outcome?.status ?? null,
-				children: pooled,
-				first: pool?.first ?? null,
-				work: pool?.work ?? null,
-			},
-		},
-		{
-			name: "pooled-child-restored-with-the-recorded-tree",
-			passed:
-				sameTree(pool?.source, pool?.reclaimed) &&
-				publishedUnder(pool?.reclaimed?.cwd, pool?.restoreRoots?.A) &&
-				child?.finalCwd === pool?.reclaimed?.cwd &&
-				child?.finalHead === pool?.source?.head &&
-				sameFiles(child?.finalFiles, filesOf(pool?.source?.entries)),
-			expected: "n1's host restored the root's tree byte for byte, with its commit, and the child finished there",
-			actual: { source: pool?.source ?? null, reclaimed: pool?.reclaimed ?? null },
-		},
-		{
-			// A host's `busy` count includes a worker whose claim request is in flight, which an idle host without a
-			// restore port has every time it asks for work and declines the bound child; the journal's claim count is what
-			// shows who took the child.
-			name: "pooled-bound-work-never-on-the-gitless-host",
-			passed:
-				pool?.hosts?.A?.restore === true &&
-				pool.hosts.B?.restore === true &&
-				pool.hosts.C?.restore === false &&
-				pool.hosts.C.git === "unavailable" &&
-				pool.heldOnGitless === 0 &&
-				setup?.C?.length === 0 &&
-				pooled.length > 0 &&
-				pooled.every((item) => item.firstHost !== "C" && item.finalHost !== "C") &&
-				(pool.work ?? []).length === 1 &&
-				(pool.work ?? []).every((row) => row.generation === 2 && row.worker?.startsWith("C/") !== true),
-			expected:
-				"n3's host has no Git and no restore port and never claimed the child, including while the reclaimed one waited: no marker or setup there, and the child's only claims were n2's host's and n1's host's (generation 2)",
-			actual: {
-				hosts: pool?.hosts ?? null,
-				heldOnGitless: pool?.heldOnGitless ?? null,
-				setup: setup ?? null,
-				work: pool?.work ?? null,
-			},
-		},
-		{
-			name: "pooled-blueprint-built-once-where-restored",
-			passed:
-				setup?.A?.length === 1 &&
-				typeof child?.finalCwd === "string" &&
-				child.finalCwd.startsWith(setup.A[0] ?? "\0") &&
-				publishedUnder(setup.A[0], pool?.restoreRoots?.A) &&
-				pool?.reclaimed?.setupRuns === 1 &&
-				setup.B?.length === 1 &&
-				typeof child.firstCwd === "string" &&
-				child.firstCwd.startsWith(setup.B[0] ?? "\0") &&
-				setup.C?.length === 0,
-			expected:
-				"each restoring host's blueprint build ran exactly once, in the worktree it restored for the child, before the child ran there; n2's host's build failed, and that neither failed the child nor removed its worktree, which the child ran in",
-			actual: setup ?? null,
-		},
+		...(legacyWorkflows
+			? [
+					{
+						name: "two-worktrees-resume-without-repeating-effects",
+						passed:
+							twoKilled?.signal === "SIGKILL" &&
+							two?.status === "completed" &&
+							two.clean === true &&
+							typeof two.restoreRoot === "string" &&
+							children.length === 2 &&
+							children[0]?.repository === "alpha\n" &&
+							children[1]?.repository === "beta\n" &&
+							children.every(
+								(child) =>
+									typeof child.cwd === "string" &&
+									child.cwd.startsWith(`${two.restoreRoot}/`) &&
+									child.effects === "node-a\n" &&
+									child.notes === "uncommitted, written on node-a\n",
+							) &&
+							children[0]?.cwd !== children[1]?.cwd,
+						expected: "two correctly restored checkouts, each effect once, interrupted stage continued",
+						actual: { killed: twoKilled ?? null, resumed: two ?? null },
+					},
+					{
+						name: "run-lookup-partition-typed-before-restore",
+						passed:
+							timeout(runPartition?.error, "run") &&
+							runPartition?.code === 2 &&
+							runPartition.noWorktrees === true &&
+							(runPartition.dropped ?? 0) > 0,
+						expected: "retryable run catalog timeout and no worktree",
+						actual: runPartition ?? null,
+					},
+					{
+						name: "pooled-child-reclaimed-after-host-sigkill",
+						passed:
+							poolKilled?.signal === "SIGKILL" &&
+							poolKilled.marker === true &&
+							pool?.outcome?.status === "completed" &&
+							pooled.length === 1 &&
+							child?.status === "completed" &&
+							child.firstHost === "B" &&
+							publishedUnder(child.firstCwd, pool.restoreRoots?.B) &&
+							pool.first?.host === "B" &&
+							child.finalHost === "A" &&
+							pool.reclaimed?.host === "A" &&
+							(pool.work ?? []).length === 1 &&
+							(pool.work ?? []).every(
+								(row) =>
+									row.state === "completed" &&
+									(row.generation ?? 0) >= 2 &&
+									row.worker?.startsWith("A/") === true,
+							),
+						expected:
+							"the child began on n2's host, which was SIGKILLed holding it; it was claimed again and completed on n1's host, which replayed its completed first step",
+						actual: {
+							killed: poolKilled ?? null,
+							status: pool?.outcome?.status ?? null,
+							children: pooled,
+							first: pool?.first ?? null,
+							work: pool?.work ?? null,
+						},
+					},
+					{
+						name: "pooled-child-restored-with-the-recorded-tree",
+						passed:
+							sameTree(pool?.source, pool?.reclaimed) &&
+							publishedUnder(pool?.reclaimed?.cwd, pool?.restoreRoots?.A) &&
+							child?.finalCwd === pool?.reclaimed?.cwd &&
+							child?.finalHead === pool?.source?.head &&
+							sameFiles(child?.finalFiles, filesOf(pool?.source?.entries)),
+						expected:
+							"n1's host restored the root's tree byte for byte, with its commit, and the child finished there",
+						actual: { source: pool?.source ?? null, reclaimed: pool?.reclaimed ?? null },
+					},
+					{
+						// A host's `busy` count includes a worker whose claim request is in flight, which an idle host without a
+						// restore port has every time it asks for work and declines the bound child; the journal's claim count is what
+						// shows who took the child.
+						name: "pooled-bound-work-never-on-the-gitless-host",
+						passed:
+							pool?.hosts?.A?.restore === true &&
+							pool.hosts.B?.restore === true &&
+							pool.hosts.C?.restore === false &&
+							pool.hosts.C.git === "unavailable" &&
+							pool.heldOnGitless === 0 &&
+							setup?.C?.length === 0 &&
+							pooled.length > 0 &&
+							pooled.every((item) => item.firstHost !== "C" && item.finalHost !== "C") &&
+							(pool.work ?? []).length === 1 &&
+							(pool.work ?? []).every((row) => row.generation === 2 && row.worker?.startsWith("C/") !== true),
+						expected:
+							"n3's host has no Git and no restore port and never claimed the child, including while the reclaimed one waited: no marker or setup there, and the child's only claims were n2's host's and n1's host's (generation 2)",
+						actual: {
+							hosts: pool?.hosts ?? null,
+							heldOnGitless: pool?.heldOnGitless ?? null,
+							setup: setup ?? null,
+							work: pool?.work ?? null,
+						},
+					},
+					{
+						name: "pooled-blueprint-built-once-where-restored",
+						passed:
+							setup?.A?.length === 1 &&
+							typeof child?.finalCwd === "string" &&
+							child.finalCwd.startsWith(setup.A[0] ?? "\0") &&
+							publishedUnder(setup.A[0], pool?.restoreRoots?.A) &&
+							pool?.reclaimed?.setupRuns === 1 &&
+							setup.B?.length === 1 &&
+							typeof child.firstCwd === "string" &&
+							child.firstCwd.startsWith(setup.B[0] ?? "\0") &&
+							setup.C?.length === 0,
+						expected:
+							"each restoring host's blueprint build ran exactly once, in the worktree it restored for the child, before the child ran there; n2's host's build failed, and that neither failed the child nor removed its worktree, which the child ran in",
+						actual: setup ?? null,
+					},
+				]
+			: []),
 		{
 			name: "released-wake-partition-typed-before-restore",
 			passed:
@@ -411,23 +419,27 @@ export function checkResumeInvariants(evidence) {
 				"a real released background subagent woke on n2: its checkout was restored from its own snapshot with the recorded tree and commit, n1's path was mapped into it, and the subagent read n1's file through that path",
 			actual: { source: releasedSubagent ?? null, woken: wokenSubagent ?? null },
 		},
-		{
-			name: "fork-restores-the-boundary-snapshot",
-			passed:
-				fork?.status === "completed" &&
-				fork.gitless === true &&
-				fork.beforeOne === "zero\n" &&
-				fork.beforeTwo === "one\n" &&
-				fork.stateAfter === "two\n" &&
-				fork.clean === true &&
-				publishedUnder(fork.cwd, fork.restoreRoot) &&
-				forkKilled?.signal === "SIGKILL" &&
-				forkKilled.marker === true &&
-				forkKilled.clean === true,
-			expected:
-				"on the third node, killed once mid-restore, the retried fork's stage sees the state after stage one in a restored worktree",
-			actual: { killed: forkKilled ?? null, fork: fork ?? null },
-		},
+		...(legacyWorkflows
+			? [
+					{
+						name: "fork-restores-the-boundary-snapshot",
+						passed:
+							fork?.status === "completed" &&
+							fork.gitless === true &&
+							fork.beforeOne === "zero\n" &&
+							fork.beforeTwo === "one\n" &&
+							fork.stateAfter === "two\n" &&
+							fork.clean === true &&
+							publishedUnder(fork.cwd, fork.restoreRoot) &&
+							forkKilled?.signal === "SIGKILL" &&
+							forkKilled.marker === true &&
+							forkKilled.clean === true,
+						expected:
+							"on the third node, killed once mid-restore, the retried fork's stage sees the state after stage one in a restored worktree",
+						actual: { killed: forkKilled ?? null, fork: fork ?? null },
+					},
+				]
+			: []),
 		{
 			name: "shared-database-integrity",
 			passed: evidence.integrity?.length === 1 && evidence.integrity[0] === "ok",

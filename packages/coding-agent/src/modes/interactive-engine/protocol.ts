@@ -9,10 +9,9 @@ import type {
 	WidgetScrollRequest,
 	WidgetScrollState,
 } from "../../core/extensions/ui-types.js";
-import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
+import { parseHostSessionPickerRows } from "../../core/host-session-picker-rows.js";
 import type { KeyId } from "../../core/keybindings.ts";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
-import { parseHostSessionPickerRows } from "../../core/workflow-resume.ts";
 import type { ToolGroupFamily, ToolGroupRole } from "../interactive/components/tool-block.ts";
 
 /**
@@ -87,8 +86,6 @@ export type InteractiveEngineMessage =
 	| { type: "engine_heartbeat"; at: number }
 	| { type: "engine_activity_started"; activity: CallbackActivity }
 	| { type: "engine_activity_finished"; activityId: string }
-	/** Workflow activity the host reports as terminal program status. Roots carry no graph. */
-	| { type: "engine_workflow_activity"; frame: WorkflowActivityFrame }
 	| {
 			type: "engine_agent_panel_state";
 			total: number;
@@ -96,7 +93,6 @@ export type InteractiveEngineMessage =
 			needsInput: number;
 			shells?: number;
 			subagents?: number;
-			hiddenWorkflow?: boolean;
 	  }
 	/**
 	 * A deprecation warning the engine raised, for the host to show as it shows its own: once per message, and with
@@ -304,15 +300,7 @@ export type InteractiveEngineCommand =
 	| { type: "engine_input_form_cancel"; componentId: string }
 	| { type: "engine_input_form_error"; componentId: string; message: string };
 
-const ACTIVITY_KINDS: readonly CallbackActivityKind[] = [
-	"extension.hook",
-	"renderer",
-	"tool.execute",
-	"tool.prepare",
-	"workflow.ctx_tool",
-	"workflow.run",
-	"workflow.stage_adapter",
-];
+const ACTIVITY_KINDS: readonly CallbackActivityKind[] = ["extension.hook", "renderer", "tool.execute", "tool.prepare"];
 
 export function isJsonValue(value: object | boolean | null | number | string): value is JsonValue {
 	if (value === null || typeof value !== "object") return true;
@@ -347,80 +335,6 @@ function isCallbackActivity(value: JsonValue): value is JsonObject & CallbackAct
 		typeof value.name === "string" &&
 		typeof value.startedAt === "number"
 	);
-}
-
-const WORKFLOW_ACTIVITY_STATES: readonly string[] = ["working", "idle", "blocked"];
-const WORKFLOW_ACTIVITY_REASONS: readonly string[] = [
-	"executing",
-	"automatic_continuation",
-	"retrying",
-	"stopping",
-	"waiting",
-	"awaiting_input",
-	"manual_intervention",
-	"paused",
-	"quiescent",
-];
-
-const WORKFLOW_PROMPT_KINDS: readonly string[] = ["input", "confirm", "select", "editor", "custom"];
-const WORKFLOW_ENDED_STATUSES: readonly string[] = ["completed", "cancelled", "killed", "failed"];
-
-function parseWorkflowRoot(value: JsonValue): WorkflowRootActivity | undefined {
-	if (
-		!isJsonObject(value) ||
-		typeof value.rootRunId !== "string" ||
-		typeof value.ownerSessionId !== "string" ||
-		typeof value.state !== "string" ||
-		!WORKFLOW_ACTIVITY_STATES.includes(value.state) ||
-		typeof value.reason !== "string" ||
-		!WORKFLOW_ACTIVITY_REASONS.includes(value.reason) ||
-		typeof value.activeExecutionCount !== "number" ||
-		typeof value.actionableBlockCount !== "number" ||
-		typeof value.needsAttention !== "boolean" ||
-		(value.blockedPromptKind !== undefined &&
-			(typeof value.blockedPromptKind !== "string" || !WORKFLOW_PROMPT_KINDS.includes(value.blockedPromptKind))) ||
-		(value.endedStatus !== undefined &&
-			(typeof value.endedStatus !== "string" || !WORKFLOW_ENDED_STATUSES.includes(value.endedStatus)))
-	)
-		return undefined;
-	return {
-		rootRunId: value.rootRunId,
-		ownerSessionId: value.ownerSessionId,
-		state: value.state as WorkflowRootActivity["state"],
-		reason: value.reason as WorkflowRootActivity["reason"],
-		activeExecutionCount: value.activeExecutionCount,
-		actionableBlockCount: value.actionableBlockCount,
-		needsAttention: value.needsAttention,
-		...(value.blockedPromptKind !== undefined
-			? { blockedPromptKind: value.blockedPromptKind as WorkflowRootActivity["blockedPromptKind"] }
-			: {}),
-		...(value.endedStatus !== undefined
-			? { endedStatus: value.endedStatus as WorkflowRootActivity["endedStatus"] }
-			: {}),
-	};
-}
-
-function parseWorkflowActivityFrame(value: JsonValue | undefined): WorkflowActivityFrame | undefined {
-	if (value === undefined || !isJsonObject(value) || !isJsonObject(value.cursor)) return undefined;
-	const { epoch, revision } = value.cursor;
-	if (typeof epoch !== "string" || typeof revision !== "number") return undefined;
-	const cursor = { epoch, revision };
-	if (value.kind === "removed") {
-		return typeof value.rootRunId === "string" ? { kind: "removed", cursor, rootRunId: value.rootRunId } : undefined;
-	}
-	if (value.kind === "changed") {
-		const root = value.root === undefined ? undefined : parseWorkflowRoot(value.root);
-		return root ? { kind: "changed", cursor, root } : undefined;
-	}
-	if (value.kind !== "snapshot") return undefined;
-	if (value.availability === "recovering" || value.availability === "unavailable") {
-		return { kind: "snapshot", cursor, availability: value.availability };
-	}
-	if (value.availability !== "ready" || !Array.isArray(value.roots)) return undefined;
-	const roots = value.roots.map(parseWorkflowRoot);
-	return roots.every((root) => root !== undefined)
-		? { kind: "snapshot", cursor, availability: "ready", roots }
-		: undefined;
 }
 
 function parseEngineTerminalControl(value: JsonValue | undefined): EngineTerminalControl | undefined {
@@ -645,7 +559,6 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 					(typeof value.subagents === "number" &&
 						Number.isSafeInteger(value.subagents) &&
 						value.subagents >= 0)) &&
-				(value.hiddenWorkflow === undefined || typeof value.hiddenWorkflow === "boolean") &&
 				(value.agents === undefined ||
 					(typeof value.agents === "number" &&
 						Number.isSafeInteger(value.agents) &&
@@ -658,13 +571,8 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						needsInput: value.needsInput,
 						...(value.shells === undefined ? {} : { shells: value.shells }),
 						...(value.subagents === undefined ? {} : { subagents: value.subagents }),
-						...(value.hiddenWorkflow === undefined ? {} : { hiddenWorkflow: value.hiddenWorkflow }),
 					}
 				: undefined;
-		case "engine_workflow_activity": {
-			const frame = parseWorkflowActivityFrame(value.frame);
-			return frame ? { type: value.type, frame } : undefined;
-		}
 		case "engine_request_accepted":
 			return typeof value.requestId === "string" && typeof value.command === "string"
 				? { type: value.type, requestId: value.requestId, command: value.command }

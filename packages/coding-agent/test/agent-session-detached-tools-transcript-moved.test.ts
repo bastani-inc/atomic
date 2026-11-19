@@ -414,7 +414,7 @@ describe("input that would start a turn while a call is detached (#4580)", () =>
 				return fauxAssistantMessage("ci passed, child finished");
 			},
 		]);
-		const recovery = await reopened.session.startPendingRecovery("workflow_stage_resume");
+		const recovery = await reopened.session.startPendingRecovery("resume");
 		assert.equal(recovery.replayed, 1);
 		await reopened.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]);
 
@@ -519,7 +519,7 @@ describe("a call whose turn the transcript moved past (#4580)", () => {
 			assert.match(tool.aborts[0] ?? "", /^AbortError: .*moved past/);
 			const [record, ...rest] = (await log.records()).filter((entry) => entry.event === "stale-detached-call");
 			assert.equal(rest.length, 0);
-			assert.equal(record?.area, "workflow");
+			assert.equal(record?.area, "engine");
 			assert.equal(record?.data.toolCallId, "ci-1");
 			assert.equal(record?.data.toolName, "wait_for_ci");
 			assert.equal(record?.data.reason, "transcript-moved");

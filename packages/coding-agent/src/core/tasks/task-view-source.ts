@@ -5,6 +5,7 @@ import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
+import { type ChatPosition, chatPosition } from "../storage/session/chat-records.js";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { readTaskOutputTail } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
@@ -22,6 +23,12 @@ import {
 	watchTaskExtensionStatuses,
 } from "./supervisor.js";
 import { loadArchiveSnapshot } from "./task-archive-snapshot.ts";
+import {
+	bindTaskChatPage,
+	type CaptureTaskChatFile,
+	captureTaskChatFile,
+	chatPageRequest,
+} from "./task-chat-records.js";
 import { taskResumer } from "./task-resumer.ts";
 import { taskTranscriptPageWithCuts } from "./transcript.js";
 
@@ -62,6 +69,7 @@ type ArchiveReader = (
 		identifyRow?: (generation: string, row: number) => string | undefined,
 	) => PageResult | Promise<PageResult>,
 	loadSnapshot: typeof loadArchiveSnapshot,
+	captureFile?: CaptureTaskChatFile,
 ) => Promise<PageResult>;
 const archives = new WeakMap<
 	TaskTranscriptSource,
@@ -144,7 +152,7 @@ export interface TaskDetailText {
 
 /**
  * What the task inspector and a chat's task footer read and do: a session's own task store, or
- * the tasks of a session that runs in another process (a workflow stage on a local worker). It
+ * the tasks of a session that runs in another process. It
  * names tasks by id, so a view never holds a task lease.
  */
 export interface TaskViewSource {
@@ -514,31 +522,35 @@ function readArchivedPage(
 	cursor: string | undefined,
 	read: ArchiveReader,
 ): Promise<PageResult> {
-	return read((entries, storedRows, generation, identifyRow) => {
-		const records: { row: number; notice: NoticePosition }[] = [];
-		const page = transcriptView(session, taskId, entries, cursor, {
-			storedRows,
-			collect: (row, notice) => records.push({ row, notice }),
-		});
-		if (!records.length) return page;
-		return generation().then((key) => {
-			let missing = key === undefined;
-			if (key !== undefined) {
-				for (const { row, notice } of records) {
-					const record = identifyRow ? identifyRow(key, row) : key;
-					if (record === undefined) missing = true;
-					else notice.occurrence = `${record}:${row}`;
+	return read(
+		(entries, storedRows, generation, identifyRow) => {
+			const records: { row: number; notice: NoticePosition }[] = [];
+			const page = transcriptView(session, taskId, entries, cursor, {
+				storedRows,
+				collect: (row, notice) => records.push({ row, notice }),
+			});
+			if (!records.length) return page;
+			return generation().then((key) => {
+				let missing = key === undefined;
+				if (key !== undefined) {
+					for (const { row, notice } of records) {
+						const record = identifyRow ? identifyRow(key, row) : key;
+						if (record === undefined) missing = true;
+						else notice.occurrence = `${record}:${row}`;
+					}
 				}
-			}
-			if (missing) {
-				// Without a record identity keep both failures. An unsaved final answer still has its live identity.
-				const notices = fragmentsByResult.get(page)!.notices.filter((notice) => notice.occurrence !== "");
-				if (notices.length) bindTaskTranscriptFragments(page, { notices });
-				else fragmentsByResult.delete(page);
-			}
-			return page;
-		});
-	}, loadArchiveSnapshot);
+				if (missing) {
+					// Without a record identity keep both failures. An unsaved final answer still has its live identity.
+					const notices = fragmentsByResult.get(page)!.notices.filter((notice) => notice.occurrence !== "");
+					if (notices.length) bindTaskTranscriptFragments(page, { notices });
+					else fragmentsByResult.delete(page);
+				}
+				return page;
+			});
+		},
+		loadArchiveSnapshot,
+		chatPageRequest.getStore() ? captureTaskChatFile : undefined,
+	);
 }
 
 /** The page of a task's transcript ending before `cursor`, read from `entries`, its session's history. */
@@ -561,12 +573,35 @@ function transcriptView(
 	const itemIds = new Set(items.map((item) => item.id));
 	let notices: NoticePosition[] | undefined;
 	let repeats: Map<string, number> | undefined;
+	const displayRequest = chatPageRequest.getStore();
+	const scope =
+		displayRequest &&
+		(displayRequest.scope ?? (!archive ? session.chatSession?.sessionManager?.chatRecordScope?.() : undefined));
+	const owned =
+		scope && page.ok
+			? ownedRows(taskId, session.getSessionId(), entries, entryIds, cursor, intoLater, !page.value.nextCursor)
+			: undefined;
+	const screen = scope &&
+		owned && {
+			scope,
+			// The first page also owns the start of the conversation, which holds what was shown before any entry.
+			positions: new Map<string, number>(owned.root ? [["", -1]] : []),
+			entries: owned.prefix,
+			prefix: owned.prefix.length,
+		};
 	let nextMessageIndex = 0;
 	const messages = entries.flatMap<AgentMessage>((entry, row) => {
 		const id = entry.id;
-		if (!entryIds.has(id)) return [];
+		const shown = entryIds.has(id);
+		const context = shown && entry.type !== "message" ? sessionEntryToContextMessages(entry) : undefined;
+		if (screen && owned.owns(entry, row) && (!archive || row < archive.storedRows) && id !== intoLater) {
+			screen.entries.push(chatPosition(entry));
+			// Its lines follow the last row it draws; a row the page never draws keeps the place before it.
+			screen.positions.set(id, nextMessageIndex - 1 + (shown ? (context?.length ?? 1) : 0));
+		}
+		if (!shown) return [];
 		if (entry.type !== "message") {
-			const projected = sessionEntryToContextMessages(entry);
+			const projected = context ?? [];
 			nextMessageIndex += projected.length;
 			return projected;
 		}
@@ -612,5 +647,60 @@ function transcriptView(
 	};
 	const result = { ok: true, value } as const;
 	if (notices) bindTaskTranscriptFragments(result, { notices });
+	if (screen) bindTaskChatPage(result, screen);
 	return result;
+}
+
+/**
+ * The source rows whose display-only records a task page draws: the rows it shows, except the start of a reply that
+ * ends on the later page, and each row no page shows after one of them (on the first page, also before them all).
+ * A notice run that leads onto the page from an earlier one is kept as row-less positions, so an order edge saved at
+ * its first notice can be checked against the stored rows before that page is read.
+ */
+function ownedRows(
+	taskId: string,
+	sessionId: string,
+	entries: Entries,
+	entryIds: ReadonlySet<string>,
+	cursor: string | undefined,
+	intoLater: string | undefined,
+	root: boolean,
+): { root: boolean; prefix: ChatPosition[]; owns: (entry: Entries[number], row: number) => boolean } | undefined {
+	const first = entries.findIndex((entry) => entryIds.has(entry.id));
+	if (first < 0) return undefined;
+	const drawn = (entry: Entries[number]) => taskTranscriptPageWithCuts(taskId, sessionId, [entry], undefined).ok;
+	const from = root ? 0 : first;
+	let to = entries.length;
+	if (intoLater !== undefined) {
+		for (let row = first; row < entries.length; row++)
+			if (entries[row]!.id === intoLater) {
+				to = row;
+				break;
+			}
+	} else if (cursor !== undefined) {
+		let row = entries.length - 1;
+		while (row > first && !entryIds.has(entries[row]!.id)) row--;
+		for (row++; row < entries.length; row++)
+			if (drawn(entries[row]!)) {
+				to = row;
+				break;
+			}
+	}
+	const prefix: ChatPosition[] = [];
+	const start = chatPosition(entries[from]!);
+	if (!root && start.role !== "other") {
+		let parentId = start.parentId;
+		for (let row = from - 1; row >= 0; row--) {
+			const position = chatPosition(entries[row]!);
+			if (position.role !== "notice" || position.id !== parentId) break;
+			prefix.push(position);
+			parentId = position.parentId;
+		}
+		prefix.reverse();
+	}
+	return {
+		root,
+		prefix,
+		owns: (entry, row) => row >= from && row < to && (entryIds.has(entry.id) || !drawn(entry)),
+	};
 }

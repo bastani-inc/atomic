@@ -3,7 +3,7 @@ import { describe, test } from "vitest";
 import {
 	isRetryableModelFailure,
 	normalizeModelFailureSignal,
-} from "../../packages/workflows/src/runs/shared/model-fallback.js";
+} from "../../packages/coding-agent/src/core/model-fallback-failures.js";
 
 /**
  * Stream decompression failures must advance model fallback (#2553).

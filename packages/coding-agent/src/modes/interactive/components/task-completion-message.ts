@@ -98,6 +98,7 @@ function readCompletionNotice(details: unknown, captureName = false): TaskComple
 		...("model" in notice && typeof notice.model === "string" ? { model: notice.model } : {}),
 		...("thinking" in notice && typeof notice.thinking === "string" ? { thinking: notice.thinking } : {}),
 		...(line === undefined ? {} : { line }),
+		...("resumeId" in notice && typeof notice.resumeId === "string" ? { resumeId: notice.resumeId } : {}),
 	};
 	let savedName: string | undefined;
 	if (!line && parsed.status === "cancelled" && parsed.taskKind !== "command") {
@@ -292,7 +293,7 @@ function cleanPreview(value: string): string {
 /**
  * Finished-task notices in the transcript, each one notice line. A shell's line expands to the tail of its output; an
  * agent's line is followed by the first line of its result, and expands to the rest. Notices joined in one message
- * show one line each. The same component renders them in the main chat, a workflow stage's chat and a subagent's view.
+ * show one line each. The same component renders them in the main chat and a subagent's view.
  */
 const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
 	read: "Read",
@@ -306,7 +307,6 @@ const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
 	web_search: "WebSearch",
 	fetch_content: "Fetch",
 	subagent: "Agent",
-	workflow: "Workflow",
 	intercom: "Intercom",
 	contact_supervisor: "Supervisor",
 };
@@ -860,6 +860,17 @@ export class TaskCompletionMessage implements Component {
 		const taskId = notice.taskId as TaskId;
 		const contentWidth = Math.max(1, width - 6);
 		if (this.expanded) {
+			// Expanded, a resumable subagent's card names the id its resume call takes, under its line.
+			const head = [
+				...(line === undefined ? [] : [line]),
+				...(notice.resumeId === undefined
+					? []
+					: [
+							previewRow(
+								truncateToWidth(theme.fg("dim", `   resume id ${cleanPreview(notice.resumeId)}`), width, "…"),
+							),
+						]),
+			];
 			const transcript = this.ensureTranscriptLoaded(notice, spec.status);
 			if (transcript) {
 				const records = new ToolBlockRecords([
@@ -882,18 +893,18 @@ export class TaskCompletionMessage implements Component {
 				]);
 				const detailWidth = Math.max(1, width - 1);
 				return [
-					...(line === undefined ? [] : [line]),
+					...head,
 					...records.render(detailWidth).map((row) => previewRow(truncateToWidth(` ${row}`, width, "…"))),
 				];
 			}
-			if (!preview) return line === undefined ? [] : [line];
+			if (!preview) return head;
 			let markdown = this.expandedPreviews.get(notice);
 			if (!markdown) {
 				markdown = new ToolBlockMarkdown(preview, { color: (text) => theme.fg("muted", text) });
 				this.expandedPreviews.set(notice, markdown);
 			}
 			return [
-				...(line === undefined ? [] : [line]),
+				...head,
 				...markdown
 					.render(contentWidth)
 					.map((text, index) =>

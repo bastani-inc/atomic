@@ -180,11 +180,11 @@ function formatBudget(ms: number): string {
 function timeoutHint(details: SessionStartTimeoutDetails): string {
 	switch (details.phase) {
 		case "admission":
-			return "Its resource admission granted no session permit in time: free capacity in that admission, such as a workflow's session limit or memory floor, then retry.";
+			return "Its resource admission granted no session permit in time: free capacity in that admission, such as its session limit or memory floor, then retry.";
 		case "dispatch":
 			return "Its task was not dispatched in time: check the extensions that handle its input and before_agent_start, then retry.";
 		case "event-loop":
-			return `The process's event loop turned only ${details.eventLoop.turns} times, about ${Math.round(details.eventLoop.meanTurnMs)} ms each: reduce the work in this process, such as busy pooled workflow roots, then retry.`;
+			return `The process's event loop turned only ${details.eventLoop.turns} times, about ${Math.round(details.eventLoop.meanTurnMs)} ms each: reduce the work in this process, then retry.`;
 		case "setup":
 			return "Its session was still being set up: check its session store and extension startup, or raise sessionStartTimeoutMs, then retry.";
 	}

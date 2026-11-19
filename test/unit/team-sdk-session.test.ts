@@ -8,7 +8,7 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** createAgentSession composes the session's extension runtime before it returns. */
 const SESSION_CREATION_TIMEOUT_MS = 60_000;
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 let root: string;
 let agentDir: string;
@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 test(
-	"createAgentSession({ storage }) selects the session store and the workflow journal, and sessionStore and journal outrank it (#4320)",
+	"createAgentSession({ storage }) selects the session store, and sessionStore outranks it (#4320)",
 	async () => {
 		const storage = { path: join(root, "sdk-storage.sqlite") };
 		const { session } = await createAgentSession({
@@ -39,22 +39,18 @@ test(
 		});
 		try {
 			assert.equal(session.sessionManager.getSessionStore().descriptor.location, join(root, "sdk-storage.sqlite"));
-			assert.equal((session as unknown as { _workflowJournal: object })._workflowJournal, storage);
 		} finally {
 			await session.dispose();
 		}
-		const journal = { memory: true } as const;
 		const { session: explicit } = await createAgentSession({
 			cwd: join(root, "project"),
 			agentDir,
 			storage,
-			journal,
 			sessionStore: { kind: "sqlite", path: join(root, "explicit.sqlite") },
 			builtins: NO_BUILTINS,
 		});
 		try {
 			assert.equal(explicit.sessionManager.getSessionStore().descriptor.location, join(root, "explicit.sqlite"));
-			assert.equal((explicit as unknown as { _workflowJournal: object })._workflowJournal, journal);
 		} finally {
 			await explicit.dispose();
 		}
@@ -68,7 +64,6 @@ test(
 				plain.sessionManager.getSessionStore().descriptor.location,
 				join(agentDir, "workflows", "journal.sqlite"),
 			);
-			assert.equal((plain as unknown as { _workflowJournal?: object })._workflowJournal, undefined);
 		} finally {
 			await plain.dispose();
 		}

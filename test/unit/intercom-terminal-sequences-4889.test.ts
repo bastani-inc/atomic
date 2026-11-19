@@ -126,27 +126,10 @@ test("Intercom session list strips terminal sequences from peer names, cwd and m
 		cwd: hostile("/self/cwd"),
 		model: hostile("self-model"),
 	};
-	const stage = {
-		kind: "workflow-stage" as const,
-		runId: "run",
-		stageId: "stage",
-		stageName: hostile("stage-name"),
-		target: hostile("workflow:run/stage-target"),
-		lifecycle: "running" as const,
-		group: "group",
-	};
-	const overlay = new SessionListOverlay(theme, new KeybindingsManager(), current, [sender], () => {}, [stage]);
+	const overlay = new SessionListOverlay(theme, new KeybindingsManager(), current, [sender], () => {});
 	const output = await renderOnScreen(overlay);
 	assertNoPayloadSequences(output);
-	for (const visible of [
-		"peer-name",
-		"/peer/cwd",
-		"peer-model",
-		"/self/cwd",
-		"self-model",
-		"stage-name",
-		"stage-target",
-	]) {
+	for (const visible of ["peer-name", "/peer/cwd", "peer-model", "/self/cwd", "self-model"]) {
 		assert.ok(output.includes(visible), `visible text ${visible} is missing`);
 	}
 });

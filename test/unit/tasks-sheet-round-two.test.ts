@@ -2,10 +2,7 @@ import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
-import {
-	type AgentPanelItem,
-	AgentPanelSourceHub,
-} from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import type { AgentPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import type { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
@@ -22,8 +19,6 @@ import {
 	type TaskNavigationActions,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-navigation.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
-import { agentPanelBoardSource } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
@@ -74,7 +69,7 @@ function askQuestion(
 }
 
 function waitingRun(promptId: string, question: string): AgentPanelItem {
-	return { id: "run:ralph", kind: "workflow", state: "input", name: "ralph", task: "stage plan", question, promptId };
+	return { id: "run:ralph", kind: "agent", state: "input", name: "ralph", task: "stage plan", question, promptId };
 }
 
 test("a subagent waiting for input shows its question on its /tasks row (#5224)", async () => {
@@ -189,7 +184,7 @@ test("a message typed to a working subagent is not sent once the subagent starts
 	}
 });
 
-test("after a refused workflow reply, a second Enter does not send the old draft to the newer question (#5224)", async () => {
+test("after a refused extension reply, a second Enter does not send the old draft to the newer question (#5224)", async () => {
 	const fixture = taskFixture();
 	let item = waitingRun("p1", "Approve this plan?");
 	const listeners = new Set<() => void>();
@@ -244,7 +239,7 @@ test("/tasks rows show elapsed time as the agent panel does (#5224)", () => {
 				{
 					id: "run:a",
 					kind: "item",
-					item: { id: "run:a", kind: "workflow", state, name: "ralph", task: "plan", elapsedMs },
+					item: { id: "run:a", kind: "agent", state, name: "ralph", task: "plan", elapsedMs },
 				},
 				false,
 				100,
@@ -262,7 +257,7 @@ test("a /tasks row keeps its state and elapsed time at 40 columns (#5224)", () =
 			{
 				id: "run:a",
 				kind: "item",
-				item: { id: "run:a", kind: "workflow", state: "input", name: "ralph", task: "plan", elapsedMs: 180_000 },
+				item: { id: "run:a", kind: "agent", state: "input", name: "ralph", task: "plan", elapsedMs: 180_000 },
 			},
 			false,
 			39,
@@ -461,43 +456,6 @@ test("a shell's input page is a /tasks bottom sheet, not a full-screen frame (#5
 	}
 });
 
-test("a finished run dismissed from the /tasks sheet leaves the idle agent panel at once (#5224)", async () => {
-	// No periodic tick: dismissal itself must refresh the panel, including when that refresh is deferred.
-	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
-	vi.setSystemTime(1_800_000_000_000);
-	const hub = new AgentPanelSourceHub();
-	const item: AgentPanelItem = {
-		id: "run:old",
-		kind: "workflow",
-		state: "done",
-		name: "release",
-		task: "",
-		elapsedMs: 60_000,
-	};
-	hub.register({ items: () => [item], subscribe: () => () => {} });
-	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-	let widget: { render(width: number): string[] } | undefined;
-	const unmounted = Promise.withResolvers<void>();
-	const dispose = bindAgentPanel(session as never, {
-		setWidget(_key, factory) {
-			widget = typeof factory === "function" ? (factory({} as never, {} as never) as never) : undefined;
-			if (factory === undefined) unmounted.resolve();
-		},
-		requestRender() {},
-	});
-	const shown = () => plain(widget?.render(100) ?? []);
-	try {
-		assert.match(shown(), /release/);
-		agentPanelBoardSource(session as never).dismiss?.("run:old");
-		await unmounted.promise;
-		assert.doesNotMatch(shown(), /release/);
-	} finally {
-		dispose();
-		hub.dispose();
-		vi.useRealTimers();
-	}
-});
-
 test("the /tasks hint keeps its way out and help key, with one separator style, at 40 and 60 columns (#5224)", async () => {
 	const fixture = taskFixture();
 	const inspector = new TaskInspector(
@@ -506,7 +464,7 @@ test("the /tasks hint keeps its way out and help key, with one separator style, 
 		() => {},
 	);
 	inspector.setBoardSource({
-		items: () => [{ id: "run:a", kind: "workflow", state: "done", name: "release", task: "ship", elapsedMs: 60_000 }],
+		items: () => [{ id: "run:a", kind: "agent", state: "done", name: "release", task: "ship", elapsedMs: 60_000 }],
 		subscribe: () => () => {},
 	});
 	try {

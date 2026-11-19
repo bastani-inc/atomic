@@ -69,121 +69,11 @@ test("single-file builds give adapters the live host modules through virtual mod
 	loadAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
 });
 
-function openJournalAdapterWithBuiltHost(env: Record<string, string | undefined>): void {
-	const agentDir = makeTempDirectory("storage-workflows-host-module-");
-	const adapterDir = makeTempDirectory("storage-workflows-adapter-");
-	const adapterPath = join(adapterDir, "adapter.mjs");
-	writeFileSync(
-		adapterPath,
-		[
-			'import { MemoryRunJournal, SqlRunJournal, StaleLeaseError } from "@bastani/atomic/workflows";',
-			"export default {",
-			"\tatomicStorageAdapter: 1,",
-			"\tasync openRunJournal() {",
-			'\t\treturn Object.assign(new MemoryRunJournal({ adapter: "custom", location: ":memory:" }), {',
-			"\t\t\tSqlRunJournal,",
-			"\t\t\tStaleLeaseError,",
-			"\t\t});",
-			"\t},",
-			"};",
-			"",
-		].join("\n"),
-	);
-	try {
-		const result = spawnSyncCollect(
-			[
-				process.execPath,
-				"--input-type=module",
-				"-e",
-				`
-			import assert from 'node:assert/strict';
-			import * as workflows from '@bastani/atomic/workflows';
-			const journal = await workflows.resolveRunJournal({
-				agentDir: ${JSON.stringify(agentDir)},
-				journal: { adapter: ${JSON.stringify(adapterPath)} },
-			});
-			assert.ok(journal instanceof workflows.MemoryRunJournal);
-			assert.equal(journal.SqlRunJournal, workflows.SqlRunJournal);
-			assert.equal(journal.StaleLeaseError, workflows.StaleLeaseError);
-			await journal.close();
-		`,
-			],
-			{ cwd: join(moduleDir(import.meta.url), "../../packages/coding-agent"), env: { ...process.env, ...env } },
-		);
-		assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
-	} finally {
-		removeTempDirectory(agentDir);
-		removeTempDirectory(adapterDir);
-	}
-}
-
-test("journal adapters loaded by path share the running @bastani/atomic/workflows module (#3963)", () => {
-	openJournalAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: undefined });
-});
-
-test("single-file builds give journal adapters the live @bastani/atomic/workflows module (#3963)", () => {
-	openJournalAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
-});
-
-function openJournalAfterSessionsLoadWithBuiltHost(env: Record<string, string | undefined>): void {
-	const agentDir = makeTempDirectory("storage-shared-ts-adapter-");
-	const adapterPath = join(agentDir, "adapter.ts");
-	writeFileSync(
-		adapterPath,
-		[
-			"export default {",
-			"\tatomicStorageAdapter: 1 as const,",
-			"\tasync openRunJournal() {",
-			'\t\tconst workflows = await import("@bastani/atomic/workflows");',
-			'\t\treturn new workflows.MemoryRunJournal({ adapter: "custom", location: ":memory:" });',
-			"\t},",
-			"};",
-			"",
-		].join("\n"),
-	);
-	try {
-		const result = spawnSyncCollect(
-			[
-				process.execPath,
-				"--input-type=module",
-				"-e",
-				`
-			import assert from 'node:assert/strict';
-			import * as storage from '@bastani/atomic/storage';
-			import * as workflows from '@bastani/atomic/workflows';
-			const agentDir = ${JSON.stringify(agentDir)};
-			await storage.loadStorageAdapter('./adapter.ts', { agentDir, domain: 'sessions' });
-			const adapter = await storage.loadStorageAdapter(
-				'./adapter.ts',
-				{ agentDir, domain: 'journal' },
-				{ '@bastani/atomic/workflows': workflows },
-			);
-			const journal = await adapter.openRunJournal();
-			assert.ok(journal instanceof workflows.MemoryRunJournal);
-			await journal.close();
-		`,
-			],
-			{ cwd: join(moduleDir(import.meta.url), "../../packages/coding-agent"), env: { ...process.env, ...env } },
-		);
-		assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
-	} finally {
-		removeTempDirectory(agentDir);
-	}
-}
-
-test("a .ts adapter loaded for sessions first still gets the journal's host modules (#3973)", () => {
-	openJournalAfterSessionsLoadWithBuiltHost({ ATOMIC_BUNDLED_BUILD: undefined });
-});
-
-test("single-file builds give a .ts adapter shared with sessions the journal's host modules (#3973)", () => {
-	openJournalAfterSessionsLoadWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
-});
-
-/** A `"type": "module"` adapter package whose own `.js` and `.mjs` files import `@bastani/atomic/workflows`. */
+/** A `"type": "module"` adapter package whose own `.js` and `.mjs` files import `@bastani/atomic/storage`. */
 async function writeModuleTypeAdapter(adapterDir: string): Promise<void> {
 	const which = [
-		'import * as workflows from "@bastani/atomic/workflows";',
-		'export const which = () => workflows.MARK ?? "node-resolved";',
+		'import * as storage from "@bastani/atomic/storage";',
+		'export const which = () => storage.MARK ?? "node-resolved";',
 		"",
 	].join("\n");
 	await writeFileEnsuringDir(join(adapterDir, "package.json"), JSON.stringify({ type: "module" }));
@@ -194,7 +84,7 @@ async function writeModuleTypeAdapter(adapterDir: string): Promise<void> {
 			"export default {",
 			"\tatomicStorageAdapter: 1,",
 			"\twhich,",
-			'\tasync openRunJournal() { return (await import("./inner.js")).which(); },',
+			'\tasync fromInner() { return (await import("./inner.js")).which(); },',
 			'\tasync nested() { return import("./nested.js"); },',
 			"};",
 			"",
@@ -209,7 +99,7 @@ async function writeModuleTypeAdapter(adapterDir: string): Promise<void> {
 	);
 }
 
-test("modules a type:module adapter imports get the host's @bastani/atomic/workflows, not the npm copy (#3972)", async () => {
+test("modules a type:module adapter imports get the host's @bastani/atomic/storage, not the npm copy (#3972)", async () => {
 	const agentDir = makeTempDirectory("storage-module-type-adapter-");
 	const adapterDir = join(agentDir, "adapter");
 	await writeModuleTypeAdapter(adapterDir);
@@ -217,20 +107,20 @@ test("modules a type:module adapter imports get the host's @bastani/atomic/workf
 	const npmCopy = join(adapterDir, "node_modules", "@bastani", "atomic");
 	await writeFileEnsuringDir(
 		join(npmCopy, "package.json"),
-		JSON.stringify({ name: "@bastani/atomic", type: "module", exports: { "./workflows": "./workflows.js" } }),
+		JSON.stringify({ name: "@bastani/atomic", type: "module", exports: { "./storage": "./storage.js" } }),
 	);
-	await writeFileEnsuringDir(join(npmCopy, "workflows.js"), "export const MARK = undefined;\n");
+	await writeFileEnsuringDir(join(npmCopy, "storage.js"), "export const MARK = undefined;\n");
 	try {
 		const adapter = (await loadStorageAdapter(
 			join(adapterDir, "adapter.js"),
-			{ agentDir, domain: "journal" },
-			{ "@bastani/atomic/workflows": { MARK: "host" } },
+			{ agentDir, domain: "sessions" },
+			{ "@bastani/atomic/storage": { MARK: "host" } },
 		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & {
 			readonly which: () => string;
-			openRunJournal(): Promise<string>;
+			fromInner(): Promise<string>;
 			nested(): Promise<{ readonly which: () => string; readonly mjs: () => string }>;
 		};
-		assert.equal(await adapter.openRunJournal(), "host");
+		assert.equal(await adapter.fromInner(), "host");
 		assert.equal(adapter.which(), "host");
 		const nested = await adapter.nested();
 		assert.equal(nested.mjs(), "host");
@@ -239,6 +129,9 @@ test("modules a type:module adapter imports get the host's @bastani/atomic/workf
 		removeTempDirectory(agentDir);
 	}
 });
+
+// The three type:module adapters below still export `openRunJournal`, a hook of earlier releases that the loader accepts
+// and no store calls; each test calls it itself to run the adapter's own imports.
 
 test("concurrent imports of a type:module helper both wait for its top-level await (#3972)", async () => {
 	const agentDir = makeTempDirectory("storage-module-type-concurrent-");
@@ -263,8 +156,8 @@ test("concurrent imports of a type:module helper both wait for its top-level awa
 	try {
 		const adapter = (await loadStorageAdapter(
 			join(adapterDir, "adapter.js"),
-			{ agentDir, domain: "journal" },
-			{ "@bastani/atomic/workflows": {} },
+			{ agentDir, domain: "sessions" },
+			{ "@bastani/atomic/storage": {} },
 		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
 		assert.deepEqual(await Promise.all([adapter.openRunJournal(), adapter.openRunJournal()]), ["run", "run"]);
 	} finally {
@@ -301,8 +194,8 @@ test("type:module adapter modules that import each other load without waiting on
 	try {
 		const adapter = (await loadStorageAdapter(
 			join(adapterDir, "adapter.js"),
-			{ agentDir, domain: "journal" },
-			{ "@bastani/atomic/workflows": {} },
+			{ agentDir, domain: "sessions" },
+			{ "@bastani/atomic/storage": {} },
 		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
 		assert.equal(await adapter.openRunJournal(), "done");
 	} finally {
@@ -341,8 +234,8 @@ test("a type:module helper and a TypeScript module that import each other load w
 	try {
 		const adapter = (await loadStorageAdapter(
 			join(adapterDir, "adapter.js"),
-			{ agentDir, domain: "journal" },
-			{ "@bastani/atomic/workflows": {} },
+			{ agentDir, domain: "sessions" },
+			{ "@bastani/atomic/storage": {} },
 		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
 		assert.equal(await adapter.openRunJournal(), "done");
 	} finally {
@@ -352,7 +245,7 @@ test("a type:module helper and a TypeScript module that import each other load w
 
 /**
  * The type:module adapter loaded by the built `@bastani/atomic/storage`, with a resolvable installed copy of Atomic
- * beside it whose workflows module lacks the host's `MARK`.
+ * beside it whose storage module lacks the host's `MARK`.
  */
 async function loadModuleTypeAdapterWithBuiltHost(env: Record<string, string | undefined>): Promise<void> {
 	const agentDir = makeTempDirectory("storage-module-type-built-host-");
@@ -374,13 +267,12 @@ async function loadModuleTypeAdapterWithBuiltHost(env: Record<string, string | u
 				`
 			import assert from 'node:assert/strict';
 			import * as storage from '@bastani/atomic/storage';
-			import * as workflows from '@bastani/atomic/workflows';
 			const adapter = await storage.loadStorageAdapter(
 				${JSON.stringify(join(adapterDir, "adapter.js"))},
-				{ agentDir: ${JSON.stringify(agentDir)}, domain: 'journal' },
-				{ '@bastani/atomic/workflows': { ...workflows, MARK: 'host' } },
+				{ agentDir: ${JSON.stringify(agentDir)}, domain: 'sessions' },
+				{ '@bastani/atomic/storage': { ...storage, MARK: 'host' } },
 			);
-			assert.equal(await adapter.openRunJournal(), 'host');
+			assert.equal(await adapter.fromInner(), 'host');
 			assert.equal(adapter.which(), 'host');
 			const nested = await adapter.nested();
 			assert.equal(nested.mjs(), 'host');
@@ -395,11 +287,11 @@ async function loadModuleTypeAdapterWithBuiltHost(env: Record<string, string | u
 	}
 }
 
-test("built package hosts give a type:module adapter's nested modules the host workflows module (#3972)", async () => {
+test("built package hosts give a type:module adapter's nested modules the host storage module (#3972)", async () => {
 	await loadModuleTypeAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: undefined });
 });
 
-test("single-file builds give a type:module adapter's nested modules the host workflows module (#3972)", async () => {
+test("single-file builds give a type:module adapter's nested modules the host storage module (#3972)", async () => {
 	await loadModuleTypeAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
 });
 

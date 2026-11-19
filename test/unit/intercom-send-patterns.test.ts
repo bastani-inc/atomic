@@ -543,44 +543,42 @@ describe("intercom send to name patterns and subagents (#4752)", () => {
 	);
 
 	test(
-		"a workflow-stage pattern still queues one sticky send through its run's owner (#4752)",
+		"a workflow-stage target, pattern or not, gets the answer an unknown name or pattern gets, and sends nothing (Atomic 0.10.0 removed workflows)",
 		async () => {
 			const runId = randomUUID();
-			const invocationGroup = `workflow:${runId}`;
-			const capability = `capability-${runId}`;
-			const owner = await connect("workflow-owner", { group: invocationGroup });
-			owner.registerPendingStageRoute(runId, invocationGroup, capability, [
-				{
-					stageId: "reviewer",
-					stageName: "reviewer",
-					target: `workflow:${runId}/reviewer`,
-					lifecycle: "pending",
-					routeEligible: true,
-					group: invocationGroup,
-				},
-			]);
-			await owner.listSessions();
-			const routed: string[] = [];
-			owner.on("pending_stage_message", (request: { requestId: string; target: string }) => {
-				routed.push(request.target);
-				owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
-			});
-			const sender = await connect("workflow-sender");
-			await sender.joinGroup(invocationGroup);
-			const tool = registerTool(sender);
-
-			const result = await tool.execute(
-				"workflow",
-				{ action: "send", to: `workflow:${runId}/**`, message: "broadcast" },
-				undefined,
-				undefined,
-				contextFor("workflow-host"),
+			const member = await connect("workflow-member", { group: `workflow:${runId}` });
+			const inbox: string[] = [];
+			member.on("message", (_from: unknown, message: { content: { text: string } }) =>
+				inbox.push(message.content.text),
 			);
+			const sender = await connect("workflow-sender");
+			const tool = registerTool(sender);
+			const send = (to: string) =>
+				tool.execute(
+					"workflow",
+					{ action: "send", to, message: "broadcast" },
+					undefined,
+					undefined,
+					contextFor("workflow-host"),
+				);
+			/** The result with its target written as `<target>` and message ids as `<id>`, which differ between calls. */
+			const normalized = async (to: string) =>
+				JSON.parse(
+					JSON.stringify(await send(to))
+						.split(to)
+						.join("<target>")
+						.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "<id>"),
+				);
 
-			assert.equal(result.isError, false, text(result));
-			assert.equal(result.details?.queued, true);
-			assert.match(text(result), new RegExp(`Message queued for workflow:${runId}/\\*\\*`));
-			assert.deepEqual(routed, [`workflow:${runId}/**`], "the owner routes the pattern once, not per session");
+			for (const [to, unknown] of [
+				[`workflow:${runId}/**`, `no-such-run-${runId}/**`],
+				[`workflow:${runId}/reviewer`, `no-such-run-${runId}-reviewer`],
+			] as const) {
+				const viaPath = await normalized(to);
+				assert.equal(viaPath.isError, true, to);
+				assert.deepEqual(viaPath, await normalized(unknown), to);
+			}
+			assert.deepEqual(inbox, []);
 		},
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);

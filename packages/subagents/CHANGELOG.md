@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+- Workflow stages no longer launch, hold, or resume subagents. Instead of nesting delegation through stages, launch children side by side from the parent session, directly or with codemode. Wait for a child by its task id and resume it by its child id. Reopening the parent session still restores its unfinished children; records left by former workflow stages are not resumed.
 - A managed worktree child's terminal report now means Atomic has finished using its directory. Extensions that unblock Git filters or pause reservations must listen for `subagent:finishing` instead of waiting for the terminal report. Atomic's cleanup Git commands set `ATOMIC_SUBAGENT_WORKTREE_PHASE=finishing`. A filter that waits for terminal without switching can still stall; the tool reports pending cleanup, not a finished task ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 
 ### Added
@@ -11,12 +12,13 @@
 - Codemode scripts can launch single or parallel subagents, get task IDs immediately, observe or control their session's children, and resume a child from its saved session. Scripts can inspect agent definitions and the configured model catalog; creating or changing definitions still requires a direct call.
 - `/skill:workflow-files` uses `skill-creator` to convert an earlier workflow into a reusable skill, with its checks in `scripts/` and its dependencies and approvals in `SKILL.md`. It leaves the old file unchanged and never overwrites an existing skill.
 
+### Changed
+
+- The `wait` and `status` output of a subagent that completed or failed names the call that continues it, after its `Output of <task-id> (…):` header. A codemode script's settled `wait` also returns the child's `childId`, and a `resumeCall` when the child completed, failed, or was paused or quit, like the one `status` returns.
+
 ### Fixed
 
 - A delayed wake refusal no longer shows `hold-failed` when Intercom confirms that reconnect restored the same released subagent. A child whose hold was dropped still reports the failure, as do older brokers that cannot verify the hold ([#5641](https://github.com/bastani-inc/atomic/issues/5641)).
-
-### Fixed
-
 - Temporary worktree children now report completion, pause, or quit after cleanup rather than while Atomic still has the directory open. The reply explains when a sibling keeps the batch open or cleanup continues in the background; Esc still ends the wait immediately ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 - When an SDK session without a task host batches several subagent calls, each caller now receives only its own children’s answers, even if a child used a fallback model or its parent cancelled it. Previously each caller could receive the whole batch’s text ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 

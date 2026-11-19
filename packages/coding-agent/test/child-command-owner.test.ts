@@ -36,7 +36,7 @@ async function parentSession(): Promise<{ session: AgentSession; owner: ChildCom
 		agentDir: join(cwd, "agent"),
 		sessionManager: SessionManager.inMemory(cwd),
 		settingsManager: SettingsManager.inMemory(),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	cleanups.push(async () => {
 		await session.dispose();

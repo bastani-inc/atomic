@@ -18,6 +18,7 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import type { SourceInfo } from "../src/core/source-info.js";
 import { buildToolStatusReport, formatToolStatus, type ToolStatusReport } from "../src/core/tool-status.js";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
+import { formatUnavailableToolsNotice } from "../src/modes/interactive/interactive-unavailable-tools.js";
 import "../src/modes/interactive/interactive-slash-commands.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
@@ -53,7 +54,7 @@ test.each([
 			services,
 			sessionManager: SessionManager.inMemory(cwd),
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 			tools,
 		});
 		try {
@@ -84,7 +85,7 @@ async function withSession<T>(
 		cwd,
 		agentDir: join(cwd, "agent"),
 		model: getModel("anthropic", "claude-sonnet-4-5")!,
-		builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+		builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 		settingsManager: SettingsManager.inMemory(),
 		sessionManager: SessionManager.inMemory(cwd),
 		...options,
@@ -156,6 +157,32 @@ test("tool status explains active, opt-in, unselected, and missing tools", async
 			assert.match(text, /^Missing \(1\)$/m);
 		},
 	);
+});
+
+test.each([
+	{ selectedBy: "the --tools allowlist", options: (name: string) => ({ tools: ["read", name] }) },
+	{
+		selectedBy: "a defaultTools addition",
+		options: (name: string) => ({ settingsManager: SettingsManager.inMemory({ defaultTools: [`+${name}`] }) }),
+	},
+	{
+		selectedBy: "a defaultTools list",
+		options: (name: string) => ({ settingsManager: SettingsManager.inMemory({ defaultTools: ["read", name] }) }),
+	},
+])("the removed workflow tool selected by $selectedBy is reported like any unknown tool name", async ({ options }) => {
+	const observe = (name: string) =>
+		withSession(options(name), async (session) => {
+			const report = session.getToolStatus();
+			return { notice: formatUnavailableToolsNotice(report), tools: formatToolStatus(report) };
+		});
+	const removed = await observe("workflow");
+	const unknown = await observe("foo");
+
+	assert.match(removed.notice ?? "", /available right now: workflow\./);
+	assert.deepEqual(removed, {
+		notice: unknown.notice?.replaceAll("foo", "workflow"),
+		tools: unknown.tools.replaceAll("foo", "workflow"),
+	});
 });
 
 test("tool status reports allowlisted, excluded, and unregistered names", async () => {

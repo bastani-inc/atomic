@@ -9,15 +9,9 @@ import {
 import { taskClocksFor } from "../../packages/coding-agent/src/core/tasks/live-elapsed.ts";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.ts";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.ts";
-import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.ts";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { agentPanelRows } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
-import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
-import { snapshotStageTasks } from "../../packages/workflows/src/workers/stage-watch-tasks.js";
 import { taskFixture } from "../helpers/task-projection.ts";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
@@ -30,22 +24,6 @@ afterEach(() => {
 	setKeybindings(previousKeys);
 });
 
-const stage = (id: string, status: StageSnapshot["status"]): StageSnapshot => ({
-	id,
-	name: id,
-	status,
-	parentIds: [],
-	toolEvents: [],
-});
-const workflowRun = (id: string): RunSnapshot => ({
-	id,
-	name: id,
-	inputs: {},
-	status: "running",
-	startedAt: 1_000,
-	toolNodes: [],
-	stages: [stage("review", "running")],
-});
 const runningAgent: AgentPanelItem = {
 	id: "ext:live",
 	kind: "agent",
@@ -55,37 +33,6 @@ const runningAgent: AgentPanelItem = {
 };
 
 /** A panel whose rows are a workflow store's runs and, while `agentRuns` is true, a running subagent. */
-function workflowPanel() {
-	const store = createStore();
-	let agentRuns = false;
-	let notify = () => {};
-	const hub = new AgentPanelSourceHub();
-	hub.register({
-		items: () => [
-			...panelItemsFromSnapshot(store.graphSnapshot(), 10_000, store),
-			...(agentRuns ? [runningAgent] : []),
-		],
-		subscribe: (listener) => {
-			notify = listener;
-			return () => {};
-		},
-	});
-	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-	return {
-		store,
-		setAgentRunning(running: boolean) {
-			agentRuns = running;
-			notify();
-		},
-		changed: () => notify(),
-		items: () => [
-			...panelItemsFromSnapshot(store.graphSnapshot(), 10_000, store),
-			...(agentRuns ? [runningAgent] : []),
-		],
-		ids: () => agentPanelRows(session).map((row) => row.id),
-	};
-}
-
 describe("a row that runs again before the panel updates is listed again while work runs (#5504)", () => {
 	test("an interrupted subagent resumed and interrupted again between two updates (#5504)", async () => {
 		const fixture = taskFixture();
@@ -124,29 +71,6 @@ describe("a row that runs again before the panel updates is listed again while w
 		}
 	});
 
-	test("a worker stage footer sees a subagent interrupted again between snapshots (#5567)", async () => {
-		const fixture = taskFixture();
-		try {
-			await fixture.start("interrupted");
-			const child = fixture.store.tasks[0]!.ref.taskId;
-			const worker = ownerTaskViewSource(fixture.store);
-			const root = new PooledStageTaskSource(async () => undefined);
-			const paint = () => {
-				root.apply(structuredClone(snapshotStageTasks(worker)));
-				return renderTaskFooter(root, 120).join("\n");
-			};
-			fixture.store.setTurnInterrupted(child, true);
-			assert.equal(paint(), "");
-			await fixture.start("unrelated");
-			assert.doesNotMatch(paint(), /interrupted/);
-			fixture.store.setTurnInterrupted(child, false);
-			fixture.store.setTurnInterrupted(child, true);
-			assert.match(paint(), /interrupted/);
-		} finally {
-			await fixture.dispose();
-		}
-	});
-
 	test("an interrupted subagent that left and is then stopped without running stays out (#5504)", async () => {
 		const fixture = taskFixture();
 		try {
@@ -179,100 +103,6 @@ describe("a row that runs again before the panel updates is listed again while w
 		}
 	});
 
-	test("a paused workflow run resumed and paused again between two updates (#5504)", () => {
-		const panel = workflowPanel();
-		panel.store.recordRunStart(workflowRun("w"));
-		panel.store.recordRunPaused("w", 2_000);
-		panel.changed();
-		assert.deepEqual(panel.ids(), [], "nothing runs: the paused run leaves");
-
-		panel.setAgentRunning(true);
-		assert.deepEqual(panel.ids(), ["ext:live"], "new work does not bring it back");
-
-		// Resumed, then paused again before the panel updates.
-		panel.store.recordRunResumed("w", 3_000);
-		panel.store.recordRunPaused("w", 3_001);
-		panel.changed();
-		assert.deepEqual(new Set(panel.ids()), new Set(["ext:live", "run:w"]), "it ran again, so it is listed again");
-	});
-
-	test("a blocked workflow run that runs and blocks again between two updates (#5504)", () => {
-		const panel = workflowPanel();
-		const blocked = (blockedAt: number) =>
-			panel.store.recordRunBlocked("w", "stage review failed", {
-				failureKind: "provider",
-				failureRecoverability: "recoverable",
-				failureDisposition: "active_blocked",
-				resumable: true,
-				blockedAt,
-			});
-		panel.store.recordRunStart(workflowRun("w"));
-		blocked(2_000);
-		panel.changed();
-		assert.deepEqual(panel.ids(), [], "nothing runs: the blocked run leaves");
-
-		panel.setAgentRunning(true);
-		assert.deepEqual(panel.ids(), ["ext:live"], "new work does not bring it back");
-
-		blocked(3_000);
-		panel.changed();
-		assert.deepEqual(new Set(panel.ids()), new Set(["ext:live", "run:w"]), "it ran again, so it is listed again");
-	});
-
-	test("a restored workflow that runs and blocks again in the same millisecond reappears in both panels (#5567)", () => {
-		const panel = workflowPanel();
-		const model = new AgentPanelModel();
-		const rows = () => {
-			panel.changed();
-			return [
-				panel.ids().sort(),
-				model
-					.rows(panel.items())
-					.map((item) => item.id)
-					.sort(),
-			];
-		};
-		const block = () =>
-			panel.store.recordRunBlocked("w", "provider unavailable", {
-				failureKind: "provider",
-				failureRecoverability: "recoverable",
-				failureDisposition: "active_blocked",
-				resumable: true,
-				blockedAt: 2_000,
-			});
-		panel.store.recordRunStart(workflowRun("w"));
-		block();
-		assert.deepEqual(rows(), [[], []]);
-		panel.setAgentRunning(true);
-		const snapshot = structuredClone(panel.store.run("w")!);
-		panel.store.clear();
-		panel.store.recordRunStart(snapshot);
-		assert.deepEqual(rows(), [["ext:live"], ["ext:live"]], "restoring the same attempt is not a resume");
-		const first = Number(panel.items()[0]!.runGeneration);
-		panel.store.recordRunStart(workflowRun("w"));
-		block();
-		assert.deepEqual(rows(), [
-			["ext:live", "run:w"],
-			["ext:live", "run:w"],
-		]);
-		assert.ok(Number(panel.items()[0]!.runGeneration) > first);
-	});
-
-	test("restoring an earlier snapshot cannot reuse a later attempt's generation (#5567)", () => {
-		const panel = workflowPanel();
-		const pause = () => panel.store.recordRunPaused("w", 2000);
-		panel.store.recordRunStart(workflowRun("w"));
-		pause();
-		const earlier = structuredClone(panel.store.run("w")!);
-		panel.store.recordRunResumed("w", 2000);
-		pause();
-		const latest = Number(panel.items()[0]!.runGeneration);
-		panel.store.recordRunStart(earlier);
-		panel.store.recordRunResumed("w", 2000);
-		pause();
-		assert.ok(Number(panel.items()[0]!.runGeneration) > latest);
-	});
-
 	test("an extension's stopped row with a new run identity is listed again while work runs (#5504)", () => {
 		const stopped = (runGeneration: string): AgentPanelItem => ({
 			id: "ext:job",
@@ -303,19 +133,5 @@ describe("a row that runs again before the panel updates is listed again while w
 		assert.deepEqual(ids(), ["ext:live"], "the same run: still out");
 		set([stopped("2"), runningAgent]);
 		assert.deepEqual(new Set(ids()), new Set(["ext:job", "ext:live"]), "a new run: listed again");
-	});
-
-	test("the panel model agrees for a paused run resumed and paused again between two updates (#5504)", () => {
-		const panel = workflowPanel();
-		const model = new AgentPanelModel(() => 10_000);
-		const modelIds = () => model.rows(panel.items()).map((row) => row.id);
-		panel.store.recordRunStart(workflowRun("w"));
-		panel.store.recordRunPaused("w", 2_000);
-		assert.deepEqual(modelIds(), []);
-		panel.setAgentRunning(true);
-		assert.deepEqual(modelIds(), ["ext:live"]);
-		panel.store.recordRunResumed("w", 3_000);
-		panel.store.recordRunPaused("w", 3_001);
-		assert.deepEqual(new Set(modelIds()), new Set(["ext:live", "run:w"]));
 	});
 });

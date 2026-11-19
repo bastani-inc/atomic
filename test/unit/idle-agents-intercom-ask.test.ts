@@ -74,7 +74,7 @@ test(
 		);
 		const sink = createSubagentChildRecordSink(
 			{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
-			{ sessionManager: owner, orchestrationContext: undefined },
+			{ sessionManager: owner },
 		);
 		const launch = async (index: number) => {
 			const child = await SessionManager.create(new MemorySessionStore(), env.root);
@@ -147,7 +147,7 @@ test(
 					getChildSessionOptions: (options) => ({
 						...resolver(options),
 						customTools: [askTool],
-						builtins: { intercom: false, workflows: false, subagents: false, mcp: false, "web-access": false },
+						builtins: { intercom: false, subagents: false, mcp: false, "web-access": false },
 					}),
 				},
 				wakeDispatcher: dispatcher,

@@ -114,7 +114,7 @@ describe("the pace of a background collection (#4355)", () => {
 			Array.from({ length: SNAPSHOT_COLLECTION_DELETE_BATCH * 2 + 1 }, (_, index) => textBlob(`orphan ${index}`)),
 		);
 		await ageBlobs(other.database, "snapshot_blobs", 10_000);
-		await other.journal.close();
+
 		await other.sessions.close();
 		await dropSnapshotIndex(other.database);
 		try {
@@ -213,7 +213,7 @@ describe("a background collection stops when it is aborted (#4355)", () => {
 		for (let index = 0; index < 20; index++) entries.push(messageEntry(`entry ${index}`, entries.at(-1)!.id));
 		await createSession(other.sessions, "session-1", entries);
 		await other.sessions.close();
-		await other.journal.close();
+
 		await dropSnapshotIndex(other.database);
 		const controller = new AbortController();
 		let links = 0;

@@ -223,7 +223,7 @@ for (const [decisionModel, classified] of [
 					settingsManager: settings,
 					sessionManager: SessionManager.inMemory(cwd),
 					resourceLoader: loader,
-					builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: true },
+					builtins: { subagents: false, mcp: false, "web-access": false, intercom: true },
 					customTools: [tool],
 					tools: ["structured_output"],
 				});

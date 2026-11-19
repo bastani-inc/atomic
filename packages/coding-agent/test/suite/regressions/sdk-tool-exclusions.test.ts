@@ -75,7 +75,7 @@ describe("SDK tool exclusions", () => {
 			cwd: tempDir,
 			agentDir,
 			// #3105: this fixture isolates coding-tool exclusions and Intercom.
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, "web-access": false },
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager,
@@ -189,16 +189,16 @@ describe("SDK tool exclusions", () => {
 		await session.dispose();
 	});
 
-	it("excludes workflow from a real workflow-stage-style tool registry", async () => {
+	it("excludes a named tool from the session registry", async () => {
 		const session = await createSession({
-			extensionToolName: "workflow",
-			excludedTools: ["workflow"],
+			extensionToolName: "fixture_tool",
+			excludedTools: ["fixture_tool"],
 		});
 
 		await session.bindExtensions({});
 
-		expect(session.getActiveToolNames()).not.toContain("workflow");
-		expect(session.getToolDefinition("workflow")).toBeUndefined();
+		expect(session.getActiveToolNames()).not.toContain("fixture_tool");
+		expect(session.getToolDefinition("fixture_tool")).toBeUndefined();
 
 		await session.dispose();
 	});
@@ -299,9 +299,9 @@ describe("SDK tool exclusions", () => {
 		await session.dispose();
 	});
 
-	it("main CLI print/json exclusion removes ask_user_question while keeping workflow", async () => {
+	it("main CLI print/json exclusion removes ask_user_question while keeping another extension tool", async () => {
 		const session = await createSession({
-			extensionToolName: "workflow",
+			extensionToolName: "fixture_tool",
 			excludedTools: resolveExcludedToolsForAppMode("print", undefined),
 		});
 
@@ -312,8 +312,8 @@ describe("SDK tool exclusions", () => {
 
 		expect(allToolNames).not.toContain("ask_user_question");
 		expect(activeToolNames).not.toContain("ask_user_question");
-		expect(activeToolNames).toContain("workflow");
-		expect(session.getToolDefinition("workflow")).toBeDefined();
+		expect(activeToolNames).toContain("fixture_tool");
+		expect(session.getToolDefinition("fixture_tool")).toBeDefined();
 		expect(session.systemPrompt).not.toContain("ask_user_question");
 
 		await session.dispose();
@@ -322,8 +322,8 @@ describe("SDK tool exclusions", () => {
 	it("main CLI app-mode exclusion adds ask_user_question only for print/json", () => {
 		expect(resolveExcludedToolsForAppMode("print", undefined)).toEqual(["ask_user_question"]);
 		expect(resolveExcludedToolsForAppMode("json", ["custom_tool"])).toEqual(["custom_tool", "ask_user_question"]);
-		expect(resolveExcludedToolsForAppMode("rpc", ["workflow"])).toEqual(["workflow"]);
-		expect(resolveExcludedToolsForAppMode("interactive", ["workflow"])).toEqual(["workflow"]);
+		expect(resolveExcludedToolsForAppMode("rpc", ["fixture_tool"])).toEqual(["fixture_tool"]);
+		expect(resolveExcludedToolsForAppMode("interactive", ["fixture_tool"])).toEqual(["fixture_tool"]);
 		expect(resolveExcludedToolsForAppMode("interactive", undefined)).toBeUndefined();
 	});
 

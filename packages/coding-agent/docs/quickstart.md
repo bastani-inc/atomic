@@ -2,7 +2,7 @@
 
 **Outcome:** Atomic is installed, authenticated, and has completed one useful task in your repository.
 
-Follow the steps below to install Atomic and complete your first useful session. Atomic runs coding-agent loops with stages, tools, artifacts, verification, subagents, review gates, checkpoints, and human approvals for engineering work.
+Follow the steps below to install Atomic and complete your first useful session. Atomic runs coding-agent sessions with tools, codemode, subagents, verification, and human approvals for engineering work.
 
 Work through the steps in order. Each links to a focused page with full instructions.
 
@@ -10,14 +10,14 @@ Work through the steps in order. Each links to a focused page with full instruct
 
 1. **[Install Atomic](/getting-started/installation)** — package manager or self-contained release archive.
 2. **[Authenticate](/getting-started/authentication)** — subscription login or API key.
-3. **[Run your first session](/getting-started/first-session)** — start Atomic, run a task, invoke a built-in workflow, and steer the run.
+3. **[Run your first session](/getting-started/first-session)** — start Atomic, run a task, and delegate work to subagents.
 4. **[Add project instructions](/getting-started/project-instructions)** — teach Atomic your repository's conventions with `AGENTS.md`.
 
 Then come back here for [common things to try](#common-things-to-try) and [next steps](#next-steps).
 
 ## Prerequisites
 
-- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.4.2+ for Bun installs or workflow-authoring examples.
+- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.4.2+ for Bun installs.
 - **Release archive install:** macOS and Linux need `tar` and either `curl` or `wget`; Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
 - **Model-provider access** — use a supported subscription login or API key. Run `/login` after startup.
 
@@ -55,9 +55,11 @@ Moved to [Installation](/getting-started/installation#atomic_bin_dir).
 
 Moved to [Installation](/getting-started/installation#github_token-/-gh_token).
 
-### Which runtime runs your workflows
+<a id="which-runtime-runs-your-workflows" />
 
-Moved to [Installation](/getting-started/installation#which-runtime-runs-your-workflows).
+### Which runtime runs Atomic?
+
+Moved to [Installation](/getting-started/installation#which-runtime-runs-atomic).
 
 ### Alpine and musl Linux archives
 
@@ -87,23 +89,27 @@ Moved to [Authentication](/getting-started/authentication#option-2-api-key).
 
 Moved to [First session](/getting-started/first-session#first-session-2).
 
-Full detail: starting Atomic, the built-in workflows, monitoring and steering a run, top skills, creating a workflow in natural language, and the default tools and prompts.
+Full detail: starting Atomic, delegating work to subagents, top skills, and the default tools and prompts.
 
-### Try the built-in workflows
+<a id="try-the-built-in-workflows" />
 
-Moved to [First session](/getting-started/first-session#try-the-built-in-workflows).
+### Use an earlier workflow
+
+Workflows are now skills. Ask Atomic to convert an old workflow file to a skill. See [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task) for the alternative.
 
 ### Monitor and steer a run
 
-Moved to [First session](/getting-started/first-session#monitor-and-steer-a-run).
+Use `/tasks` to inspect background subagents. See [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task).
 
 ### Top skills to invoke directly
 
 Moved to [First session](/getting-started/first-session#top-skills-to-invoke-directly).
 
-### Create your own workflow in natural language
+<a id="create-your-own-workflow-in-natural-language" />
 
-Moved to [First session](/getting-started/first-session#create-your-own-workflow-in-natural-language).
+### Describe a reusable procedure
+
+Describe the task to Atomic, or give it an existing workflow definition and ask it to convert the file to a skill. See [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task).
 
 ### Default tools and prompts
 
@@ -175,7 +181,7 @@ Use `--mode json` for JSON event output or `--mode rpc` for process integration.
 ## Next steps
 
 - [Using Atomic](/usage) - interactive mode, slash commands, sessions, context files, and CLI reference.
-- [Workflows](/workflows) - run, inspect, and author multi-stage automation (including the built-in workflows).
+- [Orchestration](/orchestration) - use codemode and subagents for multi-step work.
 - [Skills](/skills) - reusable expert instructions invoked with `/skill:<name>`.
 - [Providers](/providers) - authentication and model setup.
 - [Settings](/settings) - global and project configuration.

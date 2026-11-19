@@ -23,7 +23,7 @@ export interface ResumePreflightIo {
 	probeGit(signal?: AbortSignal): Promise<GitUnavailableError | undefined>;
 }
 
-export type StorageDomainName = "sessions" | "journal";
+export type StorageDomainName = "sessions";
 
 export const defaultResumePreflightIo: ResumePreflightIo = {
 	async loadAdapter(module, agentDir, domain) {
@@ -66,7 +66,7 @@ export interface ResumeStorageTarget {
 }
 
 const PACKAGE_NAME = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
-const DOMAIN_RECORDS: Record<StorageDomainName, string> = { sessions: "sessions", journal: "workflow runs" };
+const DOMAIN_RECORDS: Record<StorageDomainName, string> = { sessions: "sessions" };
 
 function adapterProblem(module: string, domain: StorageDomainName, agentDir: string): ResumePreconditionProblem {
 	return {

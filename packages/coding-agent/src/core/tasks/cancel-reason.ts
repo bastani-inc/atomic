@@ -14,9 +14,10 @@ const CANCEL_CAUSE_TEXT: Record<CancelCause, string> = {
 	shutdown: "Atomic shut down",
 };
 
-const OWNER_CLOSE_TEXT: Record<OwnerCloseCause, string> = {
+const OWNER_CLOSE_TEXT: Record<OwnerCloseCause | "stage-close", string> = {
 	"session-close": "session closed",
-	"stage-close": "workflow stage closed",
+	// Older stored task results used this close reason.
+	"stage-close": "session closed",
 	"app-shutdown": "Atomic shut down",
 };
 
@@ -28,7 +29,7 @@ export function formatTimeoutSeconds(timeoutMs: number): string {
 
 /**
  * Why a cancelled task stopped, in plain words. It names the close of the task's owner that ended it and the length
- * of the execution timeout that stopped it when the result records them (#4639): `workflow stage closed`,
+ * of the execution timeout that stopped it when the result records them (#4639): `session closed`,
  * `timed out after 300 seconds`.
  */
 export function cancelReasonText(result: CancelledTaskResult): string {

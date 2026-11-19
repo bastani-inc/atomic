@@ -14,7 +14,6 @@ import {
 	DEFAULT_TOOL_ABORT_GRACE_MS,
 	toolAbortGraceMs,
 } from "../../packages/coding-agent/src/core/tools/tool-abort-grace.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -89,7 +88,7 @@ interface StuckTool {
 	signal?: AbortSignal;
 }
 
-type SessionKind = "main" | "subagent" | "workflow stage";
+type SessionKind = "main" | "subagent";
 type ToolName = "stuck" | "quick";
 
 /**
@@ -162,12 +161,11 @@ async function sessionWithStuckTool(
 			return { content: [{ type: "text", text: "quick answer" }], details: undefined };
 		},
 	};
-	const boundary = new WorkflowStageAdmissionBoundary();
 	const executionEnded = new AbortController();
 	const { session } = await createAgentSession({
 		cwd: process.cwd(),
 		agentDir: process.cwd(),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		modelRuntime,
 		model: modelRuntime.getModel("p", "m")!,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
@@ -185,23 +183,10 @@ async function sessionWithStuckTool(
 					},
 				}
 			: {}),
-		...(kind === "workflow stage"
-			? {
-					orchestrationContext: {
-						kind: "workflow-stage" as const,
-						workflowRunId: "run",
-						workflowStageId: "stage",
-						workflowStageName: "stage",
-						constraints: { disableWorkflowTool: true },
-						messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() },
-					},
-				}
-			: {}),
 	});
 	disposals.push(() => {
 		tool.release.resolve("released at cleanup");
 		executionEnded.abort();
-		void boundary.close();
 		session.dispose();
 	});
 	return { session, tool };
@@ -243,7 +228,7 @@ async function assertLateSettlementIsSilent(
 }
 
 describe("a tool call that ignores the interrupt (#5486)", () => {
-	for (const kind of ["main", "subagent", "workflow stage"] as const) {
+	for (const kind of ["main", "subagent"] as const) {
 		test.each([false, true])(
 			`Esc ends a ${kind} session's turn without sending late output to its next model request (detachable=%s, #5486)`,
 			async (detachable) => {
@@ -273,7 +258,6 @@ describe("a tool call that ignores the interrupt (#5486)", () => {
 				assert.equal(tool.requests.length, requests, "the late result starts no turn");
 				assert.equal(session.isStreaming, false);
 				const afterLate = [...session.messages];
-				if (kind === "workflow stage") await session.resumeQueuedMessages();
 				await session.prompt("next");
 				const nextRequests = tool.requests.slice(requests);
 				assert.ok(nextRequests.length > 0);

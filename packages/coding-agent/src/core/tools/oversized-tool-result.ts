@@ -48,7 +48,7 @@ export interface RedirectOversizedToolResultInput<TDetails = unknown> {
 	sessionId: string;
 	sessionDir?: string;
 	/**
-	 * Keeps the output somewhere other than a file, for a released stage's result in a session store that holds blobs.
+	 * Keeps the output somewhere other than a file, for a released agent's result in a session store that holds blobs.
 	 * Its failure is the redirect's failure. Ignored when `sessionDir` is set.
 	 */
 	persist?: PersistToolOutput;

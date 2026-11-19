@@ -13,7 +13,7 @@ const rows = [];
 function owner(mode, unowned = false) {
 	const notifications = [];
 	const runner = new ExtensionRunner(
-		[], { workflowActivityHub: { bindDispatcher() {} }, invalidate() {} }, ".", {}, {},
+		[], { invalidate() {} }, ".", {}, {},
 	);
 	runner.setUIContext(
 		mode === "tui" || mode === "rpc" ? { notify: (message, level) => notifications.push({ message, level }) } : undefined,

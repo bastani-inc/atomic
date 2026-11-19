@@ -59,8 +59,7 @@ test("isolated /tasks is navigation, while genuine custom approvals still report
 		keybindings: new KeybindingsManager(),
 		...{ taskInspectorUi: rawUi },
 	});
-	const state = (agentRunning: boolean) =>
-		deriveSessionActivity({ agentRunning, openPromptCount, roots: [], availability: "ready" })?.state;
+	const state = (agentRunning: boolean) => deriveSessionActivity({ agentRunning, openPromptCount }).state;
 	try {
 		await handler({ type: "open_task_inspector" });
 		await flush();

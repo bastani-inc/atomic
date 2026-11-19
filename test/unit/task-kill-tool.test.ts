@@ -2,12 +2,7 @@ import assert from "node:assert/strict";
 import { Value } from "typebox/value";
 import { test, vi } from "vitest";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
-import type {
-	CancelReceipt,
-	OperationId,
-	OwnerScope,
-	TaskId,
-} from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import type { CancelReceipt, OperationId, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import type { BashToolDetails } from "../../packages/coding-agent/src/core/tools/bash.js";
 import { createAllTools, getDefaultToolNames } from "../../packages/coding-agent/src/core/tools/index.js";
 import { sleep } from "../helpers/runtime.js";
@@ -26,13 +21,10 @@ test("kill is registered by default with only a required task ID and refuses unb
 	await assert.rejects(tool.execute("kill-unbound", { id: "task-1-1-1" }), /task owner/i);
 });
 
-function host(kind: OwnerScope["kind"] = "session") {
+function host() {
 	const sessionId = crypto.randomUUID();
 	return new AgentTaskHost({
-		scope:
-			kind === "session"
-				? { kind, sessionId }
-				: { kind, sessionId, runId: "run", stageId: "stage", stageAttemptId: crypto.randomUUID() },
+		scope: { kind: "session", sessionId },
 		tasks: { wait: { kind: "automatic", commandBudgetMs: 0 } },
 		authorizeLaunch() {},
 	});
@@ -64,66 +56,64 @@ async function settled(owner: AgentTaskHost, id: TaskId) {
 	}
 }
 
-for (const kind of ["session", "workflow-stage"] as const) {
-	for (const mode of ["background", "automatic"] as const) {
-		for (const shell of process.platform === "win32" ? (["bash", "powershell"] as const) : (["bash"] as const)) {
-			test(`registered kill cancels ${mode} ${shell} for ${kind}, retains output and repeats honestly`, async () => {
-				const owner = host(kind);
-				const registered = tools(owner);
-				try {
-					const tool = registered[shell];
-					assert.ok(tool, `${shell} must be available on this test platform`);
-					const launched = await tool.execute("launch", {
-						command:
-							shell === "powershell"
-								? 'Write-Output "retained-kill-output"; Start-Sleep -Seconds 60'
-								: 'printf "retained-kill-output\\n"; sleep 60',
-						...(mode === "background" ? { wait: { kind: "background" } } : {}),
-					});
-					const observation = (launched.details as BashToolDetails).observation;
-					assert.ok(observation?.kind === "yielded");
-					const id = observation.taskId;
-					const lease = owner.resolveTask(id);
-					assert.ok(lease.ok);
-					const deadline = Date.now() + 5000;
-					for (;;) {
-						const output = await owner.ownerBinding.supervisor.readTaskOutput(lease.value, {
-							start: "0",
-							maximumBytes: 8192,
-						});
-						assert.ok(output.ok);
-						if (
-							Buffer.concat(output.value.chunks.map((chunk) => chunk.bytes))
-								.toString()
-								.includes("retained-kill-output")
-						)
-							break;
-						assert.ok(Date.now() < deadline, "shell ready output");
-						await sleep(10);
-					}
-					const first = await registered.kill.execute("stop", { id });
-					assert.equal((first.details as CancelReceipt).taskId, id);
-					const terminal = await settled(owner, id);
-					assert.ok(terminal.execution.kind === "settled");
-					assert.equal(terminal.execution.result.kind, "cancelled");
-					assert.equal(terminal.wasBackground, true);
-					const repeated = await registered.kill.execute("repeat", { id });
-					assert.equal((repeated.details as CancelReceipt).decision, (first.details as CancelReceipt).decision);
-					assert.deepEqual((repeated.details as CancelReceipt).execution, terminal.execution);
+for (const mode of ["background", "automatic"] as const) {
+	for (const shell of process.platform === "win32" ? (["bash", "powershell"] as const) : (["bash"] as const)) {
+		test(`registered kill cancels ${mode} ${shell} for the session, retains output and repeats honestly`, async () => {
+			const owner = host();
+			const registered = tools(owner);
+			try {
+				const tool = registered[shell];
+				assert.ok(tool, `${shell} must be available on this test platform`);
+				const launched = await tool.execute("launch", {
+					command:
+						shell === "powershell"
+							? 'Write-Output "retained-kill-output"; Start-Sleep -Seconds 60'
+							: 'printf "retained-kill-output\\n"; sleep 60',
+					...(mode === "background" ? { wait: { kind: "background" } } : {}),
+				});
+				const observation = (launched.details as BashToolDetails).observation;
+				assert.ok(observation?.kind === "yielded");
+				const id = observation.taskId;
+				const lease = owner.resolveTask(id);
+				assert.ok(lease.ok);
+				const deadline = Date.now() + 5000;
+				for (;;) {
 					const output = await owner.ownerBinding.supervisor.readTaskOutput(lease.value, {
 						start: "0",
 						maximumBytes: 8192,
 					});
 					assert.ok(output.ok);
-					assert.match(
-						Buffer.concat(output.value.chunks.map((chunk) => chunk.bytes)).toString(),
-						/retained-kill-output/,
-					);
-				} finally {
-					assert.ok((await owner.close("session-close")).ok);
+					if (
+						Buffer.concat(output.value.chunks.map((chunk) => chunk.bytes))
+							.toString()
+							.includes("retained-kill-output")
+					)
+						break;
+					assert.ok(Date.now() < deadline, "shell ready output");
+					await sleep(10);
 				}
-			});
-		}
+				const first = await registered.kill.execute("stop", { id });
+				assert.equal((first.details as CancelReceipt).taskId, id);
+				const terminal = await settled(owner, id);
+				assert.ok(terminal.execution.kind === "settled");
+				assert.equal(terminal.execution.result.kind, "cancelled");
+				assert.equal(terminal.wasBackground, true);
+				const repeated = await registered.kill.execute("repeat", { id });
+				assert.equal((repeated.details as CancelReceipt).decision, (first.details as CancelReceipt).decision);
+				assert.deepEqual((repeated.details as CancelReceipt).execution, terminal.execution);
+				const output = await owner.ownerBinding.supervisor.readTaskOutput(lease.value, {
+					start: "0",
+					maximumBytes: 8192,
+				});
+				assert.ok(output.ok);
+				assert.match(
+					Buffer.concat(output.value.chunks.map((chunk) => chunk.bytes)).toString(),
+					/retained-kill-output/,
+				);
+			} finally {
+				assert.ok((await owner.close("session-close")).ok);
+			}
+		});
 	}
 }
 
@@ -299,7 +289,7 @@ test.runIf(process.platform !== "win32")(
 
 test("kill resolves the live owner and cannot cancel a foreign shell after owner replacement", async () => {
 	const original = host();
-	const replacement = host("workflow-stage");
+	const replacement = host();
 	let current = original;
 	const registered = createAllTools(process.cwd(), {
 		bash: { taskOwner: original.ownerBinding },
@@ -324,6 +314,6 @@ test("kill resolves the live owner and cannot cancel a foreign shell after owner
 		await settled(original, id);
 	} finally {
 		assert.ok((await original.close("session-close")).ok);
-		assert.ok((await replacement.close("stage-close")).ok);
+		assert.ok((await replacement.close("session-close")).ok);
 	}
 });

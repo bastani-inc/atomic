@@ -66,9 +66,6 @@ export async function prepareExecutionContext(input: {
 	deps: ResolvedExecutorDeps;
 }): Promise<ExecutionContextBuildResult> {
 	const { params, ctx, signal, onUpdate, deps } = input;
-	const admission = ctx.orchestrationContext?.messageAdmission;
-	const stageCloseSignal = admission?.boundary.closeSignal;
-	const executionSignal = stageCloseSignal === undefined ? signal : AbortSignal.any([signal, stageCloseSignal]);
 	const depth = getCurrentSubagentDepth(ctx);
 	const normalized = normalizeRepeatedParallelCounts(params);
 	if (normalized.error) return { error: normalized.error };
@@ -163,9 +160,9 @@ export async function prepareExecutionContext(input: {
 	};
 	let artifactsDir: string;
 	try {
-		executionSignal.throwIfAborted();
+		signal.throwIfAborted();
 		artifactsDir = await getArtifactsDir(parentSessionFile);
-		executionSignal.throwIfAborted();
+		signal.throwIfAborted();
 	} catch (error) {
 		return { error: toExecutionErrorResult(effectiveParams, error) };
 	}
@@ -200,7 +197,7 @@ export async function prepareExecutionContext(input: {
 		params: effectiveParams,
 		effectiveCwd,
 		ctx,
-		signal: executionSignal,
+		signal,
 		onUpdate: onUpdateWithContext,
 		agents,
 		...(parallelAgentConfigs ? { parallelAgentConfigs } : {}),
@@ -215,8 +212,6 @@ export async function prepareExecutionContext(input: {
 		controlConfig,
 		intercomBridge,
 	};
-
-	admission?.boundary.registerOwnedSubagentRun(runId);
 
 	const foregroundMode: "single" | "parallel" = hasTasks ? "parallel" : "single";
 	const foregroundControl = {

@@ -67,19 +67,6 @@ export type StorageInputSelection =
 	| StorageSettingsSelection
 	| { readonly database: SqliteDatabase; readonly prefix?: string };
 
-/**
- * Whether a journal selection names no store of its own (`{}`, or an empty `path`), so it means the default journal:
- * the local journal store. A `prefix` alone still selects tables in the legacy single file, as it always did.
- */
-export function selectsDefaultJournalStore(value: StorageInputSelection | undefined): boolean {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-	const keys = Object.entries(value)
-		.filter(([key, entry]) => entry !== undefined && !(key === "memory" && entry === false))
-		.map(([key]) => key);
-	const path = (value as { readonly path?: string }).path;
-	return keys.every((key) => key === "path") && (path === undefined || path === "");
-}
-
 const PENDING_DEFAULT_PATH = "\0";
 
 function takesDefaultPath(
@@ -226,7 +213,7 @@ export const TEAM_PREFIX_ENV = "ATOMIC_TEAM_PREFIX";
 /** The variables `ATOMIC_PROFILE=ci` reads; setting any of them without the profile is an error. */
 export const TEAM_VARIABLES: readonly string[] = [TEAM_URL_ENV, TEAM_TOKEN_ENV, TEAM_TOKEN_FILE_ENV, TEAM_PREFIX_ENV];
 
-/** A team database selection in the settings form: usable as `createAgentSession({ storage })` and `RunOpts.journal`. */
+/** A team database selection in the settings form: usable as `createAgentSession({ storage })`. */
 export interface TeamStorageSelection {
 	readonly adapter: string;
 	readonly options: Readonly<Record<string, string>>;
@@ -572,8 +559,8 @@ function checkProfile(profile: string, source: TeamInputSource): "ci" {
 }
 
 /**
- * The CI profile as a team database selection, without reading or writing settings: sessions, workflow runs and
- * Intercom can all use it. A literal `token` becomes an in-memory `{ value }` secret that serializes as
+ * The CI profile as a team database selection, without reading or writing settings: sessions and Intercom can both
+ * use it. A literal `token` becomes an in-memory `{ value }` secret that serializes as
  * `[redacted]` and that only SDK callers can pass; `tokenFile` (absolute path) and `tokenEnv` are references read
  * when the store opens. Inputs are checked first; nothing else happens.
  */
@@ -715,7 +702,7 @@ function parseEnvironmentTeamProfile(
 // cheap for storage adapters and hosts that never set up a team.
 
 /**
- * Use a team database for workflow runs and Intercom while sessions stay private: checks every input and the
+ * Use a team database for Intercom while sessions stay private: checks every input and the
  * connection first, then sets the global `storage` setting to the team database and `sessions.storage` to the local
  * default store in one settings write, and restarts the Intercom broker so it routes through the team database.
  * Rejects with `TeamProfileConfigError` for an invalid input and `TeamProfileError` otherwise; on any rejection

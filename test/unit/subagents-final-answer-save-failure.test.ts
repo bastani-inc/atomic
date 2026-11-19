@@ -255,7 +255,7 @@ async function settleInBackground(
 		},
 		recordChild: createSubagentChildRecordSink(
 			{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
-			{ sessionManager: owner, orchestrationContext: undefined },
+			{ sessionManager: owner },
 		),
 		runtime: { runSync },
 	});

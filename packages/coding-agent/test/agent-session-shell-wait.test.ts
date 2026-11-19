@@ -10,7 +10,6 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import type { OperationId, TaskId } from "../src/core/tasks/contracts.js";
 import type { BashToolDetails } from "../src/core/tools/bash.js";
-import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
 import { createHarness } from "./suite/harness.js";
 import { createTestResourceLoader } from "./utilities.js";
 
@@ -34,7 +33,7 @@ vi.mock("../src/utils/shell.js", async (importOriginal) => {
 	};
 });
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 const launchShell = process.platform === "win32" ? "powershell" : "bash";
 const commands = {
 	powershell: "$value = [Console]::ReadLine(); Write-Output 'registry completed once'; exit 7",
@@ -253,10 +252,7 @@ for (const name of ["bash", "powershell"] as const) {
 	});
 }
 
-async function sdkSession(
-	root: string,
-	options: Pick<CreateAgentSessionOptions, "orchestrationContext" | "subagentPolicy"> = {},
-) {
+async function sdkSession(root: string, options: Pick<CreateAgentSessionOptions, "subagentPolicy"> = {}) {
 	const { session, extensionsResult } = await createAgentSession({
 		cwd: root,
 		agentDir: root,
@@ -276,76 +272,48 @@ async function sdkSession(
 }
 
 for (const name of ["bash", "powershell"] as const) {
-	for (const scope of ["session", "workflow-stage"] as const) {
-		test(`registered ${name} respects ${scope} ownership across session replacement`, async () => {
-			const root = mkdtempSync(join(tmpdir(), "atomic-shell-wait-"));
-			const boundary = new WorkflowStageAdmissionBoundary();
-			const options =
-				scope === "workflow-stage"
-					? {
-							orchestrationContext: {
-								kind: "workflow-stage" as const,
-								workflowRunId: crypto.randomUUID(),
-								workflowStageId: "shell-wait",
-								workflowStageName: "Shell wait",
-								constraints: { disableWorkflowTool: true as const },
-								messageAdmission: {
-									boundary,
-									extensionState: new Map<string, object>(),
-									isOpen: () => boundary.isOpen(),
-								},
-							},
-						}
-					: {};
-			const sessions: AgentSession[] = [];
-			try {
-				const original = await sdkSession(root, options);
-				sessions.push(original);
-				assert.equal(boundary.hasAgentTaskHost(), false, "registration must not create a task owner");
-				const id = await start(original);
-				const oldTool = tool(original, name);
-				original.dispose();
-				await original.closeSessionTasks();
-				const replacement = await sdkSession(root, options);
-				sessions.push(replacement);
-				await assert.rejects(oldTool.execute("stale", { action: "wait", id }), /stale|closed/i);
-				if (scope === "session") {
-					await assert.rejects(
-						tool(replacement, name).execute("foreign", { action: "wait", id }),
-						/UnknownTask|ScopeMismatch/,
-					);
-				}
-				const currentId = scope === "session" ? await start(replacement) : id;
-				const result = await tool(replacement, name).execute("poll", {
-					action: "wait",
-					id: currentId,
-					budgetMs: 0,
-				});
-				assert.equal((result.details as BashToolDetails).observation?.kind, "yielded");
-				assert.equal((result.details as BashToolDetails).observation?.taskId, currentId);
-				await release(replacement, currentId);
-				const terminal = await tool(replacement, name).execute("settle", {
-					action: "wait",
-					id: currentId,
-					budgetMs: 10000,
-				});
-				assert.equal((terminal.details as BashToolDetails).exitCode, 7);
-				await boundary.close();
-				await replacement.closeSessionTasks();
-				await assert.rejects(
-					tool(replacement, name).execute("closed", { action: "wait", id: currentId }),
-					/closed/i,
-				);
-			} finally {
-				await boundary.close();
-				for (const session of sessions) {
-					await session.closeSessionTasks();
-					session.dispose();
-				}
-				rmSync(root, { recursive: true, force: true });
+	test(`registered ${name} respects session ownership across session replacement`, async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-shell-wait-"));
+		const sessions: AgentSession[] = [];
+		try {
+			const original = await sdkSession(root);
+			sessions.push(original);
+			const id = await start(original);
+			const oldTool = tool(original, name);
+			original.dispose();
+			await original.closeSessionTasks();
+			const replacement = await sdkSession(root);
+			sessions.push(replacement);
+			await assert.rejects(oldTool.execute("stale", { action: "wait", id }), /stale|closed/i);
+			await assert.rejects(
+				tool(replacement, name).execute("foreign", { action: "wait", id }),
+				/UnknownTask|ScopeMismatch/,
+			);
+			const currentId = await start(replacement);
+			const result = await tool(replacement, name).execute("poll", {
+				action: "wait",
+				id: currentId,
+				budgetMs: 0,
+			});
+			assert.equal((result.details as BashToolDetails).observation?.kind, "yielded");
+			assert.equal((result.details as BashToolDetails).observation?.taskId, currentId);
+			await release(replacement, currentId);
+			const terminal = await tool(replacement, name).execute("settle", {
+				action: "wait",
+				id: currentId,
+				budgetMs: 10000,
+			});
+			assert.equal((terminal.details as BashToolDetails).exitCode, 7);
+			await replacement.closeSessionTasks();
+			await assert.rejects(tool(replacement, name).execute("closed", { action: "wait", id: currentId }), /closed/i);
+		} finally {
+			for (const session of sessions) {
+				await session.closeSessionTasks();
+				session.dispose();
 			}
-		});
-	}
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 }
 
 test.runIf(process.platform === "win32" || !!process.env.ATOMIC_TEST_PWSH)(

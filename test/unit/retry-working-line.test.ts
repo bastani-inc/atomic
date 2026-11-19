@@ -25,14 +25,6 @@ import {
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 import { makeTestTui } from "../support/fake-tui.js";
-import {
-	createStore,
-	deriveGraphTheme,
-	fakeFooterAgentSession,
-	makeHandle,
-	StageChatView,
-	setupRun,
-} from "./stage-chat-view-helpers.js";
 
 const plain = (lines: readonly string[]): string[] => lines.map((line) => stripVTControlCharacters(line).trimEnd());
 
@@ -252,7 +244,7 @@ describe("the working line counts a turn from its start through its retries (#55
 
 	for (const [name, open] of [
 		["main chat", mainChat],
-		["subagent or stage chat", attachedChat],
+		["subagent chat", attachedChat],
 	] as const) {
 		test(`${name}: the retried attempt and the finished turn count from the turn's start (#5535)`, async () => {
 			const chat = open();
@@ -422,103 +414,6 @@ describe("the working line counts a turn from its start through its retries (#55
 		{ role: "user", content: "Fix the picker", timestamp: 1_000 },
 		{ ...assistant("", "error", "529 overloaded_error: Overloaded"), timestamp: 1_200 },
 	];
-
-	test("stage chat opened while its agent waits to retry: the next attempt counts from the turn's start (#5535)", async () => {
-		now = 5_000;
-		const store = createStore();
-		setupRun(store, "run-1", "stage-a");
-		const session = Object.assign(fakeFooterAgentSession(false), { retryAttempt: 1 });
-		const { handle, state, emit } = makeHandle(undefined, waitingTurn(), "running", session);
-		state.isStreaming = false;
-		const view = new StageChatView({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageId: "stage-a",
-			workflowName: "test-wf",
-			handle,
-			onDetach: () => {},
-			onClose: () => {},
-			piTui: makeTestTui(30),
-		});
-		try {
-			const rows = await nextAttempt(emit as (event: AgentSessionEvent) => void, () => plain(view.render(100)));
-			assert.ok(
-				rows.some((row) => / \(7s · /.test(row)),
-				`the next attempt counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
-			);
-		} finally {
-			view.dispose();
-		}
-	});
-
-	test("stage chat opened after a failed request, before the stage moves to its next model: the next model's request counts from the turn's start (#5535)", async () => {
-		now = 5_000;
-		const store = createStore();
-		setupRun(store, "run-1", "stage-a");
-		const { handle, state, emit } = makeHandle(undefined, waitingTurn(), "running", fakeFooterAgentSession(false));
-		state.isStreaming = false;
-		const view = new StageChatView({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageId: "stage-a",
-			workflowName: "test-wf",
-			handle,
-			onDetach: () => {},
-			onClose: () => {},
-			piTui: makeTestTui(30),
-		});
-		try {
-			// The stage announces the switch; its handle knows the turn started at 1 s.
-			Object.assign(handle, { turnStartedAt: 1_000 });
-			emit({
-				type: "model_fallback_start",
-				from: "anthropic/primary",
-				to: "openai/fallback",
-				reason: "404 model not found",
-				attempt: 1,
-			} as AgentSessionEvent);
-			const rows = await nextAttempt(emit as (event: AgentSessionEvent) => void, () => plain(view.render(100)));
-			assert.ok(
-				rows.some((row) => / \(7s · /.test(row)),
-				`the next model's request counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
-			);
-		} finally {
-			view.dispose();
-		}
-	});
-
-	test("stage chat opened during the attempt after a retry: it counts from the turn's start (#5535)", async () => {
-		now = 8_000;
-		const store = createStore();
-		setupRun(store, "run-1", "stage-a");
-		const { handle, state } = makeHandle(undefined, waitingTurn(), "running", fakeFooterAgentSession(true));
-		state.isStreaming = true;
-		// The next attempt, sent at 6 s, streams its answer.
-		const streaming = { ...assistant("Fixed the picker.", "stop"), timestamp: 6_000 };
-		Object.assign(handle, { streamingMessage: () => streaming });
-		const view = new StageChatView({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageId: "stage-a",
-			workflowName: "test-wf",
-			handle,
-			onDetach: () => {},
-			onClose: () => {},
-			piTui: makeTestTui(30),
-		});
-		try {
-			const rows = plain(view.render(100));
-			assert.ok(
-				rows.some((row) => / \(7s · /.test(row)),
-				`the attempt counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
-			);
-		} finally {
-			view.dispose();
-		}
-	});
 
 	/** A subagent's chat opened at 5 s while the subagent waits to retry the request it sent at 1 s. */
 	async function subagentChatOpenedInRetryWait(switching = false) {

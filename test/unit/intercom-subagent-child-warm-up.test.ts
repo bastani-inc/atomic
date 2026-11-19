@@ -210,7 +210,6 @@ function mockBrokerClient(connect: (registration: ConnectRegistration, registrat
 			connect(structuredClone(registration), registrationGroup);
 		},
 	);
-	vi.spyOn(IntercomClient.prototype, "registerLiveWorkflowStageRoute").mockResolvedValue();
 	vi.spyOn(IntercomClient.prototype, "disconnect").mockResolvedValue();
 }
 

@@ -1,5 +1,5 @@
 /**
- * How Atomic shows a model (#4269): its raw ID, exactly as `--model`, settings, workflow `model:` fields and extension
+ * How Atomic shows a model (#4269): its raw ID, exactly as `--model`, settings and extension
  * configs take it, followed by the reasoning level it runs at. A display name never replaces the ID; it is secondary
  * metadata at most, such as a dim picker column or a search target.
  *

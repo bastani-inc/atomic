@@ -9,7 +9,6 @@ import { createAgentSession, createUnstartedAgentSession } from "../../packages/
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { setWorkspaceGitExecutableResolver } from "../../packages/coding-agent/src/core/workspace/git.ts";
 import {
-	type BoundWorkspace,
 	isBoundWorkspace,
 	isWorkspaceBindingError,
 	isWorkspaceConfigError,
@@ -26,18 +25,15 @@ import {
 	workspaceSessionCwd,
 } from "../../packages/coding-agent/src/core/workspace/session.ts";
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.ts";
-import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
 import {
-	commitFile,
 	countGitCommands,
 	createRepository,
 	git,
 	type WorkspaceSandboxDirs,
-	withInjectedGit,
 	workspaceSandbox,
 } from "../helpers/workspace-repos.ts";
 
-const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 
 let dirs: WorkspaceSandboxDirs;
 let faux: ReturnType<typeof registerFauxProvider>;
@@ -243,107 +239,6 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 		} finally {
 			second.session.dispose();
 		}
-	});
-
-	test("a resumed workflow stage session restores its recorded binding and fails closed on drift (#3109)", async () => {
-		const repo = createRepository(dirs.root, "stage-resume");
-		const store = new MemorySessionStore();
-		const meta = { runId: "run-1", stageId: "stage-1", stageName: "work" };
-		const stageWork = workspace({ repo, branch: "stage-work", label: "first" });
-		const first = await createAgentSession(
-			sessionOptions({
-				workspace: stageWork,
-				sessionManager: await SessionManager.create(store, (await resolveWorkspace(stageWork)).worktree),
-			}),
-		);
-		const sessionId = first.session.sessionManager.getSessionId();
-		const recorded = first.workspace!;
-		first.session.dispose();
-		commitFile(repo, "base-moved.txt", "main moved on\n");
-
-		const resumedSpec = workspace({ repo, branch: "stage-work" });
-		const { result: options, commands } = await countGitCommands(() =>
-			stripWorkflowOnlyOptions(
-				{ workspace: resumedSpec, resumeFromSessionId: sessionId, sessionStore: store },
-				undefined,
-				meta,
-			),
-		);
-		const restored = options.workspace as BoundWorkspace;
-		assert.equal(restored.baseCommit, recorded.baseCommit);
-		assert.equal(restored.label, "first", "the recorded label survives");
-		assert.equal(options.cwd, recorded.worktree, "an adapter's host directory cannot replace the worktree");
-		assert.ok(
-			commands.some((args) => args[0] === "merge-base" && args[1] === "--is-ancestor"),
-			"the recorded binding was restored and checked for drift",
-		);
-		assert.equal(await resolveWorkspace(resumedSpec), restored, "later resolutions reuse it");
-		const resumed = await createAgentSession(sessionOptions({ ...options, cwd: options.cwd }));
-		try {
-			assert.equal(resumed.workspace, restored);
-			assert.equal(resumed.session.sessionManager.getSessionId(), sessionId);
-		} finally {
-			resumed.session.dispose();
-		}
-
-		git(recorded.worktree, "commit", "-q", "--allow-empty", "--amend", "-m", "rewritten");
-		const drifted = await rejection(
-			stripWorkflowOnlyOptions(
-				{
-					workspace: workspace({ repo, branch: "stage-work" }),
-					resumeFromSessionId: sessionId,
-					sessionStore: store,
-				},
-				undefined,
-				meta,
-			),
-		);
-		assert.ok(isWorkspaceBindingError(drifted));
-		assert.equal(drifted.code, "drift");
-		assert.equal(drifted.reason, "history-rewritten");
-	});
-
-	// POSIX: the stand-in git that stalls the worktree addition is a shell script.
-	test.skipIf(process.platform === "win32")(
-		"a stage stopped while its workspace is being bound stops waiting for the binding (#3109)",
-		async () => {
-			const repo = createRepository(dirs.root, "stopped-setup");
-			const added = join(dirs.root, "added");
-			const controller = new AbortController();
-			const reason = new Error("stage stopped");
-			const api = workspace({ repo, branch: "feat/slow-setup" });
-			await withInjectedGit(
-				dirs.root,
-				{ FAKE_GIT_SLOW: "worktree add", FAKE_GIT_SLEEP: "2", FAKE_GIT_MARKER: added },
-				async () => {
-					const setup = stripWorkflowOnlyOptions(
-						{ workspace: api },
-						undefined,
-						{ runId: "run-1", stageId: "stage-1", stageName: "work" },
-						undefined,
-						controller.signal,
-					);
-					setTimeout(() => controller.abort(reason), 200);
-					assert.equal(await rejection(setup), reason);
-					assert.equal(existsSync(added), false, "the stage stopped before the slow addition finished");
-					await resolveWorkspace(api);
-				},
-			);
-		},
-	);
-
-	test("a resumed stage session without a workspace still opens in the stage's cwd (#3109)", async () => {
-		const store = new MemorySessionStore();
-		const created = await SessionManager.create(store, dirs.root);
-		await created.appendCustomEntry("marker", {});
-		const cwd = join(dirs.root, "stage-cwd");
-		mkdirSync(cwd);
-		const options = await stripWorkflowOnlyOptions(
-			{ resumeFromSessionId: created.getSessionId(), sessionStore: store, cwd },
-			undefined,
-			{ runId: "run-1", stageId: "stage-1", stageName: "work" },
-		);
-		assert.equal(options.sessionManager?.getCwd(), cwd);
 	});
 
 	test("a read-only session leaves file-writing tools out of an explicit tools list (#3109)", async () => {

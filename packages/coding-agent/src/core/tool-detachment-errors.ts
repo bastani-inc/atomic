@@ -4,8 +4,7 @@ export type ToolDetachmentErrorCode =
 	| "unknown-tool-call"
 	| "session-busy"
 	| "session-closed"
-	| "context-detached"
-	| "stage-parked";
+	| "context-detached";
 
 /** The largest `afterMs` a detachment policy accepts: timers clamp anything above it to 1 ms. */
 export const MAX_TOOL_DETACHMENT_AFTER_MS = 2_147_483_647;
@@ -21,8 +20,6 @@ const HINTS: Readonly<Record<ToolDetachmentErrorCode, string>> = {
 	"session-closed": "Reopen the session from its store and hand the results to the new session.",
 	"context-detached":
 		"Read what the tool's work needs from ctx before the call detaches, or pass it in the tool's arguments.",
-	"stage-parked":
-		"Wait for the workflow stage to reopen its session, then start the task again. A released stage launches no tasks while it waits.",
 };
 
 /** JSON-safe facts about a refused detachment operation. */
@@ -57,8 +54,7 @@ export interface SerializedToolDetachmentError {
 /**
  * A detached tool call operation on an `AgentSession` was refused before it changed anything: a detachment
  * policy was invalid, a result was handed back for a call the transcript is not waiting on, the session was
- * still running or already closed, a detached call's work used the session's context after it detached, or a
- * workflow stage released while it waits was asked to launch a task.
+ * still running or already closed, or a detached call's work used the session's context after it detached.
  */
 export class ToolDetachmentError extends Error {
 	override readonly name = TOOL_DETACHMENT_ERROR_NAME;
@@ -72,7 +68,7 @@ export class ToolDetachmentError extends Error {
 		super(`${toolDetachmentSubject(code, fields)} (${code}). ${hint}`, options);
 		this.code = code;
 		this.hint = hint;
-		this.retryable = code === "session-busy" || code === "stage-parked";
+		this.retryable = code === "session-busy";
 		this.fields = fields;
 	}
 
@@ -101,8 +97,6 @@ function toolDetachmentSubject(code: ToolDetachmentErrorCode, fields: ToolDetach
 			return `Session ${fields.sessionId} is closed and cannot resume its detached turn`;
 		case "context-detached":
 			return `Tool call ${fields.toolCallId} detached from session ${fields.sessionId} and can no longer use its context`;
-		case "stage-parked":
-			return `Workflow stage session ${fields.sessionId} is released and cannot launch a task`;
 	}
 }
 
@@ -112,7 +106,6 @@ const TOOL_DETACHMENT_ERROR_CODES: ReadonlySet<string> = new Set<ToolDetachmentE
 	"session-busy",
 	"session-closed",
 	"context-detached",
-	"stage-parked",
 ]);
 
 /** True when `error` is a {@link ToolDetachmentError}, including one from another realm or a structural copy. */

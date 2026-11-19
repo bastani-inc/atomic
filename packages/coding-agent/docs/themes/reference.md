@@ -185,5 +185,4 @@ Turning colors off:
 
 - `NO_COLOR` (any value) turns off every theme color, foreground and background, and text styles such as bold, italic and dim. Layout and text stay the same.
 - `FORCE_COLOR=0` does the same. `FORCE_COLOR=1` or `2` limits colors to the 256-color palette, and `FORCE_COLOR=3` keeps the terminal's own color mode. `NO_COLOR` wins when both are set.
-- The workflow graph, stage chats and run details follow the same settings for their colors.
 - An extension that paints its own `#rrggbb` colors can call `hexColorAnsi(hex, "fg")` or `hexColorAnsi(hex, "bg")` from `@bastani/atomic` to get the escape sequence for the current settings, which is empty when colors are off.

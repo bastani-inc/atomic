@@ -40,7 +40,7 @@ export interface CollectSnapshotGarbageOptions {
 /**
  * Deletes every blob in `store` that no retained snapshot references and that was last stored at least
  * `graceSeconds` ago, and resolves with the hashes it deleted. Retained snapshots are those of resumable root
- * workflow runs and the latest snapshot of each checkout in every session that shares the blob table, read from the
+ * workflow runs that earlier releases stored and the latest snapshot of each checkout in every session that shares the blob table, read from the
  * reference index that triggers keep as the journal and session store write, so the cost follows the number of blobs
  * and references, never the length of a journal. A database written before the index existed has its existing rows
  * indexed first, once, in short transactions, and nothing is deleted until that is done. Batches commit one at a
@@ -112,7 +112,7 @@ function skipped(reason: SnapshotCollectionSkipReason): Promise<SnapshotCollecti
 
 /**
  * Starts an automatic collection of `store`'s blob table when one is due and resolves with its outcome; callers that
- * must not wait, such as a closing session or a finishing workflow run, ignore the promise. A collection is due when
+ * must not wait, such as a closing session, ignore the promise. A collection is due when
  * `settings.autoCollect` is set, the store keeps a reference index, this process is not collecting the table already,
  * and no process sharing the database claimed a collection in the last `collectIntervalSeconds` on the database
  * clock. This process asks the database at most once per interval. A failure is recorded in the table's collection

@@ -86,7 +86,7 @@ async function mainSession(root: string, shown: string[]): Promise<AgentSession>
 		sessionManager: SessionManager.inMemory(root),
 		settingsManager: SettingsManager.inMemory(),
 		resourceLoader: createTestResourceLoader(),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	cleanups.push(() => session.dispose());
 	await session.bindExtensions({ uiContext: taskPromptHost(mainChat(shown)), mode: "tui" });

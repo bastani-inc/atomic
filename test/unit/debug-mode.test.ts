@@ -28,13 +28,6 @@ import {
 } from "../../packages/coding-agent/src/core/debug-setting.js";
 import { createChildProcessEnvironment } from "../../packages/coding-agent/src/utils/child-process.js";
 import { getBrokerSpawnOptions } from "../../packages/intercom/broker/spawn.js";
-import { poolCoordinationLine } from "../../packages/workflows/src/shared/pool-coordination.js";
-import type { PoolCoordinationStats } from "../../packages/workflows/src/shared/store-types.js";
-import { POOL_DURABLE_JOURNAL_ENV, poolWorkerEnvironment } from "../../packages/workflows/src/workers/pool-journal.js";
-import {
-	configurePooledWatchTrace,
-	tracePooledWatch,
-} from "../../packages/workflows/src/workers/pooled-watch-trace.js";
 import { DEBUG_ENV_VARS } from "../helpers/debug-env.js";
 import { areaRecords, DEBUG_MODE_SOURCES, withDebugLog } from "../helpers/debug-mode.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
@@ -50,10 +43,7 @@ afterEach(() => {
 describe("isDebugEnabled (#4360)", () => {
 	test("names each area's own variable", () => {
 		assert.deepEqual(DEBUG_AREA_VARIABLES, {
-			workflow: "ATOMIC_WORKFLOW_DEBUG",
 			decision: undefined,
-			"pooled-watch": "ATOMIC_DEBUG_POOLED_WATCH",
-			pool: undefined,
 			storage: undefined,
 			engine: undefined,
 		});
@@ -73,19 +63,6 @@ describe("isDebugEnabled (#4360)", () => {
 		assert.equal(isDebugEnabled(area, {}), false);
 	});
 
-	test.each(AREAS.filter((area) => DEBUG_AREA_VARIABLES[area] !== undefined))(
-		"%s is on from its own variable alone",
-		(area) => {
-			const own = DEBUG_AREA_VARIABLES[area]!;
-			assert.equal(isDebugEnabled(area, { [own]: "1" }), true);
-			assert.equal(isDebugEnabled(area, { [own]: "" }), false);
-			assert.equal(isDebugEnabled(area, { [own]: "0" }), false);
-			assert.equal(isDebugEnabled(undefined, { [own]: "1" }), false, "an area variable is not debug mode");
-			for (const other of AREAS.filter((candidate) => candidate !== area))
-				assert.equal(isDebugEnabled(other, { [own]: "1" }), false, `${own} does not turn on ${other}`);
-		},
-	);
-
 	test("tests start with every variable that turns debug output on cleared", () => {
 		const names = [
 			...Object.values(DEBUG_AREA_VARIABLES).filter((name) => name !== undefined),
@@ -98,9 +75,10 @@ describe("isDebugEnabled (#4360)", () => {
 		);
 	});
 
-	test("the pool and storage areas have no variable of their own, whatever the environment holds", () => {
-		assert.equal(isDebugEnabled("pool", { undefined: "1", "": "1" }), false);
-		assert.equal(isDebugEnabled("storage", { undefined: "1", "": "1" }), false);
+	test("retired workflow variables do not enable debug mode", () => {
+		const env = { ATOMIC_WORKFLOW_DEBUG: "1", ATOMIC_DEBUG_POOLED_WATCH: "/tmp/trace.jsonl" };
+		for (const area of AREAS) assert.equal(isDebugEnabled(area, env), false);
+		assert.equal(isDebugEnabled(undefined, env), false);
 	});
 
 	test("a process starts with the setting its parent passed down", async () => {
@@ -115,15 +93,8 @@ describe("isDebugEnabled (#4360)", () => {
 		}
 	});
 
-	test("the pooled-watch variable also takes a trace file path, while the others need exactly 1", () => {
-		assert.equal(isDebugEnabled("pooled-watch", { ATOMIC_DEBUG_POOLED_WATCH: "/tmp/trace.jsonl" }), true);
-		assert.equal(isDebugEnabled("workflow", { ATOMIC_WORKFLOW_DEBUG: "yes" }), false);
-	});
-
 	test("reads process.env at call time, so a variable set later counts", () => {
-		assert.equal(isDebugEnabled("workflow"), false);
-		vi.stubEnv("ATOMIC_WORKFLOW_DEBUG", "1");
-		assert.equal(isDebugEnabled("workflow"), true);
+		assert.equal(isDebugEnabled(), false);
 		vi.stubEnv("ATOMIC_DEBUG", "1");
 		assert.equal(isDebugEnabled(), true);
 	});
@@ -195,15 +166,6 @@ describe("the debug setting (#4360)", () => {
 		assert.equal(child.AI_AGENT, "atomic");
 	});
 
-	test("reaches pool workers with the durable journal they read", () => {
-		const durable = { selection: '{"kind":"sqlite","path":"/j.sqlite"}', agentDir: "/agent" };
-		setDebugSetting(true);
-		const env = poolWorkerEnvironment(durable);
-		assert.equal(env[POOL_DURABLE_JOURNAL_ENV], JSON.stringify(durable));
-		assert.equal(env.ATOMIC_DEBUG_SETTING, "1");
-		assert.equal(POOL_DURABLE_JOURNAL_ENV in poolWorkerEnvironment(undefined), false);
-	});
-
 	test("reaches the Intercom broker through the environment it starts with", () => {
 		assert.equal(getBrokerSpawnOptions("/extension").env.ATOMIC_DEBUG_SETTING, "0");
 		setDebugSetting(true);
@@ -215,7 +177,7 @@ describe("the debug setting (#4360)", () => {
 		timeout: REAL_BUN_CHILD_PROBES_TIMEOUT_MS,
 	}, () => {
 		const script = `import { isDebugEnabled } from ${JSON.stringify(join(process.cwd(), "packages/coding-agent/src/core/debug.ts"))};
-process.stdout.write(String(isDebugEnabled("workflow")) + "|" + String(isDebugEnabled()));`;
+process.stdout.write(String(isDebugEnabled("storage")) + "|" + String(isDebugEnabled()));`;
 		const probe = () => {
 			const result = spawnSyncCollect([bunExecutable(), "-e", script], {
 				env: createChildProcessEnvironment(undefined, { ...process.env, ATOMIC_DEBUG: undefined }),
@@ -247,23 +209,23 @@ describe("reportDebug (#4360)", () => {
 				const own = vi.fn();
 				const before = Date.now();
 				reportDebug(
-					"pool",
-					"coordination",
+					"storage",
+					"probe",
 					{ root: "r1", count: 3, ok: true, none: null, gone: undefined, ids: ["a", 2] },
 					own,
 				);
-				reportDebug("workflow", "second", {});
+				reportDebug("engine", "second", {});
 				assert.equal(own.mock.calls.length, 0, "the area variable is not set");
 				const records = await log.records();
 				assert.deepEqual(
 					records.map(({ area, event, data }) => ({ area, event, data })),
 					[
 						{
-							area: "pool",
-							event: "coordination",
+							area: "storage",
+							event: "probe",
 							data: { root: "r1", count: 3, ok: true, none: null, ids: ["a", 2] },
 						},
-						{ area: "workflow", event: "second", data: {} },
+						{ area: "engine", event: "second", data: {} },
 					],
 				);
 				assert.equal(records[0]?.pid, process.pid);
@@ -272,42 +234,17 @@ describe("reportDebug (#4360)", () => {
 		},
 	);
 
-	test("an area's own variable keeps its own output and does not write the debug log", async () => {
-		await withDebugLog("off", async (log) => {
-			vi.stubEnv("ATOMIC_WORKFLOW_DEBUG", "1");
-			const own = vi.fn();
-			reportDebug("workflow", "event", { value: 1 }, own);
-			reportDebug("pooled-watch", "event", { value: 1 }, own);
-			assert.equal(own.mock.calls.length, 1, "only the area whose variable is set");
-			assert.equal(await log.exists(), false);
-		});
-	});
-
-	test("with both on, the event reaches the debug log and the area's own output", async () => {
-		await withDebugLog("setting", async (log) => {
-			vi.stubEnv("ATOMIC_WORKFLOW_DEBUG", "1");
-			const own = vi.fn();
-			reportDebug("workflow", "event", { value: 1 }, own);
-			reportDebug("workflow", "without-own-output", {});
-			assert.equal(own.mock.calls.length, 1);
-			assert.deepEqual(
-				(await areaRecords(log, "workflow")).map((record) => record.event),
-				["event", "without-own-output"],
-			);
-		});
-	});
-
 	test("redacts credentials and bounds long text, never adding to what the caller passed", async () => {
 		await withDebugLog("setting", async (log) => {
 			const token = `sk-${"a".repeat(30)}`;
-			reportDebug("workflow", "redacted", {
+			reportDebug("engine", "redacted", {
 				message: `send failed: Authorization: Bearer ${token}`,
 				ids: [`api_key=${token}`, 7],
 				long: "x".repeat(5_000),
 				limit: "y".repeat(2_000),
 				short: "kept as is",
 			});
-			const [record] = await areaRecords(log, "workflow");
+			const [record] = await areaRecords(log, "engine");
 			assert.ok(record);
 			const text = JSON.stringify(record);
 			assert.equal(text.includes(token), false, text);
@@ -352,11 +289,11 @@ describe("reportDebug (#4360)", () => {
 				],
 			};
 			reportDebug(
-				"workflow",
+				"engine",
 				"shapes",
 				Object.fromEntries(Object.entries(cases).map(([key, [input]]) => [key, input])),
 			);
-			const [record] = await areaRecords(log, "workflow");
+			const [record] = await areaRecords(log, "engine");
 			assert.deepEqual(
 				record?.data,
 				Object.fromEntries(Object.entries(cases).map(([key, [, output]]) => [key, output])),
@@ -368,7 +305,7 @@ describe("reportDebug (#4360)", () => {
 		await withDebugLog("setting", async (log) => {
 			const nested = join(log.agentDir, "not", "yet");
 			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", nested);
-			reportDebug("pool", "created", {});
+			reportDebug("storage", "created", {});
 			await flushDebugLog();
 			assert.equal(existsSync(join(nested, "atomic-debug.log")), true);
 		});
@@ -410,82 +347,6 @@ describe("decision area", () => {
 	});
 });
 
-describe("pooled-watch area (#4360)", () => {
-	test("its own variable traces next to the pool journal, or to the file it names, as before", async () => {
-		await withDebugLog("off", async (log) => {
-			const journal = join(log.agentDir, "pool", "journal.sqlite");
-			configurePooledWatchTrace(journal, "coordinator");
-			tracePooledWatch("before", { key: "k0" });
-			await flushDebugLog();
-			assert.equal(existsSync(join(log.agentDir, "pool", "pooled-watch-trace.jsonl")), false);
-			vi.stubEnv("ATOMIC_DEBUG_POOLED_WATCH", "1");
-			tracePooledWatch("coordinator.watch.open", { watch: "w1", worker: 3 });
-			await flushDebugLog();
-			const beside = readFileSync(join(log.agentDir, "pool", "pooled-watch-trace.jsonl"), "utf8")
-				.trimEnd()
-				.split("\n")
-				.map((line) => JSON.parse(line));
-			assert.equal(beside.length, 1);
-			assert.equal(beside[0].pid, process.pid);
-			assert.equal(typeof beside[0].at, "string");
-			assert.deepEqual(
-				{ role: beside[0].role, step: beside[0].step, watch: beside[0].watch, worker: beside[0].worker },
-				{ role: "coordinator", step: "coordinator.watch.open", watch: "w1", worker: 3 },
-			);
-			const named = join(log.agentDir, "named-trace.jsonl");
-			vi.stubEnv("ATOMIC_DEBUG_POOLED_WATCH", named);
-			tracePooledWatch("root.reconnect.start", { key: "k1" });
-			await flushDebugLog();
-			assert.equal(JSON.parse(readFileSync(named, "utf8")).step, "root.reconnect.start");
-			assert.equal(await log.exists(), false, "the area variable does not write the debug log");
-		});
-	});
-
-	test("before a process knows its pool journal, its own variable traces nothing", async () => {
-		await withDebugLog("off", async (log) => {
-			vi.stubEnv("ATOMIC_DEBUG_POOLED_WATCH", "1");
-			vi.resetModules();
-			const fresh = await import("../../packages/workflows/src/workers/pooled-watch-trace.js");
-			const freshDebug = await import("../../packages/coding-agent/src/core/debug.js");
-			fresh.tracePooledWatch("root.reconnect.start", { key: "k" });
-			await freshDebug.flushDebugLog();
-			assert.equal(await log.exists(), false);
-		});
-	});
-
-	test.each(DEBUG_MODE_SOURCES)("debug mode from %s traces to the debug log with the process role", async (source) => {
-		await withDebugLog(source, async (log) => {
-			configurePooledWatchTrace(join(log.agentDir, "journal.sqlite"), "worker:7");
-			tracePooledWatch("worker.watch.opened", { watch: "w2", event: "turn" });
-			assert.deepEqual(await areaRecords(log, "pooled-watch"), [
-				{ event: "worker.watch.opened", data: { role: "worker:7", watch: "w2", event: "turn" } },
-			]);
-			assert.equal(existsSync(join(log.agentDir, "pooled-watch-trace.jsonl")), false);
-		});
-	});
-});
-
-describe("pool area (#4360)", () => {
-	const stats: PoolCoordinationStats = {
-		since: 0,
-		requests: { heartbeat: { count: 4, perSecond: 2 } },
-		writes: { heartbeat: { count: 4, perSecond: 2 } },
-	};
-
-	test("the pool line is hidden unless debug mode is on", async () => {
-		assert.equal(poolCoordinationLine({ coordination: stats }), undefined);
-		assert.equal(poolCoordinationLine(undefined), undefined);
-		for (const source of DEBUG_MODE_SOURCES)
-			await withDebugLog(source, () => {
-				assert.equal(
-					poolCoordinationLine({ coordination: stats }),
-					"pool: requests 2.0/s (heartbeat 2.0) · writes 2.0/s (heartbeat 2.0)",
-				);
-				assert.equal(poolCoordinationLine(undefined), undefined, "a run without a pool");
-			});
-	});
-});
-
 describe("debug log writes", () => {
 	const EXITING_CHILD_TIMEOUT_MS = 60_000;
 	test("writes every record when the process exits right after reporting it", {
@@ -494,7 +355,7 @@ describe("debug log writes", () => {
 		const agentDir = makeTempDirectory("atomic-debug-exit-");
 		try {
 			const script = `import { reportDebugAsync } from ${JSON.stringify(join(process.cwd(), "packages/coding-agent/src/core/debug.ts"))};
-for (const event of ["first", "second", "third"]) void reportDebugAsync("pool", event, {});
+for (const event of ["first", "second", "third"]) void reportDebugAsync("storage", event, {});
 process.exit(0);`;
 			const result = spawnSyncCollect([bunExecutable(), "-e", script], {
 				env: createChildProcessEnvironment(undefined, {
@@ -523,10 +384,10 @@ describe("debug log failures (#4360)", () => {
 			writeFileSync(blocker, "");
 			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(blocker, "agent"));
 			assert.equal(getDebugLogFailure(), undefined);
-			reportDebug("pool", "first", {});
+			reportDebug("storage", "first", {});
 			// The synchronous report writes before it returns, so its failure is recorded by then too.
 			const failure = getDebugLogFailure();
-			reportDebug("pool", "second", {});
+			reportDebug("storage", "second", {});
 			await flushDebugLog();
 			assert.equal(getDebugLogFailure(), failure, "the first failure stays the one recorded");
 			assert.ok(failure instanceof DebugLogUnwritableError);
@@ -547,7 +408,7 @@ describe("debug log failures (#4360)", () => {
 
 	test("a synchronous report is in the debug log when it returns (#5377)", async () => {
 		await withDebugLog("setting", async (log) => {
-			reportDebug("pool", "landed-before-return", {});
+			reportDebug("storage", "landed-before-return", {});
 			const written = readFileSync(join(log.agentDir, "atomic-debug.log"), "utf8");
 			assert.match(written, /"event":"landed-before-return"/);
 		});

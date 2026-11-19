@@ -88,7 +88,7 @@ async function* sessionExportLines(store: SessionStore, snapshot: SessionSnapsho
 }
 
 /**
- * Exports the sessions of `store`, every project's and workflow stage sessions included, to
+ * Exports the sessions of `store`, every project's and internal ones included, to
  * `<directory>/<sessionId>.jsonl`, one file per session. Each file is written whole or not at all; the same session
  * gives the same bytes, and a file that already holds them is not rewritten.
  */
@@ -224,11 +224,6 @@ function pendingIds(sessions: readonly PlannedSession[]): string[] {
 	return sessions.map((planned) => planned.session.header.id);
 }
 
-/** The sessions of a plan an import writes. */
-export function pendingSessions(plan: SessionImportPlan): string[] {
-	return plan.sessions.filter((session) => session.action !== "unchanged").map((session) => session.session.header.id);
-}
-
 /**
  * The fields import compares between an entry of a file and the stored entry at the same position: its ID, its
  * parent and its type, as `--import` and session storage identify entries. Everything else may differ, so a file a
@@ -296,26 +291,22 @@ function assertBlobs(store: SessionStore, session: ParsedSession): void {
 /**
  * Writes what `plan` decided, one session at a time. Each write expects the store to hold exactly what the plan
  * compared: a session another process created or added entries to since fails with the file, and nothing of it is
- * written. Session storage has no lock an import can hold across sessions, so when a write fails after earlier writes
- * (or after `workflowsWritten`, the runs the same import already wrote), `StorageImportIncompleteError` names what was
- * written and what was not; importing again writes only what is missing. A session the store already holds in full
+ * written. Session storage has no lock an import can hold across sessions, so when a write fails after earlier writes,
+ * `StorageImportIncompleteError` names what was written and what was not; importing again writes only what is missing. A session the store already holds in full
  * gets the tool outputs of the file it lacks, so a rerun also finishes a session whose outputs an interrupted import
  * did not store.
  */
-export async function applySessionImport(
-	plan: SessionImportPlan,
-	workflowsWritten: readonly string[] = [],
-): Promise<SessionImportReport> {
+export async function applySessionImport(plan: SessionImportPlan): Promise<SessionImportReport> {
 	const { store } = plan;
 	const report = { added: [] as string[], updated: [] as string[], unchanged: [] as string[] };
 	const pending = plan.sessions.filter((planned) => planned.action !== "unchanged");
 	/** `error`, naming what this import wrote before it when it wrote anything, and the sessions it did not write. */
 	const failure = (error: Error, notWritten: readonly string[]): Error => {
 		const sessionsWritten = [...report.added, ...report.updated];
-		if (sessionsWritten.length === 0 && workflowsWritten.length === 0) return error;
+		if (sessionsWritten.length === 0) return error;
 		return new StorageImportIncompleteError(error, {
-			written: { sessions: sessionsWritten, workflows: workflowsWritten },
-			notWritten: { sessions: notWritten, workflows: [] },
+			written: { sessions: sessionsWritten },
+			notWritten: { sessions: notWritten },
 		});
 	};
 	for (const planned of plan.sessions) {

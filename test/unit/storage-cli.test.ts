@@ -90,6 +90,23 @@ function storage(args: string[]) {
 	return run((log, error) => runStorageCommand(args, { cwd: project, agentDir, log, error }));
 }
 
+test("storage migrate initializes sessions and Intercom without the workflow runtime", async () => {
+	const path = join(root, "shared.sqlite");
+	writeSettings({
+		storage: { adapter: resolve(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"), options: { path } },
+	});
+	const result = await storage(["migrate"]);
+	assert.equal(result.code, 0, result.err);
+	const database = await openNodeSqliteDatabase(path);
+	try {
+		const tables = (await database.all("SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) => row.name);
+		assert.ok(tables.includes("session_sessions"));
+		assert.ok(tables.includes("intercom_known_sessions"));
+	} finally {
+		await database.close();
+	}
+});
+
 describe("atomic storage and atomic intercom arguments", () => {
 	test("parse the storage subcommands and their options (#3857)", () => {
 		assert.deepEqual(parseStorageCommand([]), { kind: "help" });
@@ -167,7 +184,7 @@ describe("atomic storage and atomic intercom arguments", () => {
 describe("storage status sources (#3856)", () => {
 	test("global settings select every domain, and an empty agent directory selects the defaults", async () => {
 		const empty = await collectStorageStatus({ cwd: project, agentDir, probe: false });
-		assert.deepEqual(sources(empty), { sessions: "default", journal: "default", intercom: "default" });
+		assert.deepEqual(sources(empty), { sessions: "default", intercom: "default" });
 		assert.equal(domain(empty, "sessions").selection, `SQLite ${join(agentDir, "workflows", "journal.sqlite")}`);
 		assert.match(domain(empty, "intercom").multiNode ?? "", /^off: no shared storage selection/);
 
@@ -175,13 +192,12 @@ describe("storage status sources (#3856)", () => {
 		const status = await collectStorageStatus({ cwd: project, agentDir, probe: true });
 		assert.deepEqual(sources(status), {
 			sessions: "global settings: storage",
-			journal: "global settings: storage",
 			intercom: "global settings: storage",
 		});
-		assert.equal(domain(status, "journal").selection, `SQLite ${join(agentDir, "shared.sqlite")} (prefix t_)`);
+		assert.equal(domain(status, "sessions").selection, `SQLite ${join(agentDir, "shared.sqlite")} (prefix t_)`);
 		assert.equal(domain(status, "sessions").probe?.connection.status, "skipped");
 		assert.match(domain(status, "sessions").probe?.connection.detail ?? "", /not created yet/);
-		assert.equal(domain(status, "journal").probe?.sameAs, "sessions");
+		assert.equal(domain(status, "intercom").probe?.sameAs, "sessions");
 		assert.match(domain(status, "intercom").multiNode ?? "", /^on \(a local SQLite file/);
 	});
 
@@ -189,12 +205,10 @@ describe("storage status sources (#3856)", () => {
 		writeSettings({
 			storage: { path: "shared.sqlite" },
 			sessions: { storage: { path: "sessions.sqlite" } },
-			workflows: { journal: { path: "journal.sqlite" } },
 		});
 		const settingsOnly = await collectStorageStatus({ cwd: project, agentDir, probe: false });
 		assert.deepEqual(sources(settingsOnly), {
 			sessions: "global settings: sessions.storage",
-			journal: "global settings: workflows.journal",
 			intercom: "global settings: storage",
 		});
 		assert.deepEqual(domain(settingsOnly, "sessions").overridden, ["global settings: storage"]);
@@ -203,25 +217,21 @@ describe("storage status sources (#3856)", () => {
 		const shared = await collectStorageStatus({ cwd: project, agentDir, probe: false });
 		assert.deepEqual(sources(shared), {
 			sessions: "ATOMIC_STORAGE",
-			journal: "ATOMIC_STORAGE",
 			intercom: "ATOMIC_STORAGE",
 		});
 		assert.equal(domain(shared, "intercom").selection, `SQLite ${join(root, "env.sqlite")}`);
-		assert.deepEqual(domain(shared, "journal").overridden, [
-			"global settings: workflows.journal",
+		assert.deepEqual(domain(shared, "sessions").overridden, [
+			"global settings: sessions.storage",
 			"global settings: storage",
 		]);
 
 		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", JSON.stringify({ dir: join(root, "sessions") }));
-		vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", join(root, "legacy-journal.sqlite"));
 		const domains = await collectStorageStatus({ cwd: project, agentDir, probe: false });
 		assert.deepEqual(sources(domains), {
 			sessions: "ATOMIC_SESSIONS_STORAGE",
-			journal: "ATOMIC_WORKFLOW_JOURNAL_PATH",
 			intercom: "ATOMIC_STORAGE",
 		});
 		assert.equal(domain(domains, "sessions").selection, `JSONL directory ${join(root, "sessions")}`);
-		assert.equal(domain(domains, "journal").selection, `SQLite ${join(root, "legacy-journal.sqlite")}`);
 
 		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", "");
 		vi.stubEnv("ATOMIC_CODING_AGENT_SESSION_DIR", join(root, "legacy-sessions"));
@@ -230,20 +240,35 @@ describe("storage status sources (#3856)", () => {
 	});
 
 	test("conflicting variables are reported as an invalid selection, not a fallback", async () => {
-		vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", JSON.stringify({ path: "a.sqlite" }));
-		vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", join(root, "b.sqlite"));
+		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", JSON.stringify({ path: "a.sqlite" }));
+		vi.stubEnv("ATOMIC_CODING_AGENT_SESSION_DIR", join(root, "b"));
 		const status = await collectStorageStatus({ cwd: project, agentDir, probe: false });
-		assert.equal(domain(status, "journal").selection, "invalid");
-		assert.match(domain(status, "journal").error ?? "", /conflicting-overrides/);
+		assert.equal(domain(status, "sessions").selection, "invalid");
+		assert.match(domain(status, "sessions").error ?? "", /conflicting-overrides/);
 	});
 
-	test("trusted project settings select sessions and workflow runs but never Intercom", async () => {
+	test("the workflow journal variables of earlier releases select nothing, even when invalid or conflicting", async () => {
+		vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", "{ not json");
+		vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", join(root, "b.sqlite"));
+		writeSettings({ workflows: { journal: { path: "journal.sqlite" } } });
+		const status = await collectStorageStatus({ cwd: project, agentDir, probe: true });
+		assert.deepEqual(
+			status.domains.map((entry) => entry.domain),
+			["sessions", "intercom"],
+		);
+		assert.deepEqual(sources(status), { sessions: "default", intercom: "default" });
+		assert.equal(domain(status, "sessions").error, undefined);
+		const result = await storage(["status"]);
+		assert.equal(result.code, 0, result.err);
+		assert.doesNotMatch(result.out, /Workflow runs|journal store/);
+	});
+
+	test("trusted project settings select sessions but never Intercom", async () => {
 		writeSettings({ storage: { path: "global.sqlite" } });
 		writeProjectSettings({ storage: { path: join(root, "project.sqlite") } }, true);
 		const status = await collectStorageStatus({ cwd: project, agentDir, probe: false });
 		assert.deepEqual(sources(status), {
 			sessions: "project settings: storage",
-			journal: "project settings: storage",
 			intercom: "global settings: storage",
 		});
 		assert.deepEqual(domain(status, "sessions").overridden, ["global settings: storage"]);
@@ -307,7 +332,8 @@ describe("storage status checks", () => {
 		assert.equal(result.code, 0, result.err);
 		assert.match(result.out, /Sessions: SQLite .*existing\.sqlite/);
 		assert.match(result.out, /connection: {2}ok \(node-sqlite .*existing\.sqlite answered in \d+ ms\)/);
-		assert.match(result.out, /Workflow runs: SQLite[\s\S]*connection: {2}same as sessions/);
+		assert.match(result.out, /Intercom: SQLite .*existing\.sqlite\n[\s\S]*connection: {2}ok \(node-sqlite/);
+		assert.doesNotMatch(result.out, /Workflow runs/);
 		assert.match(result.out, /Intercom broker: not running/);
 		assert.match(result.out, /multi-node: {2}on \(a local SQLite file[^\n]*\n {2}brokers: {5}0 live in the database/);
 
@@ -521,7 +547,6 @@ describe("atomic storage join with the libSQL package (#3857)", () => {
 			};
 			writeSettings(other);
 			writeProjectSettings({ storage: { path: join(root, "project.sqlite") } }, true);
-			vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", JSON.stringify({ path: join(root, "env-journal.sqlite") }));
 			const before = await tables();
 
 			const result = await storage(["join", databaseUrl, "--token-file", tokenFile, "--prefix", "team_"]);
@@ -545,11 +570,10 @@ describe("atomic storage join with the libSQL package (#3857)", () => {
 			});
 			assert.deepEqual(await tables(), before);
 			assert.match(result.out, /Sessions: global settings: sessions\.storage/);
-			assert.match(result.out, /Workflow runs: ATOMIC_WORKFLOWS_JOURNAL/);
+			assert.doesNotMatch(result.out, /Workflow runs/);
 			assert.match(result.out, /which Intercom ignores/);
 			assert.doesNotMatch(result.out, /secret-token/);
 
-			vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", "");
 			const status = await storage(["status", "--json"]);
 			const parsed: StorageStatus = JSON.parse(status.out);
 			assert.equal(domain(parsed, "intercom").source, "global settings: storage");

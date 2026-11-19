@@ -1,7 +1,7 @@
 ---
 title: "Embedding Atomic in a web server"
 sidebarTitle: "Web server"
-description: "Run Atomic sessions and workflows behind a Next.js App Router route and stream their output to a browser."
+description: "Run Atomic sessions behind a Next.js App Router route and stream their output to a browser."
 ---
 
 # Embedding Atomic in a web server
@@ -37,7 +37,7 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 ```
 
-Atomic's own dependencies load from `node_modules` once `@bastani/atomic` is external. The other entries cover packages your app may import directly, such as `typebox` for workflow schemas, so your code and Atomic share one copy. Add any other Atomic dependency you import yourself.
+Atomic's own dependencies load from `node_modules` once `@bastani/atomic` is external. The other entries cover packages your app may import directly, such as `typebox` for tool schemas, so your code and Atomic share one copy. Add any other Atomic dependency you import yourself.
 
 Every route that imports Atomic must use the Node.js runtime:
 
@@ -83,7 +83,7 @@ export function getConversation(id: string): Promise<Conversation> {
         sessionManager: SessionManager.inMemory(WORKSPACE),
         modelRuntime,
         tools: ["read", "find", "search"],
-        builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+        builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
       });
       return { session, busy: false };
     });
@@ -233,86 +233,13 @@ export async function sendMessage(
 
 Render each part by `type`: `text` and `thinking` are strings, and a `toolCall` part has `name`, `arguments`, and, once the tool reports progress or finishes, a `result` with `content`, `isError`, and `isPartial`. Pass an `AbortController`'s signal to stop the agent from the page.
 
-## Run a workflow from a route
-
-`run()` from `@bastani/atomic/workflows` runs a workflow definition in the server process. Each stage runs as an in-process Atomic session, so `run()` needs no adapters. Use `createAgentSessionAdapter()` when every stage should share session options, such as the same tool restrictions as your chat sessions:
-
-```ts
-// app/api/review/route.ts
-import { createTranscript, type Transcript } from "@bastani/atomic";
-import { createAgentSessionAdapter, run } from "@bastani/atomic/workflows";
-import { WORKSPACE } from "@/lib/atomic";
-import { authenticate } from "@/lib/auth";
-import { reviewWorkflow } from "@/workflows/review";
-
-export const runtime = "nodejs";
-
-export async function POST(request: Request): Promise<Response> {
-  if (!(await authenticate(request))) return new Response("Unauthorized", { status: 401 });
-  const { topic } = (await request.json()) as { topic: string };
-  if (request.signal.aborted) return new Response(null, { status: 499 });
-
-  const encoder = new TextEncoder();
-  const abort = new AbortController();
-  request.signal.addEventListener("abort", () => abort.abort(), { once: true });
-
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const send = (line: object) => {
-        if (!abort.signal.aborted) controller.enqueue(encoder.encode(`${JSON.stringify(line)}\n`));
-      };
-      const stages = new Map<string, Transcript>();
-
-      try {
-        const result = await run(reviewWorkflow, { topic }, {
-          cwd: WORKSPACE,
-          signal: abort.signal,
-          journal: { memory: true },
-          adapters: {
-            agentSession: createAgentSessionAdapter({ cwd: WORKSPACE, tools: ["read", "find", "search"] }),
-          },
-          onStageSessionEvent: (runId, stageId, event) => {
-            let transcript = stages.get(stageId);
-            if (!transcript) stages.set(stageId, (transcript = createTranscript()));
-            transcript.apply(event);
-            if (event.type === "message_update" || event.type === "tool_execution_end") {
-              send({ type: "stage", runId, stageId, parts: transcript.parts() });
-            }
-          },
-        });
-        send({ type: "done", status: result.status, result: result.result, error: result.error });
-      } catch (error) {
-        send({ type: "error", message: error instanceof Error ? error.message : String(error) });
-      } finally {
-        if (!abort.signal.aborted) controller.close();
-      }
-    },
-    cancel() {
-      abort.abort();
-    },
-  });
-
-  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8" } });
-}
-```
-
-`onStageSessionEvent` receives every stage's session events tagged with its run and stage ids, including stages that switch to a fallback model and stages of nested workflows. Aborting `signal`, here when the client disconnects, cancels the run.
-
-### Choose workflow storage
-
-By default, `run()` persists workflow state in the local [journal store](/storage#the-workflow-journal-store) in `~/.atomic/workflows/journal/`. Keep it on durable local storage when your service needs restart recovery. If several replicas must inspect or resume each other's runs, have them share a remote SQLite-compatible database through an adapter. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
-
-Use `journal: { path: "/var/lib/my-service/workflows.sqlite" }` to select a file for a run, or `journal: { memory: true }` for process-local state that cannot survive a restart. Supply a caller-owned async SQLite facade as `{ database, prefix? }`; Atomic does not close it. You can also supply a `RunJournal` instance or `{ adapter, options?, secrets?, prefix? }` for a user-installed driver module.
-
-`RunOpts.journal` (or `createAgentSession({ journal })` for sessions) overrides `ATOMIC_WORKFLOWS_JOURNAL` or a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then `ATOMIC_STORAGE`, then `workflows.journal`, then shared top-level `storage`, then the default journal store. Nearer settings replace whole selections. Relative settings paths resolve against the [storage home](/storage#storage-home). Configuration or storage failures stop the run instead of switching to memory. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
-
 ## Secure the endpoint
 
 A route that drives an agent session lets whoever calls it run tools on your server with the server process's permissions. Atomic has [no built-in sandbox](/security#no-built-in-sandbox).
 
-- **Require authentication** on every route that creates sessions, sends prompts, or starts workflows, and scope conversation ids to the authenticated user, as `getConversation()` does above.
+- **Require authentication** on every route that creates sessions or sends prompts, and scope conversation ids to the authenticated user, as `getConversation()` does above.
 - **Allow only the tools you need.** `tools` is an allowlist; the examples allow only the read-only `read`, `find`, and `search`. Leave out `bash`, `edit`, and `write` unless the agent must change files or run commands. `excludedTools` removes tools, and `noTools: "all"` exposes none. `ask_user_question` needs a person to answer, so leave it out of headless sessions. See [Tools](/sdk/reference#tools).
-- **Disable builtins you don't use.** `builtins` turns off the shipped workflows, subagents, MCP, web access, and Intercom packages, along with their tools.
+- **Disable builtins you don't use.** `builtins` turns off the shipped subagents, MCP, web access, and Intercom packages, along with their tools.
 - **Choose the working directory deliberately.** `cwd` sets the starting directory for tool paths and controls which project settings, context files, and extensions Atomic discovers. It does not restrict file access: tools can use absolute paths and paths outside `cwd`. Point it at a directory you control, never at an upload or a user-supplied path.
 - **Isolate the process** in a container, VM, or restricted OS account when callers must not access other server files, even with read-only tools, or when the agent can write files or run commands. See [Containerization](/containerization).
 - **Keep credentials on the server.** Provider keys come from the server's `ModelRuntime`. Never send them to the browser or accept them from requests.
@@ -321,4 +248,5 @@ A route that drives an agent session lets whoever calls it run tools on your ser
 
 - [SDK](/sdk) for sessions, prompting, and events.
 - [SDK API reference](/sdk/reference) for every `createAgentSession()` option.
-- [Workflow API reference](/workflows/api-reference) for `run()` and `RunOpts`.
+- [Orchestration](/orchestration) for running multi-step tasks with codemode and subagents.
+- [Migrating workflows](/orchestration/migrating-workflows) for replacing earlier workflow definitions.

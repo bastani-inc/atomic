@@ -11,7 +11,6 @@ import mcpPackageJson from "../../packages/mcp/package.json" with { type: "json"
 import nativesPackageJson from "../../packages/natives/package.json" with { type: "json" };
 import subagentsPackageJson from "../../packages/subagents/package.json" with { type: "json" };
 import webAccessPackageJson from "../../packages/web-access/package.json" with { type: "json" };
-import workflowsPackageJson from "../../packages/workflows/package.json" with { type: "json" };
 import { readJson, readText } from "../helpers/runtime.js";
 
 const STRICT_RELEASE_VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-alpha\.([1-9]\d*))?$/;
@@ -72,7 +71,6 @@ const PUBLISHED_DEPENDENCY_SECTIONS: readonly DependencySectionName[] = [
 ];
 
 const BUNDLED_PACKAGE_MANIFESTS: readonly PackageDependencySections[] = [
-	workflowsPackageJson,
 	subagentsPackageJson,
 	mcpPackageJson,
 	webAccessPackageJson,
@@ -96,6 +94,20 @@ const PUBLISHABLE_WORKSPACE_PACKAGES = new Set([
 	"@bastani/atomic-telemetry",
 	"@bastani/atomic-tui",
 ]);
+
+const ATOMIC_PACKAGE_DIR = "packages/coding-agent";
+
+/** The export checks read the build output; CI builds before the unit suites, a fresh checkout may not have. */
+const builtAtomicTest = existsSync(join(ATOMIC_PACKAGE_DIR, "dist/index.js")) ? test : test.skip;
+if (!existsSync(join(ATOMIC_PACKAGE_DIR, "dist/index.js"))) {
+	console.warn("[package-metadata] export target checks skipped: packages/coding-agent/dist is not built");
+}
+
+type ExportTarget = string | { [condition: string]: ExportTarget };
+
+function exportTargets(target: ExportTarget): string[] {
+	return typeof target === "string" ? [target] : Object.values(target).flatMap(exportTargets);
+}
 
 function markdownFiles(dir: string): string[] {
 	return readdirSync(dir)
@@ -191,6 +203,19 @@ describe("package metadata", () => {
 		assert.equal(Object.hasOwn(atomicPackageJson.dependencies, "@earendil-works/pi-protocol"), false);
 	});
 
+	builtAtomicTest("@bastani/atomic exports only subpaths that its build produces", () => {
+		const unresolved: string[] = [];
+		for (const [subpath, target] of Object.entries(atomicPackageJson.exports as Record<string, ExportTarget>)) {
+			for (const file of exportTargets(target)) {
+				const built = file.includes("*")
+					? globSync(file, { cwd: ATOMIC_PACKAGE_DIR, onlyFiles: true }).length > 0
+					: existsSync(join(ATOMIC_PACKAGE_DIR, file));
+				if (!built) unresolved.push(`${subpath} -> ${file}`);
+			}
+		}
+		assert.deepEqual(unresolved, [], "every exported subpath must resolve to a file in the published dist");
+	});
+
 	test("@bastani/atomic publish payload keeps in-product docs and prebundled builtins", async () => {
 		assert.deepEqual(atomicPackageJson.files, [
 			"dist",
@@ -214,7 +239,6 @@ describe("package metadata", () => {
 		assert.equal(buildTsconfig.compilerOptions?.inlineSources, undefined);
 		assert.deepEqual(Object.values(INSTALLED_EXTENSION_ENTRIES), [
 			"src/extension/index.bundle.mjs",
-			"src/extension/index.bundle.mjs",
 			"index.bundle.mjs",
 			"index.bundle.mjs",
 			"index.bundle.mjs",
@@ -225,7 +249,7 @@ describe("package metadata", () => {
 		assert.ok(atomicPackageJson.files.includes("docs"));
 		const binaryBuild = await readText("scripts/build-binaries.sh");
 		assert.match(binaryBuild, /^\s*cp -r docs "binaries\/\$platform\/"$/m);
-		for (const topic of ["mcp-servers", "intercom", "web-access", "subagents", "workflows"]) {
+		for (const topic of ["mcp-servers", "intercom", "web-access", "subagents", "orchestration"]) {
 			const guide = await readText(`packages/coding-agent/docs/${topic}.md`);
 			assert.match(guide, /^# /m, `${topic} must have a readable guide in the shipped docs tree`);
 		}
@@ -278,9 +302,7 @@ describe("package metadata", () => {
 		}
 	});
 
-	test("ships workflow, skill, and bundled agent assets through package metadata", () => {
-		assert.ok(workflowsPackageJson.files.includes("builtin/**/*.ts"));
-		assert.deepEqual(workflowsPackageJson.pi.builtin, ["./builtin"]);
+	test("ships bundled skill assets through package metadata", () => {
 		assert.ok(subagentsPackageJson.files.includes("skills/**/*"));
 		assert.deepEqual(subagentsPackageJson.pi.skills, ["./skills"]);
 	});

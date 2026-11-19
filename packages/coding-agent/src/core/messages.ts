@@ -47,9 +47,8 @@ export interface CustomMessage<T = unknown> {
 }
 
 export type StageAdmittedCustomMessage<T = unknown> = CustomMessage<T> & {
-	/** Stable producer identity used for exactly-once workflow-stage admission. */
+	/** Stable producer identity used for exactly-once admission, such as `subagent:<key>` for a completion notice. */
 	stageAdmissionKey?: string;
-	/** Whether this admission joined active stage work or started after the assistant had settled. */
 };
 
 export interface BranchSummaryMessage {
@@ -189,7 +188,7 @@ export function verbatimRecallHint(sessionId: string): string {
 	const url = `history://sessions/${sessionId}`;
 	const lines = [
 		`Removed lines remain in this session's history at ${url}. Use \`search\` on that URL to find removed text, including text removed in this session's earlier compaction cycles, then \`read\` with \`:N-M\` to open it.`,
-		"You can also recall relevant findings from the project's other sessions (`search history://sessions`) and from workflow runs (`search history://workflows`, or `search history://` for both). Do this before redoing an investigation, or when a removed decision, error message, file path or result matters.",
+		"You can also recall relevant findings from the project's other sessions (`search history://sessions` or `search history://`). Do this before redoing an investigation, or when a removed decision, error message, file path or result matters.",
 		"A search over several records covers the newest ones by default; page on with `?offset=`.",
 	];
 	return `${lines.join("\n")}\n\n`;
@@ -310,7 +309,7 @@ function getToolResultCallId(message: AgentMessage): string | undefined {
  * Keep every tool result adjacent to the assistant turn that announced it.
  *
  * A message admitted while a tool batch is still running (an Intercom delivery, a
- * workflow lifecycle card, a durable stage admission) is persisted between the tool
+ * subagent completion notice) is persisted between the tool
  * call and its result in raw history. The provider requires the results to follow the
  * call directly, so derived context defers such messages until the batch is answered.
  * The durable transcript keeps its admission order.

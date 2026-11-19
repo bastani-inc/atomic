@@ -7,7 +7,7 @@ description: Every RPC command, event, type, and error contract.
 
 ## Commands
 
-### Stored summaries and workflow history
+### Stored session summaries
 
 These read-only commands do not start a model turn. Stored summaries remain available when `sessionSummary.enabled` is false.
 
@@ -15,12 +15,6 @@ These read-only commands do not start a model turn. Stored summaries remain avai
 | --- | --- | --- |
 | `{"type":"get_session_summary"}` | `{ summary: SessionSummaryEntry \| null }`, including `summary` and `summarizedThroughId`; always `null` for an unsaved (`--no-session`) session | `getSessionSummary()` |
 | `{"type":"list_sessions"}` | `{ sessions: RpcSessionInfo[] }` for the current project/session directory, including `summary` and `summarizedThroughId`; `created` and `modified` are ISO strings | `listSessions()` |
-| `{"type":"list_workflow_runs"}` | `{ runs: WorkflowRunSummary[] }`, including live runs and current-project resumable and completed history | `listWorkflowRuns(status?)` |
-| `{"type":"get_workflow_run_summary","runId":"<uuid>"}` | `WorkflowRunDetail` for that run | `getWorkflowRunSummary(runId)` |
-
-Workflow records include `runId`, `name`, `status`, `label`, `identity`, `summary`, and `summarizedThrough` (Unix milliseconds). Optional summary fields are absent when no summary has been saved. `list_workflow_runs` accepts an optional `status` filter. Run detail requests accept full UUIDs for earlier sessions; a missing run returns the normal error response. Summaries describe progress through their marker and may be stale.
-
-Stored history follows the SDK's run-detail access rules: top-level runs with a recorded session owner launched from the current project directory. Runs from other project directories are not included.
 
 ### Prompting
 
@@ -896,7 +890,7 @@ Loading or switching a session never recovers anything by itself. Until a client
 {"type": "start_pending_recovery", "reason": "resume"}
 ```
 
-`reason` is optional and accepts `"startup"`, `"resume"`, or `"workflow_stage_resume"`.
+Set the optional `reason` to `"startup"` or `"resume"`.
 
 Extensions first restore their background work. Interrupted deliveries that are still wanted are then replayed in a turn, which streams like any other turn. Notices and undelivered background task results are appended without starting a turn.
 
@@ -1387,7 +1381,7 @@ If compaction failed (for example, the boundary could not be saved), `result` is
 
 `result` and `errorMessage` are independent. A mid-turn post-tool compaction can commit a boundary and *then* fail the provider hard-input-limit gate, so one `compaction_end` may carry both a non-null `result` and an `errorMessage`. Treat the result as a committed durable boundary in that case; the error describes the follow-up request that was not sent.
 
-If overflow recovery exhausts its one compact-and-retry attempt, `compaction_end` includes `"unresolvedOverflow": true` and an `errorMessage`. Workflow orchestration treats that signal as a context-length failure that can advance configured model fallback tiers.
+If overflow recovery exhausts its one compact-and-retry attempt, `compaction_end` includes `"unresolvedOverflow": true` and an `errorMessage`.
 
 There is no `context_compact` command; Atomic reports it as an unknown command. Use `compact`.
 
@@ -1401,7 +1395,7 @@ Emitted once when a compaction run's compactor request returns usage, including 
 
 ### child_session_usage
 
-Emitted on a session once for every model call of a child session it created, such as an in-process subagent, and of that child's own children: assistant responses, compactor requests and cache warming. `usage` is that one call's usage. A workflow stage charges these to its budget.
+Emitted on a session once for every model call of a child session it created, such as an in-process subagent, and of that child's own children: assistant responses, compactor requests and cache warming. `usage` is that one call's usage.
 
 ```json
 {"type": "child_session_usage", "usage": {"input": 10, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 10, "cost": {"input": 2, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 2}}}

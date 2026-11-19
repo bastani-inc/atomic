@@ -288,7 +288,7 @@ describe("AgentSession MCP tools after resuming a file-backed session through cr
 		while (cleanups.length > 0) await cleanups.pop()?.();
 	});
 
-	const noBuiltinPackages = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false };
+	const noBuiltinPackages = { subagents: false, mcp: false, "web-access": false, intercom: false };
 
 	async function createFixture() {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-mcp-resume-"));
