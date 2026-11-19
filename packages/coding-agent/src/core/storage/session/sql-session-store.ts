@@ -1,7 +1,7 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
-import { dialectOf, type StorageDialect } from "../dialect.js";
+import { dialectOf, postgresJsonb, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
@@ -93,6 +93,8 @@ export const SESSION_ENTRY_CHUNK_BYTES = 1024 * 1024;
  * sqld's 10 MB response limit; a single row longer than this is a page of its own (#4954).
  */
 export const SESSION_READ_PAGE_CHARS = 1024 * 1024;
+/** Rows per metadata query and minimum elapsed time between durable resume checkpoints. */
+export const SESSION_RESUME_REBUILD = { pageEntries: 512, checkpointIntervalMs: 60_000 } as const;
 /** Bound each write transaction while reusing the bytes already supplied to putBlob. */
 const LEGACY_BLOB_BATCH_CHUNKS = 16;
 export const SESSION_TABLES = Object.freeze({
@@ -114,7 +116,17 @@ type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
 type SummaryStateRow = HeaderRow & { summary_state: string };
 type ResumeRow = SummaryStateRow & { revision: string };
 
-type StoredSummaryState = SessionSummaryState & { readonly resume?: SessionResumeIndex; readonly epoch?: string };
+type ResumeCheckpoint = {
+	readonly revision: string;
+	readonly index: SessionResumeIndex;
+	/** Present on the second pass, after the active branch was determined. */
+	readonly topology?: readonly (readonly [number, number])[];
+};
+type StoredSummaryState = SessionSummaryState & {
+	readonly resume?: SessionResumeIndex;
+	readonly resumeCheckpoint?: ResumeCheckpoint;
+	readonly epoch?: string;
+};
 
 interface ResumeSource {
 	readonly header: SessionRecordHeader;
@@ -1407,19 +1419,28 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	private async prepareResume(sessionId: string): Promise<void> {
-		for (let attempt = 0; attempt < 3; attempt++) {
+		attempts: for (let attempt = 0; attempt < 3; attempt++) {
 			const row = await this.database.get<ResumeRow>(
 				`SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
 				sessionId,
 			);
 			if (!row) throw new SessionNotFoundError(sessionId);
-			const state = JSON.parse(row.summary_state) as StoredSummaryState;
+			const { resumeCheckpoint, ...state } = JSON.parse(row.summary_state) as StoredSummaryState;
 			if (isSessionResumeIndex(state.resume, Number(row.last_seq))) return;
 			const remembered = this.resumeIndexes.get(sessionId);
 			if (remembered?.revision === row.revision && isSessionResumeIndex(remembered.index, Number(row.last_seq)))
 				return;
 			let index: SessionResumeIndex | undefined;
-			const j = (...path: string[]) => this.dialect.jsonText("entry_json", ...path);
+			const sqlite = this.dialect.name === "sqlite";
+			// Parse once per entry on Postgres, not once for every selected path. All paths are fixed store keys.
+			const j = (...path: string[]) =>
+				sqlite
+					? this.dialect.jsonText("entry_json", ...path)
+					: this.dialect.jsonAt({ column: "entry_json", element: "parsed" }, ...path);
+			const jsonType = (...path: string[]) =>
+				sqlite
+					? this.dialect.jsonType("entry_json", ...path)
+					: `jsonb_typeof(parsed.value #> '{${path.join(",")}}')`;
 			const projected = [
 				"type",
 				"parentId",
@@ -1468,7 +1489,7 @@ export class SqlSessionStore implements SessionStore {
 						[
 							key,
 							["version", "index", "timestamp"].includes(key)
-								? `CASE WHEN ${this.dialect.jsonType("entry_json", "data", key)} IN ('integer','real') THEN CAST(${j("data", key)} AS ${this.dialect.types.real}) END`
+								? `CASE WHEN ${jsonType("data", key)} IN ('integer','real','number') THEN CAST(${j("data", key)} AS ${this.dialect.types.real}) END`
 								: j("data", key),
 						] as const,
 				),
@@ -1478,19 +1499,12 @@ export class SqlSessionStore implements SessionStore {
 						["id", "replyTo", "expectsReply"].map((key) => [key, j("data", "message", key)] as const),
 					),
 				],
-				[
-					"op",
-					`CASE WHEN ${this.dialect.jsonHasType("text", "entry_json", "data", "op")} THEN ${j("data", "op")} END`,
-				],
+				["op", `CASE WHEN ${jsonType("data", "op")} = '${sqlite ? "text" : "string"}' THEN ${j("data", "op")} END`],
 				["owner", j("data", "owner")],
 				["tasks", j("data", "tasks")],
 				["groups", j("data", "groups")],
 				...["queries", "urls"].map(
-					(key) =>
-						[
-							key,
-							`CASE WHEN ${this.dialect.jsonHasType("array", "entry_json", "data", key)} THEN '[]' ELSE NULL END`,
-						] as const,
+					(key) => [key, `CASE WHEN ${jsonType("data", key)} = 'array' THEN '[]' ELSE NULL END`] as const,
 				),
 			]);
 			const detailsExpr = this.dialect.jsonObject([
@@ -1505,7 +1519,14 @@ export class SqlSessionStore implements SessionStore {
 			const dataFieldNames =
 				this.dialect.name === "sqlite"
 					? `(SELECT COALESCE(json_group_array(key),'[]') FROM json_each(entry_json,'$.data'))`
-					: `(SELECT COALESCE(json_agg(key)::text,'[]') FROM jsonb_object_keys(CASE WHEN jsonb_typeof(entry_json::jsonb->'data')='object' THEN entry_json::jsonb->'data' ELSE '{}'::jsonb END) AS key)`;
+					: `(SELECT COALESCE(json_agg(key)::text,'[]') FROM jsonb_object_keys(CASE WHEN jsonb_typeof(parsed.value->'data')='object' THEN parsed.value->'data' ELSE '{}'::jsonb END) AS key)`;
+			const embedded = this.database.descriptor.adapter === "node-sqlite";
+			// Walk only the content array. node:sqlite can pass it as JSONB without rendering large blocks back to text.
+			const toolBlocks = sqlite
+				? this.dialect.jsonValues(
+						embedded ? "jsonb_extract(entry_json, '$.message.content')" : j("message", "content"),
+					)
+				: "jsonb_array_elements_text(parsed.value #> '{message,content}') AS blocks(value)";
 			const columns = [
 				["dataFields", `CASE WHEN ${j("type")} = 'custom' THEN ${dataFieldNames} ELSE '[]' END`],
 				...projected,
@@ -1514,97 +1535,164 @@ export class SqlSessionStore implements SessionStore {
 				["details", detailsExpr],
 				["usage", j("usage")],
 				["protectedReconciliation", j("protectedReconciliation")],
-				[
-					"snapshot",
-					`CASE WHEN ${this.dialect.jsonHasType("object", "entry_json", "snapshot")} THEN '{}' ELSE NULL END`,
-				],
+				["snapshot", `CASE WHEN ${jsonType("snapshot")} = 'object' THEN '{}' ELSE NULL END`],
 				["compactionDetails", j("details", "strategy")],
 				[
 					"toolCalls",
-					`(SELECT count(*) FROM ${this.dialect.jsonValues(`CASE WHEN ${this.dialect.jsonHasType("array", "entry_json", "message", "content")} THEN ${j("message", "content")} ELSE '[]' END`)} WHERE ${this.dialect.jsonText("value", "type")} = 'toolCall')`,
+					`CASE WHEN ${j("message", "role")} = 'assistant' AND ${jsonType("message", "content")} = 'array' THEN
+						(SELECT count(*) FROM ${toolBlocks}
+						WHERE ${this.dialect.jsonText("value", "type")} = 'toolCall') ELSE 0 END`,
 				],
 			];
 			const select = columns
 				.map(([key, expr]) => `${expr} AS ${this.dialect.identifier(`resume_${key.toLowerCase()}`)}`)
 				.join(", ");
-			let topology: readonly (readonly [number, number])[] | undefined;
-			for (let pass = 0; pass < 2; pass++) {
-				index = undefined;
-				for (let after = 0; after < Number(row.last_seq); ) {
-					const rows = await this.database.all<SqliteRow & { seq: number; entry_id: string; chunks: number }>(
-						`WITH encoded AS MATERIALIZED (
- SELECT seq,entry_id,chunks,entry_json FROM ${this.tables.entries} WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT 512
- ), payloads AS MATERIALIZED (
- SELECT seq,entry_id,chunks,CASE WHEN chunks=0 THEN entry_json ELSE ${this.dialect.name === "sqlite" ? `(SELECT group_concat(text, '') FROM (SELECT CAST(data AS TEXT) AS text FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq=encoded.seq ORDER BY idx))` : `(SELECT convert_from(string_agg(data, ''::bytea ORDER BY idx),'UTF8') FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq=encoded.seq)`} END AS entry_json FROM encoded
- ) SELECT seq,entry_id,chunks,${select} FROM payloads ORDER BY seq`,
-						sessionId,
-						after,
-						row.last_seq,
-						sessionId,
-					);
-					if (rows.length === 0) break;
+			const page = `WITH page AS (
+				SELECT session_id,seq,entry_id,chunks,entry_json FROM ${this.tables.entries}
+				WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT ${SESSION_RESUME_REBUILD.pageEntries}
+			)`;
+			const parts = (source: string) => `FROM ${this.tables.entryChunks} WHERE session_id = ${source}.session_id
+				AND seq = ${source}.seq AND idx >= 0 AND idx < ${source}.chunks`;
+			const projection = sqlite
+				? `SELECT seq,entry_id,chunks,${select} FROM payloads ORDER BY seq`
+				: `, parsed AS MATERIALIZED (SELECT seq,entry_id,chunks,${postgresJsonb("entry_json")} AS value FROM payloads)
+					SELECT seq,entry_id,chunks,${select} FROM parsed ORDER BY seq`;
+			// SQLite checks zeroblob against this connection's actual value limit without allocating the bytes.
+			// PostgreSQL fields must be smaller than 1 GiB. Ask for byte lengths, not a trial concatenation.
+			const fits = sqlite
+				? "length(zeroblob(sum(length(data)))) IS NOT NULL"
+				: "sum(octet_length(data)) < 1073741824";
+			const joined = sqlite
+				? `(SELECT group_concat(text, '') FROM (SELECT CAST(data AS TEXT) AS text ${parts("sized")} ORDER BY idx))`
+				: `(SELECT convert_from(string_agg(data, ''::bytea ORDER BY idx), 'UTF8') ${parts("sized")})`;
+			// On file SQLite, check each entry just before joining its chunks, not a whole page ahead of the reads.
+			// OFFSET 0 prevents SQLite from flattening the size check and evaluating it twice for the same entry.
+			// Materialize the joined payloads once so all projected fields share them. Only metadata leaves SQL.
+			const nativePage = `${page}, sized AS ${embedded ? "NOT MATERIALIZED" : "MATERIALIZED"} (
+				SELECT page.*, CASE WHEN chunks = 0 OR EXISTS (SELECT 1 ${parts("page")} GROUP BY seq
+					HAVING count(*) = page.chunks AND ${fits}) THEN 0 ELSE chunks END AS remaining FROM page${embedded ? " LIMIT -1 OFFSET 0" : ""}
+			), payloads AS MATERIALIZED (
+				SELECT seq,entry_id,remaining AS chunks,CASE WHEN chunks > 0 AND remaining = 0 THEN ${joined} ELSE entry_json END AS entry_json
+				FROM sized
+			) ${projection}`;
+			const stubPage = `${page}, payloads AS (SELECT * FROM page) ${projection}`;
+			// Checkpoints are not published indexes. A revision or index-format change invalidates both passes.
+			const checkpoint =
+				resumeCheckpoint?.revision === row.revision &&
+				resumeCheckpoint.index?.seq > 0 &&
+				resumeCheckpoint.index.seq < Number(row.last_seq) &&
+				isSessionResumeIndex(resumeCheckpoint.index, resumeCheckpoint.index.seq)
+					? resumeCheckpoint
+					: undefined;
+			let topology = checkpoint?.topology;
+			let expectedSummary = this.database.readOnly ? undefined : row.summary_state;
+			index = checkpoint?.index;
+			let nextCheckpointAt = performance.now() + SESSION_RESUME_REBUILD.checkpointIntervalMs;
+			for (let pass = topology === undefined ? 0 : 1; pass < 2; pass++) {
+				for (let after = index?.seq ?? 0; after < Number(row.last_seq); ) {
+					type ProjectedRow = SqliteRow & { seq: number; entry_id: string; chunks: number };
+					const args = [sessionId, after, row.last_seq] as const;
+					let rows: ProjectedRow[] = [];
 					const batch: SessionEntry[] = [];
-					for (const projected of rows) {
-						const parsed: Record<string, unknown> = { id: projected.entry_id };
-						const decode = (value: SqliteValue | undefined) =>
-							typeof value === "string" && (value.startsWith("{") || value.startsWith("["))
-								? JSON.parse(value)
-								: value;
-						for (const [key] of columns) {
-							const value = projected[`resume_${key.toLowerCase()}`];
-							parsed[key] = [
-								"dataFields",
-								"message",
-								"data",
-								"details",
-								"usage",
-								"snapshot",
-								"protectedReconciliation",
-							].includes(key)
-								? decode(value)
-								: value;
-						}
-						const message = parsed.message as Record<string, unknown>;
-						if (message && typeof message === "object") {
-							message.usage = decode(message.usage as SqliteValue);
-							message.content = Array.from({ length: Number(parsed.toolCalls ?? 0) }, () => ({
-								type: "toolCall",
-							}));
-						}
-						if (parsed.snapshot === null) delete parsed.snapshot;
-						if (parsed.type === "compaction") parsed.details = { strategy: parsed.compactionDetails };
-						if (parsed.type === "custom") {
-							const data = parsed.data as Record<string, unknown>;
-							const keys = (parsed.dataFields as string[]) ?? [];
-							for (const key of Object.keys(data)) if (!keys.includes(key)) delete data[key];
-							for (const key of keys) if (!(key in data)) data[key] = null;
-						}
-						for (const key of ["data", "details"]) {
-							const data = parsed[key] as Record<string, unknown>;
-							if (data && typeof data === "object") {
-								data.message = decode(data.message as SqliteValue);
-								data.owner = decode(data.owner as SqliteValue);
-								data.tasks = decode(data.tasks as SqliteValue);
-								for (const field of ["groups", "queries", "urls"])
-									if (field in data) data[field] = decode(data[field] as SqliteValue);
-								if (
-									data.timestamp !== null &&
-									data.timestamp !== undefined &&
-									typeof data.timestamp === "string"
-								)
-									data.timestamp = Number(data.timestamp);
-								if (parsed.type === "custom" && parsed.customType === "subagent-child") {
-									if (data.version !== null && data.version !== undefined) data.version = Number(data.version);
-									if (data.index !== null && data.index !== undefined) data.index = Number(data.index);
+					let toolCalls = 0;
+					for (const sql of [nativePage, stubPage]) {
+						try {
+							rows = await this.database.all<ProjectedRow>(sql, ...args);
+							for (const entry of rows) {
+								let projected: SqliteRow = entry;
+								if (Number(entry.chunks) > 0) {
+									try {
+										const { chunkedResumeProjection } = await import("./chunked-resume-projection.js");
+										projected = await chunkedResumeProjection(entry, this.dialect.name === "postgres", () =>
+											this.entryChunks(this.database, sessionId, Number(entry.seq), Number(entry.chunks), {
+												revision: row.revision,
+											}),
+										);
+									} catch (error) {
+										// A replacement between chunk reads can remove a chunk or change its JSON mid-token.
+										const current = await this.database.get(
+											`SELECT revision FROM ${this.tables.sessions} WHERE id = ?`,
+											sessionId,
+										);
+										if (current?.revision !== row.revision) continue attempts;
+										throw error;
+									}
 								}
-								const message = data.message as Record<string, unknown>;
-								if (message?.expectsReply === 1 || message?.expectsReply === "true")
-									message.expectsReply = true;
-								if (data.historyOnly === 1 || data.historyOnly === "true") data.historyOnly = true;
+								const parsed: Record<string, unknown> = { id: entry.entry_id };
+								const decode = (value: SqliteValue | undefined) =>
+									typeof value === "string" && (value.startsWith("{") || value.startsWith("["))
+										? JSON.parse(value)
+										: value;
+								for (const [key] of columns) {
+									const value = projected[`resume_${key.toLowerCase()}`];
+									parsed[key] = [
+										"dataFields",
+										"message",
+										"data",
+										"details",
+										"usage",
+										"snapshot",
+										"protectedReconciliation",
+									].includes(key)
+										? decode(value)
+										: value;
+								}
+								const message = parsed.message as Record<string, unknown>;
+								if (message && typeof message === "object") {
+									message.usage = decode(message.usage as SqliteValue);
+									if (parsed.type === "message" && message.role === "assistant")
+										toolCalls += Number(parsed.toolCalls ?? 0);
+								}
+								if (parsed.snapshot === null) delete parsed.snapshot;
+								if (parsed.type === "compaction") parsed.details = { strategy: parsed.compactionDetails };
+								if (parsed.type === "custom") {
+									const data = parsed.data as Record<string, unknown>;
+									const keys = (parsed.dataFields as string[]) ?? [];
+									for (const key of Object.keys(data)) if (!keys.includes(key)) delete data[key];
+									for (const key of keys) if (!(key in data)) data[key] = null;
+								}
+								for (const key of ["data", "details"]) {
+									const data = parsed[key] as Record<string, unknown>;
+									if (data && typeof data === "object") {
+										data.message = decode(data.message as SqliteValue);
+										data.owner = decode(data.owner as SqliteValue);
+										data.tasks = decode(data.tasks as SqliteValue);
+										for (const field of ["groups", "queries", "urls"])
+											if (field in data) data[field] = decode(data[field] as SqliteValue);
+										if (
+											data.timestamp !== null &&
+											data.timestamp !== undefined &&
+											typeof data.timestamp === "string"
+										)
+											data.timestamp = Number(data.timestamp);
+										if (parsed.type === "custom" && parsed.customType === "subagent-child") {
+											if (data.version !== null && data.version !== undefined)
+												data.version = Number(data.version);
+											if (data.index !== null && data.index !== undefined) data.index = Number(data.index);
+										}
+										const message = data.message as Record<string, unknown>;
+										if (message?.expectsReply === 1 || message?.expectsReply === "true")
+											message.expectsReply = true;
+										if (data.historyOnly === 1 || data.historyOnly === "true") data.historyOnly = true;
+									}
+								}
+								batch.push(parsed as unknown as SessionEntry);
 							}
+							break;
+						} catch (error) {
+							// A native value or result page exceeded a limit, or legacy projected text wasn't JSON.
+							// Read stubs and select the needed fields from chunks instead. No part of this page was folded.
+							if (
+								sql === stubPage ||
+								!(error instanceof Error) ||
+								!["SyntaxError", "StoragePayloadTooLargeError", "StorageUnavailableError"].includes(error.name)
+							)
+								throw error;
+							batch.length = 0;
+							toolCalls = 0;
 						}
-						batch.push(parsed as unknown as SessionEntry);
 					}
+					if (rows.length === 0) break;
 					const old = index ?? foldSessionResume(undefined, []);
 					const seqs = new Map<string, number>();
 					for (const id of foreignResumeIds(old, batch)) {
@@ -1617,10 +1705,44 @@ export class SqlSessionStore implements SessionStore {
 						(id) => seqs.get(id),
 						(seq) => topology === undefined || topology.some(([a, b]) => seq >= a && seq <= b),
 					);
+					if (toolCalls > 0)
+						index = { ...index, totals: { ...index.totals, toolCalls: index.totals.toolCalls + toolCalls } };
 					after = Number(rows.at(-1)!.seq);
+					// Checkpoints share SQLite's write lock with other sessions. Fast rebuilds need only the final publication.
+					if (
+						expectedSummary !== undefined &&
+						after < Number(row.last_seq) &&
+						index.seq === after &&
+						performance.now() >= nextCheckpointAt
+					) {
+						// Checkpoints feed another fold, unlike the final index. JSON null would silently turn an
+						// overflowing sum back into zero on the next addition. JSON.parse("1e999") preserves Infinity.
+						const next = JSON.stringify(
+							{ ...state, resumeCheckpoint: { revision: row.revision, index, topology } },
+							(_key, value: unknown) =>
+								value === Infinity || value === -Infinity
+									? (JSON as JSON & { rawJSON(text: string): object }).rawJSON(value > 0 ? "1e999" : "-1e999")
+									: value,
+						);
+
+						// A second reader may have finished at the same revision. Never replace its completed index with a prefix.
+						const saved = await this.database
+							.run(
+								`UPDATE ${this.tables.sessions} SET summary_state = ? WHERE id = ? AND revision = ? AND summary_state = ?`,
+								next,
+								sessionId,
+								row.revision,
+								expectedSummary,
+							)
+							.catch(() => ({ changes: 0 }));
+						expectedSummary = saved.changes === 1 ? next : undefined;
+						nextCheckpointAt = performance.now() + SESSION_RESUME_REBUILD.checkpointIntervalMs;
+					}
+					if (after < Number(row.last_seq)) await yieldTurn();
 				}
-				if (pass === 0 && index && index.jumps.length > 0) topology = branchRanges(index, index.leafSeq);
-				else break;
+				if (pass !== 0 || !index || index.jumps.length === 0) break;
+				topology = branchRanges(index, index.leafSeq);
+				index = undefined;
 			}
 			index = { ...(index ?? foldSessionResume(undefined, [])), epoch: state.epoch ?? row.revision };
 			const current = await this.database.get<ResumeRow>(
@@ -1767,21 +1889,37 @@ export class SqlSessionStore implements SessionStore {
 		signal?: AbortSignal,
 	): Promise<Uint8Array[]> {
 		const chunks: Uint8Array[] = [];
+		for await (const chunk of this.entryChunks(tx, sessionId, seq, count, { signal })) chunks.push(chunk);
+		return chunks;
+	}
+
+	private async *entryChunks(
+		tx: SqliteExecutor,
+		sessionId: string,
+		seq: number,
+		count: number,
+		{ signal, revision }: { signal?: AbortSignal; revision?: string },
+	): AsyncGenerator<Uint8Array> {
+		const fence =
+			revision === undefined
+				? ""
+				: ` AND EXISTS (SELECT 1 FROM ${this.tables.sessions} WHERE id = ? AND revision = ?)`;
+		const fenceArgs = revision === undefined ? [] : [sessionId, revision];
 		for (let index = 0; index < count; index++) {
 			signal?.throwIfAborted();
 			const chunk = await tx.get<SqliteRow & { data: Uint8Array }>(
-				`SELECT data FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ? AND idx = ?`,
+				`SELECT data FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ? AND idx = ?${fence}`,
 				sessionId,
 				seq,
 				index,
+				...fenceArgs,
 			);
 			if (chunk === undefined) {
 				throw new StorageError(`Session ${sessionId} entry ${seq} is missing chunk ${index} of ${count}`);
 			}
-			chunks.push(chunk.data);
-			if (signal !== undefined && index + 1 < count) await yieldTurn();
+			yield chunk.data;
+			if ((revision !== undefined || signal !== undefined) && index + 1 < count) await yieldTurn();
 		}
-		return chunks;
 	}
 
 	private async readInlineEntryBytes(sessionId: string, seq: number): Promise<Uint8Array[]> {
