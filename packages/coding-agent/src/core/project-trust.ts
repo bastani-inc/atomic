@@ -67,7 +67,9 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 		return options.trustOverride;
 	}
 	if (!(await hasProjectTrustInputsAsync(options.cwd))) {
-		// Nothing to gate, but a saved "Do not trust" still applies (upstream #10947).
+		// Nothing to gate: even a handler added during the store read cannot vote on this folder.
+		options.onHandlerSnapshot?.(false);
+		// A saved "Do not trust" still applies (upstream #10947).
 		return (await options.trustStore.getAsync(options.cwd)) ?? true;
 	}
 
