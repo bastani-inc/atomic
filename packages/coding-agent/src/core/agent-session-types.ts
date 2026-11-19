@@ -287,6 +287,8 @@ export interface AgentSessionConfig {
 	 * durable transcript stays unchanged; only derived context is filtered.
 	 */
 	contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
+	/** The same projection, with request-only provenance. Not used by refresh, previews or recovery. */
+	requestContextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	orchestrationContext?: OrchestrationContext;
 	intercomPolicy?: import("./intercom-policy.ts").SessionIntercomPolicy;
 	/** Resolved worktree snapshot settings; default: the settings manager's `snapshots.*`. */

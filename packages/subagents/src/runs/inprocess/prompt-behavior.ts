@@ -1,4 +1,3 @@
-import { markThinkingBeforeRemovedForkBoundary } from "@bastani/atomic";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
@@ -146,7 +145,11 @@ function stripAssistantSubagentToolCallBlocks<T>(message: T): T | undefined {
 }
 
 /** Remove parent-only orchestration history while preserving it for an authorized fanout child. */
-export function stripParentOnlySubagentMessages<T>(messages: T[], preserveFanoutToolHistory = false): T[] {
+export function stripParentOnlySubagentMessages<T>(
+	messages: T[],
+	preserveFanoutToolHistory = false,
+	onRemovedBoundary?: (previous: T) => void,
+): T[] {
 	let changed = false;
 	const filtered: T[] = [];
 	for (const message of messages) {
@@ -155,8 +158,19 @@ export function stripParentOnlySubagentMessages<T>(messages: T[], preserveFanout
 			(!preserveFanoutToolHistory && isSubagentToolResultMessage(message))
 		) {
 			changed = true;
-			const index = filtered.length - 1;
-			if (index >= 0) filtered[index] = markThinkingBeforeRemovedForkBoundary(filtered[index]!, message);
+			const previous = onRemovedBoundary && filtered.at(-1);
+			if (onRemovedBoundary && previous !== undefined && (previous as { role?: string })?.role === "assistant") {
+				const removed = message as { role: string; excludeFromContext?: boolean; content?: unknown };
+				// A tool result or a visible notice separated the parent's assistant turns. Don't
+				// inspect the assistant's blocks or scan arbitrary notice text during projection.
+				if (
+					removed.role === "toolResult" ||
+					(removed.excludeFromContext !== true &&
+						typeof removed.content === "string" &&
+						(removed.content.at(0)?.trim() || removed.content.at(-1)?.trim()))
+				)
+					onRemovedBoundary(previous);
+			}
 			continue;
 		}
 		const stripped = preserveFanoutToolHistory ? message : stripAssistantSubagentToolCallBlocks(message);
@@ -172,7 +186,10 @@ export function stripParentOnlySubagentMessages<T>(messages: T[], preserveFanout
 
 export interface InProcessChildPromptBehavior {
 	readonly systemPromptTransform: (prompt: string) => string;
-	readonly initialContextTransform: (messages: AgentMessage[]) => AgentMessage[];
+	readonly initialContextTransform: (
+		messages: AgentMessage[],
+		onRemovedBoundary?: (previous: AgentMessage) => void,
+	) => AgentMessage[];
 }
 
 export function createInProcessChildSystemPromptTransform(
@@ -193,6 +210,7 @@ export function createInProcessChildSystemPromptTransform(
 export function createInProcessChildPromptBehavior(policy: ChildPromptPolicy): InProcessChildPromptBehavior {
 	return {
 		systemPromptTransform: createInProcessChildSystemPromptTransform(policy),
-		initialContextTransform: (messages) => stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized),
+		initialContextTransform: (messages, onRemovedBoundary) =>
+			stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized, onRemovedBoundary),
 	};
 }

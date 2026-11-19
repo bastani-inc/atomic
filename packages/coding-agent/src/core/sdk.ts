@@ -430,9 +430,23 @@ async function constructAgentSession(
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
 	const repairedMessages = repairOrphanToolResults(existingSession.messages, { repairTrailing: true });
-	const existingMessages = options.initialContextTransform
-		? options.initialContextTransform(repairedMessages)
-		: repairedMessages;
+	// Keep removed turn boundaries beside the fork projection, not on its messages: recovery
+	// and cache warming both rely on the original objects. Each projection has its own gaps.
+	let forkBoundaries: WeakSet<AgentMessage> | undefined;
+	const transform = options.initialContextTransform;
+	const requestContextProjectionTransform =
+		transform && options.subagentPolicy
+			? (messages: AgentMessage[]) => {
+					forkBoundaries = undefined;
+					if (sessionManager.getHeader()?.parentSessionId === undefined) return transform(messages);
+					const boundaries = new WeakSet<AgentMessage>();
+					const projected = transform(messages, (previous) => boundaries.add(previous));
+					forkBoundaries = boundaries;
+					return projected;
+				}
+			: undefined;
+	// The initial projection can also be sent directly through the agent's conversion and payload hooks.
+	const existingMessages = (requestContextProjectionTransform ?? transform)?.(repairedMessages) ?? repairedMessages;
 	const hasExistingSession = existingMessages.length > 0;
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
 
@@ -558,10 +572,12 @@ async function constructAgentSession(
 	let agent: Agent;
 
 	let lastConvertedLlmMessages: Message[] | undefined;
+	let requestForkBoundaries: WeakSet<AgentMessage> | undefined;
 
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-		const converted = convertToLlm(messages);
+		requestForkBoundaries = forkBoundaries;
+		const converted = convertToLlm(messages, requestForkBoundaries);
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
 			lastConvertedLlmMessages = converted;
@@ -784,6 +800,10 @@ async function constructAgentSession(
 		},
 		onPayload: async (payload, model) => {
 			const sourceMessages = lastConvertedLlmMessages;
+			const boundaries =
+				requestForkBoundaries && sessionManager.getHeader()?.parentSessionId !== undefined
+					? requestForkBoundaries
+					: undefined;
 			const runner = extensionRunnerRef.current;
 			let finalPayload = payload;
 			if (runner?.hasHandlers("before_provider_request")) {
@@ -793,9 +813,7 @@ async function constructAgentSession(
 				finalPayload = await runner.emitBeforeProviderRequest(guarded);
 			}
 			if (sourceMessages) {
-				const forkedChild =
-					subagentPolicy !== undefined && sessionManager.getHeader()?.parentSessionId !== undefined;
-				finalPayload = restoreAnthropicReplayThinkingBlocks(finalPayload, sourceMessages, model, forkedChild);
+				finalPayload = restoreAnthropicReplayThinkingBlocks(finalPayload, sourceMessages, model, boundaries);
 			}
 			const sanitizedPayload = sanitizeOpenAIResponsesPayload(finalPayload, model);
 			markLifecycleTiming("before-provider-request");
@@ -928,7 +946,8 @@ async function constructAgentSession(
 			inheritedHistory: options.inheritedHistory,
 			resourceAdmission: options.resourceAdmission ?? undefined,
 			systemPromptTransform: options.systemPromptTransform,
-			contextProjectionTransform: options.initialContextTransform,
+			contextProjectionTransform: transform,
+			requestContextProjectionTransform,
 			workspace,
 		});
 	} catch (error) {

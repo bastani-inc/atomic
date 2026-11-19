@@ -173,8 +173,11 @@ export interface CreateAgentSessionOptions {
 	releaseWhenIdle?: ReleaseWhenIdleOptions;
 	/** Transform the fully constructed base system prompt at session construction. */
 	systemPromptTransform?: (prompt: string) => string;
-	/** Filter inherited session messages before they enter the new AgentSession. */
-	initialContextTransform?: (messages: AgentMessage[]) => AgentMessage[];
+	/** Filter inherited messages. A fork can report which retained messages lost a following turn boundary. */
+	initialContextTransform?: (
+		messages: AgentMessage[],
+		onRemovedBoundary?: (previous: AgentMessage) => void,
+	) => AgentMessage[];
 }
 
 export interface ResourceAdmissionRequest {

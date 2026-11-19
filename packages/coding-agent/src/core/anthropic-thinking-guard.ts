@@ -60,28 +60,6 @@ function readReplayThinkingBlock(block: unknown, allowEmptySignature = false): R
 	return { type: "thinking", thinking: block.thinking, signature: block.thinkingSignature };
 }
 
-// Keep provenance on the projected copy, not the stored transcript. Spreads during request conversion
-// retain the symbol (including across separately loaded extension modules); JSON never emits it.
-const removedForkBoundary = Symbol.for("@bastani/atomic/removed-fork-boundary");
-
-/** A removed tool result or visible parent notice can join this thinking-only message to the next reply. */
-export function markThinkingBeforeRemovedForkBoundary<T>(message: T, removed: unknown): T {
-	if (!isObject(message) || message.role !== "assistant" || !Array.isArray(message.content)) return message;
-	if (!message.content.length || !message.content.every((block) => readReplayThinkingBlock(block) !== undefined))
-		return message;
-	// Built-in parent notices start with a visible label. If neither end proves that a notice
-	// would emit, leave the turn alone rather than searching arbitrary user-like content.
-	if (
-		!isObject(removed) ||
-		(removed.role !== "toolResult" &&
-			(removed.excludeFromContext === true ||
-				typeof removed.content !== "string" ||
-				(!removed.content.at(0)?.trim() && !removed.content.at(-1)?.trim())))
-	)
-		return message;
-	return { ...message, [removedForkBoundary]: true };
-}
-
 function isSignedWireBlock(block: AnthropicContentBlock): boolean {
 	const signature =
 		block.type === "thinking" ? block.signature : block.type === "redacted_thinking" ? block.data : undefined;
@@ -151,6 +129,7 @@ function repairAssistantContent(
 	originalMessage: AssistantMessage,
 	providerBlocks: readonly AnthropicContentBlock[],
 	allowEmptySignature: boolean,
+	forkCandidate?: { onlySignedThinking: boolean },
 ): AnthropicContentBlock[] {
 	const repaired: AnthropicContentBlock[] = [];
 	let providerIndex = 0;
@@ -164,6 +143,12 @@ function repairAssistantContent(
 		// Thinking before the final marker is not in the payload and must not be restored into it:
 		// echoing thinking from both sides of the boundary is rejected outright.
 		const replayBlock = precedesBoundary ? undefined : readReplayThinkingBlock(originalBlock, allowEmptySignature);
+		// Check the single candidate during the existing repair pass. The first other block
+		// rules it out; no separate walk of its content (or any earlier assistant) is needed.
+		if (forkCandidate?.onlySignedThinking) {
+			forkCandidate.onlySignedThinking =
+				!!replayBlock && isSignedWireBlock(replayBlock) && isSignedWireBlock(providerBlocks[index]);
+		}
 		if (replayBlock) {
 			if (isThinkingLikeAnthropicBlock(providerBlocks[providerIndex])) {
 				providerIndex += 1;
@@ -248,7 +233,7 @@ export function restoreAnthropicReplayThinkingBlocks(
 	payload: unknown,
 	sourceMessages: readonly Message[],
 	model: Model<Api>,
-	forkedChild = false,
+	forkBoundaries?: WeakSet<Message>,
 ): unknown {
 	if (model.api !== "anthropic-messages") return payload;
 
@@ -275,6 +260,27 @@ export function restoreAnthropicReplayThinkingBlocks(
 	const allowEmptySignature = isObject(model.compat) && (model.compat as JsonObject).allowEmptySignature === true;
 	let nextPayloadMessages: unknown[] | undefined;
 
+	// Claude joins adjacent assistants. Only a removed boundary in the latest *emitted* pair
+	// can need the fork repair. An aborted reply may not emit at all; a visible user separates them.
+	const earlier = forkBoundaries && assistantPayloads.at(-2);
+	const latest = earlier && assistantPayloads.at(-1)!;
+	const source = earlier && emittingSourceAssistants.at(-2);
+	const candidate =
+		earlier &&
+		source &&
+		latest &&
+		earlier.index + 1 === latest.index &&
+		forkBoundaries.has(source) &&
+		(model.provider === "github-copilot" || model.provider === "anthropic" || model.provider === "anthropic-api") &&
+		(model.fastRoute?.upstreamModelId ?? model.id).startsWith("claude-") &&
+		earlier.content.length > 0 &&
+		earlier.content.length === source.content.length &&
+		latest.content[0] &&
+		isSignedWireBlock(latest.content[0])
+			? earlier
+			: undefined;
+	let omitIndex: number | undefined;
+
 	for (const [assistantPayloadOrdinal, sourceMessage] of emittingSourceAssistants.entries()) {
 		const payloadAssistant = assistantPayloads[assistantPayloadOrdinal];
 
@@ -284,7 +290,14 @@ export function restoreAnthropicReplayThinkingBlocks(
 		// signed blocks, protecting against equal-count ordinal misalignment.
 		if (!nonThinkingBlocksAlign(sourceMessage, payloadAssistant.content)) continue;
 
-		const repairedContent = repairAssistantContent(sourceMessage, payloadAssistant.content, allowEmptySignature);
+		const forkCandidate = payloadAssistant === candidate ? { onlySignedThinking: true } : undefined;
+		const repairedContent = repairAssistantContent(
+			sourceMessage,
+			payloadAssistant.content,
+			allowEmptySignature,
+			forkCandidate,
+		);
+		if (forkCandidate?.onlySignedThinking) omitIndex = payloadAssistant.index;
 		if (JSON.stringify(repairedContent) === JSON.stringify(payloadAssistant.content)) continue;
 
 		nextPayloadMessages ??= [...payloadMessages];
@@ -294,27 +307,9 @@ export function restoreAnthropicReplayThinkingBlocks(
 		};
 	}
 
-	// Claude joins adjacent assistant messages. Only the earlier, orphaned thinking-only message of
-	// the *latest emitted* turn is unsafe. Work from actual payload ordinals: aborted/empty rows do
-	// not count, and a user message that really went on the wire must keep the turns separate.
-	const earlier = assistantPayloads.at(-2);
-	const latest = assistantPayloads.at(-1)!;
-	const source = emittingSourceAssistants.at(-2);
-	if (
-		forkedChild &&
-		(model.provider === "github-copilot" || model.provider === "anthropic" || model.provider === "anthropic-api") &&
-		(model.fastRoute?.upstreamModelId ?? model.id).startsWith("claude-") &&
-		earlier &&
-		source &&
-		removedForkBoundary in source &&
-		isProducedByModel(source, model) &&
-		earlier.index + 1 === latest.index &&
-		earlier.content.length > 0 &&
-		earlier.content.every(isSignedWireBlock) &&
-		latest.content.some(isSignedWireBlock)
-	) {
+	if (omitIndex !== undefined) {
 		nextPayloadMessages ??= [...payloadMessages];
-		nextPayloadMessages.splice(earlier.index, 1);
+		nextPayloadMessages.splice(omitIndex, 1);
 	}
 
 	if (!nextPayloadMessages || !isObject(payload)) return payload;

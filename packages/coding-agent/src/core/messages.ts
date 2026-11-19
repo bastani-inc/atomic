@@ -500,10 +500,11 @@ const LEGACY_COMPACTION_SUMMARY_ROLE = "compactionSummary";
  * - Branch summarization (for summarizing abandoned branches)
  * - Custom extensions and tools
  */
-export function convertToLlm(messages: AgentMessage[]): Message[] {
+export function convertToLlm(messages: AgentMessage[], forkBoundaries?: WeakSet<AgentMessage>): Message[] {
 	const converted = messages
 		.map((rawMessage): Message | undefined => {
 			const m = normalizeRawRedactedThinking(normalizeMessageContent(rawMessage));
+			if (m !== rawMessage && forkBoundaries?.has(rawMessage)) forkBoundaries.add(m);
 			const role: string = m.role;
 			if (role === LEGACY_COMPACTION_SUMMARY_ROLE) return undefined;
 			switch (m.role) {

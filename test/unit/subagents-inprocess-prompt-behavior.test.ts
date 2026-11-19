@@ -3,18 +3,26 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { normalizeContext } from "@bastani/atomic-ai";
 import {
 	type Api,
 	type AssistantMessage,
+	createAssistantMessageEventStream,
 	getModel,
 	type Message,
 	type Model,
 	streamSimple,
 } from "@bastani/atomic-ai/compat";
-import { afterEach, describe, test } from "vitest";
-import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader.js";
+import { afterEach, describe, test, vi } from "vitest";
+import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
+import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
+import {
+	createExtensionRuntime,
+	loadExtensionFromFactory,
+} from "../../packages/coding-agent/src/core/extensions/loader.js";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import type { ResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
-import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
+import { type CreateAgentSessionOptions, createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import type { Skill } from "../../packages/coding-agent/src/core/skills.js";
@@ -75,6 +83,10 @@ function resourceLoader(): ResourceLoader {
 async function createChildSession(
 	overrides: Parameters<typeof policy>[0] = {},
 	sessionManager = SessionManager.inMemory(),
+	options: Pick<
+		CreateAgentSessionOptions,
+		"model" | "modelRuntime" | "settingsManager" | "resourceLoader" | "builtins"
+	> = {},
 ): Promise<Awaited<ReturnType<typeof createAgentSession>>["session"]> {
 	const cwd = sessionManager.getCwd();
 	const settingsManager = SettingsManager.create(cwd, cwd);
@@ -90,6 +102,7 @@ async function createChildSession(
 		subagentPolicy: childPolicy,
 		systemPromptTransform: behavior.systemPromptTransform,
 		initialContextTransform: behavior.initialContextTransform,
+		...options,
 	});
 	return session;
 }
@@ -282,6 +295,157 @@ async function forkChild(parent: SessionManager): Promise<Awaited<ReturnType<typ
 	const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
 	return createChildSession({}, child);
 }
+
+async function testModelRuntime(model: Model<Api>) {
+	const credentials = AuthStorage.inMemory();
+	await credentials.modify(model.provider, async () => ({ type: "api_key", key: "test-key" }));
+	return ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false });
+}
+
+function replyStream(message: AssistantMessage) {
+	const stream = createAssistantMessageEventStream();
+	stream.push({ type: "start", partial: message });
+	if (message.stopReason === "error") stream.push({ type: "error", reason: "error", error: message });
+	else stream.push({ type: "done", reason: "stop", message });
+	return stream;
+}
+
+describe("child context refresh (#5481)", () => {
+	test("a fresh child's retry keeps the user's task, including after reopening (#5481)", async () => {
+		const root = forkParent().getCwd();
+		const manager = await SessionManager.create(root, join(root, "sessions"));
+		await manager.appendCustomMessageEntry("subagent-notify", "Previous worker finished.", true);
+		const runtime = createExtensionRuntime();
+		const extension = await loadExtensionFromFactory(
+			(pi) => {
+				pi.on("turn_end", ({ message }) => {
+					if (message.role === "assistant" && message.stopReason === "error")
+						return {
+							entries: [
+								{
+									type: "custom_message",
+									customType: "subagent-notify",
+									content: "Worker finished.",
+									display: true,
+								},
+							],
+						};
+				});
+			},
+			root,
+			createEventBus(),
+			runtime,
+		);
+		const loader = resourceLoader();
+		loader.getExtensions = () => ({ extensions: [extension], errors: [], runtime });
+		const settingsManager = SettingsManager.create(root, root);
+		settingsManager.applyOverrides({ retry: { enabled: true, baseDelayMs: 1, maxRetries: 1 } });
+		const session = await createChildSession({}, manager, {
+			model: copilotOpus,
+			modelRuntime: await testModelRuntime(copilotOpus),
+			settingsManager,
+			resourceLoader: loader,
+			builtins: { intercom: false },
+		});
+		const requests: Message[][] = [];
+		session.agent.streamFunction = (_model, context) => {
+			requests.push(context.messages);
+			return replyStream(
+				requests.length === 1
+					? {
+							...parentTurn([{ type: "thinking", thinking: "Partial", thinkingSignature: "sig" }]),
+							stopReason: "error",
+							errorMessage: "overloaded_error",
+						}
+					: parentTurn([{ type: "text", text: "Recovered." }]),
+			);
+		};
+		try {
+			const recoveryEdit = new Promise<void>((resolve) =>
+				session.subscribe((event) => {
+					if (event.type === "entry_appended" && event.entry.type === "context_edit") resolve();
+				}),
+			);
+			const prompt = session.prompt("Keep this task.");
+			await recoveryEdit;
+			const reopened = await SessionManager.open(manager.getSessionFile()!);
+			const messages = reopened.buildSessionProjection().messages;
+			assert.ok(messages.some((m) => m.role === "user" && JSON.stringify(m.content).includes("Keep this task.")));
+			assert.ok(!messages.some((m) => m.role === "assistant" && m.stopReason === "error"));
+			await prompt;
+			assert.equal(requests.length, 2);
+			assert.deepEqual(requests[1], requests[0]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("an unchanged fresh child still sends its scheduled cache warm after refresh (#5481)", async () => {
+		const manager = forkParent();
+		const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, promptCache: { short: 60, long: 60 } };
+		const answer = {
+			...parentTurn([{ type: "thinking", thinking: "Answer", thinkingSignature: "sig" }]),
+			provider: model.provider,
+			model: model.id,
+			usage: { ...zeroUsage, input: 100_000, totalTokens: 100_000 },
+		};
+		await manager.appendMessage({ role: "user", content: "Prior task.", timestamp: 0 });
+		await manager.appendMessage(answer);
+		await manager.appendCustomMessageEntry("subagent-notify", "Worker finished.", true);
+		const settingsManager = SettingsManager.create(manager.getCwd(), manager.getCwd());
+		settingsManager.setCacheWarmingMode("idle");
+		const modelRuntime = await testModelRuntime(model);
+		const tokenLimits: (number | undefined)[] = [];
+		modelRuntime.streamSimple = (_model, _context, options) => {
+			tokenLimits.push(options?.maxTokens);
+			return replyStream(answer);
+		};
+		const session = await createChildSession({}, manager, {
+			model,
+			modelRuntime,
+			settingsManager,
+			builtins: { intercom: false },
+		});
+		try {
+			vi.useFakeTimers();
+			const messages = await session.agent.convertToLlm(session.messages);
+			await session.agent.streamFunction(model, normalizeContext({ messages }), { sessionId: session.sessionId });
+			const scheduled = session.cacheWarmingStatus;
+			assert.equal(scheduled?.state, "scheduled");
+			assert.equal(scheduled.decision?.action, "warm");
+			session.refreshContext();
+			await vi.advanceTimersByTimeAsync(scheduled.nextWarmAt! - Date.now());
+			assert.deepEqual(tokenLimits, [undefined, 1]);
+		} finally {
+			vi.useRealTimers();
+			await session.dispose();
+		}
+	});
+
+	test("refreshing a fork never rereads a mixed answer's signatures for each removed notice (#5481)", () => {
+		let reads = 0;
+		const answer = parentTurn([
+			...Array.from({ length: 256 }, () => ({
+				type: "thinking" as const,
+				thinking: "Thinking",
+				get thinkingSignature() {
+					reads++;
+					return "sig";
+				},
+			})),
+			{ type: "text", text: "Done." },
+		]);
+		const notices = Array.from({ length: 256 }, () => ({
+			role: "custom",
+			customType: "subagent-notify",
+			content: "Worker finished.",
+		}));
+		const projected = stripParentOnlySubagentMessages([answer, ...notices]);
+		assert.equal(reads, 0);
+		assert.equal(projected.length, 1);
+		assert.strictEqual(projected[0], answer);
+	});
+});
 
 describe("forked child's first request replays the parent's thinking (#5481)", () => {
 	test("an aborted reply after a notice does not replace the latest signed answer, even on reopen (#5481)", async () => {

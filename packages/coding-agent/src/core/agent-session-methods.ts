@@ -727,6 +727,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_baseSystemPromptOptions: NormalizedBuildSystemPromptOptions;
 	_systemPromptTransform?: (prompt: string) => string;
 	_contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
+	_requestContextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	_runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;
