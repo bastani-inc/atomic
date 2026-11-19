@@ -5,6 +5,7 @@ import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { AgentSession, ClearedQueue, CompactionReason } from "../../core/agent-session.js";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type {
+	ExtensionBindings,
 	ModelMutationOptions,
 	PromptDisposition,
 	PromptOptions,
@@ -18,6 +19,7 @@ import type { WorkflowActivityFrame } from "../../core/extensions/workflow-event
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
+import { retryStatusUpdate, type SessionRetryStatus } from "../../core/session-retry-status.js";
 import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
@@ -142,10 +144,17 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** The engine prepares every resume of this session and builds its blueprints; this mirror only restores the same state. */
 	protected override resumeBlueprints: "build" | "skip" = "skip";
 	private readonly patchedSessions = new WeakSet<AgentSession>();
+	/** Host sessions bound with an extension error listener. Engine errors that arrive before one is bound wait for it. */
+	private readonly errorReportingSessions = new WeakSet<AgentSession>();
+	private readonly heldExtensionErrors: ExtensionError[] = [];
 	private readonly patchedSettingsManagers = new WeakSet<AgentSession["settingsManager"]>();
 	private mirroringPersistedModelDefault = false;
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
+	private streamingEpoch = 0;
+	private turnStartedAt?: number;
+	private retryStatus?: SessionRetryStatus;
+	private retryStatusEpoch = 0;
 	private panelCounts: AgentPanelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 	private compacting = false;
 	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
@@ -246,6 +255,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			clearActivity: () => {
 				this.streaming = false;
+				this.streamingEpoch++;
+				this.turnStartedAt = undefined;
+				this.retryStatus = undefined;
+				this.retryStatusEpoch++;
 				this.compacting = false;
 				this.retrying = false;
 				this.compactionReason = undefined;
@@ -404,6 +417,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.sessionStats.reset();
 			this.pendingEnabledModelsSync = undefined;
 			const modelEpoch = this.modelEpoch;
+			const retryStatusEpoch = this.retryStatusEpoch;
+			const streamingEpoch = this.streamingEpoch;
 			const thinkingEpoch = this.thinkingEpoch;
 			const scope = this.remoteModelCatalog.getScopeSnapshot();
 			const state = await this.getEngineState();
@@ -460,7 +475,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.remoteSessionName = state.sessionName;
 			this.remoteSessionId = state.sessionId;
 			this.remoteSessionFile = state.sessionLocation;
-			this.streaming = state.isStreaming;
+			if (retryStatusEpoch === this.retryStatusEpoch) this.retryStatus = state.retryStatus;
+			if (streamingEpoch === this.streamingEpoch) {
+				this.streaming = state.isStreaming;
+				this.turnStartedAt = state.turnStartedAt;
+			}
 			this.compacting = state.isCompacting;
 			this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
 			this.compactionStartedAt = state.isCompacting
@@ -894,13 +913,28 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.patchSessionManager(session.sessionManager);
 		this.patchSettingsManager(session.settingsManager);
 		this.sessionStats.track(session);
+		// Optional because focused runtime test doubles stand in for a session without extension bindings.
+		const bindExtensions = session.bindExtensions?.bind(session);
 		Object.defineProperties(session, {
+			...(bindExtensions && {
+				bindExtensions: {
+					configurable: true,
+					value: async (bindings: ExtensionBindings) => {
+						await bindExtensions(bindings);
+						if (!bindings.onError) return;
+						this.errorReportingSessions.add(session);
+						for (const error of this.heldExtensionErrors.splice(0)) session.extensionRunner.emitError(error);
+					},
+				},
+			}),
 			isStreaming: { configurable: true, get: () => this.streaming },
+			retryStatus: { configurable: true, get: () => this.retryStatus },
+			turnStartedAt: { configurable: true, get: () => this.turnStartedAt },
 			isCompacting: { configurable: true, get: () => this.compacting },
 			compactionReason: { configurable: true, get: () => this.compactionReason },
 			compactionStartedAt: { configurable: true, get: () => this.compactionStartedAt },
 			isBashRunning: { configurable: true, get: () => this.activeBashRequestIds.size > 0 },
-			isRetrying: { configurable: true, get: () => this.retrying },
+			isRetrying: { configurable: true, get: () => this.retrying || this.retryStatus !== undefined },
 			sessionName: { configurable: true, get: () => this.remoteSessionName },
 			sessionFile: { configurable: true, get: () => this.remoteSessionFile },
 			autoCompactionEnabled: { configurable: true, get: () => this.autoCompactionEnabled },
@@ -1419,20 +1453,36 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (isEngineExtensionError(record)) {
 			// A load failure is part of the engine's resource state, which the host shows with its resource diagnostics.
 			if (isExtensionLoadError(record)) return;
-			session.extensionRunner.emitError({
+			const error = {
 				extensionPath: record.extensionPath,
 				event: record.event,
 				error: record.error,
-			});
+				...(typeof record.stack === "string" && { stack: record.stack }),
+			};
+			// An engine that loads its resources eagerly starts its extensions while this host is still starting up.
+			if (this.errorReportingSessions.has(session)) session.extensionRunner.emitError(error);
+			else this.heldExtensionErrors.push(error);
 			return;
+		}
+		const status = retryStatusUpdate(event);
+		if (status !== undefined) {
+			this.retryStatus = status ?? undefined;
+			this.retryStatusEpoch++;
 		}
 		switch (event.type) {
 			case "agent_start":
+				this.turnStartedAt = event.turnStartedAt;
+				this.streamingEpoch++;
 				this.streaming = true;
 				break;
 			case "agent_end":
+				this.streamingEpoch++;
 				this.streaming = false;
 				this.dispatchBestEffort("refresh session view", this.refreshSessionView());
+				break;
+			case "agent_settled":
+				this.streamingEpoch++;
+				this.turnStartedAt = undefined;
 				break;
 			case "compaction_start":
 				this.compacting = true;

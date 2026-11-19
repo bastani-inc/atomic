@@ -96,6 +96,7 @@ import type { WorkerDefinitionSource } from "./definitions.js";
 import { missingSnapshotBlob } from "./dispatch-snapshot.js";
 import { EndedWatches } from "./ended-watches.js";
 import { FleetRateLimiter } from "./fleet-rate-limits.js";
+import { hasLiveStageSession, releaseWorkerStages } from "./open-stages.js";
 import {
 	type BoundWait,
 	boundWait,
@@ -303,15 +304,6 @@ function token(work: PoolWork): PoolWorkToken {
 	};
 }
 
-function isLiveStage(stage: StageSnapshot): boolean {
-	return (
-		(stage.sessionId !== undefined || stage.sessionFile !== undefined) &&
-		stage.status !== "completed" &&
-		stage.status !== "failed" &&
-		stage.status !== "skipped"
-	);
-}
-
 /** Whether a later incarnation of a root runs again a child an earlier one completed with this result. */
 function rerunsOnRootResume(result: WorkflowSerializableObject): boolean {
 	return failedOnPoolFault(result) || refusedAtChildStart(result);
@@ -326,6 +318,7 @@ function remoteStageSnapshot(stage: StageSnapshot): PooledStageChatSnapshot {
 	return {
 		sessionId: stage.sessionId,
 		status: stage.status,
+		publishedActivity: stage.chatActivity ?? "idle",
 		isStreaming: false,
 		messages: [],
 		pendingToolExecutionEvents: [],
@@ -353,6 +346,7 @@ export function projectRootRun(run: RunSnapshot): PoolRootProjection {
 			...(stage.replayKey === undefined ? {} : { replayKey: stage.replayKey }),
 			...(stage.intercomGroup === undefined ? {} : { intercomGroup: stage.intercomGroup }),
 			...(stage.workflowChildRun === undefined ? {} : { workflowChildRun: stage.workflowChildRun }),
+			...(stage.startedChildRunId === undefined ? {} : { startedChildRunId: stage.startedChildRunId }),
 			...(stage.workflowChild === undefined ? {} : { workflowChild: { ...stage.workflowChild, outputs: {} } }),
 		})),
 	};
@@ -375,7 +369,7 @@ interface Attempt {
  */
 class PooledRoutes {
 	readonly mirror: Store = createStore();
-	private readonly owners = new Map<string, string>();
+	private readonly owners = new Map<string, PoolWorkToken>();
 	private readonly attempts = new Map<string, Attempt>();
 	private activated = false;
 	private bridge?: Bridge;
@@ -427,6 +421,11 @@ class PooledRoutes {
 		this.mirror.recordRunStart({ ...rootRun, inputs: {}, toolNodes: [], rootRunId: this.root });
 	}
 
+	/** The attempt whose acknowledged snapshot is in the mirror for this run. */
+	ownerOf(runId: string): PoolWorkToken | undefined {
+		return this.owners.get(runId);
+	}
+
 	/** Applies publications the root accepted. */
 	accept(entries: readonly PoolActivityEntry[]): void {
 		this.mirror.batch(() => {
@@ -441,7 +440,7 @@ class PooledRoutes {
 				if (attempt.fenced) continue;
 				for (const run of runs) {
 					attempt.runs.add(run.id);
-					this.owners.set(run.id, work.id);
+					this.owners.set(run.id, work);
 					const { pendingStageMessages: _messages, ...published } = run;
 					this.mirror.recordRunStart({ ...published, rootRunId: this.root });
 					if (run.stages.some((stage) => stage.pendingStageDeliveryAvailable === true)) this.activated = true;
@@ -510,16 +509,7 @@ class PooledRoutes {
 		this.mirror.batch(() => {
 			for (const id of attempt.runs) {
 				rotateWorkflowPendingStageRouteCapability(this.mirror, id);
-				const run = this.mirror.run(id);
-				if (run?.stages.some(isLiveStage) !== true) continue;
-				this.mirror.recordRunStart({
-					...run,
-					stages: run.stages.map((stage) => {
-						if (!isLiveStage(stage)) return stage;
-						const { sessionId: _session, sessionFile: _file, ...rest } = stage;
-						return { ...rest, attachable: false, attached: false };
-					}),
-				});
+				releaseWorkerStages(this.mirror, id);
 			}
 		});
 	}
@@ -796,6 +786,8 @@ export class PoolCoordinator {
 	private ownsJournal = true;
 	private sharedTimer?: NodeJS.Timeout;
 	private sharedPass?: Promise<void>;
+	/** Final and periodic relays run in order: an older snapshot must not overwrite a completed child's last one. */
+	private sharedActivity = Promise.resolve();
 	/** Relayed activity already read, by version (the root's coordinator of a shared pool). */
 	private activityCursor = 0;
 	/** Work whose result reached the root. */
@@ -813,7 +805,7 @@ export class PoolCoordinator {
 	/** Which stages' next inputs this coordinator takes on a pass, by run and stage. */
 	private readonly inputScheduler = new StageInputScheduler(SHARED_POLL_MS, STAGE_INPUT_RETRY_MAX_MS);
 	/** Runs of attempts on other hosts, as their activity was relayed, and the root's views of their stages (#4391). */
-	private readonly remoteWatches = new RemoteStageWatches(isLiveStage);
+	private readonly remoteWatches = new RemoteStageWatches(hasLiveStageSession);
 	/** Warm worktrees by binding identity, as the host last answered, with when it answered. */
 	private readonly preferences = new Map<string, { readonly path: string | undefined; readonly at: number }>();
 	/** Set once a satellite stops taking new work, to finish what it holds and close. */
@@ -1673,12 +1665,18 @@ export class PoolCoordinator {
 		const shared = this.sharedPool!;
 		const lease = this.lease!;
 		const root = this.root!;
-		if (this.satellite !== undefined) await this.relayActivity(shared, lease);
-		else if (this.publishing) {
-			await this.readRelayedActivity(shared, root);
-			await this.readPoolUsage(root);
-		}
+		await this.syncSharedActivity(shared, lease);
+		if (this.satellite === undefined && this.publishing) await this.readPoolUsage(root);
 		await this.takeStageInputs(shared, lease, root);
+	}
+
+	private syncSharedActivity(shared: SqlSharedPool, lease: Lease): Promise<void> {
+		const transfer = this.sharedActivity.then(() => {
+			if (this.satellite !== undefined) return this.relayActivity(shared, lease);
+			if (this.publishing) return this.readRelayedActivity(shared, lease.runId);
+		});
+		this.sharedActivity = transfer.catch(() => {});
+		return transfer;
 	}
 
 	/** Relays the latest activity of this host's attempts, at most once per pass. */
@@ -2106,7 +2104,8 @@ export class PoolCoordinator {
 	private remoteStageWatch(id: WatchId, runId: string, stageId: string): WatchResult | undefined {
 		const stage = this.routes?.mirror.run(runId)?.stages.find((candidate) => candidate.id === stageId);
 		if (stage === undefined) return undefined;
-		const work = this.remoteWatches.open(id, runId, stageId, stage);
+		const work = this.remoteWatches.open(id, runId, stage, this.routes?.ownerOf(runId));
+		if (work === "pending") return { ok: false, refusal: "AttemptChanging" };
 		if (work === undefined) return undefined;
 		return {
 			ok: true,
@@ -3091,6 +3090,8 @@ export class PoolCoordinator {
 					if (message.kind !== "complete") throw new Error("Invalid worker operation");
 					const shipping = this.shipping;
 					if (shipping !== undefined) await leased(() => shipping.flush(work));
+					// Relays only accept leased work. Commit this host's last activity before completion releases that lease.
+					if (this.satellite !== undefined) await leased(() => this.syncSharedActivity(this.sharedPool!, lease));
 					await leased(() => queue.complete(lease, work, message.result as unknown as WorkflowSerializableObject));
 					await shipping?.release(work);
 					this.endStageWatches((watch) => watch.slot === slot, "stage_finished");
@@ -3586,6 +3587,7 @@ export class PoolCoordinator {
 		const local = new Set([...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [slot.work.id])));
 		const claimWindowMs = this.options?.shared?.claimWindowMs ?? 0;
 		const capable = new Map<string, boolean>();
+		let readFinalActivity = false;
 		for (const work of rows) {
 			if (!this.attemptBase.has(work.id)) continue;
 			// A failure an unreachable journal may have written reaches the root once a pass reads the work failed; work the
@@ -3611,8 +3613,14 @@ export class PoolCoordinator {
 				readyForMs: waitedMs(wait, now),
 				claimWindowMs,
 			});
-			if (settlement === "report-result") await this.sendResult(work.id);
-			else if (settlement === "attempts-exhausted") {
+			if (settlement === "report-result") {
+				// All completions in these rows already have their final relay. Read it before sendResult flushes to the root.
+				if (!readFinalActivity) {
+					await this.syncSharedActivity(shared, lease);
+					readFinalActivity = true;
+				}
+				await this.sendResult(work.id);
+			} else if (settlement === "attempts-exhausted") {
 				const failure = this.retryLimit(work, "worker-lost", undefined);
 				if (await this.failUnclaimed(queue, lease, work, failure)) this.failWork(work, failure);
 			} else if (settlement === "claim-window-passed") {

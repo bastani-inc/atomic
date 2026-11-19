@@ -14,7 +14,7 @@ import {
 } from "../../../core/messages.ts";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import { confirmQueuedChatSessionMessages, flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts";
-import { chatSessionWorkingMeta } from "./chat-session-host-rendering.ts";
+import { chatSessionTokenCount, chatSessionWorkingMeta } from "./chat-session-host-rendering.ts";
 import {
 	afterChatSessionEvent,
 	decrementOptimisticUserSignature,
@@ -43,6 +43,19 @@ import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 export type { CompactionReason } from "../../../core/agent-session-types.js";
 
 /**
+ * A retry or a model fallback ended the turn it waited in, cancelled or out of attempts: the turn's worked line counts
+ * from its start to now, through every attempt and wait, as it would have counted on through the next attempt.
+ */
+function endRetriedTurn<TExtraEntry extends ChatTranscriptEntryLike>(state: ChatSessionHostState<TExtraEntry>): void {
+	const continued = state.retryContinuesRun;
+	state.retryContinuesRun = false;
+	const turn = continued ? state.workingRunMeter.endedRunSnapshot() : undefined;
+	if (turn === undefined) return;
+	const message = state.workedRun?.message ?? state.lastWorkingMessage;
+	state.workedRun = { message, snapshot: { ...turn, tokens: chatSessionTokenCount(state) } };
+}
+
+/**
  * A retry waits out its backoff: `retrying…` is the working line until the next attempt's `agent_start`, or the
  * retry's `auto_retry_end`, clears it.
  */
@@ -52,6 +65,19 @@ export function showChatSessionRetryWait<TExtraEntry extends ChatTranscriptEntry
 	state.sdkBusy = true;
 	state.workingMessage = undefined;
 	state.statusMessage = CHAT_SESSION_RETRYING_STATUS;
+	stopChatSessionWorkingLifecycle(state);
+}
+
+/**
+ * A move to a fallback model: `switching model…` is the working line until the next model's `agent_start`, or the
+ * switch's `model_fallback_end`, clears it.
+ */
+export function showChatSessionModelSwitch<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): void {
+	state.sdkBusy = true;
+	state.workingMessage = undefined;
+	state.statusMessage = CHAT_SESSION_SWITCHING_MODEL_STATUS;
 	stopChatSessionWorkingLifecycle(state);
 }
 
@@ -229,8 +255,12 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	}
 	let changed = false;
 	switch (type) {
-		case "agent_start":
-			state.workingRunMeter.start();
+		case "agent_start": {
+			// The attempt after a retry's wait or a model fallback continues its turn, and its time and tokens with it.
+			const { turnStartedAt } = event as Extract<AgentSessionEvent, { type: "agent_start" }>;
+			if (state.retryContinuesRun) state.workingRunMeter.continueRun(turnStartedAt);
+			else state.workingRunMeter.start(turnStartedAt);
+			state.retryContinuesRun = false;
 			state.sdkBusy = true;
 			state.workingMessage = undefined;
 			state.lastWorkingMessage = undefined;
@@ -241,6 +271,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			changed = true;
 			state.compactionPromptStarted?.();
 			break;
+		}
 		case "agent_end": {
 			const manualTakeoverPending = state.manualCompactionTakeoverPending;
 			const interrupted = state.interruptedTurnSnapshot;
@@ -390,21 +421,24 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			break;
 		case "auto_retry_start":
 			showChatSessionRetryWait(state);
+			state.retryContinuesRun = true;
 			changed = true;
 			break;
 		case "model_fallback_start":
-			state.sdkBusy = true;
-			state.workingMessage = undefined;
-			state.statusMessage = CHAT_SESSION_SWITCHING_MODEL_STATUS;
-			stopChatSessionWorkingLifecycle(state);
+			// A fallback after a failed answer continues that turn; one before a turn's first request starts it.
+			state.retryContinuesRun = state.retryContinuesRun || state.workingRunMeter.endedOnFailedAttempt();
+			showChatSessionModelSwitch(state);
 			changed = true;
 			break;
 		case "model_fallback_end": {
 			const fallback = event as Extract<AgentSessionEvent, { type: "model_fallback_end" }>;
-			state.statusMessage = fallback.success ? "" : (fallback.finalError ?? "model fallback failed");
+			// A fallback that ended without an error to report (the turn was stopped) leaves no notice.
+			state.statusMessage = fallback.success ? "" : (fallback.finalError ?? "");
 			state.workingMessage = undefined;
 			if (!fallback.success) {
+				endRetriedTurn(state);
 				state.workingRunMeter.stop();
+				state.workingRunMeter.endTurn();
 				state.sdkBusy = false;
 				state.compacting = false;
 				state.compactionStartedAt = undefined;
@@ -418,7 +452,9 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.statusMessage = "";
 			state.workingMessage = undefined;
 			if (!retry.success) {
+				endRetriedTurn(state);
 				state.workingRunMeter.stop();
+				state.workingRunMeter.endTurn();
 				state.sdkBusy = false;
 				state.compacting = false;
 				state.compactionStartedAt = undefined;

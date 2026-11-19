@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, test, vi } from "vitest";
@@ -40,6 +39,7 @@ import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { agent } from "../helpers/released-task-launch.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const CHILD_TIMEOUT_MS = 60_000;
 const cleanups: Array<() => void | Promise<void>> = [];

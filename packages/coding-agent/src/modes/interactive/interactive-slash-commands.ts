@@ -40,6 +40,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { isExpandable } from "./interactive-mode-helpers.ts";
+import { showRestartExtensionErrors } from "./interactive-session-runtime.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
 InteractiveModeBase.prototype.handleReloadCommand = async function (this: InteractiveModeBase): Promise<void> {
@@ -98,6 +99,7 @@ InteractiveModeBase.prototype.handleReloadCommand = async function (this: Intera
 			force: false,
 			showDiagnosticsWhenQuiet: true,
 		});
+		showRestartExtensionErrors(this);
 		if (savedImplicitProjectTrust) {
 			this.showStatus("Saved project trust for future sessions");
 		}
@@ -107,6 +109,7 @@ InteractiveModeBase.prototype.handleReloadCommand = async function (this: Intera
 		}
 		this.showStatus("Reloaded keybindings, extensions, skills, prompts, themes");
 	} catch (error) {
+		showRestartExtensionErrors(this);
 		dismissReloadBox(previousEditor as Component);
 		this.showError(`Reload failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
