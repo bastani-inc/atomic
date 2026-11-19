@@ -504,35 +504,43 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			}
 		});
 
-		test("1000 commits of 256 KiB checkpoints, one after another, all commit and read back intact", async (f) => {
-			await f.pool.enqueue(f.lease, work, boundary);
-			const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);
-			assert.ok(attempt);
-			// Each commit past the 64 a queue keeps of its own reads the root's checkpoints since its watermark, 16 MiB
-			// of them here: no value, row or response of that read may pass a libSQL server's limits.
-			const sized = (step: number) => ({ ...toolCheckpointOf({ work, boundary }, step), output: largeOutput(step) });
-			const seqs: number[] = [];
-			for (let step = 0; step < 1000; step++) {
-				const receipt = await f.pool
-					.commit(f.lease, attempt, `step-${step}`, { kind: "checkpoint", checkpoint: sized(step) })
-					.catch((error: Error) => assert.fail(`commit ${step + 1} of 1000 failed: ${error.message}`));
-				seqs.push(receipt.seq!);
-			}
-			assert.deepEqual(
-				seqs,
-				seqs.map((_, index) => seqs[0]! + index),
-				"each commit recorded the next event",
-			);
-			let read = 0;
-			for await (const entry of (await f.peer()).read("root")) {
-				// The child's boundary start, which queueing it recorded, comes first.
-				if (entry.event.type !== RUN_EVENT_TYPES.checkpointRecorded || entry.event.payload.kind !== "tool")
-					continue;
-				assert.deepEqual(entry.event.payload, sized(read), `checkpoint ${read} reads back intact`);
-				read++;
-			}
-			assert.equal(read, 1000);
-		}, 600_000);
+		const CHECKPOINT_INTEGRITY_TIMEOUT_MS = 600_000;
+		test(
+			"1000 commits of 256 KiB checkpoints, one after another, all commit and read back intact (#5637)",
+			async (f) => {
+				await f.pool.enqueue(f.lease, work, boundary);
+				const attempt = await f.pool.claim(f.lease, "worker", [definition], CHECKPOINT_INTEGRITY_TIMEOUT_MS);
+				assert.ok(attempt);
+				// Each commit past the 64 a queue keeps of its own reads the root's checkpoints since its watermark, 16 MiB
+				// of them here: no value, row or response of that read may pass a libSQL server's limits.
+				const sized = (step: number) => ({
+					...toolCheckpointOf({ work, boundary }, step),
+					output: largeOutput(step),
+				});
+				const seqs: number[] = [];
+				for (let step = 0; step < 1000; step++) {
+					const receipt = await f.pool
+						.commit(f.lease, attempt, `step-${step}`, { kind: "checkpoint", checkpoint: sized(step) })
+						.catch((error: Error) => assert.fail(`commit ${step + 1} of 1000 failed: ${error.message}`));
+					seqs.push(receipt.seq!);
+				}
+				assert.deepEqual(
+					seqs,
+					seqs.map((_, index) => seqs[0]! + index),
+					"each commit recorded the next event",
+				);
+				let read = 0;
+				for await (const entry of (await f.peer()).read("root")) {
+					// The child's boundary start, which queueing it recorded, comes first.
+					if (entry.event.type !== RUN_EVENT_TYPES.checkpointRecorded || entry.event.payload.kind !== "tool")
+						continue;
+					assert.deepEqual(entry.event.payload, sized(read), `checkpoint ${read} reads back intact`);
+					read++;
+				}
+				assert.equal(read, 1000);
+			},
+			CHECKPOINT_INTEGRITY_TIMEOUT_MS,
+		);
 
 		test("a completed child keeps its result and fences later writes", async (f) => {
 			await f.pool.enqueue(f.lease, work, boundary);

@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
-import type {
-	AgentSession,
-	AgentSessionEvent,
-	BashResult,
-	SessionCommandCatalog,
-	TaskViewSource,
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	AgentTokenMeter,
+	type BashResult,
+	type SessionCommandCatalog,
+	type TaskViewSource,
 } from "@bastani/atomic";
 import {
 	type AgentSessionEventListener,
+	type StageContextMeter,
 	type StageControlHandle,
 	type StageControlStatus,
 	type StagePlacement,
@@ -153,6 +155,8 @@ export class PooledStageHandle implements StageControlHandle {
 	private readonly rebindListeners = new Set<(redelivered: number) => void>();
 	private readonly drainedListeners = new Set<() => void>();
 	private settled: AgentMessage[] = [];
+	private contextTokens?: AgentTokenMeter;
+	private requestSide = false;
 	private toolExecutions = new StageToolExecutionBuffer();
 	private queued = new StageQueuedUserMessageBuffer();
 	private streaming: StreamingMessage;
@@ -259,6 +263,9 @@ export class PooledStageHandle implements StageControlHandle {
 	get turnStartedAt(): number | undefined {
 		return this.turnStart.turnStartedAt();
 	}
+	turnState(): PooledStageChatSnapshot["turn"] {
+		return this.turnStart.state();
+	}
 	get isDisposed(): boolean {
 		return this.disposed;
 	}
@@ -276,6 +283,9 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	get messages(): AgentSession["messages"] {
 		return this.settled;
+	}
+	contextMeter(): StageContextMeter | undefined {
+		return this.contextTokens && { ...this.contextTokens.snapshot(), requestSide: this.requestSide };
 	}
 	streamingMessage(): StreamingMessage {
 		return this.streaming;
@@ -813,13 +823,19 @@ export class PooledStageHandle implements StageControlHandle {
 		rebinding.done(rebinding.redelivered);
 	}
 
+	private adoptHistory(history: Pick<PooledStageChatSnapshot, "messages" | "contextMeter">): void {
+		this.settled = [...history.messages];
+		this.contextTokens = history.contextMeter && new AgentTokenMeter([], history.contextMeter);
+		this.requestSide = history.contextMeter?.requestSide ?? false;
+	}
+
 	private adopt(snapshot: PooledStageChatSnapshot): void {
 		this.session = snapshot.sessionId;
 		// A replacement attempt's session lists its own commands once it has started, and its own tasks.
 		this.commands = snapshot.commands;
 		if (!this.taskView.empty) this.taskView.apply(NO_TASKS);
 		this.markSessionStarted(snapshot.sessionStarted !== false);
-		this.settled = [...snapshot.messages];
+		this.adoptHistory(snapshot);
 		this.streaming = snapshot.streamingMessage;
 		this.currentStatus = snapshot.status;
 		this.streamingNow = snapshot.isStreaming;
@@ -858,7 +874,7 @@ export class PooledStageHandle implements StageControlHandle {
 			return false;
 		}
 		if ((event.type as string) === STAGE_MESSAGES_EVENT) {
-			this.settled = [...(event as never as { readonly messages: AgentSession["messages"] }).messages];
+			this.adoptHistory(event as never as Pick<PooledStageChatSnapshot, "messages" | "contextMeter">);
 			return false;
 		}
 		if (event.type === "bash_execution_update" && event.id !== undefined) this.bashRuns.get(event.id)?.(event.delta);
@@ -904,6 +920,10 @@ export class PooledStageHandle implements StageControlHandle {
 				return;
 			case "message_end":
 				this.settled.push(event.message);
+				if (this.contextTokens) {
+					this.contextTokens.settled(event.message);
+					this.requestSide = event.message.role === "user" || event.message.role === "toolResult";
+				}
 				if (event.message.role === "assistant") this.streaming = undefined;
 				return;
 		}

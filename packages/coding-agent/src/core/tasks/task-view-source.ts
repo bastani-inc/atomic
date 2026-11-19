@@ -5,7 +5,7 @@ import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
-import { taskOutputHeadText } from "./command-output.js";
+import { readTaskOutputTail } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
@@ -269,20 +269,8 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		async readTaskOutput(id, range) {
 			const task = lease(id);
 			if (!task.ok) return { ok: false, error: { message: task.error.message } };
-			const page = await store.supervisor.readTaskOutput(task.value, {
-				start: range.start,
-				maximumBytes: range.maximumBytes,
-			});
-			return page.ok
-				? {
-						ok: true,
-						value: {
-							text: taskOutputHeadText(page.value),
-							omitted: page.value.omittedRanges.length > 0,
-							...(page.value.nextOffset === undefined ? {} : { more: true }),
-						},
-					}
-				: { ok: false, error: { message: page.error.message } };
+			const page = await readTaskOutputTail(store.supervisor, task.value, range);
+			return page.ok ? page : { ok: false, error: { message: page.error.message } };
 		},
 		taskDetailText(id) {
 			const task = lease(id);
@@ -468,7 +456,7 @@ function transcriptView(
 					content: message.content.filter((_, index) => itemIds.has(`${entry.id}:${index}`)),
 				},
 			];
-		return message.role === "user" || message.role === "toolResult" ? [message] : [];
+		return [message];
 	});
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;

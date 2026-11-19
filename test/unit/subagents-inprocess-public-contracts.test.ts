@@ -346,6 +346,46 @@ test("management status and wait resolve the launch task ID and report an owner 
 	}
 });
 
+test("wait and status report OutputUnavailable for SDK output that never had a private copy (#5703)", async () => {
+	const cwd = makeRoot();
+	const { execute } = executor(cwd, new TestEvents());
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: cwd }, authorizeLaunch() {} });
+	const ctx = { ...context(cwd), getAgentTaskHost: () => host };
+	try {
+		const started = await host.startAgentTask(
+			{ kind: "agent", agent: "worker", task: "SDK job" },
+			"sdk-output" as OperationId,
+			({ ref, reportActivity }) => {
+				const bytes = Buffer.from("SDK result");
+				assert.ok(
+					reportActivity({
+						reportId: "out",
+						change: { kind: "output", offset: "0", bytesBase64: bytes.toString("base64") },
+					}).ok,
+				);
+				const [record] = host.taskRecords(new Set([ref.taskId]));
+				assert.ok(record);
+				return {
+					result: Promise.resolve({
+						kind: "completed",
+						output: { ...record.output, byteCount: String(bytes.length) },
+					}),
+					cleanup: Promise.resolve({ kind: "reaped" }),
+				};
+			},
+		);
+		assert.ok(started.ok);
+		const id = started.value.taskId;
+		const expected = `Output of ${id} (completed) is unavailable: OutputUnavailable`;
+		for (const action of ["wait", "status"] as const) {
+			const result = await execute.execute(action, { action, id }, new AbortController().signal, undefined, ctx);
+			assert.equal(text(result).split("\n\n").at(-1), expected, action);
+		}
+	} finally {
+		await host.close("session-close");
+	}
+});
+
 test("owner task cancellation reaches a real child and wait preserves raw cancellation under a killed receipt", async () => {
 	{
 		const field = "owner";

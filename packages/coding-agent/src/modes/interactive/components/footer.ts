@@ -28,6 +28,16 @@ export interface FooterRenderStyle {
 	warning(text: string): string;
 }
 
+export interface FooterHints {
+	segments: string[];
+	/** Insert this hint only if it fits beside the already laid-out footer. */
+	optionalIndex?: number;
+}
+
+type FooterHintSource = () => readonly string[] | FooterHints;
+
+const MIN_STATUS_WIDTH = 12;
+
 const defaultFooterRenderStyle: FooterRenderStyle = {
 	dim: (text) => theme.fg("dim", text),
 	muted: (text) => theme.fg("muted", text),
@@ -278,7 +288,7 @@ export class FooterComponent implements Component {
 	private declare readonly renderStyle: FooterRenderStyle;
 	private readonly navigationActive: () => boolean;
 	private readonly backgroundTasks: (() => Parameters<typeof renderTaskFooter>[0] | undefined) | undefined;
-	private readonly hintSegments: (() => readonly string[]) | undefined;
+	private readonly hintSegments: FooterHintSource | undefined;
 	private readonly backgroundTaskClocks: (() => TaskElapsedClocks | undefined) | undefined;
 	private branchCwd: string | undefined;
 	private releaseBranch: (() => void) | undefined;
@@ -291,7 +301,7 @@ export class FooterComponent implements Component {
 		renderStyle: FooterRenderStyle = defaultFooterRenderStyle,
 		navigationActive: () => boolean = () => false,
 		backgroundTasks?: () => Parameters<typeof renderTaskFooter>[0] | undefined,
-		hintSegments?: () => readonly string[],
+		hintSegments?: FooterHintSource,
 		backgroundTaskClocks?: () => TaskElapsedClocks | undefined,
 	) {
 		this.session = session;
@@ -381,51 +391,36 @@ export class FooterComponent implements Component {
 			if (isDebugEnabled()) {
 				statusText += `${statusText ? " " : ""}${this.renderStyle.warning("debug")}`;
 			}
-			const hintItems = (this.navigationActive() ? [] : (this.hintSegments?.() ?? [])).map((segment) =>
-				this.renderStyle.muted(segment),
-			);
 			const hintSeparator = this.renderStyle.dim(" · ");
-			if (statusText && hintItems.length > 0) {
-				const keptHints = [...hintItems];
-				const joinHints = (withLead: boolean) =>
-					keptHints.length > 0 ? `${withLead ? hintSeparator : ""}${keptHints.join(hintSeparator)}` : "";
-				const dropHintIndex = () => (keptHints.length > 2 ? 1 : 0);
-				if (working) {
-					while (keptHints.length > 2 && visibleWidth(statusText + joinHints(true)) > width) {
-						keptHints.splice(dropHintIndex(), 1);
-					}
-					const full = statusText + joinHints(true);
-					if (visibleWidth(full) <= width) {
-						lines.push(full);
-					} else {
-						while (keptHints.length > 1 && visibleWidth(joinHints(false)) > width) {
-							keptHints.splice(dropHintIndex(), 1);
-						}
-						lines.push(truncateToWidth(joinHints(false), width, this.renderStyle.dim("...")));
-					}
-				} else {
-					while (keptHints.length > 2 && width - visibleWidth(joinHints(true)) < 12) {
-						keptHints.splice(dropHintIndex(), 1);
-					}
-					const hintsWithLead = joinHints(true);
-					const room = width - visibleWidth(hintsWithLead);
-					if (room >= 12) {
-						lines.push(`${truncateToWidth(statusText, room, this.renderStyle.dim("..."))}${hintsWithLead}`);
-					} else {
-						while (keptHints.length > 1 && visibleWidth(joinHints(false)) > width) {
-							keptHints.splice(dropHintIndex(), 1);
-						}
-						lines.push(truncateToWidth(joinHints(false), width, this.renderStyle.dim("...")));
-					}
-				}
-			} else if (statusText || hintItems.length > 0) {
-				const keptHints = [...hintItems];
-				while (keptHints.length > 1 && visibleWidth(keptHints.join(hintSeparator)) > width) {
-					keptHints.splice(keptHints.length > 2 ? 1 : 0, 1);
-				}
-				const only = statusText || keptHints.join(hintSeparator);
-				lines.push(truncateToWidth(only, width, this.renderStyle.dim("...")));
+			const hints = this.navigationActive() ? [] : (this.hintSegments?.() ?? []);
+			const segments = ("segments" in hints ? hints.segments : hints).map((text) => this.renderStyle.muted(text));
+			const optionalIndex = "segments" in hints ? hints.optionalIndex : undefined;
+			const kept = segments.filter((_, index) => index !== optionalIndex);
+			if (statusText && kept.length > 0) {
+				const required = working ? visibleWidth(statusText) : MIN_STATUS_WIDTH;
+				const room = () => width - visibleWidth(hintSeparator + kept.join(hintSeparator));
+				while (kept.length > 2 && room() < required) kept.splice(1, 1);
+				const available = room();
+				if (available < required) statusText = "";
+				else if (!working) statusText = truncateToWidth(statusText, available, this.renderStyle.dim("..."));
 			}
+			if (!statusText) {
+				while (kept.length > 1 && visibleWidth(kept.join(hintSeparator)) > width) {
+					kept.splice(kept.length > 2 ? 1 : 0, 1);
+				}
+			}
+			// Fit the optional hint around what survived, never the other way round.
+			const parts = statusText ? [statusText, ...kept] : kept;
+			const next =
+				optionalIndex === undefined ? -1 : parts.findIndex((part) => segments.indexOf(part) > optionalIndex);
+			if (parts.length === 1) parts[0] = truncateToWidth(parts[0]!, width, this.renderStyle.dim("..."));
+			let line = parts.join(hintSeparator);
+			if (optionalIndex !== undefined) {
+				const extra = segments[optionalIndex]!;
+				const candidate = parts.toSpliced(next < 0 ? parts.length : next, 0, extra).join(hintSeparator);
+				if (visibleWidth(candidate) <= width) line = candidate;
+			}
+			if (line || parts.length > 0) lines.push(line);
 		}
 		const statusRow = renderExtensionStatusRow(this.footerData.getExtensionStatuses(), width, this.renderStyle);
 		if (statusRow !== undefined) lines.push(statusRow);

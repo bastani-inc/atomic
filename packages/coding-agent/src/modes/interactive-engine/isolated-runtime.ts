@@ -137,6 +137,7 @@ export function engineAgentPanelCounts(
 		shells: message.shells ?? 0,
 		searches: message.searches ?? 0,
 		subagents: message.subagents ?? 0,
+		...(message.hiddenWorkflow ? { hiddenWorkflow: true } : {}),
 	};
 }
 
