@@ -19,6 +19,7 @@ import type { KeybindingsManager } from "../../core/keybindings.ts";
 import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { runRendererCleanup } from "../interactive/components/renderer-disposal.js";
+import { isLeftMouseSequence } from "../interactive/mouse-reports.js";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";
 import { BackgroundRenderLane, BackgroundRenderTui } from "./background-render-lane.ts";
@@ -357,6 +358,7 @@ export class EngineCustomUiService {
 		this.send({
 			type: "engine_custom_open",
 			componentId,
+			...(component.handleMouse && options?.purpose === "navigation" ? { orderedClicks: true } : {}),
 			...(!component.handleInput || component.acceptsClickFocus === false ? { acceptsClickFocus: false } : {}),
 			overlay: options?.overlay === true,
 			purpose: options?.purpose,
@@ -420,6 +422,16 @@ export class EngineCustomUiService {
 		if (!command) return false;
 		if (!command.type.startsWith("engine_custom_")) return false;
 		const record = this.active.get(command.componentId);
+		if (
+			command.type === "engine_custom_click" &&
+			command.clickId !== undefined &&
+			(!record || record.purpose === "navigation")
+		) {
+			const { componentId, clickId } = command;
+			// A click can finish custom() and mount its successor in promise continuations. Send the receipt
+			// on their stream after that turn, even for an already closed target or a stale frame.
+			setImmediate(() => this.send({ type: "engine_custom_click_ready", componentId, clickId }));
+		}
 		if (!record) {
 			if (command.type === "engine_custom_input")
 				this.send({
@@ -462,28 +474,31 @@ export class EngineCustomUiService {
 			}
 			case "engine_custom_input": {
 				// Keys run as soon as they arrive: a yield here would queue the reader's keystroke behind agent work.
-				let handled = false;
+				let answer: unknown;
 				record.handlingInput = true;
 				try {
-					handled = runSynchronousCallback({ kind: "renderer", name: command.componentId }, () => {
+					answer = runSynchronousCallback({ kind: "renderer", name: command.componentId }, () => {
 						if (isKeyRelease(command.data) && record.component.wantsKeyRelease !== true) return false;
-						const handleInput = record.component.handleInput as
-							| ((data: string) => boolean | undefined)
-							| undefined;
-						const handle = () => handleInput?.call(record.component, command.data) === true;
+						const handle = () => record.component.handleInput?.(command.data);
 						return command.hint === true ? runAsHintActivation(handle) : handle();
 					});
 				} catch {
-					handled = false;
+					answer = false;
 				} finally {
 					record.handlingInput = false;
 				}
-				this.send({
-					type: "engine_custom_input_result",
-					componentId: command.componentId,
-					requestId: command.requestId,
-					handled,
-				});
+				const reply = (value: unknown) =>
+					this.send({
+						type: "engine_custom_input_result",
+						componentId: command.componentId,
+						requestId: command.requestId,
+						handled: value === true,
+					});
+				// A navigation pane may need time to decline a button report. Keep ordinary keys and wheel
+				// reports on their existing synchronous path, and never hold the engine command reader.
+				if (answer instanceof Promise && isLeftMouseSequence(command.data))
+					void answer.then(reply, () => reply(false));
+				else reply(answer);
 				if (record.paintAfterInput === true) {
 					record.paintAfterInput = false;
 					this.paintComponent(command.componentId);

@@ -304,6 +304,22 @@ function calleeName(callee: Node): string | undefined {
 	return undefined;
 }
 
+/** Resolve a member accessed through a local alias, such as `const rows = this.clickableRows`. */
+function receiverMember(receiver: Node, ancestors: TraversalAncestors): string | undefined {
+	if (receiver.type === "Identifier") {
+		for (let i = ancestors.length - 1; i >= 0; i--) {
+			const scope = ancestors[i]!.node;
+			if (scope.type !== "BlockStatement") continue;
+			for (const statement of scope.body) {
+				if (statement.type !== "VariableDeclaration") continue;
+				const decl = statement.declarations.find((d) => d.id.type === "Identifier" && d.id.name === receiver.name);
+				if (decl) return decl.init?.type === "MemberExpression" ? calleeName(decl.init) : receiver.name;
+			}
+		}
+	}
+	return calleeName(receiver);
+}
+
 /** Whether `node` names a choosing key: its literal, a constant such as `Key.enter`, or a local alias of one. */
 function namesChoosingKey(node: Node, aliases: ReadonlySet<string>): boolean {
 	if (node.type === "StringLiteral") return CHOOSE_KEYS.has(node.value);
@@ -392,23 +408,7 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 									prop.value.value === "engine_custom_click",
 							),
 					)) ||
-				(name === "call" &&
-					receiver?.type === "Identifier" &&
-					ancestors.some(
-						({ node: scope }) =>
-							scope.type === "BlockStatement" &&
-							scope.body.some(
-								(statement) =>
-									statement.type === "VariableDeclaration" &&
-									statement.declarations.some(
-										(decl) =>
-											decl.id.type === "Identifier" &&
-											decl.id.name === receiver.name &&
-											decl.init &&
-											calleeName(decl.init) === "handleMouse",
-									),
-							),
-					));
+				(name === "call" && receiver && receiverMember(receiver, ancestors) === "handleMouse");
 			const dispatches =
 				forwardsClick &&
 				ancestors.some(
@@ -439,23 +439,7 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 				const member = name === "ClickableRow" ? "<row>" : nameFromAncestors(ancestors, node);
 				sharedRows.set(owner, [...(sharedRows.get(owner) ?? []), member]);
 			} else if (registers && owner) {
-				let member = calleeName(receiver);
-				if (receiver.type === "Identifier") {
-					const method = ancestors.findLast(
-						({ node }) => node.type === "ClassMethod" || node.type === "ObjectMethod",
-					);
-					if (method)
-						traverse(method.node, (binding) => {
-							if (
-								binding.type === "VariableDeclarator" &&
-								binding.id.type === "Identifier" &&
-								binding.id.name === receiver.name &&
-								binding.init?.type === "MemberExpression" &&
-								binding.init.object.type === "ThisExpression"
-							)
-								member = keyName(binding.init.property);
-						});
-				}
+				const member = receiverMember(receiver, ancestors);
 				if (member) registrations.set(owner, [...(registrations.get(owner) ?? []), member]);
 			} else if (!draws && !dispatches && !registers) choosers.add(owner);
 		}

@@ -68,6 +68,7 @@ class RemoteComponent implements Component {
 	}
 	wantsKeyRelease = true;
 	acceptsClickFocus = true;
+	waitForClick?: (id: number) => Promise<void>;
 	readonly handlesInternalUiAction: boolean;
 	private lines: string[] = [];
 	private width = 0;
@@ -161,6 +162,7 @@ class RemoteComponent implements Component {
 		if (this.disposed || !isSingleLeftClick(event) || this.paintedFrame === undefined) return undefined;
 		const rowKey = this.paintedRowKeys?.[Math.floor(event.y)];
 		const clickId = ++this.clickId;
+		const inputReady = this.waitForClick?.(clickId);
 		this.runtime.sendEngineCommand({
 			type: "engine_custom_click",
 			componentId: this.componentId,
@@ -183,6 +185,7 @@ class RemoteComponent implements Component {
 		};
 		return {
 			handled: true,
+			...(inputReady ? { inputReady } : {}),
 			whenSingleClick: () => finish("engine_custom_click_settle"),
 			onSingleClickCancel: () => finish("engine_custom_click_cancel"),
 		};
@@ -361,6 +364,22 @@ export interface TuiRendererLifecycle {
 
 export class RemoteComponentController {
 	private readonly mounted = new Map<string, MountedRemoteComponent>();
+	// A click may close its own proxy before the replacement takes focus; the controller owns the receipt.
+	private readonly clickReceipts = new Map<string, () => void>();
+
+	private waitForClick(componentId: string, clickId: number): Promise<void> {
+		const key = `${componentId}:${clickId}`;
+		return new Promise((resolve) => {
+			const finish = () => {
+				clearTimeout(timer);
+				this.clickReceipts.delete(key);
+				resolve();
+			};
+			const timer = setTimeout(finish, REMOTE_INPUT_REPLY_TIMEOUT_MS);
+			timer.unref?.();
+			this.clickReceipts.set(key, finish);
+		});
+	}
 	private readonly unsubscribe: () => void;
 	private readonly unsubscribeGenerationEnded: () => void;
 	private readonly terminalModes: TerminalModeController;
@@ -478,6 +497,7 @@ export class RemoteComponentController {
 	 * host mounts alone: the TUI is already stopping and must not repaint.
 	 */
 	private disposeAll(reason: "generation-lost" | "host-shutdown"): void {
+		for (const finish of this.clickReceipts.values()) finish();
 		const records = [...this.mounted.entries()].reverse();
 		this.mounted.clear();
 		for (const [componentId, record] of records) {
@@ -515,6 +535,7 @@ export class RemoteComponentController {
 					message.widgetScroll,
 					message.blocked,
 					message.acceptsClickFocus !== false,
+					message.orderedClicks === true,
 				);
 				break;
 			case "engine_custom_close":
@@ -530,6 +551,9 @@ export class RemoteComponentController {
 						message.frame,
 						message.rowKeys,
 					);
+				break;
+			case "engine_custom_click_ready":
+				this.clickReceipts.get(`${message.componentId}:${message.clickId}`)?.();
 				break;
 			case "engine_custom_input_result":
 				this.mounted.get(message.componentId)?.component.resolveInput(message.requestId, message.handled);
@@ -585,6 +609,7 @@ export class RemoteComponentController {
 		widgetScroll?: { maxHeight: number; maxHeightFraction?: number },
 		blocked?: EngineBlockedStatus,
 		acceptsClickFocus = true,
+		orderedClicks = false,
 	): void {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {
@@ -638,6 +663,7 @@ export class RemoteComponentController {
 						() => tui.requestImmediateRender(),
 					);
 					component.acceptsClickFocus = acceptsClickFocus;
+					if (orderedClicks) component.waitForClick = (id) => this.waitForClick(componentId, id);
 					component.hostColorDepth = tui.terminal?.colorDepth;
 					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
 					this.mounted.set(componentId, mounted);

@@ -849,7 +849,7 @@ export abstract class TuiBase extends Container implements TUI {
 					this.clearOverlayFocusRestoreFor(entry);
 					this.retargetOverlayPreFocus(entry);
 					this.overlayStack.splice(index, 1);
-					this.getPointerFocus();
+					if (this.pointerFocus.owner === component) this.getPointerFocus();
 					// Restore focus if this overlay had focus
 					if (this.focusedComponent === component) {
 						const topVisible = this.getTopmostVisibleOverlay();
@@ -862,10 +862,10 @@ export abstract class TuiBase extends Container implements TUI {
 			setHidden: (hidden: boolean) => {
 				if (entry.hidden === hidden) return;
 				entry.hidden = hidden;
-				// A focused child can keep keyboard focus. Record the change of modal owner even without a paint.
-				this.getPointerFocus();
 				// Update focus when hiding/showing
 				if (hidden) {
+					// A focused child can keep keyboard focus. Record the lost modal owner even without a paint.
+					if (this.pointerFocus.owner === component) this.getPointerFocus();
 					this.clearOverlayFocusRestoreFor(entry);
 					// If this overlay had focus, move focus to next visible or preFocus
 					if (this.focusedComponent === component) {
@@ -934,7 +934,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.clearOverlayFocusRestoreFor(overlay);
 		this.retargetOverlayPreFocus(overlay);
 		this.overlayStack.pop();
-		this.getPointerFocus();
+		if (this.pointerFocus.owner === overlay.component) this.getPointerFocus();
 		if (this.focusedComponent === overlay.component) {
 			// Find topmost visible overlay, or fall back to preFocus
 			const topVisible = this.getTopmostVisibleOverlay();

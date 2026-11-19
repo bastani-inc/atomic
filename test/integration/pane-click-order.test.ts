@@ -42,9 +42,21 @@ test.each(["local", "engine"])(
 				rows: 24,
 			});
 			await program.waitForScreen(
+				(screen) => screen.includes("Navigation test ready"),
+				60_000,
+				"navigation command registration",
+			);
+			program.write("/pane-order\r");
+			await program.waitForScreen(
 				(screen) => screen.includes("Navigation pane") && screen.includes("Open transcript"),
 				60_000,
 				"both navigation panes",
+			);
+			program.write("k");
+			await program.waitForScreen(
+				(screen) => screen.includes("Navigation ready") && screen.includes("Open transcript"),
+				5000,
+				"keyboard focus on the other pane",
 			);
 			const lines = program.screen().split("\n");
 			const row = lines.findIndex((line) => line.includes("Open transcript"));

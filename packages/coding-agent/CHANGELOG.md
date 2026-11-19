@@ -67,6 +67,7 @@
 - Reopening a chat during a provider retry or model switch now shows the wait already in progress. A follow-up delivery warning no longer replaces the working line in subagent or stage chats ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
 - Selecting a workflow in `/resume` after another caller has resumed it and it has blocked again now asks you to refresh the list instead of retrying the newer attempt ([#5569](https://github.com/bastani-inc/atomic/issues/5569)).
 - Pressing Esc while a chat switches to a fallback model now ends the turn without sending the pending request. A new message can still retry normally, and `abort_retry` during the first request does not disable a later retry ([#5564](https://github.com/bastani-inc/atomic/issues/5564)).
+- In fullscreen, clicking a task from another pane and immediately pressing Left now opens the task and returns to the list. A release no longer overtakes a press that a navigation pane is still handling ([#5644](https://github.com/bastani-inc/atomic/issues/5644)).
 
 ## [0.9.89] - 2026-11-18
 

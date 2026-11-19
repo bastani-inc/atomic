@@ -1181,7 +1181,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (focus && this.mousePressFocus === focus) this.mousePressFocus = this.focusAfterClaim(focus, focusTarget);
 		}
 		if (result.capture) this.mouseCapture = result.target;
-		if (event.type === "click") this.afterComponentClick(result.inputReady, result.target.component);
 		return (
 			result.render ??
 			(focusChanged ||
@@ -1201,6 +1200,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	/** Run an action only if its press stays single. */
 	private waitForSingleClick(result: TuiMouseDispatchResult, start: ClickTarget, focus: PointerFocus): void {
+		this.afterComponentClick(result.inputReady, result.target.component);
 		const action = result.whenSingleClick;
 		if (action === undefined) return;
 		if (start.count !== 1 || !this.altScreenActive) {
