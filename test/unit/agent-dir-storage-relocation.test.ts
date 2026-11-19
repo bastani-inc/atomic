@@ -746,10 +746,13 @@ test.each(["copy-before-move", "copy-after-move"])(
 		assert.equal(defaultSessionDatabasePath(agent, {}), join(original, "workflows", "journal.sqlite"));
 		if (operation === "copy-before-move") cpSync(agent, join(original, "a1-backup"), { recursive: true });
 		cpSync(original, moved, { recursive: true });
-		rmSync(original, { recursive: true });
 		const current = join(moved, "a1");
 		const clone = join(moved, "a1-backup");
+		// The move across file systems is a copy and a removal on one file system here. The clone is made while the
+		// original still holds its inodes: made after the removal, it could reuse the original's inode and so take the
+		// identity the parent's owner record names, which no clone on another file system can.
 		if (operation === "copy-after-move") cpSync(current, clone, { recursive: true });
+		rmSync(original, { recursive: true });
 		resetStorageHomeCacheForTests();
 		assert.equal(defaultSessionDatabasePath(clone, {}), join(clone, "workflows", "journal.sqlite"));
 		assert.equal(defaultSessionDatabasePath(current, {}), join(moved, "workflows", "journal.sqlite"));

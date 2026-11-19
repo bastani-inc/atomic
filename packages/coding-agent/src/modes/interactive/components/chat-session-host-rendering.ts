@@ -14,7 +14,7 @@ import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-w
 import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
-	renderChatMessageEntry,
+	renderHostedChatEntry,
 } from "./chat-message-renderer.ts";
 import {
 	hasChatSessionTransientModal,
@@ -38,7 +38,13 @@ import { disposeRenderer } from "./renderer-disposal.js";
 import { taskDisplayText } from "./task-row.js";
 import { toolGroupRoleKey } from "./tool-group-tracker.ts";
 import { isClickExpandableBlock, sameRows, withBlockRenderTime } from "./transcript-block-clicks.ts";
-import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
+import {
+	AgentTokenMeter,
+	type AgentTokenMeterSnapshot,
+	agentTokenTotal,
+	compactionMeta,
+	type WorkingRunSnapshot,
+} from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
 export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -124,6 +130,19 @@ interface TranscriptTokenCache {
 }
 
 const transcriptTokenCaches = new WeakMap<object, TranscriptTokenCache>();
+
+/** Start at the session's settled count; subsequent live messages are counted normally. */
+export function restoreChatSessionTokens<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	snapshot: AgentTokenMeterSnapshot,
+): void {
+	transcriptTokenCaches.set(state, {
+		firstEntry: state.transcript[0],
+		lastSettledEntry: state.transcript.at(-1),
+		settledCount: state.transcript.length,
+		meter: new AgentTokenMeter([], snapshot),
+	});
+}
 
 function readTranscriptTokens<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
@@ -420,9 +439,10 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 			expanded === undefined
 				? chatMessageRenderOptions(state, isStreaming)
 				: { ...chatMessageRenderOptions(state, isStreaming), toolOutputExpanded: expanded };
-		const component = renderChatMessageEntry(
+		const component = renderHostedChatEntry(
 			streamingWindowedEntry(state, entry, isStreaming),
 			entry.kind === "tool" || entry.kind === "custom" ? { ...options, ui: entryTui(state, entry) } : options,
+			state.assistantCard,
 		);
 		const echoed = resolveEchoedInitialPrompt(state);
 		if (

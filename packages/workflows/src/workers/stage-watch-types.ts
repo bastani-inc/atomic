@@ -12,10 +12,11 @@ import type {
 	TaskId,
 	TaskOutputView,
 	TaskRecord,
+	TaskTranscriptFragments,
 	TaskTranscriptView,
 	TaskViewResult,
 } from "@bastani/atomic";
-import type { StageControlStatus } from "../runs/foreground/stage-control-registry.js";
+import type { StageContextMeter, StageControlStatus } from "../runs/foreground/stage-control-registry.js";
 import type { StageQueuedUserMessages } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import type { StageTurnState } from "../runs/foreground/stage-turn-start.js";
@@ -56,8 +57,10 @@ export interface PooledStageChatSnapshot {
 	readonly sessionId: string | undefined;
 	readonly status: StageControlStatus;
 	readonly isStreaming: boolean;
-	/** Settled messages. */
+	/** Settled display messages. */
 	readonly messages: AgentSession["messages"];
+	/** Omitted when these rows already match the request context, and by older workers. */
+	readonly contextMeter?: StageContextMeter;
 	/** The assistant message still streaming, if any. */
 	readonly streamingMessage?: AssistantMessage;
 	/** Whether the stage's session waits out an automatic retry's backoff. Absent from older workers. */
@@ -184,7 +187,11 @@ export type PooledTaskReply =
 	| { readonly kind: "input"; readonly result: TaskViewResult<{ readonly acceptedBytes: number }> }
 	| { readonly kind: "output"; readonly result: TaskViewResult<TaskOutputView> }
 	| { readonly kind: "detail"; readonly detail: TaskDetailText }
-	| { readonly kind: "transcript"; readonly result: TaskViewResult<TaskTranscriptView> }
+	| {
+			readonly kind: "transcript";
+			readonly result: TaskViewResult<TaskTranscriptView>;
+			readonly fragments?: TaskTranscriptFragments;
+	  }
 	/** `error` is the serialized `TaskMessageError` when the message did not reach the task. */
 	| { readonly kind: "message"; readonly error?: SerializedTaskMessageError }
 	/** What a chat of the task completes; absent when the worker does not know. */

@@ -393,6 +393,7 @@ export class CustomEditor extends Editor {
 		// it into a clear, terminate, or engine-restart handler.
 		if (isPhysicalEscape(data) || this.keybindings.matches(data, "app.interrupt")) {
 			if (!this.isShowingAutocomplete()) {
+				this.dismissEmptyAutocomplete();
 				// Use dynamic onEscape if set, otherwise registered handler
 				const handler = this.onEscape ?? this.actionHandlers.get("app.interrupt");
 				if (handler) {

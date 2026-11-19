@@ -62,6 +62,11 @@ export class RegisteredPooledStageHandle implements StageControlHandle {
 	get messages(): AgentSession["messages"] {
 		return this.current()?.messages ?? [];
 	}
+	contextMeter(
+		displayed: readonly AgentSession["messages"][number][],
+	): ReturnType<NonNullable<StageControlHandle["contextMeter"]>> {
+		return this.current()?.contextMeter?.(displayed);
+	}
 	queuedUserMessages(): StageQueuedUserMessages {
 		return this.current()?.queuedUserMessages?.() ?? EMPTY_STAGE_QUEUED_USER_MESSAGES;
 	}

@@ -191,6 +191,13 @@ export type StorageCommand =
 	  }
 	| { readonly kind: "adopt"; readonly paths: readonly string[]; readonly discover: boolean }
 	| { readonly kind: "consolidate" }
+	| {
+			readonly kind: "search-session";
+			readonly file: string;
+			readonly sessionId: string;
+			readonly pattern: string;
+			readonly cursor?: string;
+	  }
 	| ({
 			readonly kind: "export";
 			readonly directory: string;
@@ -226,6 +233,14 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	const [command, ...rest] = args;
 	if (command === undefined || command === "help" || args.includes("--help") || args.includes("-h")) {
 		return { kind: "help" };
+	}
+	if (command === "search-session") {
+		const [file, sessionId, pattern, cursor] = rest;
+		if (!file || !sessionId || !pattern || rest.length > 4)
+			throw new StorageCommandError(
+				`Usage: ${APP_NAME} storage search-session <sqlite-file> <session-id> <pattern> [cursor]`,
+			);
+		return { kind: command, file, sessionId, pattern, ...(cursor === undefined ? {} : { cursor }) };
 	}
 	const positional: string[] = [];
 	const values = new Map<string, string>();
@@ -619,6 +634,11 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 		const command = parseStorageCommand(args);
 		if (command.kind === "help") {
 			log(HELP);
+			return 0;
+		}
+		if (command.kind === "search-session") {
+			const { searchStoredSession } = await import("./storage-search-session.js");
+			await searchStoredSession(command, options.cwd, options.log);
 			return 0;
 		}
 		if (command.kind === "status") return await status(command.json, options, log);

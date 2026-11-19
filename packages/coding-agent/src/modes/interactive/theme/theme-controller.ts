@@ -52,6 +52,8 @@ export class InteractiveThemeController {
 	private currentThemeSetting: string | undefined;
 	private terminalColors: TerminalColors | undefined;
 	private activeThemeName: string | undefined;
+	private previewActive = false;
+	private settingsChangedDuringPreview = false;
 	private autoSyncEnabled = false;
 	private terminalColorSchemeUnsubscribe: (() => void) | undefined;
 	private terminalColorQuery: Promise<void> = Promise.resolve();
@@ -74,7 +76,13 @@ export class InteractiveThemeController {
 		initTheme(this.activeThemeName, true);
 		this.bindTerminalColorSchemeListener();
 	}
-	async applyFromSettings(): Promise<void> {
+	async applyFromSettings(options?: { keepPreview?: boolean }): Promise<void> {
+		if (options?.keepPreview && this.previewActive) {
+			this.settingsChangedDuringPreview = true;
+			return;
+		}
+		this.previewActive = false;
+		this.settingsChangedDuringPreview = false;
 		const setting = this.getThemeSetting();
 		const name = this.resolveThemeName();
 		this.setAutoSync(parseAutoThemeSetting(setting) !== undefined || name === SYSTEM_THEME_NAME);
@@ -108,8 +116,16 @@ export class InteractiveThemeController {
 	preview(setting: string): void {
 		const name = resolveThemeSetting(setting, getTerminalTheme()) ?? this.activeThemeName;
 		if (name && setTheme(name, true).success) {
+			this.previewActive = true;
 			this.ui.invalidate();
 			this.ui.requestRender();
+		}
+	}
+	cancelPreview(originalSetting?: string): void {
+		if (this.settingsChangedDuringPreview) void this.applyFromSettings();
+		else {
+			if (originalSetting !== undefined) this.preview(originalSetting);
+			this.previewActive = false;
 		}
 	}
 	disableAutoSync(): void {
