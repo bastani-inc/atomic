@@ -229,6 +229,50 @@ it("a default open reads the same window as a tail open without reading the whol
 	expect(manager.buildSessionContext()).toEqual(expected.buildSessionContext());
 });
 
+it("an in-flight historical lookup never returns a different session's entry with the same ID (#5554)", async () => {
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, "/project");
+	const old = await manager.appendMessage({ role: "user", content: "original owner", timestamp: 1 });
+	const raw = manager.getEntry(old)!;
+	await manager.appendCompaction("cleared", null, 100, details);
+	const original = manager.getSessionId();
+	const found = Promise.withResolvers<void>(),
+		finish = Promise.withResolvers<void>();
+	const lookup = store.findEntrySeq.bind(store);
+	store.findEntrySeq = async (sessionId, id) => {
+		const seq = await lookup(sessionId, id);
+		if (sessionId === original && id === old) {
+			found.resolve();
+			await finish.promise;
+		}
+		return seq;
+	};
+	try {
+		const inFlight = manager.readEntry(old);
+		await found.promise;
+		await manager.newSession();
+		await store.append(
+			manager.getSessionId(),
+			[
+				{
+					type: "message",
+					id: old,
+					parentId: null,
+					timestamp: raw.timestamp,
+					message: { role: "user", content: "different owner", timestamp: 2 },
+				},
+			],
+			{ expectSeq: 0 },
+		);
+		await manager.refreshFromStore();
+		finish.resolve();
+		expect(await inFlight).toEqual(raw);
+	} finally {
+		finish.resolve();
+		await store.close();
+	}
+});
+
 it("a reader can stop after its first page without hydrating older messages into the manager (#5554)", async () => {
 	const store = await sqlStore();
 	const { id, firstPreTail } = await compactedSession(store, 120);

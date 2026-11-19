@@ -8,6 +8,7 @@
 - The session picker rejects `re:` patterns that rely on backreferences, lookaround or paired start/end anchors instead of silently reporting no matches. Use a narrower pattern or a quoted phrase ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Replace `sessionManager.getSessionRecoveryState().admissionKeys.includes(key)` with `sessionManager.getAdmissionKeys().has(key)`. Admission remains synchronous; old keys are no longer retained as strings ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Await `SessionManager.inMemory(cwd, options, entries)` when seeding a private session. Creating an empty `inMemory()` manager stays synchronous ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- `AgentTaskHost.observeAgentLaunch` takes only `{ kind: "background" }` or no policy, and always returns once the launch's observation is registered, because every subagent now runs in the background; wait for a task with `waitForTask`. Its `onRegistered` callback no longer receives a function that yields the observation. A JavaScript caller that still passes `{ kind: "foreground" }` gets the default background observation, with reason `default-background`. `TaskViewSource.foregroundTask`, which no view used, was removed.
 
 ### Added
 
@@ -18,9 +19,6 @@
 - Set `ATOMIC_EVENT_LOOP_BLOCK_STACKS=0` alongside the event-loop diagnostic threshold to record delays without a stack sampler changing the process's latency. Stack collection remains the diagnostic's default ([#5544](https://github.com/bastani-inc/atomic/issues/5544)).
 - In fullscreen mode, a click on a key hint runs it as pressing its key does: the chat footers (`← main chat`, `↓ agents`, `esc interrupt`, `ctrl+o expand`, `? keys`), the hint rows of `/tasks`, `/workflows`, the workflow graph, dialogs and pickers, and hints inside tool blocks and notices. In a hint that names two keys, such as `pgup/pgdn scroll` or `1-2 pick`, the key you click is pressed. Shortened key names in help keep their click. A literal `/` binding works in picker help, including the shortcut that closes it. A hint that names a slash command, such as `/tasks to manage`, runs it and keeps what you typed in the prompt. A key that asks for confirmation asks after a click too, a drag across a hint still selects text, and a double-click runs a hint once. `?`, `↓` and a chat's `←`, which act only on an empty prompt when typed, act on a click whatever the prompt holds
 
-### Breaking Changes
-
-- `AgentTaskHost.observeAgentLaunch` takes only `{ kind: "background" }` or no policy, and always returns once the launch's observation is registered, because every subagent now runs in the background; wait for a task with `waitForTask`. Its `onRegistered` callback no longer receives a function that yields the observation. A JavaScript caller that still passes `{ kind: "foreground" }` gets the default background observation, with reason `default-background`. `TaskViewSource.foregroundTask`, which no view used, was removed.
 
 ### Changed
 

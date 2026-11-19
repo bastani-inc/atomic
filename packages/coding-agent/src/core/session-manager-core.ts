@@ -1407,9 +1407,13 @@ export class SessionManager {
 	async readEntry(id: string): Promise<SessionEntry | undefined> {
 		const held = this.byId.get(id);
 		if (held && !this.editedPayloads.has(id)) return held;
+		const { store, sessionId, historyEpoch, lastSeq } = this;
 		const seq = await this.findEntrySeq(id);
-		if (seq !== undefined) {
-			for await (const { items } of this.readHistory({ fromSeq: seq, toSeq: seq })) {
+		if (seq !== undefined && seq <= lastSeq) {
+			for await (const { items } of historyPages(store, sessionId, historyEpoch, lastSeq, {
+				fromSeq: seq,
+				toSeq: seq,
+			})) {
 				const item = items[0];
 				if (item && !("entry" in item))
 					throw Object.assign(
