@@ -387,7 +387,7 @@ test(
 			settingsManager: SettingsManager.inMemory(),
 			sessionManager: SessionManager.inMemory(root),
 			model: getModel("anthropic", "claude-sonnet-4-5"),
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 			tools: ["re*", "subagent"],
 		});
 		try {

@@ -1,6 +1,5 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
-import { BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.js";
 import type { RegisteredCommand } from "./slash-dispatch-utils.js";
 import {
 	assert,
@@ -34,7 +33,7 @@ describe("factory command registration (real factory)", () => {
 		);
 	});
 
-	test.sequential("registers /workflows and /workflow-authoring matching bundled fallback descriptions (#5224)", async () => {
+	test.sequential("registers /workflows and /workflow-authoring with their descriptions (#5224)", async () => {
 		const commands = await runFactoryWithMock();
 		const workflowsCommand = commands.find((command) => command.name === "workflows");
 		const authoringCommand = commands.find((command) => command.name === "workflow-authoring");
@@ -42,17 +41,6 @@ describe("factory command registration (real factory)", () => {
 		assert.notEqual(authoringCommand, undefined);
 		assert.equal(workflowsCommand!.options.description, "Browse running and completed workflows");
 		assert.equal(authoringCommand!.options.description, "Load the reference for writing workflow definitions");
-
-		const bundledWorkflows = BUNDLED_EXTENSION_SLASH_COMMANDS.find((command) => command.name === "workflows");
-		const bundledAuthoring = BUNDLED_EXTENSION_SLASH_COMMANDS.find(
-			(command) => command.name === "workflow-authoring",
-		);
-		assert.equal(
-			BUNDLED_EXTENSION_SLASH_COMMANDS.some((command) => command.name === "workflow"),
-			false,
-		);
-		assert.equal(bundledWorkflows?.description, workflowsCommand!.options.description);
-		assert.equal(bundledAuthoring?.description, authoringCommand!.options.description);
 	});
 
 	test.sequential("/workflows argument completions offer only top-level session run IDs (#5224)", async () => {

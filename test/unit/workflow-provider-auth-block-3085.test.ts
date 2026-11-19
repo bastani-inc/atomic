@@ -256,7 +256,7 @@ async function blockedProviderResumesWithoutReplayingPrefix(): Promise<void> {
 							cwd: sessionDir,
 							agentDir: sessionDir,
 							// #3105: this provider-only stage fixture has no extension resources.
-							builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+							builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 							modelRuntime,
 							model: modelRuntime.getModel(requestedProvider(options.model), "m")!,
 							fallbackModels: options.fallbackModels,

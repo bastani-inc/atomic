@@ -255,7 +255,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		thinkingLevel: "medium",
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, defaultThinkingLevel: "medium" }),
 		sessionManager: await SessionManager.create(cwd, join(cwd, "parent-sessions")),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 		...(options.parentAdmission ? { resourceAdmission: options.parentAdmission } : {}),
 	});

@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The bundled command names no longer include `workflows` or `workflow-authoring`. If your extension uses either name, mark clickable hints explicitly with `slashCommandHint()` rather than relying on built-in command recognition.
+
 ### Added
 
 - A stateless component returned by a chat renderer can declare `historyReplayable: true` so that saved pages can recreate it without keeping the original instance ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).

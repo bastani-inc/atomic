@@ -89,7 +89,7 @@ const sdk = createAgentSessionAdapter({
 	model,
 	modelRuntime,
 	settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
-	builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+	builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 	tools: mode === "detached" ? ["wait_for_ci"] : [],
 });
 

@@ -211,7 +211,7 @@ async function effortFixture(options: EffortFixtureOptions = {}) {
 			...(options.modelThinkingLevels ? { modelThinkingLevels: options.modelThinkingLevels } : {}),
 		}),
 		sessionManager: await SessionManager.create(cwd, join(cwd, "parent-sessions")),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 		...(options.parentAdmission ? { resourceAdmission: options.parentAdmission } : {}),
 	});

@@ -10,7 +10,7 @@ export const ONBOARDING_COPY = [
 	"",
 	"Type a message or slash command below to continue normally.",
 	"If you have not connected a provider yet, run `/login` first.",
-	"Ask Atomic to list its built-in workflows; `/workflows` shows your runs.",
+	"Use `/agents` to browse subagents and `/tasks` to inspect their work.",
 ].join("\n");
 
 InteractiveModeBase.prototype.initializeFirstRunOnboardingMarkers = function (this: InteractiveModeBase): void {

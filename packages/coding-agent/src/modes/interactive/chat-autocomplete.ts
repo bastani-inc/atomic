@@ -69,12 +69,6 @@ class AtMentionFallbackAutocompleteProvider implements AutocompleteProvider {
 	): Promise<AutocompleteSuggestions | null> {
 		const primarySuggestions = await this.primary.getSuggestions(lines, cursorLine, cursorCol, options);
 		if (primarySuggestions || options.signal.aborted) {
-			if (
-				primarySuggestions?.prefix === "/workflow" &&
-				!primarySuggestions.items.some((item) => item.value === "workflow")
-			) {
-				return { ...primarySuggestions, completeOnConfirm: false };
-			}
 			return primarySuggestions;
 		}
 
