@@ -13,6 +13,10 @@ export function bindChatLayout(view: object, layout: ChatReaderLayout): void {
 export function chatLineDrawnLive(view: object, id: string): void {
 	currentLayouts.get(view)?.deref()?.live.add(id);
 }
+/** The layout of the chat a view last drew, while it is alive. */
+export function boundChatLayout(view: object): ChatReaderLayout | undefined {
+	return currentLayouts.get(view)?.deref();
+}
 /** A reader-only row a layout drew: the anchor it shows a line of, and the row it follows (absent at the start). */
 export interface ChatDecorationRow {
 	readonly id: string;
@@ -70,6 +74,18 @@ export class ChatReaderLayout {
 	/** Anchors already shown by rows a parked reader kept. */
 	keepShown(ids: Iterable<string>): void {
 		for (const id of ids) this.shown.add(id);
+	}
+	/** Anchors whose saved lines this layout draws after one of `rows`, other than `except`. */
+	anchorsAfter(rows: ReadonlySet<Component>, except: ReadonlySet<string>): string[] {
+		const groups = new Set<number>();
+		for (const [group, span] of this.spans) {
+			const last = span.last.deref();
+			if (last && rows.has(last)) groups.add(group);
+		}
+		if (!groups.size) return [];
+		return [...this.index().values()].flatMap((p) =>
+			p.group !== undefined && groups.has(p.group) && !except.has(p.id) ? [p.id] : [],
+		);
 	}
 	/** Every prompt a notice run of these entries can show ahead of it, for a read of the whole page at once. */
 	orderTargets(): string[] {

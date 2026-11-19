@@ -16,8 +16,13 @@ import type {
 } from "../../core/storage/session/types.js";
 import { rowSource, savedRowKey, savedSeqOf } from "../../core/tasks/transcript-origin.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
-import { ChatReaderLayout, chatDecorationRow } from "./chat-reader-layout.js";
-import { type ChatPageDecorations, readMountedAnchors, sessionChatMount } from "./chat-reader-records.js";
+import { boundChatLayout, ChatReaderLayout, chatDecorationRow } from "./chat-reader-layout.js";
+import {
+	type ChatMount,
+	type ChatPageDecorations,
+	readMountedAnchors,
+	sessionChatMount,
+} from "./chat-reader-records.js";
 import { parkedRun } from "./components/parked-rows.ts";
 import { SavedRendererInstances } from "./components/saved-renderer-instances.js";
 
@@ -307,12 +312,41 @@ export function parkViewport(mode: InteractiveModeBase, context: readonly Sessio
 		const record = chatDecorationRow(child);
 		if (record) shown.add(record.id);
 	}
+	for (const id of readKeptLines(mode, moving, shown)) shown.add(id);
 	return {
 		parked: retired.length ? { rows: retired, first: run.first, last: run.last } : undefined,
 		adopted: kept,
 		keys: adopted,
 		shownRecords: shown,
 	};
+}
+
+/**
+ * A saved line whose read was still in flight when the compaction came was never drawn: the drawing that read it is
+ * cleared. Read again the lines of the rows the reader keeps that show none yet, bounded to those rows, and draw each
+ * after its row as that drawing would have, in the page those rows form or in the new context that adopts them.
+ * Returns the anchors read, which the new context then leaves to these rows, as it does the lines they show.
+ */
+function readKeptLines(mode: InteractiveModeBase, rows: ReadonlySet<Component>, shown: ReadonlySet<string>): string[] {
+	const layout = boundChatLayout(mode);
+	const mount = layout && sessionChatMount(mode, mode.sessionManager);
+	const anchors = (mount && layout?.anchorsAfter(rows, shown)) || [];
+	if (!mount || !layout || !anchors.length) return [];
+	// The lines leave with their rows, as a saved page's do: an answer already read is used, nothing is cached.
+	const records: ChatMount["records"] = new Map();
+	for (const id of anchors) {
+		const known = mount.records.get(id);
+		if (known) records.set(id, known);
+	}
+	const chat = mode.chatContainer;
+	void readMountedAnchors({ scope: mount.scope, present: mount.present, records }, anchors).then((data) => {
+		if (!data?.after.size || mode.chatContainer !== chat) return;
+		const drawn = new Set(chat.children);
+		if (!layout.apply(chat, { after: data.after, before: new Map() })) return;
+		mounts.get(mode)?.joinLines(chat.children.filter((child) => !drawn.has(child)));
+		mode.ui.requestRender();
+	});
+	return anchors;
 }
 
 /**
@@ -588,9 +622,35 @@ class SavedChatHistory {
 	 */
 	park(parked: ParkedRows): void {
 		const children = [...parked.rows];
-		// They are saved rows now, marked as a drawn page marks them: a row without a saved source (a spacer, a
-		// decoration) belongs to the entry of the next row that has one, as it was drawn before that row, and rows
-		// after the last such row follow it.
+		this.markParked(children);
+		this.chat.insertChildren(this.chat.children.indexOf(this.marker) + 1, children);
+		this.pages.push({ children, first: parked.first, last: parked.last, from: parked.first, to: parked.last });
+	}
+
+	/** Saved lines drawn after rows of a parked page once it is mounted join that page, where they are drawn. */
+	joinLines(lines: readonly Component[]): void {
+		for (let index = 0; index < this.pages.length; index++) {
+			const page = this.pages[index]!;
+			const rows = new Set(page.children);
+			const joining = new Set(
+				lines.filter((line) => {
+					const after = chatDecorationRow(line)?.after;
+					return after !== undefined && rows.has(after);
+				}),
+			);
+			if (!joining.size) continue;
+			const children = this.chat.children.filter((child) => rows.has(child) || joining.has(child));
+			this.markParked(children);
+			this.pages[index] = { ...page, children };
+		}
+	}
+
+	/**
+	 * Parked rows are saved rows, marked as a drawn page marks them: a row without a saved source (a spacer, a
+	 * decoration) belongs to the entry of the next row that has one, as it was drawn before that row, and rows after
+	 * the last such row follow it.
+	 */
+	private markParked(children: readonly Component[]): void {
 		const source = this.exceptions.source;
 		let pending: Component[] = [];
 		let at: { seq: number; block: number; parts: number } | undefined;
@@ -607,8 +667,6 @@ class SavedChatHistory {
 		if (at)
 			for (let index = 0; index < pending.length; index++)
 				WindowedContainer.markHistoryComponent(pending[index]!, source, at.seq, at.block, at.parts + index);
-		this.chat.insertChildren(this.chat.children.indexOf(this.marker) + 1, children);
-		this.pages.push({ children, first: parked.first, last: parked.last, from: parked.first, to: parked.last });
 	}
 
 	markerRow(): Component {
