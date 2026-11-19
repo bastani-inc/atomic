@@ -72,7 +72,7 @@ A reopened session or a restored background subagent registers under the Interco
 | Target | Reaches |
 | --- | --- |
 | `subagent-worker-*`, `subagent-*`, `*` | Every live session visible in your groups whose name matches, except you. `*` matches any run of characters and is case-insensitive; `*` alone reaches every visible session. |
-| `subagents:*` | Every subagent this session launched, in any run, that is running (foreground or background), released, or paused. |
+| `subagents:*` | Every subagent this session launched, in any run, that is running, released, or paused. |
 | `subagents:<runId>/*` | The same, for the children of one `subagent` run. |
 
 Each recipient gets its own direct send, with the same delivery, refusals, receipts, and reconnect retries as sending to it by name. A paused subagent's message is held for it exactly as a direct send to it would be. The result lists every recipient with its outcome: `delivered`, `queued`, `not delivered` with the reason, or `outcome unknown`. It is an error only when no recipient was reached. A glob that matches no visible session is an error that lists the closest visible names, and `subagents:` with no such child is an error too.
