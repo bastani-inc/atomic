@@ -41,7 +41,7 @@ import {
 	WorkspaceRestoreError,
 	WorkspaceSnapshotError,
 } from "./worktree-snapshot/errors.ts";
-import { scheduleSnapshotCollection } from "./worktree-snapshot/garbage.ts";
+import { SNAPSHOT_COLLECTION_SESSION_DELAY_MS, scheduleSnapshotCollection } from "./worktree-snapshot/garbage.ts";
 import { gitText, runGit } from "./worktree-snapshot/git.ts";
 import { isHeadOnlyAdvance } from "./worktree-snapshot/head-advance.ts";
 import {
@@ -235,8 +235,10 @@ export class SessionWorktreeSnapshotRecorder {
 	}
 
 	/**
-	 * Starts an automatic collection of the session store's unreferenced snapshot blobs when one is due, and returns
-	 * without waiting for it. Called when the session closes.
+	 * Schedules an automatic collection of the session store's unreferenced snapshot blobs when one is due, and returns
+	 * without waiting for it. The collection starts {@link SNAPSHOT_COLLECTION_SESSION_DELAY_MS} later, so it competes
+	 * neither with the start of an interactive session nor with opening the next session after this one closes (#5530).
+	 * Called once an interactive session has started, and when a session closes.
 	 */
 	scheduleCollection(): void {
 		let settings: WorktreeSnapshotSettings;
@@ -246,7 +248,9 @@ export class SessionWorktreeSnapshotRecorder {
 			this.reportFailure(error);
 			return;
 		}
-		void scheduleSnapshotCollection(this.deps.sessionManager.getSessionStore().snapshotBlobs, settings);
+		void scheduleSnapshotCollection(this.deps.sessionManager.getSessionStore().snapshotBlobs, settings, {
+			delayMs: SNAPSHOT_COLLECTION_SESSION_DELAY_MS,
+		});
 	}
 
 	/**

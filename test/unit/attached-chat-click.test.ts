@@ -135,6 +135,95 @@ async function openTranscript(
 	return { screen, rowOf, clickOn, emit, press, dispose };
 }
 
+test("Ctrl+O wins over an attached click still waiting to settle (#5562)", () => {
+	initTheme("dark");
+	let expanded = false;
+	const host = new ChatSessionHost({
+		style: themedChatHostStyle(),
+		editorTheme: getEditorTheme(),
+		getChatRenderSettings: () => ({
+			toolOutputExpanded: expanded,
+			getCustomMessageRenderer:
+				() =>
+				(_message, { expanded }) => ({
+					invalidate() {},
+					render: () => ["Card title", ...(expanded ? ["Detail"] : [])],
+				}),
+		}),
+	});
+	try {
+		host.replaceMessages([{ role: "custom", customType: "card", content: "sample", display: true, timestamp: 1 }]);
+		const row = host.renderBody(100, 50).findIndex((line) => line.includes("Card title"));
+		const pending = host.handleBodyClick(click(2, row, 100, 50));
+		assert.ok(pending?.whenSingleClick);
+		expanded = true;
+		host.toolOutputToggled();
+		host.renderBody(100, 50);
+		settled(pending);
+		assert.ok(host.renderBody(100, 50).some((line) => line.includes("Detail")));
+	} finally {
+		host.dispose();
+	}
+});
+
+test("an attached click uses its block's width when the click settles (#5562)", () => {
+	initTheme("dark");
+	const host = new ChatSessionHost({
+		style: themedChatHostStyle(),
+		editorTheme: getEditorTheme(),
+		getChatRenderSettings: () => ({
+			getCustomMessageRenderer:
+				() =>
+				(_message, { expanded }) => ({
+					invalidate() {},
+					render: (width) => ["Responsive title", ...(expanded && width < 80 ? ["Narrow detail"] : [])],
+				}),
+		}),
+	});
+	try {
+		host.replaceMessages([
+			{ role: "custom", customType: "responsive", content: "sample", display: true, timestamp: 1 },
+		]);
+		const wide = host.renderBody(105, 50);
+		const row = wide.findIndex((line) => line.includes("Responsive title"));
+		assert.notEqual(row, -1);
+		const pending = host.handleBodyClick(click(2, row, 105, 50));
+		assert.ok(pending?.whenSingleClick);
+		host.renderBody(68, 50);
+		settled(pending);
+		assert.ok(host.renderBody(68, 50).some((line) => line.includes("Narrow detail")));
+	} finally {
+		host.dispose();
+	}
+});
+
+test("an attached click opens the group its call joined while the click was waiting (#5562)", () => {
+	initTheme("dark");
+	const host = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
+	const finish = (id: string) => {
+		host.applyAgentEvent({ type: "tool_execution_start", toolCallId: id, toolName: "bash", args: { command: id } });
+		host.applyAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: id,
+			toolName: "bash",
+			result: { content: [{ type: "text", text: `${id} output` }] },
+			isError: false,
+		});
+	};
+	try {
+		finish("first-call");
+		const row = host.renderBody(100, 50).findIndex((line) => line.includes("first-call"));
+		const pending = host.handleBodyClick(click(2, row, 100, 50));
+		assert.ok(pending?.whenSingleClick);
+		finish("second-call");
+		assert.ok(!host.renderBody(100, 50).some((line) => line.includes("second-call output")));
+		settled(pending);
+		assert.ok(host.renderBody(100, 50).some((line) => line.includes("second-call output")));
+	} finally {
+		host.dispose();
+	}
+});
+
 test("a running tool block a click expanded stays expanded as its live output arrives", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "Run it", timestamp: 0 });
