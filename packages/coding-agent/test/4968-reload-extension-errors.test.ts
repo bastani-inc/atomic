@@ -81,7 +81,10 @@ function createExtensionFixture(source?: string): {
 function renderReloadDiagnostics(runtimeHost: AgentSessionRuntime | object): string {
 	const mode = createShowLoadedResourcesThis({ quietStartup: true, runtimeHost: runtimeHost as AgentSessionRuntime });
 	mode.formatDiagnostics = (diagnostics: Array<{ path?: string; message: string }>) =>
-		diagnostics.map((diagnostic) => `${diagnostic.path}: ${diagnostic.message}`).join("\n");
+		diagnostics.map((diagnostic) => ({
+			key: JSON.stringify(diagnostic),
+			text: `${diagnostic.path}: ${diagnostic.message}`,
+		}));
 	(InteractiveMode as any).prototype.showLoadedResources.call(mode, { force: false, showDiagnosticsWhenQuiet: true });
 	// Keep the path's own separators: normalizeRenderedOutput would rewrite a Windows path's backslashes.
 	return renderAll(mode.chatContainer, 220)

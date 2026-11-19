@@ -10,6 +10,7 @@ import { isDecisionModelUnavailableError } from "../src/core/decision/errors.js"
 import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { SettingsSelectorComponent } from "../src/modes/interactive/components/settings-selector.js";
 import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.js";
 import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.js";
 import { SelectSubmenu } from "../src/modes/interactive/components/settings-selector-submenus.js";
@@ -121,6 +122,88 @@ test("keeps a configured automatic theme marked while browsing", () => {
 	output = render(submenu);
 	expect(output).toContain("  ● light");
 	expect(output).toContain("❯ ○ other");
+});
+
+test.each(["decision", "compaction"] as const)(
+	"an open %s picker confirms the approved project's model (#5693)",
+	(kind) => {
+		const save = vi.fn();
+		const panel = new SettingsSelectorComponent(settingsConfig(), {
+			onDecisionModelChange: save,
+			onCompactionModelChange: save,
+		} as unknown as SettingsCallbacks);
+		const list = panel.getSettingsList();
+		list.selectItem(`${kind}-model`);
+		list.handleInput("\r");
+		panel.refreshSettings(settingsConfig({ [`${kind}Model`]: "fixture/project", [`${kind}ModelScope`]: "project" }));
+		expect(render(panel)).toContain("Saves to project settings");
+		expect(render(panel)).toContain("❯ ● fixture/project");
+		list.handleInput("\r");
+		expect(save).toHaveBeenCalledExactlyOnceWith("fixture/project");
+	},
+);
+
+test("mounted warnings toggle from the approved value and keep it when reopened (#5693)", () => {
+	const save = vi.fn();
+	const panel = new SettingsSelectorComponent(settingsConfig(), {
+		onWarningsChange: save,
+	} as unknown as SettingsCallbacks);
+	const list = panel.getSettingsList();
+	list.selectItem("warnings");
+	list.handleInput("\r");
+	panel.refreshSettings(settingsConfig({ warnings: { anthropicExtraUsage: false } }));
+	expect(render(panel)).toMatch(/❯ Anthropic extra usage\s+false/);
+	list.handleInput("\r");
+	expect(save).toHaveBeenCalledExactlyOnceWith({ anthropicExtraUsage: true });
+	list.handleInput("\x1b");
+	list.handleInput("\r");
+	expect(render(panel)).toMatch(/❯ Anthropic extra usage\s+true/);
+});
+
+test("the automatic theme menu keeps the open dark picker and browsed theme across approval (#5693)", () => {
+	const base = { currentTheme: "light/dark", availableThemes: ["dark", "light", "other", "latte", "mocha"] };
+	const save = vi.fn();
+	const panel = new SettingsSelectorComponent(settingsConfig(base), {
+		onThemeChange: save,
+	} as unknown as SettingsCallbacks);
+	const list = panel.getSettingsList();
+	list.selectItem("theme");
+	list.handleInput("\r");
+	list.handleInput("\x1b[B");
+	list.handleInput("\r");
+	list.handleInput("\x1b[B");
+	panel.refreshSettings(settingsConfig({ ...base, currentTheme: "latte/mocha" }));
+	expect(render(panel)).toContain("❯ ○ light");
+	expect(render(panel)).toContain("● mocha");
+	list.handleInput("\x1b");
+	expect(render(panel)).toMatch(/❯ Dark theme\s+mocha/);
+	expect(render(panel)).toMatch(/Light theme\s+latte/);
+	list.handleInput("\x1b[B");
+	list.handleInput("\r");
+	expect(save).toHaveBeenCalledExactlyOnceWith("latte/mocha");
+});
+
+test("mounted thinking rows keep the search and choice while gaining the approved override (#5693)", () => {
+	const models = [{ provider: "fixture", id: "chat", reasoning: true }] as SettingsConfig["availableDefaultModels"];
+	const remove = vi.fn();
+	const panel = new SettingsSelectorComponent(settingsConfig({ availableDefaultModels: models }), {
+		onModelThinkingLevelRemove: remove,
+	} as unknown as SettingsCallbacks);
+	const list = panel.getSettingsList();
+	list.selectItem("model-thinking");
+	list.handleInput("\r");
+	for (const ch of "fixture") list.handleInput(ch);
+	list.handleInput("\x1b[B");
+	panel.refreshSettings(
+		settingsConfig({ availableDefaultModels: models, modelThinkingLevels: { "fixture/chat": "high" } }),
+	);
+	expect(render(panel)).toContain("⌕ fixture");
+	expect(render(panel)).toMatch(/❯ ○ fixture\/chat\s+minimal/);
+	expect(render(panel)).toMatch(/● fixture\/chat\s+high · default/);
+	expect(render(panel)).toContain("clear override");
+	for (let i = 0; i < 6; i++) list.handleInput("\x1b[B");
+	list.handleInput("\r");
+	expect(remove).toHaveBeenCalledExactlyOnceWith("fixture", "chat");
 });
 
 function openRouterSubmenu(

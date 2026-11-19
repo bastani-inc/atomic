@@ -256,6 +256,12 @@ interface EditorSnapshot {
 	pasteCounter: number;
 }
 
+interface AutocompleteRequestOptions {
+	force: boolean;
+	explicitTab: boolean;
+	preserveSelection?: boolean;
+}
+
 interface LayoutLine {
 	text: string;
 	hasCursor: boolean;
@@ -377,10 +383,13 @@ export class Editor implements Component, Focusable {
 	private autocompletePrefix: string = "";
 	private autocompleteCompleteOnConfirm = true;
 	private autocompleteSelectionMoved = false;
+	private autocompleteChoiceForQuery = false;
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteAbort?: AbortController;
 	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
+	private pendingAutocomplete?: AutocompleteRequestOptions;
+	private emptyAutocomplete?: { text: string; line: number; col: number; options: AutocompleteRequestOptions };
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
 
@@ -465,10 +474,26 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
-	setAutocompleteProvider(provider: AutocompleteProvider): void {
-		this.cancelAutocomplete();
+	setAutocompleteProvider(provider: AutocompleteProvider, options?: { preserveSelection?: boolean }): void {
+		const empty = this.emptyAutocomplete;
+		const refresh =
+			options?.preserveSelection &&
+			(this.pendingAutocomplete ??
+				(empty &&
+				empty.line === this.state.cursorLine &&
+				empty.col === this.state.cursorCol &&
+				empty.text === this.getText()
+					? empty.options
+					: undefined) ??
+				(this.autocompleteState && {
+					force: this.autocompleteState === "force",
+					explicitTab: false,
+				}));
+		if (refresh) this.cancelAutocompleteRequest();
+		else this.cancelAutocomplete();
 		this.autocompleteProvider = provider;
 		this.setAutocompleteTriggerCharacters(provider.triggerCharacters ?? []);
+		if (refresh) this.requestAutocomplete({ ...refresh, preserveSelection: true });
 	}
 
 	private renderAutocompleteHint(width: number): string | undefined {
@@ -731,6 +756,9 @@ export class Editor implements Component, Focusable {
 				width: contentWidth,
 				height: this.renderedAutocompleteHeight,
 			});
+			if (result?.handled && (event.type === "press" || (event.type === "wheel" && result.render))) {
+				this.autocompleteChoiceForQuery = true;
+			}
 			return result ? { ...result, focus: true } : undefined;
 		}
 
@@ -778,6 +806,8 @@ export class Editor implements Component, Focusable {
 
 	handleInput(data: string): void {
 		const kb = getKeybindings();
+
+		if (!this.autocompleteState && kb.matches(data, "tui.select.cancel")) this.dismissEmptyAutocomplete();
 
 		// Handle character jump mode (awaiting next character to jump to)
 		if (this.jumpMode !== null) {
@@ -851,6 +881,7 @@ export class Editor implements Component, Focusable {
 				kb.matches(data, "tui.select.pageDown")
 			) {
 				this.autocompleteSelectionMoved = true;
+				this.autocompleteChoiceForQuery = true;
 				this.autocompleteList.handleInput(data);
 				return;
 			}
@@ -2386,7 +2417,7 @@ export class Editor implements Component, Focusable {
 		this.requestAutocomplete({ force: true, explicitTab });
 	}
 
-	private requestAutocomplete(options: { force: boolean; explicitTab: boolean }): void {
+	private requestAutocomplete(options: AutocompleteRequestOptions): void {
 		if (!this.autocompleteProvider) return;
 
 		if (options.force) {
@@ -2403,6 +2434,8 @@ export class Editor implements Component, Focusable {
 		}
 
 		this.cancelAutocompleteRequest();
+		this.pendingAutocomplete = options;
+		if (!options.preserveSelection) this.autocompleteChoiceForQuery = false;
 		const startToken = ++this.autocompleteStartToken;
 
 		const debounceMs = this.getAutocompleteDebounceMs(options);
@@ -2417,10 +2450,7 @@ export class Editor implements Component, Focusable {
 		void this.startAutocompleteRequest(startToken, options);
 	}
 
-	private async startAutocompleteRequest(
-		startToken: number,
-		options: { force: boolean; explicitTab: boolean },
-	): Promise<void> {
+	private async startAutocompleteRequest(startToken: number, options: AutocompleteRequestOptions): Promise<void> {
 		const previousTask = this.autocompleteRequestTask;
 		this.autocompleteRequestTask = (async () => {
 			await previousTask;
@@ -2435,7 +2465,11 @@ export class Editor implements Component, Focusable {
 			const snapshotLine = this.state.cursorLine;
 			const snapshotCol = this.state.cursorCol;
 
-			await this.runAutocompleteRequest(requestId, controller, snapshotText, snapshotLine, snapshotCol, options);
+			try {
+				await this.runAutocompleteRequest(requestId, controller, snapshotText, snapshotLine, snapshotCol, options);
+			} finally {
+				if (startToken === this.autocompleteStartToken) this.pendingAutocomplete = undefined;
+			}
 		})();
 		await this.autocompleteRequestTask;
 	}
@@ -2469,7 +2503,7 @@ export class Editor implements Component, Focusable {
 		snapshotText: string,
 		snapshotLine: number,
 		snapshotCol: number,
-		options: { force: boolean; explicitTab: boolean },
+		options: AutocompleteRequestOptions,
 	): Promise<void> {
 		if (!this.autocompleteProvider) return;
 
@@ -2488,6 +2522,7 @@ export class Editor implements Component, Focusable {
 
 		if (!suggestions || !Array.isArray(suggestions.items) || suggestions.items.length === 0) {
 			this.cancelAutocomplete();
+			this.emptyAutocomplete = { text: snapshotText, line: snapshotLine, col: snapshotCol, options };
 			this.tui.requestRender();
 			return;
 		}
@@ -2511,7 +2546,7 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
-		this.applyAutocompleteSuggestions(suggestions, options.force ? "force" : "regular");
+		this.applyAutocompleteSuggestions(suggestions, options);
 		this.tui.requestRender();
 	}
 
@@ -2531,21 +2566,45 @@ export class Editor implements Component, Focusable {
 		);
 	}
 
-	private applyAutocompleteSuggestions(suggestions: AutocompleteSuggestions, state: "regular" | "force"): void {
+	private applyAutocompleteSuggestions(
+		suggestions: AutocompleteSuggestions,
+		options: AutocompleteRequestOptions,
+	): void {
+		// Read the live selection: navigation may have moved it while the provider was answering.
+		const list = options.preserveSelection ? this.autocompleteList : undefined;
+		const selected = this.autocompleteChoiceForQuery ? list?.getSelectedItem() : undefined;
+		const retainedIndex = selected ? suggestions.items.findIndex((item) => item.value === selected.value) : -1;
 		this.autocompletePrefix = suggestions.prefix;
 		this.autocompleteCompleteOnConfirm = suggestions.completeOnConfirm !== false;
-		this.autocompleteSelectionMoved = false;
-		this.autocompleteList = this.createAutocompleteList(suggestions.prefix, suggestions.items);
-
-		const bestMatchIndex = this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
-		if (bestMatchIndex >= 0) {
-			this.autocompleteList.setSelectedIndex(bestMatchIndex);
+		this.autocompleteSelectionMoved = retainedIndex >= 0 && this.autocompleteSelectionMoved;
+		this.autocompleteChoiceForQuery = retainedIndex >= 0;
+		if (list) {
+			list.setItems(
+				suggestions.items,
+				this.autocompleteMaxVisible,
+				suggestions.prefix.startsWith("/") ? SLASH_COMMAND_SELECT_LIST_LAYOUT : undefined,
+			);
+		} else {
+			this.autocompleteList = this.createAutocompleteList(suggestions.prefix, suggestions.items);
 		}
 
-		this.autocompleteState = state;
+		const bestMatchIndex =
+			retainedIndex >= 0 ? retainedIndex : this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
+		if (bestMatchIndex >= 0) {
+			this.autocompleteList?.setSelectedIndex(bestMatchIndex);
+		}
+
+		this.autocompleteState = options.force ? "force" : "regular";
+	}
+
+	protected dismissEmptyAutocomplete(): void {
+		this.emptyAutocomplete = undefined;
+		if (this.pendingAutocomplete?.preserveSelection && !this.autocompleteState) this.cancelAutocompleteRequest();
 	}
 
 	private cancelAutocompleteRequest(): void {
+		this.emptyAutocomplete = undefined;
+		this.pendingAutocomplete = undefined;
 		this.autocompleteStartToken += 1;
 		if (this.autocompleteDebounceTimer) {
 			clearTimeout(this.autocompleteDebounceTimer);
@@ -2561,6 +2620,7 @@ export class Editor implements Component, Focusable {
 		this.autocompletePrefix = "";
 		this.autocompleteCompleteOnConfirm = true;
 		this.autocompleteSelectionMoved = false;
+		this.autocompleteChoiceForQuery = false;
 	}
 
 	private cancelAutocomplete(): void {

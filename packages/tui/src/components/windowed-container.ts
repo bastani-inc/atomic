@@ -48,6 +48,9 @@ export class WindowedContainer extends Container {
 	private windowParent: WindowedContainer | undefined;
 	/** The host's laid-out entries this container's children occupied, `[first, end)`. */
 	private windowSpan = { first: 0, end: 0 };
+	private stableWindowStructure = false;
+	private spanSyncedAt = -1;
+	private syncNumber = 0;
 	private laidOut: Entry[] = [];
 	private offsets: number[] = [0];
 	private staleOffsetsFrom = Number.POSITIVE_INFINITY;
@@ -74,7 +77,35 @@ export class WindowedContainer extends Container {
 		return this.children;
 	}
 
+	/** Reuse this nested span between structural changes. Its subtree must use the child mutators or invalidate after a direct edit. */
+	trackWindowStructure(): void {
+		this.stableWindowStructure = true;
+		this.invalidateWindowStructure();
+	}
+
+	protected invalidateWindowStructure(): void {
+		if (this.spanSyncedAt < 0) return;
+		this.spanSyncedAt = -1;
+		this.windowParent?.invalidateWindowStructure();
+	}
+
+	override addChild(component: Component): void {
+		this.invalidateWindowStructure();
+		super.addChild(component);
+	}
+
+	override removeChild(component: Component): void {
+		this.invalidateWindowStructure();
+		super.removeChild(component);
+	}
+
+	override clear(): void {
+		this.invalidateWindowStructure();
+		super.clear();
+	}
+
 	override invalidate(): void {
+		this.invalidateWindowStructure();
 		for (const child of this.windowChildren()) {
 			const entry = entries.get(child);
 			if (entry?.current) {
@@ -220,6 +251,7 @@ export class WindowedContainer extends Container {
 	}
 
 	private syncEntries(): void {
+		const previousSync = this.syncNumber++;
 		const laidOut = this.laidOut;
 		let index = 0;
 		let rebuilt: Entry[] | undefined;
@@ -227,11 +259,24 @@ export class WindowedContainer extends Container {
 		const visit = (container: WindowedContainer): void => {
 			for (const child of container.windowChildren()) {
 				if (child instanceof WindowedContainer) {
-					child.windowHost = this;
-					child.windowParent = container;
 					const first = position();
-					visit(child);
-					child.windowSpan = { first, end: position() };
+					if (
+						child.stableWindowStructure &&
+						!rebuilt &&
+						child.windowHost === this &&
+						child.windowParent === container &&
+						child.spanSyncedAt === previousSync &&
+						child.windowSpan.first === first
+					) {
+						index = child.windowSpan.end;
+					} else {
+						if (child.windowHost !== this || child.windowParent !== container) child.invalidateWindowStructure();
+						child.windowHost = this;
+						child.windowParent = container;
+						visit(child);
+						child.windowSpan = { first, end: position() };
+					}
+					child.spanSyncedAt = this.syncNumber;
 					continue;
 				}
 				if (rebuilt === undefined) {

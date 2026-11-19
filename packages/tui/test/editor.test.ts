@@ -2819,6 +2819,141 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 
+		it("submits the newly available exact command if the user hasn't browsed the list (#5693)", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const catalog = (...values: string[]): AutocompleteProvider => ({
+				getSuggestions: async () => ({
+					prefix: "/global",
+					items: values.map((value) => ({ value, label: value })),
+				}),
+				applyCompletion,
+			});
+			let submitted: string | undefined;
+			editor.onSubmit = (text) => {
+				submitted = text;
+			};
+			editor.setAutocompleteProvider(catalog("/globalone", "/globaltwo"));
+			for (const ch of "/global") editor.handleInput(ch);
+			await flushAutocomplete();
+			editor.setAutocompleteProvider(catalog("/globalone", "/global", "/globaltwo"), { preserveSelection: true });
+			await flushAutocomplete();
+			editor.handleInput("\r");
+			assert.equal(submitted, "/global");
+		});
+
+		it("does not carry navigation from an earlier prefix into a pending new lookup (#5693)", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const old = Promise.withResolvers<null>();
+			const choices = (prefix: string, ...names: string[]) => ({
+				prefix,
+				items: names.map((value) => ({ value, label: value })),
+			});
+			editor.setAutocompleteProvider({
+				getSuggestions: ([text]) =>
+					text === "/global" ? old.promise : choices("/globa", "/globalone", "/globaltwo"),
+				applyCompletion,
+			});
+			for (const ch of "/globa") editor.handleInput(ch);
+			await flushAutocomplete();
+			editor.handleInput("\x1b[B");
+			editor.handleInput("l");
+			await flushAutocomplete();
+			editor.setAutocompleteProvider(
+				{ getSuggestions: () => choices("/global", "/global", "/globalone", "/globaltwo"), applyCompletion },
+				{ preserveSelection: true },
+			);
+			old.resolve(null);
+			await flushAutocomplete();
+			editor.handleInput("\t");
+			assert.equal(editor.getText(), "/global");
+		});
+
+		it("completes the pressed file when a catalog refresh moves it to another row (#5693)", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const files = Array.from({ length: 18 }, (_, i) => `@demo${String(i).padStart(2, "0")}.txt`);
+			const catalog = (names: string[]): AutocompleteProvider => ({
+				getSuggestions: async () => ({ prefix: "@demo", items: names.map((value) => ({ value, label: value })) }),
+				applyCompletion,
+			});
+			editor.setAutocompleteProvider(catalog(files));
+			editor.setText("@demo");
+			editor.handleInput("\t");
+			await flushAutocomplete();
+			const y = editor.render(80).findIndex((line) => line.includes("demo04.txt"));
+			assert.ok(y > 0);
+			const cell = {
+				button: "left" as const,
+				x: 2,
+				y,
+				screenX: 2,
+				screenY: y,
+				width: 80,
+				height: 24,
+				shift: false,
+				alt: false,
+				ctrl: false,
+			};
+			editor.handleMouse({ ...cell, type: "press" });
+			editor.setAutocompleteProvider(catalog(["@demo-new.txt", ...files]), { preserveSelection: true });
+			await flushAutocomplete();
+			editor.render(80);
+			editor.handleMouse({ ...cell, type: "click" });
+			assert.equal(editor.getText(), "@demo04.txt");
+		});
+
+		it("looks up a still-typed prefix after an empty result but not after dismissal (#5693)", async () => {
+			for (const dismissed of [false, true]) {
+				const editor = new Editor(createTestTUI(), defaultEditorTheme);
+				editor.setAutocompleteProvider({ getSuggestions: async () => null, applyCompletion });
+				for (const ch of "/zzq") editor.handleInput(ch);
+				await flushAutocomplete();
+				assert.equal(editor.isShowingAutocomplete(), false);
+				if (dismissed) editor.handleInput("\x1b");
+				editor.setAutocompleteProvider(
+					{
+						getSuggestions: async () => ({
+							prefix: "/zzq",
+							items: ["/zzqone", "/zzqtwo"].map((value) => ({ value, label: value })),
+						}),
+						applyCompletion,
+					},
+					{ preserveSelection: true },
+				);
+				await flushAutocomplete();
+				assert.equal(editor.isShowingAutocomplete(), !dismissed);
+				if (!dismissed) {
+					editor.handleInput("\t");
+					assert.equal(editor.getText(), "/zzqone");
+				}
+			}
+		});
+
+		it("finishes an outstanding file completion against the refreshed catalog (#5693)", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const started = Promise.withResolvers<void>();
+			const original = Promise.withResolvers<null>();
+			editor.setAutocompleteProvider({
+				getSuggestions: () => {
+					started.resolve();
+					return original.promise;
+				},
+				applyCompletion,
+			});
+			editor.setText("@demo");
+			editor.handleInput("\t");
+			await started.promise;
+			editor.setAutocompleteProvider(
+				{
+					getSuggestions: async () => ({ prefix: "@demo", items: [{ value: "@demo.txt", label: "demo.txt" }] }),
+					applyCompletion,
+				},
+				{ preserveSelection: true },
+			);
+			original.resolve(null);
+			await flushAutocomplete();
+			assert.strictEqual(editor.getText(), "@demo.txt", "the original Tab still completes a unique file");
+		});
+
 		it("aborts active @ autocomplete when typing continues", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			let aborts = 0;

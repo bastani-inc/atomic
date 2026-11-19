@@ -240,15 +240,18 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
 	return createChatAutocompleteProvider(commands, this.sessionManager.getCwd(), this.fdPath);
 };
 
-InteractiveModeBase.prototype.setupAutocompleteProvider = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.setupAutocompleteProvider = function (
+	this: InteractiveModeBase,
+	options?: { preserveSelection?: boolean },
+): void {
 	let provider = this.createBaseAutocompleteProvider();
 	for (const wrapProvider of this.autocompleteProviderWrappers) {
 		provider = wrapProvider(provider);
 	}
 
 	this.autocompleteProvider = provider;
-	this.defaultEditor.setAutocompleteProvider(provider);
+	this.defaultEditor.setAutocompleteProvider(provider, options);
 	if (this.editor !== this.defaultEditor) {
-		this.editor.setAutocompleteProvider?.(provider);
+		this.editor.setAutocompleteProvider?.(provider, options);
 	}
 };

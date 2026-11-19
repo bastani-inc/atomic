@@ -51,6 +51,7 @@ import type {
 	TUI,
 	VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
+import type { ResourceDetails, ResourceRow } from "./interactive-resource-disclosure.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import type { BlockedStatus } from "./program-status-reporter.ts";
 
@@ -66,7 +67,7 @@ declare module "./interactive-mode-base.ts" {
 		getBuiltInCommandConflictDiagnostics(extensionRunner: ExtensionRunner): ResourceDiagnostic[];
 		createBaseAutocompleteProvider(): AutocompleteProvider;
 		buildRemoteSlashCommands(localCommands: SlashCommand[]): SlashCommand[];
-		setupAutocompleteProvider(): void;
+		setupAutocompleteProvider(options?: { preserveSelection?: boolean }): void;
 		showStartupNoticesIfNeeded(targetContainer?: Container): void;
 		reportModelCatalogWarning(targetContainer?: Container): void;
 		reportedModelCatalogWarning: string | undefined;
@@ -131,24 +132,24 @@ declare module "./interactive-mode-base.ts" {
 				formatPath: (item: { path: string; sourceInfo?: SourceInfo }) => string;
 				formatPackagePath: (item: { path: string; sourceInfo?: SourceInfo }, source: string) => string;
 			},
-		): string;
+		): ResourceRow[];
 		findSourceInfoForPath(p: string, sourceInfos: Map<string, SourceInfo>): SourceInfo | undefined;
 		formatPathWithSource(p: string, sourceInfo?: SourceInfo): string;
-		formatDiagnostics(diagnostics: readonly ResourceDiagnostic[], sourceInfos: Map<string, SourceInfo>): string;
+		formatDiagnostics(
+			diagnostics: readonly ResourceDiagnostic[],
+			sourceInfos: Map<string, SourceInfo>,
+		): ResourceRow[];
 		addResourceDisclosure(options: {
 			contextFiles: ReadonlyArray<{ path: string }>;
 			skills: ReadonlyArray<{ filePath: string; name: string }>;
 			prompts: ReadonlyArray<{ filePath: string; name: string }>;
 			extensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo }>;
-			expandedSections: {
-				context?: string;
-				skills?: string;
-				prompts?: string;
-				extensions?: string;
-			};
+			expandedSections: ResourceDetails;
+			previousSections?: readonly Component[];
 			targetContainer?: Container;
 		}): void;
 		showLoadedResources(options?: {
+			preserveExpansion?: boolean;
 			extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
 			force?: boolean;
 			showDiagnosticsWhenQuiet?: boolean;

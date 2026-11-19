@@ -380,8 +380,8 @@ export class InteractiveModeBase {
 	changelogMarkdown: string | undefined = undefined;
 
 	startupNoticesShown = false;
-	/** Startup What's New Markdown, redrawn when startup notices are requested again after extensions load. */
-	startupChangelogComponent: Component | undefined = undefined;
+	/** Refresh the already-mounted update notice with the current project settings and Markdown transformers. */
+	refreshStartupChangelog?: () => void;
 	/** Last model-catalog warning already shown, so the deferred re-read only speaks on a change. */
 	reportedModelCatalogWarning: string | undefined;
 	startupNoticesPrepared = false;
@@ -755,7 +755,7 @@ export class InteractiveModeBase {
 		this.documentContainer.addChild(this.headerContainer);
 		this.chatContainer = new StartupChatContainer(isChatMessageComponent, () => this.transcriptScrollView);
 		this.documentContainer.addChild(this.chatContainer);
-		this.resourceDisclosureContainer = new Container();
+		this.resourceDisclosureContainer = new WindowedContainer();
 		this.startupNoticesContainer = new Container();
 		// The isolated engine can emit session_start UI requests as soon as its
 		// bridge attaches below, before init() mounts chat in the TUI. Reserve the

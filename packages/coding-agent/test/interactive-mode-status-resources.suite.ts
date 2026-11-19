@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { Container } from "@bastani/atomic-tui";
+import { Container, Text, WindowedContainer } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, test } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import { INSTALLED_EXTENSION_ENTRIES, SOURCE_EXTENSION_ENTRIES } from "../src/core/builtin-install-layout.js";
@@ -186,6 +186,113 @@ describe("InteractiveMode.showLoadedResources", () => {
 		InteractiveMode.prototype.setToolsExpanded.call(fakeThis, false);
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toContain("commit");
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).not.toContain("/tmp/skill/SKILL.md");
+	});
+
+	test.each(["startup", "reload"])(
+		"a settled fullscreen frame does not visit %s warnings above the viewport (#5693)",
+		(source) => {
+			const mode = createShowLoadedResourcesThis({
+				quietStartup: false,
+				skillDiagnostics: Array.from({ length: 10_000 }, (_, i) => ({ type: "warning", message: `warning ${i}` })),
+			});
+			const chat = new WindowedContainer();
+			const disclosure = new WindowedContainer();
+			chat.addChild(disclosure);
+			mode.resourceDisclosureContainer = disclosure;
+			mode.chatContainer = chat;
+			mode.formatDiagnostics = InteractiveMode.prototype.formatDiagnostics;
+			InteractiveMode.prototype.showLoadedResources.call(mode, {
+				force: true,
+				targetContainer: source === "startup" ? disclosure : undefined,
+			});
+			for (let i = 0; i < 200; i++) chat.addChild(new Text(`history ${i}`, 0, 0));
+			let visits = 0;
+			const countReads = (section: Container) => {
+				for (const child of section.children) if (child instanceof Container) countReads(child);
+				section.children = new Proxy(section.children, {
+					get(target, key, receiver) {
+						if (typeof key === "string" && /^\d+$/.test(key)) visits++;
+						return Reflect.get(target, key, receiver);
+					},
+				});
+			};
+			for (const child of chat.children) if (child instanceof Container) countReads(child);
+			const frame = () =>
+				chat.layoutWindow({ top: 0, width: 100, height: 30, followEnd: true, requestRender: () => {} });
+			frame();
+			chat.settleRows();
+			frame();
+			visits = 0;
+			const next = frame();
+			expect(next.at(next.top + 29)?.trim()).toBe("history 199");
+			expect(visits).toBe(0);
+		},
+	);
+
+	test("the visible diagnostic stays anchored when approval adds earlier resources and warnings (#5693)", () => {
+		const warnings = Array.from({ length: 60 }, (_, i) => ({
+			type: "warning" as const,
+			path: `/skills/warn${i}/SKILL.md`,
+			message: "description is required",
+		}));
+		const prompts: Array<{ name: string; filePath: string }> = [];
+		const mode = createShowLoadedResourcesThis({ quietStartup: false, skillDiagnostics: warnings, prompts });
+		mode.formatDiagnostics = InteractiveMode.prototype.formatDiagnostics;
+		mode.formatPathWithSource = (path: string) => path;
+		mode.findSourceInfoForPath = () => undefined;
+		const disclosure = new WindowedContainer();
+		mode.resourceDisclosureContainer = disclosure;
+		const paint = (preserveExpansion: boolean) =>
+			InteractiveMode.prototype.showLoadedResources.call(mode, {
+				targetContainer: disclosure,
+				preserveExpansion,
+			});
+		const layout = (top: number, height: number) =>
+			disclosure.layoutWindow({ top, height, width: 80, followEnd: false, requestRender: () => {} });
+		paint(false);
+		const all = layout(0, 150);
+		const index = Array.from({ length: all.length }, (_, i) => all.at(i)).findIndex((line) =>
+			line?.includes("/warn30/"),
+		);
+		expect(index).toBeGreaterThan(0);
+		const held = layout(index, 5);
+		warnings.unshift({ type: "warning", path: "/project/SKILL.md", message: "description is required" });
+		prompts.push({ name: "approved", filePath: "/project/approved.md" });
+		paint(true);
+		const next = layout(held.top, 5);
+		expect(next.at(next.top)).toContain("/warn30/SKILL.md");
+	});
+
+	test("the first visible prompt stays anchored when project approval inserts earlier rows (#5693)", () => {
+		const prompts = Array.from({ length: 60 }, (_, i) => ({ filePath: `/user/marker${i}.md`, name: `marker${i}` }));
+		const mode = createShowLoadedResourcesThis({
+			quietStartup: false,
+			toolOutputExpanded: true,
+			prompts,
+			useRealScopeGroups: true,
+		});
+		const disclosure = new WindowedContainer();
+		mode.resourceDisclosureContainer = disclosure;
+		const paint = (preserveExpansion: boolean) =>
+			InteractiveMode.prototype.showLoadedResources.call(mode, {
+				force: true,
+				targetContainer: disclosure,
+				preserveExpansion,
+			});
+		const layout = (top: number, height: number) =>
+			disclosure.layoutWindow({ top, height, width: 80, followEnd: false, requestRender: () => {} });
+		paint(false);
+		const all = layout(0, 100);
+		const marker = Array.from({ length: all.length }, (_, i) => all.at(i)).findIndex((line) =>
+			line?.includes("/marker30"),
+		);
+		expect(marker).toBeGreaterThan(0);
+		const held = layout(marker, 5);
+		expect(held.at(held.top)).toContain("/marker30");
+		prompts.push({ filePath: "/project/earlier.md", name: "earlier" });
+		paint(true);
+		const after = layout(held.top, 5);
+		expect(after.at(after.top)).toContain("/marker30");
 	});
 
 	test("shows full resource listing when expanded", () => {

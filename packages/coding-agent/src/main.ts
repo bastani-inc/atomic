@@ -66,7 +66,7 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
-import { startupProjectTrust } from "./core/project-trust-state.ts";
+import { pendingProjectResourcesTrusted, startupProjectTrust } from "./core/project-trust-state.ts";
 import { holdToolsUntilOwnerBuilt, shareBlueprintBuild } from "./core/resume/blueprint/barrier.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
 import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
@@ -1068,6 +1068,19 @@ export async function main(argv: string[], options?: MainOptions) {
 			services.projectTrust = {
 				get pending() {
 					return startupTrustPending;
+				},
+				get resourcesTrusted() {
+					return pendingProjectResourcesTrusted({
+						decide: startupTrust.decide,
+						startedTrusted: initialProjectTrusted,
+						// Without a session decision when startup began, one in the cache now was made by this startup.
+						decided: startupTrust.decide ? projectTrustByCwd.get(cwd) : undefined,
+						saved: storedProjectTrust,
+						// While deciding, the loaded extensions are the ones the decision runs: user, global and -e.
+						hasTrustHook: services.resourceLoader
+							.getExtensions()
+							.extensions.some((extension) => (extension.handlers.get("project_trust")?.length ?? 0) > 0),
+					});
 				},
 				abandon() {
 					// No decision is coming any more: the session stays as untrusted as its settings read.

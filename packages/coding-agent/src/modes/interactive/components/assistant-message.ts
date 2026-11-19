@@ -76,6 +76,13 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	setMarkdownSettings(theme: MarkdownTheme, renderLatex: boolean): void {
+		this.markdownTheme = theme;
+		this.renderLatex = renderLatex;
+		this.markdownSlots = [];
+		if (this.lastMessage) this.updateContent(this.lastMessage);
+	}
+
 	setHideThinkingBlock(hide: boolean): void {
 		this.hideThinkingBlock = hide;
 		if (this.lastMessage) {
