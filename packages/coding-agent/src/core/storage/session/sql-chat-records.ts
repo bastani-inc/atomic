@@ -28,10 +28,11 @@ type PageRow = {
 /** Prompt ids one reverse lookup binds at most. */
 const ORDER_BATCH = 128;
 /**
- * The anchor of a prompt's reverse edge. An anchored read never asks for it, and finds no `ChatRecord` in it if an
- * entry id ever spelled the same: the edge's record has a kind of its own.
+ * The stored keys of a position's records (`L`) and of a prompt's reverse edge (`O`). Entry ids are any text, so only
+ * a tag of its own keeps every position's key apart from every prompt's: a reverse lookup never matches a body.
  */
-const orderAnchor = (promptId: string) => `\u001forder\u001f${promptId}`;
+const lineKey = (anchor: string) => `L${anchor}`;
+const orderKey = (promptId: string) => `O${promptId}`;
 
 /** A new physical table per format version; the main sessions schema (and all its old readers) stay unchanged. */
 export function sqlChatRecords(
@@ -63,10 +64,10 @@ export function sqlChatRecords(
 		async append(owner, anchor, record) {
 			record = boundedChatRecord(record);
 			await initialize();
-			const rows: [anchor: string, data: string][] = [[anchor, JSON.stringify({ v: 1, ...record })]];
+			const rows: [key: string, data: string][] = [[lineKey(anchor), JSON.stringify({ v: 1, ...record })]];
 			// A prompt's reverse edge commits in the same statement as the record it indexes.
 			if (record.kind === "promptBefore")
-				rows.push([orderAnchor(record.promptId), encodeChatOrder({ anchor, promptId: record.promptId })]);
+				rows.push([orderKey(record.promptId), encodeChatOrder({ anchor, promptId: record.promptId })]);
 			// Use the session writer's own connection and serialization. A replacement with the same public ID
 			// cannot accept a delayed record from the old session. No revision or last-modified column is touched.
 			await database.run(
@@ -100,12 +101,12 @@ export function sqlChatRecords(
 					owner.id,
 					owner.epoch,
 					after,
-					...anchors,
+					...anchors.map(lineKey),
 					CHAT_READ_PAGE_BYTES,
 				);
 				for (const { anchor, data } of rows) {
 					const record = decodeChatRecord(data);
-					if (record) result.push({ anchor, record });
+					if (record) result.push({ anchor: anchor.slice(1), record });
 				}
 				const last: PageRow | undefined = rows[rows.length - 1];
 				if (!last || (Number(last.fetched) < READ_PAGE_ROWS && rows.length === Number(last.fetched))) return result;
@@ -116,7 +117,7 @@ export function sqlChatRecords(
 			const orders: ChatOrder[] = [];
 			// Only the reverse edges' rows: ids, never a diagnostic body.
 			for (let i = 0; i < promptIds.length; i += ORDER_BATCH) {
-				const keys = promptIds.slice(i, i + ORDER_BATCH).map(orderAnchor);
+				const keys = promptIds.slice(i, i + ORDER_BATCH).map(orderKey);
 				const rows = await database.all<{ data: string }>(
 					`SELECT data FROM ${table} WHERE session_id=? AND epoch=? AND anchor IN (${keys.map(() => "?").join(",")}) ORDER BY position`,
 					owner.id,

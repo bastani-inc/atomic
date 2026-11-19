@@ -179,6 +179,9 @@ for (const kind of ["memory", "JSONL", "SQLite"] as const)
 			await scope.store.append(scope.owner, "notice", { kind: "line", level: "error", text: "Error: offscreen" });
 			await scope.store.append(scope.owner, "notice", { kind: "promptBefore", promptId: "prompt" });
 			await scope.store.append(scope.owner, "later", { kind: "promptBefore", promptId: "prompt" });
+			// Entry ids are any text: positions spelled like a reverse key hold bodies the lookup must not fetch.
+			for (const spelled of ["\u001forder\u001fprompt", "Oprompt", "order:prompt"])
+				await scope.store.append(scope.owner, spelled, { kind: "line", level: "error", text: "Error: offscreen" });
 			// A reader of the notice still finds the edge where it was saved, and nothing besides.
 			assert.deepEqual(
 				(await scope.store.read(scope.owner, ["notice"])).map(({ record }) => record.kind),
