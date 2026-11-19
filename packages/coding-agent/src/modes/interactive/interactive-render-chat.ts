@@ -7,8 +7,10 @@ import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../.
 import { projectTrustWarningVisible } from "../../core/project-trust-state.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
-import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
+import { buildContextEntries, type SessionEntry } from "../../core/session-manager.ts";
+import { sessionEntryToDisplayMessages } from "../../core/session-manager-history.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
+import { ReopenedCompletionHeaders } from "../../core/tasks/reopened-completion.js";
 import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
@@ -813,6 +815,10 @@ function planTranscript(
 		}
 		messageBuffer = [];
 	};
+	const headers = new ReopenedCompletionHeaders(() => ({
+		entries: mode.sessionManager.getBranch(),
+		recovery: mode.sessionManager.getSessionRecoveryState(),
+	}));
 	for (const entry of sessionEntries) {
 		if (entry.type === "custom") {
 			// An unrendered record between a tool call and its result must not split them into two cards.
@@ -820,7 +826,7 @@ function planTranscript(
 			flushMessages();
 			steps.push({ kind: "custom", entry });
 		} else {
-			const messages = sessionEntryToContextMessages(entry);
+			const messages = sessionEntryToDisplayMessages(entry, headers);
 			for (const message of messages) messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
 			messageBuffer.push(...messages);
 			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
