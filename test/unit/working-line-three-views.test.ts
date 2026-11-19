@@ -4,18 +4,11 @@ import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interacti
 import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.ts";
 import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";
+import assert from "node:assert/strict";
+import type { AgentSessionEvent } from "@bastani/atomic";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
-import {
-	type AgentSessionEvent,
-	assert,
-	createStore,
-	deriveGraphTheme,
-	makeHandle,
-	StageChatView,
-	setupRun,
-} from "./stage-chat-view-helpers.js";
 
 vi.mock("../../packages/coding-agent/src/modes/interactive/whimsical-messages.ts", async (importOriginal) => ({
 	...(await importOriginal<
@@ -90,69 +83,6 @@ function mainChat() {
 	};
 }
 
-function stageChat() {
-	const store = createStore();
-	setupRun(store, "run-1", "stage-a", "running");
-	let streaming = false;
-	const messages: unknown[] = [];
-	const { handle: baseHandle, emit } = makeHandle(
-		{
-			promptCalls: [],
-			steerCalls: [],
-			followUpCalls: [],
-			pauseCalls: 0,
-			resumeCalls: [],
-			get isStreaming() {
-				return streaming;
-			},
-		},
-		messages as never,
-	);
-	const originalPause = baseHandle.pause.bind(baseHandle);
-	const handle = {
-		...baseHandle,
-		get isStreaming() {
-			return streaming;
-		},
-		async pause() {
-			streaming = false;
-			await originalPause();
-			store.recordStagePaused("run-1", "stage-a");
-		},
-	};
-	const open = () =>
-		new StageChatView({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageId: "stage-a",
-			workflowName: "test-wf",
-			handle,
-			onDetach: () => {},
-			onClose: () => {},
-		});
-	let view = open();
-	return {
-		get view() {
-			return view;
-		},
-		status: () => store.run("run-1")?.stages[0]?.status,
-		reopen: () => {
-			view.dispose();
-			view = open();
-		},
-		apply: async (event: AgentSessionEvent) => {
-			if (event.type === "message_end") messages.push(event.message as never);
-			if (event.type === "agent_start") streaming = true;
-			else if (event.type === "agent_end") streaming = false;
-			await emit(event);
-		},
-		line: () => statusLine(view.render(WIDTH)),
-		rawLine: () => rawStatusLine(view.render(WIDTH)),
-		dispose: () => view.dispose(),
-	};
-}
-
 function subagentView(workingTokenCount?: () => number | undefined) {
 	const host = new ChatSessionHost({
 		style: themedChatHostStyle(),
@@ -179,7 +109,7 @@ function rawStatusLine(rows: readonly string[]): string {
 	return rows.find((row) => stripTerminalSequences(row).trim().startsWith("∀ ")) ?? "";
 }
 
-describe("one working line in the main chat, a stage chat and a subagent view (#5224)", () => {
+describe("one working line in the main chat and a subagent view (#5224)", () => {
 	beforeAll(() => initTheme("dark", false));
 	beforeEach(() => {
 		vi.stubEnv("COLORTERM", "truecolor");
@@ -196,8 +126,8 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 		initTheme("dark", false);
 	});
 
-	test("the same events paint the same working line and end row in all three views; a stage chat and a subagent view count the agent's total (#5224)", async () => {
-		const views = [mainChat(), stageChat(), subagentView()];
+	test("the same events paint the same working line and end row in both views; a subagent view counts the agent's total (#5224)", async () => {
+		const views = [mainChat(), subagentView()];
 		const lines = () => views.map((view) => view.line());
 		const all = async (event: unknown) => {
 			for (const view of views) await view.apply(event as AgentSessionEvent);
@@ -205,36 +135,31 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 		try {
 			await all({ type: "agent_start" });
 			await all({ type: "turn_start" });
-			assert.deepEqual(lines(), Array(3).fill("∀ Brewing…"));
+			assert.deepEqual(lines(), Array(2).fill("∀ Brewing…"));
 
 			vi.setSystemTime(1_005_000);
 			const message = assistant("checking the lock", 120);
 			await all({ type: "message_end", message });
-			assert.deepEqual(lines(), Array(3).fill("∀ Brewing… (5s · ↓ 120 tokens)"));
+			assert.deepEqual(lines(), Array(2).fill("∀ Brewing… (5s · ↓ 120 tokens)"));
 
 			await all({ type: "turn_end", message, toolResults: [] });
 			vi.setSystemTime(1_007_000);
 			await all({ type: "turn_start" });
-			assert.deepEqual(lines(), Array(3).fill("∀ Brewing… (7s · ↑ 120 tokens)"));
+			assert.deepEqual(lines(), Array(2).fill("∀ Brewing… (7s · ↑ 120 tokens)"));
 
 			vi.setSystemTime(1_009_000);
 			await all({ type: "turn_end", message, toolResults: [] });
 			await all({ type: "agent_end", messages: [message] });
-			assert.deepEqual(lines(), Array(3).fill("∀ Brewed for 9s · ↓ 120 tokens"));
+			assert.deepEqual(lines(), Array(2).fill("∀ Brewed for 9s · ↓ 120 tokens"));
 			const expectedDimLine = `${theme.fg("dim", "∀")} ${theme.fg("dim", "Brewed for 9s · ↓ 120 tokens")}`;
 			assert.ok(views[0]!.rawLine().includes(expectedDimLine), "main chat end row is painted with theme dim token");
 			assert.ok(
-				views[2]!.rawLine().includes(expectedDimLine),
+				views[1]!.rawLine().includes(expectedDimLine),
 				"subagent view end row is painted with theme dim token",
-			);
-			assert.match(
-				views[1]!.rawLine(),
-				/\x1b\[38;2;\d+;\d+;\d+m∀\x1b\[0m \x1b\[38;2;\d+;\d+;\d+mBrewed for 9s · ↓ 120 tokens\x1b\[0m/,
-				"stage chat end row is painted with dim ANSI foreground",
 			);
 
 			await all({ type: "agent_start" });
-			assert.deepEqual(lines(), ["∀ Working…", "∀ Working… (0s · ↓ 120 tokens)", "∀ Working… (0s · ↓ 120 tokens)"]);
+			assert.deepEqual(lines(), ["∀ Working…", "∀ Working… (0s · ↓ 120 tokens)"]);
 		} finally {
 			for (const view of views) view.dispose();
 		}
@@ -280,7 +205,7 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 	});
 
 	test("a subsequent run that ends before turn_start uses Worked instead of the previous run's verb (#5224)", async () => {
-		const views = [mainChat(), stageChat(), subagentView()];
+		const views = [mainChat(), subagentView()];
 		const lines = () => views.map((view) => view.line());
 		const all = async (event: unknown) => {
 			for (const view of views) await view.apply(event as AgentSessionEvent);
@@ -290,12 +215,12 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 			await all({ type: "turn_start" });
 			vi.setSystemTime(1_004_000);
 			await all({ type: "agent_end", messages: [] });
-			assert.deepEqual(lines(), Array(3).fill("∀ Brewed for 4s"));
+			assert.deepEqual(lines(), Array(2).fill("∀ Brewed for 4s"));
 
 			await all({ type: "agent_start" });
 			vi.setSystemTime(1_006_000);
 			await all({ type: "agent_end", messages: [] });
-			assert.deepEqual(lines(), Array(3).fill("∀ Worked for 2s"));
+			assert.deepEqual(lines(), Array(2).fill("∀ Worked for 2s"));
 		} finally {
 			for (const view of views) view.dispose();
 		}
@@ -333,11 +258,10 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 			sub.dispose();
 		}
 	});
-	test("interrupting a running turn with Esc in a stage chat prints the same past-tense end row as main chat and a subagent view (#5239)", async () => {
+	test("the main chat and subagent view show the same past-tense end row after a running turn settles (#5239)", async () => {
 		const main = mainChat();
-		const stage = stageChat();
 		const sub = subagentView();
-		const views = [main, stage, sub];
+		const views = [main, sub];
 		const all = async (event: unknown) => {
 			for (const view of views) await view.apply(event as AgentSessionEvent);
 		};
@@ -349,51 +273,18 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 			await all({ type: "message_end", message });
 			assert.deepEqual(
 				views.map((view) => view.line()),
-				Array(3).fill("∀ Brewing… (14s · ↓ 800 tokens)"),
+				Array(2).fill("∀ Brewing… (14s · ↓ 800 tokens)"),
 			);
-
-			const restored = vi.spyOn(ChatSessionHost.prototype, "restoreInterruptedTurn");
-			assert.equal(stage.view.handleInput("\x1b"), true);
-			await Promise.resolve();
-			await Promise.resolve();
-			assert.equal(restored.mock.calls.length, 1);
-			const [interruptedTurn, restoreOptions] = restored.mock.calls[0] ?? [];
-			assert.equal(interruptedTurn?.settledTokens, 800);
-			assert.equal(restoreOptions, undefined);
 
 			await all({ type: "turn_end", message, toolResults: [] });
 			await all({ type: "agent_end", messages: [message] });
-			assert.deepEqual(restored.mock.calls.at(-1), [interruptedTurn, { resumeMeterForAgentEnd: true }]);
-			restored.mockRestore();
 
 			assert.deepEqual(
 				views.map((view) => view.line()),
-				Array(3).fill("∀ Brewed for 14s · ↓ 800 tokens"),
+				Array(2).fill("∀ Brewed for 14s · ↓ 800 tokens"),
 			);
 		} finally {
 			for (const view of views) view.dispose();
-		}
-	});
-	test("a stage chat reopened after Esc interrupted its turn still ends on the interrupted turn's time and tokens (#5239)", async () => {
-		const stage = stageChat();
-		try {
-			await stage.apply({ type: "agent_start" } as AgentSessionEvent);
-			await stage.apply({ type: "turn_start" } as AgentSessionEvent);
-			vi.setSystemTime(1_014_000);
-			const message = assistant("inspecting locks", 800);
-			await stage.apply({ type: "message_end", message } as AgentSessionEvent);
-
-			assert.equal(stage.view.handleInput("\x1b"), true);
-			await vi.waitFor(() => assert.equal(stage.status(), "paused"));
-			stage.reopen();
-			vi.setSystemTime(1_020_000);
-
-			await stage.apply({ type: "turn_end", message, toolResults: [] } as AgentSessionEvent);
-			await stage.apply({ type: "agent_end", messages: [message] } as AgentSessionEvent);
-
-			assert.equal(stage.line(), "∀ Brewed for 14s · ↓ 800 tokens");
-		} finally {
-			stage.dispose();
 		}
 	});
 });

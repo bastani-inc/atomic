@@ -15,7 +15,7 @@ test("companion package names stay aligned with shipped builtin directories", ()
 		COMPANION_BUILTIN_PACKAGE_NAMES,
 		BUILTIN_PACKAGE_DIR_NAMES.map((dirName) => `@bastani/${dirName}`),
 	);
-	assert.equal(isCompanionBuiltinPackageName("@bastani/workflows"), true);
+	assert.equal(isCompanionBuiltinPackageName("@bastani/subagents"), true);
 	assert.equal(isCompanionBuiltinPackageName("@bastani/atomic"), false);
 });
 
@@ -24,26 +24,26 @@ test("atomicConfig or the Atomic package name marks app identity", () => {
 	assert.equal(packageJsonDefinesAppIdentity({ name: "@mariozechner/pi" }), true);
 	assert.equal(
 		packageJsonDefinesAppIdentity({
-			name: "@bastani/workflows",
+			name: "@bastani/subagents",
 			atomicConfig: { name: "atomic", configDir: ".atomic" },
 		}),
 		true,
 	);
 	assert.equal(
 		packageJsonDefinesAppIdentity({
-			name: "@bastani/workflows",
+			name: "@bastani/subagents",
 			piConfig: { name: "pi", configDir: ".pi" },
 		}),
 		true,
 	);
-	assert.equal(packageJsonDefinesAppIdentity({ name: "@bastani/workflows" }), false);
+	assert.equal(packageJsonDefinesAppIdentity({ name: "@bastani/subagents" }), false);
 });
 
-test("prebundled workflows package.json does not become the Atomic app root", async () => {
+test("prebundled subagents package.json does not become the Atomic app root", async () => {
 	const root = makeTempDirectory("atomic-package-identity-");
 	try {
 		const atomicRoot = join(root, "node_modules", "@bastani", "atomic");
-		const bundleDir = join(atomicRoot, "dist", "builtin", "workflows", "src", "extension");
+		const bundleDir = join(atomicRoot, "dist", "builtin", "subagents", "src", "extension");
 		await writeFileEnsuringDir(
 			join(atomicRoot, "package.json"),
 			JSON.stringify({
@@ -52,8 +52,8 @@ test("prebundled workflows package.json does not become the Atomic app root", as
 			}),
 		);
 		await writeFileEnsuringDir(
-			join(atomicRoot, "dist", "builtin", "workflows", "package.json"),
-			JSON.stringify({ name: "@bastani/workflows" }),
+			join(atomicRoot, "dist", "builtin", "subagents", "package.json"),
+			JSON.stringify({ name: "@bastani/subagents" }),
 		);
 
 		assert.equal(resolvePackageDirFrom(bundleDir), atomicRoot);
@@ -66,7 +66,7 @@ test("prebundled companion with a non-object atomicConfig still walks to Atomic"
 	const root = makeTempDirectory("atomic-package-identity-primitive-");
 	try {
 		const atomicRoot = join(root, "node_modules", "@bastani", "atomic");
-		const bundleDir = join(atomicRoot, "dist", "builtin", "workflows", "src", "extension");
+		const bundleDir = join(atomicRoot, "dist", "builtin", "subagents", "src", "extension");
 		await writeFileEnsuringDir(
 			join(atomicRoot, "package.json"),
 			JSON.stringify({
@@ -75,8 +75,8 @@ test("prebundled companion with a non-object atomicConfig still walks to Atomic"
 			}),
 		);
 		await writeFileEnsuringDir(
-			join(atomicRoot, "dist", "builtin", "workflows", "package.json"),
-			JSON.stringify({ name: "@bastani/workflows", atomicConfig: true }),
+			join(atomicRoot, "dist", "builtin", "subagents", "package.json"),
+			JSON.stringify({ name: "@bastani/subagents", atomicConfig: true }),
 		);
 
 		assert.equal(resolvePackageDirFrom(bundleDir), atomicRoot);

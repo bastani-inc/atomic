@@ -1,6 +1,5 @@
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../workflows/src/shared/workflow-artifact-env.js";
 
 /**
  * Fill the run's shared extension transpile cache (`test/helpers/shared-transpile-cache.ts`) before any worker starts,
@@ -8,12 +7,12 @@ import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../workflows/src/shared/workflow-a
  * loads them. Tests that link to the shared cache then find the builtin graph already compiled, including each file's
  * first test, which otherwise compiles it cold while the other workers do the same.
  *
- * Runs once in the orchestrator, after `global-setup-workflow-artifacts.ts` has created the run directory. Entries are
+ * Runs once in the orchestrator, after `global-setup-test-directory.ts` has created the run directory. Entries are
  * content-keyed, so a stale or partial cache only means a test compiles what is missing. A failure is reported and the
  * run continues: tests then compile on demand, as they did before.
  */
 export default async function setup(): Promise<void> {
-	const runDirectory = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+	const runDirectory = process.env.ATOMIC_TEST_RUN_DIR;
 	if (runDirectory === undefined) return;
 	const started = performance.now();
 	try {

@@ -37,7 +37,7 @@ export const LEGACY_STORE = Object.freeze({
 	sessionBlob: "cc4bc80df52ef1f22d5a81e65554a62484abf6e1bc51bf16e60121b660c3222d",
 } as const);
 
-export type LegacyStoreContents = "full" | "workflow-schema";
+export type LegacyStoreContents = "full" | "workflow-schema" | "run-schema";
 
 export interface LegacyStoreOptions {
 	readonly prefix?: string;
@@ -200,8 +200,12 @@ export async function seedLegacyStore(database: SqliteDatabase, options: LegacyS
 	const name = (table: string) => (postgres ? postgresDialect.identifier(`${prefix}${table}`) : `${prefix}${table}`);
 	if (await exists(database, name("wf_runs"))) return;
 	const statements =
-		options.contents === "workflow-schema"
-			? workflowSchema(fixture, !postgres || (await exists(database, name("atomic_migrations"))))
+		options.contents === "workflow-schema" || options.contents === "run-schema"
+			? workflowSchema(fixture, !postgres || (await exists(database, name("atomic_migrations")))).filter(
+					(statement) =>
+						options.contents !== "run-schema" ||
+						/^wf_(meta|runs|events|event_chunks|leases|lease_builds)$/.test(statement.table),
+				)
 			: fixture.filter((statement) => statement.kind !== "other");
 	// 0.9.90 indexed session search with `pg_trgm` where it could install it, as a later release does.
 	const trigrams = postgres && (await trigramsAvailable(database));

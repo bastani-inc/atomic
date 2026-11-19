@@ -11,7 +11,6 @@ import mcpPackageJson from "../../packages/mcp/package.json" with { type: "json"
 import nativesPackageJson from "../../packages/natives/package.json" with { type: "json" };
 import subagentsPackageJson from "../../packages/subagents/package.json" with { type: "json" };
 import webAccessPackageJson from "../../packages/web-access/package.json" with { type: "json" };
-import workflowsPackageJson from "../../packages/workflows/package.json" with { type: "json" };
 import { readJson, readText } from "../helpers/runtime.js";
 
 const STRICT_RELEASE_VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-alpha\.([1-9]\d*))?$/;
@@ -213,7 +212,6 @@ describe("package metadata", () => {
 		assert.equal(buildTsconfig.compilerOptions?.inlineSources, undefined);
 		assert.deepEqual(Object.values(INSTALLED_EXTENSION_ENTRIES), [
 			"src/extension/index.bundle.mjs",
-			"src/extension/index.bundle.mjs",
 			"index.bundle.mjs",
 			"index.bundle.mjs",
 			"index.bundle.mjs",
@@ -277,9 +275,7 @@ describe("package metadata", () => {
 		}
 	});
 
-	test("ships workflow, skill, and bundled agent assets through package metadata", () => {
-		assert.ok(workflowsPackageJson.files.includes("builtin/**/*.ts"));
-		assert.deepEqual(workflowsPackageJson.pi.builtin, ["./builtin"]);
+	test("ships bundled skill assets through package metadata", () => {
 		assert.ok(subagentsPackageJson.files.includes("skills/**/*"));
 		assert.deepEqual(subagentsPackageJson.pi.skills, ["./skills"]);
 	});

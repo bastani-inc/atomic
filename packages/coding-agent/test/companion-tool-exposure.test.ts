@@ -4,8 +4,7 @@ import { Type } from "typebox";
 import { test } from "vitest";
 import { registerContactSupervisorTool } from "../../intercom/contact-supervisor-tool.js";
 import subagents from "../../subagents/src/extension/index.js";
-import { registerWorkflowTool } from "../../workflows/src/extension/workflow-tool-registration.js";
-import type { ToolDefinition } from "../src/core/extensions/types.js";
+
 import { createHarness } from "./suite/harness.js";
 
 test("script tool catalogs include subagent but exclude workflow, supervisor and human prompts", async () => {
@@ -25,13 +24,6 @@ test("script tool catalogs include subagent but exclude workflow, supervisor and
 						throw new Error("Supervisor wait must not be reached");
 					},
 				});
-				registerWorkflowTool(
-					{ registerTool: (tool) => pi.registerTool(tool as ToolDefinition) },
-					async () => {
-						throw new Error("Workflow execution must not be reached");
-					},
-					(_policy, run) => run(),
-				);
 				pi.registerTool({
 					name: "catalog_probe",
 					label: "Catalog probe",
@@ -47,7 +39,7 @@ test("script tool catalogs include subagent but exclude workflow, supervisor and
 		],
 	});
 	try {
-		const directOnly = ["workflow", "contact_supervisor", "ask_user_question"];
+		const directOnly = ["contact_supervisor", "ask_user_question"];
 		for (const name of ["subagent", ...directOnly])
 			assert(harness.session.getActiveToolNames().includes(name), `${name} remains model-active`);
 		harness.setResponses([

@@ -347,7 +347,7 @@ test(
 		const run = await runGuardFixture<DefaultSessionStoreOutcome>(SESSION_STORE_FIXTURE, scratch, "default", {
 			HOME: home,
 			USERPROFILE: home,
-			ATOMIC_WORKFLOW_ARTIFACT_DIR: artifacts,
+			ATOMIC_TEST_RUN_DIR: artifacts,
 			ATOMIC_CODING_AGENT_DIR: join(home, ".atomic", "agent"),
 			PI_CODING_AGENT_DIR: join(home, ".pi", "agent"),
 		});

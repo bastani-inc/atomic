@@ -24,8 +24,7 @@ import {
 	removeRestoredWorktree,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.js";
 import { restoreWorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/restore.js";
-import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+
 import { storageBackends } from "../helpers/storage-backends.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
@@ -307,62 +306,6 @@ for (const backend of storageBackends) {
 					assert.deepEqual([...deleted].sort(), ["old", "orphan"]);
 					assert.deepEqual([...(await blobs.listBlobHashes())].sort(), ["branch", "new"]);
 				} finally {
-					await scope.close();
-				}
-			},
-			LARGE_VALUE_TIMEOUT_MS,
-		);
-
-		test(
-			"a run with more than 10 MB of checkpoints reads back whole and resumes on another connection (#4954)",
-			async () => {
-				const scope = await backend.openScope();
-				const backends: JournalDurableBackend[] = [];
-				try {
-					const journal = await SqlRunJournal.open(await scope.connect(), { prefix: scope.prefix });
-					const writer = await JournalDurableBackend.open(journal);
-					backends.push(writer);
-					const workflowId = "large-run";
-					await writer.commitWorkflowRegistration({
-						workflowId,
-						name: "large",
-						inputs: {},
-						createdAt: 1,
-						status: "running",
-					});
-					const outputs = Array.from({ length: 12 }, (_, index) => `${index % 10}`.repeat(1_000_000));
-					for (const [index, output] of outputs.entries()) {
-						await writer.commitCheckpoint({
-							kind: "tool",
-							workflowId,
-							checkpointId: `tool-${index}`,
-							name: "tool",
-							argsHash: `args-${index}`,
-							output,
-							completedAt: 2 + index,
-						});
-					}
-					await writer.releaseWorkflow(workflowId);
-
-					const elsewhere = await SqlRunJournal.open(await scope.connect(), { prefix: scope.prefix });
-					let events = 0;
-					for await (const _ of elsewhere.read(workflowId)) events++;
-					assert.ok(events >= 13, `every event is read, ${events} read`);
-					let keyed = 0;
-					for await (const entry of SqlRunJournal.readKeyRange(elsewhere, workflowId, "", "\uffff")) {
-						if (entry.key !== undefined) keyed++;
-					}
-					assert.ok(keyed >= 12, `every keyed event is read through the key index, ${keyed} read`);
-					const resumed = await JournalDurableBackend.open(elsewhere);
-					backends.push(resumed);
-					await resumed.hydrateWorkflow(workflowId);
-					const checkpoints = await resumed.readCheckpoints(workflowId);
-					assert.deepEqual(
-						checkpoints.map((checkpoint) => (checkpoint as { output?: unknown }).output),
-						outputs,
-					);
-				} finally {
-					for (const opened of backends) await opened.close();
 					await scope.close();
 				}
 			},

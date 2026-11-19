@@ -8,7 +8,6 @@ import { stripSubagentOrchestrationSkill } from "../../packages/subagents/src/ru
 import { isMutatingBashCommand } from "../../packages/subagents/src/runs/shared/long-running-guard.ts";
 import { detectSubagentError } from "../../packages/subagents/src/shared/utils.ts";
 import { extractOutputTarget } from "../../packages/subagents/src/tui/render-status-progress.ts";
-import { parse_rubric } from "../../packages/workflows/builtin/verification-criteria.ts";
 
 const RUN = 100_000;
 const LONG_RUN = 4 * RUN;
@@ -163,22 +162,6 @@ describe("model replies", () => {
 			{
 				value: { responses: [{ id: "q", value: "x" }] },
 			},
-		);
-	});
-});
-
-describe("rubrics", () => {
-	test("reading a criterion heading reads a long run of spaces in its name once", () => {
-		const heading = `Name${spaces(RUN)}x`;
-		const rubric = timed(() => parse_rubric(`## Criteria\n### ${heading}\nbody\n`));
-		assert.equal(rubric.criteria[0]?.name, heading);
-	});
-
-	test("a criterion heading still takes its id from a trailing anchor", () => {
-		const rubric = parse_rubric("## Criteria\n### Correct output   {#correct}  \nbody\n");
-		assert.deepEqual(
-			rubric.criteria.map((criterion) => [criterion.id, criterion.name]),
-			[["correct", "Correct output"]],
 		);
 	});
 });
