@@ -20,6 +20,22 @@ import { storageBackends } from "../helpers/storage-backends.js";
 
 for (const backend of storageBackends) {
 	describe.skipIf(backend.skipReason !== undefined)(`snapshot collection on ${backend.name}`, () => {
+		test("an empty collection preserves an application's table named like the session watch", async () => {
+			const scope = await backend.openScope();
+			try {
+				const db = await scope.connect();
+				const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+				const table = `${scope.prefix}snapshot_walk_sessions`;
+				await db.exec(
+					`CREATE TABLE ${table} (session_id TEXT PRIMARY KEY); INSERT INTO ${table} VALUES ('application')`,
+				);
+				assert.deepEqual((await collectSnapshotGarbage(store.snapshotBlobs, { graceSeconds: 0 })).deleted, []);
+				assert.equal((await db.get(`SELECT session_id FROM ${table}`))?.session_id, "application");
+			} finally {
+				await scope.close();
+			}
+		});
+
 		test("a shared blob does not make one collection statement walk several long sessions (#5659)", async () => {
 			const scope = await backend.openScope();
 			try {
@@ -49,6 +65,7 @@ for (const backend of storageBackends) {
 				const connection = await scope.connect();
 				const walks: number[] = [];
 				const locked: number[] = [];
+				const order: string[] = [];
 				let interleave = false;
 				let interruptCleanup = true;
 				const measured = (executor: SqliteExecutor): SqliteExecutor => ({
@@ -73,6 +90,7 @@ for (const backend of storageBackends) {
 								),
 							);
 							walks.push(sessions.size);
+							order.push(...sessions);
 						}
 						return executor.all<T>(sql, ...params);
 					},
@@ -122,6 +140,39 @@ for (const backend of storageBackends) {
 				assert.equal(interleave, false);
 				assert.deepEqual(await reader.snapshotBlobs.getBlob(gone.hash), gone.data);
 				assert.ok(Math.max(...locked) <= 1, `only the edited session needs another walk: ${locked}`);
+
+				// The only remaining reference is already present before collection, in the last group it reads.
+				// Nomination and completion must not need a writer, even to dispose of temporary state.
+				await db.run(`DELETE FROM ${scope.prefix}session_entries WHERE session_id = ? AND seq = 2501`, ids[0]!);
+				await db.run(
+					`INSERT INTO ${scope.prefix}session_entries (session_id,seq,entry_id,entry_json) VALUES (?,2501,'keep',?)`,
+					order[ids.length - 1]!,
+					JSON.stringify({ type: "message", id: "keep", parentId: first.id }),
+				);
+				locked.length = 0;
+				assert.deepEqual((await collectSnapshotGarbage(reader.snapshotBlobs, { graceSeconds: 0 })).deleted, []);
+				assert.equal(locked.length, 0, "an all-retained collection does not take a write transaction");
+
+				// A later split delete needs a watch but the name belongs to an application. Even a compatible
+				// schema and a leftover registry entry are not permission to adopt, clear or drop that table.
+				const foreign = `${scope.prefix}snapshot_walk_sessions`;
+				await db.exec(
+					`CREATE TABLE ${foreign} (session_id TEXT PRIMARY KEY, owner TEXT); INSERT INTO ${foreign} VALUES ('application', NULL)`,
+				);
+				await db.run(
+					`INSERT INTO ${scope.prefix}snapshot_index_sources (source,watermark,backfilled_through) VALUES ('walk@stale',0,0)`,
+				);
+				await db.run(
+					`DELETE FROM ${scope.prefix}session_entries WHERE session_id = ? AND seq = 2501`,
+					order[ids.length - 1]!,
+				);
+				assert.deepEqual((await collectSnapshotGarbage(reader.snapshotBlobs, { graceSeconds: 0 })).deleted, [
+					gone.hash,
+				]);
+				assert.deepEqual(
+					(await db.all(`SELECT session_id FROM ${foreign}`)).map((row) => row.session_id),
+					["application"],
+				);
 				await reader.close();
 				await writer.close();
 			} finally {

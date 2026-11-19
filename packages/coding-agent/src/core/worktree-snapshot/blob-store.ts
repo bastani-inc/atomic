@@ -425,9 +425,8 @@ interface SweepCandidate {
 
 interface SessionWalkWatch {
 	observedAt: number;
-	readonly tracked: ReadonlySet<string>;
-	readonly checked: Set<string>;
-	readonly retained: Set<string>;
+	/** Session -> blobs retained by its group when checked. Only negative observations are reusable. */
+	readonly checked: Map<string, ReadonlySet<string>>;
 	track(sessions: readonly string[]): Promise<void>;
 	/** Sessions changed since the walk began; undefined when none of the walk can be trusted. */
 	dirty(tx: SqliteExecutor, sessions: readonly string[]): Promise<ReadonlySet<string> | undefined>;
@@ -530,13 +529,6 @@ class SweepSessions {
 
 	retains(hash: string): boolean {
 		return this.retained.has(hash);
-	}
-
-	split(ids: readonly string[]): boolean {
-		return needsSplitWalk(
-			ids.length,
-			ids.reduce((cost, id) => cost + (this.costs.get(id) ?? 1), 0),
-		);
 	}
 
 	/**
@@ -1819,8 +1811,6 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					page.map((row) => row.hash),
 					sessions,
 					turns,
-					options,
-					watches,
 				);
 				let incomplete = false;
 				const batches = sessions.batches(candidates);
@@ -1841,9 +1831,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					// then recheck in an ordinary batch. Forks that keep arriving cannot make one collection run forever.
 					if (index < initialBatches && removed.unseen.length > 0) {
 						await turns.next();
-						batches.push(
-							...sessions.batches(await this.unretainedOf(removed.unseen, sessions, turns, options, watches)),
-						);
+						batches.push(...sessions.batches(await this.unretainedOf(removed.unseen, sessions, turns)));
 					}
 				}
 				if (incomplete) {
@@ -1880,8 +1868,6 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		hashes: readonly string[],
 		sessions: SweepSessions,
 		turns: SweepTurns,
-		options: SnapshotSweepOptions,
-		watches: { current?: SessionWalkWatch },
 	): Promise<SweepCandidate[]> {
 		if (hashes.length === 0) return [];
 		const t = this.tables;
@@ -1900,31 +1886,11 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		if (unwalked.length > 0) {
 			const costs = await this.sessionCosts(unwalked, () => turns.light());
 			sessions.cost(costs);
-			const groups = sessionGroups(costs);
-			for (const [index, group] of groups.entries()) {
+			// Nomination stays read-only even when only the last group retains a shared blob. Install a watch
+			// only if a split delete batch actually needs to recheck these sessions.
+			for (const group of sessionGroups(costs)) {
 				await turns.next();
-				// If the first group already retained a shared patch, no writer was needed. Otherwise start
-				// observing before walking the other forks, so nomination doubles as their final check.
-				if (index === 1 && watches.current === undefined) {
-					const ids = new Set(
-						[...referencing]
-							.filter(([hash, ids]) => !sessions.retains(hash) && sessions.split(ids))
-							.flatMap(([, ids]) => ids),
-					);
-					if (ids.size) {
-						watches.current = await this.watchSessionWalk(options, [...ids]).catch(() => undefined);
-						turns.held();
-						await turns.next();
-					}
-				}
-				const watch = watches.current;
-				const observed = watch && group.every((id) => watch.tracked.has(id)) ? watch : undefined;
-				const retained = await this.retainedBySessions(group, this.database, observed);
-				sessions.retain(group, retained);
-				if (observed) {
-					for (const id of group) observed.checked.add(id);
-					for (const hash of retained) observed.retained.add(hash);
-				}
+				sessions.retain(group, await this.retainedBySessions(group));
 				turns.held();
 			}
 		}
@@ -1955,7 +1921,6 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			options.signal?.throwIfAborted();
 		}
 		const watch = batch.groups ? watches.current : undefined;
-		let seen: ReadonlySet<string> = new Set();
 		if (watch && batch.groups) {
 			let walked = false;
 			await watch.track(batch.sessions);
@@ -1964,11 +1929,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				if (fresh.length === 0) continue;
 				await this.betweenBatches(options.pace);
 				options.signal?.throwIfAborted();
-				for (const hash of await this.retainedBySessions(fresh, this.database, watch)) watch.retained.add(hash);
-				for (const id of fresh) watch.checked.add(id);
+				const retained = new Set(await this.retainedBySessions(fresh, this.database, watch));
+				for (const id of fresh) watch.checked.set(id, retained);
 				walked = true;
 			}
-			seen = watch.retained;
 			if (walked) await this.betweenBatches(options.pace);
 			options.signal?.throwIfAborted();
 		}
@@ -1976,21 +1940,20 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			const states = await readSourceStates(transaction, this.dialect, this.tables, this.sources);
 			if (!states.every((state) => state.installed && state.backfilled)) return undefined;
 			if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
+			const seen = new Set<string>();
 			if (batch.groups) {
 				const dirty = await watch?.dirty(transaction, batch.sessions);
 				// Only sessions actually edited need another walk under the lock. Losing the witness to another
 				// collector checks every group again. Never wait for a turn while holding the writer.
 				// Only a negative answer can be reused: a pin seen earlier may have expired or a writer may have
 				// released it. A positive answer is rare after nomination; resolve it against the current index.
-				const recheckAll = dirty === undefined || batch.hashes.some((hash) => seen.has(hash));
-				if (recheckAll || dirty.size > 0) {
-					const current = new Set<string>();
-					for (const group of batch.groups) {
-						const changed = recheckAll ? group : group.filter((id) => dirty.has(id));
-						if (changed.length > 0)
-							for (const hash of await this.retainedBySessions(changed, transaction)) current.add(hash);
-					}
-					seen = current;
+				for (const group of batch.groups) {
+					const changed = group.filter((id) => {
+						const retained = watch?.checked.get(id);
+						return !dirty || dirty.has(id) || !retained || batch.hashes.some((hash) => retained.has(hash));
+					});
+					if (changed.length > 0)
+						for (const hash of await this.retainedBySessions(changed, transaction)) seen.add(hash);
 				}
 			}
 			const held = await this.keptBySessions(transaction, batch, batch.groups !== undefined);
@@ -2013,9 +1976,17 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		return [sessionLinks, sessionRefs, sessionRecords].flatMap((table, i) =>
 			["INSERT", "UPDATE", "DELETE"].map((event) =>
 				createTrigger(`${this.prefix}snapshot_walk_${i}${event.toLowerCase()[0]}`, event, table, [
-					`DELETE FROM ${unchanged} WHERE session_id = ${event === "DELETE" ? "OLD" : "NEW"}.session_id${event === "UPDATE" ? " OR session_id = OLD.session_id" : ""}`,
+					`DELETE FROM ${unchanged} WHERE owner IS NULL AND (session_id = ${event === "DELETE" ? "OLD" : "NEW"}.session_id${event === "UPDATE" ? " OR session_id = OLD.session_id" : ""})`,
 				]),
 			),
+		);
+	}
+
+	/** The random owner token lives in both the registry and the table; a replacement at the same name is not ours. */
+	private ownsSessionWatch(tx: SqliteExecutor, token: string) {
+		return tx.get(
+			`SELECT 1 FROM ${this.prefix}snapshot_walk_sessions WHERE session_id = ? AND owner = session_id`,
+			token,
 		);
 	}
 
@@ -2035,15 +2006,17 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * registrations and triggers after the lease. A live collector that has fallen behind can still check under lock. */
 	private async removeExpiredSessionWatch(options: SnapshotSweepOptions): Promise<void> {
 		const sources = this.tables.sources;
-		const recent = `SELECT 1 FROM ${sources} WHERE source LIKE 'walk@%' AND watermark > ${this.dialect.nowSeconds} - ${SNAPSHOT_COLLECTION_LEASE_SECONDS}`;
-		if (await this.database.get(recent).catch(() => true)) return;
+		const expired = `SELECT source FROM ${sources} WHERE source LIKE 'walk@%' AND watermark <= ${this.dialect.nowSeconds} - ${SNAPSHOT_COLLECTION_LEASE_SECONDS}
+			AND EXISTS (SELECT 1 FROM ${this.prefix}snapshot_walk_sessions WHERE session_id = ${sources}.source AND owner = session_id)`;
+		if (!(await this.database.get(expired).catch(() => undefined))) return;
 		options.signal?.throwIfAborted();
 		await this.database
 			.transaction(
 				async (tx) => {
-					if (await tx.get(recent)) return;
+					const marker = await tx.get<{ source: string }>(expired);
+					if (!marker) return;
 					await this.dropSessionWatch(tx);
-					await tx.run(`DELETE FROM ${sources} WHERE source LIKE 'walk@%'`);
+					await tx.run(`DELETE FROM ${sources} WHERE source = ?`, marker.source);
 				},
 				{ lockWaitMs: this.dialect.name === "postgres" ? 1 : 0 },
 			)
@@ -2052,8 +2025,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	}
 
 	/** Observe changes to the index rows a split walk reads. Even writes by older builds and index rebuilds
-	 * go through the database triggers. One watch per store: a concurrent collector invalidates the first, and a
-	 * stopped process leaves at most one marker and the same fixed triggers, reclaimed by an ordinary sweep after the lease. */
+	 * go through the database triggers. One watch per store: if its name is in use, the locked walk still works.
+	 * A stopped process leaves at most one marker and the same fixed triggers, reclaimed by a sweep after the lease. */
 	private async watchSessionWalk(
 		options: SnapshotSweepOptions,
 		initial: readonly string[],
@@ -2076,9 +2049,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				await withShortSchemaLockWaits(tx, this.dialect, () =>
 					tx.exec(
 						[
-							`CREATE TABLE IF NOT EXISTS ${unchanged} (session_id TEXT PRIMARY KEY)${this.dialect.tableOptions};`,
+							`CREATE TABLE ${unchanged} (session_id TEXT PRIMARY KEY, owner TEXT)${this.dialect.tableOptions};`,
+							`INSERT INTO ${unchanged} (session_id,owner) VALUES ('${token}','${token}');`,
 							...triggers.map((t) => this.dialect.renderTrigger(t)),
-							`DELETE FROM ${unchanged}; DELETE FROM ${sources} WHERE ${marker};`,
+							`DELETE FROM ${sources} WHERE ${marker};`,
 							`INSERT INTO ${sources} (source,watermark,backfilled_through) VALUES ('${token}',${this.dialect.nowSeconds},0);`,
 						].join("\n"),
 					),
@@ -2089,22 +2063,21 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		);
 		const watch: SessionWalkWatch = {
 			observedAt: 0,
-			tracked,
-			checked: new Set(),
-			retained: new Set(),
+			checked: new Map(),
 			track: async (sessions) => {
 				const fresh = sessions.filter((id) => !tracked.has(id));
 				if (fresh.length === 0) return;
 				await this.write(options.pace, async (tx) => {
-					if (await tx.get(`SELECT 1 FROM ${sources} WHERE source = ?`, token)) await register(tx, fresh);
+					if (await this.ownsSessionWatch(tx, token)) await register(tx, fresh);
 				}).catch(() => undefined); // A missing registration is always rechecked under the writer.
 				for (const id of fresh) tracked.add(id);
 			},
 			dirty: async (tx, sessions) => {
 				const probe = this.dialect.schemaObjects([unchanged, ...triggers.map((t) => t.name)]);
 				if ((await tx.all(probe.sql, ...probe.params)).length !== triggers.length + 1) return undefined;
+				if (!(await this.ownsSessionWatch(tx, token))) return undefined;
 				const rows = await tx.all<{ session_id: string }>(
-					`SELECT value AS session_id FROM ${this.dialect.jsonValues("?")} WHERE NOT EXISTS (SELECT 1 FROM ${sources} WHERE source = ? AND ? <= ${this.dialect.nowSeconds}) OR NOT EXISTS (SELECT 1 FROM ${unchanged} WHERE session_id = value)`,
+					`SELECT value AS session_id FROM ${this.dialect.jsonValues("?")} WHERE NOT EXISTS (SELECT 1 FROM ${sources} WHERE source = ? AND ? <= ${this.dialect.nowSeconds}) OR NOT EXISTS (SELECT 1 FROM ${unchanged} WHERE owner IS NULL AND session_id = value)`,
 					JSON.stringify(sessions),
 					token,
 					watch.observedAt,
@@ -2113,6 +2086,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			},
 			close: () =>
 				this.write(options.pace, async (tx) => {
+					if (!(await this.ownsSessionWatch(tx, token))) return;
 					if (!(await tx.run(`DELETE FROM ${sources} WHERE source = ?`, token)).changes) return;
 					await this.dropSessionWatch(tx);
 				}),
@@ -2361,19 +2335,23 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const rows = SNAPSHOT_CHUNK_MOVE_ROWS;
 		const pending = await clustered(this.database);
 		if (pending.includes(retired)) {
-			// An interrupted move may already have renamed the table. Its old pages still have to be freed;
-			// bound their log too if the disk cannot hold a full log of the existing database.
+			// Only the remaining retired chunks can be rewritten while freeing them. Unrelated pages in the
+			// same database need no log allowance and must not postpone cleanup on a roomy disk.
 			const free = await this.database.freeBytes?.().catch(() => undefined);
-			const size =
-				free === undefined
-					? undefined
-					: await this.database.get<{ bytes: number }>(
-							"SELECT (SELECT page_count FROM pragma_page_count()) * (SELECT page_size FROM pragma_page_size()) AS bytes",
-						);
-			const checkpoint =
-				size && free! < Number(size.bytes) + SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES
-					? await this.chunkMoveCheckpoint(false)
-					: undefined;
+			let checkpoint: (() => Promise<boolean>) | undefined;
+			if (free !== undefined) {
+				const remaining = await this.database
+					.get<{ rows: number }>(`SELECT count(*) AS rows FROM ${retired}`)
+					.catch(async (error: unknown) => {
+						if ((await clustered(this.database)).includes(retired)) throw error;
+						return undefined; // Another collector finished freeing the table.
+					});
+				if (
+					remaining &&
+					free < SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES + Number(remaining.rows) * SNAPSHOT_BLOB_CHUNK_BYTES
+				)
+					checkpoint = await this.chunkMoveCheckpoint(false);
+			}
 			await this.dropChunkTable(retired, options, checkpoint);
 		}
 		if (!pending.includes(t.blobChunks)) return;
@@ -2463,17 +2441,24 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		await this.dropChunkTable(retired, options, checkpoint);
 	}
 
-	/** A passive checkpoint never waits for a reader. Pause the move if it cannot drain or recycle the log. */
+	/** Make room for one bounded batch. Fully backfilled frames can still be pinned by a reader; starting another
+	 * collection must not treat those same frames as a fresh allowance. Require an empty log, without waiting. */
 	private async chunkMoveCheckpoint(copying: boolean): Promise<() => Promise<boolean>> {
-		const page = await this.database.get<{ page_size: number }>("PRAGMA page_size").catch(() => undefined);
-		if (!page) return async () => false;
-		const frameBytes = Number(page.page_size) + 24;
-		let baseline = Number.POSITIVE_INFINITY;
+		const setting = await this.database.get<{ timeout: number }>("PRAGMA busy_timeout").catch(() => undefined);
+		if (!setting) return async () => false;
+		const restore = `PRAGMA busy_timeout=${Number(setting.timeout)}`;
 		return async () => {
+			try {
+				// Run all three statements together: other users of this connection keep their busy timeout.
+				await this.database.exec(`PRAGMA busy_timeout=0; PRAGMA main.wal_checkpoint(TRUNCATE); ${restore}`);
+			} catch {
+				await this.database.exec(restore);
+				return false;
+			}
 			const row = await this.database
-				.get<{ busy: number; log: number; checkpointed: number }>("PRAGMA main.wal_checkpoint(PASSIVE)")
+				.get<{ busy: number; log: number }>("PRAGMA main.wal_checkpoint(PASSIVE)")
 				.catch(() => undefined);
-			if (!row || Number(row.busy) !== 0 || Number(row.log) !== Number(row.checkpointed)) return false;
+			if (!row || Number(row.busy) !== 0 || Number(row.log) > 0) return false;
 			if (copying) {
 				// A checkpoint can grow the file, and other writers can consume room after admission. Leave
 				// the reserve and room for both the next four chunks and their log before continuing the copy.
@@ -2481,11 +2466,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				if (free === undefined || free < SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES + CHUNK_MOVE_LOG_BYTES / 2)
 					return false;
 			}
-			const frames = Number(row.log);
-			baseline = Math.min(baseline, frames);
-			// Even a fully checkpointed WAL cannot be restarted while a reader still uses its end mark.
-			// Stop with room for one more batch, rather than letting overlapping readers grow it indefinitely.
-			return (frames - baseline) * frameBytes < CHUNK_MOVE_LOG_BYTES / 2;
+			return true;
 		};
 	}
 
