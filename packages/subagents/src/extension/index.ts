@@ -458,7 +458,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		const cleanupSessionArtifacts = (ctx: ExtensionContext) => {
 			maintenance.cleanupSessionArtifactsDeferred(ctx);
 		};
+		let releaseCards: (() => void) | undefined;
 		const resetSessionState = (ctx: ExtensionContext) => {
+			releaseCards?.();
+			releaseCards = undefined;
 			state.baseCwd = ctx.cwd;
 			state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 			state.lastUiContext = ctx;
@@ -466,7 +469,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			clearPendingForegroundControlNotices(state);
 			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
 			// A subagent's own session launches no children (#4395): it adds nothing to the child index.
-			if (!isSubagentChildSession(ctx)) bindSubagentChildCards(ctx);
+			if (!isSubagentChildSession(ctx)) releaseCards = bindSubagentChildCards(ctx);
 		};
 		let unbindChildOwner: (() => void) | undefined;
 		let stopReleasedChildWakes: (() => void) | undefined;
@@ -556,6 +559,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		});
 		eventUnsubscribes.push(unsubscribeRestoredPeers);
 		pi.on("session_shutdown", (_event, ctx) => {
+			releaseCards?.();
+			releaseCards = undefined;
 			unbindChildOwner?.();
 			unbindChildOwner = undefined;
 			taskResumer?.dispose();

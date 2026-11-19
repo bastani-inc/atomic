@@ -20,7 +20,7 @@ import {
 import { SubagentControl as NativeSubagentControl } from "@bastani/atomic-natives";
 import { test, vi } from "vitest";
 import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
-import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { buildSessionContext, SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import {
@@ -973,12 +973,37 @@ test("in-process subagent launch and transcript binding tolerate a SessionManage
 		});
 		assert.equal(tailHydrateResult.status, "ok");
 		assert.deepEqual(tailHydrateLaunches, [{ leafId: tailWithHydrate.leafId, leafSeq: 16 }]);
-		assert.equal(tailWithHydrate.tail.hasFullHistory(), true);
+		assert.equal(tailWithHydrate.tail.hasFullHistory(), false, "store identity lookup does not hydrate the manager");
+
+		const paged = await createCompactedTailSession(root, "archive-pages");
+		const oversized = await paged.tail.appendMessage({
+			role: "user",
+			content: "x".repeat(2 * 1024 * 1024),
+			timestamp: 21,
+		});
+		const pagedLaunches: Array<{ leafId: string | null; leafSeq?: number }> = [];
+		const pagedResult = await runSingleInProcess(root, sampleAgent(), "find a launch entry through archive pages", {
+			cwd: root,
+			runId: "no-index-paged-lookup",
+			sessionDir: join(root, "paged-launch"),
+			sessionManager: createSdkSessionManagerDouble(
+				paged.tail,
+				new Set(["findEntrySeq", "getEntrySeq", "getSessionStore"]),
+			),
+			onChildLaunch: (launch) => pagedLaunches.push({ leafId: launch.leafId, leafSeq: launch.leafSeq }),
+			testSession: { output: "paged ok" },
+		});
+		assert.equal(pagedResult.status, "ok");
+		assert.deepEqual(pagedLaunches, [{ leafId: oversized, leafSeq: 17 }]);
+		assert.equal(paged.tail.hasFullHistory(), false);
 
 		const tailUnhydratable = await createCompactedTailSession(root, "tail-unhydratable");
+		const completeSource = await tailUnhydratable.tail.getSessionStore().load(tailUnhydratable.tail.getSessionId());
+		const archiveControl = buildSessionContext([...completeSource.entries], tailUnhydratable.leafId);
+		let captured: ReturnType<SessionManager["buildSessionContext"]>["messages"] | undefined;
 		const tailUnhydratableManager = createSdkSessionManagerDouble(
 			tailUnhydratable.tail,
-			new Set<PropertyKey>(["getEntrySeq", "findEntrySeq", "loadFullHistory"]),
+			new Set<PropertyKey>(["getEntrySeq", "findEntrySeq", "getSessionStore", "readHistory", "readHistoryChunks"]),
 		);
 		const tailUnhydratableLaunches: Array<{ leafId: string | null; leafSeq?: number }> = [];
 		const tailUnhydratableResult = await runSingleInProcess(
@@ -990,13 +1015,17 @@ test("in-process subagent launch and transcript binding tolerate a SessionManage
 				runId: "no-entry-seq-tail-unhydratable",
 				sessionDir: join(root, "sessions", "tail-unhydratable-run"),
 				sessionManager: tailUnhydratableManager,
-				onChildLaunch: (launch) =>
-					tailUnhydratableLaunches.push({ leafId: launch.leafId, leafSeq: launch.leafSeq }),
+				onChildLaunch: (launch) => {
+					tailUnhydratableLaunches.push({ leafId: launch.leafId, leafSeq: launch.leafSeq });
+					captured = tailUnhydratableManager.buildSessionContext().messages;
+				},
 				testSession: { output: "tail unhydratable ok" },
 			},
 		);
 		assert.equal(tailUnhydratableResult.status, "ok");
 		assert.deepEqual(tailUnhydratableLaunches, [{ leafId: tailUnhydratable.leafId, leafSeq: undefined }]);
+		assert.deepEqual(captured, archiveControl.messages, "ID-only capture preserves the complete request in order");
+		assert.equal(tailUnhydratable.tail.hasFullHistory(), false);
 	} finally {
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
@@ -1048,24 +1077,31 @@ test("in-process subagent launch bounds asynchronous leaf-sequence fallback by s
 
 		const tailSession = await createCompactedTailSession(root, "stalled-load");
 		const loadEntered = Promise.withResolvers<void>();
-		const loadPending = Promise.withResolvers<void>();
+		const loadPending = Promise.withResolvers<number | undefined>();
 		const stalledLoadManager = new Proxy(tailSession.tail, {
 			getPrototypeOf: () => Object.prototype,
 			has: (target, prop) => (prop === "getEntrySeq" || prop === "findEntrySeq" ? false : Reflect.has(target, prop)),
 			get: (target, prop: keyof SessionManager) => {
 				if (prop === "getEntrySeq" || prop === "findEntrySeq") return undefined;
-				if (prop === "loadFullHistory") {
-					return () => {
-						loadEntered.resolve();
-						return loadPending.promise;
-					};
-				}
+				if (prop === "getSessionStore")
+					return () =>
+						new Proxy(target.getSessionStore(), {
+							get(store, key: keyof ReturnType<SessionManager["getSessionStore"]>) {
+								if (key === "findEntrySeq")
+									return () => {
+										loadEntered.resolve();
+										return loadPending.promise;
+									};
+								const value = store[key];
+								return typeof value === "function" ? value.bind(store) : value;
+							},
+						});
 				const value = target[prop];
 				return typeof value === "function" ? value.bind(target) : value;
 			},
 		});
 
-		const loadLaunched = runSingleInProcess(root, sampleAgent(), "stalled loadFullHistory", {
+		const loadLaunched = runSingleInProcess(root, sampleAgent(), "stalled exact store lookup", {
 			cwd: root,
 			runId: "stalled-load-full-history",
 			sessionDir: join(root, "sessions", "stalled-load-run"),
@@ -1076,7 +1112,7 @@ test("in-process subagent launch bounds asynchronous leaf-sequence fallback by s
 		});
 		await loadEntered.promise;
 		const loadOutcome = await Promise.race([loadLaunched, sleep(1_500).then(() => "hung" as const)]);
-		loadPending.resolve();
+		loadPending.resolve(16);
 		assert.notEqual(loadOutcome, "hung");
 		assert.ok(loadOutcome !== "hung");
 		assert.equal(loadOutcome.status, "error");

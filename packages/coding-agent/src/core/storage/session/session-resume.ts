@@ -37,7 +37,7 @@ const DELIVERY_OP_TYPE = "atomic-pooled-delivery-op";
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
 /** Rebuild older projections once to recover prior task aliases and the exact records named by active checkouts. */
-const RESUME_INDEX_VERSION = 10;
+const RESUME_INDEX_VERSION = 11;
 
 type SnapshotHead = readonly [seq: number, snapshotId: string];
 /**
@@ -657,10 +657,15 @@ function addStatePosition(positions: StatePositions, entry: SessionEntry, seq: n
 		positions.snapshotRecords[entry.snapshotId] = seq;
 	if (isSessionHistoryEntry(entry)) return;
 	if (entry.type === "custom" && entry.customType.startsWith("event_subscription")) positions.universal.push(seq);
+	// Model/effort history can be compacted to its effective settings. Every system loadout change
+	// stays branch state: extensions synchronously restore their tool inventory from it on open.
 	if (
 		entry.type === "model_change" ||
 		entry.type === "thinking_level_change" ||
-		(entry.type === "message" && entry.message.role === "system")
+		(entry.type === "message" &&
+			entry.message.role === "system" &&
+			!entry.message.toolsAdded &&
+			!entry.message.toolsRemoved)
 	) {
 		const delta = (seq - positions.lastSettingSeq).toString(36);
 		positions.settingsHistory = positions.settingsHistory === "" ? delta : `${positions.settingsHistory}.${delta}`;
@@ -784,7 +789,7 @@ const UPGRADABLE_RESUME_INDEX_VERSION = 5;
  * The format `sessionResumeUpgrade` produces. Any other current version disables the upgrade (a full rebuild
  * follows) until the upgrade is checked against that version's fold.
  */
-const UPGRADED_RESUME_INDEX_VERSION = 10;
+const UPGRADED_RESUME_INDEX_VERSION = 11;
 
 /** A version-5 index: admissions are keys, and the fields an upgrade derives are absent or in an older form. */
 export type UpgradableSessionResumeIndex = Omit<
@@ -950,9 +955,8 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 		index.snapshotRecords !== null &&
 		typeof index.totals === "object" &&
 		index.totals !== null &&
-		(index.extensionState === undefined ||
-			(Array.isArray(index.extensionState) &&
-				index.extensionState.every((seq) => Number.isSafeInteger(seq) && seq > 0 && seq <= lastSeq)))
+		Array.isArray(index.extensionState) &&
+		index.extensionState.every((seq) => Number.isSafeInteger(seq) && seq > 0 && seq <= lastSeq)
 	);
 }
 
@@ -1100,6 +1104,10 @@ export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number, wind
 		...snapshotSeqs(index),
 	];
 	const seqs = new Set(retained.filter((seq): seq is number => seq !== undefined && seq < fromSeq));
+	for (const at of index.extensionState ?? []) {
+		if (at >= fromSeq) break;
+		if (onBranch(ranges, at)) seqs.add(at);
+	}
 	let seq = 0;
 	if (index.state !== "") {
 		for (const delta of index.state.split(".")) {

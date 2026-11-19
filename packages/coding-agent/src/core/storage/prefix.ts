@@ -55,6 +55,8 @@ export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.fr
 	"session_entries_snapshot_refs_delete_fn",
 	"session_entries_snapshot_refs_fn",
 	"session_entry_chunks",
+	"session_fork_staging",
+	"session_fork_staging_name",
 	"session_meta",
 	"session_open",
 	"session_search_entries",

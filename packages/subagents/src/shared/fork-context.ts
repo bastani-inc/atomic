@@ -3,7 +3,7 @@ import { SessionManager } from "@bastani/atomic";
 type SubagentExecutionContext = "fresh" | "fork";
 type ForkableSessionManager = Pick<
 	SessionManager,
-	"getSessionId" | "getSessionStore" | "getLeafId" | "getCwd" | "getBranch"
+	"getSessionId" | "getSessionStore" | "getLeafId" | "getCwd" | "getBranch" | "captureFork"
 >;
 type BranchEntry = ReturnType<SessionManager["getBranch"]>[number];
 
@@ -65,20 +65,30 @@ export function createForkContextResolver(
 	if (parentLeafId === null) throw new SubagentForkContextError(parentSessionId, "no_leaf");
 	const leafId = settledForkLeaf(sessionManager.getBranch(), parentLeafId);
 	if (leafId === null) throw new SubagentForkContextError(parentSessionId, "no_leaf");
-	const children = new Map<number, Promise<SessionManager>>();
+	const openFork = sessionManager.captureFork(leafId);
+	const children = new Map<number, { id: string; manager: WeakRef<SessionManager> }>();
+	const opening = new Map<number, Promise<SessionManager>>();
 	return {
 		sessionManagerForIndex(index = 0): Promise<SessionManager> {
-			const cached = children.get(index);
-			if (cached !== undefined) return cached;
+			const pending = opening.get(index);
+			if (pending) return pending;
+			const saved = children.get(index);
+			const live = saved?.manager.deref();
+			if (live) return Promise.resolve(live);
 			const child = (async () => {
 				try {
-					return await SessionManager.forkContext(store, parentSessionId, leafId, cwd);
+					const manager = saved ? await SessionManager.open(store, saved.id, cwd) : await openFork();
+					children.set(index, { id: manager.getSessionId(), manager: new WeakRef(manager) });
+					return manager;
 				} catch (cause) {
-					children.delete(index);
 					throw new SubagentForkContextError(parentSessionId, "fork_failed", { cause });
 				}
 			})();
-			children.set(index, child);
+			opening.set(index, child);
+			void child.then(
+				() => opening.delete(index),
+				() => opening.delete(index),
+			);
 			return child;
 		},
 	};

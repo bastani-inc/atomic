@@ -11,6 +11,7 @@ import type { SessionStats } from "./agent-session-types.js";
 import { calculateContextTokens, estimateProjectedContextTokens } from "./compaction/index.ts";
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js";
+import { forkTranscriptEntries } from "./fork-transcript-boundary.js";
 import {
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionBoundaryEntry,
@@ -357,7 +358,7 @@ function capturedBranch(sessionManager: SessionManager, store: SessionStore, con
 /** One pass of `branch`, each snapshot entry with its record and content carried, each once. */
 async function* withSnapshotContent(branch: CapturedBranch): AsyncGenerator<SessionEntry, void> {
 	const inline = snapshotBlobInliner();
-	for await (const entry of branch.read())
+	for await (const entry of forkTranscriptEntries(() => branch.read()))
 		yield entry.type === "worktree_snapshot"
 			? await inline(entry, await branch.record(entry), branch.blobs(entry))
 			: entry;

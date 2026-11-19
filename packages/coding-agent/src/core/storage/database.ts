@@ -145,6 +145,9 @@ export interface SqliteDatabase extends SqliteExecutor {
 	 * undefined, when this process cannot see the database's disk (a server, memory) or the file system does not say.
 	 */
 	freeBytes?(): Promise<number | undefined>;
+	/** @internal Run one short maintenance transaction only if this handle, its writer gate and the database lock
+	 * are immediately available. A backend without no-wait admission leaves this absent. */
+	tryMaintenance?(callback: (transaction: SqliteExecutor) => Promise<void>): Promise<boolean>;
 	/** Opens a separate handle on this same database for reads. It has its own call queue; the caller must close it. */
 	openReader?(): Promise<SqliteDatabase>;
 	transaction<T>(
