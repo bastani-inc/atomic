@@ -6,10 +6,12 @@ import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { test, vi } from "vitest";
 import { FooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { fakeFooterAgentSession } from "../helpers/footer-session.js";
 import { writeFileEnsuringDir } from "../helpers/runtime.js";
 
-test("shared task context resolves and watches the stage cwd branch without changing main context", async () => {
+test("shared task context watches the task's branch without changing the main chat's branch", async () => {
+	initTheme("dark", false);
 	const directory = mkdtempSync(join(tmpdir(), "task-context-"));
 	const mainCwd = join(directory, "main");
 	const stageCwd = join(directory, "stage");

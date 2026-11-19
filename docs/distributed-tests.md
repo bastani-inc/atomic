@@ -127,7 +127,7 @@ Before any scenario, the gate checks and records:
 
 | Suite | Issue | On a ref without the feature |
 | --- | --- | --- |
-| `smoke` | #4331 | always runs |
+| `smoke` | #4331 | the ref exports its legacy workflow journal |
 | `multi-node-resume` | #4329 | skips: no `ResumeError` export |
 | `cross-host-pools` | #4310 | skips: no `WorkerPlacementError` export |
 | `shard-contention` | #4325 | skips: no `JournalShardUnavailableError` export |
@@ -147,6 +147,8 @@ feature adds its scenarios under `test/distributed/harness/` and sets `implement
 interface.
 
 ### The smoke suite
+
+This tests the legacy workflow journal. On a ref without the workflow runtime, the harness reports it as unavailable instead of starting writers.
 
 A chain of writers holds the lease on one run in the shared journal (the `smoke` namespace on sqld, opened through
 `@bastani/atomic-storage-libsql` from the deployed ref) and appends keyed checkpoints, recording every acknowledged
@@ -170,7 +172,7 @@ At the end the suite checks:
 
 ### The multi-node-resume suite
 
-The suite needs at least three nodes, including the git-less node, and covers all seven acceptance scenarios of #4329.
+The suite needs at least three nodes, including the git-less node. On refs with the workflow runtime it covers all seven original acceptance scenarios of #4329. On newer refs it still exercises session resume, released-session and subagent wake, and Git provisioning; the report marks the workflow-only scenarios 2, 3 and 4 unavailable.
 It runs the same session, workflow, released-session and pooled-child fixtures as the reduced multi-process acceptance
 tests, with each node's own Atomic home and one shared, authenticated sqld namespace. A pinned Bun 1.4.4 binary is
 copied over the private control path and checked on each node. A run's synthetic Git remotes are copied to the same

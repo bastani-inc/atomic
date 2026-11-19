@@ -2,7 +2,7 @@
 /**
  * Benchmark for what the snapshot reference index costs each write (#4355).
  *
- * Triggers on the run journal's events and runs tables and on the session store's entries keep the index current in
+ * Triggers on the session store's entries keep the index current in
  * the same transaction as every write. This measures that cost: for each kind of write it appends `--appends`
  * records to a fresh database with the index triggers installed, and to a fresh database whose triggers were dropped,
  * `--rounds` times, alternating the two so that drift in the host affects both. It reports the median microseconds
@@ -10,7 +10,7 @@
  * the number `test/unit/worktree-snapshot-index-write-cost.test.ts` pins).
  *
  * A write that carries no snapshot only evaluates the trigger's `WHEN` condition, a text search of its payload. A
- * checkpoint that carries a snapshot also parses the payload as JSON and inserts one row for each blob it needs.
+ * session entry that carries a snapshot also parses the payload as JSON and inserts one row for each blob it needs.
  *
  *   bun run scripts/perf/snapshot-index/benchmark.ts --appends 3000 --rounds 5 --dir /dev/shm --out /tmp/snapshot-index.md
  *
@@ -24,11 +24,9 @@ import type { SessionEntry } from "../../../packages/coding-agent/src/core/sessi
 import { openNodeSqliteDatabase } from "../../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
 import { SESSION_FORMAT_VERSION } from "../../../packages/coding-agent/src/core/storage/session/types.ts";
+import { snapshotBlobHashes } from "../../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import type { WorktreeSnapshot } from "../../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
-import { SqlRunJournal } from "../../../packages/workflows/src/durable/journal/sql-run-journal.ts";
-import type { Lease, RunEvent } from "../../../packages/workflows/src/durable/journal/types.ts";
 
-const RUN = "benchmark-run";
 const SESSION = "benchmark-session";
 const FILLER = "x".repeat(1_400);
 const LINKS = 10;
@@ -74,24 +72,6 @@ function snapshot(index: number): WorktreeSnapshot {
 	};
 }
 
-const checkpoint = (index: number, snapshots: readonly WorktreeSnapshot[]) =>
-	({
-		type: "CheckpointRecorded",
-		payload: {
-			kind: "tool",
-			checkpointId: `checkpoint-${index}`,
-			name: "edit",
-			output: FILLER,
-			...(snapshots.length === 0 ? {} : { worktreeSnapshots: snapshots }),
-		},
-	}) as unknown as RunEvent;
-
-const status = (index: number) =>
-	({
-		type: "StatusChanged",
-		payload: { workflowId: RUN, status: "running", completedCheckpoints: index, pendingPrompts: 0 },
-	}) as unknown as RunEvent;
-
 /** Entries follow each other, as a session records them: each one's parent is the one before it. */
 const entryBase = (index: number) => ({
 	id: `entry-${index}`,
@@ -112,24 +92,17 @@ const snapshotEntry = (index: number) =>
 	}) as SessionEntry;
 
 interface Writers {
-	readonly journal: SqlRunJournal;
 	readonly sessions: SqlSessionStore;
-	readonly lease: Lease;
 	lastSeq: number;
 }
 
 interface Case {
 	readonly name: string;
+	readonly carriesSnapshot?: boolean;
 	write(writers: Writers, index: number): Promise<unknown>;
 }
 
 const CASES: readonly Case[] = [
-	{ name: "checkpoint, no snapshot", write: (w, i) => w.journal.append(w.lease, checkpoint(i, [])) },
-	{
-		name: `checkpoint, one snapshot (${LINKS} patches and a bundle)`,
-		write: (w, i) => w.journal.append(w.lease, checkpoint(i, [snapshot(i)])),
-	},
-	{ name: "status event", write: (w, i) => w.journal.append(w.lease, status(i)) },
 	{
 		name: "session entry, no snapshot",
 		write: async (w, i) => {
@@ -138,6 +111,7 @@ const CASES: readonly Case[] = [
 	},
 	{
 		name: `session entry, one snapshot record (${LINKS} patches and a bundle)`,
+		carriesSnapshot: true,
 		write: async (w, i) => {
 			({ lastSeq: w.lastSeq } = await w.sessions.append(SESSION, [snapshotEntry(i)], { expectSeq: w.lastSeq }));
 		},
@@ -154,29 +128,31 @@ async function measure(kind: Case, indexed: boolean, appends: number, dir: strin
 	const database = await openNodeSqliteDatabase(join(dir, "benchmark.sqlite"));
 	try {
 		const sessions = await SqlSessionStore.open(database);
-		const journal = await SqlRunJournal.open(database);
-		await journal.createRun({ runId: RUN, name: "benchmark", cwd: "/repo", createdAt: 1, status: "running" });
-		const acquired = await journal.acquire(RUN, "benchmark");
-		if (acquired.status !== "acquired") throw new Error("the benchmark run's lease is held");
 		const created = await sessions.create(
 			{ id: SESSION, version: SESSION_FORMAT_VERSION, createdAt: "2026-01-01T00:00:00.000Z", cwd: "/repo" },
 			[],
 		);
-		await journal.append(acquired.lease, status(0));
 		if (!indexed) {
 			const triggers = await database.all<{ name: string }>(
 				"SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE '%snapshot%'",
 			);
 			for (const { name } of triggers) await database.exec(`DROP TRIGGER ${name}`);
 		}
-		const writers: Writers = { journal, sessions, lease: acquired.lease, lastSeq: created.lastSeq };
+		if (kind.carriesSnapshot) {
+			// A session may only publish references to stored blobs. Prepare them outside the timed writes.
+			for (let index = 1; index <= appends; index++) {
+				await sessions.snapshotBlobs.putBlobs(
+					snapshotBlobHashes(snapshot(index)).map((hash) => ({ hash, data: Uint8Array.of(1) })),
+				);
+			}
+		}
+		const writers: Writers = { sessions, lastSeq: created.lastSeq };
 		const changes = async () => Number((await database.get<{ n: number }>("SELECT total_changes() AS n"))?.n);
 		const before = await changes();
 		const start = performance.now();
 		for (let index = 1; index <= appends; index++) await kind.write(writers, index);
 		const elapsed = performance.now() - start;
 		const rowsChanged = (await changes()) - before;
-		await journal.close();
 		await sessions.close();
 		return { microseconds: (elapsed * 1_000) / appends, rowsChanged };
 	} finally {
