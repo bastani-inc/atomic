@@ -1,7 +1,7 @@
 import { isProxy } from "node:util/types";
 import { asyncScope } from "../async-scope.ts";
 import { observeArchiveLoad, type SnapshotObserver } from "../storage/session/snapshot-generation.ts";
-import type { SessionSnapshot, SessionStore } from "../storage/session/types.ts";
+import type { SessionSnapshot, SessionStore } from "../storage/session/types.js";
 
 interface Capture {
 	store: SessionStore;
