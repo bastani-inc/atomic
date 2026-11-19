@@ -10,7 +10,7 @@ import {
 
 test.each([
 	["Provider stream timed out after 300000ms without a new event (stream deadline exceeded)", "response timed out"],
-	["Codex SSE response headers timed out after 60000ms", "response timed out"],
+	["Request timed out after 60000ms", "response timed out"],
 	["504 Gateway Timeout", "response timed out"],
 	["connect ETIMEDOUT 104.18.0.1:443", "connection timed out"],
 	["429 Too Many Requests", "rate limited"],
