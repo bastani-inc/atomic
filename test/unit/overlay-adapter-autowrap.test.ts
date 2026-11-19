@@ -16,10 +16,12 @@ async function registerIsolatedTests(): Promise<void> {
 	// Use real colour conversion for the shared input label and the graph’s status palette.
 	const { colorToHex, colorToRgb, foregroundAnsi, parseColor } = await import("@bastani/atomic-tui/dist/colors.js");
 	class TestComponent {}
-	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
+	const [{ ScrollView }, { VStack }, { Input }, { ClickableRows }] = await Promise.all([
 		import("@bastani/atomic-tui/dist/components/scroll-view.js"),
 		import("@bastani/atomic-tui/dist/components/v-stack.js"),
 		import("@bastani/atomic-tui/dist/components/input.js"),
+		// Stage question cards and the workflows list name their rows for clicks with pi-tui's clickable rows.
+		import("@bastani/atomic-tui/dist/clickable-rows.js"),
 	]);
 	mock.module("@bastani/atomic-tui", () => ({
 		colorToHex,
@@ -27,6 +29,7 @@ async function registerIsolatedTests(): Promise<void> {
 		foregroundAnsi,
 		parseColor,
 		Box: TestComponent,
+		ClickableRows,
 		Editor: TestComponent,
 		// The stage-chat find box edits its query with pi-tui's own input.
 		Input,

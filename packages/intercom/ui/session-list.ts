@@ -1,5 +1,5 @@
-import type { Component } from "@bastani/atomic-tui";
-import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import type { Component, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
+import { ClickableRows, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { KeybindingsManager, Theme } from "@bastani/atomic";
 import type { SessionInfo, WorkflowStageRosterEntry } from "../types.js";
 import { terminalSafeLabel } from "./terminal-text.js";
@@ -75,6 +75,8 @@ export class SessionListOverlay implements Component {
   private selectedIndex = 0;
   private workflowStages: WorkflowStageRosterEntry[];
   private maxVisible = 8;
+  /** The rows the last render drew each session on. */
+  private readonly clickableRows = new ClickableRows<SessionInfo>();
 
   constructor(
 	theme: Theme,
@@ -99,6 +101,29 @@ export class SessionListOverlay implements Component {
   }
 
   invalidate(): void {}
+
+  /** A click on a session messages it, as moving there and pressing Enter does; the wheel moves the selection. */
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    return this.clickableRows.handleMouse(event, {
+      activate: (session) => {
+        const index = this.sessions.indexOf(session);
+        if (index < 0) return;
+        this.selectedIndex = index;
+        this.onSessionSelect(session.id);
+      },
+      scroll: (direction) => {
+        if (this.sessions.length === 0) return false;
+        const next = Math.max(0, Math.min(this.sessions.length - 1, this.selectedIndex + direction));
+        const moved = next !== this.selectedIndex;
+        this.selectedIndex = next;
+        return moved;
+      },
+    });
+  }
+
+  paintedRowKey(row: number): string | undefined {
+    return this.clickableRows.paintedRowKey(row);
+  }
 
   handleInput(data: string): boolean {
     if (this.keybindings.matches(data, "tui.select.cancel")) {
@@ -140,6 +165,7 @@ export class SessionListOverlay implements Component {
       return `${border("│")}${clipped}${" ".repeat(Math.max(0, contentWidth - visibleWidth(clipped)))}${border("│")}`;
     };
 
+    this.clickableRows.clear();
     const lines: string[] = [];
     lines.push(border(`╭${"─".repeat(contentWidth)}╮`));
     lines.push(row(this.theme.bold(" Current Session")));
@@ -173,11 +199,13 @@ export class SessionListOverlay implements Component {
         const titleLines = sessionTitleLines(session, Math.max(1, contentWidth - 2), { sameCwd });
         const pathText = `${middleTruncate(terminalSafeLabel(session.cwd), Math.max(8, contentWidth - 4))} • ${terminalSafeLabel(session.model)}`;
 
+        const firstRow = lines.length;
         lines.push(row(`${prefix}${isSelected ? this.theme.fg("accent", titleLines[0]) : titleLines[0]}`));
         for (const idLine of titleLines.slice(1)) {
           lines.push(row(`  ${this.theme.fg("dim", idLine)}`));
         }
         lines.push(row(`  ${this.theme.fg("dim", pathText)}`));
+        for (let drawn = firstRow; drawn < lines.length; drawn += 1) this.clickableRows.add(drawn, session, session.id);
         if (index < endIndex - 1) {
           lines.push(row());
         }

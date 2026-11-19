@@ -5,6 +5,8 @@ import {
 	Spacer,
 	Text,
 	type TUI,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 } from "@bastani/atomic-tui";
@@ -84,6 +86,7 @@ class LlamaView implements LlamaUi, Focusable {
 	private readonly keybindings: KeybindingsManager;
 	private readonly searchCache = new Map<string, HuggingFaceModel[]>();
 	private content: Component;
+	private paintedWidth = 0;
 	private inputHandler: InputHandler | undefined;
 	private inputTarget: Focusable | undefined;
 	private progressPromise: Promise<void> | undefined;
@@ -263,7 +266,25 @@ class LlamaView implements LlamaUi, Focusable {
 		return true;
 	}
 
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		return this.content.handleMouse?.(event);
+	}
+
+	paintedRowKey(row: number): string | undefined {
+		// The search stacks result rows inside a framed container. Name the row that was actually painted so a
+		// remote host can forward its wheel event without taking scroll away from the transcript elsewhere.
+		let component = this.content;
+		while (!component.paintedRowKey && component instanceof Container) {
+			const hit = component.childAtRow(this.paintedWidth, row);
+			if (!hit) return undefined;
+			component = hit.component;
+			row = hit.row;
+		}
+		return component.paintedRowKey?.(row);
+	}
+
 	render(width: number): string[] {
+		this.paintedWidth = width;
 		return this.content
 			.render(width)
 			.map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width, "") : line));
