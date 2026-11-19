@@ -14,7 +14,9 @@ type PageTool = ReturnType<typeof createSearchPageDefinition>;
 type Page = Awaited<ReturnType<PageTool["execute"]>>;
 type PageInput = Static<PageTool["parameters"]>;
 type LaunchInput = PageInput & { action?: never; id?: never; budgetMs?: never; wait?: WaitPolicy; timeout?: number };
-type WaitInput = { action: "wait"; id: string; budgetMs?: number };
+type WaitInput = { action: "wait"; id: string; budgetMs?: number } & Partial<
+	Record<keyof PageInput | "timeout" | "wait", never>
+>;
 const DEFAULT_TIMEOUT_SECONDS = 300;
 
 export function historySearchSchema(page: PageTool["parameters"]) {
