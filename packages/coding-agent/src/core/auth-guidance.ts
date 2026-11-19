@@ -34,9 +34,8 @@ export function formatNoApiKeyFoundMessage(provider: string | undefined): string
  * genuinely missing credentials: the stored credentials may well exist on disk
  * but could not be read, so an empty in-memory credential set is not
  * authoritative. Phrased to mention "API key"/"auth" so message-based failure
- * classifiers (such as the workflows model-fallback runtime) still treat it as a
- * recoverable/retryable auth failure, while making clear it is a load failure
- * rather than an absent key (issue #1431).
+ * classifiers still treat it as a recoverable/retryable auth failure, while
+ * making clear it is a load failure rather than an absent key (issue #1431).
  */
 export function formatAuthStorageLoadFailedMessage(provider: string | undefined, error: unknown): string {
 	const providerDisplay =
@@ -70,8 +69,8 @@ function modelLabelForMessage(model: unknown): string {
  * unknown/unresolved model id that reached the prompt path as a bare string
  * (its `provider` is `undefined`). Surfaced instead of the misleading
  * "No API key found for undefined", and phrased with "unknown model" so callers
- * that classify failures by message (such as the workflows runtime) treat it as
- * a model-configuration error rather than a missing API key.
+ * that classify failures by message treat it as a model-configuration error
+ * rather than a missing API key.
  */
 export function formatUnresolvedModelMessage(model: unknown): string {
 	return (

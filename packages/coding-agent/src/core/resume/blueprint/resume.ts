@@ -231,7 +231,7 @@ function contextFile(storeDir: string, root: string): string {
 
 /**
  * Keeps, for each worktree a build just set up, what the agent is told about it, so a session that starts in that
- * worktree later without this resume (a stage of a resumed workflow run, a pooled child) is told the same.
+ * worktree later without this resume (for example a session an SDK host opens there) is told the same.
  */
 async function persistRootContexts(
 	storeDir: string,
@@ -273,7 +273,7 @@ export function restoredWorktreeOf(storeDir: string, directory: string): string 
 
 /**
  * Puts the blueprint context of the worktree `directory` is in into a session that starts there without a resume of
- * its own, such as a stage of a resumed workflow run. A directory outside the restored worktrees adds nothing. Never
+ * its own, such as a session an SDK host opens there. A directory outside the restored worktrees adds nothing. Never
  * rejects: a kept context that cannot be read is returned as the typed failure, for the caller to report once, and the
  * session starts without it.
  */

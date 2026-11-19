@@ -230,7 +230,6 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 	excludeFromContext?: boolean;
 	/** Stable producer identity for idempotent delivery of external messages. */
 	stageAdmissionKey?: string;
-	/** Runtime provenance used to distinguish stage continuation from an externally triggered response. */
 	/** Internal crash-recovery marker for a model-facing protected turn. */
 	protectedReconciliation?: ProtectedReconciliationMarker;
 }

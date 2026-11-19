@@ -278,7 +278,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/**
-	 * Shows a saved conversation. A call in `inFlightToolCallIds` has no result yet because its stage waits for one,
+	 * Shows a saved conversation. A call in `inFlightToolCallIds` has no result yet because its agent waits for one,
 	 * so it shows as pending, not as interrupted, and the call's own end replaces it with the result.
 	 */
 	async loadSession(
