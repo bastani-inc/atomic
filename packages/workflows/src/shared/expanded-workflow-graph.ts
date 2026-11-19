@@ -51,6 +51,11 @@ export interface ExpandedWorkflowGraph {
 	 * targets (see `graph-view-state._stageChatTarget`).
 	 */
 	readonly targets: ReadonlyMap<string, ExpandedWorkflowStageTarget>;
+	/**
+	 * Failed or skipped boundaries drawn as the child each started (outermost only), as the graph drew them before. They
+	 * are not rendered; stage lookups still match them, so an id listed for one keeps naming it (#5616). Absent: none.
+	 */
+	readonly replacedBoundaries?: readonly ExpandedWorkflowStage[];
 }
 
 interface ExpandedRunResult {
@@ -338,6 +343,9 @@ function expandIndexedWorkflowGraph(
 	};
 	const visiting = new Set<string>();
 	const expandedChildren = new Set<string>();
+	const replacedBoundaries: ExpandedWorkflowStage[] = [];
+	/** How many failed or skipped boundaries enclose the run being expanded. */
+	let replacedDepth = 0;
 
 	const expandRun = (run: RunSnapshot, depth: number, incomingParentIds: readonly string[]): ExpandedRunResult => {
 		if (visiting.has(run.id)) return { stages: [], tools: [], nodes: [], terminalIds: [] };
@@ -398,7 +406,11 @@ function expandIndexedWorkflowGraph(
 			boundaryExpansions.set(stage.id, null);
 			expandedChildren.add(childRun.id);
 			const stageItem: LocalItem = { kind: "stage", stage, sourceIndex: 0 };
-			const childExpanded = expandRun(childRun, depth + 1, resolvedParentIdsFor(stageItem));
+			const childParentIds = resolvedParentIdsFor(stageItem);
+			const replaced = isTerminalNonCompletedBoundary(stage);
+			if (replaced) replacedDepth++;
+			const childExpanded = expandRun(childRun, depth + 1, childParentIds);
+			if (replaced) replacedDepth--;
 			if (childExpanded.stages.length === 0 || childExpanded.terminalIds.length === 0) return undefined;
 			boundaryExpansions.set(stage.id, childExpanded);
 			return childExpanded;
@@ -450,6 +462,13 @@ function expandIndexedWorkflowGraph(
 
 			const childExpanded = boundaryExpansionFor(item.stage);
 			if (childExpanded !== undefined) {
+				if (replacedDepth === 0 && isTerminalNonCompletedBoundary(item.stage))
+					replacedBoundaries.push({
+						...item.stage,
+						id,
+						parentIds: Object.freeze(resolvedParentIds),
+						workflowGraphTarget: { runId: run.id, stageId: item.stage.id, runName: run.name, depth },
+					});
 				stages.push(...childExpanded.stages);
 				tools.push(...childExpanded.tools);
 				nodes.push(...childExpanded.nodes);
@@ -497,6 +516,7 @@ function expandIndexedWorkflowGraph(
 		tools: expanded.tools,
 		nodes: expanded.nodes,
 		targets,
+		...(replacedBoundaries.length > 0 ? { replacedBoundaries } : {}),
 	};
 }
 
@@ -552,8 +572,6 @@ export function sameExpandedWorkflowTopology(left: StoreSnapshot, right: StoreSn
 				x.id !== y.id ||
 				x.executionOrder !== y.executionOrder ||
 				x.nodeKind !== y.nodeKind ||
-				// The authoritative id becomes undefined at failed/skipped boundaries,
-				// so this comparison also catches a terminal-boundary flip.
 				xChildRunId !== yChildRunId ||
 				!sameIds(x.parentIds, y.parentIds)
 			)
