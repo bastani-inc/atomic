@@ -38,10 +38,7 @@ export async function readTaskTranscript(
 	const bound = taskTranscriptSource(task);
 	if (!bound.ok) return bound;
 	const { session, taskId } = bound.value;
-	if (!session.loadHistory) {
-		await session.loadFullHistory?.();
-		return readTaskTranscriptSnapshot(task, cursor);
-	}
+	if (!session.loadHistory) return readTaskTranscriptSnapshot(task, cursor);
 	const history = await session.loadHistory();
 	if (history.unavailable !== undefined)
 		return { ok: false, error: { code: "TranscriptUnavailable", message: history.unavailable } };
@@ -76,6 +73,7 @@ export function taskTranscriptPageWithCuts(
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor: string | undefined,
 	onSplitEntries?: (fromEarlier: string | undefined, intoLater: string | undefined) => void,
+	window?: { offset?: number; forward?: boolean; located(start: number, end: number, total: number): void },
 ): Result<TaskTranscriptPage, Failure<TranscriptError>> {
 	const scope = `${taskId}\n${sessionId}\n`;
 	let before: string | undefined;
@@ -144,8 +142,10 @@ export function taskTranscriptPageWithCuts(
 		return { ok: false, error: { code: "TranscriptUnavailable", message: "Transcript unavailable" } };
 	}
 	const found = before === undefined ? items.length : items.findIndex((item) => item.id === before);
-	const end = found < 0 ? items.length : found;
-	const start = Math.max(0, end - PAGE_ITEMS);
+	const bound = window?.offset ?? (found < 0 ? items.length : found);
+	const end = window?.forward ? Math.min(items.length, bound + PAGE_ITEMS) : Math.min(items.length, bound);
+	const start = window?.forward ? bound : Math.max(0, end - PAGE_ITEMS);
+	window?.located(start, end, items.length);
 	const page = items.slice(start, end);
 	// Use the existing index: ignored content blocks are not page boundaries.
 	if (onSplitEntries && (start > 0 || end < items.length) && page.length > 0) {

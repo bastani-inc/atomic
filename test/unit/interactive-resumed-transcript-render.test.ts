@@ -200,6 +200,43 @@ function assertHoldsEveryTurn(mode: InteractiveMode, turns: number): void {
 	);
 }
 
+test("the main chat can scroll to saved messages before its current context and return to the live tail (#5593)", async () => {
+	const { mode, tui, transcript } = await openResumedSession(100);
+	const manager = mode.sessionManager;
+	await manager.appendCompaction("cleared history", null, 100, {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "test" },
+		stats: {
+			linesBefore: 1,
+			linesDeleted: 1,
+			linesKept: 0,
+			rangeCount: 0,
+			tokensBefore: 100,
+			tokensAfter: 2,
+			percentReduction: 98,
+		},
+		form: "cleared",
+	});
+	await manager.appendMessage({ role: "user", content: "current input", timestamp: Date.now() });
+	mode.renderInitialMessages();
+	tui.renderNow();
+	assert.match(tui.getScreenLines().join("\n"), /current input/);
+	assert.doesNotMatch(mode.documentContainer.render(COLUMNS).join("\n"), /Turn 0:/);
+	transcript.scrollToStart();
+	for (let i = 0; i < 30; i++) {
+		await nextTurn();
+		tui.renderNow();
+		if (tui.getScreenLines().join("\n").includes("Turn 0:")) break;
+	}
+	assert.match(tui.getScreenLines().join("\n"), /Turn 0:/);
+	transcript.scrollToEnd();
+	await nextTurn();
+	tui.renderNow();
+	assert.match(tui.getScreenLines().join("\n"), /current input/);
+	assert.doesNotMatch(mode.documentContainer.render(COLUMNS).join("\n"), /Turn 0:/);
+});
+
 test("a frame after the first renders what the viewport shows, however long the resumed transcript", async () => {
 	for (const turns of TURNS) {
 		const { mode, tui, transcript } = await openResumedSession(turns);

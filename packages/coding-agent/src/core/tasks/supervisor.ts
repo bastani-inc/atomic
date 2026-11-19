@@ -94,7 +94,8 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	/** The task's own retained prompt/answer if its saved session disappears. */
 	getFallbackEntries?: TaskTranscriptSource["getEntries"];
 
-	loadFullHistory?(): Promise<void>;
+	/** Cursor leading from the live context to its preceding saved branch. */
+	getEarlierCursor?(): string | undefined;
 	/** The session's commands now; a settled transcript keeps those it had when it settled. */
 	commands?(): TaskTranscriptCommands;
 	/** The live session's usage and footer data; absent from a transcript that has settled or been released. */

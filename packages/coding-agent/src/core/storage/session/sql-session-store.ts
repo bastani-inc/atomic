@@ -17,6 +17,7 @@ import {
 } from "./errors.js";
 import { guardSessionDatabase } from "./format-fence.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
+import { registerHistorySnapshot } from "./history-pages.js";
 import {
 	branchRanges,
 	foldSessionResume,
@@ -49,6 +50,7 @@ import type {
 	SessionEntryAt,
 	SessionEntryRange,
 	SessionEntrySizes,
+	SessionHistoryItem,
 	SessionListQuery,
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
@@ -64,7 +66,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import { SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 /**
@@ -392,6 +394,16 @@ export class SqlSessionStore implements SessionStore {
 		this.blobTable = snapshotBlobs;
 		this.legacyBlobData = legacyBlobData;
 		if (searchIndex !== undefined) this.searchIndex = searchIndex;
+		registerHistorySnapshot(this, (sessionId, project) => {
+			this.assertOpen();
+			validateSessionText("sessionId", sessionId);
+			return this.transaction(async (tx) => {
+				const head = await this.historyHead(tx, sessionId);
+				return project(head.epoch, head.lastSeq, (from, through, backward) =>
+					this.historyPacket(tx, sessionId, head.epoch, from, through, backward),
+				);
+			}, SESSION_TRANSACTION);
+		});
 	}
 
 	/** Bind an existing transcript for the storage search command. No schema setup, markers or search index. */
@@ -1929,6 +1941,57 @@ export class SqlSessionStore implements SessionStore {
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
 		return { lastSeq: Number(row.last_seq), epoch: row.epoch };
+	}
+
+	/** Size at most one page and return only fitting bodies, in the same snapshot as the header. The first
+	 * oversized row is a chunk reference; its full inline value never crosses the driver boundary. */
+	private async historyPacket(
+		tx: SqliteExecutor,
+		sessionId: string,
+		epoch: string,
+		from: number,
+		through: number,
+		backward: boolean,
+	): Promise<SessionHistoryItem[]> {
+		const edge = backward ? through : from;
+		const rows = await tx.all<SqliteRow & { seq: number; bytes: number | null; chunks: number; body: string | null }>(
+			`WITH sizes AS MATERIALIZED (
+				SELECT e.seq, e.chunks, CASE WHEN e.chunks = 0 THEN ${this.entryByteLength("e.entry_json")} ELSE (e.chunks - 1) * ? +
+					(SELECT length(c.data) FROM ${this.tables.entryChunks} c WHERE c.session_id = e.session_id AND c.seq = e.seq AND c.idx = e.chunks - 1) END AS bytes
+				FROM ${this.tables.entries} e WHERE e.session_id = ? AND e.seq BETWEEN ? AND ?
+			), sized_page AS (
+				SELECT seq, chunks, bytes, sum(bytes) OVER (ORDER BY seq ${backward ? "DESC" : "ASC"}) AS cumulative FROM sizes
+			) SELECT p.seq, p.chunks, p.bytes, CASE WHEN p.chunks = 0 AND p.bytes <= ? THEN e.entry_json END AS body
+			FROM sized_page p JOIN ${this.tables.entries} e ON e.session_id = ? AND e.seq = p.seq
+			WHERE p.bytes IS NULL OR p.cumulative <= ? OR p.seq = ? ORDER BY p.seq`,
+			SESSION_ENTRY_CHUNK_BYTES,
+			sessionId,
+			from,
+			through,
+			SESSION_HISTORY_PAGE_BYTES,
+			sessionId,
+			SESSION_HISTORY_PAGE_BYTES,
+			edge,
+		);
+		const items: SessionHistoryItem[] = [];
+		for (const row of rows) {
+			const seq = Number(row.seq),
+				bytes = Number(row.bytes);
+			if (row.bytes === null)
+				throw new StorageUnavailableError(
+					this.descriptor,
+					new Error(`Missing final chunk of session entry ${seq}`),
+				);
+			if (bytes > SESSION_HISTORY_PAGE_BYTES) items.push({ kind: "oversized", sessionId, epoch, seq, bytes });
+			else
+				items.push({
+					seq,
+					entry: JSON.parse(
+						row.body ?? (await this.readEntryChunks(tx, sessionId, seq, Number(row.chunks))),
+					) as SessionEntry,
+				});
+		}
+		return items;
 	}
 
 	async readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {

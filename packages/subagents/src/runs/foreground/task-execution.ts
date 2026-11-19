@@ -397,7 +397,7 @@ function taskTranscriptSource(
 		...(session.readHistory ? { readHistory: session.readHistory.bind(session) } : {}),
 		...(session.readHistoryChunks ? { readHistoryChunks: session.readHistoryChunks.bind(session) } : {}),
 		...(session.getFallbackEntries ? { getFallbackEntries: session.getFallbackEntries.bind(session) } : {}),
-		...(session.loadFullHistory ? { loadFullHistory: session.loadFullHistory.bind(session) } : {}),
+		...(session.getEarlierCursor ? { getEarlierCursor: session.getEarlierCursor.bind(session) } : {}),
 		...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
 		...(session.getStreamingMessage ? { getStreamingMessage: session.getStreamingMessage.bind(session) } : {}),
 		...(session.getCompactionReason ? { getCompactionReason: session.getCompactionReason.bind(session) } : {}),

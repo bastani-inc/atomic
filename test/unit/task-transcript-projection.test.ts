@@ -437,6 +437,45 @@ test("a summary-only or legacy compaction without a renderable boundary takes no
 	});
 });
 
+test("a live task's saved pages include the answer and clear on a branch the child left (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "before retained span", timestamp: 0 });
+	const first = await session.appendMessage({ role: "user", content: "chosen root", timestamp: 1 });
+	await session.appendMessage(fauxAssistantMessage("archived provider answer"));
+	await session.appendCompaction("archived clear", first, 40, verbatimDetails);
+	await session.branchWithSummary(first, "new branch");
+	const fixture = taskFixture();
+	try {
+		await fixture.start();
+		fixture.runners[0].context.bindTranscript({
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => session.getTaskTranscriptEntries(),
+			getEarlierCursor: () => session.getEarlierCursor(),
+			readHistory: session.readHistory.bind(session),
+			subscribe: () => () => {},
+		});
+		const view = ownerTaskViewSource(fixture.store),
+			task = fixture.store.tasks[0]!.ref.taskId;
+		const current = await view.readTaskTranscript(task);
+		assert.ok(current.ok && current.value.nextCursor);
+		assert.deepEqual(
+			current.value.messages.map((m) => m.role),
+			["branchSummary"],
+		);
+		const earlier = await view.readTaskTranscript(task, current.value.nextCursor);
+		assert.ok(earlier.ok);
+		assert.deepEqual(
+			earlier.value.messages.map((m) => m.role),
+			["user", "user", "assistant", "custom"],
+		);
+		assert.match(JSON.stringify(earlier.value.messages), /archived provider answer/);
+		assert.match(JSON.stringify(earlier.value.messages), /archived clear/);
+	} finally {
+		await fixture.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
 test("the task view reads informational entries and thinking as chats render them, with compaction on the latest page (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	for (let i = 0; i < 101; i++) await session.appendMessage({ role: "user", content: `early-${i}`, timestamp: i });
@@ -463,13 +502,18 @@ test("the task view reads informational entries and thinking as chats render the
 	});
 	await session.appendCustomMessageEntry("extension-notice", "notice text", true);
 	await session.appendCompaction("kept line", prompt, 100, verbatimDetails);
-	await session.branchWithSummary(prompt, "summary text");
+	// This synchronous source owns its complete records, independently of the manager's current branch.
+	const recorded: ReturnType<SessionManager["getEntries"]> = [];
+	for await (const { items } of session.readHistory())
+		for (const item of items) if ("entry" in item) recorded.push(item.entry);
+	const summaryId = await session.branchWithSummary(prompt, "summary text");
+	recorded.push(session.getEntry(summaryId)!);
 	const fixture = taskFixture();
 	try {
 		await fixture.start("Read informational entries");
 		fixture.runners[0].context.bindTranscript({
 			getSessionId: () => session.getSessionId(),
-			getEntries: () => session.getEntries(),
+			getEntries: () => recorded,
 			getCompactionReason: () => "threshold",
 		});
 		const view = ownerTaskViewSource(fixture.store);

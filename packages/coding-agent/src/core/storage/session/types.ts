@@ -81,7 +81,7 @@ export interface SessionHistoryPage {
 	readonly items: readonly SessionHistoryItem[];
 	readonly nextCursor?: string;
 	/** Adjacent ranges in the original snapshot, when the read requested them. */
-	readonly adjacent?: { readonly older?: string; readonly newer?: string };
+	readonly adjacent?: { readonly older?: string; readonly newer?: string; readonly current?: string };
 }
 
 export interface SessionHistoryReadOptions {

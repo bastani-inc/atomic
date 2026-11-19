@@ -368,7 +368,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const bound = taskTranscriptSource(task.value);
 			if (!bound.ok) return { ok: false, error: { message: "Transcript unavailable" } };
 			const { session, taskId } = bound.value;
-			if (session.readHistory && session.loadHistory && !session.subscribe)
+			if (session.readHistory && ((session.loadHistory && !session.subscribe) || cursor?.includes(":")))
 				return savedTranscriptView(session, taskId, session.readHistory.bind(session), cursor);
 			// A finished task keeps its history in its session store, not in memory (#5186).
 			if (session.loadHistory) {
@@ -382,6 +382,10 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 							: { ok: false, error: { message: history.unavailable } },
 					);
 			}
+			// Managers expose mutable in-window messages. As on a saved read, observe a historical page after
+			// the initiating event; the initial snapshot and its live subscription stay in the same turn.
+			if (cursor !== undefined && session.readHistory && !session.subscribe)
+				return Promise.resolve().then(() => transcriptView(session, taskId, session.getEntries(), cursor));
 			return transcriptView(session, taskId, session.getEntries(), cursor);
 		},
 		followTaskTranscript(id) {
@@ -557,6 +561,12 @@ async function savedTaskDetailText(
 	return { ...(prompt !== undefined ? { prompt } : {}), ...(output !== undefined ? { output } : {}) };
 }
 
+function savedTaskScope(taskId: string, sessionId: string): string {
+	return `${createHash("sha256")
+		.update(JSON.stringify([taskId, sessionId]))
+		.digest("base64url")}:`;
+}
+
 /** One saved page at a time; skipping a page of invisible bookkeeping doesn't keep that page alive. */
 async function savedTranscriptView(
 	session: TaskTranscriptSource,
@@ -565,68 +575,83 @@ async function savedTranscriptView(
 	cursor: string | undefined,
 ): Promise<TaskViewResult<TaskTranscriptView>> {
 	const sessionId = session.getSessionId();
-	const scope =
-		createHash("sha256")
-			.update(JSON.stringify([taskId, sessionId]))
-			.digest("base64url") + ":";
+	const scope = savedTaskScope(taskId, sessionId);
 	if (cursor !== undefined && !cursor.startsWith(scope))
 		return { ok: false, error: { message: "Transcript cursor belongs to another task or session" } };
+	const encoded = cursor?.slice(scope.length);
+	// Also page within a single saved entry: a reply can contain hundreds of independently shown blocks.
+	const slice = encoded === undefined ? undefined : /^(.*)~([fb])(\d*)$/.exec(encoded);
+	const raw = slice ? slice[1] : encoded;
+	const forward = Boolean(slice && slice[2] === "f");
+	let offset = slice?.[3] ? Number(slice[3]) : undefined;
+	if (offset !== undefined && !Number.isSafeInteger(offset))
+		return { ok: false, error: { message: "Invalid transcript cursor" } };
 	for await (const page of read({
-		...(cursor === undefined ? { direction: "backward" as const } : { cursor: cursor.slice(scope.length) }),
+		...(raw === undefined ? { direction: "backward" as const } : { cursor: raw }),
 		adjacent: true,
 	})) {
-		const messages = page.items.flatMap<AgentMessage>((item) => {
-			if (!("entry" in item))
-				return [
-					{
-						role: "custom",
-						customType: "atomic.oversized-history-entry",
-						display: true,
-						timestamp: 0,
-						content: `Saved entry ${item.seq} is ${item.bytes} bytes. Read the original bytes with the session history reader or export this session.`,
+		const entries: Entries = page.items.map((item) =>
+			"entry" in item
+				? item.entry
+				: {
+						type: "message",
+						id: `oversized-${item.seq}`,
+						parentId: null,
+						timestamp: "1970-01-01T00:00:00Z",
+						message: {
+							role: "custom",
+							customType: "atomic.oversized-history-entry",
+							display: true,
+							timestamp: 0,
+							content: `Saved entry ${item.seq} is ${item.bytes} bytes. Read the original bytes with the session history reader or export this session.`,
+						},
 					},
-				];
-			const { entry } = item;
-			if (entry.type === "message") {
-				const message = entry.message;
-				if (
-					message.role === "user" ||
-					message.role === "toolResult" ||
-					message.role === "bashExecution" ||
-					message.role === "branchSummary" ||
-					(message.role === "custom" && message.display)
-				)
-					return [message];
-				if (message.role !== "assistant") return [];
-				const content = message.content.filter(
-					(block) => block.type === "text" || block.type === "toolCall" || block.type === "thinking",
-				);
-				return content.length || ["aborted", "error", "length"].includes(message.stopReason)
-					? [{ ...message, content }]
-					: [];
-			}
-			if (
-				(entry.type === "custom_message" && entry.display) ||
-				entry.type === "branch_summary" ||
-				entry.type === "compaction"
-			)
-				return sessionEntryToContextMessages(entry);
-			return [];
-		});
-		if (messages.length || !page.nextCursor) {
-			if (!messages.length && cursor === undefined)
-				return { ok: false, error: { message: "Transcript unavailable" } };
-			const older = page.adjacent ? page.adjacent.older : page.nextCursor;
-			return {
-				ok: true,
+		);
+		let from = 0,
+			end = 0,
+			count = 0;
+		const result = transcriptView(
+			session,
+			taskId,
+			entries,
+			undefined,
+			{
+				storedRows: entries.length,
+				collect(row, notice) {
+					// The cursor's source fingerprint identifies this generation. The sequence identifies its saved reply.
+					const generation = page.adjacent?.current?.split(".", 1)[0];
+					notice.occurrence = generation ? `${generation}:${page.items[row]!.seq}` : randomUUID();
+				},
+			},
+			{
+				offset: offset ?? (forward ? 0 : undefined),
+				forward,
+				located(a, b, total) {
+					from = a;
+					end = b;
+					count = total;
+				},
+			},
+		);
+		if (result.ok) {
+			const self = page.adjacent?.current;
+			const previousPage = page.adjacent ? page.adjacent.older : page.nextCursor;
+			const older = from > 0 && self ? `${self}~b${from}` : previousPage && `${previousPage}~b`;
+			const newer = end < count && self ? `${self}~f${end}` : page.adjacent?.newer && `${page.adjacent.newer}~f`;
+			const displayed = {
+				ok: true as const,
 				value: {
-					messages,
+					messages: result.value.messages,
 					...(page.adjacent ? { savedWindow: true as const } : {}),
 					...(older ? { nextCursor: scope + older } : {}),
-					...(page.adjacent?.newer ? { newerCursor: scope + page.adjacent.newer } : {}),
+					...(newer ? { newerCursor: scope + newer } : {}),
 				},
 			};
+			const fragments = taskTranscriptFragments(result);
+			if (fragments) bindTaskTranscriptFragments(displayed, fragments);
+			return displayed;
 		}
+		offset = undefined;
 	}
 	return { ok: false, error: { message: "Transcript unavailable" } };
 }
@@ -672,13 +697,21 @@ function transcriptView(
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor: string | undefined,
 	archive?: { storedRows: number; collect: (row: number, notice: NoticePosition) => void },
+	window?: Parameters<typeof taskTranscriptPageWithCuts>[5],
 ): TaskViewResult<TaskTranscriptView> {
 	let fromEarlier: string | undefined;
 	let intoLater: string | undefined;
-	const page = taskTranscriptPageWithCuts(taskId, session.getSessionId(), entries, cursor, (first, last) => {
-		fromEarlier = first;
-		intoLater = last;
-	});
+	const page = taskTranscriptPageWithCuts(
+		taskId,
+		session.getSessionId(),
+		entries,
+		cursor,
+		(first, last) => {
+			fromEarlier = first;
+			intoLater = last;
+		},
+		window,
+	);
 	if (!page.ok && !session.subscribe) return { ok: false, error: { message: "Transcript unavailable" } };
 	const items = page.ok ? page.value.items : [];
 	const entryIds = new Set(items.map((item) => item.source.entryId));
@@ -727,9 +760,14 @@ function transcriptView(
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;
 	const activeToolStarts =
 		cursor === undefined && session.chatSession !== undefined ? activeToolExecutionStarts(session.chatSession) : [];
+	let nextCursor = page.ok ? page.value.nextCursor : undefined;
+	if (!nextCursor && !window && session.readHistory) {
+		const before = session.getEarlierCursor?.();
+		if (before) nextCursor = savedTaskScope(taskId, session.getSessionId()) + before + "~b";
+	}
 	const value: TaskTranscriptView = {
 		messages,
-		...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
+		...(nextCursor !== undefined ? { nextCursor } : {}),
 		...(compactionReason === undefined ? {} : { compactionReason }),
 		...(compactionStartedAt === undefined ? {} : { compactionStartedAt }),
 		...(activeToolStarts.length === 0 ? {} : { activeToolStarts }),

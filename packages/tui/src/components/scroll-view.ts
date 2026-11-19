@@ -44,6 +44,12 @@ export class ScrollView extends Container {
 	private transientScrollbarVisible = false;
 	private scrollbarActive = false;
 	private scrollbarHideTimer: NodeJS.Timeout | undefined;
+	private historyNavigation?: (action: "older" | "newer" | "start" | "end") => void;
+
+	/** Observe explicit navigation, including a turn clamped at the edge of a partial transcript. Layout is silent. */
+	setHistoryNavigation(listener?: (action: "older" | "newer" | "start" | "end") => void): void {
+		this.historyNavigation = listener;
+	}
 
 	constructor(component: Component, options: ScrollViewOptions = {}) {
 		super();
@@ -167,6 +173,7 @@ export class ScrollView extends Container {
 		this.followSuppressedAtEnd = false;
 		if (moved !== 0) this.markScrollbarActivity();
 		if (moved !== 0 || this.followingEnd !== wasFollowingEnd) this.requestRenderCallback?.();
+		this.historyNavigation?.(requested < 0 ? "older" : "newer");
 		return requested - moved;
 	}
 
@@ -181,6 +188,7 @@ export class ScrollView extends Container {
 			this.markScrollbarActivity();
 			this.requestRenderCallback?.();
 		}
+		this.historyNavigation?.("start");
 	}
 
 	scrollToEnd(): void {
@@ -193,6 +201,7 @@ export class ScrollView extends Container {
 			this.markScrollbarActivity();
 			this.requestRenderCallback?.();
 		}
+		this.historyNavigation?.("end");
 	}
 
 	updateLayout(

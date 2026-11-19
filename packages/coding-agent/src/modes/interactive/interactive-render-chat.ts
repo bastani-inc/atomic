@@ -58,6 +58,7 @@ import {
 	UserMessageComponent,
 	type VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
+import { installSavedChatHistory, releaseSavedChatHistory } from "./interactive-saved-chat-history.ts";
 import { StartupChatContainer, trackChatHistoryBuild } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { refreshInteractiveTasks } from "./interactive-task-projection.js";
@@ -778,11 +779,18 @@ const HISTORY_SLICE_STEPS = 24;
 function planTranscript(
 	mode: InteractiveModeBase,
 	sessionEntries: SessionEntry[],
-	options: { populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult },
+	options: { populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult; saved?: boolean },
 ): TranscriptStep[] {
 	const steps: TranscriptStep[] = [];
-	const grouping = mainToolGrouping(mode);
-	resetMainToolGroup(mode);
+	const grouping: MainToolGrouping = options.saved
+		? {
+				tracker: new ToolGroupTracker({ groupBash: false }),
+				starts: new Map(),
+				lastMember: undefined,
+				carriedBreak: false,
+			}
+		: mainToolGrouping(mode);
+	if (!options.saved) resetMainToolGroup(mode);
 	let messageBuffer: AgentMessage[] = [];
 	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
 	let firstMessage = true;
@@ -795,7 +803,8 @@ function planTranscript(
 			}
 		}
 		firstMessage = false;
-		breakMainToolGroup(mode);
+		if (options.saved) grouping.tracker.break();
+		else breakMainToolGroup(mode);
 		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta, { tracker: grouping.tracker })) {
 			if (entry.kind === "tool" && entry.isPartial !== false) {
 				const startedAt = grouping.starts.get(entry.toolCallId);
@@ -838,7 +847,7 @@ function planTranscript(
 	return steps;
 }
 
-function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, latest = true): void {
+function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, latest = true, saved = false): void {
 	if (step.kind === "custom") {
 		mode.addCustomEntryToChat(step.entry);
 		return;
@@ -849,7 +858,7 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 	}
 	const { entry } = step;
 	const component = mode.addRenderedChatEntry(entry);
-	if (entry.kind === "tool" && isGroupedToolComponent(component)) {
+	if (!saved && entry.kind === "tool" && isGroupedToolComponent(component)) {
 		const grouping = mainToolGrouping(mode);
 		grouping.tracker.bind(entry.toolCallId, (role) => {
 			entry.groupRole = role;
@@ -858,8 +867,21 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 		if (latest) grouping.lastMember = component;
 	}
 	if (entry.kind === "assistant") addServiceTierWarnings(mode, entry.message);
-	if (entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
+	if (!saved && entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
 		mode.pendingTools.set(entry.toolCallId, component);
+	}
+}
+
+/** Render an archived page on its own. Never register historical tools as pending in the live turn. */
+function savedChatComponents(mode: InteractiveModeBase, entries: SessionEntry[]): Component[] {
+	const scratch = new Container();
+	const chat = mode.chatContainer;
+	try {
+		mode.chatContainer = scratch;
+		for (const step of planTranscript(mode, entries, { saved: true })) addTranscriptStep(mode, step, false, true);
+		return scratch.children;
+	} finally {
+		mode.chatContainer = chat;
 	}
 }
 
@@ -926,6 +948,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
 	}
+	installSavedChatHistory(this, sessionEntries, savedChatComponents);
 	const steps = planTranscript(this, sessionEntries, options);
 	const tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - TAIL_STEPS) : 0;
 	if (tailStart > 0) {
@@ -991,6 +1014,7 @@ function showNativeHistoryHint(mode: InteractiveModeBase): void {
 }
 
 export function clearChatForRerender(mode: InteractiveModeBase): void {
+	releaseSavedChatHistory(mode);
 	const renderer = mode.ui as AltScreenMessageCounterHost;
 	if (mode.chatContainer.children.length > 0) {
 		renderer.newMessages?.observe(renderer.isFollowingOutput !== false, countChatMessages(mode.chatContainer));

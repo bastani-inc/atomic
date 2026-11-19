@@ -207,6 +207,55 @@ test("PageUp is a plain scroll and earlier history loads near the top under the 
 	}
 });
 
+test("a live subagent chat reads across a clear without missing output that arrives while its history is pending (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 130; i++)
+		await session.appendMessage({ role: "user", content: `archived prompt ${i}`, timestamp: i });
+	await session.appendCompaction("fresh context", null, 100, verbatimDetails);
+	await session.appendMessage({ role: "user", content: "current context prompt", timestamp: 131 });
+	const read = Promise.withResolvers<void>();
+	let event: ((ev: AgentSessionEvent) => void) | undefined;
+	let started = false;
+	const host = await openTranscript({
+		getSessionId: () => session.getSessionId(),
+		getEntries: () => session.getEntries(),
+		getEarlierCursor: () => session.getEarlierCursor(),
+		readHistory: async function* (options) {
+			started = true;
+			await read.promise;
+			yield* session.readHistory(options);
+		},
+		subscribe(listener) {
+			event = listener;
+			return () => {
+				event = undefined;
+			};
+		},
+	});
+	try {
+		assert.match(host.text(), /current context prompt/);
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.equal(started, true, "the clear must not strand earlier saved messages");
+		const message = { role: "user" as const, content: "live arrival", timestamp: 132 };
+		event?.({ type: "message_start", message });
+		event?.({ type: "message_end", message });
+		host.inspector.handleInput(CTRL_END);
+		read.resolve();
+		await flush();
+		assert.match(host.text(), /live arrival/);
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		for (let i = 0; i < 15 && !host.text().includes("archived prompt 0"); i++) await flush();
+		assert.match(host.text(), /archived prompt 0/);
+	} finally {
+		read.resolve();
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
 test("a saved task chat evicts pages outside the screen and can scroll back to the latest messages (#5593)", async () => {
 	const session = SessionManager.inMemory();
 	for (let i = 0; i < 512; i++)
@@ -619,7 +668,7 @@ test.each(savedHistoryCases)(
 				calls.map((cursor) => cursor !== undefined),
 				[false, true],
 			);
-			if (shared) assert.deepEqual(storeReads, [1, 1], "one store load per page");
+			if (shared) assert.deepEqual(storeReads, [0, 0], "neither fragment may load the complete session");
 			if (database) assert.deepEqual(queries, [3, 3], "the header, entries batch and chunked answer per page");
 			assert.equal(body.match(/Error: provider outage/g)?.length, replace ? 2 : 1);
 		} finally {

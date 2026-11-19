@@ -781,7 +781,7 @@ await runtime.fork("entry-id");
 await runtime.fork("entry-id", { position: "at" });
 ```
 
-`runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` resume at the current context window. `getEntries()` and `getTree()` describe the entries held by that manager. Instead of opening with `history: "full"`, iterate pages with `for await (const page of sessionManager.readHistory({ fromSeq, toSeq, signal }))`. Inspect `page.items` for entries or oversized references. For an oversized reference, `sessionManager.readHistoryChunks(reference)` yields the original bytes. Bounds are inclusive and optional. A read stops at the last stored sequence when iteration began; entries appended later are not mixed into it.
+`runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` resume at the current context window. `getEntries()` and `getTree()` describe the entries held by that manager. Instead of opening with `history: "full"`, iterate pages with `for await (const page of sessionManager.readHistory({ fromSeq, toSeq, signal }))`. Inspect `page.items` for entries or oversized references. For an oversized reference, `sessionManager.readHistoryChunks(reference)` yields the original bytes. Bounds are inclusive and optional. A read stops at the last stored sequence when iteration began; entries appended later are not mixed into it. By default the pages are in recording order and include messages on branches you left. Pass `branchLeafSeq` to read only that saved sequence's ancestry. A custom task transcript source with only `getEntries()` can show only the rows it supplies. To let a reader visit older or off-branch messages, supply the records themselves or expose a paged history source (`readHistory` and `getEarlierCursor` for a live window).
 
 `SessionManager.create()`, `open()`, `continueRecent()`, `forkFrom()`, and mutations are asynchronous. `SessionManager.inMemory()` returns an empty private memory-backed manager synchronously. When supplying entries, use `await SessionManager.inMemory(cwd, options, entries)` and keep them stable until the call resolves. Await a mutation before reading its result or starting dependent work. A resolved write is committed; a failed write rejects with the store's typed error and leaves the failed entry unpublished. New persistent sessions store their header during creation and commit setup entries immediately. There is no `flush` method. Reads remain synchronous.
 
@@ -795,7 +795,7 @@ const currentProjectSessions = await SessionManager.list(process.cwd());
 const allSessions = await SessionManager.listAll(process.cwd());
 
 // Tree traversal
-const entries = sm.getEntries();        // All entries (excludes header); only the held ones after a { history: "tail" } open
+const entries = sm.getEntries();        // Entries in the current window, without the header
 const tree = sm.getTree();              // Full tree structure
 const path = sm.getPath();              // Path from root to current leaf
 const leaf = sm.getLeafEntry();         // Current leaf entry

@@ -78,6 +78,14 @@ export class WindowedContainer extends Container {
 		return this.children;
 	}
 
+	/** The last window layout's span for a leaf, measured in the root document's rows; no render or tree walk. */
+	windowRowSpan(component: Component): { readonly top: number; readonly bottom: number } | undefined {
+		const entry = entries.get(component);
+		const root = this.windowHost ?? this;
+		if (!entry || root.laidOut[entry.index] !== entry) return undefined;
+		return { top: root.offsets[entry.index]!, bottom: root.offsets[entry.index + 1]! };
+	}
+
 	override invalidate(): void {
 		for (const child of this.windowChildren()) {
 			const entry = entries.get(child);

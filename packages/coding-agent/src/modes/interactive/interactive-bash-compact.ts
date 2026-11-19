@@ -3,6 +3,7 @@ import type { FullscreenExitOutput } from "../../core/settings-manager.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { BashExecutionComponent, type TruncationResult } from "./interactive-mode-deps.ts";
 import { isEngineSendFailure } from "./interactive-prompt-restore.ts";
+import { releaseSavedChatHistory } from "./interactive-saved-chat-history.ts";
 
 /** Warning shown when `/compact` is submitted while a compaction is already running. */
 export const COMPACTION_ALREADY_IN_PROGRESS_WARNING =
@@ -162,6 +163,7 @@ InteractiveModeBase.prototype.stop = function (
 	this: InteractiveModeBase,
 	fullscreenExitOutput: FullscreenExitOutput = this.settingsManager.getFullscreenExitOutput(),
 ): void {
+	releaseSavedChatHistory(this);
 	this.disposeActiveSelector();
 	this.disposeInteractiveEngineHost();
 	this.disposeInteractiveEngineHost = () => {};

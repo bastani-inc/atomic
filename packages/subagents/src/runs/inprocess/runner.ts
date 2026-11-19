@@ -2431,9 +2431,17 @@ export class SubagentControlRuntime {
 			const tokenMeter = new AgentTokenMeter(session.messages);
 			taskHooks?.bindTranscript?.({
 				getSessionId: () => sessionManager.getSessionId(),
-				getEntries: () => withUnsavedAnswer(sessionManager.getEntries(), unsavedAnswer),
-				...(typeof sessionManager.loadFullHistory === "function"
-					? { loadFullHistory: () => sessionManager.loadFullHistory() }
+				getEntries: () =>
+					withUnsavedAnswer(
+						sessionManager.getTaskTranscriptEntries?.() ?? sessionManager.getEntries(),
+						unsavedAnswer,
+					),
+				...(typeof sessionManager.readHistory === "function"
+					? {
+							getEarlierCursor: () => sessionManager.getEarlierCursor(),
+							readHistory: sessionManager.readHistory.bind(sessionManager),
+							readHistoryChunks: sessionManager.readHistoryChunks.bind(sessionManager),
+						}
 					: {}),
 				subscribe: (listener) => transcriptSession.subscribe(listener),
 				getStreamingMessage: () => observedStreamingMessage,

@@ -35,7 +35,7 @@ import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import type { ChatSessionHost } from "./chat-session-host.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
-import { ScrollableComponentViewport } from "./chat-transcript.js";
+import { parseWheelReport, ScrollableComponentViewport } from "./chat-transcript.js";
 import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
 import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
@@ -246,6 +246,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private unsubscribe?: () => void;
 	private cursor?: string;
 	private newerCursor?: string;
+	private liveHistoryStart?: string;
+	private olderIntent = false;
+	private goToFirst = false;
 	private windowGeneration = 0;
 	private readonly savedPages: { older?: string; newer?: string; visible(): boolean; discard(): void }[] = [];
 	readonly #notices = new TaskTranscriptNotices();
@@ -440,7 +443,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	private route(data: string): boolean {
 		if (data === TRANSCRIPT_JUMP_TO_END_URL) {
-			if (this.newerCursor !== undefined) this.goToLatestSavedPage();
+			if (this.newerCursor !== undefined || this.savedPages.length || this.loadingEarlier)
+				this.goToLatestSavedPage();
 			this.chat.scrollToBottom();
 			this.requestRender();
 			return true;
@@ -479,9 +483,31 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.requestRender();
 			return true;
 		}
+		if (!this.chat.hasTaskInspector) {
+			if (keybindings.matches(data, "tui.altScreen.top")) this.goToFirst = true;
+			else if (
+				parseWheelReport(data) ||
+				matchesKey(data, "pageUp") ||
+				matchesKey(data, "pageDown") ||
+				keybindings.matches(data, "tui.altScreen.halfPageUp") ||
+				keybindings.matches(data, "tui.altScreen.halfPageDown") ||
+				keybindings.matches(data, "tui.altScreen.previousPrompt") ||
+				keybindings.matches(data, "tui.altScreen.nextPrompt")
+			)
+				this.goToFirst = false;
+		}
 		if (
 			!this.chat.hasTaskInspector &&
-			this.newerCursor !== undefined &&
+			(keybindings.matches(data, "tui.altScreen.top") ||
+				keybindings.matches(data, "tui.altScreen.halfPageUp") ||
+				keybindings.matches(data, "tui.altScreen.previousPrompt") ||
+				matchesKey(data, "pageUp") ||
+				parseWheelReport(data)?.direction === -1)
+		)
+			this.olderIntent = true;
+		if (
+			!this.chat.hasTaskInspector &&
+			(this.newerCursor !== undefined || this.savedPages.length > 0 || this.loadingEarlier) &&
 			keybindings.matches(data, "tui.altScreen.bottom")
 		) {
 			this.goToLatestSavedPage();
@@ -702,6 +728,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.windowGeneration++;
 		this.savedPages.length = 0;
 		this.newerCursor = undefined;
+		this.liveHistoryStart = undefined;
 		this.cursor = page.value.nextCursor;
 		const messages = page.value.messages;
 		if (page.value.savedWindow && !session) this.attachSavedPage(page.value, "latest");
@@ -770,8 +797,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.windowGeneration++;
 		this.newerCursor = undefined;
 		this.behind = false;
+		this.olderIntent = false;
+		this.goToFirst = false;
 		this.chat.scrollToBottom();
-		void this.load();
+		if (this.followed) {
+			for (const page of this.savedPages.splice(0)) page.discard();
+			if (this.liveHistoryStart) this.cursor = this.liveHistoryStart;
+			this.requestRender();
+		} else void this.load();
 	}
 
 	private attachSavedPage(page: TaskTranscriptView, edge: "latest" | "older" | "newer"): void {
@@ -799,6 +832,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const cursor = current();
 		const generation = this.windowGeneration;
 		if (cursor === undefined || this.loadingEarlier || this.loading || this.disposed) return;
+		if (edge === "older" && this.followed && cursor.includes(":") && !this.olderIntent) return;
 		this.loadingEarlier = true;
 		void (async () => {
 			try {
@@ -810,8 +844,13 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 					this.status = page.error.message;
 					return;
 				}
-				if (page.value.savedWindow && this.savedPages.length) this.attachSavedPage(page.value, edge);
-				else {
+				if (page.value.savedWindow && (this.savedPages.length || this.followed)) {
+					if (this.followed && this.liveHistoryStart === undefined) this.liveHistoryStart = cursor;
+					if (edge === "older")
+						this.#notices.adopt(page, page.value.messages, page.value.nextCursor !== undefined);
+					this.attachSavedPage(page.value, edge);
+					if (edge === "older" && this.goToFirst) this.chat.scrollBodyTo(0);
+				} else {
 					this.cursor = page.value.nextCursor;
 					const messages = page.value.messages;
 					this.#notices.adopt(page, messages, this.cursor !== undefined);

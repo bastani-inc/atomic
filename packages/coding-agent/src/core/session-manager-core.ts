@@ -93,7 +93,12 @@ import {
 	SessionNotFoundError,
 	StorageUnavailableError,
 } from "./storage/session/errors.js";
-import { firstHistoryCursor, historyChunks, historyPages } from "./storage/session/history-pages.js";
+import {
+	earlierTranscriptCursor,
+	firstHistoryCursor,
+	historyChunks,
+	historyPages,
+} from "./storage/session/history-pages.js";
 import { bindSessionFile, JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { SessionKeyDigests } from "./storage/session/key-digests.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
@@ -456,6 +461,31 @@ export class SessionManager {
 	}
 	getLastSeq(): number {
 		return this.lastSeq;
+	}
+
+	/** A task transcript follows recorded events, including abandoned branches. The live suffix ends at the
+	 * manager's watermark and stops at the first missing record. Its preceding page is read from the archive. */
+	private taskTranscriptStart(): number {
+		let index = this.fileEntries.length,
+			seq = this.lastSeq;
+		if (index - 1 === seq) return 1;
+		while (index > 1) {
+			const entry = this.fileEntries[index - 1]!;
+			if (entry.type === "session" || this.entrySeqs.get(entry.id) !== seq--) break;
+			index--;
+		}
+		return index;
+	}
+
+	getTaskTranscriptEntries(): SessionEntry[] {
+		return this.fileEntries.slice(this.taskTranscriptStart()) as SessionEntry[];
+	}
+
+	getEarlierCursor(): string | undefined {
+		const through = this.lastSeq - (this.fileEntries.length - this.taskTranscriptStart());
+		return through > 0 && this.historyEpoch
+			? earlierTranscriptCursor(this.sessionId, this.historyEpoch, through)
+			: undefined;
 	}
 
 	/** @internal The host of an unsaved isolated session owns an independent private backend. These positions

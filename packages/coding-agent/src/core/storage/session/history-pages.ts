@@ -11,6 +11,17 @@ import {
 	type SessionStore,
 } from "./types.js";
 
+type Packet = (from: number, through: number, reverse: boolean) => Promise<SessionHistoryPage["items"]>;
+type SnapshotPage = (
+	sessionId: string,
+	read: (epoch: string, lastSeq: number, packet: Packet) => Promise<SessionHistoryPage | undefined>,
+) => Promise<SessionHistoryPage | undefined>;
+const snapshotPages = new WeakMap<SessionStore, SnapshotPage>();
+/** @internal A store that can size and return a page in the same snapshot needn't open it three times. */
+export function registerHistorySnapshot(store: SessionStore, snapshot: SnapshotPage): void {
+	snapshotPages.set(store, snapshot);
+}
+
 function cursorScope(sessionId: string, epoch: string): string {
 	return createHash("sha256")
 		.update(JSON.stringify([sessionId, epoch]))
@@ -22,6 +33,11 @@ export function firstHistoryCursor(sessionId: string, epoch: string, throughSeq:
 	return `${cursorScope(sessionId, epoch)}.1.${throughSeq}`;
 }
 
+/** The retained suffix of an append-order task transcript remembers its preceding saved prefix. */
+export function earlierTranscriptCursor(sessionId: string, epoch: string, through: number): string {
+	return `${cursorScope(sessionId, epoch)}.1.${through}.b.1.${through}`;
+}
+
 /** A lazy sequence of pages of the generation and watermark the caller observed. Metadata is sized before any
  * payload read. A new generation is rejected by readRange inside the same snapshot that reads the payload. */
 export async function* historyPages(
@@ -30,6 +46,7 @@ export async function* historyPages(
 	epoch: string | undefined,
 	watermark: number,
 	options: SessionHistoryReadOptions,
+	packet?: Packet,
 ): AsyncGenerator<SessionHistoryPage, void> {
 	if (!store.readEntrySizes || !store.readRange)
 		throw new TypeError(
@@ -98,35 +115,48 @@ export async function* historyPages(
 			right = span?.end ?? end;
 		const from = reverse ? Math.max(left, right - SESSION_HISTORY_PAGE_ENTRIES + 1) : left;
 		const through = reverse ? right : Math.min(right, left + SESSION_HISTORY_PAGE_ENTRIES - 1);
-		const sized = await store.readEntrySizes(sessionId, from, through);
-		options.signal?.throwIfAborted();
-		stamp ??= sized.epoch;
-		scope ??= cursorScope(sessionId, stamp);
-		if (sized.epoch !== stamp || sized.lastSeq < end)
-			throw new SessionConflictError(sessionId, watermark, sized.lastSeq);
-		const ordered = reverse ? [...sized.sizes].reverse() : sized.sizes;
-		const first = ordered[0];
-		const edge = reverse ? through : from;
-		if (!first || first.seq !== edge) throw new Error(`Missing session history at entry ${edge}`);
 		let page: SessionHistoryPage["items"];
+		const edge = reverse ? through : from;
 		let low = edge,
 			high = edge;
-		if (first.bytes > SESSION_HISTORY_PAGE_BYTES) {
-			page = [{ kind: "oversized", sessionId, epoch: stamp, seq: edge, bytes: first.bytes }];
-		} else {
-			let used = 0;
-			for (const size of ordered) {
-				if (used + size.bytes > SESSION_HISTORY_PAGE_BYTES) break;
-				used += size.bytes;
-				if (reverse) low = size.seq;
-				else high = size.seq;
-			}
-			const range = await store.readRange(sessionId, low, high, stamp);
+		if (packet) {
+			page = await packet(from, through, reverse);
 			options.signal?.throwIfAborted();
-			if (range.epoch !== stamp || range.lastSeq < end)
-				throw new SessionConflictError(sessionId, watermark, range.lastSeq);
-			page = range.entries.map((entry, i) => ({ seq: range.seqs?.[i] ?? low + i, entry }));
+			const first = page[0],
+				last = page.at(-1);
+			if (!first || !last || (reverse ? last.seq : first.seq) !== edge)
+				throw new Error(`Missing session history at entry ${edge}`);
+			low = first.seq;
+			high = last.seq;
+		} else {
+			const sized = await store.readEntrySizes(sessionId, from, through);
+			options.signal?.throwIfAborted();
+			stamp ??= sized.epoch;
+			scope ??= cursorScope(sessionId, stamp);
+			if (sized.epoch !== stamp || sized.lastSeq < end)
+				throw new SessionConflictError(sessionId, watermark, sized.lastSeq);
+			const ordered = reverse ? [...sized.sizes].reverse() : sized.sizes;
+			const first = ordered[0];
+			if (!first || first.seq !== edge) throw new Error(`Missing session history at entry ${edge}`);
+			if (first.bytes > SESSION_HISTORY_PAGE_BYTES) {
+				page = [{ kind: "oversized", sessionId, epoch: stamp, seq: edge, bytes: first.bytes }];
+			} else {
+				let used = 0;
+				for (const size of ordered) {
+					if (used + size.bytes > SESSION_HISTORY_PAGE_BYTES) break;
+					used += size.bytes;
+					if (reverse) low = size.seq;
+					else high = size.seq;
+				}
+				const range = await store.readRange(sessionId, low, high, stamp);
+				options.signal?.throwIfAborted();
+				if (range.epoch !== stamp || range.lastSeq < end)
+					throw new SessionConflictError(sessionId, watermark, range.lastSeq);
+				page = range.entries.map((entry, i) => ({ seq: range.seqs?.[i] ?? low + i, entry }));
+			}
 		}
+		const requestedStart = start,
+			requestedEnd = end;
 		if (reverse) end = low - 1;
 		else start = high + 1;
 		const hasOlder = span ? low > left || span.older : low > firstSeq;
@@ -140,6 +170,7 @@ export async function* historyPages(
 			...(options.adjacent
 				? {
 						adjacent: {
+							current: cursorFor(requestedStart, requestedEnd, reverse),
 							...(hasOlder ? { older: cursorFor(firstSeq, low - 1, true) } : {}),
 							...(hasNewer ? { newer: cursorFor(high + 1, lastSeq, false) } : {}),
 						},
@@ -162,6 +193,29 @@ export async function* readSessionHistory(
 			`Session store ${store.descriptor.adapter} must implement readEntrySizes for a history reader`,
 		);
 	options.signal?.throwIfAborted();
+	const snapshot = snapshotPages.get(store);
+	// Branch spans may need a separate index snapshot. Never request one from inside a single-connection reader.
+	if (snapshot && options.branchLeafSeq === undefined && !options.cursor?.includes(".p")) {
+		let request = options;
+		for (;;) {
+			options.signal?.throwIfAborted();
+			const page = await snapshot(sessionId, async (epoch, lastSeq, packet) => {
+				const reader = historyPages(store, sessionId, epoch, lastSeq, request, packet);
+				try {
+					const result = await reader.next();
+					return result.done ? undefined : result.value;
+				} finally {
+					await reader.return();
+				}
+			});
+			options.signal?.throwIfAborted();
+			if (!page) return;
+			yield page;
+			if (!page.nextCursor) return;
+			request = { cursor: page.nextCursor, signal: options.signal, adjacent: options.adjacent };
+			await yieldToEventLoop();
+		}
+	}
 	const head = await store.readEntrySizes(sessionId, 1, 0);
 	options.signal?.throwIfAborted();
 	yield* historyPages(store, sessionId, head.epoch, head.lastSeq, options);

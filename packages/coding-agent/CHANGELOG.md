@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- Sessions and extensions open at the current context window. Replace `history: "full"` and calls to `loadFullHistory()` with `for await (const page of manager.readHistory())` to visit older entries, or use `await manager.readEntry(id)` to look up one entry ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- `SessionManager.getEntries()` returns the current window, not the complete recorded conversation. Replace `history: "full"` and calls to `loadFullHistory()` with `for await (const page of manager.readHistory())` to visit older entries, or use `await manager.readEntry(id)` to look up one entry. A custom task transcript source that needs off-branch rows must supply those rows or a pager for them ([#5554](https://github.com/bastani-inc/atomic/issues/5554), [#5593](https://github.com/bastani-inc/atomic/issues/5593)).
 - The session picker rejects `re:` patterns that rely on backreferences, lookaround or paired start/end anchors instead of silently reporting no matches. Use a narrower pattern or a quoted phrase ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Replace `sessionManager.getSessionRecoveryState().admissionKeys.includes(key)` with `sessionManager.getAdmissionKeys().has(key)`. Admission remains synchronous; old keys are no longer retained as strings ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Await `SessionManager.inMemory(cwd, options, entries)` when seeding a private session. Creating an empty `inMemory()` manager stays synchronous ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
