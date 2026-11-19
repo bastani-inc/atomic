@@ -25,6 +25,9 @@
 ### Changed
 
 - Closing or switching sessions no longer needs to describe a worktree child as reaped while Git is still using its checkout. Even if the close requested the stop, the receipt can say `already-finishing` instead. Children without temporary worktrees keep their usual close receipts ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
+- Codemode scripts can launch single or parallel children with `tools.subagent`, wait with a budget, check status, and pause, quit or resume children their session launched. Scripts can `list` and `get` agent definitions, but `create`, `update` and `delete` still require direct calls. The new `models` action lists configured models and their supported thinking levels, both directly and from scripts ([#5927](https://github.com/bastani-inc/atomic/pull/5927)).
+- Codemode is now active in the default tool set. Its tool description adds to the model's prompt; `codemode.inlineBudget` bounds the inline declarations (default: 3000 estimated tokens). To opt out, set `"defaultTools": ["-codemode"]`. Explicit tool lists must name `codemode` to select it. An explicit `-codemode` also prevents MCP from turning it back on.
+- Custom session stores can implement `readForkWindow(sessionId, entryId)` to supply a subagent's retained branch and labels without opening the whole parent. Stores without the method keep their existing fork behavior ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
 
 ### Fixed
 
@@ -40,6 +43,7 @@
 - On SQLite and local libSQL stores with sufficient free space, upgrading a large snapshot reference index from Atomic 0.9.87 or earlier, or opening one that lost a trigger, no longer freezes Atomic while it clears millions of old rows. Collection releases them in short, resumable batches. Stores with custom schema that depends on the index, or without verifiable disk headroom, keep the previous atomic reset ([#5553](https://github.com/bastani-inc/atomic/issues/5553)).
 - `InteractiveMode.init()` and `run()` now resolve instead of rejecting with `SessionClosed` if you quit the host or dispose the session during its initial extension bind. An event that was starting the UI, including a replayed provider retry, no longer leaves an unhandled rejection on quit or disposal. Replacing the session during that bind still rejects, as does a direct `session.bindExtensions()` call. Track your own shutdown request rather than catching `SessionClosed` to detect it. If you dispose only the session, you can run the same mode again after creating a replacement ([#5697](https://github.com/bastani-inc/atomic/issues/5697), [#5804](https://github.com/bastani-inc/atomic/issues/5804)).
 - Reopened subagent notices from older sessions no longer show a stopped child as paused just because its task description begins with pause or wait wording. For a notice with only its title left, Atomic uses the matching stop on the same branch. If the stop predates the open window, its acknowledgement must still be in the window; otherwise the old label remains ([#5690](https://github.com/bastani-inc/atomic/issues/5690)).
+- Long-lived Node.js 22 hosts no longer accumulate an async context store for each closed or released session that called tools through codemode or `ctx.executeTool()`.
 
 ## [0.9.90] - 2026-11-19
 
