@@ -12,6 +12,7 @@ export interface Frame {
 	children: DrawnChild[];
 }
 
+const recordedFrame = Symbol.for("@bastani/atomic-tui/recorded-mouse-frame");
 let measurement: WeakMap<MouseLayout, Frame> | undefined;
 
 /** A synchronous size check may read the child rows it measured, but must not publish them as a painted frame. */
@@ -28,21 +29,24 @@ export function withMeasuredMouseLayouts<T>(measure: () => T): T {
 // Read the layout structurally: extensions may bring their own copy of Container or Box. Older copies record
 // the same child heights, but not a snapshot of their grandchildren; take it while those rows are being drawn.
 export function frameOf(component: Component): Frame | undefined {
+	if (!("childAtRow" in component || "setPaddingX" in component)) return undefined;
 	const stack = component as Component & {
-		mouseLayout?: { current?: Frame; width?: number; children?: DrawnChild[] };
+		mouseLayout?: { [recordedFrame]?: Frame; width?: number; children?: DrawnChild[] };
+		children?: Component[];
 		paddingX?: number;
 		paddingY?: number;
 	};
+	if (!Array.isArray(stack.children)) return undefined;
 	const layout = stack.mouseLayout;
-	if (!layout) return undefined;
-	if (layout.current) return layout.current;
-	if (layout.width === undefined || !Array.isArray(layout.children)) return undefined;
-	return {
-		width: layout.width,
-		x: stack.paddingX ?? 0,
-		y: stack.paddingY ?? 0,
-		children: layout.children.map(({ component, height }) => drawnChild(component, height)),
-	};
+	if (!layout || typeof layout !== "object") return undefined;
+	if (recordedFrame in layout) return layout[recordedFrame];
+	if (typeof layout.width !== "number" || !Array.isArray(layout.children)) return undefined;
+	const children: DrawnChild[] = [];
+	for (const child of layout.children) {
+		if (typeof child?.component?.render !== "function" || typeof child.height !== "number") return undefined;
+		children.push(drawnChild(child.component, child.height));
+	}
+	return { width: layout.width, x: stack.paddingX ?? 0, y: stack.paddingY ?? 0, children };
 }
 
 export function drawnChild(component: Component, height: number): DrawnChild {
@@ -56,7 +60,7 @@ export class MouseLayout {
 		return drawnChild(component, height);
 	}
 
-	get current(): Frame | undefined {
+	get [recordedFrame](): Frame | undefined {
 		return measurement?.get(this) ?? this.painted;
 	}
 
@@ -67,7 +71,7 @@ export class MouseLayout {
 	}
 
 	atWidth(width: number): DrawnChild[] | undefined {
-		const rows = this.current;
+		const rows = this[recordedFrame];
 		return rows?.width === width ? rows.children : undefined;
 	}
 }

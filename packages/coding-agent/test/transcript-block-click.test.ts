@@ -1232,6 +1232,26 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 		}
 	});
 
+	test("a renderer can keep its own mouse layout state and still take clicks (#5696)", async () => {
+		const button = Object.assign(extensionButton(["[ Save ]"]), { mouseLayout: { current: { column: 2 } } });
+		const chat = await mountChat(100, 60, { messageRenderers: { save: () => button } });
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "save",
+				content: "save",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const row = chat.rowOf(/\[ Save \]/);
+			chat.click(chat.columnOf(row, "Save"), row);
+			assert.equal(button.clicks, 1);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
 	test("shrinking an order summary between press and release does not click the button that moves up (#5696)", async () => {
 		const summary = ["Review this order", "Order summary"];
 		const cancel = extensionButton(["[ Cancel order ]"]);
