@@ -1,6 +1,7 @@
 import { APP_NAME, detectInstallChangeAsync, VERSION } from "../../config.js";
 import { sessionCloseReason } from "../../core/agent-session-events.ts";
 import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } from "../../core/cache-stats.ts";
+import { chatReceipt } from "../../core/chat-receipts.js";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
@@ -10,6 +11,8 @@ import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runti
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { bindAgentPanel } from "../rpc/agent-panel-bridge.ts";
+import { chatLineDrawnLive } from "./chat-reader-layout.js";
+import { chatRecordsChanged } from "./chat-reader-records.js";
 import { hasAssistantVisibleContent, interruptedNotice } from "./components/assistant-message.ts";
 import { AtomicWorkedStatusComponent, AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
@@ -510,6 +513,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 					this.sessionManager.getEntries(),
 					event.message,
 					createCacheMissModelSource(this.session.modelRuntime),
+					this.session.publishingReplyId?.(event.message),
 				);
 				if (miss) this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
 			}
@@ -812,6 +816,11 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			this.ui.requestRender();
 			break;
 		}
+	}
+	const receipt = chatReceipt(event);
+	if (receipt) {
+		chatRecordsChanged(this, receipt);
+		chatLineDrawnLive(this, receipt.id);
 	}
 }
 

@@ -169,6 +169,8 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	private readonly entries: readonly TEntry[];
 	private readonly renderEntry: ChatTranscriptRenderer<TEntry>;
 	readonly supportsRowWindow: boolean;
+	/** Only a block whose rows leave measureRows for the actual viewport is visible. */
+	onVisibleEntry?: (entry: TEntry) => void;
 
 	private readonly cacheKey: ChatTranscriptCacheKey<TEntry> | undefined;
 	private blockCache: Array<CachedChatTranscriptBlock<TEntry> | undefined> = [];
@@ -259,6 +261,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 					if (blockStart >= end) break;
 					if (block === undefined) continue;
 					const localEnd = Math.min(block.lines.length, end - blockStart);
+					if (localEnd > Math.max(0, start - blockStart)) this.onVisibleEntry?.(block.entry);
 					for (let row = Math.max(0, start - blockStart); row < localEnd; row++) {
 						lines.push(block.lines[row] ?? "");
 					}
