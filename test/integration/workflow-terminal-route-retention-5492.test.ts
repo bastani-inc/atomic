@@ -310,13 +310,23 @@ async function runInOtherJournal() {
 	const selected = await JournalTestBackend.create();
 	const store = createStore();
 	configureTestStoreBackend(store, selected);
+	const nested = workflow({
+		name: "nested",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await ctx.tool("step", {}, async () => 1);
+			return {};
+		},
+	});
 	const def = workflow({
 		name: "other-journal",
 		description: "",
 		inputs: {},
 		outputs: {},
 		async run(ctx) {
-			await ctx.tool("step", {}, async () => 1);
+			await ctx.workflow(nested);
 			return {};
 		},
 	});
@@ -337,8 +347,10 @@ async function runInOtherJournal() {
 		adapters: { sessionStore },
 		ensureReady: async () => selected,
 	});
+	const [child] = store.childRuns(id);
+	assert.ok(child);
 	await runtime.prepareDurableCatalog!();
-	return { own, store, id, bridge, observer, target, runtime };
+	return { own, store, id, childId: child.id, bridge, observer, target, runtime };
 }
 
 test("opening a completed run keeps its own journal for subsequent inspection (#5561)", async () => {
@@ -352,12 +364,18 @@ test("opening a completed run keeps its own journal for subsequent inspection (#
 });
 
 test("refreshing a different journal retires a run deleted from its own journal (#5561)", async () => {
-	const { own, store, id, bridge, observer, target, runtime } = await runInOtherJournal();
+	const { own, store, id, childId, bridge, observer, target, runtime } = await runInOtherJournal();
+	assert.equal(
+		store.run(childId)?.status,
+		"completed",
+		"the child is stored under its surviving root, not as a separate journal row",
+	);
 	assert.equal(await observer.sessions(), 3);
 	assert.ok((await own.deleteWorkflowIfInactive(id)).ok);
 	await runtime.prepareDurableCatalog!();
 	await bridge.flush();
 	assert.equal(store.run(id), undefined);
+	assert.equal(store.run(childId), undefined);
 	await until("the deleted run's connection to close", async () =>
 		(await observer.sessions()) === 2 ? true : undefined,
 	);

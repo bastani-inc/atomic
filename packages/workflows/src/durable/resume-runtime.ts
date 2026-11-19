@@ -755,7 +755,7 @@ export function purgeSuppressedWorkflowRuns(
 		if (controls.runControl(run.id) !== undefined) return false;
 		const rootId = durableRootRunIdForRun(store, run.id) ?? run.id;
 		const owner = availableRunDurableBackend(store, rootId) ?? backend;
-		return !owner.isWorkflowLoadable(rootId) || (rootId !== run.id && !owner.isWorkflowLoadable(run.id));
+		return !owner.isWorkflowLoadable(rootId);
 	});
 	return deleted.map((run) => run.id).filter((id) => store.removeRun(id));
 }
