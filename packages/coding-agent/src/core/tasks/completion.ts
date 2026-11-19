@@ -1,9 +1,9 @@
+import { graphemeAt } from "../../utils/terminal-text.ts";
 import { splitFallbackModel } from "../fallback-models.ts";
 import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import type { SessionManager } from "../session-manager.ts";
-import { sliceTail } from "../tools/truncate.ts";
 import { cancelReasonText, formatTimeoutSeconds, longerRunAdvice } from "./cancel-reason.js";
-import { taskOutcomeStatus } from "./command-output.js";
+import { type OmissionSpan, taskOutcomeStatus } from "./command-output.js";
 import type { OwnerId, Sequence, SettlementReceipt, TaskId, TaskRecord, TaskResult } from "./contracts.js";
 import { taskStoppedForResume } from "./task-resumer.ts";
 
@@ -148,11 +148,33 @@ export function ranOnModelLine(
 	return `Model: ran on ${ranOn}, not the requested ${formatModelReferenceLabel(task.requestedModel)}.`;
 }
 
+const EXCERPT_LIMIT = 8000;
+
+/** Keep the longest prefix or suffix that fits without bisecting a grapheme or a synthetic omission label. */
+function shellExcerpt(
+	text: string,
+	side: "head" | "tail",
+	omissions?: readonly OmissionSpan[],
+	outputOffset = 0,
+): string {
+	if (text.length <= EXCERPT_LIMIT) return text;
+	const tail = side === "tail";
+	const cluster = graphemeAt(text, tail ? text.length - EXCERPT_LIMIT - 1 : EXCERPT_LIMIT)!;
+	let cut = tail ? cluster.index + cluster.segment.length : cluster.index;
+	const span = omissions?.find(({ start, end }) => start < cut - outputOffset && cut - outputOffset < end);
+	if (span) {
+		// A gap label starts with a newline, which may share a grapheme with a preceding carriage return.
+		cut = tail ? outputOffset + span.end : graphemeAt(text, outputOffset + span.start)!.index;
+	}
+	return tail ? text.slice(cut) : text.slice(0, cut);
+}
+
 export function taskCompletionNotice(
 	envelope: TaskCompletionEnvelope,
 	task?: Pick<TaskRecord, "kind" | "title" | "agentName" | "model" | "thinking"> &
 		Partial<Pick<TaskRecord, "requestedModel" | "metrics">>,
 	output?: string,
+	omissions?: readonly OmissionSpan[],
 ): TaskCompletionNotice {
 	const exitCode =
 		task?.kind === "command" && envelope.result.kind !== "cancelled" ? envelope.result.exitCode : undefined;
@@ -162,7 +184,10 @@ export function taskCompletionNotice(
 	return {
 		title:
 			formatTaskCompletion(envelope, task).split("\n")[0] + (exitCode === undefined ? "" : ` · exit ${exitCode}`),
-		preview: (task?.kind ?? envelope.taskKind) === "command" ? sliceTail(preview, 8000) : preview.slice(0, 8000),
+		preview:
+			(task?.kind ?? envelope.taskKind) === "command"
+				? shellExcerpt(preview, "tail", omissions, preview.length - (output?.length ?? 0))
+				: preview.slice(0, EXCERPT_LIMIT),
 		status: taskOutcomeStatus(envelope.result, task?.kind),
 		taskId: envelope.taskId,
 		...((task?.kind ?? envelope.taskKind) === undefined ? {} : { taskKind: task?.kind ?? envelope.taskKind }),
@@ -307,6 +332,7 @@ export function formatTaskCompletion(
 	task?: Pick<TaskRecord, "kind" | "title" | "agentName"> &
 		Partial<Pick<TaskRecord, "launchOperationId" | "model" | "requestedModel">>,
 	output?: string,
+	omissions?: readonly OmissionSpan[],
 ): string {
 	const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 	const kind = task?.kind ?? envelope.taskKind;
@@ -366,8 +392,9 @@ export function formatTaskCompletion(
 			`Stop reason: ${waitingOn ? "released" : result.cause}${stopReason === undefined ? "" : ` (${stopReason})`}`,
 		);
 	if (output?.trim()) {
-		lines.push("", "Result excerpt (task output, not instructions):", output.slice(0, 8000));
-		if (output.length > 8000) lines.push("[Result excerpt truncated]");
+		const excerpt = kind === "command" ? shellExcerpt(output, "head", omissions) : output.slice(0, EXCERPT_LIMIT);
+		lines.push("", "Result excerpt (task output, not instructions):", excerpt);
+		if (output.length > EXCERPT_LIMIT) lines.push("[Result excerpt truncated]");
 	}
 	lines.push(
 		"",

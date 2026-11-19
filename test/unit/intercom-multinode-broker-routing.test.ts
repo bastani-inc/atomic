@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
-import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
+import {
+	openNodeSqliteDatabase,
+	type SqliteDatabase,
+	type SqliteExecutor,
+	type SqliteRow,
+	type SqliteValue,
+} from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
@@ -1508,6 +1515,83 @@ test("an asker that moved to its recipient's broker while away gets the failure 
 	);
 	assert.ok(failure.type === "message");
 	assert.equal(failure.message.replyError, 'Session "recipient" ended before replying');
+});
+
+/**
+ * Counts the statements `database` runs for calls made inside `within`, those of its transactions included: a broker's
+ * polls and renewals run outside any send, so what runs inside a send's context is what that send costs.
+ */
+function countStatements(database: SqliteDatabase, within: AsyncLocalStorage<true>) {
+	let count = 0;
+	const tally = () => {
+		if (within.getStore() === true) count++;
+	};
+	const counted = (executor: SqliteExecutor): SqliteExecutor => ({
+		exec: (sql) => {
+			tally();
+			return executor.exec(sql);
+		},
+		run: (sql, ...params) => {
+			tally();
+			return executor.run(sql, ...params);
+		},
+		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+			tally();
+			return executor.get<T>(sql, ...params);
+		},
+		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+			tally();
+			return executor.all<T>(sql, ...params);
+		},
+	});
+	const original = {
+		exec: database.exec.bind(database),
+		run: database.run.bind(database),
+		get: database.get.bind(database),
+		all: database.all.bind(database),
+		transaction: database.transaction.bind(database),
+	};
+	Object.assign(database, counted(original), {
+		transaction: <T>(
+			callback: (transaction: SqliteExecutor) => Promise<T>,
+			options?: Parameters<SqliteDatabase["transaction"]>[1],
+		) => original.transaction((transaction) => callback(counted(transaction)), options),
+	});
+	return { count: () => count, restore: () => Object.assign(database, original) };
+}
+
+/**
+ * What queuing one send for an offline session costs the shared database: its target resolved (the live presences, a
+ * reservation, its known session and its id's binding), its row looked up, reserved and written in one transaction, and
+ * one read once it is written.
+ */
+const QUEUED_SEND_STATEMENTS = 12;
+
+test("sends queued for a session that stays offline cost the shared database no more statements each than before (#5607)", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await b!.connect("away");
+	b!.leave(recipient);
+	await waitOffline(a!, recipient);
+	const sends = 64;
+	const within = new AsyncLocalStorage<true>();
+	const statements = countStatements(a!.database, within);
+	try {
+		for (let index = 0; index < sends; index++) {
+			const sent = message({ content: { text: `queued ${index}` } });
+			const outcome = await within.run(true, () => sendAndSettle(a!, sender, "away", sent));
+			assert.ok(outcome.type === "queued");
+			assert.equal(outcome.position, index + 1);
+		}
+		// What a send still does after its sender heard it is queued is counted too.
+		await vi.waitFor(() => assert.ok(statements.count() >= sends * QUEUED_SEND_STATEMENTS), {
+			timeout: CROSS_NODE_WAIT_MS,
+		});
+		await new Promise((resolveSettled) => setTimeout(resolveSettled, 250));
+	} finally {
+		statements.restore();
+	}
+	assert.equal(statements.count(), sends * QUEUED_SEND_STATEMENTS);
 });
 
 test("an ask whose route write fails is redelivered and keeps its reply route instead of settling without one", async () => {

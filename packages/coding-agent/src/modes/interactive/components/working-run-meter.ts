@@ -73,14 +73,14 @@ export function runInProgress(
 	}
 	let startedAt: number | undefined;
 	let settledTokens = 0;
-	for (const message of messages.slice(start)) {
+	const turn = messages.slice(start);
+	for (const message of turn) {
 		if (startedAt === undefined && isTimestamp(message.timestamp)) startedAt = message.timestamp;
 		if (message.role === "assistant") settledTokens += meteredOutputTokens(message);
 	}
 	if (startedAt === undefined && isTimestamp(streaming?.timestamp)) startedAt = streaming.timestamp;
-	const last = messages.at(-1);
-	const requesting =
-		!hasContent(streaming) && start < messages.length && (last?.role === "user" || last?.role === "toolResult");
+	const last = turn.at(-1);
+	const requesting = !hasContent(streaming) && (last?.role === "user" || last?.role === "toolResult");
 	return { startedAt, settledTokens, requesting };
 }
 
@@ -107,12 +107,23 @@ function hasContent(message: MeteredMessage | undefined): boolean {
 	});
 }
 
-export class AgentTokenMeter {
-	private outputTokens = 0;
-	private latestInputTokens = 0;
+export interface AgentTokenMeterSnapshot {
+	readonly outputTokens: number;
+	readonly latestInputTokens: number;
+}
 
-	constructor(messages: readonly MeteredMessage[] = []) {
+export class AgentTokenMeter {
+	private outputTokens: number;
+	private latestInputTokens: number;
+
+	constructor(messages: readonly MeteredMessage[] = [], snapshot?: AgentTokenMeterSnapshot) {
+		this.outputTokens = snapshot?.outputTokens ?? 0;
+		this.latestInputTokens = snapshot?.latestInputTokens ?? 0;
 		for (const message of messages) this.settled(message);
+	}
+
+	snapshot(): AgentTokenMeterSnapshot {
+		return { outputTokens: this.outputTokens, latestInputTokens: this.latestInputTokens };
 	}
 
 	settled(message: MeteredMessage): void {
