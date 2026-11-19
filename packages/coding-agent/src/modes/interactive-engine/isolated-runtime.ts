@@ -152,11 +152,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
 	private streamingEpoch = 0;
+	private turnStartedAt?: number;
 	private retryStatus?: SessionRetryStatus;
 	private retryStatusEpoch = 0;
 	private panelCounts: AgentPanelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 	private compacting = false;
-	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
+	/** Whether the engine has a retry or fallback in progress. */
 	private retrying = false;
 	private compactionReason: CompactionReason | undefined;
 	private compactionStartedAt: number | undefined;
@@ -255,6 +256,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			clearActivity: () => {
 				this.streaming = false;
 				this.streamingEpoch++;
+				this.turnStartedAt = undefined;
 				this.retryStatus = undefined;
 				this.retryStatusEpoch++;
 				this.compacting = false;
@@ -373,10 +375,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		return validateWorkflowResumeEntries(response?.entries);
 	}
-	async resumeWorkflowFromPicker(target: string): Promise<boolean> {
+	async resumeWorkflowFromPicker(
+		target: string,
+		selection?: HostSessionPickerRow["resumeSelection"],
+	): Promise<boolean> {
 		const response = await this.client.requestInternal<{ handled: boolean }>({
 			type: "resume_workflow_from_picker",
 			target,
+			...(selection === undefined ? {} : { selection }),
 		});
 		return response.handled;
 	}
@@ -474,7 +480,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.remoteSessionId = state.sessionId;
 			this.remoteSessionFile = state.sessionLocation;
 			if (retryStatusEpoch === this.retryStatusEpoch) this.retryStatus = state.retryStatus;
-			if (streamingEpoch === this.streamingEpoch) this.streaming = state.isStreaming;
+			if (streamingEpoch === this.streamingEpoch) {
+				this.streaming = state.isStreaming;
+				this.turnStartedAt = state.turnStartedAt;
+			}
 			this.compacting = state.isCompacting;
 			this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
 			this.compactionStartedAt = state.isCompacting
@@ -924,6 +933,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			}),
 			isStreaming: { configurable: true, get: () => this.streaming },
 			retryStatus: { configurable: true, get: () => this.retryStatus },
+			turnStartedAt: { configurable: true, get: () => this.turnStartedAt },
 			isCompacting: { configurable: true, get: () => this.compacting },
 			compactionReason: { configurable: true, get: () => this.compactionReason },
 			compactionStartedAt: { configurable: true, get: () => this.compactionStartedAt },
@@ -1465,13 +1475,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		}
 		switch (event.type) {
 			case "agent_start":
+				this.turnStartedAt = event.turnStartedAt;
 				this.streamingEpoch++;
 				this.streaming = true;
 				break;
 			case "agent_end":
 				this.streamingEpoch++;
 				this.streaming = false;
+				this.retrying = event.retryPending === true;
 				this.dispatchBestEffort("refresh session view", this.refreshSessionView());
+				break;
+			case "agent_settled":
+				this.streamingEpoch++;
+				this.retrying = false;
+				this.turnStartedAt = undefined;
 				break;
 			case "compaction_start":
 				this.compacting = true;
@@ -1485,9 +1502,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				if (!event.aborted && event.errorMessage === undefined) this.sessionStats.refresh();
 				break;
 			case "auto_retry_start":
+			case "model_fallback_start":
 				this.retrying = true;
 				break;
 			case "auto_retry_end":
+			case "model_fallback_end":
 				this.retrying = false;
 				break;
 			case "message_end":

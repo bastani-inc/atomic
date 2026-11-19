@@ -240,7 +240,7 @@ Response:
 
 `resourceErrors` lists the extensions that failed to load in the last startup or reload, and `resourceWarnings` lists their load warnings, such as an extension registering the same tool name twice.
 
-While the session waits to retry or switch models, `retryStatus` carries the `auto_retry_start` or `model_fallback_start` event. For a retry, `retryAt` gives the countdown deadline in Unix epoch milliseconds. Use this field rather than `isStreaming` to show a wait: a session can remain streaming throughout a backoff. The field is absent once the next request starts or the wait ends.
+While the session waits to retry or switch models, `retryStatus` carries the `auto_retry_start` or `model_fallback_start` event. For a retry, `retryAt` gives the countdown deadline in Unix epoch milliseconds. Use this field rather than `isStreaming` to show a wait: a session can remain streaming throughout a backoff. The field is absent once the next request starts or the wait ends. `turnStartedAt` is the Unix epoch time in milliseconds of the current turn's first request. It stays the same through retries and fallback switches, and is absent when there is no active turn.
 
 When `isCompacting` is `true`, `compactionReason` identifies the compaction. The optional `compactionStartedAt` gives its start time in Unix epoch milliseconds, so an attaching client can show elapsed time. These fields are absent when no compaction is active.
 
@@ -616,7 +616,7 @@ Response:
 
 #### abort_retry
 
-Abort an in-progress retry (cancel the delay and stop retrying).
+Cancel a retry or fallback already in progress. If the first request is still running and no retry has started, `abort_retry` does nothing. Use `abort` to interrupt that request.
 
 ```json
 {"type": "abort_retry"}
@@ -1179,15 +1179,15 @@ Events are streamed to stdout as JSON lines. Most events do not include an `id`;
 
 ### agent_start
 
-Emitted when the agent begins processing a prompt.
+Emitted when the agent begins an attempt. `turnStartedAt` identifies when the turn's first request began, even if this attempt is a retry.
 
 ```json
-{"type": "agent_start"}
+{"type": "agent_start", "turnStartedAt": 1760000000000}
 ```
 
 ### agent_end
 
-Emitted when the agent completes. Contains all messages generated during this run.
+Emitted when one agent run completes. Contains all messages generated during that run. If `retryPending` is `true`, the session is still handling a retry or fallback; `abort_retry` cancels it even before the next attempt is announced.
 
 ```json
 {

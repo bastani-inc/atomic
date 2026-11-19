@@ -814,6 +814,7 @@ function commandCatalog(handle: StageControlHandle): SessionCommandCatalog | und
 
 function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnapshot {
 	const streamingMessage = handle.agentSession?.agent?.state.streamingMessage;
+	const turn = handle.turnState?.();
 	const status = handle.agentSession?.retryStatus ?? handle.modelSwitch;
 	return {
 		sessionId: handle.sessionId,
@@ -822,6 +823,8 @@ function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnaps
 		messages: [...handle.messages],
 		...(streamingMessage === undefined ? {} : { streamingMessage }),
 		...(stageWaitsToRetry(handle) ? { waitingToRetry: true } : {}),
+		...(handle.agentSession?.isRetrying ? { retryPending: true } : {}),
+		...(turn === undefined ? {} : { turn }),
 		...(status?.type === "model_fallback_start" ? { modelSwitch: status } : {}),
 		pendingToolExecutionEvents: [...(handle.pendingToolExecutionEvents?.() ?? [])],
 		queued: handle.queuedUserMessages?.() ?? EMPTY_STAGE_QUEUED_USER_MESSAGES,

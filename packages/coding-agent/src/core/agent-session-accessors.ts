@@ -45,6 +45,11 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				return buildSystemPrompt(this._runSystemPromptOptions ?? this._baseSystemPromptOptions);
 			},
 		},
+		turnStartedAt: {
+			get() {
+				return this._turnStartedAt;
+			},
+		},
 		retryStatus: {
 			get() {
 				return this._retryStatus;
@@ -136,7 +141,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		},
 		isRetrying: {
 			get() {
-				return this._retryPromise !== undefined;
+				return this._retryPromise !== undefined || this._fallbackOriginGeneration !== undefined;
 			},
 		},
 		isWaitingToRetry: {

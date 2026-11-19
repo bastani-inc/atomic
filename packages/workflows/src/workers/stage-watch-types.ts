@@ -18,6 +18,7 @@ import type {
 import type { StageControlStatus } from "../runs/foreground/stage-control-registry.js";
 import type { StageQueuedUserMessages } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
+import type { StageTurnState } from "../runs/foreground/stage-turn-start.js";
 import type { SerializedError } from "../shared/error-codec.js";
 import type { StageInputAnswer } from "../shared/stage-prompt.js";
 import type { StageInputKind } from "../shared/store-types.js";
@@ -61,6 +62,12 @@ export interface PooledStageChatSnapshot {
 	readonly streamingMessage?: AssistantMessage;
 	/** Whether the stage's session waits out an automatic retry's backoff. Absent from older workers. */
 	readonly waitingToRetry?: boolean;
+	/** Esc can cancel the current model recovery, whether or not its backoff has started. */
+	readonly retryPending?: true;
+	/** A status-only watch on another host cannot send a pause command. */
+	readonly canPause?: false;
+	/** The stage's turn while it may still go on (`StageControlHandle.turnState`). Absent between turns and from older workers. */
+	readonly turn?: StageTurnState;
 	readonly modelSwitch?: Extract<AgentSessionEvent, { type: "model_fallback_start" }>;
 	readonly publishedActivity?: PublishedChatActivity;
 	readonly pendingToolExecutionEvents: readonly AgentSessionEvent[];

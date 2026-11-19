@@ -15,7 +15,12 @@ import { sessionWaitsToRetry } from "../../../core/session-retry-status.js";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import { releasedWaitingOn, waitingReleasedShells, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.js";
+import {
+	type TaskElapsedClocks,
+	taskClockRunning,
+	taskClocksFor,
+	taskElapsedMs,
+} from "../../../core/tasks/live-elapsed.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import { getOwnerTaskSession, isTaskTurnInterrupted, setTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import type { ChatBoxSession, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
@@ -543,11 +548,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 							: task.metrics?.elapsedMs === undefined
 								? "running"
 								: formatPanelElapsed(
-										this.elapsedClocks.elapsedMs(
-											task.ref.taskId,
+										taskElapsedMs(task, taskClockRunning(task.execution.kind), this.elapsedClocks) ??
 											task.metrics.elapsedMs,
-											taskClockRunning(task.execution.kind),
-										) ?? task.metrics.elapsedMs,
 									);
 		const released = task === undefined ? undefined : waitingReleasedTools(task);
 		const stopped = released === undefined && this.source.taskStopped?.(this.taskId) === true;
@@ -719,14 +721,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const chatSession = session.chatSession;
 		if (chatSession && sessionWaitsToRetry(chatSession)) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
-			this.chat.hydrateRetryWait();
+			this.chat.hydrateRetryWait(messages, chatSession.turnStartedAt);
 		} else if (chatSession?.retryStatus?.type === "model_fallback_start") {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
-			this.chat.applyAgentEvent(chatSession.retryStatus);
+			this.chat.hydrateModelSwitch(chatSession.turnStartedAt, messages);
 		} else if (session.isRunning?.() === true) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.beginExternalPromptLifecycle();
-			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
+			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.(), chatSession?.turnStartedAt);
 		} else if (session.isRunning?.() === false) {
 			const lastAssistant = [...messages]
 				.reverse()
