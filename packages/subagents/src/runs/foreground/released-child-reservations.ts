@@ -10,12 +10,7 @@ import {
 } from "./released-child-receipts.js";
 import { childReleaseKey, reservationRecordLookup, subagentChildRecordsOf } from "./subagent-child-card-state.js";
 import { subagentChildRequestEvents } from "./subagent-child-owner.js";
-import {
-	SUBAGENT_CHILD_RELEASED_STATUS,
-	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
-	type SubagentChildRecord,
-} from "./subagent-child-records.js";
+import { SUBAGENT_CHILD_RELEASED_STATUS, type SubagentChildRecord } from "./subagent-child-records.js";
 
 /** Subagents asks Intercom to reserve released children by name, in bulk, or to park them (#4326). */
 export const SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT = "subagent:reserve-released-children";
@@ -120,7 +115,7 @@ function recordHoldFailure(
 	if (!failure.handled) console.error("Released subagent reservation failed (hold-failed); no owner is listening");
 }
 
-const PARKED_STATUSES: ReadonlySet<string> = new Set(["paused", "quit", SUBAGENT_CHILD_STAGE_PAUSED_STATUS]);
+const PARKED_STATUSES: ReadonlySet<string> = new Set(["paused", "quit"]);
 
 /** The parts of a child record that decide what the broker holds or answers for it. */
 type ChildReservationFacts = Pick<
@@ -166,9 +161,7 @@ const ENDED_OUTCOMES = new Map<string | undefined, EndedChildOutcome>([
 	["interrupted", "stopped"],
 	["paused", "stopped"],
 	["quit", "stopped"],
-	[SUBAGENT_CHILD_STAGE_PAUSED_STATUS, "stopped"],
 	["killed", "cancelled"],
-	[SUBAGENT_CHILD_STAGE_CLOSED_STATUS, "cancelled"],
 ]);
 
 /**
