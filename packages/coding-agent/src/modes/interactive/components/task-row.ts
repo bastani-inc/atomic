@@ -4,13 +4,14 @@ import { formatModelLabel } from "../../../core/model-label.ts";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
 import { isResumableStop, releasedWaitingOn, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
-import { liveElapsedMs, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
+import { taskClockRunning, taskElapsedMs } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted, type TaskActivity } from "../../../core/tasks/owner-store.js";
 import { toolTaskNoun, unreachableTaskKind } from "../../../core/tasks/task-kind.js";
 import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
+import { slashCommandHint } from "./nav-keys.ts";
 import { WAITING_MARKER } from "./notice-line.ts";
 import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
@@ -110,11 +111,7 @@ export function taskStatusAppearance(task: TaskRecord): {
 export function taskMetricsText(task: TaskRecord): string {
 	const metrics = task.metrics;
 	const running = taskClockRunning(task.execution.kind) && !isTaskTurnInterrupted(task);
-	const elapsedMs =
-		metrics?.elapsedMs === undefined
-			? undefined
-			: (taskClockOf(task)?.elapsedMs(task.ref.taskId, metrics.elapsedMs, running) ??
-				liveElapsedMs(task.ref.taskId, metrics.elapsedMs, running));
+	const elapsedMs = metrics?.elapsedMs === undefined ? undefined : taskElapsedMs(task, running);
 	return [
 		elapsedMs === undefined ? "" : formatPanelElapsed(elapsedMs),
 		metrics?.tokenCount === undefined ? "" : `${metrics.tokenCount.toLocaleString("en-US")} tokens`,
@@ -251,7 +248,8 @@ export class TaskRow implements Component {
 				? ` · ${taskDisplayText(task.currentAction.tool)} ${taskDisplayText(task.currentAction.text)}`
 				: "";
 		const tools = task.metrics?.toolCount === undefined ? "" : ` · ${task.metrics.toolCount} tool uses`;
-		const duration = task.metrics?.elapsedMs === undefined ? "" : ` · ${formatPanelElapsed(task.metrics.elapsedMs)}`;
+		const elapsedMs = task.elapsedSpan ? taskElapsedMs(task, live) : task.metrics?.elapsedMs;
+		const duration = elapsedMs === undefined ? "" : ` · ${formatPanelElapsed(elapsedMs)}`;
 		lines.push(theme.fg("dim", truncateToWidth(`  ${state}${badge}${tools}${duration}${action}`, width)));
 		if (this.expanded) {
 			lines.push(theme.fg("dim", truncateToWidth(`  ${task.ref.taskId} · owner ${task.ref.ownerId}`, width)));
@@ -269,7 +267,7 @@ export class TaskRow implements Component {
 							: "    No retained activity",
 					),
 				);
-			lines.push(theme.fg("dim", "  /tasks to inspect transcript and task details"));
+			lines.push(theme.fg("dim", `  ${slashCommandHint("/tasks to inspect transcript and task details")}`));
 			if (task.execution.kind === "settled" && task.execution.result.kind === "failed")
 				lines.push(truncateToWidth(`    ${taskDisplayText(task.execution.result.message)}`, width));
 		}

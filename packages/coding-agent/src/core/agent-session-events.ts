@@ -65,12 +65,19 @@ import {
 	sessionLifetime,
 	shutdownDeadline,
 } from "./session-lifecycle-work.ts";
+import { retryStatusUpdate } from "./session-retry-status.js";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { observeToolExecutionTiming } from "./tool-execution-timing.ts";
 import { drainWindowsDirectorySecurityReads } from "./tools/windows-directory-security.ts";
 import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
+	if (event.type === "agent_start") {
+		if (this._retryStatus === undefined || this._turnStartedAt === undefined) this._turnStartedAt = Date.now();
+		event = { ...event, turnStartedAt: this._turnStartedAt };
+	} else if (event.type === "agent_settled" || event.type === "session_released") this._turnStartedAt = undefined;
+	const status = retryStatusUpdate(event);
+	if (status !== undefined) this._retryStatus = status ?? undefined;
 	observeToolExecutionTiming(this, event);
 	for (const l of this._eventListeners) {
 		l(event);
@@ -705,13 +712,14 @@ export function subscribe(
 		return subscribeSession(this, listenerOrSource, handler, options);
 	}
 	const listener = listenerOrSource;
-	this._eventListeners.push(listener);
+	// Keep dispatch's current array stable when a one-shot subscriber removes itself mid-event.
+	this._eventListeners = [...this._eventListeners, listener];
 
 	// Return unsubscribe function for this specific listener
 	return () => {
 		const index = this._eventListeners.indexOf(listener);
 		if (index !== -1) {
-			this._eventListeners.splice(index, 1);
+			this._eventListeners = this._eventListeners.filter((_, position) => position !== index);
 		}
 	};
 }

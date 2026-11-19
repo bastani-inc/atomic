@@ -195,6 +195,16 @@ export type HostObservation =
 	| { kind: "foreground"; waitId: WaitId }
 	| { kind: "background"; reason: YieldReason | "not-observed" | "observer-cancelled" }
 	| { kind: "none"; reason: "task-settled" | "owner-closing" };
+/** One execution of a subagent, from dispatch (not queue admission) until release, stop or completion. */
+export interface TaskElapsedSpan {
+	dispatchedAt: number;
+	endedAt?: number;
+}
+
+export function spanElapsedMs(span: TaskElapsedSpan, now = Date.now()): number {
+	return Math.max(0, (span.endedAt ?? now) - span.dispatchedAt);
+}
+
 export type TaskRecord = {
 	ref: NativeTaskRef;
 	launchOperationId: OperationId;
@@ -229,6 +239,7 @@ export type TaskRecord = {
 	attention: Attention;
 	cleanup: Cleanup;
 	currentAction?: { tool: string; text: string };
+	elapsedSpan?: TaskElapsedSpan;
 	metrics?: { elapsedMs?: number; toolCount?: number; tokenCount?: number };
 	output: OutputRef;
 };

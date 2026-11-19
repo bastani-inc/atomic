@@ -16,10 +16,12 @@ import type { SessionInfo } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
 import {
+	clickableKeyTextHint,
 	type NavKey,
 	type NavKeybindings,
 	type NavKeyStyle,
 	navActionText,
+	navFirstKeyText,
 	navKeyText,
 	renderNavHintLine,
 	renderNavKeyOverlay,
@@ -542,7 +544,7 @@ export class SessionList implements Component, Focusable {
 	render(width: number): string[] {
 		if (this.showingHelp) {
 			const kb = this.activeKeybindings();
-			const helpKeys = this.availableHelpKeys().map(navKeyText);
+			const helpKeys = this.availableHelpKeys();
 			const overlayKb: NavKeybindings =
 				helpKeys.length > 0
 					? {
@@ -550,9 +552,14 @@ export class SessionList implements Component, Focusable {
 							getKeys: (action) => (action === "app.keys.help" ? helpKeys : (kb.getKeys?.(action) ?? [])),
 						}
 					: kb;
-			return renderNavKeyOverlay("keys · resume", this.helpEntries(), width, HINT_STYLE, overlayKb).map((line) =>
-				visibleWidth(line) > width ? truncateToWidth(line, width) : line,
-			);
+			return renderNavKeyOverlay(
+				"keys · resume",
+				this.helpEntries(),
+				width,
+				HINT_STYLE,
+				overlayKb,
+				"tui.select.cancel",
+			).map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
 		}
 		this.paintedSelection = this.filteredSessions[this.selectedIndex]?.session ?? null;
 		this.selectionUnpainted = false;
@@ -581,14 +588,14 @@ export class SessionList implements Component, Focusable {
 	private emptyText(): string {
 		if (this.searchInput.getValue().trim()) return `No matches for "${this.searchInput.getValue().trim()}"`;
 		if (this.variant === "runs") return "No workflow runs to resume.";
-		const toggleKey = keyText("app.session.toggleNamedFilter");
-		const tabKey = keyText("tui.input.tab");
+		const showAll = clickableKeyTextHint(keyText("app.session.toggleNamedFilter"), " show all");
+		const allFolders = clickableKeyTextHint(keyText("tui.input.tab"), " all folders");
 		if (this.nameFilter === "named") {
 			return this.showCwd
-				? `No named sessions. ${toggleKey} show all.`
-				: `No named sessions in this folder. ${toggleKey} show all · ${tabKey} all folders.`;
+				? `No named sessions. ${showAll}.`
+				: `No named sessions in this folder. ${showAll} · ${allFolders}.`;
 		}
-		return this.showCwd ? "No sessions found." : `No sessions in this folder. ${tabKey} all folders.`;
+		return this.showCwd ? "No sessions found." : `No sessions in this folder. ${allFolders}.`;
 	}
 
 	private renderSearch(width: number): string[] {
@@ -790,7 +797,7 @@ export class SessionList implements Component, Focusable {
 		const selectedIsWorkflow = selected !== undefined && this.isWorkflowSession(selected.session);
 		const selectedIsSession = selected !== undefined && !selectedIsWorkflow;
 		const query = this.searchInput.getValue();
-		const cancel = navActionText(kb, "tui.select.cancel").split("/")[0] || "esc";
+		const cancel = navFirstKeyText(kb, "tui.select.cancel") || "esc";
 		const core: NavKey[] = [];
 		if (selected && !query) core.push({ keys: "space", label: this.previewOpen ? "close preview" : "preview" });
 		if (selected && !selectedDeleting) core.push({ action: "tui.select.confirm", label: "resume" });
@@ -850,7 +857,7 @@ export class SessionList implements Component, Focusable {
 		const selected = this.filteredSessions[this.selectedIndex];
 		if (this.confirmingDeleteSession !== null) {
 			entries.push({ action: "tui.select.confirm", label: "delete" });
-			entries.push({ keys: navActionText(kb, "tui.select.cancel").split("/")[0] || "esc", label: "keep" });
+			entries.push({ keys: navFirstKeyText(kb, "tui.select.cancel") || "esc", label: "keep" });
 			return entries;
 		}
 		if (this.variant === "mixed") {
@@ -891,7 +898,7 @@ export class SessionList implements Component, Focusable {
 		)
 			entries.push({ action: "app.session.delete", label: "delete" });
 		entries.push({ keys: "type", label: "to search" });
-		const cancel = navActionText(kb, "tui.select.cancel").split("/")[0] || "esc";
+		const cancel = navFirstKeyText(kb, "tui.select.cancel") || "esc";
 		entries.push({ keys: cancel, label: this.previewOpen ? "close" : query ? "clear" : "cancel" });
 		return entries;
 	}

@@ -14,6 +14,12 @@ import { admitProviderStream } from "../../packages/coding-agent/src/core/provid
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
+/**
+ * A queued caller with a signal takes its slot after due deadlines. Under fake timers, that turn comes one tick after
+ * the slot opens (#5604).
+ */
+const takeOpenedSlot = (): Promise<unknown> => vi.advanceTimersByTimeAsync(1);
+
 async function runtimeFixture(provider: string, dispatch: () => void) {
 	const model: Model<Api> = {
 		id: "probe",
@@ -81,6 +87,7 @@ test("provider request budgets are shared by separate model runtimes and admit a
 		await vi.advanceTimersByTimeAsync(999);
 		assert.equal(calls, 1);
 		await vi.advanceTimersByTimeAsync(1);
+		await takeOpenedSlot();
 		assert.equal((await a).stopReason, "stop");
 		assert.equal((await b).stopReason, "stop");
 		assert.equal(calls, 2);
@@ -127,6 +134,7 @@ test("HTTP admission gates inner provider retries and records each 429 once (#38
 	await vi.advanceTimersByTimeAsync(1999);
 	assert.equal(calls, 1);
 	await vi.advanceTimersByTimeAsync(1);
+	await takeOpenedSlot();
 	assert.equal((await retry).status, 200);
 	assert.equal(calls, 2);
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, readHintSpans, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import type { TaskRecord } from "../../packages/coding-agent/src/core/tasks/contracts.ts";
@@ -69,7 +69,14 @@ function bindTasks(session: object, tasks: readonly TaskRecord[]): void {
 	} as never);
 }
 
-const plain = (lines: string[]) => lines.map((line) => line.replace(/\x1b\[[\d;:]*m/g, "").trimEnd());
+function footerText(lines: string[]): string[] {
+	return lines.map((line) => {
+		const { line: text, spans } = readHintSpans(line.replace(/\x1b\[[\d;:]*m/g, ""));
+		const tasks = spans.find((span) => span.start === text.indexOf("/tasks"));
+		assert.ok(tasks?.action.kind === "command" && tasks.action.command === "/tasks");
+		return text.trimEnd();
+	});
+}
 
 describe("the main chat's hint line", () => {
 	test("counts a running background search with its own noun and points to /tasks", () => {
@@ -135,8 +142,8 @@ describe("the main chat's hint line", () => {
 });
 
 test("a chat's task footer counts a running search with its own noun", () => {
-	assert.deepEqual(plain(renderTaskFooter([search("s1")], 100)), ["  1 search · /tasks to manage"]);
-	assert.deepEqual(plain(renderTaskFooter([search("s1"), search("s2"), shell("sh1")], 100)), [
+	assert.deepEqual(footerText(renderTaskFooter([search("s1")], 100)), ["  1 search · /tasks to manage"]);
+	assert.deepEqual(footerText(renderTaskFooter([search("s1"), search("s2"), shell("sh1")], 100)), [
 		"  1 shell · 2 searches · /tasks to manage",
 	]);
 });
