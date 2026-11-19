@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
+import { test, vi } from "vitest";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { TaskOutputDecoder } from "../../packages/coding-agent/src/core/tasks/command-output.js";
@@ -18,7 +19,9 @@ import {
 	createSearchToolDefinition,
 } from "../../packages/coding-agent/src/core/tools/search.js";
 import { executeSupervisedToolTask } from "../../packages/coding-agent/src/core/tools/tool-task.js";
+import { completionNoticeFromDetails } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { taskListSections } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
+import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
 import { sleep } from "../helpers/runtime.js";
 
 /** One real session entry per page. A delayed provider call still honours the task's abort. */
@@ -230,6 +233,71 @@ test("a background search's shortened pattern stays whole in its task title (#56
 		assert.equal((await settledRecord(owner, id)).title, `search ${prefix} in ${sessionUrl}`);
 	} finally {
 		await owner.close("session-close");
+	}
+});
+
+test("waiting on a session search keeps the emoji its saved completion notice cannot fit (#5671)", async () => {
+	const harness = await createHarness();
+	const store = new MemorySessionStore();
+	try {
+		harness.setResponses([fauxAssistantMessage("ok")]);
+		const cwd = process.cwd();
+		const timestamp = new Date(0).toISOString();
+		// The first 21 entries exhaust one page. Ten matches with a context line each put 😀 at offset 7,999.
+		await store.create(
+			{ id: "s", cwd, version: 4, createdAt: timestamp },
+			Array.from({ length: 31 }, (_, i) => ({
+				type: "message",
+				id: `m${i}`,
+				parentId: i ? `m${i - 1}` : null,
+				timestamp,
+				message: {
+					role: "user",
+					timestamp: i,
+					content:
+						i < 21 ? "old" : `needle ${i === 29 ? `${"x".repeat(151)}😀` : "x".repeat(459)}\n${"y".repeat(459)}`,
+				},
+			})),
+		);
+		const router = createHistoryRouter({
+			cwd,
+			currentSessionId: "s",
+			sessionStore: () => store,
+			workflows: () => undefined,
+			budget: { rows: 21, bytes: 48_000, timeMs: 20_000 },
+		});
+		const tool = createSearchToolDefinition(cwd, {
+			contextBefore: 0,
+			contextAfter: 1,
+			taskOwner: () => harness.session.getAgentTaskHost().ownerBinding,
+		});
+		const ctx = { cwd, internalResourceRouter: router };
+		const first = await run(tool, { pattern: "needle", paths: sessionUrl, wait: { kind: "background" } }, ctx);
+		const id = first.details?.observation?.taskId;
+		assert.ok(id);
+		const full = text(await run(tool, { action: "wait", id, budgetMs: 30_000 }, ctx));
+		assert.equal(full.indexOf("😀"), 7999);
+		assert.ok(Buffer.byteLength(full) > 8192);
+		const ordinary = await run(tool, { pattern: "needle", paths: `${sessionUrl}?cursor=22` }, ctx);
+		assert.equal(full, text(ordinary));
+		const prefix = full.slice(0, 7999);
+		const saved = await vi.waitUntil(
+			() =>
+				harness.sessionManager
+					.getEntries()
+					.find((entry) => entry.type === "custom_message" && entry.customType === "task-completion"),
+			{ timeout: 10_000 },
+		);
+		assert.ok(saved?.type === "custom_message" && typeof saved.content === "string");
+		const notice = completionNoticeFromDetails(saved.details);
+		assert.ok(notice);
+		assert.equal(notice.taskId, id);
+		assert.equal(notice.preview.length, prefix.length);
+		assert.equal(notice.preview, prefix);
+		assert.ok(saved.content.includes(`\n${prefix}\n[Result excerpt truncated]`));
+	} finally {
+		await harness.cleanup();
+		await store.close();
 	}
 });
 
