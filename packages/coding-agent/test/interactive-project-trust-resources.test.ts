@@ -5,7 +5,8 @@ import { dirname, join } from "node:path";
 import { test } from "vitest";
 import { removeTempRootReleasingBroker } from "../../../test/helpers/detached-broker.js";
 import { startPtyProgram } from "../../../test/helpers/pty-program.js";
-import { bunExecutable, cliPath } from "./cli-test-helpers.js";
+import { bunExecutable } from "../../../test/helpers/runtime.js";
+import { cliPath } from "./cli-test-helpers.js";
 import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 
 // Real interactive CLI, including an isolated engine child and two independent startup trust decisions.
