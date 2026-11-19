@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, matchesKey, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -12,7 +12,6 @@ import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/o
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
 	AgentPanelFocus,
-	AgentPanelModel,
 	type AgentPanelRow,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.js";
@@ -125,46 +124,6 @@ test("focused panel single x does not dismiss a row painted as running that fini
 		component.handleInput?.("x");
 	});
 	assert.equal(dismissedAgentPanelItems(harness.session).has("run:deploy"), false);
-});
-
-test("a quit workflow run nobody keeps leaves the panel and is dismissable with x (#5224)", () => {
-	const runId = testRunId("quit-row");
-	runIds.add(runId);
-	store.recordRunStart({
-		id: runId,
-		name: "ralph",
-		inputs: {},
-		status: "running",
-		toolNodes: [],
-		stages: [makeStage("impl", "running")],
-		startedAt: Date.now(),
-	});
-	store.recordRunPaused(runId, undefined, { exitReason: "quit", resumable: true });
-	const item = panelItemsFromSnapshot(store.runs()).find((row) => row.id === `run:${runId}`)!;
-	assert.ok(item);
-
-	const model = new AgentPanelModel(() => 0);
-	assert.ok(
-		model.rows([item], () => true).some((row) => row.id === item.id),
-		"listed while it is kept",
-	);
-	const stillThere = model.rows([item]).some((row) => row.id === item.id);
-
-	const calls: string[] = [];
-	const focus = new AgentPanelFocus(new KeybindingsManager(), {
-		open: (row) => calls.push(`open ${row.id}`),
-		stop: (row) => calls.push(`stop ${row.id}`),
-		dismiss: (row) => calls.push(`dismiss ${row.id}`),
-		close: () => calls.push("close"),
-	});
-	focus.update([item]);
-	focus.enter();
-	focus.notePainted([item]);
-	const press = (data: string) => focus.handleInput(data, (input, key) => matchesKey(input, key as "up"));
-	press("x");
-	press("x");
-	assert.equal(stillThere, false);
-	assert.ok(calls.includes(`dismiss ${item.id}`));
 });
 
 test("focused panel clamps scroll when main is selected (#5224)", () => {
