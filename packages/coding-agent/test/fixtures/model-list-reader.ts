@@ -22,7 +22,10 @@ globalThis.fetch = async (input) => {
 		await release.promise;
 		throw new Error("An ordinary listing should not request the account");
 	}
-	assert.equal(mode, "writer");
+	if (mode === "account-fifo") {
+		renameSync(join(dir, "auth.json"), join(dir, "original"));
+		renameSync(join(dir, "next.fifo"), join(dir, "auth.json"));
+	} else assert.equal(mode, "writer");
 	return Response.json({
 		data: [{ id, model_picker_enabled: true, capabilities: { type: "chat", supports: { tool_calls: true } } }],
 	});
@@ -33,7 +36,40 @@ const runtime = await ModelRuntime.create({
 	catalogBaseUrl: "http://127.0.0.1:9/catalog",
 	modelRefreshTimeoutMs: mode === "fifo" ? 120 : 30_000,
 });
-if (mode === "fifo") {
+if (mode === "account-fifo") {
+	const { createAgentSession } = await import("../../src/core/sdk.js");
+	const { SessionManager } = await import("../../src/core/session-manager.js");
+	const { SettingsManager } = await import("../../src/core/settings-manager.js");
+	const { session } = await createAgentSession({
+		agentDir: dir,
+		cwd: dir,
+		modelRuntime: runtime,
+		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		sessionManager: SessionManager.inMemory(dir),
+		settingsManager: SettingsManager.inMemory({ defaultProvider: provider, defaultModel: id }),
+	});
+	try {
+		// An independent registration refresh may read its own credentials. Finish it before measuring the lookup.
+		await runtime.whenRegistrationRefreshesSettled();
+		await assert.rejects(session.prompt("hello"), { code: "no_usable_model" });
+		let credentialRead = false;
+		try {
+			const fd = openSync(join(dir, "auth.json"), constants.O_WRONLY | constants.O_NONBLOCK);
+			try {
+				credentialRead = true;
+				writeSync(fd, "{}");
+			} finally {
+				closeSync(fd);
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENXIO") throw error;
+		}
+		console.log(JSON.stringify({ accountReads, credentialRead }));
+	} finally {
+		renameSync(join(dir, "original"), join(dir, "auth.json"));
+		await session.dispose();
+	}
+} else if (mode === "fifo") {
 	renameSync(join(dir, "next.fifo"), modelsPath);
 	const rows = await runtime.getAvailable("openrouter");
 	assert.ok(rows.some((model) => model.provider === "openrouter"));

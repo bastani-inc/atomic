@@ -18,6 +18,7 @@ import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 
 /** Where Atomic refreshes its model catalog: models.dev's public `api.json`. Override with `ATOMIC_MODEL_CATALOG_URL`. */
 export const DEFAULT_CATALOG_BASE_URL = "https://models.dev";
+export const observedCopilotCache = Symbol("observedCopilotCache");
 /** One catalog download's deadline, body included. The catalog is a few megabytes. */
 const REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS = 15_000;
 export const REMOTE_CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
@@ -369,7 +370,7 @@ function withSavedModels(entry: ModelsStoreEntry, saved: readonly AnyModel[]): M
 export function withDiscoveredModels(
 	provider: Provider,
 	discover: DiscoverModels,
-	cache?: { missing?: symbol; enabled: boolean },
+	observer?: { [observedCopilotCache](missing: boolean): void },
 ): Provider {
 	let discovered: readonly AnyModel[] = [];
 	const catalogModels = (): readonly AnyModel[] => provider.getAllModels?.() ?? provider.getModels();
@@ -396,8 +397,7 @@ export function withDiscoveredModels(
 				!(await context.publish({
 					update: () => {
 						discovered = saved;
-						if (cache?.enabled)
-							cache.missing = !context.allowNetwork && stored === undefined ? Symbol() : undefined;
+						observer?.[observedCopilotCache](!context.allowNetwork && stored === undefined);
 					},
 				}))
 			) {

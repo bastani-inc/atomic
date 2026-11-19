@@ -75,6 +75,24 @@ it("an ordinary listing leaves another process's explicitly refreshed catalog an
 }, 90_000);
 
 it.skipIf(process.platform === "win32")(
+	"an account lookup does not open a credential file replaced with a pipe (#5685)",
+	async () => {
+		await writeFile(
+			join(dir, "auth.json"),
+			JSON.stringify({ "github-copilot": { type: "api_key", key: "github_pat_example" } }),
+		);
+		await writeFile(
+			join(dir, "models.json"),
+			JSON.stringify({ providers: { "github-copilot": { baseUrl: "http://127.0.0.1:9/account" } } }),
+		);
+		await exec("mkfifo", [join(dir, "next.fifo")]);
+		const { stdout } = await run("account-fifo");
+		assert.deepEqual(JSON.parse(stdout), { accountReads: 1, credentialRead: false });
+	},
+	60_000,
+);
+
+it.skipIf(process.platform === "win32")(
 	"listing known models does not reopen a blocked config or keep the process alive (#5685)",
 	async () => {
 		await writeFile(join(dir, "models.json"), "{}");

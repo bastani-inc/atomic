@@ -40,6 +40,7 @@ import {
 	rollbackFactoryAcquisitions,
 } from "./extensions/loader-rollback.ts";
 import { getModelFastRoute, streamWithFastRoute, withFastRouteStreamOptions } from "./fast-model-routing.ts";
+import { deferFirstPromptModel } from "./first-prompt-model.ts";
 import { SessionIntercomPolicy, validateIntercomSessionOptions } from "./intercom-policy.ts";
 import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import {
@@ -59,7 +60,7 @@ import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
 import { prepareSessionResume, savedProjectTrustAsync, sessionResumeOptions } from "./resume/session-resume.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult, ResourceAdmission } from "./sdk-types.ts";
-import { readSessionAccountModel, sessionAccountCheckpoint } from "./session-account-model.ts";
+import { sessionAccountCheckpoint } from "./session-account-model.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
 	ownedSessionManagerStores,
@@ -364,9 +365,26 @@ async function constructAgentSession(
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
-	const previousMiss =
-		recoverMissingModel && !options.model ? ModelRuntime[sessionAccountCheckpoint](modelRuntime) : null;
-	const restoredCatalog = await modelRuntime.refresh({ allowNetwork: false });
+	const restore = { allowNetwork: false };
+	const observing =
+		recoverMissingModel && !options.model && ModelRuntime[sessionAccountCheckpoint](modelRuntime)
+			? sessionLifecycleCreation.getStore()
+			: undefined;
+	let missingCatalog = false;
+	if (observing) {
+		observing.catalogRuntime = modelRuntime;
+		observing.catalogRestore = restore;
+	}
+	try {
+		await modelRuntime.refresh(restore);
+		missingCatalog = observing?.copilotObservation === "confirmed";
+	} finally {
+		if (observing) {
+			observing.catalogRuntime = undefined;
+			observing.catalogRestore = undefined;
+			observing.copilotObservation = undefined;
+		}
+	}
 
 	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));
 	migrateCompactionModelSettings(settingsManager, modelRuntime.getAllModels());
@@ -458,7 +476,14 @@ async function constructAgentSession(
 		if (!model) {
 			const { provider, modelId } = existingSession.model;
 			const uncachedHint = uncachedCopilotModelHint(provider, modelId, modelRuntime);
-			if (uncachedHint) missingAccountModel = modelId;
+			if (
+				uncachedHint &&
+				missingCatalog &&
+				(!deferStart ||
+					(settingsManager.getDefaultProvider() === "github-copilot" &&
+						settingsManager.getDefaultModel() === modelId))
+			)
+				missingAccountModel = modelId;
 			const label = formatModelLabel({ provider, id: modelId });
 			modelFallbackMessage = uncachedHint
 				? `Could not restore model ${label}: ${uncachedHint}, or choose another model with /model.`
@@ -482,7 +507,7 @@ async function constructAgentSession(
 		model = result.model;
 		if (!model) {
 			if (result.fallbackReason === "configured-provider-unsupported") {
-				if (defaultProvider === "github-copilot") missingAccountModel = defaultModelId;
+				if (missingCatalog && defaultProvider === "github-copilot") missingAccountModel = defaultModelId;
 				modelFallbackMessage = result.fallbackMessage;
 				modelFallbackReason = result.fallbackReason;
 			} else if (!modelFallbackMessage) {
@@ -491,36 +516,6 @@ async function constructAgentSession(
 			}
 		} else if (modelFallbackMessage) {
 			modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
-		}
-	}
-
-	// Only an actual failed selection can need a list. A supplied, restored or bundled model is already usable.
-	if (
-		previousMiss !== null &&
-		!model &&
-		missingAccountModel &&
-		!restoredCatalog.aborted &&
-		!restoredCatalog.errors.has("github-copilot")
-	) {
-		const read = modelRuntime[readSessionAccountModel](
-			missingAccountModel,
-			previousMiss,
-			options.signal,
-			() =>
-				!resourceLoader
-					.getExtensions()
-					.runtime.pendingProviderRegistrations.some(
-						(registration) =>
-							("provider" in registration ? registration.provider.id : registration.name) === "github-copilot",
-					),
-		);
-		const accountModel = read && (await read);
-		if (accountModel) {
-			model = accountModel;
-			modelFallbackMessage = undefined;
-			modelFallbackReason = undefined;
-		} else if (accountModel === null) {
-			modelFallbackMessage = `The GitHub Copilot account model list does not offer ${missingAccountModel}. Choose another model with /model.`;
 		}
 	}
 
@@ -533,6 +528,7 @@ async function constructAgentSession(
 			: (settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL);
 	}
 
+	const requestedThinking = thinkingLevel;
 	// Fall back to per-model override, then global default
 	if (thinkingLevel === undefined && model) {
 		thinkingLevel = settingsManager.getModelThinkingLevel(model.provider, model.id);
@@ -1033,8 +1029,20 @@ async function constructAgentSession(
 				});
 		}
 		if (options.parentUsageSink !== undefined) forwardUsage(session, options.parentUsageSink);
+		const unresolved = missingAccountModel ? session.model : undefined;
 		if (!deferStart) await session.bindExtensions(options.extensionBindings ?? {});
 		bindChildTaskNotices(session as unknown as AgentSessionInternalSurface);
+		if (missingAccountModel && modelFallbackMessage && unresolved && session.model === unresolved) {
+			deferFirstPromptModel(session, {
+				id: missingAccountModel,
+				original: unresolved,
+				fallbackMessage: modelFallbackMessage,
+				caller: options.signal,
+				thinking: requestedThinking,
+				print: deferStart,
+				ready: !deferStart,
+			});
+		}
 		return {
 			session,
 			extensionsResult,

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelsStoreEntry } from "@bastani/atomic-ai";
 import { afterEach, beforeEach, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
-import { createAgentSession } from "../src/core/sdk.js";
+import { DefaultResourceLoader } from "../src/core/resource-loader.js";
+import { type CreateAgentSessionOptions, createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 
@@ -47,7 +48,13 @@ function runtime(modelRefreshTimeoutMs?: number) {
 		modelRefreshTimeoutMs,
 	});
 }
-function start(modelRuntime: ModelRuntime, signal?: AbortSignal) {
+function chatResponse() {
+	return new Response(
+		'data: {"id":"reply","choices":[{"index":0,"delta":{"content":"fixture-ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+		{ headers: { "content-type": "text/event-stream" } },
+	);
+}
+function start(modelRuntime: ModelRuntime, signal?: AbortSignal, options?: Partial<CreateAgentSessionOptions>) {
 	return createAgentSession({
 		agentDir: cwd,
 		cwd,
@@ -56,6 +63,7 @@ function start(modelRuntime: ModelRuntime, signal?: AbortSignal) {
 		signal,
 		sessionManager: SessionManager.inMemory(cwd),
 		settingsManager: SettingsManager.inMemory({ defaultProvider: provider, defaultModel: id }),
+		...options,
 	});
 }
 
@@ -64,23 +72,147 @@ it("selects a missing account model for the requesting SDK session, not the shar
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 		const request = new Request(input, init);
 		requests.push(request.url);
-		return request.url.endsWith("/account/models") ? Response.json(accountList) : new Response(null, { status: 404 });
+		if (request.url.endsWith("/account/models")) return Response.json(accountList);
+		assert.equal((await request.json()).model, id);
+		return chatResponse();
 	});
 	const modelRuntime = await runtime();
-	const { session, modelFallbackMessage } = await start(modelRuntime);
+	const { session, modelFallbackMessage } = Object.freeze(await start(modelRuntime));
 	try {
-		assert.equal(session.model?.id, id, modelFallbackMessage);
+		assert.deepEqual(requests, [], "the account list belongs to the first prompt, not session construction");
+		assert.match(modelFallbackMessage ?? "", /update --models/);
+		await session.prompt("hello");
+		assert.equal(session.model?.id, id);
 		assert.equal(session.model.api, "openai-completions");
 		assert.equal(session.model.baseUrl, "http://127.0.0.1:9/account");
 		assert.equal(session.model.contextWindow, 32_000);
+		const answer = session.messages.findLast((message) => message.role === "assistant");
+		assert.equal(answer?.role === "assistant" ? answer.stopReason : undefined, "stop");
 	} finally {
 		await session.dispose();
 	}
-	assert.deepEqual(requests, ["http://127.0.0.1:9/account/models"]);
+	assert.deepEqual(requests, ["http://127.0.0.1:9/account/models", "http://127.0.0.1:9/account/chat/completions"]);
 	assert.equal(modelRuntime.getModel(provider, id), undefined);
 	assert.equal((await runtime()).getModel(provider, id), undefined);
 	assert.equal(await readFile(join(cwd, "auth.json"), "utf8"), storedLogin);
 	await assert.rejects(readFile(join(cwd, "models-store.json")), { code: "ENOENT" });
+});
+
+it("uses its own cache observation through an async runtime decorator without reading its diagnostics (#5685)", async () => {
+	const modelRuntime = await runtime();
+	const refresh = modelRuntime.refresh.bind(modelRuntime);
+	vi.spyOn(modelRuntime, "refresh").mockImplementation(async (options) => {
+		await Promise.resolve();
+		return new Proxy(await refresh(options), {
+			get(value, key, receiver) {
+				if (key === "errors" || key === "aborted") throw new Error("refresh diagnostics are private to the host");
+				return Reflect.get(value, key, receiver);
+			},
+		});
+	});
+	const requests = vi
+		.spyOn(globalThis, "fetch")
+		.mockImplementation(async (input, init) =>
+			new Request(input, init).method === "GET" ? Response.json(accountList) : chatResponse(),
+		);
+	const { session } = await start(modelRuntime);
+	try {
+		assert.equal(requests.mock.calls.length, 0);
+		await session.prompt("hello");
+		assert.equal(session.model?.id, id);
+		assert.equal(requests.mock.calls.length, 2);
+	} finally {
+		await session.dispose();
+	}
+});
+
+it.each(["preset", "fallback"] as const)(
+	"a usable %s handles the first prompt without an account lookup (#5685)",
+	async (choice) => {
+		const modelRuntime = await runtime();
+		const local = modelRuntime.getModel(provider, "gemini-3.8-flash");
+		assert.ok(local);
+		const settingsManager = SettingsManager.inMemory({ defaultProvider: provider, defaultModel: id });
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir: cwd,
+			settingsManager,
+			noExtensions: true,
+			extensionFactories:
+				choice === "preset"
+					? [
+							(pi) =>
+								pi.on("session_start", async () => {
+									await pi.setModel(local);
+								}),
+						]
+					: [],
+		});
+		await resourceLoader.reload();
+		const methods: string[] = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			const request = new Request(input, init);
+			methods.push(request.method);
+			return request.method === "GET" ? Response.json(accountList) : chatResponse();
+		});
+		const { session } = await start(modelRuntime, undefined, {
+			settingsManager,
+			resourceLoader,
+			extensionBindings: { mode: "rpc" },
+			fallbackModels: choice === "fallback" ? [`${provider}/${local.id}`] : undefined,
+		});
+		try {
+			await session.prompt("hello");
+			assert.equal(session.model?.id, local.id);
+			assert.deepEqual(methods, ["POST"]);
+		} finally {
+			await session.dispose();
+		}
+	},
+);
+
+it("rejects invalid tools before asking for the account list (#5685)", async () => {
+	const modelRuntime = await runtime();
+	const requests = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(accountList));
+	await assert.rejects(start(modelRuntime, undefined, { tools: ["read", "+bash"] }), /Invalid tools option/);
+	assert.equal(requests.mock.calls.length, 0);
+});
+
+it("an asynchronous-only credential store keeps the local miss without a discovery read (#5685)", async () => {
+	const auth = AuthStorage.inMemory({ [provider]: { type: "api_key", key: "github_pat_example" } });
+	const read = vi.fn(auth.read.bind(auth));
+	const modelRuntime = await ModelRuntime.create({
+		modelsPath: join(cwd, "models.json"),
+		credentials: { read, list: auth.list.bind(auth), delete: auth.delete.bind(auth), modify: auth.modify.bind(auth) },
+	});
+	const requests = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(accountList));
+	const { session, modelFallbackMessage } = await start(modelRuntime);
+	try {
+		await modelRuntime.whenRegistrationRefreshesSettled();
+		read.mockClear();
+		await assert.rejects(session.prompt("hello"), { code: "no_usable_model" });
+		assert.match(modelFallbackMessage ?? "", /update --models/);
+		assert.equal(read.mock.calls.length, 0);
+		assert.equal(requests.mock.calls.length, 0);
+	} finally {
+		await session.dispose();
+	}
+});
+
+it("a prompt validation error is reported before an unused account lookup (#5685)", async () => {
+	const requests = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(accountList));
+	const modelRuntime = await runtime();
+	const { session } = await start(modelRuntime);
+	const diagnostic = new Error("local credential validation failed");
+	vi.spyOn(modelRuntime, "hasConfiguredAuth").mockImplementation(() => {
+		throw diagnostic;
+	});
+	try {
+		await assert.rejects(session.prompt("hello"), (error) => error === diagnostic);
+		assert.equal(requests.mock.calls.length, 0);
+	} finally {
+		await session.dispose();
+	}
 });
 
 it.each(["absent", "empty", "saved"] as const)(
@@ -120,6 +252,7 @@ it.each(["absent", "empty", "saved"] as const)(
 			const { session, modelFallbackMessage } = await start(modelRuntime);
 			try {
 				assert.match(modelFallbackMessage ?? "", /update --models/);
+				await assert.rejects(session.prompt("hello"), { code: "no_usable_model" });
 				assert.equal(requests.mock.calls.length, 0);
 			} finally {
 				await session.dispose();
@@ -133,61 +266,85 @@ it("can select an advertised exact chat ID without a picker flag but never a dis
 		{ ...accountList.data[0]! },
 		{ ...accountList.data[0]!, id: "picker-entry", model_picker_enabled: true },
 	];
-	vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ data: rows }));
+	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) =>
+		new Request(input, init).method === "GET" ? Response.json({ data: rows }) : chatResponse(),
+	);
 	const modelRuntime = await runtime();
 	const { session } = await start(modelRuntime);
 	try {
+		await session.prompt("hello");
 		assert.equal(session.model?.id, id);
 	} finally {
 		await session.dispose();
 	}
 	Object.assign(rows[0]!, { policy: { state: "disabled" } });
-	const disabled = await start(modelRuntime);
+	const disabled = Object.freeze(await start(modelRuntime));
 	try {
+		await assert.rejects(disabled.session.prompt("hello"), {
+			name: "NoUsableModelError",
+			code: "no_usable_model",
+			message: /account model list does not offer account-chat/,
+		});
 		assert.notEqual(disabled.session.model?.id, id);
-		assert.match(disabled.modelFallbackMessage ?? "", /does not offer/);
+		assert.match(disabled.modelFallbackMessage ?? "", /update --models/);
 	} finally {
 		await disabled.session.dispose();
 	}
 });
 
-it("discards a response if its runtime account changed during the last credential read (#5685)", async () => {
-	const auth = AuthStorage.inMemory({ [provider]: { type: "api_key", key: "github_pat_example" } });
+it("discards a response if its runtime account changed before selection (#5685)", async () => {
 	const started = Promise.withResolvers<void>();
 	const resume = Promise.withResolvers<void>();
-	let received = false;
-	let held = false;
-	vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
-		received = true;
+	const requests = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+		started.resolve();
+		await resume.promise;
 		return Response.json(accountList);
 	});
-	const modelRuntime = await ModelRuntime.create({
-		modelsPath: join(cwd, "models.json"),
-		credentials: {
-			list: auth.list.bind(auth),
-			delete: auth.delete.bind(auth),
-			modify: auth.modify.bind(auth),
-			async read(p, options) {
-				const result = await auth.read(p, options);
-				if (p === provider && received && !held) {
-					held = true;
-					started.resolve();
-					await resume.promise;
-				}
-				return result;
-			},
-		},
-	});
-	const creating = start(modelRuntime);
+	const modelRuntime = await runtime();
+	const { session } = await start(modelRuntime);
+	const attempt = assert.rejects(session.prompt("hello"), { code: "no_usable_model" });
 	try {
-		await Promise.race([creating, started.promise]);
-		assert.equal(held, true);
+		await Promise.race([attempt, started.promise]);
+		assert.equal(requests.mock.calls.length, 1);
 		await modelRuntime.setRuntimeApiKey(provider, "github_pat_replacement", {});
 		resume.resolve();
-		assert.notEqual((await creating).session.model?.id, id);
+		await attempt;
+		assert.notEqual(session.model?.id, id);
+		assert.equal(requests.mock.calls.length, 1);
 	} finally {
 		resume.resolve();
-		await (await creating).session.dispose();
+		await session.dispose();
+	}
+});
+
+it("a replaced credential file invalidates only the waiting session's account response (#5685)", async () => {
+	const methods: string[] = [];
+	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+		const request = new Request(input, init);
+		methods.push(request.method);
+		if (methods.length === 1) {
+			await writeFile(join(cwd, "replacement"), storedLogin);
+			await rename(join(cwd, "replacement"), join(cwd, "auth.json"));
+		}
+		return request.method === "GET" ? Response.json(accountList) : chatResponse();
+	});
+	const modelRuntime = await runtime();
+	const a = await start(modelRuntime);
+	try {
+		await modelRuntime.whenRegistrationRefreshesSettled();
+		await assert.rejects(a.session.prompt("hello"), { code: "no_usable_model" });
+		assert.match(a.modelFallbackMessage ?? "", /update --models/);
+		assert.deepEqual(methods, ["GET"]);
+	} finally {
+		await a.session.dispose();
+	}
+	const b = await start(modelRuntime);
+	try {
+		await b.session.prompt("hello");
+		assert.equal(b.session.model?.id, id);
+		assert.deepEqual(methods, ["GET", "GET", "POST"]);
+	} finally {
+		await b.session.dispose();
 	}
 });
 
@@ -222,7 +379,8 @@ it("a superseded session restore cannot claim a miss observed before it started 
 		await reads[0]!.promise;
 		newer = modelRuntime.refresh({ providers: [provider], allowNetwork: false });
 		await reads[1]!.promise;
-		const { modelFallbackMessage } = await creating;
+		const { session, modelFallbackMessage } = await creating;
+		await assert.rejects(session.prompt("hello"), { code: "no_usable_model" });
 		assert.equal(requests.mock.calls.length, 0);
 		assert.match(modelFallbackMessage ?? "", /update --models/);
 	} finally {
@@ -261,9 +419,12 @@ it("retains both provider and model-specific request settings on an account-only
 			},
 		}),
 	);
-	vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(accountList));
+	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) =>
+		new Request(input, init).method === "GET" ? Response.json(accountList) : chatResponse(),
+	);
 	const { session } = await start(await runtime());
 	try {
+		await session.prompt("hello");
 		assert.equal(session.model?.id, id);
 		assert.ok(session.model.compat && "supportsUsageInStreaming" in session.model.compat);
 		assert.equal(session.model.compat.supportsUsageInStreaming, false);
@@ -281,7 +442,7 @@ it("cancelling one unresolved session leaves the other session's account request
 	const signals: AbortSignal[] = [];
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 		const request = new Request(input, init);
-		if (!request.url.endsWith("/account/models")) return new Response(null, { status: 404 });
+		if (!request.url.endsWith("/account/models")) return chatResponse();
 		entered[signals.length]?.resolve();
 		signals.push(request.signal);
 		await Promise.race([
@@ -293,24 +454,27 @@ it("cancelling one unresolved session leaves the other session's account request
 		return Response.json(accountList);
 	});
 	const modelRuntime = await runtime(4_000);
-	const sessions = [start(modelRuntime, first.signal)];
+	const a = await start(modelRuntime, first.signal);
+	const b = await start(modelRuntime, second.signal);
 	try {
-		await Promise.race([entered[0]!.promise, sessions[0]!]);
+		const cancelled = assert.rejects(a.session.prompt("hello"), { code: "no_usable_model" });
+		await Promise.race([entered[0]!.promise, cancelled]);
 		assert.equal(signals.length, 1);
-		sessions.push(start(modelRuntime, second.signal));
-		await Promise.race([entered[1]!.promise, sessions[1]!]);
+		const other = b.session.prompt("hello");
+		await Promise.race([entered[1]!.promise, other]);
 		assert.equal(signals.length, 2);
 		first.abort();
-		const cancelled = await sessions[0]!;
-		assert.match(cancelled.modelFallbackMessage ?? "", /update --models/);
+		await cancelled;
+		assert.match(a.modelFallbackMessage ?? "", /update --models/);
 		assert.equal(signals[0]!.aborted, true);
 		assert.equal(signals[1]!.aborted, false);
 		release.resolve();
-		assert.equal((await sessions[1]!).session.model?.id, id);
+		await other;
+		assert.equal(b.session.model?.id, id);
 	} finally {
 		first.abort();
 		second.abort();
 		release.resolve();
-		for (const pending of sessions) await (await pending).session.dispose();
+		await Promise.all([a.session.dispose(), b.session.dispose()]);
 	}
 });

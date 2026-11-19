@@ -18,7 +18,7 @@ export interface SessionAccountSource {
 	config?: ModelsJsonProvider;
 	/** The runtime's current credential snapshot, if its store supplies one. */
 	credential?: Credential;
-	readCredential(signal: AbortSignal): Promise<Credential | undefined>;
+	version?: string;
 }
 
 interface AccountRequest {
@@ -28,7 +28,7 @@ interface AccountRequest {
 
 /** Discovering a model must not rotate a login or start a credential command. */
 async function accountRequest(source: SessionAccountSource, signal: AbortSignal): Promise<AccountRequest | undefined> {
-	const stored = await source.readCredential(signal);
+	const stored = source.credential;
 	signal.throwIfAborted();
 	if (stored?.type === "oauth")
 		return stored.access && stored.expires > Date.now() ? { credential: stored } : undefined;
@@ -61,6 +61,7 @@ function sameSource(
 ): after is SessionAccountSource {
 	return (
 		after !== undefined &&
+		before.version === after.version &&
 		sameCredential(before.credential, after.credential) &&
 		before.provider.baseUrl === after.provider.baseUrl &&
 		isDeepStrictEqual(before.config, after.config)
@@ -69,7 +70,8 @@ function sameSource(
 
 /** The parser already admitted the exact chat row. Apply the same metadata layers as a locally restored row. */
 function configuredModel(model: Model<Api>, baseUrl: string, config?: ModelsJsonProvider): Model<Api> {
-	let selected = { ...model, baseUrl };
+	// trim() can leave a short display name backed by megabytes of discarded padding. Preserve every UTF-16 code unit.
+	let selected = { ...model, name: Buffer.from(model.name, "utf16le").toString("utf16le"), baseUrl };
 	if (config?.compat) selected = applyModelOverride(selected, { compat: config.compat });
 	const baseContext = model.fastRoute
 		? config?.modelOverrides?.[model.fastRoute.baseModelId]?.contextWindow
@@ -86,45 +88,42 @@ export async function readSelectedAccountModel(
 	source: () => SessionAccountSource | undefined,
 	localModel: () => Model<Api> | undefined,
 ): Promise<Model<Api> | null | undefined> {
-	const deadline = new AbortController();
+	let deadline: AbortController | undefined;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
+		if (caller?.aborted) return undefined;
 		const initial = source();
-		if (!initial || caller?.aborted) return undefined;
-		const signal = caller ? AbortSignal.any([caller, deadline.signal]) : deadline.signal;
-		timer = setTimeout(() => deadline.abort(), 15_000).unref();
-		return await raceWithAbortSignal(
-			(async () => {
-				const request = await accountRequest(initial, signal);
-				if (!request || !sameSource(initial, source()) || signal.aborted) return undefined;
-				const list = await readGitHubCopilotAccountModelList({ ...request, signal });
-				signal.throwIfAborted();
-				const current = source();
-				if (!list || !sameSource(initial, current)) return localModel();
-				const account = await accountRequest(current, signal);
-				signal.throwIfAborted();
-				const local = localModel();
-				if (local) return local;
-				const latest = source();
-				if (
-					!sameSource(initial, latest) ||
-					!account ||
-					request.baseUrl !== account.baseUrl ||
-					!sameCredential(request.credential, account.credential)
-				)
-					return undefined;
-				const catalog = latest.provider.getAllModels?.() ?? latest.provider.getModels();
-				const model = parseGitHubCopilotDiscoveredModels(list.raw, catalog).find(
-					(candidate) => candidate.id === id,
-				);
-				return model ? configuredModel(model, list.baseUrl, latest.config) : null;
-			})(),
-			signal,
-		);
+		if (!initial) return undefined;
+		const controller = new AbortController();
+		deadline = controller;
+		const signal = caller ? AbortSignal.any([caller, controller.signal]) : controller.signal;
+		timer = setTimeout(() => controller.abort(), 15_000).unref();
+		const request = await raceWithAbortSignal(accountRequest(initial, signal), signal);
+		if (!request || !sameSource(initial, source()) || signal.aborted) return undefined;
+		let selected: Model<Api> | null;
+		{
+			const list = await raceWithAbortSignal(readGitHubCopilotAccountModelList({ ...request, signal }), signal);
+			signal.throwIfAborted();
+			const current = source();
+			if (!list || !sameSource(initial, current)) return localModel();
+			const catalog = current.provider.getAllModels?.() ?? current.provider.getModels();
+			const model = parseGitHubCopilotDiscoveredModels(list.raw, catalog).find((candidate) => candidate.id === id);
+			selected = model ? configuredModel(model, list.baseUrl, current.config) : null;
+		}
+		const account = await raceWithAbortSignal(accountRequest(initial, signal), signal);
+		signal.throwIfAborted();
+		const local = localModel();
+		if (local) return local;
+		return sameSource(initial, source()) &&
+			account &&
+			request.baseUrl === account.baseUrl &&
+			sameCredential(request.credential, account.credential)
+			? selected
+			: undefined;
 	} catch {
 		return undefined;
 	} finally {
 		clearTimeout(timer);
-		deadline.abort(); // Release the body even when the account refused the request at the headers.
+		deadline?.abort(); // Release the body even when the account refused the request at the headers.
 	}
 }
