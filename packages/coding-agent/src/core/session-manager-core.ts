@@ -109,6 +109,7 @@ import {
 import {
 	findWorktreeSnapshotRecords,
 	type StoredWorktreeSnapshotEntry,
+	storeSnapshotIndex,
 	worktreeSnapshotPages,
 } from "./storage/session/snapshot-records.js";
 import type {
@@ -1934,6 +1935,8 @@ export class SessionManager {
 				historyPages(store, sessionId, historyEpoch, lastSeq, options),
 			chunks: (ref: OversizedSessionEntry, signal?: AbortSignal) =>
 				historyChunks(store, sessionId, historyEpoch, ref, { signal }),
+			// Where the store's index places the snapshot entries of this cut, read without the rest of the history (#5554).
+			snapshotIndex: storeSnapshotIndex(store, sessionId, historyEpoch, lastSeq),
 			async *bytes(seq: number, signal?: AbortSignal): AsyncGenerator<Uint8Array, void> {
 				if (seq < 1 || seq > lastSeq) throw new RangeError("Entry is outside the captured session");
 				if (store.readEntrySizes && store.readEntryChunk) {

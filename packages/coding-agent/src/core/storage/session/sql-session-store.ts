@@ -25,9 +25,11 @@ import {
 	latestCompactionOf,
 	readEarlierCompletionIntents,
 	type SessionResumeIndex,
+	selectedPagePlan,
 	sessionResumeFrom,
 	sessionResumePlan,
 	sessionTailFrom,
+	snapshotCutOf,
 	stateSeqsBefore,
 	transcriptBranchSpan,
 } from "./session-resume.js";
@@ -57,6 +59,7 @@ import type {
 	SessionRecordHeader,
 	SessionResume,
 	SessionSnapshot,
+	SessionSnapshotCut,
 	SessionStore,
 	SessionStoredEntry,
 	SessionSummary,
@@ -66,7 +69,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import { entrySizeLimit, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 /**
@@ -2044,36 +2047,69 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	/** Sparse page of child state in one fenced read, bounded by the same byte and row caps as a transcript page. */
-	async readSelectedPage(sessionId: string, seqs: readonly number[], epoch: string) {
+	async readSelectedPage(
+		sessionId: string,
+		seqs: readonly number[],
+		epoch: string,
+		options: { readonly limit?: number; readonly backward?: boolean } = {},
+	) {
 		this.assertOpen();
-		const wanted = seqs.slice(0, SESSION_HISTORY_PAGE_ENTRIES);
+		const limit = entrySizeLimit(options.limit);
+		const wanted = options.backward ? seqs.slice(-limit) : seqs.slice(0, limit);
 		if (!wanted.length) return { items: [] };
 		return this.transaction(async (tx) => {
 			const head = await this.historyHead(tx, sessionId);
 			if (head.epoch !== epoch || head.lastSeq < wanted.at(-1)!)
 				throw new SessionConflictError(sessionId, wanted.at(-1)!, head.lastSeq);
 			const tail = `(SELECT length(data) FROM ${this.tables.entryChunks} c WHERE c.session_id=e.session_id AND c.seq=e.seq AND c.idx=e.chunks-1)`;
-			const sizes = await tx.all<{ seq: number; bytes: number }>(
+			const rows = await tx.all<{ seq: number; bytes: number }>(
 				`SELECT seq,CASE WHEN chunks=0 THEN ${this.entryByteLength("entry_json")} ELSE (chunks-1)*?+${tail} END bytes FROM ${this.tables.entries} e WHERE session_id=? AND seq IN (${wanted.map(() => "?").join(",")}) ORDER BY seq`,
 				SESSION_ENTRY_CHUNK_BYTES,
 				sessionId,
 				...wanted,
 			);
-			const selected: number[] = [];
-			let total = 0;
-			for (const row of sizes) {
-				const seq = Number(row.seq),
-					bytes = Number(row.bytes);
-				if (row.bytes == null || seq !== wanted[selected.length])
-					throw new SessionConflictError(sessionId, wanted.at(-1)!, head.lastSeq);
-				if (!selected.length && bytes > SESSION_HISTORY_PAGE_BYTES)
-					return { items: [{ kind: "oversized", sessionId, epoch, seq, bytes } as const] };
-				if (total + bytes > SESSION_HISTORY_PAGE_BYTES) break;
-				total += bytes;
-				selected.push(seq);
-			}
-			return { items: await this.readSeqs(tx, sessionId, selected) };
+			const sizes = new Map(rows.map((row) => [Number(row.seq), row.bytes == null ? undefined : Number(row.bytes)]));
+			const plan = selectedPagePlan(
+				sessionId,
+				wanted,
+				head.lastSeq,
+				(seq) => {
+					const bytes = sizes.get(seq);
+					if (bytes === undefined) throw new SessionConflictError(sessionId, wanted.at(-1)!, head.lastSeq);
+					return bytes;
+				},
+				options.backward,
+			);
+			if ("oversized" in plan)
+				return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized } as const] };
+			return { items: await this.readSeqs(tx, sessionId, plan.seqs) };
 		}, SESSION_TRANSACTION);
+	}
+
+	/**
+	 * The snapshot entries of the session's resume index, read with the index and nothing else: no entry is read, and an
+	 * index that does not cover the session as it stands is not rebuilt here (#5554).
+	 */
+	async readSnapshotCut(
+		sessionId: string,
+		options: { readonly leafSeq?: number } = {},
+	): Promise<SessionSnapshotCut | undefined> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const row = await this.database.get<ResumeRow>(
+			`SELECT last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
+			sessionId,
+		);
+		if (!row) throw new SessionNotFoundError(sessionId);
+		const lastSeq = Number(row.last_seq);
+		const remembered = this.resumeIndexes.get(sessionId);
+		const index =
+			windowIndex(JSON.parse(row.summary_state) as StoredSummaryState, lastSeq) ??
+			(remembered?.revision === row.revision && isSessionResumeIndex(remembered.index, lastSeq)
+				? remembered.index
+				: undefined);
+		if (index === undefined || (options.leafSeq !== undefined && options.leafSeq > lastSeq)) return undefined;
+		return snapshotCutOf(index, options.leafSeq);
 	}
 
 	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
