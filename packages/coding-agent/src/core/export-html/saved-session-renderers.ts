@@ -4,7 +4,7 @@
  * shows every argument and all of the result's text, such as a search's limit notice.
  */
 
-import { savedCodemodeRenderers } from "../../extensions/codemode/renderer.ts";
+import { savedCodemodeRenderers } from "../../extensions/codemode/renderer.js";
 import type { ToolRenderers } from "../extensions/types.ts";
 
 /** The renderers of a tool Atomic ships, by name; undefined for a tool the page draws itself. */
