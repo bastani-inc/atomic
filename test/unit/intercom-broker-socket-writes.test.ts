@@ -259,10 +259,6 @@ function runSend(harness: SendHarness, message: Message): void {
 		writeMessageIfOpen,
 		undefined,
 		harness.pendingQuestions,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
 		writeMessageWithOutcome,
 	);
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -257,10 +257,28 @@ describe("buildSystemPrompt", () => {
 	test("routes bundled extension questions to readable guides under the docs root", () => {
 		const prompt = buildSystemPrompt({ cwd: process.cwd(), contextFiles: [], skills: [] });
 		assert.ok(prompt.includes(`Additional docs: ${getDocsPath()}`));
-		for (const topic of ["mcp-servers", "intercom", "web-access", "subagents", "workflows"]) {
+		for (const topic of ["mcp-servers", "intercom", "web-access", "subagents", "orchestration"]) {
 			assert.ok(prompt.includes(`docs/${topic}.md`), `Missing documentation route for ${topic}`);
 			assert.match(readFileSync(join(getDocsPath(), `${topic}.md`), "utf8"), /^# /m);
 		}
+	});
+
+	test("every docs path the built prompt names ships in the docs folder", () => {
+		const docsRoot = getDocsPath();
+		const prompt = buildSystemPrompt({ cwd: process.cwd(), contextFiles: [], skills: [] });
+		const named = [
+			...prompt.matchAll(/(?<![\w/])docs\/([\w./-]+\.mdx?)/gu),
+			...prompt
+				.split(`${docsRoot}/`)
+				.slice(1)
+				.map((rest) => /^[\w./-]+\.mdx?/u.exec(rest)),
+		]
+			.map((match) => (match === null ? undefined : (match[1] ?? match[0])))
+			.filter((path): path is string => path !== undefined && path !== "foo.md");
+		assert.ok(named.includes("verification.md"), "the prompt names the verification guide");
+		assert.ok(named.includes("computer-use.md"), "the prompt names the computer-use guide");
+		const missing = [...new Set(named)].filter((path) => !existsSync(join(docsRoot, path)));
+		assert.deepEqual(missing, [], "every docs path the prompt names exists in the shipped docs folder");
 	});
 
 	test("routes automation requests to domain-specific tools and sends no one to model benchmarks", () => {
@@ -277,7 +295,7 @@ describe("buildSystemPrompt", () => {
 		);
 		assert.match(
 			prompt,
-			/When workflow TypeScript code owns the sequence and postcondition, call the CLI from inside ctx\.tool, one process per command, parsing its JSON envelope, forwarding the signal, with a finite timeoutMs/,
+			/In a codemode script, use the permitted shell tool to run one CLI command at a time, parse its JSON response and set a finite timeout/,
 		);
 		assert.match(prompt, /make one bounded `npm install -g agent-desktop` attempt and report its side effects/);
 		assert.match(prompt, /never run `npx skills add` for it or copy a skill into other agent directories/);
@@ -301,6 +319,7 @@ describe("buildSystemPrompt", () => {
 			/agent-desktop reads accessibility trees, not pixels, and has no native iOS or Android support: say what stayed unverified, and use `xcrun simctl`, Appium or `adb` for native mobile apps/,
 		);
 		assert.match(prompt, /terminal automation\/testing, prefer herdr on macOS, Linux and Windows/);
+		assert.ok(prompt.includes(`${getDocsPath()}/verification.md`), "the prompt points to the shipped evidence guide");
 		assert.match(prompt, /install it if missing/);
 		assert.match(prompt, /fall back to tmux or native Windows psmux/);
 		assert.match(prompt, /explicit-request and HERDR_ENV=1 requirements/);
@@ -403,16 +422,17 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("session memory (#4252)", () => {
-		test("points at history:// as the way to recall earlier sessions and workflow runs", () => {
+		test("points at history:// as the way to recall earlier sessions", () => {
 			const prompt = buildSystemPrompt({ contextFiles: [], skills: [], cwd: process.cwd() });
 
 			assert.ok(prompt.includes("**Session memory**"));
 			assert.ok(prompt.includes("available as memory even in a fresh session"));
 			assert.ok(prompt.includes("Recall it through `history://` rather than searching storage files on disk"));
 			assert.ok(prompt.includes("the default store is SQLite, which `rg` cannot read"));
-			assert.ok(prompt.includes("`read history://sessions` and `read history://workflows`"));
-			assert.ok(prompt.includes("`read history://sessions/<id>:N-M` and `read history://workflows/<runId>`"));
-			assert.ok(prompt.includes("`search` accepts the same URLs, or `history://` for both"));
+			assert.ok(prompt.includes("`read history://sessions` lists"));
+			assert.ok(prompt.includes("`read history://sessions/<id>:N-M` opens"));
+			assert.doesNotMatch(prompt, /history:\/\/workflows/);
+			assert.ok(prompt.includes("`search` accepts the same URLs, or `history://` for session search"));
 			assert.ok(prompt.includes("the user refers to earlier or recent work or asks what was being worked on"));
 			assert.ok(prompt.includes("when a task resembles one done before"));
 			assert.ok(prompt.includes("read narrow ranges, and prefer the most recent records"));
@@ -447,7 +467,7 @@ describe("buildSystemPrompt", () => {
 			assert.ok(withSearch.includes("`search` accepts the same URLs"));
 		});
 
-		test("guides choosing a workflow, verification and estimates by earlier work and stated preferences (#4648)", () => {
+		test("guides task planning, verification and estimates by earlier work and stated preferences (#4648)", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read"],
 				contextFiles: [],
@@ -457,10 +477,9 @@ describe("buildSystemPrompt", () => {
 
 			assert.ok(
 				prompt.includes(
-					"before choosing between a workflow and inline work, how to verify a change, or how long it will take: comparable earlier sessions and runs, and the preferences the user stated in them, guide those choices.",
+					"before deciding how to carry out or verify a change, or how long it will take: comparable earlier sessions, and the preferences the user stated in them, guide those choices.",
 				),
 			);
-			assert.ok(prompt.includes("Missing or sparse history is not by itself a reason to work inline."));
 		});
 
 		test("recalls prior work from source control and its hosting provider alongside history:// with a shell (#4648)", () => {
@@ -520,14 +539,7 @@ describe("buildSystemPrompt", () => {
 				const workflowsDir = join(agentDir, "workflows");
 
 				assert.ok(guidance.includes(join(workflowsDir, "journal.sqlite")));
-				assert.ok(
-					guidance.includes(
-						`workflow runs in the journal store \`${join(workflowsDir, "journal")}/\` (a catalog plus shard files)`,
-					),
-				);
 				assert.ok(guidance.includes(getDefaultSessionDirPath(project, agentDir)));
-				assert.ok(guidance.includes(`${join(workflowsDir, "runs")}/<runId>/`));
-				assert.ok(guidance.includes("`ATOMIC_WORKFLOW_ARTIFACT_DIR` moves them"));
 				assert.ok(guidance.includes("`atomic storage status` shows the store actually in use"));
 				assert.ok(guidance.indexOf("history://") < guidance.indexOf("journal.sqlite"));
 				assert.ok(guidance.includes("Only as a fallback"));
@@ -559,6 +571,34 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("continue fully autonomously on best judgment");
 			expect(prompt).toContain("Tool unavailability alone is not a blocker");
 			expect(prompt).not.toContain("ask_user_question");
+		});
+
+		const questionToolRule =
+			"- When `ask_user_question` or an equivalent question tool is available, all agent-authored questions to the user must use that tool instead of plain text, including clarifications, choices, confirmations, and permission to proceed. Prefer `ask_user_question` when available; otherwise use the equivalent tool's supported schema. In these sessions, never end a status or final message with a prose-only question. Intercom questions are for agents, not a substitute for user approval.";
+		const noHumanInputRule =
+			"- When human input is unavailable because no usable question tool exists or the session is headless, do not stall on a question. Choose the interpretation best supported by the stated objective and repository evidence: mine git history, commits, PRs, issues, and the user's own comments to infer how they would decide, record the assumption and rationale, and continue fully autonomously on best judgment. Tool unavailability alone is not a blocker. Preserve explicit approval gates, safety, authorization, and budget limits. A cancelled or unanswered available question is not permission to use this fallback.";
+		const build = (tools: { selectedTools?: string[]; excludedTools?: string[] }) =>
+			buildSystemPrompt({ ...tools, contextFiles: [], skills: [], cwd: process.cwd() });
+
+		test("routes every question through an available question tool and never stalls without one", () => {
+			const prompt = build({});
+			expect(prompt).toContain(questionToolRule);
+			expect(prompt).toContain(noHumanInputRule);
+		});
+
+		test.each([{ excludedTools: ["ask_user_question"] }, { selectedTools: ["read", "bash"] }])(
+			"keeps only the no-human-input rule beside the fallback without ask_user_question: %j",
+			(tools) => {
+				const prompt = build(tools);
+				expect(prompt).toContain(noHumanInputRule);
+				expect(prompt).not.toContain(questionToolRule);
+			},
+		);
+
+		test("adds no question rules when the session has no tools", () => {
+			const prompt = build({ selectedTools: [] });
+			expect(prompt).not.toContain(questionToolRule);
+			expect(prompt).not.toContain(noHumanInputRule);
 		});
 
 		test("omits the fallback guideline when ask_user_question is selected", () => {

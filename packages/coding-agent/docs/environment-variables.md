@@ -17,23 +17,19 @@ Atomic accepts environment variables for configuration, provider credentials, an
 | `ATOMIC_TELEMETRY` | `PI_TELEMETRY` | Override version-adoption / first-interactive-launch pings (`1`/`true`/`yes` or `0`/`false`/`no`). Does not disable update checks. The Atomic-prefixed value wins when both are set |
 | `ATOMIC_REDUCED_MOTION` | `PI_REDUCED_MOTION` | Use static reduced-motion presentation |
 | `ATOMIC_DEBUG` | `PI_DEBUG` | Set to `1` to turn on [debug mode](/development#debugging) for this run, the same as `--debug`. The footer shows a `debug` badge |
-| `ATOMIC_WORKFLOW_DEBUG` | None | Set to `1` to print workflow debug output to stderr. See [Debugging](/development#debugging) |
 | `ATOMIC_TIMING` | `PI_TIMING` | Set to `1` to print startup timings to stderr, and where a resume's time went for `atomic --session` (see [Inspecting snapshots](/worktree-snapshots#inspecting-snapshots)) |
 | `ATOMIC_STARTUP_TRACE` | `PI_STARTUP_TRACE` | Set to a file path to append one JSON line per startup milestone (process start, first paint, engine ready, first provider request) with its wall-clock time. An interactive session's engine writes to the same file, so the two timelines line up |
-| `ATOMIC_DEBUG_POOLED_WATCH` | None | Set to `1` to trace pooled stage watches to `pooled-watch-trace.jsonl` next to the pool journal, or to a file path to choose the file. See [Debugging](/development#debugging) |
 | `ATOMIC_EVENT_LOOP_BLOCK_MS` | None | A positive whole number of milliseconds: log every stall of the interactive UI or its engine at least that long, with the code that was running, to `event-loop-blocks.jsonl` in the agent directory. Any other value leaves it off. See [Finding what freezes the UI](/development#finding-what-freezes-the-ui) |
 | `ATOMIC_EVENT_LOOP_BLOCK_LOG` | None | The file `ATOMIC_EVENT_LOOP_BLOCK_MS` writes to instead; a relative path resolves against the directory Atomic starts in |
 | `ATOMIC_EVENT_LOOP_BLOCK_STACKS` | None | Set to `0` to keep delay and stall records without the CPU overhead of collecting stack samples. Stack collection remains the default when `ATOMIC_EVENT_LOOP_BLOCK_MS` enables the diagnostic. See [Finding what freezes the UI](/development#finding-what-freezes-the-ui) |
 | `ATOMIC_EXPERIMENTAL` | `PI_EXPERIMENTAL` | Set to `1` to enable experimental features and preferred strict JSON-schema constrained sampling for additional built-in tools; `read`, `edit`, `write`, `bash`, and PowerShell already prefer strict sampling by default. The footer shows an `xp` badge |
 | `ATOMIC_CLEAR_ON_SHRINK` | `PI_CLEAR_ON_SHRINK` | Set to `1` to clear empty rows when rendered content shrinks; the `terminal.clearOnShrink` setting takes precedence. See [Settings](/settings) |
 | `ATOMIC_CLIPBOARD_OSC52` | `PI_CLIPBOARD_OSC52` | Set to `1` to also send copied text to the terminal with OSC 52 after the local clipboard write, as Atomic does over SSH. Use it when a remote client reaches Atomic without SSH variables, such as a multiplexer attached from another machine or a remote IDE daemon |
-| `ATOMIC_WORKFLOW_JOURNAL_PATH` | None | Non-empty value selects one local SQLite workflow journal file instead of the [journal store](/storage#the-workflow-journal-store), for isolation; overrides `workflows.journal` settings, but not SDK `RunOpts.journal` or `createAgentSession({ journal })` |
-| `ATOMIC_STORAGE` | None | JSON storage selection for this process's sessions and workflow runs, in the same form as the shared `storage` setting. Overrides settings but not `--storage`, the session flags, or the domain variables. See [Selecting storage per process](/storage#selecting-storage-per-process) |
-| `ATOMIC_PROFILE` | None | `ci` selects the team database for sessions, workflow runs, and Intercom in this process and its children, from `ATOMIC_TEAM_URL` and `ATOMIC_TEAM_TOKEN` or `ATOMIC_TEAM_TOKEN_FILE` (and optional `ATOMIC_TEAM_PREFIX`). Writes no settings. See [Team and CI setup](/guides/team-setup#ci-and-swarms) |
+| `ATOMIC_STORAGE` | None | Shared storage selection for this process, including sessions without their own selection and Intercom, in the same form as the shared `storage` setting. Overrides settings but not `--storage`, the session flags, or session-specific environment variables. See [Selecting storage per process](/storage#selecting-storage-per-process) |
+| `ATOMIC_PROFILE` | None | `ci` selects the team database for sessions and Intercom in this process and its children, from `ATOMIC_TEAM_URL` and `ATOMIC_TEAM_TOKEN` or `ATOMIC_TEAM_TOKEN_FILE` (and optional `ATOMIC_TEAM_PREFIX`). Writes no settings. See [Team and CI setup](/guides/team-setup#ci-and-swarms) |
 | `ATOMIC_TEAM_URL`, `ATOMIC_TEAM_TOKEN`, `ATOMIC_TEAM_TOKEN_FILE`, `ATOMIC_TEAM_PREFIX` | None | The team database for `ATOMIC_PROFILE=ci`. Setting any of them without the profile is a startup error. `ATOMIC_TEAM_TOKEN_FILE` must be an absolute path: a relative one is refused at startup, because each process Atomic starts would resolve it against its own working directory |
 | `ATOMIC_SESSIONS_STORAGE` | None | JSON session-only storage selection, in the same form as `sessions.storage`. Conflicts with a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` |
-| `ATOMIC_WORKFLOWS_JOURNAL` | None | JSON workflow-run-only storage selection, in the same form as `workflows.journal`. Conflicts with a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` |
-| `ATOMIC_HEAP_MB` | `PI_HEAP_MB` | Heap size in MiB for the Atomic process that runs agents when Atomic runs on Node (npm installs): the interactive engine, or a headless run (`-p`, `--mode json`, `--mode rpc`), which restarts itself once with the larger heap. By default it gets half of system memory when that is more than Node's default limit, because every in-process subagent and workflow stage shares that heap. `0` keeps Node's default. A `--max-old-space-size` in `NODE_OPTIONS` or on Atomic's own command line takes precedence. The standalone binary does not use this value |
+| `ATOMIC_HEAP_MB` | `PI_HEAP_MB` | Heap size in MiB for the Atomic process that runs agents when Atomic runs on Node (npm installs): the interactive engine, or a headless run (`-p`, `--mode json`, `--mode rpc`), which restarts itself once with the larger heap. By default it gets half of system memory when that is more than Node's default limit, because every in-process subagent shares that heap. `0` keeps Node's default. A `--max-old-space-size` in `NODE_OPTIONS` or on Atomic's own command line takes precedence. The standalone binary does not use this value |
 | `ATOMIC_STDIN_TIMEOUT_MS` | `PI_STDIN_TIMEOUT_MS` | Milliseconds a print-mode run (`-p`, `--mode json`) waits for the first piped byte, or the end, of a non-terminal stdin before a run with a prompt argument starts without it; default `2000`, at most `2147483647` (larger values use that). `0` waits for the end of piped input. See [Modes](/reference/cli#modes) |
 | `ATOMIC_TOOL_ABORT_GRACE_MS` | None | Milliseconds a tool call may keep running after its turn is interrupted (Esc, Ctrl+C, a stop or a cancellation) before the turn stops waiting for it; default `10000`, at most `2147483647` (larger values use that), and `0` stops waiting at once. The call gets an `Operation aborted` result and may go on in the background. Its eventual output or error is not added to the conversation. Any value other than a whole number of milliseconds keeps the default. See [Message Queue](/usage#message-queue) |
 | `ATOMIC_CODEMODE_MAX_WORKERS` | `PI_CODEMODE_MAX_WORKERS` | Maximum codemode workers alive at once across all sessions in the process; default `2`. Each worker's script may use up to 256 MB. Raise it when one process runs several sessions, such as in-process subagents. Further scripts wait for a free worker. See [Codemode](/codemode) |
@@ -49,15 +45,19 @@ Atomic accepts environment variables for configuration, provider credentials, an
 
 `ATOMIC_PROGRAM_STATUS=1` forces OSC 7501 program-status reports; `0` disables them. Otherwise Atomic reports only after the terminal confirms support. `PI_PROGRAM_STATUS` is a legacy alias. See [Program status](/terminal-setup#program-status).
 
-## Workflow journal
+## Retired workflow variables
 
-Sessions default to the local SQLite file `~/.atomic/workflows/journal.sqlite`, and workflow runs to the [journal store](/storage#the-workflow-journal-store) in `~/.atomic/workflows/journal/`. With a custom `ATOMIC_CODING_AGENT_DIR`, both live under `<agentDir>/workflows/` inside that agent directory. One eligible custom agent directory can adopt an existing parent store once, following the priority rules in [Storage home](/storage#storage-home). `ATOMIC_WORKFLOW_JOURNAL_PATH` changes the workflow journal only; `ATOMIC_CODING_AGENT_SESSION_DIR` selects JSONL for sessions only. These two path variables resolve relative paths against the working directory, and empty values leave settings in effect. `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, and `ATOMIC_WORKFLOWS_JOURNAL` instead hold the same JSON selections as the settings, adapters included, and resolve relative paths as the settings do. See [Selecting storage per process](/storage#selecting-storage-per-process).
+Unset `ATOMIC_WORKFLOWS_JOURNAL`, `ATOMIC_WORKFLOW_JOURNAL_PATH`, and `ATOMIC_WORKFLOW_ARTIFACT_DIR` when upgrading from 0.9.x. They no longer select a journal or artifact directory, and Atomic ignores them like any other variable it does not read. Your existing files are not changed. `ATOMIC_WORKFLOW_DEBUG` and `ATOMIC_DEBUG_POOLED_WATCH` are ignored; use `ATOMIC_DEBUG=1` for current diagnostics.
 
-In `settings.json`, shared `storage` selects a database for both domains; `sessions.storage` and `workflows.journal` override their respective domains. Relative settings paths resolve against the [storage home](/storage#storage-home) (`~/.atomic` by default, `<agentDir>` when `ATOMIC_CODING_AGENT_DIR` is customized, or `<parent>` for the single directory that adopted an existing parent store). To select process-local memory explicitly, use `{ "memory": true }` in the appropriate selection. Memory cannot recover data after process exit and is never selected after a storage failure. See [Workflow storage](/settings#workflow-storage).
+## Session storage
+
+Sessions default to `~/.atomic/workflows/journal.sqlite`. With a custom `ATOMIC_CODING_AGENT_DIR`, they default to `<agentDir>/workflows/journal.sqlite`. One eligible custom agent directory can adopt an existing parent store once; see [Storage home](/storage#storage-home).
+
+`ATOMIC_CODING_AGENT_SESSION_DIR` selects JSONL session files. A relative path resolves against the working directory; an empty value leaves settings in effect. `ATOMIC_STORAGE` and `ATOMIC_SESSIONS_STORAGE` accept the same JSON selections as `storage` and `sessions.storage`, including adapters. Relative paths in those selections resolve against the storage home. To select process-local memory, use `{ "memory": true }`. Memory cannot recover sessions after process exit and is never selected after a storage failure. See [Selecting storage per process](/storage#selecting-storage-per-process).
 
 ## Prompt-cache retention
 
-Atomic defaults to **long** prompt-cache retention in main chat, workflow stages, and subagents wherever the provider/model supports it. Set `ATOMIC_CACHE_RETENTION` before launching Atomic to choose `short`, `none`, or `long` (`PI_CACHE_RETENTION` is a legacy alias):
+Atomic defaults to **long** prompt-cache retention in main chat and subagents wherever the provider/model supports it. Set `ATOMIC_CACHE_RETENTION` before launching Atomic to choose `short`, `none`, or `long` (`PI_CACHE_RETENTION` is a legacy alias):
 
 ```bash
 ATOMIC_CACHE_RETENTION=short atomic
@@ -81,7 +81,7 @@ Provider keys include `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_K
 
 ## Bash and PowerShell session environment
 
-Every built-in, factory-created, direct, workflow-stage, and isolated bash or PowerShell execution receives one execution-time snapshot:
+Every built-in, factory-created, direct, and isolated bash or PowerShell execution receives one execution-time snapshot:
 
 | Atomic variable | Exact Pi alias | Value |
 |---|---|---|
@@ -90,7 +90,7 @@ Every built-in, factory-created, direct, workflow-stage, and isolated bash or Po
 | `ATOMIC_MODEL` | `PI_MODEL` | Active model ID; omitted when no model is selected |
 | `ATOMIC_REASONING_LEVEL` | `PI_REASONING_LEVEL` | Active reasoning level |
 
-Atomic clears these ten reserved names before overlaying the current snapshot, preventing stale metadata from another session or workflow stage. Unrelated inherited/caller variables remain intact. The snapshot is taken when execution begins, so a resumed session or later model change is reflected. SDK `createBashTool()` and `createPowerShellTool()` expose it by default; set `exposeSessionEnvironment: false` to opt out.
+Atomic clears these ten reserved names before overlaying the current snapshot, preventing stale metadata from another session. Unrelated inherited/caller variables remain intact. The snapshot is taken when execution begins, so a resumed session or later model change is reflected. SDK `createBashTool()` and `createPowerShellTool()` expose it by default; set `exposeSessionEnvironment: false` to opt out.
 
 `ATOMIC_SESSION_FILE` and `PI_SESSION_FILE` are no longer supplied. Session IDs identify records within the selected store; a database location or JSONL path is only display metadata.
 

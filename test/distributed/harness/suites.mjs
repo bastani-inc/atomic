@@ -55,6 +55,12 @@ const memberOf = (owner, member) => (/** @type {Capabilities} */ capabilities) =
 
 /** @type {Readonly<Record<string, FeatureProbe>>} */
 export const FEATURE_PROBES = Object.freeze({
+	smoke: {
+		issue: "#4331",
+		capability: "workflow journal export resolveRunJournal",
+		present: (capabilities) => capabilities.workflows.includes("resolveRunJournal"),
+		implemented: true,
+	},
 	"multi-node-resume": {
 		issue: "#4329",
 		capability: "export ResumeError",

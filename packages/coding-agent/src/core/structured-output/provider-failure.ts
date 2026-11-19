@@ -4,8 +4,7 @@ import { providerRetryHint } from "../provider-rate-limits.js";
 
 /**
  * What a structured-output request's provider failure says without its text, which can echo private state:
- * its HTTP status, a fixed failure code and the server's retry hint. It lets the stage, the workflow and
- * provider cooldowns tell a rate limit or an exhausted quota from any other failed request.
+ * its HTTP status, a fixed failure code and the server's retry hint. It lets callers and provider cooldowns tell a rate limit or an exhausted quota from any other failed request.
  */
 export interface ProviderFailureSignal {
 	readonly status: number;

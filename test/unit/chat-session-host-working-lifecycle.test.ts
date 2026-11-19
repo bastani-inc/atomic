@@ -213,63 +213,6 @@ test("ChatSessionHost ignores callbacks from replaced timers and after disposal"
 	}
 });
 
-test("ChatSessionHost terminal cleanup stops ordinary and compaction animation while preserving factual copy", () => {
-	delete process.env.ATOMIC_REDUCED_MOTION;
-	const cases = [
-		[{ type: "agent_end", messages: [] }, undefined],
-		[
-			{ type: "model_fallback_end", success: false, from: "a", to: "b", finalError: "fallback auth failed" },
-			"fallback auth failed",
-		],
-		[{ type: "auto_retry_end", success: false, attempt: 2, finalError: "retry exhausted" }, undefined],
-		[{ type: "agent_continue_error", source: "post_compaction", errorMessage: "provider failed" }, "provider failed"],
-	] as const;
-
-	for (const [terminalEvent, factualCopy] of cases) {
-		const timers = installLifecycleFakeClock();
-		const host = new ChatSessionHost<never>({
-			style: plainStyle,
-			editorTheme,
-			isStreaming: () => true,
-		});
-		try {
-			host.applyAgentEvent({ type: "agent_start" } as never);
-			host.applyAgentEvent({ type: "turn_start" } as never);
-			host.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
-			assert.equal(host.hasAnimationTick(), true);
-
-			host.applyAgentEvent(terminalEvent as never);
-			assert.equal(host.hasAnimationTick(), false, terminalEvent.type);
-			assert.equal(timers.intervalCount(), 0, terminalEvent.type);
-			assert.deepEqual(host.renderWorkingStatus(64), [], terminalEvent.type);
-			const body = host.renderBody(80, 8).join("\n");
-			assert.doesNotMatch(body, /Working…|Schlepping…/);
-			if (factualCopy) assert.equal((body.match(new RegExp(factualCopy, "g")) ?? []).length, 1);
-		} finally {
-			host.dispose();
-			timers.restore();
-		}
-	}
-
-	const timers = installLifecycleFakeClock();
-	const host = new ChatSessionHost<never>({
-		style: plainStyle,
-		editorTheme,
-		isStreaming: () => true,
-	});
-	try {
-		host.applyAgentEvent({ type: "agent_start" } as never);
-		host.applyAgentEvent({ type: "compaction_start", reason: "threshold" } as never);
-		host.clearBusyForTerminalWorkflowStage();
-		assert.equal(host.hasAnimationTick(), false);
-		assert.equal(timers.intervalCount(), 0);
-		assert.deepEqual(host.renderWorkingStatus(64), []);
-	} finally {
-		host.dispose();
-		timers.restore();
-	}
-});
-
 test("ChatSessionHost reduced motion keeps each lifecycle static while metadata repaints (#5243)", () => {
 	process.env.ATOMIC_REDUCED_MOTION = "1";
 	const timers = installLifecycleFakeClock();

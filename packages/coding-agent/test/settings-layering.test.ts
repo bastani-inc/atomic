@@ -202,52 +202,6 @@ describe("nested setters keep other processes' nested keys (#5049)", () => {
 		assert.deepEqual(readJson(globalPath).modelThinkingLevels, { "anthropic/claude-b": "low" });
 	});
 
-	test("workflow paths and auto-advance set by two processes keep each other and the journal (#5049)", async () => {
-		writeJson(globalPath, { workflows: { journal: { memory: true } } });
-		const first = SettingsManager.create(projectDir, agentDir);
-		const second = SettingsManager.create(projectDir, agentDir);
-
-		first.setWorkflowPaths(["./wf"]);
-		await first.flush();
-		second.setAutoAdvanceAfterSteer(false);
-		await second.flush();
-
-		assert.deepEqual(readJson(globalPath).workflows, {
-			journal: { memory: true },
-			paths: ["./wf"],
-			autoAdvanceAfterSteer: false,
-		});
-	});
-
-	test("auto-advance set over another process's list-form workflow paths keeps the paths (#5049)", async () => {
-		const first = SettingsManager.create(projectDir, agentDir);
-		const second = SettingsManager.create(projectDir, agentDir);
-
-		first.setWorkflowPaths(["./wf"]);
-		await first.flush();
-		second.setAutoAdvanceAfterSteer(false);
-		await second.flush();
-
-		assert.deepEqual(readJson(globalPath).workflows, { paths: ["./wf"], autoAdvanceAfterSteer: false });
-	});
-
-	test("workflow paths set by a stale process keep another process's auto-advance (#5049)", async () => {
-		writeJson(globalPath, { workflows: { journal: { memory: true } } });
-		const first = SettingsManager.create(projectDir, agentDir);
-		const second = SettingsManager.create(projectDir, agentDir);
-
-		first.setAutoAdvanceAfterSteer(false);
-		await first.flush();
-		second.setWorkflowPaths(["./wf"]);
-		await second.flush();
-
-		assert.deepEqual(readJson(globalPath).workflows, {
-			journal: { memory: true },
-			autoAdvanceAfterSteer: false,
-			paths: ["./wf"],
-		});
-	});
-
 	test("warning settings write the keys they set and remove the keys they drop (#5049)", async () => {
 		const manager = SettingsManager.create(projectDir, agentDir);
 
@@ -270,38 +224,6 @@ describe("nested setters keep other processes' nested keys (#5049)", () => {
 
 		assert.equal(Object.hasOwn(readJson(globalPath), "modelThinkingLevels"), false);
 	});
-
-	test("list-form workflow paths stay a list unless another process added keys (#5049)", async () => {
-		const stale = SettingsManager.create(projectDir, agentDir);
-		const manager = SettingsManager.create(projectDir, agentDir);
-		manager.setWorkflowPaths(["./b"]);
-		await manager.flush();
-		assert.deepEqual(readJson(globalPath).workflows, ["./b"]);
-
-		manager.setAutoAdvanceAfterSteer(false);
-		await manager.flush();
-		stale.setWorkflowPaths(["./a"]);
-		await stale.flush();
-
-		assert.deepEqual(readJson(globalPath).workflows, { paths: ["./a"], autoAdvanceAfterSteer: false });
-	});
-
-	test("project workflow setters keep another process's project workflow keys (#5049)", async () => {
-		writeJson(atomicProjectPath, { workflows: { journal: { memory: true } } });
-		const first = SettingsManager.create(projectDir, agentDir);
-		const second = SettingsManager.create(projectDir, agentDir);
-
-		first.setProjectWorkflowPaths(["./wf"]);
-		await first.flush();
-		second.setAutoAdvanceAfterSteer(false, "project");
-		await second.flush();
-
-		assert.deepEqual(readJson(atomicProjectPath).workflows, {
-			journal: { memory: true },
-			paths: ["./wf"],
-			autoAdvanceAfterSteer: false,
-		});
-	});
 });
 
 describe("applyOverrides last for the run (#5049)", () => {
@@ -320,20 +242,14 @@ describe("applyOverrides last for the run (#5049)", () => {
 		manager.applyOverrides({
 			theme: "light",
 			compaction: { enabled: false, reserveTokens: 1234 },
-			workflows: ["./override-wf"],
 		});
 
 		manager.setTheme("solarized");
 		manager.setCompactionEnabled(true);
-		manager.setAutoAdvanceAfterSteer(false);
 
 		assert.equal(manager.getTheme(), "solarized");
 		assert.equal(manager.getCompactionEnabled(), true);
 		assert.equal(manager.getCompactionReserveTokens(), 1234, "the other overridden compaction key stays");
-		assert.deepEqual(manager.getWorkflowPaths(), ["./override-wf"], "list-form workflow paths stay");
-
-		manager.setWorkflowPaths(["./wf"]);
-		assert.deepEqual(manager.getWorkflowPaths(), ["./wf"]);
 	});
 
 	test("replacing a whole object setting replaces its override (#5049)", () => {

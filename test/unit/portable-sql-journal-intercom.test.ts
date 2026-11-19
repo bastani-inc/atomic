@@ -18,7 +18,7 @@ import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-rele
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+
 import { interceptingDatabase } from "../helpers/intercepting-database.js";
 import { makeTempDirectory, moduleDir, readJson, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -48,11 +48,9 @@ const SCHEMA_FIXTURE = join(moduleDir(import.meta.url), "../fixtures/portable-sq
  * The tables and indexes this slice owns. The snapshot blob tables and the triggers on the journal tables belong to the
  * snapshot blob store.
  */
-const OWNED_TABLE = /^(team_)?(wf_(meta|runs|events|leases|event_chunks)|intercom_.*)$/;
+const OWNED_TABLE = /^(team_)?intercom_.+$/;
 
 async function openEveryOwnedStore(db: SqliteDatabase): Promise<void> {
-	await (await SqlRunJournal.open(db)).close();
-	await (await SqlRunJournal.open(db, { prefix: "team_" })).close();
 	for (const prefix of ["", "team_"]) {
 		const options = { database: db, prefix };
 		await openSqlBrokerLeaseStore(options);
@@ -75,12 +73,17 @@ async function ownedSchema(db: SqliteExecutor): Promise<SqliteRow[]> {
 	return rows.filter((row) => OWNED_TABLE.test(row.tbl_name));
 }
 
-test("the SQLite schema of the run journal and Intercom routing tables is byte-identical to the pinned one (#4793)", async () => {
+test("the SQLite schema of Intercom routing tables is byte-identical to the pinned one (#4793)", async () => {
 	const db = await database();
 	await openEveryOwnedStore(db);
 	const schema = await ownedSchema(db);
 	assert.ok(schema.length > 20, "every owned table and index was created");
-	assert.deepEqual(schema, await readJson<SqliteRow[]>(SCHEMA_FIXTURE));
+	assert.deepEqual(
+		schema,
+		(await readJson<(SqliteRow & { tbl_name: string })[]>(SCHEMA_FIXTURE)).filter((row) =>
+			OWNED_TABLE.test(row.tbl_name),
+		),
+	);
 	// Opening again, as a second broker or journal does, changes nothing.
 	await openEveryOwnedStore(db);
 	assert.deepEqual(await ownedSchema(db), schema);
@@ -104,97 +107,6 @@ function batchingFacade(source: SqliteDatabase): SqliteDatabase {
 		close: () => source.close(),
 	};
 }
-
-const header = { runId: "run", name: "workflow", cwd: "/cwd", createdAt: 0, status: "running" };
-const run = <R>(action: () => R): R => action();
-
-async function heldJournal(db: SqliteDatabase) {
-	const journal = await SqlRunJournal.open(db);
-	cleanups.push(() => journal.close());
-	await journal.createRun(header);
-	const acquired = await journal.acquire(header.runId, "holder");
-	assert.equal(acquired.status, "acquired");
-	if (acquired.status !== "acquired") throw new Error("not acquired");
-	return { journal, lease: acquired.lease };
-}
-
-test("a one-request appendMany changes the run status only for a status event it wrote (#4793)", async () => {
-	const { journal, lease } = await heldJournal(batchingFacade(await database()));
-	const results = await journal.appendMany!(lease, [
-		{ event: { type: "StatusChanged", payload: { status: "paused" } }, key: "status", context: run },
-		{ event: { type: "StatusChanged", payload: { status: "failed" } }, key: "status", context: run },
-	]);
-	assert.deepEqual(
-		results.map((result) => (result.status === "fulfilled" ? [result.value.status, result.value.entry.seq] : [])),
-		[
-			["appended", 1],
-			["exists", 1],
-		],
-	);
-	assert.equal((await journal.getRun(header.runId))?.status, "paused");
-});
-
-test("a one-request appendMany past the last sequence writes nothing and leaves the status (#4793)", async () => {
-	const source = await database();
-	const { journal, lease } = await heldJournal(batchingFacade(source));
-	await source.run(
-		"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, NULL, 'RunStarted', 'null', 0)",
-		header.runId,
-		Number.MAX_SAFE_INTEGER,
-		lease.epoch,
-	);
-	const [result] = await journal.appendMany!(lease, [
-		{ event: { type: "StatusChanged", payload: { status: "paused" } }, context: run },
-	]);
-	assert.equal(result?.status, "rejected");
-	assert.equal((await journal.getRun(header.runId))?.status, "running");
-	assert.equal((await source.get("SELECT COUNT(*) AS count FROM wf_events"))?.count, 1);
-});
-
-test("a run lease's age is measured on the database clock and clamped to zero and the largest safe integer (#4793)", async () => {
-	const db = await database();
-	const { journal } = await heldJournal(db);
-	await db.run("UPDATE wf_leases SET renewed_at = ?", Number.MAX_SAFE_INTEGER);
-	assert.equal((await journal.leaseState(header.runId))?.ageMs, 0);
-	await db.run("UPDATE wf_leases SET renewed_at = ?", -Number.MAX_SAFE_INTEGER);
-	assert.equal((await journal.leaseState(header.runId))?.ageMs, Number.MAX_SAFE_INTEGER);
-});
-
-test("a snapshot tail reads the completion time of the last later checkpoint from its payload (#4793)", async () => {
-	const { journal, lease } = await heldJournal(await database());
-	await journal.append(lease, { type: "RunStarted", payload: null });
-	for (const completedAt of [111, 222])
-		await journal.append(lease, {
-			type: "CheckpointRecorded",
-			payload: {
-				kind: "stage",
-				workflowId: "workflow",
-				checkpointId: `checkpoint-${completedAt}`,
-				name: "stage",
-				replayKey: `stage-${completedAt}`,
-				completedAt,
-			},
-		});
-	const tail = await journal.snapshotTail(header.runId);
-	assert.equal(tail?.laterCheckpoints, 2);
-	assert.equal(tail?.lastCheckpointAt, 222);
-});
-
-test("the change token moves when another connection appends (#4793)", async () => {
-	const db = await database();
-	const { journal, lease } = await heldJournal(db);
-	const location = (await db.get<SqliteRow & { file: string }>("PRAGMA database_list"))!.file;
-	const peerDb = await openNodeSqliteDatabase(location);
-	const peer = await SqlRunJournal.open(peerDb);
-	cleanups.push(async () => {
-		await peer.close();
-		await peerDb.close();
-	});
-	const before = await journal.changeToken();
-	assert.equal(await journal.changeToken(), before);
-	await peer.append(lease, { type: "RunStarted", payload: null });
-	assert.notEqual(await journal.changeToken(), before);
-});
 
 const reservation = {
 	reservationKey: "released:child",
@@ -340,21 +252,6 @@ test("a column another broker added meanwhile is not an error in Postgres's word
 	await openSqlOutboxStore({ database: failingAlters(db, postgres), prefix: "" });
 	const other = new Error('relation "intercom_outbox" already exists');
 	await assert.rejects(openSqlOutboxStore({ database: failingAlters(db, other), prefix: "" }), other);
-});
-
-test("reopening an initialized journal takes no write transaction (#4793)", async () => {
-	const db = await database();
-	await (await SqlRunJournal.open(db)).close();
-	let transactions = 0;
-	const counting: SqliteDatabase = {
-		...batchingFacade(db),
-		transaction: (callback, options) => {
-			transactions++;
-			return db.transaction(callback, options);
-		},
-	};
-	await (await SqlRunJournal.open(counting)).close();
-	assert.equal(transactions, 0);
 });
 
 test("pruning known sessions removes only the records older than the bound (#4793)", async () => {

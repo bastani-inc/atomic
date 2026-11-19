@@ -281,7 +281,7 @@
     },
     "app.agents.stopAll": {
       "$ref": "#/$defs/KeybindingValue",
-      "description": "After the chord key: stop all background subagents, shells and workflow runs (press twice to confirm)"
+      "description": "After the chord key: stop all background subagents and shells (press twice to confirm)"
     },
     "app.thinking.toggle": {
       "$ref": "#/$defs/KeybindingValue",

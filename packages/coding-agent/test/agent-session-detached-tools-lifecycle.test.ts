@@ -740,7 +740,7 @@ describe("resuming a detached turn (#4309)", () => {
 		assert.deepEqual(toolResultIds(reopened.sessionManager), ["ci-1", "deploy-1"]);
 	});
 
-	test("never sends the model a reopened stage's pending call as interrupted once its result is delivered (#4589)", async () => {
+	test("never sends the model a reopened session’s redispatched call as interrupted once its result is delivered (#4589)", async () => {
 		const tool = waitTool();
 		const { reopened } = await reopenedAfterDetaching(pool, [tool.definition], [waitForCiTurn("ci-1")]);
 		const toolResultTexts = (messages: readonly { role: string }[]): string[] =>
@@ -753,11 +753,14 @@ describe("resuming a detached turn (#4309)", () => {
 			},
 		]);
 
-		await reopened.session.startPendingRecovery("workflow_stage_resume");
+		await reopened.session.startPendingRecovery("resume");
+		const [retried] = reopened.session.redispatchDetachedToolCalls();
+		assert.ok(retried);
 		reopened.session.refreshContext();
 		assert.deepEqual(toolResultTexts(reopened.session.messages), [], "the pending call is not closed while it waits");
 
-		await reopened.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]);
+		tool.finish(1, "passed");
+		await reopened.session.resumeDetachedTurn([await retried.result]);
 
 		assert.deepEqual(requests, [["passed"]]);
 		assert.deepEqual(toolResultTexts(reopened.session.messages), ["passed"]);

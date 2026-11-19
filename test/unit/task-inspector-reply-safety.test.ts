@@ -17,7 +17,6 @@ import {
 	TaskInspector,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { coercePrimitivePromptAnswer } from "../../packages/workflows/src/shared/prompt-answer.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
 import { stripVTControlCharacters } from "../helpers/visible-text.ts";
@@ -58,7 +57,7 @@ function viewOf(store: OwnerTaskStore, sendTaskMessage?: (id: string, text: stri
 function waitingItem(id: string, promptId: string, question: string, choices?: readonly string[]): AgentPanelItem {
 	return {
 		id,
-		kind: "workflow",
+		kind: "agent",
 		state: "input",
 		name: id.replace(/^run:/, ""),
 		task: question,
@@ -153,9 +152,7 @@ test("peek-card digit shortcuts resolve exact raw choices when display labels sa
 			items: () => [item],
 			subscribe: () => () => {},
 			answer: async (_id, text) => {
-				const coerced = coercePrimitivePromptAnswer({ kind: "select", choices: variant.choices } as never, text);
-				if (!coerced.ok) return { ok: false, reason: "Invalid select answer" };
-				resolved.push(coerced.value);
+				resolved.push(text);
 				return { ok: true };
 			},
 		};
@@ -238,9 +235,7 @@ test("peek card draws up to 9 choices in a tall viewport and accepts digits 8 an
 		items: () => [item],
 		subscribe: () => () => {},
 		answer: async (_id, text) => {
-			const coerced = coercePrimitivePromptAnswer({ kind: "select", choices } as never, text);
-			if (!coerced.ok) return { ok: false, reason: "Invalid choice" };
-			resolved.push(coerced.value);
+			resolved.push(text);
 			return { ok: true };
 		},
 	};
@@ -368,7 +363,7 @@ test("confirming x with peek open, single x after unseen finish, and confirming 
 		const fixture = taskFixture();
 		let item: AgentPanelItem = {
 			id: "run:ralph",
-			kind: "workflow",
+			kind: "agent",
 			state: "running",
 			name: "ralph",
 			task: "stage build",
@@ -418,7 +413,7 @@ test("confirming x with peek open, single x after unseen finish, and confirming 
 		const nativeId = fixture.store.tasks[0]!.ref.taskId;
 		let item: AgentPanelItem = {
 			id: "run:build",
-			kind: "workflow",
+			kind: "agent",
 			state: "running",
 			name: "build",
 			task: "stage build",
@@ -463,8 +458,8 @@ test("confirming x with peek open, single x after unseen finish, and confirming 
 	{
 		const fixture = taskFixture();
 		let items: AgentPanelItem[] = [
-			{ id: "run:a", kind: "workflow", state: "running", name: "a", task: "stage a", elapsedMs: 1_000 },
-			{ id: "run:b", kind: "workflow", state: "done", name: "b", task: "stage b", elapsedMs: 1_000, endedAt: 1_000 },
+			{ id: "run:a", kind: "agent", state: "running", name: "a", task: "stage a", elapsedMs: 1_000 },
+			{ id: "run:b", kind: "agent", state: "done", name: "b", task: "stage b", elapsedMs: 1_000, endedAt: 1_000 },
 		];
 		const listeners = new Set<() => void>();
 		const dismissed: string[] = [];
@@ -740,8 +735,8 @@ test("metrics-only store updates reuse sorted sections and key-to-paint reads bo
 		items: () => {
 			itemReads++;
 			return [
-				{ id: "run:one", kind: "workflow", state: "running", name: "one", task: "stage 1", elapsedMs: 1_000 },
-				{ id: "run:two", kind: "workflow", state: "running", name: "two", task: "stage 2", elapsedMs: 2_000 },
+				{ id: "run:one", kind: "agent", state: "running", name: "one", task: "stage 1", elapsedMs: 1_000 },
+				{ id: "run:two", kind: "agent", state: "running", name: "two", task: "stage 2", elapsedMs: 2_000 },
 			];
 		},
 		subscribe: (listener) => {

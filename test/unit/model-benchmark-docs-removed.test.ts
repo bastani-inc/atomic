@@ -26,7 +26,6 @@ const SCANNED = [
 	"packages/coding-agent/README.md",
 	"packages/coding-agent/package.json",
 	"packages/subagents",
-	"packages/workflows",
 	"packages/mcp",
 	"packages/web-access",
 	"packages/intercom",

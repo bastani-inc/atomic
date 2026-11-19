@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { ExtensionContext, SubagentChildPolicy } from "@bastani/atomic";
+import type { SubagentChildPolicy } from "@bastani/atomic";
 import { test } from "vitest";
 import { admitActiveSessionInbound } from "../../packages/intercom/active-session-admission.js";
 
@@ -11,25 +11,16 @@ const policy: SubagentChildPolicy = {
 };
 
 for (const idle of [true, false]) {
-	test(`an ${idle ? "idle/preflight" : "active"} admitted child bypasses legacy refusal without impersonating a stage`, async () => {
+	test(`an ${idle ? "idle/preflight" : "active"} admitted child bypasses legacy refusal`, async () => {
 		const ended = new AbortController();
 		let deliveries = 0;
-		let handshakes = 0;
 		const context = { subagentPolicy: { ...policy, executionEnded: ended.signal }, isIdle: () => idle };
-		const result = admitActiveSessionInbound(
-			context,
-			() => {
-				deliveries++;
-			},
-			async () => {
-				handshakes++;
-				return "unclaimed";
-			},
-		);
+		const result = admitActiveSessionInbound(context, () => {
+			deliveries++;
+		});
 		assert.notEqual(result, false);
 		await result;
 		assert.equal(deliveries, 1);
-		assert.equal(handshakes, 0, "children do not claim a workflow-stage foreground owner");
 		assert.equal(ended.signal.aborted, false);
 	});
 }
@@ -73,25 +64,3 @@ for (const terminal of ["execution ended", "admission sealed"] as const) {
 		assert.equal(deliveries, 0);
 	});
 }
-
-test("real workflow stages keep generation-before-foreground-owner admission", async () => {
-	const order: string[] = [];
-	const context = { orchestrationContext: { kind: "workflow-stage" }, isIdle: () => false } as Pick<
-		ExtensionContext,
-		"orchestrationContext" | "isIdle"
-	>;
-	const result = admitActiveSessionInbound(
-		context,
-		async (barrier) => {
-			order.push("generation");
-			await barrier?.();
-			order.push("delivery");
-		},
-		async () => {
-			order.push("foreground-owner");
-			return "delivered";
-		},
-	);
-	await result;
-	assert.deepEqual(order, ["generation", "foreground-owner", "delivery"]);
-});

@@ -13,7 +13,6 @@ import { SqlSessionStore } from "../../src/core/storage/session/sql-session-stor
 import type { SessionStore } from "../../src/core/storage/session/types.ts";
 
 const stamp = "2026-11-16T00:00:00.000Z";
-const workflow = { runId: "run", stageId: "stage", stageName: "stage" };
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -78,14 +77,6 @@ for (const [name, backend] of Object.entries(backends)) {
 			assert.equal((await storedIds(store, manager.getSessionId())).at(-1), id);
 		});
 
-		test("appends after marking a tail-resumed session internal (#5249)", async () => {
-			const { store, manager } = await tailResumed(backend);
-			await manager.markSessionInternal(workflow);
-			const id = await manager.appendMessage({ role: "user", content: "after", timestamp: 2 });
-			assert.equal((await storedIds(store, "session")).at(-1), id);
-			assert.deepEqual((await store.readHeader("session"))?.workflow, workflow);
-		});
-
 		test("a fork of a labeled branch records each copied entry's own seq (#5249)", async () => {
 			const { store, manager } = await tailResumed(backend);
 			await manager.createBranchedSession("d");
@@ -97,9 +88,8 @@ for (const [name, backend] of Object.entries(backends)) {
 			}
 		});
 
-		test("still rejects a foreign same-length replacement after an owned replacement (#5249)", async () => {
+		test("still rejects a foreign same-length replacement after a tail resume (#5249)", async () => {
 			const { store, manager } = await tailResumed(backend);
-			await manager.markSessionInternal(workflow);
 			const header = (await store.readHeader("session"))!;
 			const foreign = Array.from(history, (_, i) => user(`foreign-${i}`, i === 0 ? null : `foreign-${i - 1}`));
 			await store.replace("session", header, foreign, { expectSeq: manager.getLastSeq() });

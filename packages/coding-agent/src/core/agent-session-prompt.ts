@@ -2,7 +2,6 @@ import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
 import { processImage } from "../utils/image-process.ts";
 import { AgentSessionBusyError } from "./agent-session-busy-error.ts";
-import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
 import {
 	earlierHeldInputs,
@@ -78,8 +77,6 @@ export async function waitForCustomMessagePreparation(session: AgentSession): Pr
 	await customPreparations.get(session);
 }
 
-type UserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
-
 function assistantHasRecoverableOutput(message: AgentMessage): boolean {
 	if (message.role !== "assistant") return false;
 	return message.content.some((block) => {
@@ -88,15 +85,6 @@ function assistantHasRecoverableOutput(message: AgentMessage): boolean {
 		return true;
 	});
 }
-
-type PromptOptionsWithWorkflowDelivery = PromptOptions & {
-	readonly __workflowDelivery?: {
-		readonly beforeDelivery?: () => void;
-		/** Called only after an idle prompt has synchronously entered the agent turn. */
-		readonly promptStarted?: () => void;
-		readonly delivered?: (action: UserMessageDeliveryAction) => void;
-	};
-};
 
 /** Dispatch registered extension slash commands without changing the raw queue pause gate. */
 export async function tryExecuteSessionSlashCommand(
@@ -160,8 +148,6 @@ export async function normalizeQueuedMessageImages(session: AgentSession, messag
 export async function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	if (this._disposed || sessionGenerationClosing.has(this))
 		throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner.prompt(text, options);
 	if (subagentExecutionEnded(this)) throw subagentExecutionEndedError();
 	if (this._isEmittingAgentSettled && !queuesDuringAgentSettled(this, options)) {
 		// A run started by an agent_settled handler waits until every settled handler completes.
@@ -260,17 +246,14 @@ async function admittedPrompt(this: AgentSession, text: string, options?: Prompt
 	this._activePromptCount += 1;
 	try {
 		await promptInternal.call(this, text, options, fresh);
-		const boundary = this._subagentMessageAdmission ?? this._workflowStageAdmission;
+		const boundary = this._subagentMessageAdmission;
 		if (
 			!this._disposed &&
 			!sessionGenerationClosing.has(this) &&
 			this._activePromptCount === 1 &&
 			!this.isStreaming &&
 			!this._queuedMessagesPaused &&
-			(this._priorityInterruptPending ||
-				boundary?.hasMessageDeliveries() ||
-				// #3919: input queued behind a stage prompt that its input hook consumed still needs its turn.
-				(this._workflowStageAwaitingFirstPrompt && this.agent.hasQueuedMessages()))
+			(this._priorityInterruptPending || boundary?.hasMessageDeliveries())
 		) {
 			// A command/input hook may consume the original prompt during preflight.
 			// Its owner still owes independently admitted priority input a reply; drain
@@ -312,8 +295,6 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
 			throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	};
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner.prompt(text, options);
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 	let preflightReported = false;
 	// Reported once: input held while the session compacts is accepted as queued before it is admitted.
@@ -322,7 +303,6 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		preflightReported = true;
 		options?.preflightResult?.(success, disposition);
 	};
-	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;
 	let messages: AgentMessage[] | undefined;
 	let preparingRun = false;
 	let fallbackGeneration: number | undefined;
@@ -353,13 +333,9 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	};
 	const releaseMessageAdmission = holdSubagentMessageAdmission(this);
 	try {
-		// Authorize workflow delivery before commands or input extensions can perform side effects.
-		// A later terminal transition cannot retroactively reject input accepted at this boundary.
-		workflowDelivery?.beforeDelivery?.();
 		// Registered slash commands execute without releasing ordinary queued work.
 		// Unknown slash input continues through the normal paused admission path.
 		if (expandPromptTemplates && (await tryExecuteSessionSlashCommand(this, text))) {
-			workflowDelivery?.delivered?.("handled");
 			preflightResult?.(true, "handled");
 			return;
 		}
@@ -389,7 +365,6 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 				);
 				assertCurrent();
 				if (inputResult.action === "handled") {
-					workflowDelivery?.delivered?.("handled");
 					preflightResult?.(true, "handled");
 					return;
 				}
@@ -403,14 +378,12 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			assertCurrent();
 			// clearQueue() gave held input back to its sender, so it is not queued again.
 			if (held?.cancelled) {
-				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true, "handled");
 				return;
 			}
 			if (held) stopWaiting(this, held);
 			if (delivery === "followUp") await this._queueFollowUp(pausedText, pausedImages, text);
 			else await this._queueSteer(pausedText, pausedImages, text);
-			workflowDelivery?.delivered?.(delivery);
 			preflightResult?.(true, "queued");
 			return;
 		}
@@ -429,7 +402,6 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			);
 			assertCurrent();
 			if (inputResult.action === "handled") {
-				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true, "handled");
 				return;
 			}
@@ -471,7 +443,6 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			}
 			// clearQueue() gave the text back, so the input is not sent.
 			if (held.cancelled) {
-				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true, "handled");
 				return;
 			}
@@ -481,7 +452,6 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			if (this._queuedMessagesPaused) {
 				if (held.lane === "followUp") await this._queueFollowUp(expandedText, currentImages, text, currentText);
 				else await this._queueSteer(expandedText, currentImages, text, currentText);
-				workflowDelivery?.delivered?.(held.lane);
 				preflightResult?.(true, "queued");
 				return;
 			}
@@ -507,7 +477,6 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 					: this._queueSteer(expandedText, currentImages, text, currentText);
 			if (settling) deliverQueuedInputIfIdle(this, { userSubmission: true });
 			await queued;
-			workflowDelivery?.delivered?.(delivery.streamingBehavior);
 			preflightResult?.(true, "queued");
 			return;
 		}
@@ -564,8 +533,6 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 
 		this._isPreparingRun = "user";
 		releasePreflight();
-		// From here, input arriving during preparation queues behind this run (#3919).
-		this._workflowStageAwaitingFirstPrompt = false;
 		preparingRun = true;
 		// Check if we need to compact before sending (catches aborted responses)
 		const lastAssistant = this._findLastAssistantMessage();
@@ -649,15 +616,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		dispatched = true;
 		preflightResult?.(true, disposition);
 	};
-	const turn = this._runAgentPrompt(
-		messages,
-		workflowDelivery?.promptStarted,
-		reportDispatch,
-		true,
-		undefined,
-		fallbackGeneration,
-	);
-	workflowDelivery?.delivered?.("prompt");
+	const turn = this._runAgentPrompt(messages, undefined, reportDispatch, true, undefined, fallbackGeneration);
 	try {
 		await turn;
 	} catch (error) {
@@ -680,24 +639,12 @@ export async function _runAgentPrompt(
 	fallbackGeneration?: number,
 ): Promise<void> {
 	const lifetime = sessionLifetime(this);
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) {
-		if (owner._queuedMessagesPaused) {
-			const items = Array.isArray(messages) ? messages : [messages];
-			for (const message of items) owner._queueAgentMessage(message, "steer");
-			reportDispatch?.("queued");
-			return;
-		}
-		return owner._runAgentPrompt(messages, promptStarted, reportDispatch, prepared, customStarter);
-	}
 	if (this._isEmittingAgentSettled) {
 		deferSettledAction(this, () =>
 			this._runAgentPrompt(messages, promptStarted, reportDispatch, prepared, customStarter, fallbackGeneration),
 		);
 		return;
 	}
-	// Any run that starts ends the gap before a fresh stage's first prompt (#3919).
-	this._workflowStageAwaitingFirstPrompt = false;
 	if (this._activePromptCount === 0 && !this.isStreaming) {
 		this._agentRunAbortRequested = false;
 		clearPersistenceFailure(this);
@@ -1027,7 +974,6 @@ export async function _runAgentContinuation(
 	const lifetime = sessionLifetime(this);
 	return trackSessionWork(this, async () => {
 		if (mode !== "settle") {
-			this._workflowStageAwaitingFirstPrompt = false;
 			this._agentRunAbortRequested = false;
 			clearPersistenceFailure(this);
 			this._stopAfterTurnBlockedContinuation = false;
@@ -1058,7 +1004,7 @@ export async function _runAgentContinuation(
  * start, which skips the wait when its message delivery started it and awaits it.
  */
 function preparePriorityContinuation(session: AgentSession, startsOwnTurn = false): Promise<void> | undefined {
-	const boundary = session._subagentMessageAdmission ?? session._workflowStageAdmission;
+	const boundary = session._subagentMessageAdmission;
 	// Explicit SDK interrupts own a native turn and the shared hold. An admitted
 	// receiver's task must join that owner before checking its priority input;
 	// otherwise it can settle before the interrupt finalizer restores the queue.
@@ -1230,8 +1176,6 @@ async function queueUserInput(
 	expandPromptTemplates = true,
 ): Promise<QueuedInputDisposition> {
 	assertSessionOpen(session);
-	const owner = resolveWorkflowStageDeliveryTarget(session);
-	if (owner !== session) return queueUserInput(owner, text, images, behavior, source, expandPromptTemplates);
 	const queue = () =>
 		trackSessionWork(session, () =>
 			admittedQueueUserInput(session, text, images, behavior, source, expandPromptTemplates),
@@ -1301,8 +1245,7 @@ function canContinueQueuedInput(session: AgentSession): boolean {
 		session._isEmittingAgentSettled ||
 		session._queuedMessagesPaused ||
 		session._pendingInterruptDeliveries > 0 ||
-		session._subagentMessageAdmission !== undefined ||
-		session._workflowStageAdmission !== undefined
+		session._subagentMessageAdmission !== undefined
 	);
 }
 
@@ -1423,7 +1366,6 @@ export async function sendUserMessage(
 	options?: {
 		deliverAs?: "steer" | "followUp";
 		expandPromptTemplates?: boolean;
-		__workflowDelivery?: PromptOptionsWithWorkflowDelivery["__workflowDelivery"];
 	},
 ): Promise<void> {
 	// Normalize content to text string + optional images
@@ -1446,20 +1388,14 @@ export async function sendUserMessage(
 		if (images.length === 0) images = undefined;
 	}
 
-	// prompt() owns command dispatch and template expansion; the default (false)
-	// keeps every pre-existing caller sending literally. The private delivery hook
-	// lets workflow routing report and gate the branch selected after asynchronous
-	// input/compaction extension preflight. A delivered message starts this session's
-	// turn, so the turn runs under this session's own resource admission, never under
-	// the scope its sender runs in, such as a workflow run's.
+	// prompt() owns command dispatch and template expansion. Start the turn under its own resource admission.
 	await withOwnResourceAdmission(this._resourceAdmission, () =>
 		this.prompt(text, {
 			expandPromptTemplates: options?.expandPromptTemplates ?? false,
 			streamingBehavior: options?.deliverAs,
 			images,
 			source: "extension",
-			__workflowDelivery: options?.__workflowDelivery,
-		} as PromptOptionsWithWorkflowDelivery),
+		}),
 	);
 }
 

@@ -1,7 +1,5 @@
 import type { McpServerContribution } from "../mcp-servers.ts";
-import type { WorkflowResourceProvider } from "./loader-resources.ts";
-
-type PackageMcpServerSource = Pick<WorkflowResourceProvider, "getMcpServers">;
+import type { PackageMcpServerSource } from "./loader-resources.ts";
 
 /**
  * MCP server contributions shared by every extension of one runtime generation.
@@ -14,7 +12,7 @@ export class McpServerRegistry {
 
 	/** Resource providers of the loaders whose extensions share this runtime. */
 	addPackageSource(source: PackageMcpServerSource): void {
-		if (source.getMcpServers) this.packageSources.add(source);
+		this.packageSources.add(source);
 	}
 
 	/** Returns the registration it replaced so a rolled-back extension load can restore it. */
@@ -40,7 +38,7 @@ export class McpServerRegistry {
 	list(): McpServerContribution[] {
 		const contributions = new Map<string, McpServerContribution>();
 		for (const source of this.packageSources) {
-			for (const contribution of source.getMcpServers?.() ?? []) {
+			for (const contribution of source.getMcpServers()) {
 				if (!contributions.has(contribution.name)) contributions.set(contribution.name, contribution);
 			}
 		}

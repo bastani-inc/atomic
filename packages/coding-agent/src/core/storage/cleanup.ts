@@ -18,13 +18,3 @@ export async function withCleanup<T>(body: () => Promise<T>, cleanup: () => Prom
 	await cleanup();
 	return result;
 }
-
-/** Closes every database; one failure is thrown as it is, several together as an `AggregateError`. */
-export async function closeEach(databases: Iterable<{ close(): Promise<void> }>): Promise<void> {
-	const failures = (await Promise.allSettled([...databases].map((database) => database.close()))).flatMap((result) =>
-		result.status === "rejected" ? [result.reason] : [],
-	);
-	if (failures.length > 1)
-		throw new AggregateError(failures, `${failures.length} journal store databases failed to close`);
-	if (failures.length === 1) throw failures[0];
-}

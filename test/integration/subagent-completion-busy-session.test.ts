@@ -3,13 +3,11 @@ import type { AgentTool } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
-import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../packages/coding-agent/src/core/agent-session-persistent-custom-messages.js";
 import type { OperationId, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
 
-test("busy stage sessions commit visible subagent completions and parent turns before acknowledging them (#3427)", async () => {
+test("busy sessions commit visible subagent completions and parent turns before acknowledging them (#3427)", async () => {
 	const release = Promise.withResolvers<void>();
 	const tool: AgentTool = {
 		name: "hold",
@@ -22,11 +20,6 @@ test("busy stage sessions commit visible subagent completions and parent turns b
 		},
 	};
 	const harness = await createHarness({ tools: [tool] });
-	const boundary = new WorkflowStageAdmissionBoundary();
-	(
-		harness.session as AgentSession & { _workflowStageAdmission?: WorkflowStageAdmissionBoundary }
-	)._workflowStageAdmission = boundary;
-	boundary.bindTaskIdentity(harness.sessionManager.getSessionId(), "busy-run", "busy-stage");
 	try {
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
@@ -59,7 +52,7 @@ test("busy stage sessions commit visible subagent completions and parent turns b
 		}
 		const notices: Promise<void>[] = [];
 		for (let index = 0; index < 6; index++) {
-			for (const customType of ["workflow-heartbeat", "intercom_message"]) {
+			for (const customType of ["task-heartbeat", "intercom_message"]) {
 				notices.push(
 					harness.session.sendCustomMessage(
 						{ customType, content: `${customType} ${index}`, display: true, details: { index } },

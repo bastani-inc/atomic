@@ -28,7 +28,6 @@ import {
 import {
 	createSubagentChildRecordSink,
 	SUBAGENT_CHILD_RELEASED_STATUS,
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 	subagentChildRecordFailures,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
@@ -82,7 +81,7 @@ test("a released child is reserved to wake its owner, a child stopped while it w
 		aliases: ["child-session", "icom-1"],
 		wake: true,
 	});
-	for (const status of ["paused", "quit", SUBAGENT_CHILD_STAGE_PAUSED_STATUS])
+	for (const status of ["paused", "quit"])
 		assert.equal(releasedChildReservation(record({ terminalStatus: status }))?.wake, false, status);
 	assert.equal(releasedChildReservation(record({ terminalStatus: "paused", waitingOn: [] })), undefined);
 	assert.equal(releasedChildReservation(record({ terminalStatus: "ok" })), undefined);
@@ -173,10 +172,13 @@ test("dropping and acknowledging name the children, and a request to nobody chan
 	await dropReleasedChildren(events, []);
 	assert.equal(emitted.length, 0);
 
-	await dropReleasedChildren(events, ["a", "b"], { gone: "its stage ended" });
+	await dropReleasedChildren(events, ["a", "b"], { gone: "its owner disconnected" });
 	await acknowledgeReleasedChildWake(events, "a");
 	assert.deepEqual(emitted, [
-		{ channel: SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, data: { childNames: ["a", "b"], gone: "its stage ended" } },
+		{
+			channel: SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
+			data: { childNames: ["a", "b"], gone: "its owner disconnected" },
+		},
 		{ channel: SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, data: { childName: "a" } },
 	]);
 });

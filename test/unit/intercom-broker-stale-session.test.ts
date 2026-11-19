@@ -145,18 +145,21 @@ async function register(client: WireClient, name: string): Promise<string> {
 
 /**
  * Register a session, then get its socket ended by the broker through a real
- * refusal path (`register_pending_stage_route` with a group the session does not
- * own). The refusal is the production window the broker log came from.
+ * refusal path (a second registration whose reach policy the broker refuses,
+ * which ends the registered session's connection).
  */
 async function makeBrokerEndedSession(client: WireClient, name: string): Promise<string> {
 	const id = await register(client, name);
 	client.sendRaw({
-		type: "register_pending_stage_route",
-		runId: `stale-run-${name}`,
-		group: "workflow:not-my-invocation",
-		capability: "stale-capability",
+		type: "register",
+		registrationGroup: "not-the-home",
+		reach: { home: "stale-home", reachable: [] },
+		session: { ...session, name, group: "stale-home", groups: ["stale-home"] },
 	});
-	assert.equal((await client.next("registration_failed")).reason, "Pending-stage route is not authorized");
+	assert.match(
+		(await client.next("registration_failed")).reason,
+		/Intercom registration group not-the-home is not the reach policy's home group stale-home/,
+	);
 	return id;
 }
 

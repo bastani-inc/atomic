@@ -116,9 +116,11 @@ test("project autoload:false is a delta over a global package including workflow
 	);
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
 	const resolved = await new DefaultPackageManager({ cwd, agentDir, settingsManager: manager }).resolve();
-	const selected = resolved.workflows.find((entry) => entry.path.endsWith("selected.ts"));
+	const selected = resolved.legacyWorkflowFiles.find((entry) => entry.path.endsWith("selected.ts"));
 	assert.equal(selected?.metadata.scope, "project");
-	assert.ok(resolved.workflows.some((entry) => entry.path.endsWith("other.ts") && entry.metadata.scope === "user"));
+	assert.ok(
+		resolved.legacyWorkflowFiles.some((entry) => entry.path.endsWith("other.ts") && entry.metadata.scope === "user"),
+	);
 	assert.ok(resolved.extensions.some((entry) => entry.path.endsWith("index.ts") && entry.metadata.scope === "user"));
 });
 

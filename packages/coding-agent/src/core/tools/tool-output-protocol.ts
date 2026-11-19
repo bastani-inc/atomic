@@ -1,5 +1,5 @@
 /**
- * tool-output:// resolution: the oversized output of a released workflow stage's tool call, kept as a blob of its
+ * tool-output:// resolution: the oversized output of a saved tool call, kept as a blob of its
  * session in the session's store and read back through it, whatever host the store is on.
  *
  *   tool-output://<sha256>    the full output, one line per text line; read it with a `:N-M` range or search it

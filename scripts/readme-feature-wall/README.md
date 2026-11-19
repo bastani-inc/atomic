@@ -1,11 +1,6 @@
 # README feature wall
 
-The root `README.md` splits 37 capability rows into a six-row **Atomic Verifiable Runtime**
-showcase directly after the user metrics and a 31-row table after the complete **Get started**
-section. Together they cover 26 of the 27 core lessons from the
-[Atomic crash course](https://github.com/bastani-inc/atomic-crash-course), three distinct
-workflow-use paths, and eight remaining Extras between A.1 and A.10. One manifest owns the exact 6+31
-order, and every row has its own real recording.
+The root `README.md` features six recorded capabilities above **Get started**, with the remaining 19 below it. Each row links to the matching docs and lesson in the [Atomic crash course](https://github.com/bastani-inc/atomic-crash-course).
 
 Nothing here is mocked. Every frame is the installed `atomic` binary driven by real
 keystrokes in a real terminal, answering with real model output. Clips are trimmed and
@@ -16,7 +11,7 @@ or model response is fabricated.
 
 | Path | What it is |
 |---|---|
-| `manifest.json` | The single source of truth: exact six-feature and 31-remaining order, 37 exact lesson labels, optional visible `display_title`, public Atomic docs and crash-course links, capture-source paths, copy, interactions, media paths, render windows, and privacy notes |
+| `manifest.json` | The single source of truth: exact six-feature and 19-remaining order, 25 exact lesson labels, optional visible `display_title`, public Atomic docs and crash-course links, capture-source paths, copy, interactions, media paths, render windows, and privacy notes |
 | `tapes/<id>.tape` | The visible beats for one row, in VHS tape syntax |
 | `tapes/<id>.prepare.sh` | Optional off-camera setup for one row; it may seed lesson files but never visible output |
 | `lib/theme.tape` | Shared terminal size, font, and colours |
@@ -35,34 +30,13 @@ are committed, under `assets/feature-wall/`.
 ## Ordering and links
 
 The first generated region begins directly after the user metrics under the exact heading
-`## Atomic Verifiable Runtime`. Its order is:
-
-```text
-A.8 → 6.2 → 6.5 → 6.4 → 5.3 → 6.6
-```
-
-6.6 keeps the crash-course identity `6.6 Security review with a repair loop`, its Workflows
-docs link, and the real `27-security-review-repair-loop` media; its visible README title uses
-`display_title: "Verification built in"`. A.8 keeps the crash-course identity
-`A.8 Natural-language workflow authoring` and the real `38-natural-language-workflow-authoring`
-media; its visible README title uses `display_title: "Create a workflow in plain English"`.
-
-The featured region links to `#more-atomic-capabilities`. The second generated region follows
-the complete `## Get started` section and contains every other row in this exact order:
-
-```text
-W.1 → A.10 → W.3 → 5.2 → 5.4 → A.9 → 5.5 → 5.1
-→ 6.3 → 6.1 → W.2 → 2.2 → 1.3 → A.2 → 3.2 → 3.3 → 4.3
-→ 3.1 → 3.4 → 4.2 → 4.1 → 2.1 → 2.3 → 1.1 → 1.4 → 5.6 → A.7
-→ A.4 → A.3 → A.1 → 3.5
-```
+`## Atomic Verifiable Runtime`. Its rows, and all rows in the second table after **Get started**, follow manifest order.
 
 The stable markers are `feature-wall:featured:start/end` and
 `feature-wall:more:start/end`. Do not hand-edit content between them. Each manifest row
 owns a course-bound `lesson`, `title`, `docs.label`, and full `docs.url`; only a declared
 `display_title` can change the visible `<h4>`. `build-readme.mjs` renders the public link as
-`Atomic docs · <label>` above the unchanged crash-course lesson link. `validate.mjs` keeps
-proves all 37 records and all 74 media paths appear once across the two tables.
+`Atomic docs · <label>` above the unchanged crash-course lesson link. `validate.mjs` proves all 25 records and all 50 media paths appear once across the two tables.
 
 ## Running it
 
@@ -79,11 +53,6 @@ node scripts/readme-feature-wall/validate.mjs     # run the independent feature 
 
 `capture.sh` needs a logged-in Atomic and the VHS toolchain (`vhs`, `ffmpeg`, `gifski`,
 `tesseract`). Nothing here installs anything.
-
-### Capturing row 6.5 on its own
-
-6.5 demonstrates durability by really killing the session, and it matches the process by
-name. Recording it beside another capture would kill that capture too. Record it alone.
 
 ## How privacy is handled
 

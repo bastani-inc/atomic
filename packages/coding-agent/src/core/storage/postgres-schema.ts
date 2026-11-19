@@ -6,9 +6,10 @@ import { POSTGRES_STORAGE_IDENTIFIER_SUFFIXES } from "./prefix.js";
 export const POSTGRES_ATOMIC_SCHEMA = "atomic";
 
 /**
- * The schema version left in `public` for each version table a moved journal, session store or worker pool had there,
- * so a process of an earlier release that still opens `public` refuses it as newer than it knows (#4965, #5029) rather
- * than writing to tables that are gone or creating empty ones beside the moved ones (#5218).
+ * The schema version left in `public` for each version table a moved session store, or a moved workflow run journal or
+ * worker pool of an earlier release, had there, so a process of an earlier release that still opens `public` refuses it
+ * as newer than it knows (#4965, #5029) rather than writing to tables that are gone or creating empty ones beside the
+ * moved ones (#5218).
  */
 export const POSTGRES_MOVED_SCHEMA_VERSION = 1_000_000;
 

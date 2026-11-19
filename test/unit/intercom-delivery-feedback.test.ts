@@ -26,7 +26,7 @@ const refusal: Message = {
 
 afterEach(() => vi.useRealTimers());
 
-async function fixture(closedStage = false) {
+async function fixture() {
 	let idle = false;
 	let rejectDelivery = false;
 	let sessionId = "parent-feedback-test";
@@ -66,17 +66,6 @@ async function fixture(closedStage = false) {
 		isIdle: () => idle,
 		ui: { notify() {} },
 		sessionManager: { getSessionId: () => sessionId, getBranch: () => [] },
-		...(closedStage
-			? {
-					orchestrationContext: {
-						kind: "workflow-stage",
-						messageAdmission: {
-							isOpen: () => false,
-							boundary: { ownsSubagentRun: (runId: string) => runId === "owned-run" },
-						},
-					},
-				}
-			: {}),
 	} as unknown as ExtensionContext;
 	const fire = async (name: string) => {
 		for (const handler of handlers.get(name) ?? []) await handler({ type: name }, ctx);
@@ -212,23 +201,6 @@ test("completion prelude cannot continue or roll back into a replacement parent 
 		assert.match(current.sent[1]!.content, /new-owner-message/);
 	} finally {
 		gate.resolve();
-		await current.close();
-	}
-});
-
-test("closed stages keep non-owned refusals as feedback and suppress their own retired child traffic", async () => {
-	const current = await fixture(true);
-	try {
-		await current.deliver({ ...refusal, id: "owned-refusal", source: { subagentRunId: "owned-run" } });
-		assert.equal(current.sent.length, 0);
-		await current.deliver({ ...refusal, source: { subagentRunId: "external-run" } });
-		assert.equal(current.sent.length, 1);
-		assert.match(current.sent[0]!.content, /Intercom delivery failed/);
-		assert.match(current.sent[0]!.content, /1970-01-01T00:00:01.000Z/);
-		assert.notEqual(current.sent[0]!.options?.triggerTurn, true);
-		await current.deliver({ ...refusal, source: { subagentRunId: "external-run" } });
-		assert.equal(current.sent.length, 1);
-	} finally {
 		await current.close();
 	}
 });

@@ -192,9 +192,7 @@ export class CustomMessageComponent extends Container {
 					theme,
 				);
 				// Explicit null = "handled; render nothing". Skip the leading spacer
-				// and the default box entirely so the entry occupies zero rows. The
-				// workflows inline-form renderer returns null for a rehydrated
-				// input-form card on /resume so the input widget does not reappear.
+				// and the default box entirely so the entry occupies zero rows.
 				if (component === null) {
 					return;
 				}

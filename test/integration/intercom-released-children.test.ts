@@ -332,7 +332,7 @@ test(
 );
 
 test(
-	"only a workflow group the owner is not in is refused, whole and typed; auto-group children reserve and re-reserve after a reconnect (#4326)",
+	"auto-group children reserve and re-reserve after a reconnect (#4326)",
 	async () => {
 		const returnAddress = randomUUID();
 		const owner = await connect("grouped-owner", { returnAddress });
@@ -340,20 +340,6 @@ test(
 		assert.ok(ownerSessionId);
 		const before = (await owner.brokerStatus())?.reservations ?? 0;
 		const autoGroup = randomUUID();
-		const refused = await owner
-			.reserveReleasedChildren([
-				{ childName: "subagent-grouped-auto-1", group: autoGroup, wake: true },
-				{ childName: "subagent-grouped-workflow-1", group: "workflow:run-elsewhere/stage", wake: true },
-			])
-			.then(
-				() => undefined,
-				(rejection: Error) => rejection,
-			);
-		assert.ok(refused instanceof ReleasedChildReservationError);
-		assert.equal(refused.code, "group_not_allowed");
-		assert.equal(refused.childName, "subagent-grouped-workflow-1");
-		assert.equal((await owner.brokerStatus())?.reservations, before, "nothing from a refused frame is reserved");
-
 		const frame = [
 			{ childName: "subagent-grouped-auto-1", group: autoGroup, wake: true },
 			{ childName: "subagent-grouped-auto-2", group: autoGroup, wake: false },
@@ -372,12 +358,6 @@ test(
 		const back = await connect("grouped-owner", { returnAddress, preferredSessionId: ownerSessionId });
 		await back.reserveReleasedChildren(frame);
 		assert.equal((await back.brokerStatus())?.reservations, before + frame.length);
-
-		const stage = await connect("grouped-stage", { group: "workflow:run-grouped" });
-		await stage.reserveReleasedChildren([
-			{ childName: "subagent-grouped-stage-1", group: "workflow:run-grouped", wake: true },
-		]);
-		assert.equal((await stage.brokerStatus())?.reservations, before + frame.length + 1);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

@@ -70,70 +70,6 @@ Every row is a real Atomic session recorded from the installed product. Open the
 <table>
 <tr>
 <td width="42%" valign="top">
-<h4>Create a workflow in plain English</h4>
-<p>Describe inputs, parallel stages, synthesis, and outputs in prose; Atomic writes and reloads the runnable TypeScript graph.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#a8-natural-language-workflow-authoring"><sub>Crash course · A.8 Natural-language workflow authoring</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#a8-natural-language-workflow-authoring">
-<picture>
-<source srcset="assets/feature-wall/38-natural-language-workflow-authoring.gif" type="image/gif">
-<img src="assets/feature-wall/38-natural-language-workflow-authoring.jpg" alt="Atomic turning a prose review-changes graph contract into a project workflow file and reloading it in the installed product" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Steer and control a live run</h4>
-<p>Attach to a running stage, watch it stream, and steer, pause, or abort it mid-flight.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#62-steer-and-control-a-live-run"><sub>Crash course · 6.2 Steer and control a live run</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#62-steer-and-control-a-live-run">
-<picture>
-<source srcset="assets/feature-wall/23-steer-a-live-run.gif" type="image/gif">
-<img src="assets/feature-wall/23-steer-a-live-run.jpg" alt="The Atomic workflow graph with a live stage streaming, receiving a steering message from the operator" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Durability and resume</h4>
-<p>Runs checkpoint as they go, so killing the process leaves them retained and resumable instead of lost.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#65-durability-and-resume"><sub>Crash course · 6.5 Durability and resume</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#65-durability-and-resume">
-<picture>
-<source srcset="assets/feature-wall/26-durability-and-resume.gif" type="image/gif">
-<img src="assets/feature-wall/26-durability-and-resume.jpg" alt="The Atomic resume picker after a killed run, listing retained workflow runs with their checkpoint counts" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Human-in-the-loop gates</h4>
-<p>Put an approval gate anywhere in the graph and the run waits for a person before it proceeds.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#64-human-in-the-loop-gates"><sub>Crash course · 6.4 Human-in-the-loop gates</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#64-human-in-the-loop-gates">
-<picture>
-<source srcset="assets/feature-wall/25-human-in-the-loop-gates.gif" type="image/gif">
-<img src="assets/feature-wall/25-human-in-the-loop-gates.jpg" alt="A workflow run pausing at a human approval gate and waiting for the operator's decision" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
 <h4>Planner-worker intercom coordination</h4>
 <p>Separate sessions message each other over intercom to split a job and agree on the answer.</p>
 <p><a href="https://docs.bastani.ai/intercom"><sub>Atomic docs · Intercom</sub></a></p>
@@ -150,27 +86,91 @@ Every row is a real Atomic session recorded from the installed product. Open the
 </tr>
 <tr>
 <td width="42%" valign="top">
-<h4>Verification built in</h4>
-<p>Executable checks and fresh reviewers produce evidence; failures route into bounded repair until the gate passes.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#66-security-review-with-a-repair-loop"><sub>Crash course · 6.6 Security review with a repair loop</sub></a></p>
+<h4>Worktree-isolated parallel work</h4>
+<p>Parallel agents each get their own git worktree, so concurrent edits cannot collide.</p>
+<p><a href="https://docs.bastani.ai/subagents"><sub>Atomic docs · Subagents</sub></a></p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#52-worktree-isolated-parallel-work"><sub>Crash course · 5.2 Worktree-isolated parallel work</sub></a></p>
 </td>
 <td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#66-security-review-with-a-repair-loop">
+<a href="https://github.com/bastani-inc/atomic-crash-course#52-worktree-isolated-parallel-work">
 <picture>
-<source srcset="assets/feature-wall/27-security-review-repair-loop.gif" type="image/gif">
-<img src="assets/feature-wall/27-security-review-repair-loop.jpg" alt="Atomic security-review workflow graph with the hardcoded API key audit finding, repair-1 running, and the header reaching four-of-four complete" width="100%">
+<source srcset="assets/feature-wall/17-worktree-parallel-work.gif" type="image/gif">
+<img src="assets/feature-wall/17-worktree-parallel-work.jpg" alt="Atomic running parallel subagents in separate git worktrees and reporting a per-worktree diff" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Escalating to a human supervisor</h4>
+<p>A delegate that hits a real product decision stops, asks the human supervising the run, and waits for the answer.</p>
+<p><a href="https://docs.bastani.ai/intercom"><sub>Atomic docs · Intercom</sub></a></p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#54-escalating-to-a-human-supervisor"><sub>Crash course · 5.4 Escalating to a human supervisor</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#54-escalating-to-a-human-supervisor">
+<picture>
+<source srcset="assets/feature-wall/19-escalate-to-supervisor.gif" type="image/gif">
+<img src="assets/feature-wall/19-escalate-to-supervisor.jpg" alt="One Atomic session escalating a null-email decision to its human supervisor over intercom, then applying the answer it receives" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Intercom context handoff</h4>
+<p>Hand a task to another session with the context attached, instead of pasting it by hand.</p>
+<p><a href="https://docs.bastani.ai/intercom"><sub>Atomic docs · Intercom</sub></a></p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#55-intercom-context-handoff"><sub>Crash course · 5.5 Intercom context handoff</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#55-intercom-context-handoff">
+<picture>
+<source srcset="assets/feature-wall/20-intercom-context-handoff.gif" type="image/gif">
+<img src="assets/feature-wall/20-intercom-context-handoff.jpg" alt="One Atomic session handing a task to another over intercom with file and snippet attachments" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Delegating to bundled specialists</h4>
+<p>Fan work out to scoped subagents that do the reading, so the main context stays small.</p>
+<p><a href="https://docs.bastani.ai/subagents"><sub>Atomic docs · Subagents</sub></a></p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#51-delegating-to-bundled-specialists"><sub>Crash course · 5.1 Delegating to bundled specialists</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#51-delegating-to-bundled-specialists">
+<picture>
+<source srcset="assets/feature-wall/16-bundled-specialists.gif" type="image/gif">
+<img src="assets/feature-wall/16-bundled-specialists.jpg" alt="Atomic delegating to bundled specialist subagents and collecting their findings" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Context compaction</h4>
+<p>Compaction clears the context window, and the agent recovers what it needs from session history, <code>&lt;keepContext&gt;</code> spans first and verbatim.</p>
+<p><a href="https://docs.bastani.ai/compaction"><sub>Atomic docs · Compaction</sub></a></p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#22-verbatim-compaction"><sub>Crash course · 2.2 Verbatim compaction</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#22-verbatim-compaction">
+<picture>
+<source srcset="assets/feature-wall/06-verbatim-compaction.gif" type="image/gif">
+<img src="assets/feature-wall/06-verbatim-compaction.jpg" alt="Atomic answering after compaction by quoting a keepContext repo rule back exactly" width="100%">
 </picture>
 </a>
 </td>
 </tr>
 </table>
 
-<p><a href="#more-atomic-capabilities"><strong>Explore 31 more Atomic capabilities ↓</strong></a></p>
+<p><a href="#more-atomic-capabilities"><strong>Explore 19 more Atomic capabilities ↓</strong></a></p>
 
 <!-- feature-wall:featured:end -->
 
-Build your process as workflows with scoped context, model choice, tools, handoffs, artifacts, retries, executable checks, review gates, and human approvals.
+Write repeatable procedures as skills. Use codemode to run checks, launch subagents, and bring their results back to the parent chat.
 
 Atomic’s primitives are built for the software engineering lifecycle. Verification is built into the execution model.
 
@@ -271,7 +271,7 @@ The model-family badges are representative open families, not a closed allowlist
 
 ### Prerequisites
 
-- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.4.2+ for Bun installs or workflow-authoring examples.
+- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.4.2+ for Bun installs.
 - **Release archive install:** macOS and Linux need `tar` and either `curl` or `wget`. Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
 - **Model-provider access** — use a supported subscription login or API key.
 
@@ -346,7 +346,7 @@ atomic
 
 Atomic stores provider credentials in `~/.atomic/agent/auth.json` and creates the file with owner-only permissions where the platform supports them. For non-interactive use, `atomic -p "<prompt>"` prints the response and exits.
 
-After authenticating, type a message, or ask which workflows are installed. A fresh install also shows a one-time workflow-engine introduction.
+After authenticating, type a message. To try parallel work, ask Atomic to delegate a review and report what each child found.
 
 > ⚠️ Atomic has no built-in sandbox or command-level shell permission gate. Tools and extensions run with your user permissions. Run autonomous work inside a devcontainer, VM, or remote development machine—not on a host with sensitive data or credentials.
 
@@ -363,11 +363,7 @@ See [Terminal setup](./packages/coding-agent/docs/terminal-setup.md), [Security]
 
 Already have agent skills? Bring them into Atomic by pointing Atomic at their existing directories or placing them in its project or user skill locations. Atomic implements the Agent Skills standard, and configured Claude Code or Codex skill directories can be used without rewriting them. See [Skills](./packages/coding-agent/docs/skills.md#using-skills-from-other-harnesses).
 
-When a skill captures a repeatable process, ask Atomic to author it as a durable workflow. Atomic inspects the skill and writes reviewable TypeScript using the [custom workflow authoring guide](./packages/coding-agent/docs/workflows/authoring.md) and its examples.
-
-```text
-Inspect the existing skill `<skill-name-or-path>`—including its SKILL.md, scripts, references, and assets—and consult Atomic’s workflow docs and runnable TypeScript examples; then author a reusable TypeScript `workflow({...})` that preserves the skill’s intent while turning its repeatable process into durable multi-stage execution with precise typed inputs and declared outputs, artifact-backed handoffs for substantial context, explicit validation gates, and bounded retries or stop conditions where appropriate; add and run representative tests or smoke cases for the applicable success, validation-failure, and retry/stop paths, reload and verify workflow discovery, and ask me only questions whose answers materially change the design—otherwise state sensible assumptions and proceed.
-```
+A skill can [run as a workflow](./packages/coding-agent/docs/skills.md#skills-as-workflows). Describe the inputs, what may run in parallel, and what must pass. If you have an earlier Atomic workflow definition, [ask Atomic to convert it into a skill](./packages/coding-agent/docs/orchestration/migrating-workflows.md); the original stays untouched.
 
 ### Migrating from another coding agent
 
@@ -384,198 +380,6 @@ Install and set up Atomic by following https://docs.bastani.ai/llms.txt.
 Explore the rest of Atomic’s real recorded capabilities, with public docs and crash-course links for each one.
 
 <table>
-<tr>
-<td width="42%" valign="top">
-<h4>Launch a workflow in plain English</h4>
-<p>Ask in normal chat and Atomic routes the request through its workflow tool into a real registered run - no command syntax required.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#part-6--workflows"><sub>Crash course · W.1 Launch a workflow in plain English</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#part-6--workflows">
-<picture>
-<source srcset="assets/feature-wall/28-launch-workflow-plain-english.gif" type="image/gif">
-<img src="assets/feature-wall/28-launch-workflow-plain-english.jpg" alt="Atomic receiving a normal chat request and launching the registered plain-english-demo workflow through the real workflow tool" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Autonomous implementation loops</h4>
-<p><code>ralph</code> refines, researches, implements, reviews, and repairs against a bounded loop contract.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#a10-autonomous-implementation-loops"><sub>Crash course · A.10 Autonomous implementation loops</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#a10-autonomous-implementation-loops">
-<picture>
-<source srcset="assets/feature-wall/40-autonomous-implementation-loops.gif" type="image/gif">
-<img src="assets/feature-wall/40-autonomous-implementation-loops.jpg" alt="An earlier Atomic session inspecting the ralph contract, launching a one-loop validation task, and opening its live research-first workflow graph" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Inspect and control workflows</h4>
-<p>Browse running and completed workflows with <code>/workflows</code>, then pause, resume or quit a run from its graph.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins"><sub>Crash course · W.3 Inspect and control workflows</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
-<picture>
-<source srcset="assets/feature-wall/30-inspect-control-workflows.gif" type="image/gif">
-<img src="assets/feature-wall/30-inspect-control-workflows.jpg" alt="An earlier Atomic session listing workflows, inspecting inputs and status, and opening the live control-demo graph" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Worktree-isolated parallel work</h4>
-<p>Parallel agents each get their own git worktree, so concurrent edits cannot collide.</p>
-<p><a href="https://docs.bastani.ai/subagents"><sub>Atomic docs · Subagents</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#52-worktree-isolated-parallel-work"><sub>Crash course · 5.2 Worktree-isolated parallel work</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#52-worktree-isolated-parallel-work">
-<picture>
-<source srcset="assets/feature-wall/17-worktree-parallel-work.gif" type="image/gif">
-<img src="assets/feature-wall/17-worktree-parallel-work.jpg" alt="Atomic running parallel subagents in separate git worktrees and reporting a per-worktree diff" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Escalating to a human supervisor</h4>
-<p>A delegate that hits a real product decision stops, asks the human supervising the run, and waits for the answer.</p>
-<p><a href="https://docs.bastani.ai/intercom"><sub>Atomic docs · Intercom</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#54-escalating-to-a-human-supervisor"><sub>Crash course · 5.4 Escalating to a human supervisor</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#54-escalating-to-a-human-supervisor">
-<picture>
-<source srcset="assets/feature-wall/19-escalate-to-supervisor.gif" type="image/gif">
-<img src="assets/feature-wall/19-escalate-to-supervisor.jpg" alt="One Atomic session escalating a null-email decision to its human supervisor over intercom, then applying the answer it receives" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Nesting builtin workflows</h4>
-<p>Compose imported workflow definitions with <code>ctx.workflow(...)</code>; child stages flatten into one inspectable parent graph.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#a9-nesting-builtin-workflows"><sub>Crash course · A.9 Nesting builtin workflows</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#a9-nesting-builtin-workflows">
-<picture>
-<source srcset="assets/feature-wall/39-nesting-builtin-workflows.gif" type="image/gif">
-<img src="assets/feature-wall/39-nesting-builtin-workflows.jpg" alt="Atomic showing nested fan-out builtin stages flattened into the live research-and-verify parent workflow graph" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Intercom context handoff</h4>
-<p>Hand a task to another session with the context attached, instead of pasting it by hand.</p>
-<p><a href="https://docs.bastani.ai/intercom"><sub>Atomic docs · Intercom</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#55-intercom-context-handoff"><sub>Crash course · 5.5 Intercom context handoff</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#55-intercom-context-handoff">
-<picture>
-<source srcset="assets/feature-wall/20-intercom-context-handoff.gif" type="image/gif">
-<img src="assets/feature-wall/20-intercom-context-handoff.jpg" alt="One Atomic session handing a task to another over intercom with file and snippet attachments" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Delegating to bundled specialists</h4>
-<p>Fan work out to scoped subagents that do the reading, so the main context stays small.</p>
-<p><a href="https://docs.bastani.ai/subagents"><sub>Atomic docs · Subagents</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#51-delegating-to-bundled-specialists"><sub>Crash course · 5.1 Delegating to bundled specialists</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#51-delegating-to-bundled-specialists">
-<picture>
-<source srcset="assets/feature-wall/16-bundled-specialists.gif" type="image/gif">
-<img src="assets/feature-wall/16-bundled-specialists.jpg" alt="Atomic delegating to bundled specialist subagents and collecting their findings" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Writing your own workflow</h4>
-<p>Stages, schemas, and gates are versioned TypeScript you review, not per-run improvisation.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#63-writing-your-own-workflow"><sub>Crash course · 6.3 Writing your own workflow</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#63-writing-your-own-workflow">
-<picture>
-<source srcset="assets/feature-wall/24-write-your-own-workflow.gif" type="image/gif">
-<img src="assets/feature-wall/24-write-your-own-workflow.jpg" alt="A project-local workflow defined in TypeScript with stages and an output schema, then run by Atomic" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Touring the builtins</h4>
-<p>Bundled workflows for research, planning, implementation, and review, ready before you write one.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins"><sub>Crash course · 6.1 Touring the builtins</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
-<picture>
-<source srcset="assets/feature-wall/22-touring-the-builtins.gif" type="image/gif">
-<img src="assets/feature-wall/22-touring-the-builtins.jpg" alt="An earlier Atomic session's workflow picker listing the bundled workflows and their stages" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Run a workflow with typed inputs</h4>
-<p>Ask for a workflow by name; the workflow tool validates its typed inputs against TypeBox before the run starts.</p>
-<p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins"><sub>Crash course · W.2 Run a workflow with typed inputs</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
-<picture>
-<source srcset="assets/feature-wall/29-workflow-typed-inputs.gif" type="image/gif">
-<img src="assets/feature-wall/29-workflow-typed-inputs.jpg" alt="An earlier Atomic session showing the typed-input-demo input contract, launching it with a string path and integer depth, and listing its live run status" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Context compaction</h4>
-<p>Compaction clears the context window, and the agent recovers what it needs from session history, <code>&lt;keepContext&gt;</code> spans first and verbatim.</p>
-<p><a href="https://docs.bastani.ai/compaction"><sub>Atomic docs · Compaction</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#22-verbatim-compaction"><sub>Crash course · 2.2 Verbatim compaction</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#22-verbatim-compaction">
-<picture>
-<source srcset="assets/feature-wall/06-verbatim-compaction.gif" type="image/gif">
-<img src="assets/feature-wall/06-verbatim-compaction.jpg" alt="Atomic answering after compaction by quoting a keepContext repo rule back exactly" width="100%">
-</picture>
-</a>
-</td>
-</tr>
 <tr>
 <td width="42%" valign="top">
 <h4>The agent interviews you</h4>
@@ -888,19 +692,11 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 
 ## How Atomic works
 
-Atomic is the runtime. Workflows encode durable processes through stages, tools, prompts, checks, artifacts, gates, and approvals. Skills supply reusable expert instructions. Specialized subagents handle focused work while a parent agent or workflow controls the larger task.
+A skill describes the procedure. The parent chat uses codemode to call tools, launch specialist subagents, and check their results. It can do other work after launching children and continue from their completion notices.
 
 Atomic is a fork of Pi, so it works with the providers, tools, MCP servers, skills, and extensions already in your Pi stack.
 
-Workflow stage dependencies must form a directed acyclic graph. Because imperative `workflow({ run })` definitions materialize topology from runtime branches, loops, and nested calls, module discovery cannot prove arbitrary acyclicity. Cyclic workflow graphs are unsupported: authored loop and repair iterations must create distinct tracked work per iteration and must never create self-edges or back-edges to ancestors. Retries within one `ctx.tool(...)` call remain attempts on that tool node rather than separate graph work.
-
-```text
-issue or goal → research → plan → agent stages → artifacts → checks → review gate → final output
-```
-
-A stage can prompt an agent, run tools, call MCP servers, save artifacts, pass selected output forward, branch, retry, run in parallel, or pause for approval. Model output can vary. The workflow definition makes stage order, inputs, handoffs, configured checks, gates, and artifacts explicit.
-
-Use direct chat for small, interactive work. Use a skill or bounded subagent when the parent should stay in control. Use a workflow when a delegated job needs durable stages, retries, evidence, resumability, or approval gates. Phrases such as “repeat until,” “review and fix until passing,” or “run checks until green” signal that the stop condition should be encoded and bounded.
+Use direct chat for a small task. For a larger one, tell the parent the scope, how to verify the result, and when to stop. If a repair needs another round, run the check first. Children have persisted, resumable sessions; an interrupted script does not automatically replay its actions.
 
 Atomic can support:
 
@@ -908,7 +704,7 @@ Atomic can support:
 - **Debugging and migrations** — reproduce, diagnose, patch, migrate in waves, and verify.
 - **Research and triage** — gather context, fan out analysis, classify issues, and synthesize findings.
 - **QA, docs, and compliance** — run repeatable checks with evidence and approval points.
-- **Custom agent products** — build on Atomic's runtime, SDK, tools, and workflows.
+- **Custom agent products** — build on Atomic's runtime, SDK, tools, and skills.
 
 ### Examples
 
@@ -921,50 +717,22 @@ Focused codebase research:
 Repository-wide research with durable artifacts:
 
 ```text
-Run fan-out-and-synthesize to partition the repository by subsystem, map every legacy auth middleware callsite, and synthesize cited migration findings.
+Give one read-only agent to each subsystem. Map the old auth middleware call sites, then combine the findings with file and line references.
 ```
 
 A task-specific implementation and review loop:
 
 ```text
-Create and run a workflow that implements specs/2026-03-rate-limit.md, runs focused tests, sends the patch to fresh verifiers, and repairs findings until burst traffic returns 429 with Retry-After or the iteration bound is reached.
+Implement specs/2026-03-rate-limit.md. Have an independent agent review the patch, run the burst test, and stop when it returns 429 with Retry-After or after three repair attempts.
 ```
-
-A reviewer-gated run with Goal:
-
-```text
-Run goal to update the CLI docs for --json, add one example, and validate the docs build.
-```
-
-A research-first implementation with Ralph:
-
-```text
-Run ralph to implement specs/2026-03-rate-limit.md and validate burst traffic, and open a PR when it is approved.
-```
-
-Use Goal when a durable ledger, receipts, bounded sub-agent orchestration, and reviewer-gated completion fit the task. Use Ralph when the job benefits from prompt refinement, codebase research, delegated implementation, and iterative multi-model review. Both skip PR creation unless `create_pr=true` explicitly authorizes the post-approval final stage.
 
 ---
 
 ## What you get
 
-Atomic ships three top-level building blocks: workflows, skills, and specialized subagents.
+### 1. Codemode orchestration
 
-### 1. Workflows
-
-Workflows define inputs, stages, branches, parallelism, retries, checks, artifacts, checkpoints, and human review gates. Atomic can author TypeScript `workflow({...})` definitions, import reusable project or package workflows, and nest workflows with `ctx.workflow(...)` within a configured `maxDepth`.
-
-| Workflow | What it does | Example request |
-| --- | --- | --- |
-| `fan-out-and-synthesize` | Partitions independent slices, writes branch artifacts, and synthesizes their evidence. | `Run fan-out-and-synthesize to map payment retries by subsystem and synthesize cited findings` |
-| `adversarial-verification` | Challenges a candidate with fresh verifiers and bounded repair. | `Run adversarial-verification on the rate-limit migration patch` |
-| `loop-until-done` | Iterates with a durable ledger until explicit completion evidence or bound exhaustion. | `Run loop-until-done to repair failures until the test suite passes` |
-| `goal` | Runs bounded autonomous implementation with a durable ledger, receipts, parallel review, and reducer-gated completion. | `Run goal to update the CLI docs and validate the docs build` |
-| `ralph` | Runs research-first delegated implementation with bounded multi-model review and repair. | `Run ralph to implement specs/rate-limit.md and open a PR when approved` |
-| `open-claude-design` | Gathers requirements and references, discovers the design system, refines output, and exports a handoff. | `Run open-claude-design for a team activity feed prototype using ./mocks/feed.png as a reference` |
-| _author your own_ | Issue-to-PR, migration, triage, release, compliance, or another process your team needs. Start with the [custom workflow authoring guide](./packages/coding-agent/docs/workflows/authoring.md). | _“Create a workflow that plans, implements, runs tests and lint, reviews the diff, then stops for approval.”_ |
-
-Ask the agent which workflows are installed and what inputs one takes. `/workflows` browses running and completed workflows; in a run's graph, `p` pauses, `r` resumes and `q` twice quits it, keeping it resumable. `/resume` resumes runs from earlier sessions. Runnable references live in [`packages/coding-agent/examples/`](./packages/coding-agent/examples).
+The parent can split a task across agents, collect their results, and decide the next step from an actual check. Use `/tasks` to inspect children and `/resume` to reopen the parent session. See [Orchestration patterns](./packages/coding-agent/docs/orchestration/patterns.md) for examples of fan-out, independent verification, tournaments, and bounded repair loops.
 
 ### 2. Skills
 
@@ -976,7 +744,7 @@ Skills are reusable expert instructions and process modules. Atomic can select o
 | `create-spec`       | Produce a technical execution spec grounded in research and engineer feedback.               |
 | `subagent`          | Delegate work through single agents, parallel groups, or forked context.                     |
 | `intercom`          | Coordinate parent, child, and peer sessions on the same machine.                             |
-| `prompt-engineer`   | Refine prompts, research questions, and workflow inputs.                                     |
+| `prompt-engineer`   | Refine prompts, research questions, and skill inputs.                                     |
 | `skill-creator`     | Create, improve, and evaluate reusable skills.                                               |
 | `tdd`               | Apply a red-green-refactor loop and testing guidance.                                        |
 | `tmux`              | Drive and verify terminal applications.                                                      |
@@ -1010,7 +778,7 @@ Large, mixed, or growing contexts can make attention harder. Specialized agents 
 
 ## Documentation
 
-Full documentation lives at **[docs.bastani.ai](https://docs.bastani.ai/)**. It covers the CLI and SDK, security, containerized execution, workflow authoring and monitoring, session management, configuration, troubleshooting, and provider setup.
+Full documentation lives at **[docs.bastani.ai](https://docs.bastani.ai/)**. It covers the CLI and SDK, security, containerized execution, codemode orchestration, session management, configuration, troubleshooting, and provider setup.
 
 The docs live in this repository under [`packages/coding-agent/docs`](./packages/coding-agent/docs). Open a pull request to suggest a change.
 
@@ -1018,7 +786,7 @@ The docs live in this repository under [`packages/coding-agent/docs`](./packages
 
 ### Is Atomic another coding agent?
 
-Atomic includes a coding-agent CLI. Its main product idea is the runtime around the agent session: scoped context, stages, tools, checks, artifacts, checkpoints, subagents, review gates, and human approvals.
+Atomic includes a coding-agent CLI. Its main product idea is the runtime around the agent session: scoped context, tools, executable checks, subagents, and human approvals.
 
 ### Why not use Claude Code, Codex, or OpenCode?
 
@@ -1026,15 +794,15 @@ Use any interactive coding tool that fits the job. Use Atomic when work needs an
 
 ### How is Atomic different from products that fan out many agents?
 
-Atomic can fan work out too. The difference is not whether agents run in parallel; it is whether developers control the context, handoffs, execution graph, evidence, checks, and approval rules around that work. Parallel execution increases throughput. Assurance comes from the process you define and enforce.
+Atomic can fan work out too. The difference is not whether agents run in parallel; it is whether developers control the context, handoffs, evidence, checks, and approval rules around that work. Parallel execution increases throughput. Assurance comes from the process you define and enforce.
 
 ### Is Atomic deterministic?
 
-The selected model can produce different output across runs. Workflow structure, stage dependencies, inputs, handoffs, configured checks, gates, and artifact paths are explicit. Deterministic reducers can apply declared approval rules to reviewer output.
+The selected model can produce different answers. Put deterministic checks in scripts and inspect their exit status and artifacts before relying on an answer.
 
 ### Why not Markdown checklists or `CLAUDE.md`?
 
-Markdown helps set context, but a model still has to follow it. An Atomic workflow runs declared stages and tools, validates configured outputs, records configured artifacts, and applies defined gates.
+A skill is Markdown the model can follow. It can also include scripts for checks that prose alone cannot perform. Reserve decisions that require human approval for the user.
 
 ### Why not LangGraph or a generic agent framework?
 
@@ -1042,13 +810,13 @@ Atomic is repo-native and focused on software engineering work: issues, research
 
 ### Where do artifacts live?
 
-Research commonly lives in `research/`, specs in `specs/`, and workflow run data in the workflow run directory. A workflow can persist plans, logs, transcripts, reviewer notes, check output, and summaries for later inspection.
+Choose project paths for deliverables you want to keep. Research commonly lives in `research/` and specs in `specs/`. A child can return a file path for the parent to read and verify.
 
 ---
 
-## Workflow playbook
+## Orchestration guide
 
-Read the [Workflow Playbook](./docs/workflow-playbook.md) for practical guidance on writing objectives, constraining scope, steering long-running work, validating results, and producing engineering handoffs.
+Read [Orchestration with codemode and subagents](./packages/coding-agent/docs/orchestration.md) to plan independent work, recover after interruption, and verify results.
 
 ## Support & ideas
 
@@ -1058,7 +826,7 @@ Join the [Atomic Discord community](https://discord.gg/9CvdXUGXR4) for questions
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [DEV_SETUP.md](DEV_SETUP.md) for development setup and testing.
 
-To contribute workflows, see the [atomic-workflows repository](https://github.com/lavaman131/atomic-workflows).
+To share a reusable procedure, see [Writing skills](./packages/coding-agent/docs/skills/authoring.md).
 
 ## License
 

@@ -1,30 +1,19 @@
-import { toolContext } from "../helpers/tool-context.js";
 /**
  * Regression coverage for the #2205 child-policy gate.
  *
  * The fanout gate used to run before the management branch, so a child with
  * `fanoutAuthorized: false` was refused every `subagent` action — `list`
- * included — with a message about fanout. Workflow stages additionally shipped
- * `fanoutAuthorized: false`, so no stage could delegate at all.
+ * included — with a message about fanout.
  */
 
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { join } from "node:path";
-import type { ExtensionAPI, SessionEntry, SubagentChildPolicy, ToolDefinition } from "@bastani/atomic";
+import type { SessionEntry, SubagentChildPolicy } from "@bastani/atomic";
 import { beforeEach, describe, test, vi } from "vitest";
-import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import { SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE } from "../../packages/subagents/src/shared/types.js";
-import type {
-	PiCodingAgentSdk,
-	PiSdkResourceLoader,
-	PiSdkSettingsManager,
-} from "../../packages/workflows/src/extension/atomic-stage-session.js";
-import { prepareAtomicStageSessionOptions } from "../../packages/workflows/src/extension/wiring.js";
-import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 
 const FANOUT_MESSAGE = "Subagent fanout is not authorized for this child.";
 
@@ -113,7 +102,6 @@ function makeContext(cwd: string, subagentPolicy?: SubagentChildPolicy): Executo
 			hasFullHistory: () => true,
 			getEntries: (): SessionEntry[] => [],
 		} as ExecutorContextForTest["sessionManager"],
-		orchestrationContext: undefined,
 		...(subagentPolicy === undefined ? {} : { subagentPolicy }),
 		isIdle: () => true,
 		isProjectTrusted: () => true,
@@ -126,7 +114,6 @@ function makeContext(cwd: string, subagentPolicy?: SubagentChildPolicy): Executo
 		compact: () => {},
 		getSystemPrompt: () => "",
 		getDecisionModel: () => "",
-		observeWorkflowActivity: () => ({ dispose() {} }),
 	} satisfies ExecutorContextForTest;
 }
 
@@ -327,113 +314,5 @@ describe("subagent child policy gates fanout, not management", () => {
 
 		assert.equal(result.isError, undefined);
 		assert.deepEqual(runSyncParentDepths, [0]);
-	});
-});
-
-function makeFakeAtomicSdk(defaultAgentDir: string): PiCodingAgentSdk {
-	class FakeResourceLoader implements PiSdkResourceLoader {
-		async reload(): Promise<void> {}
-	}
-
-	return {
-		getAgentDir: () => defaultAgentDir,
-		getBuiltinPackagePaths: () => [],
-		SettingsManager: {
-			create(): PiSdkSettingsManager {
-				return {};
-			},
-		},
-		DefaultResourceLoader: FakeResourceLoader,
-		async createAgentSession(): Promise<{ session: StageSessionRuntime }> {
-			throw new Error("not used");
-		},
-	};
-}
-
-describe("workflow stage subagent policy", () => {
-	test("a prepared stage session resolves a fanout-authorized policy with full management", async () => {
-		const sdk = makeFakeAtomicSdk(join("/home", "user", ".atomic", "agent"));
-
-		const options = await prepareAtomicStageSessionOptions({ cwd: join("/tmp", "project") }, sdk);
-
-		assert.equal(options?.subagentPolicy?.fanoutAuthorized, true);
-		assert.equal(options?.subagentPolicy?.managementActions, "full");
-		assert.equal(options?.subagentPolicy?.inheritProjectContext, true);
-		assert.equal(options?.subagentPolicy?.inheritSkills, true);
-	});
-
-	test("an executor built from the stage policy reaches the delegation path", async () => {
-		const sdk = makeFakeAtomicSdk(join("/home", "user", ".atomic", "agent"));
-		const options = await prepareAtomicStageSessionOptions({ cwd: join("/tmp", "project") }, sdk);
-		const policy = options?.subagentPolicy;
-		assert.ok(policy, "stage options must carry a subagent policy");
-
-		const executor = makeExecutor(policy);
-		const listed = await runAction(executor, { action: "list" });
-		assert.ok(!resultText(listed).includes(FANOUT_MESSAGE));
-
-		const delegated = await runAction(executor, { agent: "alpha", task: "do work" });
-		assert.equal(delegated.isError, undefined);
-		assert.deepEqual(runSyncCalls, ["alpha"]);
-	});
-
-	test("the registered subagent tool rejects kill and interrupt before schema validation with an error naming quit", () => {
-		let registered: ToolDefinition | undefined;
-		const pi = {
-			registerTool: (tool: ToolDefinition) => {
-				registered = tool;
-			},
-			registerCommand: () => {},
-			registerMessageRenderer: () => {},
-			sendMessage: () => {},
-			on: () => {},
-			events: { on: () => () => {}, emit: () => {} },
-			getSessionName: () => "parent-session",
-		} as unknown as ExtensionAPI;
-		registerSubagentExtension(pi);
-		const prepare = registered?.prepareArguments;
-		assert.ok(prepare, "the subagent tool must prepare arguments before validation");
-		for (const action of ["kill", "interrupt"])
-			assert.throws(() => prepare({ action, id: "child" }), /was removed\. Use \{ action: "quit", id \}/);
-		assert.deepEqual(prepare({ action: "quit", id: "child" }), { action: "quit", id: "child" });
-	});
-
-	test("the parent-registered subagent tool answers 'list' for a stage-policy context", async () => {
-		// The production door a workflow stage actually goes through: the full
-		// subagents extension resolves an executor from `ctx.subagentPolicy`.
-		const sdk = makeFakeAtomicSdk(join("/home", "user", ".atomic", "agent"));
-		const options = await prepareAtomicStageSessionOptions({ cwd: join("/tmp", "project") }, sdk);
-		const policy = options?.subagentPolicy;
-		assert.ok(policy, "stage options must carry a subagent policy");
-
-		let registered: ToolDefinition | undefined;
-		const pi = {
-			registerTool: (tool: ToolDefinition) => {
-				registered = tool;
-			},
-			registerCommand: () => {},
-			registerMessageRenderer: () => {},
-			sendMessage: () => {},
-			on: () => {},
-			events: { on: () => () => {}, emit: () => {} },
-			getSessionName: () => "workflow-stage-session",
-		} as unknown as ExtensionAPI;
-		registerSubagentExtension(pi);
-		assert.ok(registered, "the subagent tool must be registered");
-
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-stage-parent-tool-"));
-		const result = (await registered.execute(
-			"stage-parent-list",
-			{ action: "list" },
-			new AbortController().signal,
-			undefined,
-			toolContext(makeContext(cwd, policy)),
-		)) as ExecutorResultForTest;
-
-		assert.notEqual(result.isError, true);
-		assert.ok(
-			!resultText(result).includes(FANOUT_MESSAGE),
-			`stage 'subagent list' must not be refused as fanout, got: ${resultText(result)}`,
-		);
 	});
 });

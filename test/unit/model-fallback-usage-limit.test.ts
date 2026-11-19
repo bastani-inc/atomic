@@ -2,32 +2,32 @@ import assert from "node:assert/strict";
 import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import { _isRetryableError } from "../../packages/coding-agent/src/core/agent-session-retry.js";
-import { isRetryableSameModelFailure } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
+import {
+	isRetryableModelFailure as hostIsRetryable,
+	normalizeModelFailureSignal as hostNormalize,
+	isRetryableSameModelFailure,
+} from "../../packages/coding-agent/src/core/model-fallback-failures.js";
 import {
 	isRetryableModelFailure as subagentsIsRetryable,
 	normalizeModelFailureSignal as subagentsNormalize,
 } from "../../packages/subagents/src/runs/shared/model-fallback.js";
-import {
-	isRetryableModelFailure as workflowsIsRetryable,
-	normalizeModelFailureSignal as workflowsNormalize,
-} from "../../packages/workflows/src/runs/shared/model-fallback.js";
 
 const USAGE_LIMIT_MESSAGE = "Codex error: The usage limit has been reached";
 
 describe("provider usage-limit exhaustion is a retryable quota/rate-limit failure", () => {
 	test("plain thrown error text classifies as rate_limit in both classifier copies", () => {
 		const failure = new Error(USAGE_LIMIT_MESSAGE);
-		assert.equal(workflowsNormalize(failure).kind, "rate_limit");
+		assert.equal(hostNormalize(failure).kind, "rate_limit");
 		assert.equal(subagentsNormalize(failure).kind, "rate_limit");
-		assert.equal(workflowsIsRetryable(failure), true);
+		assert.equal(hostIsRetryable(failure), true);
 		assert.equal(subagentsIsRetryable(failure), true);
 	});
 
 	test("session-shaped assistant error message classifies as rate_limit", () => {
 		const failure = { stopReason: "error", errorMessage: USAGE_LIMIT_MESSAGE };
-		assert.equal(workflowsNormalize(failure).kind, "rate_limit");
+		assert.equal(hostNormalize(failure).kind, "rate_limit");
 		assert.equal(subagentsNormalize(failure).kind, "rate_limit");
-		assert.equal(workflowsIsRetryable(failure), true);
+		assert.equal(hostIsRetryable(failure), true);
 		assert.equal(subagentsIsRetryable(failure), true);
 	});
 
@@ -41,9 +41,9 @@ describe("provider usage-limit exhaustion is a retryable quota/rate-limit failur
 			diagnostics: [{ error: { message: USAGE_LIMIT_MESSAGE } }],
 		};
 		for (const failure of [nestedCause, nestedDiagnostic]) {
-			assert.equal(workflowsNormalize(failure).kind, "rate_limit");
+			assert.equal(hostNormalize(failure).kind, "rate_limit");
 			assert.equal(subagentsNormalize(failure).kind, "rate_limit");
-			assert.equal(workflowsIsRetryable(failure), true);
+			assert.equal(hostIsRetryable(failure), true);
 			assert.equal(subagentsIsRetryable(failure), true);
 		}
 	});
@@ -57,9 +57,9 @@ describe("provider usage-limit exhaustion is a retryable quota/rate-limit failur
 			"quota_exceeded",
 		]) {
 			const failure = { code, message: "localized provider text" };
-			assert.equal(workflowsNormalize(failure).kind, "quota_exhausted", code);
+			assert.equal(hostNormalize(failure).kind, "quota_exhausted", code);
 			assert.equal(subagentsNormalize(failure).kind, "quota_exhausted", code);
-			assert.equal(workflowsIsRetryable(failure), true, code);
+			assert.equal(hostIsRetryable(failure), true, code);
 			assert.equal(subagentsIsRetryable(failure), true, code);
 		}
 	});
@@ -75,18 +75,18 @@ describe("provider usage-limit exhaustion is a retryable quota/rate-limit failur
 			"usagelimit reached",
 		]) {
 			const failure = new Error(message);
-			assert.equal(workflowsNormalize(failure).kind, "rate_limit", message);
+			assert.equal(hostNormalize(failure).kind, "rate_limit", message);
 			assert.equal(subagentsNormalize(failure).kind, "rate_limit", message);
-			assert.equal(workflowsIsRetryable(failure), true, message);
+			assert.equal(hostIsRetryable(failure), true, message);
 			assert.equal(subagentsIsRetryable(failure), true, message);
 		}
 	});
 
 	test("an unrelated 'limit' message is not mistaken for a usage-limit quota failure", () => {
 		const failure = new Error("array index limit reached");
-		assert.equal(workflowsNormalize(failure).kind, "unknown");
+		assert.equal(hostNormalize(failure).kind, "unknown");
 		assert.equal(subagentsNormalize(failure).kind, "unknown");
-		assert.equal(workflowsIsRetryable(failure), false);
+		assert.equal(hostIsRetryable(failure), false);
 		assert.equal(subagentsIsRetryable(failure), false);
 	});
 
@@ -95,17 +95,17 @@ describe("provider usage-limit exhaustion is a retryable quota/rate-limit failur
 			errorMessage: USAGE_LIMIT_MESSAGE,
 			cause: { name: "AbortError", message: "aborted by user" },
 		};
-		assert.equal(workflowsNormalize(failure).kind, "cancelled");
+		assert.equal(hostNormalize(failure).kind, "cancelled");
 		assert.equal(subagentsNormalize(failure).kind, "cancelled");
-		assert.equal(workflowsIsRetryable(failure), false);
+		assert.equal(hostIsRetryable(failure), false);
 		assert.equal(subagentsIsRetryable(failure), false);
 	});
 
 	test("safety refusals advance only as content-filter refusals; task/tool failures and unrelated errors are non-retryable", () => {
 		const refusal = new Error("request blocked by safety policy");
-		assert.equal(workflowsNormalize(refusal).kind, "content_filter");
+		assert.equal(hostNormalize(refusal).kind, "content_filter");
 		assert.equal(subagentsNormalize(refusal).kind, "content_filter");
-		assert.equal(workflowsIsRetryable(refusal, { fallbackOnContentFilter: false }), false);
+		assert.equal(hostIsRetryable(refusal, { fallbackOnContentFilter: false }), false);
 		assert.equal(isRetryableSameModelFailure(refusal), false);
 		const fixtures: readonly { failure: unknown; kind: string }[] = [
 			{ failure: new Error("tool call refused by provider"), kind: "task_failure" },
@@ -115,9 +115,9 @@ describe("provider usage-limit exhaustion is a retryable quota/rate-limit failur
 			{ failure: { message: "something inexplicable happened" }, kind: "unknown" },
 		];
 		for (const fixture of fixtures) {
-			assert.equal(workflowsNormalize(fixture.failure).kind, fixture.kind);
+			assert.equal(hostNormalize(fixture.failure).kind, fixture.kind);
 			assert.equal(subagentsNormalize(fixture.failure).kind, fixture.kind);
-			assert.equal(workflowsIsRetryable(fixture.failure), false);
+			assert.equal(hostIsRetryable(fixture.failure), false);
 			assert.equal(subagentsIsRetryable(fixture.failure), false);
 		}
 	});
@@ -185,8 +185,8 @@ describe("quota exhaustion and overload responses", () => {
 				stopReason: "error",
 				errorMessage: `Mistral API error (429): {"object":"error","message":"limit hit","type":"${code}","code":"${code}"}`,
 			};
-			assert.equal(workflowsNormalize(failure).kind, "quota_exhausted", code);
-			assert.equal(workflowsIsRetryable(failure), true, code);
+			assert.equal(hostNormalize(failure).kind, "quota_exhausted", code);
+			assert.equal(hostIsRetryable(failure), true, code);
 			assert.equal(isRetryableSameModelFailure(failure), false, code);
 		},
 	);
@@ -197,14 +197,14 @@ describe("quota exhaustion and overload responses", () => {
 		"usage_limit_reached: please retry later",
 	])("free-text quota or usage-limit wording stays a short rate limit: %s (#3984)", (errorMessage) => {
 		const failure = { stopReason: "error", errorMessage };
-		assert.equal(workflowsNormalize(failure).kind, "rate_limit");
+		assert.equal(hostNormalize(failure).kind, "rate_limit");
 		assert.equal(isRetryableSameModelFailure(failure), true);
 	});
 
 	test("a 402 assistant error is an exhausted quota that falls back without a same-model retry (#3984)", () => {
 		const failure = { stopReason: "error", errorMessage: '402 {"type":"error","error":{"message":"quota spent"}}' };
-		assert.equal(workflowsNormalize(failure).kind, "quota_exhausted");
-		assert.equal(workflowsIsRetryable(failure), true);
+		assert.equal(hostNormalize(failure).kind, "quota_exhausted");
+		assert.equal(hostIsRetryable(failure), true);
 		assert.equal(isRetryableSameModelFailure(failure), false);
 	});
 
@@ -222,10 +222,10 @@ describe("quota exhaustion and overload responses", () => {
 				},
 			});
 		const daily = { stopReason: "error", errorMessage: body("GenerateRequestsPerDayPerProjectPerModel-FreeTier") };
-		assert.equal(workflowsNormalize(daily).kind, "quota_exhausted");
+		assert.equal(hostNormalize(daily).kind, "quota_exhausted");
 		assert.equal(isRetryableSameModelFailure(daily), false);
 		const perMinute = { stopReason: "error", errorMessage: body("GenerateRequestsPerMinutePerProjectPerModel") };
-		assert.equal(workflowsNormalize(perMinute).kind, "rate_limit");
+		assert.equal(hostNormalize(perMinute).kind, "rate_limit");
 		assert.equal(isRetryableSameModelFailure(perMinute), true);
 	});
 
@@ -234,22 +234,22 @@ describe("quota exhaustion and overload responses", () => {
 			stopReason: "error",
 			errorMessage: "ServiceQuotaExceededException: Your request exceeds the service quota for your account.",
 		};
-		assert.equal(workflowsNormalize(quota).kind, "quota_exhausted");
+		assert.equal(hostNormalize(quota).kind, "quota_exhausted");
 		assert.equal(subagentsNormalize(quota).kind, "quota_exhausted");
 		assert.equal(isRetryableSameModelFailure(quota), false);
 		const named = Object.assign(new Error("Your request exceeds the service quota for your account."), {
 			name: "ServiceQuotaExceededException",
 		});
-		assert.equal(workflowsNormalize(named).kind, "quota_exhausted");
+		assert.equal(hostNormalize(named).kind, "quota_exhausted");
 		const throttled = Object.assign(new Error("Too many requests, please wait before trying again."), {
 			name: "ThrottlingException",
 		});
-		assert.equal(workflowsNormalize(throttled).kind, "rate_limit");
+		assert.equal(hostNormalize(throttled).kind, "rate_limit");
 	});
 
 	test("a 529 assistant error is a retryable overload even without overload wording (#3984)", () => {
 		const failure = { stopReason: "error", errorMessage: '529 {"type":"error","error":{"message":"try later"}}' };
-		assert.equal(workflowsNormalize(failure).kind, "provider_unavailable");
+		assert.equal(hostNormalize(failure).kind, "provider_unavailable");
 		assert.equal(isRetryableSameModelFailure(failure), true);
 	});
 });

@@ -317,7 +317,7 @@ function buildChatEntries(
 			}
 			case "system":
 				// System messages carry prompt sections, not chat content; rendering
-				// them printed a bare dim "system" line in workflow stage chats.
+				// them printed a bare dim "system" line in embedded chats.
 				break;
 			default: {
 				const role = (message as { role: string }).role;

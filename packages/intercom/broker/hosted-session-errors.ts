@@ -28,7 +28,7 @@ const HINTS: Readonly<Record<IntercomHostedSessionErrorCode, string>> = {
 	invalid_hosted_frame:
 		"Send between 1 and 500 sessions per frame, each under a distinct non-empty key, or 1 to 500 session ids to remove.",
 	invalid_hosted_session:
-		"Give each hosted session a non-empty name and a valid agent registration (cwd, model, pid and timestamps). A host with an Intercom reach policy hosts only sessions in groups it reaches or in workflow groups.",
+		"Give each hosted session a non-empty name and a valid agent registration (cwd, model, pid and timestamps). A host with an Intercom reach policy hosts only sessions in groups it reaches.",
 	not_hosted_by_connection:
 		"Only the connection that hosts a session may send as it or remove it; host the session again after a reconnect.",
 };

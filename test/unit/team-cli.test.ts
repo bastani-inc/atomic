@@ -33,7 +33,7 @@ import {
 	type StorageStatus,
 } from "../../packages/coding-agent/src/core/storage/storage-status.js";
 import { joinTeamWith } from "../../packages/coding-agent/src/core/storage/team.js";
-import { selectRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -44,9 +44,7 @@ const packageRoot = resolve(moduleDir(import.meta.url), "../../packages/storage-
 const STORAGE_VARIABLES = [
 	"ATOMIC_STORAGE",
 	"ATOMIC_SESSIONS_STORAGE",
-	"ATOMIC_WORKFLOWS_JOURNAL",
 	"ATOMIC_CODING_AGENT_SESSION_DIR",
-	"ATOMIC_WORKFLOW_JOURNAL_PATH",
 	"ATOMIC_PROFILE",
 	"ATOMIC_TEAM_URL",
 	"ATOMIC_TEAM_TOKEN",
@@ -136,7 +134,7 @@ async function team(args: string[]): Promise<{ code: number; out: string; err: s
 
 describe("atomic team join, status and leave (#4320)", () => {
 	test(
-		"join pins sessions to the local store, shares workflow runs and Intercom, restarts the broker and prints the status (#4320)",
+		"join pins sessions to the local store, shares Intercom, restarts the broker and prints the status (#4320)",
 		async () => {
 			writeSettings({ ...UNRELATED, packages: [packageRoot] });
 			const joined = await team(["join", databaseUrl, "--token-file", tokenFile, "--prefix", "team_"]);
@@ -164,10 +162,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 			assert.deepEqual(restarts, [agentDir]);
 			assert.doesNotMatch(`${joined.out}\n${joined.err}`, /team-secret-token/);
 			assert.match(joined.out, /^No Intercom broker was running/m);
-			assert.match(
-				joined.out,
-				/^Profile: team \(sessions on this machine; workflow runs and Intercom on the team database\)$/m,
-			);
+			assert.match(joined.out, /^Profile: team \(sessions on this machine; Intercom on the team database\)$/m);
 			assert.match(
 				joined.out,
 				new RegExp(
@@ -176,7 +171,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 				),
 			);
 			assert.match(joined.out, /^ {2}source: {6}global settings: sessions\.storage$/m);
-			assert.match(joined.out, /^Workflow runs: adapter @bastani\/atomic-storage-libsql \(prefix team_\)$/m);
+			assert.doesNotMatch(joined.out, /^Workflow runs:/m);
 			assert.match(joined.out, /^Intercom: adapter @bastani\/atomic-storage-libsql \(prefix team_\)$/m);
 			assert.match(joined.out, /^ {2}multi-node: {2}on$/m);
 			assert.match(joined.out, /^Intercom group: sessions in .* join "project:project"/m);
@@ -185,7 +180,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 	);
 
 	test(
-		"sessions stay local after join while workflow runs and Intercom use the team database (#4320)",
+		"sessions stay local after join while Intercom uses the team database (#4320)",
 		async () => {
 			writeSettings({ packages: [packageRoot] });
 			await joinTeam({ url: databaseUrl, tokenFile, agentDir, cwd: project });
@@ -194,9 +189,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 				kind: "sqlite",
 				path: join(agentDir, "workflows", "journal.sqlite"),
 			});
-			const journal = selectRunJournal({ agentDir, settings });
-			assert.ok("kind" in journal && journal.kind === "adapter");
-			assert.equal(journal.module, LIBSQL_ADAPTER_PACKAGE);
+
 			const status = await collectStorageStatus({ cwd: project, agentDir, probe: false });
 			const intercom = status.domains.find((domain) => domain.domain === "intercom");
 			assert.equal(intercom?.selection, `adapter ${LIBSQL_ADAPTER_PACKAGE}`);

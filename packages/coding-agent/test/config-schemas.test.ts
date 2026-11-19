@@ -378,7 +378,7 @@ describe("settings.json schema", () => {
 				search: { contextBefore: 2, contextAfter: 4 },
 				herdr: { enabled: false },
 				markdown: { codeBlockIndent: "  ", mermaid: "final", latex: false },
-				packages: ["pi-skills", { source: "pi-skills", workflows: [], mcpServers: [], autoload: false }],
+				packages: ["pi-skills", { source: "pi-skills", skills: [], mcpServers: [], autoload: false }],
 				workflows: { paths: ["./workflows"], journal: { path: "workflows/project.sqlite" } },
 				streamDeadlineMs: "5m",
 				codemode: { mode: "only", inlineBudget: 0 },
@@ -386,86 +386,13 @@ describe("settings.json schema", () => {
 			true,
 		);
 		assert.equal(validator.Check({ cacheWarming: "always" }), false);
-		assert.equal(validator.Check({ workflows: { journal: { path: "runs.sqlite", memory: true } } }), false);
+		// Removed settings, including now-irrelevant journal errors, do not invalidate old files.
+		assert.equal(validator.Check({ workflows: { journal: { path: "runs.sqlite", memory: true } } }), true);
 		// Removed compaction keys are ignored, so a stale value never makes settings invalid.
 		assert.equal(
 			validator.Check({ compaction: { compression_ratio: 1, background: "yes", planningTimeoutMs: -1 } }),
 			true,
 		);
-	});
-
-	it("validates public workflow worker and admission settings (#3869)", () => {
-		const validator = Compile(SettingsSchema);
-		const definitions = [{ path: "./child.ts", exportName: "child" }];
-		assert.equal(
-			validator.Check({
-				workflows: {
-					localWorkers: { count: 2, definitions },
-					admission: {
-						limits: { session: 2, process: 4 },
-						userLimits: { session: 3 },
-						userDatabase: "/tmp/journal.sqlite",
-						host: { maxLoadPerCpu: 0, minFreeMemoryBytes: 1024 },
-					},
-				},
-			}),
-			true,
-		);
-		for (const workflows of [
-			{ localWorkers: { count: 0, definitions } },
-			{ localWorkers: { count: 1.5, definitions } },
-			{ localWorkers: { count: 1 } },
-			{ localWorkers: { count: 1, definitions: [{ path: "./child.ts" }] } },
-			{ admission: { limits: { session: 0 } } },
-			{ admission: { userLimits: { process: 1.5 } } },
-			{ admission: { host: { maxLoadPerCpu: -1 } } },
-			{ admission: { host: { minFreeMemoryBytes: -1 } } },
-		])
-			assert.equal(validator.Check({ workflows }), false, JSON.stringify(workflows));
-	});
-
-	it("validates the local worker startup timeout setting (#3887)", () => {
-		const validator = Compile(SettingsSchema);
-		const definitions = [{ path: "./child.ts", exportName: "child" }];
-		assert.equal(
-			validator.Check({ workflows: { localWorkers: { count: 2, definitions, startupTimeoutMs: 120_000 } } }),
-			true,
-		);
-		for (const startupTimeoutMs of [0, 1.5, 2_147_483_648, "60s"])
-			assert.equal(
-				validator.Check({ workflows: { localWorkers: { count: 2, definitions, startupTimeoutMs } } }),
-				false,
-				String(startupTimeoutMs),
-			);
-	});
-
-	it("validates the local worker lease setting (#3888)", () => {
-		const validator = Compile(SettingsSchema);
-		const definitions = [{ path: "./child.ts", exportName: "child" }];
-		assert.equal(validator.Check({ workflows: { localWorkers: { count: 2, definitions, leaseMs: 60_000 } } }), true);
-		for (const leaseMs of [0, 1_999, 2_000.5, 2_147_483_648, "30s"])
-			assert.equal(
-				validator.Check({ workflows: { localWorkers: { count: 2, definitions, leaseMs } } }),
-				false,
-				String(leaseMs),
-			);
-	});
-
-	it("validates the local worker heartbeat setting (#4313)", () => {
-		const validator = Compile(SettingsSchema);
-		const definitions = [{ path: "./child.ts", exportName: "child" }];
-		for (const heartbeatMs of [100, 15_000])
-			assert.equal(
-				validator.Check({ workflows: { localWorkers: { count: 2, definitions, leaseMs: 60_000, heartbeatMs } } }),
-				true,
-				String(heartbeatMs),
-			);
-		for (const heartbeatMs of [0, 99, 250.5, 1_073_741_824, "15s"])
-			assert.equal(
-				validator.Check({ workflows: { localWorkers: { count: 2, definitions, heartbeatMs } } }),
-				false,
-				String(heartbeatMs),
-			);
 	});
 
 	it("rejects settings values that runtime accessors reject", () => {

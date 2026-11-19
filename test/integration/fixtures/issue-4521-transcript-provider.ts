@@ -9,8 +9,6 @@
  * - main chat, "launch-child": a background `worker` subagent on this model, then "MAIN-LAUNCHED"
  * - the child: thinking, CHILD-LINE-001..120 and a `seq` of CHILD-TOOL lines, then a `true` tool call every few
  *   seconds until a message containing E2E-PING-4521 reaches it, which it answers with "CHILD-ACK E2E-PING-4521"
- * - the workflow stage (prompt STAGE_TASK_4521): thinking, `seq` of STAGE-TOOL lines, STAGE-LINE-001..150, then a
- *   `true` tool call every few seconds, so the stage stays live and keeps adding output while it is inspected
  *
  * Holding a turn open with the model's own delay, rather than a long shell command, keeps the turn in the
  * foreground: a shell past its wait budget would background and release the session.
@@ -90,17 +88,6 @@ export default function (pi: ExtensionAPI): void {
 						{ type: "text", text: lines("CHILD-LINE", 120) },
 						bash('seq -f "CHILD-TOOL-%03g" 1 60'),
 					];
-				else {
-					delayMs = HOLD_MS;
-					content = [bash("true")];
-				}
-			} else if (all.includes("STAGE_TASK_4521")) {
-				if (answered === 0)
-					content = [
-						{ type: "thinking", thinking: "STAGE-THINKING planning the stage" },
-						bash('seq -f "STAGE-TOOL-%03g" 1 60'),
-					];
-				else if (answered === 1) content = [{ type: "text", text: lines("STAGE-LINE", 150) }, bash("true")];
 				else {
 					delayMs = HOLD_MS;
 					content = [bash("true")];

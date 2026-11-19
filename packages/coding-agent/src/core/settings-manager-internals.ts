@@ -1,9 +1,11 @@
-import type { Settings } from "./settings-types.ts";
+import type { SettingsManager } from "./settings-manager-core.ts";
+import type { Settings, SettingsScope } from "./settings-types.ts";
 
 export interface SettingsManagerInternals {
 	globalSettings: Settings;
 	projectSettings: Settings;
 	settings: Settings;
+	legacyWorkflowPaths: Partial<Record<SettingsScope, string[]>>;
 	markModified(field: keyof Settings, nestedKey?: string): void;
 	markProjectModified(field: keyof Settings, nestedKey?: string): void;
 	save(): void;
@@ -12,6 +14,12 @@ export interface SettingsManagerInternals {
 
 export function settingsInternals(manager: object): SettingsManagerInternals {
 	return manager as unknown as SettingsManagerInternals;
+}
+
+/** Read-only migration input, kept out of the SDK settings interface. */
+export function legacyWorkflowFilePaths(manager: SettingsManager, scope: SettingsScope): string[] {
+	if (scope === "project" && !manager.isProjectTrusted()) return [];
+	return [...(settingsInternals(manager).legacyWorkflowPaths[scope] ?? [])];
 }
 
 /**
