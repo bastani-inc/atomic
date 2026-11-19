@@ -21,7 +21,13 @@ import {
 	resumeReleasedChild,
 } from "./released-child-resume.js";
 import { subagentWakeKey } from "./released-children.js";
-import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
+import {
+	boundedWorktreeReply,
+	observeChildWorktreeAtReply,
+	parkRunWorktree,
+	unparkRunWorktree,
+	WORKTREE_REPLY_WAIT_MS,
+} from "./run-worktrees.js";
 import { indexSubagentChildOwner, observedSubagentRunIds } from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
 import {
@@ -49,7 +55,7 @@ import {
 	type SubagentChildRestoreOutcome,
 	subagentChildRestoring,
 } from "./subagent-child-restore.js";
-import { isQueuedSubagentChild, stopQueuedSubagentChild } from "./task-execution.js";
+import { isFinishingWorktreeTask, isQueuedSubagentChild, stopQueuedSubagentChild } from "./task-execution.js";
 
 /** The prompt a resumed child runs when `resume` carries no message, as a resumed workflow stage receives. */
 export const SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT =
@@ -269,6 +275,10 @@ async function stopHostChild(
 	status: SubagentChildStopStatus,
 ): Promise<string | undefined> {
 	const taskId = record.taskId as TaskId;
+	if (isFinishingWorktreeTask(taskId)) {
+		await waitForSettlement(host, taskId);
+		return undefined;
+	}
 	requestSubagentChildStop(taskId, status);
 	// It stays resumable: its worktree is kept if it has unsaved work when its run's worktrees are removed.
 	parkRunWorktree(record.runId, record.index);
@@ -276,13 +286,13 @@ async function stopHostChild(
 	const cancelled = await host.cancelTask(taskId, status === "quit" ? "quit" : "pause");
 	if (!cancelled.ok) {
 		takeSubagentChildStop(taskId);
-		unparkRunWorktree(record.runId, record.index);
-		return cancelled.error.message;
+		const note = await boundedWorktreeReply(record.runId, unparkRunWorktree(record.runId, record.index));
+		return [cancelled.error.message, note].filter(Boolean).join(" ");
 	}
 	// It settled on its own before the stop reached it: nothing takes the stop, and its worktree is not stopped (#5172).
 	if (cancelled.value.decision === "already-settled") {
 		takeSubagentChildStop(taskId);
-		unparkRunWorktree(record.runId, record.index);
+		await boundedWorktreeReply(record.runId, unparkRunWorktree(record.runId, record.index));
 		return undefined;
 	}
 	// A child cancelled while still queued never starts, so nothing else records how it stopped.
@@ -366,6 +376,7 @@ async function stopChildren(
 	request: SubagentRunControlRequest & { action: "pause" | "quit" },
 ): Promise<SubagentToolResult> {
 	const { action } = request;
+	const deadline = Date.now() + WORKTREE_REPLY_WAIT_MS;
 	const status: SubagentChildStopStatus = action === "pause" ? "paused" : "quit";
 	const host = ctx.getAgentTaskHost?.();
 	const live = liveTaskIds(host);
@@ -457,8 +468,23 @@ async function stopChildren(
 			`${action === "pause" ? "Paused" : "Quit"} released ${label(latest)}: it is not woken any more, and results of the calls it waited on are kept for its resume. Resume it with { action: "resume", id: "${latest.childId}", message? }.`,
 		);
 	}
-	const text = [...lines, ...failures].join("\n");
-	return controlResult(text, { action, children }, failures.length > 0 && children.length === 0);
+	// Broker acknowledgements and later targets can yield while a sibling starts the batch sweep.
+	const trees = targets.filter((record) => record.worktree && !record.worktree.named);
+	const notes = trees.length
+		? await Promise.all(
+				trees.map(async (record) => {
+					const note = await observeChildWorktreeAtReply(record.runId, record.index, deadline);
+					return note ? `${label(record)}: ${note}` : undefined;
+				}),
+			)
+		: [];
+	const worktreeNotes = notes.filter((note) => note !== undefined);
+	const text = [...lines, ...failures, ...worktreeNotes].join("\n");
+	return controlResult(
+		text,
+		{ action, children, ...(worktreeNotes.length ? { worktreeNotes } : {}) },
+		failures.length > 0 && children.length === 0,
+	);
 }
 
 /** What {@link unlessInterrupted} gives when the turn that asked for the work was interrupted first. */
@@ -487,7 +513,7 @@ function interruptedResume(record: SubagentChildRecord, withdrawn: boolean, mess
 		"resume",
 		withdrawn
 			? `Interrupted before ${label(record)} took the resume: it was withdrawn, and the child does not run it${message ? " or get your message" : ""}. Resume it again when you are ready.`
-			: `Interrupted while ${label(record)} was being resumed: the resume had begun and goes on${message ? " with your message" : ""}. subagent({ action: "status", id: "${record.childId}" }) shows how it went.`,
+			: `Interrupted while ${label(record)} was being resumed: the resume had begun and goes on${message ? " with your message" : ""}.${record.worktree && !record.worktree.named ? " Any worktree cleanup continues in the background." : ""} subagent({ action: "status", id: "${record.childId}" }) shows how it went.`,
 	);
 }
 
@@ -686,7 +712,7 @@ export function controlSubagentChildren(
 		result === INTERRUPTED
 			? errorResult(
 					action,
-					`Interrupted before ${action} finished: the stop was requested and goes on. subagent({ action: "status"${request.id ? `, id: "${request.id}"` : ""} }) shows where ${request.id ? "the child stands" : "each child stands"}.`,
+					`Interrupted before ${action} finished: the stop was requested and goes on. Any worktree cleanup continues in the background. subagent({ action: "status"${request.id ? `, id: "${request.id}"` : ""} }) shows where ${request.id ? "the child stands" : "each child stands"}.`,
 				)
 			: result,
 	);

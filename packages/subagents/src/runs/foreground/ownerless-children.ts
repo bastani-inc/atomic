@@ -3,8 +3,8 @@ import type { AgentSource } from "../../agents/agent-types.js";
 import type { RunSyncOptions, SingleResult } from "../../shared/types.js";
 import { isExecutionTicket } from "../shared/parallel-utils.js";
 import {
+	beginWorktreeExecution,
 	claimRunWorktree,
-	holdRunWorktree,
 	parkRunWorktree,
 	runWorktreeRecord,
 	unparkRunWorktree,
@@ -161,9 +161,16 @@ export function runOwnerlessChild(input: {
 		});
 	};
 	const settled = Promise.withResolvers<void>();
+	const finishWorktree = beginWorktreeExecution(runId, index);
+	let finishing = false;
+	const end = () => {
+		liveLaunches.delete(launchId);
+		settled.resolve();
+	};
 	const launch: OwnerlessLaunch = {
 		dispatched: false,
 		async stop(status) {
+			if (finishing) return settled.promise;
 			// It stays resumable: its worktree is kept if it has unsaved work when its run's worktrees are removed.
 			parkRunWorktree(runId, index);
 			if (launch.dispatched) {
@@ -195,9 +202,31 @@ export function runOwnerlessChild(input: {
 					recordChild: resumed.recordChild,
 				}),
 			);
+			if (finishWorktree) await finishWorktree();
 			record("terminal", status);
+			end();
 			await input.recordChild.flushed?.();
 		},
+	};
+	const finishChild = async (child: SingleResult) => {
+		const stopped = takeSubagentChildStop(launchId);
+		const stoppedByControl = stopped !== undefined && child.status === "interrupted";
+		const ownerClosed = !stoppedByControl && child.status === "interrupted" && input.ownerSignal?.aborted === true;
+		if (stopped !== undefined && !stoppedByControl) unparkRunWorktree(runId, index);
+		if (child.status === "killed") forgetRunMembership(runId, index);
+		if (ownerClosed) parkRunWorktree(runId, index);
+		if (finishWorktree) {
+			finishing = true;
+			child.worktreeNote = await finishWorktree();
+		}
+		if (ownerClosed) record("running", undefined, pendingMessagesOfResult(child));
+		else
+			record(
+				"terminal",
+				stoppedByControl ? stopped : child.status,
+				stoppedByControl ? pendingMessagesOfResult(child) : undefined,
+			);
+		return child;
 	};
 	const execute = async (options: RunSyncOptions): Promise<SingleResult> => {
 		launch.dispatched = true;
@@ -212,10 +241,21 @@ export function runOwnerlessChild(input: {
 			};
 		// This execution owns the child's worktree now; a stopped child's worktree was kept for it until here.
 		claimRunWorktree(runId, index);
+		let detached = false;
 		try {
 			const running = input.runSync(input.task, {
 				...options,
 				signal,
+				...(finishWorktree && {
+					onDetachedExit: async (child: SingleResult) => {
+						try {
+							await finishChild(child);
+						} finally {
+							end();
+							options.onDetachedExit?.(child);
+						}
+					},
+				}),
 				onChildSession: (session) => {
 					childSession = {
 						childSessionId: session.sessionId,
@@ -235,31 +275,19 @@ export function runOwnerlessChild(input: {
 			});
 			if (isExecutionTicket(input.schedule)) input.schedule.onEntered();
 			const child = await running;
-			const stopped = takeSubagentChildStop(launchId);
-			const stoppedByControl = stopped !== undefined && child.status === "interrupted";
-			const ownerClosed = !stoppedByControl && child.status === "interrupted" && input.ownerSignal?.aborted === true;
-			// Run control marked it stopped before it stopped it; a child that ended otherwise is not stopped.
-			if (stopped !== undefined && !stoppedByControl) unparkRunWorktree(runId, index);
-			if (child.status === "killed") forgetRunMembership(runId, index);
-			if (ownerClosed) {
-				// Its owner closed, which ends nothing: it stays restorable, with its worktree and unread messages.
-				parkRunWorktree(runId, index);
-				record("running", undefined, pendingMessagesOfResult(child));
-				return child;
-			}
-			// A child that stays resumable keeps what it had queued and not read, for its resume.
-			record(
-				"terminal",
-				stoppedByControl ? stopped : child.status,
-				stoppedByControl ? pendingMessagesOfResult(child) : undefined,
-			);
-			return child;
+			detached = !!finishWorktree && child.detached === true;
+			return detached ? child : await finishChild(child);
 		} catch (error) {
 			if (isExecutionTicket(input.schedule)) input.schedule.onEntered();
 			if (takeSubagentChildStop(launchId) !== undefined) unparkRunWorktree(runId, index);
+			finishing = !!finishWorktree;
+			const note = finishWorktree && (await finishWorktree());
 			// Its owner closed: its latest record stays `running`, so reopening the owner restores it.
 			if (input.ownerSignal?.aborted !== true) record("terminal", "error");
+			if (note) throw new Error(`${String(error)}. ${note}`, { cause: error });
 			throw error;
+		} finally {
+			if (finishWorktree && !detached) end();
 		}
 	};
 	liveLaunches.set(launchId, launch);
@@ -280,23 +308,14 @@ export function runOwnerlessChild(input: {
 					input.agent,
 					input.task,
 					(dispatch) => {
-						const release = holdRunWorktree(runId, index);
-						schedule(() => dispatch().finally(release));
+						schedule(dispatch);
 						if (isExecutionTicket(schedule)) schedule.onObserved();
 					},
 					execute,
 				)
-			: (async () => {
-					const release = holdRunWorktree(runId, index);
-					try {
-						return await execute(input.options);
-					} finally {
-						release();
-					}
-				})()
+			: execute(input.options)
 	).finally(() => {
-		liveLaunches.delete(launchId);
-		settled.resolve();
+		if (!finishWorktree) end();
 	});
 	return { launchId, result };
 }

@@ -575,7 +575,8 @@ function extractInlineSettledOutput(
 ): string | undefined {
 	if (ownerId) {
 		const kept = retainedTaskOutput(ownerId, taskId);
-		if (kept?.head?.trim()) return kept.head.trim();
+		if (kept?.worktreeNote || kept?.head?.trim())
+			return [kept.worktreeNote, kept.head.trim()].filter(Boolean).join("\n\n");
 	}
 	const textPart = result.content.find((part) => part.type === "text");
 	if (textPart?.type !== "text") return undefined;

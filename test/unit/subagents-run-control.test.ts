@@ -108,6 +108,7 @@ import {
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
 import { subagentStartHoldMs } from "../../packages/subagents/src/runs/shared/start-progress.js";
+import * as worktrees from "../../packages/subagents/src/runs/shared/worktree.js";
 import * as artifactStorage from "../../packages/subagents/src/shared/artifacts.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import {
@@ -3131,6 +3132,118 @@ test("resuming a completed worktree child starts from its saved edits, and no ex
 	assert.match(latest, /draft by A/, "the resumed execution's patch keeps the earlier draft");
 	assert.match(latest, /second pass by A/, "the resumed execution's patch has its own edits");
 });
+
+test("waiting for a finished child checks a batch sweep already started by its sibling (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const first = Promise.withResolvers<void>(),
+		last = Promise.withResolvers<void>();
+	h.finishOn.set("first-child", first);
+	h.finishOn.set("last-child", last);
+	const [a, b] = await launchWorktreeRun(h, ["first-child", "last-child"]);
+	assert.ok(a?.taskId && b?.taskId);
+	await h.waitForLatest(a.childId, (record) => !!record.childSessionId);
+	first.resolve();
+	await settled(h, a.taskId);
+	const held = await h.call({ action: "wait", id: a.taskId });
+	assert.match(text(held), /worktree kept until the other children in this batch finish/i);
+	const reached = Promise.withResolvers<void>(),
+		proceed = Promise.withResolvers<void>();
+	const capture = worktrees.diffWorktrees;
+	const gate = vi.spyOn(worktrees, "diffWorktrees").mockImplementation(async (...args) => {
+		reached.resolve();
+		await proceed.promise;
+		return capture(...args);
+	});
+	try {
+		last.resolve();
+		await reached.promise;
+		const observing = h.call({ action: "wait", id: a.taskId });
+		setImmediate(proceed.resolve);
+		const reply = await observing;
+		assert.equal(existsSync(a.cwd), false, "the already-running batch sweep finished before wait replied");
+		assert.doesNotMatch(text(reply), /worktree kept until/i);
+	} finally {
+		proceed.resolve();
+		gate.mockRestore();
+		last.resolve();
+		await settled(h, b.taskId);
+		await waitForWorktreeCleanup(h, a);
+	}
+});
+
+test("an SDK pause waits for its worktree sweep without waiting on the foreground batch reply (#5600)", async () => {
+	const h = harness({ ownerless: true });
+	initGitRepository(h.cwd);
+	const finish = Promise.withResolvers<void>();
+	h.finishOn.set("sdk-swept", finish);
+	const batch = h.call({ tasks: [{ agent: "worker", task: "sdk-swept" }], worktree: true });
+	try {
+		const child = await vi.waitFor(
+			() => {
+				const record = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+					(r) => r.childSessionId,
+				);
+				assert.ok(record);
+				return record;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		const paused = await h.call({ action: "pause", id: child.childId });
+		assert.notEqual(paused.isError, true, text(paused));
+		assert.equal(existsSync(child.cwd), false, "the SDK stop replies after the sweep, not before the batch returns");
+	} finally {
+		finish.resolve();
+		await batch;
+	}
+});
+
+for (const waiting of ["Esc", "deadline"] as const)
+	test(`${waiting} releases a pause waiting on worktree cleanup with a note, without stopping the sweep (#5600)`, async () => {
+		const h = harness();
+		initGitRepository(h.cwd);
+		h.finishOn.set("stalled-cleanup", Promise.withResolvers<void>());
+		const [child] = await launchWorktreeRun(h, ["stalled-cleanup"]);
+		assert.ok(child?.taskId);
+		await h.waitForLatest(child.childId, (record) => !!record.childSessionId);
+		const reached = Promise.withResolvers<void>(),
+			proceed = Promise.withResolvers<void>();
+		const check = worktrees.worktreeHasUnsavedWork;
+		const gate = vi.spyOn(worktrees, "worktreeHasUnsavedWork").mockImplementation(async (...args) => {
+			reached.resolve();
+			await proceed.promise;
+			return check(...args);
+		});
+		const turn = new AbortController();
+		const stop = h.call({ action: "pause", id: child.childId }, turn.signal);
+		try {
+			await reached.promise;
+			if (waiting === "Esc") {
+				const watched = h.host.watchOwnerTasks();
+				assert.ok(watched.ok);
+				try {
+					assert.notEqual(
+						watched.value.snapshot.tasks.find((t) => t.ref.taskId === child.taskId)?.execution.kind,
+						"settled",
+					);
+				} finally {
+					watched.value.dispose();
+				}
+				assert.equal(h.latest(child.childId)?.state, "running");
+				turn.abort();
+				assert.ok(await settlesWithin(stop), "Esc must not wait for the sweep deadline");
+			}
+			const reply = await stop;
+			assert.match(text(reply), /worktree cleanup.*background/i);
+			assert.equal(reply.isError === true, waiting === "Esc");
+			assert.equal(existsSync(child.cwd), true);
+		} finally {
+			proceed.resolve();
+			gate.mockRestore();
+			await settled(h, child.taskId);
+			await waitForWorktreeCleanup(h, child);
+		}
+	});
 
 for (const action of ["completion", "pause", "quit", "pause after completion"] as const)
 	test(`${action} reports only after the child's worktree sweep (#5600)`, async () => {

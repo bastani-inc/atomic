@@ -21,6 +21,8 @@ export type RetainedTaskOutput = {
 	/** Leading bytes of the output, bounded by INLINE_TASK_OUTPUT_MAX_BYTES. */
 	readonly head: string;
 	readonly totalBytes: number;
+	worktreeNote?: string;
+	readonly worktree?: { readonly runId: string; readonly index: number };
 };
 
 const retained = new Map<string, RetainedTaskOutput>();
@@ -84,6 +86,7 @@ export async function retainTaskOutput(
 	child: SingleResult,
 	text: string,
 	ref: { readonly ownerId: string; readonly taskId: string },
+	worktree?: RetainedTaskOutput["worktree"],
 ): Promise<void> {
 	const path = await writePrivateCopy(ref.ownerId, ref.taskId, await fullOutputText(child, text));
 	const key = retentionKey(ref.ownerId, ref.taskId);
@@ -93,6 +96,8 @@ export async function retainTaskOutput(
 		...(path ? { path } : {}),
 		...(child.outputReference ? { requestedPath: child.outputReference.path } : {}),
 		...(child.outputSaveError ? { saveError: child.outputSaveError } : {}),
+		...(worktree ? { worktree } : {}),
+		...(child.worktreeNote ? { worktreeNote: child.worktreeNote } : {}),
 		head: utf8Head(text, INLINE_TASK_OUTPUT_MAX_BYTES),
 		totalBytes: Buffer.byteLength(text, "utf-8"),
 	});

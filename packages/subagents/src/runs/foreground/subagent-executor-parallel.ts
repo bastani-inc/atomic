@@ -28,7 +28,7 @@ import { resolveModelCandidate, resultRanOnLine } from "../shared/model-fallback
 import { formatParallelResultContent } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
-import type { WorktreeSetup } from "../shared/worktree.js";
+import { formatWorktreeDiffSummary, type WorktreeSetup } from "../shared/worktree.js";
 import { registerRunWorktrees } from "./run-worktrees.js";
 import { createSubagentChildRecordSink } from "./subagent-child-records.js";
 import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.js";
@@ -42,11 +42,9 @@ import {
 	BURST_EXECUTION_SCHEDULE,
 	type ExecutionContextData,
 	type ResolvedExecutorDeps,
-	type TaskParam,
 } from "./subagent-executor-types.js";
 import {
 	buildParallelModeError,
-	buildParallelWorktreeSuffix,
 	buildParallelWorktreeTaskCwdError,
 	createParallelWorktreeSetup,
 	findDuplicateParallelOutputPath,
@@ -164,10 +162,18 @@ export async function runParallelPath(
 	if (errorResult) return errorResult;
 	// Each child execution holds the worktrees; they go once the run returned and no execution holds them, except a
 	// stopped child's worktree with unsaved work.
+	let worktreeSuffix = "";
 	const runWorktrees = worktreeSetup
 		? registerRunWorktrees(runId, worktreeSetup, {
 				diffsDir: parallelWorktreeDiffsDir(artifactsDir, runId),
 				agents: tasks.map((task) => task.agent),
+				...(ctx.getAgentTaskHost
+					? {}
+					: {
+							onCaptured: (diffs) => {
+								worktreeSuffix = formatWorktreeDiffSummary(diffs);
+							},
+						}),
 			})
 		: undefined;
 
@@ -206,6 +212,7 @@ export async function runParallelPath(
 		// context then throws on every read. Its stage admission outlives that session, so read it now.
 		const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 		const results = await runForegroundParallelTasks({
+			runWorktrees,
 			wait: params.wait,
 			...(params.heartbeatMs === undefined ? {} : { heartbeatMs: params.heartbeatMs }),
 			schedule: params[BURST_EXECUTION_SCHEDULE],
@@ -346,16 +353,12 @@ export async function runParallelPath(
 			};
 		}
 
-		const worktreeSuffix = await buildParallelWorktreeSuffix(
-			worktreeSetup,
-			artifactsDir,
-			runId,
-			tasks as TaskParam[],
-		);
 		const childContent = formatParallelResultContent(
 			results.map((result) => ({
 				agent: result.agent,
-				output: result.truncation?.text || getSingleResultOutput(result),
+				output: [result.worktreeNote, result.truncation?.text || getSingleResultOutput(result)]
+					.filter(Boolean)
+					.join("\n\n"),
 				status: result.status,
 				error: result.error,
 				...(result.cause ? { cause: result.cause } : {}),

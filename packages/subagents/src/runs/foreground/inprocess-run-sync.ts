@@ -664,7 +664,7 @@ async function launchSingleInProcess(
 				}
 				forgetIfReleased(control, continuedOutcome);
 				await persistRequestedOutput(recovered, options, outputSnapshot);
-				options.onDetachedExit?.(recovered);
+				await options.onDetachedExit?.(recovered);
 			})
 			.catch((error: unknown) => {
 				// #3981: nothing awaits a detached child's exit, and a run's async scope fails on any unhandled rejection.
