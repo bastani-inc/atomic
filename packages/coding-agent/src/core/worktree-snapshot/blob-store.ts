@@ -62,7 +62,11 @@ export interface SnapshotIndexTables {
 	 * in `chunks` rows of {@link SnapshotIndexTables.blobChunks}.
 	 */
 	readonly blobs: string;
-	/** `(hash, idx, data)`: the chunks of each blob larger than {@link SNAPSHOT_BLOB_CHUNK_BYTES}, in order (#4954). */
+	/**
+	 * `(hash, idx, data)`: the chunks of each blob larger than {@link SNAPSHOT_BLOB_CHUNK_BYTES}, in order (#4954). An
+	 * ordinary table whose primary key is an index of its own, never `WITHOUT ROWID` (#5541): see
+	 * {@link chunkTableDefinition}.
+	 */
 	readonly blobChunks: string;
 	/** `(run_id, hash)`: each blob a run's tool or stage checkpoints reference, once per run. */
 	readonly runRefs: string;
@@ -251,6 +255,13 @@ export const SNAPSHOT_COLLECTION_BATCH = 256;
  * proportional to that value's size.
  */
 export const SNAPSHOT_LEGACY_STAMP_BYTES = 16 * SNAPSHOT_BLOB_CHUNK_BYTES;
+
+/**
+ * The most chunk rows one write transaction copies or frees while collection moves a chunk table an earlier release
+ * created `WITHOUT ROWID` to the row layout (#5541). Each costs a read of its 1 MiB, cold on a first move, under the
+ * write lock.
+ */
+export const SNAPSHOT_CHUNK_MOVE_ROWS = 4;
 
 /** Rows of one referencing table that one backfill transaction indexes. */
 export const SNAPSHOT_INDEX_BACKFILL_BATCH = 500;
@@ -774,6 +785,31 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 }
 
 /**
+ * Creates a chunk table named `table` unless it exists. An ordinary table, whose primary key is an index of its own:
+ * a lookup reads that small index, then only the row it finds. A `WITHOUT ROWID` table, as earlier releases created,
+ * keeps each row in its key's b-tree, so a seek reads the whole record of every 1 MiB row it compares on its way, and
+ * every lookup, a delete's of a blob without chunks included, read several chunks (#5541). On Postgres both are the
+ * same heap table.
+ */
+function chunkTableDefinition(table: string, dialect: StorageDialect): string {
+	const { int, text, blob } = dialect.types;
+	return `CREATE TABLE IF NOT EXISTS ${table} (hash ${text} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL, PRIMARY KEY (hash, idx))${dialect.tableOptions}`;
+}
+
+/** The trigger that deletes a blob's chunks with it, in the statement that deletes it, whoever deletes it. */
+const chunksDeleteTrigger = (t: SnapshotIndexTables) =>
+	createTrigger(`${t.blobs}_chunks_delete_all`, "DELETE", t.blobs, [
+		`DELETE FROM ${t.blobChunks} WHERE hash = OLD.hash`,
+	]);
+
+/**
+ * The tables of a chunk table's move to the row layout (#5541): `next`, the new table it fills, which then takes the
+ * chunk table's name, and `retired`, the old table under its new name until it is emptied and dropped.
+ */
+const chunkMoveTables = (t: SnapshotIndexTables) =>
+	({ next: `${t.blobChunks}_next`, retired: `${t.blobChunks}_retired` }) as const;
+
+/**
  * Chunked blobs (#4954): the chunk table, the blob table's `chunks` column, 0 for a blob whose bytes are in its own row,
  * as every blob written before it was, and the trigger that deletes a blob's chunks with it. Idempotent.
  */
@@ -782,24 +818,15 @@ async function addBlobChunks(
 	t: SnapshotIndexTables,
 	dialect: StorageDialect,
 ): Promise<void> {
-	const { int, text, blob } = dialect.types;
-	await transaction.exec(
-		`CREATE TABLE IF NOT EXISTS ${t.blobChunks} (hash ${text} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL, PRIMARY KEY (hash, idx))${dialect.withoutRowidTableOptions}`,
-	);
+	await transaction.exec(chunkTableDefinition(t.blobChunks, dialect));
 	const column = dialect.columnExists(t.blobs, "chunks");
 	if (!(await transaction.get(column.sql, ...column.params))) {
-		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
+		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN chunks ${dialect.types.int} NOT NULL DEFAULT 0`);
 	}
 	const trigger = dialect.schemaObjects([`${t.blobs}_chunks_delete_all`]);
 	if (await transaction.get(trigger.sql, ...trigger.params)) return;
 	await transaction.exec(dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs, true));
-	await transaction.exec(
-		dialect.renderTrigger(
-			createTrigger(`${t.blobs}_chunks_delete_all`, "DELETE", t.blobs, [
-				`DELETE FROM ${t.blobChunks} WHERE hash = OLD.hash`,
-			]),
-		),
-	);
+	await transaction.exec(dialect.renderTrigger(chunksDeleteTrigger(t)));
 }
 
 /** Creates the blob table and the tables of its reference index that are missing. */
@@ -1714,6 +1741,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			options.onBatch?.(batch.deleted);
 			if (batch.page.length < SNAPSHOT_COLLECTION_BATCH) {
 				await this.stampLegacyAges(options);
+				await this.moveChunksToRowTable(options);
 				return deleted;
 			}
 			cursor = batch.page.at(-1);
@@ -1845,6 +1873,116 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			`DELETE FROM ${t.blobChunks} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND NOT EXISTS (SELECT 1 FROM ${t.blobs} AS stored WHERE stored.hash = ${t.blobChunks}.hash AND stored.chunks > 0)`,
 			JSON.stringify(hashes),
 		);
+	}
+
+	/**
+	 * Moves a chunk table that an earlier release created `WITHOUT ROWID` to the row layout of
+	 * {@link chunkTableDefinition} (#5541), in write transactions that each copy or free at most
+	 * {@link SNAPSHOT_CHUNK_MOVE_ROWS} chunks in all. It copies the rows, in key order, to a new table in that layout;
+	 * later transactions copy the rows written since and drop the copies of rows deleted since, and the one that leaves
+	 * the new table holding exactly the chunk table's rows gives it the chunk table's name, under which the old one is
+	 * kept until later transactions empty and drop it. The chunk table keeps its name, columns and key throughout, so
+	 * a process of an earlier release reads and writes it unchanged, and a chunk is copied with its bytes: its key, a
+	 * blob's hash and an index, names them. A stopped move resumes from what the tables hold. Does nothing on a chunk
+	 * table in the row layout, which every Postgres table is.
+	 */
+	private async moveChunksToRowTable(options: SnapshotIndexOptions): Promise<void> {
+		const t = this.tables;
+		const { next, retired } = chunkMoveTables(t);
+		// The old table is `WITHOUT ROWID` under either name, so one statement tells a store with nothing to move, as
+		// every store is once its move is over.
+		const probe = this.dialect.withoutRowidTables([t.blobChunks, retired]);
+		const clustered = async (executor: SqliteExecutor) =>
+			(await executor.all<SqliteRow & { name: string }>(probe.sql, ...probe.params)).map((row) => row.name);
+		const rows = SNAPSHOT_CHUNK_MOVE_ROWS;
+		const pending = await clustered(this.database);
+		if (pending.includes(retired)) await this.dropRetiredChunks(options);
+		if (!pending.includes(t.blobChunks)) return;
+		// Copies the rows after the last one copied: no other statement writes the new table before it is renamed.
+		const copyNext = async (transaction: SqliteExecutor) => {
+			const last = await transaction.get<SqliteRow & { hash: string; idx: number }>(
+				`SELECT hash, idx FROM ${next} ORDER BY hash DESC, idx DESC LIMIT 1`,
+			);
+			const { changes } = await transaction.run(
+				`INSERT INTO ${next} (hash, idx, data) SELECT hash, idx, data FROM ${t.blobChunks} WHERE (hash, idx) > (?, ?) ORDER BY hash, idx LIMIT ? ON CONFLICT DO NOTHING`,
+				last?.hash ?? "",
+				last?.idx ?? -1,
+				rows,
+			);
+			return changes;
+		};
+		// Copies the first rows the new table lacks, wherever they are: rows written behind the copy.
+		const copyMissing = async (transaction: SqliteExecutor) => {
+			const { changes } = await transaction.run(
+				`INSERT INTO ${next} (hash, idx, data) SELECT old.hash, old.idx, old.data FROM ${t.blobChunks} AS old WHERE NOT EXISTS (SELECT 1 FROM ${next} AS copy WHERE copy.hash = old.hash AND copy.idx = old.idx) ORDER BY old.hash, old.idx LIMIT ?`,
+				rows,
+			);
+			return changes;
+		};
+		// The rows the new table holds and the chunk table no longer does: copies of rows deleted since they were copied.
+		const stale = `SELECT hash, idx FROM ${next} EXCEPT SELECT hash, idx FROM ${t.blobChunks}`;
+		for (let copying = true; ; ) {
+			options.signal?.throwIfAborted();
+			const moved = await this.write(options.pace, async (transaction) => {
+				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
+				if (!(await clustered(transaction)).includes(t.blobChunks)) return true;
+				await transaction.exec(chunkTableDefinition(next, this.dialect));
+				if (copying) {
+					copying = (await copyNext(transaction)) === rows;
+					return false;
+				}
+				// Rows copied and stale copies dropped share the transaction's rows. The tables are renamed only by a transaction
+				// that leaves the new table holding exactly the chunk table's rows; otherwise the next transaction continues.
+				const copied = await copyMissing(transaction);
+				if (copied === rows) return false;
+				const room = rows - copied;
+				const { changes: dropped } = await transaction.run(
+					`DELETE FROM ${next} WHERE (hash, idx) IN (${stale} LIMIT ?)`,
+					room,
+				);
+				if (dropped === room && (await transaction.get(`${stale} LIMIT 1`)) !== undefined) return false;
+				// Renaming the table would point a trigger that names it at the old table: both of the delete triggers releases
+				// installed are dropped, and the current one is installed again on the new table.
+				await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs));
+				await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete_all`, t.blobs));
+				await transaction.exec(`ALTER TABLE ${t.blobChunks} RENAME TO ${retired}`);
+				await transaction.exec(`ALTER TABLE ${next} RENAME TO ${t.blobChunks}`);
+				await transaction.exec(this.dialect.renderTrigger(chunksDeleteTrigger(t)));
+				return true;
+			});
+			await this.betweenBatches(options.pace);
+			if (moved) break;
+		}
+		await this.dropRetiredChunks(options);
+	}
+
+	/**
+	 * Empties the chunk table a move to the row layout retired, in write transactions of at most
+	 * {@link SNAPSHOT_CHUNK_MOVE_ROWS} rows, from its first key on, then drops it.
+	 */
+	private async dropRetiredChunks(options: SnapshotIndexOptions): Promise<void> {
+		const { retired } = chunkMoveTables(this.tables);
+		const probe = this.dialect.tableExists(retired);
+		if ((await this.database.get(probe.sql, ...probe.params)) === undefined) return;
+		for (;;) {
+			options.signal?.throwIfAborted();
+			const dropped = await this.write(options.pace, async (transaction) => {
+				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
+				if ((await transaction.get(probe.sql, ...probe.params)) === undefined) return true;
+				const last = await transaction.get<SqliteRow & { hash: string; idx: number }>(
+					`SELECT hash, idx FROM ${retired} ORDER BY hash, idx LIMIT 1 OFFSET ?`,
+					SNAPSHOT_CHUNK_MOVE_ROWS - 1,
+				);
+				if (last === undefined) {
+					await transaction.exec(`DROP TABLE IF EXISTS ${retired}`);
+					return true;
+				}
+				await transaction.run(`DELETE FROM ${retired} WHERE (hash, idx) <= (?, ?)`, last.hash, last.idx);
+				return false;
+			});
+			await this.betweenBatches(options.pace);
+			if (dropped) return;
+		}
 	}
 
 	/** {@link completeIndex}, then {@link sweep}: what a manual collection does. */
