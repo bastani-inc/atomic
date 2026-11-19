@@ -10,6 +10,7 @@ import type { SessionEntry } from "./session-manager-types.ts";
 import { TOOL_OUTPUT_ENTRY_TYPE } from "./session-tool-output.ts";
 import { SessionConflictError } from "./storage/session/errors.js";
 import { historyChunks, historyPages, type SessionHistorySource } from "./storage/session/history-pages.js";
+import { isExtensionCustomState } from "./storage/session/session-resume.js";
 import type { OversizedSessionEntry } from "./storage/session/types.js";
 import { TOOL_DEACTIVATION_ENTRY_TYPE } from "./tool-deactivation.ts";
 
@@ -219,7 +220,11 @@ export function forkContextPath(
 		let entry: SessionEntry | undefined = source;
 		if (source.type === "message" && source.message.role === "bashExecution" && source.message.excludeFromContext) {
 			entry = undefined;
-		} else if (!window.has(source.id) && source.type === "message") {
+		} else if (
+			!window.has(source.id) &&
+			source.type === "message" &&
+			!(source.message.role === "system" && (source.message.toolsAdded || source.message.toolsRemoved))
+		) {
 			// A previous assistant can have selected the effective model even without a model change entry. Keep
 			// the setting, never its covered answer or reasoning.
 			entry =
@@ -253,6 +258,7 @@ export function forkContextPath(
 				(source.data as { toolCallId?: string } | undefined)?.toolCallId;
 			if (
 				!forkSettings.has(source.customType) &&
+				!isExtensionCustomState(source.customType) &&
 				!displayEvidence?.has(source.id) &&
 				!(source.customType === TOOL_OUTPUT_ENTRY_TYPE && (window.has(source.id) || (ref && toolResults.has(ref))))
 			)

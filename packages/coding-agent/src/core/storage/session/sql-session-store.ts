@@ -2109,7 +2109,15 @@ export class SqlSessionStore implements SessionStore {
 					`CASE WHEN ${deliveryOp} THEN '["op"]' WHEN ${j("type")} = 'custom' THEN ${dataFieldNames} ELSE '[]' END`,
 				],
 				...projected,
-				["message", this.dialect.jsonObject(messageKeys.map((key) => [key, j("message", key)] as const))],
+				[
+					"message",
+					this.dialect.jsonObject([
+						...messageKeys.map((key) => [key, j("message", key)] as const),
+						...["toolsAdded", "toolsRemoved"].map(
+							(key) => [key, `CASE WHEN ${jsonType("message", key)}='array' THEN 1 END`] as const,
+						),
+					]),
+				],
 				// The chunked delivery protocol uses only its operation ID. Other extension values are opaque,
 				// not encoded membership lists, task records, or owners to send and parse on the client.
 				["data", `CASE WHEN ${deliveryOp} THEN ${this.dialect.jsonObject([["op", op]])} ELSE ${dataExpr} END`],
@@ -2142,7 +2150,7 @@ export class SqlSessionStore implements SessionStore {
 				values.map((value) => `'${value.replaceAll("'", "''")}'`).join(",");
 			const source = `chunks > 0 OR ${j("type")} IN (${list(RESUME_UPGRADE_SOURCES.types)})
 				OR (${j("type")} = 'message' AND ${j("message", "role")} = 'system')
-				OR (${j("type")} = 'custom' AND ${j("customType")} IN (${list(RESUME_UPGRADE_SOURCES.customTypes)}))`;
+				OR (${j("type")} = 'custom' AND ${j("customType")} NOT IN (${list(RESUME_UPGRADE_SOURCES.omittedCustomTypes)}))`;
 			const sources = !upgrade
 				? ""
 				: sqlite
@@ -2773,8 +2781,9 @@ export class SqlSessionStore implements SessionStore {
 						},
 						entryId,
 						async (seqs) => {
-							// Chunked rows store their ID, parent and type inline. A chunked compaction or custom
-							// record needs the bounded projection; other rows need only their links for this walk.
+							// Chunked rows store their ID, parent and type inline. A chunked compaction, custom record or
+							// message (which may be a system message) needs the bounded projection; other rows need only
+							// their links for this walk.
 							const pg = this.dialect.name === "postgres";
 							const key = (...path: string[]) =>
 								pg
@@ -2790,6 +2799,7 @@ export class SqlSessionStore implements SessionStore {
 								key("coveredThroughEntryId"),
 								key("details", "strategy"),
 								`CASE WHEN ${key("customType")} IN ('task-completion-intent','task-completion-ack') AND ${this.dialect.jsonAtIsText(pg ? { column: "entry_json", element: "parsed" } : { column: "entry_json" }, "data", "completionId")} THEN ${key("data", "completionId")} END`,
+								key("message", "role"),
 							]);
 							const links = await tx.all<SqliteRow & { seq: number; chunks: number; link: string | null }>(
 								`WITH projected AS MATERIALIZED (SELECT seq,chunks,CAST(${projection} AS TEXT) AS link FROM ${entries} ${pg ? `CROSS JOIN LATERAL (SELECT ${postgresJsonb("entry_json")} AS value OFFSET 0) AS parsed` : ""} WHERE session_id=? AND seq BETWEEN ? AND ?) SELECT seq,chunks,CASE WHEN ${this.dialect.textByteLength("link")}<=512 THEN link END AS link FROM projected ORDER BY seq`,
@@ -2811,11 +2821,16 @@ export class SqlSessionStore implements SessionStore {
 												string | null,
 												string | null,
 												string | null,
+												string | null,
 											]);
-								if (!link || (Number(r.chunks) > 0 && (link[2] === "custom" || link[2] === "compaction")))
+								if (
+									!link ||
+									(Number(r.chunks) > 0 &&
+										(link[2] === "custom" || link[2] === "compaction" || link[2] === "message"))
+								)
 									page.push(...(await metadata([Number(r.seq)])));
 								else {
-									const [id, parentId, type, customType, first, covered, strategy, completionId] = link;
+									const [id, parentId, type, customType, first, covered, strategy, completionId, role] = link;
 									page.push({
 										seq: Number(r.seq),
 										id,
@@ -2823,6 +2838,7 @@ export class SqlSessionStore implements SessionStore {
 										type,
 										customType: customType ?? undefined,
 										completionId: completionId ?? undefined,
+										...(type === "message" && role === "system" ? { system: true } : {}),
 										...(type === "compaction" && strategy === "verbatim-lines"
 											? { boundary: { first, covered: covered ?? undefined } }
 											: {}),

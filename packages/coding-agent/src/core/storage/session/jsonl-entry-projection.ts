@@ -42,6 +42,8 @@ const ENTRY = object({
 		model: exact,
 		usage: exact,
 		toolCallId: exact,
+		toolsAdded: leaf,
+		toolsRemoved: leaf,
 		content: { kind: "tools" },
 		command: leaf,
 		output: leaf,
