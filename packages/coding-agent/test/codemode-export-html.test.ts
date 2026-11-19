@@ -143,9 +143,16 @@ test.each([
 			const savedText = `${scriptHeader}\n${outputText}`;
 			const outputs = Array.from(
 				execution.querySelectorAll(".tool-output"),
-				(block) => (block.querySelector(".output-full") ?? block).textContent ?? "",
+				(block) => block.querySelector(".output-full") ?? block,
 			);
-			assert.ok(outputs.includes(savedText), JSON.stringify(outputs));
+			const resultBlock = outputs.find((block) => block.textContent === savedText);
+			assert.ok(resultBlock, JSON.stringify(outputs.map((block) => block.textContent)));
+			if (savedText.endsWith("\n")) {
+				assert.ok(
+					resultBlock.querySelector("br:last-child"),
+					"the final empty line is rendered so selection includes its newline",
+				);
+			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

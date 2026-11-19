@@ -1665,7 +1665,10 @@
         const node = template.content.firstElementChild;
         if (textNodes.length) {
           for (const block of node.querySelectorAll('[data-saved-text]')) {
-            block.textContent = textNodes[block.dataset.savedText];
+            const text = textNodes[block.dataset.savedText];
+            block.textContent = text;
+            // Without a final line box, selecting this block omits its last newline.
+            if (text.endsWith('\n')) block.appendChild(document.createElement('br'));
           }
         }
 
