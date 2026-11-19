@@ -191,7 +191,7 @@ Restored completions may have only an outcome and task identity if the original 
 
 A collapsed subagent notice shows the first wrapped line of its result; a shell notice shows only its line. Use the expand-tools key, normally Ctrl+O, for the shell's last output lines or the agent's full retained result, or `/tasks` to inspect.
 
-Completion notices are unshaded. Long titles shorten to fit one terminal row, and expanded results wrap to the terminal width. Ctrl+O shows the entire retained agent result, up to 8,000 characters.
+Completion notices are unshaded. Long titles shorten to fit one terminal row, and expanded results wrap to the terminal width. A subagent's saved preview and its result excerpt for the parent stop before any character, such as an emoji, that would cross the 8,000 UTF-16 code unit limit. The child's full result is unchanged.
 
 ## Task heartbeats
 
