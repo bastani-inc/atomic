@@ -1,7 +1,7 @@
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import type { RpcSlashCommand } from "../rpc/rpc-types.ts";
 
-export type RemoteCommandsListener = (commands: readonly RpcSlashCommand[]) => void;
+export type RemoteCommandsListener = (commands: readonly RpcSlashCommand[], forNextView?: true) => void;
 
 export class RemoteCommandCatalog {
 	private commands: readonly RpcSlashCommand[] = [];
@@ -27,14 +27,17 @@ export class RemoteCommandCatalog {
 	 * Kick off a best-effort catalog fetch. Fire-and-forget by design: the caller
 	 * (engine bind, restart, reload, new/resume/fork) must not await it.
 	 */
-	refresh(): void {
+	refresh(forNextView = false): void {
 		const generation = ++this.generation;
 		void this.client
 			.getCommands()
 			.then((commands) => {
 				if (generation !== this.generation) return;
 				this.commands = commands;
-				for (const listener of this.listeners) listener(commands);
+				for (const listener of this.listeners) {
+					if (forNextView) listener(commands, true);
+					else listener(commands);
+				}
 			})
 			.catch(() => {
 				// Best-effort: keep the last good catalog when the child is momentarily

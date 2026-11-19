@@ -33,6 +33,7 @@ import {
 import type { MissingCwdForkSource } from "./interactive-mode-surface.ts";
 import { showQueueRestoreFailure } from "./interactive-queueing.ts";
 import { clearChatForRerender } from "./interactive-render-chat.ts";
+import { onPreliminaryCatalogWithdrawn } from "./interactive-startup-trust.ts";
 import { resolveResumeTarget, workflowResumeSession } from "./resume-catalog.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
@@ -321,7 +322,11 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 		);
 		selector.onLabelError = (error) => this.showError(error.message);
 		selector.onLabelUpdate = () => this.ui.requestRender();
-		return { component: selector, focus: selector };
+		const dispose = onPreliminaryCatalogWithdrawn(this, () => {
+			selector.getTreeList().updateInitialFilter(this.settingsManager.getTreeFilterMode());
+			this.ui.requestRender();
+		});
+		return { component: selector, focus: selector, dispose };
 	});
 };
 

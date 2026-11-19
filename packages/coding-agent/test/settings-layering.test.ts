@@ -59,6 +59,43 @@ function globalLayeredManager(atomic: object, pi: object): SettingsManager {
 	return SettingsManager.fromStorage(storage);
 }
 
+test("approval preserves only the settings the user edited that the project actually supplies (#5693)", async () => {
+	writeJson(globalPath, { terminal: { showImages: false } });
+	writeJson(atomicProjectPath, { terminal: { showImages: true, imageWidthCells: 80 } });
+	const manager = await SettingsManager.createAsync(projectDir, agentDir, { projectTrusted: false });
+	manager.trackEditsWhileProjectTrustPending(true);
+	manager.setShowImages(true);
+	manager.setShowImages(false); // Back to its old value is still an explicit choice.
+	manager.setTreeFilterMode("all");
+	await manager.flush();
+	await manager.setProjectTrustedAsync(true);
+	manager.trackEditsWhileProjectTrustPending(false);
+	expectAfterApproval();
+	writeJson(atomicProjectPath, { ...readJson(atomicProjectPath), treeFilterMode: "user-only" });
+	await manager.reload();
+	assert.equal(manager.getTreeFilterMode(), "user-only", "a later reload is not a setting applied at approval");
+	expectAfterApproval();
+	manager.setShowImages(false); // A later explicit save to global uses normal project-over-global layering.
+	await manager.flush();
+	assert.equal(manager.getShowImages(), true);
+	assert.equal((readJson(globalPath).terminal as { showImages: boolean }).showImages, false);
+	function expectAfterApproval() {
+		assert.equal(manager.getShowImages(), false);
+		assert.equal(manager.getImageWidthCells(), 80);
+		assert.deepEqual(manager.getProjectSettings().terminal, { showImages: true, imageWidthCells: 80 });
+	}
+});
+
+test("recording a startup notice is not an explicit user preference (#5693)", async () => {
+	writeJson(atomicProjectPath, { lastChangelogVersion: "1.0.0" });
+	const manager = await SettingsManager.createAsync(projectDir, agentDir, { projectTrusted: false });
+	manager.trackEditsWhileProjectTrustPending(true);
+	manager.setLastChangelogVersion("2.0.0");
+	await manager.flush();
+	await manager.setProjectTrustedAsync(true);
+	assert.equal(manager.getLastChangelogVersion(), "1.0.0");
+});
+
 describe("each settings file is validated on its own (#5049)", () => {
 	test("a wrong-typed .atomic value falls through to the valid .pi value (#5049)", () => {
 		const manager = projectManager({ extensions: "./bad.ts" }, { extensions: ["./good.ts"] });
