@@ -276,7 +276,9 @@ export async function* historyPages(
 					}
 				: {}),
 		};
-		if (stamp !== undefined) pageGenerations.set(read, { store, sessionId, epoch: stamp });
+		// A forked file's partial reader has no reader-only chat records of its own.
+		if (stamp !== undefined)
+			pageGenerations.set(read, { store: "chatRecords" in store ? store : {}, sessionId, epoch: stamp });
 		yield read;
 		if (!hasNext) return;
 		await yieldToEventLoop();
