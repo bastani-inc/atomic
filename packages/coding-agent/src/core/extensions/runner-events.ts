@@ -11,6 +11,7 @@ import {
 import {
 	discoveryCalls,
 	forwardedDiscoveryId,
+	isRawStartupHandler,
 	startupRegistrationTokens,
 	watchDiscoveryCall,
 } from "./loader-bindings.ts";
@@ -625,15 +626,18 @@ export async function runResourcesDiscoverHandlers(
 	const themePaths: ResourcesDiscoverCombinedResult["themePaths"] = [];
 
 	const copies = new Map<string, number>();
-	for (const [extensionIndex, { ext, handlers }] of snapshotEventHandlers(
-		extensions,
-		"resources_discover",
-	).entries()) {
+	const snapshot = snapshotEventHandlers(extensions, "resources_discover");
+	// Multiple raw callbacks could forward the very same registration. Without evidence of which wrapper was
+	// rebuilt, keep reporting by raw callback identity, just as for non-forwarding handlers.
+	const raw = reason === "startup" ? snapshot.flatMap(({ handlers }) => handlers.filter(isRawStartupHandler)) : [];
+	const forwarder = raw.length === 1 ? raw[0] : undefined;
+	for (const { ext, handlers } of snapshot) {
 		const tokens = startupRegistrationTokens(ext, handlers, copies);
 		for (const [index, handler] of handlers.entries()) {
 			const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
-			const call = reason === "startup" ? watchDiscoveryCall(handler, event) : undefined;
+			const call = handler === forwarder ? watchDiscoveryCall(event) : undefined;
 			let returned: unknown;
+			let callbackSucceeded = false;
 			try {
 				const result = (await runCallback(
 					{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
@@ -642,6 +646,7 @@ export async function runResourcesDiscoverHandlers(
 						return returned;
 					},
 				)) as ResourcesDiscoverResult | undefined;
+				callbackSucceeded = true;
 				if (result?.skillPaths?.length) {
 					skillPaths.push(...result.skillPaths.map((path) => ({ path, extensionPath: ext.path })));
 				}
@@ -652,9 +657,7 @@ export async function runResourcesDiscoverHandlers(
 					themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
 				}
 			} catch (error) {
-				const delegate = forwardedDiscoveryId(call, returned, error);
-				// Two installations of the same forwarding function are still two registrations.
-				const forwarded = delegate === undefined ? undefined : JSON.stringify([extensionIndex, index, delegate]);
+				const forwarded = callbackSucceeded ? undefined : forwardedDiscoveryId(call, returned, error);
 				emitCaughtError(emitError, ext.path, "resources_discover", error, tokens[index], forwarded);
 			} finally {
 				if (call) discoveryCalls.delete(event);

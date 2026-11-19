@@ -44,7 +44,7 @@ async function configuredClient(ctx: ExtensionCommandContext): Promise<LlamaClie
 
 export default function llamaExtension(pi: ExtensionAPI): void {
 	const provider = createLlamaProvider();
-	const registration = pi.registerProvider(provider.provider);
+	pi.registerProvider(provider.provider);
 
 	const syncCatalog = async (
 		ctx: ExtensionCommandContext,
@@ -183,7 +183,7 @@ export default function llamaExtension(pi: ExtensionAPI): void {
 		ctx.ui.notify(`Downloaded ${model}`);
 	};
 
-	const command: Parameters<ExtensionAPI["registerCommand"]>[1] = {
+	pi.registerCommand("llama", {
 		description: "Manage llama.cpp router models",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") {
@@ -229,15 +229,5 @@ export default function llamaExtension(pi: ExtensionAPI): void {
 				}
 			});
 		},
-	};
-	try {
-		pi.registerCommand("llama", command);
-	} catch (error) {
-		// On a stale API both registrations fail. Observe the abandoned provider promise without letting a
-		// host-supplied promise change the synchronous command error. A successful load never waits on it.
-		void Promise.resolve()
-			.then(() => registration)
-			.catch(() => {});
-		throw error;
-	}
+	});
 }

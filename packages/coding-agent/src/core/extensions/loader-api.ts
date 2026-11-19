@@ -117,6 +117,7 @@ export function createExtensionAPI(
 	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	registrationSource: object | string = extension,
+	installation: object | string = extension,
 ): { api: ExtensionAPI; commit: () => void; discard: () => void } {
 	const originalRuntime = runtime;
 	const startupOwner = startupSourceId(registrationSource);
@@ -235,7 +236,7 @@ export function createExtensionAPI(
 				const slot = nextStartupHandlerSlot.get(event) ?? 0;
 				nextStartupHandlerSlot.set(event, slot + 1);
 				const id = registerFactoryStartupHandler(registeredHandler, startupOwner, event, slot);
-				if (event === "resources_discover") discoveryId = id;
+				if (event === "resources_discover") discoveryId = JSON.stringify([startupSourceId(installation), id]);
 			}
 			const list = extension.handlers.get(event) ?? [];
 			list.push(registeredHandler);

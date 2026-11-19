@@ -60,8 +60,11 @@ const discoveriesHost = globalThis as typeof globalThis & { [discoveriesKey]?: W
 discoveriesHost[discoveriesKey] ??= new WeakMap();
 export const discoveryCalls = discoveriesHost[discoveriesKey];
 
-export function watchDiscoveryCall(handler: Callback, event: object): DiscoveryCall | undefined {
-	if (identities.startup.has(originalRegistrationCallback(handler))) return undefined;
+export function isRawStartupHandler(handler: Callback): boolean {
+	return !identities.startup.has(originalRegistrationCallback(handler));
+}
+
+export function watchDiscoveryCall(event: object): DiscoveryCall {
 	const call: DiscoveryCall = { calls: 0 };
 	discoveryCalls.set(event, call);
 	return call;
