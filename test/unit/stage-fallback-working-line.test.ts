@@ -242,7 +242,7 @@ describe("a stage chat's working line across the stage's own model fallback (#55
 			await assert.rejects(stage.ctx.prompt("Fix the picker"));
 			const ended = stage.status();
 			assert.ok(
-				ended.some((line) => / for 6s/.test(line)) && !ended.some((line) => line.includes("switching model")),
+				ended.some((line) => / for 6s/.test(line)) && !ended.some((line) => line.includes("Switching model")),
 				`the turn ends where its switch failed: ${ended.join(" | ")}`,
 			);
 			now = 60_000;
@@ -384,7 +384,7 @@ describe("a stage chat opened after the stage moved its turn to the fallback mod
 				if (host === "worker") worker = await workerStageHandle(stage.handle);
 				chat = openStageChat(worker?.handle ?? stage.handle);
 				const rows = chat.rows().join("\n");
-				assert.match(rows, /switching model/);
+				assert.match(rows, /Switching model/);
 				assert.match(rows, /esc interrupt/);
 				chat.pressEscape();
 				await sleep(0);
@@ -420,7 +420,7 @@ describe("a stage chat opened after the stage moved its turn to the fallback mod
 			chat = openStageChat(stage.handle);
 			const switching = chat.rows();
 			assert.ok(
-				switching.some((row) => row.includes("switching model")),
+				switching.some((row) => row.includes("Switching model")),
 				`the chat shows the switch: ${switching.filter((row) => row.includes("∀") || row.includes("switching")).join(" | ")}`,
 			);
 			release.resolve();
@@ -450,7 +450,7 @@ describe("a stage chat opened after the stage moved its turn to the fallback mod
 			const paused = stage.ctx.__requestPause();
 			const stopped = chat.rows();
 			assert.ok(
-				stopped.some((row) => / for 7s/.test(row)) && !stopped.some((row) => row.includes("switching model")),
+				stopped.some((row) => / for 7s/.test(row)) && !stopped.some((row) => row.includes("Switching model")),
 				`the turn ends at the pause: ${stopped.filter((row) => row.includes("∀")).join(" | ")}`,
 			);
 			release.resolve();
@@ -580,7 +580,7 @@ describe("a stage chat opened after the stage moved its turn to the fallback mod
 			await sleep(120);
 			const switching = openedStageChat(worker.handle);
 			assert.ok(
-				switching.some((row) => row.includes("switching model")),
+				switching.some((row) => row.includes("Switching model")),
 				`the chat shows the switch: ${switching.filter((row) => row.includes("∀")).join(" | ")}`,
 			);
 			assert.equal(worker.handle.turnStartedAt, 1_000);
