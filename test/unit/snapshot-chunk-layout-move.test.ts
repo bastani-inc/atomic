@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.ts";
 
@@ -605,7 +605,8 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 
 					// Collector A finds the partial copy; collector B, on another connection, then finishes the whole move, or
 					// finds no room for it and drops the copy, before A reads anything else.
-					const path = database.descriptor.location.replace(/^file:\/\//, "").replace(/^file:/, "");
+					const { location } = database.descriptor;
+					const path = adapter === "libsql" ? fileURLToPath(location) : location;
 					const collectorB = await SqlSnapshotBlobStore.open(await openDatabase(path), prefix);
 					let interleaved = false;
 					const paused: SqliteDatabase = {
