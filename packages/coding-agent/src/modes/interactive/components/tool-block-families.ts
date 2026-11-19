@@ -398,8 +398,11 @@ function presentRead(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 		: undefined;
 	const imagePart = input.result?.content.find((part) => part.type === "image");
 	if (imagePart || /^Read image file \[/i.test(rawText)) {
-		const dimsFromImage =
-			imagePart?.data && imagePart.mimeType ? getImageDimensions(imagePart.data, imagePart.mimeType) : null;
+		// A saved image over the page budget carries only the header, sufficient for common image dimensions.
+		const saved = savedReadLines(input.result?.content) === null;
+		const data = imagePart?.data ?? (saved ? asString(details?.savedImageHeader) : undefined);
+		const mime = imagePart?.mimeType ?? (saved ? asString(details?.savedImageType) : undefined);
+		const dimsFromImage = data && mime ? getImageDimensions(data, mime) : null;
 		const dimMatch = /(\d+)\s*[x×]\s*(\d+)/.exec(rawText);
 		const widthPx =
 			asNumber(details?.widthPx) ?? dimsFromImage?.widthPx ?? (dimMatch ? Number(dimMatch[1]) : undefined);

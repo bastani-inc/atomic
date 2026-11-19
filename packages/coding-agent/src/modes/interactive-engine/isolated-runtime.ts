@@ -144,14 +144,19 @@ export function engineAgentPanelCounts(
 
 /** How long host listeners wait for the session view after a compaction before they get its events anyway. */
 const COMPACTION_VIEW_HOLD_MS = 3_000;
+type HeldHostEvent = { event: JsonAgentSessionEvent; audience: number };
 
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
 	/** The host session's listeners, which get the engine's events through one ordered subscription. */
-	private readonly hostListeners = new Set<(event: JsonAgentSessionEvent) => void>();
+	private readonly hostListeners = new Map<number, (event: JsonAgentSessionEvent) => void>();
+	private lastHostListener = 0;
+	private releasingHostEvents?: HeldHostEvent[];
 	private hostEventsSubscribed = false;
 	/** Events held, in order, from a compaction's end until the session view shows its boundary. */
-	private compactionHold: { readonly events: JsonAgentSessionEvent[]; readonly timer: NodeJS.Timeout } | undefined;
+	private compactionHold:
+		| { readonly events: HeldHostEvent[]; readonly timer: NodeJS.Timeout; readonly generation: number | undefined }
+		| undefined;
 	private compactionHoldReported = false;
 	/** The engine prepares every resume of this session and builds its blueprints; this mirror only restores the same state. */
 	protected override resumeBlueprints: "build" | "skip" = "skip";
@@ -303,6 +308,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		);
 		this.initialStart?.catch(() => {});
 		this.client.onGenerationEnded((event) => {
+			if (this.compactionHold?.generation === event.generation) this.discardHeldHostEvents();
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
 				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
@@ -902,6 +908,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	): Promise<{ cancelled: boolean }> {
 		const result = await this.client.switchSession(sessionId, options?.cwdOverride, options?.sessionDirectory);
 		if (!result.cancelled) {
+			this.discardHeldHostEvents();
 			this.queueResumeNotices(result.notices ?? []);
 			await super.switchSession(sessionId, {
 				cwdOverride: options?.cwdOverride,
@@ -917,6 +924,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override async newSession(options?: { parentSession?: string }): Promise<{ cancelled: boolean }> {
 		const result = await this.client.newSession(options?.parentSession);
 		if (result.cancelled) return result;
+		this.discardHeldHostEvents();
 		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
@@ -935,6 +943,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			cwdOverride,
 		});
 		if (result.cancelled) return { cancelled: true };
+		this.discardHeldHostEvents();
 		this.queueResumeNotices(result.notices ?? []);
 		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
@@ -961,6 +970,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			selectedText = result.text;
 		}
 		if (cancelled) return { cancelled: true };
+		this.discardHeldHostEvents();
 		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
@@ -983,6 +993,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override dispose(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.disposePromise) return this.disposePromise;
 		this.disposed = true;
+		this.discardHeldHostEvents();
+		this.hostListeners.clear();
 		this.stopSharingDebugSetting();
 		this.disposePromise = (async () => {
 			// A quit the user asked for must reach the engine before it is stopped: the stop
@@ -1360,11 +1372,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private subscribeHost(listener: (event: JsonAgentSessionEvent) => void): () => void {
 		if (!this.hostEventsSubscribed) {
 			this.hostEventsSubscribed = true;
-			this.client.onEvent((event) => this.deliverHostEvent(event));
+			this.client.onEvent((event) => {
+				if (this.releasingHostEvents) this.releasingHostEvents.push({ event, audience: this.lastHostListener });
+				else this.deliverHostEvent(event, this.lastHostListener);
+			});
 		}
-		this.hostListeners.add(listener);
+		const subscription = ++this.lastHostListener;
+		this.hostListeners.set(subscription, listener);
 		return () => {
-			this.hostListeners.delete(listener);
+			this.hostListeners.delete(subscription);
 		};
 	}
 
@@ -1373,18 +1389,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 * asked. Hold the compaction's end, and every event after it in order, until the view shows the new boundary, or
 	 * for at most a few seconds. Events before and outside a compaction pass straight through.
 	 */
-	private deliverHostEvent(event: JsonAgentSessionEvent): void {
+	private deliverHostEvent(event: JsonAgentSessionEvent, audience: number): void {
+		if (this.disposed) return;
 		const held = this.compactionHold;
 		if (held) {
-			held.events.push(event);
+			held.events.push({ event, audience });
 			return;
 		}
 		if (event.type !== "compaction_end" || !event.result || event.aborted) {
-			for (const listener of [...this.hostListeners]) listener(event);
+			this.notifyHostListeners(event, audience);
 			return;
 		}
 		const hold = {
-			events: [event],
+			events: [{ event, audience }],
+			generation: this.client.getGeneration?.(),
 			timer: setTimeout(() => {
 				this.reportCompactionHold("the session view took too long to refresh");
 				release();
@@ -1396,15 +1414,38 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (this.compactionHold !== hold) return;
 			clearTimeout(hold.timer);
 			this.compactionHold = undefined;
-			const [end, ...later] = hold.events;
-			for (const listener of [...this.hostListeners]) listener(end!);
-			// A later compaction's end holds the events after it in turn.
-			for (const next of later) this.deliverHostEvent(next);
+			this.releasingHostEvents = hold.events;
+			try {
+				this.notifyHostListeners(event, audience);
+				// A synchronous listener can emit another event during delivery. It goes behind the ones already held.
+				for (let i = 1; i < hold.events.length; i++) {
+					const next = hold.events[i]!;
+					this.deliverHostEvent(next.event, next.audience);
+				}
+			} finally {
+				this.releasingHostEvents = undefined;
+			}
 		};
-		void this.refreshSessionView().then(release, (error: unknown) => {
+		const valid = () => this.compactionHold === hold;
+		void this.refreshSessionView(valid).then(release, (error: unknown) => {
+			if (!valid()) return;
 			this.reportCompactionHold(error instanceof Error ? error.message : String(error));
 			release();
 		});
+	}
+
+	private notifyHostListeners(event: JsonAgentSessionEvent, audience: number): void {
+		for (const [id, listener] of [...this.hostListeners]) if (id <= audience) listener(event);
+	}
+
+	private discardHeldHostEvents(): void {
+		const hold = this.compactionHold;
+		if (hold) {
+			clearTimeout(hold.timer);
+			hold.events.length = 0;
+			this.compactionHold = undefined;
+		}
+		if (this.releasingHostEvents) this.releasingHostEvents.length = 0;
 	}
 
 	/** Once per runtime, as an internal diagnostic: the chat still redraws, from the view it has. */
@@ -1566,7 +1607,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return state;
 	}
 
-	private async refreshSessionView(): Promise<void> {
+	private async refreshSessionView(valid: () => boolean = () => true): Promise<void> {
 		const session = super.session;
 		const currentManager = session.sessionManager;
 		const unchanged =
@@ -1583,6 +1624,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						{ history: "tail" },
 					)
 				: await this.openUnpersistedSessionView(currentManager);
+		if (!valid() || this.disposed || session !== super.session || currentManager !== session.sessionManager) return;
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: refreshed });
 		this.patchSessionManager(refreshed);
 		session.agent.state.messages = refreshed.buildSessionContext().messages;

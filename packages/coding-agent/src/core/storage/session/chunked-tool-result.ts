@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { Token } from "stream-json/core/parser.js";
 import type { SessionEntry } from "../../session-manager-types.ts";
-import { readContentLines } from "./chunked-read-lines.js";
+import { readContentLines, type SavedReadImage } from "./chunked-read-lines.js";
 import { type Reader, read, skip, stringValue } from "./chunked-resume-projection.js";
 import { bindSavedReadLines } from "./saved-read-summary.js";
 
@@ -19,6 +19,8 @@ export interface ChunkedToolResult {
 	readonly durationMs: number | undefined;
 	readonly messageTimestamp: number | undefined;
 	readonly readLines?: number | null;
+	readonly readImage?: SavedReadImage;
+	readonly readDetails?: { widthPx?: number; heightPx?: number; bytes?: number; imageUnsupportedByModel?: string };
 }
 
 /** Keys are compared exactly; any longer key is not one read here. */
@@ -27,6 +29,7 @@ const KEY_CHARS = 32;
 const VALUE_CHARS = 1024;
 const ENTRY_KEYS = new Set(["type", "id", "parentId", "timestamp"]);
 const MESSAGE_KEYS = new Set(["role", "toolCallId", "toolName", "isError", "durationMs", "timestamp"]);
+const READ_DETAILS = new Set(["widthPx", "heightPx", "bytes", "imageUnsupportedByModel"]);
 
 function* scalar(first: Token): Reader<string | number | boolean | null | undefined> {
 	switch (first.name) {
@@ -55,7 +58,7 @@ const OTHER = Symbol("not a tool result");
  */
 function* fields(
 	keys: ReadonlySet<string>,
-	kind: readonly [string, unknown],
+	kind?: readonly [string, unknown],
 	nested?: string,
 ): Reader<Record<string, unknown> | typeof OTHER> {
 	const selected: Record<string, unknown> = {};
@@ -72,9 +75,16 @@ function* fields(
 			(selected.toolName === undefined || selected.toolName === "read")
 		) {
 			selected.content = yield* readContentLines(first);
+		} else if (
+			keys === MESSAGE_KEYS &&
+			key === "details" &&
+			first.name === "startObject" &&
+			(selected.toolName === undefined || selected.toolName === "read")
+		) {
+			selected.details = yield* fields(READ_DETAILS);
 		} else if (keys.has(key)) {
 			selected[key] = yield* scalar(first);
-			if (key === kind[0] && selected[key] !== kind[1]) return OTHER;
+			if (kind && key === kind[0] && selected[key] !== kind[1]) return OTHER;
 		} else yield* skip(first);
 	}
 	return selected;
@@ -100,6 +110,8 @@ export async function chunkedToolResult(chunks: AsyncIterable<Uint8Array>): Prom
 	const toolCallId = text(message.toolCallId);
 	if (toolCallId === undefined) return undefined;
 	const parentId = entry.parentId;
+	const content = message.content as { lines: number | null; image?: SavedReadImage } | undefined;
+	const details = message.details as ChunkedToolResult["readDetails"];
 	return {
 		id: text(entry.id),
 		parentId: parentId === null ? null : text(parentId),
@@ -109,7 +121,13 @@ export async function chunkedToolResult(chunks: AsyncIterable<Uint8Array>): Prom
 		isError: message.isError === true,
 		durationMs: number(message.durationMs),
 		messageTimestamp: number(message.timestamp),
-		...(message.toolName === "read" ? { readLines: number(message.content) ?? null } : {}),
+		...(message.toolName === "read"
+			? {
+					readLines: content?.lines ?? null,
+					...(content?.image ? { readImage: content.image } : {}),
+					...(details && Object.keys(details).length ? { readDetails: details } : {}),
+				}
+			: {}),
 	};
 }
 
@@ -122,7 +140,28 @@ export function chunkedToolResultEntry(result: ChunkedToolResult, fallbackId: st
 		role: "toolResult",
 		toolCallId: result.toolCallId,
 		toolName: result.toolName,
-		content: [{ type: "text", text: note }],
+		content: [
+			{
+				type: "text",
+				text: result.readImage
+					? `Read image file [${result.readImage.mimeType ?? "image"}]${result.readImage.dimensionHint ? ` ${result.readImage.dimensionHint}` : ""}\n${note}`
+					: note,
+			},
+		],
+		...(result.readDetails || result.readImage
+			? {
+					details: {
+						...(result.readImage
+							? {
+									bytes: result.readImage.bytes,
+									savedImageHeader: result.readImage.header,
+									savedImageType: result.readImage.mimeType,
+								}
+							: {}),
+						...result.readDetails,
+					},
+				}
+			: {}),
 		isError: result.isError,
 		timestamp: result.messageTimestamp ?? 0,
 		...(result.durationMs === undefined ? {} : { durationMs: result.durationMs }),

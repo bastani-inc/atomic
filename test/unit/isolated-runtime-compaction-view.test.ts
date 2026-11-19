@@ -73,7 +73,7 @@ async function hostOf(harness: Harness) {
 				: event.type,
 		);
 	});
-	return { emit: engine.emit, refreshes, seen };
+	return { emit: engine.emit, refreshes, seen, session: runtime.session };
 }
 
 const user = (content: string) =>
@@ -114,6 +114,28 @@ test("an engine host shows a compaction's end and what follows, in order, once i
 			"compaction_end",
 			"message_start:last",
 		]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("a listener subscribed during a compaction refresh receives no event from before it subscribed (#5593)", async () => {
+	const harness = await createHarness();
+	try {
+		const host = await hostOf(harness),
+			seen: string[] = [];
+		const receive = (e: Parameters<Parameters<typeof host.session.subscribe>[0]>[0]) =>
+			seen.push(e.type === "message_start" ? (e.message as { content: string }).content : e.type);
+		const off = host.session.subscribe(receive);
+		host.emit(compactionEnd(true));
+		host.emit(user("old subscription"));
+		off();
+		host.session.subscribe(receive);
+		host.emit(user("new subscription"));
+		host.refreshes[0]!.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		assert.deepEqual(seen, ["new subscription"]);
 	} finally {
 		await harness.cleanup();
 	}
