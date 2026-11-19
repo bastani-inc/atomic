@@ -136,6 +136,7 @@ test("the interactive engine sends the host the panel's agent and subagent count
 		workflowRows = [];
 		workflowsChanged();
 		await nextState.promise;
+
 		nextState = Promise.withResolvers<PanelState>();
 		replace([finishedAgent]);
 		const finished = await nextState.promise;
