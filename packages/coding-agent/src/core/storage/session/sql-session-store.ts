@@ -22,11 +22,14 @@ import {
 	foldSessionResume,
 	foreignResumeIds,
 	isSessionResumeIndex,
+	isUpgradableSessionResumeIndex,
 	latestCompactionOf,
+	RESUME_UPGRADE_SOURCES,
 	readEarlierCompletionIntents,
 	type SessionResumeIndex,
 	sessionResumeFrom,
 	sessionResumePlan,
+	sessionResumeUpgrade,
 	sessionTailFrom,
 	stateSeqsBefore,
 	transcriptBranchSpan,
@@ -1664,13 +1667,31 @@ export class SqlSessionStore implements SessionStore {
 			const select = columns
 				.map(([key, expr]) => `${expr} AS ${this.dialect.identifier(`resume_${key.toLowerCase()}`)}`)
 				.join(", ");
-			const where = "WHERE session_id = ? AND seq > ? AND seq <= ?";
+			// The first resume after an upgrade converts the 0.9 releases' index from the entries outside the
+			// conversation (and every chunked row, whose stored row names no custom type) instead of folding them all.
+			const upgrade =
+				requested === undefined &&
+				limit === Number(row.last_seq) &&
+				isUpgradableSessionResumeIndex(state.resume, limit)
+					? sessionResumeUpgrade(state.resume)
+					: undefined;
+			const list = (values: readonly string[]) =>
+				values.map((value) => `'${value.replaceAll("'", "''")}'`).join(",");
+			const source = `chunks > 0 OR ${j("type")} IN (${list(RESUME_UPGRADE_SOURCES.types)})
+				OR (${j("type")} = 'message' AND ${j("message", "role")} = 'system')
+				OR (${j("type")} = 'custom' AND ${j("customType")} IN (${list(RESUME_UPGRADE_SOURCES.customTypes)}))`;
+			const sources = !upgrade
+				? ""
+				: sqlite
+					? ` AND (${source})`
+					: ` AND EXISTS (SELECT 1 FROM (SELECT ${postgresJsonb("entry_json")} AS value OFFSET 0) AS parsed WHERE ${source})`;
+			const where = `WHERE session_id = ? AND seq > ? AND seq <= ?${sources}`;
 			// Bind a wide SQLite owner once without copying it into every page row. Some positional adapters
 			// treat numbered SQLite parameters as named bindings rather than positional ones.
 			const owner = "(SELECT id FROM bounds)";
 			const lo = "(SELECT lo FROM bounds)";
 			const hi = "(SELECT hi FROM bounds)";
-			const pageWhere = sqlite ? `WHERE session_id = ${owner} AND seq > ${lo} AND seq <= ${hi}` : where;
+			const pageWhere = sqlite ? `WHERE session_id = ${owner} AND seq > ${lo} AND seq <= ${hi}${sources}` : where;
 			const page = `WITH ${sqlite ? "bounds(id,lo,hi) AS NOT MATERIALIZED (VALUES (?,?,?)), " : ""}page AS (
 				SELECT ${sqlite ? "" : "CASE WHEN chunks > 0 THEN session_id END AS session_id,"}seq,entry_id,chunks,entry_json FROM ${this.tables.entries}
 				${pageWhere} ORDER BY seq LIMIT ${SESSION_RESUME_REBUILD.pageEntries}
@@ -1865,7 +1886,13 @@ export class SqlSessionStore implements SessionStore {
 								if (data.historyOnly === 1 || data.historyOnly === "true") data.historyOnly = true;
 							}
 						}
-						batch.push(parsed as unknown as SessionEntry);
+						if (upgrade) upgrade.add(parsed as unknown as SessionEntry, Number(entry.seq));
+						else batch.push(parsed as unknown as SessionEntry);
+					}
+					if (upgrade) {
+						after = Number(rows.at(-1)!.seq);
+						if (after < limit) await yieldTurn();
+						continue;
 					}
 					const old = index ?? foldSessionResume(undefined, []);
 					const seqs = new Map<string, number>();
@@ -1893,6 +1920,7 @@ export class SqlSessionStore implements SessionStore {
 				topology = branchRanges(index, requested ?? index.leafSeq);
 				index = undefined;
 			}
+			if (upgrade) index = upgrade.finish();
 			index = { ...(index ?? foldSessionResume(undefined, [])), epoch: state.epoch ?? row.revision };
 			const current = await this.database.get<ResumeRow>(
 				`SELECT revision,last_seq FROM ${this.tables.sessions} WHERE id = ?`,
