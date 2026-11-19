@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { inspect } from "node:util";
 import { test } from "vitest";
 import type { WorkflowStageOrchestrationContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -47,6 +48,24 @@ async function closeStageAfterRefusal(errors: Error[]): Promise<WeakRef<object>>
 		await stage.messageAdmission?.boundary.close();
 	}
 }
+
+const diagnostics: Record<string, (error: Error) => void> = {
+	"deep equality": (error) => assert.deepStrictEqual(error, new Error("Task owner is closed")),
+	inspection: (error) => assert.equal(inspect(error), error.stack),
+	"object spread": (error) => assert.deepStrictEqual({ ...error }, {}),
+	"own keys": (error) =>
+		assert.deepStrictEqual(Reflect.ownKeys(error), Reflect.ownKeys(new Error("Task owner is closed"))),
+};
+
+test.each(Object.entries(diagnostics))(
+	"a saved ordinary stage refusal matches a plain Error under %s (#5629)",
+	async (_name, check) => {
+		const errors: Error[] = [];
+		await closeStageAfterRefusal(errors);
+		assert.equal(errors.length, 1);
+		check(errors[0]);
+	},
+);
 
 test("saving an ordinary launch refusal during reload does not retain the released stage session (#5629)", async () => {
 	const errors: Error[] = [];

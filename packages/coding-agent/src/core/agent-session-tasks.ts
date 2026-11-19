@@ -46,6 +46,12 @@ function stageTaskAdmission(session: AgentSession) {
 	return isSubagentChildSession(session) ? undefined : session._workflowStageAdmission;
 }
 
+// A reloaded extension can have a separate copy of the SDK. Share the weak lookup, not a property on the Error.
+const reloadRefusalsKey = Symbol.for("atomic.tasks/stage-reload-refusals@1");
+const registry = globalThis as { [reloadRefusalsKey]?: WeakMap<object, ReturnType<typeof stageReloadWaiter>> };
+registry[reloadRefusalsKey] ??= new WeakMap();
+const reloadRefusals = registry[reloadRefusalsKey];
+
 // A caller may keep its refusal long after the stage closes. Its retry callback must not own the session or reload.
 function stageReloadWaiter(owner: WeakRef<AgentSession>, reload: WeakRef<SessionReload>) {
 	return async (wakeId: string): Promise<void> => {
@@ -270,14 +276,9 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			if (sessionGenerationClosing.has(this)) {
 				const error = new Error("Task owner is closed");
 				const reload = stageAdmission && currentSessionReload(this);
-				if (!reload) throw error;
 				// Ordinary refusals do not wait. A wake can join this reload after its runner has unwound.
-				throw Object.assign(error, {
-					[Symbol.for("atomic.tasks/wait-for-stage-reload@1")]: stageReloadWaiter(
-						new WeakRef(this),
-						new WeakRef(reload),
-					),
-				});
+				if (reload) reloadRefusals.set(error, stageReloadWaiter(new WeakRef(this), new WeakRef(reload)));
+				throw error;
 			}
 			if (isSubagentChildSession(this)) throw new Error("Subagent delegation is not available inside a subagent");
 		},
