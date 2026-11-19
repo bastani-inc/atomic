@@ -35,7 +35,7 @@ import {
 } from "../shared/start-progress.js";
 import { scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
 import { endedChildMark, markEndedChildren, reserveReleasedChildTargets } from "./released-child-reservations.js";
-import { recordSubagentAdmission } from "./released-child-resume.js";
+import { recordSubagentAdmission, subagentAdmissionOwner } from "./released-child-resume.js";
 import {
 	forwardDetachedResults,
 	routeReleasedChildShellCompletions,
@@ -222,6 +222,18 @@ export async function settledTaskOutputText(
 	return present.length ? `\n\n${present.join("\n\n")}` : "";
 }
 
+function receiptRecords(response: ModelSingleResponse | ModelParallelResponse, host?: AgentTaskHost) {
+	const taskRecords = taskResponseRecords(response, host);
+	// A parallel receipt's slots were launched by one parent. Identify it from an admitted slot's scoped lease,
+	// not a task number in a shared index; an unstarted slot has no child record.
+	for (const record of taskRecords) {
+		const lease = host?.resolveTask(record.ref.taskId);
+		const ownerSessionId = lease?.ok ? subagentAdmissionOwner(lease.value) : undefined;
+		if (ownerSessionId !== undefined) return { taskRecords, ownerSessionId };
+	}
+	return { taskRecords };
+}
+
 export function taskToolResult(response: ModelSingleResponse, host?: AgentTaskHost): SubagentToolResult {
 	return {
 		content: [{ type: "text", text: subagentTaskResponseText(response) }],
@@ -229,7 +241,7 @@ export function taskToolResult(response: ModelSingleResponse, host?: AgentTaskHo
 			mode: "single",
 			results: [],
 			taskResponse: response,
-			taskRecords: taskResponseRecords(response, host),
+			...receiptRecords(response, host),
 		},
 		...(response.kind === "unstarted" ? { isError: true } : {}),
 	};
@@ -264,7 +276,7 @@ export async function parallelTaskToolResultWithOutput(
 			mode: "parallel",
 			results: [],
 			taskResponse: response,
-			taskRecords: taskResponseRecords(response, host),
+			...receiptRecords(response, host),
 		},
 		...(parallelResponseNeverStarted(response) ? { isError: true } : {}),
 	};

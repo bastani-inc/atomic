@@ -3386,7 +3386,7 @@ test("pausing a worktree child that finished on its own as the pause reached it 
 
 	const paused = await h.call({ action: "pause", all: true });
 	assert.equal(decisions.get(childB.taskId as string), "already-settled", "the race this covers happened");
-	assert.match(text(paused), /Paused worker \(\w+:0,/);
+	assert.ok(text(paused).includes(`Paused worker (${childA.childId},`), text(paused));
 	assert.match(text(paused), /completed \(ok\) before it could be paused/);
 	assert.equal(h.latest(childB.childId)?.terminalStatus, "ok");
 	assert.equal(takeSubagentChildStop(childB.taskId as string), undefined, "no stop request is left for it");
