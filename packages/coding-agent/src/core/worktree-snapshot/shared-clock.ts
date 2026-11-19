@@ -73,6 +73,11 @@ function elapsedClock(): number {
 /** A cold reading needs only a descriptor, not a FileHandle or an optional native operation. */
 function ordinaryReading(directory: string, fallback?: number, retry = true): Promise<number> {
 	const probe = probePath(directory);
+	// Ordinary lock offsets keep the wall-clock midpoint. A late open or stat callback is not the
+	// instant of creation, and a host's elapsed clock may stop while a renewing owner sleeps.
+	const wallOffset = fallback === undefined;
+	const clock = wallOffset ? Date.now : elapsedClock;
+	const before = wallOffset ? clock() : 0;
 	return new Promise((resolve, reject) => {
 		const opened = (error: NodeJS.ErrnoException | null, fd: number) => {
 			if (error)
@@ -82,15 +87,17 @@ function ordinaryReading(directory: string, fallback?: number, retry = true): Pr
 			const finish = (offset?: number) =>
 				fs.unlink(probe, () => {
 					if (offset === undefined) return resolve(fallback ?? 0);
-					removeLeftoverProbes(directory, offset, elapsedClock).then(() => {
-						const now = elapsedClock() + offset;
-						resolve(fallback === undefined ? now - Date.now() : now);
+					removeLeftoverProbes(directory, offset, clock).then(() => {
+						resolve(wallOffset ? offset : clock() + offset);
 					}, reject);
 				});
 			fs.close(fd, (error) => {
 				if (error) return finish();
-				// Use the measured timestamp, never time spent waiting for creation or metadata in the worker queue.
-				fs.stat(probe, (error, stats) => finish(error ? undefined : stats.mtimeMs - elapsedClock()));
+				fs.stat(probe, (error, stats) => {
+					if (error) return finish();
+					const sampled = clock();
+					finish(stats.mtimeMs - (wallOffset ? (before + sampled) / 2 : sampled));
+				});
 			});
 		};
 		try {
@@ -113,10 +120,12 @@ export function sharedClockOffset(directory: string): Promise<number> {
 	return sampleClock(directory);
 }
 
-/** An absolute reading advances the filesystem's timestamp by elapsed time, independent of civil clock steps. */
+/** The shared filesystem's time. Windows advances a measured stamp through cleanup, never through a queued create. */
 export function sharedClockNow(directory: string): Promise<number> {
-	// If no file can be sampled, keep the caller's original local-time fallback even across a clock step.
-	return sampleClock(directory, Date.now());
+	const local = Date.now();
+	// Preserve the ordinary estimate, including the entry-time fallback when the probe fails.
+	if (process.platform !== "win32") return ordinaryReading(directory).then((offset) => local + offset);
+	return sampleClock(directory, local);
 }
 
 function sampleClock(directory: string, fallback?: number): Promise<number> {

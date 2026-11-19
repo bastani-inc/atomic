@@ -7,6 +7,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -28,6 +29,8 @@ const io = vi.hoisted(() => ({
 	refuseDelete: false,
 	withoutDeleteOnClose: false,
 	beforeOpen: undefined as (() => void) | undefined,
+	afterOpen: undefined as (() => void) | undefined,
+	beforeUnlink: undefined as (() => void) | undefined,
 	nativeTick: undefined as (() => number) | undefined,
 	onStat: undefined as ((path: string) => void) | undefined,
 	refusalClock: undefined as { now: number; stamp: number } | undefined,
@@ -41,7 +44,10 @@ vi.mock("node:fs", async (original) => {
 			io.calls.push("open");
 			io.beforeOpen?.();
 			if (io.refusalClock) io.refusalClock.stamp = io.refusalClock.now;
-			fs.open(path, flags, callback);
+			fs.open(path, flags, (error, fd) => {
+				if (!error) io.afterOpen?.();
+				callback(error, fd);
+			});
 		},
 		stat: (path: string, callback: (err: NodeJS.ErrnoException | null, stats?: import("node:fs").Stats) => void) => {
 			io.calls.push("stat");
@@ -54,6 +60,7 @@ vi.mock("node:fs", async (original) => {
 		},
 		unlink: (path: string, callback: (err: NodeJS.ErrnoException | null) => void) => {
 			io.calls.push("unlink");
+			io.beforeUnlink?.();
 			if (io.refusalClock) io.refusalClock.now += 150;
 			if (io.refuseDelete) return callback(Object.assign(new Error("sharing violation"), { code: "EBUSY" }));
 			fs.unlink(path, callback);
@@ -70,7 +77,11 @@ vi.mock("node:fs/promises", async (original) => {
 		...fs,
 		open: (...args: Parameters<typeof fs.open>) => {
 			io.calls.push("open");
-			return fs.open(...args);
+			io.beforeOpen?.();
+			return fs.open(...args).then((file) => {
+				io.afterOpen?.();
+				return file;
+			});
 		},
 		stat: async (path: string) => {
 			io.calls.push("stat");
@@ -81,6 +92,7 @@ vi.mock("node:fs/promises", async (original) => {
 		},
 		unlink: (path: string) => {
 			io.calls.push("unlink");
+			io.beforeUnlink?.();
 			if (io.refusalClock) io.refusalClock.now += 150;
 			if (io.refuseDelete) return Promise.reject(Object.assign(new Error("sharing violation"), { code: "EBUSY" }));
 			return fs.unlink(path);
@@ -149,6 +161,8 @@ afterEach(() => {
 	io.withoutDeleteOnClose = false;
 	io.refusalClock = undefined;
 	io.beforeOpen = undefined;
+	io.afterOpen = undefined;
+	io.beforeUnlink = undefined;
 	io.nativeTick = undefined;
 	io.onStat = undefined;
 	names.length = 0;
@@ -276,19 +290,24 @@ test("probe queue time is not added to the filesystem timestamp (#5050, #5674)",
 	const directory = mkdtempSync(join(tmpdir(), "clock-queued-"));
 	try {
 		let elapsed = 0;
+		const end = Date.now();
+		io.nativeTick = () => elapsed;
+		vi.spyOn(Date, "now").mockImplementation(() => end - 7_000 + elapsed);
 		vi.spyOn(performance, "now").mockImplementation(() => elapsed);
 		io.beforeOpen = () => {
 			elapsed += 7_000;
 		};
 		const now = await sharedClockNow(directory);
 		assert.equal(elapsed, 7_000);
-		assert.ok(Math.abs(now - io.stamp) < 100, `waiting to create the file added ${now - io.stamp} ms`);
+		// The ordinary non-Windows reading uses the entry time and wall-clock midpoint. Neither path
+		// puts the shared clock ahead of the actual creation stamp and falsely ages a live marker.
+		assert.equal(now, process.platform === "win32" ? io.stamp : io.stamp - 3_500);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
 });
 
-test.runIf(process.platform === "win32")("a paused contender cannot take a renewed lock (#5050)", async () => {
+test("a paused contender cannot take a renewed lock (#5050)", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "clock-paused-lock-"));
 	const slot = join(directory, "slot");
 	let release: (() => Promise<void>) | undefined;
@@ -296,6 +315,7 @@ test.runIf(process.platform === "win32")("a paused contender cannot take a renew
 		mkdirSync(`${slot}.lock`);
 		let elapsed = 0;
 		const end = Date.now();
+		io.nativeTick = () => elapsed;
 		vi.spyOn(performance, "now").mockImplementation(() => elapsed);
 		vi.spyOn(Date, "now").mockImplementation(() => end - 7_000 + elapsed);
 		io.beforeOpen = () => {
@@ -316,7 +336,58 @@ test.runIf(process.platform === "win32")("a paused contender cannot take a renew
 	}
 });
 
-test("filesystem time includes time spent sweeping probes after the measurement (#5674)", async () => {
+test.each(["suspend during cleanup", "delayed stat delivery", "delayed open delivery"] as const)(
+	"a renewing lock stays fresh across %s on the ordinary clock path (#5050)",
+	async (schedule) => {
+		io.withoutDeleteOnClose = true;
+		const directory = mkdtempSync(join(tmpdir(), "clock-suspended-owner-"));
+		const slot = join(directory, "slot");
+		const lock = `${slot}.lock`;
+		const heartbeat = Promise.withResolvers<number>();
+		const wall = Date.now.bind(Date);
+		let advanced = 0;
+		let renewing = false;
+		const elapsed = performance.now.bind(performance);
+		vi.spyOn(Date, "now").mockImplementation(() => wall() + advanced);
+		vi.spyOn(performance, "now").mockImplementation(
+			() => elapsed() + (schedule === "suspend during cleanup" ? 0 : advanced),
+		);
+		let release: (() => Promise<void>) | undefined;
+		const timeout = setTimeout(() => heartbeat.reject(new Error("owner did not renew")), 10_000);
+		try {
+			release = await lockShared(slot, {
+				realpath: false,
+				stale: 30_000,
+				update: 1_000,
+				onCompromised: heartbeat.reject,
+			});
+			io.onStat = (path) => {
+				if (path === lock) {
+					// The owner verifies its previous stamp, then reads back its next real heartbeat.
+					if (advanced) heartbeat.resolve(Date.now() - statSync(lock).mtimeMs);
+					else renewing = true;
+				} else if (renewing && schedule === "delayed stat delivery" && path.endsWith(".probe")) {
+					advanced = 16_000;
+				}
+			};
+			io.afterOpen = () => {
+				if (renewing && schedule === "delayed open delivery") advanced = 16_000;
+			};
+			io.beforeUnlink = () => {
+				if (renewing && schedule === "suspend during cleanup") advanced = 16_000;
+			};
+			const age = await heartbeat.promise;
+			assert.equal(advanced, 16_000);
+			assert.ok(age < 30_000, `the refreshed lock appeared ${age} ms old`);
+		} finally {
+			clearTimeout(timeout);
+			await release?.();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	},
+);
+
+test("Windows filesystem time includes cleanup; ordinary non-Windows readings retain the measurement time (#5674)", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "clock-time-"));
 	try {
 		let time = Date.now();
@@ -327,7 +398,7 @@ test("filesystem time includes time spent sweeping probes after the measurement 
 			time += 1_000;
 		};
 		const now = await sharedClockNow(directory);
-		assert.equal(now, io.stamp + 1_000);
+		assert.equal(now, process.platform === "win32" ? io.stamp + 1_000 : io.stamp);
 		if (process.platform !== "win32") assert.deepEqual(io.calls, ["open", "close", "stat", "unlink", "readdir"]);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
