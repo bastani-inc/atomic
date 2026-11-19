@@ -127,31 +127,6 @@ function matchesNameFilter(session: SessionInfo, filter: NameFilter): boolean {
 	return hasSessionName(session);
 }
 
-/** Backreferences and lookaround can depend on text outside a searched message. Likewise a pair of transcript
- * anchors is not a pair of message anchors. Reject those queries, rather than certify that nothing matched. */
-function needsWholeTranscript(pattern: string): boolean {
-	let inClass = false;
-	let startAnchor = false;
-	let endAnchor = false;
-	for (let i = 0; i < pattern.length; i++) {
-		const ch = pattern[i];
-		if (ch === "\\") {
-			const escaped = pattern[++i];
-			if (!inClass && escaped && ((escaped >= "1" && escaped <= "9") || (escaped === "k" && pattern[i + 1] === "<")))
-				return true;
-			continue;
-		}
-		if (ch === "[") inClass = true;
-		else if (ch === "]") inClass = false;
-		else if (!inClass) {
-			if (ch === "^") startAnchor = true;
-			if (ch === "$") endAnchor = true;
-			if (ch === "(" && /^(?:\(\?[!=]|\(\?<[!=])/.test(pattern.slice(i, i + 4))) return true;
-		}
-	}
-	return startAnchor && endAnchor;
-}
-
 export function parseSearchQuery(query: string): ParsedSearchQuery {
 	const trimmed = query.trim();
 	if (!trimmed) {
@@ -165,15 +140,7 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
 			return { mode: "regex", tokens: [], regex: null, error: "Empty regex" };
 		}
 		try {
-			const regex = new RegExp(pattern, "i");
-			if (needsWholeTranscript(pattern))
-				return {
-					mode: "regex",
-					tokens: [],
-					regex: null,
-					error: "Regex searches one message at a time. Use a narrower pattern without backreferences, lookaround or paired anchors.",
-				};
-			return { mode: "regex", tokens: [], regex };
+			return { mode: "regex", tokens: [], regex: new RegExp(pattern, "i") };
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			return { mode: "regex", tokens: [], regex: null, error: msg };
