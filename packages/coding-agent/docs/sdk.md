@@ -963,7 +963,7 @@ await session.agent.waitForIdle();
 Provider requests use `session.sessionManager` as the canonical finalized context. Assigning `session.agent.state.messages` does not replace persisted context and may be overwritten at the next request boundary. Restore externally stored history when constructing the session instead:
 
 ```typescript
-const restoredManager = SessionManager.inMemory(process.cwd(), { id: sessionId }, entries);
+const restoredManager = await SessionManager.inMemory(process.cwd(), { id: sessionId }, entries);
 const { session } = await createAgentSession({ sessionManager: restoredManager });
 ```
 

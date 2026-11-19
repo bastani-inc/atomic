@@ -25,56 +25,69 @@ export async function* historyPages(
 	epoch: string | undefined,
 	watermark: number,
 	options: SessionHistoryReadOptions,
-): AsyncGenerator<SessionHistoryPage> {
+): AsyncGenerator<SessionHistoryPage, void> {
 	if (!store.readEntrySizes || !store.readRange)
 		throw new TypeError(
 			`Session store ${store.descriptor.adapter} must implement bounded history reads (readEntrySizes and readRange)`,
 		);
 	let start = Math.max(1, options.fromSeq ?? 1);
 	let end = Math.min(watermark, options.toSeq ?? watermark);
+	let reverse = options.direction === "backward";
 	let stamp = epoch;
 	let scope = epoch === undefined ? undefined : cursorScope(sessionId, epoch);
 	if (options.cursor !== undefined) {
-		const match = /^([A-Za-z0-9_-]+)\.(\d+)\.(\d+)$/.exec(options.cursor);
-		if (!match || match[1] !== scope || options.fromSeq !== undefined || options.toSeq !== undefined)
+		const match = /^([A-Za-z0-9_-]+)\.(\d+)\.(\d+)(\.b)?$/.exec(options.cursor);
+		if (
+			!match ||
+			match[1] !== scope ||
+			options.fromSeq !== undefined ||
+			options.toSeq !== undefined ||
+			(options.direction !== undefined && reverse !== Boolean(match[4]))
+		)
 			throw new TypeError("History cursor does not match this session, generation or range");
 		start = Number(match[2]);
 		end = Number(match[3]);
+		reverse = Boolean(match[4]);
 		if (end > watermark || start > end) throw new TypeError("Invalid history cursor range");
 	}
 	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1)
 		throw new RangeError("History sequence must be a safe integer");
 	while (start <= end) {
 		options.signal?.throwIfAborted();
-		const through = Math.min(end, start + SESSION_HISTORY_PAGE_ENTRIES - 1);
-		const sized = await store.readEntrySizes(sessionId, start, through);
+		const from = reverse ? Math.max(start, end - SESSION_HISTORY_PAGE_ENTRIES + 1) : start;
+		const through = reverse ? end : Math.min(end, start + SESSION_HISTORY_PAGE_ENTRIES - 1);
+		const sized = await store.readEntrySizes(sessionId, from, through);
 		options.signal?.throwIfAborted();
 		stamp ??= sized.epoch;
 		scope ??= cursorScope(sessionId, stamp);
 		if (sized.epoch !== stamp || sized.lastSeq < end)
 			throw new SessionConflictError(sessionId, watermark, sized.lastSeq);
-		const first = sized.sizes[0];
-		if (!first || first.seq !== start) throw new Error(`Missing session history at entry ${start}`);
+		const ordered = reverse ? [...sized.sizes].reverse() : sized.sizes;
+		const first = ordered[0];
+		const edge = reverse ? end : start;
+		if (!first || first.seq !== edge) throw new Error(`Missing session history at entry ${edge}`);
 		let page: SessionHistoryPage["items"];
+		let low = edge,
+			high = edge;
 		if (first.bytes > SESSION_HISTORY_PAGE_BYTES) {
-			page = [{ kind: "oversized", sessionId, epoch: stamp, seq: start, bytes: first.bytes }];
-			start++;
+			page = [{ kind: "oversized", sessionId, epoch: stamp, seq: edge, bytes: first.bytes }];
 		} else {
 			let used = 0;
-			let last = first.seq;
-			for (const size of sized.sizes) {
+			for (const size of ordered) {
 				if (used + size.bytes > SESSION_HISTORY_PAGE_BYTES) break;
 				used += size.bytes;
-				last = size.seq;
+				if (reverse) low = size.seq;
+				else high = size.seq;
 			}
-			const range = await store.readRange(sessionId, start, last, stamp);
+			const range = await store.readRange(sessionId, low, high, stamp);
 			options.signal?.throwIfAborted();
 			if (range.epoch !== stamp || range.lastSeq < end)
 				throw new SessionConflictError(sessionId, watermark, range.lastSeq);
-			page = range.entries.map((entry, i) => ({ seq: range.seqs?.[i] ?? start + i, entry }));
-			start = last + 1;
+			page = range.entries.map((entry, i) => ({ seq: range.seqs?.[i] ?? low + i, entry }));
 		}
-		yield { items: page, ...(start <= end ? { nextCursor: `${scope}.${start}.${end}` } : {}) };
+		if (reverse) end = low - 1;
+		else start = high + 1;
+		yield { items: page, ...(start <= end ? { nextCursor: `${scope}.${start}.${end}${reverse ? ".b" : ""}` } : {}) };
 		if (start <= end) await yieldToEventLoop();
 	}
 }
@@ -85,7 +98,7 @@ export async function* historyChunks(
 	epoch: string | undefined,
 	reference: OversizedSessionEntry,
 	options: { readonly offset?: number; readonly signal?: AbortSignal },
-): AsyncGenerator<Uint8Array> {
+): AsyncGenerator<Uint8Array, void> {
 	if (!store.readEntryChunk)
 		throw new TypeError(`Session store ${store.descriptor.adapter} must implement readEntryChunk`);
 	if (reference.sessionId !== sessionId || (epoch !== undefined && reference.epoch !== epoch))

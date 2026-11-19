@@ -157,7 +157,6 @@ export async function exportToHtml(
 		cwd: this.sessionManager.getCwd(),
 	});
 
-	await this.sessionManager.loadFullHistory();
 	return await exportSessionToHtml(this.sessionManager, this.state, {
 		outputPath,
 		themeName,

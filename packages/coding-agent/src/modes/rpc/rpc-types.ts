@@ -39,14 +39,13 @@ import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";
 import type { SerializedMissingSessionCwdError } from "../../core/session-cwd.ts";
-import type {
-	BranchSummaryEntry,
-	SessionEntry,
-	SessionInfo,
-	SessionSummaryEntry,
-	SessionTreeNode,
-} from "../../core/session-manager.ts";
+import type { BranchSummaryEntry, SessionEntry, SessionInfo, SessionSummaryEntry } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import type {
+	OversizedSessionEntry,
+	SessionHistoryPage,
+	SessionStoredEntry,
+} from "../../core/storage/session/types.js";
 import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import type { QuestionAnswer, QuestionParams } from "../../core/tools/ask-user-question/tool/types.js";
@@ -97,6 +96,27 @@ export type RpcSessionInfo = Omit<SessionInfo, "created" | "modified"> & {
 	created: string;
 	modified: string;
 };
+
+export type RpcHistoryPage = SessionHistoryPage & { readonly leafId: string | null };
+export interface RpcForkMessagePage {
+	readonly items: readonly (
+		| { readonly seq: number; readonly entryId: string; readonly text: string }
+		| OversizedSessionEntry
+	)[];
+	readonly nextCursor?: string;
+}
+export interface RpcTreePage {
+	readonly items: readonly (
+		| (SessionStoredEntry & { readonly label?: string; readonly labelTimestamp?: string })
+		| OversizedSessionEntry
+	)[];
+	readonly nextCursor?: string;
+	readonly leafId: string | null;
+}
+export interface RpcHistoryChunk {
+	readonly data: string;
+	readonly nextOffset?: number;
+}
 
 export type RpcCommand =
 	// Prompting
@@ -192,9 +212,11 @@ export type RpcCommand =
 	| { id?: string; type: "import_session"; inputPath: string; cwdOverride?: string }
 	| { id?: string; type: "fork"; entryId: string }
 	| { id?: string; type: "clone" }
-	| { id?: string; type: "get_fork_messages" }
-	| { id?: string; type: "get_entries"; since?: string }
-	| { id?: string; type: "get_tree" }
+	| { id?: string; type: "get_fork_messages"; cursor?: string }
+	| { id?: string; type: "get_entries"; since?: string; cursor?: string; fromSeq?: number; toSeq?: number }
+	| { id?: string; type: "get_context_window" }
+	| { id?: string; type: "get_history_chunk"; reference: OversizedSessionEntry; offset: number }
+	| { id?: string; type: "get_tree"; cursor?: string }
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
 	| {
@@ -510,22 +532,30 @@ export type RpcResponse =
 			type: "response";
 			command: "get_fork_messages";
 			success: true;
-			data: { messages: Array<{ entryId: string; text: string }> };
+			data: RpcForkMessagePage;
 	  }
 	| {
 			id?: string;
 			type: "response";
 			command: "get_entries";
 			success: true;
-			data: { entries: SessionEntry[]; leafId: string | null };
+			data: RpcHistoryPage;
 	  }
 	| {
 			id?: string;
 			type: "response";
 			command: "get_tree";
 			success: true;
-			data: { tree: SessionTreeNode[]; leafId: string | null };
+			data: RpcTreePage;
 	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_context_window";
+			success: true;
+			data: { entries: SessionEntry[]; leafId: string | null };
+	  }
+	| { id?: string; type: "response"; command: "get_history_chunk"; success: true; data: RpcHistoryChunk }
 	| {
 			id?: string;
 			type: "response";

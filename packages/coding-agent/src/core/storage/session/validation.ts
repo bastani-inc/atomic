@@ -5,7 +5,7 @@ import {
 	type SessionTextField,
 	type SessionTimestampField,
 } from "./errors.js";
-import type { SessionRecordHeader } from "./types.js";
+import { SESSION_ID_MAX_BYTES, type SessionRecordHeader } from "./types.js";
 
 const isoInstant = /^(\d{4}|[+-]\d{6})-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
 
@@ -32,6 +32,12 @@ export function validateSessionText(field: SessionTextField, value: string): voi
 	if (/\p{Surrogate}/u.test(value)) throw new SessionInvalidTextError(field, "ill-formed-unicode");
 }
 
+/** Applies only when assigning an identity, not when reading or referring to an older stored ID. */
+export function validateNewSessionId(field: "header.id" | "entry.id", id: string): void {
+	if (id.length > SESSION_ID_MAX_BYTES || Buffer.byteLength(id) > SESSION_ID_MAX_BYTES)
+		throw new SessionInvalidTextError(field, "id-too-long");
+}
+
 export function validateSessionHeader(header: SessionRecordHeader): void {
 	validateSessionText("header.id", header.id);
 	validateSessionText("header.cwd", header.cwd);
@@ -39,9 +45,10 @@ export function validateSessionHeader(header: SessionRecordHeader): void {
 	validateSessionTimestamp("header.createdAt", header.createdAt);
 }
 
-export function validateSessionEntries(entries: readonly SessionEntry[]): void {
+export function validateSessionEntries(entries: readonly SessionEntry[], mode: "stored" | "new" = "stored"): void {
 	for (const entry of entries) {
 		validateSessionText("entry.id", entry.id);
+		if (mode === "new") validateNewSessionId("entry.id", entry.id);
 		if (entry.parentId !== null) validateSessionText("entry.parentId", entry.parentId);
 		if (entry.type === "session_summary") validateSessionText("summarizedThroughId", entry.summarizedThroughId);
 		validateSessionTimestamp("entry.timestamp", entry.timestamp);

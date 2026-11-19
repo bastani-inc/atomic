@@ -16,6 +16,8 @@ For an explicitly selected JSONL store, sessions can be removed by deleting thei
 
 Delete individual sessions from `/resume`: select a session, press `CTRL+D`, then confirm. Database stores delete the selected session record. JSONL stores use the `trash` CLI when available.
 
+Newly assigned session and entry IDs must fit in 4,096 UTF-8 bytes. Existing sessions remain readable; a parent link can still refer to an older stored ID.
+
 ## Session Version
 
 SessionManager writes version 4 headers with `createdAt` and `parentSessionId`. Sessions in formats 1, 2, and 3, and early version-4 files whose header has `timestamp` and `parentSession` instead, are upgraded automatically when opened, resumed, imported, or forked. Reading converts older records in memory; listing sessions and looking up headers leave files unchanged. Opening an older JSONL session persists its upgrade atomically under the file lock before new entries are saved. Future versions, unrecognized version values, and structurally invalid entries remain rejected; unloadable sessions are omitted from resume listings. A complete final record without a newline is accepted. A final line that a crashed or killed process left unfinished was never saved: it is ignored with one warning naming the file, the session still opens and lists, and the next saved entry removes it. A damaged record before the last line is still rejected.
@@ -482,7 +484,7 @@ Await `create`, `open`, `continueRecent`, `forkFrom`, and all session mutations.
 - `SessionManager.open(store, sessionId, cwdOverride?, options?)` - Open an existing session by exact ID in that store. A missing ID raises `SessionNotFoundError`; it does not create a session. A compacted session opens at its current context window. `openSessionById(id, cwd?, sessionDir?, options?)` and `continueRecent(store, cwd, options?)` do the same. Use `readHistory()` for entries before the window.
 - `SessionManager.open(path, sessionDir?, cwdOverride?)` - Open a JSONL file directly, creating it if missing. This is a file API, not the CLI session selector.
 - `SessionManager.continueRecent(cwd, sessionDir?, options?)` or `continueRecent(store, cwd, options?)` - Continue the most recent regular session or create one. Pass `{ includeInternal: true }` only to include workflow sessions.
-- `SessionManager.inMemory(cwd?, options?, entries?)` - Explicit memory storage.
+- `SessionManager.inMemory(cwd?, options?)` - Create an empty, private, memory-only session synchronously. To seed it, use `await SessionManager.inMemory(cwd, options, entries)` and do not change the supplied entries until it resolves. The store keeps the history; the manager opens at the current window.
 - `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)` - Fork a JSONL file into the configured or explicit destination. To fork a database session, open it by ID and await `manager.forkTo(targetCwd, targetStore?, options?)`.
 - `SessionManager.importFromJsonl(inputPath, cwd, targetStoreOrDir?)` - Import a JSONL export without changing its ID, upgrading older supported formats. An existing ID raises `SessionExistsError`.
 
@@ -541,7 +543,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `appendContextEdit(targetId, replacement)` - Append a branch-local context edit (`null` omits the target; `{ content }` replaces only its content)
 - `getEntries()` - Entries the manager currently holds, excluding the header
 - `hasFullHistory()` - Whether every stored entry is held
-- `readHistory({ fromSeq?, toSeq?, signal? }?)` - Iterate pages in append order, between the inclusive bounds. A page has `items` and, when there are more, `nextCursor`. To resume a stopped read, pass `{ cursor: nextCursor }` without new bounds. Items are `{ seq, entry }` except that an entry over 1 MiB is an oversized reference with `kind: "oversized"`, `seq` and `bytes`, not a truncated entry. A replaced or recreated session is rejected rather than mixing generations
+- `readHistory({ fromSeq?, toSeq?, direction?, signal? }?)` - Iterate pages between the inclusive bounds. Use `direction: "backward"` to start with the latest page and page toward the start; entries within each page always stay in append order. A page has `items` and, when there are more, `nextCursor`. To resume a stopped read, pass `{ cursor: nextCursor }` without new bounds. Items are `{ seq, entry }` except that an entry over 1 MiB is an oversized reference with `kind: "oversized"`, `seq` and `bytes`, not a truncated entry. A replaced or recreated session is rejected rather than mixing generations
 - `readHistoryChunks(reference, { offset?, signal? }?)` - Read an oversized entry’s original encoded bytes in chunks of at most 64 KiB. Track the number of bytes consumed to resume at a byte offset; use a streaming text decoder when decoding UTF-8
 - `readEntry(id)` - Read one entry by ID, including one outside the window, or return `undefined` if it is missing
 - `getOmittedHistoryTotals()` - Usage and message counts of the entries a `{ history: "tail" }` open left out, or `undefined` when every entry is held
