@@ -286,6 +286,22 @@ async function read<T>(chunks: AsyncIterable<Uint8Array>, reader: Reader<T>): Pr
 	throw new SyntaxError("Incomplete chunked session entry");
 }
 
+/**
+ * The role of the session message entry whose stored JSON begins with `prefix`, or undefined when the prefix ends
+ * before the role is known. A message normally begins with its `role`, so a short prefix tells a system message apart
+ * without reading the message's payload.
+ */
+export function messageRoleIn(prefix: Uint8Array): string | undefined {
+	try {
+		return feed(discriminator("role", "message"))(
+			new TextDecoder("utf-8", { fatal: true }).decode(prefix, { stream: true }),
+		)?.value;
+	} catch {
+		// A prefix that cannot be read decides nothing. Reading the whole entry reports what is wrong with it.
+		return undefined;
+	}
+}
+
 export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uint8Array>): Promise<ForkMetadata> {
 	const e = object(
 		await read(

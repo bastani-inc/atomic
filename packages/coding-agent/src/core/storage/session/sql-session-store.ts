@@ -90,6 +90,11 @@ export const SESSION_BLOB_CHUNK_BYTES = 1024 * 1024;
  */
 export const SESSION_ENTRY_CHUNK_BYTES = 1024 * 1024;
 /**
+ * The bytes of a chunked message's JSON an unindexed fork reads to learn its role. The role follows the entry's type,
+ * IDs and timestamp, a few hundred bytes in.
+ */
+const FORK_ROLE_PREFIX_BYTES = 4096;
+/**
  * The most characters one read of entries or listing rows returns, by the stored text's `length()`. A character is at
  * most four bytes of UTF-8 and a JSON escape at most doubles a character on a server's wire, so a page stays under
  * sqld's 10 MB response limit; a single row longer than this is a page of its own (#4954).
@@ -1946,9 +1951,9 @@ export class SqlSessionStore implements SessionStore {
 						},
 						entryId,
 						async (seqs) => {
-							// Chunked rows store their ID, parent and type inline. A chunked compaction, custom record or
-							// message (which may be a system message) needs the bounded projection; other rows need only
-							// their links for this walk.
+							// Chunked rows store their ID, parent and type inline. A chunked compaction or custom record needs the
+							// bounded projection; a chunked message needs only its role, to tell a system message apart; other
+							// rows need only their links for this walk.
 							const pg = this.dialect.name === "postgres";
 							const key = (...path: string[]) =>
 								pg
@@ -1972,9 +1977,10 @@ export class SqlSessionStore implements SessionStore {
 								seqs[0]!,
 								seqs.at(-1)!,
 							);
-							const page: import("./fork-window.js").ForkMetadata[] = [];
-							for (const r of links) {
-								const link =
+							const parsed = links.map((r) => ({
+								seq: Number(r.seq),
+								chunked: Number(r.chunks) > 0,
+								link:
 									r.link === null
 										? undefined
 										: (JSON.parse(r.link) as [
@@ -1987,17 +1993,41 @@ export class SqlSessionStore implements SessionStore {
 												string | null,
 												string | null,
 												string | null,
-											]);
+											]),
+							}));
+							// Read a chunked message's role from the start of its first chunk, not from its whole payload. When
+							// that prefix ends before the role, the bounded projection reads the message instead.
+							const roles = new Map<number, string | undefined>();
+							const chunkedMessages = parsed
+								.filter((r) => r.chunked && r.link?.[2] === "message")
+								.map((r) => r.seq);
+							if (chunkedMessages.length) {
+								const { messageRoleIn } = await import("./chunked-resume-projection.js");
+								for (let i = 0; i < chunkedMessages.length; i += SEQ_BATCH) {
+									const batch = chunkedMessages.slice(i, i + SEQ_BATCH);
+									const prefixes = await tx.all<SqliteRow & { seq: number; prefix: Uint8Array }>(
+										`SELECT seq,substr(data,1,${FORK_ROLE_PREFIX_BYTES}) AS prefix FROM ${this.tables.entryChunks} WHERE session_id=? AND idx=0 AND seq IN (${batch.map(() => "?").join(",")})`,
+										sessionId,
+										...batch,
+									);
+									for (const row of prefixes) roles.set(Number(row.seq), messageRoleIn(row.prefix));
+								}
+							}
+							const page: import("./fork-window.js").ForkMetadata[] = [];
+							for (const { seq, chunked, link } of parsed) {
+								const role = chunked ? roles.get(seq) : link?.[8];
 								if (
 									!link ||
-									(Number(r.chunks) > 0 &&
-										(link[2] === "custom" || link[2] === "compaction" || link[2] === "message"))
+									(chunked &&
+										(link[2] === "custom" ||
+											link[2] === "compaction" ||
+											(link[2] === "message" && role === undefined)))
 								)
-									page.push(...(await metadata([Number(r.seq)])));
+									page.push(...(await metadata([seq])));
 								else {
-									const [id, parentId, type, customType, first, covered, strategy, completionId, role] = link;
+									const [id, parentId, type, customType, first, covered, strategy, completionId] = link;
 									page.push({
-										seq: Number(r.seq),
+										seq,
 										id,
 										parentId,
 										type,
