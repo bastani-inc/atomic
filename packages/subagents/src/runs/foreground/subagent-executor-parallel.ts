@@ -30,7 +30,7 @@ import { formatParallelResultContent } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
 import { formatWorktreeDiffSummary, type WorktreeSetup } from "../shared/worktree.js";
-import { registerRunWorktrees } from "./run-worktrees.js";
+import { boundedWorktreeReply, registerRunWorktrees } from "./run-worktrees.js";
 import { createSubagentChildRecordSink } from "./subagent-child-records.js";
 import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.js";
 import {
@@ -323,6 +323,12 @@ export async function runParallelPath(
 				})),
 			};
 			return parallelTaskToolResultWithOutput(response, ctx.getAgentTaskHost());
+		}
+		// A child's note was read when it finished, while a sibling may still have held the batch: every child has
+		// finished now, so read the batch's worktree state again, without waiting.
+		if (runWorktrees && results.some((result) => result.worktreeNote)) {
+			const note = await boundedWorktreeReply(runId, undefined, Date.now());
+			for (const result of results) if (result.worktreeNote) result.worktreeNote = note;
 		}
 		for (let i = 0; i < results.length; i++) {
 			const run = results[i]!;

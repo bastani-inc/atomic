@@ -3461,6 +3461,48 @@ test("an SDK foreground batch reports when its child's worktree sweep is still r
 	}
 });
 
+test("an SDK foreground batch reports its children's final worktree state, not a hold from when the first one finished (#5600)", async () => {
+	const h = harness({ ownerless: true });
+	initGitRepository(h.cwd);
+	const first = Promise.withResolvers<void>(),
+		second = Promise.withResolvers<void>();
+	h.finishOn.set("first-to-finish", first);
+	h.finishOn.set("second-to-finish", second);
+	const batch = h.call({
+		tasks: [
+			{ agent: "worker", task: "first-to-finish" },
+			{ agent: "worker", task: "second-to-finish" },
+		],
+		worktree: true,
+	});
+	try {
+		const [a, b] = await vi.waitFor(
+			() => {
+				const records = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+					(left, right) => left.index - right.index,
+				);
+				assert.equal(records.filter((record) => record.childSessionId).length, 2);
+				return records;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		assert.ok(a && b);
+		writeFileSync(join(a.cwd, "first-result.txt"), "first child's deliverable\n");
+		first.resolve();
+		await h.waitForLatest(a.childId, (record) => record.state === "terminal");
+		second.resolve();
+		const reply = text(await batch);
+		assert.equal(existsSync(a.cwd) || existsSync(b.cwd), false, "both worktrees are gone at reply");
+		assert.match(reply, /^2\/2 succeeded/);
+		assert.match(reply, /Worktree Changes[\s\S]*first-result\.txt/);
+		assert.doesNotMatch(reply, /worktree kept until the other children in this batch finish/i);
+	} finally {
+		first.resolve();
+		second.resolve();
+		await batch;
+	}
+});
+
 test("an SDK pause waits for its worktree sweep without waiting on the foreground batch reply (#5600)", async () => {
 	const h = harness({ ownerless: true });
 	initGitRepository(h.cwd);
