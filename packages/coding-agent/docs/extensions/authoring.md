@@ -419,7 +419,7 @@ Inside `execute`, the context is an `ExtensionToolContext`. `ctx.tools` lists pe
 
 If your orchestrator invokes a tool with `concurrency: "exclusive"`, give the orchestrator `concurrency: "exclusive"` too. A shared orchestrator cannot safely upgrade its nested call to exclusive access and receives an error before that target executes. File mutation queues remain required for read-modify-write operations.
 
-Nested execution events include `parentToolCallId`. Nested calls do not create separate conversation messages; the parent reports their results. Its final result may carry bounded `nestedCalls` metadata for exports and file-operation tracking. Report only the parent's own usage: nested usage is aggregated automatically, including deeper calls.
+Nested execution events and the nested tool's `ctx` include `parentToolCallId`. Nested calls do not create separate conversation messages; the parent reports their results. Its final result may carry bounded `nestedCalls` metadata for exports and file-operation tracking. Report only the parent's own usage: nested usage is aggregated automatically, including deeper calls.
 
 ### Tool exposure
 
@@ -428,14 +428,14 @@ Nested execution events include `parentToolCallId`. Nested calls do not create s
 | Exposure | Model declaration | Callable from another tool |
 | --- | --- | --- |
 | `direct` | While active | While active |
-| `model-only` | While active | Never |
+| `model-only` | While active | Only its permitted `scriptAccess` subset while active |
 | `codemode` | Only if explicitly activated | When registered and permitted by the session |
 | `deferred` | Only if explicitly activated | When registered and permitted by the session |
 | `hidden` | Never | Never |
 
 Use `model-only` for interactive or orchestration tools that should not be called from scripts. `codemode` tools are advertised in the codemode tool's catalog; `deferred` tools are discoverable without occupying that inline catalog. Session allowlists and exclusions remain authoritative. Exposure cannot restore a suppressed tool.
 
-Atomic's workflow, subagent, Intercom/supervisor, and user-question tools are `model-only`: a script cannot launch agents, ask questions of other sessions, or request interactive input through them. Ordinary permitted file, shell, MCP, and web-data tools remain callable. Custom tools that perform interactive or orchestration work should use the same exposure.
+Atomic's workflow, subagent, Intercom/supervisor, and user-question tools are `model-only`: scripts can launch and control their session's subagents and send exact-target Intercom messages, but cannot edit agent definitions, ask questions of other sessions, or request interactive input through them. Ordinary permitted file, shell, MCP, and web-data tools remain callable. Custom tools that perform interactive or orchestration work should use the same exposure.
 
 A `model-only` tool can offer scripts part of its actions with `scriptAccess: { description, outputSchema?, refuse(params) }`. While the tool is active, scripts see it with `description` and receive its `structuredContent` as described by `outputSchema`. `refuse` runs after schema validation and before permission hooks, and returns why a script may not make the call, or `undefined` to run the tool's own `execute`. Direct calls are unaffected. Intercom uses it to let scripts list sessions and send to exact targets.
 
