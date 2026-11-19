@@ -29,6 +29,7 @@ import {
 } from "../shared/worker-pool-errors.js";
 import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
 import { authoritativeWorkflowChildRunId, publishRunForOwner } from "../shared/workflow-run-ownership.js";
+import { releaseWorkerStages } from "./open-stages.js";
 import { stageInputRefusal, stageInputRefusedReason } from "./placement-errors.js";
 import type { PooledRunResult, StageReceipts } from "./protocol.js";
 import { isRunChanges, type PublishedRun, type RunChanges, type RunHeader } from "./run-changes.js";
@@ -903,18 +904,7 @@ export class PoolStageHandoff {
 		attempt.deliveries.clear();
 		attempt.sessions.clear();
 		for (const id of attempt.runs) rotateWorkflowPendingStageRouteCapability(this.store, id);
-		for (const id of attempt.runs) {
-			const run = this.store.run(id);
-			if (run?.stages.some((stage) => isLive(stage)) !== true) continue;
-			this.publishRun({
-				...run,
-				stages: run.stages.map((stage) => {
-					if (!isLive(stage)) return stage;
-					const { sessionId: _session, sessionFile: _file, ...rest } = stage;
-					return { ...rest, attachable: false, attached: false };
-				}),
-			});
-		}
+		for (const id of attempt.runs) releaseWorkerStages(this.store, id, this.attachmentOwner);
 	}
 
 	private requireOwned(work: Pick<PoolWork, "id" | "generation">, attempt: Attempt, runId: string): void {
@@ -972,15 +962,6 @@ export class PoolStageHandoff {
 				action,
 			);
 	}
-}
-
-function isLive(stage: StageSnapshot): boolean {
-	return (
-		(stage.sessionId !== undefined || stage.sessionFile !== undefined) &&
-		stage.status !== "completed" &&
-		stage.status !== "failed" &&
-		stage.status !== "skipped"
-	);
 }
 
 /**

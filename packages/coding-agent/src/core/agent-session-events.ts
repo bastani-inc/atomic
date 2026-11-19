@@ -23,6 +23,7 @@ import {
 import { normalizeQueuedMessageImages } from "./agent-session-prompt.ts";
 import { abortCurrentGeneration } from "./agent-session-queue-pause.ts";
 import { sessionClosing } from "./agent-session-release.ts";
+import { ensureRetryPromise, retryIsCurrent } from "./agent-session-retry.ts";
 import { recordExplicitToolDeactivations } from "./agent-session-state.ts";
 import { forgetTypedQueuedText } from "./agent-session-typed-queue.ts";
 import {
@@ -65,12 +66,19 @@ import {
 	sessionLifetime,
 	shutdownDeadline,
 } from "./session-lifecycle-work.ts";
+import { retryStatusUpdate } from "./session-retry-status.js";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { observeToolExecutionTiming } from "./tool-execution-timing.ts";
 import { drainWindowsDirectorySecurityReads } from "./tools/windows-directory-security.ts";
 import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
+	if (event.type === "agent_start") {
+		if (this._retryStatus === undefined || this._turnStartedAt === undefined) this._turnStartedAt = Date.now();
+		event = { ...event, turnStartedAt: this._turnStartedAt };
+	} else if (event.type === "agent_settled" || event.type === "session_released") this._turnStartedAt = undefined;
+	const status = retryStatusUpdate(event);
+	if (status !== undefined) this._retryStatus = status ?? undefined;
 	observeToolExecutionTiming(this, event);
 	for (const l of this._eventListeners) {
 		l(event);
@@ -149,6 +157,7 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	let event = withoutDetachedPlaceholders(this, received);
 	if (event === undefined) return;
 	if (event.type === "agent_start") {
+		this._agentRunRetryGeneration = this._retryGeneration;
 		this._undeliveredAgentStarts += 1;
 		this._awaitingStartAfterInterrupt = false;
 	}
@@ -163,7 +172,8 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	// as soon as agent.prompt() resolves. If _retryPromise is created only inside
 	// _processAgentEvent, slow earlier queued events can delay agent_end processing
 	// and waitForRetry() can miss the in-flight retry.
-	this._createRetryPromiseForAgentEnd(event);
+	const retryGeneration = this._agentRunRetryGeneration;
+	if (event.type === "agent_end" && retryIsCurrent(this, retryGeneration)) this._createRetryPromiseForAgentEnd(event);
 	// Agent-core has already consumed this message. Reflect admission before an
 	// Escape/abort can restore it from a stale queue while earlier hooks settle.
 	if (event.type === "message_start" && event.message.role === "user") {
@@ -182,10 +192,14 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 			? markProtectedStreamingCustomMessageConsumed(this, event.message)
 			: false;
 
-	const processing = this._agentEventQueue.then(
-		() => this._processAgentEvent(event),
-		() => this._processAgentEvent(event),
-	);
+	const process = () => {
+		// The store can already hold the new row before its append promise returns. Pin the preceding leaf
+		// when this serialized save begins, not when it first joins the queue.
+		if (event.type === "message_end")
+			this._transcriptAppend = { message: event.message, previousLeaf: this.sessionManager.getLeafId() };
+		return this._processAgentEvent(event, retryGeneration);
+	};
+	const processing = this._agentEventQueue.then(process, process);
 	this._agentEventQueue = processing;
 	if (event.type === "message_end") this._messagesAwaitingPersistence.set(event.message, processing);
 
@@ -196,7 +210,16 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	// handlers may replace the message that gets persisted, and the request is built
 	// from the persisted canonical projection, so every queued handler gates the next
 	// request rather than only the persistence step.
-	processing.catch((error) => {
+	// This observer is registered before the next queued event. Release the pin on either outcome without
+	// putting another promise between this event and the next event or provider request.
+	const releasePin =
+		event.type === "message_end"
+			? () => {
+					this._transcriptAppend = undefined;
+				}
+			: undefined;
+	processing.then(releasePin, (error) => {
+		releasePin?.();
 		// #3105: callbacks interrupted by terminal disposal remain observable at shutdown.
 		if (this._disposed) {
 			const failures = shutdownEventFailures.get(this) ?? [];
@@ -245,10 +268,7 @@ export function _createRetryPromiseForAgentEnd(this: AgentSession, event: AgentE
 		return;
 	}
 
-	this._retryCancelled = false;
-	this._retryPromise = new Promise((resolve) => {
-		this._retryResolve = resolve;
-	});
+	ensureRetryPromise(this);
 }
 
 export function _findLastAssistantInMessages(
@@ -280,7 +300,11 @@ function answersUnsavedCall(session: AgentSession, result: ToolResultMessage): b
 	return false;
 }
 
-export async function _processAgentEvent(this: AgentSession, event: AgentEvent): Promise<void> {
+export async function _processAgentEvent(
+	this: AgentSession,
+	event: AgentEvent,
+	retryGeneration = this._retryGeneration,
+): Promise<void> {
 	const protectedMessage =
 		event.type === "message_end" &&
 		event.message.role === "custom" &&
@@ -310,7 +334,8 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	try {
 		await this._emitExtensionEvent(event);
 		if (event.type === "agent_start") this._undeliveredAgentStarts -= 1;
-		if (event.type !== "message_end" && !repeatsShownInput(this, event)) this._emit(event);
+		if (event.type === "agent_end" && this.isRetrying) this._emit({ ...event, retryPending: true });
+		else if (event.type !== "message_end" && !repeatsShownInput(this, event)) this._emit(event);
 	} finally {
 		// Agent-core has consumed this protected input already. Its durability
 		// boundary cannot be skipped by a fallible extension or session listener.
@@ -443,10 +468,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	if (event.type === "agent_end" && this._lastAssistantMessage) {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
-		if (this._agentRunAbortRequested) {
-			this._resolveRetry();
-			return;
-		}
+		if (!retryIsCurrent(this, retryGeneration)) return;
 		const postToolPreflightFailed =
 			this._postToolCompactionPreflightError !== undefined &&
 			msg.errorMessage === this._postToolCompactionPreflightError;
@@ -482,12 +504,12 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			if (didRetry) return; // Retry was initiated, don't proceed to compaction
 			settleAfterTurn = true;
 		}
-		if (this._agentRunAbortRequested) return;
+		if (!retryIsCurrent(this, retryGeneration)) return;
 
 		this._resolveRetry();
 		this._contextOverflowUnresolved = false;
 		await this._checkCompaction(msg);
-		if (this._agentRunAbortRequested) return;
+		if (!retryIsCurrent(this, retryGeneration)) return;
 
 		// Compaction owns context overflow first. Only once it is disabled, fails,
 		// or reports the overflow unresolved may the chain spend a candidate on a
@@ -705,13 +727,14 @@ export function subscribe(
 		return subscribeSession(this, listenerOrSource, handler, options);
 	}
 	const listener = listenerOrSource;
-	this._eventListeners.push(listener);
+	// Keep dispatch's current array stable when a one-shot subscriber removes itself mid-event.
+	this._eventListeners = [...this._eventListeners, listener];
 
 	// Return unsubscribe function for this specific listener
 	return () => {
 		const index = this._eventListeners.indexOf(listener);
 		if (index !== -1) {
-			this._eventListeners.splice(index, 1);
+			this._eventListeners = this._eventListeners.filter((_, position) => position !== index);
 		}
 	};
 }

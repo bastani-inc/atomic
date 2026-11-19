@@ -1,5 +1,6 @@
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { abortTurnRetries } from "./agent-session-retry.ts";
 import type { SessionAbortOptions } from "./agent-session-types.js";
 
 async function settlePauseAbortBoundaries(boundaries: readonly Promise<void>[]): Promise<void> {
@@ -94,7 +95,7 @@ export async function interruptTurn(this: AgentSession): Promise<void> {
 	this._turnInterruptedByUser = true;
 	this._awaitingMessageAfterInterrupt = false;
 	this._extensionRunner.cancelHostInput();
-	this.abortRetry();
+	abortTurnRetries.call(this);
 	if (this._isPreparingRun === "custom" && !this.agent.state.isStreaming) this._abortPreparedRunAtStart = true;
 	this.agent.abort();
 	await this.agent.waitForIdle();
@@ -119,7 +120,7 @@ export function abortCurrentGeneration(this: AgentSession): Promise<void> {
 		// A stage's generation remains host-owned; only explicit resume releases it.
 		this.pauseQueuedMessages();
 	}
-	this.abortRetry();
+	abortTurnRetries.call(this);
 	this._compactionAbortController?.abort();
 	this._autoCompactionAbortController?.abort();
 	this._branchSummaryAbortController?.abort();

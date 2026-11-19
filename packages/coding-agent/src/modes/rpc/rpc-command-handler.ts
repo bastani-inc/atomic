@@ -311,7 +311,7 @@ export function createRpcCommandHandler({
 			case "resume_workflow_from_picker": {
 				try {
 					return createRpcSuccessResponse(id, command.type, {
-						handled: await resumeWorkflowFromPicker(session, command.target),
+						handled: await resumeWorkflowFromPicker(session, command.target, command.selection),
 					});
 				} catch (error: unknown) {
 					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);
@@ -334,6 +334,8 @@ export function createRpcCommandHandler({
 					modelFallbackReason: runtimeHost.modelFallbackReason,
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
+					retryStatus: session.retryStatus,
+					turnStartedAt: session.turnStartedAt,
 					isCompacting: session.isCompacting,
 					compactionReason: session.compactionReason,
 					...(session.compactionStartedAt === undefined

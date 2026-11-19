@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers";
 import {
 	discoverLegacyJournal,
 	isJournalCatalogError,
@@ -10,7 +11,7 @@ import {
 	type StorageFailureCause,
 } from "@bastani/atomic/storage";
 import { pathExists } from "../../shared/path-exists.js";
-import { type JournalKeyRangeReadOptions, journalKeyRangeRead } from "./internal.js";
+import { type JournalKeyRangeReadOptions, journalKeyRangeRead, type RunJournalVersions } from "./internal.js";
 import {
 	type AppendOutcome,
 	JOURNAL_LEASE,
@@ -37,6 +38,14 @@ import { serializeJson, validateText } from "./values.js";
 const SHARDED_RUN_JOURNAL = Symbol.for("@bastani/workflows/sharded-run-journal");
 /** A read follows its run to another shard at most this often: a consolidation moves it once, a rollback moves it back. */
 const READ_FOLLOW_LIMIT = 3;
+
+/**
+ * A turn of the event loop between shards of a listing: each shard's statements hold the turn with the local SQLite
+ * store, and a store of dozens of shards held it for hundreds of milliseconds when they ran in one (#5480).
+ */
+function nextTurn(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
+}
 
 export interface ShardedRunJournalOptions {
 	/** The store's directory: its `catalog.sqlite` and native shard files. */
@@ -455,11 +464,14 @@ export class ShardedRunJournal implements RunJournal {
 		});
 	}
 
-	async changeToken(): Promise<string | undefined> {
+	/** Once `stop` aborts, the read ends at the next shard with its reason (#5480). */
+	async changeToken(stop?: AbortSignal): Promise<string | undefined> {
 		this.assertOpen();
 		return this.operation(async () => {
 			const tokens = [await this.catalog.changeToken()];
 			for (const record of await this.catalog.shards()) {
+				await nextTurn();
+				stop?.throwIfAborted();
 				const journal = await this.listable(record);
 				if (journal === undefined) tokens.push(`unavailable:${this.unavailable.get(record.id)!.code}`);
 				else if (journal.changeToken === undefined) tokens.push("untracked");
@@ -474,16 +486,20 @@ export class ShardedRunJournal implements RunJournal {
 		});
 	}
 
-	async runVersions(): Promise<ReadonlyMap<string, RunVersion>> {
+	/** Once `stop` aborts, the read ends at the next shard, or the next statement of a shard, with its reason (#5480). */
+	async runVersions(stop?: AbortSignal): Promise<ReadonlyMap<string, RunVersion>> {
 		this.assertOpen();
 		return this.operation(async () => {
 			const [records, owners] = await Promise.all([this.catalog.shards(), this.catalog.owners()]);
 			const versions = new Map<string, RunVersion>();
+			const versionsOf = (journal: Partial<RunJournalVersions>) => journal.runVersions?.(stop);
 			for (const record of records) {
+				await nextTurn();
+				stop?.throwIfAborted();
 				const journal = await this.listable(record);
 				if (journal === undefined) continue;
 				const shardVersions =
-					(await journal.runVersions?.()) ??
+					(await versionsOf(journal)) ??
 					new Map((await journal.listRuns()).map((run) => [run.runId, { seq: 0, at: 0 }]));
 				for (const [runId, version] of shardVersions) {
 					const owner = owners.get(runId);
@@ -495,15 +511,18 @@ export class ShardedRunJournal implements RunJournal {
 		});
 	}
 
-	async snapshotTail(runId: string): Promise<RunSnapshotTail | undefined> {
+	/** Once `stop` aborts, the shard's walk back to the snapshot ends at its next statement with its reason (#5480). */
+	async snapshotTail(runId: string, stop?: AbortSignal): Promise<RunSnapshotTail | undefined> {
 		this.assertOpen();
 		validateText("runId", runId);
 		return this.operation(async () => {
+			const tailOf = (journal: Partial<RunJournalVersions>) => journal.snapshotTail?.(runId, stop);
 			const located = await this.locate(runId);
 			if (located === undefined) return undefined;
-			const tail = await located.journal.snapshotTail?.(runId);
+			const tail = await tailOf(located.journal);
 			if (tail !== undefined) return tail;
-			return (await this.relocated(runId, located.record))?.journal.snapshotTail?.(runId);
+			const relocated = await this.relocated(runId, located.record);
+			return relocated === undefined ? undefined : tailOf(relocated.journal);
 		});
 	}
 

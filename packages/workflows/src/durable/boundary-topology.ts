@@ -1,4 +1,5 @@
 import type { BoundWorkspace, WorkspaceWriterLease } from "@bastani/atomic";
+import type { RunStatus } from "../shared/store-types.js";
 import type { WorkflowChildResult, WorkflowOutputValues, WorkflowSerializableValue } from "../shared/types.js";
 import { boundaryAttemptCheckpoint, durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
@@ -70,6 +71,7 @@ export interface DurableChildInvocation {
 	recordTerminal(
 		status: Extract<DurableStageLifecycleStatus, "completed" | "failed" | "skipped">,
 		output?: WorkflowChildResult<WorkflowOutputValues>,
+		startedChildStatus?: RunStatus,
 	): Promise<void>;
 }
 
@@ -194,7 +196,7 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 			// Only once stored: a start the store refused is recorded again with the failure it ends with (#5027).
 			topology = started;
 		},
-		async recordTerminal(status, output): Promise<void> {
+		async recordTerminal(status, output, startedChildStatus): Promise<void> {
 			if (terminalRecorded) return;
 			if (topology === undefined) throw invalid(input, "boundary terminal state preceded its durable start");
 			const parsedOutput =
@@ -218,6 +220,8 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 				topology.sourceOrder!,
 				"terminal",
 				status,
+				undefined,
+				startedChildStatus,
 			);
 			const now = Math.max(Date.now(), priorTerminalAt + 1);
 			await input.backend.commitCheckpoint({
@@ -399,6 +403,7 @@ function makeTopology(
 	event: DurableWorkflowBoundaryTopology["event"],
 	status: Extract<DurableStageLifecycleStatus, "running" | "completed" | "failed" | "skipped">,
 	workspace?: BoundWorkspace,
+	startedChildStatus?: RunStatus,
 ): DurableStageTopology {
 	const child = {
 		runId: childRunId,
@@ -422,7 +427,7 @@ function makeTopology(
 		boundary = { ...identity, event, status };
 	} else {
 		if (status === "running") throw invalid(input, "boundary terminal has a running status");
-		boundary = { ...identity, event, status };
+		boundary = { ...identity, event, status, ...(startedChildStatus !== undefined ? { startedChildStatus } : {}) };
 	}
 	return {
 		version: DURABLE_STAGE_TOPOLOGY_VERSION,

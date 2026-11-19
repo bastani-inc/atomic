@@ -379,7 +379,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			// told so. Without one the call still runs its children directly and waits for them, so nothing changed.
 			const legacy = takeLegacyForegroundWait(id, params, ctx);
 			const result = await (invalidHeartbeatResult(legacy.params) ??
-				executeWithBurstCollection(id, legacy.params, signal, onUpdate, ctx));
+				executeWithBurstCollection(id, legacy.params, signal, onUpdate, ctx, legacy.wait));
 			return legacy.foreground && ctx.getAgentTaskHost ? withLegacyForegroundWaitNote(result) : result;
 		},
 	};

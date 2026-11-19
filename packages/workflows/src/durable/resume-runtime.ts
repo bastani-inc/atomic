@@ -15,7 +15,7 @@ import { WorkflowProjectNotTrustedError } from "./project-trust.js";
 
 import { assertWaitingStageSessionsExist, type ResumeSessionStorage } from "../engine/run-resume-preflight.js";
 import { currentToolControlRegistry, type ToolControlRegistry } from "../engine/run-tool-control-registry.js";
-import type { JobTracker } from "../runs/background/job-tracker.js";
+import { currentJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
 import {
 	isWorkflowDefinition,
@@ -24,7 +24,7 @@ import {
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { busyStageChat, stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
-import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
+import { isFullRunId, isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import type { WorkflowDefinition, WorkflowInputValues } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { type DurableWorkflowBackend, resumableEntryFromHandle } from "./backend.js";
@@ -35,7 +35,7 @@ import { JournalDurableBackend } from "./journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { claimsOf, hasActiveLiveRun, hasForkClaim, pendingResumes, unsettledResumeClaims } from "./run-claims.js";
 import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
-import { availableRunDurableBackend } from "./run-owner-backend.js";
+import { availableRunDurableBackend, bindRunDurableBackend, durableRootRunIdForRun } from "./run-owner-backend.js";
 import { restorePreconditionsChecked, resumeClaim, resumeLaunchCwd } from "./run-restore-preconditions.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { canonicalDirectoryAsync, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
@@ -68,10 +68,15 @@ export type ResumeDurableResult =
 			error?: JournalCatalogError | ForkError | ResumeError;
 	  };
 
+export function staleResumeSelectionMessage(id: string): string {
+	return `Workflow ${id} changed since it was listed; refresh the workflow list and try again.`;
+}
+
 export interface ResumeDurableDeps {
+	readonly expectedUpdatedAt?: number;
 	readonly registry: WorkflowRegistry;
 	/** Base run options forwarded to the detached runner (store, persistence, …). */
-	readonly baseRunOpts: RunOpts;
+	readonly baseRunOpts: RunOpts & { readonly jobs?: JobTracker };
 	/** Backend selected by the owning runtime or store. */
 	readonly durableBackend?: DurableWorkflowBackend;
 	/** Resolve a definition from its original invocation directory after restart. */
@@ -107,7 +112,7 @@ export async function prepareDurableResume(
 	if (workflowId !== undefined) {
 		const resolved = resolveDurableEntry(workflowId, catalog);
 		if (resolved !== undefined && !("kind" in resolved)) {
-			await backend.hydrateWorkflow(resolved.workflowId);
+			await backend.hydrateWorkflow(resolved.workflowId, { checkHeader: true });
 		}
 	}
 	return backend.listResumableWorkflows();
@@ -133,6 +138,23 @@ export function resolveDurableEntry(
 	return catalog.find((entry) => entry.workflowId === resolution.runId);
 }
 
+/** Capture the caller's selected version before any await. The local failed job still owes its final version. */
+export function selectedResumeEntry(
+	workflowId: string,
+	catalog: readonly ResumableWorkflowEntry[] | undefined,
+	store: RunOpts["store"],
+	jobs: JobTracker,
+): ResumableWorkflowEntry | undefined {
+	if (catalog === undefined) return undefined;
+	const entry = isFullRunId(workflowId)
+		? catalog.find((row) => row.workflowId === workflowId)
+		: resolveDurableEntry(workflowId, catalog);
+	if (entry === undefined || "kind" in entry) return undefined;
+	return entry.status === "running" && store?.run(entry.workflowId)?.status === "failed" && jobs.has(entry.workflowId)
+		? undefined
+		: entry;
+}
+
 async function hasWorktreeSnapshots(backend: DurableWorkflowBackend, workflowId: string): Promise<boolean> {
 	const journal = backend.snapshotJournal;
 	return journal !== undefined && (await listWorkflowSnapshotBoundaries(journal, workflowId)).length > 0;
@@ -149,10 +171,38 @@ export async function resumeDurableWorkflow(
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
 	resolveWorktreeSnapshotSettings(deps.baseRunOpts.snapshots, "sdk", "snapshots");
+	const jobs = deps.jobs ?? deps.baseRunOpts.jobs ?? currentJobTracker();
+	const store = deps.baseRunOpts.store ?? currentWorkflowStore();
+	deps = { ...deps, jobs, baseRunOpts: { ...deps.baseRunOpts, store } };
+	let selected = selectedResumeEntry(workflowId, catalog, store, jobs);
 	const backend = resumeBackend(deps, workflowId);
-	const target = resolveDurableEntry(workflowId, catalog ?? backend.listResumableWorkflows());
-	const id = target !== undefined && !("kind" in target) ? target.workflowId : workflowId;
+	let id = workflowId;
+	if (!isFullRunId(id)) {
+		const stored = isRunIdPrefix(id)
+			? await raceAbort(backend.prepareWorkflowCatalog({ signal: deps.signal }), deps.signal)
+			: undefined;
+		const ids =
+			stored?.inspectableIds ??
+			[...(stored?.resumable ?? []), ...(stored?.completed ?? [])].map((entry) => entry.workflowId);
+		const resolution = resolveRunIdTarget(id, selected === undefined ? ids : [...ids, selected.workflowId]);
+		if (resolution.kind === "not_found")
+			return { ok: false, reason: "not_registered", message: `No resumable workflow found for id: ${id}` };
+		if (resolution.kind === "malformed" || resolution.kind === "ambiguous")
+			return { ok: false, reason: "not_registered", message: resolution.message };
+		id = resolution.runId;
+		await raceAbort(backend.hydrateWorkflow(id, { checkHeader: true }), deps.signal);
+	}
 	let handle = backend.getWorkflow(id);
+	if (handle === undefined) {
+		// A cold backend may not have loaded this run. Check its journal row before reading any history for it.
+		const journal = backend.snapshotJournal;
+		if (journal === undefined || (await raceAbort(journal.getRun(id), deps.signal)) !== undefined) {
+			await raceAbort(backend.hydrateWorkflow(id), deps.signal);
+			handle = backend.getWorkflow(id);
+			if (journal !== undefined && handle === undefined)
+				return { ok: false, reason: "stale", message: `Workflow ${id} has no valid journal state.` };
+		}
+	}
 	if (handle?.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, id))
 		return alreadyRunningResult(handle.name, id);
 	if (handle !== undefined) {
@@ -163,7 +213,7 @@ export async function resumeDurableWorkflow(
 			if (message) return { ok: false, reason: "not_resumable", message };
 		}
 	}
-	const finishing = deps.jobs?.get(id);
+	const finishing = jobs.get(id);
 	if (
 		finishing !== undefined &&
 		(handle?.status === "failed" || deps.baseRunOpts.store?.run(id)?.status === "failed")
@@ -171,13 +221,24 @@ export async function resumeDurableWorkflow(
 		// The terminal event can reach a caller before the old attempt finishes its persistence and releases its
 		// lease. Wait for that attempt before admitting a replacement, then discard its now-stale catalog version.
 		await raceAbort(finishing.promise, deps.signal);
-		await raceAbort(backend.hydrateWorkflow(id), deps.signal);
+		await raceAbort(backend.hydrateWorkflow(id, { checkHeader: true }), deps.signal);
 		handle = backend.getWorkflow(id);
-		if (handle !== undefined && catalog !== undefined) {
-			const refreshed = resumableEntryFromHandle(handle);
-			catalog = catalog.map((entry) => (entry.workflowId === id ? refreshed : entry));
-		}
+		if (handle !== undefined) selected = resumableEntryFromHandle(handle);
 	}
+	// The resumable list can omit an owned run even if its failed attempt finished between listing and admission.
+	// An exact id identifies the run independently of that list. Keep a listed version for its stale-write check.
+	if (selected === undefined) {
+		if (handle === undefined) {
+			const error = durableRunNotFoundError(backend, id);
+			return { ok: false, reason: "not_registered", message: formatRunNotFound(error), error };
+		}
+		if (catalog !== undefined && handle.status === "running" && (await backend.workflowOwnership(id)) === "local")
+			return alreadyRunningResult(handle.name, id);
+		selected = resumableEntryFromHandle(handle);
+	}
+	if (deps.expectedUpdatedAt !== undefined && handle?.updatedAt !== deps.expectedUpdatedAt)
+		return { ok: false, reason: "stale", message: staleResumeSelectionMessage(id) };
+	const resolved = selected;
 	if (hasForkClaim(backend, id))
 		return {
 			ok: false,
@@ -194,7 +255,7 @@ export async function resumeDurableWorkflow(
 	)
 		return resumeIntoFork(handle, currentCwd, { ...deps, durableBackend: backend });
 	const pending = claimsOf(pendingResumes, backend);
-	if (pending.has(id) || unsettledResumeClaims.get(backend)?.has(id) || deps.jobs?.has(id))
+	if (pending.has(id) || unsettledResumeClaims.get(backend)?.has(id) || jobs.has(id))
 		return {
 			ok: false,
 			reason: "not_resumable",
@@ -211,7 +272,7 @@ export async function resumeDurableWorkflow(
 	else deps.signal?.addEventListener("abort", releaseCaller, { once: true });
 	try {
 		const resume = () =>
-			resumeDurableWorkflowClaimed(workflowId, { ...deps, durableBackend: backend }, catalog, () => {
+			resumeDurableWorkflowClaimed(resolved, { ...deps, durableBackend: backend }, () => {
 				admitted = true;
 			});
 		const execution = backend instanceof JournalDurableBackend ? backend.withWorkflowLease(id, resume) : resume();
@@ -224,64 +285,16 @@ export async function resumeDurableWorkflow(
 
 /** Resume by workflow id and replay persisted checkpoints. */
 async function resumeDurableWorkflowClaimed(
-	workflowId: string,
+	resolved: ResumableWorkflowEntry,
 	deps: ResumeDurableDeps,
-	catalog?: readonly ResumableWorkflowEntry[],
 	onAdmitted?: () => void,
 ): Promise<ResumeDurableResult> {
 	deps.signal?.throwIfAborted();
-	const backend = resumeBackend(deps, workflowId);
-	const knownCatalog = catalog ?? backend.listResumableWorkflows();
-	const target = resolveRunIdTarget(
-		workflowId,
-		knownCatalog.map((entry) => entry.workflowId),
-	);
-	if (target.kind === "malformed" || target.kind === "ambiguous") {
-		return { ok: false, reason: "not_registered", message: target.message };
-	}
-	if (target.kind === "not_found") {
-		if (!isFullRunId(workflowId)) {
-			return { ok: false, reason: "not_registered", message: `No resumable workflow found for id: ${workflowId}` };
-		}
-	} else {
-		workflowId = target.runId;
-	}
-	const resolvedCatalog = catalog ?? backend.listResumableWorkflows();
-	const resolved = resolveDurableEntry(workflowId, resolvedCatalog);
-	if (resolved === undefined) {
-		const direct = backend.getWorkflow(workflowId);
-		if (direct !== undefined && direct.status === "running") {
-			if (hasActiveLiveRun(deps.baseRunOpts.store, direct.workflowId)) {
-				return alreadyRunningResult(direct.name, direct.workflowId);
-			}
-			if ((await backend.workflowOwnership(direct.workflowId)) === "foreign") {
-				return foreignRunningResult(direct.name, direct.workflowId);
-			}
-		}
-		if (direct !== undefined && !backend.isWorkflowLoadable(workflowId)) {
-			return {
-				ok: false,
-				reason: "not_registered",
-				message: `Workflow ${workflowId} has no valid journal state.`,
-			};
-		}
-		if (direct === undefined) {
-			const error = durableRunNotFoundError(backend, workflowId);
-			return { ok: false, reason: "not_registered", message: formatRunNotFound(error), error };
-		}
-		return {
-			ok: false,
-			reason: "not_registered",
-			message: `No resumable workflow found for id: ${workflowId}`,
-		};
-	}
-	if ("kind" in resolved) {
-		return { ok: false, reason: "not_registered", message: resolved.message };
-	}
+	const backend = resumeBackend(deps, resolved.workflowId);
 	if (!backend.isWorkflowLoadable(resolved.workflowId)) {
 		return {
 			ok: false,
-			reason: "not_registered",
+			reason: "stale",
 			message: `Workflow ${resolved.workflowId} has no valid journal state.`,
 		};
 	}
@@ -307,7 +320,10 @@ async function resumeDurableWorkflowClaimed(
 		return {
 			ok: false,
 			reason: "not_resumable",
-			message: `Workflow ${resolved.workflowId} is ${handle.status}, not resumable.`,
+			message:
+				handle.rootWorkflowId !== undefined && handle.rootWorkflowId !== handle.workflowId
+					? `Workflow ${resolved.workflowId} is nested; resume its root ${handle.rootWorkflowId}.`
+					: `Workflow ${resolved.workflowId} is ${handle.status}, not resumable.`,
 		};
 	}
 	const requestedOwner = deps.baseRunOpts.modelOwner;
@@ -404,7 +420,12 @@ async function resumeDurableWorkflowClaimed(
 		failureDisposition: handle.failureDisposition,
 		failedToolNodeId: handle.failedToolNodeId,
 	};
-	const sourceSnapshot = toolContinuation?.source ?? deps.baseRunOpts.store?.run(resolved.workflowId);
+	const stored = deps.baseRunOpts.store?.run(resolved.workflowId);
+	// A refused claim is not a finish. Older failed handles were ordered by their pre-claim update time.
+	const finishSequence =
+		handle.finishSequence ?? stored?.finishSequence ?? (handle.status === "failed" ? handle.updatedAt : undefined);
+	const sourceSnapshot = toolContinuation === undefined ? stored : { ...toolContinuation.source, finishSequence };
+	if (sourceSnapshot !== undefined && toolContinuation !== undefined) bindRunDurableBackend(sourceSnapshot, backend);
 	/**
 	 * Undo the claim. An adoption is undone only while the adopter still owns the run and nothing else changed it; an
 	 * aborted adoption (`restoreOwner`) also returns the run to its previous owner, and a released run goes back to the
@@ -454,6 +475,8 @@ async function resumeDurableWorkflowClaimed(
 			handle.pendingPrompts,
 			handle.resumable,
 			sourceFailure,
+			undefined,
+			finishSequence,
 		);
 		onRestored?.();
 		return true;
@@ -474,7 +497,7 @@ async function resumeDurableWorkflowClaimed(
 				"running",
 				undefined,
 				undefined,
-				resolved.updatedAt,
+				deps.expectedUpdatedAt ?? resolved.updatedAt,
 				adopting ? requestedOwner : undefined,
 			);
 			// #5149: an aborted adoption is rolled back too, restoring its status and its previous owner.
@@ -557,13 +580,17 @@ async function resumeDurableWorkflowClaimed(
 							handle.pendingPrompts,
 							handle.resumable,
 							sourceFailure,
+							undefined,
+							finishSequence,
 						);
 						if (
 							deps.baseRunOpts.store?.run(resolved.workflowId) === current &&
 							current.status === "failed" &&
 							current.error === message
 						) {
-							deps.baseRunOpts.store.recordRunStart({ ...toolContinuation.source, error: message });
+							const restored = { ...toolContinuation.source, error: message, finishSequence };
+							bindRunDurableBackend(restored, backend);
+							deps.baseRunOpts.store.recordRunStart(restored);
 						}
 					}
 				}
@@ -668,10 +695,15 @@ async function resumeIntoFork(
 			reason: "different_project",
 			message: "Workflow resume cancelled; the source run was not changed.",
 		};
+	const selectionChanged =
+		deps.expectedUpdatedAt === undefined ? undefined : new Error(staleResumeSelectionMessage(handle.workflowId));
 	let fork: Awaited<ReturnType<typeof forkDurableRun>>;
 	try {
 		fork = await forkDurableRun(deps.durableBackend, {
 			source: "cli",
+			validateSource: (source) => {
+				if (selectionChanged !== undefined && source.updatedAt !== deps.expectedUpdatedAt) throw selectionChanged;
+			},
 			runId: handle.workflowId,
 			cwd: currentCwd,
 			carryMessages: "all",
@@ -682,6 +714,8 @@ async function resumeIntoFork(
 			isLiveRun: (runId) => hasActiveLiveRun(deps.baseRunOpts.store, runId),
 		});
 	} catch (error) {
+		if (selectionChanged !== undefined && error === selectionChanged)
+			return { ok: false, reason: "stale", message: selectionChanged.message };
 		if (!isForkError(error)) throw error;
 		return { ok: false, reason: "fork_failed", message: error.message, error };
 	}
@@ -690,6 +724,7 @@ async function resumeIntoFork(
 		fork.runId,
 		{
 			...deps,
+			expectedUpdatedAt: undefined,
 			confirmCrossProjectFork: undefined,
 			resolveDefinition: async () => fork.definition,
 			onBeforeResume:
@@ -750,12 +785,14 @@ export function purgeSuppressedWorkflowRuns(
 	controls: ToolControlRegistry = currentToolControlRegistry(),
 ): readonly string[] {
 	if (store === undefined) return [];
-	const removed: string[] = [];
-	for (const run of store.runs()) {
-		if (controls.runControl(run.id) !== undefined || backend.isWorkflowLoadable(run.id)) continue;
-		if (store.removeRun(run.id)) removed.push(run.id);
-	}
-	return removed;
+	// Resolve every owner before removing any root: its nested snapshots share its journal and deletion.
+	const deleted = store.runs().filter((run) => {
+		if (controls.runControl(run.id) !== undefined) return false;
+		const rootId = durableRootRunIdForRun(store, run.id) ?? run.id;
+		const owner = availableRunDurableBackend(store, rootId) ?? backend;
+		return !owner.isWorkflowLoadable(rootId);
+	});
+	return deleted.map((run) => run.id).filter((id) => store.removeRun(id));
 }
 
 /** Refresh known workflow ids for resume discovery. */
@@ -768,7 +805,7 @@ export async function prepareTargetedDurableResumable(
 	for (const workflowId of workflowIds) {
 		if (seen.has(workflowId)) continue;
 		seen.add(workflowId);
-		await backend.hydrateWorkflow(workflowId);
+		await backend.hydrateWorkflow(workflowId, { checkHeader: true });
 		const handle = backend.getLoadableWorkflow(workflowId);
 		if (
 			handle === undefined ||
@@ -789,7 +826,8 @@ export async function prepareRuntimeDurableResumable(
 	await backend.hydrateResumableWorkflows();
 	if (workflowId !== undefined) {
 		const resolved = resolveDurableEntry(workflowId, backend.listResumableWorkflows());
-		if (resolved !== undefined && !("kind" in resolved)) await backend.hydrateWorkflow(resolved.workflowId);
+		if (resolved !== undefined && !("kind" in resolved))
+			await backend.hydrateWorkflow(resolved.workflowId, { checkHeader: true });
 	}
 	return backend.listResumableWorkflows();
 }

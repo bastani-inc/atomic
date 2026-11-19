@@ -9,6 +9,7 @@ import {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
 	buildSkillCatalogAsync,
+	type Cleanup,
 	type CreateAgentSessionOptions,
 	type CustomMessageEntry,
 	createAgentSession,
@@ -31,6 +32,8 @@ import {
 	type Skill,
 	type SubagentIntercomIdentity,
 	sliceHead,
+	spanElapsedMs,
+	type TaskElapsedSpan,
 	watchHeldPromptAttention,
 } from "@bastani/atomic";
 import {
@@ -52,7 +55,6 @@ import type {
 	ChildCommandTaskOwner,
 	ChildTaskCompletionRoute,
 } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
-import type { Cleanup } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import {
 	buildSkillInjection,
@@ -90,6 +92,7 @@ import {
 	PARENT_CANCEL_CAUSE,
 	recoverCancelledChildOutput,
 } from "../shared/cancellation-recovery.js";
+import { finishElapsedSpan } from "../shared/elapsed.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
 import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
 import {
@@ -171,6 +174,8 @@ export interface TestSessionOptions {
 
 export interface ChildSpec {
 	readonly taskName: string;
+	readonly elapsedSpan?: TaskElapsedSpan;
+	readonly onElapsedSpanChanged?: () => void;
 	/** The child id (`<runId>:<index>`) run control knows the child by; `status` names the child by it. */
 	readonly childId?: string;
 	readonly task: string;
@@ -695,6 +700,7 @@ export function nextTurnSettled(
 		readonly waitForStart?: boolean;
 		readonly skipStarts?: number;
 		readonly skipStart?: () => boolean;
+		readonly onStart?: () => void;
 		readonly subscribeDrained?: (listener: () => void) => () => void;
 	} = {},
 ): Promise<void> {
@@ -714,7 +720,10 @@ export function nextTurnSettled(
 		unsubscribe = session.subscribe((event) => {
 			if (event.type === "agent_start") {
 				if (startsToSkip > 0) startsToSkip -= 1;
-				else if (options.skipStart?.() !== true) started = true;
+				else if (!started && options.skipStart?.() !== true) {
+					started = true;
+					options.onStart?.();
+				}
 			} else if (options.subscribeDrained === undefined) {
 				if (event.type === "agent_settled" && started && !session.isStreaming) finish();
 				else if (event.type === "agent_end" && started)
@@ -1088,6 +1097,7 @@ function settledTranscript(
 	const sessionFile = manager.getSessionFile();
 	// #5210: a final answer its session could not save is still shown, after what it saved, unless the session holds it.
 	const kept = withUnsavedAnswer(promptAndAnswer(manager, inherited), unsaved);
+	const last = kept.at(-1);
 	// A child's own session file is read through a store opened for the read, so a finished child keeps no store of its
 	// own in memory; a session in a shared store, as a forked or resumed child's, is read from that store.
 	const store =
@@ -1109,6 +1119,7 @@ function settledTranscript(
 	return {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
+		...(last?.type === "message" && last.message.role === "assistant" ? { settledReply: last.message } : {}),
 		loadHistory: async () => {
 			try {
 				return { entries: await read() };
@@ -1887,6 +1898,7 @@ export class SubagentControlRuntime {
 			| undefined,
 		onDisposal: (disposal: Promise<SessionDisposal>) => void,
 	): Promise<AttemptOutcome> {
+		const elapsedSpan = admitted.spec.elapsedSpan ?? { dispatchedAt: Date.now() };
 		const candidateModelId = modelIdForCandidate(candidate, admitted.policy.model);
 		const configuredThinking = candidate.thinkingLevel ?? admitted.policy.thinkingLevel;
 		let effectiveModelId = candidateModelId;
@@ -2002,8 +2014,8 @@ export class SubagentControlRuntime {
 		let unsubscribe: (() => void) | undefined;
 		let eventLog: EventLog | undefined;
 		let skillReport: AttemptSkillReport = {};
-		/** Reports the attempt's metrics as of now, once its progress is tracked; the attempt's end reports them last. */
-		let reportFinalMetrics: (() => void) | undefined;
+		let retryableStart = false;
+		let finalProgress: AgentProgress | undefined;
 		const terminate = async (cause: TerminationCauseName): Promise<void> => {
 			if (terminating) {
 				if (!terminationWasKill) this.killedChildren.delete(admitted.identity.path);
@@ -2282,9 +2294,13 @@ export class SubagentControlRuntime {
 				});
 			}
 			const transcriptSession = session;
+			let refreshElapsed: (() => void) | undefined;
+			let interruptGeneration = 0;
 			const interruptTurn = async (): Promise<void> => {
 				// A turn is interrupted while it streams, and between two attempts of a retry, where nothing streams.
 				if ((!transcriptSession.isStreaming && !transcriptSession.isRetrying) || termination !== undefined) return;
+				const generation = ++interruptGeneration;
+				let resumed = false;
 				interruptedTurnSettlement = nextTurnSettled(
 					transcriptSession,
 					[signals.abort, signals.interrupt, executionEnded.signal],
@@ -2292,6 +2308,14 @@ export class SubagentControlRuntime {
 						waitForStart: true,
 						skipStarts: transcriptSession._undeliveredAgentStarts ?? 0,
 						skipStart: () => transcriptSession._startAbortedForInterrupt === true,
+						onStart: () => {
+							if (generation !== interruptGeneration) return;
+							resumed = true;
+							elapsedSpan.dispatchedAt = Date.now();
+							delete elapsedSpan.endedAt;
+							admitted.spec.onElapsedSpanChanged?.();
+							refreshElapsed?.();
+						},
 						...(prepared === undefined
 							? {}
 							: {
@@ -2303,6 +2327,11 @@ export class SubagentControlRuntime {
 					},
 				);
 				await transcriptSession.interruptTurn();
+				if (!resumed && generation === interruptGeneration) {
+					elapsedSpan.endedAt ??= Date.now();
+					admitted.spec.onElapsedSpanChanged?.();
+					refreshElapsed?.();
+				}
 			};
 			const settleInterruptedTurns = async (): Promise<void> => {
 				while (interruptedTurnSettlement !== undefined && termination === undefined) {
@@ -2368,11 +2397,11 @@ export class SubagentControlRuntime {
 				durationMs: 0,
 				lastActivityAt: Date.now(),
 			};
-			const attemptStartedAt = Date.now();
+			finalProgress = progressState;
 			const activityPrefix = randomUUID();
 			let lastProgressEmit = 0;
 			const reportMetrics = (now: number) => {
-				progressState.durationMs = now - attemptStartedAt;
+				progressState.durationMs = spanElapsedMs(elapsedSpan, now);
 				taskHooks?.reportActivity({
 					reportId: `${activityPrefix}:metrics-${++activitySequence}`,
 					change: {
@@ -2388,13 +2417,14 @@ export class SubagentControlRuntime {
 				if (!onProgress && !taskHooks) return;
 				const now = Date.now();
 				progressState.lastActivityAt = now;
+				progressState.status = elapsedSpan.endedAt === undefined ? "running" : "interrupted";
 				reportMetrics(now);
 				if (!force && now - lastProgressEmit < 400) return;
 				lastProgressEmit = now;
 				onProgress?.({ ...progressState, recentTools: [...progressState.recentTools] });
 			};
+			refreshElapsed = () => emitProgress(true);
 			let activitySequence = 0;
-			reportFinalMetrics = () => reportMetrics(Date.now());
 			const reportModel = () =>
 				taskHooks?.reportActivity({
 					reportId: `${activityPrefix}:model-${++activitySequence}`,
@@ -2705,6 +2735,7 @@ export class SubagentControlRuntime {
 					...skillReport,
 				};
 			const startError = findSessionStartError(error);
+			retryableStart = startError !== undefined && isSessionStartTimeoutError(startError);
 			return {
 				status,
 				cause,
@@ -2725,12 +2756,10 @@ export class SubagentControlRuntime {
 				...skillReport,
 			};
 		} finally {
-			// Whatever ended the attempt, its time runs to now: a child released, or stopped, while a tool call ran sent no
-			// report since that call started (#5496).
-			try {
-				reportFinalMetrics?.();
-			} catch {
-				// A report the task host refuses must not replace the attempt result.
+			// Release, stop and completion precede session disposal. A stalled start still has a retry to decide.
+			if (!retryableStart) {
+				finishElapsedSpan(elapsedSpan, taskHooks, finalProgress);
+				admitted.spec.onElapsedSpanChanged?.();
 			}
 			startBudget.end();
 			// End reply capability before asynchronous cleanup or extension invalidation.

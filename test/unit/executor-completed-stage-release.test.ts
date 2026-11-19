@@ -278,7 +278,8 @@ describe("completed stage session release", () => {
 			}
 		});
 
-		test("a resume that takes the failed stage's own id before the failed run's cleanup keeps its stage and open question, and the cleanup still disposes the old session (#5499)", async () => {
+		async function runningSuccessor(separate: boolean): Promise<void> {
+			const resumedRegistry = separate ? createStageControlRegistry() : stageControlRegistry;
 			const backend = await createMemoryTestBackend();
 			const store = createStore();
 			const stageUiBroker = new StageUiBroker(store);
@@ -332,7 +333,14 @@ describe("completed stage session release", () => {
 				resumed = run(
 					def,
 					{},
-					{ runId: args[0], durableBackend: backend, store, stageUiBroker, adapters: fixture.adapters },
+					{
+						runId: args[0],
+						durableBackend: backend,
+						store,
+						stageUiBroker,
+						stageControlRegistry: resumedRegistry,
+						adapters: fixture.adapters,
+					},
 				);
 				await Promise.race([
 					resumedPromptStarted.promise,
@@ -340,6 +348,14 @@ describe("completed stage session release", () => {
 						throw new Error("the resume ended before its stage started");
 					}),
 				]);
+				fixture.sessions[0]!.emit({
+					type: "tool_execution_start",
+					toolCallId: "stale",
+					toolName: "ask_user_question",
+					args: {
+						questions: [{ question: "Obsolete?", header: "Old", options: [{ label: "Yes" }, { label: "No" }] }],
+					},
+				});
 			});
 			try {
 				const failed = await run(
@@ -352,16 +368,12 @@ describe("completed stage session release", () => {
 				assert.equal(fixture.sessions.length, 2);
 				assert.equal(fixture.sessions[0]!.disposals, 1, "the failed run disposed its own session");
 				assert.equal(fixture.sessions[1]!.disposals, 0, "the resumed stage's session is still open");
-				const [handle] = stageControlRegistry.forRun(failed.runId);
+				const [handle] = resumedRegistry.forRun(failed.runId);
 				assert.equal(handle?.stageName, "last", "the resumed stage stays registered");
 				const resumedStage = store.run(failed.runId)?.stages.find((stage) => stage.name === "last");
-				assert.notEqual(
-					resumedStage?.attachable,
-					false,
-					"the failed run's cleanup must not detach the resumed stage",
-				);
+				assert.equal(resumedStage?.attachable, true, "the failed run's cleanup must not detach the resumed stage");
 				assert.ok(
-					resumedStage?.awaitingInputSince !== undefined && resumedStage.inputRequest !== undefined,
+					resumedStage?.awaitingInputSince !== undefined && resumedStage.inputRequest?.id === "resumed-question",
 					"the resumed stage's open question survives the failed run's cleanup",
 				);
 
@@ -372,11 +384,21 @@ describe("completed stage session release", () => {
 				await resumed?.catch(() => {});
 				commits.mockRestore();
 				await stageControlRegistry.clear();
+				await resumedRegistry.clear();
 				await closeMemoryTestBackends();
 			}
-		}, 15_000);
+		}
+		test(
+			"a resume that takes the failed stage's own id before the failed run's cleanup keeps its stage and open question, and the cleanup still disposes the old session (#5499)",
+			() => runningSuccessor(false),
+			15_000,
+		);
+		test("a late question from a failed stage leaves a separate registry's running successor unchanged (#5577)", () =>
+			runningSuccessor(true));
 
-		test("a question asked in chat with a resumed stage that already completed stays answerable after the failed run's cleanup (#5499)", async () => {
+		async function completedSuccessor(cleanup: "shared" | "separate" | "clear"): Promise<void> {
+			const oldRegistry = cleanup === "clear" ? createStageControlRegistry() : undefined;
+			const resumedRegistry = cleanup === "shared" ? stageControlRegistry : createStageControlRegistry();
 			const backend = await createMemoryTestBackend();
 			const store = createStore();
 			const stageUiBroker = new StageUiBroker(store);
@@ -453,8 +475,9 @@ describe("completed stage session release", () => {
 						store,
 						stageUiBroker,
 						adapters: fixture.adapters,
+						stageControlRegistry: resumedRegistry,
 						onStageStart(id, stage) {
-							closeChatPane = stageControlRegistry.get(id, stage.id)!.subscribe(() => {});
+							closeChatPane = resumedRegistry.get(id, stage.id)!.subscribe(() => {});
 						},
 					},
 				);
@@ -464,10 +487,10 @@ describe("completed stage session release", () => {
 						throw new Error("the resume ended before its stage completed");
 					}),
 				]);
-				const handle = stageControlRegistry.get(runId, stageId)!;
+				const handle = resumedRegistry.get(runId, stageId)!;
 				assert.equal(handle.status, "completed");
 				assert.deepEqual(
-					stageControlRegistry.run(runId).stages(),
+					resumedRegistry.run(runId).stages(),
 					[],
 					"the completed stage no longer takes part in run control",
 				);
@@ -482,8 +505,15 @@ describe("completed stage session release", () => {
 				const failed = await run(
 					def,
 					{},
-					{ durableBackend: backend, store, stageUiBroker, adapters: fixture.adapters },
+					{
+						durableBackend: backend,
+						store,
+						stageUiBroker,
+						adapters: fixture.adapters,
+						stageControlRegistry: oldRegistry,
+					},
 				);
+				await oldRegistry?.clear();
 				assert.equal(failed.status, "failed");
 				assert.ok(chat, "the resumed stage completed and its chat asked a question");
 				assert.equal(fixture.sessions.length, 2);
@@ -510,9 +540,20 @@ describe("completed stage session release", () => {
 				await resumed?.catch(() => {});
 				commits.mockRestore();
 				await stageControlRegistry.clear();
+				await oldRegistry?.clear();
+				await resumedRegistry.clear();
 				await closeMemoryTestBackends();
 			}
-		}, 15_000);
+		}
+		test(
+			"a question asked in chat with a resumed stage that already completed stays answerable after the failed run's cleanup (#5499)",
+			() => completedSuccessor("shared"),
+			15_000,
+		);
+		test("automatic cleanup leaves a completed successor's question answerable in a different registry (#5577)", () =>
+			completedSuccessor("separate"));
+		test("clearing the old registry leaves a completed successor's question answerable in its own registry (#5577)", () =>
+			completedSuccessor("clear"));
 
 		test("with a caller-owned stage registry, a stage a resume registers while the failed run releases its idle stages is left alone (#5499)", async () => {
 			const registry = createStageControlRegistry();

@@ -23,6 +23,7 @@ import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { CodeHighlighter, theme } from "../theme/theme.js";
 import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { keyHint, keyText } from "./keybinding-hints.js";
+import { clickableKeyTextHint } from "./nav-keys.ts";
 import { STATUS_MARKERS } from "./notice-line.ts";
 import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
 import {
@@ -407,8 +408,8 @@ export class ToolExecutionComponent extends Container {
 			invalidate() {},
 			render(available) {
 				if (available < 1) return [];
-				const full = keys ? theme.fg("dim", `  (${keys} to expand)`) : "";
-				const compact = keys ? theme.fg("dim", ` (${keys})`) : "";
+				const full = keys ? theme.fg("dim", `  (${clickableKeyTextHint(keys, " to expand")})`) : "";
+				const compact = keys ? theme.fg("dim", ` (${clickableKeyTextHint(keys, "")})`) : "";
 				const suffix = visibleWidth(full) < available ? full : visibleWidth(compact) < available ? compact : "";
 				return [`${truncateToWidth(summary, available - visibleWidth(suffix), "…")}${suffix}`];
 			},

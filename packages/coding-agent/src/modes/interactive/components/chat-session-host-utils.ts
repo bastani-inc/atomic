@@ -141,8 +141,9 @@ export function spinnerFrame(): string {
 	return SPINNER_FRAMES[idx]!;
 }
 
+/** `s` without CSI sequences and APC markers, such as a clickable key hint's. */
 export function stripAnsi(s: string): string {
-	return s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+	return s.replace(/\x1B\[[0-?]*[ -/]*[@-~]|\x1B_[^\x07\x1B]*(?:\x07|\x1B\\)/g, "");
 }
 
 export function errorMessage(error: unknown): string {

@@ -516,6 +516,118 @@ test(
 	WIDE_LISTING_SEED_TIMEOUT_MS,
 );
 
+/** The sessions a light listing may scan in one turn of the event loop; an uncached store reads each in up to ~0.4 ms. */
+const LIGHT_LISTING_ROWS_PER_TURN = 256;
+
+test("SQL light listing of a project gives the event loop a turn every 256 sessions it scans (#5480)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		const store = await SqlSessionStore.open(database);
+		const sessions = 2 * LIGHT_LISTING_ROWS_PER_TURN + 100;
+		const expected = Array.from({ length: sessions }, (_, index) => `s-${String(index).padStart(4, "0")}`);
+		await database.exec("PRAGMA synchronous=OFF");
+		for (const id of expected) await store.create({ ...header, id }, []);
+		let turns = 0;
+		let ticking = true;
+		const tick = () => {
+			turns++;
+			if (ticking) setImmediate(tick);
+		};
+		setImmediate(tick);
+		const start = turns;
+		const listedPerTurn = new Map<number, number>();
+		const actual: string[] = [];
+		try {
+			for await (const summary of store.list({ cwd: header.cwd, withoutSearchText: true })) {
+				actual.push(summary.id);
+				listedPerTurn.set(turns, (listedPerTurn.get(turns) ?? 0) + 1);
+			}
+		} finally {
+			ticking = false;
+		}
+		assert.deepEqual(actual, expected);
+		const mostInOneTurn = Math.max(...listedPerTurn.values());
+		assert.ok(
+			mostInOneTurn <= LIGHT_LISTING_ROWS_PER_TURN,
+			`the listing handed over ${mostInOneTurn} sessions in one turn`,
+		);
+		// Finding the project's stored spellings scans every session too, and gets the same turns.
+		const scanTurns = 2 * Math.ceil(sessions / LIGHT_LISTING_ROWS_PER_TURN);
+		assert.ok(turns - start >= scanTurns, `the listing took ${turns - start} turns, expected ${scanTurns}`);
+		await store.close();
+	});
+});
+
+/** Sessions of another project whose wide columns a light listing of this project must not read. */
+const OTHER_PROJECT_SESSIONS = 128;
+/** Characters of each other session's stored summary: 64 MiB across them, most of it in overflow pages. */
+const OTHER_SUMMARY_CHARS = 512 * 1024;
+/** Best of several listings, so a pause of the test process does not decide the comparison. */
+const LISTING_TIMINGS = 5;
+/** Time a listing may take beyond four times its time beside narrow sessions; copying the summaries takes ~20 ms. */
+const LISTING_TIMING_SLACK_MS = 5;
+
+test("SQL light listing of a project reads only the keys of other projects' sessions (#5480)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		const store = await SqlSessionStore.open(database);
+		const tables = renderStorageIdentifiers("sessions", SESSION_TABLES);
+		await database.exec("PRAGMA synchronous=OFF");
+		await store.create(header, [message("m", "this project")]);
+		for (let index = 0; index < OTHER_PROJECT_SESSIONS; index++)
+			await store.create({ ...header, id: `other-${index}`, cwd: "/other" }, [message("m", "other project")]);
+		const fastestListing = async (): Promise<number> => {
+			let fastest = Number.POSITIVE_INFINITY;
+			for (let run = 0; run < LISTING_TIMINGS; run++) {
+				const started = performance.now();
+				const listed: string[] = [];
+				for await (const summary of store.list({ cwd: header.cwd, withoutSearchText: true }))
+					listed.push(summary.id);
+				fastest = Math.min(fastest, performance.now() - started);
+				assert.deepEqual(listed, [header.id]);
+			}
+			return fastest;
+		};
+		const narrow = await fastestListing();
+		await database.run(
+			`UPDATE ${tables.sessions} SET summary = json_quote(printf('%.*c', ?, 'y')) WHERE cwd = '/other'`,
+			OTHER_SUMMARY_CHARS,
+		);
+		const wide = await fastestListing();
+		assert.ok(
+			wide <= narrow * 4 + LISTING_TIMING_SLACK_MS,
+			`listing took ${wide.toFixed(1)} ms beside wide sessions, ${narrow.toFixed(1)} ms beside narrow ones`,
+		);
+		await store.close();
+	});
+});
+
+/** Stored project spellings a paced listing resolves at once: each can be a chain of file system calls. */
+const PROJECT_SPELLINGS_AT_ONCE = 64;
+
+test("SQL light listing resolves other projects' spellings a few at a time (#5480)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		let resolving = 0;
+		let mostAtOnce = 0;
+		const store = await SqlSessionStore.open(database, {
+			cwdMatcher: (cwd) => async (candidate) => {
+				resolving++;
+				mostAtOnce = Math.max(mostAtOnce, resolving);
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				resolving--;
+				return candidate === cwd;
+			},
+		});
+		await database.exec("PRAGMA synchronous=OFF");
+		await store.create(header, []);
+		for (let index = 0; index < PROJECT_SPELLINGS_AT_ONCE * 3; index++)
+			await store.create({ ...header, id: `other-${index}`, cwd: `/other-${index}` }, []);
+		const listed: string[] = [];
+		for await (const summary of store.list({ cwd: header.cwd, withoutSearchText: true })) listed.push(summary.id);
+		assert.deepEqual(listed, [header.id]);
+		assert.ok(mostAtOnce <= PROJECT_SPELLINGS_AT_ONCE, `the listing resolved ${mostAtOnce} spellings at once`);
+		await store.close();
+	});
+});
+
 for (let seed = 1; seed <= 16; seed++) {
 	test(`SQL incremental summaries match full history after reopen for random sequence ${seed} (#3645)`, async () => {
 		const directory = makeTempDirectory("atomic-summary-property-");

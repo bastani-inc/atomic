@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext } from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall, type Message } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings, type TUI, visibleWidth } from "@bastani/atomic-tui";
@@ -61,6 +60,7 @@ import type { SubagentResultRenderState } from "../../packages/subagents/src/tui
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { sleep } from "../helpers/runtime.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 /** A live child loads its real resources and runs a real shell; that is the structural cost of this test. */
 const LIVE_CHILD_TIMEOUT_MS = 120_000;

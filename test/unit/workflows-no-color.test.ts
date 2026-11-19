@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { afterEach, test, vi } from "vitest";
 import { refreshColorEnvironment } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import type { RunDetail } from "../../packages/workflows/src/runs/background/status.js";
@@ -13,6 +12,7 @@ import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js"
 import { type RunOutcome, renderRunOutcome } from "../../packages/workflows/src/tui/run-outcome.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { openWorkflowsListing } from "../../packages/workflows/src/tui/workflows-listing.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { makeTestTui as makeGraphTui, makeRun, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 import { makeHandle, makeTestTui as makeStageTui } from "./stage-chat-view-helpers.js";

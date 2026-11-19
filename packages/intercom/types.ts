@@ -406,6 +406,8 @@ export type ClientMessage =
 	| { type: "pending_stage_notification_result"; requestId: string; delivered: boolean }
  | {
 		type: "register_pending_stage_route";
+		/** Identifies this ownership lifetime on the registering socket, across roster updates. */
+		generation?: string;
 		/** When present, the broker answers with `pending_stage_route_registered` once the route is applied. */
 		requestId?: string;
 		runId: string;
@@ -428,6 +430,7 @@ export type ClientMessage =
 		 */
 		refusalKeepsConnection?: true;
 	}
+	| { type: "withdraw_pending_stage_route"; requestId: string; runId: string; generation: string }
   | {
       type: "register_live_workflow_stage_route";
       requestId: string;
@@ -481,6 +484,7 @@ export type BrokerMessage =
 			acknowledgesReceipt?: true;
 			/** This broker acknowledges a `register_pending_stage_route` that carries a `requestId`; absent on older brokers. */
 			acknowledgesPendingStageRoutes?: true;
+			withdrawsPendingStageRoutes?: true;
 			/** #3906: this broker honours `refusalKeepsConnection`; absent on older brokers, which end the connection. */
 			refusesPendingStageRoutesInPlace?: true;
 			/** This broker answers `broker_status`; absent on older brokers, which drop a client that sends it. */
@@ -544,6 +548,7 @@ export type BrokerMessage =
 			invocationControl?: true;
 	  }
   | { type: "live_workflow_stage_route_registered"; requestId: string }
+	/** The requested pending-stage registration change (publish or withdraw) was processed. */
 	| { type: "pending_stage_route_registered"; requestId: string }
 	/** #3906: the registration `requestId` of run `runId` was refused; the connection and its other routes are kept. */
 	| {

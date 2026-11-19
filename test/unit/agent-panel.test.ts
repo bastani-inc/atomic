@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
-import { matchesKey, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
+import { matchesKey, readHintSpans, stripHintMarkers, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -41,6 +40,7 @@ import {
 	themedAgentPanelStyle,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 import { makeTestTui } from "../support/fake-tui.js";
 
 const plain: AgentPanelStyle = {
@@ -523,8 +523,13 @@ test("a stop confirmation keeps terminal controls in a source's name inert (#522
 	focus.enter();
 	press("x");
 	const hint = renderAgentPanelHint(focus, 160, plain, new KeybindingsManager());
-	assert.doesNotMatch(hint, /[\x1b\x07\u202e]/u);
+	assert.doesNotMatch(stripHintMarkers(hint), /[\x1b\x07\u202e]/u);
 	assert.match(stripVTControlCharacters(hint), /^ {2}Press x again within 3s to stop/);
+	assert.deepEqual(
+		readHintSpans(hint).spans.map((span) => [span.start, span.end, span.action]),
+		[[8, 15, { kind: "key", key: "x" }]],
+		"only the key, x again, is marked for a click",
+	);
 });
 
 test("rows whose name, task or stage label starts with combining marks stay within terminal width (#5224)", () => {
@@ -916,6 +921,17 @@ test("a row that finishes between the two x presses is not dismissed by the seco
 	focus.notePainted([{ ...ROWS[0]!, state: "done" }, ...ROWS.slice(1)]);
 	press("x");
 	assert.deepEqual(calls, ["dismiss task:a"], "a later press dismisses it");
+});
+
+test("short task titles keep whole characters and count the ellipsis inside 60 units (#5654)", () => {
+	const prefix = "x".repeat(58);
+	for (const cluster of ["😀", "e\u0301", "👩‍💻"]) {
+		assert.equal(shortTaskTitle(`${prefix}${cluster}more`), `${prefix}…`);
+	}
+	assert.equal(shortTaskTitle(`${"x".repeat(57)}😀more`), `${"x".repeat(57)}😀…`);
+	assert.equal(shortTaskTitle("a".repeat(61)), `${"a".repeat(59)}…`);
+	assert.equal(shortTaskTitle(`${prefix}😀`), `${prefix}😀`);
+	assert.equal(shortTaskTitle(`${"w".repeat(40)}\u0600 ${"v".repeat(30)}`), `${"w".repeat(40)}…`);
 });
 
 test("a row names a task by a short title, not the subagent's whole prompt (#5224)", () => {

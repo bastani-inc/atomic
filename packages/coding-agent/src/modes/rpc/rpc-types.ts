@@ -114,7 +114,12 @@ export type RpcCommand =
 	| { id?: string; type: "list_workflow_runs"; status?: WorkflowRunFilterStatus }
 	| { id?: string; type: "get_workflow_run_summary"; runId: string }
 	| { id?: string; type: "get_workflow_resume_entries"; target?: string }
-	| { id?: string; type: "resume_workflow_from_picker"; target: string }
+	| {
+			id?: string;
+			type: "resume_workflow_from_picker";
+			target: string;
+			selection?: HostSessionPickerRow["resumeSelection"];
+	  }
 	| { id?: string; type: "delete_workflow_from_picker"; runId: string }
 	| { id?: string; type: "open_task_inspector"; taskId?: string }
 	| { id?: string; type: "stop_all_background" }
@@ -258,6 +263,9 @@ export interface RpcSessionState {
 	modelFallbackReason?: ModelFallbackReason;
 	thinkingLevel: ThinkingLevel;
 	isStreaming: boolean;
+	/** The pending automatic retry or fallback switch, if its next request has not started yet. */
+	retryStatus?: import("../../core/session-retry-status.js").SessionRetryStatus;
+	turnStartedAt?: number;
 	isCompacting: boolean;
 	compactionReason?: CompactionReason;
 	compactionStartedAt?: number;

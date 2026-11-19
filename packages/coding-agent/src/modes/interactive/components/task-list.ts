@@ -3,7 +3,7 @@ import {
 	isActivePanelState,
 	isRestingPanelRow,
 	panelHintParts,
-	panelHintText,
+	panelHintSegments,
 	panelRowListed,
 } from "../../../core/tasks/agent-panel-rules.ts";
 import {
@@ -16,6 +16,7 @@ import {
 import { supersededSettledAttempts, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import {
+	shownSpanMs,
 	type TaskElapsedClocks,
 	taskClockOf,
 	taskClockRunning,
@@ -25,6 +26,7 @@ import { backgroundTaskScope } from "../../../core/tasks/session-scope.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_IDLE_ROWS, AgentPanelModel, renderAgentPanelRows } from "./agent-panel.ts";
+import { slashCommandHint } from "./nav-keys.ts";
 import { countTasksBy, TaskRow, taskLabel, taskSiblings, taskTitle } from "./task-row.js";
 
 const labelAndTitle = (task: TaskRecord): string => JSON.stringify([taskLabel(task), taskTitle(task)]);
@@ -149,7 +151,9 @@ export function renderTaskFooter(
 	const listed = [...input, ...running, ...other, ...finished];
 	const total = listed.length;
 	// The chat's own key hint already offers ↓ to its task list, so this line never adds the subagents pointer.
-	const hint = panelHintText(panelHintParts({ total, agents: 0, needsInput: 0 }, shells, 0, true), "");
+	const hint = panelHintSegments(panelHintParts({ total, agents: 0, needsInput: 0 }, shells, 0, true), "").map(
+		(segment) => (segment.kind === "tasks" ? slashCommandHint(segment.text) : segment.text),
+	);
 	const shellLine =
 		hint.length === 0
 			? []
@@ -165,8 +169,9 @@ export function renderTaskFooter(
 	const items = taskPanelItems({ backgroundTasks: shownTasks }, new Set(), { topLevelOnly: false }).map((row) => {
 		if (row.state === "queued") return row;
 		const itemClocks = taskClockOf(row) ?? clocks;
-		if (itemClocks === undefined) return row;
 		const taskId = agentPanelTaskId(row.id) ?? row.id;
+		if (row.elapsedSpan) return { ...row, elapsedMs: shownSpanMs(taskId, row.elapsedSpan, itemClocks, now) };
+		if (itemClocks === undefined) return row;
 		const elapsedMs = itemClocks.elapsedMs(taskId, row.elapsedMs, taskClockRunning(row.state), now);
 		return elapsedMs === undefined || elapsedMs === row.elapsedMs || (row.elapsedMs === undefined && elapsedMs < 1000)
 			? row

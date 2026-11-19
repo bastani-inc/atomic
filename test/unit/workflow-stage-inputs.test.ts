@@ -894,7 +894,7 @@ test("the root's views of stages on other hosts end when their attempt is replac
 		toolNodes: [],
 	});
 	assert.equal(
-		watches.open("w0" as WatchId, "run", "stage", remoteStage("stage", {})),
+		watches.open("w0" as WatchId, "run", remoteStage("stage", {}), undefined),
 		undefined,
 		"nothing relayed it",
 	);
@@ -902,12 +902,12 @@ test("the root's views of stages on other hosts end when their attempt is replac
 	assert.equal(watches.attemptOf("run"), first);
 	assert.equal(watches.attemptOf("other"), undefined);
 	assert.equal(
-		watches.open("w0" as WatchId, "run", "stage", remoteStage("stage", { status: "completed" })),
+		watches.open("w0" as WatchId, "run", remoteStage("stage", { status: "completed" }), first),
 		undefined,
 		"a stage that finished opens no view",
 	);
-	assert.equal(watches.open("w1" as WatchId, "run", "stage", remoteStage("stage", {})), first);
-	assert.equal(watches.open("w2" as WatchId, "run", "stage", remoteStage("stage", {})), first);
+	assert.equal(watches.open("w1" as WatchId, "run", remoteStage("stage", {}), first), first);
+	assert.equal(watches.open("w2" as WatchId, "run", remoteStage("stage", {}), first), first);
 	assert.deepEqual(watches.get("w1" as WatchId), { work: first, runId: "run", stageId: "stage" });
 	assert.equal(watches.close("w2" as WatchId), true);
 	assert.equal(watches.close("w2" as WatchId), false);
@@ -921,7 +921,8 @@ test("the root's views of stages on other hosts end when their attempt is replac
 	assert.deepEqual(watches.relayed(second, [run("running")]), [["w1", "attempt_fenced"]]);
 	assert.equal(watches.get("w1" as WatchId), undefined);
 	assert.equal(watches.attemptOf("run"), second);
-	assert.equal(watches.open("w3" as WatchId, "run", "stage", remoteStage("stage", {})), second);
+	assert.equal(watches.open("w3" as WatchId, "run", remoteStage("stage", {}), first), "pending");
+	assert.equal(watches.open("w3" as WatchId, "run", remoteStage("stage", {}), second), second);
 	assert.deepEqual(watches.relayed(second, [{ ...run("running"), stages: [] }]), [], "a run without the stage");
 	assert.deepEqual(watches.relayed(second, []), [], "activity without the view's run");
 	assert.deepEqual(
@@ -933,8 +934,11 @@ test("the root's views of stages on other hosts end when their attempt is replac
 		"only the view's own run and stage decide",
 	);
 	assert.deepEqual(watches.relayed(second, [run("completed")]), [["w3", "stage_finished"]]);
-	assert.equal(watches.open("w4" as WatchId, "run", "stage", remoteStage("stage", {})), second);
-	assert.equal(watches.open("w5" as WatchId, "other-run", "stage", remoteStage("stage", {})), otherWork);
+	assert.equal(watches.open("w4" as WatchId, "run", remoteStage("stage", {}), second), undefined);
+	watches.relayed(second, [run("running")]);
+	watches.relayed(otherWork, [{ ...run("running"), id: "other-run" }]);
+	assert.equal(watches.open("w4" as WatchId, "run", remoteStage("stage", {}), second), second);
+	assert.equal(watches.open("w5" as WatchId, "other-run", remoteStage("stage", {}), otherWork), otherWork);
 	assert.deepEqual(watches.takenOver("work"), ["w4"]);
 	assert.equal(watches.attemptOf("run"), undefined, "a run the root's own worker took runs there");
 	assert.equal(watches.attemptOf("other-run"), otherWork, "another work's run still runs elsewhere");

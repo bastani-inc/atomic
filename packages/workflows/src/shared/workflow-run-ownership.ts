@@ -23,9 +23,8 @@ export function publishRunForOwner(run: RunSnapshot, owner: symbol): RunSnapshot
 
 /** Child run selected by a boundary's status-authoritative ownership metadata. */
 export function authoritativeWorkflowChildRunId(stage: StageSnapshot | undefined): string | undefined {
-	if (stage === undefined || stage.status === "failed" || stage.status === "skipped") {
-		return undefined;
-	}
+	if (stage === undefined) return undefined;
+	if (stage.status === "failed" || stage.status === "skipped") return stage.startedChildRunId;
 	if (stage.status === "completed") {
 		return stage.workflowChild?.runId ?? stage.workflowChildRun?.runId;
 	}
@@ -64,6 +63,22 @@ export function reciprocalWorkflowRootRunId(runById: RunsById, runId: string): s
 	}
 
 	return undefined;
+}
+
+/** Terminal stage lookups by a failed boundary id, including older pool records that named only the parent. */
+export function failedBoundaryChildRuns(
+	runs: readonly RunSnapshot[],
+	parent: string,
+	stage: string,
+	startedChildRunId: string | undefined,
+): readonly RunSnapshot[] {
+	if (startedChildRunId === undefined) return childRunsInSource(runs, parent, stage);
+	const child = findSnapshotRun(runs, startedChildRunId);
+	return child?.parentRunId === parent &&
+		child.parentStageId === stage &&
+		reciprocalWorkflowRootRunId(runsByIdOf(runs), startedChildRunId) !== undefined
+		? [child]
+		: [];
 }
 
 /** Runs by id without a scan; a `Store` is one. */

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -42,7 +41,7 @@ function render(groups: SubagentStatusGroup[], expanded = false, width = 100) {
 		invalidate() {},
 	}).render(width);
 }
-const plain = (lines: string[]) => lines.map(stripVTControlCharacters).join("\n");
+const plain = (lines: string[]) => lines.map(stripTerminalSequences).join("\n");
 
 test("status inspection preserves text and missing identities while supplying parent, child and all snapshots", () => {
 	const control = createSubagentControl({ path: "status-test-parent", depth: 0 });

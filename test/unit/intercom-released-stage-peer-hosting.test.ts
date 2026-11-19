@@ -257,6 +257,84 @@ describe("an ask in the read that carries the hosting answer (#4642)", () => {
 });
 
 describe("adopting a stage again (#4642)", () => {
+	test("a delayed release announcement cannot redirect the current stage's ask (#5577)", async () => {
+		const { peers, connections } = harness();
+		try {
+			await peers.adopt(route(0, { generation: 2, answer: async () => "current" }));
+			// One obsolete release still belongs to the stage recorded in its own store; the shared route is newer.
+			await peers.adopt(route(0, { generation: 1, isCurrent: () => true, answer: async () => "out of order" }));
+			await peers.adopt(route(0, { generation: 3, isCurrent: () => false, answer: async () => "obsolete" }));
+			deliver(connections[0]!, idOf(0), "which stage?", { id: "q" });
+			await settle();
+			assert.equal(connections[0]!.sent[0]?.options.text, "current");
+		} finally {
+			await peers.disconnectAll();
+		}
+	});
+
+	test("an exact hosted address refuses an ask once retired, before any new announcement (#5577)", async () => {
+		const { peers, connections } = harness();
+		let current = true,
+			delivered = false;
+		try {
+			await peers.adopt(
+				route(0, {
+					isCurrent: () => current,
+					answer: async () => {
+						delivered = true;
+						return "wrong";
+					},
+				}),
+			);
+			current = false;
+			deliver(connections[0]!, idOf(0), "obsolete ask", { id: "old" });
+			await settle();
+			assert.equal(delivered, false);
+			assert.match(connections[0]!.sent[0]?.options.replyError ?? "", /replaced/);
+		} finally {
+			await peers.disconnectAll();
+		}
+	});
+
+	test("a retired stage's exact broker address never reaches the newer chat on the same transcript (#5577)", async () => {
+		const { peers, connections } = harness({
+			host: async (frame, _, call) => frame.map(({ key }) => ({ key, sessionId: `unique-${call}` })),
+		});
+		let generation = 1;
+		const delivered: number[] = [];
+		try {
+			await peers.adopt(
+				route(0, {
+					generation: 1,
+					isCurrent: () => generation === 1,
+					answer: async () => {
+						delivered.push(1);
+						return "old";
+					},
+				}),
+			);
+			generation = 2;
+			await peers.adopt(
+				route(0, {
+					generation: 2,
+					isCurrent: () => generation === 2,
+					answer: async () => {
+						delivered.push(2);
+						return "current";
+					},
+				}),
+			);
+			deliver(connections[0]!, "unique-0", "for old conversation", { id: "old" });
+			await settle();
+			assert.deepEqual(delivered, []);
+			deliver(connections[0]!, "unique-1", "for current conversation", { id: "new" });
+			await settle();
+			assert.deepEqual(delivered, [2]);
+		} finally {
+			await peers.disconnectAll();
+		}
+	});
+
 	test("a changed model, live-route capability or stage keys hosts the stage again; the same route does not (#4642)", async () => {
 		const live = { stageKeys: ["stage-0", "review-0"], capability: "cap" };
 		const { peers, connections } = harness();

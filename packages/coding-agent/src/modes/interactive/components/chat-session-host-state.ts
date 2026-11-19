@@ -58,6 +58,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getAgentSession: (() => AgentSession | undefined) | undefined;
 	readonly getChatBoxSession: (() => ChatBoxSession | undefined) | undefined;
 	readonly getSessionMessages: (() => AgentSession["messages"] | undefined) | undefined;
+	readonly getSessionContextMeter: ChatSessionHostOpts<TExtraEntry>["getSessionContextMeter"];
 	readonly getPromptEntries: ChatSessionHostOpts<TExtraEntry>["getPromptEntries"];
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
 	readonly echoedInitialPrompt: string | (() => string | undefined) | undefined;
@@ -85,6 +86,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	transcript: ChatSessionHostEntry<TExtraEntry>[] = [];
 	extraEntries: TExtraEntry[] = [];
 	statusMessage = "";
+	/** A delivery notice belongs beside the transcript, independently of the turn's working line. */
+	noticeMessage = "";
 	/** Explicit diagnostics survive busy-state cleanup, but are not restored after later input. */
 	lastWarningMessage: string | undefined;
 	isBashMode = false;
@@ -108,6 +111,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly newMessages = new NewMessageCounter();
 	compactionStartedAt: number | undefined;
 	readonly workingRunMeter = new WorkingRunMeter();
+	/** A retry or a model fallback this host saw start waits for the next attempt, which continues the turn's run. */
+	retryContinuesRun = false;
 	workingLifecycleActive: boolean;
 	workingLifecycleGeneration = 0;
 	disposed = false;
@@ -177,6 +182,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.getAgentSession = opts.getAgentSession;
 		this.getChatBoxSession = opts.getChatBoxSession;
 		this.getSessionMessages = opts.getSessionMessages;
+		this.getSessionContextMeter = opts.getSessionContextMeter;
 		this.getPromptEntries = opts.getPromptEntries;
 		this.getTaskSource = opts.getTaskSource;
 		this.echoedInitialPrompt = opts.echoedInitialPrompt;

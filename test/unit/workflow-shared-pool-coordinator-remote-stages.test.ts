@@ -89,7 +89,7 @@ async function queueIntercom(f: Fixture, store: Store, runId: string, stageKey: 
 }
 
 test(
-	"the root reaches a stage on another host: its chat steers, its question is shown and answered, its Intercom message arrives, each once through the stage's input queue (#4391)",
+	"the root reaches a stage on another host: its chat steers, its question is shown and answered, its Intercom message arrives, each once through the stage's input queue, and its retry wait is visible (#4391, #5572)",
 	async () => {
 		const registry = createStageControlRegistry();
 		const f = await fixture("shared-coordinator-remote-stage", {
@@ -144,8 +144,10 @@ test(
 			assert.deepEqual(
 				watch.watch.snapshot,
 				{
+					canPause: false,
 					sessionId: "session-stage",
 					status: "running",
+					publishedActivity: "retrying",
 					isStreaming: false,
 					messages: [],
 					pendingToolExecutionEvents: [],
@@ -292,9 +294,10 @@ test(
 );
 
 test(
-	"inputs queued for a stage whose host stopped are taken by the host that takes the stage over, each applied once (#4391)",
+	"a remote stage reopens on its replacement's session and activity, and inputs queued during the handoff arrive once (#4391, #5572)",
 	async () => {
 		const f = await fixture("shared-coordinator-remote-failover", { workspace: binding });
+		vi.stubEnv("SHARED_POOL_STUB_SESSION_PER_HOST", "1");
 		const release = join(f.directory, "release");
 		vi.stubEnv("SHARED_POOL_STUB_RELEASE", release);
 		vi.stubEnv("SHARED_POOL_STUB_LIVE_STAGE", "1");
@@ -318,15 +321,21 @@ test(
 				() => {
 					const stage = store.runs().find((candidate) => candidate.stages.some((entry) => entry.id === "stage"));
 					runId = stage?.id ?? "";
-					return stage?.stages.find((entry) => entry.id === "stage")?.sessionId === "session-stage";
+					return stage?.stages.find((entry) => entry.id === "stage")?.sessionId === "session-host-b";
 				},
 				execution,
 			);
-			const ended: unknown[] = [];
-			const watch = await f.pool.watchPooledStage({ runId, stageId: "stage" }, (message) => {
-				if (message.kind === "ended") ended.push(message.reason);
+			const ref = { runId, stageId: "stage" };
+			const ended: string[] = [];
+			const immediate = Promise.withResolvers<Awaited<ReturnType<typeof f.pool.watchPooledStage>>>();
+			const watch = await f.pool.watchPooledStage(ref, (message) => {
+				if (message.kind !== "ended") return;
+				ended.push(message.reason);
+				// Open from the fence notification, before the root has applied the replacement's publication.
+				immediate.resolve(f.pool.watchPooledStage(ref, () => {}));
 			});
 			assert.ok(watch.ok);
+			assert.equal(watch.watch.snapshot.publishedActivity, "retrying");
 			// Host B stops: its child goes back to the queue, and the root's text waits in the stage's input queue.
 			await first.stopSatellite();
 			const delivery = f.pool.deliverToPooledStage({
@@ -360,7 +369,7 @@ test(
 				readFileSync(f.log, "utf8")
 					.split("\n")
 					.filter((line) => /^(user|received) /.test(line)),
-				["user op-failover followUp after failover", "received session-stage intercom-failover"],
+				["user op-failover followUp after failover", "received session-host-c intercom-failover"],
 				"each input reached the stage once, on the host that took the stage over",
 			);
 			assert.deepEqual(
@@ -370,6 +379,17 @@ test(
 			// Host C's activity ended the view of host B's attempt: text sent through it now is refused as stale.
 			await until("the view to end", () => ended.length > 0, execution);
 			assert.deepEqual(ended, ["attempt_fenced"]);
+			assert.deepEqual(await immediate.promise, { ok: false, refusal: "AttemptChanging" });
+			const reopened = await f.pool.watchPooledStage(ref, () => {});
+			assert.ok(reopened.ok);
+			assert.deepEqual(
+				[
+					reopened.watch.attempt.generation,
+					reopened.watch.snapshot.sessionId,
+					reopened.watch.snapshot.publishedActivity,
+				],
+				[2, "session-host-c", "working"],
+			);
 			assert.deepEqual(
 				await f.pool.deliverToPooledStage({
 					watch: watch.watch.id,
@@ -384,11 +404,12 @@ test(
 			assert.equal(result.status, "completed", JSON.stringify(result));
 			assert.deepEqual(outcomes, ["completed"]);
 		} finally {
+			writeFileSync(release, "");
+			await execution.catch(() => {});
 			for (const host of hosts) {
 				await host.stopSatellite();
 				await host.shutdown();
 			}
-			await execution.catch(() => {});
 			await f.close();
 		}
 	},
@@ -660,7 +681,7 @@ test(
 );
 
 test(
-	"a view of a stage on another host ends once that host publishes the stage finished, and text sent to it then is refused as not live (#4391)",
+	"a finished remote stage cannot reopen from its previous publication, and refuses new text (#4391, #5572)",
 	async () => {
 		const f = await fixture("shared-coordinator-remote-finished", { workspace: binding });
 		const release = join(f.directory, "release");
@@ -689,14 +710,19 @@ test(
 				},
 				execution,
 			);
-			const ended: unknown[] = [];
-			const watch = await f.pool.watchPooledStage({ runId, stageId: "stage" }, (message) => {
-				if (message.kind === "ended") ended.push(message.reason);
+			const ended: string[] = [];
+			const ref = { runId, stageId: "stage" };
+			const reopened = Promise.withResolvers<Awaited<ReturnType<typeof f.pool.watchPooledStage>>>();
+			const watch = await f.pool.watchPooledStage(ref, (message) => {
+				if (message.kind !== "ended") return;
+				ended.push(message.reason);
+				reopened.resolve(f.pool.watchPooledStage(ref, () => {}));
 			});
 			assert.ok(watch.ok);
 			writeFileSync(release, "");
 			await until("the view to end", () => ended.length > 0, execution);
 			assert.deepEqual(ended, ["stage_finished"]);
+			assert.deepEqual(await reopened.promise, { ok: false, refusal: "StageNotOnWorker" });
 			assert.deepEqual(
 				await f.pool.deliverToPooledStage({
 					watch: watch.watch.id,
