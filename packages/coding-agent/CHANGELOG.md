@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- A `history://` search continuation can now keep its place when an unread session gets a new message or its next workflow run disappears. The search keeps its original first-page order and uses the existing cursor when the extra position cannot fit. Earlier `after=` and `run=` URLs still work ([#5692](https://github.com/bastani-inc/atomic/issues/5692)).
 - Drawing the usage meter no longer checks credential files synchronously, avoiding a stalled frame when those file checks are slow ([#5516](https://github.com/bastani-inc/atomic/issues/5516)).
 - Subagents started from deeply nested directories no longer wait for each parent directory's resource checks one at a time, keeping starts responsive while the main thread is busy ([#5514](https://github.com/bastani-inc/atomic/issues/5514)).
 - The main chat no longer leaves a blank row between the working line and the usage meter above the prompt. Every chat now keeps exactly one row there: the usage meter, or a blank row in a subagent or stage chat with no usage to show, so a chat's last line never runs into its prompt.
