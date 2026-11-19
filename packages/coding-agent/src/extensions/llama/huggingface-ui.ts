@@ -1,4 +1,5 @@
 import {
+	ClickableRow,
 	Container,
 	type Focusable,
 	fuzzyFilter,
@@ -105,14 +106,18 @@ export class HuggingFaceSearch extends Container implements Focusable {
 			if (!model) continue;
 			const prefix = index === this.selectedIndex ? "❯ " : "  ";
 			const details = `${compactCount(model.downloads)} downloads`;
+			const text = new Text(
+				index === this.selectedIndex
+					? this.theme.fg("accent", `${prefix}${model.id}  ${details}`)
+					: `${prefix}${model.id}${this.theme.fg("muted", `  ${details}`)}`,
+				0,
+				0,
+			);
+			// A click downloads the model clicked, as moving to it and pressing Enter does.
 			this.resultsContainer.addChild(
-				new Text(
-					index === this.selectedIndex
-						? this.theme.fg("accent", `${prefix}${model.id}  ${details}`)
-						: `${prefix}${model.id}${this.theme.fg("muted", `  ${details}`)}`,
-					0,
-					0,
-				),
+				new ClickableRow(text, model.id, {
+					activate: () => this.close(model.id),
+				}),
 			);
 		}
 		const above = start;

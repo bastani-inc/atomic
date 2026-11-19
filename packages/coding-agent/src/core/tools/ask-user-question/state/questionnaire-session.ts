@@ -1,6 +1,15 @@
-import { decodeKittyPrintable, getKeybindings, type Input } from "@bastani/atomic-tui";
+import {
+	ClickableRows,
+	decodeKittyPrintable,
+	getKeybindings,
+	type Input,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+} from "@bastani/atomic-tui";
+import { rowKeyInput } from "../../../../modes/interactive/components/row-key-input.ts";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
 import type { QuestionData, QuestionnaireResult, QuestionParams } from "../tool/types.js";
+import { parseClickTarget, type QuestionnaireClickTarget } from "../view/click-targets.ts";
 import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";
 import type { QuestionnairePropsAdapter } from "../view/props-adapter.ts";
 import { buildQuestionnaire } from "./build-questionnaire.ts";
@@ -69,6 +78,9 @@ export interface QuestionnaireSessionComponent {
 	render(width: number): string[];
 	invalidate(): void;
 	handleInput(data: string): boolean;
+	/** A click on an option, a tab or a review choice runs it as moving there and pressing Enter does. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined;
+	paintedRowKey(row: number): string | undefined;
 	capturesBack(): boolean;
 }
 
@@ -113,6 +125,10 @@ export class QuestionnaireSession {
 
 	private readonly tui: QuestionnaireSessionConfig["tui"];
 	private readonly done: QuestionnaireSessionConfig["done"];
+	/** Where the last render drew each option, tab and review choice. */
+	private readonly clickableRows = new ClickableRows<QuestionnaireClickTarget>();
+	/** The last frame the dialog built and the lines it painted as. */
+	private painted: { readonly frame: string[]; readonly lines: string[] } | undefined;
 
 	readonly component: QuestionnaireSessionComponent;
 
@@ -141,13 +157,31 @@ export class QuestionnaireSession {
 		this.viewAdapter = built.adapter;
 
 		this.component = {
-			render: built.render,
+			render: (width) => this.render(built.render(width)),
 			invalidate: built.invalidate,
 			handleInput: (data) => this.dispatch(data),
+			handleMouse: (event) => {
+				const result = this.clickableRows.handleMouse(event, { activate: (target) => this.click(target) });
+				if (result) this.tui.requestRender();
+				return result;
+			},
+			paintedRowKey: (row) => this.clickableRows.paintedRowKey(row),
 			capturesBack: () => this.capturesBack(),
 		};
 
 		this.viewAdapter.apply(this.state);
+	}
+
+	/**
+	 * The dialog's frame without its click marks, recording where each target landed. A frame the dialog reused comes
+	 * back as the same lines, so a repaint that changed nothing costs nothing here either.
+	 */
+	private render(frame: string[]): string[] {
+		const painted = this.painted;
+		if (painted?.frame === frame) return painted.lines;
+		const lines = this.clickableRows.collect(frame, parseClickTarget);
+		this.painted = { frame, lines };
+		return lines;
 	}
 
 	capturesBack(): boolean {
@@ -165,6 +199,34 @@ export class QuestionnaireSession {
 		}
 		this.commit(action);
 		return true;
+	}
+
+	/**
+	 * Run a clicked target as the keyboard would: move to the row, then press Enter. A tab only opens, as Tab does.
+	 * While notes are open the keys type into them, so a click there runs nothing.
+	 */
+	private click(target: QuestionnaireClickTarget): void {
+		if (this.state.notesVisible) return;
+		switch (target.kind) {
+			case "tab":
+				if (this.isMulti && target.index !== this.state.currentTab) {
+					this.commit({ kind: "tab_switch", nextTab: target.index });
+				}
+				return;
+			case "submit":
+				if (target.index !== this.state.submitChoiceIndex)
+					this.commit({ kind: "submit_nav", nextIndex: target.index });
+				break;
+			case "chat":
+				if (!this.state.chatFocused) this.commit({ kind: "focus_chat" });
+				break;
+			case "option":
+				if (this.state.chatFocused) this.commit({ kind: "focus_options", optionIndex: target.index });
+				else if (target.index !== this.state.optionIndex) this.commit({ kind: "nav", nextIndex: target.index });
+				break;
+		}
+		const confirm = rowKeyInput("tui.select.confirm");
+		if (confirm !== undefined) this.dispatch(confirm);
 	}
 
 	private commit(action: QuestionnaireAction): void {

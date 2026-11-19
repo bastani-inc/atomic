@@ -1,4 +1,5 @@
 import { clickableHintText } from "../clickable-hints.ts";
+import { ClickableRows } from "../clickable-rows.ts";
 import { fuzzyFilter } from "../fuzzy.ts";
 import { getKeybindings, getSelectPageIndex } from "../keybindings.ts";
 import type { Component, TuiMouseEvent, TuiMouseEventResult } from "../tui.ts";
@@ -42,7 +43,8 @@ export class SettingsList implements Component {
 	private filteredItems: SettingItem[];
 	private theme: SettingsListTheme;
 	private selectedIndex = 0;
-	private mousePressedIndex: number | undefined;
+	/** The row each setting was drawn on in the last render. */
+	private readonly clickableRows = new ClickableRows<SettingItem>();
 	private maxVisible: number;
 	private onChange: (id: string, newValue: string) => void;
 	private onCancel: () => void;
@@ -106,6 +108,7 @@ export class SettingsList implements Component {
 
 	private renderMainList(width: number): string[] {
 		const lines: string[] = [];
+		this.clickableRows.clear();
 
 		if (this.searchEnabled && this.searchInput) {
 			lines.push(...this.searchInput.render(width));
@@ -153,6 +156,7 @@ export class SettingsList implements Component {
 
 			const valueText = this.theme.value(truncateToWidth(item.currentValue, valueMaxWidth, ""), isSelected);
 
+			this.clickableRows.add(lines.length, item, item.id);
 			lines.push(truncateToWidth(prefix + labelText + separator + valueText, width));
 		}
 
@@ -178,6 +182,7 @@ export class SettingsList implements Component {
 		return lines;
 	}
 
+	/** A click on a row changes it as Enter does. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.submenuComponent) {
 			const result = this.submenuComponent.handleMouse?.(event);
@@ -200,25 +205,20 @@ export class SettingsList implements Component {
 			this.selectedIndex = Math.max(0, Math.min(displayItems.length - 1, this.selectedIndex + delta));
 			return { handled: true, render: this.selectedIndex !== previousIndex };
 		}
-		// Hover must not change selection: the visible range is centered on it.
-		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
+		return this.clickableRows.handleMouse(event, {
+			activate: (item) => {
+				const index = displayItems.indexOf(item);
+				if (index === -1) return;
+				this.selectedIndex = index;
+				this.activateItem();
+			},
+		});
+	}
 
-		const rowOffset = this.searchEnabled ? 2 : 0;
-		const { startIndex, endIndex } = this.getVisibleRange(displayItems);
-		const itemIndex = startIndex + event.y - rowOffset;
-		if (itemIndex < startIndex || itemIndex >= endIndex) return undefined;
-		if (event.type === "press") {
-			this.mousePressedIndex = itemIndex;
-			this.selectedIndex = itemIndex;
-			return { handled: true, focus: true };
-		}
-		if (event.type === "click") {
-			this.selectedIndex = this.mousePressedIndex ?? itemIndex;
-			this.mousePressedIndex = undefined;
-			this.activateItem();
-			return { handled: true };
-		}
-		return undefined;
+	/** The setting the last render drew on `row`, or what an open submenu drew there. */
+	paintedRowKey(row: number): string | undefined {
+		if (this.submenuComponent) return this.submenuComponent.paintedRowKey?.(row);
+		return this.clickableRows.paintedRowKey(row);
 	}
 
 	handleInput(data: string): void {

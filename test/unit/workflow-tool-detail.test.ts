@@ -21,6 +21,7 @@ import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 import { renderSessionList } from "../../packages/workflows/src/tui/session-list.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { renderToolDetail } from "../../packages/workflows/src/tui/tool-detail.js";
+import { sgrClick } from "../helpers/graph-click.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { ANSI_RE, defaultTheme, visibleText } from "./overlay-graph-helpers.js";
@@ -324,7 +325,7 @@ describe("tool graph inspection", () => {
 
 		const clickView = viewFor(node);
 		clickView.render(120);
-		assert.equal(clickView.handleInput(clickForSingleNode(node)), true);
+		assert.deepEqual(clickView.handleMouse(sgrClick(clickForSingleNode(node))), { handled: true });
 		assert.ok(clickView._toolDetail);
 		clickView.dispose();
 	});

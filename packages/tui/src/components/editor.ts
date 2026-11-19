@@ -25,7 +25,7 @@ import {
 	visibleWidth,
 } from "../utils.ts";
 import { findWordBackward, findWordForward } from "../word-navigation.ts";
-import { SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list.ts";
+import { type SelectItem, SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list.ts";
 
 const graphemeSegmenter = getGraphemeSegmenter();
 const wordSegmenter = getWordSegmenter();
@@ -857,59 +857,11 @@ export class Editor implements Component, Focusable {
 
 			if (kb.matches(data, "tui.input.tab")) {
 				const selected = this.autocompleteList.getSelectedItem();
-				if (selected && this.autocompleteProvider) {
-					this.pushUndoSnapshot();
-					this.lastAction = null;
-					const result = this.autocompleteProvider.applyCompletion(
-						this.state.lines,
-						this.state.cursorLine,
-						this.state.cursorCol,
-						selected,
-						this.autocompletePrefix,
-					);
-					this.state.lines = result.lines;
-					this.state.cursorLine = result.cursorLine;
-					this.setCursorCol(result.cursorCol);
-					this.cancelAutocomplete();
-					if (this.onChange) this.onChange(this.getText());
-				}
+				if (selected && this.applyAutocomplete(selected)) this.onChange?.(this.getText());
 				return;
 			}
 
-			if (kb.matches(data, "tui.select.confirm")) {
-				if (
-					!this.autocompleteCompleteOnConfirm &&
-					!this.autocompleteSelectionMoved &&
-					this.autocompletePrefix.startsWith("/")
-				) {
-					this.cancelAutocomplete();
-				} else {
-					const selected = this.autocompleteList.getSelectedItem();
-					if (selected && this.autocompleteProvider) {
-						this.pushUndoSnapshot();
-						this.lastAction = null;
-						const result = this.autocompleteProvider.applyCompletion(
-							this.state.lines,
-							this.state.cursorLine,
-							this.state.cursorCol,
-							selected,
-							this.autocompletePrefix,
-						);
-						this.state.lines = result.lines;
-						this.state.cursorLine = result.cursorLine;
-						this.setCursorCol(result.cursorCol);
-
-						if (this.autocompletePrefix.startsWith("/")) {
-							this.cancelAutocomplete();
-							// Fall through to submit
-						} else {
-							this.cancelAutocomplete();
-							if (this.onChange) this.onChange(this.getText());
-							return;
-						}
-					}
-				}
-			}
+			if (kb.matches(data, "tui.select.confirm") && !this.confirmAutocomplete()) return;
 		}
 
 		// Tab - trigger completion
@@ -1444,6 +1396,44 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+	}
+
+	/**
+	 * Enter on the open autocomplete menu: complete the selected row. Returns whether the key goes on to submit, as it
+	 * does for a slash command.
+	 */
+	private confirmAutocomplete(): boolean {
+		if (
+			!this.autocompleteCompleteOnConfirm &&
+			!this.autocompleteSelectionMoved &&
+			this.autocompletePrefix.startsWith("/")
+		) {
+			this.cancelAutocomplete();
+			return true;
+		}
+		const selected = this.autocompleteList?.getSelectedItem();
+		const slash = this.autocompletePrefix.startsWith("/");
+		if (!selected || !this.applyAutocomplete(selected) || slash) return true;
+		this.onChange?.(this.getText());
+		return false;
+	}
+
+	private applyAutocomplete(selected: SelectItem): boolean {
+		if (!this.autocompleteProvider) return false;
+		this.pushUndoSnapshot();
+		this.lastAction = null;
+		const result = this.autocompleteProvider.applyCompletion(
+			this.state.lines,
+			this.state.cursorLine,
+			this.state.cursorCol,
+			selected,
+			this.autocompletePrefix,
+		);
+		this.state.lines = result.lines;
+		this.state.cursorLine = result.cursorLine;
+		this.setCursorCol(result.cursorCol);
+		this.cancelAutocomplete();
+		return true;
 	}
 
 	private shouldSubmitOnBackslashEnter(data: string, kb: ReturnType<typeof getKeybindings>): boolean {
@@ -2342,21 +2332,13 @@ export class Editor implements Component, Focusable {
 		const layout = prefix.startsWith("/") ? SLASH_COMMAND_SELECT_LIST_LAYOUT : undefined;
 		const list = new SelectList(items, this.autocompleteMaxVisible, this.theme.selectList, layout);
 		list.onSelect = (selected) => {
-			if (!this.autocompleteProvider) return;
-			this.pushUndoSnapshot();
-			this.lastAction = null;
-			const result = this.autocompleteProvider.applyCompletion(
-				this.state.lines,
-				this.state.cursorLine,
-				this.state.cursorCol,
-				selected,
-				this.autocompletePrefix,
-			);
-			this.state.lines = result.lines;
-			this.state.cursorLine = result.cursorLine;
-			this.setCursorCol(result.cursorCol);
-			this.cancelAutocomplete();
+			const kb = getKeybindings();
+			const run =
+				prefix.startsWith("/") && kb.matches("\r", "tui.select.confirm") && kb.matches("\r", "tui.input.submit");
+			if (!this.applyAutocomplete(selected)) return;
 			this.onChange?.(this.getText());
+			// A click can run the completed command, but is not a keypress in the editor.
+			if (run && !this.disableSubmit) this.submitValue();
 		};
 		return list;
 	}

@@ -1,4 +1,12 @@
-import { type Component, getKeybindings, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import {
+	ClickableRows,
+	type Component,
+	getKeybindings,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	truncateToWidth,
+	visibleWidth,
+} from "@bastani/atomic-tui";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { formatLabelTimestamp, getEntryDisplayText } from "./tree-selector-content.ts";
@@ -9,6 +17,8 @@ import { renderHorizontalViewport } from "./tree-selector-viewport.ts";
 /** Tree list component with selection and ASCII art visualization */
 export class TreeList implements Component {
 	private readonly state: TreeListState;
+	/** The row each entry was drawn on in the last render. */
+	private readonly clickableRows = new ClickableRows<string>();
 
 	public onSelect?: (entryId: string) => void;
 	public onCancel?: () => void;
@@ -93,6 +103,7 @@ export class TreeList implements Component {
 	render(width: number): string[] {
 		const state = this.state;
 		const lines: string[] = [];
+		this.clickableRows.clear();
 
 		if (state.filteredNodes.length === 0) {
 			lines.push(truncateToWidth(theme.fg("dim", "  No entries match"), width));
@@ -182,6 +193,7 @@ export class TreeList implements Component {
 				gutter = theme.bg("selectedBg", gutter);
 				body = theme.bg("selectedBg", body);
 			}
+			this.clickableRows.add(lines.length + renderedRows.length, entry.id, entry.id);
 			renderedRows.push({ gutter, body, anchorCol, bodyWidth: visibleWidth(body), isSelected });
 		}
 
@@ -196,6 +208,24 @@ export class TreeList implements Component {
 		if (footer.length > 0) lines.push(truncateToWidth(theme.fg("dim", `  ${footer.join(" · ")}`), width));
 
 		return lines;
+	}
+
+	/** A click on an entry goes to it, as moving there and pressing Enter does. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const state = this.state;
+		return this.clickableRows.handleMouse(event, {
+			activate: (entryId) => {
+				const index = state.filteredNodes.findIndex((flatNode) => flatNode.node.entry.id === entryId);
+				if (index < 0) return;
+				state.selectedIndex = index;
+				this.onSelect?.(entryId);
+			},
+		});
+	}
+
+	/** The entry the last render drew on `row`. */
+	paintedRowKey(row: number): string | undefined {
+		return this.clickableRows.paintedRowKey(row);
 	}
 
 	handleInput(keyData: string): boolean {

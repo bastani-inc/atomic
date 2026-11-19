@@ -35,11 +35,31 @@ function sgrMousePress(col: number, row: number, buttonCode = 0, final = "M"): s
 	return `\x1b[<${buttonCode};${col + 1};${row + 1}${final}`;
 }
 
+/** The mouse event the renderer sends at a cell: by default the click after a press and release there. */
+function mouseAt(col: number, row: number, overrides: Record<string, unknown> = {}) {
+	return {
+		type: "click",
+		button: "left",
+		x: col,
+		y: row,
+		screenX: col,
+		screenY: row,
+		width: 96,
+		height: 32,
+		shift: false,
+		alt: false,
+		ctrl: false,
+		clickCount: 1,
+		...overrides,
+	};
+}
+
+/** The click on graph node `index`, where the graph draws it. */
 function graphNodeClick(
 	stages: ReturnType<typeof makeStage>[],
 	index: number,
 	opts: { width?: number; rows?: number; scrollRows?: number; scrollCols?: number } = {},
-): string {
+) {
 	const width = opts.width ?? 96;
 	const rows = opts.rows ?? 32;
 	const scrollRows = opts.scrollRows ?? 0;
@@ -54,7 +74,7 @@ function graphNodeClick(
 	const graphInner = Math.max(1, Math.max(40, width) - 4);
 	const canvasWidth = layout.reduce((max, n) => Math.max(max, n.x + NODE_W), 0);
 	const leftMargin = Math.max(2, canvasWidth <= graphInner ? Math.floor((graphInner - canvasWidth) / 2) : 2);
-	return sgrMousePress(
+	return mouseAt(
 		leftMargin + node.x - scrollCols + 2,
 		marginRows + GRAPH_HEADER_ROWS + topPad + node.y - scrollRows + 2,
 	);
@@ -76,7 +96,7 @@ describe("GraphView keyboard navigation", () => {
 		});
 
 		view.render(96);
-		assert.equal(view.handleInput(graphNodeClick(stages, 1)), true);
+		assert.deepEqual(view.handleMouse(graphNodeClick(stages, 1)), { handled: true });
 
 		assert.equal(view._focusedIndex, 1);
 		assert.deepEqual(attached, [{ runId: "run-1", stageId: "stage-1" }]);
@@ -99,14 +119,14 @@ describe("GraphView keyboard navigation", () => {
 
 		view.render(96);
 		assert.equal(view._focusedIndex, 0);
-		view.handleInput(graphNodeClick(stages, 2));
+		view.handleMouse(graphNodeClick(stages, 2));
 
 		assert.equal(view._focusedIndex, 2);
 		assert.deepEqual(attached, ["stage-2"]);
 		view.dispose();
 	});
 
-	it("does not open nodes for empty graph space, chrome, releases, or non-left mouse buttons", () => {
+	it("opens no node for a click on empty graph space or chrome, a press, a double-click, or another button", () => {
 		const stages = [makeStage("stage-0"), makeStage("stage-1", ["stage-0"])];
 		const store = makeStore(makeSnap(stages));
 		const attached: string[] = [];
@@ -121,10 +141,13 @@ describe("GraphView keyboard navigation", () => {
 		});
 
 		view.render(96);
-		assert.equal(view.handleInput(sgrMousePress(1, 10)), true, "empty graph body click is consumed as a no-op");
-		assert.equal(view.handleInput(sgrMousePress(10, 1)), true, "header/chrome click is consumed as a no-op");
-		assert.equal(view.handleInput(sgrMousePress(10, 10, 0, "m")), false, "release event is ignored");
-		assert.equal(view.handleInput(sgrMousePress(10, 10, 2)), false, "right-click is ignored");
+		const node = graphNodeClick(stages, 1);
+		assert.equal(view.handleMouse(mouseAt(1, 10)), undefined, "a click on empty graph space opens nothing");
+		assert.equal(view.handleMouse(mouseAt(10, 1)), undefined, "a click on the header opens nothing");
+		assert.equal(view.handleMouse({ ...node, type: "press" }), undefined, "a press is left to text selection");
+		assert.equal(view.handleInput(sgrMousePress(node.x, node.y)), false, "a raw press is left to text selection");
+		assert.equal(view.handleMouse({ ...node, clickCount: 2 }), undefined, "a double-click selects a word");
+		assert.equal(view.handleMouse({ ...node, button: "right" }), undefined, "a right click opens nothing");
 
 		assert.equal(view._focusedIndex, 0);
 		assert.deepEqual(attached, []);
@@ -159,7 +182,7 @@ describe("GraphView keyboard navigation", () => {
 		const scrollRows = view._graphScrollOffset;
 		assert.ok(scrollRows > 0);
 
-		view.handleInput(graphNodeClick(stages, 2, { scrollRows }));
+		view.handleMouse(graphNodeClick(stages, 2, { scrollRows }));
 
 		assert.equal(view._focusedIndex, 2);
 		assert.deepEqual(attached, ["stage-2"]);
@@ -192,7 +215,7 @@ describe("GraphView keyboard navigation", () => {
 		const scrollCols = view._graphScrollColOffset;
 		assert.ok(scrollCols > 0);
 
-		view.handleInput(graphNodeClick(stages, 0, { width: 48, scrollCols }));
+		view.handleMouse(graphNodeClick(stages, 0, { width: 48, scrollCols }));
 
 		assert.equal(view._focusedIndex, 0);
 		assert.deepEqual(attached, ["root"]);

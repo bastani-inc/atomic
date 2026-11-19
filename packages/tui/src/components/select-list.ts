@@ -1,3 +1,4 @@
+import { ClickableRows } from "../clickable-rows.ts";
 import { getKeybindings, getSelectPageIndex } from "../keybindings.ts";
 import type { Component, TuiMouseEvent, TuiMouseEventResult } from "../tui.ts";
 import { truncateToWidth, visibleWidth } from "../utils.ts";
@@ -42,7 +43,8 @@ export class SelectList implements Component {
 	private items: SelectItem[] = [];
 	private filteredItems: SelectItem[] = [];
 	private selectedIndex: number = 0;
-	private mousePressedIndex: number | undefined;
+	/** The row each item was drawn on in the last render. */
+	private readonly clickableRows = new ClickableRows<SelectItem>();
 	private maxVisible: number = 5;
 	private theme: SelectListTheme;
 	private layout: SelectListLayoutOptions;
@@ -76,6 +78,7 @@ export class SelectList implements Component {
 
 	render(width: number): string[] {
 		const lines: string[] = [];
+		this.clickableRows.clear();
 
 		// If no items match filter, show message
 		if (this.filteredItems.length === 0) {
@@ -95,6 +98,7 @@ export class SelectList implements Component {
 
 			const isSelected = i === this.selectedIndex;
 			const descriptionSingleLine = item.description ? normalizeToSingleLine(item.description) : undefined;
+			this.clickableRows.add(lines.length, item, `${i}\u0000${item.value}`);
 			lines.push(this.renderItem(item, isSelected, width, descriptionSingleLine, primaryColumnWidth));
 		}
 
@@ -108,6 +112,7 @@ export class SelectList implements Component {
 		return lines;
 	}
 
+	/** A click on a row selects it and runs it as Enter does. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.filteredItems.length === 0) return undefined;
 		if (event.type === "wheel" && event.wheelDelta) {
@@ -117,31 +122,24 @@ export class SelectList implements Component {
 			if (this.selectedIndex !== previousIndex) this.notifySelectionChange();
 			return { handled: true, render: this.selectedIndex !== previousIndex };
 		}
-		// Hover must not change selection: the visible range is centered on it.
-		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
-		const { startIndex, endIndex } = this.getVisibleRange();
-		const itemIndex = startIndex + event.y;
-		if (itemIndex < startIndex || itemIndex >= endIndex) return undefined;
+		return this.clickableRows.handleMouse(event, {
+			activate: (item) => {
+				// The item drawn under the pointer, wherever it is in the list now.
+				const index = this.filteredItems.indexOf(item);
+				if (index === -1) return;
+				if (this.selectedIndex !== index) {
+					this.selectedIndex = index;
+					this.notifySelectionChange();
+				}
+				const selectedItem = this.filteredItems[this.selectedIndex];
+				if (selectedItem) this.onSelect?.(selectedItem);
+			},
+		});
+	}
 
-		if (event.type === "press") {
-			this.mousePressedIndex = itemIndex;
-			if (this.selectedIndex !== itemIndex) {
-				this.selectedIndex = itemIndex;
-				this.notifySelectionChange();
-			}
-			return { handled: true, focus: true };
-		}
-		if (event.type === "click") {
-			const clickedIndex = this.mousePressedIndex ?? itemIndex;
-			this.mousePressedIndex = undefined;
-			const changed = this.selectedIndex !== clickedIndex;
-			this.selectedIndex = clickedIndex;
-			if (changed) this.notifySelectionChange();
-			const selectedItem = this.filteredItems[this.selectedIndex];
-			if (selectedItem) this.onSelect?.(selectedItem);
-			return { handled: true };
-		}
-		return undefined;
+	/** The item the last render drew on `row`. */
+	paintedRowKey(row: number): string | undefined {
+		return this.clickableRows.paintedRowKey(row);
 	}
 
 	handleInput(keyData: string): void {
