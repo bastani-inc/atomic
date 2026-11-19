@@ -2,7 +2,7 @@
 
 **Outcome:** Atomic is installed, authenticated, and has completed one useful task in your repository.
 
-Follow the steps below to install Atomic and complete your first useful session. Atomic runs coding-agent loops with stages, tools, artifacts, verification, subagents, review gates, checkpoints, and human approvals for engineering work.
+Follow the steps below to install Atomic and complete your first useful session. Atomic runs coding-agent sessions with tools, codemode, subagents, verification, and human approvals for engineering work.
 
 Work through the steps in order. Each links to a focused page with full instructions.
 

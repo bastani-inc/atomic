@@ -19,7 +19,7 @@ export interface PostgresDatabaseOptions {
 	statementTimeoutMs?: number;
 	/**
 	 * A direct (session) endpoint for the connection that listens for wake-ups, when `url` goes through a transaction
-	 * pooler. Default `url`. Without notifications, worker hosts and Intercom brokers find work by polling alone.
+	 * pooler. Default `url`. Without notifications, Intercom brokers find work by polling alone.
 	 */
 	listenUrl?: string;
 	/**

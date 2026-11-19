@@ -5,8 +5,8 @@ import lockfile from "proper-lockfile";
 import { normalizePath } from "./paths.ts";
 
 /**
- * Process-global state shared with the bundled packages that warn about the same removed options (settings, subagents,
- * workflows): the warnings already shown, so each message shows once between them, and where they are shown.
+ * Process-global state shared with the bundled packages that warn about the same removed options (settings,
+ * subagents): the warnings already shown, so each message shows once between them, and where they are shown.
  */
 const EMITTED_KEY = "__atomicDeprecationWarnings";
 const SINK_KEY = "__atomicDeprecationSink";
