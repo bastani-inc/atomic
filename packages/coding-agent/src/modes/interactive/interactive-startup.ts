@@ -35,6 +35,7 @@ import {
 	type Container,
 	checkForNewPiVersion,
 	composeStartupIdentity,
+	configureHttpDispatcher,
 	DefaultPackageManager,
 	DynamicBorder,
 	ENV_OFFLINE,
@@ -57,6 +58,7 @@ import {
 	preloadChangelog,
 	recordTimeSinceReset,
 	Spacer,
+	setRegisteredThemes,
 	spawn,
 	Text,
 	theme,
@@ -203,16 +205,20 @@ InteractiveModeBase.prototype.showManagedToolStatus = function (this: Interactiv
 	this.ui.requestRender();
 };
 
+function refreshResourceDisclosure(mode: InteractiveModeBase): void {
+	mode.showLoadedResources({
+		force: true,
+		showDiagnosticsWhenQuiet: true,
+		targetContainer: mode.resourceDisclosureContainer,
+	});
+}
+
 export function attachInteractiveEngineResourceExtensionRefresh(mode: InteractiveModeBase): () => void {
-	return onInteractiveEngineResourceExtensionsChanged(mode.runtimeHost, () => {
+	return onInteractiveEngineResourceExtensionsChanged(mode.runtimeHost, (_extensions, forNextView) => {
+		if (forNextView) return;
 		mode.chatContainer.invalidate();
 		mode.ui.requestRender();
-		if (mode.resourceDisclosureContainer.children.length === 0) return;
-		mode.showLoadedResources({
-			force: true,
-			showDiagnosticsWhenQuiet: true,
-			targetContainer: mode.resourceDisclosureContainer,
-		});
+		if (mode.resourceDisclosureContainer.children.length > 0) refreshResourceDisclosure(mode);
 	});
 }
 
@@ -272,12 +278,28 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// changes (initial bind, engine restart, reload, new/resume/fork). Subscribed
 	// before bind so the first async catalog fetch can never be missed. No-op when
 	// the host is not isolated.
-	onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, () => {
-		this.setupAutocompleteProvider();
+	onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, (_commands, forNextView) => {
+		this.setupAutocompleteProvider(forNextView ? { preserveSelection: true } : undefined);
 	});
 	attachInteractiveEngineResourceExtensionRefresh(this);
-	// The engine decides project trust after this host drew the chat.
-	onInteractiveEngineProjectTrustChanged(this.runtimeHost, () => this.refreshProjectTrustWarning());
+	onInteractiveEngineProjectTrustChanged(this.runtimeHost, (resourcesChanged) => {
+		// The cwd's own load can finish before the engine's full catalog. Apply the same settings as startup,
+		// without rebinding extensions or replacing the live editor and transcript.
+		if (resourcesChanged) {
+			setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
+			this.applyRuntimeSettings();
+			configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
+			const trusted = this.settingsManager.isProjectTrusted();
+			void this.themeController.applyFromSettings({ keepPreview: trusted });
+			if (this.isInitialized) {
+				// Withholding resources removes any preliminary project data. Approval publishes to future views;
+				// it must not insert rows into a transcript the user may be selecting or searching.
+				if (!trusted) refreshResourceDisclosure(this);
+				this.setupAutocompleteProvider(trusted ? { preserveSelection: true } : undefined);
+			}
+		}
+		this.refreshProjectTrustWarning();
+	});
 	// Engine stats can land after the last event of a run; repaint so the idle footer shows them.
 	onInteractiveEngineSessionStatsChanged(this.runtimeHost, () => {
 		this.ui.requestRender();

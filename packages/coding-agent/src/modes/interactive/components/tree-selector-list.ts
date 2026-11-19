@@ -9,6 +9,7 @@ import { renderHorizontalViewport } from "./tree-selector-viewport.ts";
 /** Tree list component with selection and ASCII art visualization */
 export class TreeList implements Component {
 	private readonly state: TreeListState;
+	private filterChosen = false;
 
 	public onSelect?: (entryId: string) => void;
 	public onCancel?: () => void;
@@ -51,6 +52,20 @@ export class TreeList implements Component {
 	}
 
 	invalidate(): void {}
+
+	/** Withdraw a preliminary project default, without overwriting a filter the user selected. */
+	updateInitialFilter(mode: FilterMode): void {
+		if (this.filterChosen || mode === this.state.filterMode) return;
+		this.state.filterMode = mode;
+		applyTreeFilter(this.state);
+	}
+
+	private chooseFilter(mode: FilterMode): void {
+		this.filterChosen = true;
+		this.state.filterMode = mode;
+		this.state.foldedNodes.clear();
+		applyTreeFilter(this.state);
+	}
 
 	getSearchQuery(): string {
 		return this.state.searchQuery;
@@ -242,43 +257,29 @@ export class TreeList implements Component {
 			}
 		} else if (kb.matches(keyData, "app.tree.filter.default")) {
 			// Direct filter: default
-			state.filterMode = "default";
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter("default");
 		} else if (kb.matches(keyData, "app.tree.filter.noTools")) {
 			// Toggle filter: no-tools ↔ default
-			state.filterMode = state.filterMode === "no-tools" ? "default" : "no-tools";
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(state.filterMode === "no-tools" ? "default" : "no-tools");
 		} else if (kb.matches(keyData, "app.tree.filter.userOnly")) {
 			// Toggle filter: user-only ↔ default
-			state.filterMode = state.filterMode === "user-only" ? "default" : "user-only";
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(state.filterMode === "user-only" ? "default" : "user-only");
 		} else if (kb.matches(keyData, "app.tree.filter.labeledOnly")) {
 			// Toggle filter: labeled-only ↔ default
-			state.filterMode = state.filterMode === "labeled-only" ? "default" : "labeled-only";
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(state.filterMode === "labeled-only" ? "default" : "labeled-only");
 		} else if (kb.matches(keyData, "app.tree.filter.all")) {
 			// Toggle filter: all ↔ default
-			state.filterMode = state.filterMode === "all" ? "default" : "all";
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(state.filterMode === "all" ? "default" : "all");
 		} else if (kb.matches(keyData, "app.tree.filter.cycleBackward")) {
 			// Cycle filter backwards
 			const modes: FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
 			const currentIndex = modes.indexOf(state.filterMode);
-			state.filterMode = modes[(currentIndex - 1 + modes.length) % modes.length];
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(modes[(currentIndex - 1 + modes.length) % modes.length]!);
 		} else if (kb.matches(keyData, "app.tree.filter.cycleForward")) {
 			// Cycle filter forwards: default → no-tools → user-only → labeled-only → all → default
 			const modes: FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
 			const currentIndex = modes.indexOf(state.filterMode);
-			state.filterMode = modes[(currentIndex + 1) % modes.length];
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(modes[(currentIndex + 1) % modes.length]!);
 		} else if (kb.matches(keyData, "tui.editor.deleteCharBackward")) {
 			if (state.searchQuery.length > 0) {
 				state.searchQuery = state.searchQuery.slice(0, -1);
