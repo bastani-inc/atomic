@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { Container, type TUI } from "@bastani/atomic-tui";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { exportSessionToHtml } from "../../packages/coding-agent/src/core/export-html/index.js";
 import { createToolHtmlRenderer } from "../../packages/coding-agent/src/core/export-html/tool-renderer.js";
@@ -39,7 +39,10 @@ import {
 	chatEntriesFromAgentMessages,
 	renderChatMessageEntry,
 } from "../../packages/coding-agent/src/modes/interactive/components/index.js";
-import { completionNoticeFromDetails } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.ts";
+import {
+	completionNoticeFromDetails,
+	TaskCompletionMessage,
+} from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.ts";
 import { attachInteractiveEngineResourceExtensionRefresh } from "../../packages/coding-agent/src/modes/interactive/interactive-startup.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { EngineRenderService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-render-service.js";
@@ -703,7 +706,7 @@ test("after a restart, a finished subagent's notice shows the child's saved prom
 	}
 });
 
-test("after a restart, a finished subagent's notice saved before notices named their child finds the child by its task id, unless two children ran as it (#5525)", async () => {
+test("an older notice keeps its saved result whether one or several children used its number (#5525)", async () => {
 	initTheme("dark");
 	const { store, manager } = await finishedScriptChild("hyolder", "task-1-0-7");
 	const older = savedNotice("hyolder", "task-1-0-7", undefined);
@@ -711,8 +714,10 @@ test("after a restart, a finished subagent's notice saved before notices named t
 	const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
 	try {
 		bindSubagentChildCards({ sessionManager: manager });
-		const shown = await engineNotice(manager, older, /const v19 = 19; \)/);
-		assert.match(shown, /Prompt Script the hyolder audit .*Tool calls ● codemode\( const v0 = 0;/);
+		const task = noticeTranscriptQuery(older.details.taskId, older.details.notification, manager.getSessionId());
+		assert.equal(await loadTaskTranscript(undefined, task), undefined);
+		const shown = await engineNotice(manager, older, /Audit done\./);
+		assert.doesNotMatch(shown, /Prompt|Tool calls|codemode\(/);
 
 		// A later process ran another child under the same task id: the notice cannot tell which one it is about.
 		const t = new TranscriptBuilder(manager, process.cwd());
@@ -724,12 +729,8 @@ test("after a restart, a finished subagent's notice saved before notices named t
 			taskId: "task-1-0-7",
 		});
 		bindSubagentChildCards({ sessionManager: manager });
-		const ambiguous = await engineNotice(
-			manager,
-			older,
-			/Transcript unavailable · more than one subagent ran as task-1-0-7/,
-		);
-		assert.doesNotMatch(ambiguous, /codemode\(/);
+		assert.equal(await loadTaskTranscript(undefined, task), undefined);
+		assert.equal(await engineNotice(manager, older, /Audit done\./), shown);
 	} finally {
 		unregister();
 		await store.close();
@@ -741,11 +742,10 @@ test("a legacy notice cannot read a different saved child's prompt through a reu
 	const { store, manager } = await finishedScriptChild("shapes-reader", taskId);
 	const saved = savedNotice("shapes-reader", taskId, undefined);
 	await manager.appendCustomMessageEntry(saved.customType, saved.content, true, saved.details);
-	const completionId = saved.details.completionId;
 	const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
 	try {
 		bindSubagentChildCards({ sessionManager: manager });
-		const matching = { taskId, completionId, agentName: "shapes-reader", subject: "task for shapes-reader" };
+		const matching = { taskId, launchId: "shapes-reader:0" };
 		assert.equal(hasTaskTranscript(undefined, { ...matching, ownerSessionId: manager.getSessionId() }), true);
 		assert.equal(
 			hasTaskTranscript(undefined, { ...matching, ownerSessionId: "another-owner" }),
@@ -753,14 +753,96 @@ test("a legacy notice cannot read a different saved child's prompt through a reu
 			"another owner's records cannot supply the prompt",
 		);
 		for (const [agentName, subject] of [
+			["shapes-reader", "task for shapes-reader"],
 			["worker", "restart 0"],
 			["worker", "task for shapes-reader"],
 			["shapes-reader", "restart 0"],
 		]) {
-			const notice = { taskId, completionId, agentName, subject };
-			assert.equal(hasTaskTranscript(undefined, notice), false, "only the original notice preview is available");
-			assert.equal(await loadTaskTranscript(undefined, notice), undefined, "no other child's prompt or calls");
+			const notification = saved.details.notification;
+			const query = noticeTranscriptQuery(
+				taskId,
+				{ ...notification, agentName, line: { ...notification.line!, subject } },
+				manager.getSessionId(),
+			);
+			assert.equal(hasTaskTranscript(undefined, query), false, "only the original notice preview is available");
+			assert.equal(await loadTaskTranscript(undefined, query), undefined, "no other child's prompt or calls");
 		}
+	} finally {
+		unregister();
+		await store.close();
+	}
+});
+
+// Two 0.9.89 processes wrote these notices to the same parent. Only the first launched a child.
+// The fixture omits unrelated entries and replaces absolute paths; both completion envelopes are unchanged.
+const legacyFixtures = new URL("../fixtures/task-completion-0.9.89/", import.meta.url);
+
+test("a restarted SDK task with the same number, agent and title does not show the earlier child's file read (#5531)", async () => {
+	initTheme("dark");
+	const dir = mkdtempSync(join(tmpdir(), "atomic-old-notices-"));
+	try {
+		cpSync(legacyFixtures, dir, { recursive: true });
+		const manager = await SessionManager.open(join(dir, "parent.jsonl"), dir, dir);
+		bindSubagentChildCards({ sessionManager: manager });
+		const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
+		try {
+			const notices = manager
+				.getEntries()
+				.filter((e) => e.type === "custom_message" && e.customType === "task-completion");
+			assert.equal(notices.length, 2);
+			const second = notices[1]!;
+			assert.ok(second.type === "custom_message");
+			const parsed = completionNoticeFromDetails(second.details);
+			assert.ok(parsed);
+			const task = noticeTranscriptQuery(parsed.taskId, parsed, manager.getSessionId());
+			assert.equal(await loadTaskTranscript(undefined, task), undefined);
+			const shown = await engineNotice(
+				manager,
+				{ ...second, role: "custom", timestamp: Date.parse(second.timestamp) },
+				/Square task finished separately/,
+			);
+			assert.equal(shown.trim(), "✗ reviewer failed ⎿ Square task finished separately");
+		} finally {
+			unregister();
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("repainting 512 folded SDK notices after an unrelated append copies no parent history (#5531)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const writer = await SessionManager.create(store, process.cwd());
+	// Repeat the SDK-only envelope from the 0.9.89 recording, with a different task number for each notice.
+	const sdkLine = readFileSync(new URL("parent.jsonl", legacyFixtures), "utf8").trimEnd().split("\n").at(-1)!;
+	for (let i = 0; i < 512; i++) {
+		const entry = JSON.parse(sdkLine.replaceAll("task-1-0-0", `task-1-0-${i}`));
+		await writer.appendCustomMessageEntry(entry.customType, entry.content, entry.display, entry.details);
+	}
+	const manager = await SessionManager.open(store, writer.getSessionId(), process.cwd());
+	bindSubagentChildCards({ sessionManager: manager });
+	const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
+	try {
+		const cards = manager.getEntries().flatMap((entry) => {
+			if (entry.type !== "custom_message") return [];
+			const notice = completionNoticeFromDetails(entry.details);
+			assert.ok(notice);
+			return new TaskCompletionMessage(notice, false, {
+				hasTranscript: (id, shown) =>
+					hasTaskTranscript(undefined, noticeTranscriptQuery(id, shown, manager.getSessionId())),
+			});
+		});
+		assert.equal(cards.length, 512);
+		const copies = vi.spyOn(manager, "getEntries");
+		const paint = () => cards.map((card) => card.render(100));
+		const rows = paint();
+		const coldCopies = copies.mock.calls.length;
+		await manager.appendCustomEntry("unrelated", {});
+		copies.mockClear();
+		assert.deepEqual(paint(), rows);
+		assert.equal(copies.mock.calls.length, 0, "repaint after unrelated append");
+		assert.equal(coldCopies, 0, "first paint");
 	} finally {
 		unregister();
 		await store.close();
@@ -802,10 +884,10 @@ test("a later child with even the same number, agent and title cannot supply an 
 		const shown = await engineNotice(manager, earlier, /restart done/);
 		assert.match(shown, /worker failed.*restart done/i);
 		assert.doesNotMatch(shown, /Prompt|TASK B|Tool calls/);
-		// The same child *does* precede a later completion of the very same task number and labels.
+		// A later completion with the same labels still has no saved launch identity.
 		const later = { ...earlier, details: { ...earlier.details, completionId: `later-${taskId}` } };
 		await manager.appendCustomMessageEntry(later.customType, later.content, true, later.details);
-		assert.match(await engineNotice(manager, later, /TASK B/), /TASK B: Count the triangles/);
+		assert.equal(await engineNotice(manager, later, /restart done/), shown);
 	} finally {
 		unregister();
 		await store.close();
@@ -815,7 +897,7 @@ test("a later child with even the same number, agent and title cannot supply an 
 test("a notice whose task id this process reuses for another task reads the notice's own child, not the running task (#5525)", async () => {
 	const loads: TaskTranscriptQuery[] = [];
 	const stop = registerSavedTaskTranscripts({
-		has: (task) => task.launchId === "first:0" || task.agentName === "first",
+		has: () => true,
 		load: async (task) => {
 			loads.push(task);
 			return { entries: [] };
@@ -830,30 +912,12 @@ test("a notice whose task id this process reuses for another task reads the noti
 		assert.deepEqual(await loadTaskTranscript(store, { taskId: "task-reused-7", launchId: "first:0" }), {
 			entries: [],
 		});
-		// A notice saved before notices named the launch tells the tasks apart by agent and title.
-		const older = { taskId: "task-reused-7", agentName: "first", subject: "First task" };
-		assert.equal(hasTaskTranscript(store, older), true);
-		assert.deepEqual(await loadTaskTranscript(store, older), { entries: [] });
-		assert.deepEqual(loads, [{ taskId: "task-reused-7", launchId: "first:0" }, older]);
-		// Of the same agent and title, it cannot tell them apart once several tasks ran under the id: it does not take
-		// the running task's transcript for its own.
-		const same = { taskId: "task-reused-7", agentName: "second", subject: "Second task" };
-		const stopSeveral = registerSavedTaskTranscripts({
-			has: (task) => task === same,
-			load: async () => ({
-				entries: [],
-				unavailable: "more than one subagent ran as task-reused-7 in this session",
-			}),
-			ranAsSeveral: (taskId) => taskId === "task-reused-7",
-		});
-		try {
-			assert.deepEqual(await loadTaskTranscript(store, same), {
-				entries: [],
-				unavailable: "more than one subagent ran as task-reused-7 in this session",
-			});
-		} finally {
-			stopSeveral();
-		}
+		// Even a source offering a transcript for every task cannot enrich an unidentified notice.
+		const older = savedNotice("second", "task-reused-7", undefined).details.notification;
+		const query = noticeTranscriptQuery(older.taskId, older);
+		assert.equal(hasTaskTranscript(store, query), false);
+		assert.equal(await loadTaskTranscript(store, query), undefined);
+		assert.deepEqual(loads, [{ taskId: "task-reused-7", launchId: "first:0" }]);
 	} finally {
 		stop();
 	}

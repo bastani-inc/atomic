@@ -70,8 +70,6 @@ export type TaskNoticeLine = {
 };
 
 export type TaskCompletionNotice = {
-	/** The persisted completion envelope this notice was parsed from, if available. */
-	completionId?: string;
 	title: string;
 	preview: string;
 	status: "completed" | "failed" | "cancelled";
@@ -91,11 +89,6 @@ export type TaskCompletionNotice = {
 	launchId?: string;
 };
 
-/** A task's title as its notice's line quotes it: on one line, at most 240 characters. */
-export function noticeSubject(title: string): string {
-	return title.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 240);
-}
-
 /** The line of a finished task's notice: what it is, its name, how it ended, and how long it ran. */
 export function taskNoticeLine(
 	envelope: TaskCompletionEnvelope,
@@ -103,7 +96,7 @@ export function taskNoticeLine(
 ): TaskNoticeLine {
 	const kind = task?.kind ?? envelope.taskKind;
 	const result = envelope.result;
-	const subject = task?.title ? noticeSubject(task.title) : undefined;
+	const subject = task?.title ? task.title.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 240) : undefined;
 	const facts = {
 		...(subject ? { subject } : {}),
 		...((task?.metrics?.elapsedMs ?? envelope.elapsedMs) === undefined

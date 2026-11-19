@@ -431,23 +431,13 @@ describe("a released child's index entry (#4395)", () => {
 			sink.record(row);
 			sink.record({ ...row, state: "terminal", terminalStatus: "released" });
 			await sink.flushed();
-			if (i === 0)
-				await owner.appendCustomMessageEntry("task-completion", "wake 0", true, {
-					taskId: "ix-wake-0",
-					completionId: "ix-first-completion",
-				});
 		}
 		for (const bind of [false, true]) {
 			if (bind) bindSubagentChildCards({ sessionManager: owner });
 			assert.equal(
-				savedSubagentTranscripts(owner).has({
-					taskId: "ix-wake-0",
-					completionId: "ix-first-completion",
-					agentName: "worker",
-					subject: "wake 0",
-				}),
+				savedSubagentTranscripts(owner).has({ taskId: "ix-wake-0", launchId: "ix-woken:0" }),
 				true,
-				"the first attempt is still discoverable from its saved record",
+				"the child is still available by its saved launch identity",
 			);
 			const after = subagentChildCardStateSizes();
 			assert.equal(after.records, before.records + 1);

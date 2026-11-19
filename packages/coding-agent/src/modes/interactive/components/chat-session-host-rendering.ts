@@ -542,6 +542,7 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);
 			const task = noticeTranscriptQuery(taskId, notice, session?.sessionManager.getSessionId());
+			if (!task) return false;
 			if (session && hasTaskTranscript(store, task)) return true;
 			// A task gone from this process, as after a restart, shows what was saved of it.
 			return inherited?.hasTaskTranscript
@@ -552,6 +553,7 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);
 			const task = noticeTranscriptQuery(taskId, notice, session?.sessionManager.getSessionId());
+			if (!task) return undefined;
 			if (session && hasTaskTranscript(store, task)) return loadTaskTranscript(store, task);
 			return inherited?.loadTaskTranscript
 				? inherited.loadTaskTranscript(taskId, notice)

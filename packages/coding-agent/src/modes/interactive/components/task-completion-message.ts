@@ -74,9 +74,6 @@ export function completionNoticeFromDetails(details: unknown): TaskCompletionNot
 	if (notice.status !== "completed" && notice.status !== "failed" && notice.status !== "cancelled") return undefined;
 	const line = "line" in notice ? noticeLineFrom(notice.line) : undefined;
 	const parsed: TaskCompletionNotice = {
-		...("completionId" in details && typeof details.completionId === "string"
-			? { completionId: details.completionId }
-			: {}),
 		title: notice.title,
 		preview: notice.preview,
 		taskId: notice.taskId,
