@@ -501,53 +501,61 @@ const LEGACY_COMPACTION_SUMMARY_ROLE = "compactionSummary";
  * - Custom extensions and tools
  */
 export function convertToLlm(messages: AgentMessage[]): Message[] {
-	const converted = messages
-		.map((rawMessage): Message | undefined => {
-			const m = normalizeRawRedactedThinking(normalizeMessageContent(rawMessage));
-			const role: string = m.role;
-			if (role === LEGACY_COMPACTION_SUMMARY_ROLE) return undefined;
-			switch (m.role) {
-				case "bashExecution":
-					if (!messageStartsLlmUserTurn(m)) return undefined;
-					return {
-						role: "user",
-						content: [{ type: "text", text: bashExecutionToText(m) }],
-						timestamp: m.timestamp,
-					};
-				case "custom": {
-					if (!messageStartsLlmUserTurn(m)) return undefined;
-					const content =
-						typeof m.content === "string"
-							? [{ type: "text" as const, text: m.content }]
-							: (filterUserLikeContentBlocks(m.content) as Message["content"]);
-					return { role: "user", content, timestamp: m.timestamp } as Message;
-				}
-				case "branchSummary":
-					if (!messageStartsLlmUserTurn(m)) return undefined;
-					return {
-						role: "user",
-						content: [{ type: "text" as const, text: BRANCH_SUMMARY_PREFIX + m.summary + BRANCH_SUMMARY_SUFFIX }],
-						timestamp: m.timestamp,
-					};
-				case "user": {
-					if (!messageStartsLlmUserTurn(m)) return undefined;
-					if (!Array.isArray(m.content)) return m;
-					return { ...m, content: filterUserLikeContentBlocks(m.content) } as Message;
-				}
-				case "system":
-					return m;
-				case "assistant":
-				case "toolResult":
-					return m;
-				default: {
-					// Exhaustiveness guard: new AgentMessage roles must define provider conversion explicitly.
-					const _exhaustiveCheck: never = m;
-					void _exhaustiveCheck;
-					return undefined;
-				}
+	return convertToLlmWithForkBoundaries(messages);
+}
+
+/** A fork may identify its two opening messages in the already-normalized rows before filtering. */
+export function convertToLlmWithForkBoundaries(
+	messages: AgentMessage[],
+	onNormalized?: (normalized: (Message | undefined)[]) => void,
+): Message[] {
+	const normalized = messages.map((rawMessage): Message | undefined => {
+		const m = normalizeRawRedactedThinking(normalizeMessageContent(rawMessage));
+		const role: string = m.role;
+		if (role === LEGACY_COMPACTION_SUMMARY_ROLE) return undefined;
+		switch (m.role) {
+			case "bashExecution":
+				if (!messageStartsLlmUserTurn(m)) return undefined;
+				return {
+					role: "user",
+					content: [{ type: "text", text: bashExecutionToText(m) }],
+					timestamp: m.timestamp,
+				};
+			case "custom": {
+				if (!messageStartsLlmUserTurn(m)) return undefined;
+				const content =
+					typeof m.content === "string"
+						? [{ type: "text" as const, text: m.content }]
+						: (filterUserLikeContentBlocks(m.content) as Message["content"]);
+				return { role: "user", content, timestamp: m.timestamp } as Message;
 			}
-		})
-		.filter((m) => m !== undefined);
+			case "branchSummary":
+				if (!messageStartsLlmUserTurn(m)) return undefined;
+				return {
+					role: "user",
+					content: [{ type: "text" as const, text: BRANCH_SUMMARY_PREFIX + m.summary + BRANCH_SUMMARY_SUFFIX }],
+					timestamp: m.timestamp,
+				};
+			case "user": {
+				if (!messageStartsLlmUserTurn(m)) return undefined;
+				if (!Array.isArray(m.content)) return m;
+				return { ...m, content: filterUserLikeContentBlocks(m.content) } as Message;
+			}
+			case "system":
+				return m;
+			case "assistant":
+			case "toolResult":
+				return m;
+			default: {
+				// Exhaustiveness guard: new AgentMessage roles must define provider conversion explicitly.
+				const _exhaustiveCheck: never = m;
+				void _exhaustiveCheck;
+				return undefined;
+			}
+		}
+	});
+	onNormalized?.(normalized);
+	const converted = normalized.filter((m) => m !== undefined);
 	// The same ordering as the live request path: a message admitted while a tool batch
 	// was running follows the batch, so it never turns a later real result into an orphan.
 	return repairOrphanToolResults(deferMessagesInterleavedWithToolBatch(uniquifyToolCallIds(converted)));

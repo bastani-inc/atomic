@@ -326,6 +326,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return sessionLifecycleCreation.run({ scope: lifecycleScopeForOwner(this), claimed: true }, async () => {
 			await reloadDefaultResourceLoader(this, options);
 			this.loadOptions = options ? { ...options } : undefined;
+			// A later session loader has its own settings; this publication's settings were already loaded only here.
+			if (this.loadOptions?.useLoadedSettings) delete this.loadOptions.useLoadedSettings;
 			lifecycleScopeForOwner(this.getExtensions().runtime);
 		});
 	}
