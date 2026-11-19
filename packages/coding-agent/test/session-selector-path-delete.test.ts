@@ -742,5 +742,4 @@ describe("session selector path/delete interactions", () => {
 			selector.dispose();
 		}
 	});
-
 });

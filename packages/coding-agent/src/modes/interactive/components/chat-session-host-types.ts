@@ -100,8 +100,7 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	 */
 	getChatBoxSession?: () => ChatBoxSession | undefined;
 	/**
-	 * The session's messages when `getAgentSession` has no session in this process, such as a workflow
-	 * stage on a local worker: a compaction redraws the transcript from them.
+	 * The session's messages when `getAgentSession` has no session in this process: a compaction redraws the transcript from them.
 	 */
 	getSessionMessages?: () => AgentSession["messages"] | undefined;
 	/** Metering baseline when compaction replaces the displayed history with a new session snapshot. */
@@ -109,7 +108,7 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	getPromptEntries?: () => Parameters<typeof sessionPromptsFromEntries>[0] | undefined;
 	/**
 	 * Tasks to show when `getAgentSession` has no task store in this process: the tasks of a session
-	 * that runs elsewhere, such as a workflow stage on a local worker.
+	 * that runs elsewhere.
 	 */
 	getTaskSource?: () => TaskViewSource | undefined;
 	/** Custom hosts may retain live task rows; interactive stage chat uses footer-only status. */

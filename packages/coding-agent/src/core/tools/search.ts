@@ -13,7 +13,6 @@ import { originalHistoryNote } from "./history-search-wire.js";
 import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
 import {
-	type HistoryNoteWindow,
 	type InternalResourceContext,
 	isInternalUrl,
 	parseArchiveSelector,
@@ -354,24 +353,6 @@ async function searchFileLineRanges(
 
 const SEARCH_ROW_PATH = /^(.+?)(?::\d+: |-\d+- |:(?!\/\/)[^:]+: )/;
 
-function historyWindow(first: number, end: number): HistoryNoteWindow {
-	return {
-		first,
-		end,
-		includes(lines, note) {
-			const wanted = SEARCH_ROW_PATH.exec(note)?.[1];
-			const paths = new Set<string>();
-			for (const line of lines) {
-				const path = SEARCH_ROW_PATH.exec(line)?.[1];
-				if (!path || paths.has(path)) continue;
-				if (path === wanted) return paths.size >= first && paths.size < end;
-				paths.add(path);
-			}
-			return false;
-		},
-	};
-}
-
 function groupSearchOutput(text: string): SearchOutputGroup[] {
 	const groups: SearchOutputGroup[] = [];
 	const byPath = new Map<string, SearchOutputGroup>();
@@ -640,7 +621,7 @@ export function createSearchToolDefinition(
 										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
 										...(signal === undefined ? {} : { signal }),
 									},
-									historyWindow(0, 0),
+									{ first: 0, end: 0 },
 								);
 					return groupSearchOutput(filterTargetLineRanges(text, target, contextBefore, contextAfter)).length > 0;
 				}
@@ -716,10 +697,10 @@ export function createSearchToolDefinition(
 										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
 										...(signal === undefined ? {} : { signal }),
 									},
-									historyWindow(
-										Math.max(0, skip - groups.length),
-										skip > 0 ? skip + limit - groups.length : remaining,
-									),
+									{
+										first: Math.max(0, skip - groups.length),
+										end: skip > 0 ? skip + limit - groups.length : remaining,
+									},
 								);
 					if (archive && target.archive) text = text.split(archive.archivePath).join(target.archive.archivePath);
 					if (target.sqlite)

@@ -81,6 +81,12 @@ test("helpers, old run artifacts, and declined projects do not advertise runnabl
 	} finally {
 		await harness.cleanup();
 	}
+	const globalPath = join(agentDir, "workflows", "user-recipe.ts");
+	put(globalPath, "export default {};");
+	await resourceLoader.reload();
+	assert.deepEqual(resourceLoader.getLegacyWorkflowFiles()?.files, [
+		{ path: globalPath, scope: "global", targetSkillsDir: join(agentDir, "skills") },
+	]);
 });
 
 test("a parent can locate project, user and package workflow recipes without executing them", async () => {
@@ -92,17 +98,22 @@ test("a parent can locate project, user and package workflow recipes without exe
 	const piPkg = join(root, "pi-package");
 	const conventionPkg = join(root, "convention-package");
 	const borrowed = join(root, "borrowed");
-	const recipes = [
+	const projectPkg = join(root, "project-package");
+	const projectRecipes = [
 		join(cwd, ".atomic", "workflows", "check.ts"),
 		join(cwd, ".pi", "workflows", "report.js"),
+		join(cwd, ".atomic", "custom", "project.ts"),
+		join(projectPkg, "workflows", "project-package.ts"),
+		join(borrowed, ".atomic", "workflows", "inspect.ts"),
+	];
+	const globalRecipes = [
 		join(agentDir, "workflows", "triage.mjs"),
+		join(agentDir, "custom", "user.ts"),
 		join(pkg, "recipes", "publish.cjs"),
 		join(piPkg, "custom", "review.ts"),
 		join(conventionPkg, "workflows", "verify.ts"),
-		join(agentDir, "custom", "user.ts"),
-		join(cwd, ".atomic", "custom", "project.ts"),
-		join(borrowed, ".atomic", "workflows", "inspect.ts"),
 	];
+	const recipes = [...projectRecipes, ...globalRecipes];
 	const marker = join(root, "executed");
 	for (const path of recipes) put(path, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'executed')`);
 	put(join(pkg, "package.json"), JSON.stringify({ atomic: { workflows: ["recipes/publish.cjs"] } }));
@@ -111,7 +122,10 @@ test("a parent can locate project, user and package workflow recipes without exe
 		join(agentDir, "settings.json"),
 		JSON.stringify({ packages: [pkg, piPkg, conventionPkg], workflows: ["custom/user.ts"] }),
 	);
-	put(join(cwd, ".atomic", "settings.json"), JSON.stringify({ workflows: { paths: ["custom/project.ts"] } }));
+	put(
+		join(cwd, ".atomic", "settings.json"),
+		JSON.stringify({ packages: [projectPkg], workflows: { paths: ["custom/project.ts"] } }),
+	);
 	const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
@@ -125,7 +139,15 @@ test("a parent can locate project, user and package workflow recipes without exe
 	try {
 		const prompt = harness.session.systemPrompt;
 		assert.match(prompt, /<legacy_workflow_files>/);
-		for (const path of recipes) assert.ok(prompt.includes(JSON.stringify(path)), path);
+		for (const path of recipes) {
+			assert.ok(prompt.includes(JSON.stringify(path)), path);
+			const file = resourceLoader.getLegacyWorkflowFiles()?.files.find((entry) => entry.path === path);
+			const project = projectRecipes.includes(path);
+			assert.equal(file?.scope, project ? "project" : "global", path);
+			assert.equal(file?.targetSkillsDir, project ? join(cwd, ".atomic", "skills") : join(agentDir, "skills"), path);
+		}
+		assert.ok(!existsSync(join(cwd, ".atomic", "skills")));
+		assert.ok(!existsSync(join(agentDir, "skills")));
 		assert.ok(!prompt.includes("writeFileSync"));
 		assert.equal(existsSync(marker), false);
 	} finally {

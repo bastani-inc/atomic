@@ -5,7 +5,7 @@ import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import { createEventBus, createStagedEventBus, type EventBus } from "./event-bus.js";
 import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
-import type { LegacyWorkflowFiles } from "./legacy-workflow-files.ts";
+import type { LegacyWorkflowFiles } from "./legacy-workflow-files.js";
 import type { McpServerContribution } from "./mcp-servers.ts";
 import { DefaultPackageManager, type PathMetadata } from "./package-manager.ts";
 import { registerHostStoragePackagesAsync } from "./package-manager-storage-adapters.js";

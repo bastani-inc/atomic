@@ -52,7 +52,6 @@ export interface InternalSearchRequest {
 export interface HistoryNoteWindow {
 	first: number;
 	end: number;
-	includes: (lines: readonly string[], note: string) => boolean;
 }
 export const historyNoteWindows = new WeakMap<InternalSearchRequest, HistoryNoteWindow>();
 

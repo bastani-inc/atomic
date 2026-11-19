@@ -22,7 +22,7 @@ test("failed task rows sanitize the failure reason before truncation (#5224)", (
 		kind: "item",
 		item: {
 			id: "run:failed",
-			kind: "workflow",
+			kind: "agent",
 			name: "Build",
 			task: "compile",
 			state: "failed",

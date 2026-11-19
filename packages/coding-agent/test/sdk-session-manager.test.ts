@@ -114,26 +114,37 @@ describe("createAgentSession session manager defaults", () => {
 		await assert.rejects(session.sessionManager.getSessionStore().load(session.sessionId), StoreClosedError);
 	});
 
-	it("uses merged SDK settings before choosing the default session database's legacy home (#5242)", async () => {
-		vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", "");
-		writeFileSync(join(tempDir, "legacy-workflows.sqlite"), "");
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir,
-			settingsManager: SettingsManager.inMemory({ workflows: { journal: { path: "legacy-workflows.sqlite" } } }),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
-			builtins: NO_BUILTINS,
-		});
-		try {
-			assert.deepEqual(session.sessionManager.getSessionStore().descriptor, {
-				adapter: "node-sqlite",
-				location: join(tempDir, "workflows", "journal.sqlite"),
+	it.each(["SDK storage selection", "legacy journal path on disk"])(
+		"keeps the default session database's legacy home from a %s (#5242)",
+		async (hint) => {
+			vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", "");
+			const path = "existing.sqlite";
+			writeFileSync(join(tempDir, path), "");
+			if (hint === "legacy journal path on disk") {
+				writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ workflows: { journal: { path } } }));
+			}
+			const settingsManager =
+				hint === "SDK storage selection"
+					? SettingsManager.inMemory({ storage: { path }, sessions: { storage: {} } })
+					: SettingsManager.create(cwd, agentDir);
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir,
+				settingsManager,
+				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				builtins: NO_BUILTINS,
 			});
-			assert.equal(existsSync(join(agentDir, "workflows", "journal.sqlite")), false);
-		} finally {
-			await session.dispose();
-		}
-	});
+			try {
+				assert.deepEqual(session.sessionManager.getSessionStore().descriptor, {
+					adapter: "node-sqlite",
+					location: join(tempDir, "workflows", "journal.sqlite"),
+				});
+				assert.equal(existsSync(join(agentDir, "workflows", "journal.sqlite")), false);
+			} finally {
+				await session.dispose();
+			}
+		},
+	);
 
 	it("rejects an unavailable default database without choosing memory", async () => {
 		mkdirSync(agentDir, { recursive: true });

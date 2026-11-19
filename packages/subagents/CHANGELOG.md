@@ -10,6 +10,7 @@
 
 - `/skill:workflow-files` guides the parent chat through an earlier workflow definition without executing the module, preserving its dependencies, checks, and approval gates.
 - Codemode scripts can launch single or parallel subagents, get task IDs immediately, observe or control their session's children, and resume a child from its saved session. Scripts can inspect agent definitions and the configured model catalog; creating or changing definitions still requires a direct call.
+- `/skill:workflow-files` uses `skill-creator` to convert an earlier workflow into a reusable skill, with its checks in `scripts/` and its dependencies and approvals in `SKILL.md`. It leaves the old file unchanged and never overwrites an existing skill.
 
 ## [0.9.90] - 2026-11-19
 

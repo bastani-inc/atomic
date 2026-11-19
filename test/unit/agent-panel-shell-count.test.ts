@@ -3,10 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import { matchesKey } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
-import {
-	type AgentPanelItem,
-	AgentPanelSourceHub,
-} from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import type { AgentPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import type { TaskRecord } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
@@ -52,12 +49,6 @@ function shell(id: string): TaskRecord {
 	return { ...taskRecord(id, "command"), title: `sleep 300 # ${id}` };
 }
 
-function workflowSession(items: readonly AgentPanelItem[]) {
-	const hub = new AgentPanelSourceHub();
-	hub.register({ items: () => items, subscribe: () => () => {} });
-	return { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-}
-
 function mountPanel(session: object, onCounts?: (counts: AgentPanelCounts) => void) {
 	let widget: { render(width: number): string[] } | undefined;
 	const dispose = bindAgentPanel(
@@ -75,7 +66,7 @@ function mountPanel(session: object, onCounts?: (counts: AgentPanelCounts) => vo
 	return { dispose, lines, mounted: () => widget !== undefined };
 }
 
-const workflowRow: AgentPanelItem = {
+const extensionAgent: AgentPanelItem = {
 	id: "run:wf",
 	kind: "agent",
 	state: "running",
@@ -171,7 +162,7 @@ test("the focused panel keeps main above its eight rows when subagents are liste
 		close: () => {},
 	});
 	const rows: AgentPanelRow[] = [
-		workflowRow as AgentPanelRow,
+		extensionAgent as AgentPanelRow,
 		{ id: "task:a", kind: "agent", state: "running", name: "worker", task: "fix" },
 	];
 	focus.update(rows);

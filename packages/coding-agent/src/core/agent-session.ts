@@ -55,7 +55,7 @@ import type {
 	ToolDefinition,
 } from "./extensions/index.js";
 import { sessionIntercomFacade } from "./intercom-policy.ts";
-import { MessageAdmissionBoundary } from "./message-admission.ts";
+import { MessageAdmissionBoundary } from "./message-admission.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";

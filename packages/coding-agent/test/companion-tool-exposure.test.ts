@@ -7,7 +7,7 @@ import subagents from "../../subagents/src/extension/index.js";
 
 import { createHarness } from "./suite/harness.js";
 
-test("script tool catalogs include subagent but exclude workflow, supervisor and human prompts", async () => {
+test("script tool catalogs include subagent but exclude supervisor and human prompts", async () => {
 	let catalog: string[] = [];
 	const harness = await createHarness({
 		extensionFactories: [

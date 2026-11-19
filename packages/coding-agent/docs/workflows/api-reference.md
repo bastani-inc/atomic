@@ -1790,7 +1790,6 @@ A malformed workspace, a conflicting input or a missing git fails before anythin
 
 Package authors list both `@bastani/atomic` and `typebox` in `peerDependencies`. The `@bastani/atomic` package publishes compiled JavaScript and declarations for `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin`, and each `@bastani/atomic/workflows/builtin/*` module. TypeScript resolves those exports directly under `moduleResolution: NodeNext`. When Atomic executes a workflow file or an imported helper, its runtime loader supplies the workflow SDK and current TypeBox modules.
 
-The loader also shares the host's modules for the exact specifiers `@bastani/atomic`, `@bastani/atomic-ai`, and `@bastani/atomic-ai/providers/all`. These exceptions expose Atomic's public root API and the AI compatibility API and provider transports. The host's versions take precedence over project-local copies, including in standalone-binary installs without project packages. Workflow files and relative imports still refresh on reload. Other deep subpaths resolve from disk. The workflow loader does not share the extension loader's remaining host aliases, including the separate agent-core and UI packages, other AI subpaths, and `proper-lockfile`. Older or alternative hosts without [`getWorkflowHostModules()`](/extensions/api-reference#pi-getworkflowhostmodules) retain filesystem resolution for the three specifiers.
 
 ```ts
 import { workflow } from "@bastani/atomic/workflows";

@@ -30,11 +30,11 @@ function agent(id: string): TaskRecord {
 	return { ...taskRecord(id), agentName: "worker", title: `job ${id}` };
 }
 
-function workflow(id: string, name: string): AgentPanelItem {
+function extensionAgent(id: string, name: string): AgentPanelItem {
 	return { id, kind: "agent", state: "running", name, task: "stage build", progress: { done: 1, total: 3 } };
 }
 
-/** A session whose panel lists `tasks` (subagents) and `runs` (workflow runs that record what opened them). */
+/** A session whose panel lists `tasks` (subagents) and `runs` (extension rows that record what opened them). */
 function panelSession(tasks: readonly TaskRecord[], runs: readonly AgentPanelItem[]) {
 	const opened: string[] = [];
 	const hub = new AgentPanelSourceHub();
@@ -103,7 +103,7 @@ for (const width of [80, 160]) {
 	test(`a click on a row of the panel below the prompt opens that row, and main and +N more open nothing, at ${width} columns`, () => {
 		const { session, opened } = panelSession(
 			[agent("a1"), agent("a2"), agent("a3")],
-			[workflow("run:first", "first-run"), workflow("run:second", "second-run")],
+			[extensionAgent("run:first", "first-run"), extensionAgent("run:second", "second-run")],
 		);
 		const widget = mountWidget(session, noInspector);
 		const lines = plain(widget.render(width));
@@ -125,7 +125,7 @@ for (const width of [80, 160]) {
 }
 
 test("a click on a row of the focused panel opens it, and a click on main returns to the prompt", async () => {
-	const { session, opened } = panelSession([agent("a1")], [workflow("run:first", "first-run")]);
+	const { session, opened } = panelSession([agent("a1")], [extensionAgent("run:first", "first-run")]);
 	const run = (row: (lines: readonly string[]) => number) =>
 		showAgentPanel(session as never, {
 			custom: async (factory) => {
@@ -182,7 +182,7 @@ test("a click on a row of the focused panel opens it, and a click on main return
 
 test("a click opens the row that was painted under it, even after the rows changed before the next paint", async () => {
 	const opened: string[] = [];
-	let runs: AgentPanelItem[] = [workflow("run:b", "run-b"), workflow("run:a", "run-a")];
+	let runs: AgentPanelItem[] = [extensionAgent("run:b", "run-b"), extensionAgent("run:a", "run-a")];
 	const listeners = new Set<() => void>();
 	const hub = new AgentPanelSourceHub();
 	hub.register({
@@ -203,8 +203,8 @@ test("a click opens the row that was painted under it, even after the rows chang
 
 	// The other run now waits for an answer and ranks first; the panel has not painted that yet.
 	runs = [
-		{ ...workflow(`run:${other}`, `run-${other}`), state: "input", question: "Ship it?" },
-		workflow(`run:${top}`, `run-${top}`),
+		{ ...extensionAgent(`run:${other}`, `run-${other}`), state: "input", question: "Ship it?" },
+		extensionAgent(`run:${top}`, `run-${top}`),
 	];
 	const refreshed = Promise.withResolvers<void>();
 	repaint = refreshed.resolve;
@@ -226,7 +226,7 @@ test("a press and release on a panel row whose item was swapped for one with the
 		"../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts"
 	);
 	const opened: string[] = [];
-	let runs: AgentPanelItem[] = [workflow("run:x", "same-name")];
+	let runs: AgentPanelItem[] = [extensionAgent("run:x", "same-name")];
 	const listeners = new Set<() => void>();
 	const hub = new AgentPanelSourceHub();
 	hub.register({
@@ -262,7 +262,7 @@ test("a press and release on a panel row whose item was swapped for one with the
 		const row = tui.getScreenLines().findIndex((line) => stripTerminalSequences(line).includes("same-name"));
 		assert.notEqual(row, -1);
 		terminal.input(`\x1b[<0;5;${row + 1}M`);
-		runs = [workflow("run:x2", "same-name")];
+		runs = [extensionAgent("run:x2", "same-name")];
 		for (const listener of listeners) listener();
 		await new Promise<void>((resolve) => queueMicrotask(resolve));
 		tui.renderNow();

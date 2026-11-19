@@ -43,7 +43,9 @@ async function attentionProjection() {
 			fresh.dispose();
 		}
 		try {
-			value(h.actor.reportTaskActivity(h.runner, { reportId: "", change: { kind: "attention-set", attention } }));
+			// An older native producer reports a stage attempt. Both the event and fresh SDK projections ignore it.
+			const legacy = { ...attention, route: { ...attention.route, stageAttemptId: "old-attempt" } };
+			value(h.actor.reportTaskActivity(h.runner, { reportId: "", change: { kind: "attention-set", attention: legacy } }));
 			consistent(attention);
 			if (scenario === "cleanup-failed") value(h.actor.acknowledgeTaskCleanup(h.runner, failure));
 			const cancelled = h.actor.cancelTask(h.task, "user");

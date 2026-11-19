@@ -690,7 +690,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_workspace?: import("./workspace/resolve.ts").BoundWorkspace;
 	_subagentPolicy?: import("./extensions/index.js").SubagentChildPolicy;
 	_intercomPolicy?: import("./intercom-policy.ts").SessionIntercomPolicy;
-	_subagentMessageAdmission?: import("./message-admission.ts").MessageAdmissionBoundary;
+	_subagentMessageAdmission?: import("./message-admission.js").MessageAdmissionBoundary;
 	_extensionUIContext?: ExtensionUIContext;
 	_extensionHumanInput?: import("./extensions/host-input.js").HostInput | null;
 	_extensionDiagnosticListener?: (diagnostic: import("./extensions/host-input.js").HostDiagnostic) => void;
@@ -728,5 +728,5 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_resourceAdmission: import("./sdk-types.ts").ResourceAdmission | undefined;
 	_childTaskWaits: import("./tasks/child-command-owner.js").ChildTaskWaits;
 	_taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;
-	_taskAdmission: import("./message-admission.ts").MessageAdmissionBoundary | undefined;
+	_taskAdmission: import("./message-admission.js").MessageAdmissionBoundary | undefined;
 }

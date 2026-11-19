@@ -22,7 +22,7 @@ function changes(raw: string): C.ActivityReport["change"][] {
 		{ kind: "model", model: raw, thinking: raw },
 	];
 }
-function mutations(change: C.ActivityReport["change"], raw: string): C.ActivityReport["change"][] {
+function mutations(change: C.ActivityReport["change"], raw: string): native.ActivityReport["change"][] {
 	switch (change.kind) {
 		case "action": return [{ ...change, tool: raw }, { ...change, text: raw }];
 		case "model": return [{ ...change, model: raw }, { ...change, thinking: raw }];
@@ -35,7 +35,8 @@ function mutations(change: C.ActivityReport["change"], raw: string): C.ActivityR
 				{ ...change, attention: { ...attention, requestId: raw } },
 				{ ...change, attention: { ...attention, prompt: raw } },
 				...(["sessionId", "promptId"] as const).map((field) => ({ ...change, attention: { ...attention, route: { ...attention.route, [field]: raw } } })),
-				{ ...change, attention: { ...attention, route: { sessionId: attention.route.sessionId, promptId: attention.route.promptId } } },
+				// The native ABI still includes this legacy field in report identity, even when the SDK omits it.
+				{ ...change, attention: { ...attention, route: { ...attention.route, stageAttemptId: raw } } },
 			];
 		}
 		case "metrics": throw new Error("numeric reports have their own exhaustive fixture");
@@ -118,7 +119,7 @@ for (const raw of strings) {
 		for (const field of ["generation", "sequence"] as const) refused(actor.watchOwnerTasks(nativeOwner, () => {}, { ...watch.cursor, [field]: `\ud800${watch.cursor[field]}` }), "StaleGeneration");
 		value(actor.drainOwnerTasks(journal.lease));
 		for (const [index, change] of changes(raw).entries()) {
-			const report: C.ActivityReport = { reportId: `${index}/${raw}`, change };
+			const report: native.ActivityReport = { reportId: `${index}/${raw}`, change };
 			const receipt = value(actor.reportTaskActivity(runner, report));
 			reports++;
 			assert.equal(receipt.reportId, report.reportId);

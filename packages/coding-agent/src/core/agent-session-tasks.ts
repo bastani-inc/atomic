@@ -4,7 +4,7 @@ import { pendingCustomMessageSaved } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-custom-messages.ts";
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
-import { MessageAdmissionBoundary } from "./message-admission.ts";
+import { MessageAdmissionBoundary } from "./message-admission.js";
 import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import { AgentTaskHost } from "./tasks/agent-adapter.js";
 import {
@@ -171,7 +171,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 						);
 			await admission.admit(key, deliver, () => {
 				throw new Error("Task owner is closed");
-			}).completion;
+			});
 			// Without a turn, a notice admitted mid-turn waits in memory for that turn's end; it is acknowledged once saved (#5047).
 			if (!live)
 				for (const notice of own) {
@@ -217,7 +217,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				});
 			await admission.admit(undefined, deliver, () => {
 				throw new Error("Task owner is closed");
-			}).completion;
+			});
 		},
 	};
 	const binding = {
