@@ -1,8 +1,10 @@
 import type { UserBashEventResult } from "../../core/extensions/types.ts";
 import type { FullscreenExitOutput } from "../../core/settings-manager.ts";
+import { discardChatMount } from "./chat-reader-records.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { BashExecutionComponent, type TruncationResult } from "./interactive-mode-deps.ts";
 import { isEngineSendFailure } from "./interactive-prompt-restore.ts";
+import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 
 /** Warning shown when `/compact` is submitted while a compaction is already running. */
 export const COMPACTION_ALREADY_IN_PROGRESS_WARNING =
@@ -162,6 +164,8 @@ InteractiveModeBase.prototype.stop = function (
 	this: InteractiveModeBase,
 	fullscreenExitOutput: FullscreenExitOutput = this.settingsManager.getFullscreenExitOutput(),
 ): void {
+	if (this.chatContainer instanceof StartupChatContainer) this.chatContainer.cancelChatRecordPaint();
+	discardChatMount(this);
 	this.disposeActiveSelector();
 	this.disposeInteractiveEngineHost();
 	this.disposeInteractiveEngineHost = () => {};
