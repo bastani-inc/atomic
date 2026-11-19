@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
@@ -577,6 +577,95 @@ const EXTENSION_TRANSPILE_CACHE_FORMAT = "ts-source-specifiers";
  */
 export function getExtensionTranspileCacheDir(agentDir: string = getAgentDir()): string {
 	return join(agentDir, "cache", "jiti", `${VERSION}+${EXTENSION_TRANSPILE_CACHE_FORMAT}`);
+}
+
+let cliRuntime = false;
+
+/** SDK hosts may explicitly choose TMPDIR for session tool output. CLI runs always use Atomic's scratch. */
+export function useCliRuntimeStorage(): void {
+	cliRuntime = true;
+}
+export function useManagedSessionScratch(): boolean {
+	return cliRuntime || !process.env.TMPDIR;
+}
+
+/** Leave space for a Git index, editor filename, or session component below a long Windows agent directory. */
+export function getRuntimeScratchCache(agent = getAgentDir()): string {
+	const cache = resolve(agent, "cache");
+	if (process.platform === "win32" && cache.length > 150 && process.env.LOCALAPPDATA) {
+		const short = resolve(process.env.LOCALAPPDATA, "Atomic", "cache");
+		if (short.length < cache.length) return short;
+	}
+	return cache;
+}
+
+/** Private scratch shared by the operations of this process, removed on exit. */
+export async function getRuntimeScratchDir(checkout?: {
+	readonly root: string;
+	readonly gitDir?: string;
+}): Promise<string> {
+	const cache = getRuntimeScratchCache();
+	const storage = await import("./config-runtime-scratch.ts");
+	return storage.runtimeScratchDirectory(checkout ? await storage.checkoutScratchCache(cache, checkout) : cache);
+}
+
+const CACHE_GENERATION_MS = 30 * 24 * 60 * 60 * 1000;
+const prunedRuntimeCaches = new Set<string>();
+let reportedRuntimeFallback = false;
+
+export function reportRuntimeStorageFallback(): void {
+	if (reportedRuntimeFallback) return;
+	reportedRuntimeFallback = true;
+	process.stderr.write(
+		"Atomic cannot write private runtime storage in the agent directory; using temporary storage instead.\n",
+	);
+}
+
+/** A bounded lifetime for reusable bytecode. Pruning never scans individual modules on startup. */
+export function getRuntimeCacheDir(kind: "node" | "workflows"): string {
+	const parent =
+		kind === "node" ? resolve(getAgentDir(), "cache", "node") : resolve(getExtensionTranspileCacheDir(), "workflows");
+	const generation = Math.floor(Date.now() / CACHE_GENERATION_MS);
+	const current = join(parent, String(generation));
+	if (!prunedRuntimeCaches.has(current)) {
+		prunedRuntimeCaches.add(current);
+		setTimeout(() => {
+			void readdir(parent, { withFileTypes: true })
+				.then(async (entries) => {
+					for (const entry of entries) {
+						if (entry.isDirectory() && /^\d+$/.test(entry.name) && Number(entry.name) < generation - 1) {
+							await rm(join(parent, entry.name), { recursive: true, force: true }).catch(() => {});
+						}
+					}
+				})
+				.catch(() => {});
+		}, 10_000).unref();
+	}
+	return current;
+}
+
+/** jiti silently disables its cache for a refused directory; retain its normal temp fallback instead. */
+export function withWorkflowTranspileCache<T extends { options: { fsCache?: boolean | string } }>(
+	create: (dir: string | boolean) => T,
+	honorEnvironment = true,
+): T {
+	if (honorEnvironment) {
+		let enabled = true;
+		for (const value of [process.env.JITI_CACHE, process.env.JITI_FS_CACHE]) {
+			if (value !== undefined) {
+				try {
+					enabled = Boolean(JSON.parse(value));
+				} catch {
+					/* jiti ignores invalid values. */
+				}
+			}
+		}
+		if (!enabled) return create(false);
+	}
+	const loader = create(getRuntimeCacheDir("workflows"));
+	if (loader.options.fsCache !== false) return loader;
+	reportRuntimeStorageFallback();
+	return create(true);
 }
 
 /** Get path to prompt templates directory */

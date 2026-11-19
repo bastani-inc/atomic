@@ -25,6 +25,7 @@ import {
 import {
 	acquireProtectedPaths,
 	getProtectedSessionTempDirs,
+	getSessionTempDirAsync,
 	resetSessionTempDirStateForTesting,
 	resolveSessionTempDirPath,
 } from "../src/core/tools/session-temp-dir.ts";
@@ -166,6 +167,34 @@ describe("AgentSession storage protection", () => {
 		await session.dispose();
 
 		assert.equal(getProtectedSessionTempDirs().has(tempDir), false, "a disposed session protects nothing");
+	});
+
+	it("removes a disposed session's managed scratch without affecting a live sibling", async () => {
+		const previousAgent = process.env.ATOMIC_CODING_AGENT_DIR;
+		const previousTemp = process.env.TMPDIR;
+		process.env.ATOMIC_CODING_AGENT_DIR = join(sandbox, "agent");
+		delete process.env.TMPDIR;
+		try {
+			const first = await createSession();
+			const second = await createSession();
+			try {
+				const departed = await getSessionTempDirAsync(first.sessionManager.getSessionId());
+				const live = await getSessionTempDirAsync(second.sessionManager.getSessionId());
+				writeFileSync(join(departed, "tool.log"), "first");
+				writeFileSync(join(live, "tool.log"), "second");
+				await first.dispose();
+				assert.equal(existsSync(departed), false);
+				assert.ok(existsSync(join(live, "tool.log")));
+			} finally {
+				await first.dispose();
+				await second.dispose();
+			}
+		} finally {
+			if (previousAgent === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+			else process.env.ATOMIC_CODING_AGENT_DIR = previousAgent;
+			if (previousTemp === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = previousTemp;
+		}
 	});
 
 	it("protects a disk-backed session's tool-results directory until disposal", async () => {

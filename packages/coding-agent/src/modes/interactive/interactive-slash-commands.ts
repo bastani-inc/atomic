@@ -1,3 +1,4 @@
+import { getRuntimeScratchDir } from "../../config.js";
 import { computeCacheWaste, createCacheMissModelSource, formatCacheWaste } from "../../core/cache-stats.ts";
 import { formatResumeTimings, latestResumeTimings } from "../../core/resume/timings.ts";
 import {
@@ -29,7 +30,6 @@ import {
 	hyperlink,
 	MissingSessionCwdError,
 	normalizeChangelogLinks,
-	os,
 	parseChangelogAsync,
 	path,
 	SessionImportFileNotFoundError,
@@ -269,7 +269,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 
 	// Share an export-only JSONL copy carrying context for the viewer. The
 	// persisted session is not mutated.
-	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "atomic-share-"));
+	const tempDir = await fs.promises.mkdtemp(path.join(await getRuntimeScratchDir(), "atomic-share-"));
 	const tmpFile = path.join(tempDir, "session.jsonl");
 	try {
 		await this.session.exportToJsonl(tmpFile, {

@@ -1,9 +1,8 @@
 import { spawn } from "node:child_process";
 import { totalmem } from "node:os";
-import { getHeapStatistics } from "node:v8";
 import { ENV_HEAP_MB, getEnvValue } from "../config.js";
 import { engineHeapRuntimeArgs } from "../modes/interactive-engine/engine-heap.ts";
-import { INTERACTIVE_ENGINE_BOOTSTRAP_FLAG } from "./interactive-engine-bootstrap.ts";
+import { INTERACTIVE_ENGINE_BOOTSTRAP_FLAG } from "./interactive-engine-flags.ts";
 
 const HEAP_RELAUNCHED_ENV = "ATOMIC_INTERNAL_HEAP_RELAUNCHED";
 const HEAP_FLAG = /^--max[-_]old[-_]space[-_]size(?:=|$)/;
@@ -40,7 +39,8 @@ export function headlessHeapRelaunchArgs(args: readonly string[]): string[] {
 		runsOnNode: true,
 		totalMemoryBytes: totalmem(),
 		constrainedMemoryBytes: process.constrainedMemory(),
-		currentHeapLimitBytes: getHeapStatistics().heap_size_limit,
+		// Metadata, interactive and engine invocations do not need to initialize V8's diagnostic module.
+		currentHeapLimitBytes: process.getBuiltinModule("node:v8").getHeapStatistics().heap_size_limit,
 		nodeOptions: process.env.NODE_OPTIONS,
 		execArgv: [],
 		configuredHeapMb: getEnvValue(ENV_HEAP_MB),

@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getBinDir } from "../../config.js";
 import { GitUnavailableError, isGitProvisionError, isGitUnavailableError } from "../../utils/git-errors.ts";
 import { STORAGE_JOIN_COMMAND } from "../agent-rehydrate-errors.ts";
@@ -33,7 +32,7 @@ export const defaultResumePreflightIo: ResumePreflightIo = {
 	env: (name) => process.env[name],
 	async probeGit(signal) {
 		try {
-			await gitText(["--version"], { cwd: tmpdir(), signal });
+			await gitText(["--version"], { cwd: dirname(process.execPath), signal });
 			return undefined;
 		} catch (error) {
 			if (signal?.aborted || !isGitProvisionError(error)) throw error;

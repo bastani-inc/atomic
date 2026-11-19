@@ -3,7 +3,7 @@ import type * as Fs from "node:fs";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import type * as FsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 
 /** What each rename of a bootstrap record saw, and whether it fails after the temporary file was written. */
@@ -99,6 +99,9 @@ test.each(WRITERS)(
 
 		assert.equal(publication.renames.length, 1, "the temporary file was written before the failure");
 		assert.match(publication.renames[0]!.written, /secret-key/);
+		assert.equal(existsSync(publication.renames[0]!.from), false);
+		assert.equal(existsSync(publication.renames[0]!.to), false);
+		assert.equal(existsSync(dirname(publication.renames[0]!.to)), false);
 		assert.deepEqual(readdirSync(scoped), [], "nothing the publication created is left behind");
 	},
 );

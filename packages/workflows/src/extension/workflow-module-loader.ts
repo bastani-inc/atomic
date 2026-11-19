@@ -6,6 +6,7 @@
  * stay consistent.
  */
 
+import { withWorkflowTranspileCache } from "@bastani/atomic";
 import { createJiti } from "jiti/static";
 import * as typeboxModule from "typebox";
 import * as typeboxCompileModule from "typebox/compile";
@@ -85,14 +86,17 @@ export type WorkflowHostModuleProvider = () => Promise<WorkflowHostModules>;
 function createWorkflowModuleLoader(virtualModules: Record<string, unknown>) {
 	// Build a fresh jiti per load: jiti creates its filesystem cache directory only when an instance is constructed,
 	// so a long-lived instance fails with ENOENT on every load after something (such as a /tmp cleanup) deletes it.
-	return createJiti(import.meta.url, {
-		moduleCache: false,
-		// Keep workflow-file import semantics deterministic: jiti owns .ts/.js/.mjs/.cjs
-		// resolution instead of handing some imports back to native import().
-		tryNative: false,
-		// Resolve the current SDK once while workflow files are evaluated fresh.
-		virtualModules,
-	});
+	return withWorkflowTranspileCache((fsCache) =>
+		createJiti(import.meta.url, {
+			fsCache,
+			moduleCache: false,
+			// Keep workflow-file import semantics deterministic: jiti owns .ts/.js/.mjs/.cjs
+			// resolution instead of handing some imports back to native import().
+			tryNative: false,
+			// Resolve the current SDK once while workflow files are evaluated fresh.
+			virtualModules,
+		}),
+	);
 }
 
 function materializeModuleObject(mod: object): Record<string, unknown> {

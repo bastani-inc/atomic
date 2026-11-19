@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type AdvisoryLock, renameNoReplaceAsync, tryAdvisoryLockAsync } from "@bastani/atomic-natives";
@@ -247,10 +246,9 @@ async function resolveLockDirectory(commonDir: string): Promise<string> {
 	const canonicalCommon = await comparablePath(commonDir);
 	const primary = path.join(canonicalCommon, "objects", "info", "atomic-named-worktree-locks");
 	if (await pathExists(primary)) return primary;
-	const fallback = path.join(
-		os.tmpdir(),
-		`atomic-named-worktree-locks-${createHash("sha256").update(canonicalCommon).digest("hex")}`,
-	);
+	// Keep all accounts using a shared repository in one lock namespace, even when objects/info is read-only.
+	// Git excludes components ending in .lock from ref names.
+	const fallback = path.join(canonicalCommon, "refs", "atomic-named-worktrees.lock");
 	const { dirMode, gid } = await repositoryLockModes(canonicalCommon);
 	if (await pathExists(fallback)) {
 		await validateFallbackLockDirectory(fallback, gid);

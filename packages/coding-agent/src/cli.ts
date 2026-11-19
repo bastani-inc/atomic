@@ -9,16 +9,17 @@
  * attribution, and the disabled-by-default lifecycle seam. The full CLI graph
  * loads dynamically so metadata fast paths (for example `--version`) skip it.
  */
-import { APP_NAME, VERSION } from "./config.js";
+import { APP_NAME, useCliRuntimeStorage, VERSION } from "./config.js";
 import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 import { enablePersistentCompileCache } from "./utils/compile-cache.ts";
 import { headlessHeapRelaunchArgs, relaunchWithHeap } from "./utils/heap-relaunch.ts";
-import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "./utils/interactive-engine-bootstrap.ts";
+import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "./utils/interactive-engine-flags.ts";
 
 installLifecycleTraceFromEnv();
 markLifecycleTiming("process-entry");
 
+useCliRuntimeStorage();
 enablePersistentCompileCache();
 
 process.title = APP_NAME;

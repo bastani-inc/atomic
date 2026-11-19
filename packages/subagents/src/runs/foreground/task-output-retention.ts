@@ -1,7 +1,6 @@
-import { rmSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getRuntimeScratchDir } from "@bastani/atomic";
 import type { TaskLease } from "../../../../coding-agent/src/core/tasks/supervisor.js";
 import type { SingleResult } from "../../shared/types.js";
 import { utf8Head } from "../../shared/types-output.js";
@@ -38,16 +37,12 @@ function fileSafe(value: string): string {
 }
 
 function privateCopyRoot(): Promise<string> {
-	copyRoot ??= mkdtemp(join(tmpdir(), "atomic-subagent-output-")).then(
-		(root) => {
-			process.once("exit", () => rmSync(root, { recursive: true, force: true }));
-			return root;
-		},
-		(error: unknown) => {
+	copyRoot ??= getRuntimeScratchDir()
+		.then((dir) => mkdtemp(join(dir, "atomic-subagent-output-")))
+		.catch((error: unknown) => {
 			copyRoot = undefined;
 			throw error;
-		},
-	);
+		});
 	return copyRoot;
 }
 

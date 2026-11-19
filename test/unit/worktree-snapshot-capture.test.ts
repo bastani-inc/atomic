@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
 	bindingOf,
 	captureWorktreeSnapshot,
@@ -122,6 +122,19 @@ describe("captureWorktreeSnapshot availability", () => {
 });
 
 describe("captureWorktreeSnapshot content", () => {
+	test("runtime scratch inside the checkout does not become part of a snapshot", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(clone, "agent"));
+		try {
+			const { writeOutputFile } = await import("../../packages/coding-agent/src/utils/output-files.js");
+			await writeOutputFile("private", ".txt", "must not leave the runtime directory");
+			const result = captured(await captureWorktreeSnapshot(clone));
+			assert.equal(result.snapshot.tree, await sandbox.git(clone, "rev-parse", "HEAD^{tree}"));
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
 	test("a clean tree records HEAD's tree with no patch or bundle", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		const result = captured(await captureWorktreeSnapshot(clone));

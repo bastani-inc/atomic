@@ -12,8 +12,8 @@ import {
 	utimes,
 	writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { getRuntimeScratchDir } from "../../config.js";
 import { pathExists } from "../../utils/path-exists.ts";
 import { renameWithRetry } from "../rename-retry.ts";
 import { snapshotBlobHashes } from "./blob-store.ts";
@@ -199,8 +199,11 @@ async function locateCheckoutStepwise(
 }
 
 /** Runs `action` with a private directory that is removed afterwards; a removal failure never hides `action`'s. */
-export async function withScratchDirectory<T>(action: (directory: string) => Promise<T>): Promise<T> {
-	const directory = await mkdtemp(join(tmpdir(), "atomic-snapshot-"));
+export async function withScratchDirectory<T>(
+	action: (directory: string) => Promise<T>,
+	checkout?: Pick<Checkout, "root" | "gitDir">,
+): Promise<T> {
+	const directory = await mkdtemp(join(await getRuntimeScratchDir(checkout), "atomic-snapshot-"));
 	let result: T;
 	try {
 		result = await action(directory);
@@ -499,7 +502,7 @@ function readWorkingFiles(
 			const policy = await loadSnapshotPathPolicy(checkout.root);
 			const state = await writeCapturedTree(checkout, settings, policy, scratch, capture, modeTree, signal);
 			return { state, omitted: [...state.omitted, ...(await submoduleOmissions(checkout.root, signal))] };
-		});
+		}, checkout);
 	if (signal !== undefined) return inTurn(capture.index, compute);
 	const key = JSON.stringify([
 		checkout.root,
@@ -1197,5 +1200,5 @@ async function captureCheckout(
 		};
 		if (options.blobs) await options.blobs.putBlobs(blobs);
 		return { status: "captured", snapshot, binding: bindingOf(snapshot), blobs };
-	});
+	}, checkout);
 }
