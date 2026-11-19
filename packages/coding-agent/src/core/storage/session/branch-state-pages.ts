@@ -1,3 +1,4 @@
+import { jsonlEntryProjection } from "./jsonl-entry-projection.js";
 import {
 	SESSION_HISTORY_CHUNK_BYTES,
 	SESSION_HISTORY_PAGE_BYTES,
@@ -7,7 +8,8 @@ import {
 } from "./types.js";
 
 /** A scan of a known session generation. Read whole entries only while a page fits the history budget. A single
- * oversized entry contributes only its branch-local protocol fields; never decode its conversation body. */
+ * oversized entry contributes only the fields its validation and the resume fold read; never decode its conversation
+ * body. With `prefixToolCalls`, its tool calls are counted there, not in its skipped content. */
 export async function* branchStatePages(
 	lastSeq: number,
 	source: {
@@ -30,12 +32,10 @@ export async function* branchStatePages(
 					if (offset < size) await yieldToEventLoop();
 				}
 			}
-			const { chunkedBranchState, chunkedPrefixFields } = await import("./chunked-resume-projection.js");
-			if (prefixToolCalls) {
-				const { entry, toolCalls } = await chunkedPrefixFields(chunks);
-				prefixToolCalls(toolCalls);
-				yield [{ seq: current, entry }];
-			} else yield [{ seq: current, entry: await chunkedBranchState(chunks) }];
+			const projected = await jsonlEntryProjection(chunks());
+			if (!projected) throw new SyntaxError(`Invalid historical entry ${current}`);
+			prefixToolCalls?.(projected.toolCalls);
+			yield [{ seq: current, entry: projected.entry }];
 		} else {
 			const seqs = [seq++];
 			let total = size;

@@ -468,7 +468,8 @@ class ResumeProtocols {
 		data: Record<string, unknown>,
 		branchActive: boolean,
 	): void {
-		if (branchActive && entry.stageAdmissionKey) this.admissions.add(entry.stageAdmissionKey);
+		if (branchActive && typeof entry.stageAdmissionKey === "string" && entry.stageAdmissionKey.length)
+			this.admissions.add(entry.stageAdmissionKey);
 		const reconciled = text(data.protectedReconciliationOf);
 		if (branchActive && reconciled) this.settle(`protected:${reconciled}`);
 		if (branchActive && entry.protectedReconciliation) this.keepPending(`protected:${entry.id}`, seq);
