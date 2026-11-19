@@ -124,7 +124,8 @@ test("post-tool preflight clears the context with no model call and the turn fin
 		assert.equal(traffic.requests.length, 2, JSON.stringify(traffic.requests.map((request) => request.length)));
 
 		// 4: one boundary, placed after the whole tool batch, so the call and its result are both behind it.
-		const branch = manager.getBranch();
+		// After the clear the live session keeps only the current context window, so read the saved session (one branch).
+		const branch = (await manager.getSessionStore().load(manager.getSessionId())).entries;
 		const boundaryIndex = branch.findIndex((entry) => entry.type === "compaction");
 		assert.ok(boundaryIndex >= 0, "no compaction boundary was persisted");
 		const boundary = branch[boundaryIndex] as { summary: string; details?: VerbatimCompactionDetails };
