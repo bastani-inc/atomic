@@ -32,7 +32,6 @@ test("a stopped child's result reaches its task before the host takes the child'
 			agent: "worker",
 			task: "work",
 			options: { runId: "cleanup-order", index: 0 },
-			wait: { kind: "background" },
 			runtime: {
 				runSync: async (_cwd, _agents, agent, task, options): Promise<SingleResult> => {
 					const cleanup = Promise.withResolvers<Cleanup>();

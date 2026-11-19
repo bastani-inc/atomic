@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, type Server, type Socket } from "node:net";
+import { buffer } from "node:stream/consumers";
 import { describe, test } from "vitest";
 import { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import {
@@ -207,6 +208,101 @@ describe("PostgreSQL proxy tunnel (#5473)", () => {
 				proxy.requests[0]!,
 				new RegExp(`Proxy-Authorization: Basic ${Buffer.from("agent:secret").toString("base64")}\r\n`),
 			);
+		} finally {
+			proxy.server.close();
+		}
+	});
+
+	test.each([
+		["CRLF", "\r\n", "\r\n"],
+		["LF", "\n", "\n"],
+		["mixed", "\n", "\r\n"],
+	])(
+		"waits through informational replies with %s endings and keeps the tunnel bytes (#5565)",
+		async (_, eol, blank) => {
+			const payload = Buffer.from([0x00, 0x0d, 0x0a, 0xff]);
+			const proxy = await fakeProxy((socket) => {
+				socket.write(`HTTP/1.1 100 Continue${eol}${blank}H`);
+				const rest = `TTP/1.1 103 Early Hints${eol}Link: </db>${blank}${eol}HTTP/1.1 102 Processing${eol}${blank}HTTP/1.1 199 Misc${eol}${blank}HTTP/1.1 204 No Content${eol}${blank}`;
+				setImmediate(() => socket.end(Buffer.concat([Buffer.from(rest), payload])));
+			});
+			try {
+				const socket = await openProxyTunnel(proxyAt(proxy.port), target);
+				assert.deepEqual(await buffer(socket), payload);
+			} finally {
+				proxy.server.close();
+			}
+		},
+	);
+
+	test("limits all CONNECT headers together to 16 KiB, not counting tunnel bytes (#5565)", async () => {
+		const limit = 16 * 1024;
+		const interim = "HTTP/1.1 103 Early Hints\r\n\r\n";
+		const final = "HTTP/1.1 200 OK\r\nX-Pad: ";
+		const end = "\r\n\r\n";
+		const padded = (extra: number) =>
+			interim + final + "x".repeat(limit - interim.length - final.length - end.length + extra) + end;
+		const payload = Buffer.alloc(limit + 1, 0xee);
+		const exact = await fakeProxy((socket) => socket.end(Buffer.concat([Buffer.from(padded(0)), payload])));
+		try {
+			const socket = await openProxyTunnel(proxyAt(exact.port), target);
+			assert.deepEqual(await buffer(socket), payload);
+		} finally {
+			exact.server.close();
+		}
+
+		for (const answer of [padded(1), interim.repeat(Math.ceil(limit / interim.length))]) {
+			const proxy = await fakeProxy((socket) => socket.end(answer));
+			try {
+				await assert.rejects(openProxyTunnel(proxyAt(proxy.port), target), { code: "proxy-protocol" });
+			} finally {
+				proxy.server.close();
+			}
+		}
+	});
+
+	test("a bare CR in a CONNECT header is a protocol error, including at EOF (#5565)", async () => {
+		for (const suffix of ["bad\r\n\r\n", ""]) {
+			const proxy = await fakeProxy((socket) => {
+				socket.write("HTTP/1.1 200 OK\r\nX-Test: value\r");
+				setImmediate(() => socket.end(suffix));
+			});
+			try {
+				await assert.rejects(openProxyTunnel(proxyAt(proxy.port), target), { code: "proxy-protocol" });
+			} finally {
+				proxy.server.close();
+			}
+		}
+	});
+
+	test("reports the final refusal, and does not skip 101 Switching Protocols (#5565)", async () => {
+		for (const [status, code, permanent] of [
+			[101, "proxy-refused", true],
+			[407, "proxy-auth-required", true],
+			[502, "proxy-upstream", false],
+		] as const) {
+			const proxy = await fakeProxy((socket) =>
+				socket.end(`HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 ${status}\r\n\r\nHTTP/1.1 200 OK\r\n\r\n`),
+			);
+			try {
+				await assert.rejects(openProxyTunnel(proxyAt(proxy.port), target), { code, status, permanent });
+			} finally {
+				proxy.server.close();
+			}
+		}
+	});
+
+	test("informational replies do not extend the CONNECT deadline (#5565)", async () => {
+		const interim = "HTTP/1.1 103 Early Hints\r\n\r\n";
+		const proxy = await fakeProxy((socket) => {
+			socket.write(interim);
+			const pulse = setInterval(() => socket.write(interim), 10);
+			socket.once("close", () => clearInterval(pulse));
+		});
+		try {
+			await assert.rejects(openProxyTunnel(proxyAt(proxy.port), target, { timeoutMs: 500 }), {
+				code: "proxy-timeout",
+			});
 		} finally {
 			proxy.server.close();
 		}

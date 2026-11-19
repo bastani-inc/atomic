@@ -127,7 +127,7 @@ function trackTurnStarts(registry: StageControlRegistry, started: WeakSet<StageC
 	return new Proxy(registry, {
 		get(target, key) {
 			if (key === "register")
-				return (handle: StageControlHandle) => {
+				return (handle: StageControlHandle, executionEnded?: () => boolean) => {
 					const unsubscribe = handle.subscribe((event) => {
 						if (
 							event.type !== "agent_start" &&
@@ -137,7 +137,7 @@ function trackTurnStarts(registry: StageControlRegistry, started: WeakSet<StageC
 						started.add(handle);
 						unsubscribe();
 					});
-					const unregister = target.register(handle);
+					const unregister = target.register(handle, executionEnded);
 					return () => {
 						unsubscribe();
 						unregister();

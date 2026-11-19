@@ -3,10 +3,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, vi } from "vitest";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 import * as jsonl from "../src/modes/rpc/jsonl.js";
 import { RpcClient } from "../src/modes/rpc/rpc-client.js";
 import type { RpcExtensionUIRequest } from "../src/modes/rpc/rpc-types.js";
 import { bunExecutable, cliPath } from "./cli-test-helpers.js";
+import { createHarness } from "./suite/harness.js";
 
 // Real CLI startup, extension loading, and RPC input are structural work.
 const REAL_STARTUP_RPC_TIMEOUT_MS = 120_000;
@@ -416,6 +420,74 @@ test(
 			assert.equal(existsSync(join(agentDir, "trust.json")), false);
 		} finally {
 			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
+
+test(
+	"restarting during a trust question asks again only about the unanswered source (#5568)",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-pending-trust-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(join(cwd, ".atomic"), { recursive: true });
+		writeFileSync(join(cwd, ".atomic", "settings.json"), "{}");
+		const sources = [join(root, "one"), join(root, "two")];
+		for (const source of sources) {
+			mkdirSync(join(source, ".atomic", "extensions"), { recursive: true });
+			writeFileSync(join(source, ".atomic", "extensions", "borrowed.ts"), "export default function() {}");
+			mkdirSync(join(source, "extensions"));
+			writeFileSync(join(source, "extensions", "authorized.ts"), "export default function() {}");
+		}
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			args: ["--no-session", "--offline", ...sources.flatMap((source) => ["-e", source])],
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+			interactiveEngine: { onDiagnostic: () => {} },
+		});
+		const harness = await createHarness({ cwd, sessionManager: SessionManager.inMemory(cwd) });
+		const { modelRuntime, settingsManager, resourceLoader } = harness.session;
+		const unusedFactory = async () => {
+			throw new Error("unexpected session switch");
+		};
+		const local = new AgentSessionRuntime(
+			harness.session,
+			{ cwd, agentDir, modelRuntime, settingsManager, resourceLoader, diagnostics: [] },
+			unusedFactory,
+		);
+		const runtime = new IsolatedInteractiveRuntime(local, unusedFactory, client);
+		const asked: string[] = [];
+		const pending = Promise.withResolvers<void>();
+		client.onExtensionUIRequest((request) => {
+			if (request.method !== "select") return;
+			asked.push(request.title);
+			if (asked.length === 3) {
+				pending.resolve();
+				return;
+			}
+			void client.respondExtensionUI({
+				type: "extension_ui_response",
+				id: request.id,
+				value: request.title.startsWith("Trust project folder?")
+					? "Do not trust (this session only)"
+					: "Trust (this session only)",
+			});
+		});
+		try {
+			await client.start();
+			await pending.promise;
+			await runtime.terminateAndRecover();
+			await runtime.waitUntilResourcesReady();
+			assert.deepEqual(asked.slice(3), [asked[2]]);
+			assert.equal((await client.getState()).projectTrusted, false);
+			assert.equal(existsSync(join(agentDir, "trust.json")), false);
+		} finally {
+			await runtime.dispose();
+			await harness.cleanup();
 			rmSync(root, { recursive: true, force: true });
 		}
 	},

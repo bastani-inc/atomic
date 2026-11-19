@@ -540,10 +540,6 @@ describe("a released agent keeps its history and its long call's delivery, nothi
 			const historyBytes = Buffer.byteLength(JSON.stringify(history));
 			assert.equal(perAgent(idle, "AbortSignal"), 0);
 			assert.ok(
-				perAgent(idle, "Promise") <= RELEASED_AGENT_PROMISES,
-				`${perAgent(idle, "Promise")} promises per agent`,
-			);
-			assert.ok(
 				perAgent(idle, "ArrayBuffer") <= Math.floor(Math.log2(historyBytes)) + 2,
 				`${perAgent(idle, "ArrayBuffer")} buffers per agent for ${historyBytes} bytes of history`,
 			);
@@ -567,7 +563,16 @@ describe("a released agent keeps its history and its long call's delivery, nothi
 				await new Promise((resolve) => setImmediate(resolve));
 			assert.deepEqual(delivered.sort(), later.map((toolCallId) => `ci:${toolCallId}`).sort());
 			await settledHandles();
-			queryObjects(Promise, { format: "count" });
+			const afterDelivery = queryObjects(Promise, { format: "count" }) as number;
+			const releasedPerCall = wholeCountPerAgent(idle.Promise - afterDelivery, agents);
+			assert.ok(
+				releasedPerCall <= RELEASED_AGENT_PROMISES,
+				`${releasedPerCall} promises held until delivery per call`,
+			);
+			assert.ok(
+				perAgent(idle, "Promise") <= RELEASED_AGENT_PROMISES,
+				`${perAgent(idle, "Promise")} promises per agent`,
+			);
 			assert.deepEqual(watch.surviving(later), []);
 		},
 		HEAP_WALK_TEST_TIMEOUT_MS,
