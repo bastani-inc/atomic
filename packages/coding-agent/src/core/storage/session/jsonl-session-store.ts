@@ -40,6 +40,7 @@ import {
 	appendFileChatRecord,
 	deleteFileChatRecords,
 	hasFileChatRecords,
+	readFileChatOrders,
 	readFileChatRecords,
 } from "./jsonl-chat-records.js";
 import {
@@ -533,6 +534,7 @@ export class JsonlSessionStore implements SessionStore {
 		this.chatStore ??= {
 			has: hasFileChatRecords,
 			read: readFileChatRecords,
+			readOrders: readFileChatOrders,
 			append: (owner, anchor, record) => {
 				record = boundedChatRecord(record);
 				return this.run(async () => {

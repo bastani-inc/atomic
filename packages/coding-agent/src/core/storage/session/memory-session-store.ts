@@ -7,6 +7,7 @@ import {
 	boundedChatRecord,
 	type ChatRecord,
 	decodeChatRecord,
+	firstChatOrders,
 	type SessionChatRecords,
 } from "./chat-records.js";
 import { EntryTypeReader } from "./entry-type.js";
@@ -83,6 +84,10 @@ interface StoredSession {
 	readonly header: Uint8Array;
 	chat?: Map<string, ChatRecord[]>;
 	spilledChat?: Map<string, { directory: SessionHistoryDirectory; files: number[] }>;
+	/** Each move of `chat` to files, so a read that overlapped one reads again rather than missing its lines. */
+	chatMoves?: number;
+	/** Ids only, never spilled: each prompt's first edge, by prompt. */
+	orders?: Map<string, string>;
 	/** The entries held in memory: everything after the bytes its spill file holds. */
 	entries: Uint8Array[];
 	summaryState: SessionSummaryState;
@@ -285,6 +290,10 @@ export class MemorySessionStore implements SessionStore {
 			const list = byAnchor.get(anchor);
 			if (list) list.push({ ...record });
 			else byAnchor.set(anchor, [{ ...record }]);
+			if (record.kind === "promptBefore" && !held.orders?.has(record.promptId)) {
+				held.orders ??= new Map();
+				held.orders.set(record.promptId, anchor);
+			}
 		},
 		has: async (owner) => {
 			const held = this.stored(owner.id);
@@ -293,21 +302,33 @@ export class MemorySessionStore implements SessionStore {
 		read: async (owner, anchors) => {
 			const held = this.stored(owner.id);
 			if (held?.index.epoch !== owner.epoch) return [];
-			while (held.spilling) await settled(held.spilling);
-			const rows: { anchor: string; record: ChatRecord }[] = [];
-			for (const anchor of anchors) {
-				const spill = held.spilledChat?.get(anchor);
-				if (spill)
-					for (const file of spill.files) {
-						const bytes = await spill.directory.read(file);
-						for (const line of Buffer.from(bytes).toString("utf8").split("\n")) {
-							const record = decodeChatRecord(line);
-							if (record) rows.push({ anchor, record });
+			for (;;) {
+				while (held.spilling) await settled(held.spilling);
+				const moves = held.chatMoves;
+				const rows: { anchor: string; record: ChatRecord }[] = [];
+				for (const anchor of anchors) {
+					const spill = held.spilledChat?.get(anchor);
+					if (spill)
+						for (const file of spill.files) {
+							const bytes = await spill.directory.read(file);
+							for (const line of Buffer.from(bytes).toString("utf8").split("\n")) {
+								const record = decodeChatRecord(line);
+								if (record) rows.push({ anchor, record });
+							}
 						}
-					}
-				for (const record of held.chat?.get(anchor) ?? []) rows.push({ anchor, record: { ...record } });
+					for (const record of held.chat?.get(anchor) ?? []) rows.push({ anchor, record: { ...record } });
+				}
+				if (this.records.get(owner.id) !== held) return [];
+				if (held.chatMoves === moves) return rows;
 			}
-			return this.records.get(owner.id) === held ? rows : [];
+		},
+		readOrders: async (owner, promptIds) => {
+			const held = this.stored(owner.id);
+			if (held?.index.epoch !== owner.epoch || !held.orders) return [];
+			return firstChatOrders(
+				Array.from(held.orders, ([promptId, anchor]) => ({ anchor, promptId })),
+				promptIds,
+			);
 		},
 	};
 
@@ -999,6 +1020,7 @@ export class MemorySessionStore implements SessionStore {
 		record.spilledChat ??= new Map();
 		const pending = record.chat;
 		record.chat = undefined;
+		record.chatMoves = (record.chatMoves ?? 0) + 1;
 		for (const [anchor, lines] of pending) {
 			const bytes = utf8Encoder.encode(lines.map((line) => JSON.stringify({ v: 1, ...line })).join("\n"));
 			const file = spill.nextFile();
