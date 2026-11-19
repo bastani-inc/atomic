@@ -238,10 +238,13 @@ impl State {
 	}
 	pub fn finish_close(&mut self, oi: usize) {
 		if self.owners[oi].state == "closing"
-			&& self.owners[oi].tasks.iter().all(|t| matches!(t.record.cleanup, Cleanup::Reaped {}))
+			&& self.owners[oi]
+				.tasks
+				.iter()
+				.all(|t| t.directory_tail || matches!(t.record.cleanup, Cleanup::Reaped {}))
 		{
 			self.owners[oi].state = "closed".into();
-			// Every task of a closed owner is done: its commands keep their spooled output on disk and none in memory,
+			// Every command of a closed owner is done: it keeps its spooled output on disk and none in memory,
 			// so a long-lived process does not keep every session's command output until it exits (#4215).
 			for task in self.owners[oi].tasks.iter() {
 				if let Some(command) = &task.command {

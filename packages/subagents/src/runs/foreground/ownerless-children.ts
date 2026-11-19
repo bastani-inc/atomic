@@ -5,8 +5,10 @@ import type { RunSyncOptions, SingleResult } from "../../shared/types.js";
 import { isExecutionTicket } from "../shared/parallel-utils.js";
 import { type AdmittedSubagentChild, admittedSubagentChild, recordSubagentAdmission } from "./released-child-resume.js";
 import {
+	beginWorktreeExecution,
+	boundedWorktreeReply,
+	childWorktreeFinishing,
 	claimRunWorktree,
-	holdRunWorktree,
 	parkRunWorktree,
 	runWorktreeRecord,
 	unparkRunWorktree,
@@ -137,6 +139,7 @@ export function runOwnerlessChild(input: {
 		"launchModel" | "launchThinkingLevel" | "launchLeafId" | "launchLeafSeq"
 	> = {};
 	let elapsedSpan: TaskElapsedSpan | undefined;
+	let exitTime: number | undefined;
 	let stoppedBeforeDispatch = false;
 	const forked = input.forked ?? (input.options.sessionManager !== undefined && input.options.resumeSession !== true);
 	const record = (
@@ -153,7 +156,7 @@ export function runOwnerlessChild(input: {
 			...(input.agentSource ? { agentSource: input.agentSource } : {}),
 			forked,
 			state,
-			elapsedMs: elapsedSpan ? spanElapsedMs(elapsedSpan) : 0,
+			elapsedMs: elapsedSpan ? spanElapsedMs(elapsedSpan, exitTime) : 0,
 			elapsedSpan: elapsedSpan ? { ...elapsedSpan } : null,
 			cwd: input.cwd,
 			taskId: launchId,
@@ -179,9 +182,12 @@ export function runOwnerlessChild(input: {
 		});
 	};
 	const settled = Promise.withResolvers<void>();
+	const finishWorktree = beginWorktreeExecution(runId, index, input.cwd, () => launchId, input.options.intercomEvents);
+	let finishing = false;
 	const launch: OwnerlessLaunch = {
 		dispatched: false,
 		async stop(status) {
+			if (finishing) return settled.promise;
 			// It stays resumable: its worktree is kept if it has unsaved work when its run's worktrees are removed.
 			parkRunWorktree(runId, index);
 			if (launch.dispatched) {
@@ -213,7 +219,10 @@ export function runOwnerlessChild(input: {
 					recordChild: resumed.recordChild,
 				}),
 			);
+			const swept = finishWorktree?.(status);
 			record("terminal", status);
+			if (swept) await swept;
+			finish();
 			await input.recordChild.flushed?.();
 		},
 	};
@@ -221,28 +230,52 @@ export function runOwnerlessChild(input: {
 		liveLaunches.delete(launchId);
 		settled.resolve();
 	};
-	const recordExit = (child: SingleResult) => {
+	const recordExit = async (
+		child: SingleResult,
+		onBackground?: (result: SingleResult) => void,
+	): Promise<SingleResult> => {
 		const stopped = takeSubagentChildStop(launchId);
 		const stoppedByControl = stopped !== undefined && child.status === "interrupted";
 		const ownerClosed = !stoppedByControl && child.status === "interrupted" && input.ownerSignal?.aborted === true;
 		// Run control marked it stopped before it stopped it; a child that ended otherwise is not stopped.
 		if (stopped !== undefined && !stoppedByControl) unparkRunWorktree(runId, index);
 		if (child.status === "killed") forgetRunMembership(runId, index);
-		if (ownerClosed) {
-			// Its owner closed, which ends nothing: it stays restorable, with its worktree and unread messages.
-			parkRunWorktree(runId, index);
-			record("running", undefined, pendingMessagesOfResult(child));
-		} else {
-			record(
-				"terminal",
-				stoppedByControl ? stopped : child.status,
-				stoppedByControl ? pendingMessagesOfResult(child) : undefined,
-			);
+		// Its owner closed, which ends nothing: it stays restorable, with its worktree and unread messages.
+		if (ownerClosed) parkRunWorktree(runId, index);
+		const status = stoppedByControl ? stopped : child.status;
+		if (finishWorktree) {
+			exitTime = Date.now();
+			finishing = true;
 		}
+		const swept = finishWorktree?.(status);
+		if (ownerClosed) record("running", undefined, pendingMessagesOfResult(child));
+		else record("terminal", status, stoppedByControl ? pendingMessagesOfResult(child) : undefined);
+		if (!swept) {
+			finish();
+			return child;
+		}
+		const published = swept.then(finish);
+		if (onBackground) {
+			const note = await boundedWorktreeReply(runId, published);
+			if (note && childWorktreeFinishing({ runId, index, taskId: launchId })) {
+				void published.then(() => onBackground(child));
+				return {
+					...child,
+					status: "continued",
+					interrupted: false,
+					detached: true,
+					detachedReason: "worktree-cleanup",
+					worktreeNote: note,
+				};
+			}
+			child.worktreeNote = note;
+		} else await published;
+		return child;
 	};
 	const execute = async (options: RunSyncOptions): Promise<SingleResult> => {
 		launch.dispatched = true;
 		if (stoppedBeforeDispatch) {
+			if (finishWorktree) await finishWorktree();
 			finish();
 			return {
 				agent: input.agent,
@@ -264,9 +297,9 @@ export function runOwnerlessChild(input: {
 				elapsedSpan,
 				onElapsedSpanChanged: () => record("running"),
 				signal,
-				onDetachedExit: (child) => {
+				onDetachedExit: async (child) => {
 					try {
-						recordExit(child);
+						await recordExit(child);
 					} finally {
 						finish();
 						options.onDetachedExit?.(child);
@@ -292,16 +325,21 @@ export function runOwnerlessChild(input: {
 			if (isExecutionTicket(input.schedule)) input.schedule.onEntered();
 			const child = await running;
 			// Handoff settles only the caller's observation. The launch, its stop and its worktree live until exit.
-			if (!child.detached) {
-				recordExit(child);
-				finish();
-			}
-			return child;
+			return child.detached
+				? child
+				: await recordExit(child, input.options.onDetachedExit ? options.onDetachedExit : undefined);
 		} catch (error) {
 			if (isExecutionTicket(input.schedule)) input.schedule.onEntered();
 			if (takeSubagentChildStop(launchId) !== undefined) unparkRunWorktree(runId, index);
+			if (finishWorktree) {
+				// Sample at failure without adding an end to a span the runner left open.
+				exitTime = Date.now();
+				finishing = true;
+			}
+			const swept = finishWorktree?.("error");
 			// Its owner closed: its latest record stays `running`, so reopening the owner restores it.
 			if (input.ownerSignal?.aborted !== true) record("terminal", "error");
+			if (swept) await swept;
 			finish();
 			throw error;
 		}
@@ -331,13 +369,11 @@ export function runOwnerlessChild(input: {
 		input.agent,
 		input.task,
 		(dispatch) => {
-			const release = holdRunWorktree(runId, index);
-			const run = () => dispatch().finally(release);
 			if (schedule) {
-				schedule(run);
+				schedule(dispatch);
 				if (isExecutionTicket(schedule)) schedule.onObserved();
 			} else {
-				void run().catch((error: unknown) =>
+				void dispatch().catch((error: unknown) =>
 					console.error("atomic-subagents: child worktree cleanup failed", error),
 				);
 			}

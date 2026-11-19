@@ -27,7 +27,10 @@ export async function stopAllBackgroundWork(session: StopAllBackgroundSession): 
 	const source = store === undefined ? undefined : ownerTaskViewSource(store);
 	// Everything this session's owner runs stops, the shells its subagents launched there included.
 	const live = (store?.ownerBackgroundTasks ?? []).filter(
-		(task) => task.execution.kind !== "settled" && task.execution.kind !== "cancelling",
+		(task) =>
+			task.execution.kind !== "settled" &&
+			task.execution.kind !== "cancelling" &&
+			!(task.kind === "agent" && store?.isRunnerFinishing(task.ref.taskId)),
 	);
 	const stopped = await Promise.all(
 		live.map(async (task) => {
