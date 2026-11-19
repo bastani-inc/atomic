@@ -527,11 +527,11 @@ export function _bindExtensionCore(
 	const candidateRegistryNames = new Set(this._baseToolDefinitions.keys());
 	const refreshCandidateTools = () => {
 		const definitions = candidateDefinitions();
-		for (const [name, { definition }] of definitions) {
+		for (const [name, { definition, sourceInfo }] of definitions) {
 			if (
 				!candidateRegistryNames.has(name) &&
 				(startupLoadout
-					? activatesAfterRecordedLoadout(this, startupLoadout, name, definition) &&
+					? activatesAfterRecordedLoadout(this, startupLoadout, name, definition, sourceInfo.path) &&
 						applyToolModifiers([name], this._defaultToolModifiers).includes(name)
 					: startupToolNames === undefined &&
 						activatesOnRegistration(this, name, definition, this._toolRegistry.has(name)))
@@ -1173,6 +1173,17 @@ export async function completeStartupResources(this: AgentSession, resourceLoade
 		const powerShellAvailable = await isPowerShellAvailableAsync();
 		this._resourceLoader = resourceLoader;
 		const startNewcomers = this._extensionRunner.attachStartupExtensions(resourceLoader.getExtensions().extensions);
+		// The early loader may not have supplied every built-in yet. Resolve the selection against the
+		// completed resources before deciding which newly registered tools to activate.
+		if (this._usesDefaultTools) {
+			const available = defaultToolSelectionFor(powerShellAvailable, resourceLoader);
+			this._appliedDefaultTools = new Set(
+				applyToolModifiers(
+					this.settingsManager.getDefaultToolsWith(available) ?? available,
+					this._defaultToolModifiers,
+				),
+			);
+		}
 		const recorded = preservesInitialToolLoadout(this) ? undefined : recordedToolLoadout(this);
 		const knownToolNames = new Set(this._toolRegistry.keys());
 		this._buildRuntime({
