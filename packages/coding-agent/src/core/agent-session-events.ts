@@ -192,7 +192,13 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 			? markProtectedStreamingCustomMessageConsumed(this, event.message)
 			: false;
 
-	const process = () => this._processAgentEvent(event, retryGeneration);
+	const process = () => {
+		// The store can already hold the new row before its append promise returns. Pin the preceding leaf
+		// when this serialized save begins, not when it first joins the queue.
+		if (event.type === "message_end")
+			this._transcriptAppend = { message: event.message, previousLeaf: this.sessionManager.getLeafId() };
+		return this._processAgentEvent(event, retryGeneration);
+	};
 	const processing = this._agentEventQueue.then(process, process);
 	this._agentEventQueue = processing;
 	if (event.type === "message_end") this._messagesAwaitingPersistence.set(event.message, processing);
@@ -204,7 +210,16 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	// handlers may replace the message that gets persisted, and the request is built
 	// from the persisted canonical projection, so every queued handler gates the next
 	// request rather than only the persistence step.
-	processing.catch((error) => {
+	// This observer is registered before the next queued event. Release the pin on either outcome without
+	// putting another promise between this event and the next event or provider request.
+	const releasePin =
+		event.type === "message_end"
+			? () => {
+					this._transcriptAppend = undefined;
+				}
+			: undefined;
+	processing.then(releasePin, (error) => {
+		releasePin?.();
 		// #3105: callbacks interrupted by terminal disposal remain observable at shutdown.
 		if (this._disposed) {
 			const failures = shutdownEventFailures.get(this) ?? [];

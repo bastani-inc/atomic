@@ -46,17 +46,21 @@ function projectSessionMessages(session: AgentSession): AgentMessage[] {
 	return projection.messages;
 }
 
-function finalizeProjectedMessages(
+export function repairUniquifiedMessages(session: AgentSession, messages: AgentMessage[]): AgentMessage[] {
+	// While a run is active the loop owns pairing for the in-flight tool batch.
+	return repairOrphanToolResults(deferMessagesInterleavedWithToolBatch(messages), {
+		repairTrailing: !session.isStreaming,
+		inFlightToolCallIds: session._reissuedToolCallIds,
+	});
+}
+
+export function finalizeProjectedMessages(
 	session: AgentSession,
 	messages: AgentMessage[],
 	requestTransform?: (messages: AgentMessage[]) => AgentMessage[],
 ): AgentMessage[] {
-	// While a run is active the loop owns pairing for the in-flight tool batch.
 	// Unique ids first: deferral and repair pair results with calls by id (#5056).
-	const repaired = repairOrphanToolResults(deferMessagesInterleavedWithToolBatch(uniquifyToolCallIds(messages)), {
-		repairTrailing: !session.isStreaming,
-		inFlightToolCallIds: session._reissuedToolCallIds,
-	});
+	const repaired = repairUniquifiedMessages(session, uniquifyToolCallIds(messages));
 	if (requestTransform) return requestTransform(repaired);
 	return session._contextProjectionTransform ? session._contextProjectionTransform(repaired) : repaired;
 }

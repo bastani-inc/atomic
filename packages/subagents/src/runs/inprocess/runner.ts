@@ -1097,6 +1097,7 @@ function settledTranscript(
 	const sessionFile = manager.getSessionFile();
 	// #5210: a final answer its session could not save is still shown, after what it saved, unless the session holds it.
 	const kept = withUnsavedAnswer(promptAndAnswer(manager, inherited), unsaved);
+	const last = kept.at(-1);
 	// A child's own session file is read through a store opened for the read, so a finished child keeps no store of its
 	// own in memory; a session in a shared store, as a forked or resumed child's, is read from that store.
 	const store =
@@ -1118,6 +1119,7 @@ function settledTranscript(
 	return {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
+		...(last?.type === "message" && last.message.role === "assistant" ? { settledReply: last.message } : {}),
 		loadHistory: async () => {
 			try {
 				return { entries: await read() };

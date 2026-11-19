@@ -95,13 +95,15 @@ function requestedTranscriptEntryLimit(args: WorkflowToolArgs): number {
 	return Math.floor(raw);
 }
 
-function selectTranscriptEntries(
-	entries: readonly WorkflowTranscriptEntry[],
-	args: WorkflowToolArgs,
-): TranscriptEntrySelection {
-	const count = requestedTranscriptEntryLimit(args);
+function selectTranscriptEntries(input: {
+	args: WorkflowToolArgs;
+	entryCount: number;
+	buildEntries: () => readonly WorkflowTranscriptEntry[];
+}): TranscriptEntrySelection {
+	const count = requestedTranscriptEntryLimit(input.args);
+	if (count === 0) return { entries: [], truncated: false, entryCount: input.entryCount, entryLimit: count };
+	const entries = input.buildEntries();
 	const entryCount = entries.length;
-	if (count === 0) return { entries: [], truncated: false, entryCount, entryLimit: count };
 	if (entries.length <= count) {
 		return { entries: [...entries], truncated: false, entryCount, entryLimit: count };
 	}
@@ -152,7 +154,7 @@ export function shapeTranscriptResult(input: {
 		return result;
 	}
 
-	const limited = selectTranscriptEntries(input.buildEntries(), input.args);
+	const limited = selectTranscriptEntries(input);
 	const result: WorkflowTranscriptResult = {
 		action: "transcript",
 		runId: input.runId,

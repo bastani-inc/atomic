@@ -319,7 +319,7 @@ export interface InternalStageContext extends StageContext {
 	/** Internal: live coding-agent session when the adapter returned one. */
 	__agentSession(): AgentSession | undefined;
 	/**
-	 * Internal: the resident session's messages, or the adapter's; none while the session is released. Never throws,
+	 * Internal: the resident session's transcript (not its edited model context), or the adapter's messages; none while released. Never throws,
 	 * unlike `messages`, so the stage's chat and inspection surfaces can read it at any time (#4309).
 	 */
 	__residentMessages(): AgentSession["messages"];

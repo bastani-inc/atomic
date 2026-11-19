@@ -219,6 +219,7 @@ class AgentSessionBase {
 	protected _agentRunRetryGeneration = 0;
 	protected _bashAbortControllers = new Map<string | symbol, Set<AbortController>>();
 	protected _pendingBashMessages: BashExecutionMessage[] = [];
+	protected _runOnlyBashMessages?: WeakSet<object>;
 	protected _extensionRunner!: ExtensionRunner;
 	protected _turnIndex = 0;
 	/** Source entry IDs for projected messages, so boundaries and omissions resolve provenance. */
@@ -227,6 +228,7 @@ class AgentSessionBase {
 	protected readonly _boundaryDispatchedMessages = new WeakSet<object>();
 	/** Messages whose message_end processing, including their save, has not settled yet. */
 	protected readonly _messagesAwaitingPersistence = new WeakMap<object, Promise<void>>();
+	protected _transcriptAppend: { message: AgentMessage; previousLeaf: string | null } | undefined;
 	protected readonly _messagesWithFailedPersistence = new WeakSet<object>();
 	/** The reported cause once a message of the current run could not be saved; the run stops (#4226). */
 	protected _persistenceFailure: string | undefined = undefined;
