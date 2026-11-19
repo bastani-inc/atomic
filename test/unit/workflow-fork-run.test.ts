@@ -6,6 +6,7 @@ import { StorageRollbackError, StorageUnavailableError } from "@bastani/atomic/s
 import { Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
@@ -37,6 +38,7 @@ import {
 import { durableForkPoints, forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import {
 	type JournalEntry,
 	type RunJournal,
@@ -48,6 +50,7 @@ import { forkRun, listForkPoints } from "../../packages/workflows/src/runs/foreg
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowUIAdapter } from "../../packages/workflows/src/shared/types.js";
+import { limitHeaderResponse } from "../helpers/observe-sql-reads.js";
 import { testRunId } from "../helpers/run-id.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -65,6 +68,16 @@ async function journalEvents(journal: RunJournal, runId: string): Promise<Journa
 	for await (const entry of journal.read(runId)) entries.push(entry);
 	return entries;
 }
+
+test("prefix lookup calls an older journal without an options argument when no signal was supplied (#5537)", async () => {
+	const { backend, runId } = await linearSource("prefix-without-options");
+	const list = vi.spyOn(backend.journal, "listRuns");
+	assert.deepEqual(
+		(await Array.fromAsync(durableForkPoints(backend, runId.slice(0, 8)))).map((point) => point.stagePath),
+		["plan", "implement", "review"],
+	);
+	assert.deepEqual(list.mock.calls, [[]]);
+});
 
 function promptUi(answers: string[], asked: string[]): WorkflowUIAdapter {
 	return {
@@ -559,6 +572,116 @@ test("ForkSourceBusyError covers a pending fork, a pending resume, a live execut
 	assert.equal(held.holderId, "other-process");
 	assert.deepEqual(await backend.journal.listRuns(), runsBefore);
 });
+
+test.each([
+	["ordinary error", new Error("prefix fork cancelled")],
+	[
+		"storage error",
+		new StorageUnavailableError({ adapter: "node-sqlite", location: "catalog" }, new Error("caller cancelled")),
+	],
+] as const)(
+	"cancelling a prefix fork preserves its %s reason between catalog pages (#5537)",
+	async (_label, reason) => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-fork-catalog-cancel-"));
+		const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+		const journal = await SqlRunJournal.open(database);
+		const backend = await JournalDurableBackend.open(journal, { runs: [], ownsJournal: false });
+		try {
+			// Two ambiguous matches and an enforced response ceiling to exercise cancellation between catalog pages.
+			for (let index = 1; index <= 129; index++) {
+				await journal.createRun({
+					runId: index <= 2 ? `aaaaaaaa-0000-4000-8000-00000000000${index}` : `other-${index}`,
+					name: "run",
+					cwd: "/project",
+					createdAt: 1,
+					status: "paused",
+				});
+			}
+			const controller = new AbortController();
+			const release = limitHeaderResponse(database, (rows) => rows.length <= 128);
+			const timer = setImmediate(() => controller.abort(reason));
+			try {
+				await assert.rejects(
+					forkDurableRun(backend, {
+						source: "sdk",
+						runId: "aaaaaaaa",
+						fromStage: "stage",
+						carryMessages: "before",
+						signal: controller.signal,
+					}),
+					(error) => error === reason,
+				);
+			} finally {
+				clearImmediate(timer);
+				release();
+			}
+			assert.equal((await journal.listRuns()).length, 129);
+		} finally {
+			await backend.close();
+			await journal.close();
+			await database.close();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	},
+);
+
+for (const stopAt of ["validation", "live-check", "lease", "claimed"] as const)
+	test(`fork cancellation after ${stopAt} starts no further source read and releases its claim (#5537)`, async () => {
+		const { backend, def, runId } = await linearSource(`fork-cancel-${stopAt}`);
+		const journal = backend.journal;
+		const controller = new AbortController();
+		const reason = new Error(`cancelled after ${stopAt}`);
+		const leaseState = journal.leaseState.bind(journal);
+		const current = await leaseState(runId);
+		if (stopAt === "claimed" && current !== undefined) await journal.release(current);
+		let readsAfterAbort = 0;
+		const get = journal.getRun.bind(journal);
+		const read = journal.read.bind(journal);
+		const takeover = journal.takeoverExpired.bind(journal);
+		vi.spyOn(journal, "getRun").mockImplementation(async (id) => {
+			if (controller.signal.aborted) readsAfterAbort++;
+			return get(id);
+		});
+		vi.spyOn(journal, "read").mockImplementation((id, fromSeq) => {
+			if (controller.signal.aborted) readsAfterAbort++;
+			return read(id, fromSeq);
+		});
+		vi.spyOn(journal, "leaseState").mockImplementation(async (id) => {
+			if (controller.signal.aborted) readsAfterAbort++;
+			const state = await leaseState(id);
+			if (stopAt === "lease") controller.abort(reason);
+			return state;
+		});
+		vi.spyOn(journal, "takeoverExpired").mockImplementation(async (...args) => {
+			if (controller.signal.aborted) readsAfterAbort++;
+			const result = await takeover(...args);
+			if (stopAt === "claimed") controller.abort(reason);
+			return result;
+		});
+		await assert.rejects(
+			forkDurableRun(backend, {
+				source: "sdk",
+				runId,
+				fromStage: "implement",
+				carryMessages: "before",
+				definition: def,
+				signal: controller.signal,
+				validateSource: () => {
+					if (stopAt === "validation") controller.abort(reason);
+				},
+				isLiveRun: () => {
+					if (stopAt !== "live-check") return false;
+					controller.abort(reason);
+					return true;
+				},
+			}),
+			(error) => error === reason,
+		);
+		assert.equal(controller.signal.aborted, true);
+		assert.equal(readsAfterAbort, 0);
+		assert.equal(claimsOf(pendingForks, backend).has(runId), false);
+		if (stopAt === "claimed") assert.equal(await leaseState(runId), undefined);
+	});
 
 test("an aborted fork rejects with the signal's reason and creates no run (#4321)", async () => {
 	const { backend, def, runId } = await linearSource("fork-abort-source");

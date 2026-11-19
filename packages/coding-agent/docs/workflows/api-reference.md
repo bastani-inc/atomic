@@ -2359,13 +2359,15 @@ try {
 
 `SqlRunJournal.open` leaves ownership of the facade with you. Journal tables use `wf_` names, optionally preceded by your prefix; session tables use a separate namespace in the same database. A new prefix selects an empty journal, not a migration. Bare journal table names from earlier unreleased builds are not read. SQL event and lease timestamps, including expiry checks, use the database clock. Journal storage failures expose `StorageUnavailableError.adapter`, `.location`, and `.cause`; use `.location` rather than `.path`.
 
+SQL journals use the ordinary header queries, including checks for unconverted legacy runs. If the storage server refuses the response size, the journal reads smaller pages from one consistent snapshot. A retry restarts from the first key rather than mixing rows from two snapshots. Listings yield and check `options.signal` between batches. For example, `await journal.listRuns({ cwd }, { signal: controller.signal })` rejects with the signal's reason when cancelled, rather than returning a partial catalog. When a fork or sharded listing calls an older custom journal, it uses the original `listRuns` arguments and checks cancellation before and after the call. If an individual header is too large or a stored key disagrees with its header ID, recovery reports the refusal instead of returning a partial catalog.
+
 Custom journals implement this full async interface. The named types are exported from `@bastani/atomic/workflows`:
 
 ```ts
 interface RunJournal {
 	createRun(header: RunHeader): Promise<"created" | "exists">;
 	getRun(runId: string): Promise<RunSummary | undefined>;
-	listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]>;
+	listRuns(filter?: { cwd?: string }, options?: { signal?: AbortSignal }): Promise<readonly RunSummary[]>;
 	acquire(runId: string, holderId: string): Promise<LeaseOutcome>;
 	takeover(runId: string, holderId: string, expectedHolder: string): Promise<LeaseOutcome>;
 	takeoverExpired(runId: string, holderId: string, staleAfterMs: number): Promise<LeaseOutcome>;

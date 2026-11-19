@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import {
 	createSqliteDatabase,
 	isRetryableStorageError,
+	recoverCatalogRead,
 	type SqliteDriver,
 	type SqliteDriverTransientFailure,
 	STORAGE_TRANSIENT_RETRY_ATTEMPTS,
 	StorageConfigError,
+	StoragePayloadTooLargeError,
 	StorageRollbackError,
 	StorageTransientError,
 	type StorageTransientErrorCode,
@@ -200,6 +202,47 @@ test("a driver names the hop on the way to the server where a call failed, in th
 	for (const reported of [error.message, warnings[0]!.message]) {
 		assert.equal(reported.includes("the database server call failed"), false, reported);
 		assert.equal(reported.includes("s3cret"), false, reported);
+	}
+});
+
+test("a fitting read does not replay a lost commit response or delay the next writer (#5537)", async () => {
+	const { driver, calls, fail } = plannedDriver();
+	fail("commit", transient("connection-lost", "unknown"));
+	const db = createSqliteDatabase(driver);
+	try {
+		const failure = assert.rejects(
+			db.transaction((tx) => tx.get("ordinary read"), { readOnly: true, retryTransientFailures: true }),
+			(error: unknown) =>
+				error instanceof StorageTransientError && error.attempts === 1 && error.outcome === "unknown",
+		);
+		const write = db.run("queued write");
+		await Promise.all([failure, write, vi.advanceTimersByTimeAsync(4000)]);
+		assert.equal(calls.filter((call) => call === "tx ordinary read").length, 1);
+	} finally {
+		await db.close();
+	}
+});
+
+test("a lost read-only commit response replays the safe snapshot, not an individual page (#5537)", async () => {
+	const { driver, calls, fail } = plannedDriver();
+	fail("commit", transient("connection-lost", "unknown"));
+	const db = createSqliteDatabase(driver);
+	try {
+		const read = recoverCatalogRead(db, new StoragePayloadTooLargeError(0, 0, { kind: "response" }), async (tx) => [
+			await tx.get("first page"),
+			await tx.get("last page"),
+		]);
+		const result = assert.doesNotReject(
+			read.then((rows) => assert.deepEqual(rows, [{ sql: "first page" }, { sql: "last page" }])),
+		);
+		const joined = Promise.all([result, vi.advanceTimersByTimeAsync(4000)]);
+		await joined;
+		assert.deepEqual(
+			calls.filter((call) => call.startsWith("tx ") && call !== "tx close"),
+			["tx first page", "tx last page", "tx first page", "tx last page"],
+		);
+	} finally {
+		await db.close();
 	}
 });
 

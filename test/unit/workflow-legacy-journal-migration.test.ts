@@ -4,16 +4,26 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
-import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import {
+	StoragePayloadTooLargeError,
+	StorageUnavailableError,
+} from "../../packages/coding-agent/src/core/storage/errors.js";
+import { inspectJournalFile } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { migrateStageSessionCheckpoint } from "../../packages/workflows/src/durable/backend.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
-import { type JournalEntry, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
+import {
+	JOURNAL_SCHEMA_VERSION,
+	type JournalEntry,
+	JournalSchemaVersionError,
+	RUN_EVENT_TYPES,
+} from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
+import { limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, readText, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
 const directories: string[] = [];
@@ -83,6 +93,169 @@ function writeLegacyJournal(path: string): void {
 		database.close();
 	}
 }
+
+for (const method of ["listRuns", "getRun"] as const)
+	test(`${method} checks a current-table miss before returning a legacy header (#5537)`, async () => {
+		const path = join(tempDirectory(), "schema.sqlite");
+		writeLegacyJournal(path);
+		const db = await openNodeSqliteDatabase(path),
+			peer = await openNodeSqliteDatabase(path);
+		const journal = await SqlRunJournal.open(db);
+		let upgraded = false;
+		const restore = observeSqlReads(db, {
+			after: async (_rows, sql) => {
+				if (!upgraded && sql.includes("wf_runs")) {
+					upgraded = true;
+					await peer.run("UPDATE wf_meta SET schema_version=?", JOURNAL_SCHEMA_VERSION + 1);
+				}
+			},
+		});
+		try {
+			await assert.rejects(
+				method === "getRun" ? journal.getRun(legacyRun.runId) : journal.listRuns({ cwd: legacyRun.cwd }),
+				JournalSchemaVersionError,
+			);
+			assert.equal(upgraded, true);
+		} finally {
+			restore();
+			await journal.close();
+			await peer.close();
+			await db.close();
+		}
+	});
+
+test("near-limit legacy headers and events keep their original response columns (#5537)", async () => {
+	const path = join(tempDirectory(), "legacy-wire.sqlite");
+	writeLegacyJournal(path);
+	const db = await openNodeSqliteDatabase(path);
+	const journal = await SqlRunJournal.open(db);
+	try {
+		const header = {
+			runId: "a",
+			name: "r",
+			cwd: "/p",
+			createdAt: 1,
+			status: "paused",
+			inputs: { s: "x".repeat(149720) },
+		};
+		const payload = { inputs: { s: "x".repeat(149536) } };
+		await db.run(
+			"INSERT INTO runs VALUES (?,?,?,?,?,?)",
+			header.runId,
+			header.name,
+			header.cwd,
+			header.createdAt,
+			header.status,
+			JSON.stringify(header),
+		);
+		await db.run("UPDATE events SET payload=?,epoch=1,at=1 WHERE run_id=?", JSON.stringify(payload), legacyRun.runId);
+		const restore = observeSqlReads(db, {
+			after(rows) {
+				for (const row of rows) {
+					if (typeof row.header_json === "string" && row.header_json.length > 149000)
+						assert.deepEqual(Object.keys(row).sort(), ["header_json", "run_id", "status"]);
+					if (typeof row.payload === "string" && row.payload.length > 149000)
+						assert.deepEqual(Object.keys(row).sort(), ["at", "epoch", "key", "payload", "run_id", "seq", "type"]);
+				}
+			},
+		});
+		try {
+			assert.deepEqual(await journal.getRun("a"), header);
+			assert.deepEqual(await journal.listRuns({ cwd: "/p" }), [header]);
+			assert.deepEqual((await Array.fromAsync(journal.read(legacyRun.runId)))[0]!.event.payload, payload);
+		} finally {
+			restore();
+		}
+	} finally {
+		await journal.close();
+		await db.close();
+	}
+});
+
+test("legacy event reads honor the same size budget as current event reads (#5537)", async () => {
+	const path = join(tempDirectory(), "large-legacy-events.sqlite");
+	writeLegacyJournal(path);
+	const payload = JSON.stringify({ inputs: { text: '"'.repeat(1_000_000) } });
+	const raw = new DatabaseSync(path);
+	try {
+		const insert = raw.prepare(
+			"INSERT INTO events(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, 3, NULL, ?, ?, ?)",
+		);
+		for (let seq = 2; seq <= 7; seq++)
+			insert.run(legacyRun.runId, seq, RUN_EVENT_TYPES.runStarted, payload, legacyRun.createdAt + seq);
+	} finally {
+		raw.close();
+	}
+	const database = await openNodeSqliteDatabase(path);
+	const journal = await SqlRunJournal.open(database);
+	const release = observeSqlReads(database, {
+		after(rows) {
+			const bytes = rows.reduce(
+				(total, row) => total + (typeof row.payload === "string" ? Buffer.byteLength(row.payload) : 0),
+				0,
+			);
+			if (bytes > 4 * 1024 * 1024 + Buffer.byteLength(payload))
+				throw new StoragePayloadTooLargeError(bytes, 0, { kind: "response" });
+		},
+	});
+	try {
+		const seqs: number[] = [];
+		for await (const entry of journal.read(legacyRun.runId)) seqs.push(entry.seq);
+		assert.deepEqual(seqs, [1, 2, 3, 4, 5, 6, 7]);
+	} finally {
+		release();
+		await journal.close();
+		await database.close();
+	}
+});
+
+test("inspection lists a 150,000-run legacy catalog without overflowing the call stack (#5537)", async () => {
+	const path = join(tempDirectory(), "large-legacy.sqlite");
+	writeLegacyJournal(path);
+	const database = new DatabaseSync(path);
+	try {
+		database.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 150000)
+			INSERT INTO runs(run_id, name, cwd, created_at, status, header_json)
+			SELECT 'run-' || i, 'run', '/project', 1, 'running',
+			'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
+	} finally {
+		database.close();
+	}
+	const inspection = await inspectJournalFile(path);
+	assert.equal(inspection.runs.length, 150_001);
+	assert.equal(new Set(inspection.runs.map((run) => run.runId)).size, 150_001);
+});
+
+test("legacy catalog listings check cancellation between size-bounded pages (#5537)", async () => {
+	const path = join(tempDirectory(), "journal.sqlite");
+	writeLegacyJournal(path);
+	const database = new DatabaseSync(path);
+	try {
+		database.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 128)
+			INSERT INTO runs(run_id, name, cwd, created_at, status, header_json)
+			SELECT 'run-' || i, 'run', '/project', 1, 'running',
+			'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
+	} finally {
+		database.close();
+	}
+	const db = await openNodeSqliteDatabase(path);
+	const journal = await SqlRunJournal.open(db);
+	const release = limitHeaderResponse(db, (rows) => rows.length <= 64);
+	try {
+		const controller = new AbortController();
+		const reason = new Error("legacy catalog cancelled");
+		const timer = setImmediate(() => controller.abort(reason));
+		try {
+			await assert.rejects(journal.listRuns(undefined, { signal: controller.signal }), (error) => error === reason);
+		} finally {
+			clearImmediate(timer);
+		}
+	} finally {
+		release();
+		await journal.close();
+		await db.close();
+	}
+});
 
 async function readAll(iterable: AsyncIterable<JournalEntry>): Promise<JournalEntry[]> {
 	const entries: JournalEntry[] = [];

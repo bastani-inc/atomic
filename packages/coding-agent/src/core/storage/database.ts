@@ -29,6 +29,8 @@ export interface SqliteStatement {
 export interface SqliteTransactionOptions {
 	/** @internal A consistent read snapshot without a writer lock. The callback must only read. */
 	readonly readOnly?: boolean;
+	/** @internal The entire read-only snapshot is a retry of a refused catalog response, even if its COMMIT reply is lost. */
+	readonly retryReadOnlyCommit?: boolean;
 	/**
 	 * How long the transaction keeps waiting for the write lock while it is held and no other connection commits,
 	 * instead of the connection's own lock wait. A writer whose work must not fail because another process stalled
