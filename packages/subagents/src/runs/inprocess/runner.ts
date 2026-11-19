@@ -1120,10 +1120,7 @@ function settledTranscript(
 		getEntries: () => [],
 		loadHistory: async () => {
 			try {
-				return {
-					entries: await read(),
-					hasEntryLookup: sessionFile !== undefined || Boolean(store?.findEntrySeq && store.readEntryRange),
-				};
+				return { entries: await read() };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return {
@@ -1200,8 +1197,6 @@ function releasedTranscript(manager: SessionManager, commands: TranscriptCommand
 					loadHistory: async () => {
 						try {
 							return {
-								hasEntryLookup:
-									sessionFile !== undefined || Boolean(store?.findEntrySeq && store.readEntryRange),
 								entries: store
 									? [...(await store.load(sessionId)).entries]
 									: await readSessionFileEntries(sessionFile as string, sessionId),

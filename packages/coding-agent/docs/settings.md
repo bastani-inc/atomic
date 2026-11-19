@@ -130,7 +130,7 @@ This setting selects the model that makes each decision listed above. It does no
 
 A model named with `--model` on the command line runs as named. That session falls back only to the models `--fallback-models` names, never to this list, whether user or project. `--fallback-models` replaces this list for one run, and `--no-fallback` turns fallback off for one run. See [CLI model options](/reference/cli#model-options).
 
-If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures and cancellations do not trigger fallback.
+If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures and cancellations do not trigger fallback. Press Esc during a retry wait or a model switch to stop the pending request. In a subagent chat, send a new message to continue; in a workflow stage chat, Esc pauses the stage, including while it waits for a provider's rate limit to clear.
 
 A content-filter refusal, such as OpenAI's HTTP 422 `cyber_policy` ("This content was flagged for possible cybersecurity risk"), Anthropic's refusal stop, or a `content_filter` finish reason, also moves to the next fallback, without retrying the model that refused: the same request would be refused again. The refused model is recorded in the fallback history. Set `retry.fallbackOnContentFilter` to `false` to keep such a refusal on the model that gave it. Subagents and workflow stages follow the same setting for their own `fallbackModels`.
 

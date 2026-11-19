@@ -97,6 +97,55 @@ test("standalone HTML, interactive HTML and JSONL exports contain each complete 
 	}
 });
 
+test.each(["incomplete point read", "missing header"])(
+	"a resumed chat shows a saved outcome inline when its link is unreadable: %s (#5649)",
+	async (fault) => {
+		const { manager } = await persistedSession();
+		const store = manager.getSessionStore();
+		const text = `Compaction failed: ${"long-directory/".repeat(55)} ENOSPC`;
+		await manager.appendCustomEntry(HOST_NOTICE_TYPE, { level: "error", text });
+		const read = store.readEntryRange!.bind(store);
+		if (fault === "missing header") store.readHeader = async () => undefined;
+		else
+			store.readEntryRange = async (...args) => {
+				const page = await read(...args);
+				return {
+					...page,
+					entries: page.entries.map((row) =>
+						row.entry.type === "custom"
+							? { ...row, entry: { ...row.entry, data: { level: "error", text: text.slice(0, 100) } } }
+							: row,
+					),
+				};
+			};
+		const resumed = await SessionManager.open(store, manager.getSessionId());
+		const message = resumed.buildSessionProjection("transcript").messages.at(-1);
+		assert.ok(message?.role === "custom");
+		assert.equal(message.content, text);
+		assert.equal((message.details as HostNotice).location, undefined);
+	},
+);
+
+test("JSONL export reads individual saved outcomes without loading the complete session (#5649)", async () => {
+	const { manager } = await persistedSession();
+	const harness = await harnessFor(manager, {});
+	const store = manager.getSessionStore();
+	store.readRange = undefined;
+	const texts = Array.from({ length: 40 }, (_, i) => `Failure ${i}: ${"path/".repeat(500)}ENOSPC`);
+	for (const text of texts) await manager.appendCustomEntry(HOST_NOTICE_TYPE, { level: "error", text });
+	const loads = vi.spyOn(store, "load");
+	const path = await harness.session.exportToJsonl(`${manager.getSessionFile()}.export.jsonl`);
+	const saved = readFileSync(path, "utf8")
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line));
+	assert.deepEqual(
+		saved.filter((e) => e.customType === HOST_NOTICE_TYPE).map((e) => e.data.text),
+		texts,
+	);
+	assert.equal(loads.mock.calls.length, 0);
+});
+
 const overloaded = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" });
 
 test("a final retry failure reopens with the session, in its place, and never reaches the model (#5649)", async () => {
@@ -196,8 +245,10 @@ test("a healthy turn with boundary drafts never reads archived outcome bodies (#
 		bodies += page.entries.filter((e) => e.type === "custom" && e.customType === HOST_NOTICE_TYPE).length;
 		return page;
 	};
+	const points = vi.spyOn(store, "readEntryRange");
 	harness.setResponses([fauxAssistantMessage("ok")]);
 	await harness.session.prompt("healthy follow-up");
+	assert.equal(points.mock.calls.length, 0);
 	assert.ok(manager.getEntries().some((e) => e.type === "custom" && e.customType === "marker"));
 	assert.equal(bodies, 0);
 	assert.deepEqual(after, before, "drafts preserve the diagnostic previews already visible to handlers");
@@ -213,9 +264,10 @@ test("a provider error longer than the notice bound is saved cut at a whole char
 
 	await harness.session.prompt("hello");
 
-	const notices = (await reopen())
-		.getEntries()
-		.flatMap((entry) => (entry.type === "custom" && entry.customType === "atomic.turn-outcome.v1" ? [entry] : []));
+	const reopened = await reopen();
+	const notices = (await reopened.getSessionStore().load(reopened.getSessionId())).entries.flatMap((entry) =>
+		entry.type === "custom" && entry.customType === "atomic.turn-outcome.v1" ? [entry] : [],
+	);
 	assert.equal(notices.length, 1);
 	const text = (notices[0]!.data as { text: string }).text;
 	assert.ok(Buffer.byteLength(text) <= 4096, `${Buffer.byteLength(text)} bytes`);
@@ -225,7 +277,7 @@ test("a provider error longer than the notice bound is saved cut at a whole char
 	const live = harness.events.flatMap((event) =>
 		event.type === "message_end" && event.message.role === "custom" ? [messageText(event.message)] : [],
 	);
-	assert.deepEqual(live, [text], "the live line is the saved one");
+	assert.deepEqual(live, [`Retry failed after 1 attempts: ${page}`], "the storage cap does not cut the live line");
 });
 
 test("a chat that reads the transcript while the line is still being saved shows it once, and once after (#5649)", async () => {

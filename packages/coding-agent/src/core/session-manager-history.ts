@@ -191,8 +191,8 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
  * Convert one durable session entry into the messages a chat transcript shows for it: its context messages, or the
  * display-only line a host notice records, which model context never contains (#5649).
  */
-export function sessionEntryToTranscriptMessages(entry: SessionEntry, sessionId?: string): AgentMessage[] {
-	const notice = hostNoticeMessageFromEntry(entry, sessionId);
+export function sessionEntryToTranscriptMessages(entry: SessionEntry): AgentMessage[] {
+	const notice = hostNoticeMessageFromEntry(entry);
 	return notice === undefined ? sessionEntryToContextMessages(entry) : [notice];
 }
 

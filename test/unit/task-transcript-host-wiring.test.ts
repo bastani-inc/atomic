@@ -3,11 +3,13 @@ import { test } from "vitest";
 import { SessionManager, type SessionMessageEntry } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/message-error.js";
+import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import {
 	ownerTaskViewSource,
 	type TaskViewSource,
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import { createHistoryRouter } from "../../packages/coding-agent/src/core/tools/history-protocol.ts";
 import { parseInteractiveEngineCommand } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.js";
 import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
 import { runStageTaskAction } from "../../packages/workflows/src/workers/stage-watch-tasks.js";
@@ -28,8 +30,18 @@ const usage = {
 async function withTaskView(
 	transcript: TaskTranscriptSource,
 	check: (view: TaskViewSource, taskId: TaskId) => Promise<void> | void,
+	reader?: SessionManager,
 ) {
 	const fixture = taskFixture();
+	if (reader) {
+		const internalResourceRouter = createHistoryRouter({
+			cwd: reader.getCwd(),
+			currentSessionId: reader.getSessionId(),
+			sessionStore: () => reader.getSessionStore(),
+			workflows: () => undefined,
+		});
+		bindOwnerTaskStore({ extensionRunner: { createContext: () => ({ internalResourceRouter }) } }, fixture.store);
+	}
 	try {
 		await fixture.start("Transcript wiring");
 		fixture.runners[0].context.bindTranscript(transcript);
@@ -268,7 +280,6 @@ test("a task page from storage returns a bounded preview window and a location f
 			getEntries: () => [],
 			loadHistory: async () => ({
 				entries: [...(await store.load(session.getSessionId())).entries],
-				hasEntryLookup: Boolean(store.findEntrySeq && store.readEntryRange),
 			}),
 		},
 		async (view, taskId) => {
@@ -284,8 +295,38 @@ test("a task page from storage returns a bounded preview window and a location f
 				) <= 384,
 			);
 		},
+		session,
 	);
 });
+
+test.each(["running", "finished"])(
+	"a %s child's saved outcome stays inline when its parent cannot read the entry (#5649)",
+	async (state) => {
+		const child = SessionManager.inMemory();
+		const parent = SessionManager.inMemory();
+		const text = `Compaction failed: ${"child-dir/".repeat(65)} ENOSPC`;
+		await child.appendCustomEntry("atomic.turn-outcome.v1", { level: "error", text });
+		const store = child.getSessionStore();
+		await withTaskView(
+			{
+				getSessionId: () => child.getSessionId(),
+				getEntries: () => child.getEntries(),
+				...(state === "finished" && {
+					loadHistory: async () => ({ entries: [...(await store.load(child.getSessionId())).entries] }),
+				}),
+			},
+			async (view, taskId) => {
+				const page = await view.readTaskTranscript(taskId);
+				assert.ok(page.ok);
+				const message = page.value.messages[0];
+				assert.ok(message?.role === "custom");
+				assert.equal(message.content, text);
+				assert.equal((message.details as { location?: string }).location, undefined);
+			},
+			parent,
+		);
+	},
+);
 
 test("a task transcript with no history locator keeps the stored diagnostic inline (#5649)", async () => {
 	const session = SessionManager.inMemory();

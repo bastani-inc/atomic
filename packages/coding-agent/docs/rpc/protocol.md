@@ -616,7 +616,7 @@ Response:
 
 #### abort_retry
 
-Abort an in-progress retry (cancel the delay and stop retrying).
+Cancel a retry or fallback already in progress. If the first request is still running and no retry has started, `abort_retry` does nothing. Use `abort` to interrupt that request.
 
 ```json
 {"type": "abort_retry"}
@@ -1187,7 +1187,7 @@ Emitted when the agent begins an attempt. `turnStartedAt` identifies when the tu
 
 ### agent_end
 
-Emitted when the agent completes. Contains all messages generated during this run.
+Emitted when one agent run completes. Contains all messages generated during that run. If `retryPending` is `true`, the session is still handling a retry or fallback; `abort_retry` cancels it even before the next attempt is announced.
 
 ```json
 {

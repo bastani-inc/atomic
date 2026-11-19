@@ -33,7 +33,7 @@ import type {
 	SessionStore,
 	TaskViewSource,
 } from "@bastani/atomic";
-import { retryStatusUpdate, sessionWaitsToRetry } from "@bastani/atomic";
+import { AgentTokenMeter, type AgentTokenMeterSnapshot, retryStatusUpdate, sessionWaitsToRetry } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import {
 	ownsStageRecord,
@@ -102,6 +102,8 @@ export interface StageControlHandle {
 	/** True after the executor has released the live SDK session behind this handle. */
 	readonly isDisposed?: boolean;
 	readonly messages: AgentSession["messages"];
+	/** The meter for a fresh view of these display rows, when they differ from the stage's request context. */
+	contextMeter?(displayed: readonly AgentSession["messages"][number][]): StageContextMeter | undefined;
 	/** Live coding-agent session when available, used by embedded chat/footer UI. */
 	readonly agentSession?: AgentSession;
 	/** Replayable in-flight tool starts/partial updates for stage-chat remounts. */
@@ -112,11 +114,14 @@ export interface StageControlHandle {
 	 */
 	streamingMessage?(): NonNullable<NonNullable<AgentSession["agent"]>["state"]["streamingMessage"]> | undefined;
 	/**
-	 * Whether the stage's session waits out an automatic retry's backoff, for a handle without an `agentSession` (a
-	 * stage on a local worker). Handles with a session expose it through the session instead: see
-	 * {@link stageWaitsToRetry}.
+	 * A backoff outside the local SDK session: the stage is retrying a failed operation itself or its session
+	 * lives on a worker. See {@link stageWaitsToRetry} for either source.
 	 */
 	readonly isWaitingToRetry?: boolean;
+	/** A worker session has a cancellable retry, even before it announces the next attempt. */
+	readonly isRetrying?: boolean;
+	/** False for a status-only watch on another host, which refuses pause commands. */
+	readonly canPause?: boolean;
 	/**
 	 * When the stage's current turn sent its first request, while the turn is under way (a request runs, or a retry or
 	 * a model switch announced the next one). A turn the stage moved to its next model goes on in a new session that
@@ -379,6 +384,34 @@ export interface StageChatTarget {
 	readonly stageId: string;
 }
 
+export interface StageContextMeter extends AgentTokenMeterSnapshot {
+	/** Whether the last settled row in the request context is a user message or tool result. */
+	readonly requestSide: boolean;
+}
+
+/** Read the display history once. A reopened meter starts from the resident context, not restored display-only rows. */
+export function stageChatHistory(
+	handle: StageControlHandle,
+	messages = handle.messages,
+): {
+	messages: AgentSession["messages"];
+	contextMeter?: StageContextMeter;
+} {
+	const contextMeter = handle.contextMeter?.(messages);
+	return contextMeter ? { messages, contextMeter } : { messages };
+}
+
+/** A local SDK stage can restore display-only rows without treating those rows as part of the current request. */
+export function stageContextMeter(
+	session: AgentSession | undefined,
+	displayed: readonly AgentSession["messages"][number][],
+): StageContextMeter | undefined {
+	const resident = session?.messages;
+	if (!resident || resident === displayed) return undefined;
+	const role = resident.at(-1)?.role;
+	return { ...new AgentTokenMeter(resident).snapshot(), requestSide: role === "user" || role === "toolResult" };
+}
+
 /** A running post-mortem turn owns its transcript until it finishes. Never wait for it in resume admission. */
 export function busyStageChat(handle: StageControlHandle): string | undefined {
 	const session = handle.agentSession;
@@ -459,14 +492,14 @@ export function isLatestStageRelease(source?: ReleasedStageSource): boolean {
 }
 
 /** Seed a reply awaiting its message-end notification as streaming rather than as another settled row. */
-export function stageChatMessages(handle: StageControlHandle) {
+export function stageChatSnapshot(handle: StageControlHandle) {
 	const session = handle.agentSession;
-	return (
-		session?.pendingReplySnapshot ?? {
-			messages: handle.messages,
-			streamingMessage: session?.agent?.state.streamingMessage ?? handle.streamingMessage?.(),
-		}
-	);
+	const pending = session?.pendingReplySnapshot;
+	return {
+		...stageChatHistory(handle, pending?.messages),
+		streamingMessage:
+			pending?.streamingMessage ?? session?.agent?.state.streamingMessage ?? handle.streamingMessage?.(),
+	};
 }
 
 /** Whether the stage's session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */

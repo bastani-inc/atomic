@@ -271,7 +271,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		},
 		isRetrying: {
 			get() {
-				return this._retryPromise !== undefined;
+				return this._retryPromise !== undefined || this._fallbackOriginGeneration !== undefined;
 			},
 		},
 		isWaitingToRetry: {

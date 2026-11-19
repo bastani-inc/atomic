@@ -257,22 +257,23 @@ describe("resumeDurableWorkflow", () => {
 		assert.equal(second.workflowId, secondId);
 	});
 
-	test("returns not_resumable when status is completed", async () => {
-		const workflowId = testRunId("wf-done-1");
-		await backend.commitWorkflowRegistration({
-			workflowId,
-			name: "resumable-pipeline",
-			inputs: { topic: "a" },
-			createdAt: 1,
-			status: "completed",
-		});
-		// Pass an explicit catalog containing the completed entry (the backend's
-		// resumable list would filter it out) to exercise the not_resumable branch.
-		const catalog = [makeEntry(workflowId, "resumable-pipeline", "completed")];
-		const result = await resumeDurableWorkflow(workflowId, deps(), catalog);
-		assert.equal(result.ok, false);
-		assert.equal(result.reason, "not_resumable");
-	});
+	test.each([true, false])(
+		"returns not_resumable for a stored completed run (in catalog: %s) (#5569)",
+		async (listed) => {
+			const workflowId = testRunId("wf-done-1");
+			await backend.commitWorkflowRegistration({
+				workflowId,
+				name: "resumable-pipeline",
+				inputs: { topic: "a" },
+				createdAt: 1,
+				status: "completed",
+			});
+			const catalog = listed ? [makeEntry(workflowId, "resumable-pipeline", "completed")] : [];
+			const result = await resumeDurableWorkflow(workflowId, deps(), catalog);
+			assert.equal(result.ok, false);
+			assert.equal(result.reason, "not_resumable");
+		},
+	);
 
 	test("rejects when authoritative backend state is ineligible despite stale catalog progress", async () => {
 		const workflowId = testRunId("wf-zero-progress");
@@ -290,6 +291,39 @@ describe("resumeDurableWorkflow", () => {
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "not_resumable");
 		assert.equal(backend.getWorkflow(workflowId)?.status, "paused");
+	});
+
+	test("preparing another catalog cannot discard a pending resume's selected version (#5569)", async () => {
+		const id = testRunId("selected-version");
+		await backend.commitWorkflowRegistration({
+			workflowId: id,
+			name: "resumable-pipeline",
+			inputs: { topic: "data" },
+			createdAt: 1,
+			status: "failed",
+		});
+		const runtime = createExtensionRuntime({ registry: makeRegistryWith(makeDef()), store, jobs });
+		await runtime.prepareDurableResumableForIds!([id]);
+		const reading = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const hydrate = backend.hydrateWorkflow.bind(backend);
+		vi.spyOn(backend, "hydrateWorkflow").mockImplementationOnce(async (id) => {
+			reading.resolve();
+			await release.promise;
+			await hydrate(id);
+		});
+		const resuming = runtime.resumeDurableWorkflow(id, { definition: makeDef() });
+		try {
+			await reading.promise;
+			await backend.commitWorkflowStatus(id, "failed");
+			await runtime.prepareDurableResumableForIds!([]);
+		} finally {
+			release.resolve();
+		}
+		const result = await resuming;
+		assert.ok(!result.ok, result.message);
+		assert.equal(result.reason, "stale");
+		assert.equal(backend.getWorkflow(id)?.status, "failed");
 	});
 
 	test("returns workflow_not_found when definition is missing", async () => {
