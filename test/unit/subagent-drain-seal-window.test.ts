@@ -172,8 +172,6 @@ async function attemptReceiving(
 					});
 				},
 				onExecution() {},
-				yieldTaskWait() {},
-				isParentObserving: () => false,
 			},
 		}),
 	});
@@ -272,8 +270,6 @@ test(
 						transcript.resolve({ source, session });
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		});
@@ -349,8 +345,6 @@ test(
 						});
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		});
@@ -423,8 +417,6 @@ test.each(promptSenders)(
 							});
 						},
 						onExecution() {},
-						yieldTaskWait() {},
-						isParentObserving: () => false,
 					},
 				}),
 			});
@@ -783,8 +775,6 @@ function childHooks(stop: AbortSignal, onSession: (session: AgentSession) => voi
 			if (session !== undefined) onSession(session);
 		},
 		onExecution() {},
-		yieldTaskWait() {},
-		isParentObserving: () => false,
 	};
 }
 
