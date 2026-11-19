@@ -201,6 +201,51 @@ async function fixture() {
 	};
 }
 
+test("a nested run's chat cannot displace the parent run's stage with the same local ID on one worker (#5577)", async () => {
+	const f = await fixture();
+	const registry = createStageControlRegistry();
+	const sessions = new MemorySessionStore();
+	let closeChat: (() => void) | undefined;
+	try {
+		const saved = async (text: string) => {
+			const session = await SessionManager.create(sessions, process.cwd());
+			await session.appendMessage({ role: "user", content: text, timestamp: 1 });
+			return stage("local-stage", { status: "completed", sessionId: session.getSessionId() });
+		};
+		const nestedId = "grandchild";
+		const parent = childRun([
+			await saved("parent chat"),
+			stage("nested", { workflowChildRun: { alias: "n", workflow: "n", runId: nestedId } }),
+		]);
+		const nested = snapshot(nestedId, {
+			parentRunId: parent.id,
+			parentStageId: "nested",
+			rootRunId: ROOT,
+			stages: [await saved("nested chat")],
+		});
+		await f.handoff.publish(f.first, [parent, nested]);
+		const parentRow = f.store.run(parent.id)!.stages[0]!,
+			nestedRow = f.store.run(nested.id)!.stages[0]!;
+		assert.equal(parentRow.workerExecution, nestedRow.workerExecution);
+		const deps = {
+			store: f.store,
+			registry,
+			adapters: { sessionStore: sessions, agentSession: { create: async () => assert.fail("lazy session") } },
+		};
+		const first = await ensurePostMortemStageHandle(parent.id, parentRow, deps);
+		assert.ok(first.ok);
+		closeChat = first.handle.subscribe(() => {});
+		assert.ok((await ensurePostMortemStageHandle(nested.id, nestedRow, deps)).ok);
+		const again = await ensurePostMortemStageHandle(parent.id, parentRow, deps);
+		assert.ok(again.ok && again.handle === first.handle, "the parent stage's held chat remains available");
+	} finally {
+		closeChat?.();
+		await registry.clear();
+		await sessions.close();
+		await f.close();
+	}
+});
+
 test("a full publication from the same worker does not invalidate a finished stage's transcript read (#5577)", async () => {
 	const f = await fixture();
 	const registry = createStageControlRegistry();

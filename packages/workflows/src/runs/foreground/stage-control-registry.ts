@@ -339,6 +339,7 @@ export interface ReleasedStage {
 
 /** The registration that released a stage, separate from the IDs used for the public notice. */
 export interface ReleasedStageSource {
+	readonly key: string;
 	readonly generation: number;
 	readonly record?: StageRecordOwner;
 }
@@ -357,20 +358,22 @@ export function beginStageRegistrationCheck(registry: StageControlRegistry, runI
 	return { current: () => registry.generation === generation, release() {} };
 }
 
-function releaseSource(record?: StageSnapshot): ReleasedStageSource {
+function releaseSource(runId: string, stageId: string, record?: StageSnapshot): ReleasedStageSource {
+	// One worker publication shares its lease across the subtree, including runs that reuse a local stage ID.
+	const key = JSON.stringify([runId, stageId]);
 	const generation = ++sources.next;
-	if (!record) return { generation };
+	if (!record) return { key, generation };
 	const identity = stageRecordIdentity(record);
 	const stages = sources.records.get(identity) ?? new Map<string, number>();
 	sources.records.set(identity, stages);
-	stages.set(record.id, generation);
-	return { generation, record: stageRecordOwner(record) };
+	stages.set(key, generation);
+	return { key, generation, record: stageRecordOwner(record) };
 }
 
 export function isLatestStageRelease(source?: ReleasedStageSource): boolean {
 	if (!source?.record) return true;
 	const record = source.record.identity.deref();
-	return record !== undefined && sources.records.get(record)?.get(source.record.stageId) === source.generation;
+	return record !== undefined && sources.records.get(record)?.get(source.key) === source.generation;
 }
 
 /** Whether the stage's session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */
@@ -451,7 +454,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 	): RegistryEntry {
 		const entry: RegistryEntry = {
 			handle,
-			source: releaseSource(handle.stageRecord),
+			source: releaseSource(runId, stageId, handle.stageRecord),
 			...fields,
 			leases: new Set(),
 			epoch: 0,
