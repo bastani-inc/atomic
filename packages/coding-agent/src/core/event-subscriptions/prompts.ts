@@ -1,4 +1,4 @@
-/** Text shared by workflow and session event children: the seed prompt and the report a subscriber receives. */
+/** Text for session event children: the seed prompt and the report a subscriber receives. */
 
 import { Type } from "typebox";
 import { defineTool } from "../extensions/tool-types.ts";

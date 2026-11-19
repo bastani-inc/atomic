@@ -47,9 +47,8 @@ export interface CustomMessage<T = unknown> {
 }
 
 export type StageAdmittedCustomMessage<T = unknown> = CustomMessage<T> & {
-	/** Stable producer identity used for exactly-once workflow-stage admission. */
+	/** Stable producer identity used for exactly-once admission, such as `subagent:<key>` for a completion notice. */
 	stageAdmissionKey?: string;
-	/** Whether this admission joined active stage work or started after the assistant had settled. */
 };
 
 export interface BranchSummaryMessage {
@@ -310,7 +309,7 @@ function getToolResultCallId(message: AgentMessage): string | undefined {
  * Keep every tool result adjacent to the assistant turn that announced it.
  *
  * A message admitted while a tool batch is still running (an Intercom delivery, a
- * workflow lifecycle card, a durable stage admission) is persisted between the tool
+ * subagent completion notice) is persisted between the tool
  * call and its result in raw history. The provider requires the results to follow the
  * call directly, so derived context defers such messages until the batch is answered.
  * The durable transcript keeps its admission order.

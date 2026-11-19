@@ -15,8 +15,8 @@ export class StorageUnavailableError extends StorageError {
 	readonly location: string;
 	declare readonly cause: StorageFailureCause;
 	/**
-	 * `detail` names the driver failure in the message: a worker or coordinator that relays only `message` across
-	 * a process boundary keeps the reason. Adapters pass it only for causes that cannot carry credentials.
+	 * `detail` names the driver failure in the message: a process that relays only `message` across a process
+	 * boundary keeps the reason. Adapters pass it only for causes that cannot carry credentials.
 	 */
 	constructor(descriptor: StorageDescriptor, cause: StorageFailureCause, detail?: string) {
 		super(`Storage unavailable: ${descriptor.adapter} at ${descriptor.location}${detail ? `: ${detail}` : ""}`, {
@@ -1396,7 +1396,7 @@ export interface SerializedTeamErrorCause {
 	readonly cause?: SerializedTeamErrorCause;
 }
 
-/** A {@link TeamProfileError} or {@link TeamProfileConfigError} as JSON, to cross a worker, coordinator or broker boundary. */
+/** A {@link TeamProfileError} or {@link TeamProfileConfigError} as JSON, to cross a process boundary such as a broker. */
 export interface SerializedTeamError {
 	readonly name: string;
 	readonly code: string;

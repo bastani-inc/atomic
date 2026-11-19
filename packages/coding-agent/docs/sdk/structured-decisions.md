@@ -80,7 +80,7 @@ Pass an optional exact `provider/model` string, not a model object and not `auto
 
 - `model` is the primary. It may be a chat language model or a classifier registered in the current model registry. `typesafe/jev-latest` is one example classifier, not a separate request type.
 - `fallbackModels` is an ordered list of the same kind of exact IDs.
-- Omit `model` to use the configured `decisionModel` as the primary when you pass `settings` (the `structured_output` tool always does), or the current stage or chat model otherwise.
+- Omit `model` to use the configured `decisionModel` as the primary when you pass `settings` (the `structured_output` tool always does), or the current chat model otherwise.
 - After the primary and every explicit fallback, Atomic tries the current chat model if it has not already been tried.
 
 Image-generation models, model patterns, reasoning suffixes, surrounding whitespace, and IDs the registry does not list cannot be used. Atomic skips such an ID, records it with its error in `modelAttempts`, and still tries the remaining candidates, including the current chat model, so a mistyped `model` or fallback does not fail the call. The call fails with the first ID's error only when no candidate resolves. A catalog entry does not prove that the provider can classify, that credentials work, or that quota remains. `decisionModel` only changes this selection when `model` is omitted and `settings` is passed, and it is not skipped: an unregistered or invalid `decisionModel` fails the call with a [`DecisionError`](#errors).
@@ -116,7 +116,7 @@ console.log(result.value.category, result.model);
 
 The returned `value` is the schema-validated decision, not the request arguments. `model` names the candidate that produced it. `modelAttempts` records skips and failed candidates when a chain was used. This decision API does not expose classifier billing usage: its classifier-produced `usage` is not a classifier bill. The lower-level classifier operation may report usage and cost separately. Chat usage is reported when a chat candidate supplies the accepted result. A valid shape is not proof that the judgment is correct. Validate current policy again before any later action.
 
-The `structured_output` tool takes the same decision inputs from the calling model: required `instructions` and nonempty named `state`, plus optional `model` and `fallbackModels`. The registered schema is fixed by `createStructuredOutputTool({ schema })`. The tool resolves those IDs through the session registry and returns the inferred value. Omitting `model` starts on the session's `decisionModel`, which defaults to the current stage or session chat model. The calling model cannot set a deadline; the tool's own [`timeoutMs`](#cancellation-and-failures) option does. See [Structured output final results](/sdk/reference#structured-output-final-results).
+The `structured_output` tool takes the same decision inputs from the calling model: required `instructions` and nonempty named `state`, plus optional `model` and `fallbackModels`. The registered schema is fixed by `createStructuredOutputTool({ schema })`. The tool resolves those IDs through the session registry and returns the inferred value. Omitting `model` starts on the session's `decisionModel`, which defaults to the current session chat model. The calling model cannot set a deadline; the tool's own [`timeoutMs`](#cancellation-and-failures) option does. See [Structured output final results](/sdk/reference#structured-output-final-results).
 
 ## Prepare a decision
 

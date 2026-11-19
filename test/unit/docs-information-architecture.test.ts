@@ -580,6 +580,17 @@ describe("docs information architecture (#2847)", () => {
 		}
 	});
 
+	test("retired worker guide bookmarks lead to delegation and the PostgreSQL storage guide", () => {
+		const redirects = new Map(docsJson.redirects?.map(({ source, destination }) => [source, destination]));
+		assert.equal(redirects.get("/guides/worker-hosts"), "/orchestration");
+		assert.equal(redirects.get("/guides/worker-fleets-postgres"), "/storage#postgresql");
+		assert.ok(routeToSlug.has("/orchestration"));
+		assert.ok(anchorResolves("/storage", "postgresql"), "the PostgreSQL storage section must exist");
+		for (const source of ["/guides/worker-hosts", "/guides/worker-fleets-postgres"]) {
+			assert.ok(!routeToSlug.has(source), `${source} must not also serve worker instructions`);
+		}
+	});
+
 	// #2847 / PR #2971: a Reference-tab entry cannot replace the guide's own handoff.
 	for (const [slug, targets] of [
 		["skills/authoring", ["/skills/reference#frontmatter", "/skills/reference#validation"]],

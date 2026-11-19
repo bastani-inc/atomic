@@ -22,7 +22,8 @@ export { processStartToken } from "../process-start-token.js";
  * `<storeDir>/worktrees/<repositoryId>-<n>`, described by one record, `<storeDir>/pool/<repositoryId>/<n>.json`, and
  * leased while a session works in it: each process that holds a slot has a lease lock of its own next to the record,
  * and a lock on the record itself serializes changes to the slot. Only session resumes admit slots: worktrees restored
- * for workflow runs, by the SDK into a chosen directory, or by earlier versions have no record and are never pooled.
+ * by the SDK into a chosen directory, or by earlier versions (including for their workflow runs) have no record and
+ * are never pooled.
  *
  * A slot's owner is the holder that last took it, whether it still holds the lease or released it when it closed;
  * only the owner continues in it. {@link claimIdleWorktree} is the one way an existing worktree is rewritten: it takes

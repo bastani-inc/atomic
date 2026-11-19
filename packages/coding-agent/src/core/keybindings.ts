@@ -202,7 +202,7 @@ export const KEYBINDINGS = {
 		defaultKeys: windowsKeybindings ? "ctrl+down" : ["ctrl+shift+down", "ctrl+down"],
 	},
 	// Unbind pi-tui 0.84.2's transcript-search defaults. Atomic no longer
-	// exposes a find box over the transcript or an attached stage chat.
+	// exposes a find box over the transcript or an attached chat.
 	"tui.altScreen.search": { defaultKeys: [], description: "Search the rendered transcript (disabled)" },
 	"tui.altScreen.searchNext": { defaultKeys: [], description: "Select the next search match (disabled)" },
 	"tui.altScreen.searchPrevious": { defaultKeys: [], description: "Select the previous search match (disabled)" },

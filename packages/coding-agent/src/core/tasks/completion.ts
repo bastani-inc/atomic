@@ -422,7 +422,7 @@ export function formatTaskCompletion(
 	const outcome = taskOutcomeStatus(result, kind);
 	const waitingOn = releasedWaitingOn(result);
 	const pauseStop = result.kind === "cancelled" && result.cause === "pause";
-	// A shell cannot resume: a stage, run or session pause interrupts it, and the resumed stage redoes the step.
+	// A shell cannot resume: a pause interrupts it, and the resumed agent redoes the step.
 	const interruptedByPause = pauseStop && kind === "command";
 	// An intent saved without its kind cannot tell a shell from a subagent, so its notice names no resume call.
 	const pausedUnknownKind = pauseStop && kind === undefined;

@@ -51,7 +51,7 @@ export class AgentTaskHost {
 	private readonly heartbeats: TaskHeartbeatMonitor;
 	/** Whether this owner has launched anything; owners that never do pay nothing for heartbeats. */
 	private launched = false;
-	/** Stage replacement updates callbacks, never native identity or ownership. */
+	/** Rebinding updates callbacks, never native identity or ownership. */
 	updateBinding(binding: Omit<AgentTaskHostBinding, "scope">): void {
 		this.binding = { ...this.binding, ...binding };
 		this.watchHeartbeats();

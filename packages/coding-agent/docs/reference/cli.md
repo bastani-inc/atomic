@@ -175,7 +175,7 @@ Interactive sessions use fullscreen, with a scrolling transcript above the docke
 
 Adjust **Fullscreen wheel scroll lines** in `/settings`, or set `fullscreenWheelScrollLines` to `"auto"` or a number from 1 to 100. This also applies to fullscreen tool detail views and `/tasks` transcripts.
 
-Selection copies automatically unless `fullscreenCopyOnSelect` is false. Ctrl+X returns tool detail or stage chat to the graph, returns the graph to main chat, or clears a scoped-model selection. It does not copy; `/copy` copies the last assistant message.
+Selection copies automatically unless `fullscreenCopyOnSelect` is false. Ctrl+X does not copy: followed by Ctrl+K it stops all background work (see [Keybindings](/keybindings#navigation)), and the scoped-model selector uses it to clear its selection. `/copy` copies the last assistant message.
 
 On exit, `fullscreenExitOutput: "transcript"` prints the final transcript and resume hint. `"resume-hint"` restores the previous screen and prints only the hint. See [Settings](/settings) and [Terminal setup](/terminal-setup).
 

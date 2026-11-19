@@ -135,7 +135,7 @@ A failed or cancelled `/compact` stops its spinner, shows the error, writes no b
 
 ## Recovery omissions
 
-Threshold decisions and recovery use the canonical session projection. When Atomic recovers from a provider error retry, a model fallback, a context overflow, or a truncated response, the failed attempt stays in raw session history and a `context_edit` entry durably omits it from model context (see [Session Format](/session-format)). Omitted entries are left out of compaction and of token estimates, and usage captured by an omitted or later-edited assistant is not trusted for threshold checks. You can reopen the stage or subagent chat to read the original provider error, even while the next attempt is running. The error stays in the conversation without being sent back to the model. Extensions can also inspect the attempt through the raw transcript, exports, and history search.
+Threshold decisions and recovery use the canonical session projection. When Atomic recovers from a provider error retry, a model fallback, a context overflow, or a truncated response, the failed attempt stays in raw session history and a `context_edit` entry durably omits it from model context (see [Session Format](/session-format)). Omitted entries are left out of compaction and of token estimates, and usage captured by an omitted or later-edited assistant is not trusted for threshold checks. You can reopen the subagent chat to read the original provider error, even while the next attempt is running. The error stays in the conversation without being sent back to the model. Extensions can also inspect the attempt through the raw transcript, exports, and history search.
 
 ## Parameters
 

@@ -142,7 +142,7 @@ export function getPackageDir(): string {
 	}
 	// Node.js: walk up from __dirname to the Atomic app package. Prebundled
 	// companion extensions ship under dist/builtin/<name>/ with their own
-	// package.json; stopping at the first one made APP_NAME "workflows".
+	// package.json; stopping at the first one would name APP_NAME after a companion.
 	return modulePackageDir;
 }
 
