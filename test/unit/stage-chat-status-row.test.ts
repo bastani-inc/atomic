@@ -78,9 +78,17 @@ test("a stage chat without usage to show keeps one blank row on the composer's t
 	}
 });
 
-for (const [event, status] of [
-	[{ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2_000, errorMessage: "overloaded" }, "retrying…"],
-	[{ type: "model_fallback_start", from: "a", to: "b", reason: "quota", attempt: 1 }, "switching model…"],
+for (const [event, status, statusLine] of [
+	[
+		{ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 60_000, errorMessage: "overloaded" },
+		"Retrying · overloaded · attempt 1/3",
+		/^ ∀ Retrying · overloaded · attempt 1\/3 in (?:1m 0s|59s) {3}esc cancel$/u,
+	],
+	[
+		{ type: "model_fallback_start", from: "a", to: "b", reason: "quota", attempt: 1 },
+		"Switching model…",
+		/^ ∀ Switching model…$/u,
+	],
 ] as const) {
 	test(`a stage chat shows \`${status}\` as its status line on the usage row above the composer`, () => {
 		const { view, emit } = stageChat(fakeFooterAgentSession(true));
@@ -90,7 +98,7 @@ for (const [event, status] of [
 			for (const width of [80, 160]) {
 				const [gap, line, usage] = rowsAboveComposer(view, width);
 				assert.equal(gap, "", `${width} columns: a blank row above the status line`);
-				assert.match(line ?? "", new RegExp(`^ ∀ ${status}`, "u"), `${width} columns: the status line`);
+				assert.match(line ?? "", statusLine, `${width} columns: the status line`);
 				assert.match(usage ?? "", /\(auto\)$/u, `${width} columns: the usage row`);
 				const shown = view
 					.render(width)
@@ -109,20 +117,21 @@ function waitingToRetry(): AgentSession {
 	return Object.assign(fakeFooterAgentSession(false), { retryAttempt: 1 });
 }
 
-test("a stage chat opened while its agent waits to retry shows `retrying…` on the usage row until the next attempt (#5483)", () => {
+test("a stage chat opened while its agent waits to retry shows `Retrying…` on the usage row until the next attempt (#5483)", () => {
 	const { view, emit } = stageChat(waitingToRetry(), [], false);
 	try {
 		for (const width of [80, 160]) {
 			const [gap, line, usage] = rowsAboveComposer(view, width);
 			assert.equal(gap, "", `${width} columns: a blank row above the status line`);
-			assert.equal(line, " ∀ retrying…", `${width} columns: the retry is the status line`);
+			// A session that does not publish its wait's details shows the plain line; Esc pauses the stage.
+			assert.equal(line, " ∀ Retrying…   esc cancel", `${width} columns: the retry is the status line`);
 			assert.match(usage ?? "", /\(auto\)$/u, `${width} columns: right on the usage row`);
 		}
 		emit({ type: "agent_start" } as never);
 		for (const width of [80, 160]) {
 			const [, line] = rowsAboveComposer(view, width);
 			assert.match(line ?? "", /^ ∀ /u, `${width} columns: the next attempt is the working line`);
-			assert.doesNotMatch(line ?? "", /retrying…/u, `${width} columns: the next attempt clears the retry`);
+			assert.doesNotMatch(line ?? "", /Retrying/u, `${width} columns: the next attempt clears the retry`);
 		}
 	} finally {
 		view.dispose();
@@ -132,7 +141,7 @@ test("a stage chat opened while its agent waits to retry shows `retrying…` on 
 test("a stage chat opened while its agent waits to retry stops showing it when the retry ends (#5483)", () => {
 	const { view, emit } = stageChat(waitingToRetry(), [], false);
 	try {
-		const shows = () => view.render(80).some((row) => stripAnsi(row).includes("retrying…"));
+		const shows = () => view.render(80).some((row) => stripAnsi(row).includes("Retrying…"));
 		assert.ok(shows(), "the retry wait is shown");
 		emit({ type: "auto_retry_end", success: false, attempt: 1, finalError: "Retry cancelled" } as never);
 		assert.ok(!shows(), "the retry's end clears it");
@@ -159,7 +168,8 @@ test("an open stage chat stops showing a retry when its worker attempt is fenced
 		onClose() {},
 		piTui: makeTestTui(30),
 	});
-	const retrying = (chat: StageChatView) => chat.render(80).some((row) => stripAnsi(row).includes("retrying…"));
+	const retrying = (chat: StageChatView) =>
+		chat.render(80).some((row) => stripAnsi(row).includes("Retrying · busy · attempt 1/1"));
 	try {
 		emit({ type: "auto_retry_start", attempt: 1, maxAttempts: 1, delayMs: 2000, errorMessage: "busy" });
 		assert.equal(retrying(view), true);
@@ -197,9 +207,9 @@ test("a chat on another host updates the retry line from the stage publication w
 			.find((row) => row.includes("∀"))
 			?.trim();
 	try {
-		assert.equal(line(), "∀ retrying…");
+		assert.equal(line(), "∀ Retrying…");
 		publish("switching");
-		assert.equal(line(), "∀ switching model…");
+		assert.equal(line(), "∀ Switching model…");
 		publish("working");
 		assert.equal(line(), "∀ Working…");
 		store.editRun("run-1", (run) => {
@@ -220,7 +230,7 @@ test("a chat on another host updates the retry line from the stage publication w
 	}
 });
 
-test("a chat opened while a stage on a local worker waits to retry shows `retrying…` above the composer (#5483)", () => {
+test("a chat opened while a stage on a local worker waits to retry shows `Retrying…` above the composer (#5483)", () => {
 	const store = createStore();
 	setupRun(store, "run-1", "stage-a");
 	// No session in this process: the stage's handle says whether its session waits to retry.
@@ -240,7 +250,7 @@ test("a chat opened while a stage on a local worker waits to retry shows `retryi
 		for (const width of [80, 160]) {
 			const [gap, line, blank] = rowsAboveComposer(view, width);
 			assert.equal(gap, "", `${width} columns: a blank row above the status line`);
-			assert.equal(line, " ∀ retrying…", `${width} columns: the retry is the status line`);
+			assert.equal(line, " ∀ Retrying…   esc cancel", `${width} columns: the retry is the status line`);
 			assert.equal(blank, "", `${width} columns: the blank row in the usage row's place`);
 		}
 	} finally {
