@@ -6,6 +6,8 @@ import {
 	SESSION_HISTORY_CHUNK_BYTES,
 	SESSION_HISTORY_PAGE_BYTES,
 	SESSION_HISTORY_PAGE_ENTRIES,
+	SESSION_HISTORY_SCAN_ENTRIES,
+	type SessionBranchSpan,
 	type SessionHistoryPage,
 	type SessionHistoryReadOptions,
 	type SessionStore,
@@ -88,6 +90,13 @@ export async function* historyPages(
 		throw new RangeError("Branch history must start from a sequence in the captured session");
 	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1)
 		throw new RangeError("History sequence must be a safe integer");
+	// A scan asks for more entries a page, never more bytes, and reads a forward branch span once for its whole run:
+	// the stored ancestry cannot change under a pinned generation, and every page's own reads still check it.
+	const pageEntries = options.pageEntries ?? SESSION_HISTORY_PAGE_ENTRIES;
+	if (!Number.isSafeInteger(pageEntries) || pageEntries < 1 || pageEntries > SESSION_HISTORY_SCAN_ENTRIES)
+		throw new RangeError(`History pages hold from 1 to ${SESSION_HISTORY_SCAN_ENTRIES} entries`);
+	const scan = options.pageEntries !== undefined;
+	let pinned: SessionBranchSpan | undefined;
 	while (start <= end) {
 		options.signal?.throwIfAborted();
 		const branchCut =
@@ -96,21 +105,24 @@ export async function* historyPages(
 				: { leaf, first: firstSeq, last: lastSeq, pivot: reverse ? end : start, backward: reverse, epoch: stamp };
 		const span = !branchCut
 			? undefined
-			: store.readBranchSpan
-				? await store.readBranchSpan(sessionId, branchCut)
-				: await (await import("./snapshot-history.js")).snapshotBranchSpan(
-						snapshotSource(store),
-						sessionId,
-						branchCut,
-					);
+			: pinned && start > pinned.start && start <= pinned.end
+				? { start, end: pinned.end, older: true, newer: pinned.newer }
+				: store.readBranchSpan
+					? await store.readBranchSpan(sessionId, branchCut)
+					: await (await import("./snapshot-history.js")).snapshotBranchSpan(
+							snapshotSource(store),
+							sessionId,
+							branchCut,
+						);
+		if (scan && !reverse) pinned = span;
 		if (leaf !== undefined) {
 			options.signal?.throwIfAborted();
 			if (!span) return;
 		}
 		const left = span?.start ?? start,
 			right = span?.end ?? end;
-		const from = reverse ? Math.max(left, right - SESSION_HISTORY_PAGE_ENTRIES + 1) : left;
-		const through = reverse ? right : Math.min(right, left + SESSION_HISTORY_PAGE_ENTRIES - 1);
+		const from = reverse ? Math.max(left, right - pageEntries + 1) : left;
+		const through = reverse ? right : Math.min(right, left + pageEntries - 1);
 		let page: SessionHistoryPage["items"];
 		let low: number, high: number;
 		if (snapshotOnly) {
@@ -124,7 +136,9 @@ export async function* historyPages(
 			low = page[0]!.seq;
 			high = page[page.length - 1]!.seq;
 		} else {
-			const sized = await store.readEntrySizes!(sessionId, from, through);
+			const sized = scan
+				? await store.readEntrySizes!(sessionId, from, through, pageEntries)
+				: await store.readEntrySizes!(sessionId, from, through);
 			options.signal?.throwIfAborted();
 			stamp ??= sized.epoch;
 			scope ??= cursorScope(sessionId, stamp);

@@ -152,6 +152,8 @@ test.each([false, true])(
 		const directory = temporaryDirectory("atomic-visible-fork-cut-");
 		const store = await sqlStore(directory, "source");
 		const manager = await SessionManager.create(store, process.cwd());
+		const sibling = await manager.appendMessage({ role: "user", timestamp: 0, content: "unrelated branch" });
+		await manager.resetLeaf();
 		const first = hasPredecessor
 			? await manager.appendMessage({ role: "user", timestamp: 0, content: "covered" })
 			: null;
@@ -180,9 +182,12 @@ test.each([false, true])(
 			cut,
 		);
 		const expected = manager.buildSessionContext().messages;
-		const harness = await createHarness({ sessionManager: manager });
+		const reopenedSource = await SessionManager.open(store, manager.getSessionId());
+		const harness = await createHarness({ sessionManager: reopenedSource });
 		harnesses.push(harness);
+		assert.equal(reopenedSource.getEntry(sibling), undefined);
 		const path = await harness.session.exportToJsonl(join(directory, "fork.jsonl"));
+		assert.equal(reopenedSource.getEntry(sibling), undefined, "export the covered cut without hydrating the parent");
 		const lines = fileLines(path)
 			.slice(1)
 			.map((s) => JSON.parse(s));

@@ -63,7 +63,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import { entrySizeLimit, matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
@@ -558,11 +558,16 @@ export class MemorySessionStore implements SessionStore {
 		return transcriptBranchSpan(sessionId, index, cut);
 	}
 
-	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
+	async readEntrySizes(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		limit?: number,
+	): Promise<SessionEntrySizes> {
 		const record = await this.settledRecord(sessionId);
 		const held = this.held(record);
 		const start = Math.max(1, startSeq);
-		const seqs = seqRange(start, Math.min(endSeq, held.lastSeq, start + SESSION_HISTORY_PAGE_ENTRIES - 1));
+		const seqs = seqRange(start, Math.min(endSeq, held.lastSeq, start + entrySizeLimit(limit) - 1));
 		return {
 			epoch: record.index.epoch,
 			lastSeq: held.lastSeq,

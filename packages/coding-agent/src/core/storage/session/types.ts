@@ -80,6 +80,15 @@ export interface SessionStoredEntry {
 export const SESSION_HISTORY_PAGE_BYTES = 1024 * 1024;
 export const SESSION_HISTORY_CHUNK_BYTES = 64 * 1024;
 export const SESSION_HISTORY_PAGE_ENTRIES = 64;
+/** The most entries a scan that consumes every page at once, such as an export, may ask for in one page. */
+export const SESSION_HISTORY_SCAN_ENTRIES = 4096;
+
+/** How many sizes one `readEntrySizes` call returns: `SESSION_HISTORY_PAGE_ENTRIES` unless a scan asks for more. */
+export function entrySizeLimit(limit: number | undefined): number {
+	return limit === undefined || !Number.isSafeInteger(limit)
+		? SESSION_HISTORY_PAGE_ENTRIES
+		: Math.min(SESSION_HISTORY_SCAN_ENTRIES, Math.max(1, limit));
+}
 
 /** A stored entry too large for a history page. Its exact bytes are available in chunks, not a truncated entry. */
 export interface OversizedSessionEntry {
@@ -110,6 +119,13 @@ export interface SessionHistoryReadOptions {
 	readonly toSeq?: number;
 	readonly cursor?: string;
 	readonly signal?: AbortSignal;
+	/**
+	 * For a scan that consumes every page at once, such as an export: up to this many entries a page, at most
+	 * `SESSION_HISTORY_SCAN_ENTRIES`, still within `SESSION_HISTORY_PAGE_BYTES`, and one branch span read for each
+	 * contiguous run of the branch. The pages hold the same entries in the same order. Default
+	 * `SESSION_HISTORY_PAGE_ENTRIES`.
+	 */
+	readonly pageEntries?: number;
 }
 
 export interface SessionBranchPageCut {
@@ -510,8 +526,11 @@ export interface SessionStore {
 	): Promise<readonly (SessionTreeOutlineEntry | { readonly seq: number; readonly streamed: true })[]>;
 	/** Locate a contiguous range on the requested branch without reading neighboring conversation bodies. */
 	readBranchSpan?(sessionId: string, cut: SessionBranchPageCut): Promise<SessionBranchSpan | undefined>;
-	/** Metadata only; a historical page is sized before any entry is decoded. */
-	readEntrySizes?(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes>;
+	/**
+	 * Metadata only; a historical page is sized before any entry is decoded. Returns at most
+	 * `SESSION_HISTORY_PAGE_ENTRIES` sizes, or up to `limit` (at most `SESSION_HISTORY_SCAN_ENTRIES`) for a scan.
+	 */
+	readEntrySizes?(sessionId: string, startSeq: number, endSeq: number, limit?: number): Promise<SessionEntrySizes>;
 	/** Read at most SESSION_HISTORY_CHUNK_BYTES, rejecting a reference to a replaced generation. */
 	readEntryChunk?(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array>;
 
