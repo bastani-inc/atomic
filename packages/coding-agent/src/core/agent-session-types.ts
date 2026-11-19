@@ -26,10 +26,14 @@ export type CompactionReason = "manual" | "threshold" | "overflow" | "branchSumm
 
 export type AgentSessionEvent =
 	| ((
-			| Exclude<AgentEvent, { type: "agent_start" }>
+			| Exclude<AgentEvent, { type: "agent_start" | "agent_end" }>
 			| (Extract<AgentEvent, { type: "agent_start" }> & {
 					/** The first request of this turn, even when this event starts a retry. */
 					turnStartedAt?: number;
+			  })
+			| (Extract<AgentEvent, { type: "agent_end" }> & {
+					/** The session is still deciding or settling a retry; the end of this attempt is not yet the end of the turn. */
+					retryPending?: true;
 			  })
 	  ) & { parentToolCallId?: string })
 	| { type: "agent_settled"; aborted: boolean }
