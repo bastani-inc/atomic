@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- A stage chat waiting to retry a request shows the same line as the main chat, such as `Retrying · response timed out · attempt 2/3 in 4s   esc cancel`, instead of `retrying…`: why the request failed, the attempt, and a countdown to the next one. `esc cancel` appears while Esc would pause the stage and so cancel the retry. A stage chat opened during a wait on a workflow worker, which publishes only that the stage waits, shows `Retrying…`. A model switch reads `Switching model…`.
+
 ## [0.9.90] - 2026-11-19
 
 ### Added
