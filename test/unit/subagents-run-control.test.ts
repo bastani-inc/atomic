@@ -3172,6 +3172,44 @@ test("waiting for a finished child checks a batch sweep already started by its s
 	}
 });
 
+test("an SDK foreground batch reports when its child's worktree sweep is still running (#5600)", async () => {
+	const h = harness({ ownerless: true });
+	initGitRepository(h.cwd);
+	const done = Promise.withResolvers<void>();
+	h.finishOn.set("sdk-sweeping", done);
+	const batch = h.call({ tasks: [{ agent: "worker", task: "sdk-sweeping" }], worktree: true });
+	const child = await vi.waitFor(
+		() => {
+			const record = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+				(r) => r.childSessionId,
+			);
+			assert.ok(record);
+			return record;
+		},
+		{ timeout: RECORD_WAIT_MS },
+	);
+	const capture = worktrees.diffWorktrees;
+	const reached = Promise.withResolvers<void>(),
+		proceed = Promise.withResolvers<void>();
+	const gate = vi.spyOn(worktrees, "diffWorktrees").mockImplementation(async (...args) => {
+		reached.resolve();
+		await proceed.promise;
+		return capture(...args);
+	});
+	try {
+		const quitting = h.call({ action: "quit", id: child.childId });
+		await reached.promise;
+		const [reply, stopped] = await Promise.all([batch, quitting]);
+		assert.match(text(stopped), /worktree cleanup.*background/i);
+		assert.match(text(reply), /worktree cleanup.*background/i);
+	} finally {
+		proceed.resolve();
+		gate.mockRestore();
+		done.resolve();
+		await waitForWorktreeCleanup(h, child);
+	}
+});
+
 test("an SDK pause waits for its worktree sweep without waiting on the foreground batch reply (#5600)", async () => {
 	const h = harness({ ownerless: true });
 	initGitRepository(h.cwd);
