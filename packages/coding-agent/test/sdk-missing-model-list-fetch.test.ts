@@ -729,10 +729,52 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 			);
 		} finally {
 			release.resolve();
-			(await creation).session.dispose();
 			await modelRuntime.getAvailable(PROVIDER);
+			await (await creation).session.dispose();
 		}
 		assert.ok(modelRuntime.getModel(PROVIDER, ACCOUNT_MODEL_ID));
+	});
+
+	it("disposing the SDK session lets its process exit with the account list still held (#5685)", async () => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		let expiry: ReturnType<typeof setTimeout> | undefined;
+		let expired = false;
+		await withEndpoint(
+			async (url) => {
+				writeFileSync(runtimePaths().modelsPath, JSON.stringify({ providers: { openrouter: { baseUrl: url } } }));
+				const fixture = fileURLToPath(new URL("./fixtures/model-list-session-close.ts", import.meta.url));
+				try {
+					const { stdout } = await promisify(execFile)(
+						bunExecutable(),
+						["--no-env-file", fixture, agentDir, url],
+						{
+							cwd: agentDir,
+							env: { ...process.env, HOME: agentDir, ATOMIC_CODING_AGENT_DIR: agentDir },
+						},
+					);
+					assert.equal(stdout.trim(), "disposed");
+					assert.equal(expired, false, "the disposed process waited for the list response");
+				} finally {
+					clearTimeout(expiry);
+					release.resolve();
+				}
+			},
+			async (req, res) => {
+				if (req.url === "/models/user") {
+					entered.resolve();
+					expiry = setTimeout(() => {
+						expired = true;
+						release.resolve();
+					}, PROMPT_FALLBACK_MS);
+					await release.promise;
+					res.end(JSON.stringify({ data: [] }));
+				} else if (req.url === "/close-session") {
+					await entered.promise;
+					res.end();
+				} else res.writeHead(404).end();
+			},
+		);
 	});
 
 	it("returns the selected SDK model while an unrelated provider's restore is held (#5685)", async () => {

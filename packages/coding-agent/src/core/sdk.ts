@@ -1033,7 +1033,13 @@ async function constructAgentSession(
 		}
 		if (options.parentUsageSink !== undefined) forwardUsage(session, options.parentUsageSink);
 		if (!deferStart) await session.bindExtensions(options.extensionBindings ?? {});
-		if (backgroundList) void modelRuntime.refreshMissingModelList(backgroundList, options.signal);
+		if (backgroundList) {
+			const lifetime = sessionLifetime(session);
+			void modelRuntime.refreshMissingModelList(
+				backgroundList,
+				options.signal ? AbortSignal.any([options.signal, lifetime]) : lifetime,
+			);
+		}
 		bindChildTaskNotices(session as unknown as AgentSessionInternalSurface);
 		return {
 			session,
