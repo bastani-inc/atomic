@@ -94,7 +94,12 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import {
+	matchesSessionIdPrefix,
+	SESSION_HISTORY_CHUNK_BYTES,
+	SESSION_HISTORY_PAGE_BYTES,
+	SESSION_HISTORY_PAGE_ENTRIES,
+} from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 interface SessionFileState {
@@ -167,6 +172,16 @@ interface JsonlIndex {
 	readonly sidecarSize: number;
 }
 
+interface FoldedFile {
+	readonly fork: JsonlForkIndex;
+	readonly index: SessionResumeIndex;
+	readonly spans: number[];
+	readonly ids: number[];
+	readonly size: number;
+	readonly terminated: boolean;
+	readonly torn: boolean;
+}
+
 interface FileWindowInput {
 	readonly handle: FileHandle;
 	readonly legacy?: StoredSessionHeader;
@@ -209,6 +224,7 @@ const RANGE_CHUNK_BYTES = 64 * 1024;
 const RANGE_READ_ATTEMPTS = 3;
 const TYPING_RETAIN_BYTES = 1024 * 1024;
 const WITNESS_BYTES = 64;
+const NEWLINE = Buffer.from("\n");
 const MARK_CHECK_READS = 32;
 const STUB_ENTRY: SessionEntry = {
 	type: "custom",
@@ -691,8 +707,25 @@ export class JsonlSessionStore implements SessionStore {
 				ids: number[] = [];
 			const { encodedForkRow } = await import("./fork-row-bytes.js");
 			const { foldForkRow, findForkRow } = await import("./fork-row-index.js");
+			// Rows are copied into one page-sized buffer and written a page at a time, not one write per row.
+			const staging = Buffer.allocUnsafe(SESSION_HISTORY_PAGE_BYTES);
+			let staged = 0;
+			const flush = async () => {
+				if (staged === 0) return;
+				await handle.writeFile(staging.subarray(0, staged));
+				staged = 0;
+			};
+			const write = async (part: Uint8Array) => {
+				if (staged + part.byteLength > staging.length) await flush();
+				if (part.byteLength >= staging.length) await handle.writeFile(part);
+				else {
+					staging.set(part, staged);
+					staged += part.byteLength;
+				}
+			};
 			const lookup = (id: string) =>
 				findForkRow(id, ids, async function* (seq) {
+					await flush();
 					const end = spans[2 * seq - 1]!;
 					for (let i = spans[2 * seq - 2]!; i < end; i += SESSION_HISTORY_CHUNK_BYTES)
 						yield await readFrom(handle, i, Math.min(end - i, SESSION_HISTORY_CHUNK_BYTES));
@@ -708,12 +741,12 @@ export class JsonlSessionStore implements SessionStore {
 			let size = Buffer.byteLength(line);
 			let witness: Buffer;
 			try {
-				await handle.writeFile(line);
+				await write(Buffer.from(line));
 				for await (const row of rows) {
 					const start = size;
 					const encoded = await encodedForkRow(source.store, row);
 					for await (const part of encoded.chunks()) {
-						await handle.writeFile(part);
+						await write(part);
 						size += part.byteLength;
 					}
 					if (stream) {
@@ -723,9 +756,10 @@ export class JsonlSessionStore implements SessionStore {
 					lastId = row.entry.id;
 					ids.push(idHash(lastId));
 					spans.push(start, size);
-					await handle.writeFile("\n");
+					await write(NEWLINE);
 					size++;
 				}
+				await flush();
 				witness = await witnessAt(handle, size);
 			} finally {
 				await handle.close();
@@ -1226,12 +1260,37 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
-	/** Read the window of this exact export file, not another file in the directory with the same session ID.
-	 * An export is an input: do not create or rewrite a sidecar beside it. */
+	/** Read this exact export file, not another file in the directory with the same session ID. An export is an
+	 * input: do not create or rewrite a sidecar beside it. `history` reads any position of the same open file while
+	 * `use` runs, and `saved.window()` reads its window when asked for: a whole-file copy never holds it. `use` awaits
+	 * `saved.unchanged()` before it publishes anything it read, which rejects with a conflict when the file changed
+	 * in place meanwhile. A legacy file's raw bytes are not v4 rows: `history.readRange` upgrades its entries,
+	 * `readEntryChunk` does not. */
 	[withForkFileWindow]<T>(
 		file: string,
-		use: (resume: SessionResume, history: SessionHistorySource) => Promise<T>,
+		use: (
+			saved: {
+				readonly header: SessionRecordHeader;
+				readonly epoch: string;
+				readonly lastSeq: number;
+				readonly legacy: boolean;
+				window(): Promise<SessionResume>;
+				unchanged(): Promise<void>;
+			},
+			history: SessionHistorySource,
+		) => Promise<T>,
 	): Promise<T> {
+		// What `use` throws, from the destination too, is the caller's failure, not this source's to wrap.
+		// A failure to read this file stays this store's, as when the whole file was loaded.
+		let used: { readonly error: unknown } | undefined;
+		const readFailures = new WeakSet<object>();
+		const reading =
+			<A extends unknown[], R>(read: (...args: A) => Promise<R>) =>
+			(...args: A): Promise<R> =>
+				read(...args).catch((error: unknown) => {
+					if (typeof error === "object" && error !== null) readFailures.add(error);
+					throw error;
+				});
 		return this.run(async () => {
 			const path = resolve(file);
 			const handle = await open(path, "r");
@@ -1240,45 +1299,79 @@ export class JsonlSessionStore implements SessionStore {
 				const stored = await readFirstLineFrom(handle, HEADER_READ_CHUNK_BYTES, 0);
 				const header = await this.readHeaderAt(path, stored);
 				const input: FileWindowInput = { handle, legacy: isCurrentSessionHeader(stored) ? undefined : stored };
-				const jsonl = await this.buildIndex(path, JSON.stringify(header), stats, input);
-				const resume = await this.windowFromIndex(path, header, jsonl, jsonl.index, input);
-				const { epoch, lastSeq } = resume;
-				const result = await use(resume, {
-					descriptor: this.descriptor,
-					readEntrySizes: async (_id, from, to) => ({
+				const headerStamp = JSON.stringify(header);
+				const topology = await this.foldFile(path, epochOf(stats, headerStamp), () => true, input);
+				// Positions need only the topology pass. The active branch is folded again only for the window.
+				const jsonl = await this.buildIndex(path, headerStamp, stats, input, { topology, branch: false });
+				const { epoch, seq: lastSeq } = jsonl.index;
+				let window: Promise<SessionResume> | undefined;
+				const unchanged = async () => {
+					const after = await handle.stat({ bigint: true });
+					if (stats.size === after.size && stats.mtimeNs === after.mtimeNs && stats.ctimeNs === after.ctimeNs)
+						return;
+					// A writer appending after the indexed rows leaves every row read through this handle as it was.
+					if (
+						after.size > stats.size &&
+						(await boundaryHolds(handle, { witness: jsonl.witness, witnessEnd: jsonl.size }))
+					)
+						return;
+					throw new SessionConflictError(header.id, lastSeq, lastSeq);
+				};
+				return await use(
+					{
+						header,
 						epoch,
 						lastSeq,
-						sizes: seqRange(from, Math.min(lastSeq, to, from + SESSION_HISTORY_PAGE_ENTRIES - 1)).map((seq) => ({
-							seq,
-							bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+						legacy: input.legacy !== undefined,
+						window: reading(() => {
+							window ??= this.buildIndex(path, headerStamp, stats, input, { topology, branch: true }).then(
+								(active) => this.windowFromIndex(path, header, active, active.index, input),
+							);
+							return window;
+						}),
+						unchanged,
+					},
+					{
+						descriptor: this.descriptor,
+						readEntrySizes: reading(async (_id: string, from: number, to: number) => ({
+							epoch,
+							lastSeq,
+							sizes: seqRange(from, Math.min(lastSeq, to, from + SESSION_HISTORY_PAGE_ENTRIES - 1)).map(
+								(seq) => ({
+									seq,
+									bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+								}),
+							),
 						})),
-					}),
-					readEntryChunk: (ref, offset) =>
-						readFrom(
-							handle,
-							spanStart(jsonl, ref.seq) + offset,
-							Math.min(
-								SESSION_HISTORY_CHUNK_BYTES,
-								spanEnd(jsonl, ref.seq) - spanStart(jsonl, ref.seq) - offset,
+						readEntryChunk: reading((ref: OversizedSessionEntry, offset: number) =>
+							readFrom(
+								handle,
+								spanStart(jsonl, ref.seq) + offset,
+								Math.min(
+									SESSION_HISTORY_CHUNK_BYTES,
+									spanEnd(jsonl, ref.seq) - spanStart(jsonl, ref.seq) - offset,
+								),
 							),
 						),
-					readRange: async (_id, from, to) => ({
-						epoch,
-						lastSeq,
-						startSeq: from,
-						entries: (await this.entriesAt(path, jsonl, seqRange(from, Math.min(lastSeq, to)), input)).map(
-							(held) => held.entry,
-						),
-					}),
+						readRange: reading(async (_id: string, from: number, to: number) => ({
+							epoch,
+							lastSeq,
+							startSeq: from,
+							entries: (await this.entriesAt(path, jsonl, seqRange(from, Math.min(lastSeq, to)), input)).map(
+								(held) => held.entry,
+							),
+						})),
+					},
+				).catch((error: unknown) => {
+					used = { error };
+					throw error;
 				});
-				const after = await handle.stat({ bigint: true });
-				if (stats.size !== after.size || stats.mtimeNs !== after.mtimeNs || stats.ctimeNs !== after.ctimeNs)
-					throw new SessionConflictError(header.id, lastSeq, lastSeq);
-				return result;
 			} finally {
 				await handle.close();
 			}
-		}, false);
+		}, false).catch((error: unknown) => {
+			throw used === undefined || readFailures.has(used.error as object) ? error : used.error;
+		});
 	}
 
 	readForkWindow(sessionId: string, entryId: string, options?: { readonly archivedReceipts: true }) {
@@ -1476,19 +1569,24 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
+	/** `folded` reuses a topology pass already made; `branch: false` keeps it and skips folding the active branch
+	 * again, for a reader of positions that never selects a window. */
 	private async buildIndex(
 		path: string,
 		headerStamp: string,
 		stats: BigIntStats,
 		input?: FileWindowInput,
+		folded?: { readonly topology: FoldedFile; readonly branch: boolean },
 	): Promise<JsonlIndex> {
 		const identity = `${stats.dev}:${stats.ino}`;
 		const birthtimeNs = String(stats.birthtimeNs);
 		const epoch = epochOf(stats, headerStamp);
-		const topology = await this.foldFile(path, epoch, () => true, input);
+		const topology = folded?.topology ?? (await this.foldFile(path, epoch, () => true, input));
 		const ranges =
-			topology.index.jumps.length === 0 ? undefined : branchRanges(topology.index, topology.index.leafSeq);
-		const folded =
+			folded?.branch === false || topology.index.jumps.length === 0
+				? undefined
+				: branchRanges(topology.index, topology.index.leafSeq);
+		const active =
 			ranges === undefined
 				? topology
 				: await this.foldFile(path, epoch, (seq) => ranges.some(([low, high]) => seq >= low && seq <= high), input);
@@ -1498,20 +1596,20 @@ export class JsonlSessionStore implements SessionStore {
 			headerStamp,
 			fileSize: Number(stats.size),
 			mtimeNs: String(stats.mtimeNs),
-			size: folded.size,
+			size: active.size,
 			witness: input
 				? await readFrom(
 						input.handle,
-						Math.max(0, folded.size - WITNESS_BYTES),
-						Math.min(folded.size, WITNESS_BYTES),
+						Math.max(0, active.size - WITNESS_BYTES),
+						Math.min(active.size, WITNESS_BYTES),
 					)
-				: await readWitness(path, folded.size),
-			terminated: folded.terminated,
-			torn: folded.torn,
-			spans: folded.spans,
-			ids: folded.ids,
-			fork: folded.fork,
-			index: folded.index,
+				: await readWitness(path, active.size),
+			terminated: active.terminated,
+			torn: active.torn,
+			spans: active.spans,
+			ids: active.ids,
+			fork: active.fork,
+			index: active.index,
 			sidecarSize: 0,
 		};
 	}
@@ -1521,15 +1619,7 @@ export class JsonlSessionStore implements SessionStore {
 		epoch: string,
 		activeSeq: (seq: number) => boolean,
 		pinned?: FileWindowInput,
-	): Promise<{
-		readonly index: SessionResumeIndex;
-		readonly spans: number[];
-		readonly ids: number[];
-		readonly fork: JsonlForkIndex;
-		readonly size: number;
-		readonly terminated: boolean;
-		readonly torn: boolean;
-	}> {
+	): Promise<FoldedFile> {
 		let index: SessionResumeIndex = { ...foldSessionResume(undefined, [], undefined, activeSeq), epoch };
 		const spans: number[] = [];
 		const hashes: number[] = [];

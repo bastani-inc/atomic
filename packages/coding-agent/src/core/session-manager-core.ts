@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { isProxy } from "node:util/types";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
@@ -74,10 +74,12 @@ import {
 	assertSessionBlobStore,
 	copySessionBlobs,
 	sessionBlobHashes,
+	storeInlineToolOutputs,
 	storeSessionBlobs,
 	TOOL_OUTPUT_ENTRY_TYPE,
 	type ToolOutputReference,
 	takeInlineToolOutput,
+	takeInlineToolOutputEntry,
 } from "./session-tool-output.ts";
 import { adoptInlineSnapshotBlobs, deleteSessionWithSnapshotRefs } from "./session-worktree-snapshots.ts";
 import {
@@ -96,8 +98,14 @@ import {
 	StorageUnavailableError,
 } from "./storage/session/errors.js";
 import { createForkArchive } from "./storage/session/fork-archive.js";
-import { forkScope, forkStoreRelation } from "./storage/session/fork-store-scope.js";
-import { firstHistoryCursor, historyChunks, historyPages } from "./storage/session/history-pages.js";
+import { exactDirectoryRelation, resolveForkStoreRelation } from "./storage/session/fork-store-relation.js";
+import { forkScope } from "./storage/session/fork-store-scope.js";
+import {
+	firstHistoryCursor,
+	historyChunks,
+	historyPages,
+	type SessionHistorySource,
+} from "./storage/session/history-pages.js";
 import { bindSessionFile, JsonlSessionStore, withForkFileWindow } from "./storage/session/jsonl-session-store.js";
 import { SessionKeyDigests } from "./storage/session/key-digests.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
@@ -111,6 +119,8 @@ import {
 import type {
 	OversizedSessionEntry,
 	SessionBlob,
+	SessionForkRow,
+	SessionForkStream,
 	SessionHistoryPage,
 	SessionHistoryReadOptions,
 	SessionHistoryTotals,
@@ -199,6 +209,120 @@ async function openSessionFileWindow(path: string, cwd: string | undefined, opti
 
 function openedHeader(opened: OpenedSession): SessionRecordHeader {
 	return "snapshot" in opened ? opened.snapshot.header : opened.resume.header;
+}
+
+/** A saved file being forked: any position of the same open file, its window when asked for, and a check that it
+ * did not change. */
+interface ExportedSource {
+	readonly id: string;
+	readonly history: SessionHistorySource;
+	readonly file: {
+		readonly epoch: string;
+		readonly lastSeq: number;
+		readonly legacy: boolean;
+		window(): Promise<SessionResume>;
+		unchanged(): Promise<void>;
+	};
+}
+
+/** The window copy for a destination proven to be another collection, without its inline outputs. */
+interface ExportedWindow {
+	readonly entries: SessionEntry[];
+	/** Each inline output by hash: how to read its receipt again when the output is stored. */
+	readonly outputs: ReadonlyMap<string, () => Promise<SessionEntry>>;
+}
+
+/** The one entry at `seq` of the saved file, upgraded when the file is legacy: never a page or the whole file. */
+async function readExportedEntry(source: ExportedSource, seq: number, id?: string): Promise<SessionEntry> {
+	const range = await source.history.readRange!(source.id, seq, seq, source.file.epoch);
+	const entry = range.entries[0];
+	if (
+		!entry ||
+		range.entries.length !== 1 ||
+		range.startSeq !== seq ||
+		range.epoch !== source.file.epoch ||
+		(id !== undefined && entry.id !== id)
+	)
+		throw new SessionConflictError(source.id, seq, range.lastSeq);
+	return entry;
+}
+
+async function exportedWindow(source: ExportedSource): Promise<ExportedWindow> {
+	const { history, id } = source;
+	const window = await source.file.window();
+	const held = [...window.state.filter(({ onBranch }) => onBranch), ...window.branch].sort((a, b) => a.seq - b.seq);
+	const archived = new Map<string, OversizedSessionEntry>();
+	const path = await includeNamedForkOutputs(
+		forkContextPath(
+			held.map(({ entry }) => entry),
+			id,
+		),
+		history,
+		id,
+		window.leafId,
+		window.epoch,
+		window.lastSeq,
+		"session",
+		archived,
+	);
+	const entries: SessionEntry[] = [];
+	const outputs = new Map<string, () => Promise<SessionEntry>>();
+	// Built outside the loop: a closure made beside `receipt` would share its scope and keep every receipt read.
+	const inWindow = (receipt: SessionEntry) => async () => receipt;
+	const readAgain = (seq: number, receiptId: string) => () => readExportedEntry(source, seq, receiptId);
+	for (const entry of path) {
+		const at =
+			entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE
+				? archived.get(entry.id)?.seq
+				: undefined;
+		// A named output from outside the window is read here by its position, one receipt at a time.
+		const receipt = at === undefined ? entry : await readExportedEntry(source, at, entry.id);
+		const taken = takeInlineToolOutputEntry(receipt, id);
+		if (taken && !outputs.has(taken.hash))
+			outputs.set(taken.hash, at === undefined ? inWindow(receipt) : readAgain(at, entry.id));
+		entries.push(taken?.entry ?? receipt);
+	}
+	return { entries, outputs };
+}
+
+/** Every row of the saved file in append order, as main copied it: sibling branches, labels and leaf moves unchanged,
+ * a legacy file upgraded entry by entry, and each inline output taken out of its receipt as the copy reaches it,
+ * recorded by position in `outputs`. Other rows over a page keep their original bytes. `finish` runs after the last
+ * row, before the destination publishes the child. */
+function exportedSessionStream(
+	source: ExportedSource,
+	outputs: Map<string, number>,
+	finish: () => Promise<void>,
+): SessionForkStream {
+	const { history, id, file } = source;
+	return {
+		kind: "complete-session",
+		async *read() {
+			const { forkSeedFields } = await import("./storage/session/chunked-resume-projection.js");
+			for await (const { items } of historyPages(history, id, file.epoch, file.lastSeq, {}))
+				for (const item of items) {
+					let row: SessionForkRow =
+						"entry" in item
+							? { entry: item.entry }
+							: file.legacy
+								? { entry: await readExportedEntry(source, item.seq) }
+								: {
+										...(await forkSeedFields(() => historyChunks(history, id, file.epoch, item, {}))),
+										reference: item,
+									};
+					if (row.entry.type === "custom" && row.entry.customType === TOOL_OUTPUT_ENTRY_TYPE) {
+						const receipt = row.reference ? await readExportedEntry(source, item.seq, row.entry.id) : row.entry;
+						const taken = takeInlineToolOutputEntry(receipt, id);
+						if (taken) {
+							if (!outputs.has(taken.hash)) outputs.set(taken.hash, item.seq);
+							row = { entry: taken.entry };
+						}
+					}
+					yield row;
+				}
+			await finish();
+		},
+	};
 }
 
 /** A custom entry written with a message, in the same store write (see `SessionManager.appendWithMessage`). */
@@ -2273,25 +2397,8 @@ export class SessionManager {
 				sessionId = this.sessionId,
 				epoch = this.historyEpoch,
 				through = this.lastSeq;
-			let relation = forkStoreRelation(source, store);
-			const a = forkScope(source),
-				b = forkScope(store);
-			if (relation === "unknown" && a?.kind === "jsonl" && b?.kind === "jsonl") {
-				const { realpath, stat } = await import("node:fs/promises");
-				try {
-					const [pa, pb] = await Promise.all([realpath(a.directory), realpath(b.directory)]);
-					const [sa, sb] = await Promise.all([stat(pa, { bigint: true }), stat(pb, { bigint: true })]);
-					if (sa.dev === sb.dev && sa.ino === sb.ino && sa.ino !== 0n)
-						relation = a.exact === b.exact ? "same" : "unknown";
-					else {
-						const outside = (p: string) => isAbsolute(p) || p === ".." || p.startsWith(`..${sep}`);
-						if ((a.exact && b.exact) || (outside(relative(pa, pb)) && outside(relative(pb, pa))))
-							relation = "different";
-					}
-				} catch {
-					/* A failed identity check is not evidence that private history belongs to another collection. */
-				}
-			}
+			const relation = await resolveForkStoreRelation(source, store);
+			const a = forkScope(source);
 			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: sessionId });
 			const receipts = new Map<string, OversizedSessionEntry>();
 			const data =
@@ -2532,61 +2639,89 @@ export class SessionManager {
 		return this;
 	}
 
+	/**
+	 * Fork the saved file at `sourcePath` (an export, or a session file opened by path). A destination proven to be
+	 * another collection gets the window copy with the parent's ID; any other gets every row of the file in append
+	 * order, as a whole-session clone. Rows stream from the open file to the destination, which publishes the child
+	 * only after the last row. Inline tool outputs are read one receipt at a time; see takeInlineToolOutputEntry.
+	 */
 	static async forkFrom(
 		sourcePath: string,
 		targetCwd: string,
 		sessionDir?: string | SessionStore,
 		options?: NewSessionOptions,
 	): Promise<SessionManager> {
-		const sourceStore = await JsonlSessionStore.open(dirname(resolvePath(sourcePath)), {
-			exactDirectory: true,
-			scanExisting: false,
-		});
-		let source: { id: string; entries: SessionEntry[] };
+		const path = resolvePath(sourcePath);
+		const sourceStore = await JsonlSessionStore.open(dirname(path), { exactDirectory: true, scanExisting: false });
 		try {
-			source = await sourceStore[withForkFileWindow](resolvePath(sourcePath), async (window, history) => {
-				const selected = [...window.state.filter(({ onBranch }) => onBranch), ...window.branch]
-					.sort((a, b) => a.seq - b.seq)
-					.map(({ entry }) => entry);
-				const id = window.header.id;
-				const entries = await includeNamedForkOutputs(
-					forkContextPath(selected, id),
-					history,
-					id,
-					window.leafId,
-					window.epoch,
-					window.lastSeq,
-					"session",
-				);
-				return { id, entries };
+			return await sourceStore[withForkFileWindow](path, async (file, history) => {
+				const source: ExportedSource = { history, file, id: file.header.id };
+				const into = async (
+					store: SessionStore,
+					directory: string,
+					windowed: ExportedWindow | undefined,
+				): Promise<SessionManager> => {
+					const manager = new SessionManager(store, targetCwd, directory, {
+						...options,
+						parentSession: source.id,
+					});
+					if (windowed) {
+						manager.markForkOrigin(sourceStore);
+						assertSessionBlobStore(store, manager.sessionId, windowed.outputs.size);
+						manager.fileEntries.push(...windowed.entries);
+						await file.unchanged();
+						await manager.initialize();
+						await storeInlineToolOutputs(store, manager.sessionId, source.id, windowed.outputs);
+						manager._buildIndex();
+						return manager;
+					}
+					const outputs = new Map<string, number>();
+					const created = await createForkArchive(
+						store,
+						manager.recordHeader(),
+						exportedSessionStream(source, outputs, async () => {
+							await file.unchanged();
+							assertSessionBlobStore(store, manager.sessionId, outputs.size);
+						}),
+						// The history reader has no blobs: inline outputs are stored below, never copied as blobs.
+						{
+							store: history as SessionStore,
+							sessionId: source.id,
+							epoch: file.epoch,
+							hashes: [],
+							receipts: new Map(),
+						},
+						manager.sessionFile,
+					);
+					const receipts = new Map<string, () => Promise<SessionEntry>>();
+					for (const [hash, seq] of outputs) receipts.set(hash, () => readExportedEntry(source, seq));
+					await storeInlineToolOutputs(store, manager.sessionId, source.id, receipts);
+					const opened = await readStoredSession(store, manager.sessionId, undefined);
+					if (created.epoch !== undefined && opened.resume.epoch !== created.epoch)
+						throw new SessionConflictError(manager.sessionId, created.lastSeq, opened.resume.lastSeq);
+					manager.restoreOpened(opened, manager.sessionFile);
+					return manager;
+				};
+				if (typeof sessionDir === "string") {
+					// Decide before opening, which creates the directory: a window copy is checked before anything is written.
+					const relation = await exactDirectoryRelation(dirname(path), sessionDir);
+					const windowed = relation === "different" ? await exportedWindow(source) : undefined;
+					const store = await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false });
+					return SessionManager.constructWithStore(store, true, () => into(store, sessionDir, windowed));
+				}
+				const store = sessionDir ?? (await resolveSessionStore(targetCwd));
+				return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
+					const relation = await resolveForkStoreRelation(sourceStore, store);
+					return into(
+						store,
+						sessionDir instanceof JsonlSessionStore ? sessionDir.descriptor.location : "",
+						relation === "different" ? await exportedWindow(source) : undefined,
+					);
+				});
 			});
 		} finally {
 			await sourceStore.close();
 		}
-		const { entries, blobs } = takeInlineToolOutput(source.entries, source.id);
-		const store =
-			typeof sessionDir === "string"
-				? await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false })
-				: (sessionDir ?? (await resolveSessionStore(targetCwd)));
-		const directory =
-			typeof sessionDir === "string"
-				? sessionDir
-				: sessionDir instanceof JsonlSessionStore
-					? sessionDir.descriptor.location
-					: "";
-		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
-			const manager = new SessionManager(store, targetCwd, directory, {
-				...options,
-				parentSession: source.id,
-			});
-			manager.markForkOrigin(sourceStore);
-			assertSessionBlobStore(store, manager.sessionId, blobs.length);
-			manager.fileEntries.push(...entries);
-			await manager.initialize();
-			await storeSessionBlobs(store, manager.sessionId, blobs);
-			manager._buildIndex();
-			return manager;
-		});
 	}
 
 	static async findById(cwd: string, id: string, sessionDir?: string): Promise<string | undefined> {
