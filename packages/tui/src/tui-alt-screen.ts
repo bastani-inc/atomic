@@ -986,14 +986,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const wheelDelta =
 				wheelEvent.direction * ((wheelEvent.button & 8) !== 0 ? lines * ALT_WHEEL_SCROLL_MULTIPLIER : lines);
 			const event = this.createMouseEvent("wheel", wheelEvent.button, wheelEvent.x, wheelEvent.y, { wheelDelta });
-			const focus = this.getPointerFocus();
-			event.onWheelUnhandled = () => {
-				if (!this.stopped && this.getPointerFocus() === focus) this.routeWheel(wheelEvent, wheelDelta);
-			};
 			const overlay = this.dispatchMouseToOverlay(event);
 			const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(event));
 			if (result) {
-				if (this.applyMouseDispatchResult(event, result, focus)) this.requestRender();
+				if (this.applyMouseDispatchResult(event, result, this.getPointerFocus())) this.requestRender();
 				return { consume: true };
 			}
 			this.routeWheel(wheelEvent, wheelDelta);
@@ -1119,12 +1115,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (visited.has(box.component)) continue;
 			if (getLayoutNode(box.component) && box.component.handleMouse === Container.prototype.handleMouse) continue;
 			visited.add(box.component);
+			// A click names the painted source row. Wheel coordinates stay relative to the visible box.
+			const offset = event.type === "wheel" ? 0 : (box.lineOffset ?? 0);
 			const result = dispatchMouseEvent(box.component, {
 				...event,
 				x: event.screenX - box.rect.x,
-				y: event.screenY - box.rect.y + (box.lineOffset ?? 0),
+				y: event.screenY - box.rect.y + offset,
 				width: box.rect.width,
-				height: box.rect.height + (box.lineOffset ?? 0),
+				height: box.rect.height + offset,
 			});
 			if (result) return result;
 		}

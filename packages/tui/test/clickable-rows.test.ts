@@ -349,6 +349,32 @@ describe("clickable list rows", () => {
 		}
 	});
 
+	it("a cropped component still receives wheel coordinates relative to its visible box (#5532)", async () => {
+		const terminal = new VirtualTerminal(30, 2);
+		const tui = new TuiAltScreen(terminal);
+		const turns: number[][] = [];
+		const component: Component = {
+			render: () => ["Alpha", "Bravo", "Charlie", `${CURSOR_MARKER}Search`],
+			invalidate() {},
+			handleMouse(event) {
+				if (event.type !== "wheel") return undefined;
+				turns.push([event.y, event.height]);
+				return { handled: true };
+			},
+		};
+		tui.setLayoutRoot(new VStack([{ component, basis: 2 }]));
+		tui.setFocus(component);
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			assert.match(terminal.getViewport()[0]!, /Charlie/);
+			terminal.sendInput(wheelDown(3, 0));
+			assert.deepStrictEqual(turns, [[0, 2]]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("a clipped inline picker clicks the painted row, not the row above the clip", async () => {
 		const terminal = new VirtualTerminal(30, 2);
 		const picker = new Container();

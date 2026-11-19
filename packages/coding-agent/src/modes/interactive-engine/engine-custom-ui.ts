@@ -197,33 +197,6 @@ function sameFrame(
 	return JSON.stringify(frame.scrollRequest) === JSON.stringify(scrollRequest);
 }
 
-/**
- * The wheel event an SGR wheel report stands for, at the row and column it names, or undefined for other input. Holding
- * Shift, Alt or Ctrl is reported as the terminal sends it.
- */
-function wheelReportEvent(data: string, width: number, height: number): TuiMouseEvent | undefined {
-	const report = /^\x1b\[<(\d+);(\d+);(\d+)M$/.exec(data);
-	if (report === null) return undefined;
-	const code = Number.parseInt(report[1] ?? "", 10);
-	if ((code & 64) === 0 || (code & 3) > 1) return undefined;
-	const x = Math.max(0, Number.parseInt(report[2] ?? "1", 10) - 1);
-	const y = Math.max(0, Number.parseInt(report[3] ?? "1", 10) - 1);
-	return {
-		type: "wheel",
-		button: "none",
-		x,
-		y,
-		screenX: x,
-		screenY: y,
-		width,
-		height,
-		shift: (code & 4) !== 0,
-		alt: (code & 8) !== 0,
-		ctrl: (code & 16) !== 0,
-		wheelDelta: (code & 3) === 0 ? -1 : 1,
-	};
-}
-
 /** What `component` reports it drew on each of its `count` rows, when it reports anything. */
 function rowKeysOf(component: Component, count: number): string[] | undefined {
 	const key = component.paintedRowKey;
@@ -494,12 +467,6 @@ export class EngineCustomUiService {
 				try {
 					handled = runSynchronousCallback({ kind: "renderer", name: command.componentId }, () => {
 						if (isKeyRelease(command.data) && record.component.wantsKeyRelease !== true) return false;
-						// A wheel turn reaches a list's own wheel handling first, as it does in the host process.
-						const wheel = wheelReportEvent(command.data, record.terminal.columns, record.terminal.rows);
-						const handleMouse = record.component.handleMouse as
-							| ((event: TuiMouseEvent) => TuiMouseEventResult | undefined)
-							| undefined;
-						if (wheel !== undefined && handleMouse?.call(record.component, wheel)?.handled === true) return true;
 						const handleInput = record.component.handleInput as
 							| ((data: string) => boolean | undefined)
 							| undefined;

@@ -48,8 +48,6 @@ export interface TuiMouseEvent {
 	ctrl: boolean;
 	/** Logical lines. Negative values scroll up. */
 	wheelDelta?: number;
-	/** Continue normal viewport scrolling if a forwarded wheel event is declined after dispatch returns. */
-	onWheelUnhandled?: () => void;
 	/** Consecutive click count when type is click. */
 	clickCount?: number;
 }
@@ -1015,7 +1013,9 @@ export abstract class TuiBase extends Container implements TUI {
 	 * the layout behind it takes the event; while a dialog holds focus, it owns every point outside it as well.
 	 */
 	protected dispatchMouseToOverlay(event: TuiMouseEvent): { hit: boolean; result?: TuiMouseDispatchResult } {
-		const modal = this.getPointerFocus().owner;
+		// Modal ownership guards button gestures. The wheel follows the painted layout under the pointer.
+		const gesture = event.type !== "wheel";
+		const modal = gesture ? this.getPointerFocus().owner : undefined;
 		if (modal && !this.modalContainsPoint(modal, event.screenX, event.screenY)) return { hit: true };
 		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
 			const layout = this.renderedOverlayLayouts[index]!;
@@ -1027,7 +1027,8 @@ export abstract class TuiBase extends Container implements TUI {
 			) {
 				continue;
 			}
-			if (!this.overlayStack.includes(layout.entry) || !this.isOverlayVisible(layout.entry)) return { hit: true };
+			if (gesture && (!this.overlayStack.includes(layout.entry) || !this.isOverlayVisible(layout.entry)))
+				return { hit: true };
 			const result = dispatchMouseEvent(layout.entry.component, {
 				...event,
 				x: event.screenX - layout.col,

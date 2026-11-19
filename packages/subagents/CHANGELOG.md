@@ -8,7 +8,7 @@
 
 ### Added
 
-- In fullscreen mode, a click on an agent in `/agents` opens its details, and the wheel moves the selection.
+- In fullscreen mode, a click on an agent in `/agents` opens its details.
 
 ### Changed
 

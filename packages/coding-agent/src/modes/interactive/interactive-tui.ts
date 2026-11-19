@@ -557,7 +557,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		this.repairOverlayFocus();
 		// An overlay may yield before declining a mouse report. Never replay that report into a gesture that
 		// outlived its modal owner, even if the same overlay has since regained focus.
-		if (isMouseInput) {
+		if (isMouseInput && !isMouseWheelInput(data)) {
 			const focus = this.getPointerFocus();
 			const presses = new Map<string, () => boolean>();
 			for (const report of parseMouseSequences(data) ?? []) {
@@ -567,7 +567,9 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			}
 			const listener = viewportListener;
 			viewportListener = (report) => {
-				if (this.getPointerFocus() === focus && presses.get(report)?.() !== false) return listener(report);
+				// A coalesced chunk can contain both a press and a wheel. Only the gesture needs this guard.
+				if (isMouseWheelInput(report) || (this.getPointerFocus() === focus && presses.get(report)?.() !== false))
+					return listener(report);
 				return undefined;
 			};
 		}

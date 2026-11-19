@@ -988,45 +988,6 @@ test("fullscreen overlay fallback returns the default editor result", () => {
 	assert.equal(thinking.handler("\x14"), false);
 });
 
-test("a slow inline wheel reply scrolls only on a real decline (#5532)", async () => {
-	const bridge = makeBridge({ stallInput: true });
-	void bridge.child.custom(() => ({
-		render: () => ["List row"],
-		invalidate() {},
-		paintedRowKey: () => "list-row",
-		handleMouse: (event: TuiMouseEvent) => ({ handled: event.wheelDelta === 1 }),
-	}));
-	await flush();
-	const row = bridge.hostComponent;
-	assert.ok(row);
-	row.render(40);
-	const scrolled: number[] = [];
-	for (const delta of [1, -1]) {
-		row.handleMouse?.({
-			type: "wheel",
-			button: "none",
-			x: 0,
-			y: 0,
-			screenX: 0,
-			screenY: 0,
-			width: 40,
-			height: 1,
-			shift: false,
-			alt: false,
-			ctrl: false,
-			wheelDelta: delta,
-			onWheelUnhandled: () => scrolled.push(delta),
-		});
-	}
-	await sleep(REMOTE_INPUT_REPLY_TIMEOUT_MS + 20);
-	assert.deepEqual(scrolled, [], "a pending reply is not a decline");
-	for (const command of bridge.childCommands.filter((c) => c.type === "engine_custom_input")) {
-		bridge.child.handleLine(serializeInteractiveEngineFrame(command));
-	}
-	await flush();
-	assert.deepEqual(scrolled, [-1]);
-});
-
 test("an unresponsive remote child falls back to the viewport and keeps later input routable", async () => {
 	const bridge = makeBridge({ fullscreen: true, stallInput: true });
 	const inputs: string[] = [];

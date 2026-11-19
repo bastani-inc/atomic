@@ -1,6 +1,6 @@
 /**
- * A list an extension shows from the isolated engine runs its rows on one click and moves its selection on the wheel,
- * as it does in the host process: driven through Atomic's fullscreen renderer with SGR mouse reports, with the host's
+ * A list an extension shows from the isolated engine runs its rows on one click, as in the host process.
+ * These tests drive Atomic's fullscreen renderer with SGR mouse reports, with the host's
  * mirror of the engine component and the engine's custom-UI service joined by an in-process message pump.
  */
 import assert from "node:assert/strict";
@@ -136,59 +136,36 @@ test("a click-only engine component acts without taking the composer's keyboard"
 	}
 });
 
-test("the wheel over a list shown from the engine in the prompt's place moves its selection", async () => {
-	const ui = makeClickScreen(100, 30);
-	const shown = await showFromEngine(
-		ui,
-		() =>
-			new AgentBrowser(
-				[agent("alpha"), agent("bravo"), agent("charlie")],
-				theme,
-				() => {},
-				() => 30,
-			),
-		false,
-	);
-	try {
-		const selected = () => ui.screen().find((line) => line.includes("›")) ?? "";
-		assert.match(selected(), /alpha/);
-		await ui.wheel("down", 6, ui.rowOf(/\balpha\b/));
-		await settle(ui);
-		assert.match(selected(), /bravo/, ui.screen().join("\n"));
-	} finally {
-		shown.dispose();
-		ui.tui.stop();
-	}
-});
-
-test("the wheel reaches a search result inside the engine's bundled model manager", async () => {
+test("one click picks a search result inside the engine's bundled model manager", async () => {
 	const ui = makeClickScreen();
 	let mounted: ReturnType<typeof showFromEngine> | undefined;
 	const custom: ExtensionUIContext["custom"] = (factory) => {
 		mounted = showFromEngine(ui, factory, false);
 		return new Promise(() => {});
 	};
+	const picked: Array<string | undefined> = [];
 	void showLlamaUi({ ui: { custom } } as ExtensionCommandContext, async (manager) => {
-		await manager.searchModels(async () => [
+		const model = await manager.searchModels(async () => [
 			{ id: "alpha/first", downloads: 10 },
 			{ id: "alpha/second", downloads: 5 },
 		]);
+		picked.push(model);
 	});
 	const shown = await mounted;
 	try {
 		ui.terminal.input("a");
 		ui.terminal.input("l");
 		await vi.waitFor(() => assert.match(ui.screen().join("\n"), /❯ alpha\/first/), { timeout: 5000 });
-		await ui.wheel("down", 4, ui.rowOf("alpha/first"));
+		await ui.click("alpha/second");
 		await settle(ui);
-		assert.match(ui.screen().join("\n"), /❯ alpha\/second/);
+		assert.deepEqual(picked, ["alpha/second"]);
 	} finally {
 		shown?.dispose();
 		ui.tui.stop();
 	}
 });
 
-test("the wheel over a list an engine overlay shows moves its selection", async () => {
+test("one click chooses a session in an engine overlay", async () => {
 	const ui = makeClickScreen(100, 40);
 	const session = (id: string, name: string): SessionInfo => ({
 		id,
@@ -216,9 +193,9 @@ test("the wheel over a list an engine overlay shows moves its selection", async 
 		true,
 	);
 	try {
-		await ui.wheel("down", 6, ui.rowOf(/worker \(/));
+		await ui.click(/reviewer \(/, "reviewer");
 		await settle(ui);
-		assert.match(ui.screen().find((line) => line.includes("→")) ?? "", /reviewer/, ui.screen().join("\n"));
+		assert.deepEqual(picked, ["reviewer"]);
 	} finally {
 		shown.dispose();
 		ui.tui.stop();

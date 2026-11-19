@@ -271,8 +271,7 @@ class LlamaView implements LlamaUi, Focusable {
 	}
 
 	paintedRowKey(row: number): string | undefined {
-		// The search stacks result rows inside a framed container. Name the row that was actually painted so a
-		// remote host can forward its wheel event without taking scroll away from the transcript elsewhere.
+		// The search stacks results inside a frame. Identify the painted item so a click stays on that result.
 		let component = this.content;
 		while (!component.paintedRowKey && component instanceof Container) {
 			const hit = component.childAtRow(this.paintedWidth, row);
