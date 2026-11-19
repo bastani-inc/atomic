@@ -2000,6 +2000,7 @@ export class TaskInspector implements Component {
 			...new TaskDetail(task, {
 				...this.detailContent,
 				stdinAvailable: this.stdinAvailable(),
+				tasks: this.store.ownerTasks ?? this.store.tasks,
 				activity: this.store.recentActivity(task.ref.taskId),
 				activityOmitted: this.store.activityOmitted(task.ref.taskId),
 			}).renderContent(width),

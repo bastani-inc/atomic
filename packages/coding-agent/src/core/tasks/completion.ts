@@ -353,20 +353,15 @@ function resumeId(envelope: TaskCompletionEnvelope, task?: Partial<Pick<TaskReco
 }
 
 /**
- * The id a settled task's notice names in its resume call, or undefined when it names none: a subagent that finished,
- * or that a pause or quit stopped. {@link formatTaskCompletion} names the call under the same conditions.
+ * The id a subagent's notice names in its resume call, or undefined when it names none: a subagent that finished, or
+ * that a pause or quit stopped. {@link formatTaskCompletion} names the call under the same conditions.
  */
 function noticeResumeId(
 	envelope: TaskCompletionEnvelope,
 	task?: Partial<Pick<TaskRecord, "kind" | "launchOperationId">>,
 ): string | undefined {
-	const kind = task?.kind ?? envelope.taskKind;
-	const result = envelope.result;
-	if (envelope.interruptedByRestart === true) return undefined;
-	const finished = kind === "agent" && result.kind !== "cancelled";
-	// A pause interrupts a shell, and stops a task of unknown kind without naming a resume call.
-	const stopped = isResumableStop(result) && (result.cause !== "pause" || kind === "agent");
-	return finished || stopped ? resumeId(envelope, task) : undefined;
+	if ((task?.kind ?? envelope.taskKind) !== "agent" || envelope.interruptedByRestart === true) return undefined;
+	return resumableSubagentResult(envelope.result) ? resumeId(envelope, task) : undefined;
 }
 
 /**
@@ -378,12 +373,28 @@ export function resumableSubagentResult(result: TaskResult): boolean {
 	return result.kind !== "cancelled" || isResumableStop(result);
 }
 
-/** The id `/tasks` shows for a settled subagent that stays resumable, the id its notice's resume call names. */
+const supersededInList = new WeakMap<readonly TaskRecord[], ReadonlySet<TaskId>>();
+
+/**
+ * The id `/tasks` shows for a settled subagent that stays resumable, the id its notice's resume call names. With the
+ * list the task is shown in, only the subagent's latest attempt there names it: an attempt a resume continued does not.
+ */
 export function settledTaskResumeId(
 	task: Pick<TaskRecord, "kind" | "execution" | "launchOperationId" | "ref">,
+	tasks?: readonly TaskRecord[],
 ): string | undefined {
 	if (task.kind !== "agent" || task.execution.kind !== "settled") return undefined;
-	return resumableSubagentResult(task.execution.result) ? subagentResumeId(task.ref.taskId, task) : undefined;
+	if (!resumableSubagentResult(task.execution.result)) return undefined;
+	if (tasks !== undefined) {
+		// Each row of a list asks: work it out once per list, not once per row.
+		let superseded = supersededInList.get(tasks);
+		if (superseded === undefined) {
+			superseded = supersededSettledAttempts(tasks);
+			supersededInList.set(tasks, superseded);
+		}
+		if (superseded.has(task.ref.taskId)) return undefined;
+	}
+	return subagentResumeId(task.ref.taskId, task);
 }
 
 /** The sentence that tells how to continue a finished subagent: its exact resume call. */

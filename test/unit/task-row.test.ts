@@ -124,6 +124,27 @@ test("/tasks names the resume id of a settled subagent that stays resumable, in 
 		settled({ kind: "completed", output, exitCode: 0 }, "command"),
 	])
 		for (const text of shown(task)) assert.doesNotMatch(text, /resume id/i);
+
+	// Once resumed, the child is its latest attempt: only that one names the id, not the attempt it continued.
+	const first = {
+		...settled({ kind: "completed", output }),
+		launchOperationId: "a760c0ec:0" as TaskRecord["launchOperationId"],
+	};
+	const second: TaskRecord = {
+		...taskRecord("second-attempt"),
+		launchOperationId: "a760c0ec:0:resume:uuid" as TaskRecord["launchOperationId"],
+		launchOrdinal: 1,
+	};
+	const attempt = (task: TaskRecord, siblings: readonly TaskRecord[]) => [
+		plain(new TaskRow(task, { expanded: true, siblings }).render(120)),
+		plain(new TaskDetail(task, { stdinAvailable: false, tasks: siblings }).render(120)),
+	];
+	for (const text of attempt(first, [first, second]))
+		assert.doesNotMatch(text, /resume id/i, "while the resumed attempt runs");
+	const done: TaskRecord = { ...second, execution: { kind: "settled", result: { kind: "completed", output } } };
+	for (const text of attempt(first, [first, done]))
+		assert.doesNotMatch(text, /resume id/i, "after the resumed attempt finished");
+	for (const text of attempt(done, [first, done])) assert.match(text, /resume id a760c0ec:0/i, "the latest attempt");
 });
 
 test("an agent released while it waits shows released and what it waits on in /tasks, not paused (#5031)", () => {

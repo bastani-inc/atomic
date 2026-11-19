@@ -183,7 +183,7 @@ export async function waitForScriptChild(ctx: ExtensionContext, params: Subagent
 		action: "wait",
 		taskId,
 		outcome: "settled",
-		// A settled child that stays resumable names the call that continues it, as `status` does.
+		// A settled child that stays resumable names the call that continues it, in the shape `status` uses.
 		childId: owned.childId,
 		...(resumableSubagentResult(result) ? { resumeCall: { action: "resume", id: owned.childId } } : {}),
 		...(worktreeNote ? { worktreeNote } : {}),

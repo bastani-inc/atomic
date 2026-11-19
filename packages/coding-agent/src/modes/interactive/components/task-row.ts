@@ -247,7 +247,7 @@ export class TaskRow implements Component {
 		const duration = elapsedMs === undefined ? "" : ` · ${formatPanelElapsed(elapsedMs)}`;
 		lines.push(theme.fg("dim", truncateToWidth(`  ${state}${badge}${tools}${duration}${action}`, width)));
 		if (this.expanded) {
-			const resumeId = settledTaskResumeId(task);
+			const resumeId = settledTaskResumeId(task, siblings);
 			lines.push(
 				theme.fg(
 					"dim",

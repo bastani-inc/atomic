@@ -239,10 +239,12 @@ test("a resumable subagent's card keeps its line and shows the id its notice nam
 	assert.equal(paused?.resumeId, FINISHED_CHILD_ID);
 	assert.equal(card({ kind: "completed", output: task.output })?.resumeId, undefined, "unknown kind");
 	assert.equal(card({ kind: "cancelled", cause: "user" }, launched)?.resumeId, undefined, "killed");
-	assert.equal(
-		card({ kind: "completed", output: task.output, exitCode: 0 }, taskRecord("shell", "command"))?.resumeId,
-		undefined,
-	);
+	for (const result of [
+		{ kind: "completed", output: task.output, exitCode: 0 },
+		{ kind: "cancelled", cause: "quit" },
+	] as const)
+		assert.equal(card(result, taskRecord("shell", "command"))?.resumeId, undefined, `shell ${result.kind}`);
+	assert.equal(card({ kind: "cancelled", cause: "quit" })?.resumeId, undefined, "a quit task of unknown kind");
 	assert.ok(completed);
 	// A notice saved before it carried the id renders as it always did, collapsed and expanded.
 	const { resumeId: _id, ...saved } = completed;

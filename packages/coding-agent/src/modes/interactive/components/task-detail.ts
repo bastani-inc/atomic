@@ -38,6 +38,8 @@ export type TaskDetailContent = {
 	stdinAvailable: boolean;
 	activity?: readonly TaskActivity[];
 	activityOmitted?: boolean;
+	/** The tasks the detail's task is listed with: only a subagent's latest attempt among them names its resume id. */
+	tasks?: readonly TaskRecord[];
 };
 
 export function taskDetailSummary(task: TaskRecord): string {
@@ -157,7 +159,7 @@ export class TaskDetail implements Component {
 			if (this.content.prompt !== undefined) section("Prompt", this.content.prompt, 3);
 			if (this.content.output) section("Latest response", this.content.output, 5);
 		}
-		const resumeId = settledTaskResumeId(task);
+		const resumeId = settledTaskResumeId(task, this.content.tasks);
 		lines.push(
 			"",
 			theme.fg(
