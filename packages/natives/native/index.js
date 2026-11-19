@@ -883,3 +883,7 @@ module.exports.trySharedAdvisoryLock = nativeBinding.trySharedAdvisoryLock
 module.exports.windowsDirectorySecurity = nativeBinding.windowsDirectorySecurity
 module.exports.windowsDirectorySecurityAsync = nativeBinding.windowsDirectorySecurityAsync
 module.exports.YieldReason = nativeBinding.YieldReason
+
+if (process.platform === 'win32' && module.exports.WindowsTemporaryFile?.prototype.writeFile) {
+  process[Symbol.for('@bastani/atomic/windows-temporary@1')] = module.exports
+}

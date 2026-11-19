@@ -62,8 +62,12 @@ export async function sharedClockOffset(directory: string): Promise<number> {
 		let offset: number;
 		try {
 			const before = Date.now();
-			if (process.platform === "win32") temporary = await openWindowsTemporary(probe, "clock");
-			if (temporary === undefined) {
+			const opening = process.platform === "win32" ? openWindowsTemporary(probe, "clock") : undefined;
+			if (opening) {
+				temporary = await opening;
+				if (!temporary) return 0;
+				created = true;
+			} else {
 				const file = await open(probe, "wx");
 				created = true;
 				await file.close();

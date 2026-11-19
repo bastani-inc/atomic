@@ -13,5 +13,10 @@ export function fixGeneratedBinding(loader: string, declarations: string) {
 		if (!declarations.includes(marker)) throw new Error("Review updated napi binding marker declaration");
 		declarations = declarations.replace(marker, `${marker} | undefined`);
 	}
+	// A clock sample may use an already-loaded binding, but must never trigger package resolution or installation.
+	const loadedTemporaryFiles = `if (process.platform === 'win32' && module.exports.WindowsTemporaryFile?.prototype.writeFile) {
+  process[Symbol.for('@bastani/atomic/windows-temporary@1')] = module.exports
+}`;
+	if (!loader.includes(loadedTemporaryFiles)) loader = `${loader.trimEnd()}\n\n${loadedTemporaryFiles}\n`;
 	return { loader, declarations };
 }

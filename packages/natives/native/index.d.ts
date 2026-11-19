@@ -172,6 +172,8 @@ export declare class WaitLease {
 }
 
 export declare class WindowsTemporaryFile {
+  /** Write through the handle granted at creation; opening the path again can require different permissions. */
+  writeFile(data: string): Promise<undefined>
   /** Close the original handle off the event loop. Closing it removes only its own name, not a published hard link. */
   close(): Promise<undefined>
 }
@@ -671,7 +673,7 @@ export interface OmittedRange {
 /**
  * Opens an exclusive temporary file, pinning its name until close. A clock probe takes the rights granted by its
  * directory and requests deletion only after measuring the clock; a writable record also requests delete access.
- * Reports a collision separately and returns null when this open is unavailable.
+ * A failed probe create rejects; only a name collision permits another attempt. A record may fall back if delete access is unavailable.
  */
 export declare function openWindowsTemporaryFile(path: string, clockProbe?: boolean | undefined | null): Promise<WindowsTemporaryFile | undefined | null>
 

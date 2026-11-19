@@ -109,10 +109,22 @@ vi.mock("../src/core/worktree-snapshot/windows-temporary.ts", async (original) =
 	const actual = await original<typeof import("../src/core/worktree-snapshot/windows-temporary.ts")>();
 	return {
 		...actual,
-		openWindowsTemporary: (path: string, kind: "record" | "clock") =>
-			lockRefusals.deleteOnCloseUnavailable && path.endsWith(".tmp")
-				? undefined
-				: actual.openWindowsTemporary(path, kind),
+		openWindowsTemporary: (path: string, kind: "record" | "clock") => {
+			if (lockRefusals.deleteOnCloseUnavailable && kind === "record") return undefined;
+			const opening = actual.openWindowsTemporary(path, kind);
+			if (kind === "clock") return opening;
+			return opening?.then(
+				(file) =>
+					file && {
+						close: () => file.close(),
+						writeFile: async (data: string) => {
+							await lockRefusals.onRecordWrite?.(path, data);
+							await file.writeFile(data);
+							lockRefusals.afterWrite?.(path);
+						},
+					},
+			);
+		},
 	};
 });
 

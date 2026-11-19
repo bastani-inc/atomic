@@ -1,5 +1,5 @@
 //! A Windows temporary name reserved for deletion at creation, not looked up again at cleanup.
-use std::fs::File;
+use std::{fs::File, io::Write, sync::Arc};
 
 use napi_derive::napi;
 
@@ -15,12 +15,12 @@ pub fn remove_windows_file_older_than(path: String, before_ms: f64) -> crate::ta
 			};
 			use windows_sys::Win32::Storage::FileSystem::{
 				DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-				FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+				FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
 			};
-			// Do not follow a link at the old probe's name or let another opener move this name before disposition.
+			// Preserve unlink's sharing semantics. Check and dispose the same opened file, not its path.
 			let Ok(file) = OpenOptions::new()
 				.access_mode(DELETE | FILE_READ_ATTRIBUTES)
-				.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+				.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
 				.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
 				.open(path)
 			else {
@@ -46,11 +46,24 @@ pub fn remove_windows_file_older_than(path: String, before_ms: f64) -> crate::ta
 
 #[napi]
 pub struct WindowsTemporaryFile {
-	file: Option<File>,
+	file: Option<Arc<File>>,
 }
 
 #[napi]
 impl WindowsTemporaryFile {
+	/// Write through the handle granted at creation; opening the path again can require different permissions.
+	#[napi]
+	pub fn write_file(&self, data: String) -> crate::task::Promise<()> {
+		let file = self.file.clone();
+		crate::task::blocking("temporary-file-write", (), move |_| {
+			let mut file =
+				file.as_deref().ok_or_else(|| napi::Error::from_reason("File is closed"))?;
+			file
+				.write_all(data.as_bytes())
+				.map_err(|error| napi::Error::from_reason(error.to_string()))
+		})
+	}
+
 	/// Close the original handle off the event loop. Closing it removes only its own name, not a published hard link.
 	#[napi]
 	pub fn close(&mut self) -> crate::task::Promise<()> {
@@ -119,7 +132,7 @@ fn dispose_by_handle(file: &File) -> std::io::Result<()> {
 
 /// Opens an exclusive temporary file, pinning its name until close. A clock probe takes the rights granted by its
 /// directory and requests deletion only after measuring the clock; a writable record also requests delete access.
-/// Reports a collision separately and returns null when this open is unavailable.
+/// A failed probe create rejects; only a name collision permits another attempt. A record may fall back if delete access is unavailable.
 #[napi]
 pub fn open_windows_temporary_file(
 	path: String,
@@ -147,10 +160,11 @@ pub fn open_windows_temporary_file(
 				options.access_mode(FILE_GENERIC_WRITE | DELETE);
 			}
 			match options.open(path) {
-				Ok(file) => Ok(Some(WindowsTemporaryFile { file: Some(file) })),
+				Ok(file) => Ok(Some(WindowsTemporaryFile { file: Some(Arc::new(file)) })),
 				Err(error) if error.kind() == ErrorKind::AlreadyExists => {
 					Err(napi::Error::from_reason("EEXIST"))
 				},
+				Err(error) if measuring => Err(napi::Error::from_reason(error.to_string())),
 				Err(_) => Ok(None),
 			}
 		}

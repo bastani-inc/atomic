@@ -562,7 +562,9 @@ async function createRecord(file: string, record: PoolSlotRecord): Promise<boole
 	let created = false;
 	try {
 		const data = JSON.stringify(record);
-		if (windows && !reservation) {
+		if (reservation) {
+			await reservation.writeFile(data);
+		} else if (windows) {
 			// Without a native handle, distinguish a failed exclusive create from a later partial write.
 			const file = await open(temporary, "wx", 0o600);
 			created = true;

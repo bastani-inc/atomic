@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, test, vi } from "vitest";
+import { afterEach, beforeAll, test, vi } from "vitest";
 import { sharedClockNow, sharedClockOffset } from "../src/core/worktree-snapshot/shared-clock.js";
 
 const names = vi.hoisted(() => [] as Buffer[]);
@@ -81,6 +82,10 @@ vi.mock("node:fs/promises", async (original) => {
 	};
 });
 
+beforeAll(() => {
+	if (process.platform === "win32") createRequire(import.meta.url)("@bastani/atomic-natives");
+});
+
 afterEach(() => {
 	io.calls.length = 0;
 	io.afterList = undefined;
@@ -145,6 +150,19 @@ test.runIf(process.platform === "win32")(
 			assert.deepEqual(readdirSync(directory), []);
 		} finally {
 			if (reader !== undefined) closeSync(reader);
+			rmSync(directory, { recursive: true, force: true });
+		}
+	},
+);
+
+test.runIf(process.platform === "win32")(
+	"a failed native create in a missing directory is not tried again (#5674)",
+	async () => {
+		const directory = mkdtempSync(join(tmpdir(), "clock-missing-"));
+		try {
+			assert.equal(await sharedClockOffset(join(directory, "missing")), 0);
+			assert.ok(!io.calls.includes("open"), "retried a failed native create by pathname");
+		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
 	},
