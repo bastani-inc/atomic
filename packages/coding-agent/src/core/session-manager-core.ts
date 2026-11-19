@@ -1108,6 +1108,8 @@ export class SessionManager {
 			manager.restore(snapshot);
 			await manager.initialize();
 			await storeSessionBlobs(this.store, snapshot.header.id, blobs);
+			// The imported file is saved; continue from its current context window, as a resume does (#5554).
+			manager.restoreOpened(await readStoredSession(this.store, snapshot.header.id, undefined), manager.sessionFile);
 			return manager;
 		} finally {
 			await source.close();
