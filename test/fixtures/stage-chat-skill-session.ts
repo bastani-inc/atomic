@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
 	buildSkillCatalog,
+	type CreateAgentSessionOptions,
 	createSyntheticSourceInfo,
 	initTheme,
 	type PromptTemplate,
@@ -27,6 +28,7 @@ import type { StageChatViewOpts } from "../../packages/workflows/src/tui/stage-c
 import { writeFileEnsuringDir } from "../helpers/runtime.js";
 
 export interface StageSkillFixtureOptions {
+	readonly initialContextTransform?: CreateAgentSessionOptions["initialContextTransform"];
 	/** Prompt templates the stage session can expand. */
 	readonly prompts?: readonly PromptTemplate[];
 	/** Extensions loaded into the stage session. */
@@ -65,7 +67,7 @@ export async function createStageSkillFixture(options: StageSkillFixtureOptions 
 		getSkills: () => ({ skills: [stageSkill], diagnostics: [] }),
 		getSkillCatalog: () => catalog,
 	};
-	const stage = await createHarness({ resourceLoader: loader, sessionManager: (await SessionManager.create(join(directory, "stage-cwd"), join(directory, "sessions"))), settings: { retry: { enabled: false } },
+	const stage = await createHarness({ resourceLoader: loader, initialContextTransform: options.initialContextTransform, sessionManager: (await SessionManager.create(join(directory, "stage-cwd"), join(directory, "sessions"))), settings: { retry: { enabled: false } },
 		tools: [{ name: "ask_user_question", label: "Fixture readiness", description: "Deterministic readiness barrier", parameters: Type.Object({}),
 			async execute() { return { content: [{ type: "text", text: "Fixture ready" }], details: {} }; } }],
 	});

@@ -454,7 +454,7 @@ function transcriptView(
 					content: message.content.filter((_, index) => itemIds.has(`${entry.id}:${index}`)),
 				},
 			];
-		return message.role === "user" || message.role === "toolResult" ? [message] : [];
+		return [message];
 	});
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;
