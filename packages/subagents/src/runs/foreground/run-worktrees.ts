@@ -47,7 +47,7 @@ interface RunWorktrees {
 	readonly removed: Set<number>;
 	/** The run returned: nothing more is launched by it, so worktrees go once no execution holds them. */
 	returned: boolean;
-	sweeping: Promise<void>;
+	sweeping?: Promise<void>;
 	sweepNote?: string;
 	/** Edits are saved as a patch before a worktree is removed, also for a run tracked again after a restart. */
 	readonly diffs?: {
@@ -144,10 +144,15 @@ async function sweepIdle(run: RunWorktrees, failedResume?: number): Promise<void
 }
 
 function sweep(run: RunWorktrees, failedResume?: number): Promise<void> {
-	const next = run.sweeping.then(() => sweepIdle(run, failedResume));
-	run.sweeping = next.catch(() => {
-		run.sweepNote = "Worktree cleanup failed. Check the worktree before removing it.";
-	});
+	const next = (run.sweeping ?? Promise.resolve()).then(() => sweepIdle(run, failedResume));
+	const observed = next
+		.catch(() => {
+			run.sweepNote = "Worktree cleanup failed. Check the worktree before removing it.";
+		})
+		.finally(() => {
+			if (run.sweeping === observed) run.sweeping = undefined;
+		});
+	run.sweeping = observed;
 	return next;
 }
 
@@ -156,7 +161,7 @@ function hold(run: RunWorktrees): (failedResume?: number) => Promise<void> {
 	run.holds.add(token);
 	return (failedResume) => {
 		if (run.holds.delete(token)) return sweep(run, failedResume);
-		return run.sweeping;
+		return run.sweeping ?? Promise.resolve();
 	};
 }
 function track(runId: string, setup: WorktreeSetup, diffs?: RunWorktreeDiffs): RunWorktrees {
@@ -169,7 +174,6 @@ function track(runId: string, setup: WorktreeSetup, diffs?: RunWorktreeDiffs): R
 		stopped: new Set(),
 		removed: new Set(),
 		returned: false,
-		sweeping: Promise.resolve(),
 		...(diffs ? { diffs: { ...diffs, agents: [...diffs.agents], patchPaths: new Map() } } : {}),
 	};
 	runs.set(runId, run);
@@ -212,6 +216,17 @@ const CLEANUP_IN_BACKGROUND = "Worktree cleanup continues in the background; wai
 const BATCH_KEPT = "Worktree kept until the other children in this batch finish.";
 export const WORKTREE_REPLY_WAIT_MS = 10_000;
 
+function idleWorktreeNote(run: RunWorktrees): string | undefined {
+	return run.holds.size || run.launching.size ? BATCH_KEPT : run.sweepNote;
+}
+
+/** A card renders synchronously: report the current sweep or hold without starting or waiting for work. */
+export function currentChildWorktreeNote(runId: string, index: number): string | undefined {
+	const run = runs.get(runId);
+	if (!run?.setup.worktrees.some((tree) => tree.index === index)) return undefined;
+	return run.finishing.has(index) || run.sweeping ? CLEANUP_IN_BACKGROUND : idleWorktreeNote(run);
+}
+
 /** Bound the observation, not the cleanup: it must still release its hold and save the child's changes. */
 export async function boundedWorktreeReply(
 	runId: string,
@@ -223,12 +238,8 @@ export async function boundedWorktreeReply(
 	if (!run) return undefined;
 	const finished = async () => {
 		await work.catch(() => {});
-		let observed: Promise<void>;
-		do {
-			observed = run.sweeping;
-			await observed;
-		} while (observed !== run.sweeping);
-		return run.holds.size || run.launching.size ? BATCH_KEPT : run.sweepNote;
+		while (run.sweeping) await run.sweeping;
+		return idleWorktreeNote(run);
 	};
 	const interrupted = Promise.withResolvers<string>();
 	const endWait = () => interrupted.resolve(CLEANUP_IN_BACKGROUND);
@@ -250,7 +261,9 @@ export function observeChildWorktreeAtReply(
 	deadline?: number,
 	signal?: AbortSignal,
 ): Promise<string | undefined> {
-	return boundedWorktreeReply(runId, runs.get(runId)?.finishing.get(index), deadline, signal);
+	const run = runs.get(runId);
+	if (!run?.setup.worktrees.some((tree) => tree.index === index)) return Promise.resolve(undefined);
+	return boundedWorktreeReply(runId, run.finishing.get(index), deadline, signal);
 }
 
 /** The execution's hold ends after session cleanup, even when the reply's deadline expires first. */

@@ -21,7 +21,6 @@ export type RetainedTaskOutput = {
 	/** Leading bytes of the output, bounded by INLINE_TASK_OUTPUT_MAX_BYTES. */
 	readonly head: string;
 	readonly totalBytes: number;
-	worktreeNote?: string;
 	readonly worktree?: { readonly runId: string; readonly index: number };
 };
 
@@ -97,7 +96,6 @@ export async function retainTaskOutput(
 		...(child.outputReference ? { requestedPath: child.outputReference.path } : {}),
 		...(child.outputSaveError ? { saveError: child.outputSaveError } : {}),
 		...(worktree ? { worktree } : {}),
-		...(child.worktreeNote ? { worktreeNote: child.worktreeNote } : {}),
 		head: utf8Head(text, INLINE_TASK_OUTPUT_MAX_BYTES),
 		totalBytes: Buffer.byteLength(text, "utf-8"),
 	});

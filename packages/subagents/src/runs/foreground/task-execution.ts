@@ -51,7 +51,7 @@ import {
 	runWorktreeRecord,
 	unparkRunWorktree,
 } from "./run-worktrees.js";
-import { readableSubagentChildRecordOf } from "./subagent-child-card-state.js";
+import { readableSubagentChildRecordOf, subagentChildCardRecord } from "./subagent-child-card-state.js";
 import {
 	observeChildRecordFailure,
 	pendingMessagesOfResult,
@@ -151,9 +151,11 @@ function settledOutputSection(
 		output.shown < output.total
 			? `, first ${output.shown} shown${output.path ? "; read the full output file for the rest" : ""}`
 			: "";
-	const lines = [`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):`];
+	// Keep the observation in the header, not in the answer a replayed card extracts from this section.
+	const lines = [
+		`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):${output.worktreeNote ? ` ${output.worktreeNote}` : ""}`,
+	];
 	if (ranOn) lines.push(ranOn);
-	if (output.worktreeNote) lines.push(output.worktreeNote);
 	if (output.requestedPath) lines.push(`Requested output: ${output.requestedPath}`);
 	if (output.saveError) lines.push(`Output file error: ${output.saveError}`);
 	if (output.path) lines.push(`Full output: ${output.path}`);
@@ -173,26 +175,29 @@ async function readSettledOutput(
 	// A child that ran on another model than its launch asked for says so beside its output (#4188).
 	const ranOn = ranOnModelLine(record);
 	const kept = retainedTaskOutput(output.ownerId, output.taskId);
+	const tree = kept
+		? kept.worktree
+		: record?.kind === "agent"
+			? subagentChildCardRecord(undefined, settled.taskId)
+			: undefined;
+	const observeWorktree = () => tree && observeChildWorktreeAtReply(tree.runId, tree.index, undefined, signal);
 	if (kept) {
-		if (kept.worktree)
-			kept.worktreeNote = await observeChildWorktreeAtReply(
-				kept.worktree.runId,
-				kept.worktree.index,
-				undefined,
-				signal,
-			);
 		return settledOutputSection(
 			settled.taskId,
 			label,
 			{
 				...kept,
+				worktreeNote: await observeWorktree(),
 				shown: Math.min(kept.totalBytes, INLINE_TASK_OUTPUT_MAX_BYTES),
 				total: kept.totalBytes,
 			},
 			ranOn,
 		);
 	}
-	const unavailable = (reason: string) => `Output of ${settled.taskId} (${label}) is unavailable: ${reason}`;
+	const unavailable = async (reason: string) =>
+		[`Output of ${settled.taskId} (${label}) is unavailable: ${reason}`, await observeWorktree()]
+			.filter(Boolean)
+			.join("\n");
 	const lease = host.resolveTask(settled.taskId);
 	if (!lease.ok) return unavailable(lease.error.message);
 	try {
@@ -205,7 +210,12 @@ async function readSettledOutput(
 		const head =
 			page.value.chunks.map((chunk) => decoder.decode(chunk.bytes, { stream: true })).join("") + decoder.decode();
 		const shown = page.value.chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0);
-		return settledOutputSection(settled.taskId, label, { head, shown, total: Number(output.byteCount) }, ranOn);
+		return settledOutputSection(
+			settled.taskId,
+			label,
+			{ head, shown, total: Number(output.byteCount), worktreeNote: await observeWorktree() },
+			ranOn,
+		);
 	} catch (error) {
 		return unavailable(error instanceof Error ? error.message : String(error));
 	}
@@ -831,11 +841,6 @@ export async function runAgentTask(input: {
 								? undefined
 								: retainTaskOutput(child, worktreeOutput, context.ref, { runId, index });
 							child.worktreeNote = await finishWorktree(Promise.all([executionCleanup, saved]));
-							if (child.worktreeNote) {
-								const kept = retainedTaskOutput(context.ref.ownerId, context.ref.taskId);
-								if (kept) kept.worktreeNote = child.worktreeNote;
-								worktreeOutput = `${child.worktreeNote}\n\n${worktreeOutput}`;
-							}
 						}
 						if (released && child.released) {
 							// The record goes first: a result forwarded before it would find the child still recorded running.

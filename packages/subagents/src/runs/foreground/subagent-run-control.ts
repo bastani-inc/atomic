@@ -396,6 +396,7 @@ async function stopChildren(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 	request: SubagentRunControlRequest & { action: "pause" | "quit" },
+	onWorktreeTarget: () => void,
 ): Promise<SubagentToolResult> {
 	const { action } = request;
 	const deadline = Date.now() + WORKTREE_REPLY_WAIT_MS;
@@ -424,6 +425,8 @@ async function stopChildren(
 			return errorResult(action, `Unknown subagent '${request.id}': this session launched no such child.`);
 		targets = [resolved];
 	}
+	const trees = targets.filter((record) => record.worktree && !record.worktree.named);
+	if (trees.length) onWorktreeTarget();
 	const children: SubagentRunControlChild[] = [];
 	const lines: string[] = [];
 	const failures: string[] = [];
@@ -493,7 +496,6 @@ async function stopChildren(
 		);
 	}
 	// Broker acknowledgements and later targets can yield while a sibling starts the batch sweep.
-	const trees = targets.filter((record) => record.worktree && !record.worktree.named);
 	const notes = trees.length
 		? await Promise.all(
 				trees.map(async (record) => {
@@ -755,11 +757,15 @@ export function controlSubagentChildren(
 	if (request.action === "resume") return resumeChild(deps, ctx, request, signal);
 	const action = request.action;
 	// A child that does not stop yet keeps its stop waiting: the interrupted turn ends, and the stop goes on.
-	return unlessInterrupted(stopChildren(deps, ctx, { ...request, action }), signal).then((result) =>
+	let worktreeNotice = "";
+	const stopping = stopChildren(deps, ctx, { ...request, action }, () => {
+		worktreeNotice = " Any worktree cleanup continues in the background.";
+	});
+	return unlessInterrupted(stopping, signal).then((result) =>
 		result === INTERRUPTED
 			? errorResult(
 					action,
-					`Interrupted before ${action} finished: the stop was requested and goes on. Any worktree cleanup continues in the background. subagent({ action: "status"${request.id ? `, id: "${request.id}"` : ""} }) shows where ${request.id ? "the child stands" : "each child stands"}.`,
+					`Interrupted before ${action} finished: the stop was requested and goes on.${worktreeNotice} subagent({ action: "status"${request.id ? `, id: "${request.id}"` : ""} }) shows where ${request.id ? "the child stands" : "each child stands"}.`,
 				)
 			: result,
 	);

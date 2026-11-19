@@ -22,6 +22,7 @@ import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { Message } from "@bastani/atomic-ai/compat";
 import { type Component, getKeybindings, Text, truncateToWidth } from "@bastani/atomic-tui";
 import type { TaskResult, WaitOutcome } from "../../../coding-agent/src/core/tasks/contracts.js";
+import { currentChildWorktreeNote } from "../runs/foreground/run-worktrees.js";
 import {
 	clearSubagentChildTranscriptCache,
 	type SubagentChildToolCallEntry,
@@ -568,16 +569,7 @@ class SectionRecord implements Component {
 	}
 }
 
-function extractInlineSettledOutput(
-	result: AgentToolResult<Details>,
-	taskId: string,
-	ownerId?: string,
-): string | undefined {
-	if (ownerId) {
-		const kept = retainedTaskOutput(ownerId, taskId);
-		if (kept?.worktreeNote || kept?.head?.trim())
-			return [kept.worktreeNote, kept.head.trim()].filter(Boolean).join("\n\n");
-	}
+function extractInlineSettledOutput(result: AgentToolResult<Details>, taskId: string): string | undefined {
 	const textPart = result.content.find((part) => part.type === "text");
 	if (textPart?.type !== "text") return undefined;
 	const prefix = `Output of ${taskId} (`;
@@ -937,7 +929,11 @@ function buildOutcomeToolBlock(input: {
 
 		const ownerId =
 			task?.ref.ownerId ?? (observation.kind === "settled" ? observation.result.output?.ownerId : undefined);
-		const resultText = hydrated?.result ?? extractInlineSettledOutput(result, activeTaskId, ownerId);
+		const kept = ownerId ? retainedTaskOutput(ownerId, activeTaskId) : undefined;
+		const answer = hydrated?.result ?? (kept?.head.trim() || extractInlineSettledOutput(result, activeTaskId));
+		const tree = kept?.worktree ?? record;
+		const note = !isRunningNow && tree ? currentChildWorktreeNote(tree.runId, tree.index) : undefined;
+		const resultText = note ? [note, answer].filter(Boolean).join("\n\n") : answer;
 		const toolCallsUnavailable =
 			hydrated?.unavailable ??
 			((task?.metrics?.toolCount ?? 0) > 0 && (!hydrated || hydrated.toolCalls.length === 0)

@@ -7,6 +7,7 @@ import { delimiter, join } from "node:path";
 import type { AgentSession, DetachedToolCall, DetachedToolResult, ExtensionContext } from "@bastani/atomic";
 import { Agent } from "@bastani/atomic-agent-core";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
+import { stripTerminalSequences } from "@bastani/atomic-tui";
 import { afterEach, test, vi } from "vitest";
 import {
 	AgentWakeDispatcher,
@@ -20,6 +21,7 @@ import type { Sequence, TaskId } from "../../packages/coding-agent/src/core/task
 import { FINISHED_TASK_RETENTION } from "../../packages/coding-agent/src/core/tasks/eviction-error.js";
 import { taskHostStateSizesForTesting } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	formatReleasedReply,
 	RELEASED_REPLY_FORMAT_EVENT,
@@ -30,6 +32,7 @@ import {
 	type ReleasedChildReplyRequest,
 } from "../../packages/intercom/released-reply-wait.js";
 import type { AgentConfig, AgentScope } from "../../packages/subagents/src/agents/agents.js";
+import { renderSubagentToolResult } from "../../packages/subagents/src/extension/tool-rendering.js";
 import { INTERCOM_BRIDGE_MARKER } from "../../packages/subagents/src/intercom/intercom-bridge.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -141,6 +144,7 @@ import { createStore as createWorkflowStore } from "../../packages/workflows/src
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { drained, waitForWakeCompletion } from "../helpers/wake-completion.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { theme } from "./subagents-render-stability-helpers.js";
 
 const ORIGINAL_TASK = "original task";
 /** The detached call a released child waits on in these tests. */
@@ -3423,6 +3427,65 @@ test("waiting for a finished child checks a batch sweep already started by its s
 	}
 });
 
+test("the original launch card shows the answers after the last sibling releases the batch worktrees (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	bindSubagentChildCards(h.ctx);
+	initTheme("dark", false);
+	const first = Promise.withResolvers<void>();
+	const last = Promise.withResolvers<void>();
+	h.finishOn.set("first-to-finish", first);
+	h.finishOn.set("last-to-finish", last);
+	const args = {
+		tasks: ["first-to-finish", "last-to-finish"].map((task) => ({ agent: "worker", task })),
+		worktree: true,
+	};
+	const launch = await h.call(args);
+	assert.notEqual(launch.isError, true, text(launch));
+	try {
+		const [a, b] = await vi.waitFor(
+			() => {
+				const records = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+					(a, b) => a.index - b.index,
+				);
+				assert.equal(records.filter((record) => record.childSessionId).length, 2);
+				return records;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		assert.ok(a?.taskId && b?.taskId);
+		writeFileSync(join(a.cwd, "first-result.txt"), "first child's deliverable\n");
+		first.resolve();
+		await settled(h, a.taskId);
+		assert.ok(existsSync(a.cwd));
+		last.resolve();
+		await settled(h, b.taskId);
+		assert.equal(existsSync(a.cwd) || existsSync(b.cwd), false);
+		const card = renderSubagentToolResult(launch, { expanded: true, isPartial: false }, theme, {
+			state: {},
+			toolCallId: "launch",
+			args,
+			invalidate() {},
+			getTaskRecord: (id) => h.host.taskRecords(new Set([id]))[0],
+		})
+			.render(160)
+			.map(stripTerminalSequences)
+			.join("\n");
+		assert.equal(occurrences(card, "Done"), 2);
+		assert.equal(occurrences(card, "finished"), 2);
+		assert.doesNotMatch(card, /worktree kept until the other children in this batch finish/i);
+		for (const action of ["wait", "status"] as const) {
+			const reply = text(await h.call({ action, id: a.taskId }));
+			assert.doesNotMatch(reply, /worktree kept until/i);
+			assert.match(reply, /\(completed, 8 bytes\):[\s\S]*finished$/);
+			assert.match(reply, /"byteCount":"8"/, "the output reference counts only the child's answer");
+		}
+	} finally {
+		first.resolve();
+		last.resolve();
+	}
+});
+
 test("an SDK foreground batch reports when its child's worktree sweep is still running (#5600)", async () => {
 	const h = harness({ ownerless: true });
 	initGitRepository(h.cwd);
@@ -6010,7 +6073,7 @@ function taskExecutionKind(h: Harness, taskId: string): string | undefined {
 }
 
 for (const action of ["pause", "quit"] as const) {
-	test(`interrupting the parent's turn ends a ${action} still waiting for a child that has not stopped yet, and the ${action} goes on (#5485)`, async () => {
+	test(`interrupting the parent's turn ends a ${action} still waiting for a plain child with just the stop and status guidance (#5485, #5600)`, async () => {
 		const h = harness();
 		const stuck = Promise.withResolvers<void>();
 		h.stuckOn.set(ORIGINAL_TASK, stuck);
@@ -6028,9 +6091,9 @@ for (const action of ["pause", "quit"] as const) {
 				await settlesWithin(turn.waitForIdle()),
 				`the interrupted turn ends while the ${action} still waits`,
 			);
-			assert.match(
+			assert.equal(
 				parentToolResultText(turn),
-				new RegExp(`Interrupted before ${action} finished: the stop was requested and goes on`),
+				`Interrupted before ${action} finished: the stop was requested and goes on. subagent({ action: "status", id: "${childId}" }) shows where the child stands.`,
 			);
 		} finally {
 			stuck.resolve();
