@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	unlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -116,15 +125,56 @@ function assertNoProbes(directory: string, leftBefore: readonly string[] = []): 
  * refreshing it, each refresh through probes there: a refresh still running when `directory` is read has its probe
  * there until it ends, so the probes found are looked for again once `lock` was refreshed since (#5605).
  */
-async function assertNoProbesLeftByLiveHolder(directory: string, lock: string): Promise<void> {
+async function assertNoProbesLeftByLiveHolder(directory: string, lock: string, budgetMs = STALE_MS): Promise<void> {
 	const found = probes(directory);
-	const refreshed = statSync(lock).mtimeMs;
-	while (found.length > 0 && statSync(lock).mtimeMs === refreshed) await sleep(50);
-	assert.deepEqual(
-		probes(directory).filter((name) => found.includes(name)),
-		[],
-	);
+	let refreshed = statSync(lock).mtimeMs;
+	for (let refresh = 0; refresh < 2; refresh++) {
+		const deadline = performance.now() + budgetMs;
+		let stamp = refreshed;
+		while (stamp === refreshed) {
+			assert.ok(performance.now() < deadline, "holder did not refresh its lock");
+			await sleep(50);
+			stamp = statSync(lock).mtimeMs;
+		}
+		refreshed = stamp;
+		const remaining = probes(directory).filter((name) => found.includes(name));
+		if (remaining.length === 0) return;
+		// One refresh may have left its final probe for cleanup during the following refresh.
+		if (refresh === 1) assert.deepEqual(remaining, []);
+	}
 }
+
+test("a live-holder check rejects a stopped holder even when no probes were found (#5635)", async () => {
+	const directory = sandbox.path("stopped");
+	mkdirSync(directory);
+	const lock = join(directory, "holder.lock");
+	mkdirSync(lock);
+	await assert.rejects(assertNoProbesLeftByLiveHolder(directory, lock, 50), /holder did not refresh/);
+});
+
+test("a live-holder check distinguishes next-refresh cleanup from a permanent leak (#5635)", async () => {
+	const directory = sandbox.path("refreshing");
+	mkdirSync(directory);
+	const lock = join(directory, "holder.lock");
+	mkdirSync(lock);
+	const probe = join(directory, ".clock-0123456789abcdef.probe");
+	for (const leak of [true, false]) {
+		writeFileSync(probe, "");
+		const checking = assertNoProbesLeftByLiveHolder(directory, lock);
+		const expected = leak ? assert.rejects(checking, /clock-0123456789abcdef/) : checking;
+		// The next completed refresh still sees the file. The following refresh may have reclaimed it.
+		backdate(lock, 2_000);
+		const refresh = setInterval(() => {
+			if (!leak && existsSync(probe)) unlinkSync(probe);
+			backdate(lock, 2_000);
+		}, 150);
+		try {
+			await expected;
+		} finally {
+			clearInterval(refresh);
+		}
+	}
+});
 
 /** Runs `source` in a Bun child, resolving once it prints its first line; `ask` sends it a line and resolves its answer. */
 async function runChild(

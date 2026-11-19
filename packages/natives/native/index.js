@@ -850,6 +850,7 @@ module.exports.TaskLease = nativeBinding.TaskLease
 module.exports.TaskSupervisor = nativeBinding.TaskSupervisor
 module.exports.NapiTaskSupervisor = nativeBinding.NapiTaskSupervisor
 module.exports.WaitLease = nativeBinding.WaitLease
+module.exports.WindowsTemporaryFile = nativeBinding.WindowsTemporaryFile
 module.exports.AdmissionRefusalKind = nativeBinding.AdmissionRefusalKind
 module.exports.AgentStatus = nativeBinding.AgentStatus
 module.exports.AgentTaskKind = nativeBinding.AgentTaskKind
@@ -866,9 +867,11 @@ module.exports.hasMatch = nativeBinding.hasMatch
 module.exports.HostProcessEventKind = nativeBinding.HostProcessEventKind
 module.exports.invalidateFsScanCache = nativeBinding.invalidateFsScanCache
 module.exports.killSupervisedProcessTrees = nativeBinding.killSupervisedProcessTrees
+module.exports.openWindowsTemporaryFile = nativeBinding.openWindowsTemporaryFile
 module.exports.OwnerCloseCause = nativeBinding.OwnerCloseCause
 module.exports.pendingStdinInput = nativeBinding.pendingStdinInput
 module.exports.processCreationTime = nativeBinding.processCreationTime
+module.exports.removeWindowsFileOlderThan = nativeBinding.removeWindowsFileOlderThan
 module.exports.renameNoReplace = nativeBinding.renameNoReplace
 module.exports.renameNoReplaceAsync = nativeBinding.renameNoReplaceAsync
 module.exports.search = nativeBinding.search
@@ -880,3 +883,7 @@ module.exports.trySharedAdvisoryLock = nativeBinding.trySharedAdvisoryLock
 module.exports.windowsDirectorySecurity = nativeBinding.windowsDirectorySecurity
 module.exports.windowsDirectorySecurityAsync = nativeBinding.windowsDirectorySecurityAsync
 module.exports.YieldReason = nativeBinding.YieldReason
+
+if (process.platform === 'win32' && module.exports.WindowsTemporaryFile?.prototype.writeFile) {
+  process[Symbol.for('@bastani/atomic/windows-temporary@1')] = module.exports
+}

@@ -14,6 +14,7 @@ pub mod stdin_input;
 pub mod subagent_control;
 pub mod task;
 pub mod task_supervisor;
+pub mod temporary_file;
 
 #[macro_export]
 macro_rules! env_uint {

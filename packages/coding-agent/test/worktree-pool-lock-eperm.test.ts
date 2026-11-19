@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -76,6 +86,8 @@ const lockRefusals = vi.hoisted(() => ({
 		| undefined,
 	onRefusal: undefined as ((refused: number, path: string) => void) | undefined,
 	onCompromised: undefined as ((path: string) => void) | undefined,
+	deleteOnCloseUnavailable: false,
+	afterWrite: undefined as ((path: string) => void) | undefined,
 	onRecordWrite: undefined as ((path: string, data: string) => Promise<void>) | undefined,
 	onRemove: undefined as ((path: string) => Promise<void>) | undefined,
 }));
@@ -93,11 +105,46 @@ vi.mock("../src/core/worktree-snapshot/shared-clock.ts", async (importOriginal) 
 	return { ...actual, lockShared };
 });
 
+vi.mock("../src/core/worktree-snapshot/windows-temporary.ts", async (original) => {
+	const actual = await original<typeof import("../src/core/worktree-snapshot/windows-temporary.ts")>();
+	return {
+		...actual,
+		openWindowsTemporary: (path: string, kind: "record" | "clock") => {
+			if (lockRefusals.deleteOnCloseUnavailable && kind === "record") return undefined;
+			const opening = actual.openWindowsTemporary(path, kind);
+			if (kind === "clock") return opening;
+			return opening?.then(
+				(file) =>
+					file && {
+						close: () => file.close(),
+						writeFile: async (data: string) => {
+							await lockRefusals.onRecordWrite?.(path, data);
+							await file.writeFile(data);
+							lockRefusals.afterWrite?.(path);
+						},
+					},
+			);
+		},
+	};
+});
+
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const open: typeof actual.open = async (path, flags, mode) => {
+		const file = await actual.open(path, flags, mode);
+		if (String(path).endsWith(".tmp")) {
+			const write = file.writeFile.bind(file);
+			file.writeFile = async (data, options) => {
+				if (typeof data === "string") await lockRefusals.onRecordWrite?.(String(path), data);
+				return write(data, options);
+			};
+		}
+		return file;
+	};
 	const writeFile: typeof actual.writeFile = async (path, data, options) => {
 		if (typeof data === "string") await lockRefusals.onRecordWrite?.(String(path), data);
-		return actual.writeFile(path, data, options);
+		await actual.writeFile(path, data, options);
+		lockRefusals.afterWrite?.(String(path));
 	};
 	const rm: typeof actual.rm = async (path, options) => {
 		await lockRefusals.onRemove?.(String(path));
@@ -109,7 +156,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 			return stats;
 		return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { mtimeMs: Date.now() });
 	}) as typeof actual.stat;
-	return { ...actual, writeFile, rm, stat };
+	return { ...actual, open, writeFile, rm, stat };
 });
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -194,6 +241,8 @@ afterEach(() => {
 	lockRefusals.onCompromised = undefined;
 	lockRefusals.onRecordWrite = undefined;
 	lockRefusals.onRemove = undefined;
+	lockRefusals.deleteOnCloseUnavailable = false;
+	lockRefusals.afterWrite = undefined;
 	sandbox.dispose();
 });
 
@@ -819,7 +868,72 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 		}
 	});
 
+	test.runIf(process.platform === "win32")(
+		"admission and release leave no temporary record after a brief delete refusal (#5636)",
+		async () => {
+			const storeDir = sandbox.path("store-brief-refusal");
+			const remotes = ["https://example.com/acme/repo.git"];
+			const file = join(storeDir, "pool", repositoryIdOf(remotes), "0.json");
+			const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
+			let temporary: string | undefined;
+			lockRefusals.onRecordWrite = async (path, data) => {
+				if (path.startsWith(`${file}.`) && data.includes('"holder"')) temporary = path;
+			};
+			lockRefusals.onRemove = async (path) => {
+				if (path !== temporary) return;
+				lockRefusals.onRemove = undefined;
+				throw Object.assign(new Error("temporary record cleanup refused"), { code: "EPERM" });
+			};
+			let reader: number | undefined;
+			lockRefusals.afterWrite = (path) => {
+				if (path === temporary) reader ??= openSync(path, "r");
+			};
+			try {
+				const owner = { kind: "session" as const, id: "record-owner" };
+				const lease = await admitPooledWorktree({ storeDir, remotes, lastState: state, envHash: "env" }, owner);
+				assert.ok(temporary);
+				assert.notEqual(reader, undefined);
+				lockRefusals.onRecordWrite = undefined;
+				assert.equal(await releaseRestoredWorktree(lease, state), true);
+				assert.deepEqual((JSON.parse(readFileSync(file, "utf8")) as PoolSlotRecord).holder, owner);
+				assert.equal(existsSync(temporary), false);
+				assert.equal(readdirSync(dirname(file)).includes(basename(temporary)), false);
+			} finally {
+				if (reader !== undefined) closeSync(reader);
+			}
+		},
+	);
+
+	test("a failed temporary record write is cleaned up without delete-on-close (#5636)", async () => {
+		setPlatform("win32");
+		const storeDir = sandbox.path("store-partial-temp");
+		const remotes = ["https://example.com/acme/repo.git"];
+		const file = join(storeDir, "pool", repositoryIdOf(remotes), "0.json");
+		const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
+		lockRefusals.deleteOnCloseUnavailable = true;
+		let failed: string | undefined;
+		lockRefusals.onRecordWrite = async (path, data) => {
+			if (path.startsWith(`${file}.`) && data.includes('"holder"')) {
+				failed = path;
+				writeFileSync(path, "partial");
+				throw Object.assign(new Error("partial record"), { code: "EIO" });
+			}
+		};
+		await assert.rejects(
+			admitPooledWorktree(
+				{ storeDir, remotes, lastState: state, envHash: "env" },
+				{ kind: "session", id: "record-owner" },
+			),
+			{ code: "EIO" },
+		);
+		assert.ok(failed);
+		assert.equal(existsSync(failed), false);
+		assert.equal(existsSync(file), false);
+	});
+
 	test("temporary-file cleanup refusal does not orphan a published pool admission (#5320)", async () => {
+		// Simulate a filesystem requiring an explicit delete, so this still exercises an actual cleanup refusal.
+		lockRefusals.deleteOnCloseUnavailable = true;
 		const storeDir = sandbox.path("store-cleanup-refused");
 		const remotes = ["https://example.com/acme/repo.git"];
 		const repository = repositoryIdOf(remotes);
@@ -855,6 +969,7 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 	});
 
 	test("a retained admission temporary file cannot corrupt its slot during a later failed write (#5320)", async () => {
+		lockRefusals.deleteOnCloseUnavailable = true;
 		const storeDir = sandbox.path("store-retained-temporary");
 		const remotes = ["https://example.com/acme/repo.git"];
 		const file = join(storeDir, "pool", repositoryIdOf(remotes), "0.json");
@@ -888,6 +1003,7 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 	test.each(["temporary", "taken"])(
 		"cleanup of a %s record cannot turn a published pool hold into a failure (#5320)",
 		async (cleanupTarget) => {
+			lockRefusals.deleteOnCloseUnavailable = true;
 			const storeDir = sandbox.path("store-hold-cleanup");
 			const remotes = ["https://example.com/acme/repo.git"];
 			const file = join(storeDir, "pool", repositoryIdOf(remotes), "0.json");

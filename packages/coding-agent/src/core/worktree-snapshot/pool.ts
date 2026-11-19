@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
@@ -14,6 +14,8 @@ import { type RepositoryId, sharedRepositoryIdOf, sharedRepositoryIdsOf } from "
 import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./restore.ts";
 import { lockShared, sharedClockNow } from "./shared-clock.ts";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
+
+import { openWindowsTemporary } from "./windows-temporary.ts";
 
 export { processStartToken } from "../process-start-token.js";
 
@@ -555,8 +557,25 @@ async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> 
 
 async function createRecord(file: string, record: PoolSlotRecord): Promise<boolean> {
 	const temporary = `${file}.${randomUUID()}.tmp`;
+	const windows = process.platform === "win32";
+	const reservation = windows ? await openWindowsTemporary(temporary, "record") : undefined;
+	let created = false;
 	try {
-		await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
+		const data = JSON.stringify(record);
+		if (reservation) {
+			await reservation.writeFile(data);
+		} else if (windows) {
+			// Without a native handle, distinguish a failed exclusive create from a later partial write.
+			const file = await open(temporary, "wx", 0o600);
+			created = true;
+			try {
+				await file.writeFile(data);
+			} finally {
+				await file.close();
+			}
+		} else {
+			await writeFile(temporary, data, { mode: 0o600 });
+		}
 		try {
 			await link(temporary, file);
 			return true;
@@ -565,7 +584,12 @@ async function createRecord(file: string, record: PoolSlotRecord): Promise<boole
 			throw error;
 		}
 	} finally {
-		await rm(temporary, { force: true }).catch((error) => {
+		const cleanup = reservation
+			? reservation.close()
+			: created || !windows
+				? rm(temporary, { force: true })
+				: undefined;
+		await cleanup?.catch((error: unknown) => {
 			reportDebug("storage", "worktree-pool-temporary-cleanup-failed", { file, ...failureDebugFields(error) });
 		});
 	}
