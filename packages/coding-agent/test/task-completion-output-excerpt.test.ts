@@ -48,7 +48,7 @@ async function settledCommand(owner: AgentTaskHost, command: string): Promise<{ 
 test.runIf(process.platform !== "win32")("a short command's excerpt is its whole output", async () => {
 	const owner = host();
 	const { lease, task } = await settledCommand(owner, "printf 'short output'");
-	assert.equal(await commandOutputExcerpt(owner, lease, task), "short output");
+	assert.equal((await commandOutputExcerpt(owner, lease, task)).text, "short output");
 });
 
 test.runIf(process.platform !== "win32")(
@@ -56,7 +56,7 @@ test.runIf(process.platform !== "win32")(
 	async () => {
 		const owner = host();
 		const { lease, task } = await settledCommand(owner, "printf 'head%.0s' $(seq 1 3000); printf 'tail-end'");
-		const excerpt = await commandOutputExcerpt(owner, lease, task);
+		const { text: excerpt } = await commandOutputExcerpt(owner, lease, task);
 		assert.ok(excerpt.startsWith("[Earlier output omitted]\n"), excerpt.slice(0, 40));
 		assert.ok(excerpt.endsWith("tail-end"));
 		assert.equal(excerpt.length, "[Earlier output omitted]\n".length + COMMAND_DETAIL_TAIL_BYTES);
@@ -84,7 +84,7 @@ test.each([
 				maximumBytes: COMMAND_DETAIL_TAIL_BYTES,
 			});
 			assert.ok(view.ok);
-			const excerpt = await commandOutputExcerpt(owner, lease, task);
+			const { text: excerpt } = await commandOutputExcerpt(owner, lease, task);
 			const marker = "[Earlier output omitted]\n";
 			assert.ok(excerpt.startsWith(marker));
 			for (const text of [view.value.text, excerpt.slice(marker.length)]) {
@@ -108,8 +108,8 @@ test.runIf(process.platform !== "win32")(
 			ok: false,
 			error: { code: "OutputUnavailable", message: "gone" },
 		});
-		assert.equal(await commandOutputExcerpt(owner, lease, task), COMMAND_OUTPUT_UNAVAILABLE);
+		assert.equal((await commandOutputExcerpt(owner, lease, task)).text, COMMAND_OUTPUT_UNAVAILABLE);
 		vi.spyOn(supervisor, "readTaskOutput").mockRejectedValueOnce(new Error("read failed"));
-		assert.equal(await commandOutputExcerpt(owner, lease, task), "Output unavailable");
+		assert.equal((await commandOutputExcerpt(owner, lease, task)).text, "Output unavailable");
 	},
 );
