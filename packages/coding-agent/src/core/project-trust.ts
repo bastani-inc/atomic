@@ -21,6 +21,8 @@ export interface ResolveProjectTrustedOptions {
 	projectTrustContext: ProjectTrustContext;
 	promptMessage?: string;
 	onExtensionError?: (message: string) => void;
+	/** Reports whether any handler can vote in the captured dispatch, before the first one runs. */
+	onHandlerSnapshot?: (hasHandlers: boolean) => void;
 }
 
 /** The question the trust prompt asks about the project folder `cwd`. */
@@ -74,6 +76,7 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 			options.extensionsResult,
 			{ type: "project_trust", cwd: options.cwd },
 			options.projectTrustContext,
+			options.onHandlerSnapshot,
 		);
 		for (const error of errors) {
 			options.onExtensionError?.(`Extension "${error.extensionPath}" project_trust error: ${error.error}`);
