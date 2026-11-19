@@ -832,6 +832,12 @@ export class SqlSessionStore implements SessionStore {
 			saveSummary: (tx, header, lastSeq, summary, index) =>
 				this.saveSummary(tx, header.id, { header, entries: [], lastSeq }, summary, index),
 			create: (header, entries) => this.create(header, entries),
+			sourceStoredEntryChunks: (source) => {
+				const store = nativeForkReader(source, "entry");
+				return store instanceof SqlSessionStore && store.readEntryChunk === SqlSessionStore.prototype.readEntryChunk
+					? (reference, index) => store.readStoredEntryChunk(reference, index)
+					: undefined;
+			},
 			rebuildResume: async (sessionId) => {
 				await this.prepareResume(sessionId);
 			},
@@ -846,10 +852,38 @@ export class SqlSessionStore implements SessionStore {
 			sourceBlobParts: (source) => {
 				const store = nativeForkReader(source, "blob");
 				return store instanceof SqlSessionStore && store.getBlob === SqlSessionStore.prototype.getBlob
-					? (sessionId, hash, index) => store.readBlobPart(sessionId, hash, index)
+					? (sessionId, hash, offset, legacyBytes) => store.readBlobPart(sessionId, hash, offset, legacyBytes)
 					: undefined;
 			},
 		};
+	}
+
+	/**
+	 * The stored chunk row `index` of the entry `reference` names, whole, in its generation; undefined when the entry is
+	 * stored whole. One read where `readEntryChunk` would take one per 64 KiB of it (#5594).
+	 */
+	private async readStoredEntryChunk(
+		reference: OversizedSessionEntry,
+		index: number,
+	): Promise<Uint8Array | undefined> {
+		this.assertOpen();
+		return this.transaction(async (tx) => {
+			const { sessionId, epoch, seq } = reference;
+			const head = await this.historyHead(tx, sessionId);
+			if (head.epoch !== epoch) throw new SessionConflictError(sessionId, seq, head.lastSeq);
+			const row = await tx.get<SqliteRow & { chunks: number; data: Uint8Array | null }>(
+				`SELECT e.chunks, c.data FROM ${this.tables.entries} e LEFT JOIN ${this.tables.entryChunks} c
+					ON c.session_id = e.session_id AND c.seq = e.seq AND c.idx = ? WHERE e.session_id = ? AND e.seq = ?`,
+				index,
+				sessionId,
+				seq,
+			);
+			if (!row) throw new StorageUnavailableError(this.descriptor, new Error(`Missing session entry ${seq}`));
+			if (Number(row.chunks) === 0) return undefined;
+			if (row.data == null)
+				throw new StorageUnavailableError(this.descriptor, new Error(`Missing chunk of session entry ${seq}`));
+			return row.data;
+		}, SESSION_TRANSACTION);
 	}
 
 	/** How many chunks the entry `reference` names is stored in, 0 when it is stored whole, in its generation. */
@@ -869,17 +903,28 @@ export class SqlSessionStore implements SessionStore {
 		}, SESSION_TRANSACTION);
 	}
 
-	/** One stored row of a blob, so a staged clone holds one chunk at a time; `chunks` -1 is the legacy layout. */
+	/**
+	 * The bytes of a blob from `offset`, a multiple of {@link SESSION_BLOB_CHUNK_BYTES}, so a staged clone never holds
+	 * the whole of a large one (#5594): the stored chunk row there, or for a blob in the legacy one-row layout (`chunks`
+	 * -1), at most `legacyBytes` cut from its data column by the database, which loads that one value itself for each
+	 * cut. Nothing is converted or written.
+	 */
 	private async readBlobPart(
 		sessionId: string,
 		hash: string,
-		index: number,
+		offset: number,
+		legacyBytes: number,
 	): Promise<{ readonly bytes: number; readonly chunks: number; readonly data?: Uint8Array } | undefined> {
 		this.assertOpen();
+		// The data column exists only in SQLite tables written before chunked blobs.
+		const legacy = this.legacyBlobData
+			? "CASE WHEN b.chunks = -1 THEN substr(b.data, ?, ?) ELSE c.data END"
+			: "c.data";
 		const row = await this.database.get<SqliteRow & { bytes: number; chunks: number; data: Uint8Array | null }>(
-			`SELECT b.bytes, b.chunks, c.data FROM ${this.tables.blobs} b LEFT JOIN ${this.tables.blobChunks} c
+			`SELECT b.bytes, b.chunks, ${legacy} AS data FROM ${this.tables.blobs} b LEFT JOIN ${this.tables.blobChunks} c
 				ON c.session_id = b.session_id AND c.hash = b.hash AND c.idx = ? WHERE b.session_id = ? AND b.hash = ?`,
-			index,
+			...(this.legacyBlobData ? [offset + 1, legacyBytes] : []),
+			Math.floor(offset / SESSION_BLOB_CHUNK_BYTES),
 			sessionId,
 			hash,
 		);

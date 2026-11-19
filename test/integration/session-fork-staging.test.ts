@@ -16,6 +16,7 @@ import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/s
 import { completeSessionForkStream } from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
 import {
 	ensureForkStagingTable,
+	FORK_STAGING_BATCH_BYTES,
 	FORK_STAGING_CLEANUP_ROWS,
 	FORK_STAGING_OPEN_CLEANUPS,
 } from "../../packages/coding-agent/src/core/storage/session/fork-staging.js";
@@ -56,6 +57,8 @@ const CREATED = "2026-11-19T00:00:00.000Z";
 const BIG_TEXT_BYTES = SESSION_ENTRY_CHUNK_BYTES + SESSION_ENTRY_CHUNK_BYTES / 2;
 const BIG_BLOB_BYTES = 2 * SESSION_BLOB_CHUNK_BYTES + 12_345;
 const SNAPSHOT_WARNING_BYTES = SESSION_ENTRY_CHUNK_BYTES + 200_000;
+/** A blob larger than one staging batch. */
+const BEYOND_ONE_BATCH = FORK_STAGING_BATCH_BYTES + SESSION_BLOB_CHUNK_BYTES + 7;
 
 function header(id: string, parent?: string): SessionRecordHeader {
 	return {
@@ -124,9 +127,14 @@ const sha256 = (data: Uint8Array | string) => createHash("sha256").update(data).
  * snapshot entry stored whole, a branch and a compaction whose links the resume index resolves, a label, a name, and
  * tool outputs whose blobs span several chunks, are empty, or are no longer stored.
  */
-async function seedSource(store: SessionStore, id: string, word: string): Promise<{ readonly missing: string }> {
+async function seedSource(
+	store: SessionStore,
+	id: string,
+	word: string,
+	bigBlobBytes = BIG_BLOB_BYTES,
+): Promise<{ readonly missing: string }> {
 	await store.create(header(id), [user("e1", null, `hello ${word}`, 1)]);
-	const big = await store.putBlob!(id, bytesOf(BIG_BLOB_BYTES, 7));
+	const big = await store.putBlob!(id, bytesOf(bigBlobBytes, 7));
 	const small = await store.putBlob!(id, bytesOf(100, 9));
 	const empty = await store.putBlob!(id, new Uint8Array(0));
 	const missing = sha256(`not stored ${word}`);
@@ -292,7 +300,7 @@ function instrumented(
 	options: {
 		readonly name?: string;
 		readonly ledger?: Ledger;
-		readonly pause?: (sql: string, inTransaction: boolean) => Promise<void> | undefined;
+		readonly pause?: (sql: string, inTransaction: boolean, params: readonly unknown[]) => Promise<void> | undefined;
 	},
 ): SqliteDatabase {
 	const { name = "", ledger, pause } = options;
@@ -309,7 +317,7 @@ function instrumented(
 				if (key === "get" || key === "all" || key === "run" || key === "exec")
 					return async (...args: unknown[]) => {
 						enter(`${String(key)} ${String(args[0]).slice(0, 60)}`);
-						const wait = pause?.(String(args[0]), inTransaction);
+						const wait = pause?.(String(args[0]), inTransaction, args.slice(1));
 						if (wait !== undefined) await wait;
 						return Reflect.apply(value, target, args);
 					};
@@ -485,6 +493,161 @@ for (const backend of storageBackends) {
 		);
 
 		test(
+			"staged rows are written in transactions of about one batch, each after the source reads it holds returned",
+			() =>
+				withScope(async (scope) => {
+					const source = await SqlSessionStore.open(await scope.connect(), { prefix: `${scope.prefix}s_` });
+					await seedSource(source, "src", "batches", 2 * FORK_STAGING_BATCH_BYTES + 3);
+					const destPrefix = `${scope.prefix}d_`;
+					const staging = stagingTable(destPrefix);
+					const ledger: Ledger = { open: new Map(), overlaps: [], recording: false };
+					const counted = instrumented(await scope.connect(), { name: "source", ledger });
+					const reader = await SqlSessionStore.open(counted, { prefix: `${scope.prefix}s_` });
+					/** The bytes each staging transaction inserted, from its lease renewal on. */
+					const batches: number[] = [];
+					const pause = (sql: string, inTransaction: boolean, params: readonly unknown[]) => {
+						if (!inTransaction) return undefined;
+						if (sql.startsWith(`UPDATE ${staging} SET size`)) batches.push(0);
+						else if (sql.startsWith(`INSERT INTO ${staging} `) && batches.length > 0)
+							batches[batches.length - 1]! += params.reduce<number>(
+								(n, p) => n + (typeof p === "string" ? p.length : p instanceof Uint8Array ? p.byteLength : 0),
+								0,
+							);
+						return undefined;
+					};
+					const dest = await SqlSessionStore.open(
+						instrumented(await scope.connect(), { name: "dest", ledger, pause }),
+						{ prefix: destPrefix },
+					);
+					ledger.recording = true;
+					await stagedClone(reader, "src", dest, header("child", "src"));
+					ledger.recording = false;
+					// The writes of the staging transactions, the lease renewal of the publication aside.
+					const written = batches.filter((bytes) => bytes > 0);
+					const total = written.reduce((n, bytes) => n + bytes, 0);
+					assert.ok(total > 2 * FORK_STAGING_BATCH_BYTES, `staged ${total} bytes`);
+					assert.ok(
+						written.length <= Math.ceil(total / FORK_STAGING_BATCH_BYTES) + 1,
+						`${written.length} staging transactions for ${total} bytes`,
+					);
+					for (const bytes of written)
+						assert.ok(
+							bytes <= FORK_STAGING_BATCH_BYTES + SESSION_BLOB_CHUNK_BYTES + 4096,
+							`a batch of ${bytes} bytes`,
+						);
+					assert.deepEqual(ledger.overlaps, [], "no source read ran while a staging transaction was open");
+					assert.deepEqual(
+						await dest.getBlob("child", sha256(bytesOf(2 * FORK_STAGING_BATCH_BYTES + 3, 7))),
+						bytesOf(2 * FORK_STAGING_BATCH_BYTES + 3, 7),
+					);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"multi-MiB blobs reach Node in bounded parts and are copied byte for byte, one in the legacy one-row layout without converting it",
+			() =>
+				withScope(async (scope) => {
+					const sourcePrefix = `${scope.prefix}s_`;
+					const seeding = await scope.connect();
+					await (await SqlSessionStore.open(seeding, { prefix: sourcePrefix })).create(header("src"), [
+						user("e1", null, "blobs", 1),
+					]);
+					// More than two cuts on a SQLite file; a libSQL server caps a row at 5 MB, so its legacy rows were smaller.
+					const legacyBytes = bytesOf(
+						backend.name === "SQLite file"
+							? 2 * FORK_STAGING_BATCH_BYTES + 17
+							: 4 * SESSION_BLOB_CHUNK_BYTES + 17,
+						11,
+					);
+					const legacyHash = sha256(legacyBytes);
+					// SQLite and libSQL tables written before chunked blobs kept each blob in one row; PostgreSQL never did.
+					const legacy = dialectOf(seeding).name === "sqlite";
+					const blobs = renderStorageIdentifiers("sessions", SESSION_TABLES, sourcePrefix);
+					if (legacy) {
+						await seeding.exec(`DROP TABLE ${blobs.blobs}; DROP TABLE ${blobs.blobChunks};
+							CREATE TABLE ${blobs.blobs} (session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL,
+							data BLOB NOT NULL, PRIMARY KEY (session_id, hash)) STRICT`);
+						await seeding.run(
+							`INSERT INTO ${blobs.blobs} VALUES ('src', ?, ?, ?)`,
+							legacyHash,
+							legacyBytes.byteLength,
+							legacyBytes,
+						);
+					}
+					// The largest bytes value the source database hands Node while the clone runs.
+					let largest = 0;
+					let measuring = false;
+					const measure = <R>(rows: R): R => {
+						if (measuring)
+							for (const row of Array.isArray(rows) ? rows : rows === undefined ? [] : [rows])
+								for (const value of Object.values(row as object))
+									if (value instanceof Uint8Array) largest = Math.max(largest, value.byteLength);
+						return rows;
+					};
+					const measured = <E extends SqliteExecutor>(executor: E): E =>
+						new Proxy(executor, {
+							get(target, key) {
+								const value = Reflect.get(target, key, target) as unknown;
+								if (typeof value !== "function") return value;
+								if (key === "get" || key === "all")
+									return async (...args: unknown[]) => measure(await Reflect.apply(value, target, args));
+								if (key === "transaction")
+									return (body: (tx: SqliteExecutor) => Promise<unknown>, options?: object) =>
+										Reflect.apply(value, target, [(tx: SqliteExecutor) => body(measured(tx)), options]);
+								return value.bind(target);
+							},
+						});
+					const source = await SqlSessionStore.open(measured(await scope.connect()), { prefix: sourcePrefix });
+					const chunkedBytes = bytesOf(5 * SESSION_BLOB_CHUNK_BYTES + 23, 13);
+					const chunked = await source.putBlob("src", chunkedBytes);
+					await source.append(
+						"src",
+						[
+							...(legacy ? [toolOutput("e2", "e1", legacyHash, legacyBytes.byteLength, 2)] : []),
+							toolOutput("e3", legacy ? "e2" : "e1", chunked.hash, chunked.bytes, 3),
+						],
+						{ expectSeq: 1 },
+					);
+					const mainDb = await scope.connect();
+					const stagingDb = await scope.connect();
+					const mainDest = await SqlSessionStore.open(mainDb, { prefix: `${scope.prefix}m_` });
+					const stagingDest = await SqlSessionStore.open(stagingDb, { prefix: `${scope.prefix}t_` });
+					await mainClone(source, "src", mainDest, header("child", "src"));
+					measuring = true;
+					const staged = await stagedClone(source, "src", stagingDest, header("child", "src"));
+					measuring = false;
+					assert.deepEqual(staged.created.remainingBlobs, []);
+					// A chunk row; a cut of a legacy row, which the database reads whole once per cut, is at most one batch.
+					const bound = legacy ? FORK_STAGING_BATCH_BYTES : SESSION_BLOB_CHUNK_BYTES;
+					assert.ok(largest <= bound, `Node received ${largest} bytes at once`);
+					assert.deepEqual(
+						await stored(stagingDb, `${scope.prefix}t_`, "child"),
+						await stored(mainDb, `${scope.prefix}m_`, "child"),
+					);
+					assert.deepEqual(await stagingDest.getBlob("child", chunked.hash), chunkedBytes);
+					if (legacy) {
+						assert.deepEqual(await stagingDest.getBlob("child", legacyHash), legacyBytes);
+						const kept = await seeding.get(
+							`SELECT chunks, length(data) AS bytes FROM ${blobs.blobs} WHERE session_id = 'src' AND hash = ?`,
+							legacyHash,
+						);
+						assert.deepEqual(
+							{ chunks: Number(kept?.chunks), bytes: Number(kept?.bytes) },
+							{ chunks: -1, bytes: legacyBytes.byteLength },
+							"the source keeps its legacy row as it was",
+						);
+						const converted = await seeding.get(
+							`SELECT count(*) AS n FROM ${blobs.blobChunks} WHERE session_id = 'src' AND hash = ?`,
+							legacyHash,
+						);
+						assert.equal(Number(converted?.n), 0, "nothing converts the legacy blob");
+					}
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
 			"two stores on one queued connection clone into each other without either waiting on the other",
 			() =>
 				withScope(async (scope) => {
@@ -603,7 +766,8 @@ for (const backend of storageBackends) {
 			() =>
 				withScope(async (scope) => {
 					const source = await SqlSessionStore.open(await scope.connect(), { prefix: `${scope.prefix}s_` });
-					await seedSource(source, "src", "crash");
+					// More than one batch before the clone stops: some of it is written to the staging table.
+					await seedSource(source, "src", "crash", BEYOND_ONE_BATCH);
 					const destPrefix = `${scope.prefix}d_`;
 					const destDb = await scope.connect();
 					const dest = await SqlSessionStore.open(destDb, { prefix: destPrefix });
@@ -645,7 +809,7 @@ for (const backend of storageBackends) {
 					const sourcePrefix = `${target.prefix}s_`;
 					const destPrefix = `${target.prefix}d_`;
 					const source = await SqlSessionStore.open(await target.connect(), { prefix: sourcePrefix });
-					await seedSource(source, "src", "killed");
+					await seedSource(source, "src", "killed", BEYOND_ONE_BATCH);
 					const destDb = await target.connect();
 					const dest = await SqlSessionStore.open(destDb, { prefix: destPrefix });
 					const config = { database: target.config, sourcePrefix, destPrefix, sourceId: "src", childId: "child" };
