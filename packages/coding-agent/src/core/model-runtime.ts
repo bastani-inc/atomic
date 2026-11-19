@@ -90,8 +90,20 @@ import {
 	resolveConfiguredModelHeadersAsync,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
-import { withDiscoveredModels, withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-provider.ts";
+import {
+	type AccountCatalogObservation,
+	observeAccountCatalog,
+	withDiscoveredModels,
+	withPersonalizedCatalog,
+	withRemoteCatalog,
+} from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
+import {
+	readSelectedAccountModel,
+	readSessionAccountModel,
+	sessionAccountCheckpoint,
+} from "./session-account-model.ts";
+import { sessionLifecycleCreation } from "./session-lifecycle-scope.ts";
 
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 
@@ -174,6 +186,8 @@ export class ModelRuntime implements Models {
 	private readonly fastModelVariantDiagnostics = new Map<string, readonly FastModelVariantDiagnostic[]>();
 	private readonly modelsPath: string | undefined;
 	private readonly modelNetworkEnabled: boolean;
+	#sessionDiscoveryEnabled = false;
+	#accountCatalog?: AccountCatalogObservation;
 	private config: ModelConfig;
 	private snapshot: ModelRuntimeSnapshot = createEmptyModelRuntimeSnapshot();
 	private snapshotGeneration = 0;
@@ -243,11 +257,8 @@ export class ModelRuntime implements Models {
 					builtinModelDataGeneratedAt,
 				);
 			}
-			const withCatalog = withRemoteCatalog(provider, catalogBaseUrl, builtinModelDataGeneratedAt);
-			// GitHub Copilot adds the models the account's own list offers beyond the catalog.
-			return provider.id === "github-copilot"
-				? withDiscoveredModels(withCatalog, discoverGitHubCopilotModels)
-				: withCatalog;
+			const catalog = withRemoteCatalog(provider, catalogBaseUrl, builtinModelDataGeneratedAt);
+			return provider.id === "github-copilot" ? withDiscoveredModels(catalog, discoverGitHubCopilotModels) : catalog;
 		});
 		const runtime = new ModelRuntime(
 			credentials,
@@ -259,7 +270,9 @@ export class ModelRuntime implements Models {
 		);
 		runtime.rebuildBuiltinProviders();
 		runtime.rebuildProviders();
-		const refreshFromNetwork = runtime.modelNetworkEnabled && options.allowModelNetwork === true;
+		const allowModelNetwork = runtime.modelNetworkEnabled && options.allowModelNetwork;
+		runtime.#sessionDiscoveryEnabled = allowModelNetwork !== false;
+		const refreshFromNetwork = allowModelNetwork === true;
 		const controller = refreshFromNetwork ? new AbortController() : undefined;
 		const timeout = controller
 			? setTimeout(() => controller.abort(), options.modelRefreshTimeoutMs ?? 15_000)
@@ -272,6 +285,48 @@ export class ModelRuntime implements Models {
 			if (timeout) clearTimeout(timeout);
 		}
 		return runtime;
+	}
+	/** Brand check without a property lookup on a borrowed or decorated runtime. */
+	static [sessionAccountCheckpoint](runtime: ModelRuntime): boolean {
+		return (
+			typeof runtime === "object" &&
+			runtime !== null &&
+			#sessionDiscoveryEnabled in runtime &&
+			runtime.#sessionDiscoveryEnabled
+		);
+	}
+	/** Resolve one exact miss without refreshing or publishing the runtime's catalog. */
+	[readSessionAccountModel](
+		id: string,
+		signal: AbortSignal | undefined,
+		ownsSelection: () => boolean,
+	): Promise<Model<Api> | null | undefined> | undefined {
+		if (isOfflineModeEnabled() || signal?.aborted) return undefined;
+		const providerId = "github-copilot";
+		if (!this.credentials.hasRuntimeApiKey(providerId) && !this.credentials.hasCredentialSnapshot()) return undefined;
+		const local = this.getModel(providerId, id);
+		if (local) return Promise.resolve(local);
+		return readSelectedAccountModel(
+			id,
+			signal,
+			() => {
+				if (
+					!this.#accountCatalog?.missing ||
+					this.nativeExtensionProviders.has(providerId) ||
+					this.extensionProviders.has(providerId) ||
+					this.compositionErrors.has(providerId) ||
+					this.config.getError() ||
+					!ownsSelection()
+				)
+					return undefined;
+				const provider = this.models.getProvider(providerId);
+				const snapshot = this.credentials.accountSnapshot(providerId);
+				return provider && snapshot
+					? { provider, config: this.config.getProvider(providerId), ...snapshot }
+					: undefined;
+			},
+			() => this.getModel(providerId, id),
+		);
 	}
 	private rebuildBuiltinProviders(): void {
 		configureBuiltinProviders(this.builtins, this.defaultBuiltins, process.env, (providerId) =>
@@ -1303,6 +1358,12 @@ export class ModelRuntime implements Models {
 		sequence: number,
 		discardIfSuperseded = false,
 	): Promise<ModelsRefreshResult> {
+		const creation = sessionLifecycleCreation.getStore();
+		const receipt =
+			creation?.catalogRestore === options && !creation.copilotObservation && creation.catalogRuntime === this
+				? options
+				: undefined;
+		if (receipt) creation!.copilotObservation = "restoring";
 		const config = await ModelConfig.load(this.modelsPath);
 		if (discardIfSuperseded && sequence !== this.refreshSequence) {
 			return { aborted: true, errors: new Map<string, Error>() };
@@ -1315,7 +1376,21 @@ export class ModelRuntime implements Models {
 			this.updateModelSnapshot();
 		} else this.rebuildProviders();
 		const refreshOptions = { ...options, allowNetwork: options.allowNetwork ?? this.isNetworkRefreshEnabled() };
-		const result = await this.models.refresh(refreshOptions);
+		if (receipt) this.#accountCatalog ??= observeAccountCatalog(this.defaultBuiltins.get("github-copilot"));
+		const observation = this.#accountCatalog;
+		// A later Copilot pass supersedes this pass's publisher; unrelated scoped refreshes do not.
+		if (
+			observation &&
+			(receipt || observation.publishing) &&
+			(!refreshOptions.providers || refreshOptions.providers.includes("github-copilot"))
+		)
+			observation.publishing = receipt;
+		let result: ModelsRefreshResult;
+		try {
+			result = await this.models.refresh(refreshOptions);
+		} finally {
+			if (observation && observation.publishing === receipt) observation.publishing = undefined;
+		}
 		const errors = new Map(result.errors);
 		this.updateModelSnapshot();
 		if (options.providers) {
@@ -1336,7 +1411,16 @@ export class ModelRuntime implements Models {
 				// Availability errors are recorded by the latest pass; refreshed models remain usable.
 			}
 		}
-		return { aborted: result.aborted || (options.signal?.aborted ?? false), errors };
+		const aborted = result.aborted || (options.signal?.aborted ?? false);
+		if (
+			receipt &&
+			creation?.catalogRestore === receipt &&
+			creation.copilotObservation === "absent" &&
+			!aborted &&
+			!errors.has("github-copilot")
+		)
+			creation.copilotObservation = "confirmed";
+		return { aborted, errors };
 	}
 
 	private validateAliasRegistration(

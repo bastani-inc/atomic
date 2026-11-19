@@ -77,6 +77,7 @@
 - A Windows command that keeps its background processes no longer fails after completion just because its idle input thread was paused while holding the input queue lock ([#5702](https://github.com/bastani-inc/atomic/issues/5702)).
 - Quitting at the first prompt after declining project trust no longer crashes if the bundled local model provider is still loading ([#5639](https://github.com/bastani-inc/atomic/issues/5639)).
 - `atomic --export <session.jsonl>` shows an agent card when a single subagent launch on the selected branch has a recorded child transcript or background handoff. Expand it to see the saved prompt, tool calls and answer, or a note when the child history is not included. The original arguments and receipt remain available beneath the card ([#5658](https://github.com/bastani-inc/atomic/issues/5658)).
+- SDK sessions and `atomic -p` can use a saved, account-only GitHub Copilot model without first running `atomic update --models`. The first prompt checks the account list only when no catalog is cached and no local model or configured fallback can handle it. Startup, shared model listings and credentials are unchanged ([#5685](https://github.com/bastani-inc/atomic/issues/5685)).
 
 ## [0.9.89] - 2026-11-18
 

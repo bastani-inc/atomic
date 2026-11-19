@@ -40,6 +40,7 @@ import {
 	rollbackFactoryAcquisitions,
 } from "./extensions/loader-rollback.ts";
 import { getModelFastRoute, streamWithFastRoute, withFastRouteStreamOptions } from "./fast-model-routing.ts";
+import { deferFirstPromptModel } from "./first-prompt-model.ts";
 import { SessionIntercomPolicy, validateIntercomSessionOptions } from "./intercom-policy.ts";
 import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import {
@@ -59,6 +60,7 @@ import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
 import { prepareSessionResume, savedProjectTrustAsync, sessionResumeOptions } from "./resume/session-resume.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult, ResourceAdmission } from "./sdk-types.ts";
+import { sessionAccountCheckpoint } from "./session-account-model.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
 	ownedSessionManagerStores,
@@ -191,14 +193,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 export function createUnstartedAgentSession(
 	options: CreateAgentSessionOptions,
 	persistInitialState = true,
+	recoverMissingModel = false,
 ): Promise<CreateAgentSessionResult> {
-	return createScopedSession(options, true, persistInitialState);
+	return createScopedSession(options, true, persistInitialState, recoverMissingModel);
 }
 
 function createScopedSession(
 	options: CreateAgentSessionOptions,
 	deferStart: boolean,
 	persistInitialState = true,
+	recoverMissingModel = !deferStart,
 ): Promise<CreateAgentSessionResult> {
 	let releaseWhenIdle: ReleaseWhenIdleOptions | undefined;
 	try {
@@ -239,6 +243,7 @@ function createScopedSession(
 						deferStart,
 						persistInitialState,
 						acquisition,
+						recoverMissingModel,
 					);
 				} catch (error) {
 					// The resumed session never opened: nothing else releases the pooled worktrees it holds (#4748).
@@ -324,6 +329,7 @@ async function constructAgentSession(
 	deferStart: boolean,
 	persistInitialState: boolean,
 	acquisition: SessionAcquisition,
+	recoverMissingModel: boolean,
 ): Promise<CreateAgentSessionResult> {
 	resolveWorktreeSnapshotSettings(options.snapshots, "sdk", "snapshots");
 	const workspace =
@@ -359,7 +365,26 @@ async function constructAgentSession(
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
-	await modelRuntime.refresh({ allowNetwork: false });
+	const restore = { allowNetwork: false };
+	const observing =
+		recoverMissingModel && !options.model && ModelRuntime[sessionAccountCheckpoint](modelRuntime)
+			? sessionLifecycleCreation.getStore()
+			: undefined;
+	let missingCatalog = false;
+	if (observing) {
+		observing.catalogRuntime = modelRuntime;
+		observing.catalogRestore = restore;
+	}
+	try {
+		await modelRuntime.refresh(restore);
+		missingCatalog = observing?.copilotObservation === "confirmed";
+	} finally {
+		if (observing) {
+			observing.catalogRuntime = undefined;
+			observing.catalogRestore = undefined;
+			observing.copilotObservation = undefined;
+		}
+	}
 
 	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));
 	migrateCompactionModelSettings(settingsManager, modelRuntime.getAllModels());
@@ -437,6 +462,7 @@ async function constructAgentSession(
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
 
 	let model = options.model;
+	let missingAccountModel: string | undefined;
 	let modelFallbackMessage: string | undefined;
 	let modelFallbackReason: import("./model-resolver-types.ts").ModelFallbackReason | undefined;
 
@@ -450,6 +476,14 @@ async function constructAgentSession(
 		if (!model) {
 			const { provider, modelId } = existingSession.model;
 			const uncachedHint = uncachedCopilotModelHint(provider, modelId, modelRuntime);
+			if (
+				uncachedHint &&
+				missingCatalog &&
+				(!deferStart ||
+					(settingsManager.getDefaultProvider() === "github-copilot" &&
+						settingsManager.getDefaultModel() === modelId))
+			)
+				missingAccountModel = modelId;
 			const label = formatModelLabel({ provider, id: modelId });
 			modelFallbackMessage = uncachedHint
 				? `Could not restore model ${label}: ${uncachedHint}, or choose another model with /model.`
@@ -459,11 +493,13 @@ async function constructAgentSession(
 		}
 	}
 	if (!model && modelFallbackReason !== "configured-provider-unsupported") {
+		const defaultProvider = settingsManager.getDefaultProvider();
+		const defaultModelId = settingsManager.getDefaultModel();
 		const result = await findInitialModel({
 			scopedModels: [],
 			isContinuing: hasExistingSession,
-			defaultProvider: settingsManager.getDefaultProvider(),
-			defaultModelId: settingsManager.getDefaultModel(),
+			defaultProvider,
+			defaultModelId,
 			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
 			modelThinkingLevels: settingsManager.getAllModelThinkingLevels(),
 			modelRuntime,
@@ -471,6 +507,7 @@ async function constructAgentSession(
 		model = result.model;
 		if (!model) {
 			if (result.fallbackReason === "configured-provider-unsupported") {
+				if (missingCatalog && defaultProvider === "github-copilot") missingAccountModel = defaultModelId;
 				modelFallbackMessage = result.fallbackMessage;
 				modelFallbackReason = result.fallbackReason;
 			} else if (!modelFallbackMessage) {
@@ -491,6 +528,7 @@ async function constructAgentSession(
 			: (settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL);
 	}
 
+	const requestedThinking = thinkingLevel;
 	// Fall back to per-model override, then global default
 	if (thinkingLevel === undefined && model) {
 		thinkingLevel = settingsManager.getModelThinkingLevel(model.provider, model.id);
@@ -991,8 +1029,20 @@ async function constructAgentSession(
 				});
 		}
 		if (options.parentUsageSink !== undefined) forwardUsage(session, options.parentUsageSink);
+		const unresolved = missingAccountModel ? session.model : undefined;
 		if (!deferStart) await session.bindExtensions(options.extensionBindings ?? {});
 		bindChildTaskNotices(session as unknown as AgentSessionInternalSurface);
+		if (missingAccountModel && modelFallbackMessage && unresolved && session.model === unresolved) {
+			deferFirstPromptModel(session, {
+				id: missingAccountModel,
+				original: unresolved,
+				fallbackMessage: modelFallbackMessage,
+				caller: options.signal,
+				thinking: requestedThinking,
+				print: deferStart,
+				ready: !deferStart,
+			});
+		}
 		return {
 			session,
 			extensionsResult,

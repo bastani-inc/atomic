@@ -1069,6 +1069,12 @@ export async function main(argv: string[], options?: MainOptions) {
 					customTools: sessionOptions.customTools,
 				},
 				!isolateInteractiveHost && !deferStartupTrust,
+				appMode === "print" &&
+					!offlineMode &&
+					!parsed.model &&
+					!parsed.provider &&
+					!parsed.models &&
+					!parsed.apiKey,
 			);
 			startupSession = created.session;
 			services.projectTrust = {
