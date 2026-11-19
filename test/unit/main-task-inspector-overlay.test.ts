@@ -53,9 +53,8 @@ import {
 	getLayoutFrame,
 	RecordingTerminal,
 } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
-import { buildGraphOverlayAdapter, type OverlayUISurface } from "../../packages/workflows/src/tui/overlay-adapter.js";
+import { fakeFooterAgentSession } from "../helpers/footer-session.js";
 import { taskFixture } from "../helpers/task-projection.js";
-import { createStore, fakeFooterAgentSession } from "./stage-chat-view-helpers.js";
 
 const CTRL_T = "\x14";
 const CTRL_O = "\x0f";
@@ -432,6 +431,43 @@ for (const isolated of [false, true]) {
 	});
 }
 
+/** Exercise the real inline-prompt stack while an independent extension overlay has focus. */
+function navigationOverlay(custom: ExtensionUIContext["custom"]) {
+	let handle: OverlayHandle | undefined;
+	let finish: (() => void) | undefined;
+	return {
+		open() {
+			if (handle) {
+				handle.setHidden(false);
+				handle.focus();
+				return;
+			}
+			void custom<void>(
+				(_ui, _theme, _keys, done) => {
+					finish = done;
+					return new Text("Extension overlay", 0, 0);
+				},
+				{
+					purpose: "navigation",
+					overlay: true,
+					deferInlineCustomUiFocus: true,
+					onHandle: (opened) => {
+						handle = opened;
+					},
+				},
+			);
+		},
+		hide() {
+			handle?.setHidden(true);
+			handle?.unfocus();
+		},
+		close() {
+			handle?.hide();
+			finish?.();
+		},
+	};
+}
+
 for (const [isolated, completeOlderFirst] of [
 	[false, true],
 	[false, false],
@@ -445,15 +481,7 @@ for (const [isolated, completeOlderFirst] of [
 		const custom: ExtensionUIContext["custom"] = host.service
 			? host.service.custom.bind(host.service)
 			: host.mode.showExtensionCustom.bind(host.mode);
-		const surface: OverlayUISurface = {
-			custom: custom as unknown as OverlayUISurface["custom"],
-			getHostCustomUiState: () => source.getHostCustomUiState(),
-			onHostCustomUiStateChange: (listener) => source.onHostCustomUiStateChange(listener),
-			setStatus: (key, value) => (value === undefined ? host.statuses.delete(key) : host.statuses.set(key, value)),
-		};
-		const adapter = buildGraphOverlayAdapter({ ui: surface }, createStore());
-		const key = "pi-workflows:main-chat-input";
-		const notice = "Main chat needs input — exit graph to answer.";
+		const overlay = navigationOverlay(custom);
 		// PR #2926: the footer abbreviates home using native path separators on Windows too.
 		const context = `openai-codex/gpt-6-astra  medium • ${join("~", "Documents/projects/atomic")} (main)`;
 		let finishFirst = () => {};
@@ -481,10 +509,10 @@ for (const [isolated, completeOlderFirst] of [
 				await host.paint();
 				assert.match(host.frame(), /Late task owned by main/);
 			});
-			adapter.open(null);
+			overlay.open();
 			await flush();
-			assert.equal(host.statuses.get(key), undefined, "task navigation is not a main-chat question");
-			const graphFocus = host.tui.getFocusedComponent();
+
+			const overlayFocus = host.tui.getFocusedComponent();
 			first = custom<void>((_ui, _theme, _keys, done) => {
 				finishFirst = done;
 				return Object.assign(new Text("First genuine approval", 0, 0), {
@@ -513,21 +541,25 @@ for (const [isolated, completeOlderFirst] of [
 				{ purpose: "prompt" },
 			);
 			await flush();
-			assert.equal(host.statuses.get(key), notice);
+
 			assert.equal(
 				host.tui.getFocusedComponent(),
-				graphFocus,
-				"a main prompt must not steal foreground graph input",
+				overlayFocus,
+				"a main prompt must not steal foreground overlay input",
 			);
 			if (completeOlderFirst) finishFirst();
 			else finishSecond();
 			await (completeOlderFirst ? first : second);
 			await flush();
-			assert.equal(host.statuses.get(key), notice, "one completion cannot mask another required prompt");
-			assert.equal(host.tui.getFocusedComponent(), graphFocus, "completion must preserve foreground graph focus");
-			adapter.toggle(null);
+
+			assert.equal(
+				host.tui.getFocusedComponent(),
+				overlayFocus,
+				"completion must preserve foreground overlay focus",
+			);
+			overlay.hide();
 			await flush();
-			assert.equal(host.statuses.get(key), undefined, "hidden graph must not advertise an exit-graph notice");
+
 			const survivor = completeOlderFirst ? /Second genuine approval/ : /First genuine approval/;
 			assert.match(stripVTControlCharacters((await host.paint()).join("\n")), survivor);
 			assert.match(host.frame(), survivor, "the focused approval must actually be visible");
@@ -541,13 +573,13 @@ for (const [isolated, completeOlderFirst] of [
 			);
 			assert.match(host.frame(), /^ Tasks\b/m, "the pending navigation owner must resume, not main chat");
 			assert.match(stripVTControlCharacters((await host.paint()).join("\n")), /^ Tasks\b/m);
-			assert.equal(host.statuses.get(key), undefined);
-			adapter.open(null);
+
+			overlay.open();
 			await flush();
-			assert.equal(host.statuses.get(key), undefined, "navigation remaining after prompts is not input-needed");
-			adapter.close();
+
+			overlay.close();
 			await flush();
-			assert.equal(host.statuses.get(key), undefined);
+
 			await host.input(" ");
 			assert.match(stripVTControlCharacters((await host.input("\r")).join("\n")), /Inspect transcript/);
 			await host.input("\x1b");
@@ -561,7 +593,7 @@ for (const [isolated, completeOlderFirst] of [
 		} finally {
 			finishFirst();
 			finishSecond();
-			adapter.close();
+			overlay.close();
 			await Promise.all([first, second]);
 			await host.dispose();
 			setKeybindings(previous);
@@ -641,18 +673,7 @@ for (const isolated of [false, true]) {
 			const custom: ExtensionUIContext["custom"] = host.service
 				? host.service.custom.bind(host.service)
 				: host.mode.showExtensionCustom.bind(host.mode);
-			const adapter = buildGraphOverlayAdapter(
-				{
-					ui: {
-						custom: custom as unknown as OverlayUISurface["custom"],
-						getHostCustomUiState: () => source.getHostCustomUiState(),
-						onHostCustomUiStateChange: (listener) => source.onHostCustomUiStateChange(listener),
-						setStatus: (key, value) =>
-							value === undefined ? host.statuses.delete(key) : host.statuses.set(key, value),
-					},
-				},
-				createStore(),
-			);
+			const overlay = navigationOverlay(custom);
 			const aborts = [new AbortController(), new AbortController()];
 			const reason = new Error("Approval canceled");
 			const labels = ["FIRST approval", "SECOND approval"];
@@ -666,9 +687,9 @@ for (const isolated of [false, true]) {
 			const states = () =>
 				[host.mode, ...(host.service ? [host.service] : [])].map((ui) => ui.getHostCustomUiState());
 			try {
-				adapter.open(null);
+				overlay.open();
 				await flush();
-				const graphFocus = host.tui.getFocusedComponent();
+				const overlayFocus = host.tui.getFocusedComponent();
 				for (const [index, label] of labels.entries()) {
 					completions.push(
 						custom<string | undefined>(
@@ -702,7 +723,7 @@ for (const isolated of [false, true]) {
 				}
 				await flush();
 				assert.ok(states().every((state) => state.blockingInlineCustomUiDepth === 3));
-				assert.equal(host.tui.getFocusedComponent(), graphFocus);
+				assert.equal(host.tui.getFocusedComponent(), overlayFocus);
 				aborts[canceled].abort(reason);
 				await completions[canceled];
 				await flush();
@@ -711,12 +732,8 @@ for (const isolated of [false, true]) {
 				assert.deepEqual(settled, [
 					isolated ? { index: canceled, value: undefined } : { index: canceled, error: reason },
 				]);
-				assert.equal(host.tui.getFocusedComponent(), graphFocus, "abort cannot steal graph focus");
-				assert.equal(
-					host.statuses.get("pi-workflows:main-chat-input"),
-					"Main chat needs input — exit graph to answer.",
-				);
-				adapter.toggle(null);
+				assert.equal(host.tui.getFocusedComponent(), overlayFocus, "abort cannot steal overlay focus");
+				overlay.hide();
 				await flush();
 				const survivorFocus = stripVTControlCharacters((await host.paint()).join("\n"));
 				const survivorFrame = host.frame();
@@ -760,7 +777,7 @@ for (const isolated of [false, true]) {
 					doneMessages,
 					"late done/abort must not emit duplicate settlements",
 				);
-				assert.equal(host.statuses.get("pi-workflows:main-chat-input"), undefined);
+
 				assert.equal(host.editor.getText(), "");
 				assert.equal(host.hostFallbacks, 0);
 				await host.input("\x1b");
@@ -770,7 +787,7 @@ for (const isolated of [false, true]) {
 			} finally {
 				for (const abort of aborts) abort.abort(reason);
 				for (const done of finish) done(undefined);
-				adapter.close();
+				overlay.close();
 				await Promise.all(completions);
 				await host.dispose();
 				setKeybindings(previous);

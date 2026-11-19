@@ -37,6 +37,7 @@
 - `history://` searches session transcripts only. Existing `history://workflows` links explain the removal; old workflow stores are left untouched. Use `history://sessions` to recall the conversation.
 - Workflow definitions are no longer loadable resources. Atomic ignores the old `workflows` and `intercom.showUnknownTargetWarnings` settings. Package manifests and package filters no longer load workflows; package a skill for repeated use instead. Existing files can stay in place: ask the agent to convert an old definition into a project or global skill that runs with codemode and subagents. Nothing is written automatically at startup.
 - Source checkouts no longer include the `@bastani/workflows` extension or its builtin workflow definitions. If you linked that directory into another host, remove the link. To reuse a definition, ask Atomic to read it and carry out its steps with codemode and subagents.
+- Source checkouts no longer include the `@bastani/workflows` extension or its builtin workflow definitions. If you linked that directory into another host, remove the link. To reuse a definition, ask Atomic to convert it to a skill and run the skill with codemode and subagents. The original file stays untouched.
 
 ### Added
 
