@@ -13,6 +13,13 @@ import type {
 	WorkflowRootGraph,
 } from "./workflow-events.js";
 
+/** Host-only: distinguish the empty initial epoch from a publisher whose state is temporarily unavailable,
+ * without changing the snapshots extensions receive or retain. */
+const unpublishedSnapshots = new WeakSet<WorkflowActivityFrame>();
+export function isUnpublishedWorkflowSnapshot(frame: WorkflowActivitySnapshotFrame): boolean {
+	return unpublishedSnapshots.has(frame);
+}
+
 /** Graph nodes found deep-frozen, which every copy of every frame may share. */
 const sharedGraphNodes = new WeakSet<WorkflowGraphNode>();
 /** Graphs the hub built from a publication; their nodes are all shared. */
@@ -91,6 +98,7 @@ export class WorkflowActivityHub {
 		this.runDelivery = runDelivery;
 	}
 	private cursor: WorkflowObservationCursor = { epoch: randomUUID(), revision: 0 };
+	private readonly unpublishedEpoch = this.cursor.epoch;
 	private availability: "ready" | "recovering" | "unavailable" = "unavailable";
 	private roots = new Map<string, WorkflowRootActivity>();
 	/** Per root, the nodes of its last publication and the shared nodes the hub kept for them. */
@@ -197,7 +205,9 @@ export class WorkflowActivityHub {
 	private async deliver(lease: ObserverLease): Promise<void> {
 		while (lease.active && lease.queue.length) {
 			try {
-				await lease.observer(copyFrame(lease.queue.shift()!));
+				const frame = copyFrame(lease.queue.shift()!);
+				if (frame.cursor.epoch === this.unpublishedEpoch) unpublishedSnapshots.add(frame);
+				await lease.observer(frame);
 			} catch {
 				this.record("ObserverDeliveryFailed");
 			}

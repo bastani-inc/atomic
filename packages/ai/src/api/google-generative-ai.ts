@@ -52,6 +52,8 @@ import {
 	toGoogleThinkingLevel,
 	usesGoogleThinkingLevel,
 } from "./google-shared.ts";
+import { ProviderRetryTransport } from "../utils/provider-retry.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
 export interface GoogleOptions extends StreamOptions {
@@ -101,7 +103,8 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			if (!apiKey) {
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
-			const client = createClient(model, apiKey, options.headers, options.identity, options.fetch);
+			const retryTransport = ProviderRetryTransport.for(options);
+			const client = createClient(model, apiKey, options.headers, options.identity, retryTransport?.fetch ?? options.fetch);
 			recordGoogleThinkingOffFallback(model, options, output, (level) =>
 				getGoogleBudget(model, level, options?.thinkingBudgets),
 			);
@@ -117,7 +120,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			const googleStream = await retryGoogleRequest(() => client.models.generateContentStream(requestParams), {
 				...options,
 				signal: streamDeadline.signal,
-			});
+			}, retryTransport);
 
 			stream.push({ type: "start", partial: output });
 			let currentBlock: TextContent | ThinkingContent | null = null;
@@ -306,7 +309,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			appendProviderResponseFailureDiagnostic(output, error, googleErrorStatus(output.errorMessage));
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;

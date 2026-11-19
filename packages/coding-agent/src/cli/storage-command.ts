@@ -83,6 +83,7 @@ const HELP = `Usage:
   ${MIGRATE_USAGE}
   ${APP_NAME} storage adopt <path>... [--no-discover]
   ${APP_NAME} storage consolidate
+  ${APP_NAME} storage move-snapshot-chunks <sqlite-file> [--prefix <prefix>]
   ${APP_NAME} storage export <dir> [--sessions] [--workflows] [--run <id>]... [--unfinished]
                               [--limit <n>] [--since <time>] [--storage <json> | --storage-file <path>]
   ${APP_NAME} storage import <dir> [--sessions] [--workflows] [--storage <json> | --storage-file <path>]
@@ -117,6 +118,9 @@ Commands:
            Move finished runs (completed, failed or cancelled, not leased, without local workers)
            from adopted journals into the journal store's own shards. Other runs stay where they
            are. An interrupted consolidation leaves every run readable; run it again to finish.
+  move-snapshot-chunks
+           Move the snapshot chunk table in a closed local SQLite file. Uses exclusive access to
+           checkpoint after each batch, so the log does not need room for the whole copy.
   export   Write sessions to <dir>/sessions/<sessionId>.jsonl (session format version
            ${SESSION_FORMAT_VERSION}, the format \`${APP_NAME} --import\` reads) and workflow runs to
            <dir>/workflows/<runId>.jsonl (workflow run export version ${WORKFLOW_RUN_EXPORT_VERSION}), one file per
@@ -188,6 +192,7 @@ export type StorageCommand =
 	  }
 	| { readonly kind: "adopt"; readonly paths: readonly string[]; readonly discover: boolean }
 	| { readonly kind: "consolidate" }
+	| { readonly kind: "move-snapshot-chunks"; readonly file: string; readonly prefix: string }
 	| {
 			readonly kind: "search-session";
 			readonly file: string;
@@ -276,6 +281,7 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 			((command === "join" || command === "migrate") &&
 				(arg === "--token-file" || arg === "--password-file" || arg === "--auth" || arg === "--prefix")) ||
 			(command === "migrate" && arg === "--db") ||
+			(command === "move-snapshot-chunks" && arg === "--prefix") ||
 			(command === "export" && (arg === "--limit" || arg === "--since")) ||
 			((command === "export" || command === "import") && (arg === "--storage" || arg === "--storage-file"))
 		) {
@@ -287,6 +293,14 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 		if (arg.startsWith("-"))
 			throw new StorageCommandError(`Unknown option ${arg} for "storage ${command}".\n${HELP_HINT}`);
 		positional.push(arg);
+	}
+	if (command === "move-snapshot-chunks") {
+		const [file, ...extra] = positional;
+		if (!file || extra.length)
+			throw new StorageCommandError(
+				`Usage: ${APP_NAME} storage move-snapshot-chunks <sqlite-file> [--prefix <prefix>]`,
+			);
+		return { kind: command, file, prefix: values.get("--prefix") ?? "" };
 	}
 	if (command === "status") {
 		if (positional.length > 0) throw new StorageCommandError(`Usage: ${APP_NAME} storage status [--json]`);
@@ -634,6 +648,12 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 		if (command.kind === "search-session") {
 			const { searchStoredSession } = await import("./storage-search-session.js");
 			await searchStoredSession(command, options.cwd, options.log);
+			return 0;
+		}
+		if (command.kind === "move-snapshot-chunks") {
+			const { SqlSnapshotBlobStore } = await import("../core/worktree-snapshot/blob-store.ts");
+			await SqlSnapshotBlobStore.moveChunksOffline(resolve(options.cwd, command.file), command.prefix);
+			log("Snapshot chunk layout is up to date.");
 			return 0;
 		}
 		if (command.kind === "status") return await status(command.json, options, log);

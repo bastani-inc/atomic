@@ -25,6 +25,7 @@ export interface InteractiveEngineStartupEnv {
 	readonly apiKey: string | undefined;
 	/** Trust decisions of this host session, handed to an engine started to replace one that stopped. */
 	readonly trustDecisions?: SessionTrustDecisions;
+	readonly projectResourceWithdrawals?: true;
 }
 
 let snapshot: InteractiveEngineStartupEnv | undefined;
@@ -63,6 +64,7 @@ export function captureInteractiveEngineStartupEnv(
 					guardFile: bootstrap.guardFile,
 					apiKey: bootstrap.apiKey,
 					...(bootstrap.trustDecisions ? { trustDecisions: bootstrap.trustDecisions } : {}),
+					...(bootstrap.projectResourceWithdrawals ? { projectResourceWithdrawals: true as const } : {}),
 				}
 			: {
 					child: process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD,
