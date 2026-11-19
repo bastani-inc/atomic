@@ -11,7 +11,7 @@ import {
 	type AttachedComposerStyle,
 	applyAttachedComposer,
 } from "../../packages/coding-agent/src/modes/interactive/components/input-label.js";
-import { mainComposerHintSegments } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.js";
+import { mainComposerFooterHints } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.js";
 import {
 	type NavKey,
 	type NavKeyStyle,
@@ -99,7 +99,7 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 				undefined,
 				() => false,
 				undefined,
-				(width) => mainComposerHintSegments(keybindings, { agentRows: 3, needsInput: 1, hiddenWorkflow }, width),
+				() => mainComposerFooterHints(keybindings, { agentRows: 3, needsInput: 1, hiddenWorkflow }),
 			);
 			for (const width of [30, 40, 50, 60, 80, 160]) {
 				const line = stripTerminalSequences(footer.render(width)[0] ?? "");
@@ -115,8 +115,14 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 			assert.equal(stripTerminalSequences(footer.render(30)[0] ?? ""), "↓ 3 agents · ? keys");
 			hiddenWorkflow = true;
 			assert.match(stripTerminalSequences(footer.render(60)[0] ?? ""), /↓ 3 agents · 1 needs input · \? keys$/u);
-			assert.match(
+			assert.equal(
 				stripTerminalSequences(footer.render(100)[0] ?? ""),
+				working
+					? "esc to interrupt · ↓ 3 agents · 1 needs input · /workflows to see runs · ? keys"
+					: "claude-sonnet-4-5  medium • /workspace/atomic-project (main) · ↓ 3 agents · 1 needs input · ? keys",
+			);
+			assert.match(
+				stripTerminalSequences(footer.render(160)[0] ?? ""),
 				/1 needs input · \/workflows to see runs · \? keys$/u,
 			);
 		}

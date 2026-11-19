@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { resolve, sep } from "node:path";
+import { getKeybindings, setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { panelCounts } from "../../packages/coding-agent/src/core/tasks/agent-panel-rules.ts";
@@ -11,7 +12,11 @@ import { taskClocksFor } from "../../packages/coding-agent/src/core/tasks/live-e
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.ts";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.ts";
 import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.ts";
-import { mainComposerHintSegments } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
+import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.ts";
+import {
+	mainComposerFooterHints,
+	mainComposerHintSegments,
+} from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { engineAgentPanelCounts } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
@@ -39,6 +44,7 @@ beforeEach(() => {
 });
 afterEach(() => {
 	setKeybindings(previousKeys);
+	vi.unstubAllEnvs();
 });
 
 function panelSession(initial: AgentPanelItem[] = []) {
@@ -351,6 +357,58 @@ describe("a paused or blocked workflow run rests like a paused subagent (#5490)"
 		} finally {
 			await fixture.dispose();
 		}
+	});
+
+	describe.each(["in-process", "isolated"] as const)("%s host", (host) => {
+		test.each([80, 120, 160])(
+			"the workflow hint uses only spare footer cells at %i columns (#5710)",
+			async (width) => {
+				vi.stubEnv("ATOMIC_EXPERIMENTAL", "1");
+				vi.stubEnv("ATOMIC_DEBUG", "1");
+				const home = resolve("home");
+				vi.stubEnv("HOME", home);
+				const fixture = taskFixture();
+				try {
+					await fixture.start("keeps running");
+					const panel = panelSession([run("paused")]);
+					bindOwnerTaskStore(panel.session, fixture.store);
+					await fixture.settle(0);
+					assert.deepEqual(panel.ids(), []);
+					const message = parseInteractiveEngineMessage(
+						serializeInteractiveEngineMessage({
+							type: "engine_agent_panel_state",
+							...agentPanelCounts(panel.session),
+						}),
+					);
+					assert.ok(message?.type === "engine_agent_panel_state");
+					const source = host === "isolated" ? () => engineAgentPanelCounts(message) : panel.session;
+					let directory = "footer" + "x".repeat(width - 80);
+					const footer = new FooterComponent(
+						{
+							state: { model: { provider: "local", id: "cap-1" } },
+							sessionManager: { getCwd: () => resolve(home, directory) },
+						} as never,
+						{
+							getGitBranch: () => "main",
+							getExtensionStatuses: () => new Map(),
+							getAvailableProviderCount: () => 1,
+							onBranchChange: () => () => {},
+						},
+						undefined,
+						undefined,
+						undefined,
+						() => mainComposerFooterHints(keybindings, source),
+					);
+					const line = () => stripTerminalSequences(footer.render(width)[0]!);
+					const prefix = () => `cap-1 • ~${sep}${directory} (main) xp debug · /tasks to see subagents`;
+					assert.equal(line(), `${prefix()} · ? keys`);
+					directory = "footer";
+					assert.equal(line(), `${prefix()}${width === 80 ? "" : " · /workflows to see runs"} · ? keys`);
+				} finally {
+					await fixture.dispose();
+				}
+			},
+		);
 	});
 
 	test("stays listed while another workflow run or a background shell is active (#5490)", () => {

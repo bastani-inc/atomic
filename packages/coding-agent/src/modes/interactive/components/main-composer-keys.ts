@@ -1,8 +1,9 @@
-import { type Component, clickableKeysHint, stripHintMarkers, visibleWidth } from "@bastani/atomic-tui";
+import { type Component, clickableKeysHint, stripHintMarkers } from "@bastani/atomic-tui";
 import { panelHintParts, panelHintSegments } from "../../../core/tasks/agent-panel-rules.ts";
 import type { AgentPanelSession } from "../../../core/tasks/agent-panel-source.ts";
 import { type AgentPanelCounts, agentPanelCounts } from "../../rpc/agent-panel-bridge.ts";
 import { theme } from "../theme/theme.js";
+import type { FooterHints } from "./footer.ts";
 import {
 	isNavHelpKey,
 	type NavKey,
@@ -73,9 +74,8 @@ function promptKeybindings(keybindings: NavKeybindings | undefined): NavKeybindi
 export function mainComposerHintSegments(
 	keybindings: NavKeybindings | undefined,
 	state?: MainComposerHintSource,
-	availableWidth?: number,
 ): string[] {
-	return mainComposerHints(keybindings, state, availableWidth).map(stripHintMarkers);
+	return mainComposerHints(keybindings, state).map(stripHintMarkers);
 }
 
 /**
@@ -83,11 +83,14 @@ export function mainComposerHintSegments(
  * manage` when the panel has nothing to focus, and `? keys`. A click on a key's segment presses the key, and a click on
  * the `/tasks` segment runs the command.
  */
-export function mainComposerHints(
+export function mainComposerHints(keybindings: NavKeybindings | undefined, state?: MainComposerHintSource): string[] {
+	return mainComposerFooterHints(keybindings, state).segments;
+}
+
+export function mainComposerFooterHints(
 	keybindings: NavKeybindings | undefined,
 	state?: MainComposerHintSource,
-	availableWidth?: number,
-): string[] {
+): FooterHints {
 	const counts = resolveAgentCounts(keybindings, state);
 	const promptKeys = promptKeybindings(keybindings);
 	const focusKeys = navEntryKeyParts(promptKeys, { action: "app.agents.focus", label: "" });
@@ -104,15 +107,11 @@ export function mainComposerHints(
 		if (segment.kind === "tasks") return slashCommandHint(segment.text);
 		return segment.text;
 	});
-	const workflowIndex = segments.length;
+	const optionalIndex = counts.hiddenWorkflow ? segments.length : undefined;
 	if (counts.hiddenWorkflow) segments.push(slashCommandHint("/workflows to see runs"));
 	const helpKeys = navEntryKeyParts(promptKeys, { action: "app.keys.help", label: "" });
 	if (helpKeys.length > 0) segments.push(clickableKeysHint(helpKeys, " keys"));
-	// Never displace a prompt key, task pointer or input count that already fit.
-	if (counts.hiddenWorkflow && availableWidth !== undefined && visibleWidth(segments.join(" · ")) > availableWidth) {
-		segments.splice(workflowIndex, 1);
-	}
-	return segments;
+	return { segments, optionalIndex };
 }
 
 function finiteCount(value: number): number {
