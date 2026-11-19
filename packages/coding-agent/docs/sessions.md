@@ -300,7 +300,9 @@ The chat, the tree's current marker, `/session`, and the context indicator switc
 | Typical use | Explore alternatives in place | Start a new session from an earlier prompt | Duplicate current work before continuing |
 | Summary | Optional branch summary | None | None |
 
-Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone` when you want a separate session.
+Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone` when you want a separate session. Both copy the complete path from the session's first entry to the selected point, including its worktree snapshots, into a new session; other branches stay only in the original session.
+
+`atomic --fork <id>`, **Fork** for a session whose working directory is missing, and the SDK's `forkTo` into the same store copy the whole saved session, every branch included. Only a fork into a store that Atomic can tell is a different store copies less: the current context, without the parent's retired turns or private task records. Such a fork records its parent ID, but the parent history stays in the original store and may no longer be available if that store was temporary; resuming the fork says `Parent history is in its original store or is no longer available.` When Atomic cannot tell whether two stores are the same, it copies the whole session. For a complete, independent copy, use `atomic storage export` and `atomic storage import` instead.
 
 `/fork` opens **Fork from message** with the newest user message selected. Type to filter the messages by their text, use ↑ and ↓ to choose, and press Enter to copy the conversation up to that message into a new session. Esc clears the search, then closes the picker.
 

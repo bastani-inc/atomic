@@ -22,6 +22,15 @@ import {
 	yieldSessionTurn as yieldToEventLoop,
 } from "./types.js";
 
+export type SessionHistorySource =
+	| SessionStore
+	| Pick<SessionStore, "descriptor" | "readBranchSpan" | "readEntrySizes" | "readEntryChunk" | "readRange">;
+
+function snapshotSource(store: SessionHistorySource): SessionStore {
+	if ("load" in store) return store;
+	throw new TypeError(`The selected ${store.descriptor.adapter} reader does not support this historical operation`);
+}
+
 function cursorScope(sessionId: string, epoch: string): string {
 	return Buffer.from(hash(new TextEncoder().encode(JSON.stringify([sessionId, epoch])))).toString("base64url");
 }
@@ -71,7 +80,7 @@ export function historyPageGeneration(page: object): PageGeneration | undefined 
 /** A lazy sequence of pages of the generation and watermark the caller observed. Metadata is sized before any
  * payload read. A new generation is rejected by readRange inside the same snapshot that reads the payload. */
 export async function* historyPages(
-	store: SessionStore,
+	store: SessionHistorySource,
 	sessionId: string,
 	epoch: string | undefined,
 	watermark: number,
@@ -154,7 +163,11 @@ export async function* historyPages(
 				? { start, end: pinned.end, older: true, newer: pinned.newer }
 				: store.readBranchSpan
 					? await store.readBranchSpan(sessionId, branchCut)
-					: await (await import("./snapshot-history.js")).snapshotBranchSpan(store, sessionId, branchCut);
+					: await (await import("./snapshot-history.js")).snapshotBranchSpan(
+							snapshotSource(store),
+							sessionId,
+							branchCut,
+						);
 		if (scan && !reverse) pinned = span;
 		if (leaf !== undefined) {
 			options.signal?.throwIfAborted();
@@ -178,7 +191,7 @@ export async function* historyPages(
 			low = first.seq;
 			high = last.seq;
 		} else if (snapshotOnly) {
-			const result = await snapshotPage(store, sessionId, from, through, reverse, cut, stamp);
+			const result = await snapshotPage(snapshotSource(store), sessionId, from, through, reverse, cut, stamp);
 			options.signal?.throwIfAborted();
 			stamp = result.epoch;
 			scope = cursorScope(sessionId, stamp);
@@ -249,7 +262,8 @@ export async function* historyPages(
 		const hasNext = reverse ? hasOlder : hasNewer;
 		const cursorFor = (from: number, to: number, backward: boolean) =>
 			`${scope}.${from}.${to}${backward ? ".b" : ""}${options.adjacent || leaf !== undefined ? `.${firstSeq}.${lastSeq}` : ""}${leaf === undefined ? "" : `.p${leaf}`}${snapshotOnly ? `.s${cut}` : ""}`;
-		observeReferenceCut(options, store, sessionId, stamp, cut);
+		// Only a whole store can carry a task-reference watcher; a forked file's partial reader never has one.
+		if ("load" in store) observeReferenceCut(options, store, sessionId, stamp, cut);
 		const read: SessionHistoryPage = {
 			items: page,
 			...(hasNext ? { nextCursor: cursorFor(start, end, reverse) } : {}),
@@ -274,6 +288,30 @@ export async function* historyPages(
 		if (!hasNext) return;
 		await yieldToEventLoop();
 	}
+}
+
+/** Find the last exact stored position in pages visited newest first. An opaque oversized item cannot
+ * be skipped without checking its identity: an older row could reuse its ID. No body is assembled. */
+export async function findInSessionHistory(
+	pages: AsyncIterable<SessionHistoryPage>,
+	id: string,
+	chunks?: (item: OversizedSessionEntry) => AsyncIterable<Uint8Array>,
+	signal?: AbortSignal,
+): Promise<number | undefined> {
+	for await (const { items } of pages) {
+		signal?.throwIfAborted();
+		for (let i = items.length - 1; i >= 0; i--) {
+			const item = items[i]!;
+			if ("entry" in item) {
+				if (item.entry.id === id) return item.seq;
+			} else {
+				if (!chunks) return undefined;
+				if (await (await import("./chunked-resume-projection.js")).chunkedEntryHasId(chunks(item), id))
+					return item.seq;
+			}
+		}
+	}
+	return undefined;
 }
 
 /** Read an existing saved session without creating a live session manager, model context or recovery bindings. */
@@ -334,7 +372,7 @@ export function readSessionHistoryChunks(
 }
 
 export async function* historyChunks(
-	store: SessionStore,
+	store: SessionHistorySource,
 	sessionId: string,
 	epoch: string | undefined,
 	reference: OversizedSessionEntry,
@@ -360,7 +398,7 @@ export async function* historyChunks(
 		const data =
 			store.readEntryChunk && store.readEntrySizes && store.readRange
 				? await store.readEntryChunk(reference, offset)
-				: await snapshotChunk(store, reference, offset);
+				: await snapshotChunk(snapshotSource(store), reference, offset);
 		options.signal?.throwIfAborted();
 		if (!data.length || data.length > SESSION_HISTORY_CHUNK_BYTES || offset + data.length > reference.bytes)
 			throw new Error(`Incomplete or invalid historical entry ${reference.seq}`);

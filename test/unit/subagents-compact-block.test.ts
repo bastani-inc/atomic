@@ -693,11 +693,15 @@ test("expanded Agent block releases cached transcript on collapse and fails clos
 	bindSubagentChildCards({ sessionManager: parentSession });
 
 	let childLoads = 0;
-	const origOpen = SessionManager.open.bind(SessionManager);
-	SessionManager.open = (async (...args: Parameters<typeof SessionManager.open>) => {
-		if (args[1] === childSession.getSessionId()) childLoads += 1;
-		return origOpen(...args);
-	}) as typeof SessionManager.open;
+	// A card reads a saved child's rows, starting with which rows its launch shows, instead of reopening the child.
+	const readChildDisplayCut = store.readChildDisplayCut.bind(store);
+	let countRead = (sessionId: string) => {
+		if (sessionId === childSession.getSessionId()) childLoads += 1;
+	};
+	store.readChildDisplayCut = (sessionId, launch) => {
+		countRead(sessionId);
+		return readChildDisplayCut(sessionId, launch);
+	};
 
 	try {
 		let invalidated = 0;
@@ -774,10 +778,9 @@ test("expanded Agent block releases cached transcript on collapse and fails clos
 		bindSubagentChildCards({ sessionManager: parentSession });
 
 		let forkLoads = 0;
-		SessionManager.open = (async (...args: Parameters<typeof SessionManager.open>) => {
-			if (args[1] === forkedChild.getSessionId()) forkLoads += 1;
-			return origOpen(...args);
-		}) as typeof SessionManager.open;
+		countRead = (sessionId) => {
+			if (sessionId === forkedChild.getSessionId()) forkLoads += 1;
+		};
 		const forkContext = { toolCallId: "broken-fork-call", state: {}, invalidate() {} };
 		renderSubagentToolCall({ agent: "debugger", task: "Child own task" }, theme, forkContext);
 		const forkResponse = taskToolResult({
@@ -983,7 +986,7 @@ test("expanded Agent block releases cached transcript on collapse and fails clos
 		assert.match(extOut, /● PrivateTool\(redacted\)/);
 		assert.doesNotMatch(extOut, /top-secret-token-123/);
 	} finally {
-		SessionManager.open = origOpen;
+		store.readChildDisplayCut = readChildDisplayCut;
 		await store.close();
 	}
 });

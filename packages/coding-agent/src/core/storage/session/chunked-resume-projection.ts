@@ -20,6 +20,7 @@ export type Shape =
 	| "truth"
 	| "short"
 	| "answerText"
+	| "searchText"
 	| "nonBlank"
 	| "treeContent"
 	| "labelPreview"
@@ -182,6 +183,23 @@ export function* readValue(first: Token, shape: Shape | undefined): Reader<Json>
 			return out;
 		}
 		case "startArray": {
+			if (shape === "searchText") {
+				let text = "",
+					seen = false;
+				for (let part = yield; part.name !== "endArray"; part = yield) {
+					if (text.length >= 65537) {
+						yield* skip(part);
+						continue;
+					}
+					const b = object(yield* readValue(part, { type: "short", text: "searchText" }));
+					if (b.type === "text" && typeof b.text === "string") {
+						if (seen) text += " ";
+						text += b.text.slice(0, 65537 - text.length);
+						seen = true;
+					}
+				}
+				return text;
+			}
 			if (shape === "treeContent") {
 				let present = false;
 				const calls: string[] = [];
@@ -236,7 +254,9 @@ export function* readValue(first: Token, shape: Shape | undefined): Reader<Json>
 					present ||= token.value.trim().length > 0;
 				return present;
 			}
-			return yield* stringValue(shape === "short" ? 64 : shape === "hash" ? 65 : Infinity);
+			return yield* stringValue(
+				shape === "short" ? 64 : shape === "hash" ? 65 : shape === "searchText" ? 65537 : Infinity,
+			);
 		case "numberValue":
 			return Number(first.value);
 		case "trueValue":
@@ -318,7 +338,9 @@ function* project(
 					? { role: true, provider: true, model: true, usage: true, content: "tools" }
 					: role === "toolResult"
 						? { role: true, toolCallId: true, usage: "usage" }
-						: { role: "short" };
+						: role === "system"
+							? { role: "short", toolsAdded: "truth", toolsRemoved: "truth" }
+							: { role: "short" };
 			break;
 		case "compaction":
 			fields.firstKeptEntryId = true;
@@ -536,6 +558,38 @@ export async function chunkedBranchState(chunks: () => AsyncIterable<Uint8Array>
 	return entry as unknown as SessionEntry;
 }
 
+/** Identity and parent of a historical entry, plus its hash when it is a tool-output receipt. Never collect the receipt's inline bytes here. */
+export async function chunkedForkLink(
+	chunks: () => AsyncIterable<Uint8Array>,
+): Promise<{ id?: string; parentId?: string | null; timestamp?: string; hash?: string; anchor: boolean }> {
+	const selected = object(
+		await read(
+			chunks(),
+			(function* (): Reader<Json> {
+				return yield* readValue(yield, {
+					id: "string",
+					parentId: "string",
+					timestamp: "string",
+					type: "short",
+					customType: "short",
+					data: { hash: "short" },
+				});
+			})(),
+		),
+	);
+	const hash =
+		selected.type === "custom" && selected.customType === "atomic.tool-output"
+			? object(selected.data).hash
+			: undefined;
+	return {
+		id: typeof selected.id === "string" ? selected.id : undefined,
+		parentId: typeof selected.parentId === "string" ? selected.parentId : null,
+		timestamp: typeof selected.timestamp === "string" ? selected.timestamp : undefined,
+		hash: typeof hash === "string" ? hash : undefined,
+		anchor: selected.type === "custom" && selected.customType === "atomic.fork-anchor",
+	};
+}
+
 /** Fold a pinned prefix that has no native resume index. Read the stored ID, ancestry and billing fields, never
  * the message body. The tool-call count is kept separate so no array of dummy content blocks is allocated. */
 export async function chunkedPrefixFields(
@@ -720,6 +774,44 @@ export async function chunkedAnswerContent(
 	if (edit && entry.replacement === null) return null;
 	const text = object(entry[field]).content;
 	return typeof text === "string" ? text.trim() || undefined : undefined;
+}
+
+/** The bounded listing contribution and index fields of a raw backup row. The original bytes, not
+ * these fields, are written into the child. Model usage/tool counts remain from the resume projection. */
+export async function forkSeedFields(chunks: () => AsyncIterable<Uint8Array>) {
+	const { entry, toolCalls } = await chunkedPrefixFields(chunks);
+	const extra = object(
+		await read(
+			chunks(),
+			(function* (): Reader<Json> {
+				return yield* readValue(
+					yield,
+					entry.type === "message"
+						? { message: { timestamp: "number", content: "searchText" } }
+						: entry.type === "session_info"
+							? { name: "string" }
+							: entry.type === "session_summary"
+								? { summary: "string", summarizedThroughId: "string" }
+								: entry.type === "custom" && entry.customType === "atomic.tool-output"
+									? { data: { hash: "hash" } }
+									: {},
+				);
+			})(),
+		),
+	);
+	if (entry.type === "message") {
+		const fields = object(extra.message);
+		Object.assign(entry.message, {
+			timestamp: fields.timestamp,
+			content:
+				typeof fields.content === "string"
+					? entry.message.role === "assistant"
+						? [{ type: "text", text: fields.content }]
+						: fields.content
+					: [],
+		});
+	} else Object.assign(entry, extra);
+	return { entry, extraToolCalls: toolCalls };
 }
 
 /** Fill the inline projection of the stub with the streamed fields. No reconstructed value is sent back to SQL. */
