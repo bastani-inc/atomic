@@ -125,7 +125,7 @@ Tools are named `mcp__<server>__<tool>`, with punctuation replaced by `_`. Names
 | `direct` | Declared like a built-in tool and also callable from codemode. |
 | `hidden` | Unreachable. |
 
-`codemode-deferred` is accepted as an alias for `codemode`. Atomic activates `codemode` for codemode servers and `tool_search` for deferred servers. Set `"autoEnableCodemode": false` beside `mcpServers` to prevent automatic codemode activation. A project value overrides a user-level value.
+`codemode-deferred` is accepted as an alias for `codemode`. Atomic activates `codemode` for codemode servers and `tool_search` for deferred servers. An explicit `-codemode` in `defaultTools` or `--tools` takes precedence: MCP leaves it off. Merely omitting it from a `defaultTools` list does not prevent MCP activation. Set `"autoEnableCodemode": false` beside `mcpServers` to disable MCP's automatic activation without removing codemode from the ordinary defaults. A project value overrides a user-level value.
 
 `toolExposure` overrides individual tools. Keys are original server tool names or patterns where `*` matches any characters. Exact names win; among patterns, the first match wins:
 

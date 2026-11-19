@@ -517,7 +517,7 @@ Plain names establish a replacement list before its modifiers apply. A project l
 
 `/reload` enables tools newly added to `defaultTools`. It does not disable removed tools or re-enable unchanged tools you turned off during the session. `--tools` with plain names, `--no-tools`, and `--no-builtin-tools` override the setting on reload too; excluded tools remain excluded. Modifier-only `--tools` lists apply on top of the reloaded setting, so a tool removed with `-name` stays removed.
 
-`codemode` and `tool_search` are built-in extension tools registered inactive. Add `"+codemode"` or `"+tool_search"` to `defaultTools` to activate them alongside ordinary defaults. See [codemode](/tools#codemode) and [tool search](/tools#tool_search) for usage and safety boundaries.
+`codemode` is selected by default. Use `"defaultTools": ["-codemode"]` to remove it; a replacement list must name `codemode` to select it. `tool_search` remains opt-in: use `"defaultTools": ["+tool_search"]` to add it alongside the defaults. See [codemode](/tools#codemode) and [tool search](/tools#tool_search) for usage and safety boundaries.
 
 ### Tasks
 

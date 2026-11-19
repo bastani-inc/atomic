@@ -391,6 +391,7 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 	"/sessions": ["/worktree-snapshots", "/guides/resume-on-any-machine"],
 	"/compaction": [
 		"/guides/configuration",
+		"/guides/orchestration",
 		"/guides/workflows",
 		"/guides/subagents",
 		"/background-tasks",
@@ -401,7 +402,15 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 	"/skills": ["/skills/authoring"],
 	"/subagents": ["/subagents/authoring"],
 	"/intercom": ["/intercom/operations"],
-	"/extensions": ["/extensions/authoring", "/extensions/events", "/extensions/ui", "/extensions/examples"],
+	"/extensions": [
+		"/extensions/authoring",
+		"/extensions/events",
+		"/extensions/ui",
+		"/extensions/examples",
+		"/orchestration",
+		"/orchestration/patterns",
+		"/orchestration/migrating-workflows",
+	],
 	"/packages": ["/packages/authoring"],
 	"/workflows/reliable-design": ["/workflows/verification"],
 	"/tmux": ["/herdr"],
@@ -653,7 +662,7 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			46,
+			50,
 			"migration routes, additions, and the storage API have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");

@@ -6,7 +6,7 @@ import { settingsFileNoticeKey, warnDeprecation } from "../utils/deprecation.js"
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import { isDecisionConfigError } from "./decision/errors.js";
-import { deepMergeSettings, isPrototypeKey } from "./settings-merge.js";
+import { deepMergeSettings, isPrototypeKey, isToolModifier } from "./settings-merge.js";
 import {
 	asyncSettingsStorage,
 	FileSettingsStorage,
@@ -101,6 +101,31 @@ export class SettingsManager {
 	/** A defensive snapshot of the effective merged settings. */
 	getSettings(): Settings {
 		return structuredClone(this.settings);
+	}
+
+	/** Explicit `-name` choices (not omissions from a plain list), in effective settings and CLI order. */
+	getDefaultToolRemovals(cliModifiers: readonly string[]): ReadonlySet<string> {
+		const removed = new Set<string>();
+		// The merged defaultTools list can no longer distinguish omission from subtraction. Read just
+		// this field from the same layers as mergeEffectiveSettings, without cloning whole settings.
+		const project = this.approvedProjectEdits?.has("defaultTools") ? undefined : this.projectSettings.defaultTools;
+		for (const entries of [
+			this.globalSettings.defaultTools,
+			project,
+			...this.overrides.map((layer) => layer.defaultTools),
+			cliModifiers.length ? cliModifiers : undefined,
+		]) {
+			if (entries === undefined) continue;
+			const list = Array.isArray(entries)
+				? entries.filter((entry): entry is string => typeof entry === "string")
+				: [];
+			if (list.length === 0 || list.some((entry) => !isToolModifier(entry))) removed.clear();
+			for (const entry of list) {
+				if (entry.startsWith("-")) removed.add(entry.slice(1));
+				else if (entry.startsWith("+")) removed.delete(entry.slice(1));
+			}
+		}
+		return removed;
 	}
 
 	private storage: SettingsStorage;

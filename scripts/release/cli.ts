@@ -1,7 +1,13 @@
 import { parseArgs } from "node:util";
 
 /** A verified stop condition; distinct from malformed input, missing tools and transport errors. */
-export class ReleaseBlocked extends Error {}
+export class ReleaseBlocked extends Error {
+	readonly lastObservation?: "pending";
+	constructor(message: string, lastObservation?: "pending") {
+		super(message);
+		this.lastObservation = lastObservation;
+	}
+}
 
 export function argumentsFor(
 	commands: Record<string, string>,
@@ -47,6 +53,9 @@ export async function releaseCli(run: (signal: AbortSignal) => object | Promise<
 			JSON.stringify({
 				status: stopped ? "blocked" : "error",
 				summary: error instanceof Error ? error.message : String(error),
+				...(!controller.signal.aborted && error instanceof ReleaseBlocked && error.lastObservation
+					? { lastObservation: error.lastObservation }
+					: {}),
 			}),
 		);
 		process.exitCode = stopped ? 2 : 1;

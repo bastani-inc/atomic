@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { type InitialBind, initialBindScope } from "../../core/extension-startup-close.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
+import { showLegacyWorkflowNotice } from "./session-notices.ts";
 
 export interface EventStartup {
 	mode: WeakRef<InteractiveModeBase>;
@@ -33,6 +34,7 @@ export async function bindInitialEagerSession(mode: InteractiveModeBase): Promis
 			showDiagnosticsWhenQuiet: true,
 			targetContainer: mode.resourceDisclosureContainer,
 		});
+		showLegacyWorkflowNotice(mode);
 		mode.showStartupNoticesIfNeeded(mode.startupNoticesContainer);
 		// A suppressed derived `-fast` duplicate is a startup notice, so it renders here on the eager
 		// path and again after deferred extension loading on the other branch of `run()`.

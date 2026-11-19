@@ -4,9 +4,11 @@ import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { type GitToolStatus, getGitStatus, getGitStatusAsync } from "../utils/tools-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";
+import { isSubagentChildSession } from "./agent-session-tasks.js";
 import { syncSessionHistoryTool } from "./agent-session-tool-registry.ts";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
+import { legacyWorkflowSection } from "./legacy-workflow-files.js";
 import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import {
@@ -49,6 +51,7 @@ export function getCallableToolNames(this: AgentSession): string[] {
  */
 
 export function getAllTools(this: AgentSession): ToolInfo[] {
+	const removed = this.settingsManager.getDefaultToolRemovals(this._defaultToolModifiers);
 	return Array.from(this._toolDefinitions.values()).map(({ definition, sourceInfo }) => ({
 		name: definition.name,
 		description: definition.description,
@@ -59,6 +62,7 @@ export function getAllTools(this: AgentSession): ToolInfo[] {
 		promptGuidelines: definition.promptGuidelines,
 		exposure: definition.exposure ?? "direct",
 		namespace: definition.namespace,
+		...(removed.has(definition.name) ? { explicitDefaultOptOut: true } : {}),
 		annotations: definition.annotations,
 		sourceInfo,
 	}));
@@ -232,6 +236,10 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 	const appendSystemPrompt = loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 	const loadedSkills = getSkillCatalog(this._resourceLoader).modelSkills();
 	const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
+	const legacyWorkflows =
+		isSubagentChildSession(this) || this._orchestrationContext?.kind === "workflow-stage"
+			? undefined
+			: legacyWorkflowSection(this._resourceLoader.getLegacyWorkflowFiles?.());
 	const previousBase = this._baseSystemPromptOptions;
 	const previousForcedPrompt = previousBase?.forceSystemPrompt;
 	const hiddenTools = validToolNames.filter((name) => isToolDeclarationHidden(this, name));
@@ -257,6 +265,7 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 		toolSnippets,
 		toolGuidelines: Object.fromEntries(this._toolPromptGuidelines),
 		sections: {
+			...(legacyWorkflows === undefined ? {} : { legacy_workflow_files: legacyWorkflows }),
 			...(subagentSessionMemory === undefined ? {} : { session_memory: `- ${subagentSessionMemory}` }),
 			...(this._worktreeRestoreNotices.length === 0
 				? {}
@@ -394,6 +403,15 @@ export function recordedToolLoadout(session: AgentSession): RecordedToolLoadout 
 	};
 }
 
+/** Although registered by an extension, the bundled codemode follows the user's built-in selection on restore. */
+function followsBuiltinSelection(
+	session: AgentSession,
+	name: string,
+	sourcePath = session._toolDefinitions.get(name)?.sourceInfo.path,
+): boolean {
+	return session._baseToolDefinitions.has(name) || (name === "codemode" && sourcePath === "builtin:codemode");
+}
+
 /**
  * Whether restoring a transcript activates a registered tool its recorded loadout does not list.
  *
@@ -408,8 +426,9 @@ export function activatesAfterRecordedLoadout(
 	recorded: RecordedToolLoadout,
 	name: string,
 	definition: { exposure?: string; defaultActive?: boolean } | undefined,
+	sourcePath?: string,
 ): boolean {
-	if (session._baseToolDefinitions.has(name)) {
+	if (followsBuiltinSelection(session, name, sourcePath)) {
 		return (
 			recorded.mentioned.has(name) &&
 			!recorded.current.includes(name) &&
@@ -452,7 +471,7 @@ export function _restoreToolsFromTranscript(this: AgentSession, options?: { star
 		this._setActiveTools(declared);
 		return;
 	}
-	const restored = declared.filter((name) => !this._baseToolDefinitions.has(name));
+	const restored = declared.filter((name) => !followsBuiltinSelection(this, name));
 	this._pendingToolNames = new Set(restored);
 	this._setActiveTools(applyToolModifiers([...this.getActiveToolNames(), ...restored], modifiers));
 }

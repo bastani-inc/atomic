@@ -2,6 +2,12 @@ import type { AgentTaskHost, ExtensionContext, TaskId, ToolScriptAccess } from "
 import type { JsonValue } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { admittedSubagentChild } from "../runs/foreground/released-child-resume.js";
+import {
+	currentChildWorktreeNote,
+	finishingWorktreeStatus,
+	worktreeWaitDeadline,
+} from "../runs/foreground/run-worktrees.js";
+import { subagentChildCardRecord } from "../runs/foreground/subagent-child-card-state.js";
 import { subagentChildId, subagentChildOwner } from "../runs/foreground/subagent-child-records.js";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor-types.js";
 import { readSettledOutput } from "../runs/foreground/task-execution.js";
@@ -56,6 +62,7 @@ Inspect definitions with list/get and the configured model catalog with models. 
 			action: Type.Literal("wait"),
 			taskId: string,
 			outcome: Type.Union([Type.Literal("running"), Type.Literal("settled"), Type.Literal("stopped-waiting")]),
+			worktreeNote: optionalString,
 			result: Type.Optional(
 				Type.Object({ status: string, output: optionalString, outputPath: optionalString, reason: optionalString }),
 			),
@@ -67,6 +74,7 @@ Inspect definitions with list/get and the configured model catalog with models. 
 					...identity,
 					state: string,
 					resumable: Type.Boolean(),
+					worktreeNote: optionalString,
 					resumeCall: Type.Optional(Type.Object({ action: Type.Literal("resume"), id: string })),
 				}),
 			),
@@ -74,6 +82,7 @@ Inspect definitions with list/get and the configured model catalog with models. 
 		Type.Object({
 			action: Type.Union([Type.Literal("pause"), Type.Literal("resume"), Type.Literal("quit")]),
 			children: Type.Array(Type.Object({ ...identity, state: string })),
+			worktreeNotes: Type.Optional(Type.Array(string)),
 		}),
 		Type.Object({ action: Type.Literal("list"), agents: Type.Array(Type.Object(summary)) }),
 		Type.Object({
@@ -138,21 +147,34 @@ function childForTask(host: AgentTaskHost, owner: string, taskId: TaskId) {
 export async function waitForScriptChild(ctx: ExtensionContext, params: SubagentParamsLike, signal: AbortSignal) {
 	const taskId = params.id as TaskId;
 	const host = ctx.getAgentTaskHost?.();
-	if (!host || !childForTask(host, subagentChildOwner(ctx).sessionId, taskId))
-		throw new Error(`Unknown subagent task in this session: ${taskId}`);
-	const observed = await host.waitForTask(taskId, params.budgetMs ?? host.boundedAgentWaitBudgetMs, undefined, signal);
+	const owned = host && childForTask(host, subagentChildOwner(ctx).sessionId, taskId);
+	if (!host || !owned) throw new Error(`Unknown subagent task in this session: ${taskId}`);
+	const member = subagentChildCardRecord(owned.childId, taskId);
+	const tree = member?.taskId === taskId ? member : undefined;
+	const deadline = tree && worktreeWaitDeadline(tree);
+	const waitSignal = deadline ? AbortSignal.any([signal, deadline.signal]) : signal;
+	const observed = await host
+		.waitForTask(taskId, params.budgetMs ?? host.boundedAgentWaitBudgetMs, undefined, waitSignal)
+		.finally(() => deadline?.dispose());
+	const note = () => tree && currentChildWorktreeNote(tree.runId, tree.index);
+	const observing = (outcome: "running" | "stopped-waiting") => {
+		const worktreeNote = tree && finishingWorktreeStatus(tree) && note();
+		return scriptResult({ action: "wait", taskId, outcome, ...(worktreeNote ? { worktreeNote } : {}) });
+	};
 	if (!observed.ok) {
 		if (observed.error.code === "ObserverCancelled")
-			return scriptResult({ action: "wait", taskId, outcome: "stopped-waiting" });
+			return observing(!signal.aborted && deadline?.signal.aborted ? "running" : "stopped-waiting");
 		throw new Error(observed.error.message);
 	}
-	if (observed.value.kind === "yielded") return scriptResult({ action: "wait", taskId, outcome: "running" });
+	if (observed.value.kind === "yielded") return observing("running");
 	const { result } = observed.value;
 	const output = await readSettledOutput(host, observed.value, host.taskRecords(new Set([taskId]))[0]);
+	const worktreeNote = note();
 	return scriptResult({
 		action: "wait",
 		taskId,
 		outcome: "settled",
+		...(worktreeNote ? { worktreeNote } : {}),
 		result: {
 			status:
 				result.kind === "cancelled" && (result.cause === "pause" || result.cause === "quit") && !result.released
@@ -184,6 +206,7 @@ export function scriptControlResult(result: SubagentToolResult): SubagentToolRes
 	if (control && !result.isError)
 		return scriptResult({
 			action: control.action,
+			...(control.worktreeNotes?.length ? { worktreeNotes: [...control.worktreeNotes] } : {}),
 			children: control.children.map(({ childId, agent, taskId, intercomTarget, state }) => ({
 				childId,
 				agent,
