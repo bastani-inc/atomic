@@ -7,7 +7,7 @@ export const ownedSessionPermits = new WeakMap<object, () => Promise<void>>();
 export const ownedSessionManagerStores = new WeakMap<object, SessionStore>();
 
 const currentWork = new AsyncLocalStorage<ReadonlySet<Promise<void>>>();
-interface SessionReload {
+export interface SessionReload {
 	readonly result: Promise<void>;
 	waitForWake(id: string): Promise<void>;
 }
