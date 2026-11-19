@@ -24,6 +24,7 @@ import type { WorkflowExitCleanup } from "./executor-types.js";
 interface LinkedChildWorkflowExitState {
 	readonly ref: WorkflowChildRunRef;
 	readonly controller: AbortController;
+	readonly previous?: WeakRef<RunSnapshot>;
 	runPromise?: Promise<unknown>;
 }
 
@@ -32,6 +33,7 @@ export interface WorkflowBoundaryStage {
 	readonly parentIds: readonly string[];
 	readonly sourceOrder: number;
 	readonly replayedChild?: WorkflowChildResult;
+	readonly startedChildStatus: RunSnapshot["status"] | undefined;
 	finalizeReplay(): Promise<void>;
 	linkChildRun(ref: WorkflowChildRunRef, childController: AbortController): Promise<void>;
 	observeChildRun(promise: Promise<unknown>): void;
@@ -170,13 +172,28 @@ export function createWorkflowBoundaryFactory(input: {
 					? { summary: stageSnapshot.result }
 					: {}),
 				...stageReplayFields(stageSnapshot),
+				...(stageSnapshot.startedChildRunId !== undefined
+					? { startedChildRunId: stageSnapshot.startedChildRunId }
+					: {}),
 				...(stageSnapshot.status === "completed" && stageSnapshot.workflowChild !== undefined
 					? { workflowChild: stageSnapshot.workflowChild }
 					: {}),
 			});
 		};
 
-		const clearBoundaryChildMetadata = (): void => {
+		// Linking reserves the id before dispatch; only a fresh run in this invocation's store proves it started.
+		let startedChildStatus: RunSnapshot["status"] | undefined;
+		const endChildLink = (): void => {
+			const child = linkedChild?.runPromise === undefined ? undefined : input.activeStore.run(linkedChild.ref.runId);
+			if (
+				child !== undefined &&
+				child !== linkedChild?.previous?.deref() &&
+				child.parentRunId === input.runId &&
+				child.parentStageId === stageId
+			) {
+				stageSnapshot.startedChildRunId = child.id;
+				startedChildStatus = child.status;
+			}
 			delete stageSnapshot.workflowChildRun;
 			delete stageSnapshot.workflowChild;
 		};
@@ -195,12 +212,10 @@ export function createWorkflowBoundaryFactory(input: {
 				if (status === "completed") {
 					stageSnapshot.result = summaryOrError;
 					if (workflowChild !== undefined) stageSnapshot.workflowChild = workflowChild;
-				} else if (status === "skipped") {
-					clearBoundaryChildMetadata();
-					stageSnapshot.skippedReason = summaryOrError;
 				} else {
-					clearBoundaryChildMetadata();
-					applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(failureError));
+					endChildLink();
+					if (status === "skipped") stageSnapshot.skippedReason = summaryOrError;
+					else applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(failureError));
 				}
 				if (replayedChild === undefined) {
 					stageSnapshot.endedAt = Date.now();
@@ -217,14 +232,15 @@ export function createWorkflowBoundaryFactory(input: {
 		input.activeStore.recordStageStart(input.runId, stageSnapshot);
 		input.opts.onStageStart?.(input.runId, stageSnapshot);
 
-		unregisterWorkflowExitCleanup = input.registerWorkflowExitCleanup(stageId, {
-			async skipForWorkflowExit(reason?: string): Promise<void> {
-				const child = linkedChild;
-				if (child !== undefined) requestLinkedChildWorkflowExit(child, reason);
-				await finalize("skipped", input.workflowExitSkippedReason(reason));
-				if (child !== undefined) await waitForLinkedChildWorkflowExit(child);
-			},
-		});
+		const skipForWorkflowExit = async (reason?: string): Promise<void> => {
+			const child = linkedChild;
+			if (child !== undefined) {
+				requestLinkedChildWorkflowExit(child, reason);
+				await waitForLinkedChildWorkflowExit(child);
+			}
+			await finalize("skipped", input.workflowExitSkippedReason(reason));
+		};
+		unregisterWorkflowExitCleanup = input.registerWorkflowExitCleanup(stageId, { skipForWorkflowExit });
 
 		const finalizeReplay = async (): Promise<void> => {
 			if (replayedChild === undefined) return;
@@ -246,10 +262,19 @@ export function createWorkflowBoundaryFactory(input: {
 			sourceOrder,
 			...(replayedChild !== undefined ? { replayedChild } : {}),
 			finalizeReplay,
+			get startedChildStatus() {
+				return startedChildStatus;
+			},
 			async linkChildRun(ref: WorkflowChildRunRef, childController: AbortController): Promise<void> {
 				if (finalized) return;
 				await appendStageStartOnce();
-				linkedChild = { ref: { ...ref }, controller: childController };
+				if (finalized) return;
+				const previous = input.activeStore.run(ref.runId);
+				linkedChild = {
+					ref: { ...ref },
+					controller: childController,
+					...(previous === undefined ? {} : { previous: new WeakRef(previous) }),
+				};
 				stageSnapshot.workflowChildRun = { ...ref };
 				input.activeStore.recordStageWorkflowChildRun(input.runId, stageId, ref);
 			},
@@ -260,12 +285,7 @@ export function createWorkflowBoundaryFactory(input: {
 			async complete(summary: string, workflowChild: WorkflowChildReplaySnapshot): Promise<void> {
 				await finalize("completed", summary, workflowChild);
 			},
-			async skipForWorkflowExit(reason?: string): Promise<void> {
-				const child = linkedChild;
-				if (child !== undefined) requestLinkedChildWorkflowExit(child, reason);
-				await finalize("skipped", input.workflowExitSkippedReason(reason));
-				if (child !== undefined) await waitForLinkedChildWorkflowExit(child);
-			},
+			skipForWorkflowExit,
 			async fail(error: unknown): Promise<void> {
 				await finalize("failed", error instanceof Error ? error.message : String(error), undefined, error);
 			},

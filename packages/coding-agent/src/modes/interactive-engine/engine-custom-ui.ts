@@ -3,6 +3,7 @@ import {
 	isKeyRelease,
 	type OverlayHandle,
 	type OverlayOptions,
+	runAsHintActivation,
 	type Terminal,
 	type TUI,
 	TuiMainScreen,
@@ -467,7 +468,8 @@ export class EngineCustomUiService {
 						const handleInput = record.component.handleInput as
 							| ((data: string) => boolean | undefined)
 							| undefined;
-						return handleInput?.call(record.component, command.data) === true;
+						const handle = () => handleInput?.call(record.component, command.data) === true;
+						return command.hint === true ? runAsHintActivation(handle) : handle();
 					});
 				} catch {
 					handled = false;

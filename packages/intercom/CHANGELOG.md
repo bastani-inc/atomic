@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- In fullscreen mode, a click on a key in the intercom session list's and message dialog's hint rows, such as `Enter: Send` or `Escape: Close`, presses that key
+
 ### Fixed
 
 - The bundled intercom skill now teaches answering a sender outside your groups (up to 3 messages within 30 minutes of its latest message, and the refusal once that path closes), and no longer tells the model that Intercom works on one machine only: with multi-node routing, sessions on machines that share storage message each other, and ungrouped sessions join their project group.

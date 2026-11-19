@@ -1,3 +1,4 @@
+import { stripHintMarkers } from "@bastani/atomic-tui";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 /** Shared fixtures for overlay graph tests. */
 
@@ -179,7 +180,7 @@ export { makeTestTui } from "../support/fake-tui.js";
 export const SGR_MOUSE_WHEEL_DOWN = "\x1b[<65;10;10M";
 
 export function visibleText(lines: string[]): string {
-	return lines.join("\n").replace(ANSI_RE, "");
+	return stripHintMarkers(lines.join("\n")).replace(ANSI_RE, "");
 }
 
 export function assertVisibleWidths(lines: string[], width: number): void {
