@@ -94,6 +94,64 @@ test("streamed forks reject missing and invalid sources without creating a sessi
 	}
 });
 
+test.each(["z.jsonl", "backup.bak"])(
+	"an explicitly opened %s owns its reads and writes even beside a file with the same header ID (#5554)",
+	async (name) => {
+		const dir = await mkdtemp(join(tmpdir(), "session-explicit-owner-"));
+		try {
+			const time = new Date(0).toISOString();
+			const header = { type: "session", version: 4, id: "shared", createdAt: time, cwd: dir };
+			const contents = (text: string) =>
+				`${JSON.stringify(header)}\n${JSON.stringify({ type: "message", id: text, parentId: null, timestamp: time, message: { role: "user", content: text, timestamp: 0 } })}\n`;
+			const first = join(dir, "a.jsonl"),
+				selected = join(dir, name);
+			await writeFile(first, contents("unselected"));
+			await writeFile(selected, contents("selected"));
+			const sm = await SessionManager.open(selected);
+			try {
+				assert.equal(sm.getLeafId(), "selected");
+				await sm.appendMessage({ role: "user", content: "only on selected", timestamp: 1 });
+				assert.equal(await readFile(first, "utf8"), contents("unselected"));
+				assert.match(await readFile(selected, "utf8"), /only on selected/);
+				await rm(selected);
+				await assert.rejects(sm.appendMessage({ role: "user", content: "no fallthrough", timestamp: 2 }));
+				assert.equal(await readFile(first, "utf8"), contents("unselected"));
+			} finally {
+				await sm.getSessionStore().close();
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	},
+);
+
+test("a successfully recreated explicit session ID writes to its new generation's file (#5554)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "session-pinned-recreate-"));
+	try {
+		const original = join(dir, "z.jsonl");
+		await writeFile(
+			original,
+			JSON.stringify({ type: "session", version: 4, id: "A", createdAt: new Date(0).toISOString(), cwd: dir }) +
+				"\n",
+		);
+		const sm = await SessionManager.open(original);
+		try {
+			await sm.newSession({ id: "B" });
+			await sm.getSessionStore().delete("A");
+			const created = await sm.newSession({ id: "A" });
+			assert.ok(created);
+			assert.notEqual(created, original);
+			await sm.appendMessage({ role: "user", content: "new A", timestamp: 1 });
+			assert.match(await readFile(created, "utf8"), /new A/);
+			await assert.rejects(fsPromises.access(original), { code: "ENOENT" });
+		} finally {
+			await sm.getSessionStore().close();
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
 test("opening a missing explicit session creates its directory and persists at that path (#3577)", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "session-missing-open-"));
 	try {

@@ -519,7 +519,15 @@ const LOCK_BACKOFF_MS = [10, 20, 50, 100, 200, 400, 700];
 /** The name a session's file is created with: its creation time, then its id or the key of its id. */
 const SESSION_FILE_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d+)?Z_(.+)\.jsonl$/;
 
+/** Used only by the owner of a view opened at an explicit file path, not by ordinary directory listings. */
+export const bindSessionFile = Symbol("bindSessionFile");
+
 export class JsonlSessionStore implements SessionStore {
+	private selectedFile?: { id: string; path: string };
+
+	[bindSessionFile](id: string, path: string): void {
+		this.selectedFile = { id, path: resolve(path) };
+	}
 	private queue: Promise<void> = Promise.resolve();
 	private closed = false;
 	private poisoned: JsonlStoragePoisonedError | StorageUnavailableError | undefined;
@@ -605,6 +613,8 @@ export class JsonlSessionStore implements SessionStore {
 			}
 			const state = this.contentState(header, entries, payload);
 			const stats = await this.remember(path, state);
+			// Only successful creation of a new generation of the bound ID moves this handle's association.
+			if (this.selectedFile?.id === header.id) this.selectedFile = { id: header.id, path };
 			return { lastSeq: entries.length, epoch: epochOf(stats, state.headerStamp) };
 		}, true);
 	}
@@ -1692,6 +1702,7 @@ export class JsonlSessionStore implements SessionStore {
 		| undefined
 	> {
 		validateSessionText("sessionId", sessionId);
+		if (this.selectedFile?.id === sessionId) return this.scan(sessionId, [this.selectedFile.path]);
 		const known = await this.locateKnown(sessionId);
 		if (known) return known;
 		const suffix = `_${this.key(sessionId)}.jsonl`;

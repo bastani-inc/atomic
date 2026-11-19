@@ -723,11 +723,16 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "clone", { cancelled: result.cancelled });
 			}
 
-			case "get_context_window":
+			case "get_context_window": {
+				const manager = session.sessionManager;
+				const entries = manager.getEntries();
+				const privateArchive = manager.getPrivateMirrorArchive(entries);
 				return createRpcSuccessResponse(id, command.type, {
-					entries: session.sessionManager.getEntries(),
-					leafId: session.sessionManager.getLeafId(),
+					entries,
+					leafId: manager.getLeafId(),
+					...(privateArchive && { privateArchive }),
 				});
+			}
 
 			case "get_history_chunk": {
 				const next = await session.sessionManager

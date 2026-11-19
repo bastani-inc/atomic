@@ -92,8 +92,8 @@ import {
 	SessionNotFoundError,
 	StorageUnavailableError,
 } from "./storage/session/errors.js";
-import { historyChunks, historyPages } from "./storage/session/history-pages.js";
-import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
+import { firstHistoryCursor, historyChunks, historyPages } from "./storage/session/history-pages.js";
+import { bindSessionFile, JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { SessionKeyDigests } from "./storage/session/key-digests.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import {
@@ -164,6 +164,7 @@ async function openSessionFileWindow(path: string, cwd: string | undefined, opti
 		await store.create(header, [], path);
 		id = header.id;
 	}
+	store[bindSessionFile](id, path);
 	return { store, opened: await readStoredSession(store, id, options) };
 }
 
@@ -439,6 +440,19 @@ export class SessionManager {
 	}
 	getLastSeq(): number {
 		return this.lastSeq;
+	}
+
+	/** @internal The host of an unsaved isolated session owns an independent private backend. These positions
+	 * let it combine the live (possibly locally mutated) rows with the same generation's archived bytes. */
+	getPrivateMirrorArchive(
+		entries: readonly SessionEntry[],
+	): { sessionId: string; cursor: string; seqs: number[] } | undefined {
+		if (this.isPersisted() || entries.length === this.lastSeq || this.historyEpoch === undefined) return undefined;
+		return {
+			sessionId: this.sessionId,
+			cursor: firstHistoryCursor(this.sessionId, this.historyEpoch, this.lastSeq),
+			seqs: entries.map((e) => this.entrySeqs.get(e.id)!),
+		};
 	}
 	getSessionRecoveryState(): SessionRecoveryState {
 		return { ...this.recoveryState, admissionDigests: this.admissionKeys.serialize() };
@@ -767,7 +781,12 @@ export class SessionManager {
 		}
 		const location = store instanceof JsonlSessionStore ? await store.findFile(sessionId) : undefined;
 		if (location !== undefined) {
-			store = await JsonlSessionStore.open(dirname(location), { exactDirectory: true, scanExisting: false });
+			const selected = await JsonlSessionStore.open(dirname(location), {
+				exactDirectory: true,
+				scanExisting: false,
+			});
+			selected[bindSessionFile](sessionId, location);
+			store = selected;
 			opened = await readStoredSession(store, sessionId, options);
 		}
 		const header = openedHeader(opened);
