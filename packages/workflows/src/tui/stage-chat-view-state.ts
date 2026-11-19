@@ -249,8 +249,6 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 	return new ChatSessionHost<NoticeEntry>({
 		taskRowsInChat: false,
 		style: chatHostStyle(ctx),
-		// The stage chat takes Esc itself: it pauses the stage, which cancels the retry it waits on.
-		canCancelRetry: () => isAbortableStreamingSession(ctx),
 		autocompleteProvider: stageSkillAutocomplete(ctx),
 		commands: {
 			submitUserMessage: (text, mode) => submitStageSkillCommand(ctx, text, mode),
@@ -463,8 +461,7 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	if (!active) return;
 	const turnStartedAt = active.turnStartedAt ?? active.agentSession?.turnStartedAt;
 	const status = active.agentSession?.retryStatus ?? active.modelSwitch;
-	if (stageWaitsToRetry(active))
-		ctx.chatHost.hydrateRetryWait(messages, turnStartedAt, status?.type === "auto_retry_start" ? status : undefined);
+	if (stageWaitsToRetry(active)) ctx.chatHost.hydrateRetryWait(messages, turnStartedAt);
 	else if (status?.type === "model_fallback_start") ctx.chatHost.hydrateModelSwitch(turnStartedAt, messages);
 	else if (active.isStreaming)
 		ctx.chatHost.hydrateRunningTurn(messages, streaming, turnStartedAt, contextMeter?.requestSide);

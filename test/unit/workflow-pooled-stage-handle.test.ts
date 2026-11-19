@@ -25,14 +25,7 @@ import type {
 } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { taskRecord } from "../helpers/task-record.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
-import {
-	createStore,
-	deriveGraphTheme,
-	makeTestTui,
-	StageChatView,
-	setupRun,
-	stripAnsi,
-} from "./stage-chat-view-helpers.js";
+import { createStore, deriveGraphTheme, makeTestTui, StageChatView, setupRun } from "./stage-chat-view-helpers.js";
 
 function snapshot(deliveredOps: readonly string[] = []): PooledStageChatSnapshot {
 	return {
@@ -678,14 +671,13 @@ for (const reason of ["stage_finished", "pool_closed", "worker_exited", "attempt
 		const line = (chat: StageChatView) =>
 			chat
 				.render(80)
-				.map(stripAnsi)
+				.map(stripVTControlCharacters)
 				.find((row) => row.includes("∀"))
 				?.trim();
 		const view = new StageChatView(options);
 		let fresh: StageChatView | undefined;
 		try {
-			// The worker's snapshot says the stage waits, not why: the plain line, and Esc pauses the stage.
-			assert.equal(line(view), "∀ Retrying…   esc cancel");
+			assert.equal(line(view), "∀ Retrying…");
 			const before = frames;
 			opened.handle.receive({ kind: "ended", reason });
 			assert.equal(opened.handle.turnStartedAt, undefined, "the retired attempt no longer owns a turn");

@@ -37,7 +37,7 @@ const timedOut = {
 test("a chat's retry line counts down to its next attempt, then reads Working… until the attempt starts", () => {
 	let renders = 0;
 	const host = makeLifecycleHost({
-		commands: { interrupt: async () => {} },
+		canCancelRetry: () => true,
 		requestRender: () => {
 			renders += 1;
 		},
@@ -63,7 +63,8 @@ test("a chat's retry line counts down to its next attempt, then reads Working…
 test("a chat names the key that cancels a retry only where Esc reaches it", () => {
 	for (const [options, hint] of [
 		[{}, false],
-		[{ commands: { interrupt: async () => {} } }, true],
+		// An interrupt command alone does not say that Esc reaches the retry.
+		[{ commands: { interrupt: async () => {} } }, false],
 		[{ commands: { interrupt: async () => {} }, canCancelRetry: () => false }, false],
 		[{ canCancelRetry: () => true }, true],
 	] as const) {
@@ -82,7 +83,7 @@ test("a chat names the key that cancels a retry only where Esc reaches it", () =
 });
 
 test("a chat retrying a summary names the summary, and no key: Esc interrupts the turn, not the summary", () => {
-	const host = makeLifecycleHost({ commands: { interrupt: async () => {} } });
+	const host = makeLifecycleHost({ canCancelRetry: () => true });
 	try {
 		host.applyAgentEvent({
 			type: "summarization_retry_scheduled",
@@ -94,6 +95,32 @@ test("a chat retrying a summary names the summary, and no key: Esc interrupts th
 		assert.equal(workingLine(host), " ∀ Retrying summary · rate limited · attempt 1/3 in 2s");
 		host.applyAgentEvent({ type: "summarization_retry_attempt_start", source: "branchSummary" });
 		assert.doesNotMatch(workingLine(host) ?? "", /Retrying/);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("a chat sent a message while Esc settles shows Resuming… until the resume is sent", async () => {
+	const settled = Promise.withResolvers<void>();
+	const resumed: string[] = [];
+	const host = makeLifecycleHost({
+		commands: {
+			interrupt: () => settled.promise,
+			resume: async (message) => {
+				resumed.push(message ?? "");
+			},
+		},
+	});
+	try {
+		host.applyAgentEvent({ type: "agent_start" });
+		const interrupting = host.interrupt();
+		const sending = host.submit("auto", "carry on");
+		assert.equal(workingLine(host), " ∀ Resuming…");
+		settled.resolve();
+		await interrupting;
+		await sending;
+		assert.deepEqual(resumed, ["carry on"]);
+		assert.equal(host.statusText(), "");
 	} finally {
 		host.dispose();
 	}

@@ -28,7 +28,7 @@ import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 import { WorkingRunMeter, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
 /** The chat's status while work it started is still under way; the chat shows it as its working line. */
-export const CHAT_SESSION_RESUMING_STATUS = "resuming…";
+export const CHAT_SESSION_RESUMING_STATUS = "Resuming…";
 /** A retry's wait; with the retry's details the line reads `Retrying · <reason> · attempt 1/3 in 2s` instead. */
 export const CHAT_SESSION_RETRYING_STATUS = "Retrying…";
 export const CHAT_SESSION_SWITCHING_MODEL_STATUS = "Switching model…";

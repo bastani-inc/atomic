@@ -224,9 +224,8 @@ function chatSessionBusyMessage<TExtraEntry extends ChatTranscriptEntryLike>(
 	const status = published === undefined ? state.statusMessage : publishedWorkingMessages[published];
 	if (!isChatSessionRetryStatus(status)) return status;
 	const wait = (state.statusMessage === status ? state.retryWait : undefined) ?? {};
-	// Esc interrupts the chat's turn; a summary is not part of it.
-	const cancellable =
-		wait.subject !== "summary" && (state.canCancelRetry?.() ?? state.commands.interrupt !== undefined);
+	// Only the chat's owner knows whether its Esc reaches the retry; a summary is not part of the turn Esc interrupts.
+	const cancellable = wait.subject !== "summary" && state.canCancelRetry?.() === true;
 	const cancel = cancellable
 		? clickableKeyTextHint(state.getActionKeyDisplay?.("app.interrupt") ?? "esc", " cancel")
 		: undefined;

@@ -97,7 +97,7 @@ export function compactionStatusMessage(reason: CompactionReason): string {
 		case "overflow":
 			return "Context overflow detected. Auto-compacting...";
 		case "branchSummary":
-			return "summarizing branch…";
+			return "Summarizing branch…";
 	}
 }
 
