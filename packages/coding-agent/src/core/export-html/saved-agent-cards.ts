@@ -1,4 +1,5 @@
-import type { SessionEntry, SessionManager } from "../session-manager.js";
+import type { AssistantMessage, ToolCall } from "@bastani/atomic-ai/compat";
+import type { SessionEntry, SessionManager } from "../session-manager.ts";
 
 /** Entry addresses, not provider call IDs: separate turns and fork receipts may reuse those IDs. */
 export interface SavedAgentCard {
@@ -102,37 +103,43 @@ function rootedLaunches(sm: SessionManager, entries: SessionEntry[]): (id: strin
 	};
 }
 
-function savedCard(sm: SessionManager, entry: SessionEntry, previousTurn: PreviousTurn): SavedAgentCard | undefined {
+function singleLaunchCall(content: AssistantMessage["content"]): ToolCall | null {
+	let call: ToolCall | null = null;
+	for (const block of content) {
+		if (block?.type !== "toolCall") continue;
+		if (call || block.name !== "subagent") return null;
+		const args = record(block.arguments);
+		if (
+			!args ||
+			args.action !== undefined ||
+			args.tasks !== undefined ||
+			typeof args.agent !== "string" ||
+			typeof args.task !== "string"
+		)
+			return null;
+		call = block;
+	}
+	return call;
+}
+
+interface SavedReceipt {
+	toolCallId: string;
+	child?: Record<string, unknown>;
+	answerBlock?: number;
+}
+
+function savedReceipt(sm: SessionManager, entry: SessionEntry): SavedReceipt | undefined {
 	if (entry.type !== "message" || entry.message.role !== "toolResult") return;
 	const receipt = entry.message;
 	if (receipt.toolName !== "subagent" || receipt.isError || !receipt.toolCallId) return;
 	const details = record(receipt.details);
 	if (details?.mode !== "single" || !Array.isArray(details.results)) return;
 	if (details.ownerSessionId !== undefined && details.ownerSessionId !== sm.getSessionId()) return;
-	const launch = previousTurn(entry);
-	if (launch?.type !== "message" || launch.message.role !== "assistant" || !Array.isArray(launch.message.content))
-		return;
-	let args: Record<string, unknown> | undefined;
-	for (const block of launch.message.content) {
-		if (block?.type !== "toolCall") continue;
-		if (args || block.name !== "subagent" || block.id !== receipt.toolCallId) return;
-		args = record(block.arguments);
-		if (!args) return;
-	}
-	if (
-		!args ||
-		args.action !== undefined ||
-		args.tasks !== undefined ||
-		typeof args.agent !== "string" ||
-		typeof args.task !== "string"
-	)
-		return;
-
 	if (details.results.length === 0) {
 		const response = record(details.taskResponse);
 		const observation = record(response?.observation);
 		if (response?.kind === "admitted" && observation?.kind === "yielded" && typeof observation.taskId === "string") {
-			if (readableResult(receipt.content, receipt.nestedCalls)) return { launch: launch.id, receipt: entry.id };
+			if (readableResult(receipt.content, receipt.nestedCalls)) return { toolCallId: receipt.toolCallId };
 		}
 		return;
 	}
@@ -141,8 +148,8 @@ function savedCard(sm: SessionManager, entry: SessionEntry, previousTurn: Previo
 		details.results.length !== 1 ||
 		child?.status !== "ok" ||
 		child.detached ||
-		child.agent !== args.agent ||
-		child.task !== args.task
+		typeof child.agent !== "string" ||
+		typeof child.task !== "string"
 	)
 		return;
 	let answer = child.finalOutput;
@@ -192,22 +199,36 @@ function savedCard(sm: SessionManager, entry: SessionEntry, previousTurn: Previo
 	)
 		return;
 	if (readableResult(receipt.content, receipt.nestedCalls))
-		return { launch: launch.id, receipt: entry.id, answerBlock };
+		return { toolCallId: receipt.toolCallId, child, answerBlock };
 }
 
 /** Do not embed viewer code unless a complete recorded branch can show a card. */
 export function savedAgentCards(sm: SessionManager, entries: SessionEntry[]): SavedAgentCard[] | undefined {
 	if (sm.getEntryCount() !== entries.length) return; // A reused entry address cannot identify its own receipt.
 	const previousTurn = previousTurns(sm);
+	let calls: Map<SessionEntry, ToolCall | null> | undefined;
 	let rooted: ReturnType<typeof rootedLaunches> | undefined;
 	let cards: SavedAgentCard[] | undefined;
 	for (const entry of entries) {
-		const card = savedCard(sm, entry, previousTurn);
-		if (!card) continue;
+		const receipt = savedReceipt(sm, entry);
+		if (!receipt) continue;
+		const launch = previousTurn(entry);
+		if (launch?.type !== "message" || launch.message.role !== "assistant" || !Array.isArray(launch.message.content))
+			continue;
+		// Fork receipts share a launch. Remember even an ambiguous launch, but never scan one for a compacted receipt.
+		calls ??= new Map();
+		let call = calls.get(launch);
+		if (call === undefined) {
+			call = singleLaunchCall(launch.message.content);
+			calls.set(launch, call);
+		}
+		if (!call || call.id !== receipt.toolCallId) continue;
+		if (receipt.child && (receipt.child.agent !== call.arguments.agent || receipt.child.task !== call.arguments.task))
+			continue;
 		rooted ??= rootedLaunches(sm, entries);
-		if (!rooted(card.launch)) continue;
+		if (!rooted(launch.id)) continue;
 		cards ??= [];
-		cards.push(card);
+		cards.push({ launch: launch.id, receipt: entry.id, answerBlock: receipt.answerBlock });
 	}
 	if (!cards) return;
 

@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { exportFromFile, exportSessionToHtml } from "../src/core/export-html/index.js";
+import { savedAgentCards } from "../src/core/export-html/saved-agent-cards.js";
 import { CURRENT_SESSION_VERSION, SessionManager } from "../src/core/session-manager.ts";
 import { openExportedPage } from "./helpers/exported-page.ts";
 
@@ -84,6 +85,46 @@ test("without a recorded card the standalone export is byte-identical to the ord
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test.each(["compacted", "recorded", "ambiguous"] as const)(
+	"%s sibling receipts need at most one pass over their shared launch (#5658)",
+	async (kind) => {
+		const args = { agent: "worker", task: "Inspect the sample" };
+		const message = fauxAssistantMessage([
+			...Array.from({ length: 32 }, () => ({ type: "text" as const, text: "Shared launch text" })),
+			fauxToolCall("subagent", args, { id: "call" }),
+		]);
+		if (kind === "ambiguous") message.content.push(fauxToolCall("subagent", args, { id: "another" }));
+		const sm = SessionManager.inMemory();
+		const launch = await sm.appendMessage(message);
+		const forks = 32;
+		const history =
+			kind === "compacted" ? { sessionFile: "child.jsonl" } : { toolCalls: [{ text: "read sample.txt" }] };
+		for (let i = 0; i < forks; i++) {
+			if (i) await sm.branch(launch);
+			await sm.appendMessage({
+				role: "toolResult",
+				toolName: "subagent",
+				toolCallId: i === 0 ? "another" : "call",
+				isError: false,
+				timestamp: 1,
+				content: [{ type: "text", text: "Done" }],
+				details: { mode: "single", results: [{ ...args, status: "ok", finalOutput: "Done", ...history }] },
+			});
+		}
+		let visits = 0;
+		message.content = new Proxy(message.content, {
+			get(blocks, key, receiver) {
+				if (typeof key === "string" && /^\d+$/.test(key)) visits++;
+				return Reflect.get(blocks, key, receiver);
+			},
+		});
+		const cards = savedAgentCards(sm, sm.getEntries());
+		assert.equal(cards?.length ?? 0, kind === "recorded" ? forks - 1 : 0);
+		const budget = kind === "compacted" ? 0 : message.content.length;
+		assert.ok(visits <= budget, `${visits} launch block visits; expected at most ${budget}`);
+	},
+);
 
 test("a launch that cannot be reached on any branch leaves the complete ordinary export unchanged (#5658)", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-file-export-reachable-"));
