@@ -468,7 +468,7 @@ test(
 			inRow.length,
 			inRow,
 		);
-		await store.journal.close();
+
 		await store.sessions.close();
 		// Without its index, the store is indexed again from its journal and sessions first, table by table.
 		await dropSnapshotIndex(store.database);

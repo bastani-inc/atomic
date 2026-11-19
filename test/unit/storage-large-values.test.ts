@@ -22,9 +22,7 @@ import {
 	SNAPSHOT_BLOB_CHUNK_BYTES,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
-import { JOURNAL_READ_PAGE_CHARS } from "../../packages/workflows/src/durable/journal/internal.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import type { RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
+
 import { withLibsqlDatabase } from "../helpers/libsql-database.js";
 import { rowLimitedDatabase } from "../helpers/row-limited-database.js";
 import { withNodeSqliteDatabase } from "../helpers/storage-database.js";
@@ -697,44 +695,6 @@ describe("snapshot blobs under a libSQL server's size limits (#4954)", () => {
 				await database.run(damage, blob.hash);
 				assert.equal(await blobs.getBlob(blob.hash), undefined, name);
 			}
-		});
-	});
-});
-
-describe("workflow journal reads under a libSQL server's size limits (#4954)", () => {
-	test("events of more than a response read back in order, by sequence and by key (#4954)", async () => {
-		await withNodeSqliteDatabase(async ({ database }) => {
-			const limited = rowLimitedDatabase(database, { ...LIMITS, maxValueBytes: 2 * MiB });
-			const journal = await SqlRunJournal.open(limited.wrapped);
-			await journal.createRun({ runId: "run", name: "workflow", cwd: "/cwd", createdAt: 0, status: "running" });
-			const outcome = await journal.acquire("run", "holder");
-			if (outcome.status !== "acquired") assert.fail("lease not acquired");
-			// One event longer than a page is a page of its own; the small ones around it share pages.
-			const payloads = Array.from({ length: 8 }, (_, index) =>
-				`${index}`.repeat(index === 3 ? JOURNAL_READ_PAGE_CHARS + 1 : index === 4 ? 10 : 600_000),
-			);
-			for (const [index, payload] of payloads.entries()) {
-				await journal.append(outcome.lease, { type: "SummaryRecorded", payload } as RunEvent, {
-					key: `k-${index}`,
-				});
-			}
-			const read = await Array.fromAsync(journal.read("run"));
-			assert.deepEqual(
-				read.map((entry) => entry.event.payload),
-				payloads,
-			);
-			const fromThird = await Array.fromAsync(journal.read("run", 3));
-			assert.deepEqual(
-				fromThird.map((entry) => entry.seq),
-				[3, 4, 5, 6, 7, 8],
-			);
-			const keyed = await Array.fromAsync(SqlRunJournal.readKeyRange(journal, "run", "k-2", "k-7"));
-			assert.deepEqual(
-				keyed.map((entry) => entry.key),
-				["k-2", "k-3", "k-4", "k-5", "k-6"],
-			);
-			assert.deepEqual(limited.refused, []);
-			await journal.close();
 		});
 	});
 });

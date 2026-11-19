@@ -5,11 +5,7 @@ import type { TaskHeartbeatDetails } from "../../packages/coding-agent/src/core/
 import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
 import { TASK_HEARTBEAT_COLLAPSED_TASKS } from "../../packages/coding-agent/src/modes/interactive/components/task-heartbeat-message.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import type { PiMessageRenderer } from "../../packages/workflows/src/extension/index.js";
-import {
-	formatWorkflowHeartbeatNoticeText,
-	registerWorkflowHeartbeatRenderer,
-} from "../../packages/workflows/src/extension/workflow-heartbeat-notice.js";
+
 import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const MINUTE = 60_000;
@@ -66,31 +62,6 @@ function taskHeartbeat(value: TaskHeartbeatDetails, expanded: boolean, width: nu
 	return component.render(width);
 }
 
-const runId = "33333333-3333-4333-8333-333333333333";
-const workflowDetails = {
-	runId,
-	workflowName: "release-check",
-	startedAt: 1_000,
-	scheduledAt: 1_000 + 15 * MINUTE,
-	intervalMinutes: 15,
-};
-
-function workflowHeartbeat(width: number, outputPad?: number, expanded = false): string[] {
-	let renderer: PiMessageRenderer | undefined;
-	registerWorkflowHeartbeatRenderer({
-		rendererHost: {},
-		registerMessageRenderer(_type, value) {
-			renderer = value as PiMessageRenderer;
-		},
-	});
-	const rendered = renderer?.(
-		{ details: workflowDetails },
-		{ expanded, ...(outputPad === undefined ? {} : { outputPad }) },
-	);
-	assert.ok(rendered && typeof rendered === "object");
-	return rendered.render(width);
-}
-
 const plain = (lines: readonly string[]) => lines.map(stripVTControlCharacters);
 
 test("a task heartbeat is a notice: one ♥ header row, a ⎿ row per task and the hint under them, with no box", () => {
@@ -142,55 +113,10 @@ test("a collapsed task heartbeat lists a named number of tasks and counts the re
 test("under NO_COLOR a heartbeat is plain text and keeps its ♥ mark", () => {
 	initTheme("dark");
 	process.env.NO_COLOR = "1";
-	for (const lines of [
-		taskHeartbeat(details(2), false, 80),
-		taskHeartbeat(details(2), true, 80),
-		workflowHeartbeat(80),
-	]) {
+	for (const lines of [taskHeartbeat(details(2), false, 80), taskHeartbeat(details(2), true, 80)]) {
 		for (const line of lines) assert.doesNotMatch(line, /\x1b/);
 		assert.ok(lines.some((line) => line.startsWith(" ♥ ")));
 	}
-});
-
-test("a workflow heartbeat uses the same notice anatomy as a task heartbeat", () => {
-	initTheme("dark");
-	assert.deepEqual(plain(workflowHeartbeat(80)), [
-		" ♥ Workflow heartbeat · release-check still running · 15m",
-		`   ⎿  run ${runId} · 15-minute cadence`,
-		`      /workflows ${runId}`,
-	]);
-	assert.deepEqual(plain(workflowHeartbeat(80, 1, true)), [
-		" ♥ Workflow heartbeat · release-check still running · 15m",
-		"   ⎿  workflow release-check",
-		`      run ${runId}`,
-		"      15-minute cadence · running for 15m",
-		`      /workflows ${runId}`,
-	]);
-	for (const width of WIDTHS) {
-		const lines = workflowHeartbeat(width);
-		for (const line of lines) {
-			assert.doesNotMatch(line, BACKGROUND_OR_BORDER);
-			assert.ok(visibleWidth(line) <= width);
-		}
-		assert.match(plain(lines)[0] ?? "", /^ ♥ Workflow heartbeat/);
-	}
-});
-
-test("a narrow workflow heartbeat keeps the workflow's name, and shows every fact when expanded", () => {
-	initTheme("dark");
-	const collapsed = plain(workflowHeartbeat(40));
-	assert.equal(
-		collapsed[0],
-		" ♥ Workflow heartbeat · release-check s…",
-		"the elapsed time is dropped before the name",
-	);
-	const expanded = plain(workflowHeartbeat(40, 1, true))
-		.map((line) => line.trim())
-		.join(" ");
-	for (const fact of ["workflow release-check", "15-minute cadence · running for 15m"])
-		assert.ok(expanded.includes(fact), `${fact} in ${expanded}`);
-	assert.ok(expanded.replace(/\s+/g, "").includes(`run${runId}`), "the whole run id, wrapped");
-	for (const line of workflowHeartbeat(40, 1, true)) assert.ok(visibleWidth(line) <= 40);
 });
 
 test("a heartbeat renders the same rows in every chat; only the output pad differs", () => {
@@ -199,32 +125,5 @@ test("a heartbeat renders the same rows in every chat; only the output pad diffe
 	assert.deepEqual(
 		withPad(taskHeartbeat(details(2), true, 81, 1).slice(1), 1),
 		withPad(taskHeartbeat(details(2), true, 80, 0).slice(1), 0),
-	);
-	assert.deepEqual(withPad(workflowHeartbeat(81, 1), 1), withPad(workflowHeartbeat(80, 0), 0));
-	assert.deepEqual(withPad(workflowHeartbeat(84, 4), 4), withPad(workflowHeartbeat(80, 0), 0));
-	assert.match(plain(workflowHeartbeat(84, 4))[0] ?? "", /^ {4}♥ /);
-});
-
-test("the heartbeat text the model reads is unchanged by its rendering", () => {
-	assert.equal(
-		formatWorkflowHeartbeatNoticeText(workflowDetails),
-		`♥ Workflow "release-check" heartbeat (run ${runId}) — still running after 15m, on a 15-minute cadence. ` +
-			"This is a periodic alignment check. Review whether the run is still on goal. " +
-			"When steering or communication is useful, use Intercom. Before steering a stage, join its invocation group. " +
-			"Use the Intercom `groups` action to discover it. Workflow invocation groups are named `workflow:<rootRunId>`. " +
-			"Consider the expanded workflow topology and match each update's reach to its impact: send a local update to " +
-			"its affected stage; when shared scope or acceptance criteria change, broadcast one authoritative Intercom update " +
-			"to `workflow:<rootRunId>/**` (or a narrower path pattern such as `workflow:<rootRunId>/review-*`) rather than " +
-			"enumerating stages, including each worker-to-reviewer loop. `**` reaches every live stage now and remains sticky " +
-			"for every future stage, including nested children, until the root run terminates. Use `intercom list` inside the " +
-			"invocation group to see live, pending, and possible future targets. Targets use " +
-			"`workflow:<rootRunId>/<segment>[/<segment>...]`; `*` matches one segment and `**` any depth. Intercom delivers " +
-			"immediately to live stages and queues updates for known stages that have not started, delivering them before their " +
-			"first model turn, so workers and reviewers begin with one consistent contract. A valid target outside the known set " +
-			"still queues and settles undeliverable at terminal only if never delivered; a note appears only when the target looks like a typo of a known stage. " +
-			"Use `ask` once the target has a live session that can reply. " +
-			"Use workflow pause, resume, or quit for run control. " +
-			"Continue the progressing run when no intervention is needed, or ask the user when a decision is needed. " +
-			`Inspect: /workflows ${runId}`,
 	);
 });

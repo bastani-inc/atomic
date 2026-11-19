@@ -64,8 +64,6 @@ type Runtime = "Node" | "Bun";
 const cases: Array<{ runtime: Runtime; module: WorktreeModule }> = [
 	{ runtime: "Node", module: "subagents" },
 	{ runtime: "Bun", module: "subagents" },
-	{ runtime: "Node", module: "workflows" },
-	{ runtime: "Bun", module: "workflows" },
 ];
 
 describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) => {
@@ -96,12 +94,11 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 		assert.ok(result.captureError, "the diff records the capture failure");
 		assert.ok(result.summary.includes(result.worktreePath), `the summary names the kept worktree: ${result.summary}`);
 		assert.match(result.summary, /Task 1 \(worker\): diff capture failed/);
-		if (module === "subagents")
-			assert.equal(
-				result.laterSweepSavedWork,
-				true,
-				"a later sweep saves the work once capture works, then removes it",
-			);
+		assert.equal(
+			result.laterSweepSavedWork,
+			true,
+			"a later sweep saves the work once capture works, then removes it",
+		);
 	});
 
 	test("a .worktreeinclude file is copied into a new worktree when the ignored files list to over 1 MiB (#4876)", {

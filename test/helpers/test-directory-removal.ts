@@ -3,7 +3,6 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifact-env.js";
 
 export interface RemovalRetries {
 	readonly retries: number;
@@ -23,7 +22,7 @@ function leftoverRecords(runDirectory: string): string {
 }
 
 function recordLeftover(path: string): string | undefined {
-	const runDirectory = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+	const runDirectory = process.env.ATOMIC_TEST_RUN_DIR;
 	if (runDirectory === undefined) return undefined;
 	const records = leftoverRecords(runDirectory);
 	mkdirSync(records, { recursive: true });

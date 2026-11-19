@@ -5,9 +5,7 @@ import type { SessionEntry } from "../../packages/coding-agent/src/core/session-
 import { StorageTransientError } from "../../packages/coding-agent/src/core/storage/index.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
-import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { type Lease, RUN_EVENT_TYPES, type RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
+
 import {
 	countRows,
 	type FakeLibsqlServer,
@@ -146,96 +144,6 @@ test("network codes for a request that never reached the server run it again (#4
 		assert.equal(warnings.length, 1, `${code} at depth ${depth}`);
 		assert.equal((warnings[0] as StorageTransientError).code, "connection-refused");
 	}
-});
-
-const header = { runId: "root", name: "root", cwd: "/work", createdAt: 0, status: "running" };
-const checkpoint = (stage: string): RunEvent =>
-	({ type: RUN_EVENT_TYPES.checkpointRecorded, payload: { kind: "stage", stage, status: "completed" } }) as RunEvent;
-const statusChanged = (status: string): RunEvent =>
-	({ type: RUN_EVENT_TYPES.statusChanged, payload: { status } }) as RunEvent;
-
-async function journalOn(fake: FakeLibsqlServer): Promise<{ journal: SqlRunJournal; lease: Lease }> {
-	const database = await open(fake.url);
-	await database.exec("CREATE TABLE scratch(n INTEGER NOT NULL)");
-	const journal = await SqlRunJournal.open(database);
-	await journal.createRun(header);
-	const acquired = await journal.acquire("root", "holder");
-	if (acquired.status !== "acquired") assert.fail("lease not acquired");
-	return { journal, lease: acquired.lease };
-}
-
-async function entries(journal: SqlRunJournal) {
-	const read = [];
-	for await (const entry of journal.read("root")) read.push(entry);
-	return read;
-}
-
-test("journal appends whose stream expired mid-transaction are written exactly once (#4383)", async () => {
-	const fake = await server();
-	const { journal, lease } = await journalOn(fake);
-	// An expected sequence keeps each append in a transaction: an append without one goes in one request (#4768).
-	stallNextTransaction(fake);
-	const keyed = await journal.append(lease, checkpoint("plan"), { key: "stage:plan", expectSeq: 0 });
-	stallNextTransaction(fake);
-	const keyless = await journal.append(lease, statusChanged("suspended"), { expectSeq: 1 });
-	assert.equal(keyed.status, "appended");
-	assert.equal(keyless.status, "appended");
-	assert.equal(fake.expiredStatements, 2);
-	assert.deepEqual(
-		(await entries(journal)).map((entry) => [entry.seq, entry.key ?? null, entry.event.type]),
-		[
-			[1, "stage:plan", "CheckpointRecorded"],
-			[2, null, "StatusChanged"],
-		],
-	);
-	assert.equal((await journal.getRun("root"))?.status, "suspended");
-});
-
-test("a batch of journal appends whose connection broke is never sent twice (#4383)", async () => {
-	const fake = await server();
-	const { journal, lease } = await journalOn(fake);
-	const appends = [
-		{ event: checkpoint("a"), key: "stage:a", context: <T>(action: () => T) => action() },
-		{ event: statusChanged("suspended"), context: <T>(action: () => T) => action() },
-	];
-	fake.fail({ kind: "reset-after" });
-	await assert.rejects(journal.appendMany(lease, appends), (error: unknown) => {
-		assert.ok(error instanceof StorageTransientError);
-		assert.equal(error.outcome, "unknown");
-		return true;
-	});
-	assert.deepEqual(
-		(await entries(journal)).map((entry) => [entry.seq, entry.key ?? null]),
-		[
-			[1, "stage:a"],
-			[2, null],
-		],
-	);
-});
-
-test("a pool table transaction on the journal fails typed instead of running its callback again (#4383)", async () => {
-	const fake = await server();
-	const { journal } = await journalOn(fake);
-	const storage = sqlPoolStorage(journal);
-	assert.ok(storage);
-	stallNextTransaction(fake);
-	let runs = 0;
-	await assert.rejects(
-		storage.transaction(async (tx) => {
-			runs++;
-			await tx.run("INSERT INTO scratch VALUES (1)");
-			await tx.run("INSERT INTO scratch VALUES (2)");
-		}),
-		(error: unknown) => {
-			assert.ok(error instanceof StorageTransientError);
-			assert.deepEqual([error.code, error.outcome, error.attempts], ["stream-expired", "not-applied", 1]);
-			return true;
-		},
-	);
-	assert.equal(runs, 1);
-	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM scratch"), 0);
-	await storage.transaction((tx) => tx.run("INSERT INTO scratch VALUES (3)"));
-	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM scratch"), 1);
 });
 
 test("session writes whose stream expired mid-transaction are written exactly once (#4383)", async () => {

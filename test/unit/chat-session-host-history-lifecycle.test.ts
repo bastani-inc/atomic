@@ -20,9 +20,9 @@ import type { ChatTranscriptEntryLike } from "../../packages/coding-agent/src/mo
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
-import type { StageNotice } from "../../packages/workflows/src/shared/store-types.js";
-import { stageNoticeCountsAsMessage } from "../../packages/workflows/src/tui/stage-chat-view-transcript.js";
-import type { NoticeEntry } from "../../packages/workflows/src/tui/stage-chat-view-types.js";
+
+type NoticeEntry = { role: "notice"; text: string };
+
 import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task-transcript-environment.js";
 
 const identity = (value: string): string => value;
@@ -59,16 +59,8 @@ function hostOptions<TExtraEntry extends ChatTranscriptEntryLike = never>(
 
 const plain = (rows: readonly string[]): string => stripVTControlCharacters(rows.join("\n"));
 
-function makeNoticeEntry(index: number, kind: StageNotice["kind"]): NoticeEntry {
-	return {
-		role: "notice",
-		noticeId: `notice-${index}`,
-		kind,
-		value: `value-${index}`,
-		from: `from-${index}`,
-		meta: `meta-${index}`,
-		text: `~ ${kind} -> value-${index}`,
-	};
+function makeNoticeEntry(index: number): NoticeEntry {
+	return { role: "notice", text: `Notice ${index}` };
 }
 
 afterEach(() => {
@@ -89,7 +81,7 @@ test("loadSession excludes hydrated session history from the scrolled-up new-mes
 	);
 	try {
 		for (let i = 0; i < 20; i++) {
-			host.appendExtraEntry(makeNoticeEntry(i, "model"));
+			host.appendExtraEntry(makeNoticeEntry(i));
 		}
 		host.renderBody(80, 6);
 		host.handleInput(PAGE_UP);
@@ -231,12 +223,12 @@ test("a compaction redraw shows a call saved without its result as interrupted, 
 	}
 });
 
-test("stage notices do not count as new messages while scrolled up (#5243)", () => {
+test("a host can exclude extra entries from its new-message count while scrolled up (#5243)", () => {
 	initTheme("dark");
 	const host = new ChatSessionHost<NoticeEntry>(
 		hostOptions<NoticeEntry>({
 			renderExtraEntry: (entry) => new Text(entry.text, 0, 0),
-			countsAsMessage: stageNoticeCountsAsMessage,
+			countsAsMessage: (entry) => entry.role !== "notice",
 		}),
 	);
 	try {
@@ -251,19 +243,8 @@ test("stage notices do not count as new messages while scrolled up (#5243)", () 
 		host.handleInput(PAGE_UP);
 		assert.match(plain(host.renderBody(80, 6).slice(-1)), /jump to bottom/);
 
-		const noticeKinds: readonly StageNotice["kind"][] = [
-			"model",
-			"thinking",
-			"compaction",
-			"tree",
-			"abort",
-			"mcp",
-			"cleanup",
-			"decision",
-			"undelivered",
-		];
-		for (let i = 0; i < noticeKinds.length; i++) {
-			host.appendExtraEntry(makeNoticeEntry(i, noticeKinds[i]!));
+		for (let i = 0; i < 9; i++) {
+			host.appendExtraEntry(makeNoticeEntry(i));
 			assert.match(plain(host.renderBody(80, 6).slice(-1)), /jump to bottom/);
 		}
 

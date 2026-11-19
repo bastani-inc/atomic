@@ -13,7 +13,7 @@ import {
 	type InputLabelStyle,
 } from "../../packages/coding-agent/src/modes/interactive/components/input-label.js";
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { applyStageLabelToEditorTopRule } from "../../packages/workflows/src/tui/stage-input-label.js";
+
 import { makeTestTui } from "../support/fake-tui.js";
 
 const MUTED = "\x1b[90m";
@@ -139,15 +139,6 @@ describe("the shared chat input label (#4640)", () => {
 		assert.equal(buildInputLabel(style, "worker", 0, "[stage: ", "]"), undefined);
 		const shown = (columns: number) => plain(buildInputLabel(style, "worker", columns, "[stage: ", "]")?.plain);
 		assert.deepEqual([shown(1), shown(6)], ["[stage: …]", "[stage: worker]"]);
-	});
-
-	test("one label implementation serves the stage kind too (#4640)", () => {
-		const source = [rule(80), "❯ x", rule(80)];
-		const stage = applyStageLabelToEditorTopRule({ textMuted: "#888888", text: "#ffffff" }, "review-a", source);
-		const shared = applyInputLabelToEditorTopRule(style, "stage", "review-a", source);
-		assert.equal(plain(stage[0]), plain(shared[0]));
-		assert.equal(plain(stage[0]), `[stage: review-a] ${"─".repeat(62)}`);
-		assert.deepEqual(applyInputLabelToEditorTopRule(style, "subagent", "worker", stage), stage);
 	});
 
 	test("attached composer strips APC cursor markers and scans repeated unclosed APC prefixes in linear time (#5224, #5239)", () => {

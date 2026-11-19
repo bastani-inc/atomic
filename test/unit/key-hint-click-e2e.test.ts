@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import type { AgentSessionEvent } from "@bastani/atomic";
+
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import {
 	type Component,
@@ -46,13 +46,8 @@ import {
 import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import { showTaskInspector } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
-import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
-import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
+
 import { taskFixture } from "../helpers/task-projection.js";
-import { makeHandle, setupRun } from "./stage-chat-view-helpers.ts";
 
 const WIDTH = 120;
 /** Taller than a stage chat's default height, so its footer hint row is on screen. */
@@ -145,68 +140,6 @@ function makeScreen(mainPrompt: () => Component = () => placeholderPrompt) {
 	};
 	return { terminal, tui, screen, shows, click, mount };
 }
-
-function emitBash(emit: (event: AgentSessionEvent) => void, command: string, label: string, count = 20) {
-	emit({ type: "tool_execution_start", toolCallId: label, toolName: "bash", args: { command } } as AgentSessionEvent);
-	emit({
-		type: "tool_execution_end",
-		toolCallId: label,
-		toolName: "bash",
-		result: {
-			content: [
-				{ type: "text", text: Array.from({ length: count }, (_, i) => `${label} line ${i + 1}`).join("\n") },
-			],
-		},
-		isError: false,
-	} as AgentSessionEvent);
-}
-
-test("a stage chat's hints run their keys: ? keys and ← graph act on a typed prompt, ctrl+o expands", async () => {
-	const ui = makeScreen();
-	const store = createStore();
-	setupRun(store, "run-1", "stage-a");
-	const { handle, emit } = makeHandle();
-	let toolsExpanded = false;
-	const detached: string[] = [];
-	const view = new StageChatView({
-		store,
-		graphTheme: deriveGraphTheme({}),
-		runId: "run-1",
-		stageId: "stage-a",
-		workflowName: "test-wf",
-		handle,
-		onDetach: () => detached.push("graph"),
-		onClose: () => {},
-		getToolsExpanded: () => toolsExpanded,
-		setToolsExpanded: (expanded) => {
-			toolsExpanded = expanded;
-		},
-	});
-	try {
-		emitBash(emit, "stage-cmd", "stage");
-		ui.mount(view);
-		typeText(ui.terminal, "draft");
-		await flush();
-		assert.ok(ui.shows(/❯ draft/), ui.screen().join("\n"));
-
-		await ui.click(/\? keys/, "? keys");
-		assert.ok(ui.shows(/keys · stage chat/), `the keys open over a typed prompt:\n${ui.screen().join("\n")}`);
-		ui.terminal.input("\x1b");
-		await flush();
-		assert.ok(ui.shows(/❯ draft/), "the draft is kept");
-
-		await pastDoubleClick();
-		await ui.click(/ctrl\+o expand/, "ctrl+o");
-		assert.equal(toolsExpanded, true);
-
-		await pastDoubleClick();
-		await ui.click(/← graph/, "← graph");
-		assert.deepEqual(detached, ["graph"], "← goes back to the graph whatever the prompt holds");
-	} finally {
-		view.dispose();
-		ui.tui.stop();
-	}
-});
 
 /** A session holding one finished bash call with `count` lines of output. */
 async function sessionWithBash(command: string, label: string, count: number): Promise<SessionManager> {
@@ -712,70 +645,6 @@ test("a hint the isolated engine wraps onto a second row runs its key from a cli
 		await flush();
 		assert.equal(pressed(), 1, "the row after the hint runs nothing");
 	} finally {
-		child.dispose();
-		ui.tui.stop();
-	}
-});
-
-test("a stage chat in the isolated engine opens its keys from a clicked ? keys over a typed prompt", async () => {
-	const ui = makeScreen();
-	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
-	const child = new EngineCustomUiService((line) => {
-		const message = parseInteractiveEngineMessage(line);
-		if (!message) return;
-		for (const listener of [...engineListeners]) listener(message);
-	}, new KeybindingsManager());
-	const runtime = {
-		onGenerationEnded: () => () => {},
-		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
-			engineListeners.push(listener);
-			return () => {};
-		},
-		sendEngineCommand: (command: InteractiveEngineCommand) => {
-			child.handleLine(serializeInteractiveEngineFrame(command));
-		},
-	} as unknown as IsolatedInteractiveRuntime;
-	let host: Component | undefined;
-	const hostUi = {
-		requestRender: () => ui.tui.requestRender(),
-		setWidget: () => {},
-		custom: (factory: (tui: unknown, theme: unknown, keys: unknown, done: (result: unknown) => void) => Component) =>
-			new Promise(() => {
-				host = factory(ui.tui, {}, {}, () => {});
-			}),
-	} as unknown as ExtensionUIContext;
-	new RemoteComponentController(runtime, hostUi, { isFullscreen: () => true, onRendererReplaced: () => () => {} });
-	const store = createStore();
-	setupRun(store, "run-1", "stage-a");
-	const { handle } = makeHandle();
-	const registry = createStageControlRegistry();
-	const unregister = registry.register(handle);
-	let pane: WorkflowAttachPane | undefined;
-	try {
-		void child.custom((tui) => {
-			pane = new WorkflowAttachPane({
-				store,
-				graphTheme: deriveGraphTheme({}),
-				runId: "run-1",
-				stageControlRegistry: registry,
-				initialAttachStageId: "stage-a",
-				onClose: () => {},
-				requestRender: () => tui.requestRender(),
-			});
-			return pane;
-		});
-		await flush();
-		assert.ok(host && pane, "the engine's stage chat is mirrored on the host");
-		ui.mount(host);
-		await vi.waitFor(() => assert.ok(ui.shows(/\? keys/), ui.screen().join("\n")), ENGINE_FRAME_WAIT);
-		typeText(ui.terminal, "draft");
-		await vi.waitFor(() => assert.ok(ui.shows(/❯ draft/), ui.screen().join("\n")), ENGINE_FRAME_WAIT);
-		await ui.click(/\? keys/, "? keys");
-		await vi.waitFor(() => assert.ok(ui.shows(/keys · stage chat/), ui.screen().join("\n")), ENGINE_FRAME_WAIT);
-		assert.ok(!ui.shows(/❯ draft\?/), "no ? is typed into the engine's prompt");
-	} finally {
-		pane?.dispose();
-		unregister();
 		child.dispose();
 		ui.tui.stop();
 	}
