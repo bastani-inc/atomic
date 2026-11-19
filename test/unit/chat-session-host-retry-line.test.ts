@@ -82,6 +82,26 @@ test("a chat names the key that cancels a retry only where Esc reaches it", () =
 	}
 });
 
+test("a chat's retry line stays one row: the reason gives way first, then the key hint", () => {
+	const host = makeLifecycleHost({ canCancelRetry: () => true });
+	const rows = (width: number) =>
+		host
+			.renderWorkingStatus(width)
+			.slice(1)
+			.map((row) => stripAnsi(row).trimEnd());
+	try {
+		host.applyAgentEvent({ type: "agent_start" });
+		host.applyAgentEvent({
+			...timedOut,
+			errorMessage: "Content blocked by the provider's safety filter: the request was refused",
+		});
+		assert.deepEqual(rows(80), [" ∀ Retrying · Content blocked by the provider… · attempt 2/3 in 4s   esc cancel"]);
+		assert.deepEqual(rows(40), [" ∀ Retrying · attempt 2/3 in 4s"]);
+	} finally {
+		host.dispose();
+	}
+});
+
 test("a chat retrying a summary names the summary, and no key: Esc interrupts the turn, not the summary", () => {
 	const host = makeLifecycleHost({ canCancelRetry: () => true });
 	try {

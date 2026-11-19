@@ -1,4 +1,4 @@
-import { stripTerminalSequences, truncateToWidth } from "@bastani/atomic-tui";
+import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
 import { keyText, keyTextHint } from "./keybinding-hints.js";
 import { clickableKeyTextHint } from "./nav-keys.ts";
@@ -31,6 +31,8 @@ export interface RetryWaitEvent {
 /** Separates the line from the key hint that cancels it. */
 const CANCEL_HINT_GAP = "   ";
 const REASON_MAX_WIDTH = 40;
+/** The fewest columns a reason shortened to fit the line keeps, its `…` included; a narrower line leaves it out. */
+const REASON_MIN_WIDTH = 10;
 
 /** A status code on its own, not part of a longer number or word such as a request id or `500ms`. */
 const statusCode = (codes: string) => new RegExp(`(?<![a-z0-9])(${codes})(?![a-z0-9])`, "i");
@@ -113,26 +115,64 @@ export function retrySecondsLeft(wait: RetryWait, now = Date.now()): number | un
  * the next attempt. A detail the wait does not know is left out, down to a plain `Retrying…`.
  */
 export function retryWaitText(wait: RetryWait, secondsLeft: number | undefined): string {
-	const head = wait.subject === "summary" ? "Retrying summary" : "Retrying";
-	const reason = retryReason(wait.errorMessage);
-	const attempt =
-		wait.attempt === undefined || wait.maxAttempts === undefined
-			? undefined
-			: `attempt ${wait.attempt}/${wait.maxAttempts}`;
+	const { head, reason, progress } = retryLineParts(wait, secondsLeft);
+	return retryLine(head, reason, progress);
+}
+
+/** The line's parts: its progress reads `attempt 2/3 in 4s`, or `2/3 in 4s` compacted. */
+function retryLineParts(wait: RetryWait, secondsLeft: number | undefined) {
+	const counter =
+		wait.attempt === undefined || wait.maxAttempts === undefined ? undefined : `${wait.attempt}/${wait.maxAttempts}`;
 	const countdown = secondsLeft === undefined ? undefined : `in ${formatWorkingElapsed(secondsLeft * 1000)}`;
-	const progress = [attempt, countdown].filter((part) => part !== undefined).join(" ");
+	const progress = (counterText: string | undefined) =>
+		[counterText, countdown].filter((part) => part !== undefined).join(" ");
+	return {
+		head: wait.subject === "summary" ? "Retrying summary" : "Retrying",
+		reason: retryReason(wait.errorMessage),
+		progress: progress(counter === undefined ? undefined : `attempt ${counter}`),
+		compactProgress: progress(counter),
+	};
+}
+
+function retryLine(head: string, reason: string | undefined, progress: string, cancelHint?: string): string {
 	const parts = [head, ...(reason === undefined ? [] : [reason]), ...(progress === "" ? [] : [progress])];
-	return parts.length === 1 ? `${head}…` : parts.join(" · ");
+	const text = parts.length === 1 ? `${head}…` : parts.join(" · ");
+	return cancelHint ? `${text}${CANCEL_HINT_GAP}${cancelHint}` : text;
 }
 
 /**
  * The working line's message while a retry waits: the wait and, where Esc cancels it, `cancelHint`. Once the next
  * attempt is due the line reads `Working…` until the attempt starts.
+ *
+ * The message fits in `columns`, so the line never wraps: the reason gives way first, shortened while enough of it
+ * fits and then left out, then the key hint, then the word `attempt`; a line narrower than that is cut.
  */
-export function retryWaitMessage(wait: RetryWait, secondsLeft: number | undefined, cancelHint?: string): string {
+export function retryWaitMessage(
+	wait: RetryWait,
+	secondsLeft: number | undefined,
+	cancelHint?: string,
+	columns = Number.POSITIVE_INFINITY,
+): string {
 	if (secondsLeft !== undefined && secondsLeft <= 0) return DEFAULT_WORKING_MESSAGE;
-	const text = retryWaitText(wait, secondsLeft);
-	return cancelHint ? `${text}${CANCEL_HINT_GAP}${cancelHint}` : text;
+	const { head, reason, progress, compactProgress } = retryLineParts(wait, secondsLeft);
+	const full = retryLine(head, reason, progress, cancelHint);
+	if (visibleWidth(full) <= columns) return full;
+	if (reason !== undefined) {
+		const room = columns - visibleWidth(retryLine(head, "", progress, cancelHint));
+		if (room >= REASON_MIN_WIDTH) {
+			const shortened = stripTerminalSequences(truncateToWidth(reason, room, "…")).replace(/\s+…$/, "…");
+			return retryLine(head, shortened, progress, cancelHint);
+		}
+	}
+	const shorter = [
+		retryLine(head, undefined, progress, cancelHint),
+		retryLine(head, undefined, progress),
+		retryLine(head, undefined, compactProgress),
+	];
+	return (
+		shorter.find((line) => visibleWidth(line) <= columns) ??
+		stripTerminalSequences(truncateToWidth(shorter[2]!, columns, "…"))
+	);
 }
 
 /** `esc cancel` for the main chat, whose editor takes Esc for a retry even when `app.interrupt` has no key of its own. */
