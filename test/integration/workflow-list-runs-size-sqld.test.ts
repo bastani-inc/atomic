@@ -178,6 +178,7 @@ for (const backend of storageBackends) {
 						'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
 					const controller = new AbortController();
 					const reason = new Error("catalog cancelled");
+					const release = limitHeaderResponse(database, (rows) => rows.length <= 128);
 					let readsAfterAbort = 0;
 					const restore = observeSqlReads(database, {
 						before: () => {
@@ -191,6 +192,7 @@ for (const backend of storageBackends) {
 					} finally {
 						clearImmediate(timer);
 						restore();
+						release();
 					}
 					expect(await journal.listRuns()).toHaveLength(512);
 				} finally {

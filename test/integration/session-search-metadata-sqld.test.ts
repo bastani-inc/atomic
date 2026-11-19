@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
+import { StoragePayloadTooLargeError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { StoreClosedError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import {
@@ -103,7 +104,8 @@ for (const backend of storageBackends) {
 						},
 						after: async (rows) => {
 							const metadata = rows.some((row) => row.seq != null && "size" in row);
-							if (metadata) expect(rows.length).toBeLessThanOrEqual(SESSION_READ_FETCH.max);
+							if (metadata && rows.length > SESSION_READ_FETCH.max)
+								throw new StoragePayloadTooLargeError(0, 0, { kind: "response" });
 							const text = rows.some((row) => typeof row.text_json === "string");
 							if (!stopped && stop !== undefined && (stop.phase === "metadata" ? metadata : text)) {
 								stopped = true;

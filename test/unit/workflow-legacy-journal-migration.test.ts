@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
-import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
+import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
-import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import {
+	StoragePayloadTooLargeError,
+	StorageUnavailableError,
+} from "../../packages/coding-agent/src/core/storage/errors.js";
 import { inspectJournalFile } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
@@ -12,10 +15,15 @@ import { migrateStageSessionCheckpoint } from "../../packages/workflows/src/dura
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
-import { type JournalEntry, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
+import {
+	JOURNAL_SCHEMA_VERSION,
+	type JournalEntry,
+	JournalSchemaVersionError,
+	RUN_EVENT_TYPES,
+} from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
-import { observeSqlReads } from "../helpers/observe-sql-reads.js";
+import { limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, readText, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
 const directories: string[] = [];
@@ -86,39 +94,83 @@ function writeLegacyJournal(path: string): void {
 	}
 }
 
-for (const method of ["listRuns", "runVersions", "getRun"] as const)
-	test(`${method} does not lose a legacy run converted by another connection at its first read boundary (#5537)`, async () => {
-		const path = join(tempDirectory(), `conversion-${method}.sqlite`);
+for (const method of ["listRuns", "getRun"] as const)
+	test(`${method} checks a current-table miss before returning a legacy header (#5537)`, async () => {
+		const path = join(tempDirectory(), "schema.sqlite");
 		writeLegacyJournal(path);
-		const database = await openNodeSqliteDatabase(path);
-		const writerDatabase = await openNodeSqliteDatabase(path);
-		const journal = await SqlRunJournal.open(database);
-		const writer = await SqlRunJournal.open(writerDatabase);
-		let converted = false;
-		const convert = async () => {
-			if (converted) return;
-			converted = true;
-			assert.equal((await writer.acquire(legacyRun.runId, "conversion-writer")).status, "acquired");
-		};
-		const restore = observeSqlReads(database, { after: convert });
+		const db = await openNodeSqliteDatabase(path),
+			peer = await openNodeSqliteDatabase(path);
+		const journal = await SqlRunJournal.open(db);
+		let upgraded = false;
+		const restore = observeSqlReads(db, {
+			after: async (_rows, sql) => {
+				if (!upgraded && sql.includes("wf_runs")) {
+					upgraded = true;
+					await peer.run("UPDATE wf_meta SET schema_version=?", JOURNAL_SCHEMA_VERSION + 1);
+				}
+			},
+		});
 		try {
-			if (method === "getRun") assert.equal((await journal.getRun(legacyRun.runId))?.runId, legacyRun.runId);
-			else if (method === "runVersions")
-				assert.deepEqual([...(await journal.runVersions()).keys()], [legacyRun.runId]);
-			else
-				assert.deepEqual(
-					(await journal.listRuns()).map((run) => run.runId),
-					[legacyRun.runId],
-				);
-			assert.equal(converted, true);
+			await assert.rejects(
+				method === "getRun" ? journal.getRun(legacyRun.runId) : journal.listRuns({ cwd: legacyRun.cwd }),
+				JournalSchemaVersionError,
+			);
+			assert.equal(upgraded, true);
 		} finally {
 			restore();
-			await writer.close();
 			await journal.close();
-			await writerDatabase.close();
-			await database.close();
+			await peer.close();
+			await db.close();
 		}
 	});
+
+test("near-limit legacy headers and events keep their original response columns (#5537)", async () => {
+	const path = join(tempDirectory(), "legacy-wire.sqlite");
+	writeLegacyJournal(path);
+	const db = await openNodeSqliteDatabase(path);
+	const journal = await SqlRunJournal.open(db);
+	try {
+		const header = {
+			runId: "a",
+			name: "r",
+			cwd: "/p",
+			createdAt: 1,
+			status: "paused",
+			inputs: { s: "x".repeat(149720) },
+		};
+		const payload = { inputs: { s: "x".repeat(149536) } };
+		await db.run(
+			"INSERT INTO runs VALUES (?,?,?,?,?,?)",
+			header.runId,
+			header.name,
+			header.cwd,
+			header.createdAt,
+			header.status,
+			JSON.stringify(header),
+		);
+		await db.run("UPDATE events SET payload=?,epoch=1,at=1 WHERE run_id=?", JSON.stringify(payload), legacyRun.runId);
+		const restore = observeSqlReads(db, {
+			after(rows) {
+				for (const row of rows) {
+					if (typeof row.header_json === "string" && row.header_json.length > 149000)
+						assert.deepEqual(Object.keys(row).sort(), ["header_json", "run_id", "status"]);
+					if (typeof row.payload === "string" && row.payload.length > 149000)
+						assert.deepEqual(Object.keys(row).sort(), ["at", "epoch", "key", "payload", "run_id", "seq", "type"]);
+				}
+			},
+		});
+		try {
+			assert.deepEqual(await journal.getRun("a"), header);
+			assert.deepEqual(await journal.listRuns({ cwd: "/p" }), [header]);
+			assert.deepEqual((await Array.fromAsync(journal.read(legacyRun.runId)))[0]!.event.payload, payload);
+		} finally {
+			restore();
+		}
+	} finally {
+		await journal.close();
+		await db.close();
+	}
+});
 
 test("legacy event reads honor the same size budget as current event reads (#5537)", async () => {
 	const path = join(tempDirectory(), "large-legacy-events.sqlite");
@@ -136,22 +188,22 @@ test("legacy event reads honor the same size budget as current event reads (#553
 	}
 	const database = await openNodeSqliteDatabase(path);
 	const journal = await SqlRunJournal.open(database);
-	const all = database.all.bind(database);
-	database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-		const rows = await all<Row>(sql, ...params);
-		const bytes = rows.reduce(
-			(total, row) => total + (typeof row.payload === "string" ? Buffer.byteLength(row.payload) : 0),
-			0,
-		);
-		assert.ok(bytes <= 4 * 1024 * 1024 + Buffer.byteLength(payload), `legacy payload response was ${bytes} bytes`);
-		return rows;
-	};
+	const release = observeSqlReads(database, {
+		after(rows) {
+			const bytes = rows.reduce(
+				(total, row) => total + (typeof row.payload === "string" ? Buffer.byteLength(row.payload) : 0),
+				0,
+			);
+			if (bytes > 4 * 1024 * 1024 + Buffer.byteLength(payload))
+				throw new StoragePayloadTooLargeError(bytes, 0, { kind: "response" });
+		},
+	});
 	try {
 		const seqs: number[] = [];
 		for await (const entry of journal.read(legacyRun.runId)) seqs.push(entry.seq);
 		assert.deepEqual(seqs, [1, 2, 3, 4, 5, 6, 7]);
 	} finally {
-		database.all = all;
+		release();
 		await journal.close();
 		await database.close();
 	}
@@ -186,7 +238,9 @@ test("legacy catalog listings check cancellation between size-bounded pages (#55
 	} finally {
 		database.close();
 	}
-	const journal = await openSqlRunJournal(path);
+	const db = await openNodeSqliteDatabase(path);
+	const journal = await SqlRunJournal.open(db);
+	const release = limitHeaderResponse(db, (rows) => rows.length <= 64);
 	try {
 		const controller = new AbortController();
 		const reason = new Error("legacy catalog cancelled");
@@ -197,7 +251,9 @@ test("legacy catalog listings check cancellation between size-bounded pages (#55
 			clearImmediate(timer);
 		}
 	} finally {
+		release();
 		await journal.close();
+		await db.close();
 	}
 });
 

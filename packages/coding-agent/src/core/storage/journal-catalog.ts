@@ -13,55 +13,6 @@ import {
 } from "./errors.js";
 import { fileIdentityAsync } from "./file-identity.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
-import type { SqlCatalogReadOptions } from "./sql-catalog.js";
-
-/** Loads catalog traversal only when a catalog is read, not while the storage entry loads. */
-export async function* readSqlCatalogPages<Row extends SqliteRow>(
-	executor: SqliteExecutor,
-	options: SqlCatalogReadOptions,
-): AsyncIterable<Row[]> {
-	const catalog = await import("./sql-catalog.js");
-	if (!("transaction" in executor) || options.inSnapshot) {
-		yield* catalog.readSqlCatalogPages<Row>(executor, options);
-		return;
-	}
-	// Never keep a database transaction open across its caller's yield. Only publish a completed read attempt.
-	const { value: pages } = await catalog.reduceSqlCatalog<Row, Row[][]>(
-		executor,
-		options,
-		() => [],
-		(pages, page) => {
-			if (page.length) pages.push(page);
-		},
-	);
-	for (const page of pages) {
-		options.assertOpen?.();
-		options.signal?.throwIfAborted();
-		yield page;
-		await new Promise<void>((resolve) => setImmediate(resolve));
-	}
-	options.assertOpen?.();
-	options.signal?.throwIfAborted();
-}
-
-/** Processes catalog pages inside the storage-owned snapshot, without eagerly loading the reader. */
-export async function reduceSqlCatalog<Row extends SqliteRow, Result>(
-	executor: SqliteExecutor,
-	options: SqlCatalogReadOptions,
-	initial: () => Result,
-	append: (value: Result, page: Row[]) => void,
-): Promise<{ value: Result; paged: boolean }> {
-	return (await import("./sql-catalog.js")).reduceSqlCatalog(executor, options, initial, append);
-}
-
-/** Collects a catalog without loading its reader during storage setup. */
-export async function readSqlCatalog<Row extends SqliteRow>(
-	executor: SqliteExecutor,
-	options: SqlCatalogReadOptions,
-): Promise<Row[]> {
-	const catalog = await import("./sql-catalog.js");
-	return catalog.readSqlCatalog<Row>(executor, options);
-}
 
 /** The catalog's file in a journal store directory. */
 export const JOURNAL_CATALOG_FILE = "catalog.sqlite";
@@ -81,9 +32,6 @@ export const JOURNAL_BUSY_STATUSES = ["running"] as const;
 export const JOURNAL_FINISHED_STATUSES = ["completed", "failed", "cancelled"] as const;
 
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
-const RUN_ROW_SIZE =
-	"length(run_id) + length(root_run_id) + coalesce(length(cwd), 0) + coalesce(length(workflow), 0) + coalesce(length(status), 0)";
-const SHARD_ROW_SIZE = "length(path) + length(kind)";
 
 export type JournalShardKind = "native" | "adopted";
 
@@ -290,12 +238,10 @@ export class JournalCatalog {
 	}
 
 	/** A catalog read outside any transaction; a storage failure makes the catalog unavailable. */
-	private async read<T>(body: (executor: SqliteExecutor) => Promise<T>, signal?: AbortSignal): Promise<T> {
+	private async read<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T> {
 		try {
-			signal?.throwIfAborted();
 			return await body(this.database);
 		} catch (cause) {
-			signal?.throwIfAborted();
 			throw new JournalCatalogError({
 				code: "catalog-unavailable",
 				catalogPath: this.path,
@@ -328,16 +274,8 @@ export class JournalCatalog {
 	}
 
 	async shards(options?: { signal?: AbortSignal }): Promise<readonly JournalShardRecord[]> {
-		const rows = await this.read(
-			(db) =>
-				readSqlCatalog<ShardRow>(db, {
-					sql: "SELECT * FROM catalog_shards",
-					key: "id",
-					size: SHARD_ROW_SIZE,
-					signal: options?.signal,
-				}),
-			options?.signal,
-		);
+		options?.signal?.throwIfAborted();
+		const rows = await this.read((db) => db.all<ShardRow>("SELECT * FROM catalog_shards ORDER BY id"));
 		return rows.map((row) => this.shardRecord(row));
 	}
 
@@ -362,51 +300,35 @@ export class JournalCatalog {
 	}
 
 	/** The roots the catalog counts as running, which keep their shard busy. */
-	async busyRuns(options?: { signal?: AbortSignal }): Promise<readonly JournalCatalogRun[]> {
-		const rows = await this.read(
-			(db) =>
-				readSqlCatalog<RunRow>(db, {
-					sql: `SELECT * FROM catalog_runs WHERE status IN (${JOURNAL_BUSY_STATUSES.map(() => "?").join(", ")})`,
-					params: JOURNAL_BUSY_STATUSES,
-					key: "run_id",
-					size: RUN_ROW_SIZE,
-					signal: options?.signal,
-				}),
-			options?.signal,
+	async busyRuns(): Promise<readonly JournalCatalogRun[]> {
+		const rows = await this.read((db) =>
+			db.all<RunRow>(
+				`SELECT * FROM catalog_runs WHERE status IN (${JOURNAL_BUSY_STATUSES.map(() => "?").join(", ")}) ORDER BY run_id`,
+				...JOURNAL_BUSY_STATUSES,
+			),
 		);
 		return rows.map((row) => this.runRecord(row));
 	}
 
-	async runs(
-		filter: { readonly shard?: number } = {},
-		options?: { signal?: AbortSignal },
-	): Promise<readonly JournalCatalogRun[]> {
-		const rows = await this.read(
-			(db) =>
-				readSqlCatalog<RunRow>(db, {
-					sql: `SELECT * FROM catalog_runs${filter.shard === undefined ? "" : " WHERE shard = ?"}`,
-					params: filter.shard === undefined ? [] : [filter.shard],
-					key: "run_id",
-					size: RUN_ROW_SIZE,
-					signal: options?.signal,
-				}),
-			options?.signal,
+	async runs(filter: { readonly shard?: number } = {}): Promise<readonly JournalCatalogRun[]> {
+		const rows = await this.read((db) =>
+			filter.shard === undefined
+				? db.all<RunRow>("SELECT * FROM catalog_runs ORDER BY run_id")
+				: db.all<RunRow>("SELECT * FROM catalog_runs WHERE shard = ? ORDER BY run_id", filter.shard),
 		);
 		return rows.map((row) => this.runRecord(row));
 	}
 
 	/** Which shard owns each catalogued run. */
 	async owners(options?: { signal?: AbortSignal }): Promise<ReadonlyMap<string, number>> {
-		const rows = await this.read(
-			(db) =>
-				readSqlCatalog<SqliteRow & { run_id: string; shard: number }>(db, {
-					sql: "SELECT run_id, shard FROM catalog_runs",
-					key: "run_id",
-					size: "length(run_id)",
-					signal: options?.signal,
-				}),
-			options?.signal,
+		options?.signal?.throwIfAborted();
+		const rows = await this.read((db) =>
+			db.all<SqliteRow & { run_id: string; shard: number }>("SELECT run_id, shard FROM catalog_runs"),
 		);
+		if (options?.signal) {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			options.signal.throwIfAborted();
+		}
 		return new Map(rows.map((row) => [row.run_id, Number(row.shard)]));
 	}
 
@@ -469,11 +391,9 @@ export class JournalCatalog {
 	 */
 	private async acceptingShards(tx: SqliteExecutor): Promise<JournalShardRecord[]> {
 		const accepting: JournalShardRecord[] = [];
-		for (const row of await readSqlCatalog<ShardRow>(tx, {
-			sql: "SELECT * FROM catalog_shards WHERE accepts_new_roots = 1",
-			key: "id",
-			size: SHARD_ROW_SIZE,
-		})) {
+		for (const row of await tx.all<ShardRow>(
+			"SELECT * FROM catalog_shards WHERE accepts_new_roots = 1 ORDER BY id",
+		)) {
 			const shard = this.shardRecord(row);
 			if (await exists(shard.path)) accepting.push(shard);
 			else await tx.run("UPDATE catalog_shards SET accepts_new_roots = 0 WHERE id = ?", shard.id);
@@ -483,15 +403,14 @@ export class JournalCatalog {
 
 	private async choose(tx: SqliteExecutor, runId: string): Promise<JournalShardRecord> {
 		const accepting = await this.acceptingShards(tx);
-		const busyRows = await readSqlCatalog<SqliteRow & { shard: number; busy: number }>(tx, {
-			sql: `SELECT shard, count(*) AS busy FROM catalog_runs
+		const busyRows = await tx.all<SqliteRow & { shard: number; busy: number }>(
+			`SELECT shard, count(*) AS busy FROM catalog_runs
 			WHERE status IN (${JOURNAL_BUSY_STATUSES.map(() => "?").join(", ")})
 				OR (status IS NULL AND updated_at >= ${STORE_NOW} - ?)
 			GROUP BY shard`,
-			params: [...JOURNAL_BUSY_STATUSES, JOURNAL_RESERVATION_TTL_MS],
-			key: "shard",
-			size: "1",
-		});
+			...JOURNAL_BUSY_STATUSES,
+			JOURNAL_RESERVATION_TTL_MS,
+		);
 		const busy = new Map(busyRows.map((row) => [Number(row.shard), Number(row.busy)]));
 		const load = (shard: JournalShardRecord) => busy.get(shard.id) ?? 0;
 		const pick = (candidates: readonly JournalShardRecord[]) =>
@@ -527,9 +446,7 @@ export class JournalCatalog {
 
 	private async createNativeShardFile(tx: SqliteExecutor, from: number): Promise<string> {
 		const registered = new Set(
-			(
-				await readSqlCatalog<ShardRow>(tx, { sql: "SELECT * FROM catalog_shards", key: "id", size: SHARD_ROW_SIZE })
-			).map((row) => this.shardRecord(row).path),
+			(await tx.all<ShardRow>("SELECT * FROM catalog_shards")).map((row) => this.shardRecord(row).path),
 		);
 		for (let number = from; ; number++) {
 			const file = nativeShardFile(number);
@@ -674,11 +591,7 @@ export class JournalCatalog {
 	): Promise<JournalShardRegistration> {
 		const identity = await fileIdentityAsync(absolute);
 		let registered: JournalShardRecord | undefined;
-		for (const row of await readSqlCatalog<ShardRow>(tx, {
-			sql: "SELECT * FROM catalog_shards",
-			key: "id",
-			size: SHARD_ROW_SIZE,
-		})) {
+		for (const row of await tx.all<ShardRow>("SELECT * FROM catalog_shards")) {
 			const shard = this.shardRecord(row);
 			if (
 				shard.path === absolute ||
@@ -741,24 +654,17 @@ export class JournalCatalog {
 		);
 	}
 
-	async discoveries(options?: { signal?: AbortSignal }): Promise<readonly JournalDiscoveryRecord[]> {
-		const rows = await this.read(
-			(db) =>
-				readSqlCatalog<
-					SqliteRow & {
-						path: string;
-						outcome: string;
-						reason: string | null;
-						referenced_by: string | null;
-						checked_at: number;
-					}
-				>(db, {
-					sql: "SELECT * FROM catalog_discovery",
-					key: "path",
-					size: "length(path) + length(outcome) + coalesce(length(reason), 0) + coalesce(length(referenced_by), 0)",
-					signal: options?.signal,
-				}),
-			options?.signal,
+	async discoveries(): Promise<readonly JournalDiscoveryRecord[]> {
+		const rows = await this.read((db) =>
+			db.all<
+				SqliteRow & {
+					path: string;
+					outcome: string;
+					reason: string | null;
+					referenced_by: string | null;
+					checked_at: number;
+				}
+			>("SELECT * FROM catalog_discovery ORDER BY path"),
 		);
 		return rows.map((row) => ({
 			path: row.path,

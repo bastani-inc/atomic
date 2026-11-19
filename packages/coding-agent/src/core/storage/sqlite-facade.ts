@@ -795,14 +795,15 @@ class DriverDatabase implements SqliteDatabase {
 			...(options?.lockWaitMs === undefined ? {} : { lockWaitMs: options.lockWaitMs }),
 			...(options?.readOnly === true ? { readOnly: true } : {}),
 		};
-		const run = () => this.retrying((attempt) => this.runTransaction(callback, attempt, begin), replay);
-		const independent =
-			begin.readOnly === true
-				? this.driver.concurrentReads === true
-				: concurrency.kind === "fenced" && this.driver.concurrentTransactions === true;
+		const replayableRead = begin.readOnly === true && replay;
+		const run = () =>
+			this.retrying((attempt) => this.runTransaction(callback, attempt, begin, replayableRead), replay);
+		const independent = replayableRead
+			? this.driver.concurrentReads === true
+			: concurrency.kind === "fenced" && this.driver.concurrentTransactions === true;
 		if (!independent) return this.queue.push(run);
 		// Admit the read after previously queued calls, but do not put its lifetime on the write queue.
-		const result = begin.readOnly ? this.queue.push(async () => {}).then(run) : run();
+		const result = replayableRead ? this.queue.push(async () => {}).then(run) : run();
 		const settled = result.then(
 			() => {},
 			() => {},
@@ -816,6 +817,7 @@ class DriverDatabase implements SqliteDatabase {
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		attempt: Attempt,
 		begin: SqliteDriverTransactionOptions,
+		replayableRead: boolean,
 	): Promise<T> {
 		const connection = await this.call(() => this.driver.beginTransaction(begin), attempt);
 		const pipelined = this.driver.pipelinedTransactions === true;
@@ -835,7 +837,7 @@ class DriverDatabase implements SqliteDatabase {
 		const commit = () => {
 			attempt.transient = undefined;
 			// A lost acknowledgment of a read-only commit cannot have applied a write.
-			return this.call(() => connection.commit(), attempt, begin.readOnly !== true);
+			return this.call(() => connection.commit(), attempt, !replayableRead);
 		};
 		try {
 			let committing: Promise<void> | undefined;

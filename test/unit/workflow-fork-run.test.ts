@@ -50,6 +50,7 @@ import { forkRun, listForkPoints } from "../../packages/workflows/src/runs/foreg
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowUIAdapter } from "../../packages/workflows/src/shared/types.js";
+import { limitHeaderResponse } from "../helpers/observe-sql-reads.js";
 import { testRunId } from "../helpers/run-id.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -576,7 +577,7 @@ test.each([
 		const journal = await SqlRunJournal.open(database);
 		const backend = await JournalDurableBackend.open(journal, { runs: [], ownsJournal: false });
 		try {
-			// Two ambiguous matches and enough unrelated runs to require a second catalog page.
+			// Two ambiguous matches and an enforced response ceiling to exercise cancellation between catalog pages.
 			for (let index = 1; index <= 129; index++) {
 				await journal.createRun({
 					runId: index <= 2 ? `aaaaaaaa-0000-4000-8000-00000000000${index}` : `other-${index}`,
@@ -587,6 +588,7 @@ test.each([
 				});
 			}
 			const controller = new AbortController();
+			const release = limitHeaderResponse(database, (rows) => rows.length <= 128);
 			const timer = setImmediate(() => controller.abort(reason));
 			try {
 				await assert.rejects(
@@ -601,6 +603,7 @@ test.each([
 				);
 			} finally {
 				clearImmediate(timer);
+				release();
 			}
 			assert.equal((await journal.listRuns()).length, 129);
 		} finally {

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
+import { StoragePayloadTooLargeError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { runJournalTables } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { STORED_JSON_CHUNK_BYTES } from "../../packages/coding-agent/src/core/storage/run-journal.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
 for (const backend of storageBackends) {
@@ -21,27 +22,29 @@ for (const backend of storageBackends) {
 						SELECT 'run', i, 1, 'key-' || i || ?, 'RunStarted', '{}', i, 0 FROM n`,
 						tail,
 					);
-					const all = database.all.bind(database);
-					database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-						const rows = await all<Row>(sql, ...params);
-						const bytes = rows.reduce(
-							(total, row) =>
-								total +
-								Object.values(row).reduce<number>(
-									(sum, value) => sum + (typeof value === "string" ? Buffer.byteLength(value) : 0),
-									0,
-								),
-							0,
-						);
-						expect(bytes).toBeLessThanOrEqual(4 * 1024 * 1024 + Buffer.byteLength(tail) + 128);
-						return rows;
-					};
+					const release = observeSqlReads(database, {
+						after(rows) {
+							const bytes = rows.reduce(
+								(total, row) =>
+									total +
+									Object.values(row).reduce<number>(
+										(sum, value) => sum + (typeof value === "string" ? Buffer.byteLength(value) : 0),
+										0,
+									),
+								0,
+							);
+							if (bytes > 4 * 1024 * 1024 + Buffer.byteLength(tail) + 128)
+								throw new StoragePayloadTooLargeError(0, 0, { kind: "response" });
+						},
+					});
 					try {
 						const keys: (string | undefined)[] = [];
 						for await (const entry of journal.read("run")) keys.push(entry.key);
 						expect(keys).toEqual(Array.from({ length: 96 }, (_, i) => `key-${i + 1}${tail}`));
+						const byKey = await Array.fromAsync(SqlRunJournal.readKeyRange(journal, "run", "key-", "key."));
+						expect(byKey.map((entry) => entry.key)).toEqual([...keys].sort());
 					} finally {
-						database.all = all;
+						release();
 					}
 				} finally {
 					await journal.close();
@@ -51,7 +54,7 @@ for (const backend of storageBackends) {
 			}
 		});
 
-		it("turns the event loop between ordinary event pages (#5537)", async () => {
+		it("turns the event loop before retrying a refused event page (#5537)", async () => {
 			const scope = await backend.openScope();
 			try {
 				const database = await scope.connect();
@@ -61,6 +64,11 @@ for (const backend of storageBackends) {
 					await database.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1025)
 						INSERT INTO ${runJournalTables(scope.prefix).events}(run_id, seq, epoch, key, type, payload, at, chunks)
 						SELECT 'run', i, 1, NULL, 'RunStarted', '{}', i, 0 FROM n`);
+					const release = observeSqlReads(database, {
+						after(rows) {
+							if (rows.length > 128) throw new StoragePayloadTooLargeError(0, 0, { kind: "response" });
+						},
+					});
 					let turns = 0;
 					let counting = true;
 					let timer: ReturnType<typeof setImmediate>;
@@ -77,6 +85,7 @@ for (const backend of storageBackends) {
 					} finally {
 						counting = false;
 						clearImmediate(timer);
+						release();
 					}
 				} finally {
 					await journal.close();
@@ -86,7 +95,7 @@ for (const backend of storageBackends) {
 			}
 		});
 
-		it("does not hydrate later chunked events before the first event is consumed (#5537)", async () => {
+		it("after a response refusal does not hydrate chunked events beyond the accepted page (#5537)", async () => {
 			const scope = await backend.openScope();
 			try {
 				const database = await scope.connect();
@@ -99,13 +108,14 @@ for (const backend of storageBackends) {
 					await journal.append(lease.lease, { type: "RunStarted", payload });
 					await journal.append(lease.lease, { type: "RunStarted", payload });
 					const chunksPerEvent = Math.ceil(Buffer.byteLength(JSON.stringify(payload)) / STORED_JSON_CHUNK_BYTES);
-					const get = database.get.bind(database);
 					let chunksRead = 0;
-					database.get = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-						const row = await get<Row>(sql, ...params);
-						if (row?.data instanceof Uint8Array) chunksRead++;
-						return row;
-					};
+					const release = observeSqlReads(database, {
+						after(rows) {
+							if (rows.length > 1 && rows.some((row) => "chunks" in row))
+								throw new StoragePayloadTooLargeError(0, 0, { kind: "response" });
+							if (rows[0]?.data instanceof Uint8Array) chunksRead++;
+						},
+					});
 					const iterator = journal.read("run")[Symbol.asyncIterator]();
 					try {
 						const first = await iterator.next();
@@ -115,7 +125,7 @@ for (const backend of storageBackends) {
 						expect(chunksRead).toBe(chunksPerEvent);
 					} finally {
 						await iterator.return?.();
-						database.get = get;
+						release();
 					}
 				} finally {
 					await journal.close();

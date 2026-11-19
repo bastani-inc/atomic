@@ -48,7 +48,7 @@ test("a cancelled shard catalog starts no later shard open after a child read co
 	}
 });
 
-test("a warmed catalog with empty shards yields between shard reads (#5537)", async () => {
+test("a cancellable warmed catalog with empty shards yields between shard reads (#5537)", async () => {
 	const directory = makeTempDirectory("atomic-shard-list-turns-");
 	const handles = new Map<string, SqlRunJournal>();
 	let measuring = false;
@@ -81,7 +81,7 @@ test("a warmed catalog with empty shards yields between shard reads (#5537)", as
 		for (const child of handles.values()) for (const run of await child.listRuns()) await child.deleteRun(run.runId);
 		await journal.listRuns();
 		measuring = true;
-		expect(await journal.listRuns()).toEqual([]);
+		expect(await journal.listRuns(undefined, { signal: new AbortController().signal })).toEqual([]);
 		expect(armed).toBe(true);
 		expect(turns).toBeGreaterThan(0);
 	} finally {

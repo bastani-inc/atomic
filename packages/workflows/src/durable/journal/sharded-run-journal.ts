@@ -465,7 +465,7 @@ export class ShardedRunJournal implements RunJournal {
 						listed.set(run.runId, run);
 					}
 				}
-				await nextTurn();
+				if (options?.signal) await nextTurn();
 				options?.signal?.throwIfAborted();
 			}
 			options?.signal?.throwIfAborted();

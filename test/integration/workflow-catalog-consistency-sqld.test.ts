@@ -79,7 +79,7 @@ it.each(["native memory", "local file", "local memory"])(
 
 for (const backend of storageBackends) {
 	describe.skipIf(backend.skipReason !== undefined)(`catalog consistency: ${backend.name}`, () => {
-		it("a single-run export does not fetch unrelated catalog headers (#5537)", async () => {
+		it("after a header response refusal a single-run export fetches only the requested header (#5537)", async () => {
 			const scope = await backend.openScope();
 			const directory = makeTempDirectory("atomic-selected-run-");
 			try {
@@ -89,6 +89,7 @@ for (const backend of storageBackends) {
 					await reader.createRun(header);
 					await reader.createRun({ ...header, runId: "unselected" });
 					let fetchedOther = false;
+					const release = limitHeaderResponse(database, (rows) => rows.length <= 1);
 					const restore = observeSqlReads(database, {
 						after: (rows) => {
 							if (rows.some((row) => row.run_id === "unselected")) fetchedOther = true;
@@ -104,6 +105,7 @@ for (const backend of storageBackends) {
 						expect(fetchedOther).toBe(false);
 					} finally {
 						restore();
+						release();
 					}
 				} finally {
 					await reader.close();
