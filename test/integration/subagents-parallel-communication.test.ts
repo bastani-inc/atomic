@@ -35,11 +35,7 @@ type Tool = {
 type Inbound = Parameters<NonNullable<IntercomExtensionTestOverrides["captureInboundHandler"]>>[0];
 
 /** `wait` is what a legacy call still passes: every launch runs in the background whatever it says. */
-function fixture(
-	wait: { kind: "background" } | undefined,
-	owned = true,
-	resources: { worktree?: boolean; stage?: boolean } = {},
-) {
+function fixture(wait: { kind: "background" } | undefined, owned = true, resources: { worktree?: boolean } = {}) {
 	const cwd = makeTempDirectory("parallel-communication-");
 	const git = (...args: string[]) => {
 		const result = spawnSyncCollect(["git", "-C", cwd, ...args]);
@@ -106,9 +102,7 @@ function fixture(
 	let inbound!: Inbound;
 	let idle = false;
 	const host = new AgentTaskHost({
-		scope: resources.stage
-			? { kind: "workflow-stage", sessionId: cwd, runId: cwd, stageId: "worker", stageAttemptId: "attempt-1" }
-			: { kind: "session", sessionId: cwd },
+		scope: { kind: "session", sessionId: cwd },
 		authorizeLaunch() {},
 	});
 	const ctx = {
@@ -539,34 +533,32 @@ for (const wait of [{ kind: "background" }] as const) {
 			}
 		});
 	}
-	for (const cause of ["session-close", "stage-close"] as const) {
-		test(`parallel ${wait.kind} ${cause} cancels active and queued tasks and pending reply waiters`, async () => {
-			const current = fixture(wait);
-			try {
-				await current.start();
-				await current.launch;
-				current.setIdle();
-				const child = current.childTool("intercom");
-				const execution = child.execute({ action: "ask", to: "parent-id", message: "Choose" });
-				await current.until(() => current.surfaced.length >= 1);
-				assert.equal(current.surfaced.length, 1);
-				const closed = await current.host.close(cause);
-				assert.ok(closed.ok);
-				// #4751: closing the owner interrupts the ask's wait; the delivered ask yields instead of failing.
-				const interrupted = await execution;
-				assert.equal(interrupted.isError, false);
-				assert.match(JSON.stringify(interrupted.content), /stopped waiting/);
-				assert.equal(child.waits.has(), false);
-				assert.equal(child.reply(current.surfaced[0]!.id), false);
-				assert.deepEqual(current.starts, [0, 1]);
-				assert.deepEqual(current.effects, []);
-				assert.equal(current.terminal.get(0)?.status, "interrupted");
-				assert.equal(current.terminal.get(1)?.status, "interrupted");
-			} finally {
-				await current.close();
-			}
-		});
-	}
+	test(`parallel ${wait.kind} session close cancels active and queued tasks and pending reply waiters`, async () => {
+		const current = fixture(wait);
+		try {
+			await current.start();
+			await current.launch;
+			current.setIdle();
+			const child = current.childTool("intercom");
+			const execution = child.execute({ action: "ask", to: "parent-id", message: "Choose" });
+			await current.until(() => current.surfaced.length >= 1);
+			assert.equal(current.surfaced.length, 1);
+			const closed = await current.host.close("session-close");
+			assert.ok(closed.ok);
+			// #4751: closing the owner interrupts the ask's wait; the delivered ask yields instead of failing.
+			const interrupted = await execution;
+			assert.equal(interrupted.isError, false);
+			assert.match(JSON.stringify(interrupted.content), /stopped waiting/);
+			assert.equal(child.waits.has(), false);
+			assert.equal(child.reply(current.surfaced[0]!.id), false);
+			assert.deepEqual(current.starts, [0, 1]);
+			assert.deepEqual(current.effects, []);
+			assert.equal(current.terminal.get(0)?.status, "interrupted");
+			assert.equal(current.terminal.get(1)?.status, "interrupted");
+		} finally {
+			await current.close();
+		}
+	});
 }
 
 test("unbound parallel Intercom yield keeps execution concurrency and queued siblings", async () => {
@@ -641,9 +633,9 @@ test("admission does not execute a queued child cancelled before capacity is ava
 });
 
 for (const wait of [undefined, { kind: "background" }] as const) {
-	for (const stop of ["queued", "session-close", "stage-close"] as const) {
+	for (const stop of ["queued", "session-close"] as const) {
 		test(`parallel ${wait?.kind ?? "default"} ${stop} releases yielded worktrees without starting cancelled children`, async () => {
-			const current = fixture(wait, true, { worktree: true, stage: stop === "stage-close" });
+			const current = fixture(wait, true, { worktree: true });
 			const originalWorktrees = current.git("worktree", "list", "--porcelain");
 			const originalBranches = current.git("branch", "--format=%(refname)");
 			try {

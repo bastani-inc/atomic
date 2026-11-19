@@ -116,8 +116,7 @@ export type EntryRenderer<T = unknown> = (
  * - `Component`: mount this component (the renderer owns its styling).
  * - `null`: the renderer handled the message but wants to render nothing —
  *   the entry occupies zero rows (no leading spacer, no default box). Use this
- *   to suppress a rehydrated entry whose backing state is gone (e.g. the
- *   workflows input form on `/resume`).
+ *   to suppress a rehydrated entry whose backing state is gone.
  * - `undefined`: the renderer did not handle the message; fall back to the
  *   default boxed `[customType]` rendering.
  */

@@ -212,7 +212,7 @@ async function admittedCustomMessage<T>(
 	if (boundary === undefined) return deliver();
 	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
 		throw new Error("Subagent execution is terminal and cannot accept messages");
-	}).completion;
+	});
 }
 
 /** Atomically admits a custom-message batch in array order. */
@@ -258,7 +258,7 @@ async function admittedCustomMessages<T>(
 	if (boundary === undefined) return deliver();
 	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
 		throw new Error("Subagent execution is terminal and cannot accept messages");
-	}).completion;
+	});
 }
 
 const pendingCustomMessageSaves = new WeakMap<CustomMessage, PromiseWithResolvers<void>>();

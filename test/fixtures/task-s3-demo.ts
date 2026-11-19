@@ -41,7 +41,7 @@ const outbox = new TaskCompletionOutbox(session, () => boundary.isOpen(), async 
 		(await session.appendCustomMessageEntry("task-completion", JSON.stringify(envelope), false, envelope));
 
 		console.log(`COMPLETION ${JSON.stringify(envelope)}`);
-	}, () => { throw new Error("session closed"); }).completion;
+	}, () => { throw new Error("session closed"); });
 });
 const host = new AgentTaskHost({scope: {kind: "session", sessionId: session.getSessionId()}, authorizeLaunch() {}, onTaskSettled: (ref, receipt) => outbox.record(ref.ownerId, receipt)});
 const emitter = new EventEmitter();

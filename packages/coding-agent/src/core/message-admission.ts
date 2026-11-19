@@ -1,12 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-type AdmissionDecision = "admitted" | "late" | "duplicate";
-
-interface AdmissionResult {
-	readonly decision: AdmissionDecision;
-	readonly completion: Promise<void>;
-}
-
 interface PersistedAdmission {
 	readonly type: string;
 	readonly stageAdmissionKey?: string;
@@ -38,13 +31,8 @@ export class MessageAdmissionBoundary {
 	}
 
 	/** One FIFO position for an external operation, including its retry waits. */
-	runMessageDelivery(deliver: () => void | Promise<void>, routeLate?: () => void | Promise<void>): Promise<void> {
-		const late =
-			routeLate ??
-			(() => {
-				throw new Error("Message admission is closed");
-			});
-		return this.admit(undefined, () => this.serializeMessageDelivery(deliver), late).completion;
+	runMessageDelivery(deliver: () => void | Promise<void>, ifClosed: () => never): Promise<void> {
+		return this.admit(undefined, () => this.serializeMessageDelivery(deliver), ifClosed);
 	}
 
 	/** Reentrant SDK commits stay inside their producer's FIFO position. */
@@ -87,26 +75,17 @@ export class MessageAdmissionBoundary {
 		return this.messageDeliveries.size > 0;
 	}
 
-	admit(
-		key: string | undefined,
-		deliver: () => void | Promise<void>,
-		routeLate: () => void | Promise<void>,
-	): AdmissionResult {
+	admit(key: string | undefined, deliver: () => void | Promise<void>, ifClosed: () => never): Promise<void> {
 		if (key !== undefined) {
-			if (this.completed.has(key)) return { decision: "duplicate", completion: Promise.resolve() };
+			if (this.completed.has(key)) return Promise.resolve();
 			const inFlight = this.inFlight.get(key);
-			if (inFlight) {
-				return {
-					decision: "duplicate",
-					completion: this.invocationContext.getStore() === key ? Promise.resolve() : inFlight,
-				};
-			}
+			if (inFlight) return this.invocationContext.getStore() === key ? Promise.resolve() : inFlight;
 		}
 		const admitted = this.open;
-		const decision: AdmissionDecision = admitted ? "admitted" : "late";
+		const action = admitted ? deliver : ifClosed;
 		let completion: Promise<void>;
 		if (key === undefined) {
-			completion = this.invoke(admitted ? deliver : routeLate);
+			completion = this.invoke(action);
 		} else {
 			let resolveCompletion!: () => void;
 			let rejectCompletion!: (reason?: unknown) => void;
@@ -116,7 +95,7 @@ export class MessageAdmissionBoundary {
 			});
 			void completion.catch(() => {});
 			this.inFlight.set(key, completion);
-			const delivery = this.invocationContext.run(key, () => this.invoke(admitted ? deliver : routeLate));
+			const delivery = this.invocationContext.run(key, () => this.invoke(action));
 			void delivery.then(resolveCompletion, rejectCompletion);
 			void completion.then(
 				() => {
@@ -129,16 +108,14 @@ export class MessageAdmissionBoundary {
 				},
 			);
 		}
-		if (decision === "admitted") this.trackAdmittedWork(completion);
-		return { decision, completion };
-	}
-
-	trackAdmittedWork(completion: Promise<void>): void {
-		this.pending.add(completion);
-		void completion.then(
-			() => this.pending.delete(completion),
-			() => this.pending.delete(completion),
-		);
+		if (admitted) {
+			this.pending.add(completion);
+			void completion.then(
+				() => this.pending.delete(completion),
+				() => this.pending.delete(completion),
+			);
+		}
+		return completion;
 	}
 
 	/** Join already-reserved queue commits before a native turn polls its input. */
