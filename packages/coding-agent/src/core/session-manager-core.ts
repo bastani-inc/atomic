@@ -1196,9 +1196,16 @@ export class SessionManager {
 		return buildContextEntries(this.getEntries(), this.leafId, this.byId, this.activeBranch());
 	}
 
-	/** Build provenance-preserving, compaction-aware model context from the current leaf. */
-	buildSessionProjection(): SessionProjection {
-		return buildSessionProjection(this.getEntries(), this.leafId, this.byId, this.sessionId, this.activeBranch());
+	/** Project the current leaf and its compaction boundary. Transcript rows keep the content shown before model-only edits. */
+	buildSessionProjection(purpose: "model" | "transcript" = "model"): SessionProjection {
+		return buildSessionProjection(
+			this.getEntries(),
+			this.leafId,
+			this.byId,
+			this.sessionId,
+			this.activeBranch(),
+			purpose,
+		);
 	}
 
 	/** The active branch when the leaf is an entry of this session; undefined lets a stale leaf fall back as before. */

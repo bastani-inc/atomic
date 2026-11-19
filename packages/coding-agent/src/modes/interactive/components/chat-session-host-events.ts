@@ -145,7 +145,9 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 	state: ChatSessionHostState<TExtraEntry>,
 	result: VerbatimCompactionResult,
 ): void {
-	const compactedMessages = state.getAgentSession?.()?.messages;
+	const session = state.getAgentSession?.();
+	const compactedMessages =
+		session?.sessionManager?.buildSessionProjection("transcript").messages ?? session?.messages;
 	if (compactedMessages && hasVerbatimCompactionMessage(compactedMessages)) {
 		if (state.bodyViewport.getScrollFromBottom() > 0) {
 			state.newMessages.observe(false, countableTranscriptLength(state));

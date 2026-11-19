@@ -219,6 +219,7 @@ export function buildSessionProjection(
 	byId?: Map<string, SessionEntry>,
 	sessionId?: string,
 	branch?: readonly SessionEntry[],
+	purpose: "model" | "transcript" = "model",
 ): SessionProjection {
 	// Build uuid index if not available
 	if (!byId) {
@@ -252,6 +253,8 @@ export function buildSessionProjection(
 	const { thinkingLevel, model } = getSessionContextSettings(path);
 	const contextEntries = buildContextEntries(entries, leaf.id, byId, walked);
 	const edits = collectContextEdits(contextEntries);
+	// Context edits change what the next request sees, not the rows the reader already saw.
+	const rowEdits = purpose === "model" ? edits : undefined;
 
 	const boundary = getLatestCompactionBoundaryEntry(path);
 	// A summary boundary from an older release replays with its kept messages as structured messages.
@@ -263,7 +266,7 @@ export function buildSessionProjection(
 				messages:
 					boundary && sourceEntry.type === "compaction" && sourceEntry.id !== boundary.id
 						? []
-						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id)),
+						: projectContextEntry(sourceEntry, rowEdits?.get(sourceEntry.id)),
 			}),
 		);
 		return { entries: projected, messages: projected.flatMap((entry) => entry.messages), thinkingLevel, model };
@@ -298,7 +301,7 @@ export function buildSessionProjection(
 					? boundaryMessages
 					: keptTailIds.has(sourceEntry.id) || sourceEntry.type === "compaction"
 						? []
-						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id)),
+						: projectContextEntry(sourceEntry, rowEdits?.get(sourceEntry.id)),
 		}),
 	);
 	return { entries: projected, messages: projected.flatMap((entry) => entry.messages), thinkingLevel, model };
