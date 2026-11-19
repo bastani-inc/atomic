@@ -604,7 +604,7 @@ function returnedNoticeError(run: RunSnapshot, kind: "completed" | "failed" | "b
 }
 
 function terminalRunKey(kind: "completed" | "failed" | "blocked", run: RunSnapshot): string {
-	const occurrence = kind === "blocked" ? (run.blockedAt ?? lifecycleOccurrenceAt(run, kind)) : "";
+	const occurrence = kind === "blocked" ? (run.runGeneration ?? lifecycleOccurrenceAt(run, kind)) : "";
 	return occurrence === undefined ? `${kind}:${run.id}` : `${kind}:${run.id}:${occurrence}`;
 }
 function budgetWarningKey(run: RunSnapshot, dimension: BudgetDimension): string {

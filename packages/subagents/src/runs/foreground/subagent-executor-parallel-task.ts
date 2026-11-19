@@ -31,7 +31,7 @@ import { boundedWorktreeReply, type registerRunWorktrees } from "./run-worktrees
 import { holdStartingChild, type StartingChildHold } from "./subagent-child-hold.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
 import { markLiveResultIndices } from "./subagent-executor-live-update.js";
-import { type SubagentExecutorRuntimeDeps, TASK_EXECUTION_TICKETS, type TaskParam } from "./subagent-executor-types.js";
+import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
 import { resolveParallelTaskCwd } from "./subagent-executor-worktree.js";
 import { runAgentTask } from "./task-execution.js";
 
@@ -81,7 +81,6 @@ interface ForegroundParallelRunInput {
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: SubagentToolResult) => void;
 	onDetachedExit?: (index: number, result: SingleResult) => void;
-	wait?: import("@bastani/atomic").WaitPolicy;
 	onExecution?: (index: number, runtimeCwd: string, options: RunSyncOptions) => void;
 	worktreeSetup?: WorktreeSetup;
 	runWorktrees?: ReturnType<typeof registerRunWorktrees>;
@@ -160,7 +159,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 	const host = input.ctx.getAgentTaskHost?.();
 	// Admit observations independently; only actual execution holds a concurrency slot.
 	const schedule = input.schedule ?? createExecutionScheduler(input.concurrencyLimit);
-	const tickets = input.tasks.map((task) => task[TASK_EXECUTION_TICKETS]?.[0] ?? schedule.reserve?.());
+	const tickets = input.tasks.map(() => schedule.reserve?.());
 	const cwdVerdicts = await Promise.all(
 		input.tasks.map((task, index) =>
 			checkLaunchCwd(resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index)),
@@ -337,10 +336,9 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		};
 		input.onExecution?.(index, input.ctx.cwd, runOptions);
 		if (host) {
-			if (input.wait?.kind !== "foreground") {
-				runOptions.intercomDetachSignal = undefined;
-				runOptions.onIntercomDetachCommit = undefined;
-			}
+			// A task-hosted child runs in the background: no launching call waits on it to release.
+			runOptions.intercomDetachSignal = undefined;
+			runOptions.onIntercomDetachCommit = undefined;
 			let terminalChild: SingleResult | undefined;
 			const response = await runAgentTask({
 				host,
@@ -351,7 +349,6 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				intentTask: task.task,
 				options: runOptions,
 				runtime: input.runtime,
-				wait: input.wait,
 				...((task.heartbeatMs ?? input.heartbeatMs) === undefined
 					? {}
 					: { heartbeatMs: task.heartbeatMs ?? input.heartbeatMs }),

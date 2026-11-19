@@ -817,7 +817,6 @@ async function relaunchChild(
 		...(fresh?.intentTask === undefined ? {} : { intentTask: fresh.intentTask }),
 		...(resume || fresh ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
 		options,
-		wait: { kind: "background" },
 		runtime,
 		recordChild,
 		forked: record.forked === true,
