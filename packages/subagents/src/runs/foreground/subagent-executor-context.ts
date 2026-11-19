@@ -32,6 +32,7 @@ import {
 	withForkContext,
 } from "./subagent-executor-input.js";
 import {
+	BURST_PREPARED_TASKS,
 	BURST_TASK_DISCOVERY_CWD,
 	BURST_TASK_LAUNCH_CALL_ID,
 	type BurstTaskParam,
@@ -75,6 +76,8 @@ export async function prepareExecutionContext(input: {
 	const normalized = normalizeRepeatedParallelCounts(params);
 	if (normalized.error) return { error: normalized.error };
 	const normalizedParams = normalized.params!;
+	if (normalizedParams.worktree !== true && normalizedParams.tasks)
+		normalizedParams[BURST_PREPARED_TASKS]?.(normalizedParams.tasks);
 
 	let effectiveParams = normalizedParams;
 

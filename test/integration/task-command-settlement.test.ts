@@ -232,9 +232,9 @@ test.runIf(process.platform !== "win32")(
 				{ kind: "yielded", taskId: h.supervisor.taskReference(task).taskId },
 			);
 			assert.equal(value(await waiting).kind, "yielded");
-			const foreground = value(await h.supervisor.foregroundTask(task, 10_000));
+			const waited = value(await h.supervisor.waitForTask(task, 10_000));
 			const observed = value(await h.supervisor.initialObservation(task, { kind: "foreground", budgetMs: 10_000 }));
-			assert.deepEqual(foreground, observed);
+			assert.deepEqual(waited, observed);
 			const timedOut = { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 300 };
 			assert.ok(observed.kind === "settled");
 			assert.deepEqual({ ...observed.result, output: undefined }, { ...timedOut, output: undefined });

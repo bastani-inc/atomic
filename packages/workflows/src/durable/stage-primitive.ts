@@ -167,6 +167,23 @@ export function latestStageSessionCheckpoints(
 	return latest;
 }
 
+/** Chats whose transcripts this resume can write again. A replayed output does not take over a chat. */
+export function resumingStageChats(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+): { runId: string; stageId: string }[] {
+	const chats = [];
+	for (const stage of latestStageSessionCheckpoints(backend, workflowId).values()) {
+		if (
+			stage.topology === undefined ||
+			(stage.wait === undefined && backend.getStageOutput(workflowId, stage.replayKey) !== undefined)
+		)
+			continue;
+		chats.push({ runId: stage.topology.run?.runId ?? workflowId, stageId: stage.topology.stageId });
+	}
+	return chats;
+}
+
 /** A stage the run's previous process left waiting with its session released. */
 export interface DurableWaitingStage {
 	readonly replayKey: string;
