@@ -137,20 +137,25 @@ export class CustomMessageComponent extends Container {
 		this.customComponent = undefined;
 		if (previous) this.removeChild(previous);
 		try {
-			this.buildDisplay();
+			this.buildDisplay(previous);
 		} finally {
 			if (previous !== this.customComponent) disposeRenderer(previous);
 		}
 	}
 
-	private buildDisplay(): void {
+	private buildDisplay(previous?: Component): void {
 		if (this.spacer) {
 			this.removeChild(this.spacer);
 			this.spacer = undefined;
 		}
 		this.removeChild(this.box);
 		if (this.message.customType === TASK_COMPLETION_MESSAGE_TYPE) {
-			const card = TaskCompletionMessage.fromMessage(this.message, this._expanded, this.completionOptions);
+			const card = TaskCompletionMessage.fromMessage(
+				this.message,
+				this._expanded,
+				this.completionOptions,
+				previous instanceof TaskCompletionMessage ? previous : undefined,
+			);
 			if (card) {
 				this.spacer = new Spacer(1);
 				this.customComponent = card;

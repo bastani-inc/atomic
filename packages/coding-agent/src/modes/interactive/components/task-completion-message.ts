@@ -34,8 +34,8 @@ function previewRow(row: string): string {
 
 const NOTICE_LINE_STATUSES = new Set(["success", "failure", "stopped", "warning", "paused", "waiting"]);
 const parsedNotices = new WeakMap<object, TaskCompletionNotice>();
-// A title-only card can have a different header, but it still owns the same expanded child transcript.
-const titleOnlyStopNames = new WeakMap<TaskCompletionNotice, string>();
+// A second message can share a notice but supply different content. Keep its source weak until a name is confirmed.
+const stopEvidence = new WeakMap<TaskCompletionNotice, WeakSet<object> | string>();
 
 /**
  * A line's status as saved. Earlier versions saved the line of a subagent released while it waits as paused; its
@@ -61,6 +61,13 @@ function noticeLineFrom(value: unknown): TaskNoticeLine | undefined {
 }
 
 export function completionNoticeFromDetails(details: unknown): TaskCompletionNotice | undefined {
+	return readCompletionNotice(details);
+}
+
+type CapturedStop = [notice: TaskCompletionNotice, savedName: string];
+function readCompletionNotice(details: unknown): TaskCompletionNotice | undefined;
+function readCompletionNotice(details: unknown, captureName: true): TaskCompletionNotice | CapturedStop | undefined;
+function readCompletionNotice(details: unknown, captureName = false): TaskCompletionNotice | CapturedStop | undefined {
 	if (!details || typeof details !== "object" || !("notification" in details)) return undefined;
 	const existing = parsedNotices.get(details);
 	if (existing !== undefined) return existing;
@@ -91,20 +98,21 @@ export function completionNoticeFromDetails(details: unknown): TaskCompletionNot
 		...("thinking" in notice && typeof notice.thinking === "string" ? { thinking: notice.thinking } : {}),
 		...(line === undefined ? {} : { line }),
 	};
+	let savedName: string | undefined;
 	if (!line && parsed.status === "cancelled" && parsed.taskKind !== "command") {
 		const result = "result" in details ? details.result : undefined;
 		const stop = legacyStop(parsed.title, result);
 		if (stop) {
-			if (result === undefined && parsed.preview === "" && parsed.agentName && stop.agentName) {
-				const name = witnessedStopName(parsed.title, parsed.agentName, stop.agentName);
-				if (name) titleOnlyStopNames.set(parsed, name);
+			if (result === undefined && parsed.preview === "" && parsed.agentName && stop.agentName?.endsWith(":")) {
+				stopEvidence.set(parsed, new WeakSet([notice]));
+				if (captureName) savedName = parsed.agentName;
 			}
 			parsed.line = stop.line;
 			if (stop.agentName !== undefined) parsed.agentName = stop.agentName;
 		}
 	}
 	parsedNotices.set(details, parsed);
-	return parsed;
+	return savedName === undefined ? parsed : [parsed, savedName];
 }
 
 /** How long a task ran: `12s`, `3m 2s`, `1h 31m`. */
@@ -155,6 +163,35 @@ const QUIT_WORDING = "quit · paused, awaiting resume";
 // Named agents could time out, but only shells recorded a timeout duration or a restart.
 const AGENT_STOP_SUFFIX =
 	/^ (?:killed \(non-resumable\)|timed out|stopped(?: \((?:task owner closed|session closed|workflow stage closed|Atomic shut down)\))?):$/u;
+
+function ownData(object: unknown, key: string): unknown {
+	if (!object || typeof object !== "object" || isProxy(object)) return undefined;
+	const property = Object.getOwnPropertyDescriptor(object, key);
+	return property && Object.hasOwn(property, "value") ? property.value : undefined;
+}
+
+function isPlainRecord(value: unknown): value is object {
+	if (!value || typeof value !== "object" || isProxy(value)) return false;
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === null || prototype === Object.prototype;
+}
+
+/** A different message may share this snapshot. Only consult the original, still-intact saved data, never a lease. */
+function sharedSavedName(details: unknown, notice: TaskCompletionNotice, sources: WeakSet<object>): string | undefined {
+	if (!isPlainRecord(details) || "result" in details) return undefined;
+	const source = ownData(details, "notification");
+	if (!isPlainRecord(source) || !sources.has(source) || "line" in source) return undefined;
+	if (
+		ownData(source, "title") !== notice.title ||
+		ownData(source, "taskId") !== notice.taskId ||
+		ownData(source, "preview") !== "" ||
+		ownData(source, "status") !== "cancelled" ||
+		ownData(source, "taskKind") !== notice.taskKind
+	)
+		return undefined;
+	const name = ownData(source, "agentName");
+	return typeof name === "string" ? name : undefined;
+}
 
 /** A name can itself end in `killed (non-resumable):`. Only a separately saved name fixes the boundary. */
 function witnessedStopName(title: string, savedName: string, label: string): string | undefined {
@@ -657,16 +694,32 @@ export class TaskCompletionMessage implements Component {
 		message: CustomMessage,
 		expanded: boolean,
 		options?: TaskCompletionMessageOptions,
+		previous?: TaskCompletionMessage,
 	): TaskCompletionMessage | undefined {
-		const notice = completionNoticeFromDetails(message.details);
-		if (!notice) return undefined;
+		const details = message.details;
+		const read = readCompletionNotice(details, true);
+		if (!read) return undefined;
+		const notice = Array.isArray(read) ? read[0] : read;
 		const card = new TaskCompletionMessage(notice, expanded, options);
-		const name = titleOnlyStopNames.get(notice);
-		if (name !== undefined && !isProxy(message)) {
-			// A plain saved string is positive evidence. Don't invoke an extension getter or scan hidden blocks.
-			const body = Object.getOwnPropertyDescriptor(message, "content");
-			if (body && Object.hasOwn(body, "value") && (body.value === "" || body.value === notice.title))
-				card.stoppedName = name;
+		// A repaint of this mounted message keeps its header decision, not its old render or transcript state.
+		if (previous?.notices[0] === notice) {
+			card.stoppedName = previous.stoppedName;
+			return card;
+		}
+		const evidence = stopEvidence.get(notice);
+		if (evidence) {
+			// A surviving body rules out recovery before we scan the independent name. Never invoke a body getter.
+			const body = ownData(message, "content");
+			if (body !== "" && body !== notice.title) return card;
+			if (typeof evidence === "string") card.stoppedName = evidence;
+			else {
+				const name = Array.isArray(read) ? read[1] : sharedSavedName(details, notice, evidence);
+				if (name && notice.agentName) {
+					card.stoppedName = witnessedStopName(notice.title, name, notice.agentName);
+					if (card.stoppedName) stopEvidence.set(notice, card.stoppedName);
+					else stopEvidence.delete(notice);
+				}
+			}
 		}
 		return card;
 	}

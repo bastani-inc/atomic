@@ -106,6 +106,72 @@ function mount(host: Host, message: CustomMessage, settings: Partial<ChatMessage
 }
 
 for (const backend of ["sqlite", "jsonl"] as const) {
+	test(`${backend}: a surviving body needs no scan of the independently saved name (#5690)`, () => {
+		const name = `worker ${"x".repeat(20_480)}`;
+		const notification = {
+			...killed.notification,
+			agentName: name,
+			title: `Subagent ${name} killed (non-resumable): paused · awaiting resume: A`,
+		};
+		return reopen(
+			backend,
+			async (message) => {
+				const replace = String.prototype.replace;
+				let folded = 0;
+				String.prototype.replace = new Proxy(replace, {
+					apply(target, subject, args) {
+						if (subject === name) folded++;
+						return Reflect.apply(target, subject, args);
+					},
+				});
+				try {
+					for (const host of ["chat", "stage"] as const) {
+						const card = mount(host, message);
+						try {
+							assert.match(card.draw(), /⏸ worker/u);
+						} finally {
+							card.close();
+						}
+					}
+				} finally {
+					String.prototype.replace = replace;
+				}
+				assert.equal(folded, 0);
+			},
+			{ notification },
+		);
+	});
+	test(`${backend}: repaint does not recheck an unchanged hidden near-title body (#5690)`, () =>
+		reopen(
+			backend,
+			async (message) => {
+				const title = killed.notification.title;
+				message.content = `${title.slice(0, -1)}B`;
+				const card = new CustomMessageComponent(message);
+				const descriptor = Object.getOwnPropertyDescriptor;
+				let probes = 0;
+				Object.getOwnPropertyDescriptor = (object, key) => {
+					if (object === message && key === "content") probes++;
+					return descriptor(object, key);
+				};
+				try {
+					for (let i = 0; i < 4; i++) card.invalidate();
+					assert.match(stripVTControlCharacters(card.render(120).join("")), /⏸ worker ops killed/u);
+				} finally {
+					Object.getOwnPropertyDescriptor = descriptor;
+					card.dispose();
+				}
+				assert.equal(probes, 0);
+				// Sharing details does not share the header decision with a different message body.
+				const other = new CustomMessageComponent({ ...message, content: title });
+				try {
+					assert.match(stripVTControlCharacters(other.render(120).join("")), /◼ worker ops stopped/u);
+				} finally {
+					other.dispose();
+				}
+			},
+			killed,
+		));
 	for (const host of ["chat", "stage"] as const) {
 		test(`${backend} ${host}: repaint keeps the completion after the notification getter expires (#5690)`, () =>
 			reopen(backend, async (message) => {

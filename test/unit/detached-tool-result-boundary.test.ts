@@ -196,43 +196,36 @@ function stageMetadata(details: unknown) {
 	])[0]!;
 }
 
-test("a reopened stage keeps a marked prefix of each large tool result field (#5691)", async () => {
-	const { owner, finish } = await detached(true);
-	const large = '🟢\n"'.repeat(TOOL_PAYLOAD_VALUE_LIMIT);
-	const answer = await finish({
-		content: [{ type: "text", text: "CI complete" }],
-		details: { status: "green", log: large },
-		structuredContent: { jobs: ["compiled", large] },
-	});
-	const [restored] = stageWaitToolResults(JSON.parse(JSON.stringify(recordStageWaitToolResults([answer]))));
-	assert.ok(restored);
-	owner.setResponses([fauxAssistantMessage("done")]);
-	await owner.session.resumeDetachedTurn([restored]);
-	const result = owner.sessionManager.buildSessionProjection().messages.find((m) => m.role === "toolResult");
-	assert.ok(result && !result.isError);
-	assert.deepEqual(result.content, [{ type: "text", text: "CI complete" }]);
-	const details = result.details as { status: string; log: string };
-	const structured = restored.result.structuredContent as { jobs: string[] };
-	assert.equal(details.status, "green");
-	assert.equal(structured.jobs[0], "compiled");
-	for (const [field, prefix] of [
-		[details, details.log],
-		[structured, structured.jobs[1]],
-	] as const) {
-		assert.ok(prefix?.startsWith('🟢\n"') && prefix.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER));
-		assert.ok(large.startsWith(prefix.slice(0, -TOOL_PAYLOAD_TRUNCATION_MARKER.length)));
-		assert.ok(Buffer.byteLength(JSON.stringify(field)) <= TOOL_PAYLOAD_VALUE_LIMIT);
+test("a fitting stage checkpoint needs no extra member lists or identity comparisons (#5691)", () => {
+	const data = Array.from({ length: 2048 }, (_, i) => i % 10);
+	const answer = {
+		toolCallId: "ci",
+		toolName: "watch",
+		isError: false,
+		result: { content: [], details: data, structuredContent: data },
+	};
+	const push = Array.prototype.push;
+	const is = Object.is;
+	let pushed = 0;
+	let compared = 0;
+	let record: ReturnType<typeof recordStageWaitToolResults>[number] | undefined;
+	try {
+		Array.prototype.push = function (...items) {
+			pushed += items.length;
+			return push.apply(this, items);
+		};
+		Object.is = (a, b) => {
+			compared++;
+			return is(a, b);
+		};
+		[record] = recordStageWaitToolResults([answer]);
+	} finally {
+		Array.prototype.push = push;
+		Object.is = is;
 	}
-});
-
-test("a stage keeps existing marker-like keys when the next result key cannot fit (#5691)", () => {
-	const record = stageMetadata({ ["__proto__"]: "data", "…": "one", "…1": "two", ["界".repeat(16_384)]: false });
-	assert.deepEqual(record.details, {
-		["__proto__"]: "data",
-		"…": "one",
-		"…1": "two",
-		"…2": TOOL_PAYLOAD_TRUNCATION_MARKER,
-	});
+	assert.deepEqual(record?.details, data);
+	assert.deepEqual(record?.structuredContent, data);
+	assert.deepEqual([pushed, compared], [0, 0]);
 });
 
 test("stage checkpoints reject object proxies before enumerating any of their keys (#5486)", () => {

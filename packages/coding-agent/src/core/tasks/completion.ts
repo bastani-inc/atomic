@@ -90,7 +90,8 @@ export function completionTitleText(text: string): string {
 
 /** The description after `: ` in a saved title: at most 240 UTF-16 code units, with controls folded to spaces. */
 export function completionTitleDescription(text: string): string {
-	return completionTitleText(text.slice(0, 240));
+	// The saved subject can outlive a much larger string that the task title was sliced from.
+	return Buffer.from(completionTitleText(text.slice(0, 240)), "utf16le").toString("utf16le");
 }
 
 /** The line of a finished task's notice: what it is, its name, how it ended, and how long it ran. */
