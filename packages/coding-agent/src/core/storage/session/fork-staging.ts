@@ -577,7 +577,7 @@ export async function createStagedFork(
 				continue;
 			}
 			const at = ordinal++;
-			const chunks = await stageBlob(target, source, hash, at, stage);
+			const chunks = await stageBlob(target, source, hash, at, stage, flush);
 			if (chunks === undefined) missing.push(hash);
 			else {
 				blobRows++;
@@ -679,11 +679,24 @@ export async function createStagedFork(
 	}
 }
 
+/** Into how many cuts at most the database divides a large blob in the legacy one-row layout. */
+export const FORK_STAGING_LEGACY_CUTS = 8;
+
+/**
+ * The cut of a blob of `bytes` in the legacy one-row layout: at least {@link FORK_STAGING_BATCH_BYTES}, and an eighth
+ * of the blob, in whole chunks of `chunkBytes`, for a larger one. The database reads the whole value for each cut, so
+ * its work stays within {@link FORK_STAGING_LEGACY_CUTS} reads of the blob; Node holds one cut.
+ */
+export function forkStagingLegacyCut(bytes: number, chunkBytes: number): number {
+	const share = Math.ceil(Math.ceil(bytes / FORK_STAGING_LEGACY_CUTS) / chunkBytes) * chunkBytes;
+	return Math.max(FORK_STAGING_BATCH_BYTES, share);
+}
+
 /**
  * Stages the blob `hash` of the source session under `ordinal`. From a SQL session store, one stored chunk row at a
- * time, or for a blob in the legacy one-row layout, cuts of at most {@link FORK_STAGING_BATCH_BYTES} the database makes
- * without converting it; each cut costs the database one read of the whole value, so larger cuts mean fewer. Otherwise
- * whole, as `copySessionBlobs` reads it. Resolves with its chunk count, or undefined when the source no longer holds it.
+ * time, or for a blob in the legacy one-row layout, {@link forkStagingLegacyCut} cuts the database makes without
+ * converting it, each written before the next is read, so Node holds one. Otherwise whole, as `copySessionBlobs` reads
+ * it. Resolves with its chunk count, or undefined when the source no longer holds it.
  */
 async function stageBlob(
 	target: ForkStagingTarget,
@@ -691,24 +704,33 @@ async function stageBlob(
 	hash: string,
 	ordinal: number,
 	stage: (row: StagedRow) => Promise<void>,
+	flush: () => Promise<void>,
 ): Promise<number | undefined> {
 	const size = target.blobChunkBytes;
 	const parts = target.sourceBlobParts(source.store);
 	const incomplete = (bytes: number) =>
 		new SessionBlobError("blob-incomplete", { sessionId: source.sessionId, hash, bytes });
 	if (parts !== undefined) {
-		const first = await parts(source.sessionId, hash, 0, FORK_STAGING_BATCH_BYTES);
+		// The header, and the first chunk row of a chunked blob; a legacy blob's value is not read yet.
+		const first = await parts(source.sessionId, hash, 0, 0);
 		if (first === undefined) return undefined;
 		const { bytes } = first;
 		const chunks = Math.ceil(bytes / size);
+		const cut = forkStagingLegacyCut(bytes, size);
 		let idx = 0;
-		for (let offset = 0, part: ForkStagingBlobPart | undefined = first; offset < bytes; ) {
-			if (offset > 0) part = await parts(source.sessionId, hash, offset, FORK_STAGING_BATCH_BYTES);
+		let legacy = first.chunks === -1;
+		for (let offset = 0; offset < bytes; ) {
+			let part: ForkStagingBlobPart | undefined = offset === 0 && !legacy ? first : undefined;
+			if (part === undefined) {
+				// Write what the batch holds before the next legacy cut, so Node holds one cut and no more.
+				if (legacy) await flush();
+				part = await parts(source.sessionId, hash, offset, cut);
+			}
 			// The session was deleted meanwhile: it holds nothing, as getBlob would report.
 			if (part === undefined) return undefined;
 			// A legacy blob converted to chunks meanwhile keeps its bytes and their cut: it reads on from its chunk rows.
-			const legacy = part.chunks === -1;
-			const length = Math.min(legacy ? FORK_STAGING_BATCH_BYTES : size, bytes - offset);
+			legacy = part.chunks === -1;
+			const length = Math.min(legacy ? cut : size, bytes - offset);
 			if (part.bytes !== bytes || (!legacy && part.chunks !== chunks) || part.data?.byteLength !== length)
 				throw incomplete(bytes);
 			for (let start = 0; start < length; start += size)
