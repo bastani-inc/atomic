@@ -51,7 +51,8 @@ type DiscoveryRuntime = ExtensionRuntime & { [runtimeSources]?: Construction[] }
 
 function rememberConstruction(extension: Extension, runtime: ExtensionRuntime, recipe: ExtensionSource): void {
 	prepareRegistrationCallbacks(extension);
-	// Loader overrides commonly spread an extension to replace a registration map. Keep its recipe with that copy.
+	// A spread must keep the recipe, but a fresh replay's private receipt is not a change to the descriptor's data.
+	Object.defineProperty(recipe, "identity", { enumerable: false });
 	Object.defineProperty(extension, extensionSource, { value: recipe, enumerable: true });
 	(runtime as DiscoveryRuntime)[runtimeSources] ??= [];
 	const records = (runtime as DiscoveryRuntime)[runtimeSources]!;
@@ -68,12 +69,21 @@ export async function instantiateExtensions(target: LoadExtensionsResult, cwd: s
 	try {
 		for (const source of target.extensions) {
 			const sourceRecipe = (source as DiscoveredExtension)[extensionSource];
-			const index = records.findIndex(
+			let index = records.findIndex(
 				(record) =>
 					record.extension === source ||
 					record.recipe === sourceRecipe ||
 					(sourceRecipe?.identity !== undefined && record.recipe.identity === sourceRecipe.identity),
 			);
+			if (index < 0 && !sourceRecipe) {
+				// A loader may project just the public fields. Reuse an unambiguous discovery object, never its label.
+				const candidates = records.filter(
+					({ extension }) =>
+						extension.sourceInfo === source.sourceInfo ||
+						registrationFields.some((field) => source[field] !== undefined && source[field] === extension[field]),
+				);
+				if (candidates.length === 1) index = records.indexOf(candidates[0]);
+			}
 			const construction = index < 0 ? undefined : records.splice(index, 1)[0];
 			const recipe = construction?.recipe ?? sourceRecipe;
 			if (!recipe) {
@@ -111,6 +121,7 @@ export async function instantiateExtensions(target: LoadExtensionsResult, cwd: s
 			if ([...source.tools.values()].some(isTrustedMandatoryRuntimeTool))
 				markTrustedMandatoryRuntimeExtension(extension);
 			extension.hidden = source.hidden;
+			if (source.replaceable !== undefined) extension.replaceable = source.replaceable;
 		}
 	} catch (error) {
 		const failures = await rollbackExtensionFactories(extensions, cwd);
