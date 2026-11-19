@@ -6,7 +6,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ### Added
 
-- GitHub Copilot: `github-copilot/gemini-4-neon` (Gemini 4 Neon, generally available in Copilot since 2026-11-18) is in the built-in catalog, also when the catalog is built before models.dev lists it for Copilot. It runs on Chat Completions with thinking levels `low`, `medium`, `high` and `xhigh`, a 1,048,576-token context window and 65,536 output tokens
+- GitHub Copilot: `github-copilot/gemini-4-neon` (Gemini 4 Neon, generally available in Copilot since 2026-11-18) is in the built-in catalog, also when the catalog is built before models.dev lists it for Copilot. It runs on Chat Completions with thinking levels `low`, `medium`, `high` and `xhigh`, a 1,048,576-token context window and 65,536 output tokens ([#5675](https://github.com/bastani-inc/atomic/pull/5675))
 
 ## [0.9.89] - 2026-11-18
 
