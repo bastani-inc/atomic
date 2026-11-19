@@ -251,6 +251,9 @@ export class PooledStageHandle implements StageControlHandle {
 	get turnStartedAt(): number | undefined {
 		return this.turnStart.turnStartedAt();
 	}
+	turnState(): PooledStageChatSnapshot["turn"] {
+		return this.turnStart.state();
+	}
 	get isDisposed(): boolean {
 		return this.disposed;
 	}

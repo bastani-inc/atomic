@@ -1,18 +1,35 @@
 import assert from "node:assert/strict";
+import { initTheme } from "@bastani/atomic";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
+import { Type } from "typebox";
 import { test, vi } from "vitest";
 import { stripAnsi } from "../../packages/coding-agent/src/utils/ansi.js";
+import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { workflowTranscriptResult } from "../../packages/workflows/src/extension/workflow-tool-inspection.js";
-import type { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
+import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
+import {
+	createStageControlRegistry,
+	type StageControlHandle,
+} from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { PooledStageHandle } from "../../packages/workflows/src/workers/pooled-stage-handle.js";
 import { WorkerStageWatches } from "../../packages/workflows/src/workers/stage-watch.js";
 import type { WatchId } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { createStageSkillFixture } from "../fixtures/stage-chat-skill-session.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 type Fixture = Awaited<ReturnType<typeof createStageSkillFixture>>;
 
 /** Open the stage as another process's chat does: through a worker watch whose snapshot seeds a mirror handle. */
-function withWorkerView<T>(fixture: Fixture, use: (mirror: PooledStageHandle) => T): T {
+function withWorkerView<T>(
+	fixture: Pick<Fixture, "registry" | "runId" | "stageId">,
+	use: (mirror: PooledStageHandle) => T,
+): T {
 	const attempt = { workId: "work", generation: 1 };
 	const watch = "watch-1" as WatchId;
 	let mirror: PooledStageHandle | undefined;
@@ -65,6 +82,129 @@ async function retriedFailure(fixture: Fixture): Promise<void> {
 	await manager.appendContextEdit(await manager.appendMessage(failure), null);
 	fixture.stage.session.refreshContext();
 }
+
+test("reopened stage chats still show requesting before the retry's first token (#5613)", async () => {
+	initTheme("dark", false);
+	const stage = await createHarness({
+		settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 25 } },
+		tools: [
+			{
+				name: "read_value",
+				label: "Read",
+				description: "Read a value",
+				parameters: Type.Object({}),
+				async execute() {
+					return { content: [{ type: "text", text: "Value." }], details: {} };
+				},
+			},
+		],
+	});
+	const started = Promise.withResolvers<void>();
+	const fail = Promise.withResolvers<void>();
+	const retryStarted = Promise.withResolvers<void>();
+	const finish = Promise.withResolvers<void>();
+	const call = fauxAssistantMessage(fauxToolCall("read_value", {}), { stopReason: "toolUse" });
+	call.usage = { ...call.usage, output: 24, totalTokens: 24 };
+	let requests = 0;
+	stage.session.agent.streamFunction = async () => {
+		const stream = createAssistantMessageEventStream();
+		switch (++requests) {
+			case 1:
+				stream.push({ type: "done", reason: "toolUse", message: call });
+				break;
+			case 2:
+				started.resolve();
+				await fail.promise;
+				stream.push({
+					type: "error",
+					reason: "error",
+					error: fauxAssistantMessage([], { stopReason: "error", errorMessage: "529 overloaded" }),
+				});
+				break;
+			default:
+				retryStarted.resolve();
+				await finish.promise;
+				stream.push({ type: "done", reason: "stop", message: fauxAssistantMessage("Done.") });
+		}
+		stream.end();
+		return stream;
+	};
+	const registry = createStageControlRegistry();
+	const store = createStore();
+	let target: { runId: string; stageId: string } | undefined;
+	const execution = run(
+		workflow({
+			name: "retry-direction",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await ctx.stage("inspect", { releaseWhenWaiting: false }).complete("Get the value.");
+				return {};
+			},
+		}),
+		{},
+		{
+			durableBackend: await createMemoryTestBackend(),
+			store,
+			stageControlRegistry: registry,
+			adapters: {
+				agentSession: {
+					async create() {
+						return stage.session as StageSessionRuntime;
+					},
+				},
+			},
+			onStageStart(runId, snapshot) {
+				target = { runId, stageId: snapshot.id };
+			},
+		},
+	);
+	const views: StageChatView[] = [];
+	function mount(handle: StageControlHandle): StageChatView {
+		assert.ok(target);
+		const view = new StageChatView({
+			...target,
+			store,
+			graphTheme: deriveGraphTheme({}),
+			workflowName: "retry-direction",
+			handle,
+			onDetach() {},
+			onClose() {},
+		});
+		views.push(view);
+		return view;
+	}
+	try {
+		await Promise.race([
+			started.promise,
+			execution.then((outcome) => assert.fail(`Stage ended before the failed request: ${JSON.stringify(outcome)}`)),
+		]);
+		assert.ok(target);
+		const handle = registry.get(target.runId, target.stageId);
+		assert.ok(handle);
+		const live = mount(handle);
+		fail.resolve();
+		await Promise.race([
+			retryStarted.promise,
+			execution.then(() => assert.fail("Stage ended before the retry request")),
+		]);
+		const attached = text(mount(handle));
+		const pooled = withWorkerView({ ...target, registry }, (mirror) => text(mount(mirror)));
+		const segment = (body: string) => body.match(/[↑↓] [\d.kM]+ tokens/u)?.[0];
+		const requesting = segment(text(live));
+		assert.equal(requesting, "↑ 24 tokens");
+		assert.deepEqual([segment(attached), segment(pooled)], [requesting, requesting]);
+		for (const body of [attached, pooled]) assert.equal(body.split("Error: 529 overloaded").length - 1, 1);
+	} finally {
+		for (const view of views) view.dispose();
+		fail.resolve();
+		finish.resolve();
+		await execution;
+		registry.clear();
+		await stage.cleanup();
+	}
+});
 
 const histories = [
 	{ history: "a plain history", retried: false },

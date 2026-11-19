@@ -791,11 +791,12 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		messages: readonly MeteredRunMessage[],
 		streaming?: MeteredRunMessage,
 		turnStartedAt?: number,
+		skipPriorFailures = false,
 	): void {
 		if (this.state.disposed) return;
 		if (!this.state.workingLifecycleActive) startChatSessionWorkingLifecycle(this.state);
 		if (this.state.workingRunMeter.snapshot() === undefined) {
-			const run = runInProgress(messages, streaming);
+			const run = runInProgress(messages, streaming, skipPriorFailures);
 			this.state.workingRunMeter.resume(turnStartedAt ?? run.startedAt, run.settledTokens, run.requesting);
 			if (streaming !== undefined) this.state.workingRunMeter.streaming(streaming);
 		}
