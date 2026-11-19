@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import type { SqliteRow, SqliteValue } from "../storage/database.js";
 
 export type SqliteSelectorValue = string | number | boolean | null;
 export type SqliteSelectorRow = Record<string, SqliteSelectorValue>;
@@ -142,6 +143,11 @@ export class SqliteSelectorConnection {
 
 	all(sql: string, params: readonly SqliteSelectorValue[] = []): Promise<SqliteSelectorRow[]> {
 		return this.request({ kind: "all", sql, params: bindValues(params) }) as Promise<SqliteSelectorRow[]>;
+	}
+
+	/** Transcript entries can contain binary chunks; preserve their SQLite values across the worker boundary. */
+	storageRows<T extends SqliteRow>(sql: string, params: readonly SqliteValue[]): Promise<T[]> {
+		return this.request({ kind: "all", sql, params }) as Promise<T[]>;
 	}
 
 	rows(sql: string, limit: number): Promise<SqliteSelectorRow[]> {
