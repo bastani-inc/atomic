@@ -216,12 +216,16 @@ describe("two resumes of the same block start one replacement (#5534)", () => {
 	});
 
 	/** A run blocked with its journal recorded, and a runtime whose journal reads of it can be held, one at a time. */
-	async function recordedBlock() {
+	async function recordedBlock(id?: string) {
 		const { attempts, child, root } = failingTwice("blocked");
 		const memory = await createMemoryTestBackend();
 		const store = createStore();
 		const jobs = createJobTracker();
-		const blocked = await run(root, {}, { store, durableBackend: memory });
+		const blocked = await run(
+			root,
+			{},
+			{ store, durableBackend: memory, ...(id === undefined ? {} : { runId: id }) },
+		);
 		const runId = blocked.runId;
 		assert.equal(memory.getWorkflow(runId)?.status, "blocked");
 		const held: { reading: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> }[] = [];
@@ -311,5 +315,22 @@ describe("two resumes of the same block start one replacement (#5534)", () => {
 		await jobs.get(runId)?.promise;
 		assert.equal(attempts.count, 2, "the request that saw the block resumed it");
 		assert.equal(effectiveRunStatus(store.run(runId)!), "blocked");
+	});
+	test("resumes of the same run id in two independent journals each resume their own block (#5534)", async () => {
+		const runId = "abcdef01-2222-4333-8444-abcdefabcdef";
+		const left = await recordedBlock(runId);
+		const right = await recordedBlock(runId);
+		// One journal's resume reads its run while the other journal's run of the same id is resumed and blocks again.
+		const read = left.holdNextRead();
+		const leftResume = left.runtime.resumeDurableWorkflow(runId, { actor: "user" });
+		await read.reading.promise;
+		const rightResume = await right.runtime.resumeFailedRun(runId);
+		assert.ok(rightResume.ok, rightResume.message);
+		await right.jobs.get(runId)?.promise;
+		read.release.resolve();
+		const leftResult = await leftResume;
+		await left.jobs.get(runId)?.promise;
+		assert.ok(leftResult.ok, JSON.stringify(leftResult));
+		assert.deepEqual([left.attempts.count, right.attempts.count], [2, 2], "each journal's block resumed once");
 	});
 });

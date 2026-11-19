@@ -264,7 +264,12 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		async resumeDurableWorkflow(workflowId, options): Promise<ResumeDurableResult> {
 			options?.signal?.throwIfAborted();
 			// What this request resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
-			const admissionMark = options?.admissionMark ?? resumeAdmissionMark(workflowId);
+			const admissionMark =
+				options?.admissionMark ??
+				resumeAdmissionMark(
+					workflowId,
+					options?.durableBackend ?? availableRunDurableBackend(deps.store, workflowId) ?? backendRef.current,
+				);
 			return raceWorkflowRequestAbort(
 				withWorkflowResumeAdmission(deps.store, async (dormantWrites) => {
 					const backend = await withRecovery(async () => {

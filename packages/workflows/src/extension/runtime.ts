@@ -18,7 +18,11 @@ import type { RunJournalOption } from "../durable/journal/resolution.js";
 import { resumeDurableWorkflow } from "../durable/resume-runtime.js";
 import { resumeAdmissionMark } from "../durable/run-claims.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
-import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
+import {
+	availableStoreDurableBackend,
+	availableStoreDurableBackendOverride,
+	bindStoreDurableBackend,
+} from "../durable/store-backend.js";
 import { resolveToolResumeFrontier } from "../durable/tool-resume-frontier.js";
 import { currentToolControlRegistry, type ToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { type CancellationRegistry, currentCancellationRegistry } from "../runs/background/cancellation-registry.js";
@@ -360,7 +364,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	): Promise<ResumeFailedRunResult> {
 		options?.signal?.throwIfAborted();
 		// What this request resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
-		const admissionMark = options?.admissionMark ?? resumeAdmissionMark(sourceRunId);
+		const admissionMark =
+			options?.admissionMark ??
+			resumeAdmissionMark(sourceRunId, availableStoreDurableBackend(activeStore, sourceRunId));
 		const source = activeStore.run(sourceRunId);
 		if (source === undefined) {
 			return { ok: false, reason: "run_not_found", message: `run not found: ${sourceRunId}` };
