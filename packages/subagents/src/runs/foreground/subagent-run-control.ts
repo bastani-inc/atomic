@@ -697,10 +697,13 @@ export function subagentChildStoppedForResume(ctx: ExtensionContext, id: string)
 export function subagentChildrenAwaitingResume(ctx: ExtensionContext, id?: string): string[] {
 	const records = ownedRecords(ctx);
 	const failure = takeChildRecordFailure(subagentChildOwner(ctx).sessionId, id?.trim() ? id : undefined);
+	// The message already names the code and the hint, and names the subagent when the failure has no child id (#5551).
 	const failureLine =
 		failure === undefined
 			? undefined
-			: `Subagent ${failure.childId}: ${failure.message} (${failure.code}). ${failure.hint}`;
+			: failure.childId === undefined
+				? failure.message
+				: `Subagent ${failure.childId}: ${failure.message}`;
 	if (id?.trim()) {
 		const resolved = resolveRecord(records, id);
 		return [...(typeof resolved === "object" ? statusLines(resolved) : []), ...(failureLine ? [failureLine] : [])];

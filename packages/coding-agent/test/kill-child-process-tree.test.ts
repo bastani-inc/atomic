@@ -128,4 +128,28 @@ describe("stopping a child's process tree without a Job object (#5377)", () => {
 		assert.deepEqual(taskkill.runs, [], "the pid may already name another process");
 		assert.equal(exited.kill.mock.calls.length, 0);
 	});
+
+	test.each(["linux", "win32"] as const)(
+		"on %s, a child that never started has nothing to kill, and stopping it does not throw (#5601)",
+		async (name) => {
+			onPlatform(name);
+			const sent = recordSignals();
+			// Node gives a child whose spawn failed no pid; on Windows its kill() then throws EINVAL.
+			const neverStarted = {
+				pid: undefined,
+				exitCode: null,
+				signalCode: null,
+				kill: vi.fn(() => {
+					throw Object.assign(new Error("kill EINVAL"), { code: "EINVAL", syscall: "kill" });
+				}),
+			};
+
+			assert.doesNotThrow(() => killChildProcessTree(neverStarted as unknown as ChildProcess, false));
+			await new Promise((resolve) => setImmediate(resolve));
+
+			assert.deepEqual(sent, []);
+			assert.deepEqual(taskkill.runs, []);
+			assert.equal(neverStarted.kill.mock.calls.length, 0);
+		},
+	);
 });
