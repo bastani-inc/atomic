@@ -13,6 +13,7 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import {
 	sessionTailOf as rawSessionTailOf,
 	sessionCompactionOf,
+	sessionResumeOf,
 } from "../../packages/coding-agent/src/core/storage/session/session-resume.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { makeTempDirectory } from "../helpers/runtime.js";
@@ -168,6 +169,26 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 				await store.close();
 				await database.close();
 			}
+		}
+	});
+
+	it("a delayed historical branch reads its saved window, not every prior conversation payload (#5554)", async () => {
+		const path = databasePath();
+		const entries = compactedEntries(600);
+		const point = entries.at(-1)!.id;
+		entries.push(entry(603, { parentId: "e3" }), entry(604, { type: "thinking_level_change", thinkingLevel: "low" }));
+		await writeSession(path, entries);
+		const { database, rows } = countingRows(await openNodeSqliteDatabase(path));
+		const store = await SqlSessionStore.open(database);
+		try {
+			const { epoch: _referenceEpoch, ...expected } = sessionResumeOf(header, entries, point);
+			const { epoch: _actualEpoch, ...actual } = await store.readResume(header.id, point);
+			assert.deepEqual(actual, expected);
+			assert.ok(rows() <= expected.branch.length + expected.state.length, `decoded ${rows()} history bodies`);
+			assert.equal((await store.readResume(header.id)).leafId, entries.at(-1)!.id);
+		} finally {
+			await store.close();
+			await database.close();
 		}
 	});
 

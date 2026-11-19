@@ -25,7 +25,6 @@ import {
 	latestCompactionOf,
 	type SessionResumeIndex,
 	sessionResumeFrom,
-	sessionResumeOf,
 	sessionResumePlan,
 	sessionTailFrom,
 	stateSeqsBefore,
@@ -1409,7 +1408,10 @@ export class SqlSessionStore implements SessionStore {
 		return { header: JSON.parse(row.header_json) as SessionRecordHeader, index, row };
 	}
 
-	private async prepareResume(sessionId: string): Promise<void> {
+	private async prepareResume(
+		sessionId: string,
+		leafId?: string,
+	): Promise<{ index: SessionResumeIndex; revision: string }> {
 		attempts: for (let attempt = 0; attempt < 3; attempt++) {
 			const row = await this.database.get<ResumeRow>(
 				`SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
@@ -1417,10 +1419,16 @@ export class SqlSessionStore implements SessionStore {
 			);
 			if (!row) throw new SessionNotFoundError(sessionId);
 			const { resumeCheckpoint, ...state } = JSON.parse(row.summary_state) as StoredSummaryState;
-			if (isSessionResumeIndex(state.resume, Number(row.last_seq))) return;
 			const remembered = this.resumeIndexes.get(sessionId);
-			if (remembered?.revision === row.revision && isSessionResumeIndex(remembered.index, Number(row.last_seq)))
-				return;
+			const currentIndex = isSessionResumeIndex(state.resume, Number(row.last_seq))
+				? state.resume
+				: remembered?.revision === row.revision && isSessionResumeIndex(remembered.index, Number(row.last_seq))
+					? remembered.index
+					: undefined;
+			const requested =
+				leafId === undefined ? undefined : ((await this.seqOfEntry(this.database, sessionId, leafId)) ?? 0);
+			if (currentIndex && (requested === undefined || requested === currentIndex.leafSeq))
+				return { index: currentIndex, revision: row.revision };
 			let index: SessionResumeIndex | undefined;
 			const j = (...path: string[]) => this.dialect.jsonText("entry_json", ...path);
 			const projected = [
@@ -1543,14 +1551,17 @@ export class SqlSessionStore implements SessionStore {
 				.join(", ");
 			// Checkpoints are not published indexes. A revision or index-format change invalidates both passes.
 			const checkpoint =
+				requested === undefined &&
 				resumeCheckpoint?.revision === row.revision &&
 				resumeCheckpoint.index?.seq > 0 &&
 				resumeCheckpoint.index.seq < Number(row.last_seq) &&
 				isSessionResumeIndex(resumeCheckpoint.index, resumeCheckpoint.index.seq)
 					? resumeCheckpoint
 					: undefined;
-			let topology = checkpoint?.topology;
-			let expectedSummary = this.database.readOnly ? undefined : row.summary_state;
+			// Reuse the topology, not branch-local recovery state, for a fork or navigation at an older leaf.
+			let topology =
+				currentIndex && requested !== undefined ? branchRanges(currentIndex, requested) : checkpoint?.topology;
+			let expectedSummary = this.database.readOnly || requested !== undefined ? undefined : row.summary_state;
 			index = checkpoint?.index;
 			for (let pass = topology === undefined ? 0 : 1; pass < 2; pass++) {
 				for (let after = index?.seq ?? 0; after < Number(row.last_seq); ) {
@@ -1685,8 +1696,13 @@ export class SqlSessionStore implements SessionStore {
 					}
 					if (after < Number(row.last_seq)) await yieldTurn();
 				}
-				if (pass !== 0 || !index || index.jumps.length === 0) break;
-				topology = branchRanges(index, index.leafSeq);
+				if (
+					pass !== 0 ||
+					!index ||
+					(index.jumps.length === 0 && (requested === undefined || requested === index.leafSeq))
+				)
+					break;
+				topology = branchRanges(index, requested ?? index.leafSeq);
 				index = undefined;
 			}
 			index = { ...(index ?? foldSessionResume(undefined, [])), epoch: state.epoch ?? row.revision };
@@ -1695,6 +1711,8 @@ export class SqlSessionStore implements SessionStore {
 				sessionId,
 			);
 			if (current?.revision !== row.revision || Number(current.last_seq) !== Number(row.last_seq)) continue;
+			// A historical read never replaces the index or checkpoint of the session's current leaf.
+			if (requested !== undefined) return { index: { ...index, leafSeq: requested }, revision: row.revision };
 			this.resumeIndexes.set(sessionId, { revision: row.revision, index });
 			while (this.resumeIndexes.size > 16) this.resumeIndexes.delete(this.resumeIndexes.keys().next().value!);
 			await this.database
@@ -1706,7 +1724,7 @@ export class SqlSessionStore implements SessionStore {
 					row.last_seq,
 				)
 				.catch(() => ({ changes: 0 }));
-			return;
+			return { index, revision: row.revision };
 		}
 		throw new SessionConflictError(sessionId, 0, 0);
 	}
@@ -1836,32 +1854,36 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
-		await this.prepareResume(sessionId);
-		return this.transaction(async (tx) => {
-			const source = await this.resumeSource(tx, sessionId);
-			const leafSeq =
-				leafId === undefined ? source.index.leafSeq : ((await this.seqOfEntry(tx, sessionId, leafId)) ?? 0);
-			if (leafSeq !== source.index.leafSeq) {
-				const all = (await this.readRows(tx, sessionId)).map((held) => held.entry);
-				return sessionResumeOf(source.header, all, leafId, { ...source.index, leafSeq: source.index.leafSeq });
-			}
-			const index = { ...source.index, leafSeq };
-			const plan = sessionResumePlan(index);
-			announceHistoryLoad(plan.state.length + plan.branch.reduce((sum, [a, b]) => sum + b - a + 1, 0));
-			const branch: SessionStoredEntry[] = [];
-			for (const [start, end] of plan.branch)
-				branch.push(...(await this.readRows(tx, sessionId, "seq >= ? AND seq <= ?", [start, end])));
-			const state = await this.readSeqs(tx, sessionId, plan.state);
-			const leaf =
-				leafSeq <= 0
-					? undefined
-					: await tx.get<SqliteRow & { entry_id: string }>(
-							`SELECT entry_id FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
-							sessionId,
-							leafSeq,
-						);
-			return sessionResumeFrom(index, source.header, branch, state, leaf?.entry_id ?? null);
-		}, SESSION_TRANSACTION);
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const { index, revision } = await this.prepareResume(sessionId, leafId);
+			const resume = await this.transaction(async (tx) => {
+				const head = await tx.get<SqliteRow & { header_json: string; revision: string }>(
+					`SELECT header_json,revision FROM ${this.tables.sessions} WHERE id = ?${this.dialect.lockClause("share")}`,
+					sessionId,
+				);
+				if (!head) throw new SessionNotFoundError(sessionId);
+				if (revision !== head.revision) return undefined;
+				const header = JSON.parse(head.header_json) as SessionRecordHeader;
+				const { leafSeq } = index;
+				const plan = sessionResumePlan(index);
+				announceHistoryLoad(plan.state.length + plan.branch.reduce((sum, [a, b]) => sum + b - a + 1, 0));
+				const branch: SessionStoredEntry[] = [];
+				for (const [start, end] of plan.branch)
+					branch.push(...(await this.readRows(tx, sessionId, "seq >= ? AND seq <= ?", [start, end])));
+				const state = await this.readSeqs(tx, sessionId, plan.state);
+				const leaf =
+					leafSeq <= 0
+						? undefined
+						: await tx.get<SqliteRow & { entry_id: string }>(
+								`SELECT entry_id FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+								sessionId,
+								leafSeq,
+							);
+				return sessionResumeFrom(index, header, branch, state, leaf?.entry_id ?? null);
+			}, SESSION_TRANSACTION);
+			if (resume !== undefined) return resume;
+		}
+		throw new SessionConflictError(sessionId, 0, 0);
 	}
 
 	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
