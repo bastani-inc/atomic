@@ -36,7 +36,7 @@ import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/inte
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
+
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { makeHandle, setupRun } from "./stage-chat-view-helpers.ts";
@@ -124,24 +124,6 @@ function makeScreen() {
 	return { terminal, tui, screen, click, pressAndRelease, settle, fastClicks, mount };
 }
 
-function stageView(
-	store: ReturnType<typeof createStore>,
-	handle: ReturnType<typeof makeHandle>["handle"],
-	requestRender?: () => void,
-) {
-	return new StageChatView({
-		store,
-		graphTheme: deriveGraphTheme({}),
-		runId: "run-1",
-		stageId: "stage-a",
-		workflowName: "test-wf",
-		handle,
-		onDetach: () => {},
-		onClose: () => {},
-		...(requestRender ? { requestRender } : {}),
-	});
-}
-
 function emitBash(emit: (event: AgentSessionEvent) => void, command: string, label: string) {
 	emit({ type: "tool_execution_start", toolCallId: label, toolName: "bash", args: { command } } as AgentSessionEvent);
 	emit({
@@ -152,54 +134,6 @@ function emitBash(emit: (event: AgentSessionEvent) => void, command: string, lab
 		isError: false,
 	} as AgentSessionEvent);
 }
-
-test("a stage chat expands a block when a terminal press and release land on its output", async () => {
-	const ui = makeScreen();
-	const store = createStore();
-	setupRun(store, "run-1", "stage-a");
-	const { handle, emit } = makeHandle();
-	const view = stageView(store, handle);
-	try {
-		emitBash(emit, "stage-cmd", "stage");
-		const overlay = ui.mount(view);
-		ui.tui.renderNow();
-		const expanded = () => ui.screen().some((line) => line.trimEnd().endsWith("stage line 1"));
-		assert.ok(!expanded(), ui.screen().join("\n"));
-		await ui.pressAndRelease(/stage line 18\s*$/, "stage");
-		assert.ok(!expanded(), "the click waits until it cannot become a double-click");
-		await ui.settle();
-		assert.ok(expanded(), ui.screen().join("\n"));
-		overlay.hide();
-	} finally {
-		view.dispose();
-		ui.tui.stop();
-	}
-});
-
-test("fast single clicks on different rows of a block in a stage chat each toggle it once they settle", async () => {
-	const ui = makeScreen();
-	const store = createStore();
-	setupRun(store, "run-1", "stage-a");
-	const { handle, emit } = makeHandle();
-	const view = stageView(store, handle);
-	try {
-		emitBash(emit, "stage-cmd", "stage");
-		ui.mount(view);
-		ui.tui.renderNow();
-		const expanded = () => ui.screen().some((line) => line.trimEnd().endsWith("stage line 1"));
-		await ui.fastClicks([/Bash\(stage-cmd\)/, "stage-cmd"], [/stage line 18\s*$/, "stage"]);
-		assert.ok(!expanded(), `the second click folds what the first opened:\n${ui.screen().join("\n")}`);
-		await ui.fastClicks(
-			[/Bash\(stage-cmd\)/, "stage-cmd"],
-			[/stage line 18\s*$/, "stage"],
-			[/stage line 19\s*$/, "stage"],
-		);
-		assert.ok(expanded(), `three clicks leave it open:\n${ui.screen().join("\n")}`);
-	} finally {
-		view.dispose();
-		ui.tui.stop();
-	}
-});
 
 /** A session holding one finished bash call with 20 lines of output. */
 async function sessionWithBash(command: string, label: string): Promise<SessionManager> {
@@ -422,40 +356,6 @@ async function engineStageChat(
 	};
 }
 
-test("a stage chat in the isolated engine expands a block when a terminal press and release land on its output", async () => {
-	const ui = makeScreen();
-	const engine = await engineStageChat(ui);
-	try {
-		assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
-		await ui.pressAndRelease(/engine line 18\s*$/, "engine");
-		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 0);
-		await ui.settle();
-		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 1);
-		await vi.waitFor(() => assert.ok(engine.shows(/engine line 1\s*$/), ui.screen().join("\n")), ENGINE_FRAME_WAIT);
-	} finally {
-		engine.dispose();
-		ui.tui.stop();
-	}
-});
-
-test("fast single clicks on different rows of a block in the isolated engine's stage chat each toggle it once they settle", async () => {
-	const ui = makeScreen();
-	const engine = await engineStageChat(ui);
-	try {
-		const before = engine.frames();
-		await ui.fastClicks([/Bash\(engine-cmd\)/, "engine-cmd"], [/engine line 18\s*$/, "engine"]);
-		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 2);
-		// The frames the engine drew once the clicks settled show the block folded again.
-		await vi.waitFor(() => {
-			assert.ok(engine.frames() > before);
-			assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
-		}, ENGINE_FRAME_WAIT);
-	} finally {
-		engine.dispose();
-		ui.tui.stop();
-	}
-});
-
 for (const noCancel of [false, true]) {
 	test(
 		noCancel
@@ -486,44 +386,3 @@ for (const noCancel of [false, true]) {
 		},
 	);
 }
-
-test("a stage chat in an isolated engine paired with an older host expands a block on a click, as that host expects", async () => {
-	const ui = makeScreen();
-	const engine = await engineStageChat(ui, { olderHost: true });
-	try {
-		assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
-		await ui.click(/engine line 18\s*$/, "engine");
-		await vi.waitFor(() => assert.ok(engine.shows(/engine line 1\s*$/), ui.screen().join("\n")), ENGINE_FRAME_WAIT);
-	} finally {
-		engine.dispose();
-		ui.tui.stop();
-	}
-});
-
-test("a double-click in an isolated stage chat cancels the forwarded action, selects a word and toggles nothing (#5562)", async () => {
-	const ui = makeScreen();
-	const engine = await engineStageChat(ui);
-	try {
-		await ui.pressAndRelease(/engine line 18\s*$/, "engine");
-		await ui.pressAndRelease(/engine line 18\s*$/, "engine");
-		await ui.settle();
-		assert.equal(
-			engine.sent.filter((command) => command.type === "engine_custom_click").length,
-			1,
-			"only the first click of the double-click reaches the engine",
-		);
-		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 0);
-		const cancellations = engine.sent.filter((command) => command.type === "engine_custom_click_cancel");
-		assert.equal(cancellations.length, 1);
-		// The engine released this callback: even a stale settlement cannot run it now.
-		const canceled = cancellations[0]!;
-		if (canceled.type !== "engine_custom_click_cancel") assert.fail("missing cancellation");
-		engine.deliver({ ...canceled, type: "engine_custom_click_settle" });
-		assert.ok(!engine.engineShows(/engine line 1\s*$/));
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
-	} finally {
-		engine.dispose();
-		ui.tui.stop();
-	}
-});

@@ -10,12 +10,14 @@ import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/o
 import { createFullscreenTui } from "../../packages/coding-agent/src/modes/interactive/interactive-tui.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { editorTheme, plainStyle } from "../unit/chat-session-host-working-lifecycle-fixture.js";
-import { createStageSkillFixture } from "./stage-chat-skill-session.js";
+import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 
 // Real local host and terminal, deterministic task runner; no provider/network requests.
 const evidence = process.env.TASK_TERMINAL_EVENTS!;
 const record = (value: object) => appendFileSync(evidence, `${JSON.stringify({ at: performance.now(), ...value })}\n`);
-const workflow = await createStageSkillFixture();
+initTheme("dark", false);
+const parent = await createHarness();
 const keys = new KeybindingsManager();
 setKeybindings(keys);
 const tui = createFullscreenTui({
@@ -24,14 +26,14 @@ const tui = createFullscreenTui({
 	shouldHandleViewportInput: () => false,
 });
 const tasks = taskFixture();
-bindOwnerTaskStore(workflow.main.session, tasks.store);
+bindOwnerTaskStore(parent.session, tasks.store);
 const main = new ChatSessionHost({
 	taskRowsInChat: false,
 	style: plainStyle,
 	editorTheme,
 	tui,
 	keybindings: keys,
-	getAgentSession: () => workflow.main.session,
+	getAgentSession: () => parent.session,
 	requestRender: () => tui.requestRender(),
 	commands: {
 		handleSlashCommand: (text): boolean => {
@@ -122,7 +124,7 @@ async function stop() {
 	main.dispose();
 	tui.stop();
 	await tasks.dispose();
-	await workflow.cleanup();
+	await parent.cleanup();
 	record({ kind: "exit", listeners: listeners.size });
 	process.exit(0);
 }

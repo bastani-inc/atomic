@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import type { TUI } from "@bastani/atomic-tui";
-import { beforeAll, test, vi } from "vitest";
+import { beforeAll, test } from "vitest";
 import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
 import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -32,17 +32,10 @@ import type { SubagentParamsLike } from "../../packages/subagents/src/runs/foreg
 import { taskToolResult } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import type { Details } from "../../packages/subagents/src/shared/types.js";
 import type { SubagentResultRenderState } from "../../packages/subagents/src/tui/render.js";
-import {
-	WorkflowToolResultBlock,
-	workflowBlockTheme,
-} from "../../packages/workflows/src/extension/workflow-tool-block.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
+
 import savedNotices from "../fixtures/saved-subagent-notices.json" with { type: "json" };
 import { withDiskSessions } from "../helpers/on-disk-session.js";
 import { taskRecord } from "../helpers/task-record.js";
-import { setupRun } from "./stage-chat-view-helpers.js";
 
 beforeAll(() => {
 	initTheme("dark");
@@ -281,7 +274,7 @@ test.each([
 		agentName: "triage\tstopped:",
 		expected: "⏸ triage stopped: paused · awaiting resume",
 	},
-])("main and detached stage chats reopen '$expected' from the saved title (#5690)", (entry) => {
+])("main chats reopen '$expected' from the saved title (#5690)", (entry) => {
 	const { title, expected } = entry;
 	const fields = ("notification" in entry ? entry.notification : undefined) ?? savedNotices.pause088;
 	const agentName = "agentName" in entry ? entry.agentName : undefined;
@@ -321,7 +314,7 @@ test.each([
 	form: string;
 	body: CustomMessage["content"];
 	fields?: { title?: string; model?: string; requestedModel?: string };
-}[])("main and detached stage chats keep the legacy row without its result: $form (#5690)", ({ body, fields }) =>
+}[])("main chats keep the legacy row without its result: $form (#5690)", ({ body, fields }) =>
 	expectReopenedNotice(
 		body,
 		{ ...detailsWithoutResult, notification: { ...detailsWithoutResult.notification, ...fields } },
@@ -408,48 +401,20 @@ async function expectReopenedNotice(
 
 			const { store: reader } = await open();
 			const main = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
-			const store = createStore();
-			setupRun(store, "run-1", "stage-a", "completed");
-			store.recordStageSession("run-1", "stage-a", { sessionId });
-			const stage = new StageChatView({
-				store,
-				sessionStore: reader,
-				graphTheme: deriveGraphTheme({}),
-				runId: "run-1",
-				stageId: "stage-a",
-				workflowName: "review",
-				onDetach() {},
-				onClose() {},
-			});
 			try {
 				assert.equal(await main.loadSession(reader, sessionId), true);
 				const notice = (rows: string[]) =>
 					rows.map((row) => stripVTControlCharacters(row).trim()).find((row) => /^[◼⏸◌●!] /u.test(row));
-				const stageRow = await vi.waitFor(() => {
-					const row = notice(stage.render(120));
-					assert.ok(row, "stage loads its archived notice");
-					return row;
-				});
-				assert.deepEqual(
-					{ main: notice(main.renderBody(120, 25)), stage: stageRow },
-					{ main: expected, stage: expected },
-					backend,
-				);
+				assert.equal(notice(main.renderBody(120, 25)), expected, backend);
 				if (preview)
-					for (const rows of [main.renderBody(120, 25), stage.render(120)])
+					for (const rows of [main.renderBody(120, 25)])
 						assert.ok(
 							rows.some((row) => stripVTControlCharacters(row).includes(preview)),
 							preview,
 						);
 				main.toolOutputToggled();
-				stage.invalidate();
-				assert.deepEqual(
-					[notice(main.renderBody(120, 25)), notice(stage.render(120))],
-					[expected, expected],
-					backend,
-				);
+				assert.equal(notice(main.renderBody(120, 25)), expected, backend);
 			} finally {
-				stage.dispose();
 				main.dispose();
 			}
 		});
@@ -492,33 +457,4 @@ test("a released subagent's notice saved by an earlier version shows the waiting
 	assert.equal(row.mark, STATUS_MARKERS.waiting.glyph, row.text);
 	assert.ok(row.raw.includes(theme.fg(STATUS_MARKERS.waiting.color, STATUS_MARKERS.waiting.glyph)), row.raw);
 	assert.match(row.text, /worker is waiting on bash \(toolu_1\) · 16m 16s$/);
-});
-
-test("a workflow stage released while it waits wears the same waiting mark on the workflow card (#5489)", () => {
-	const store = createStore();
-	store.recordRunStart({
-		id: "run-1",
-		name: "release",
-		inputs: {},
-		status: "running",
-		toolNodes: [],
-		stages: [],
-		startedAt: 1_000,
-	});
-	store.recordStageStart("run-1", {
-		id: "docs",
-		name: "docs",
-		status: "suspended",
-		parentIds: [],
-		toolEvents: [],
-		startedAt: 1_000,
-		wait: { kind: "tool", since: 2_000, toolCalls: [{ toolCallId: "toolu_1", toolName: "bash" }] },
-	});
-	const card = new WorkflowToolResultBlock(store, workflowBlockTheme(theme), { now: () => 5_000 }).update(
-		{ action: "run", name: "release", runId: "run-1", status: "running", message: "started in background" },
-		{ expanded: true, isError: false, invalidate: () => {}, args: { workflow: "release" } },
-	);
-	const row = markedRow("workflow card", card.render(120), /docs/);
-	assert.equal(row.mark, STATUS_MARKERS.waiting.glyph, row.text);
-	assert.ok(row.raw.includes(theme.fg(STATUS_MARKERS.waiting.color, STATUS_MARKERS.waiting.glyph)), row.raw);
 });

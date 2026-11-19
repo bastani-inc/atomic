@@ -16,8 +16,6 @@ import {
 } from "../../packages/coding-agent/src/core/worktree-snapshot/excluded-roots.js";
 import { runGit, setWorktreeSnapshotGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.js";
 
-import { run } from "../../packages/workflows/src/engine/run.js";
-
 import { repositoryRoot } from "../../vitest.base.js";
 
 import { GitSandbox } from "../helpers/worktree-snapshot.js";

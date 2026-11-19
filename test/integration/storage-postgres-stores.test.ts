@@ -5,7 +5,6 @@ import type { SessionEntry } from "../../packages/coding-agent/src/core/session-
 
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
-import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 
 import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 

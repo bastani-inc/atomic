@@ -17,16 +17,9 @@ import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-rele
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import { physicalIdentifiers } from "../../packages/storage-postgres/postgres.js";
-import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
-import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
-import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
-import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
-import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
+
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
-import { openPoolSessions } from "../../packages/workflows/src/workers/pool-session-store.js";
-import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
-import { type PoolStoreScope, registerPoolStoreConformance } from "./pool-store-conformance.js";
+
 import { storageBackends } from "./storage-backends.js";
 
 /**
@@ -41,20 +34,6 @@ const postgres = storageBackends.find((backend) => backend.name === "Postgres")!
 const LONG_PREFIX = `${"p".repeat(23)}_`;
 /** Longer than any prefix PostgreSQL accepts: its names would be truncated if any reached the server whole. */
 const OVERLONG_PREFIX = `${"q".repeat(35)}_`;
-
-function prefixScope(prefix: string): () => Promise<PoolStoreScope> {
-	return async () => ({ ...(await postgres.openScope()), prefix });
-}
-
-const runner = (name: string, body: () => Promise<void>, timeoutMs?: number) =>
-	postgres.skipReason === undefined ? it(name, body, timeoutMs) : it.skip(name, body);
-
-for (const prefix of [LONG_PREFIX, OVERLONG_PREFIX])
-	registerPoolStoreConformance(
-		runner,
-		`worker pool on Postgres under a ${prefix.length}-character prefix`,
-		prefixScope(prefix),
-	);
 
 /** `database`, whose dialect records every name the stores hand it to create, render, probe or drop. */
 function recordingNames(database: SqliteDatabase, asked: Set<string>, made = new Set<string>()): SqliteDatabase {
@@ -124,7 +103,7 @@ function recordingNames(database: SqliteDatabase, asked: Set<string>, made = new
 	});
 }
 
-/** Opens every store Atomic keeps on a database under `prefix`: sessions, the run journal, Intercom and the pool. */
+/** Opens every store Atomic keeps on a database under `prefix`: sessions, and Intercom. */
 async function openEveryStore(
 	database: SqliteDatabase,
 	prefix: string,
@@ -143,18 +122,6 @@ async function openEveryStore(
 	await openSqlSentMessageAuthority(options);
 	await openSqlKnownSessionStore(options);
 	await (await openDatabaseWakeUpBus({ openDatabase: connect, prefix })).close();
-	const journal = await SqlRunJournal.open(database, { prefix });
-	try {
-		const queue = await openSqlPoolQueue(journal);
-		await openSqlPoolUsage(journal);
-		await SqlSharedPool.open(journal, queue);
-		await SqlFleetStore.open(journal);
-		await SqlRateBuckets.open(journal);
-		await SqlResourceAdmission.open(journal, { root: "root", holder: "holder" });
-		await (await openPoolSessions(sqlPoolStorage(journal)!)).close();
-	} finally {
-		await journal.close();
-	}
 }
 
 test("every unquoted identifier past 63 bytes, in DDL, DML and function bodies, becomes the dialect's name for it (#4793)", () => {
