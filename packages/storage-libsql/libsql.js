@@ -786,13 +786,24 @@ function statements(connection, watch, single = watch, shared = async () => unde
 		executeMultiple: async (sql) => {
 			if (isOneStatement(sql)) return one(sql);
 			const separate = stepped === undefined ? undefined : separateStatements(sql);
-			if (stepped === undefined || separate === undefined)
-				return watch(async () => (await connection()).executeMultiple(sql));
+			const whole = () => watch(async () => (await connection()).executeMultiple(sql));
+			if (stepped === undefined || separate === undefined) return whole();
 			for (let next = 0; next < separate.length; ) {
 				/** @type {number} */
 				let failed = next;
 				try {
-					const stopped = await watch(() => stepped(separate.slice(next)));
+					/** @type {StoppedStatement | undefined} */
+					let stopped;
+					try {
+						stopped = await watch(() => stepped(separate.slice(next)));
+					} catch (error) {
+						// The server reads every statement of a request before it runs any, so statements it could not read ran
+						// none. It reads the whole text differently: it tells where in the text a syntax error is, and runs the
+						// statements before an unfinished last one. So the text is sent as it is, and the caller gets the
+						// server's own answer for it.
+						if (next === 0 && UNREAD_CODES.has(/** @type {{ readonly code?: unknown }} */ (error)?.code)) return whole();
+						throw error;
+					}
 					if (stopped === undefined) return;
 					failed = next + stopped.index;
 					if (!isBusy(stopped.error) && !isSchemaChanged(stopped.error)) throw stopped.error;
@@ -862,6 +873,12 @@ async function stepBatch(hrana, api, client, separate) {
 }
 
 /**
+ * The codes a server answers a request with when it cannot read its statements, which it reads before it runs any.
+ * @type {ReadonlySet<unknown>}
+ */
+const UNREAD_CODES = new Set(["SQL_PARSE_ERROR", "SQL_NO_STATEMENT", "SQL_MANY_STATEMENTS"]);
+
+/**
  * Failures of an `exec` of several statements after statements of it committed. A transient failure among them is
  * reported with an unknown outcome even when the request that failed never reached the server, so the facade does not
  * run the whole `exec` again.
@@ -871,23 +888,29 @@ const partlyApplied = new WeakSet();
 
 /**
  * The keywords that start a statement `separateStatements` may send apart from the ones before it: statements whose
- * effect is in the database, which another connection sees once it committed.
+ * effect is in the database, which another connection sees once it committed, and which return no rows.
  */
-const SEPARABLE_KEYWORDS = new Set(["CREATE", "DROP", "ALTER", "INSERT", "UPDATE", "DELETE", "REPLACE", "SELECT", "WITH", "VALUES"]);
+const SEPARABLE_KEYWORDS = new Set(["CREATE", "DROP", "ALTER", "INSERT", "UPDATE", "DELETE", "REPLACE"]);
 /**
  * Names, quoted or not, that tie a statement to the connection that ran the statements before it: a temporary table,
  * view or trigger, and the functions that read what that connection did last or load code into it.
  */
 const CONNECTION_NAMES = new Set(["TEMP", "TEMPORARY", "LAST_INSERT_ROWID", "CHANGES", "TOTAL_CHANGES", "LOAD_EXTENSION"]);
+/** The keyword after which a write returns rows. */
+const RETURNING_KEYWORD = "RETURNING";
 
 /**
  * The statements of `sql`, an `exec` of several, each as the server reads it on its own, or undefined when they must
  * run on one connection or are not told apart exactly. Each statement starts with one of `SEPARABLE_KEYWORDS`, no
- * name of `CONNECTION_NAMES` appears in the text, the text's tokens are SQLite's (`statementSpans`), and each statement
- * passes `isOneStatement` on its own. A statement ends at the `;` after it, and a `CREATE TRIGGER` at the first `END`
- * right after a `;`, as in SQLite's grammar. Settings such as a `PRAGMA`, transaction control and temporary tables
- * hold on one connection only, which statements sent again apart from the ones before them may not share, so a text
- * with one of them is not split.
+ * name of `CONNECTION_NAMES` and no `RETURNING_KEYWORD` appears in the text, quoted or not, the text's tokens are
+ * SQLite's (`statementSpans`), and each statement passes `isOneStatement` on its own. A statement ends at the `;`
+ * after it, and a `CREATE TRIGGER` at the first `END` right after a `;`, as in SQLite's grammar. Settings such as a
+ * `PRAGMA`, transaction control and temporary tables hold on one connection only, which statements sent again apart
+ * from the ones before them may not share, so a text with one of them is not split. Nor is a text with a statement
+ * that returns rows: a server describes the columns of each statement sent apart, which together may pass the size it
+ * answers in one response, and describes none for the statements of a text. Each statement starts where the server's
+ * reading of the text starts it, right after the `;` before it (the first at the text's start), so a failure the
+ * server reports at a place in the statement is at the same place as in the text.
  * @param {string} sql
  * @returns {string[] | undefined}
  */
@@ -897,10 +920,12 @@ function separateStatements(sql) {
 	for (const { start, end } of spans) {
 		const text = sql.slice(start, end);
 		const name = Object.hasOwn(QUOTE_END, text[0]) ? text.slice(1, -1) : text;
-		if (CONNECTION_NAMES.has(name.toUpperCase())) return undefined;
+		const upper = name.toUpperCase();
+		if (CONNECTION_NAMES.has(upper) || upper === RETURNING_KEYWORD) return undefined;
 	}
 	/** @type {string[]} */
 	const separate = [];
+	let from = 0;
 	for (let index = 0; index < spans.length; ) {
 		if (spans[index].token === ";") {
 			index++;
@@ -914,9 +939,10 @@ function separateStatements(sql) {
 			last++;
 			if (last + 1 < spans.length && spans[last + 1].token !== ";") return undefined;
 		} else while (last + 1 < spans.length && spans[last + 1].token !== ";") last++;
-		const statement = sql.slice(spans[index].start, spans[last].end);
+		const statement = sql.slice(from, spans[last].end);
 		if (!isOneStatement(statement)) return undefined;
 		separate.push(statement);
+		from = spans[last + 1]?.end ?? sql.length;
 		index = last + 1;
 	}
 	return separate.length > 1 ? separate : undefined;

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createClient } from "@libsql/client";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
@@ -38,10 +39,54 @@ const SEVERAL_STATEMENT_TEXTS = 5;
 const WRITES_PER_TEXT = 3;
 
 const prefix = `churn_${randomUUID().replaceAll("-", "_").slice(0, 12)}_`;
-const open = () => {
+const serverOptions = () => {
 	const authToken = tokenFile === undefined ? undefined : readFileSync(tokenFile, "utf8").trim();
-	return openLibsqlDatabase({ url: serverUrl!, ...(authToken === undefined ? {} : { authToken }) });
+	return { url: serverUrl!, ...(authToken === undefined ? {} : { authToken }) };
 };
+const open = () => openLibsqlDatabase(serverOptions());
+
+/**
+ * How `run` ends for `sql` on a new `table` of unique numbers: the code and message of the server's answer when it
+ * fails (`answer` finds it in the failure), and the rows it leaves.
+ */
+async function outcome(
+	table: string,
+	sql: string,
+	run: (sql: string) => Promise<unknown>,
+	answer: (failure: unknown) => unknown = (failure) => failure,
+) {
+	await database.exec(`DROP TABLE IF EXISTS ${table}`);
+	await database.exec(`CREATE TABLE ${table} (x INTEGER UNIQUE)`);
+	const failure = await run(sql).then(
+		() => undefined,
+		(error: unknown) => {
+			const { code, message } = answer(error) as { readonly code?: unknown; readonly message?: unknown };
+			return { code, message };
+		},
+	);
+	return { failure, rows: await database.all(`SELECT x FROM ${table} ORDER BY x`) };
+}
+
+/**
+ * How the server answers `sql` sent as one text, the way the adapter sent every `exec`, next to how the adapter's
+ * `exec` ends for it; the adapter's failure holds the server's answer as its cause.
+ */
+async function serverAndExec(table: string, sql: string) {
+	const client = createClient(serverOptions());
+	try {
+		return {
+			server: await outcome(table, sql, (text) => client.executeMultiple(text)),
+			exec: await outcome(
+				table,
+				sql,
+				(text) => database.exec(text),
+				(failure) => (failure as { readonly cause?: unknown }).cause,
+			),
+		};
+	} finally {
+		client.close();
+	}
+}
 
 /**
  * Starts connections that keep creating, indexing and dropping tables of their own, and returns once each has changed
@@ -104,6 +149,55 @@ describe.skipIf(serverUrl === undefined)(
 					`the server read the whole text before it ran any statement of it: ${sql}`,
 				);
 				assert.deepEqual(await database.all(`SELECT x FROM ${table}_rows`), [], sql);
+			}
+		});
+
+		test("several statements in one exec that the server cannot read whole fail with the server's own answer for the text, at its place in the text, or run as far as the server runs the text (#5652)", async () => {
+			const table = `${prefix}answers`;
+			for (const sql of [
+				`INSERT INTO ${table} VALUES (1);\n  INSERT bad syntax`,
+				`INSERT INTO ${table} VALUES (1);  INSERT bad syntax; INSERT INTO ${table} VALUES (2)`,
+				`INSERT INTO ${table} VALUES (1); -- a note\n/* and another */INSERT bad syntax`,
+				`INSERT bad syntax; INSERT INTO ${table} VALUES (1)`,
+				// The server runs the statements before an unfinished last one.
+				`INSERT INTO ${table} VALUES (1); INSERT INTO ${table} VALUES (`,
+				`INSERT INTO ${table} VALUES (1); INSERT INTO ${table} VALUES (2); DELETE FROM ${table} WHERE x = 10 %`,
+				`INSERT INTO ${table} VALUES (1); INSERT INTO ${table} VALUES (1); INSERT INTO ${table} VALUES (2)`,
+				`INSERT INTO ${table} VALUES (1); INSERT INTO ${table} VALUES (2)`,
+				// The server reports where in a statement it fails, counted from the end of the statement before it.
+				`INSERT INTO ${table} VALUES (1);   INSERT INTO ${table} VALUES (nope)`,
+				`INSERT INTO ${table} VALUES (1); /* a note */\n  DELETE FROM ${table} WHERE nope(x)`,
+				`INSERT INTO ${table} VALUES (1);\n\tCREATE TABLE ${table} (y)`,
+			]) {
+				const { server, exec } = await serverAndExec(table, sql);
+				assert.deepEqual(exec, server, sql);
+			}
+		});
+
+		test("several statements in one exec that return more columns than the server describes in one response run as the server runs the text (#5652)", async () => {
+			const table = `${prefix}wide_rows`;
+			const view = `${prefix}wide`;
+			const returned = `${prefix}wide_returned`;
+			// The server runs an exec's text without describing the columns its statements return; 2,200 statements that
+			// return 64 columns with long names, or 150 columns, would take over 10 MB to describe, more than the server
+			// answers in one response by default.
+			const names = Array.from({ length: 64 }, (_, index) => `${"c".repeat(60)}${index}`);
+			await database.exec(`CREATE VIEW ${view} AS SELECT ${names.map((name) => `1 AS ${name}`).join(", ")}`);
+			await database.exec(`CREATE TABLE ${returned} (${names.join(", ")})`);
+			try {
+				for (const statement of [
+					`SELECT * FROM ${view}`,
+					`WITH named AS (SELECT * FROM ${view}) SELECT * FROM named`,
+					`VALUES (${Array.from({ length: 150 }, () => "1").join(", ")})`,
+					`DELETE FROM ${returned} WHERE 0 RETURNING *`,
+				]) {
+					const sql = `INSERT INTO ${table} VALUES (1); ${`${statement}; `.repeat(2_200)}INSERT INTO ${table} VALUES (2)`;
+					const { server, exec } = await serverAndExec(table, sql);
+					assert.deepEqual(server, { failure: undefined, rows: [{ x: 1 }, { x: 2 }] }, statement);
+					assert.deepEqual(exec, server, statement);
+				}
+			} finally {
+				await database.exec(`DROP VIEW IF EXISTS ${view}`);
 			}
 		});
 
