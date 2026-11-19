@@ -1,17 +1,17 @@
 ---
 title: "Team and CI setup"
-description: "Share workflow runs and Intercom with your team through one database while sessions stay private, and give CI runners the same database from environment variables alone."
+description: "Share Intercom with your team through one database while sessions stay private, and give CI runners the same database from environment variables alone."
 ---
 
 # Team and CI setup
 
-A team can share workflow runs and Intercom routing through one libSQL or Turso database. Each person's sessions stay on their own machine, and CI runners can put their sessions in the shared database too, so teammates can inspect and resume them.
+A team can share Intercom routing through one libSQL or Turso database, so sessions on different machines message each other. Each person's sessions stay on their own machine, and CI runners can put their sessions in the shared database too, so teammates can inspect and resume them.
 
-| Scope | Sessions | Workflow runs | Intercom |
-|---|---|---|---|
-| Individual (default) | local | local | local only |
-| Team | local (share with `/share` or export/import) | team database | team database, project group |
-| CI and swarms | team database | team database | team database, groups per run (workflow groups already are) |
+| Scope | Sessions | Intercom |
+|---|---|---|
+| Individual (default) | local | local only |
+| Team | local (share with `/share` or export/import) | team database, project group |
+| CI and swarms | team database | team database, a group per run (`ATOMIC_INTERCOM_GROUP`) |
 
 `atomic team status` shows which of these is in effect, or `custom` when your selections match none of them.
 
@@ -57,7 +57,7 @@ While multi-node routing is on, a session that has no explicit group joins a pro
 - `project:<owner>/<repo>`, from the repository's `origin` remote. Clones over SSH and HTTPS of the same repository share one group.
 - In a repository without an `origin` remote, the repository's directory name; outside Git, the working directory's name.
 
-Sessions of different repositories on the same database cannot see or message each other unless they share a group. An explicit group still wins: `ATOMIC_INTERCOM_GROUP`, the Intercom `config.json` `group`, a workflow stage's group, or a subagent's inherited group. With one machine and no shared storage, sessions keep using `default`.
+Sessions of different repositories on the same database cannot see or message each other unless they share a group. An explicit group still wins: `ATOMIC_INTERCOM_GROUP`, the Intercom `config.json` `group`, or a subagent's inherited group. With one machine and no shared storage, sessions keep using `default`.
 
 Joining `default` explicitly while multi-node routing is on prints a one-line warning, because every teammate's sessions on the database can address that group. A session without a UI, such as `atomic -p` in CI, writes it to stderr once per process.
 
@@ -74,7 +74,7 @@ A CI runner needs no settings file. Set these variables for the process:
 | `ATOMIC_TEAM_TOKEN` or `ATOMIC_TEAM_TOKEN_FILE` | The token, or a file holding it. Only an absolute `file:` URL needs neither. Give the file as an absolute path, for example under `$RUNNER_TEMP`: a relative path is refused at startup, because each process Atomic starts would resolve it against its own working directory |
 | `ATOMIC_TEAM_PREFIX` | Optional: the prefix the team joined with |
 
-With `ATOMIC_PROFILE=ci`, sessions, workflow runs, and Intercom all use the team database in that process and the processes it starts. Nothing is written to settings. The token is read from the variable or the file when a store opens; it is never copied into settings, logs, or the selection a child process receives.
+With `ATOMIC_PROFILE=ci`, sessions and Intercom both use the team database in that process and the processes it starts. Nothing is written to settings. The token is read from the variable or the file when a store opens; it is never copied into settings, logs, or the selection a child process receives.
 
 Atomic checks these variables when it starts, before any session starts. A team variable without `ATOMIC_PROFILE`, or the profile without its URL or token, fails with one error that names every missing variable. An unknown profile, a bad URL, an unreadable or empty token file, and an invalid prefix fail the same way. More specific selections still win: `--storage`, `ATOMIC_STORAGE`, and the domain variables outrank the profile. `--storage` and `ATOMIC_STORAGE` outrank it for every store, Intercom included, while a domain variable outranks it only for its own store. As long as the profile still selects a store, startup fails with the `atomic install` command to run if the adapter cannot be loaded.
 
@@ -198,7 +198,7 @@ The key changes when a lockfile or key file, `resume.cache`, the repository blue
 
 ### From the SDK
 
-`@bastani/atomic/storage` exposes the same operations as the commands: `joinTeam()`, `leaveTeam()`, and `getTeamProfile()`, which return promises, and `teamProfileSelection()`. `teamProfileSelection({ profile: "ci", url, token })` returns a selection you can pass as `createAgentSession({ storage })` and as `RunOpts.journal`, without touching settings. A literal `token` stays in memory: it serializes as `[redacted]` and is refused anywhere but the SDK. Pass `tokenFile` or `tokenEnv` instead to reference a file or an environment variable.
+`@bastani/atomic/storage` exposes the same operations as the commands: `joinTeam()`, `leaveTeam()`, and `getTeamProfile()`, which return promises, and `teamProfileSelection()`. `teamProfileSelection({ profile: "ci", url, token })` returns a selection you can pass as `createAgentSession({ storage })`, without touching settings. A literal `token` stays in memory: it serializes as `[redacted]` and is refused anywhere but the SDK. Pass `tokenFile` or `tokenEnv` instead to reference a file or an environment variable.
 
 Intercom has one broker per agent directory, chosen by the process, so give the CI profile variables to the host process (for Intercom in its own sessions) and to the agent processes it starts:
 
@@ -210,10 +210,10 @@ import { teamProfileSelection } from "@bastani/atomic/storage";
 const url = process.env.TEAM_DATABASE_URL!;
 const token = process.env.TEAM_DATABASE_TOKEN!;
 
-// An agent in this process: its sessions and workflow runs use the team database.
+// An agent in this process: its sessions use the team database.
 const storage = teamProfileSelection({ profile: "ci", url, token });
 const { session } = await createAgentSession({ storage });
-await session.prompt("Summarize the open workflow runs");
+await session.prompt("Summarize the failing tests");
 
 // Agent processes on the same database, Intercom included.
 const child = spawn("atomic", ["-p", "Fix the failing test"], {
@@ -222,11 +222,11 @@ const child = spawn("atomic", ["-p", "Fix the failing test"], {
 });
 ```
 
-A selection with an in-memory token cannot be reopened by [local workflow workers](/workflows/operations#local-workflow-workers), which run in other processes; use `tokenFile` or `tokenEnv` for pooled runs. See [Team setup errors](/storage#team-setup-errors) for the typed errors these functions throw.
+A selection with an in-memory token cannot be reopened by other processes; use `tokenFile` or `tokenEnv` when another process needs it. See [Team setup errors](/storage#team-setup-errors) for the typed errors these functions throw.
 
 ## Security
 
-Anyone who can read the database can read everything in it: every session stored there (CI sessions in the CI profile), every workflow run, and Intercom messages until shortly after they are delivered. Treat database access as full read access and give each team its own database. With Turso, create per-database tokens (`turso db tokens create <db>`), give CI tokens an `--expiration`, and when someone leaves, run `turso db tokens invalidate <db>` and hand out new tokens: Turso cannot revoke a single token. The team layout keeps individual sessions out of the database only because `sessions.storage` points at the local store; share a session deliberately with `/share` or export and import.
+Anyone who can read the database can read everything in it: every session stored there (CI sessions in the CI profile), any workflow runs an earlier release stored there, and Intercom messages until shortly after they are delivered. Treat database access as full read access and give each team its own database. With Turso, create per-database tokens (`turso db tokens create <db>`), give CI tokens an `--expiration`, and when someone leaves, run `turso db tokens invalidate <db>` and hand out new tokens: Turso cannot revoke a single token. The team layout keeps individual sessions out of the database only because `sessions.storage` points at the local store; share a session deliberately with `/share` or export and import.
 
 ## Related
 
