@@ -199,6 +199,63 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		assert.equal(fetchSpy.mock.calls.length, 0);
 	});
 
+	it("restores a registered provider's disk model while another provider reads its missing list (#5685)", async () => {
+		serveAccountList();
+		const rt = await ModelRuntime.create({
+			...runtimePaths(),
+			credentials: AuthStorage.inMemory({ [PROVIDER]: API_KEY }),
+		});
+		const id = "fixture-disk";
+		const cached = { ...rt.getModels(PROVIDER)[0]!, provider: id, id: "cached-model" };
+		writeFileSync(join(agentDir, "models-store.json"), JSON.stringify({ [id]: { checkedAt: 1, models: [cached] } }));
+		let rows: (typeof cached)[] = [];
+		rt.registerNativeProvider({
+			...rt.getProvider(PROVIDER)!,
+			id,
+			getModels: () => rows,
+			async refreshModels({ stored, publish }) {
+				if (stored?.models.some((model) => model.id === cached.id))
+					await publish({
+						update: () => {
+							rows = [cached];
+						},
+					});
+			},
+		});
+		await rt.getAvailable(PROVIDER);
+		await rt.whenRegistrationRefreshesSettled();
+		assert.ok(rt.getModel(id, cached.id));
+		assert.ok(rt.getModel(PROVIDER, ACCOUNT_MODEL_ID));
+	});
+
+	it("listing keeps a native provider's last successful in-memory list when its endpoint is down (#5685)", async () => {
+		const id = "fixture-memory";
+		const rt = await ModelRuntime.create({ modelsPath: null, credentials: AuthStorage.inMemory({ [id]: API_KEY }) });
+		const base = { ...rt.getModels(PROVIDER)[0]!, provider: id, id: "static" };
+		const live = { ...base, id: "live" };
+		let rows = [base];
+		let calls = 0;
+		rt.registerNativeProvider({
+			...rt.getProvider("openrouter")!,
+			id,
+			getModels: () => rows,
+			async refreshModels({ allowNetwork, publish }) {
+				if (allowNetwork && ++calls > 1) throw new Error("503 Service Unavailable");
+				await publish({
+					update: () => {
+						rows = allowNetwork ? [base, live] : [base];
+					},
+				});
+			},
+		});
+		await rt.whenRegistrationRefreshesSettled();
+		assert.equal((await rt.refresh({ providers: [id] })).errors.size, 0);
+		assert.ok(rt.getModel(id, live.id));
+		assert.ok((await rt.getAvailable(id)).some((m) => m.id === live.id));
+		assert.ok(rt.getModel(id, live.id));
+		assert.equal(calls, 1);
+	});
+
 	it("uses a credential added after restore when listing its provider (#5685)", async () => {
 		serveAccountList();
 		vi.stubEnv("COPILOT_GITHUB_TOKEN", "");
@@ -640,6 +697,44 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		assertMentions(modelFallbackMessage, "update --models");
 	});
 
+	it("starts a resolved SDK model before its background list returns (#5685)", async () => {
+		const release = Promise.withResolvers<void>();
+		const started = Promise.withResolvers<void>();
+		stubNetwork(async () => {
+			started.resolve();
+			await release.promise;
+			return Response.json(ACCOUNT_LIST);
+		});
+		const modelRuntime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory({ [PROVIDER]: API_KEY }),
+			modelsPath: null,
+		});
+		const creation = createAgentSession({
+			cwd: agentDir,
+			agentDir,
+			modelRuntime,
+			model: modelRuntime.getModel(PROVIDER, CATALOG_MODEL_ID)!,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager: SessionManager.inMemory(agentDir),
+			builtins: NO_BUILTINS,
+		});
+		try {
+			await started.promise;
+			assert.equal(
+				await Promise.race([
+					creation.then(({ session }) => session.model?.id),
+					new Promise((done) => setTimeout(done, PROMPT_FALLBACK_MS)),
+				]),
+				CATALOG_MODEL_ID,
+			);
+		} finally {
+			release.resolve();
+			(await creation).session.dispose();
+			await modelRuntime.getAvailable(PROVIDER);
+		}
+		assert.ok(modelRuntime.getModel(PROVIDER, ACCOUNT_MODEL_ID));
+	});
+
 	it("returns the selected SDK model while an unrelated provider's restore is held (#5685)", async () => {
 		serveAccountList();
 		const held = Promise.withResolvers<void>();
@@ -823,14 +918,100 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		assert.equal(stdout.trim(), "0");
 	});
 
-	it.each(["reselected", "qualified"])(
+	it.each(["print", "rpc"])(
+		"%s answers on its locally resolved model before the account list returns (#5685)",
+		async (mode) => {
+			const selected = mode === "rpc" ? "moonshotai/kimi-k2.7-code" : "openai/gpt-4o";
+			const started = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			let expired = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			let lists = 0;
+			await withEndpoint(
+				async (url) => {
+					writeFileSync(
+						runtimePaths().modelsPath,
+						JSON.stringify({ providers: { openrouter: { baseUrl: url } } }),
+					);
+					const env = {
+						HOME: agentDir,
+						ATOMIC_CODING_AGENT_DIR: agentDir,
+						ATOMIC_MODEL_CATALOG_URL: url,
+						OPENROUTER_API_KEY: "fixture",
+						ATOMIC_OFFLINE: "0",
+					};
+					const args = ["--no-session", "--no-extensions", "--no-tools"];
+					try {
+						if (mode === "print") {
+							const result = await runCliProcess(
+								[...args, "--print", "--model", `openrouter/${selected}`, "hello"],
+								{ cwd: agentDir, env: { ...process.env, ...env } },
+							);
+							assert.equal(result.code, 0, result.stderr);
+							assert.match(result.stdout, /fixture reply/);
+						} else {
+							writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "openrouter" }));
+							const client = new RpcClient({
+								cliPath,
+								runtimeExecutable: bunExecutable(),
+								cwd: agentDir,
+								args,
+								env,
+							});
+							try {
+								await client.start();
+								assert.equal((await client.getState()).model?.id, selected);
+								const events = await client.promptAndWait("hello");
+								assert.ok(
+									events.some(
+										(e) =>
+											e.type === "message_end" &&
+											e.message.role === "assistant" &&
+											e.message.stopReason === "stop",
+									),
+								);
+							} finally {
+								await client.stop();
+							}
+						}
+						assert.equal(expired, false, "the first reply waited for the list");
+						assert.equal(lists, 1);
+					} finally {
+						release.resolve();
+						clearTimeout(timer);
+					}
+				},
+				async (req, res) => {
+					if (req.url === "/models/user") {
+						lists++;
+						started.resolve();
+						timer = setTimeout(() => {
+							expired = true;
+							release.resolve();
+						}, PROMPT_FALLBACK_MS);
+						await release.promise;
+						res.end(JSON.stringify({ data: [{ id: selected }] }));
+					} else if (req.url === "/chat/completions") {
+						// Exercise the overlap even if the prompt reaches the server first.
+						await started.promise;
+						res.writeHead(200, { "content-type": "text/event-stream" });
+						res.end(
+							`data: ${JSON.stringify({ id: "fixture", model: selected, choices: [{ index: 0, delta: { role: "assistant", content: "fixture reply" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+						);
+					} else res.writeHead(404).end();
+				},
+			);
+		},
+	);
+
+	it.each(["first resolved", "qualified"])(
 		"uses the inline key with the %s account model in --models (#5685)",
 		async (scope) => {
 			const posted: Array<[string | undefined, string | undefined]> = [];
 			await withEndpoint(
 				async (url) => {
-					const reselect = scope === "reselected";
-					if (reselect)
+					const firstResolved = scope === "first resolved";
+					if (firstResolved)
 						writeFileSync(
 							join(agentDir, "models-store.json"),
 							JSON.stringify({ [PROVIDER]: { models: [], checkedAt: 1 } }),
@@ -839,8 +1020,10 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 						runtimePaths().modelsPath,
 						JSON.stringify({ providers: { openrouter: { baseUrl: url } } }),
 					);
-					const selected = reselect ? "gpt-6.1-sol" : ACCOUNT_MODEL_ID;
-					const models = `${reselect ? "openrouter/openai/gpt-4o-mini," : ""}${PROVIDER}/${selected}`;
+					const selected = firstResolved ? "openai/gpt-4o-mini" : ACCOUNT_MODEL_ID;
+					const models = firstResolved
+						? `openrouter/${selected},${PROVIDER}/gpt-6.1-sol`
+						: `${PROVIDER}/${selected}`;
 					await runCliProcess(
 						[
 							"--no-session",

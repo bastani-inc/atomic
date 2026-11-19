@@ -422,7 +422,7 @@ interface ProviderRefreshPolicy {
 }
 
 export interface CreateModelsOptions {
-	/** Observe normal account-list restores and writes without probing the store. */
+	/** Observe account-list restores and publications, including a provider's memory-only network result. */
 	onModelListPresence?(id: string, present: boolean): void;
 	credentials?: CredentialStore;
 	modelsStore?: ModelsStore;
@@ -644,11 +644,16 @@ class ModelsImpl implements MutableModels {
 		}
 		if (requests && stored !== undefined) allowNetwork = false;
 		const refreshed = allowNetwork ? credential : undefined;
+		let publishedInMemory = false;
 		await provider.refreshModels({
 			...(requests && allowNetwork ? { fetchAccountModelList: requests.get } : {}),
 			credential,
 			stored: stored ? withKnownModelTypes(structuredClone(stored)) : undefined,
-			publish: (publication) => this.publishProviderModels(provider.id, generation, signal, publication),
+			publish: async (publication) => {
+				const applied = await this.publishProviderModels(provider.id, generation, signal, publication);
+				if (applied && publication.update) publishedInMemory = publication.persist === undefined;
+				return applied;
+			},
 			allowNetwork,
 			force: allowNetwork ? force : undefined,
 			signal,
@@ -657,6 +662,8 @@ class ModelsImpl implements MutableModels {
 				? { updateCredential: (update) => this.updateRefreshCredential(provider.id, refreshed, update, signal) }
 				: {}),
 		});
+		// A provider may publish in several steps. A listing must still join the refresh until its final result.
+		if (allowNetwork && publishedInMemory && !signal.aborted) this.onModelListPresence?.(provider.id, true);
 		return stored === undefined;
 	}
 

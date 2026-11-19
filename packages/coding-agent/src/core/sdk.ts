@@ -51,7 +51,7 @@ import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
 import { modelCallUsage } from "./model-call-usage.ts";
 import { formatModelLabel } from "./model-label.ts";
 import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHint } from "./model-resolver.ts";
-import { findPreferredAvailableModel } from "./model-resolver-defaults.ts";
+import { findPreferredAvailableModel, hasLocalStartupModel } from "./model-resolver-defaults.ts";
 import { ModelRuntime } from "./model-runtime.js";
 import { type ModelRuntimeSimpleStreamOptions, mergeHeaders } from "./model-runtime-streaming.ts";
 import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanitizer.ts";
@@ -442,6 +442,7 @@ async function constructAgentSession(
 		(hasExistingSession ? existingSession.model?.provider : undefined) ??
 		settingsManager.getDefaultProvider() ??
 		(!deferStart ? findPreferredAvailableModel(modelRuntime.getAvailableSnapshot())?.provider : undefined);
+	let backgroundList: string | undefined;
 	// The CLI has already resolved its provider (including errors and --api-key) before creating an unstarted session.
 	if (
 		!deferStart &&
@@ -467,7 +468,13 @@ async function constructAgentSession(
 			} // Leave invalid registrations for normal extension error reporting.
 		});
 		// The scoped refresh restores its own provider before fetching. Other registration restores stay in the background.
-		await modelRuntime.refreshMissingModelList(provider, options.signal);
+		const requestedId =
+			options.model?.id ??
+			(hasExistingSession ? existingSession.model?.modelId : undefined) ??
+			settingsManager.getDefaultModel();
+		if (hasLocalStartupModel(modelRuntime, provider, requestedId, !!settingsManager.getDefaultProvider()))
+			backgroundList = provider;
+		else await modelRuntime.refreshMissingModelList(provider, options.signal);
 	}
 
 	let model = options.model;
@@ -1026,6 +1033,7 @@ async function constructAgentSession(
 		}
 		if (options.parentUsageSink !== undefined) forwardUsage(session, options.parentUsageSink);
 		if (!deferStart) await session.bindExtensions(options.extensionBindings ?? {});
+		if (backgroundList) void modelRuntime.refreshMissingModelList(backgroundList, options.signal);
 		bindChildTaskNotices(session as unknown as AgentSessionInternalSurface);
 		return {
 			session,

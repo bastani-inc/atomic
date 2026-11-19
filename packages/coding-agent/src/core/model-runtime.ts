@@ -197,7 +197,8 @@ export class ModelRuntime implements Models {
 	private readonly providerAvailabilitySeq = new Map<string, number>();
 	private readonly credentialOperations = new Map<string, Promise<unknown>>();
 	private availabilityError: string | undefined;
-	private refreshSequence = 0;
+	/** Providers claimed by newer scoped refreshes while the queued registration restore is loading config. */
+	private supersededRestoreProviders?: Set<string>;
 	private readonly registrationRefreshes = new Set<Promise<ModelsRefreshResult>>();
 	private constructor(
 		credentials: RuntimeCredentials,
@@ -1332,12 +1333,9 @@ export class ModelRuntime implements Models {
 			if (!flight) {
 				this.attemptedLists.add(id);
 				const controller = new AbortController();
-				const result = this.runRefresh(
-					{ providers: [id], allowNetwork: true, signal: controller.signal },
-					++this.refreshSequence,
-					false,
-					{ missingOnly: true },
-				)
+				const result = this.runRefresh({ providers: [id], allowNetwork: true, signal: controller.signal }, false, {
+					missingOnly: true,
+				})
 					.then(() => {})
 					.finally(() => this.autoReads.delete(id));
 				flight = { controller, result, waiters: 0 };
@@ -1367,7 +1365,7 @@ export class ModelRuntime implements Models {
 
 	async refresh(options: ModelsRefreshOptions = {}, cacheOnlyProvider?: string): Promise<ModelsRefreshResult> {
 		if (this.missingListTimeout === undefined || !(options.allowNetwork ?? this.modelNetworkEnabled))
-			return this.runRefresh(options, ++this.refreshSequence);
+			return this.runRefresh(options);
 		// A listing can join the selected provider without waiting for the rest of an all-provider refresh.
 		const pending = new Map<string, () => void>();
 		for (const provider of this.models.getProviders()) {
@@ -1385,7 +1383,7 @@ export class ModelRuntime implements Models {
 			});
 		}
 		try {
-			return await this.runRefresh(options, ++this.refreshSequence, false, {
+			return await this.runRefresh(options, false, {
 				onProviderSettled: (id) => pending.get(id)?.(),
 				cacheOnlyProvider,
 			});
@@ -1404,8 +1402,7 @@ export class ModelRuntime implements Models {
 	 */
 	private scheduleRegistrationRefresh(): void {
 		this.markCatalogInputsChanged();
-		const sequence = ++this.refreshSequence;
-		const refresh = this.runRefresh({ allowNetwork: false }, sequence, true);
+		const refresh = this.runRefresh({ allowNetwork: false }, true);
 		this.registrationRefreshes.add(refresh);
 		void refresh.finally(() => this.registrationRefreshes.delete(refresh));
 	}
@@ -1422,22 +1419,31 @@ export class ModelRuntime implements Models {
 
 	private async runRefresh(
 		options: ModelsRefreshOptions,
-		sequence: number,
-		discardIfSuperseded = false,
+		registrationRestore = false,
 		policy?: Parameters<ReturnType<typeof createModels>["refresh"]>[1],
 	): Promise<ModelsRefreshResult> {
+		const superseded = registrationRestore ? new Set<string>() : undefined;
+		if (options.providers) {
+			const providers = options.providers.map(normalizeProviderId);
+			for (const id of providers) this.supersededRestoreProviders?.add(id);
+			options = { ...options, providers };
+		} else this.supersededRestoreProviders = superseded;
 		const config = await ModelConfig.load(this.modelsPath);
+		if (superseded) {
+			if (this.supersededRestoreProviders !== superseded) return { aborted: true, errors: new Map() };
+			this.supersededRestoreProviders = undefined;
+			if (superseded.size) {
+				const ids = new Set([...this.providerIds(), ...config.getProviderIds()]);
+				options = { ...options, providers: [...ids].filter((id) => !superseded.has(id)) };
+			}
+		}
 		if (policy?.missingOnly) {
 			const explicit = this.explicitReads.get(options.providers![0]!);
 			if (explicit) await raceWithAbortSignal(explicit, operationSignal(options.signal));
 			if (explicit || options.signal?.aborted) return { aborted: !!options.signal?.aborted, errors: new Map() };
 		}
-		if (discardIfSuperseded && sequence !== this.refreshSequence) {
-			return { aborted: true, errors: new Map<string, Error>() };
-		}
 		this.config = config;
 		this.rebuildBuiltinProviders();
-		if (options.providers) options = { ...options, providers: options.providers.map(normalizeProviderId) };
 		if (options.providers) {
 			for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);
 			this.updateModelSnapshot();
@@ -1563,7 +1569,7 @@ export class ModelRuntime implements Models {
 						this.nativeExtensionProviders.set(providerId, provider);
 					this.rebuildProviders();
 					this.markCatalogInputsChanged();
-					await this.runRefresh({ allowNetwork: false }, ++this.refreshSequence, true);
+					await this.runRefresh({ allowNetwork: false }, true);
 				} catch (error) {
 					this.extensionProviders.clear();
 					for (const [providerId, config] of previous.extensionProviders)

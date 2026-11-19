@@ -1,4 +1,5 @@
 import type { Api, Model } from "@bastani/atomic-ai/compat";
+import type { ModelRuntime } from "./model-runtime.js";
 
 /** Default model IDs for each known provider */
 export const defaultModelPerProvider: Record<string, string> = {
@@ -56,4 +57,16 @@ export function findPreferredAvailableModel(availableModels: readonly Model<Api>
 	}
 
 	return availableModels[0];
+}
+
+/** An inferred CLI model can borrow another model's metadata. Only a local catalog entry settles its ID. */
+export function hasLocalStartupModel(
+	runtime: ModelRuntime,
+	provider: string,
+	modelId: string | undefined,
+	providerOnly: boolean,
+): boolean {
+	return modelId !== undefined
+		? !!runtime.getModel(provider, modelId)
+		: providerOnly && runtime.getAvailableSnapshot().length > 0;
 }

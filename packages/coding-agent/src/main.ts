@@ -62,7 +62,7 @@ import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.t
 import { formatModelLabel } from "./core/model-label.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
 import { findInitialModel, resolveModelScopeWithDiagnostics, uncachedCopilotModelHint } from "./core/model-resolver.ts";
-import { findPreferredAvailableModel } from "./core/model-resolver-defaults.ts";
+import { findPreferredAvailableModel, hasLocalStartupModel } from "./core/model-resolver-defaults.ts";
 import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
@@ -793,6 +793,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	const builtinPackagePaths = options?.builtinPackagePaths;
 	const trustPromptMode: AppMode = appMode;
 	let rpcSelectionRefresh: string | undefined;
+	let printCatalog: AbortController | undefined;
 	// Decisions made in this host session. An engine the host started to replace one that stopped is handed the
 	// decisions of the one it replaces, so nobody is asked twice.
 	const projectTrustByCwd = new Map<string, boolean>(Object.entries(engineEnv.trustDecisions?.projects ?? {}));
@@ -1037,15 +1038,22 @@ export async function main(argv: string[], options?: MainOptions) {
 					? ((continuingConversation ? sessionContext.model?.modelId : undefined) ??
 						settingsManager.getDefaultModel())
 					: undefined);
-			// RPC can serve state immediately for a known model. Its ordinary background refresh owns the GET.
-			const rpcCanStart = appMode === "rpc" && provider && selectedId && modelRuntime.getModel(provider, selectedId);
+			// Exact and provider-only selections use the local catalog. A synthesized model still needs its own metadata.
+			const localModel =
+				provider &&
+				hasLocalStartupModel(
+					modelRuntime,
+					provider,
+					selectedId,
+					!hasSelector && !!settingsManager.getDefaultProvider(),
+				);
 			let keyProvider: string | undefined;
 			// An unresolved single qualified CLI scope still identifies the provider for its own list.
 			const qualifiedScope =
 				!parsed.model && parsed.models?.length === 1 && providerOfModelReference(parsed.models[0]!);
 			if (
 				provider &&
-				!rpcCanStart &&
+				!localModel &&
 				!deferStartupTrust &&
 				!deferExtensions &&
 				(!parsed.apiKey || selection.options.model || qualifiedScope === provider) &&
@@ -1124,6 +1132,10 @@ export async function main(argv: string[], options?: MainOptions) {
 				!isolateInteractiveHost && !deferStartupTrust,
 			);
 			startupSession = created.session;
+			if (localModel && (appMode === "print" || appMode === "json") && startupSession.model) {
+				printCatalog = new AbortController();
+				void modelRuntime.refreshMissingModelList(startupSession.model.provider, printCatalog.signal);
+			}
 			services.projectTrust = {
 				get pending() {
 					return startupTrustPending;
@@ -1483,7 +1495,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			messages: parsed.messages,
 			initialMessage,
 			initialImages,
-		});
+		}).finally(() => printCatalog?.abort());
 		stopThemeWatcher();
 		restoreStdout();
 		if (exitCode !== 0) {
