@@ -142,6 +142,50 @@ function occurrences(text: string, part: string): number {
 }
 
 test(
+	"stopping the interactive host while an eager session_start is pending exits normally (#5697)",
+	async () => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const { mode } = await createMode((pi) => {
+			pi.on("session_start", async () => {
+				entered.resolve();
+				await release.promise;
+			});
+		});
+		const exit = vi.spyOn(process, "exit").mockImplementation((code) => {
+			throw new Error(`process.exit(${code})`);
+		});
+		try {
+			const run = mode.run();
+			await Promise.race([entered.promise, run]);
+			const quit = assert.rejects(mode.shutdown({ fromSignal: true }), /process\.exit\(0\)/);
+			release.resolve();
+			try {
+				await run;
+			} finally {
+				await quit;
+			}
+		} finally {
+			release.resolve();
+			exit.mockRestore();
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"an event awaiting interactive startup settles without showing work for a closed session (#5697)",
+	async () => {
+		const { mode } = await createMode(() => {});
+		const event = mode.handleEvent({ type: "agent_start" });
+		// Close in the same turn, before startup resumes to bind the extensions.
+		await Promise.all([event, mode.runtimeHost.dispose()]);
+		assert.equal(mode.workingRunMeter.snapshot(), undefined);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
 	"the in-process interactive host keeps its session when an extension throws in session_start and shows the error once (#5501)",
 	async () => {
 		const { mode, faux } = await createMode((pi) => {

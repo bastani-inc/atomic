@@ -3,6 +3,7 @@ import { markEventLoopStartupComplete } from "../../core/event-loop-monitor.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
+import { sessionQuitSignal } from "../../core/session-lifecycle-work.ts";
 import { consumeStartupInput } from "../../main-early-input.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { setDeprecationWarningSink } from "../../utils/deprecation.js";
@@ -366,7 +367,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.updateTerminalTitle();
 	} else {
 		await preloadChangelog(getChangelogPath());
-		await bindInitialEagerSession(this);
+		if ((await bindInitialEagerSession(this)) === "closed") return;
 		void reportUnavailableTools(this);
 	}
 
@@ -423,7 +424,7 @@ export function showResumeNotices(
 
 InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): Promise<void> {
 	await this.init();
-	if (this.isShuttingDown) return;
+	if (this.isShuttingDown || sessionQuitSignal(this.runtimeHost).aborted) return;
 
 	if (shouldRefreshCatalogsOnStartup()) void refreshCatalogsAfterTuiStartup(this);
 
