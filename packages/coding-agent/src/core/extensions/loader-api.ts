@@ -21,8 +21,8 @@ import {
 	invocationExtension,
 	invocationRuntime,
 	originalRegistrationCallback,
+	registerFactoryStartupHandler,
 	resolveInvocationRuntime,
-	startupHandlerSlots,
 } from "./loader-bindings.ts";
 import { getWorkflowHostModules } from "./loader-host-modules.js";
 import {
@@ -217,7 +217,7 @@ export function createExtensionAPI(
 			if (event === "session_start" || event === "resources_discover") {
 				const slot = nextStartupHandlerSlot.get(event) ?? 0;
 				nextStartupHandlerSlot.set(event, slot + 1);
-				startupHandlerSlots.set(originalRegistrationCallback(registeredHandler), slot);
+				registerFactoryStartupHandler(registeredHandler, extension.path, event, slot);
 			}
 			const list = extension.handlers.get(event) ?? [];
 			list.push(registeredHandler);

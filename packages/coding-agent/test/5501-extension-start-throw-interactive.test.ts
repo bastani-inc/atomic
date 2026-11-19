@@ -19,7 +19,7 @@ import {
 } from "../src/core/agent-session-runtime.js";
 import { createUnstartedAgentSessionFromServices } from "../src/core/agent-session-services.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
-import type { ExtensionFactory } from "../src/core/extensions/types.js";
+import type { ExtensionFactory, LoadExtensionsResult } from "../src/core/extensions/types.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
@@ -62,7 +62,13 @@ afterEach(async () => {
  * `settlesStartupTrust`, the first session finishes startup in place once trust is settled, as a CLI startup that asks
  * the project trust question or loads `-e` extensions does.
  */
-async function createMode(extension: ExtensionFactory, options: { settlesStartupTrust?: boolean } = {}) {
+async function createMode(
+	extension: ExtensionFactory,
+	options: {
+		settlesStartupTrust?: boolean;
+		extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
+	} = {},
+) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-5501-cwd-"));
 	const agentDir = mkdtempSync(join(tmpdir(), "atomic-5501-agent-"));
 	const faux = registerFauxProvider();
@@ -94,6 +100,7 @@ async function createMode(extension: ExtensionFactory, options: { settlesStartup
 			resourceLoaderOptions: {
 				builtinPackagePaths: [],
 				extensionFactories: [extension],
+				extensionsOverride: options.extensionsOverride,
 				noSkills: true,
 				noPromptTemplates: true,
 				noThemes: true,
@@ -250,6 +257,76 @@ test(
 		assert.equal(occurrences(chat, 'Extension "<inline:1>" error: unavailable directory'), 2, chat);
 		assert.equal(occurrences(chat, "at firstDirectory"), 1, chat);
 		assert.equal(occurrences(chat, "at secondDirectory"), 1, chat);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"startup reports a loader override and a factory discovery handler separately when both throw the same error (#5501)",
+	async () => {
+		let overrides = 0;
+		let discoveries = 0;
+		const { mode } = await createMode(
+			(pi) => {
+				pi.on("resources_discover", function factoryDirectory() {
+					discoveries++;
+					throw new Error("unavailable directory");
+				});
+			},
+			{
+				settlesStartupTrust: true,
+				extensionsOverride(base) {
+					const extension = base.extensions.find((entry) => entry.path === "<inline:1>");
+					extension?.handlers.get("resources_discover")?.unshift(async function overrideDirectory() {
+						if (++overrides === 2) throw new Error("unavailable directory");
+					});
+					return base;
+				},
+			},
+		);
+		mode.deferredStartupPending = true;
+		await mode.completeDeferredStartup();
+		const chat = normalizeRenderedOutput(mode.chatContainer);
+		assert.equal(overrides, 2);
+		assert.equal(discoveries, 2);
+		assert.equal(occurrences(chat, "at factoryDirectory"), 1, chat);
+		assert.equal(occurrences(chat, "at overrideDirectory"), 1, chat);
+		assert.equal(occurrences(chat, 'Extension "<inline:1>" error: unavailable directory'), 2, chat);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"a startup reload reports both registrations of a raw session_start callback beside the factory callback (#5501)",
+	async () => {
+		let rawCalls = 0;
+		let factoryCalls = 0;
+		async function sharedStartup() {
+			if (++rawCalls > 2) throw new Error("startup error");
+		}
+		const { mode } = await createMode(
+			(pi) => {
+				pi.on("session_start", function factoryStartup() {
+					factoryCalls++;
+					throw new Error("startup error");
+				});
+			},
+			{
+				extensionsOverride(base) {
+					const extension = base.extensions.find((entry) => entry.path === "<inline:1>");
+					extension?.handlers.get("session_start")?.unshift(sharedStartup, sharedStartup);
+					return base;
+				},
+			},
+		);
+		mode.deferredStartupPending = true;
+		await mode.completeDeferredStartup();
+		const chat = normalizeRenderedOutput(mode.chatContainer);
+		assert.equal(factoryCalls, 2);
+		assert.equal(rawCalls, 4);
+		assert.equal(occurrences(chat, "at factoryStartup"), 1, chat);
+		assert.equal(occurrences(chat, "at sharedStartup"), 2, chat);
+		assert.equal(occurrences(chat, 'Extension "<inline:1>" error: startup error'), 3, chat);
 	},
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );

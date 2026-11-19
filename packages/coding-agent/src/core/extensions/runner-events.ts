@@ -8,7 +8,7 @@ import {
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "../system-prompt.ts";
-import { originalRegistrationCallback, startupHandlerSlots } from "./loader-bindings.ts";
+import { startupRegistrationTokens } from "./loader-bindings.ts";
 import type {
 	AgentBeforeSettleEvent,
 	BeforeAgentStartEvent,
@@ -134,15 +134,15 @@ function shutdownErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-/** Local dispatch metadata; extension error listeners and the engine transport do not need the registration slot. */
-export const startupErrorHandlerSlots = new WeakMap<ExtensionError, number>();
+/** Local dispatch metadata; extension error listeners and the engine transport do not need the registration token. */
+export const startupErrorHandlerTokens = new WeakMap<ExtensionError, string>();
 
 const emitCaughtError = (
 	emitError: EmitExtensionError,
 	extensionPath: string,
 	event: string,
 	error: unknown,
-	slot?: number,
+	token?: string,
 ): void => {
 	const failure: ExtensionError = {
 		extensionPath,
@@ -155,7 +155,7 @@ const emitCaughtError = (
 					: String(error),
 		stack: error instanceof Error ? error.stack : undefined,
 	};
-	if (slot !== undefined) startupErrorHandlerSlots.set(failure, slot);
+	if (token !== undefined) startupErrorHandlerTokens.set(failure, token);
 	emitError(failure);
 };
 
@@ -174,7 +174,8 @@ export async function runGenericHandlers<TEvent extends RunnerEmitEvent>(
 	const promptNotifications: Promise<void>[] = [];
 
 	for (const { ext, handlers } of snapshotEventHandlers(extensions, event.type)) {
-		for (const handler of handlers) {
+		let tokens: string[] | undefined;
+		for (const [index, handler] of handlers.entries()) {
 			// Workflow publishers can retire while a previous handler awaits.
 			if (isCurrent && !isCurrent()) return result as RunnerEmitResult<TEvent>;
 			try {
@@ -200,11 +201,8 @@ export async function runGenericHandlers<TEvent extends RunnerEmitEvent>(
 					if (result.cancel) return result as RunnerEmitResult<TEvent>;
 				}
 			} catch (error) {
-				const slot =
-					event.type === "session_start"
-						? (startupHandlerSlots.get(originalRegistrationCallback(handler)) ?? handlers.indexOf(handler))
-						: undefined;
-				emitCaughtError(emitError, ext.path, event.type, error, slot);
+				if (event.type === "session_start") tokens ??= startupRegistrationTokens(handlers);
+				emitCaughtError(emitError, ext.path, event.type, error, tokens?.[index]);
 			}
 		}
 	}
@@ -619,7 +617,8 @@ export async function runResourcesDiscoverHandlers(
 	const themePaths: ResourcesDiscoverCombinedResult["themePaths"] = [];
 
 	for (const { ext, handlers } of snapshotEventHandlers(extensions, "resources_discover")) {
-		for (const handler of handlers) {
+		let tokens: string[] | undefined;
+		for (const [index, handler] of handlers.entries()) {
 			try {
 				const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
 				const result = (await runCallback({ kind: "extension.hook", name: event.type, sourcePath: ext.path }, () =>
@@ -635,8 +634,8 @@ export async function runResourcesDiscoverHandlers(
 					themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
 				}
 			} catch (error) {
-				const slot = startupHandlerSlots.get(originalRegistrationCallback(handler)) ?? handlers.indexOf(handler);
-				emitCaughtError(emitError, ext.path, "resources_discover", error, slot);
+				tokens ??= startupRegistrationTokens(handlers);
+				emitCaughtError(emitError, ext.path, "resources_discover", error, tokens[index]);
 			}
 		}
 	}

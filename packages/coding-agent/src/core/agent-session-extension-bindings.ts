@@ -30,7 +30,7 @@ import {
 } from "./extensions/loader-rollback.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { bindExtensionContextPublication, runSynchronousExtensionContextEffect } from "./extensions/runner-context.ts";
-import { startupErrorHandlerSlots } from "./extensions/runner-events.ts";
+import { startupErrorHandlerTokens } from "./extensions/runner-events.ts";
 import type { ExtensionRuntime, ProviderConfig, RegisteredTool } from "./extensions/types.ts";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
@@ -233,7 +233,7 @@ const startupFailureReports = new WeakMap<AgentSession, Set<string>>();
 
 /** Records a startup failure; false when this session's startup already reported the same one. */
 function recordStartupFailure(session: AgentSession, error: ExtensionError): boolean {
-	const key = JSON.stringify([error.extensionPath, error.event, startupErrorHandlerSlots.get(error), error.error]);
+	const key = JSON.stringify([error.extensionPath, error.event, startupErrorHandlerTokens.get(error), error.error]);
 	const reported = startupFailureReports.get(session) ?? new Set<string>();
 	startupFailureReports.set(session, reported);
 	if (reported.has(key)) return false;

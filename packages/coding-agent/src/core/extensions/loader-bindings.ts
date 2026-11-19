@@ -3,9 +3,40 @@ import type { Extension, ExtensionRuntime } from "./types.ts";
 
 type Callback = (...args: never[]) => unknown;
 
-const originalCallbacks = new WeakMap<Callback, Callback>();
-/** The registration's ordinal for this extension and hook, not its changing position in the active handler list. */
-export const startupHandlerSlots = new WeakMap<Callback, number>();
+// Source and built loaders can wrap one another's registrations. Keep the weak identity tables shared across that boundary.
+const registrationsKey = Symbol.for("atomic.extension-registration-identities.v1");
+type RegistrationIdentities = {
+	originals: WeakMap<Callback, Callback>;
+	startup: WeakMap<Callback, string>;
+	nextRaw: number;
+};
+const registrationsHost = globalThis as typeof globalThis & { [registrationsKey]?: RegistrationIdentities };
+registrationsHost[registrationsKey] ??= { originals: new WeakMap(), startup: new WeakMap(), nextRaw: 0 };
+const identities = registrationsHost[registrationsKey];
+const originalCallbacks = identities.originals;
+
+/** Factory replay registers this same hook again; an override can move the callback into another extension's list. */
+export function registerFactoryStartupHandler(handler: Callback, path: string, event: string, ordinal: number): void {
+	identities.startup.set(originalRegistrationCallback(handler), JSON.stringify([path, event, ordinal]));
+}
+
+/** Identify the registrations in a dispatch snapshot. Neighbouring handlers and their ordering are not part of a token. */
+export function startupRegistrationTokens(handlers: readonly Callback[]): string[] {
+	const copies = new Map<string, number>();
+	return handlers.map((handler) => {
+		const original = originalRegistrationCallback(handler);
+		let token = identities.startup.get(original);
+		if (token === undefined) {
+			// A raw loader callback has no factory registration. Its weak identity follows it through wrappers and reordering.
+			token = `raw:${identities.nextRaw++}`;
+			identities.startup.set(original, token);
+		}
+		// A loader can deliberately install the very same callable twice. Count its copies, not its list indices.
+		const copy = copies.get(token) ?? 0;
+		copies.set(token, copy + 1);
+		return `${token}:${copy}`;
+	});
+}
 
 function retainCallbackIdentity(wrapped: Callback, original: Callback): Callback {
 	originalCallbacks.set(wrapped, originalCallbacks.get(original) ?? original);
