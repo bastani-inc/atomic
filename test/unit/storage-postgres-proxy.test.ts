@@ -223,7 +223,7 @@ describe("PostgreSQL proxy tunnel (#5473)", () => {
 			const payload = Buffer.from([0x00, 0x0d, 0x0a, 0xff]);
 			const proxy = await fakeProxy((socket) => {
 				socket.write(`HTTP/1.1 100 Continue${eol}${blank}H`);
-				const rest = `TTP/1.1 103 Early Hints${eol}Link: </db>${blank}${eol}HTTP/1.1 204 No Content${eol}${blank}`;
+				const rest = `TTP/1.1 103 Early Hints${eol}Link: </db>${blank}${eol}HTTP/1.1 102 Processing${eol}${blank}HTTP/1.1 199 Misc${eol}${blank}HTTP/1.1 204 No Content${eol}${blank}`;
 				setImmediate(() => socket.end(Buffer.concat([Buffer.from(rest), payload])));
 			});
 			try {

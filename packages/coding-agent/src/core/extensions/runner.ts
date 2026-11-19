@@ -1160,14 +1160,14 @@ export class ExtensionRunner {
 		);
 	}
 
+	/** `reportError` receives each failing handler's error instead of `emitError`, for a caller that filters them. */
 	emitResourcesDiscover(
 		cwd: string,
 		reason: ResourcesDiscoverEvent["reason"],
+		reportError: (error: ExtensionError) => void = (error) => this.emitError(error),
 	): Promise<ResourcesDiscoverCombinedResult> {
 		return runResourceRegistrationBatch(this.runtime, () =>
-			runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, (error) =>
-				this.emitError(error),
-			),
+			runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, reportError),
 		);
 	}
 

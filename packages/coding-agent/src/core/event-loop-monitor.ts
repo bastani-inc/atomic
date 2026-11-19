@@ -2,18 +2,18 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import type { Profiler, Session } from "node:inspector";
 import { dirname, join, resolve } from "node:path";
 import { type IntervalHistogram, monitorEventLoopDelay } from "node:perf_hooks";
-import { Worker } from "node:worker_threads";
 import { getAgentDir, isBunRuntime } from "../config.js";
 import { createModuleRequire } from "../utils/module-require.js";
 import { DiagnosticWriter } from "./diagnostic-writer.ts";
 
 export const EVENT_LOOP_BLOCK_MS_ENV = "ATOMIC_EVENT_LOOP_BLOCK_MS";
 export const EVENT_LOOP_BLOCK_LOG_ENV = "ATOMIC_EVENT_LOOP_BLOCK_LOG";
+export const EVENT_LOOP_BLOCK_STACKS_ENV = "ATOMIC_EVENT_LOOP_BLOCK_STACKS";
 export const EVENT_LOOP_BLOCK_LOG_NAME = "event-loop-blocks.jsonl";
 
 export type EventLoopProcessRole = "host" | "engine";
 
-export type EventLoopStackSource = "debugger" | "profiler" | "unavailable";
+export type EventLoopStackSource = "debugger" | "profiler" | "unavailable" | "disabled";
 
 export interface EventLoopBlockStack {
 	readonly count: number;
@@ -59,13 +59,9 @@ export type EventLoopRecord =
 	| (RecordBase & { readonly type: "delay"; readonly phase: EventLoopPhase } & EventLoopDelaySummary);
 
 const HEARTBEAT_MS = 20;
-const WATCH_POLL_MS = 10;
-const STACK_SAMPLE_INTERVAL_MS = 20;
-const MAX_STACK_SAMPLES = 50;
 const STACK_END_FRAMES = 12;
 const MAX_BLOCK_STACKS = 3;
 const MAX_HOT_FRAMES = 10;
-const BLOCK_SAMPLES_GRACE_MS = 1_000;
 const PROFILE_SAMPLING_INTERVAL_US = 2_000;
 const PROFILE_WINDOW_MS = 5_000;
 const DELAY_RESOLUTION_MS = 10;
@@ -104,7 +100,8 @@ export function summarizeStacks(samples: readonly (readonly string[])[]): EventL
 	return [...counts.values()].sort((left, right) => right.count - left.count).slice(0, MAX_BLOCK_STACKS);
 }
 
-const nodeFunctionFrames = new WeakMap<readonly string[], readonly string[]>();
+// CPU-profile frames already name the function's definition, not the sampled instruction's location.
+const definitionLocatedStacks = new WeakSet<readonly string[]>();
 
 export function hotFrames(samples: readonly (readonly string[])[]): EventLoopHotFrame[] {
 	const frames = new Map<string, { frame: string; count: number; depth: number }>();
@@ -113,8 +110,9 @@ export function hotFrames(samples: readonly (readonly string[])[]): EventLoopHot
 		for (const [depth, frame] of stack.entries()) {
 			if (frame.startsWith("… ")) continue;
 			const key =
-				nodeFunctionFrames.get(stack)?.[depth] ??
-				(frame.startsWith("(anonymous)") ? frame : frame.replace(/:\d+:\d+\)$/, ")"));
+				definitionLocatedStacks.has(stack) || frame.startsWith("(anonymous)")
+					? frame
+					: frame.replace(/:\d+:\d+\)$/, ")");
 			if (counted.has(key)) continue;
 			counted.add(key);
 			const seen = frames.get(key);
@@ -148,197 +146,93 @@ export function profileStacksBetween(profile: Profiler.Profile, fromUs: number, 
 			const { functionName, url, lineNumber, columnNumber } = node.callFrame;
 			frames.push(formatStackFrame(functionName, url, lineNumber, columnNumber));
 		}
-		stacks.push(trimStack(frames));
+		const stack = trimStack(frames);
+		definitionLocatedStacks.add(stack);
+		stacks.push(stack);
 	}
 	return stacks;
 }
 
-type WorkerFrame = readonly [string, string, number, number, number, number];
-
-interface WorkerBlockSamples {
-	readonly sinceUs: number;
-	readonly samples: readonly (readonly WorkerFrame[])[];
-}
-
-const WatchdogState = {
-	Exiting: 0,
-	Attached: 1,
-} as const;
-
-const DETACH_ON_EXIT_MS = 100;
-
-const WATCHDOG_SOURCE = `
-const { parentPort, workerData } = require("node:worker_threads");
-const { Session } = require("node:inspector");
-const { heartbeatMs, thresholdMs, pollMs, sampleIntervalMs, maxSamples } = workerData;
-const stamp = new BigInt64Array(workerData.stamp);
-const state = new Int32Array(workerData.state);
-const readStamp = () => Number(Atomics.load(stamp, 0));
-const nowUs = () => (performance.timeOrigin + performance.now()) * 1000;
-let block;
-function begin(sinceUs) {
-	const session = new Session();
-	session.connectToMainThread();
-	Atomics.store(state, ${WatchdogState.Attached}, 1);
-	const urls = new Map();
-	const current = { sinceUs, session, samples: [], pausing: false, nextPauseUs: 0 };
-	session.on("Debugger.scriptParsed", ({ params }) => urls.set(params.scriptId, params.url));
-	session.on("Debugger.paused", ({ params }) => {
-		session.post("Debugger.resume");
-		if (block === current && readStamp() === sinceUs) {
-			current.samples.push(params.callFrames.map((frame) => [
-				frame.functionName,
-				frame.url || urls.get(frame.location.scriptId) || "",
-				frame.location.lineNumber,
-				frame.location.columnNumber ?? 0,
-				frame.functionLocation?.lineNumber ?? frame.location.lineNumber,
-				frame.functionLocation?.columnNumber ?? frame.location.columnNumber ?? 0,
-			]));
-		}
-		current.pausing = false;
-		current.nextPauseUs = nowUs() + sampleIntervalMs * 1000;
-	});
-	session.post("Debugger.enable");
-	return current;
-}
-function detach() {
-	block.session.disconnect();
-	Atomics.store(state, ${WatchdogState.Attached}, 0);
-	const ended = block;
-	block = undefined;
-	return ended;
-}
-setInterval(() => {
-	if (Atomics.load(state, ${WatchdogState.Exiting}) === 1) {
-		if (block !== undefined) detach();
-		return;
-	}
-	const sinceUs = readStamp();
-	if (block !== undefined && sinceUs !== block.sinceUs) {
-		const ended = detach();
-		parentPort.postMessage({ sinceUs: ended.sinceUs, samples: ended.samples });
-	}
-	if (block === undefined) {
-		if (sinceUs === 0 || (nowUs() - sinceUs) / 1000 - heartbeatMs < thresholdMs) return;
-		block = begin(sinceUs);
-	}
-	if (!block.pausing && block.samples.length < maxSamples && nowUs() >= block.nextPauseUs) {
-		block.pausing = true;
-		block.session.post("Debugger.pause");
-	}
-}, pollMs);
-`;
-
 interface StackSampler {
 	readonly source: EventLoopStackSource;
+	readonly ready?: Promise<void>;
 	stacksOf(sinceUs: number, untilUs: number): Promise<readonly (readonly string[])[]>;
 	beat(nowUs: number): void;
 	exit(): void;
 }
 
-class DebuggerSampler implements StackSampler {
-	readonly source = "debugger";
-	private readonly stamp = new BigInt64Array(new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT));
-	private readonly state = new Int32Array(new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT));
-	private readonly arrived = new Map<number, readonly (readonly string[])[]>();
-	private readonly waiting = new Map<number, (stacks: readonly (readonly string[])[]) => void>();
-
-	constructor(thresholdMs: number) {
-		const worker = new Worker(WATCHDOG_SOURCE, {
-			eval: true,
-			workerData: {
-				stamp: this.stamp.buffer,
-				state: this.state.buffer,
-				heartbeatMs: HEARTBEAT_MS,
-				thresholdMs,
-				pollMs: WATCH_POLL_MS,
-				sampleIntervalMs: STACK_SAMPLE_INTERVAL_MS,
-				maxSamples: MAX_STACK_SAMPLES,
-			},
-		});
-		worker.on("message", ({ sinceUs, samples }: WorkerBlockSamples) => {
-			const stacks = samples.map((frames) => {
-				const stack = trimStack(
-					frames.map(([name, url, line, column]) => formatStackFrame(name, url, line, column)),
-				);
-				nodeFunctionFrames.set(
-					stack,
-					trimStack(frames.map(([name, url, , , line, column]) => formatStackFrame(name, url, line, column))),
-				);
-				return stack;
-			});
-			const waiter = this.waiting.get(sinceUs);
-			if (waiter === undefined) this.arrived.set(sinceUs, stacks);
-			else waiter(stacks);
-		});
-		worker.on("error", () => {});
-		worker.unref();
-	}
-
-	beat(nowUs: number): void {
-		Atomics.store(this.stamp, 0, BigInt(nowUs));
-		for (const sinceUs of this.arrived.keys()) {
-			if (nowUs - sinceUs > BLOCK_SAMPLES_GRACE_MS * 1000) this.arrived.delete(sinceUs);
-		}
-	}
-
-	exit(): void {
-		Atomics.store(this.state, WatchdogState.Exiting, 1);
-		const deadline = performance.now() + DETACH_ON_EXIT_MS;
-		while (Atomics.load(this.state, WatchdogState.Attached) === 1 && performance.now() < deadline) {}
-	}
-
-	stacksOf(sinceUs: number): Promise<readonly (readonly string[])[]> {
-		const arrived = this.arrived.get(sinceUs);
-		if (arrived !== undefined) {
-			this.arrived.delete(sinceUs);
-			return Promise.resolve(arrived);
-		}
-		return new Promise((settle) => {
-			const timer = setTimeout(() => done([]), BLOCK_SAMPLES_GRACE_MS);
-			timer.unref();
-			const done = (stacks: readonly (readonly string[])[]) => {
-				clearTimeout(timer);
-				this.waiting.delete(sinceUs);
-				settle(stacks);
-			};
-			this.waiting.set(sinceUs, done);
-		});
-	}
-}
-
 class ProfileSampler implements StackSampler {
 	readonly source = "profiler";
 	private startedUs = 0;
-	private queue: Promise<unknown> = Promise.resolve();
+	private observedUs: number;
+	private queue: Promise<void> = Promise.resolve();
+	private collectionScheduled = false;
+	private completed: Profiler.Profile[] = [];
+	private readonly requests: {
+		readonly sinceUs: number;
+		readonly untilUs: number;
+		readonly settle: (stacks: readonly (readonly string[])[]) => void;
+	}[] = [];
 
 	private readonly session: Session;
+	private readonly profileTimeOffsetUs: number;
 
 	constructor(session: Session, nowUs: number) {
 		this.session = session;
+		this.observedUs = nowUs;
+		// Node profiles use the monotonic process clock; Bun profiles already use epoch microseconds.
+		this.profileTimeOffsetUs = isBunRuntime ? 0 : epochUs() - Number(process.hrtime.bigint() / 1000n);
 		session.post("Profiler.enable");
 		session.post("Profiler.setSamplingInterval", { interval: PROFILE_SAMPLING_INTERVAL_US });
 		this.restart(nowUs);
 	}
 
 	beat(nowUs: number): void {
-		if (nowUs - this.startedUs < PROFILE_WINDOW_MS * 1000) return;
-		this.startedUs = nowUs;
-		this.queue = this.queue.then(() => this.stop()).then(() => this.restart(nowUs));
+		this.observedUs = nowUs;
+		if (!this.collectionScheduled && this.requests.length === 0) this.releaseObservedProfiles();
+		if (nowUs - this.startedUs >= PROFILE_WINDOW_MS * 1000) this.scheduleCollection();
 	}
 
 	stacksOf(sinceUs: number, untilUs: number): Promise<readonly (readonly string[])[]> {
-		const stacks = this.queue
-			.then(() => this.stop())
-			.then((profile) => {
-				this.restart(untilUs);
-				return profile === undefined ? [] : profileStacksBetween(profile, sinceUs, untilUs);
-			});
-		this.queue = stacks;
-		return stacks;
+		return new Promise((settle) => {
+			this.requests.push({ sinceUs, untilUs, settle });
+			this.scheduleCollection();
+		});
 	}
 
 	exit(): void {}
+
+	private scheduleCollection(): void {
+		if (this.collectionScheduled) return;
+		this.collectionScheduled = true;
+		this.queue = this.queue.then(async () => {
+			// Requests arriving after this stop may need samples from the newly started profile.
+			const batch = this.requests.splice(0);
+			const profile = await this.stop();
+			if (profile !== undefined) this.completed.push(profile);
+			for (const request of batch) {
+				request.settle(
+					this.completed.flatMap((completed) =>
+						profileStacksBetween(
+							completed,
+							request.sinceUs - this.profileTimeOffsetUs,
+							request.untilUs - this.profileTimeOffsetUs,
+						),
+					),
+				);
+			}
+			this.releaseObservedProfiles();
+			this.collectionScheduled = false;
+			if (this.requests.length > 0) this.scheduleCollection();
+		});
+	}
+
+	private releaseObservedProfiles(): void {
+		// A phase can end before the next timer discovers a later stall in the same task. Keep that unread tail,
+		// including a rotation's tail, until every window through the last observed heartbeat has been served.
+		const nextWindowUs = this.requests[0]?.sinceUs ?? this.observedUs + HEARTBEAT_MS * 1000;
+		this.completed = this.completed.filter((profile) => profile.endTime + this.profileTimeOffsetUs >= nextWindowUs);
+	}
 
 	private restart(nowUs: number): void {
 		this.startedUs = nowUs;
@@ -346,8 +240,24 @@ class ProfileSampler implements StackSampler {
 	}
 
 	private stop(): Promise<Profiler.Profile | undefined> {
+		if (isBunRuntime) {
+			// Bun's optional callback is deferred even though post returns its result synchronously.
+			const stopProfile = this.session.post as unknown as (method: "Profiler.stop") => {
+				readonly profile: Profiler.Profile;
+			};
+			let profile: Profiler.Profile | undefined;
+			try {
+				profile = stopProfile.call(this.session, "Profiler.stop").profile;
+			} catch {}
+			this.restart(epochUs());
+			return Promise.resolve(profile);
+		}
 		return new Promise((settle) =>
-			this.session.post("Profiler.stop", (error, result) => settle(error ? undefined : result.profile)),
+			this.session.post("Profiler.stop", (error, result) => {
+				// Resume collection before another user microtask can run between stop and result processing.
+				this.restart(epochUs());
+				settle(error ? undefined : result.profile);
+			}),
 		);
 	}
 }
@@ -359,9 +269,10 @@ const noStacks: StackSampler = {
 	exit: () => {},
 };
 
-function createSampler(thresholdMs: number, nowUs: number): StackSampler {
+const delayOnly: StackSampler = { ...noStacks, source: "disabled" };
+
+function createSampler(nowUs: number): StackSampler {
 	try {
-		if (!isBunRuntime) return new DebuggerSampler(thresholdMs);
 		const { Session: InspectorSession } = createModuleRequire(import.meta.url)("node:inspector") as {
 			Session: typeof Session;
 		};
@@ -390,19 +301,20 @@ class EventLoopMonitor {
 	private lastBeatUs: number;
 	private phase: EventLoopPhase = "startup";
 	private phaseStartedUs: number;
+	private maxBeatDelayMs = 0;
 
 	private readonly role: EventLoopProcessRole;
 	private readonly thresholdMs: number;
 	private readonly logPath: string;
 
-	constructor(role: EventLoopProcessRole, thresholdMs: number, logPath: string) {
+	constructor(role: EventLoopProcessRole, thresholdMs: number, logPath: string, collectStacks: boolean) {
 		this.role = role;
 		this.thresholdMs = thresholdMs;
 		this.logPath = logPath;
 		this.lastBeatUs = epochUs();
 		this.phaseStartedUs = this.lastBeatUs;
 		this.histogram = startDelayHistogram();
-		this.sampler = createSampler(thresholdMs, this.lastBeatUs);
+		this.sampler = collectStacks ? createSampler(this.lastBeatUs) : delayOnly;
 		this.sampler.beat(this.lastBeatUs);
 		setInterval(() => this.beat(), HEARTBEAT_MS).unref();
 		process.once("exit", () => {
@@ -422,6 +334,10 @@ class EventLoopMonitor {
 		});
 	}
 
+	whenReady(): Promise<void> {
+		return this.sampler.ready ?? Promise.resolve();
+	}
+
 	enter(next: EventLoopPhase): void {
 		if (PHASES.indexOf(next) <= PHASES.indexOf(this.phase)) return;
 		const lateMs = this.beat();
@@ -430,6 +346,7 @@ class EventLoopMonitor {
 		else this.write(ended);
 		this.histogram.disable();
 		this.histogram = startDelayHistogram();
+		this.maxBeatDelayMs = 0;
 		this.phase = next;
 		this.phaseStartedUs = epochUs();
 	}
@@ -439,9 +356,10 @@ class EventLoopMonitor {
 		const sinceUs = this.lastBeatUs;
 		this.lastBeatUs = nowUs;
 		const durationMs = (nowUs - sinceUs) / 1000 - HEARTBEAT_MS;
+		this.maxBeatDelayMs = Math.max(this.maxBeatDelayMs, durationMs);
 		if (durationMs >= this.thresholdMs) {
 			void this.sampler
-				.stacksOf(sinceUs, nowUs)
+				.stacksOf(sinceUs + HEARTBEAT_MS * 1000, nowUs)
 				.then((samples) => this.write(this.blockRecord(sinceUs, durationMs, samples)));
 		}
 		this.sampler.beat(nowUs);
@@ -476,7 +394,7 @@ class EventLoopMonitor {
 			ticks,
 			p50Ms: ticks === 0 ? 0 : lagMs(this.histogram.percentile(50)),
 			p99Ms: ticks === 0 ? 0 : lagMs(this.histogram.percentile(99)),
-			maxMs: Math.max(ticks === 0 ? 0 : lagMs(this.histogram.max), roundMs(lateMs)),
+			maxMs: Math.max(ticks === 0 ? 0 : lagMs(this.histogram.max), roundMs(this.maxBeatDelayMs), roundMs(lateMs)),
 		};
 	}
 
@@ -509,8 +427,14 @@ export function startEventLoopMonitor(role: EventLoopProcessRole, env: NodeJS.Pr
 		return false;
 	}
 	if (env[EVENT_LOOP_BLOCK_LOG_ENV]?.trim()) env[EVENT_LOOP_BLOCK_LOG_ENV] = logPath;
-	monitor = new EventLoopMonitor(role, thresholdMs, logPath);
+	const collectStacks = env[EVENT_LOOP_BLOCK_STACKS_ENV]?.trim() !== "0";
+	monitor = new EventLoopMonitor(role, thresholdMs, logPath, collectStacks);
 	return true;
+}
+
+/** Finish opt-in diagnostic setup before the CLI exposes its interactive input surface. */
+export function waitForEventLoopMonitorReady(): Promise<void> {
+	return monitor?.whenReady() ?? Promise.resolve();
 }
 
 export function markEventLoopStartupComplete(): void {
