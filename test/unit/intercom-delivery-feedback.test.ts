@@ -26,7 +26,7 @@ const refusal: Message = {
 
 afterEach(() => vi.useRealTimers());
 
-async function fixture(closedStage = false) {
+async function fixture() {
 	let idle = false;
 	let rejectDelivery = false;
 	let sessionId = "parent-feedback-test";
@@ -66,17 +66,6 @@ async function fixture(closedStage = false) {
 		isIdle: () => idle,
 		ui: { notify() {} },
 		sessionManager: { getSessionId: () => sessionId, getBranch: () => [] },
-		...(closedStage
-			? {
-					orchestrationContext: {
-						kind: "workflow-stage",
-						messageAdmission: {
-							isOpen: () => false,
-							boundary: { ownsSubagentRun: (runId: string) => runId === "owned-run" },
-						},
-					},
-				}
-			: {}),
 	} as unknown as ExtensionContext;
 	const fire = async (name: string) => {
 		for (const handler of handlers.get(name) ?? []) await handler({ type: name }, ctx);

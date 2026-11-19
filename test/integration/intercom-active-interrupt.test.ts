@@ -3,9 +3,7 @@ import type { AgentTool } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
-import type { AgentSessionMethodSurface } from "../../packages/coding-agent/src/core/agent-session-methods.js";
 import type { ExtensionContext } from "../../packages/coding-agent/src/core/extensions/index.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { createHarness, getMessageText, type HarnessOptions } from "../../packages/coding-agent/test/suite/harness.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import type { IntercomExtensionTestOverrides } from "../../packages/intercom/intercom-test-seams.js";
@@ -13,7 +11,7 @@ import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import { createDispatchCounter } from "../helpers/intercom-interrupt-probe.js";
 
-type Receiver = "child" | "workflow-stage";
+type Receiver = "child";
 type Action = "send" | "ask";
 type Inbound = Parameters<NonNullable<IntercomExtensionTestOverrides["captureInboundHandler"]>>[0];
 
@@ -48,7 +46,6 @@ async function receiver(
 	options: Pick<HarnessOptions, "settings" | "extensionFactories"> = {},
 ) {
 	const ended = new AbortController();
-	const boundary = new WorkflowStageAdmissionBoundary();
 	let inbound!: Inbound;
 	let ctx!: ExtensionContext;
 	const h = await createHarness({
@@ -64,16 +61,7 @@ async function receiver(
 						depth: 1,
 					},
 				}
-			: {
-					orchestrationContext: {
-						kind: "workflow-stage",
-						workflowRunId: "interrupt-run",
-						workflowStageId: "interrupt-stage",
-						workflowStageName: "interrupt-stage",
-						constraints: { disableWorkflowTool: true },
-						messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() },
-					},
-				}),
+			: {}),
 		tools,
 		extensionFactories: [
 			(pi) => {
@@ -93,13 +81,11 @@ async function receiver(
 	return {
 		...h,
 		ended,
-		boundary,
 		context: ctx,
 		deliver: (entry: Message, from: SessionInfo = peer) => inbound(ctx, from, entry),
 		async close(execution: Promise<void>) {
 			ended.abort();
 			void h.session.abort().catch(() => {});
-			boundary.seal();
 			await execution.catch(() => {});
 			await h.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 			h.session.pauseQueuedMessages();
@@ -146,9 +132,9 @@ function cancellableTool(record: { calls: number; signal?: AbortSignal; complete
 	};
 }
 
-// Amended 2x2 matrix: with an explicit `delivery: "interrupt"`, both actions and both receivers
-// cancel supported active work immediately and continue the same task/stage with the message.
-for (const kind of ["child", "workflow-stage"] as const) {
+// With an explicit `delivery: "interrupt"`, both actions cancel a child's supported active work immediately
+// and continue the same task with the message.
+for (const kind of ["child"] as const) {
 	for (const action of ["send", "ask"] as const) {
 		test(`${action} with delivery interrupt to an active ${kind} cancels its long-running tool and continues the original task`, async () => {
 			const record = { calls: 0, completed: 0 } as { calls: number; signal?: AbortSignal; completed: number };
@@ -204,8 +190,6 @@ for (const kind of ["child", "workflow-stage"] as const) {
 							entry.content.includes("To reply, use the intercom tool"),
 					);
 				}
-				if (kind === "workflow-stage")
-					assert.equal(h.boundary.isOpen(), true, "the stage generation stays open for its host");
 			} finally {
 				work.cleanup.resolve();
 				await h.close(execution);
@@ -214,7 +198,7 @@ for (const kind of ["child", "workflow-stage"] as const) {
 	}
 }
 
-for (const kind of ["child", "workflow-stage"] as const) {
+for (const kind of ["child"] as const) {
 	for (const action of ["send", "ask"] as const) {
 		test(`${action} during an SDK interrupt turn cancels that turn and drains priority input in the same ${kind}`, async () => {
 			const record = { calls: 0, completed: 0 } as { calls: number; signal?: AbortSignal; completed: number };
@@ -278,7 +262,6 @@ for (const kind of ["child", "workflow-stage"] as const) {
 					1,
 				);
 				assert.equal(getMessageText(h.session.messages.at(-1)), "amended SDK result");
-				if (kind === "workflow-stage") assert.equal(h.boundary.isOpen(), true);
 			} finally {
 				sdkRelease.resolve();
 				work.cleanup.resolve();
@@ -288,7 +271,7 @@ for (const kind of ["child", "workflow-stage"] as const) {
 	}
 }
 
-for (const kind of ["child", "workflow-stage"] as const) {
+for (const kind of ["child"] as const) {
 	for (const handled of [false, true]) {
 		for (const action of ["send", "ask"] as const) {
 			test(`${action} admitted during ${kind} preflight is processed when input is ${handled ? "handled" : "continued"}`, async () => {
@@ -352,7 +335,6 @@ for (const kind of ["child", "workflow-stage"] as const) {
 						1,
 					);
 					assert.equal(getMessageText(h.session.messages.at(-1)), "amended preflight result");
-					if (kind === "workflow-stage") assert.equal(h.boundary.isOpen(), true);
 				} finally {
 					release.resolve();
 					await h.close(execution);
@@ -362,7 +344,7 @@ for (const kind of ["child", "workflow-stage"] as const) {
 	}
 }
 
-for (const kind of ["child", "workflow-stage"] as const) {
+for (const kind of ["child"] as const) {
 	for (const action of ["send", "ask"] as const) {
 		for (const handled of [true, false]) {
 			test(`explicit abort prevents ${action} from draining ${handled ? "handled" : "continued"} ${kind} preflight`, async () => {
@@ -426,7 +408,7 @@ for (const kind of ["child", "workflow-stage"] as const) {
 	}
 }
 
-for (const kind of ["child", "workflow-stage"] as const) {
+for (const kind of ["child"] as const) {
 	test(`priority input cancels an active retry model call in the same ${kind}`, async () => {
 		const h = await receiver(kind, [], {
 			settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 10 } },
@@ -480,7 +462,6 @@ for (const kind of ["child", "workflow-stage"] as const) {
 				1,
 			);
 			assert.equal(getMessageText(h.session.messages.at(-1)), "amended retry result");
-			if (kind === "workflow-stage") assert.equal(h.boundary.isOpen(), true);
 		} finally {
 			release.resolve();
 			await h.close(execution);
@@ -488,8 +469,8 @@ for (const kind of ["child", "workflow-stage"] as const) {
 	});
 }
 
-test("a message during model streaming cancels the stream for both receiver kinds", async () => {
-	for (const kind of ["child", "workflow-stage"] as const) {
+test("a message during model streaming cancels the stream", async () => {
+	for (const kind of ["child"] as const) {
 		const h = await receiver(kind, []);
 		const streaming = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -564,69 +545,6 @@ test("multiple arrivals keep FIFO and dedup while the first cancellation is sett
 	}
 });
 
-// R7: durable card order is insufficient; replacement must preserve model-context FIFO.
-for (const transfer of [false, true]) {
-	for (const action of ["send", "ask"] as const) {
-		test(`${action} priority model context keeps FIFO ${transfer ? "across same-generation transfer" : "without transfer"}`, async () => {
-			const source = await receiver("workflow-stage", []);
-			const replacement = transfer
-				? await createHarness({
-						sessionManager: source.sessionManager,
-						orchestrationContext: source.context.orchestrationContext,
-					})
-				: undefined;
-			const active = replacement ?? source;
-			const contexts: string[][] = [];
-			const dispatches = createDispatchCounter(
-				Array.from({ length: 2 }, () => (context: { messages: object[] }) => {
-					contexts.push(
-						context.messages.flatMap((entry) => getMessageText(entry).match(/PRIORITY-(?:first|second)/g) ?? []),
-					);
-					return fauxAssistantMessage("processed priority input");
-				}),
-			);
-			active.setResponses(dispatches.steps(4));
-			let execution = Promise.resolve();
-			try {
-				source.session.pauseQueuedMessages();
-				const first = message("first", action);
-				await source.deliver(first);
-				await source.boundary.waitForMessageDeliveries();
-				if (replacement) {
-					const transferable = source.session as typeof source.session &
-						Pick<AgentSessionMethodSurface, "transferWorkflowStageDeliveriesTo">;
-					transferable.transferWorkflowStageDeliveriesTo(replacement.session);
-				}
-				assert.equal(active.session.sessionId, source.session.sessionId);
-				assert.equal(source.boundary.isOpen(), true);
-				// The old inbound handler remains reachable after retirement; retries stay deduplicated.
-				await source.deliver(first);
-				await source.deliver(message("second", action));
-				await source.boundary.waitForMessageDeliveries();
-				assert.deepEqual(
-					source.sessionManager
-						.getEntries()
-						.flatMap((entry) =>
-							entry.type === "custom_message" && entry.customType === "intercom_message"
-								? [entry.stageAdmissionKey]
-								: [],
-						),
-					["intercom:first", "intercom:second"],
-				);
-				assert.equal(dispatches.counts.valid, 0, "paused admission must not start a model turn");
-				await active.session.resumeQueuedMessages();
-				execution = active.session.prompt("resume stage");
-				await execution;
-				assert.deepEqual(contexts, [["PRIORITY-first"], ["PRIORITY-first", "PRIORITY-second"]]);
-				assert.equal(dispatches.counts.valid, 2);
-			} finally {
-				await source.close(execution);
-				replacement?.cleanup();
-			}
-		});
-	}
-}
-
 test("an explicit abort wins: later priority input never restarts a cancelled child", async () => {
 	const record = { calls: 0, completed: 0 } as { calls: number; signal?: AbortSignal; completed: number };
 	const work = cancellableTool(record);
@@ -658,30 +576,10 @@ test("an explicit abort wins: later priority input never restarts a cancelled ch
 	}
 });
 
-test("a terminal workflow generation does not reopen for priority input", async () => {
-	const h = await receiver("workflow-stage", []);
-	const dispatches = createDispatchCounter([
-		() => fauxAssistantMessage("stage done"),
-		() => fauxAssistantMessage("must not run"),
-	]);
-	h.setResponses(dispatches.steps(3));
-	const execution = h.session.prompt("stage task");
-	await execution;
-	try {
-		h.boundary.seal();
-		await Promise.resolve(h.deliver(message("closed", "send"))).catch(() => undefined);
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		assert.equal(dispatches.counts.valid, 1);
-		assert.equal(h.session.agent.state.isStreaming, false);
-	} finally {
-		await h.close(execution);
-	}
-});
-
 // Sender-chosen delivery without interrupt, e.g. peer-to-peer swarm messaging: the
 // in-flight tool call always completes. The default steer is handled right after the
 // tool's turn; followUp waits until the agent would otherwise stop.
-for (const kind of ["child", "workflow-stage"] as const) {
+for (const kind of ["child"] as const) {
 	for (const action of ["send", "ask"] as const) {
 		for (const delivery of [undefined, "followUp"] as const) {
 			const mode = delivery ?? "default steer";
@@ -745,7 +643,7 @@ for (const kind of ["child", "workflow-stage"] as const) {
 
 // #3921 review: a followUp ask A that arrives before a steer (or interrupt) ask B reaches the
 // model after B. Each turn's implicit reply must answer the ask the model actually sees.
-for (const kind of ["child", "workflow-stage"] as const) {
+for (const kind of ["child"] as const) {
 	for (const second of ["steer", "interrupt"] as const) {
 		test(`followUp ask then ${second} ask to an active ${kind}: each implicit reply reaches the visible asker (#3921)`, async () => {
 			const trackers = new Set<ReplyTracker>();
@@ -829,7 +727,7 @@ for (const kind of ["child", "workflow-stage"] as const) {
 // #3921 follow-up: a reply context binds only when its message enters the model. A followUp ask A
 // queued while a tool runs is not visible in the continuation after that tool, so an implicit
 // reply there must not answer A; A's own turn then replies to A.
-for (const kind of ["child", "workflow-stage"] as const) {
+for (const kind of ["child"] as const) {
 	test(`followUp ask queued during an active ${kind} tool is not the reply target of the continuation (#3921)`, async () => {
 		const trackers = new Set<ReplyTracker>();
 		const queueTurnContext = ReplyTracker.prototype.queueTurnContext;
@@ -891,7 +789,7 @@ for (const kind of ["child", "workflow-stage"] as const) {
 
 // Greptile 4368756044: with followUpMode "all", followUp asks A and B enter the model together.
 // A is the turn's reply target, and B is seen too, so after answering A an implicit reply resolves to B.
-for (const kind of ["child", "workflow-stage"] as const) {
+for (const kind of ["child"] as const) {
 	test(`followUp asks admitted together in one ${kind} turn both become visible reply candidates`, async () => {
 		const trackers = new Set<ReplyTracker>();
 		const queueTurnContext = ReplyTracker.prototype.queueTurnContext;

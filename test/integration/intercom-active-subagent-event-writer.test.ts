@@ -3,7 +3,6 @@ import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
 import type { ExtensionContext } from "../../packages/coding-agent/src/core/extensions/index.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { createHarness, getMessageText } from "../../packages/coding-agent/test/suite/harness.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import type { IntercomExtensionTestOverrides } from "../../packages/intercom/intercom-test-seams.js";
@@ -12,7 +11,7 @@ import { createDispatchCounter } from "../helpers/intercom-interrupt-probe.js";
 // R1: an event writer may await an ordinary custom-message write while inbound
 // protected persistence is waiting for that same event writer. Neither may deadlock.
 for (const api of ["single", "batch"] as const) {
-	for (const mode of ["child-control-no-inbound", "workflow-control-with-inbound", "child-with-inbound"] as const) {
+	for (const mode of ["child-control-no-inbound", "child-with-inbound"] as const) {
 		test(`${api} event-hook messages finish without blocking protected inbound: ${mode}`, async () => {
 			const ended = new AbortController();
 			const hookEntered = Promise.withResolvers<void>();
@@ -23,28 +22,14 @@ for (const api of ["single", "batch"] as const) {
 			let ctx!: ExtensionContext;
 			let hookDone = false;
 			let amended = false;
-			const boundary = new WorkflowStageAdmissionBoundary();
 			const h = await createHarness({
-				...(mode.startsWith("child")
-					? {
-							subagentPolicy: {
-								managementActions: "restricted",
-								fanoutAuthorized: false,
-								inheritProjectContext: false,
-								inheritSkills: false,
-								executionEnded: ended.signal,
-							},
-						}
-					: {
-							orchestrationContext: {
-								kind: "workflow-stage",
-								workflowRunId: "event-run",
-								workflowStageId: "event-stage",
-								workflowStageName: "event-stage",
-								constraints: { disableWorkflowTool: true },
-								messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() },
-							},
-						}),
+				subagentPolicy: {
+					managementActions: "restricted",
+					fanoutAuthorized: false,
+					inheritProjectContext: false,
+					inheritSkills: false,
+					executionEnded: ended.signal,
+				},
 				tools: [
 					{
 						name: "working",
