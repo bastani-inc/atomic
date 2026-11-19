@@ -14,6 +14,7 @@ import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
+import { stripParentOnlySubagentMessages } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
 import type { SingleResult, SubagentAttemptStatus, Usage } from "../../packages/subagents/src/shared/types.js";
 import { resolveTopLevelParallelMaxTasks } from "../../packages/subagents/src/shared/types.js";
 import {
@@ -205,6 +206,26 @@ describe("recent upstream subagent syncs", () => {
 			false,
 		);
 		bridge.dispose();
+	});
+
+	test("preserves live nested subagent history in fanout child context", () => {
+		const user = { role: "user", content: "Task" };
+		const subagentCall = {
+			role: "assistant",
+			content: [{ type: "toolCall", name: "subagent", input: { agent: "delegate" } }],
+		};
+		const subagentResult = { role: "toolResult", toolName: "subagent", content: "OK" };
+		const slashTextResult = {
+			role: "custom",
+			customType: "subagent-slash-text-result",
+			content: "Subagent profiles",
+		};
+
+		assert.deepEqual(stripParentOnlySubagentMessages([user, subagentCall, subagentResult, slashTextResult], true), [
+			user,
+			subagentCall,
+			subagentResult,
+		]);
 	});
 
 	test("omits provider-rejected schema keywords", () => {

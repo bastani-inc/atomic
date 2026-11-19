@@ -191,10 +191,6 @@ export function createWorkflowStageFactory(input: {
 						forkFromSessionId: stageOptions?.forkFromSessionId ?? executeReplaySource.sessionId,
 						forkFromEntryId:
 							stageOptions?.forkFromSessionId === undefined ? undefined : stageOptions.forkFromEntryId,
-						forkFromEmptySource:
-							stageOptions?.forkFromSessionId === undefined ? undefined : stageOptions.forkFromEmptySource,
-						durableForkPoint:
-							stageOptions?.forkFromSessionId === undefined ? undefined : stageOptions.durableForkPoint,
 					};
 		const intercomGroup =
 			options?.durableIntercomGroup ?? resolveStageGroup(replayOptionsOf(options), input.workflowIntercomGroup);
