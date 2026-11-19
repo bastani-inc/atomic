@@ -1,3 +1,4 @@
+import { unsavedHostNotices } from "./agent-session-host-notices.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
@@ -81,7 +82,12 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 					saving && this._messagesAwaitingPersistence.has(saving.message) ? saving.previousLeaf : undefined;
 				const { entries, messages } = this.sessionManager.buildSessionProjection("transcript", beforeSave);
 				const pending = this.messages.filter((message) => this._messagesAwaitingPersistence.has(message));
-				if (pending.length === 0) return messages;
+				// A line about how a turn ended that is still being saved is part of the transcript already (#5649).
+				const notices = unsavedHostNotices(
+					this,
+					entries.map(({ sourceEntry }) => sourceEntry),
+				);
+				if (pending.length === 0 && notices.length === 0) return messages;
 				const saved = new Set(entries.map(({ sourceEntry }) => sourceEntry.id));
 				return [
 					...messages,
@@ -89,6 +95,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 						const id = this._entryIdsByMessage.get(message);
 						return id === undefined || !saved.has(id);
 					}),
+					...notices,
 				];
 			},
 		},

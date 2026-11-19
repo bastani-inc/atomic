@@ -149,3 +149,28 @@ test("a provider error longer than the notice bound is saved cut at a whole char
 	);
 	assert.deepEqual(live, [text], "the live line is the saved one");
 });
+
+test("a chat that reads the transcript while the line is still being saved shows it once, and once after (#5649)", async () => {
+	const { manager } = await persistedSession();
+	const harness = await harnessFor(manager, { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } });
+	const append = manager.appendCustomEntry.bind(manager);
+	const saving = Promise.withResolvers<void>();
+	manager.appendCustomEntry = (async (customType: string, data?: unknown) => {
+		await saving.promise;
+		return append(customType, data);
+	}) as typeof manager.appendCustomEntry;
+	const shown = Promise.withResolvers<void>();
+	harness.session.subscribe((event) => {
+		if (event.type === "message_end" && event.message.role === "custom") shown.resolve();
+	});
+	harness.setResponses([overloaded(), overloaded()]);
+	const notices = () => rows(harness.session.transcriptMessages).filter((row) => row.startsWith("atomic.notice"));
+	const expected = ["atomic.notice error: Retry failed after 1 attempts: overloaded_error"];
+
+	const prompt = harness.session.prompt("hello");
+	await shown.promise;
+	assert.deepEqual(notices(), expected, "while it is being saved");
+	saving.resolve();
+	await prompt;
+	assert.deepEqual(notices(), expected, "once it is saved");
+});

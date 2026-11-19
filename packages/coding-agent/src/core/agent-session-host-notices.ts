@@ -8,6 +8,7 @@ import {
 	hostNoticeMessage,
 } from "./host-notices.ts";
 import type { CustomMessage } from "./messages.ts";
+import type { SessionEntry } from "./session-manager-types.ts";
 
 /**
  * Saves the line `event` puts in the session's chat, if any, and returns the message that shows it (#5649). The entry
@@ -20,6 +21,7 @@ export function recordHostNotice(
 	const found = hostNoticeForEvent(event, session._compactionReason);
 	if (found === undefined) return undefined;
 	const notice: HostNotice = { level: found.level, text: boundHostNoticeText(found.text) };
+	const message = hostNoticeMessage(notice, Date.now());
 	const manager = session.sessionManager;
 	let saved: Promise<string> | undefined;
 	try {
@@ -28,14 +30,20 @@ export function recordHostNotice(
 		// A session that can no longer be written still shows the line; it is lost with the session's other unsaved work.
 	}
 	if (saved !== undefined) {
+		const pending = unsaved.get(session) ?? new Map<HostNotice, CustomMessage<HostNotice>>();
+		unsaved.set(session, pending);
+		pending.set(notice, message);
 		const announced = saved.then(
 			(id) => {
+				pending.delete(notice);
 				const entry = manager.getEntry(id);
 				// A host that reads the session from its store learns the entry exists.
 				if (entry !== undefined && session.sessionManager === manager)
 					session._emit({ type: "entry_appended", entry });
 			},
-			() => {},
+			() => {
+				pending.delete(notice);
+			},
 		);
 		// Whatever waits for the session's events to settle, such as the prompt that ended this way or the next model
 		// request, also waits for the line to be saved. A failure already in the queue stays there for them to see.
@@ -47,7 +55,21 @@ export function recordHostNotice(
 		settled.catch(() => {});
 		session._agentEventQueue = settled;
 	}
-	return hostNoticeMessage(notice, Date.now());
+	return message;
+}
+
+/** Lines a session has shown and is still saving, keyed by the data of the entry that saves each. */
+const unsaved = new WeakMap<object, Map<HostNotice, CustomMessage<HostNotice>>>();
+
+/**
+ * The lines `session` has shown but not yet saved, other than any among `entries`: a chat opened in that moment reads
+ * them with the saved transcript, since the event that showed them has passed.
+ */
+export function unsavedHostNotices(session: object, entries: readonly SessionEntry[]): CustomMessage<HostNotice>[] {
+	const pending = unsaved.get(session);
+	if (pending === undefined || pending.size === 0) return [];
+	const saved = new Set(entries.flatMap((entry) => (entry.type === "custom" ? [entry.data] : [])));
+	return [...pending].flatMap(([notice, message]) => (saved.has(notice) ? [] : [message]));
 }
 
 /** Shows a saved notice in the chats that follow the session, as a display-only message. */
