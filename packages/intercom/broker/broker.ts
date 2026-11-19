@@ -2105,6 +2105,7 @@ class IntercomBroker {
     id: string,
     supervisorId: string | undefined,
     setId: (id: string | null) => void,
+    presenceWaitStartedAt?: number,
   ): void {
         setId(id);
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
@@ -2257,6 +2258,7 @@ class IntercomBroker {
                       groups: sessionGroups(info),
                       ...(supervisorId ? { authorizedBy: supervisorId } : {}),
                     },
+                presenceWaitStartedAt,
               );
         if (presence === undefined) completeRegistration();
         else {
@@ -2421,7 +2423,7 @@ class IntercomBroker {
           this.claimingSessionIds.add(socket);
           void multiNode
             .claimSessionId(preferred, returnAddress)
-            .then((claimed) => {
+            .then(({ claimed, presenceWaitStartedAt }) => {
               this.claimingSessionIds.delete(socket);
               if (socket.destroyed || socket.writableEnded) return;
               if (this.shuttingDown) {
@@ -2435,6 +2437,7 @@ class IntercomBroker {
                 claimed && !this.sessions.has(preferred) ? preferred : randomUUID(),
                 supervisorId,
                 setId,
+                presenceWaitStartedAt,
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));

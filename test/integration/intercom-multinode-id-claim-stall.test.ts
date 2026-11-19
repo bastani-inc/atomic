@@ -60,6 +60,33 @@ test(
 );
 
 test(
+	"a returning session still registers when another overdue callback stalls the broker after the id deadline (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const original = await harness.connect("a", unique("returning"));
+		const id = original.sessionId;
+		await original.client.disconnect({ resumable: true });
+		original.disconnected = true;
+
+		harness.stallIdClaim(original.returnAddress, 2_800, 3_200);
+		harness.holdRegistration(original.name);
+		try {
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			});
+			assert.ok(harness.idClaimStalled(original.returnAddress));
+			await harness.registrationParked(original.name);
+			assert.notEqual(back.sessionId, id);
+		} finally {
+			harness.releaseRegistration();
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
 	"a returning session still registers when its broker accepts late, stalls during the id check and waits for presence (#5607)",
 	async () => {
 		assert.equal(harness.multiNodeRouting, true);

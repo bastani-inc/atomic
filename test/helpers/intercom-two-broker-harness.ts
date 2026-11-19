@@ -378,10 +378,14 @@ export class TwoBrokerHarness {
 
 	/**
 	 * #5607: the next claim of an id back for `returnAddress` (`stallableIdClaims`) gets no answer from the shared database,
-	 * and the broker making it does not run for `stallMs` right after it asked.
+	 * and the broker making it does not run for `stallMs` right after it asked. Optionally a second due callback
+	 * occupies the broker for `overdueCallbackMs` before it can poll for I/O.
 	 */
-	stallIdClaim(returnAddress: string, stallMs: number): void {
-		writeFileSync(join(this.root, ID_CLAIM_STALL_GATE), JSON.stringify({ returnAddress, stallMs }));
+	stallIdClaim(returnAddress: string, stallMs: number, overdueCallbackMs?: number): void {
+		writeFileSync(
+			join(this.root, ID_CLAIM_STALL_GATE),
+			JSON.stringify({ returnAddress, stallMs, overdueCallbackMs }),
+		);
 	}
 
 	/** Whether a broker has stalled on the claim `stallIdClaim` set up for `returnAddress`. */

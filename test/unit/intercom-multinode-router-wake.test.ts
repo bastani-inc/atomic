@@ -1993,26 +1993,30 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
-		assert.equal(await node.router.claimSessionId(id, "return-2"), false);
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		assert.equal((await node.router.claimSessionId(id, "return-1")).claimed, true);
+		assert.equal((await node.router.claimSessionId(id, "return-2")).claimed, false);
+		assert.equal((await node.router.claimSessionId(id, "return-1")).claimed, true);
 
 		const bind = vi.spyOn(node.state.knownSessions, "bind");
 		bind.mockRejectedValueOnce(new Error("the shared database is down"));
-		assert.equal(await node.router.claimSessionId(id, "return-1"), false, "a failed binding grants nothing");
+		assert.equal(
+			(await node.router.claimSessionId(id, "return-1")).claimed,
+			false,
+			"a failed binding grants nothing",
+		);
 		bind.mockReturnValueOnce(new Promise(() => {}));
 		const claim = node.router.claimSessionId(id, "return-1");
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
-		assert.equal(await claim, false, "a binding that does not answer in time grants nothing");
+		assert.equal((await claim).claimed, false, "a binding that does not answer in time grants nothing");
 
 		await node.router.close();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), false, "a closed router grants nothing");
+		assert.equal((await node.router.claimSessionId(id, "return-1")).claimed, false, "a closed router grants nothing");
 	});
 
 	test("a broker that stalls while the database confirms a returning session's id still grants it the id (#5607)", async () => {
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		assert.equal((await node.router.claimSessionId(id, "return-1")).claimed, true);
 		const knownSessions = node.state.knownSessions;
 		const bind = knownSessions.bind.bind(knownSessions);
 		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
@@ -2024,14 +2028,14 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		// The database answers at once, but this broker does not run for longer than the claim may wait.
 		stallEventLoop(SESSION_ID_CLAIM_BOUND_MS + STALL_PAST_BOUND_MS);
 
-		assert.equal(await claim, true, "the broker's own stall is not the database's time");
+		assert.equal((await claim).claimed, true, "the broker's own stall is not the database's time");
 	});
 
 	test("a broker that stalls just before the claim's bound passes still reads the database's confirmation (#5607)", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		assert.equal((await node.router.claimSessionId(id, "return-1")).claimed, true);
 		const knownSessions = node.state.knownSessions;
 		const bind = knownSessions.bind.bind(knownSessions);
 		let answer!: () => void;
@@ -2047,7 +2051,7 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		const claim = node.router.claimSessionId(id, "return-1");
 		let granted: boolean | undefined;
 		void claim.then((result) => {
-			granted = result;
+			granted = result.claimed;
 		});
 		// The database is slow for all but the last moment of the bound, while this broker runs.
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS - 100);
@@ -2058,7 +2062,11 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		vi.advanceTimersByTime(100); // Run the due timer, not the next event-loop turn.
 		answer();
 
-		assert.equal(await claim, true, "what the database answered during the stall is read before the bound passes");
+		assert.equal(
+			(await claim).claimed,
+			true,
+			"what the database answered during the stall is read before the bound passes",
+		);
 	});
 
 	test("a broker that stalls while it reads whether a session is connected through another broker still reads the answer (#5607)", async () => {
@@ -2091,13 +2099,13 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		assert.equal((await node.router.claimSessionId(id, "return-1")).claimed, true);
 		vi.spyOn(node.state.knownSessions, "bind").mockReturnValueOnce(new Promise(() => {}));
 
 		const claim = node.router.claimSessionId(id, "return-1");
 		let granted: boolean | undefined;
 		void claim.then((result) => {
-			granted = result;
+			granted = result.claimed;
 		});
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS - 100);
 		// From here every tick of the broker comes late: it is slow, not stalled once, and the claim must not wait for good.

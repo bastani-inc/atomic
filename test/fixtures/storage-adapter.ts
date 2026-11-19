@@ -143,13 +143,13 @@ function withPresenceReadGate(database: SqliteDatabase, gate: string): SqliteDat
 
 /**
  * #5607: the broker stalls while it claims an id back for the return address named in the file at `gate` (JSON
- * `{ returnAddress, stallMs }`). The shared database binds the id but its answer never reaches the broker, and right
- * after it asked, the broker's event loop does not run for `stallMs`, as on a host that stops scheduling it. Once: the
+ * `{ returnAddress, stallMs, overdueCallbackMs? }`). The shared database binds the id but its answer never reaches
+ * the broker. After it asks, its event loop does not run for `stallMs`, as on a host that stops scheduling it. Once: the
  * file is removed as it fires, and `<gate>.stalled` names the address.
  */
 function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabase {
 	const stallIfNamed = async <T>(returnAddress: SqliteValue | undefined, answer: T): Promise<T> => {
-		let named: { readonly returnAddress?: unknown; readonly stallMs?: unknown } = {};
+		let named: { readonly returnAddress?: unknown; readonly stallMs?: unknown; readonly overdueCallbackMs?: unknown } = {};
 		try {
 			named = JSON.parse(readFileSync(gate, "utf8")) as typeof named;
 		} catch {
@@ -160,10 +160,13 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 		}
 		rmSync(gate, { force: true });
 		writeFileSync(`${gate}.stalled`, `${returnAddress}\n`);
-		const until = performance.now() + named.stallMs;
-		while (performance.now() < until) {
-			// Busy: nothing else in the broker runs.
+		const stall = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+		const { stallMs, overdueCallbackMs } = named;
+		if (typeof overdueCallbackMs === "number") {
+			// Both timers come due during the stall: the claim deadline first, then this unrelated callback before poll.
+			setTimeout(() => stall(overdueCallbackMs), stallMs);
 		}
+		stall(stallMs);
 		return new Promise<T>(() => {});
 	};
 	return {

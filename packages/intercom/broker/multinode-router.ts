@@ -639,19 +639,26 @@ export class MultiNodeRouter {
 	/**
 	 * Whether a registration with `returnAddress` may take the Intercom id `sessionId`, binding the id to it when free.
 	 * In multi-node mode an id carries authority (shared ask routes and known sessions name sessions by id), so only the
-	 * session that registered it gets it back. False when the shared store does not answer in time.
+	 * session that registered it gets it back. If the deadline fired, its timestamp starts the presence wait.
 	 */
-	async claimSessionId(sessionId: string, returnAddress: string): Promise<boolean> {
-		if (this.closed) return false;
+	async claimSessionId(
+		sessionId: string,
+		returnAddress: string,
+	): Promise<{ claimed: boolean; presenceWaitStartedAt: number | undefined }> {
+		let presenceWaitStartedAt: number | undefined;
+		if (this.closed) return { claimed: false, presenceWaitStartedAt };
+		let claimed = false;
 		let deadline: ReturnType<typeof setTimeout> | undefined;
 		let afterPoll: ReturnType<typeof setImmediate> | undefined;
 		try {
-			return await Promise.race([
+			claimed = await Promise.race([
 				this.state.knownSessions
 					.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS)
 					.then((result) => result.status === "bound"),
 				new Promise<boolean>((resolve) => {
 					deadline = setTimeout(() => {
+						// Waiting for this poll uses the presence budget, even if another overdue callback stalls the broker.
+						presenceWaitStartedAt = performance.now();
 						afterPoll = setImmediate(() => resolve(false));
 						afterPoll.unref?.();
 					}, SESSION_ID_CLAIM_BOUND_MS);
@@ -660,11 +667,11 @@ export class MultiNodeRouter {
 			]);
 		} catch (error) {
 			this.report(error);
-			return false;
 		} finally {
 			clearTimeout(deadline);
 			if (afterPoll !== undefined) clearImmediate(afterPoll);
 		}
+		return { claimed, presenceWaitStartedAt };
 	}
 
 	private holdsSessionId(sessionId: string, returnAddress: string | undefined): Promise<boolean> {
@@ -679,6 +686,7 @@ export class MultiNodeRouter {
 	sessionRegistered(
 		session: BrokerConnectedSession,
 		consumed?: ConsumedReservation,
+		presenceWaitStartedAt?: number,
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
 		const entry: PresenceEntry = {};
@@ -688,8 +696,12 @@ export class MultiNodeRouter {
 		const insertedBy = consumed?.childName === undefined ? undefined : this.state.reservations.insertionMark();
 		insertedBy?.catch(() => {});
 		return new Promise<void>((resolve) => {
-			const bound = setTimeout(resolve, PRESENCE_REGISTRATION_BOUND_MS);
-			bound.unref?.();
+			const remaining = presenceWaitStartedAt === undefined
+				? PRESENCE_REGISTRATION_BOUND_MS
+				: presenceWaitStartedAt + PRESENCE_REGISTRATION_BOUND_MS - performance.now();
+			const bound = remaining > 0 ? setTimeout(resolve, remaining) : undefined;
+			if (bound === undefined) resolve();
+			else bound.unref?.();
 			this.serial(identity, async () => {
 				try {
 					// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
