@@ -733,17 +733,24 @@ export function _disconnectFromAgent(this: AgentSession): void {
 const shutdownEventFailures = new WeakMap<AgentSession, Error[]>();
 const sessionClosures = new WeakMap<object, Promise<void>>();
 const sessionRetirements = new WeakMap<AgentSession, Promise<void>>();
-// Only a requested close can cancel a bind. A startup rollback closes the session to clean up its failure.
-const cancelledBinds = new WeakMap<object, WeakSet<Error>>();
+// A startup rollback closes the session to clean up its failure; it is not a request to cancel a bind.
+const requestedCloses = new WeakSet<object>();
+const bindCloseListeners = new WeakMap<object, Set<(error: Error) => void>>();
 
 export function closedExtensionBindError(session: object): Error {
 	const error = hostInputError("SessionClosed");
-	cancelledBinds.get(session)?.add(error);
+	if (requestedCloses.has(session)) {
+		for (const listener of bindCloseListeners.get(session) ?? []) listener(error);
+	}
 	return error;
 }
 
-export function isCancelledExtensionBind(session: object, error: unknown): boolean {
-	return error instanceof Error && cancelledBinds.get(session)?.has(error) === true;
+/** Notify pending binds at the point of failure, before asynchronous cleanup can change the host's quit state. */
+export function onRequestedExtensionBindClose(session: object, listener: (error: Error) => void): () => void {
+	const listeners = bindCloseListeners.get(session) ?? new Set();
+	bindCloseListeners.set(session, listeners);
+	listeners.add(listener);
+	return () => listeners.delete(listener);
 }
 
 /** A close has started; this session will not accept another extension bind. */
@@ -761,7 +768,7 @@ export function closeAgentSession(
 	const handoff = event.reason !== "quit" && hasCallingSessionWork(session);
 	const existing = sessionClosures.get(session);
 	if (existing) return (handoff && sessionRetirements.get(session)) || existing;
-	if (origin === "request") cancelledBinds.set(session, new WeakSet());
+	if (origin === "request") requestedCloses.add(session);
 	let resolveRetired!: () => void;
 	let rejectRetired!: (error: Error) => void;
 	const retirement = new Promise<void>((resolve, reject) => {

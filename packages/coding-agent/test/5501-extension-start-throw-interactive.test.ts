@@ -23,9 +23,10 @@ import type { ExtensionFactory, InlineExtension, LoadExtensionsResult } from "..
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { DefaultResourceLoader, type ResourceExtensionPaths } from "../src/core/resource-loader.js";
 import { SessionManager } from "../src/core/session-manager.js";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { AgentSessionRuntime, InteractiveMode } from "../src/index.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { normalizeRenderedOutput } from "./interactive-mode-status-helpers.js";
+import { createHarness } from "./suite/harness.js";
 
 /** Each case builds a real interactive host over a real session, which is slow on loaded Windows runners. */
 const INTERACTIVE_HOST_TIMEOUT_MS = 90_000;
@@ -154,6 +155,78 @@ async function createMode(
 function occurrences(text: string, part: string): number {
 	return text.split(part).length - 1;
 }
+
+test.each(["before run", "during session_start", "before a later runtime quit"] as const)(
+	"disposing the SDK session %s rejects interactive startup with the original error (#5697)",
+	async (timing) => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const {
+			session,
+			tempDir,
+			cleanup: disposeHarness,
+		} = await createHarness({
+			extensionFactories: [
+				(pi) =>
+					pi.on("session_start", async () => {
+						entered.resolve();
+						await release.promise;
+					}),
+			],
+		});
+		cleanup.push(disposeHarness);
+		const runtime = new AgentSessionRuntime(
+			session,
+			{
+				cwd: tempDir,
+				agentDir: tempDir,
+				modelRuntime: session.modelRuntime,
+				settingsManager: session.settingsManager,
+				resourceLoader: session.resourceLoader,
+				diagnostics: [],
+			},
+			async () => {
+				throw new Error("unexpected session replacement");
+			},
+		);
+		cleanup.push(() => runtime.dispose());
+		if (timing !== "during session_start") await runtime.session.dispose();
+		const mode = new InteractiveMode(runtime, { initialMessage: "probe", terminal: new FakeTerminal() });
+		const bindExtensions = session.bindExtensions.bind(session);
+		const bind = vi.spyOn(session, "bindExtensions");
+		if (timing === "before a later runtime quit") {
+			bind.mockImplementation((bindings) =>
+				bindExtensions(bindings).catch(async (error: unknown) => {
+					await runtime.dispose();
+					throw error;
+				}),
+			);
+		}
+		const prompt = vi.spyOn(session, "prompt");
+		vi.spyOn(mode, "getUserInput").mockRejectedValue(new Error("startup entered the input loop"));
+		try {
+			const run = mode.run();
+			await Promise.all([
+				assert.rejects(run, (error) => {
+					assert.ok(error instanceof Error && "code" in error && error.code === "SessionClosed", String(error));
+					assert.equal(error, bind.mock.settledResults[0]?.value);
+					return true;
+				}),
+				timing === "during session_start" &&
+					Promise.race([entered.promise, run]).then(() => {
+						const disposed = runtime.session.dispose();
+						release.resolve();
+						return disposed;
+					}),
+			]);
+			assert.equal(prompt.mock.calls.length, 0);
+		} finally {
+			release.resolve();
+			mode.stop();
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
 
 test(
 	"eager startup propagates the error from a resource loader using a closed session (#5697)",
