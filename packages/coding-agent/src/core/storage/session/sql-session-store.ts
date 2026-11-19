@@ -2062,8 +2062,11 @@ export class SqlSessionStore implements SessionStore {
 			const hasText = sqlite
 				? `EXISTS(SELECT 1 FROM json_each(entry_json,'$.message.content') b WHERE CASE WHEN b.type='object' AND json_extract(b.value,'$.type')='text' THEN length(trim(json_extract(b.value,'$.text'),?))>0 END)`
 				: `EXISTS(SELECT 1 FROM jsonb_array_elements((${content})::jsonb) b WHERE b->>'type'='text' AND length(btrim(b->>'text',?))>0)`;
+			const callIds = sqlite
+				? `(SELECT json_group_array(json_extract(b.value,'$.id')) FROM json_each(entry_json,'$.message.content') b WHERE CASE WHEN b.type='object' THEN json_extract(b.value,'$.type')='toolCall' AND json_type(b.value,'$.id')='text' END)`
+				: `(SELECT json_agg(b->>'id')::text FROM jsonb_array_elements((${content})::jsonb) b WHERE b->>'type'='toolCall' AND jsonb_typeof(b->'id')='string')`;
 			const rows = await tx.all(
-				`SELECT seq,entry_id,chunks,${j("type")} kind,${j("parentId")} parent,${j("timestamp")} stamp,${role} role,
+				`SELECT CASE WHEN ${role}='assistant' AND ${ctype}='array' THEN ${callIds} END calls,seq,entry_id,chunks,${j("type")} kind,${j("parentId")} parent,${j("timestamp")} stamp,${role} role,
 				CASE WHEN ${role}='assistant' AND COALESCE(${j("message", "stopReason")},'') IN ('','toolUse','stop') AND CASE WHEN ${ctype}='array' THEN NOT ${hasText} WHEN ${ctype}='${sqlite ? "text" : "string"}' THEN length(${trim}(${content},?))=0 ELSE TRUE END THEN 1 ELSE 0 END hidden,
 				CASE WHEN ${j("type")}='custom' AND ${j("customType")}='atomic.leaf' THEN 1 ELSE 0 END leaf_move,
 				CASE WHEN ${j("type")}='label' THEN ${j("targetId")} END target,CASE WHEN ${j("type")}='label' THEN substr(${j("label")},1,128) END label
@@ -2086,6 +2089,9 @@ export class SqlSessionStore implements SessionStore {
 							type: row.kind as SessionEntry["type"],
 							...(typeof row.role === "string" ? { role: row.role } : {}),
 							...(Number(row.hidden) === 1 ? { hideAssistant: true } : {}),
+							...(typeof row.calls === "string" && row.calls !== "[]"
+								? { callIds: JSON.parse(row.calls) as string[] }
+								: {}),
 							...(Number(row.leaf_move) === 1 ? { leafMove: true } : {}),
 							...(typeof row.target === "string"
 								? { labelTarget: row.target, label: typeof row.label === "string" ? row.label : undefined }

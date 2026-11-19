@@ -3,7 +3,7 @@ import { isProxy } from "node:util/types";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
-import { yieldToEventLoop } from "../utils/event-loop.js";
+import { yieldToEventLoop } from "../utils/event-loop.ts";
 
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
@@ -148,7 +148,7 @@ async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 }
 
 type SelectedWindow = SessionResume & { readonly priorAnswer?: AssistantAnswer; readonly archiveOnlyEpoch?: true };
-type OpenedSession = { readonly resume: SelectedWindow };
+type OpenedSession = { readonly resume: SelectedWindow } | { readonly snapshot: SessionSnapshot };
 async function withPriorAnswer(store: SessionStore, resume: SelectedWindow): Promise<SelectedWindow> {
 	return Object.hasOwn(resume, "priorAnswer")
 		? resume
@@ -159,11 +159,8 @@ async function readStoredSession(
 	sessionId: string,
 	options: SessionOpenOptions | undefined,
 ): Promise<OpenedSession> {
-	if (options?.history !== undefined && options.history !== "tail") {
-		throw new TypeError(
-			'Session history: "full" has been removed. Use sessionManager.readHistory() to iterate older entries.',
-		);
-	}
+	// Kept for older SDK callers until the remaining built-in consumers have migrated to archive pages.
+	if (options?.history === "full") return { snapshot: await store.load(sessionId) };
 	if (!store.readResume || !store.readRange)
 		return { resume: await (await import("./storage/session/snapshot-history.js")).snapshotWindow(store, sessionId) };
 	return { resume: await withPriorAnswer(store, await store.readResume(sessionId)) };
@@ -186,7 +183,7 @@ async function openSessionFileWindow(path: string, cwd: string | undefined, opti
 }
 
 function openedHeader(opened: OpenedSession): SessionRecordHeader {
-	return opened.resume.header;
+	return "snapshot" in opened ? opened.snapshot.header : opened.resume.header;
 }
 
 /** A custom entry written with a message, in the same store write (see `SessionManager.appendWithMessage`). */
@@ -312,6 +309,10 @@ export class SessionManager {
 	}
 
 	private restoreOpened(opened: OpenedSession, location?: string): void {
+		if ("snapshot" in opened) {
+			this.restore(opened.snapshot, location);
+			return;
+		}
 		const resume = opened.resume;
 		const held = [...resume.state, ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.restoreHistory(
@@ -670,9 +671,10 @@ export class SessionManager {
 			const { store, opened } = await openSessionFileWindow(path, this.cwd);
 			validateSessionFileEntries(
 				[
-					{ type: "session", ...opened.resume.header },
-					...opened.resume.state.map(({ entry }) => entry),
-					...opened.resume.branch.map(({ entry }) => entry),
+					{ type: "session", ...openedHeader(opened) },
+					...("snapshot" in opened
+						? opened.snapshot.entries
+						: [...opened.resume.state, ...opened.resume.branch].map(({ entry }) => entry)),
 				],
 				path,
 			);
@@ -825,11 +827,9 @@ export class SessionManager {
 			const result = await store.create(header, entries);
 			await copySessionBlobs(this.store, this.sessionId, store, this.sessionId, hashes);
 			const opened = await readStoredSession(store, this.sessionId, undefined);
-			if (
-				opened.resume.lastSeq !== result.lastSeq ||
-				(result.epoch !== undefined && opened.resume.epoch !== result.epoch)
-			)
-				throw new SessionConflictError(this.sessionId, result.lastSeq, opened.resume.lastSeq);
+			const restored = "snapshot" in opened ? opened.snapshot : opened.resume;
+			if (restored.lastSeq !== result.lastSeq || (result.epoch !== undefined && restored.epoch !== result.epoch))
+				throw new SessionConflictError(this.sessionId, result.lastSeq, restored.lastSeq);
 			if (removeProvisionalRecord) await this.store.delete(this.sessionId);
 			this.store = store;
 			this.sessionDir = store instanceof JsonlSessionStore ? store.descriptor.location : "";
