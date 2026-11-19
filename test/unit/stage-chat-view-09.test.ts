@@ -410,6 +410,73 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
+	test.each(["retry", "cooldown", "switch"] as const)(
+		"Esc pauses a worker stage during its %s wait (#5564)",
+		async (wait) => {
+			const store = createStore();
+			setupRun(store, "run-1", "stage-a", "running");
+			const { handle, state, emit } = makeHandle(undefined, [], "running");
+			state.isStreaming = false;
+			if (wait === "retry") Object.assign(handle, { isWaitingToRetry: true });
+			if (wait === "cooldown") {
+				const stage = store.run("run-1")!.stages[0]!;
+				stage.rateLimits = [
+					{
+						provider: "limited",
+						rateLimitCount: 1,
+						cooldownUntil: Date.now() + 2000,
+						waitingUntil: Date.now() + 2000,
+					},
+				];
+			}
+			const view = new StageChatView({
+				store,
+				graphTheme: deriveGraphTheme({}),
+				runId: "run-1",
+				stageId: "stage-a",
+				workflowName: "wf",
+				handle,
+				onDetach() {},
+				onClose() {},
+			});
+			try {
+				if (wait === "switch")
+					emit({ type: "model_fallback_start", from: "primary", to: "next", reason: "overloaded", attempt: 1 });
+				view.handleInput("\x1b");
+				await flush();
+				assert.equal(state.pauseCalls, 1);
+			} finally {
+				view.dispose();
+			}
+		},
+	);
+
+	test("a status-only view of a remote stage does not offer a retry interrupt its host cannot deliver (#5564)", async () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "running");
+		const { handle, state } = makeHandle(undefined, [], "running");
+		state.isStreaming = false;
+		Object.assign(handle, { canPause: false, isWaitingToRetry: true });
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "wf",
+			handle,
+			onDetach() {},
+			onClose() {},
+		});
+		try {
+			assert.doesNotMatch(stripAnsi(view.render(100).join("\n")), /esc interrupt/);
+			view.handleInput("\x1b");
+			await flush();
+			assert.equal(state.pauseCalls, 0);
+		} finally {
+			view.dispose();
+		}
+	});
+
 	test("inherits custom message renderers from parent chat settings", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");

@@ -65,9 +65,13 @@ export interface AgentPanelCounts {
 	readonly searches?: number;
 	/** The chat's subagents in /tasks, listed in the panel or not: the hint points there once the panel lists none. */
 	readonly subagents?: number;
+	/** A paused or blocked run left the panel and can still be found in /workflows. */
+	readonly hiddenWorkflow?: boolean;
 }
 
-type PanelRankCache = {
+const EMPTY_PANEL_COUNTS: AgentPanelCounts = { ...NO_PANEL_ROWS, shells: 0, searches: 0, subagents: 0 };
+
+type PanelRankCache = PanelRanking & {
 	readonly store: OwnerTaskStore | undefined;
 	readonly revision: number;
 	readonly finishedRevision: number;
@@ -75,38 +79,16 @@ type PanelRankCache = {
 	readonly generation: number;
 	readonly dismissed: ReadonlySet<string>;
 	readonly viewed: ReadonlySet<string>;
-	readonly rows: AgentPanelRow[];
-	readonly total: number;
-	readonly needsInput: number;
-	readonly shells: number;
-	readonly searches: number;
-	readonly subagents: number;
-	readonly agents: number;
-	readonly main: boolean;
 };
 
 interface PanelRanking {
 	readonly rows: AgentPanelRow[];
-	readonly total: number;
-	readonly needsInput: number;
-	readonly shells: number;
-	readonly searches: number;
-	readonly subagents: number;
-	readonly agents: number;
+	readonly counts: AgentPanelCounts;
 	readonly main: boolean;
 }
 
 function rankingOf(cache: PanelRankCache, rows: AgentPanelRow[] = cache.rows): PanelRanking {
-	return {
-		rows,
-		total: cache.total,
-		needsInput: cache.needsInput,
-		shells: cache.shells,
-		searches: cache.searches,
-		subagents: cache.subagents,
-		agents: cache.agents,
-		main: cache.main,
-	};
+	return { rows, counts: cache.counts, main: cache.main };
 }
 
 interface PanelState {
@@ -288,7 +270,7 @@ function rankPanelSession(
 	if (!active) {
 		for (const task of tasks) {
 			if (task.parentTaskId !== undefined || (superseded.size > 0 && superseded.has(task.ref.taskId))) continue;
-			// Background work that is not a row is active while it runs if it is a shell; a search is a tool call's work.
+			// A running shell keeps resting rows listed; a search does not.
 			const role = taskPanelRole(task);
 			if (
 				role === "agent"
@@ -310,6 +292,7 @@ function rankPanelSession(
 	let shells = 0;
 	let searches = 0;
 	let subagents = 0;
+	let hiddenWorkflow = false;
 	const room = () => inputRows.length + runningRows.length + otherRows.length + finishedRows.length < cap;
 	/** Whether the panel lists a row, by the shared rules; a finished row it lists starts fading. */
 	const listed = (
@@ -323,6 +306,7 @@ function rankPanelSession(
 		run: string | undefined,
 	): boolean => {
 		const retired = isRestingPanelRow(kind, rowState) && state.model.retireResting(rowId, active, pass, run);
+		if (retired && kind === "workflow") hiddenWorkflow = true;
 		if (!panelRowListed(kind, rowState, finished, { active, retired, kept })) return false;
 		if (finished) state.model.keepFinished(fadeKey, true, now, pass, native);
 		counts = countPanelRow(counts, kind, rowState);
@@ -397,9 +381,9 @@ function rankPanelSession(
 		if (item.kind !== "workflow") pushItem(item, false);
 	}
 
-	const { total, needsInput, agents } = counts;
+	const panelCounts = { ...counts, shells, searches, subagents, ...(hiddenWorkflow ? { hiddenWorkflow } : {}) };
 	// The main row leads the panel whenever it lists a subagent.
-	const main = agents > 0;
+	const main = counts.agents > 0;
 	state.model.endPass(pass);
 	const ordered = inputRows.concat(runningRows, otherRows, finishedRows);
 	const rows = Number.isFinite(cap) ? ordered.slice(0, cap) : ordered;
@@ -415,15 +399,10 @@ function rankPanelSession(
 		dismissed: new Set(dismissed),
 		viewed: new Set([...state.viewed, ...sharedViewed]),
 		rows,
-		total,
-		needsInput,
-		shells,
-		searches,
-		subagents,
-		agents,
+		counts: panelCounts,
 		main,
 	});
-	return { rows, total, needsInput, shells, searches, subagents, agents, main };
+	return { rows, counts: panelCounts, main };
 }
 
 export function agentPanelRows(
@@ -530,12 +509,7 @@ export function bindAgentPanel(
 	let dirty = false;
 	let currentHiddenBelow = 0;
 	let currentMain = false;
-	let lastTotal = -1;
-	let lastNeedsInput = -1;
-	let lastShells = -1;
-	let lastSearches = -1;
-	let lastSubagents = -1;
-	let lastAgents = -1;
+	let lastCounts: AgentPanelCounts | undefined;
 	let scheduled = false;
 	let windowStart = Number.NEGATIVE_INFINITY;
 	let spent = 0;
@@ -553,25 +527,21 @@ export function bindAgentPanel(
 	let cachedLines: string[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
 
-	const publishCounts = (counts: Required<AgentPanelCounts>) => {
-		const { total, needsInput, shells, searches, subagents, agents } = counts;
+	const publishCounts = (counts: AgentPanelCounts) => {
 		if (
-			total === lastTotal &&
-			needsInput === lastNeedsInput &&
-			shells === lastShells &&
-			searches === lastSearches &&
-			subagents === lastSubagents &&
-			agents === lastAgents
+			lastCounts !== undefined &&
+			counts.total === lastCounts.total &&
+			counts.needsInput === lastCounts.needsInput &&
+			counts.shells === lastCounts.shells &&
+			counts.searches === lastCounts.searches &&
+			counts.subagents === lastCounts.subagents &&
+			counts.agents === lastCounts.agents &&
+			counts.hiddenWorkflow === lastCounts.hiddenWorkflow
 		)
 			return false;
-		lastTotal = total;
-		lastNeedsInput = needsInput;
-		lastShells = shells;
-		lastSearches = searches;
-		lastSubagents = subagents;
-		lastAgents = agents;
+		lastCounts = counts;
 		try {
-			onCounts?.({ total, agents, needsInput, shells, searches, subagents });
+			onCounts?.({ ...counts });
 		} catch {}
 		return true;
 	};
@@ -593,7 +563,7 @@ export function bindAgentPanel(
 		const wasMounted = mounted;
 		mounted = false;
 		stopTimer();
-		if (resetCounts) publishCounts({ total: 0, agents: 0, needsInput: 0, shells: 0, searches: 0, subagents: 0 });
+		if (resetCounts) publishCounts(EMPTY_PANEL_COUNTS);
 		if (wasMounted) {
 			try {
 				ui.setWidget(WIDGET_KEY, undefined);
@@ -626,17 +596,15 @@ export function bindAgentPanel(
 			unmount(false);
 			return;
 		}
-		const { rows, total, needsInput, shells, searches, subagents, agents, main } = idleRows();
+		const { rows, counts, main } = idleRows();
+		// The prompt's hints still update when there are no rows to mount.
+		const changed = publishCounts(counts);
 		if (rows.length === 0) {
-			// Counts go out before the panel closes; the hint line still counts running shells and searches and points
-			// to /tasks.
-			const changed = publishCounts({ total: 0, agents: 0, needsInput: 0, shells, searches, subagents });
 			unmount(false);
 			if (changed) ui.requestRender();
 			return;
 		}
-		publishCounts({ total, agents, needsInput, shells, searches, subagents });
-		currentHiddenBelow = Math.max(0, total - rows.length);
+		currentHiddenBelow = Math.max(0, counts.total - rows.length);
 		currentMain = main;
 		if (!mounted || !sameUnfocusedRows(currentRows, rows, state.model)) {
 			currentRows = rows;
@@ -692,9 +660,9 @@ export function bindAgentPanel(
 									dirty = false;
 									refreshes++;
 									try {
-										const { rows, total, needsInput, shells, searches, subagents, agents, main } = idleRows();
-										publishCounts({ total, agents, needsInput, shells, searches, subagents });
-										currentHiddenBelow = Math.max(0, total - rows.length);
+										const { rows, counts, main } = idleRows();
+										publishCounts(counts);
+										currentHiddenBelow = Math.max(0, counts.total - rows.length);
 										currentMain = main;
 										if (!sameUnfocusedRows(currentRows, rows, state.model)) {
 											currentRows = rows;
@@ -1156,17 +1124,12 @@ export function setAgentPanelVisible(session: object, visible: boolean): void {
 
 export function agentPanelCounts(session: AgentPanelSession & object): AgentPanelCounts {
 	try {
-		const { total, agents, needsInput, shells, searches, subagents } = rankPanelSession(session, {
-			start: 0,
-			limit: 0,
-			cap: 1,
-		});
-		return { total, agents, needsInput, shells, searches, subagents };
+		return { ...rankPanelSession(session, { start: 0, limit: 0, cap: 1 }).counts };
 	} catch (error) {
 		const state = panelState(session);
 		if (state.reportOnce !== undefined) state.reportOnce(error);
 		else state.onSourceError?.(sourceError(error));
-		return { total: 0, agents: 0, needsInput: 0, shells: 0, searches: 0, subagents: 0 };
+		return { ...EMPTY_PANEL_COUNTS };
 	}
 }
 

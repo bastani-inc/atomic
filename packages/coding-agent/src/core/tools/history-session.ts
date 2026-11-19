@@ -1258,7 +1258,7 @@ class SessionSearcher {
 		for (const segment of segments) {
 			for (let pos = segment.start; pos <= Math.min(segment.end, this.lastSeq); ) {
 				const reason = budget.spent();
-				if (reason && started) return this.finish({ reason, resume: this.resumeAt(pos) });
+				if (reason && started) return this.finish({ reason, resume: { seq: pos, matchIndex: 0 } });
 				if (this.firstMore !== undefined && pos > this.firstMore.seq + EXTRA_COUNT_SEQS)
 					return this.finish(undefined, false);
 				started = true;
@@ -1415,7 +1415,7 @@ class SessionSearcher {
 			);
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) {
-				return { stop: { reason: "time", resume: this.resumeAt(pos) } };
+				return { stop: { reason: "time", resume: { seq: pos, matchIndex: 0 } } };
 			}
 			if (budget.signal?.aborted) throw error;
 			seqs = undefined;
@@ -1429,9 +1429,9 @@ class SessionSearcher {
 		}
 		for (const seq of seqs) {
 			const reason = budget.spent();
-			if (reason && this.examined) return { stop: { reason, resume: this.resumeAt(seq) } };
+			if (reason && this.examined) return { stop: { reason, resume: { seq, matchIndex: 0 } } };
 			const loaded = await this.getRenderedEntry(seq);
-			if (loaded === "timedOut") return { stop: { reason: "time", resume: this.resumeAt(seq) } };
+			if (loaded === "timedOut") return { stop: { reason: "time", resume: { seq, matchIndex: 0 } } };
 			this.coveredThroughSeq = seq;
 			this.countedThrough = seq;
 			if (loaded !== null) {
@@ -1459,19 +1459,6 @@ class SessionSearcher {
 		return { next: seqs.at(-1)! + 1 };
 	}
 
-	/**
-	 * Where a stop before `seq` was searched in this call resumes: at its start, except at the entry this call resumed
-	 * in, whose matches and line offset the previous call already showed and this one did not reach again.
-	 */
-	private resumeAt(seq: number): SearchResume {
-		if (seq !== this.search.fromSeq) return { seq, matchIndex: 0 };
-		return {
-			seq,
-			matchIndex: this.search.fromMatchIndex ?? 0,
-			...(this.search.fromLineOffset ? { lineOffset: this.search.fromLineOffset } : {}),
-		};
-	}
-
 	private timeoutOnEntry(seq: number, completedMatches = 0): SearchStep {
 		if (!this.emittedAny && seq === this.coveredFromSeq) {
 			this.skipped = seq;
@@ -1495,7 +1482,7 @@ class SessionSearcher {
 			page = await this.pager.page(pos, Math.min(capEnd, pos + budget.rowAllowance(PAGE_SEQS) - 1), budget);
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) {
-				return { stop: { reason: "time", resume: this.resumeAt(pos) } };
+				return { stop: { reason: "time", resume: { seq: pos, matchIndex: 0 } } };
 			}
 			throw error;
 		}
@@ -1514,7 +1501,7 @@ class SessionSearcher {
 		for (let s = prevSeq + 1; s <= page.throughSeq; s++) this.rememberEntry(s, null);
 		if ((await this.extendIndex(pos, page.throughSeq, rendered)) === "timedOut") {
 			if (this.emittedAny || this.coveredThroughSeq >= this.coveredFromSeq) {
-				return { stop: { reason: "time", resume: this.resumeAt(pos) } };
+				return { stop: { reason: "time", resume: { seq: pos, matchIndex: 0 } } };
 			}
 		}
 		if (this.multiline) {
@@ -1528,7 +1515,7 @@ class SessionSearcher {
 				}
 				const reason = budget.spent();
 				if (reason && (this.emittedAny || this.coveredThroughSeq >= this.coveredFromSeq))
-					return { stop: { reason, resume: this.resumeAt(entry.seq) } };
+					return { stop: { reason, resume: { seq: entry.seq, matchIndex: 0 } } };
 				const step = await this.scanMultilineEntry(entry);
 				budget.takeRows(1);
 				chargedThrough = entry.seq;

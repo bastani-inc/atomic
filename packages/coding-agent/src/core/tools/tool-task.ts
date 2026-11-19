@@ -5,7 +5,6 @@
  * child process, and its output is what it writes.
  */
 
-import { setTimeout as poll } from "node:timers/promises";
 import type {
 	CancelCause,
 	OperationId,
@@ -13,10 +12,11 @@ import type {
 	TaskId,
 	TaskResult,
 	ToolIntent,
+	WaitOutcome,
 	WaitPolicy,
 } from "../tasks/contracts.js";
-import type { FakeExecution, FakeRunnerContext } from "../tasks/supervisor.js";
-import { type SupervisedCommandOwner, type SupervisedCommandResult, validateBashWait } from "./bash-pty-native.js";
+import type { FakeExecution, FakeRunnerContext, TaskLease } from "../tasks/supervisor.js";
+import { type SupervisedCommandOwner, validateBashWait } from "./bash-pty-native.js";
 
 /**
  * The work of a tool call that runs as a task. It writes its output as it goes, and resolves `finished` when it did
@@ -35,16 +35,14 @@ export interface ToolTaskLaunch {
 	readonly wait?: WaitPolicy;
 	/** The tool call's abort: it stops the task, as a stop from `/tasks` does. */
 	readonly signal?: AbortSignal;
-	/** Receives the task's output while the call observes it. */
-	readonly onData?: (bytes: Buffer) => void;
+	readonly onStarted?: (task: TaskLease) => void;
 	readonly heartbeatMs?: number;
 	readonly work: ToolTaskWork;
 }
 
-export interface ToolTaskResult extends SupervisedCommandResult {
+export interface ToolTaskResult {
 	readonly taskId: TaskId;
-	/** Whether the work ended because its execution timeout elapsed. */
-	readonly timedOut: boolean;
+	readonly observation: WaitOutcome;
 }
 
 /** Why the work was asked to stop: a cancellation's cause, or its own execution timeout. */
@@ -65,10 +63,11 @@ function stopCause(reason: unknown): CancelCause {
 }
 
 /** A tool task's runner: run the work, write its output to the task, and settle with how it ended. */
-function toolTaskRunner(launch: ToolTaskLaunch, timedOut: { value: boolean }) {
+function toolTaskRunner(launch: ToolTaskLaunch) {
 	return (context: FakeRunnerContext, _intent: ToolIntent): FakeExecution => {
 		const stop = new AbortController();
-		const forward = () => stop.abort(context.signal.reason);
+		const forward = () => stop.abort(launch.signal?.aborted ? launch.signal.reason : context.signal.reason);
+		const signal = launch.signal ? AbortSignal.any([launch.signal, stop.signal]) : stop.signal;
 		if (context.signal.aborted) forward();
 		else context.signal.addEventListener("abort", forward, { once: true });
 		const timer =
@@ -76,8 +75,7 @@ function toolTaskRunner(launch: ToolTaskLaunch, timedOut: { value: boolean }) {
 				? undefined
 				: setTimeout(() => {
 						// A stop that came first keeps its own reason.
-						if (stop.signal.aborted) return;
-						timedOut.value = true;
+						if (signal.aborted) return;
 						stop.abort("execution-timeout");
 					}, launch.timeoutMs);
 		let bytes = 0;
@@ -96,15 +94,13 @@ function toolTaskRunner(launch: ToolTaskLaunch, timedOut: { value: boolean }) {
 		});
 		const result: Promise<TaskResult> = (async () => {
 			try {
-				const ended = await launch.work(write, stop.signal);
+				const ended = await launch.work(write, signal);
 				// Work that finished before a late stop reached it completed: nothing of it was cut short.
-				if (ended === "stopped")
-					return { kind: "cancelled", cause: stopCause(stop.signal.reason), output: output() };
+				if (ended === "stopped") return { kind: "cancelled", cause: stopCause(signal.reason), output: output() };
 				// A tool's work has no exit code; it finished, as a command that exits 0 does.
 				return { kind: "completed", output: output(), exitCode: 0 };
 			} catch (error) {
-				if (stop.signal.aborted)
-					return { kind: "cancelled", cause: stopCause(stop.signal.reason), output: output() };
+				if (signal.aborted) return { kind: "cancelled", cause: stopCause(signal.reason), output: output() };
 				return {
 					kind: "failed",
 					code: "ToolFailed",
@@ -123,8 +119,7 @@ function toolTaskRunner(launch: ToolTaskLaunch, timedOut: { value: boolean }) {
 
 /**
  * Start `launch` as a task of `context`'s owner and observe it as bash observes a command: in the foreground for the
- * wait's budget (the owner's automatic yield when none is named), then it goes on in the background. Output it writes
- * while observed reaches `onData`.
+ * wait's budget (the owner's automatic yield when none is named), then it goes on in the background.
  */
 export async function executeSupervisedToolTask(
 	context: SupervisedCommandOwner,
@@ -133,7 +128,6 @@ export async function executeSupervisedToolTask(
 	validateBashWait(launch.wait, !!context.startToolTask);
 	launch.signal?.throwIfAborted();
 	if (!context.startToolTask) throw new Error("This tool's background task requires a supported task owner");
-	const timedOut = { value: false };
 	const started = await context.startToolTask(
 		{
 			kind: "tool",
@@ -146,54 +140,22 @@ export async function executeSupervisedToolTask(
 			...(context.launchedBy === undefined ? {} : { launchedBy: context.launchedBy }),
 		},
 		crypto.randomUUID() as OperationId,
-		toolTaskRunner(launch, timedOut),
+		toolTaskRunner(launch),
 	);
 	if (!started.ok) throw new Error(`${started.error.code}: ${started.error.message}`);
 	const { taskId, lease: task } = started.value;
+	launch.onStarted?.(task);
 	context.onCommandStarted?.(taskId);
 	const abort = () => {
 		void context.supervisor.cancelTask(task, "user");
 	};
 	launch.signal?.addEventListener("abort", abort, { once: true });
 	if (launch.signal?.aborted) abort();
-	let offset = "0";
-	let done = false;
-	const observation = context.supervisor.initialObservation(task, launch.wait).finally(() => {
-		done = true;
-	});
-	const drain = async (): Promise<boolean> => {
-		const page = await context.supervisor.readTaskOutput(task, { start: offset, maximumBytes: 64 * 1024 });
-		if (!page.ok) throw new Error(page.error.message);
-		const segments = [
-			...page.value.chunks.map((chunk) => ({ offsets: chunk.offsets, bytes: Buffer.from(chunk.bytes) })),
-			...page.value.omittedRanges.map((offsets) => ({
-				offsets,
-				bytes: Buffer.from(`\n[Output omitted: bytes ${offsets.start}-${offsets.end}]\n`),
-			})),
-		].sort((a, b) => (BigInt(a.offsets.start) < BigInt(b.offsets.start) ? -1 : 1));
-		for (const segment of segments) {
-			launch.onData?.(segment.bytes);
-			offset = segment.offsets.end;
-		}
-		if (page.value.nextOffset !== undefined) offset = page.value.nextOffset;
-		return page.value.nextOffset !== undefined;
-	};
 	try {
-		while (!done) {
-			if (!(await drain())) await poll(10);
-		}
-		const observed = await observation;
+		const observed = await context.supervisor.initialObservation(task, launch.wait);
+		launch.signal?.throwIfAborted();
 		if (!observed.ok) throw new Error(`${observed.error.code}: ${observed.error.message}`);
-		// What the work wrote before the observation ended, including all of it once it settled.
-		while (await drain()) {}
-		if (observed.value.kind === "settled" && observed.value.result.kind === "cancelled")
-			launch.signal?.throwIfAborted();
-		return {
-			taskId,
-			timedOut: timedOut.value,
-			exitCode: observed.value.kind === "settled" && observed.value.result.kind === "completed" ? 0 : null,
-			observation: observed.value,
-		};
+		return { taskId, observation: observed.value };
 	} finally {
 		launch.signal?.removeEventListener("abort", abort);
 	}
