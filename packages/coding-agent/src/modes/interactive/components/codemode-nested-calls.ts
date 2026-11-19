@@ -167,11 +167,18 @@ export class CodemodeNestedCalls extends Container {
 		return this.slots.length;
 	}
 
-	/** A saved transcript page may draw these blocks again only when it can draw each of them again. */
+	/**
+	 * A saved transcript page may draw these blocks again only when it can draw each of them again: a block whose
+	 * renderer keeps state of its own must say it can; a block without such state can.
+	 */
 	get historyReplayable(): boolean {
-		return this.slots.every(
-			(slot) => (slot.component as { readonly historyReplayable?: boolean }).historyReplayable !== false,
-		);
+		return this.slots.every((slot) => {
+			const block = slot.component as {
+				readonly historyReplayable?: boolean;
+				readonly selectionTextMayChangeOnReplay?: boolean;
+			};
+			return block.selectionTextMayChangeOnReplay !== true || block.historyReplayable === true;
+		});
 	}
 
 	/** Whether a block drawn again may read differently, as one whose renderer keeps state of its own can. */

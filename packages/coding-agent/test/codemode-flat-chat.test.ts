@@ -465,3 +465,23 @@ test("clearing the chat disposes the engine rows of a script's calls", () => {
 		rendered.map((command) => command.componentId),
 	);
 });
+
+test("a script's calls may be drawn again from a saved page only when each block with state of its own says so", () => {
+	const block = (flags: { selectionTextMayChangeOnReplay?: boolean; historyReplayable?: boolean }) =>
+		Object.assign(new Text("block", 0, 0), {
+			isExpanded: () => false,
+			setExpanded: () => {},
+			setGroupRole: () => {},
+			...flags,
+		});
+	const calls = new CodemodeNestedCalls(1, false);
+	calls.add("cm/1", block({}));
+	assert.equal(calls.historyReplayable, true);
+	assert.equal(calls.selectionTextMayChangeOnReplay, false);
+	calls.add("cm/2", block({ selectionTextMayChangeOnReplay: true }));
+	assert.equal(calls.historyReplayable, false);
+	assert.equal(calls.selectionTextMayChangeOnReplay, true);
+	const replayable = new CodemodeNestedCalls(1, false);
+	replayable.add("cm/1", block({ selectionTextMayChangeOnReplay: true, historyReplayable: true }));
+	assert.equal(replayable.historyReplayable, true);
+});
