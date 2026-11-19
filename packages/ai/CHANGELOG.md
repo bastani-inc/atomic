@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Fixed
+
+- The first request using the chat client loads its modules over several event-loop turns, so starting a workflow no longer has to wait out the entire client load in one turn ([#5544](https://github.com/bastani-inc/atomic/issues/5544)).
+
 ## [0.9.89] - 2026-11-18
 
 ### Added

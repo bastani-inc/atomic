@@ -1,3 +1,4 @@
+import { loadOpenAITransport } from "../../api/load-openai-transport.ts";
 import type { generateImages as generateImagesOpenAIFunction } from "../../api/openai-images.ts";
 import type { generateImages as generateImagesOpenRouterFunction } from "../../api/openrouter-images.ts";
 import { registerImagesApiProvider } from "../../images-api-registry.ts";
@@ -34,14 +35,14 @@ function createLazyLoadErrorImages(model: ImageModel<ImageApi>, error: unknown):
 }
 
 function loadOpenRouterImagesProviderModule(): Promise<OpenRouterImagesProviderModule> {
-	openRouterImagesProviderModulePromise ||= import("../../api/openrouter-images.ts").then(
+	openRouterImagesProviderModulePromise ||= loadOpenAITransport(() => import("../../api/openrouter-images.ts")).then(
 		(module) => module as OpenRouterImagesProviderModule,
 	);
 	return openRouterImagesProviderModulePromise;
 }
 
 function loadOpenAIImagesProviderModule(): Promise<OpenAIImagesProviderModule> {
-	openAIImagesProviderModulePromise ||= import("../../api/openai-images.ts").then(
+	openAIImagesProviderModulePromise ||= loadOpenAITransport(() => import("../../api/openai-images.ts")).then(
 		(module) => module as OpenAIImagesProviderModule,
 	);
 	return openAIImagesProviderModulePromise;
