@@ -255,7 +255,7 @@ export {
 	builtinToolBlockPresentation,
 } from "./modes/interactive/components/tool-block-families.ts";
 export { formatToolActionSummary } from "./modes/interactive/components/tool-block-summary.ts";
-// Internal host seam for bundled workflow stage chats' click-expandable blocks; not yet a stable extension API.
+// Internal chat UI helpers for click-expandable blocks; not yet a stable extension API.
 export {
 	type ClickExpandableBlock,
 	type RowRange,
@@ -952,9 +952,7 @@ export {
 	type UnavailableToolStatus,
 } from "./core/tool-status.js";
 export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.ts";
-// Builtin tool definitions reusable by first-party extensions (e.g. workflows
-// invoking the structured ask_user_question UI deterministically).
-// Tools
+// Builtin tool definitions reusable by extensions.
 export {
 	BASH_SHELL_PRESENTATION,
 	type BashOperations,
@@ -1224,7 +1222,7 @@ export {
 	buildInputLabel,
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
-	// Internal host seam for bundled workflow stage chat; not yet a stable extension API.
+	// Internal host for embedded chats; not yet a stable extension API.
 	ChatSessionHost,
 	type ChatSessionHostBashRequest,
 	type ChatSessionHostCommands,
