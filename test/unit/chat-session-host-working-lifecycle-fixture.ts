@@ -1,5 +1,6 @@
 // @ts-nocheck
 import type { EditorTheme } from "@bastani/atomic-tui";
+import { stripHintMarkers } from "@bastani/atomic-tui";
 import { hostNoticeForEvent, hostNoticeMessage } from "../../packages/coding-agent/src/core/host-notices.ts";
 import {
 	ChatSessionHost,
@@ -53,7 +54,7 @@ export function applySessionEvent(host: ChatSessionHost<never>, event: unknown):
 }
 
 export function stripAnsi(text: string): string {
-	return text.replace(/\u001b\[[0-9;]*m/g, "");
+	return stripHintMarkers(text).replace(/\u001b\[[0-9;]*m/g, "");
 }
 
 export function rawWorkingLine(host: ChatSessionHost<never>): string | undefined {

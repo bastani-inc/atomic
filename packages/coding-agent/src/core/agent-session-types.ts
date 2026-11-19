@@ -25,7 +25,13 @@ import type { ResourceFailure, TaskId } from "./tasks/contracts.js";
 export type CompactionReason = "manual" | "threshold" | "overflow" | "branchSummary";
 
 export type AgentSessionEvent =
-	| (AgentEvent & { parentToolCallId?: string })
+	| ((
+			| Exclude<AgentEvent, { type: "agent_start" }>
+			| (Extract<AgentEvent, { type: "agent_start" }> & {
+					/** The first request of this turn, even when this event starts a retry. */
+					turnStartedAt?: number;
+			  })
+	  ) & { parentToolCallId?: string })
 	| { type: "agent_settled"; aborted: boolean }
 	/** The session let go of its in-memory state; only its stored history remains. Emitted before teardown. */
 	| { type: "session_released"; released: import("./agent-session-release.ts").ReleasedAgentSession }
@@ -308,6 +314,12 @@ export interface ExtensionBindings {
 	commandContextActions?: ExtensionCommandContextActions;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
+	/**
+	 * Report a `session_start` or `resources_discover` handler that throws through `onError` and keep the session, as
+	 * for any other handler. Without it a failed start rolls the session back and rejects with `ExtensionStartupError`.
+	 * The interactive terminal sets it, so an extension that fails to start never closes the session a user works in.
+	 */
+	reportStartupErrors?: boolean;
 }
 
 export interface AgentSessionReloadOptions {

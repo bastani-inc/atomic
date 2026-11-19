@@ -46,8 +46,9 @@ import {
 } from "../shared/external-run-routes.js";
 import { formatPoolCoordination } from "../shared/pool-coordination.js";
 import { askStagePromptUi, presentStageQuestion } from "../shared/stage-question-form.js";
-import type { StageUiBroker } from "../shared/stage-ui-broker.js";
+import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
+import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { PoolCoordinationStats } from "../shared/store-types.js";
 import type {
 	WorkflowDefinition,
@@ -506,6 +507,8 @@ export class LocalWorkerPool {
 			 * every live pooled stage. A handle opens a watch only while it is used.
 			 */
 			readonly stageControlRegistry?: StageControlRegistry;
+			/** The host drops a retained chat once its resumed worker publishes that stage. */
+			readonly resumingChats?: StageControlRegistry;
 		},
 	) {
 		// Where the pool's tables are: a SQLite file by path, or, for a shared pool, the durable journal itself.
@@ -962,7 +965,11 @@ export class LocalWorkerPool {
 	private routeQuestion(runId: string, stageId: string, promptId: string | undefined, generation: number): void {
 		const key = JSON.stringify([runId, stageId]);
 		const active = this.routedQuestions.get(key);
-		if (active !== undefined && active.promptId === promptId) return;
+		if (
+			active !== undefined &&
+			(active.generation > generation || (active.generation === generation && active.promptId === promptId))
+		)
+			return;
 		if (active !== undefined) {
 			this.routedQuestions.delete(key);
 			active.controller.abort(new Error("The stage's question was answered or withdrawn."));
@@ -970,7 +977,10 @@ export class LocalWorkerPool {
 		if (promptId === undefined || this.closed) return;
 		const controller = new AbortController();
 		this.routedQuestions.set(key, { promptId, generation, controller });
-		void this.askQuestion(runId, stageId, promptId, generation, controller)
+		const broker = this.questionBroker ?? currentStageUiBroker();
+		const owner = broker.claimStage(runId, stageId);
+		void this.askQuestion(runId, stageId, promptId, generation, controller, broker, owner.signal)
+			.finally(owner.release)
 			.then((asked) => {
 				// The worker had not raised its form yet, or the root's broker failed it there:
 				// the stage's next question is shown again.
@@ -991,13 +1001,13 @@ export class LocalWorkerPool {
 		promptId: string,
 		generation: number,
 		route: AbortController,
+		broker: StageUiBroker,
+		owner: AbortSignal,
 	): Promise<boolean | "failed"> {
-		const signal = route.signal;
-		// The stage UI broker is loaded on first use, so pools whose stages never ask never load it.
-		const [question, { currentStageUiBroker }] = await Promise.all([
-			this.command({ kind: "stage-question", runId, stageId, promptId }) as Promise<PooledStageQuestion | undefined>,
-			import("../shared/stage-ui-broker.js"),
-		]);
+		const signal = AbortSignal.any([route.signal, owner]);
+		const question = (await this.command({ kind: "stage-question", runId, stageId, promptId })) as
+			| PooledStageQuestion
+			| undefined;
 		if (question?.promptId !== promptId || signal.aborted) return signal.aborted;
 		// The user already answered this question, or its form host failed, while the attempt that asked
 		// it first was dying.
@@ -1006,7 +1016,6 @@ export class LocalWorkerPool {
 			const sent = await this.sendQuestionOutcome(runId, stageId, question, generation, held, route);
 			return sent && "error" in held ? "failed" : sent;
 		}
-		const broker = this.questionBroker ?? currentStageUiBroker();
 		let answered: { readonly value: QuestionnaireResult } | undefined;
 		let failure: Error | undefined;
 		try {
@@ -1019,6 +1028,7 @@ export class LocalWorkerPool {
 				kind: question.kind,
 				params: question.params,
 				signal,
+				owner,
 			});
 			await form.result;
 			answered = form.answered();
@@ -1027,7 +1037,7 @@ export class LocalWorkerPool {
 			// that error, as an in-process stage's does, instead of waiting for an answer that never comes.
 			if (!signal.aborted) failure = error instanceof Error ? error : new Error(String(error));
 		} finally {
-			if (signal.aborted) broker.clearStagePrompt(runId, stageId);
+			if (signal.aborted) broker.clearStagePrompt(runId, stageId, owner);
 		}
 		if (failure !== undefined) {
 			const sent = await this.sendQuestionOutcome(runId, stageId, question, generation, { error: failure }, route);
@@ -1764,6 +1774,17 @@ export class LocalWorkerPool {
 			const accepted = publications
 				.filter((_, index) => outcomes[index] === undefined)
 				.map(({ work, runs }) => ({ work, runs: this.openStages.visit(work, runs) }));
+			const chats = this.options.resumingChats;
+			if (chats?.handoffToWorker) {
+				for (const { runs } of accepted)
+					for (const run of runs)
+						for (const stage of run.stages) {
+							const terminal = isTerminalStageStatus(stage.status);
+							// An SDK caller gets a replacement proxy below; the host resolves its own worker view.
+							if (!this.options.stageControlRegistry || terminal)
+								chats.handoffToWorker(run.id, stage.id, terminal);
+						}
+			}
 			this.routePrompts(accepted);
 			this.drainRemoteStages(handoff, accepted);
 			const registry = this.options.stageControlRegistry;

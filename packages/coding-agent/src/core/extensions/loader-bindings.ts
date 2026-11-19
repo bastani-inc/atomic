@@ -3,7 +3,65 @@ import type { Extension, ExtensionRuntime } from "./types.ts";
 
 type Callback = (...args: never[]) => unknown;
 
-const originalCallbacks = new WeakMap<Callback, Callback>();
+// Source and built loaders can wrap one another's registrations. Keep the weak identity tables shared across that boundary.
+const registrationsKey = Symbol.for("atomic.extension-registration-identities.v2");
+type RegistrationIdentities = {
+	originals: WeakMap<Callback, Callback>;
+	startup: WeakMap<Callback, string>;
+	sourceIds: WeakMap<object, number>;
+	nextId: number;
+};
+const registrationsHost = globalThis as typeof globalThis & { [registrationsKey]?: RegistrationIdentities };
+registrationsHost[registrationsKey] ??= {
+	originals: new WeakMap(),
+	startup: new WeakMap(),
+	sourceIds: new WeakMap(),
+	nextId: 0,
+};
+const identities = registrationsHost[registrationsKey];
+const originalCallbacks = identities.originals;
+
+function objectId(source: object): number {
+	let id = identities.sourceIds.get(source);
+	if (id === undefined) {
+		id = identities.nextId++;
+		identities.sourceIds.set(source, id);
+	}
+	return id;
+}
+
+/** The construction recipe survives the supported built/source loader boundary and a loader override's shallow copy. */
+export const extensionSource = Symbol.for("atomic.extension-source.v1");
+
+/** A factory object (SDK) or canonical module path (file), never its display name. */
+export function startupSourceId(source: object | string): string {
+	return typeof source === "string" ? `file:${source}` : `object:${objectId(source)}`;
+}
+
+export function registerFactoryStartupHandler(handler: Callback, owner: string, event: string, ordinal: number): void {
+	identities.startup.set(originalRegistrationCallback(handler), JSON.stringify([owner, event, ordinal]));
+}
+
+/** Identify the registrations in a dispatch snapshot. Neighbouring handlers and their ordering are not part of a token. */
+export function startupRegistrationTokens(
+	extension: Extension,
+	handlers: readonly Callback[],
+	copies: Map<string, number>,
+): string[] {
+	const recipe = (
+		extension as Extension & { [extensionSource]?: { registrationSource: object | string; factory: Callback } }
+	)[extensionSource];
+	const owner = recipe ? startupSourceId(recipe.registrationSource ?? recipe.factory) : "raw";
+	return handlers.map((handler) => {
+		const original = originalRegistrationCallback(handler);
+		const registration = identities.startup.get(original) ?? `raw:${objectId(original)}`;
+		const token = JSON.stringify([owner, registration]);
+		// A loader can deliberately install the very same callable twice. Count its copies, not its list indices.
+		const copy = copies.get(token) ?? 0;
+		copies.set(token, copy + 1);
+		return `${token}:${copy}`;
+	});
+}
 
 function retainCallbackIdentity(wrapped: Callback, original: Callback): Callback {
 	originalCallbacks.set(wrapped, originalCallbacks.get(original) ?? original);

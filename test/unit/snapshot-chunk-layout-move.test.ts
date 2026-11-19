@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import {
@@ -12,6 +12,16 @@ import {
 	SNAPSHOT_CHUNK_MOVE_ROWS,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
+import {
+	rehydrateWorkspaceError,
+	type SerializedWorkspaceError,
+	serializeWorkspaceError,
+	WorkspaceCollectionError,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
+import {
+	resetSnapshotCollectionScheduleForTesting,
+	scheduleSnapshotCollection,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 
 /** The snapshot blob store of Atomic 0.9.89, vendored unmodified (test/fixtures/snapshot-store-0.9.89/README.md). */
@@ -70,8 +80,11 @@ let directory: string;
 const closers: Array<() => Promise<void>> = [];
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "snapshot-chunk-layout-move-"));
+	resetSnapshotCollectionScheduleForTesting();
 });
 afterEach(async () => {
+	vi.restoreAllMocks();
+	resetSnapshotCollectionScheduleForTesting();
 	while (closers.length > 0) await closers.pop()?.();
 	rmSync(directory, { recursive: true, force: true });
 });
@@ -414,6 +427,56 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				await assertEveryBlobReads(older, [...STORED, behind], "0.9.89");
 			});
 
+			test("the move ends while 0.9.89 deletes a blob it copied after every move transaction (#5622)", async () => {
+				const database = await release0989Store();
+				const older = await release0989.SqlSnapshotBlobStore.open(database, prefix);
+				// A blob of more chunks than two transactions free, so the move takes several transactions after its copy, and
+				// two-chunk blobs, more of them than those transactions: 0.9.89 deletes one after each move transaction.
+				const large = blob(2 * SNAPSHOT_CHUNK_MOVE_ROWS * SNAPSHOT_BLOB_CHUNK_BYTES + 1, 700);
+				const small = Array.from({ length: 5 }, (_, index) => blob(2 * SNAPSHOT_BLOB_CHUNK_BYTES, 710 + index));
+				await older.putBlobs([large, ...small]);
+				const doomed = [large, ...small];
+				const deleted: Blob[] = [];
+				let copied = false;
+				let outlasted = false;
+				let expected: ChunkRow[] = [];
+				const work: number[] = [];
+				const measured = measuringMove(database, work, async () => {
+					copied = true;
+				});
+				const deleting = afterEachTransaction(measured, async () => {
+					if (!copied || !(await chunkTables(database)).includes(`${chunks}_next`)) return;
+					// The move is under way and its copy is complete: 0.9.89 collects one more blob the move copied.
+					const gone = doomed.shift();
+					if (gone === undefined) {
+						outlasted = true;
+						return;
+					}
+					await database.run(`UPDATE ${blobs} SET created_at = 1 WHERE hash = ?`, gone.hash);
+					assert.deepEqual(await older.collectGarbage({ graceSeconds: 3_600 }), [gone.hash]);
+					deleted.push(gone);
+					expected = await chunkRows(database);
+				});
+
+				const store = await SqlSnapshotBlobStore.open(deleting, prefix);
+				assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), []);
+
+				assert.equal(outlasted, false, `the move outlasted 0.9.89 deleting all ${deleted.length} blobs`);
+				assert.ok(deleted.length > 2, `0.9.89 deleted a blob after each of ${deleted.length} move transactions`);
+				assert.deepEqual(
+					work.filter((rows) => rows > SNAPSHOT_CHUNK_MOVE_ROWS),
+					[],
+					`chunks each transaction copied or freed: ${work.join(" ")}`,
+				);
+				assert.deepEqual(await chunkTables(database), [chunks]);
+				assert.equal(await layoutOf(database), "rowid");
+				assert.deepEqual(await chunkRows(database), expected);
+				const live = [...STORED, ...doomed];
+				await assertEveryBlobReads(store, live, "this version");
+				await assertEveryBlobReads(older, live, "0.9.89");
+				for (const { hash } of deleted) assert.equal(await store.getBlob(hash), undefined);
+			});
+
 			test("0.9.89 reads, writes and collects a moved chunk table without changing its layout (#5541)", async () => {
 				const database = await release0989Store();
 				const store = await SqlSnapshotBlobStore.open(database, prefix);
@@ -461,6 +524,154 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 					await chunkRows(database),
 					before.filter((row) => row.hash !== deleted.hash),
 				);
+			});
+
+			for (const broken of ["trigger", "view"] as const) {
+				test(`the collection warning names a ${broken} that refers to a missing table and blocks the move, once per process (#5622)`, async () => {
+					const database = await release0989Store();
+					const before = await chunkRows(database);
+					// Another application's objects in the same database: dropping a table leaves its trigger or view broken, and
+					// SQLite then renames no table in the database.
+					const name = `foreign_${broken}`;
+					await database.exec("CREATE TABLE foreign_source (x)");
+					await database.exec("CREATE TABLE foreign_gone (x)");
+					await database.exec(
+						broken === "trigger"
+							? `CREATE TRIGGER ${name} AFTER INSERT ON foreign_source BEGIN INSERT INTO foreign_gone VALUES (new.x); END`
+							: `CREATE VIEW ${name} AS SELECT x FROM foreign_gone`,
+					);
+					await database.exec("DROP TABLE foreign_gone");
+					const store = await SqlSnapshotBlobStore.open(database, prefix);
+					const warnings: unknown[] = [];
+					vi.spyOn(process, "emitWarning").mockImplementation((warning) => void warnings.push(warning));
+					let now = 0;
+					vi.spyOn(performance, "now").mockImplementation(() => now);
+					const settings = { autoCollect: true, collectIntervalSeconds: 60, graceSeconds: 3_600 };
+					/** A collection once the interval since the last one has passed, in this process and on the database clock. */
+					const collectLater = async () => {
+						now += 60_000;
+						await database.run(
+							`UPDATE ${prefix}snapshot_collection SET claimed_at = claimed_at - 60, finished_at = finished_at - 60`,
+						);
+						return scheduleSnapshotCollection(store, settings);
+					};
+
+					const outcome = await scheduleSnapshotCollection(store, settings);
+
+					assert.equal(outcome.status, "failed");
+					const { error } = outcome as { error: WorkspaceCollectionError };
+					assert.deepEqual(warnings, [error], "the failure is shown as a process warning");
+					const shown = (warnings[0] as Error).message;
+					assert.match(
+						shown,
+						new RegExp(
+							`^Snapshot blob collection failed while deleting unreferenced blobs from ${blobs}: (?:.*: )?error in ${broken} ${name}: no such table: main\\.foreign_gone \\(collection-failed\\)\\. `,
+							"u",
+						),
+					);
+					assert.ok(
+						shown.endsWith(
+							`(collection-failed). A trigger or view that refers to a missing table blocks moving the snapshot chunk table to its new layout until it is fixed or dropped: SQLite renames no table while one exists. Fix the ${broken} ${name}, or drop it with DROP ${broken.toUpperCase()} "${name}", and the next collection finishes the move. No blob a retained snapshot needs was deleted, and snapshots keep working meanwhile; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.`,
+						),
+						shown,
+					);
+					assert.equal(await layoutOf(database), "WITHOUT ROWID");
+					assert.deepEqual(await chunkRows(database), before);
+					await assertEveryBlobReads(store, STORED, "this version while the move is blocked");
+
+					// The next collection stops at the same point, and the warning is not shown again.
+					assert.equal((await collectLater()).status, "failed");
+					assert.equal(warnings.length, 1);
+
+					// Once the broken object is dropped, the next collection finishes the move.
+					await database.exec(`DROP ${broken.toUpperCase()} "${name}"`);
+					assert.deepEqual(await collectLater(), { status: "collected", deleted: [] });
+					assert.deepEqual(await chunkTables(database), [chunks]);
+					assert.equal(await layoutOf(database), "rowid");
+					assert.deepEqual(await chunkRows(database), before);
+					assert.equal(warnings.length, 1);
+				});
+			}
+
+			/** A failed automatic collection of a 0.9.89 store, whose `views` refer to a table, dropped unless the view is `working`. */
+			async function failedCollection(
+				views: Readonly<Record<string, "working" | "broken">>,
+			): Promise<{ database: SqliteDatabase; store: SqlSnapshotBlobStore; error: WorkspaceCollectionError }> {
+				const database = await release0989Store();
+				await database.exec("CREATE TABLE view_source (x)");
+				await database.exec("CREATE TABLE view_gone (x)");
+				for (const [name, state] of Object.entries(views))
+					await database.exec(
+						`CREATE VIEW "${name.replaceAll('"', '""')}" AS SELECT x FROM ${state === "working" ? "view_source" : "view_gone"}`,
+					);
+				await database.exec("DROP TABLE view_gone");
+				const store = await SqlSnapshotBlobStore.open(database, prefix);
+				const outcome = await scheduleSnapshotCollection(
+					store,
+					{ autoCollect: true, collectIntervalSeconds: 60, graceSeconds: 3_600 },
+					{ onFailure: () => {} },
+				);
+				assert.equal(outcome.status, "failed");
+				return { database, store, error: (outcome as { error: WorkspaceCollectionError }).error };
+			}
+
+			for (const [blocker, named] of [
+				["sales after tax", true],
+				["sales after rename", false],
+			] as const) {
+				test(`the collection warning never says to drop the working view sales when the view '${blocker}' blocks the move (#5622)`, async () => {
+					const { database, store, error } = await failedCollection({ sales: "working", [blocker]: "broken" });
+
+					assert.match(
+						error.summary,
+						new RegExp(`: error in view ${blocker}: no such table: main\\.view_gone$`, "u"),
+					);
+					assert.doesNotMatch(error.message, /DROP VIEW "sales"/u);
+					const drop =
+						/or drop it with (DROP VIEW "(?:[^"]|"")*"), and the next collection finishes the move\./u.exec(
+							error.hint,
+						)?.[1];
+					if (named) {
+						// SQLite reports a table rename's broken view without a suffix: only `sales after tax` is meant.
+						assert.equal(drop, `DROP VIEW "${blocker}"`, error.hint);
+					} else {
+						// SQLite also writes `<name> after rename` for a view named `sales`: the warning cannot say which.
+						assert.equal(
+							error.hint,
+							"No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.",
+						);
+					}
+
+					await database.exec(drop ?? `DROP VIEW "${blocker}"`);
+					assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), []);
+					assert.equal(await layoutOf(database), "rowid");
+					assert.deepEqual(
+						await database.all("SELECT name FROM sqlite_schema WHERE type = 'view' ORDER BY name"),
+						[{ name: "sales" }],
+					);
+					await database.all("SELECT x FROM sales");
+				});
+			}
+
+			test("a collection warning sent to another process keeps its message and hint, even with the blocking view as its eighth cause (#5622)", async () => {
+				const { error } = await failedCollection({ 'report "q"': "broken" });
+				let wrapped = error.cause as Error;
+				for (let wrapper = 1; wrapper < 8; wrapper++) wrapped = new Error(`wrapper ${wrapper}`, { cause: wrapped });
+				const deep = new WorkspaceCollectionError(
+					{ table: error.table, phase: error.phase, deleted: error.deleted },
+					wrapped,
+				);
+
+				for (const sent of [error, deep]) {
+					assert.match(sent.hint, /or drop it with DROP VIEW "report ""q""", and the next collection/u);
+					const received = rehydrateWorkspaceError(
+						JSON.parse(JSON.stringify(serializeWorkspaceError(sent))) as SerializedWorkspaceError,
+					);
+					assert.ok(received instanceof WorkspaceCollectionError);
+					assert.equal(received.message, sent.message);
+					assert.equal(received.hint, sent.hint);
+					assert.equal(received.summary, sent.summary);
+				}
 			});
 		});
 	}

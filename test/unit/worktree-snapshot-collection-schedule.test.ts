@@ -22,6 +22,7 @@ import {
 import {
 	resetSnapshotCollectionScheduleForTesting,
 	runningSnapshotCollection,
+	SNAPSHOT_COLLECTION_SESSION_DELAY_MS,
 	scheduleSnapshotCollection,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/src/core/worktree-snapshot/settings.ts";
@@ -316,7 +317,10 @@ describe("an automatic collection that fails is an outcome, reported once and re
 		assert.equal(outcome.status, "failed");
 		const { error } = outcome as { error: WorkspaceCollectionError };
 		assert.deepEqual(error.fields, { table: "snapshot_blobs", phase: "index", deleted: 0 });
-		assert.ok(error.summary.endsWith("while indexing existing snapshot references of snapshot_blobs"));
+		assert.equal(
+			error.summary,
+			"Snapshot blob collection failed while indexing existing snapshot references of snapshot_blobs: schema read failed",
+		);
 		fault.current = undefined;
 		assert.equal((await store.listBlobHashes()).length, 2);
 		assert.equal((await claimRow(database))?.error_code, "collection-failed");
@@ -429,6 +433,76 @@ test("aborting the collections of one database leaves those of another database 
 	assert.equal((await stopped).status, "interrupted");
 	assert.equal((await finished).status, "collected");
 	assert.deepEqual(await second.store.listBlobHashes(), []);
+});
+
+describe("a collection a session schedules starts after a delay that holds neither the process nor storage closing (#5530)", () => {
+	test("it reads nothing until the delay has passed, on a timer that does not hold the process, and then collects", async () => {
+		const { database, store, counted, reset } = await connection();
+		const orphans = await agedOrphans(store, database, 3);
+		reset();
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const outcome = scheduleSnapshotCollection(store, settings, {
+				...silent,
+				delayMs: SNAPSHOT_COLLECTION_SESSION_DELAY_MS,
+			});
+			await vi.advanceTimersByTimeAsync(SNAPSHOT_COLLECTION_SESSION_DELAY_MS - 1);
+
+			assert.deepEqual(counted.statements, [], "nothing was read before the delay passed");
+			assert.ok(runningSnapshotCollection(store), "the collection counts as running while it waits");
+			await vi.advanceTimersByTimeAsync(1);
+			vi.useRealTimers();
+			const settled = await outcome;
+			assert.equal(settled.status, "collected");
+			assert.deepEqual([...(settled as { deleted: readonly string[] }).deleted].sort(), [...orphans].sort());
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("the wait does not keep the process alive", async () => {
+		const { database, store } = await connection();
+		await agedOrphans(store, database, 1);
+		const timers: ReturnType<typeof setTimeout>[] = [];
+		const realSetTimeout = globalThis.setTimeout;
+		vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, milliseconds?: number) => {
+			const timer = realSetTimeout(handler, milliseconds);
+			timers.push(timer);
+			return timer;
+		}) as typeof setTimeout);
+
+		const outcome = scheduleSnapshotCollection(store, settings, { ...silent, delayMs: 60_000 });
+
+		const waits = timers.filter((timer) => !timer.hasRef());
+		assert.equal(waits.length, 1, "one wait, which the process does not wait for");
+		abortSnapshotCollectionsOn(database.descriptor, new StoreClosedError(database.descriptor));
+		assert.equal((await outcome).status, "interrupted");
+	});
+
+	test("storage closing during the delay ends the collection at once, interrupted, having read and claimed nothing", async () => {
+		const { database, store, counted, reset } = await connection();
+		await agedOrphans(store, database, 2);
+		reset();
+		const outcome = scheduleSnapshotCollection(store, settings, { ...silent, delayMs: 60_000 });
+		const started = performance.now();
+
+		abortSnapshotCollectionsOn(database.descriptor, new StoreClosedError(database.descriptor));
+		await Promise.all(runningSnapshotCollectionsOn(database.descriptor));
+
+		assert.ok(performance.now() - started < 5_000, "closing did not wait out the delay");
+		assert.deepEqual(await outcome, { status: "interrupted", deleted: [] });
+		assert.deepEqual(counted.statements, []);
+		assert.equal((await claimRow(database))?.claimed_at, null);
+		assert.equal((await store.listBlobHashes()).length, 2);
+	});
+
+	test("a delay that is not a non-negative integer is refused before any storage is touched", () => {
+		for (const delayMs of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])
+			assert.throws(
+				() => scheduleSnapshotCollection(undefined, settings, { delayMs }),
+				(error: unknown) => isWorkspaceConfigError(error) && error.fields.field === "delayMs",
+			);
+	});
 });
 
 describe("the claim is a lease every batch renews, and the interval runs from the last finish (#4355)", () => {

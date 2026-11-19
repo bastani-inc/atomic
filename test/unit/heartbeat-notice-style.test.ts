@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
 import type { TaskHeartbeatDetails } from "../../packages/coding-agent/src/core/tasks/heartbeat-notice.js";
@@ -11,6 +10,7 @@ import {
 	formatWorkflowHeartbeatNoticeText,
 	registerWorkflowHeartbeatRenderer,
 } from "../../packages/workflows/src/extension/workflow-heartbeat-notice.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const MINUTE = 60_000;
 const WIDTHS = [40, 80, 120] as const;

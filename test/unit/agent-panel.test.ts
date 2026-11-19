@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
-import { matchesKey, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
+import { matchesKey, readHintSpans, stripHintMarkers, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -41,6 +40,7 @@ import {
 	themedAgentPanelStyle,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 import { makeTestTui } from "../support/fake-tui.js";
 
 const plain: AgentPanelStyle = {
@@ -523,8 +523,13 @@ test("a stop confirmation keeps terminal controls in a source's name inert (#522
 	focus.enter();
 	press("x");
 	const hint = renderAgentPanelHint(focus, 160, plain, new KeybindingsManager());
-	assert.doesNotMatch(hint, /[\x1b\x07\u202e]/u);
+	assert.doesNotMatch(stripHintMarkers(hint), /[\x1b\x07\u202e]/u);
 	assert.match(stripVTControlCharacters(hint), /^ {2}Press x again within 3s to stop/);
+	assert.deepEqual(
+		readHintSpans(hint).spans.map((span) => [span.start, span.end, span.action]),
+		[[8, 15, { kind: "key", key: "x" }]],
+		"only the key, x again, is marked for a click",
+	);
 });
 
 test("rows whose name, task or stage label starts with combining marks stay within terminal width (#5224)", () => {

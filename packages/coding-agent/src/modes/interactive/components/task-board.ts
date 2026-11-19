@@ -2,7 +2,7 @@ import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@bastani/
 import type { AgentPanelItem } from "../../../core/tasks/agent-panel-source.ts";
 import { waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
-import { taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
+import { shownSpanMs, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
@@ -135,6 +135,12 @@ export function compactTokens(tokens: number): string {
 }
 
 function rowElapsed(row: TaskBoardRow): number | undefined {
+	const span = row.kind === "task" ? row.task.elapsedSpan : row.item.elapsedSpan;
+	if (span) {
+		return row.kind === "task"
+			? shownSpanMs(row.task.ref.taskId, span, taskClockOf(row.task))
+			: shownSpanMs(row.item.id, span, taskClockOf(row.item));
+	}
 	if (row.kind === "task") {
 		const reported = row.task.metrics?.elapsedMs;
 		if (!isTaskTurnInterrupted(row.task)) return reported;
