@@ -360,7 +360,9 @@ export class EngineRenderService {
 					getToolDefinition: (name) =>
 						session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
 					cwd: session.sessionManager.getCwd(),
-					requestRender: () => tui.requestRender(),
+					// A card read its transcript for an expansion. The last check may have seen the same rows on an
+					// earlier expansion, before a fold the host drew without it: repaint without comparing to it.
+					requestRender: () => tui.requestRender(true),
 				},
 			);
 			tui.addChild(component);

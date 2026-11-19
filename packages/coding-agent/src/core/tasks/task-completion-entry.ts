@@ -98,7 +98,13 @@ export interface SavedEntryHeader {
 	readonly longToolCallId?: true;
 }
 
-/** The fields that decide what an entry adds to a card, in one pass that keeps none of its content. */
+// Ends a header read once its fields are known: the rest of a large row is not tokenized.
+const HEADER_READ = Symbol("header read");
+
+/**
+ * The fields that decide what an entry adds to a card, in one pass that keeps none of its content. The pass ends as
+ * soon as they are known, which in a saved row is before its message content.
+ */
 export function savedEntryHeader(
 	chunks: AsyncIterable<Uint8Array>,
 	throughId: string | undefined,
@@ -108,40 +114,87 @@ export function savedEntryHeader(
 		chunks,
 		(function* (): Reader<SavedEntryHeader> {
 			let boundary = false;
+			let seenId = throughId === undefined;
 			let type: string | undefined;
 			let fields: { role?: string; toolCallId?: string; longToolCallId?: true } = {};
-			yield* object(yield, {
-				*id(token) {
-					if (throughId === undefined) yield* skip(token);
-					else boundary = yield* equals(token, throughId);
-				},
-				*type(token) {
-					type = yield* tag(token);
-				},
-				*message(token) {
-					const next: typeof fields = {};
-					yield* object(token, {
-						*role(role) {
-							next.role = yield* tag(role);
-						},
-						*toolCallId(id) {
-							delete next.toolCallId;
-							delete next.longToolCallId;
-							if (id.name !== "startString") {
-								yield* skip(id);
-								return;
-							}
-							const text = yield* stringValue(idLimit + 1);
-							if (text.length > idLimit) next.longToolCallId = true;
-							else next.toolCallId = text;
-						},
-					});
-					fields = next;
-				},
-			});
+			let seenCallId = false;
+			const known = () =>
+				seenId &&
+				type !== undefined &&
+				(type !== "message" || (fields.role !== undefined && (fields.role !== "toolResult" || seenCallId)));
+			try {
+				yield* object(yield, {
+					*id(token) {
+						if (throughId === undefined) yield* skip(token);
+						else boundary = yield* equals(token, throughId);
+						seenId = true;
+						if (known()) throw HEADER_READ;
+					},
+					*type(token) {
+						type = yield* tag(token);
+						if (known()) throw HEADER_READ;
+					},
+					*message(token) {
+						fields = {};
+						seenCallId = false;
+						yield* object(token, {
+							*role(role) {
+								fields.role = yield* tag(role);
+								if (known()) throw HEADER_READ;
+							},
+							*toolCallId(id) {
+								delete fields.toolCallId;
+								delete fields.longToolCallId;
+								seenCallId = true;
+								if (id.name !== "startString") yield* skip(id);
+								else {
+									const text = yield* stringValue(idLimit + 1);
+									if (text.length > idLimit) fields.longToolCallId = true;
+									else fields.toolCallId = text;
+								}
+								if (known()) throw HEADER_READ;
+							},
+						});
+					},
+				});
+			} catch (error) {
+				if (error !== HEADER_READ) throw error;
+			}
 			return { boundary, ...(type === undefined ? {} : { type }), ...fields };
 		})(),
 	);
+}
+
+const ESCAPE = new TextEncoder().encode("\\u");
+
+function indexOf(bytes: Uint8Array, needle: Uint8Array): number {
+	search: for (
+		let at = bytes.indexOf(needle[0]!);
+		at >= 0 && at <= bytes.length - needle.length;
+		at = bytes.indexOf(needle[0]!, at + 1)
+	) {
+		for (let i = 1; i < needle.length; i++) if (bytes[at + i] !== needle[i]) continue search;
+		return at;
+	}
+	return -1;
+}
+
+/**
+ * Whether a saved row can hold the string `text` anywhere: its bytes spell it, or escape a character somewhere.
+ * A row that can't is passed over without tokenizing it.
+ */
+export async function savedRowMayHold(chunks: AsyncIterable<Uint8Array>, text: string): Promise<boolean> {
+	const needle = new TextEncoder().encode(text);
+	const overlap = Math.max(needle.length, ESCAPE.length) - 1;
+	let tail = new Uint8Array(0);
+	for await (const chunk of chunks) {
+		const bytes = new Uint8Array(tail.length + chunk.length);
+		bytes.set(tail);
+		bytes.set(chunk, tail.length);
+		if (indexOf(bytes, needle) >= 0 || indexOf(bytes, ESCAPE) >= 0) return true;
+		tail = bytes.slice(Math.max(0, bytes.length - overlap));
+	}
+	return false;
 }
 
 /** A user message's text as a card's prompt reads it: its string, or its text blocks joined by newlines. */
