@@ -98,6 +98,8 @@ export interface FleetPolicyState {
 	readonly idleSince: Readonly<Record<string, number>>;
 	/** Since when each host has been seen not registered, by provider id. */
 	readonly unregisteredSince: Readonly<Record<string, number>>;
+	/** Still-listed provider failures already counted, by instance id and time it entered the failed state. */
+	readonly failedSince?: ReadonlyMap<string, number>;
 	/** Hosts that failed to boot in a row; a host that registers resets it. */
 	readonly bootFailures: number;
 	/** No host is added before this time, after repeated boot failures. */
@@ -174,6 +176,7 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 	const idleSince: Record<string, number> = {};
 	const unregisteredSince: Record<string, number> = {};
 	const removedIds = new Set<string>();
+	let failedSince: Map<string, number> | undefined;
 	// A host that booted since the last tick forgets the failures before it, whether or not it took work at once.
 	const booted = hosts.some((host) => host.registered && state.unregisteredSince[host.id] !== undefined);
 	let bootFailures = booted ? 0 : state.bootFailures;
@@ -192,13 +195,20 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 	let pending = 0;
 	for (const host of hosts) {
 		const draining = host.draining || host.state === "draining";
+		if (host.state === "failed") {
+			const counted = state.failedSince?.get(host.id) === host.since;
+			if (counted || (host.leased === 0 && !draining)) {
+				failedSince ??= new Map();
+				failedSince.set(host.id, host.since);
+				if (!counted) fail();
+			}
+		}
 		if (host.leased > 0) {
 			// Busy: never touched. It counts as serving unless it is on its way out.
 			if (!draining && host.state !== "stopped" && host.state !== "failed") live++;
 			continue;
 		}
 		if (host.state === "stopped" || host.state === "failed") {
-			if (host.state === "failed" && !draining) fail();
 			remove(host.id, draining ? "drained" : host.state);
 			continue;
 		}
@@ -257,6 +267,7 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 			...(overSince === undefined ? {} : { overSince }),
 			idleSince,
 			unregisteredSince,
+			...(failedSince === undefined ? {} : { failedSince }),
 			bootFailures,
 			holdUntil,
 		},
