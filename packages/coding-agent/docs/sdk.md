@@ -636,6 +636,8 @@ await live.release();
   - **Failures:** a file that cannot be written keeps that history in memory and is reported once as a process warning (`process.on("warning")`) carrying a `SessionSpillError`. A missing store directory is recreated on a later write; history already deleted cannot be recovered. Length and an incremental FNV-1a checksum detect accidental corruption, including same-length valid JSON edits (not malicious tampering). A missing or corrupt file makes the load fail with a `SessionSpillError`, and a listing leaves that session out and reports it once (see [Storage errors](/storage#storage-errors)).
   - A custom `SessionStore` can implement `releaseSession(sessionId)` the same way; Atomic calls it after a session is released. Custom stores used with `history://` must also implement `readEntryRange(sessionId, query)`, because `history://` reads and searches page entries by range and refuse stores that only support whole-session `load(sessionId)`.
 
+A custom store can also implement `readForkWindow(sessionId, entryId)` to support compact subagent forks. Read the branch at that exact entry from one committed version, not from the source's latest leaf. Return its `SessionForkWindow` (header, retained entries in branch order, current labels for retained targets, and the source watermark), or `undefined` if the entry is missing. Keep any referenced tool outputs usable in the copy; if that requires the original branch, return that branch. Without this method, subagents fork by loading the source as before.
+
 To release automatically, pass `releaseWhenIdle`:
 
 ```typescript

@@ -83,7 +83,6 @@ async function submit(text: string): Promise<Call[]> {
 		handleResumeTarget: record("handleResumeTarget"),
 		shutdown: record("shutdown"),
 		showWarning: record("showWarning"),
-		showStatus: record("showStatus"),
 	};
 	prototype.setupEditorSubmitHandler.call(context);
 	await context.defaultEditor.onSubmit?.(text);
@@ -130,18 +129,6 @@ const BARE_COMMANDS: ReadonlyArray<{ name: string; expected: Call; withText?: Ca
 ];
 
 describe("built-in slash commands split their name at the first whitespace (#5192)", () => {
-	test.each(["/workflows", "/workflow-authoring", "/workflows\told-id"])(
-		"%s offers conversion instead of sending a prompt to the model",
-		async (command) => {
-			assert.deepEqual(await submit(command), [
-				[
-					"showStatus",
-					"Workflows are now skills. Ask Atomic to convert your old workflow files into skills for use with codemode and subagents.",
-				],
-			]);
-		},
-	);
-
 	test("resume advertises saved sessions in the command menu (#5224)", () => {
 		const description = BUILTIN_SLASH_COMMANDS.find((command) => command.name === "resume")?.description ?? "";
 		assert.equal(description, "Resume a session");
