@@ -151,6 +151,7 @@ class ResourceSection extends WindowedContainer {
 	}
 
 	setExpanded(expanded: boolean): void {
+		this.invalidateWindowStructure();
 		this.expanded = expanded;
 		if (!expanded) {
 			this.rows.clear();

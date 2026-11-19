@@ -383,11 +383,13 @@ export class Editor implements Component, Focusable {
 	private autocompletePrefix: string = "";
 	private autocompleteCompleteOnConfirm = true;
 	private autocompleteSelectionMoved = false;
+	private autocompletePointerSelection = false;
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteAbort?: AbortController;
 	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
 	private pendingAutocomplete?: AutocompleteRequestOptions;
+	private emptyAutocomplete?: { text: string; line: number; col: number; options: AutocompleteRequestOptions };
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
 
@@ -473,9 +475,16 @@ export class Editor implements Component, Focusable {
 	}
 
 	setAutocompleteProvider(provider: AutocompleteProvider, options?: { preserveSelection?: boolean }): void {
+		const empty = this.emptyAutocomplete;
 		const refresh =
 			options?.preserveSelection &&
 			(this.pendingAutocomplete ??
+				(empty &&
+				empty.line === this.state.cursorLine &&
+				empty.col === this.state.cursorCol &&
+				empty.text === this.getText()
+					? empty.options
+					: undefined) ??
 				(this.autocompleteState && {
 					force: this.autocompleteState === "force",
 					explicitTab: false,
@@ -747,6 +756,9 @@ export class Editor implements Component, Focusable {
 				width: contentWidth,
 				height: this.renderedAutocompleteHeight,
 			});
+			if (result?.handled && (event.type === "press" || (event.type === "wheel" && result.render))) {
+				this.autocompletePointerSelection = true;
+			}
 			return result ? { ...result, focus: true } : undefined;
 		}
 
@@ -794,6 +806,8 @@ export class Editor implements Component, Focusable {
 
 	handleInput(data: string): void {
 		const kb = getKeybindings();
+
+		if (!this.autocompleteState && kb.matches(data, "tui.select.cancel")) this.dismissEmptyAutocomplete();
 
 		// Handle character jump mode (awaiting next character to jump to)
 		if (this.jumpMode !== null) {
@@ -2506,6 +2520,7 @@ export class Editor implements Component, Focusable {
 
 		if (!suggestions || !Array.isArray(suggestions.items) || suggestions.items.length === 0) {
 			this.cancelAutocomplete();
+			this.emptyAutocomplete = { text: snapshotText, line: snapshotLine, col: snapshotCol, options };
 			this.tui.requestRender();
 			return;
 		}
@@ -2554,23 +2569,40 @@ export class Editor implements Component, Focusable {
 		options: AutocompleteRequestOptions,
 	): void {
 		// Read the live selection: navigation may have moved it while the provider was answering.
-		const selected = options.preserveSelection ? this.autocompleteList?.getSelectedItem() : undefined;
+		const list = options.preserveSelection ? this.autocompleteList : undefined;
+		const selected =
+			this.autocompleteSelectionMoved || this.autocompletePointerSelection ? list?.getSelectedItem() : undefined;
 		const retainedIndex = selected ? suggestions.items.findIndex((item) => item.value === selected.value) : -1;
 		this.autocompletePrefix = suggestions.prefix;
 		this.autocompleteCompleteOnConfirm = suggestions.completeOnConfirm !== false;
 		this.autocompleteSelectionMoved = retainedIndex >= 0 && this.autocompleteSelectionMoved;
-		this.autocompleteList = this.createAutocompleteList(suggestions.prefix, suggestions.items);
+		this.autocompletePointerSelection = retainedIndex >= 0 && this.autocompletePointerSelection;
+		if (list) {
+			list.setItems(
+				suggestions.items,
+				this.autocompleteMaxVisible,
+				suggestions.prefix.startsWith("/") ? SLASH_COMMAND_SELECT_LIST_LAYOUT : undefined,
+			);
+		} else {
+			this.autocompleteList = this.createAutocompleteList(suggestions.prefix, suggestions.items);
+		}
 
 		const bestMatchIndex =
 			retainedIndex >= 0 ? retainedIndex : this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
 		if (bestMatchIndex >= 0) {
-			this.autocompleteList.setSelectedIndex(bestMatchIndex);
+			this.autocompleteList?.setSelectedIndex(bestMatchIndex);
 		}
 
 		this.autocompleteState = options.force ? "force" : "regular";
 	}
 
+	protected dismissEmptyAutocomplete(): void {
+		this.emptyAutocomplete = undefined;
+		if (this.pendingAutocomplete?.preserveSelection && !this.autocompleteState) this.cancelAutocompleteRequest();
+	}
+
 	private cancelAutocompleteRequest(): void {
+		this.emptyAutocomplete = undefined;
 		this.pendingAutocomplete = undefined;
 		this.autocompleteStartToken += 1;
 		if (this.autocompleteDebounceTimer) {
@@ -2587,6 +2619,7 @@ export class Editor implements Component, Focusable {
 		this.autocompletePrefix = "";
 		this.autocompleteCompleteOnConfirm = true;
 		this.autocompleteSelectionMoved = false;
+		this.autocompletePointerSelection = false;
 	}
 
 	private cancelAutocomplete(): void {

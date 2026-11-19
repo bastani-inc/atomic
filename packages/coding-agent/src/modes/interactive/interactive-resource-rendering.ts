@@ -1,3 +1,4 @@
+import { WindowedContainer } from "@bastani/atomic-tui";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import {
 	getInteractiveEngineResourceExtensions,
@@ -154,7 +155,10 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 		return;
 	}
 	const previousSections = options?.preserveExpansion ? [...targetContainer.children] : undefined;
-	if (targetContainer === this.resourceDisclosureContainer) targetContainer.clear();
+	if (targetContainer === this.resourceDisclosureContainer) {
+		targetContainer.clear();
+		if (targetContainer instanceof WindowedContainer) targetContainer.trackWindowStructure();
+	}
 
 	const skillsResult = this.session.resourceLoader.getSkills();
 	const promptsResult = this.session.resourceLoader.getPrompts();

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { Container, WindowedContainer } from "@bastani/atomic-tui";
+import { Container, Text, WindowedContainer } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, test } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import { INSTALLED_EXTENSION_ENTRIES, SOURCE_EXTENSION_ENTRIES } from "../src/core/builtin-install-layout.js";
@@ -186,6 +186,40 @@ describe("InteractiveMode.showLoadedResources", () => {
 		InteractiveMode.prototype.setToolsExpanded.call(fakeThis, false);
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toContain("commit");
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).not.toContain("/tmp/skill/SKILL.md");
+	});
+
+	test("a settled fullscreen frame does not visit warnings above the viewport (#5693)", () => {
+		const mode = createShowLoadedResourcesThis({
+			quietStartup: false,
+			skillDiagnostics: Array.from({ length: 10_000 }, (_, i) => ({ type: "warning", message: `warning ${i}` })),
+		});
+		const chat = new WindowedContainer();
+		const disclosure = new WindowedContainer();
+		chat.addChild(disclosure);
+		mode.resourceDisclosureContainer = disclosure;
+		mode.formatDiagnostics = InteractiveMode.prototype.formatDiagnostics;
+		InteractiveMode.prototype.showLoadedResources.call(mode, { force: true, targetContainer: disclosure });
+		for (let i = 0; i < 200; i++) chat.addChild(new Text(`history ${i}`, 0, 0));
+		let visits = 0;
+		const countReads = (section: Container) => {
+			for (const child of section.children) if (child instanceof Container) countReads(child);
+			section.children = new Proxy(section.children, {
+				get(target, key, receiver) {
+					if (typeof key === "string" && /^\d+$/.test(key)) visits++;
+					return Reflect.get(target, key, receiver);
+				},
+			});
+		};
+		countReads(disclosure);
+		const frame = () =>
+			chat.layoutWindow({ top: 0, width: 100, height: 30, followEnd: true, requestRender: () => {} });
+		frame();
+		chat.settleRows();
+		frame();
+		visits = 0;
+		const next = frame();
+		expect(next.at(next.top + 29)?.trim()).toBe("history 199");
+		expect(visits).toBe(0);
 	});
 
 	test("the visible diagnostic stays anchored when approval adds earlier resources and warnings (#5693)", () => {

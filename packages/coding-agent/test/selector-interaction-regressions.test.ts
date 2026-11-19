@@ -66,6 +66,22 @@ function makeItems(ids: readonly string[]): SelectorItem<string>[] {
 }
 
 describe("selector interaction and rendering regressions (#5237)", () => {
+	test("refreshing an unchanged catalog keeps the selected row in the same part of the window (#5693)", () => {
+		const open = () =>
+			new Selector({
+				items: makeItems(Array.from({ length: 30 }, (_, i) => `row-${i}`)),
+				style: PLAIN_SELECTOR_STYLE,
+			});
+		const previous = open();
+		for (let i = 0; i < 16; i++) previous.handleInput(DOWN);
+		for (let i = 0; i < 4; i++) previous.handleInput(UP);
+		const before = previous.render(80);
+		assert.ok(before.some((row) => row.includes("↑ 7 more")));
+		const next = open();
+		next.restoreNavigation(previous, true);
+		assert.deepEqual(next.render(80), before);
+	});
+
 	test("closes single and multi pickers after the first selection, confirmation, or cancel while keeping toggle pickers open (#5237)", () => {
 		const selected: string[] = [];
 		const cancelled: number[] = [];
