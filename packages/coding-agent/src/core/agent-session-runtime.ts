@@ -258,7 +258,7 @@ export class AgentSessionRuntime {
 	 * own decision is made or nothing can turn it untrusted. Other open questions, such as an `-e` source's, do not count.
 	 */
 	pendingProjectResourcesTrusted(): boolean {
-		return this.services.projectTrust?.pending === true && this.services.projectTrust.resourcesTrusted;
+		return this.services.projectTrust?.pending === true && this.services.projectTrust.resourcesTrusted === true;
 	}
 
 	/**

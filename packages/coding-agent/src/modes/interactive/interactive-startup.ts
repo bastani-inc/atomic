@@ -203,16 +203,19 @@ InteractiveModeBase.prototype.showManagedToolStatus = function (this: Interactiv
 	this.ui.requestRender();
 };
 
+function refreshResourceDisclosure(mode: InteractiveModeBase): void {
+	mode.showLoadedResources({
+		force: true,
+		showDiagnosticsWhenQuiet: true,
+		targetContainer: mode.resourceDisclosureContainer,
+	});
+}
+
 export function attachInteractiveEngineResourceExtensionRefresh(mode: InteractiveModeBase): () => void {
 	return onInteractiveEngineResourceExtensionsChanged(mode.runtimeHost, () => {
 		mode.chatContainer.invalidate();
 		mode.ui.requestRender();
-		if (mode.resourceDisclosureContainer.children.length === 0) return;
-		mode.showLoadedResources({
-			force: true,
-			showDiagnosticsWhenQuiet: true,
-			targetContainer: mode.resourceDisclosureContainer,
-		});
+		if (mode.resourceDisclosureContainer.children.length > 0) refreshResourceDisclosure(mode);
 	});
 }
 
@@ -276,8 +279,14 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.setupAutocompleteProvider();
 	});
 	attachInteractiveEngineResourceExtensionRefresh(this);
-	// The engine decides project trust after this host drew the chat.
-	onInteractiveEngineProjectTrustChanged(this.runtimeHost, () => this.refreshProjectTrustWarning());
+	onInteractiveEngineProjectTrustChanged(this.runtimeHost, () => {
+		// The folder's decision can reload local resources while another source still holds up the engine catalog.
+		if (this.isInitialized && this.runtimeHost.isProjectTrustPending()) {
+			refreshResourceDisclosure(this);
+			this.setupAutocompleteProvider();
+		}
+		this.refreshProjectTrustWarning();
+	});
 	// Engine stats can land after the last event of a run; repaint so the idle footer shows them.
 	onInteractiveEngineSessionStatsChanged(this.runtimeHost, () => {
 		this.ui.requestRender();

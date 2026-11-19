@@ -12,9 +12,9 @@ export interface SessionProjectTrust {
 	readonly pending: boolean;
 	/**
 	 * While `pending`: whether the project's own resources may load already (see pendingProjectResourcesTrusted). They
-	 * wait while the project's decision can still come out untrusted.
+	 * wait while the project's decision can still come out untrusted, or if the host does not report this value.
 	 */
-	readonly resourcesTrusted: boolean;
+	readonly resourcesTrusted?: boolean;
 	/** Ends a decision that was still to be made but will not be: startup failed before it could make it. */
 	abandon(): void;
 	/**
