@@ -135,6 +135,17 @@ async function entriesProgress(database: SqliteDatabase) {
 		: { watermark: Number(row.watermark), backfilled: Number(row.backfilled_through) };
 }
 
+/**
+ * Whether the session index awaits its rebuild: its progress row, the only one older builds read, is gone, so none reads
+ * the index as complete, and this build's mark is there (#5553).
+ */
+async function awaitsRebuild(database: SqliteDatabase): Promise<boolean> {
+	const marked = await database.get(
+		"SELECT 1 AS marked FROM snapshot_index_sources WHERE source = 'session-entries@rebuild'",
+	);
+	return marked !== undefined && (await entriesProgress(database)) === undefined;
+}
+
 /** One write transaction: how many session index rows it removed, and whether the event loop turned before it began. */
 interface WatchedTransaction {
 	readonly removed: number;
@@ -251,7 +262,7 @@ describe("an old session index is removed in bounded batches before it is rebuil
 			watched.transactions.every((transaction) => transaction.removed === 0),
 			"no transaction of the open removed rows",
 		);
-		assert.equal((await entriesProgress(database))?.watermark, -1, "the open left the rebuild to collection");
+		assert.ok(await awaitsRebuild(database), "the open left the rebuild to collection");
 		await reopened.completeIndex();
 		const teardown = watched.transactions.filter((transaction) => transaction.removed > 0);
 		assert.ok(Math.max(...teardown.map((transaction) => transaction.removed)) <= SNAPSHOT_INDEX_TEARDOWN_BATCH);
@@ -280,7 +291,7 @@ describe("an old session index is removed in bounded batches before it is rebuil
 
 		const left = await indexRows(database);
 		assert.equal(left, before - SNAPSHOT_INDEX_TEARDOWN_BATCH, "the teardown stopped after its first batch");
-		assert.equal((await entriesProgress(database))?.watermark, -1, "the index still awaits its rebuild");
+		assert.ok(await awaitsRebuild(database), "the index still awaits its rebuild");
 		// A sweep stopped during the teardown it resumes deletes nothing, however old every blob is.
 		await ageBlobs(database, "snapshot_blobs", 10_000);
 		const sweeping = new AbortController();
@@ -360,7 +371,7 @@ describe("an old session index is removed in bounded batches before it is rebuil
 				const write = writes.shift();
 				if (write !== undefined) {
 					const progress = await entriesProgress(database);
-					if (progress?.watermark === -1) duringTeardown++;
+					if (await awaitsRebuild(database)) duringTeardown++;
 					else if (progress !== undefined && progress.backfilled < progress.watermark) duringBackfill++;
 					await write();
 				}
@@ -428,10 +439,9 @@ describe("an old session index is removed in bounded batches before it is rebuil
 		await upgraded.completeIndex({ pace: new MarkingPace() });
 
 		assert.ok(marked, "the index was marked during the backfill");
-		const progress = await entriesProgress(database);
 		assert.ok(
-			progress !== undefined && progress.backfilled < progress.watermark && progress.watermark < 0,
-			`the index awaits its rebuild, which no build reads as complete: ${JSON.stringify(progress)}`,
+			await awaitsRebuild(database),
+			`the index awaits its rebuild, which no build reads as complete: ${JSON.stringify(await entriesProgress(database))}`,
 		);
 		await upgraded.completeIndex();
 		assert.deepEqual(await indexContents(database), await rebuiltFromNothing(database));

@@ -401,7 +401,7 @@ interface SourceState {
 	readonly installed: boolean;
 	readonly backfilled: boolean;
 	readonly deferred: boolean;
-	/** Marked for a rebuild ({@link REBUILD_PROGRESS}), with none of its triggers: its index rows can be removed. */
+	/** Marked for a rebuild ({@link rebuildRow}), with none of its triggers: its index rows can be removed. */
 	readonly rebuilding: boolean;
 	/**
 	 * On SQLite, installed with {@link IndexSource.version} but not backfilled: by a build of 0.9.88 to 0.9.90 whose
@@ -419,11 +419,12 @@ interface SourceState {
 const PUBLISHED_VERSION = 1;
 
 /**
- * The progress row of a source whose index rows are being removed so that its triggers can be installed again (#5553).
- * Every build defers a source at watermark -1 to collection, and none reads an index whose `backfilled_through` is
- * below its watermark as complete, as a session store does to find an entry by its id.
+ * The row that marks `source` for a rebuild while its index rows are removed so that its triggers can be installed
+ * again (#5553). The source's own progress row is gone meanwhile, so that no build reads the index as complete and an
+ * older build's backfill in progress stops at its next batch: that row is the only one older builds read. An older
+ * build that opens the store meanwhile installs the index again itself, as over any table without one.
  */
-const REBUILD_PROGRESS = { watermark: -1, backfilled: -2 } as const;
+const rebuildRow = (source: IndexSource) => `${source.name}@rebuild`;
 
 const CHECKPOINT_EVENT = "CheckpointRecorded";
 const STATUS_EVENTS = "'RunStarted', 'StatusChanged'";
@@ -566,7 +567,7 @@ function carriedSource(d: StorageDialect, t: SnapshotIndexTables, carried: Carri
 	};
 }
 
-/** The progress row of this build's own backfill of the session entries (#5558). */
+/** The progress row of this build's own backfill of the session entries (#5553). */
 const ENTRIES_OWN_PROGRESS = "session-entries@own-progress";
 
 function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect): readonly IndexSource[] {
@@ -719,7 +720,7 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 				[
 					`UPDATE ${t.sources} SET watermark = ${newRowOrder} WHERE source = 'session-entries' AND watermark < ${newRowOrder}`,
 					`UPDATE ${t.sources} SET backfilled_through = ${newRowOrder} - 1 WHERE source = 'session-entries' AND backfilled_through >= ${newRowOrder}`,
-					// This build's own progress follows, so an older build's backfill of these rows is never trusted (#5558).
+					// This build's own progress follows, so an older build's backfill of these rows is never trusted (#5553).
 					`UPDATE ${t.sources} SET watermark = ${newRowOrder} WHERE source = '${ENTRIES_OWN_PROGRESS}' AND watermark < ${newRowOrder}`,
 					`UPDATE ${t.sources} SET backfilled_through = ${newRowOrder} - 1 WHERE source = '${ENTRIES_OWN_PROGRESS}' AND backfilled_through >= ${newRowOrder}`,
 				],
@@ -928,9 +929,9 @@ async function holdsIndexRows(executor: SqliteExecutor, source: IndexSource): Pr
 }
 
 /**
- * Marks `source` for a rebuild (#5553): drops its triggers and the row that says they are this build's, and records
- * {@link REBUILD_PROGRESS}, so that every build leaves it to collection and none reads its index as complete. Its index
- * rows stay until collection removes them.
+ * Marks `source` for a rebuild (#5553): drops its triggers, its progress rows and the row that says they are this
+ * build's, and records {@link rebuildRow}, so that this build leaves it to collection and no build reads its index as
+ * complete. Its index rows stay until collection removes them.
  */
 async function markForRebuild(
 	transaction: SqliteExecutor,
@@ -939,14 +940,12 @@ async function markForRebuild(
 	source: IndexSource,
 ): Promise<void> {
 	for (const trigger of source.triggers) await transaction.exec(dialect.dropTrigger(trigger.name, trigger.table));
-	await transaction.run(
-		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, ?, ?) ${REPLACE_PROGRESS}`,
-		source.name,
-		REBUILD_PROGRESS.watermark,
-		REBUILD_PROGRESS.backfilled,
-	);
-	for (const row of [source.version, source.own])
+	for (const row of [source.name, source.version, source.own])
 		if (row !== undefined) await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, row);
+	await transaction.run(
+		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, -1, -1) ${REPLACE_PROGRESS}`,
+		rebuildRow(source),
+	);
 }
 
 /**
@@ -977,6 +976,7 @@ async function installSource(
 			source.own,
 			source.name,
 		);
+	await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, rebuildRow(source));
 	if (source.version === undefined) return true;
 	if (!withholdsVersion(dialect, source)) {
 		await publishVersion(transaction, t, source);
@@ -1163,6 +1163,8 @@ async function readSourceStates(
 				// Rows an older build indexed with its statements past this build's own progress are not backfilled.
 				trusted = own === undefined || ownDone;
 			}
+			// Marked for a rebuild: an older build that installed the index again since wrote the source's row (#5553).
+			const marked = row === undefined && progress.has(rebuildRow(source));
 			const installed =
 				row !== undefined &&
 				!foreign &&
@@ -1178,12 +1180,8 @@ async function readSourceStates(
 				source,
 				installed,
 				backfilled,
-				deferred: row !== undefined && (foreign || Number(row.watermark) === -1),
-				rebuilding:
-					row !== undefined &&
-					Number(row.watermark) === REBUILD_PROGRESS.watermark &&
-					Number(row.backfilled_through) === REBUILD_PROGRESS.backfilled &&
-					source.triggers.every((trigger) => !present.has(trigger.name)),
+				deferred: marked || (row !== undefined && (foreign || Number(row.watermark) === -1)),
+				rebuilding: marked && source.triggers.every((trigger) => !present.has(trigger.name)),
 				takeover: withholdsVersion(dialect, source) && installed && version !== undefined && !backfilled,
 			};
 		});
@@ -1534,8 +1532,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const withholds = withholdsVersion(this.dialect, source);
 		return this.write(pace, async (transaction) => {
 			const [state] = await readSourceStates(transaction, this.dialect, t, [source]);
-			// A source marked for a rebuild, or installed by another build, since the loop read the states is left to the
-			// next collection: a mark keeps its progress, which no build reads as complete (#5553, #5558).
+			// A source marked for a rebuild, which has no progress row then, or installed by another build, since the loop read
+			// the states is left to the next collection (#5553, #5558).
 			if (state === undefined || !state.installed || state.backfilled) return true;
 			const progress = (await transaction.get<SqliteRow & { watermark: number; backfilled_through: number }>(
 				`SELECT watermark, backfilled_through FROM ${t.sources} WHERE source = ?`,
