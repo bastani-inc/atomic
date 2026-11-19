@@ -63,7 +63,6 @@ describe("DefaultResourceLoader deferResources", () => {
 
 		expect(loader.getExtensions().extensions).toEqual([]);
 		expect(loader.getSkills().skills).toEqual([]);
-		expect(loader.getWorkflowResources()).toEqual([]);
 
 		await loader.reload();
 

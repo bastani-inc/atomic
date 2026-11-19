@@ -211,7 +211,7 @@ describe("storage status sources (#3856)", () => {
 		const settingsOnly = await collectStorageStatus({ cwd: project, agentDir, probe: false });
 		assert.deepEqual(sources(settingsOnly), {
 			sessions: "global settings: sessions.storage",
-			journal: "global settings: workflows.journal",
+			journal: "global settings: storage",
 			intercom: "global settings: storage",
 		});
 		assert.deepEqual(domain(settingsOnly, "sessions").overridden, ["global settings: storage"]);
@@ -224,10 +224,7 @@ describe("storage status sources (#3856)", () => {
 			intercom: "ATOMIC_STORAGE",
 		});
 		assert.equal(domain(shared, "intercom").selection, `SQLite ${join(root, "env.sqlite")}`);
-		assert.deepEqual(domain(shared, "journal").overridden, [
-			"global settings: workflows.journal",
-			"global settings: storage",
-		]);
+		assert.deepEqual(domain(shared, "journal").overridden, ["global settings: storage"]);
 
 		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", JSON.stringify({ dir: join(root, "sessions") }));
 		vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", join(root, "legacy-journal.sqlite"));

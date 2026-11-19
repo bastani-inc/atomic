@@ -11,6 +11,7 @@ export {
 } from "./loader-core.js";
 export { discoverAndLoadExtensions } from "./loader-discovery.ts";
 export type {
+	PackageMcpServerSource,
 	ResourceLoaderInheritanceSnapshotProvider,
 	WorkflowResourceProvider,
 	WorkflowResourceProviderInput,

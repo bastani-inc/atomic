@@ -142,7 +142,6 @@ describe("settings type validation (#4902)", () => {
 			compactionModel: 7,
 			storage: "memory",
 			sessions: 1,
-			workflows: 1,
 			snapshots: 1,
 			httpIdleTimeoutMs: true,
 			websocketConnectTimeoutMs: true,

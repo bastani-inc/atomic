@@ -14,8 +14,6 @@ import {
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const TARGET = `workflow:${RUN_ID}/reviwe-1`;
-const OLD_WARNING =
-	"(not in the workflow's known stage set; it will be delivered to every matching stage that starts before the run terminates)";
 
 type ToolResult = { content: Array<{ text: string }>; isError: boolean; details?: Record<string, unknown> };
 type Tool = {
@@ -121,14 +119,10 @@ describe("queued workflow sends (#4359)", () => {
 		assert.equal(unmatched.content[0]?.text, `Message queued for ${TARGET}\nNo stage named reviwe-1 is expected.`);
 	});
 
-	test("intercom.showUnknownTargetWarnings restores the old warning for unknown targets", async () => {
+	test("a saved showUnknownTargetWarnings option no longer changes a queued send", async () => {
 		const result = await send({ prediction: "unknown" }, { intercom: { showUnknownTargetWarnings: true } });
-		assert.equal(result.content[0]?.text, `Message queued for ${TARGET} ${OLD_WARNING}`);
-		assert.equal(
-			queuedSendText(TARGET, { prediction: "unknown" }, false),
-			`Message queued for ${TARGET}`,
-			"off by default",
-		);
+		assert.equal(result.content[0]?.text, `Message queued for ${TARGET}`);
+		assert.equal(result.details?.prediction, "unknown");
 	});
 
 	test("the typo line names a nested stage path, and details carry only the fields that are set", async () => {
