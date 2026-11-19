@@ -302,6 +302,8 @@ class _Command:
         if self.process is None or self._ended or self._owner != os.getpid():
             return
         self._ended = True
+        if self.process.returncode is not None:
+            return  # Already reaped by _exited(): its group id may belong to someone else now.
         if os.name == "nt":
             _windows().terminate(self._job)
         else:
@@ -342,20 +344,17 @@ class _Command:
                     return True
                 time.sleep(0.01)
             else:
-                # Without waitid the exit status can only be read by reaping the command, after which its
-                # group can no longer be ended safely. It has already closed its output, so let it finish.
-                _in_actor(self._release)
-                try:
-                    process.wait(timeout=None if deadline_ns is None else max(0, deadline_ns - time.monotonic_ns()) / 1e9)
+                # Without waitid, reading the exit status reaps the command. The actor does that, so it never
+                # ends a group after its leader is reaped; what the command left running then stays.
+                if _in_actor(self._exited):
                     return True
-                except subprocess.TimeoutExpired:
-                    return False
+                time.sleep(0.01)
             _check_stopped()
             if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
                 return False
 
-    def _release(self):
-        self._ended = True
+    def _exited(self):
+        return self.process.poll() is not None
 
     def close(self):
         """End the command and everything it started, reap it, and return its exit status (None if it never started)."""
