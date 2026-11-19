@@ -1,18 +1,8 @@
-import assert from "node:assert/strict";
 import { test } from "vitest";
-import { expectDrainedFixture, expectVerifiedFixture, runBuiltNodeFixture } from "./sdk-builtin-host-parity-helpers.js";
+import { expectDrainedFixture, expectVerifiedFixture } from "./sdk-builtin-host-parity-helpers.js";
 
 // Declared in-file: the duration guard resolves timeout expressions only from numeric consts in this file.
 const BUILT_NODE_HOST_PROCESS_TIMEOUT_MS = 60_000;
-
-test("retained workflow fixture rejects an unowned home before host initialization", () => {
-	const result = runBuiltNodeFixture("sdk-host-concurrent-replacements.mjs", ["new", "dispose", "workflow"], [], {
-		...process.env,
-		ATOMIC_MANAGED_TEST_HOME: undefined,
-	});
-	assert.notEqual(result.exitCode, 0);
-	assert.match(result.stderr.toString(), /requires a disposable managed HOME/);
-});
 
 // #3105: every admitted successor remains owned through reverse publication and failure.
 // The duration guard expands only literal scalar test.each tables with a %s
@@ -54,16 +44,6 @@ test.each(["acquisition", "shell", "settings"])(
 	"built Node owned cleanup %s",
 	(mode) => {
 		expectVerifiedFixture("sdk-host-acquisition-persistence.mjs", [mode]);
-	},
-	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
-);
-
-test.each(["success", "failure", "both-fail", "dispose", "cleanup", "startup"])(
-	"built Node overlapping retained workflow %s",
-	async (outcome) => {
-		expectDrainedFixture("sdk-host-concurrent-replacements.mjs", ["new", outcome, "workflow"], {
-			...process.env,
-		});
 	},
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
 );

@@ -193,7 +193,7 @@ async function runStageThatLaunchesSubagents(
 						retry: { enabled: true, maxRetries: 0, baseDelayMs: 10 },
 						compaction: { enabled: false },
 					}),
-					builtins: { workflows: false, subagents: true, intercom: false, mcp: false, "web-access": false },
+					builtins: { subagents: true, intercom: false, mcp: false, "web-access": false },
 					schema: Type.Object({ done: Type.Boolean() }),
 				});
 			} catch (error) {

@@ -25,6 +25,20 @@ export const atomicSrcIndex = fileURLToPath(
 /** Every alias each vitest project shares. */
 export const sharedAliases: readonly Alias[] = [
 	{ find: /^@bastani\/atomic$/, replacement: atomicSrcIndex },
+	// The unpublished workflow workspace is still exercised by source-level tests. Installed-package
+	// tests run Node outside Vitest so they see the real package exports, not these fixture aliases.
+	{
+		find: /^@bastani\/atomic\/workflows$/,
+		replacement: fileURLToPath(new URL("./packages/workflows/src/index.ts", import.meta.url)),
+	},
+	{
+		find: /^@bastani\/atomic\/workflows\/builtin$/,
+		replacement: fileURLToPath(new URL("./packages/workflows/builtin/index.ts", import.meta.url)),
+	},
+	{
+		find: /^@bastani\/atomic\/workflows\/builtin\/(.+)$/,
+		replacement: fileURLToPath(new URL("./packages/workflows/builtin/$1.ts", import.meta.url)),
+	},
 	{
 		find: /^@bastani\/atomic\/storage$/,
 		replacement: fileURLToPath(new URL("./packages/coding-agent/src/core/storage/index.ts", import.meta.url)),

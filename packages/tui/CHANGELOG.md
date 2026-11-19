@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The bundled command names no longer include `workflows` or `workflow-authoring`. If your extension uses either name, mark clickable hints explicitly with `slashCommandHint()` rather than relying on built-in command recognition ([#5926](https://github.com/bastani-inc/atomic/pull/5926)).
+
 ### Fixed
 
 - Hiding and showing a fullscreen dialog before the next paint cancels a held single click and any pending single-click action on that dialog. A control that took the press still receives its release; double- and triple-click text selection keeps its clipboard behavior ([#5643](https://github.com/bastani-inc/atomic/issues/5643)).

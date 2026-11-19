@@ -19,7 +19,7 @@ import { TOOL_DEACTIVATION_ENTRY_TYPE } from "../src/core/tool-deactivation.js";
 import { getDefaultToolNames } from "../src/core/tools/index.js";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.js";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 let tempDir: string;
 let agentDir: string;
