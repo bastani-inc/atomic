@@ -5,6 +5,7 @@
 ### Fixed
 
 - On Linux and macOS, worktree pool leases and session-open markers are aged by the shared filesystem's time when the clock reading finishes, as on Windows, so the cleanup of the reading's probe file no longer makes them look younger than they are. A change to this machine's wall clock during the reading is not counted as elapsed time ([#5674](https://github.com/bastani-inc/atomic/issues/5674)).
+- A worktree pool admission whose temporary record name is already taken leaves that file untouched and writes under a fresh name. On Linux and macOS it used to overwrite the other file and remove its name; on Windows the admission failed ([#5824](https://github.com/bastani-inc/atomic/issues/5824)).
 
 ## [0.9.90] - 2026-11-19
 
