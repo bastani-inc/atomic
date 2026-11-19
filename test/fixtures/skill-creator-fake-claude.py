@@ -5,6 +5,7 @@ process ids in FAKE_CLAUDE_RECORDS once the child exists. FAKE_CLAUDE_MODE then 
 and FAKE_CLAUDE_IMPROVE_MODE what a description improvement (`--output-format text`) does:
   wait     wait to be stopped
   trigger  report that the skill under evaluation was used, then wait to be stopped
+  held-trigger  report the trigger only once the driver creates the allow-trigger file
   answer   answer the prompt on stdin with a description and exit, leaving the child running
   slow     wait FAKE_CLAUDE_SECONDS (no child, no record), report that the skill was not used, and exit
 """
@@ -35,7 +36,10 @@ partial = records / f"{os.getpid()}.partial"
 partial.write_text(json.dumps({"pid": os.getpid(), "child": child.pid, "argv": sys.argv[1:]}))
 os.replace(partial, record)
 
-if mode == "trigger":
+if mode in ("trigger", "held-trigger"):
+    if mode == "held-trigger":
+        while not (records / "allow-trigger").exists():
+            time.sleep(0.01)
     name = next(Path.cwd().glob(".claude/commands/*.md")).stem
     use = {"type": "tool_use", "name": "Skill", "input": {"skill": name}}
     print(json.dumps({"type": "assistant", "message": {"content": [use]}}), flush=True)

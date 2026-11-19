@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from scripts.utils import parse_skill_md
@@ -85,6 +85,8 @@ class _Actor:
     def __init__(self):
         self.pid = os.getpid()
         self.requests = queue.SimpleQueue()
+        self.suspending = False
+        self.resume = None
         self.thread = threading.Thread(target=self._serve, name="skill-eval-commands", daemon=True)
 
     def _serve(self):
@@ -98,7 +100,7 @@ class _Actor:
                 request.done.release()
 
 
-def _in_actor(function, *args, wait=True):
+def _command_actor():
     global _actor
     actor = _actor
     if actor is None:
@@ -108,6 +110,11 @@ def _in_actor(function, *args, wait=True):
                 started.thread.start()
                 _actor = started
             actor = _actor
+    return actor
+
+
+def _in_actor(function, *args, wait=True):
+    actor = _command_actor()
     request = _Request(function, args)
     actor.requests.put(request)
     if wait:
@@ -263,8 +270,6 @@ class _Command:
         _commands.add(self)
         if self._batch is not None:
             self._batch.commands.add(self)
-        if os.name == "nt":
-            _windows().resume(process)
         if process.stdout is not None:
             self.stdout = _Output(process.stdout)
             self._threads.append(self.stdout.thread)
@@ -282,21 +287,33 @@ class _Command:
         # its debugger thread dies: keep that protection from creation until the job takes over, then detach
         # before running any of the command's code. No second process or inherited debug session is needed.
         windows = _windows()
-        flags = (options.pop("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP
-                 | windows.CREATE_SUSPENDED | windows.DEBUG_ONLY_THIS_PROCESS)
+        flags = options.pop("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP
+        guard = windows.CREATE_SUSPENDED | windows.DEBUG_ONLY_THIS_PROCESS
+        guarded = True
         job = windows.new_job()
         try:
-            process = subprocess.Popen(args, creationflags=flags, **options)
+            try:
+                process = subprocess.Popen(args, creationflags=flags | guard, **options)
+            except OSError as error:
+                if error.winerror != 50:  # ERROR_NOT_SUPPORTED: a 32-bit Python cannot debug a 64-bit command.
+                    raise
+                # Start it running, as a normal launch would; if this script dies before assignment, the
+                # command can still finish. Never leave an unguarded, suspended process behind.
+                guarded = False
+                process = subprocess.Popen(args, creationflags=flags, **options)
         except BaseException:
             windows.close(job)
             raise
         try:
-            windows.assign(job, process)
-            windows.detach(process)
+            windows.assign(job, process, may_have_exited=not guarded)
+            if guarded:
+                windows.detach(process)
+                windows.resume(process)
         except BaseException:
             try:
-                process.kill()  # Keep the launch guard until termination is requested, even if assignment failed.
-                windows.detach(process, required=False)
+                process.kill()  # Keep any launch guard until termination is requested.
+                if guarded:
+                    windows.detach(process, required=False)
                 process.wait()
             finally:
                 windows.close(job)
@@ -314,13 +331,17 @@ class _Command:
         if os.name == "nt":
             _windows().terminate(self._job)
         else:
-            try:
-                os.killpg(self.process.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass  # Everything in the group has already exited.
+            self._signal_group(signal.SIGKILL)
         for output in (self.stdout, self.stderr):
             if output is not None:
                 output.wake()
+
+    def _signal_group(self, signum):
+        # Only the actor signals groups, and only before reaping the leader.
+        try:
+            os.killpg(self.process.pid, signum)
+        except (ProcessLookupError, PermissionError):
+            pass
 
     def _stop(self):
         # Runs on the actor: end the group, then reap the leader.
@@ -408,6 +429,41 @@ def _on_stop_signal(signum, frame):
     _cancel(signum)
 
 
+def _suspend_job(actor, signum):
+    # Keep starts and reaps on hold until the shell continues the job. The signal handler must not wait
+    # for us: it could have interrupted the main thread holding a lock we need to finish a launch.
+    groups = [command for command in _commands if not command._ended and command.process.returncode is None]
+    for command in groups:
+        command._signal_group(signal.SIGSTOP)  # SIGTSTP is ignored by an orphaned process group.
+    resumed = threading.Lock()
+    resumed.acquire()
+    actor.resume = resumed
+    signal.pthread_kill(threading.main_thread().ident, signum)
+    resumed.acquire()
+    for command in groups:
+        command._signal_group(signal.SIGCONT)
+
+
+def _on_suspend(signum, frame):
+    actor = _actor
+    if actor is not None and actor.resume is None:
+        if not _cancelled and not actor.suspending:
+            actor.suspending = True
+            _in_actor(_suspend_job, actor, signum, wait=False)
+        return
+    # Either no command can have started, or the actor has paused them all and signalled back.
+    signal.signal(signum, signal.SIG_DFL)
+    try:
+        if not _cancelled:
+            signal.raise_signal(signum)  # Preserve the shell's stop status and the default for orphaned jobs.
+    finally:
+        signal.signal(signum, _on_suspend)
+        if actor is not None:
+            resumed, actor.resume = actor.resume, None
+            actor.suspending = False
+            resumed.release()
+
+
 def install_signal_handlers():
     """Make SIGINT, SIGTERM and SIGHUP cancel this process's evaluations (on Windows: Ctrl+C, Ctrl+Break and console close).
 
@@ -420,6 +476,8 @@ def install_signal_handlers():
             signal.signal(signum, _on_stop_signal)
     if os.name == "nt":
         _windows().handle_console_events()
+    elif signal.getsignal(signal.SIGTSTP) == signal.SIG_DFL:
+        signal.signal(signal.SIGTSTP, _on_suspend)
 
 
 def _wait_until_settled(timeout):
@@ -596,9 +654,12 @@ class _WindowsJobs:
             raise self._ctypes.WinError(error)
         return job
 
-    def assign(self, job, process):
+    def assign(self, job, process, may_have_exited=False):
         if not self._kernel32.AssignProcessToJobObject(job, int(process._handle)):
-            self._fail()
+            error = self._ctypes.get_last_error()
+            if may_have_exited and error == 5 and process.poll() is not None:
+                return  # Windows denies assignment to an exited process. Its answer and exit status are still valid.
+            raise self._ctypes.WinError(error)
 
     def detach(self, process, required=True):
         if not self._kernel32.DebugActiveProcessStop(process.pid) and required:
@@ -822,6 +883,9 @@ def run_eval(
     # Leaving the block early (an interrupt or cancellation) ends the queries' commands instead of waiting for them.
     with ThreadPoolExecutor(max_workers=num_workers) as executor, _Batch() as batch:
         future_to_info = {}
+        completed = queue.SimpleQueue()
+        if eval_set and runs_per_query > 0 and os.name == "posix" and signal.getsignal(signal.SIGTSTP) is _on_suspend:
+            _command_actor()  # Publish the actor before a worker can race the CLI's first suspend signal.
         for item in eval_set:
             for run_idx in range(runs_per_query):
                 future = executor.submit(
@@ -835,11 +899,18 @@ def run_eval(
                     model,
                 )
                 future_to_info[future] = (item, run_idx)
+                future.add_done_callback(completed.put)
 
         query_triggers: dict[str, list[bool]] = {}
         query_items: dict[str, dict] = {}
-        for future in as_completed(future_to_info):
-            item, _ = future_to_info[future]
+        while future_to_info:
+            # After SIGCONT a worker may receive a pending signal. Only the main thread can run its
+            # Python handler, so don't sleep until the next query finishes. Results still wake us immediately.
+            try:
+                future = completed.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            item, _ = future_to_info.pop(future)
             query = item["query"]
             query_items[query] = item
             if query not in query_triggers:

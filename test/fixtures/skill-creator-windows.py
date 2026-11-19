@@ -4,6 +4,7 @@
 Scenarios:
   triggers   a query whose command uses the skill is counted as a trigger
   improve    the description improver returns the command's answer and ends what the command left running
+  native-command  the description improver works when Windows refuses to debug a native command
   terminate  the evaluator is terminated outright (TerminateProcess) while its queries run
   terminate-at-launch  the evaluator is terminated after Windows creates a command, before Popen returns
   break      Ctrl+Break to the evaluator's process group while its queries run
@@ -150,7 +151,7 @@ def scenario(name, root):
         output = json.loads(program.stdout) if program.returncode == 0 else None
         triggers = output["results"][0]["triggers"] if output else None
         return {"status": program.returncode, "triggers": triggers, "stderr": program.stderr[-2000:], **leftovers(root, project)}
-    if name == "improve":
+    if name in ("improve", "native-command"):
         results = root / "results.json"
         failed = {"query": "question", "should_trigger": True, "trigger_rate": 0, "triggers": 0, "runs": 1, "pass": False}
         summary = {"total": 1, "passed": 0, "failed": 1}
@@ -158,6 +159,8 @@ def scenario(name, root):
         args = ["--eval-results", str(results), "--skill-path", str(root / "skill"), "--model", "any"]
         env = environment(root, "wait")
         env["FAKE_CLAUDE_IMPROVE_MODE"] = "answer"
+        if name == "native-command":
+            env["FAKE_CLAUDE_NATIVE_COMMAND"] = "1"
         program = subprocess.run(program_command(root, "scripts.improve_description", *args), cwd=project, env=env, capture_output=True, text=True, timeout=120)
         output = json.loads(program.stdout) if program.returncode == 0 else None
         return {"status": program.returncode, "description": output and output["description"], "stderr": program.stderr[-2000:], **leftovers(root, project)}
@@ -216,11 +219,24 @@ def program(root, module, args):
         def __init__(self, command, *rest, **options):
             is_claude = isinstance(command, list) and command[:1] == ["claude"]
             pause = os.environ.get("FAKE_CLAUDE_PAUSE_AT_CREATE") if is_claude else None
+            native_command = is_claude and os.environ.get("FAKE_CLAUDE_NATIVE_COMMAND")
             if pause:
                 command = [sys.executable, "-c", "import time; time.sleep(1)"]
+            elif native_command:
+                # Sysnative lets a 32-bit Python start the host's native (64-bit) cmd.exe, but not debug it.
+                native = Path(os.environ["SystemRoot"]) / "Sysnative" / "cmd.exe"
+                if not native.exists():
+                    # Exercise the same CreateProcess refusal on hosts with only native Python installed.
+                    if options.get("creationflags", 0) & 0x2:  # DEBUG_ONLY_THIS_PROCESS
+                        raise ctypes.WinError(50)  # ERROR_NOT_SUPPORTED
+                    native = Path(os.environ["ComSpec"])
+                command = [str(native), "/d", "/c", "echo A clearer description."]
             elif is_claude:
                 command = [sys.executable, str(FAKE), *command[1:]]
             super().__init__(command, *rest, **options)
+            if native_command and not options.get("creationflags", 0) & 0x4:
+                # A normally launched command may already have answered before the caller gets its handle.
+                assert kernel32.WaitForSingleObject(int(self._handle), 5000) == 0
             if pause:
                 partial = Path(pause).with_suffix(".tmp")
                 partial.write_text(str(self.pid))

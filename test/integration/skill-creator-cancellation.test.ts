@@ -247,7 +247,7 @@ describe.runIf(posix && hasPython)("skill-creator description scripts on POSIX (
 	}
 
 	test("an evaluation started with SIGHUP ignored, as nohup does, keeps ignoring it and finishes (#5625)", async () => {
-		const space = workspace(["first question"], "trigger");
+		const space = workspace(["first question"], "held-trigger");
 		// Ignore SIGHUP, then become the evaluator, as `nohup python -m scripts.run_eval ...` would.
 		const nohup =
 			"import os, signal, sys; signal.signal(signal.SIGHUP, signal.SIG_IGN); os.execvp(sys.argv[1], sys.argv[1:])";
@@ -275,6 +275,7 @@ describe.runIf(posix && hasPython)("skill-creator description scripts on POSIX (
 		const closed = new Promise<number | null>((resolveClose) => program.on("close", (code) => resolveClose(code)));
 		await startedFakes(space, 1);
 		process.kill(program.pid ?? 0, "SIGHUP");
+		writeFileSync(join(space.records, "allow-trigger"), "");
 		assert.equal(await closed, 0);
 		assert.equal(JSON.parse(stdout).results[0].triggers, 1);
 	});
@@ -359,6 +360,68 @@ describe.runIf(posix && hasPython)("skill-creator description scripts on POSIX (
 	});
 
 	const linux = process.platform === "linux";
+	test.runIf(linux && spawnSync("tmux", ["-V"]).status === 0)(
+		"Ctrl+Z suspends the queries with the foreground job and fg continues them (#5625)",
+		async () => {
+			const space = workspace(["first question", "second question"], "wait");
+			const socket = join(space.dir, "tmux");
+			const tmux = (...args: string[]) => {
+				const result = spawnSync("tmux", ["-S", socket, ...args], { env: space.env, encoding: "utf8" });
+				assert.equal(result.status, 0, result.stderr);
+			};
+			try {
+				tmux("-f", "/dev/null", "new-session", "-d", "-c", space.project, "bash --noprofile --norc");
+				const command =
+					"python3 -m scripts.run_eval --eval-set ../eval.json --skill-path ../skill --runs-per-query 1";
+				tmux("send-keys", "-l", command);
+				tmux("send-keys", "Enter");
+				const started = await startedFakes(space, 2);
+				const pids = started.flatMap((fake) => [fake.pid, fake.child]);
+				const stopped = (pid: number) => readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1)?.[0] === "T";
+				const expectStopped = async (target: boolean) => {
+					const ready = () => pids.every((pid) => stopped(pid) === target);
+					for (let i = 0; i < 120 && !ready(); ++i) await sleep(25);
+					assert.ok(ready(), target ? "queries kept running" : "queries did not resume");
+				};
+				tmux("send-keys", "C-z");
+				await expectStopped(true);
+				tmux("send-keys", "fg", "Enter");
+				await expectStopped(false);
+				tmux("send-keys", "C-c");
+				assert.deepEqual(await survivors(started), []);
+			} finally {
+				spawnSync("tmux", ["-S", socket, "kill-server"]);
+			}
+		},
+	);
+
+	for (const signal of ["SIGTERM", "SIGHUP"] as const) {
+		test.runIf(linux)(`a pending ${signal} stops a suspended evaluation promptly (#5625)`, async () => {
+			const space = workspace(["first question", "second question"], "wait");
+			const run = evaluate(space);
+			const started = await startedFakes(space, 2);
+			const pid = run.program.pid;
+			assert.ok(pid);
+			process.kill(-pid, "SIGSTOP");
+			// Linux can deliver a signal pending across SIGCONT to any thread. Pick a worker rather than
+			// depending on which thread the kernel happens to schedule first when the shell continues the job.
+			const tid = readdirSync(`/proc/${pid}/task`).find((id) => Number(id) !== pid);
+			assert.ok(tid);
+			const deliver = [
+				"import ctypes, signal, sys",
+				"pid, tid = map(int, sys.argv[1:3])",
+				"assert ctypes.CDLL(None).tgkill(pid, tid, getattr(signal, sys.argv[3])) == 0",
+			].join("\n");
+			const sent = spawnSync(python, ["-c", deliver, String(pid), tid, signal], { encoding: "utf8" });
+			assert.equal(sent.status, 0, sent.stderr);
+			process.kill(-pid, "SIGCONT");
+			const exit = await run.exited(3_000);
+			assert.equal(exit.signal, signal, exit.stderr);
+			assert.deepEqual(await survivors(started), []);
+			assert.deepEqual(commandFiles(space), []);
+		});
+	}
+
 	// Ctrl+C at each line the evaluator runs on the importer's thread, each in a forked importer that then exits.
 	test.runIf(linux)(
 		"Ctrl+C at any line of an imported query leaves nothing running and no command file (#5625)",
@@ -423,6 +486,14 @@ describe.runIf(!posix && hasPython)("skill-creator description scripts on Window
 		assert.equal(report.status, 0, report.stderr);
 		assert.equal(report.description, "A clearer description.");
 		assert.deepEqual(report.running, []);
+	});
+
+	test("the description improver can run a native command that Windows won't let Python debug (#5625)", {
+		timeout: 200_000,
+	}, () => {
+		const report = windowsScenario("native-command");
+		assert.equal(report.status, 0, report.stderr);
+		assert.equal(report.description, "A clearer description.");
 	});
 
 	test("terminating the evaluator outright still ends every query command and its children (#5625)", {
