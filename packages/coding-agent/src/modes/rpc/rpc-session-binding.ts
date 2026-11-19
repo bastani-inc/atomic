@@ -2,6 +2,7 @@ import { setCapabilityOverrides } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionInternalSurface } from "../../core/agent-session-methods.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { chatReceipt } from "../../core/chat-receipts.js";
 import type { ProjectTrustContext } from "../../core/extensions/index.js";
 import { FooterDataProvider } from "../../core/footer-data-provider.ts";
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
@@ -243,7 +244,8 @@ export class RpcSessionBinding {
 			);
 		}
 		this.unsubscribe = session.subscribe((event) => {
-			this.output(toJsonEvent(event));
+			const receipt = this.writeEngineLine && chatReceipt(event);
+			this.output(receipt ? { ...toJsonEvent(event), atomicChatReceipt: receipt } : toJsonEvent(event));
 			if (event.type === "agent_settled") this.checkShutdownRequested?.();
 		});
 		this.unsubscribeBackpressure = session.agent.subscribe(async () => {
