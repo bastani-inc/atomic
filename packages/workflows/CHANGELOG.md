@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - On Windows, a Git command or worktree setup hook that a workflow stops for its timeout or output size has its process tree terminated once. Atomic no longer terminates it again when the command's exit arrives, or when its timeout comes after an output overflow ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
 - Clicking the stage summary in a workflow run's preview opens that run, including on the first click from another pane.
 - A graph node opens on a click, once the button is released where it was pressed, instead of on the press, so dragging across the run graph selects its text rather than opening the stage under the pointer.
+- A stage chat opened during a provider backoff or model switch shows `retrying…` or `switching model…` even when the session still reads as streaming, including on a worker. When the worker exits or is replaced, the stage and its subagent chats clear the old wait; a remote stage reopens on the replacement’s own session ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
 
 ## [0.9.89] - 2026-11-18
 

@@ -45,6 +45,7 @@ export type ChatBoxSession = Pick<
 	| "isRetrying"
 	| "isWaitingToRetry"
 	| "retryAttempt"
+	| "retryStatus"
 	| "isBashRunning"
 > & {
 	readonly getToolDefinition?: (toolName: string) => ToolRenderers | undefined;

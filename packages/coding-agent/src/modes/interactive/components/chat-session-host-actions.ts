@@ -105,7 +105,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 	if (state.disposed) return;
 	const text = (submittedText ?? state.inputBuffer).trim();
 	if (!text) return;
-	if (state.statusMessage === state.lastWarningMessage) state.statusMessage = "";
+	state.noticeMessage = "";
 	state.lastWarningMessage = undefined;
 	// Task inspection is local even while Escape is settling. It must never release
 	// the pause or fall through to model delivery; other slash commands keep their order.
@@ -254,8 +254,13 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 		if (submission && !submissionStarted) {
 			state.compactionQueuedMessages = [submission, ...state.compactionQueuedMessages];
 		}
-		settleSubmittedPromptLifecycle(state, submittedPromptLifecycleGeneration);
-		state.statusMessage = errorMessage(err);
+		if (isStreaming && !isPaused && !nativeQueuePaused) {
+			// Queuing failed, not the turn the message was meant for.
+			state.noticeMessage = errorMessage(err);
+		} else {
+			settleSubmittedPromptLifecycle(state, submittedPromptLifecycleGeneration);
+			state.statusMessage = errorMessage(err);
+		}
 		syncChatSessionAnimationTick(state);
 		state.requestRender?.();
 	} finally {
