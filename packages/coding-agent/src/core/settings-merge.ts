@@ -75,17 +75,6 @@ export function deepMergeSettings(base: Settings, overrides: Settings): Settings
 	if (overrides.sessions?.storage !== undefined) {
 		merged.sessions = { ...merged.sessions, storage: overrides.sessions.storage };
 	}
-	if (isMergeableObject(base.workflows) || isMergeableObject(overrides.workflows)) {
-		const globalWorkflows = Array.isArray(base.workflows) ? { paths: base.workflows } : (base.workflows ?? {});
-		const projectWorkflows = Array.isArray(overrides.workflows)
-			? { paths: overrides.workflows }
-			: (overrides.workflows ?? {});
-		merged.workflows = deepMergeObjects(globalWorkflows, projectWorkflows);
-		// A journal selects one storage mode; nearer scopes replace that choice as a whole.
-		if ("journal" in projectWorkflows && projectWorkflows.journal !== undefined) {
-			merged.workflows.journal = projectWorkflows.journal;
-		}
-	}
 	const overrideTools = Array.isArray(overrides.defaultTools)
 		? overrides.defaultTools.filter((entry) => typeof entry === "string")
 		: undefined;

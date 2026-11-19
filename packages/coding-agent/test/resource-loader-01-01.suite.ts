@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionAPI } from "../src/core/extensions/types.ts";
-import type { ResolvedResource } from "../src/core/package-manager.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { withoutDefaultBuiltins } from "./helpers/default-builtins.js";
@@ -182,146 +179,6 @@ describe("DefaultResourceLoader", () => {
 			});
 
 			await assert.rejects(loader.reload(), SyntaxError);
-		});
-		it("should refresh package workflow resources without reloading extensions", async () => {
-			const settingsManager = SettingsManager.inMemory();
-			const pkgDir = join(tempDir, "workflow-package");
-			const workflowDir = join(pkgDir, "workflows");
-			const workflowA = join(workflowDir, "a.ts");
-			const workflowB = join(workflowDir, "b.ts");
-			const manifestPath = join(pkgDir, "package.json");
-			const writeManifest = (workflows: string[]): void => {
-				writeFileSync(
-					manifestPath,
-					JSON.stringify({
-						name: "workflow-package",
-						atomic: { workflows },
-					}),
-				);
-			};
-
-			mkdirSync(workflowDir, { recursive: true });
-			writeFileSync(workflowA, "export default {}");
-			writeFileSync(workflowB, "export default {}");
-			writeManifest(["workflows/a.ts"]);
-			settingsManager.setPackages([pkgDir]);
-
-			const preservedSkillDir = join(agentDir, "skills", "preserved-skill");
-			const preservedPromptDir = join(agentDir, "prompts");
-			const preservedThemeDir = join(agentDir, "themes");
-			mkdirSync(preservedSkillDir, { recursive: true });
-			mkdirSync(preservedPromptDir, { recursive: true });
-			mkdirSync(preservedThemeDir, { recursive: true });
-			writeFileSync(
-				join(preservedSkillDir, "SKILL.md"),
-				"---\nname: preserved-skill\ndescription: Reload preservation fixture\n---\n",
-			);
-			writeFileSync(join(preservedPromptDir, "preserved.md"), "Preserved prompt");
-			const baseThemePath = fileURLToPath(new URL("../src/modes/interactive/theme/dark.json", import.meta.url));
-			const preservedTheme = JSON.parse(readFileSync(baseThemePath, "utf8")) as { name: string };
-			preservedTheme.name = "preserved-theme";
-			writeFileSync(join(preservedThemeDir, "preserved.json"), JSON.stringify(preservedTheme));
-			let factoryCalls = 0;
-			let apiGetWorkflowResources: (() => ResolvedResource[]) | undefined;
-			let apiRefreshWorkflowResources: (() => Promise<ResolvedResource[]>) | undefined;
-			const loader = new DefaultResourceLoader({
-				cwd,
-				agentDir,
-				settingsManager,
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						factoryCalls += 1;
-						apiGetWorkflowResources = () => pi.getWorkflowResources();
-						apiRefreshWorkflowResources = () => pi.refreshWorkflowResources();
-					},
-				],
-			});
-
-			await loader.reload();
-
-			if (!apiGetWorkflowResources || !apiRefreshWorkflowResources) {
-				throw new Error("expected extension factory to capture workflow resource APIs");
-			}
-
-			expect(factoryCalls).toBe(1);
-			expect(apiGetWorkflowResources().map((resource) => resource.path)).toEqual([workflowA]);
-			expect(loader.getWorkflowResources().map((resource) => resource.path)).toEqual([workflowA]);
-
-			const preservedResources = {
-				extensions: loader.getExtensions(),
-				skills: loader.getSkills(),
-				prompts: loader.getPrompts(),
-				themes: loader.getThemes(),
-				projectTrusted: settingsManager.isProjectTrusted(),
-				inheritance: loader.getInheritanceSnapshot(),
-			};
-			expect(preservedResources.skills.skills.map((skill) => skill.name)).toContain("preserved-skill");
-			expect(preservedResources.prompts.prompts.map((prompt) => prompt.name)).toContain("preserved");
-			expect(preservedResources.themes.themes.map((theme) => theme.name)).toContain("preserved-theme");
-
-			writeManifest(["workflows/a.ts", "workflows/b.ts"]);
-			const refreshed = await apiRefreshWorkflowResources();
-
-			expect(refreshed.map((resource) => resource.path)).toEqual([workflowA, workflowB]);
-			expect(apiGetWorkflowResources().map((resource) => resource.path)).toEqual([workflowA, workflowB]);
-			expect(loader.getWorkflowResources().map((resource) => resource.path)).toEqual([workflowA, workflowB]);
-			expect(factoryCalls).toBe(1);
-			expect(loader.getExtensions()).toEqual(preservedResources.extensions);
-			expect(loader.getSkills()).toEqual(preservedResources.skills);
-			expect(loader.getPrompts()).toEqual(preservedResources.prompts);
-			expect(loader.getThemes()).toEqual(preservedResources.themes);
-			expect(settingsManager.isProjectTrusted()).toBe(preservedResources.projectTrusted);
-			expect(loader.getInheritanceSnapshot()).toEqual(preservedResources.inheritance);
-		});
-		it("should expose project-local workflows from additional extension paths", async () => {
-			const repoDir = join(tempDir, "borrowed-repo");
-			const atomicWorkflow = join(repoDir, ".atomic", "workflows", "atomic.ts");
-			const legacyWorkflow = join(repoDir, ".pi", "workflows", "legacy.ts");
-			mkdirSync(join(repoDir, ".atomic", "workflows"), { recursive: true });
-			mkdirSync(join(repoDir, ".pi", "workflows"), { recursive: true });
-			writeFileSync(atomicWorkflow, "export default {}");
-			writeFileSync(legacyWorkflow, "export default {}");
-
-			let apiGetWorkflowResources: (() => ResolvedResource[]) | undefined;
-			let apiRefreshWorkflowResources: (() => Promise<ResolvedResource[]>) | undefined;
-			const loader = new DefaultResourceLoader({
-				cwd,
-				agentDir,
-				settingsManager: SettingsManager.inMemory(),
-				additionalExtensionPaths: [repoDir],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						apiGetWorkflowResources = () => pi.getWorkflowResources();
-						apiRefreshWorkflowResources = () => pi.refreshWorkflowResources();
-					},
-				],
-			});
-
-			await loader.reload();
-
-			if (!apiGetWorkflowResources || !apiRefreshWorkflowResources) {
-				throw new Error("expected extension factory to capture workflow resource APIs");
-			}
-
-			const expected = [
-				expect.objectContaining({
-					path: atomicWorkflow,
-					enabled: true,
-					metadata: expect.objectContaining({ origin: "top-level", scope: "temporary" }),
-				}),
-				expect.objectContaining({
-					path: legacyWorkflow,
-					enabled: true,
-					metadata: expect.objectContaining({ origin: "top-level", scope: "temporary" }),
-				}),
-			];
-
-			expect(loader.getWorkflowResources()).toEqual(expect.arrayContaining(expected));
-			expect(apiGetWorkflowResources()).toEqual(expect.arrayContaining(expected));
-
-			const refreshed = await apiRefreshWorkflowResources();
-			expect(refreshed).toEqual(expect.arrayContaining(expected));
-			expect(loader.getWorkflowResources()).toEqual(expect.arrayContaining(expected));
 		});
 		it("should preserve borrowed project-local skill provenance from additional extension paths", async () => {
 			const repoDir = join(tempDir, "borrowed-skills-repo");

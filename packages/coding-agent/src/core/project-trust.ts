@@ -40,7 +40,7 @@ export function formatProjectTrustPrompt(cwd: string): string {
  * source, not a product name.
  */
 export function formatBorrowedExtensionSourceTrustPrompt(source: string): string {
-	return `Trust extension source?\n${source}\n\nThis allows ${APP_TITLE} to load project-local .atomic/.pi resources and .agents/skills from this -e source, including extensions and workflows that can execute code.`;
+	return `Trust extension source?\n${source}\n\nThis allows ${APP_TITLE} to load project-local .atomic/.pi resources and .agents/skills from this -e source, including extensions that can execute code.`;
 }
 
 async function selectProjectTrustOption(

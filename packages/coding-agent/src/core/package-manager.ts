@@ -41,13 +41,13 @@ import type {
 	ConfiguredPackage,
 	GitUpdateTargetInfo,
 	MissingSourceAction,
+	PackageDiscovery,
 	PackageManager,
 	PackageManagerContext,
 	PackageManagerOptions,
 	PackageUpdate,
 	ParsedSource,
 	ProgressCallback,
-	ResolvedPaths,
 	ResolveExtensionSourcesOptions,
 	SourceScope,
 } from "./package-manager-types.ts";
@@ -114,14 +114,14 @@ export class DefaultPackageManager implements PackageManager {
 		return getInstalledPathFromContext(this.context, source, scope);
 	}
 
-	async resolve(onMissing?: (source: string) => Promise<MissingSourceAction>): Promise<ResolvedPaths> {
+	async resolve(onMissing?: (source: string) => Promise<MissingSourceAction>): Promise<PackageDiscovery> {
 		return resolvePackages(this.context, onMissing);
 	}
 
 	async resolveExtensionSources(
 		sources: PackageSource[],
 		options?: ResolveExtensionSourcesOptions,
-	): Promise<ResolvedPaths> {
+	): Promise<PackageDiscovery> {
 		return resolveExtensionSourcesFromContext(this.context, sources, options);
 	}
 
