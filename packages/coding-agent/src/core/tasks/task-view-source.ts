@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
+import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
-import { taskOutputText } from "./command-output.js";
+import { readTaskOutputTail } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
@@ -50,6 +51,8 @@ export interface TaskTranscriptFollow {
 	readonly session?: TaskTranscriptSource;
 	/** The transcript has no live tail; a view reads it again when the task changes. */
 	readonly historyOnly: boolean;
+	/** Latest activity from a worker that publishes task state rather than live session events. */
+	readonly publishedActivity?: PublishedChatActivity;
 }
 
 /** What a chat of an agent task completes, as plain data: its session's cwd and the skill commands it offers. */
@@ -264,13 +267,8 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		async readTaskOutput(id, range) {
 			const task = lease(id);
 			if (!task.ok) return { ok: false, error: { message: task.error.message } };
-			const page = await store.supervisor.readTaskOutput(task.value, {
-				start: range.start,
-				maximumBytes: range.maximumBytes,
-			});
-			return page.ok
-				? { ok: true, value: { text: taskOutputText(page.value), omitted: page.value.omittedRanges.length > 0 } }
-				: { ok: false, error: { message: page.error.message } };
+			const page = await readTaskOutputTail(store.supervisor, task.value, range);
+			return page.ok ? page : { ok: false, error: { message: page.error.message } };
 		},
 		taskDetailText(id) {
 			const task = lease(id);
@@ -456,7 +454,7 @@ function transcriptView(
 					content: message.content.filter((_, index) => itemIds.has(`${entry.id}:${index}`)),
 				},
 			];
-		return message.role === "user" || message.role === "toolResult" ? [message] : [];
+		return [message];
 	});
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;

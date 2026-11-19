@@ -158,6 +158,8 @@ export interface ExtensionRuntime extends DurableResumeRuntime {
 	): Promise<ResumeFailedRunResult>;
 }
 export interface RuntimeDispatchOptions {
+	/** A picker selection may only resume the journal version it listed. */
+	readonly expectedUpdatedAt?: number;
 	/** Session identity that owns a model-tool launch and its lifecycle controls. */
 	readonly modelOwner?: string;
 	readonly policy?: WorkflowExecutionPolicy;
@@ -400,6 +402,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				registry,
 				durableBackend: backend,
 				jobs,
+				expectedUpdatedAt: options?.expectedUpdatedAt,
 				signal: options?.signal,
 				onRunAccepted: options?.onRunAccepted,
 				baseRunOpts: {
@@ -493,6 +496,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			registry,
 			store: activeStore,
 			stageControlRegistry,
+			stageUiBroker,
 			toolControlRegistry,
 			adapters,
 			runtimeCwd,

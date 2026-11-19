@@ -590,7 +590,7 @@ Named `extensionFactories` descriptors may set `builtin: true` to expose the fac
 
 Every `DefaultResourceLoader` includes Atomic's inline built-in extensions, `codemode`, `tool-search`, and `llama.cpp`, so `defaultTools: ["+codemode"]` or `tools: ["+tool_search"]` works in SDK sessions without extra factories. `loader.getExtensions()` lists them with `builtin:<name>` paths. Registering them does not activate `codemode` or `tool_search`; both stay opt-in. A descriptor you pass with the same name replaces the default one, and `noExtensions: true`, `disabledBuiltinExtensions: ["codemode"]`, or an `extensions` setting such as `"-builtin:codemode"` turns one off.
 
-Pass `extensionBindings` to `createAgentSession()` to install `uiContext`, `mode`, `commandContextActions`, `shutdownHandler` or `onError` before startup hooks run. Creation awaits startup and resource discovery. A failed startup shuts down the partially created session before rejecting. Rebinding updates the host without replaying `session_start`; reload emits one start for its new generation. Remove manual post-creation startup calls from integrations that only used them to initialize extensions.
+Pass `extensionBindings` to `createAgentSession()` to install `uiContext`, `mode`, `commandContextActions`, `shutdownHandler` or `onError` before startup hooks run. Creation awaits startup and resource discovery. A failed startup shuts down the partially created session before rejecting. Set `reportStartupErrors: true` to keep the session instead when a `session_start` or `resources_discover` handler throws: the error goes to `onError` and the extension stays loaded, as in the interactive terminal. Rebinding updates the host without replaying `session_start`; reload emits one start for its new generation. Remove manual post-creation startup calls from integrations that only used them to initialize extensions.
 
 Strict reloads (`failOnExtensionErrors: true`) require the loader's transactional `prepareReload()` support so a failed candidate cannot mutate live state before validation. `DefaultResourceLoader` provides that support. Custom loaders without it remain compatible with ordinary reloads, but strict reload fails before calling their mutating `reload()` method.
 
@@ -1435,7 +1435,7 @@ Only Atomic's interactive hosts with a task inspector hold child prompts automat
 
 ### Task transcript references
 
-Task inspectors show references to the bound child conversation: prompts, responses, thinking blocks, tool calls and results, compaction boundaries, branch summaries, and displayed extension messages. Model-only custom messages and entries a chat does not render are left out. An unbound or empty history reports `Transcript unavailable`. Saved history is not authority to restart or control a task.
+Task inspectors show references to the bound child conversation: prompts, responses, provider errors, thinking blocks, tool calls and results, shell commands and their output, compaction boundaries, branch summaries, and displayed extension messages. Model-only custom messages and entries a chat does not render are left out. An unbound or empty history reports `Transcript unavailable`. Saved history is not authority to restart or control a task.
 
 `TaskViewSource.sendTaskMessage(id, text)` sends text typed into an agent task's transcript to that task through its Intercom target and resolves once Intercom confirms delivery. A task view that cannot message tasks omits the method. A failure rejects with a `TaskMessageError`:
 

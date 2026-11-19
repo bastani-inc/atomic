@@ -136,6 +136,53 @@ test("a failure that does not pass stays a plain StorageUnavailableError and is 
 	);
 });
 
+test("several statements in one exec whose request never reached the server run again from the first, once each (#5652)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	const real = globalThis.fetch;
+	let carrying = 0;
+	vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+		const request = new Request(input, init);
+		if ((await request.clone().text()).includes("VALUES (2)") && ++carrying === 1)
+			throw networkFailure("ECONNREFUSED");
+		return real(request);
+	});
+	await database.exec("INSERT INTO events VALUES (1); INSERT INTO events VALUES (2)");
+	vi.unstubAllGlobals();
+	assert.equal(carrying, 2, "sent again once, whole");
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 1"), 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 2"), 1);
+});
+
+test("a statement of several in one exec whose rerun never reached the server fails the exec as possibly applied, and the statement before it runs once (#5652)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	// The server runs the first statement and refuses the second with SQLITE_SCHEMA; the second's own request then
+	// never reaches it.
+	fake.fail({ kind: "schema-changed", statement: "VALUES (2)" });
+	const real = globalThis.fetch;
+	let carrying = 0;
+	vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+		const request = new Request(input, init);
+		if ((await request.clone().text()).includes("VALUES (2)") && ++carrying > 1) throw networkFailure("ECONNREFUSED");
+		return real(request);
+	});
+	// The first statement committed: running the exec again would write it twice.
+	await assert.rejects(
+		database.exec("INSERT INTO events VALUES (1); INSERT INTO events VALUES (2)"),
+		(error: unknown) => {
+			assert.ok(error instanceof StorageTransientError);
+			assert.deepEqual([error.code, error.outcome, error.attempts], ["connection-refused", "unknown", 1]);
+			return true;
+		},
+	);
+	vi.unstubAllGlobals();
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 1"), 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 2"), 0);
+});
+
 test("network codes for a connection that broke fail at once with an unknown outcome (#4383)", async () => {
 	const fake = await server();
 	for (const code of ["ECONNRESET", "EPIPE", "ETIMEDOUT", "UND_ERR_SOCKET"]) {

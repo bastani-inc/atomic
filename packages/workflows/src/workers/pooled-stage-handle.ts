@@ -1,20 +1,25 @@
 import { randomUUID } from "node:crypto";
-import type {
-	AgentSession,
-	AgentSessionEvent,
-	BashResult,
-	SessionCommandCatalog,
-	TaskViewSource,
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	AgentTokenMeter,
+	type BashResult,
+	type SessionCommandCatalog,
+	type TaskViewSource,
 } from "@bastani/atomic";
-import type {
-	AgentSessionEventListener,
-	StageControlHandle,
-	StageControlStatus,
-	StagePlacement,
+import {
+	type AgentSessionEventListener,
+	type StageContextMeter,
+	type StageControlHandle,
+	type StageControlStatus,
+	type StagePlacement,
+	type StageRetryWait,
+	stageRetryWaitAfter,
 } from "../runs/foreground/stage-control-registry.js";
 import { StageQueuedUserMessageBuffer } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { StageToolExecutionBuffer } from "../runs/foreground/stage-tool-execution-buffer.js";
+import { StageTurnStart } from "../runs/foreground/stage-turn-start.js";
 import type { StageSendUserMessageOptions } from "../shared/types.js";
 import { PooledStageTaskSource } from "./pooled-stage-task-source.js";
 import { tracePooledWatch } from "./pooled-watch-trace.js";
@@ -146,17 +151,23 @@ export interface OutboundEntry {
  */
 export class PooledStageHandle implements StageControlHandle {
 	readonly sessionFile = undefined;
-	private readonly listeners = new Set<AgentSessionEventListener>();
+	private readonly listeners = new Map<AgentSessionEventListener, (() => void) | undefined>();
 	private readonly rebindListeners = new Set<(redelivered: number) => void>();
 	private readonly drainedListeners = new Set<() => void>();
 	private settled: AgentMessage[] = [];
+	private contextTokens?: AgentTokenMeter;
+	private requestSide = false;
 	private toolExecutions = new StageToolExecutionBuffer();
 	private queued = new StageQueuedUserMessageBuffer();
 	private streaming: StreamingMessage;
 	private currentStatus: StageControlStatus = "running";
 	private streamingNow = false;
-	/** Whether the stage's session waits out an automatic retry's backoff: its retry started, its next attempt has not. */
-	private waitingToRetry = false;
+	private retryPending = false;
+	private pauseSupported = true;
+	/** When the stage's turn started, read from the worker's snapshot and the events since. */
+	private turnStart = new StageTurnStart();
+	private pendingRetry: StageRetryWait;
+	publishedActivity?: PooledStageChatSnapshot["publishedActivity"];
 	private seq = 0;
 	private attempt: { readonly workId: string; readonly generation: number };
 	private ended?: WatchEndReason;
@@ -237,8 +248,23 @@ export class PooledStageHandle implements StageControlHandle {
 	get isStreaming(): boolean {
 		return this.streamingNow;
 	}
+	get canPause(): boolean {
+		return this.pauseSupported && !this.reconnecting && !this.disposed && this.ended === undefined;
+	}
+	get isRetrying(): boolean {
+		return this.retryPending;
+	}
 	get isWaitingToRetry(): boolean {
-		return this.waitingToRetry;
+		return this.pendingRetry === "backoff";
+	}
+	get modelSwitch(): PooledStageChatSnapshot["modelSwitch"] {
+		return this.pendingRetry === "backoff" ? undefined : this.pendingRetry;
+	}
+	get turnStartedAt(): number | undefined {
+		return this.turnStart.turnStartedAt();
+	}
+	turnState(): PooledStageChatSnapshot["turn"] {
+		return this.turnStart.state();
 	}
 	get isDisposed(): boolean {
 		return this.disposed;
@@ -257,6 +283,9 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	get messages(): AgentSession["messages"] {
 		return this.settled;
+	}
+	contextMeter(): StageContextMeter | undefined {
+		return this.contextTokens && { ...this.contextTokens.snapshot(), requestSide: this.requestSide };
 	}
 	streamingMessage(): StreamingMessage {
 		return this.streaming;
@@ -360,19 +389,20 @@ export class PooledStageHandle implements StageControlHandle {
 	/** Applies one message of the watch stream. */
 	receive(message: PooledStageWatchMessage): void {
 		if (message.kind === "ended") {
-			this.leaveWatch();
 			this.streamingNow = false;
 			if (RECONNECTABLE.has(message.reason) && !this.disposed && this.ended === undefined) this.reconnecting = true;
 			else this.end(message.reason);
+			this.leaveWatch();
 			// A rebind cut short by this end leaves the rest for the next attempt.
 			this.finishRebind(false);
+			for (const onWatchEnd of [...this.listeners.values()]) onWatchEnd?.();
 			return;
 		}
 		for (const { seq, event } of message.events) {
 			if (seq <= this.seq) continue;
 			this.seq = seq;
 			if (!this.apply(event)) continue;
-			for (const listener of [...this.listeners]) listener(event);
+			for (const listener of [...this.listeners.keys()]) listener(event);
 		}
 	}
 
@@ -397,8 +427,8 @@ export class PooledStageHandle implements StageControlHandle {
 		return done.promise;
 	}
 
-	subscribe(listener: AgentSessionEventListener): () => void {
-		this.listeners.add(listener);
+	subscribe(listener: AgentSessionEventListener, onWatchEnd?: () => void): () => void {
+		this.listeners.set(listener, onWatchEnd);
 		return () => {
 			this.listeners.delete(listener);
 		};
@@ -432,7 +462,9 @@ export class PooledStageHandle implements StageControlHandle {
 		const result = await this.transport.pause(this.watchId);
 		if (!result.ok) throw new PooledStageDeliveryError(result.refusal, this.stageName);
 		this.currentStatus = "paused";
+		this.pendingRetry = undefined;
 		this.streamingNow = false;
+		this.retryPending = false;
 	}
 	async resume(message?: string, beforeResume?: () => void): Promise<StageUserMessageDeliveryAction | undefined> {
 		this.throwIfClosed();
@@ -471,6 +503,11 @@ export class PooledStageHandle implements StageControlHandle {
 
 	/** Releases sends waiting on the current watch; the next watch gets a fresh signal. */
 	private leaveWatch(): void {
+		this.retryPending = false;
+		this.turnStart = new StageTurnStart();
+		this.publishedActivity = undefined;
+		this.pendingRetry = undefined;
+		this.taskView.withdrawChatActivity();
 		this.watchGone.resolve();
 		this.watchGone = Promise.withResolvers<void>();
 	}
@@ -695,7 +732,7 @@ export class PooledStageHandle implements StageControlHandle {
 									return;
 								entry.admittedBy = generation;
 								entry.unconfirmedOn = undefined;
-								for (const listener of [...this.listeners]) listener({ type: "queue_update" } as never);
+								for (const listener of [...this.listeners.keys()]) listener({ type: "queue_update" } as never);
 							},
 							() => {},
 						);
@@ -786,17 +823,27 @@ export class PooledStageHandle implements StageControlHandle {
 		rebinding.done(rebinding.redelivered);
 	}
 
+	private adoptHistory(history: Pick<PooledStageChatSnapshot, "messages" | "contextMeter">): void {
+		this.settled = [...history.messages];
+		this.contextTokens = history.contextMeter && new AgentTokenMeter([], history.contextMeter);
+		this.requestSide = history.contextMeter?.requestSide ?? false;
+	}
+
 	private adopt(snapshot: PooledStageChatSnapshot): void {
 		this.session = snapshot.sessionId;
 		// A replacement attempt's session lists its own commands once it has started, and its own tasks.
 		this.commands = snapshot.commands;
 		if (!this.taskView.empty) this.taskView.apply(NO_TASKS);
 		this.markSessionStarted(snapshot.sessionStarted !== false);
-		this.settled = [...snapshot.messages];
+		this.adoptHistory(snapshot);
 		this.streaming = snapshot.streamingMessage;
 		this.currentStatus = snapshot.status;
 		this.streamingNow = snapshot.isStreaming;
-		this.waitingToRetry = snapshot.waitingToRetry === true;
+		this.retryPending = snapshot.retryPending === true;
+		this.pauseSupported = snapshot.canPause !== false;
+		this.turnStart = new StageTurnStart(snapshot.turn);
+		this.publishedActivity = snapshot.publishedActivity;
+		this.pendingRetry = snapshot.modelSwitch ?? (snapshot.waitingToRetry ? "backoff" : undefined);
 		this.seq = snapshot.seq;
 		this.toolExecutions = new StageToolExecutionBuffer();
 		for (const event of snapshot.pendingToolExecutionEvents) this.toolExecutions.record(event);
@@ -819,7 +866,7 @@ export class PooledStageHandle implements StageControlHandle {
 			// Views redraw, so the chat stops saying the stage is starting; the queue itself is unchanged.
 			const queued = this.queuedUserMessages();
 			const redraw = { type: "queue_update", steering: [...queued.steering], followUp: [...queued.followUp] };
-			for (const listener of [...this.listeners]) listener(redraw as AgentSessionEvent);
+			for (const listener of [...this.listeners.keys()]) listener(redraw as AgentSessionEvent);
 			return false;
 		}
 		if ((event.type as string) === STAGE_TASKS_EVENT) {
@@ -827,7 +874,7 @@ export class PooledStageHandle implements StageControlHandle {
 			return false;
 		}
 		if ((event.type as string) === STAGE_MESSAGES_EVENT) {
-			this.settled = [...(event as never as { readonly messages: AgentSession["messages"] }).messages];
+			this.adoptHistory(event as never as Pick<PooledStageChatSnapshot, "messages" | "contextMeter">);
 			return false;
 		}
 		if (event.type === "bash_execution_update" && event.id !== undefined) this.bashRuns.get(event.id)?.(event.delta);
@@ -846,20 +893,24 @@ export class PooledStageHandle implements StageControlHandle {
 	private applyEvent(event: AgentSessionEvent): void {
 		this.toolExecutions.record(event);
 		this.queued.record(event);
+		this.turnStart.record(event);
+		this.pendingRetry = stageRetryWaitAfter(this.pendingRetry, event);
 		switch (event.type) {
 			case "agent_start":
 				// A turn only starts on a running stage, including one resumed after it paused.
 				this.streamingNow = true;
-				this.waitingToRetry = false;
 				this.currentStatus = "running";
 				return;
-			case "auto_retry_start":
-				this.waitingToRetry = true;
+			case "model_fallback_start":
+				this.retryPending = true;
 				return;
 			case "auto_retry_end":
-				this.waitingToRetry = false;
+			case "model_fallback_end":
+			case "agent_settled":
+				this.retryPending = false;
 				return;
 			case "agent_end":
+				this.retryPending = event.retryPending === true;
 				this.streamingNow = false;
 				this.streaming = undefined;
 				return;
@@ -869,6 +920,10 @@ export class PooledStageHandle implements StageControlHandle {
 				return;
 			case "message_end":
 				this.settled.push(event.message);
+				if (this.contextTokens) {
+					this.contextTokens.settled(event.message);
+					this.requestSide = event.message.role === "user" || event.message.role === "toolResult";
+				}
 				if (event.message.role === "assistant") this.streaming = undefined;
 				return;
 		}
@@ -935,8 +990,8 @@ export async function reconnectPooledStageHandle(
 		else early.push(message);
 	});
 	if (!result.ok) return false;
-	// A view that gave up on this attempt, or closed, does not bind a watch that opened late.
-	if (handle.isDisposed || !wanted()) {
+	// A stage can finish while the replacement watch is opening; a late snapshot cannot revive its turn.
+	if (!handle.isReconnecting || handle.isDisposed || !wanted()) {
 		await transport.unwatch(result.watch.id);
 		return false;
 	}
@@ -944,5 +999,5 @@ export async function reconnectPooledStageHandle(
 	bound = true;
 	for (const message of early.splice(0)) handle.receive(message);
 	await rebinding;
-	return !handle.isReconnecting;
+	return !handle.isDisposed && handle.endReason === undefined && !handle.isReconnecting;
 }

@@ -63,6 +63,7 @@ export interface LiveStageRuntime {
 	readonly opts: EngineStageRuntimeOptions;
 	readonly stageRegistry: StageControlRegistry;
 	readonly stageUiBroker: StageUiBroker;
+	readonly stageUiSignal: AbortSignal;
 	readonly scheduler: StageScheduler;
 	readonly signal: AbortSignal;
 	readonly exit: WorkflowExitManager;

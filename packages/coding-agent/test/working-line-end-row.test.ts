@@ -146,4 +146,17 @@ describe("agent token total (#5224)", () => {
 			requesting: false,
 		});
 	});
+
+	test("a failed answer the run went on from belongs to the run; one a new prompt followed ended its turn (#5535)", () => {
+		const retried = [
+			{ role: "user", content: "go", timestamp: 1_000 },
+			assistant(5, "error", 1_200),
+			assistant(30, "toolUse", 6_000),
+			{ role: "toolResult", content: [], timestamp: 7_000 },
+		];
+		assert.deepEqual(runInProgress(retried), { startedAt: 1_000, settledTokens: 35, requesting: true });
+		assert.equal(runInProgress(retried.slice(0, 2)).startedAt, 1_000);
+		const next = [...retried.slice(0, 2), { role: "user", content: "again", timestamp: 9_000 }];
+		assert.deepEqual(runInProgress(next), { startedAt: 9_000, settledTokens: 0, requesting: true });
+	});
 });

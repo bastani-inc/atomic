@@ -352,3 +352,58 @@ test("uses process-tree containment to terminate descendants when root already e
 		containment.onTerminate = undefined;
 	}
 });
+
+test("a timeout that stops a running command terminates its process tree once, also when the command's exit follows (#5601)", async () => {
+	containment.enabled = true;
+	containment.events = [];
+	let child: ReturnType<typeof spawn> | undefined;
+	// Terminating the job ends every process in it, the command included, whose exit is reported afterwards.
+	containment.onTerminate = () => child?.kill("SIGKILL");
+	try {
+		const running = spawnCollect(node, ["-e", "setTimeout(() => {}, 60_000)"], {
+			cwd: process.cwd(),
+			env: process.env,
+			timeout: 200,
+			maxBuffer: 1024,
+		});
+		child = vi.mocked(spawn).mock.results.at(-1)?.value;
+		assert.ok(child, "the command was spawned");
+		const result = await running;
+		assert.equal(errorCode(result.error), "ETIMEDOUT");
+		assert.deepEqual(containment.events, ["contain:true", "terminate", "close"]);
+	} finally {
+		child?.kill("SIGKILL");
+		containment.enabled = false;
+		containment.onTerminate = undefined;
+	}
+});
+
+test("an output overflow that stops a running command terminates its process tree once, also when the timeout and then the command's exit follow (#5601)", async () => {
+	containment.enabled = true;
+	containment.events = [];
+	containment.onTerminate = undefined;
+	let child: ReturnType<typeof spawn> | undefined;
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const running = spawnCollect(
+			node,
+			["-e", "process.stdout.write('x'.repeat(4096)); setTimeout(() => {}, 60_000)"],
+			{ cwd: process.cwd(), env: process.env, timeout: GENEROUS_TIMEOUT_MS, maxBuffer: 1024 },
+		);
+		child = vi.mocked(spawn).mock.results.at(-1)?.value;
+		assert.ok(child, "the command was spawned");
+		const deadline = Date.now() + ROOT_EXIT_BOUND_MS;
+		while (!containment.events.includes("terminate") && Date.now() < deadline) await realSleep(10);
+		assert.deepEqual(containment.events, ["contain:true", "terminate"], "the overflow terminated the tree");
+		assert.equal(child.exitCode, null, "the command still runs");
+		await vi.advanceTimersByTimeAsync(GENEROUS_TIMEOUT_MS);
+		child.kill("SIGKILL");
+		const result = await running;
+		assert.equal(errorCode(result.error), "ENOBUFS");
+		assert.deepEqual(containment.events, ["contain:true", "terminate", "close"]);
+	} finally {
+		child?.kill("SIGKILL");
+		vi.useRealTimers();
+		containment.enabled = false;
+	}
+});

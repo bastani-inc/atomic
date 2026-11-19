@@ -118,11 +118,13 @@ export type {
 	Cleanup,
 	OperationId,
 	ResourceFailure,
+	TaskElapsedSpan,
 	TaskId,
 	TaskRecord,
 	TaskResult,
 	WaitPolicy,
 } from "./core/tasks/contracts.js";
+export { spanElapsedMs } from "./core/tasks/contracts.js";
 export {
 	FINISHED_TASK_RETENTION,
 	findTaskEvictedError,
@@ -206,15 +208,20 @@ export {
 	type HeartbeatRow,
 } from "./modes/interactive/components/heartbeat-block.ts";
 export {
+	clickableHintText,
+	clickableKeyTextHint,
+	hintKeyParts,
 	isNavHelpKey,
 	NAV_CONFIRM_WINDOW_MS,
 	type NavKey,
 	type NavKeybindings,
 	type NavKeyStyle,
+	navEntryKeyParts,
 	navEntryKeys,
 	renderAutocompleteHintLine,
 	renderNavHintLine,
 	renderNavKeyOverlay,
+	slashCommandHint,
 	TwoPressConfirm,
 } from "./modes/interactive/components/nav-keys.ts";
 export {
@@ -841,6 +848,12 @@ export {
 	workflowSessionMetadataFromEnv,
 } from "./core/session-manager-classification.ts";
 export {
+	type PublishedChatActivity,
+	retryStatusUpdate,
+	type SessionRetryStatus,
+	sessionWaitsToRetry,
+} from "./core/session-retry-status.js";
+export {
 	findSessionStartError,
 	isRetryableSessionStartError,
 	isSessionStartConfigError,
@@ -1202,6 +1215,7 @@ export {
 // UI components for extensions
 export {
 	AgentTokenMeter,
+	type AgentTokenMeterSnapshot,
 	ArminComponent,
 	AssistantMessageComponent,
 	agentTokenTotal,

@@ -127,6 +127,8 @@ export async function recordBashResult(
 		// Avoid writing a source-owned result into a shared manager that an
 		// in-memory fork changed while this execution was active. The result stays
 		// visible to this run only, so it must be added to agent state directly.
+		this._runOnlyBashMessages ??= new WeakSet();
+		this._runOnlyBashMessages.add(bashMessage);
 		this.agent.state.messages.push(bashMessage);
 	}
 }

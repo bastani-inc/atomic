@@ -33,6 +33,7 @@ export function assertWorkflowCreatedExecution(runSnapshot: RunSnapshot, openedS
 export async function appendRunEndWhenRecorded(
 	persistence: WorkflowPersistencePort | undefined,
 	recorded: boolean,
+	run: RunSnapshot,
 	payload: {
 		readonly runId: string;
 		readonly runGeneration?: number;
@@ -55,7 +56,7 @@ export async function appendRunEndWhenRecorded(
 	},
 ): Promise<void> {
 	if (!persistence || !recorded) return;
-	await appendRunEnd(persistence, payload);
+	await appendRunEnd(persistence, { ...payload, finishSequence: run.finishSequence });
 }
 
 /**
@@ -530,7 +531,7 @@ export async function finalizeKilled(
 		resumable: false,
 	};
 	const recorded = activeStore.recordRunEnd(runId, "killed", undefined, errorMessage, metadata);
-	await appendRunEndWhenRecorded(persistence, recorded, {
+	await appendRunEndWhenRecorded(persistence, recorded, runSnapshot, {
 		runId,
 		status: "killed",
 		error: errorMessage,
@@ -555,7 +556,7 @@ export async function finalizeKilledByFailure(
 	metadata: RunFailureMetadata,
 ): Promise<RunResult> {
 	const recorded = activeStore.recordRunEnd(runId, "killed", undefined, metadata.errorMessage, metadata);
-	await appendRunEndWhenRecorded(persistence, recorded, {
+	await appendRunEndWhenRecorded(persistence, recorded, runSnapshot, {
 		runId,
 		status: "killed",
 		error: metadata.errorMessage,

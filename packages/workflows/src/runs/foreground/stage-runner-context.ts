@@ -65,6 +65,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		);
 	let effectiveStageOptions = effectiveOptionsOf(stageOptions);
 	const meta: StageExecutionMeta = {
+		...(opts.stageUiSignal === undefined ? {} : { stageUiSignal: opts.stageUiSignal }),
 		runId,
 		stageId,
 		stageName,
@@ -427,7 +428,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		},
 
 		__residentMessages() {
-			return controller.currentSession?.messages ?? adapterMessages;
+			return controller.agentSession()?.transcriptMessages ?? controller.currentSession?.messages ?? adapterMessages;
 		},
 
 		get isStreaming() {
@@ -512,6 +513,9 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 			return controller.isIdleForRelease();
 		},
 
+		__waitsToRetry() {
+			return controller.waitsToRetry();
+		},
 		__turnLoopBusy() {
 			return controller.isTurnLoopBusy();
 		},

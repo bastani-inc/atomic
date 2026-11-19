@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { getPriority, constants as osConstants, setPriority, tmpdir } from "node:os";
+import { getPriority, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { PerformanceObserver } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import type { WorkflowRunDetail } from "../src/core/extensions/workflow-run-control.js";
@@ -41,6 +40,14 @@ import { entryLines } from "../src/core/tools/history-transcript.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext, InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
 import { createSearchToolDefinition } from "../src/core/tools/search.js";
+import {
+	assertFewStalls,
+	CPU_CLOCK_STEP_MS,
+	cpuMs,
+	turnBlockedMs,
+	type WatchedTurns,
+	watchEventLoopTurns,
+} from "./helpers/event-loop-turns.js";
 
 const PROJECT = resolve("/projects/bounded");
 const BASE = Date.parse("2026-11-01T00:00:00.000Z");
@@ -49,129 +56,13 @@ const EVENT_LOOP_CPU_LIMIT_MS = 120;
 const LARGE_SESSION_TIMEOUT_MS = 120_000;
 const INDEX_BUILD_ENTRIES = 6_000;
 const TURN_LIMIT_MS = 10;
-const STALLS_ALLOWED = 3;
-const STALL_CEILING_MS = 100;
 const PACED_SESSIONS = 40;
 const SLOW_INDEX_QUERY_MS = 4;
 const PACED_TURN_LIMIT_MS = 3 * SLOW_INDEX_QUERY_MS;
+/** The lowest limit a watched turn is checked against here. */
+const WATCHED_TURN_LIMIT_MS = Math.min(TURN_LIMIT_MS, PACED_TURN_LIMIT_MS);
 const LONG_SESSION_ENTRIES = 3000;
 const LONG_SESSION_SEARCH_ROWS = 100;
-
-function cpuMs(): number {
-	const used = typeof process.threadCpuUsage === "function" ? process.threadCpuUsage() : process.cpuUsage();
-	return (used.user + used.system) / 1000;
-}
-
-const CPU_CLOCK_STEP_SAMPLES = 3;
-const CPU_CLOCK_STEP_SEARCH_MS = 200;
-
-function measureCpuClockStepMs(): number {
-	let step = Number.POSITIVE_INFINITY;
-	let last = cpuMs();
-	const searchUntil = performance.now() + CPU_CLOCK_STEP_SEARCH_MS;
-	for (let seen = 0; seen < CPU_CLOCK_STEP_SAMPLES && performance.now() < searchUntil; ) {
-		const now = cpuMs();
-		if (now === last) continue;
-		step = Math.min(step, now - last);
-		last = now;
-		seen++;
-	}
-	return Number.isFinite(step) ? step : 0;
-}
-
-/** The smallest change the thread CPU clock reports: a scheduler tick (15.6 ms) on Windows, far less elsewhere. */
-const CPU_CLOCK_STEP_MS = measureCpuClockStepMs();
-
-interface Interval {
-	readonly start: number;
-	readonly end: number;
-}
-
-interface WatchedTurn extends Interval {
-	readonly cpu: number;
-}
-
-interface WatchedTurns {
-	readonly count: number;
-	readonly blockedMs: readonly number[];
-}
-
-function overlapMs(turn: Interval, pauses: readonly Interval[]): number {
-	return pauses.reduce(
-		(sum, pause) => sum + Math.max(0, Math.min(turn.end, pause.end) - Math.max(turn.start, pause.start)),
-		0,
-	);
-}
-
-/**
- * How long a turn held the event loop: its CPU time, less the one clock step a coarse CPU clock may have added, and
- * at most its wall time less its collections' pauses. A collection's pause includes any time the thread waited off
- * the CPU, which CPU time never counted, so pauses come off wall time only.
- */
-function turnBlockedMs(turn: WatchedTurn, collections: readonly Interval[], cpuClockStepMs: number): number {
-	return Math.max(0, Math.min(turn.cpu - cpuClockStepMs, turn.end - turn.start - overlapMs(turn, collections)));
-}
-
-function raiseProcessPriority(): () => void {
-	const before = getPriority();
-	if (before <= osConstants.priority.PRIORITY_HIGH) return () => {};
-	try {
-		setPriority(osConstants.priority.PRIORITY_HIGH);
-	} catch {
-		return () => {};
-	}
-	return () => setPriority(before);
-}
-
-function watchEventLoopTurns(): () => Promise<WatchedTurns> {
-	const restorePriority = raiseProcessPriority();
-	const turns: WatchedTurn[] = [];
-	let count = 0;
-	const minimumLimitMs = Math.min(TURN_LIMIT_MS, PACED_TURN_LIMIT_MS);
-	const collections: Interval[] = [];
-	const collected = (entries: readonly PerformanceEntry[]) => {
-		for (const entry of entries) collections.push({ start: entry.startTime, end: entry.startTime + entry.duration });
-	};
-	const observer = new PerformanceObserver((list) => collected(list.getEntries()));
-	observer.observe({ entryTypes: ["gc"] });
-	let watching = true;
-	let last = performance.now();
-	let lastCpu = cpuMs();
-	const turn = () => {
-		const now = performance.now();
-		const cpu = cpuMs();
-		count++;
-		// Only retain a turn that could fail an assertion, even before subtracting collection pauses. A worker can
-		// leave millions of idle turns here; retaining each one makes the measurement itself allocate and stall.
-		if (Math.min(cpu - lastCpu - CPU_CLOCK_STEP_MS, now - last) > minimumLimitMs)
-			turns.push({ start: last, end: now, cpu: cpu - lastCpu });
-		if (watching) setImmediate(turn);
-		// The collector's own allocation and scheduling are not work done by history://.
-		last = performance.now();
-		lastCpu = cpuMs();
-	};
-	setImmediate(turn);
-	return async () => {
-		try {
-			watching = false;
-			turn();
-			await new Promise((resolve) => setTimeout(resolve, 20));
-			collected(observer.takeRecords());
-			observer.disconnect();
-			return { count, blockedMs: turns.map((item) => turnBlockedMs(item, collections, CPU_CLOCK_STEP_MS)) };
-		} finally {
-			restorePriority();
-		}
-	};
-}
-
-function assertFewStalls(turns: WatchedTurns, limitMs: number, what: string): void {
-	const stalls = turns.blockedMs.filter((ms) => ms > limitMs).sort((a, b) => b - a);
-	assert.ok(
-		stalls.length <= STALLS_ALLOWED && (stalls[0] ?? 0) < STALL_CEILING_MS,
-		`${what} held the event loop for more than ${limitMs} ms ${stalls.length} times in ${turns.count} turns: ${stalls.slice(0, 8).map(Math.round).join(", ")} ms`,
-	);
-}
 
 function header(id: string): SessionRecordHeader {
 	return { id, version: SESSION_FORMAT_VERSION, createdAt: new Date(BASE).toISOString(), cwd: PROJECT };
@@ -245,9 +136,16 @@ function countingDatabase(database: SqliteDatabase): { database: SqliteDatabase;
 	return { database: counted, entryRows: () => entryRows };
 }
 
-function busyFor(ms: number, now: () => number = () => performance.now()): void {
-	const start = now();
-	while (now() - start < ms) Math.sqrt(ms);
+/**
+ * Holds the event loop for `ms` of wall time. With a CPU clock, also until that clock has advanced `ms`, less
+ * `cpuClockStepMs`: a burst the scheduler preempts keeps working until it has used the CPU time, and a coarse clock
+ * that charges a whole step early can't end it before `ms` have passed.
+ */
+function busyFor(ms: number, cpuClock?: () => number, cpuClockStepMs = 0): void {
+	const start = performance.now();
+	const cpuStart = cpuClock?.() ?? 0;
+	while (performance.now() - start < ms || (cpuClock !== undefined && cpuClock() - cpuStart < ms - cpuClockStepMs))
+		Math.sqrt(ms);
 }
 
 function withSlowIndexQueries(store: SessionStore): { readonly store: SessionStore; readonly queries: () => number } {
@@ -1182,7 +1080,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 					} as never,
 				]);
 				const { router, read, request } = historyOver(store);
-				const stopWatching = watchEventLoopTurns();
+				const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS);
 				let turns: WatchedTurns;
 				try {
 					const page = await read("history://sessions/big:1-1");
@@ -1386,17 +1284,8 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			message("e1", "user", `${"a".repeat(28)}!`, BASE),
 			message("e2", "assistant", "safe-tail", BASE + 1000),
 		]);
-		let longest = 0;
-		let last = performance.now();
-		let lastCpu = process.cpuUsage();
-		const gap = () => {
-			const now = performance.now();
-			const used = process.cpuUsage(lastCpu);
-			longest = Math.max(longest, Math.min(now - last, (used.user + used.system) / 1000));
-			last = now;
-			lastCpu = process.cpuUsage();
-		};
-		const ticker = setInterval(gap, 1);
+		const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS);
+		let turns: WatchedTurns;
 		try {
 			const controller = new AbortController();
 			const { router, request } = historyOver(store, { timeMs: 10_000 });
@@ -1411,9 +1300,9 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			assert.match(out, /time budget/);
 			assert.ok(continuation(out)?.includes("cursor=2"), out);
 		} finally {
-			clearInterval(ticker);
-			gap();
+			turns = await stopWatching();
 		}
+		const longest = Math.max(0, ...turns.blockedMs);
 		assert.ok(longest < EVENT_LOOP_CPU_LIMIT_MS, `the event loop was busy for ${Math.round(longest)} ms`);
 	});
 
@@ -2405,7 +2294,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 					numbered(INDEX_BUILD_ENTRIES, () => Array.from({ length: 240 }, word).join(" ")),
 				);
 				const { router, request } = historyOver(store, { timeMs: 120_000, rows: 10_000_000 });
-				const stopWatching = watchEventLoopTurns();
+				const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS);
 				let found: string;
 				let turns: WatchedTurns;
 				try {
@@ -2428,11 +2317,12 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 	it("still counts work that holds the event loop past the limit while it watches at raised priority (#5250)", async () => {
 		const blocked = new Set([100, 200, 300, 400]);
 		const before = getPriority();
-		const stopWatching = watchEventLoopTurns();
+		const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS);
 		let turns: WatchedTurns;
 		try {
 			for (let index = 0; index < 500; index++) {
-				busyFor(blocked.has(index) ? 25 : 0.2, blocked.has(index) ? cpuMs : undefined);
+				if (blocked.has(index)) busyFor(25, cpuMs, CPU_CLOCK_STEP_MS);
+				else busyFor(0.2);
 				await new Promise((resolve) => setImmediate(resolve));
 			}
 		} finally {
@@ -2460,12 +2350,39 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		assert.ok(turnBlockedMs(turn, [{ start: 5, end: 25 }], 0.001) <= TURN_LIMIT_MS);
 	});
 
-	it("does not count one tick of a coarse CPU clock as blocking (#5250)", () => {
+	it("does not charge a clock step to a turn with no measured CPU time (#5624)", () => {
 		const windowsTick = 15.625;
-		const descheduledTurn = { start: 0, end: 15.2, cpu: windowsTick };
-		assert.equal(turnBlockedMs(descheduledTurn, [], windowsTick), 0);
+		for (const wall of [12, 200]) assert.equal(turnBlockedMs({ start: 0, end: wall, cpu: 0 }, [], windowsTick), 0);
+	});
+
+	it("counts a turn that held the event loop past the limit when a coarse CPU clock charged it a step (#5599)", () => {
+		const windowsTick = 15.625;
+		for (const turn of [
+			{ start: 0, end: 12, cpu: windowsTick },
+			{ start: 0, end: 15.2, cpu: windowsTick },
+			{ start: 0, end: 20, cpu: windowsTick },
+			{ start: 0, end: 25, cpu: windowsTick },
+			{ start: 0, end: 31, cpu: windowsTick },
+		])
+			assert.ok(
+				turnBlockedMs(turn, [], windowsTick) > TURN_LIMIT_MS,
+				`a ${turn.end} ms turn charged ${turn.cpu} ms of CPU time held the event loop`,
+			);
 		const longTurn = { start: 0, end: 30, cpu: 2 * windowsTick };
 		assert.ok(turnBlockedMs(longTurn, [], windowsTick) > TURN_LIMIT_MS);
+		const aroundPreemptedCollection = { start: 0, end: 42, cpu: windowsTick };
+		assert.ok(
+			turnBlockedMs(aroundPreemptedCollection, [{ start: 10, end: 40 }], windowsTick) > TURN_LIMIT_MS,
+			"12 ms of work around a 30 ms collection pause, charged one step, held the event loop",
+		);
+	});
+
+	it("does not count a coarse CPU clock's step past a turn's wall time, or more than one step of waiting off the CPU (#5250)", () => {
+		const windowsTick = 15.625;
+		const shortTurn = { start: 0, end: 3, cpu: windowsTick };
+		assert.ok(turnBlockedMs(shortTurn, [], windowsTick) <= TURN_LIMIT_MS);
+		const descheduledTurn = { start: 0, end: 200, cpu: windowsTick };
+		assert.ok(turnBlockedMs(descheduledTurn, [], windowsTick) <= 2 * windowsTick);
 	});
 
 	it("spends the requested CPU time in a blocking busyFor burst even when wall time jumps (#5250)", () => {
@@ -2484,11 +2401,21 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		}
 	});
 
+	it("holds the event loop for the requested wall time in a blocking busyFor burst even when a coarse CPU clock steps ahead (#5599)", () => {
+		const windowsTick = 15.625;
+		let reads = 0;
+		const coarseCpuClock = () => (reads++ === 0 ? 0 : 2 * windowsTick);
+		const start = performance.now();
+		busyFor(25, coarseCpuClock, windowsTick);
+		const elapsed = performance.now() - start;
+		assert.ok(elapsed >= 25, `busyFor(25) held the event loop for ${elapsed} ms`);
+	});
+
 	it("restores the process priority after watching the event loop, also when the watched work throws (#5250)", async () => {
 		const before = getPriority();
 		let during: number | undefined;
 		await assert.rejects(async () => {
-			const stopWatching = watchEventLoopTurns();
+			const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS);
 			try {
 				during = getPriority();
 				throw new Error("the watched work failed");
@@ -2513,7 +2440,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			await warm.router.search?.(url, warm.request("text that no entry holds"));
 			const slow = withSlowIndexQueries(store);
 			const { router, request } = historyOver(slow.store, { timeMs: 60_000 });
-			const stopWatching = watchEventLoopTurns();
+			const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS);
 			let found: string;
 			let turns: WatchedTurns;
 			try {
@@ -2537,7 +2464,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				const entries = numbered(6000, (seq) => `${seq} ${"lorem ipsum dolor sit amet ".repeat(150)}`);
 				await store.create(header("big"), entries);
 				const { router, request } = historyOver(store, { timeMs: 60_000, rows: 10_000_000 });
-				const stopWatching = watchEventLoopTurns();
+				const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS);
 				let turns: WatchedTurns;
 				try {
 					for (const pattern of ["no such text anywhere", "(?:x|y)z+ no"])

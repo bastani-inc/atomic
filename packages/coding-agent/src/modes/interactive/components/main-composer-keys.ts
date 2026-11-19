@@ -1,9 +1,17 @@
-import type { Component } from "@bastani/atomic-tui";
-import { panelHintParts, panelHintText } from "../../../core/tasks/agent-panel-rules.ts";
+import { type Component, clickableKeysHint, stripHintMarkers } from "@bastani/atomic-tui";
+import { panelHintParts, panelHintSegments } from "../../../core/tasks/agent-panel-rules.ts";
 import type { AgentPanelSession } from "../../../core/tasks/agent-panel-source.ts";
 import { type AgentPanelCounts, agentPanelCounts } from "../../rpc/agent-panel-bridge.ts";
 import { theme } from "../theme/theme.js";
-import { isNavHelpKey, type NavKey, type NavKeybindings, navActionText, renderNavKeyOverlay } from "./nav-keys.ts";
+import type { FooterHints } from "./footer.ts";
+import {
+	isNavHelpKey,
+	type NavKey,
+	type NavKeybindings,
+	navEntryKeyParts,
+	renderNavKeyOverlay,
+	slashCommandHint,
+} from "./nav-keys.ts";
 
 export interface MainComposerKeyState {
 	/** Every row the panel lists, workflow runs included. */
@@ -15,11 +23,12 @@ export interface MainComposerKeyState {
 	readonly shells?: number;
 	/** The chat's subagents in /tasks, listed in the panel or not. */
 	readonly subagents?: number;
+	readonly hiddenWorkflow?: boolean;
 	readonly working: boolean;
 }
 
 export type MainComposerHintSource =
-	| Pick<MainComposerKeyState, "agentRows" | "agents" | "needsInput" | "shells" | "subagents">
+	| Pick<MainComposerKeyState, "agentRows" | "agents" | "needsInput" | "shells" | "subagents" | "hiddenWorkflow">
 	| (AgentPanelSession & object)
 	| (() => AgentPanelCounts);
 
@@ -42,6 +51,7 @@ function resolveAgentCounts(
 				needsInput: source.needsInput ?? 0,
 				shells: source.shells ?? 0,
 				subagents: source.subagents ?? 0,
+				hiddenWorkflow: source.hiddenWorkflow,
 			};
 		}
 		return agentPanelCounts(source as AgentPanelSession & object);
@@ -60,13 +70,31 @@ function promptKeybindings(keybindings: NavKeybindings | undefined): NavKeybindi
 	};
 }
 
+/** The plain text of {@link mainComposerHints}. */
 export function mainComposerHintSegments(
 	keybindings: NavKeybindings | undefined,
 	state?: MainComposerHintSource,
 ): string[] {
+	return mainComposerHints(keybindings, state).map(stripHintMarkers);
+}
+
+/**
+ * The hint segments the main chat shows by its prompt: `↓ N agents` and the counts of what the panel lists, `/tasks to
+ * manage` when the panel has nothing to focus, and `? keys`. A click on a key's segment presses the key, and a click on
+ * the `/tasks` segment runs the command.
+ */
+export function mainComposerHints(keybindings: NavKeybindings | undefined, state?: MainComposerHintSource): string[] {
+	return mainComposerFooterHints(keybindings, state).segments;
+}
+
+export function mainComposerFooterHints(
+	keybindings: NavKeybindings | undefined,
+	state?: MainComposerHintSource,
+): FooterHints {
 	const counts = resolveAgentCounts(keybindings, state);
 	const promptKeys = promptKeybindings(keybindings);
-	const focusKey = navActionText(promptKeys, "app.agents.focus");
+	const focusKeys = navEntryKeyParts(promptKeys, { action: "app.agents.focus", label: "" });
+	const focusKey = focusKeys.map((part) => part.text).join("");
 	const total = finiteCount(counts.total);
 	const parts = panelHintParts(
 		{ total, agents: finiteCount(counts.agents ?? total), needsInput: finiteCount(counts.needsInput) },
@@ -74,10 +102,16 @@ export function mainComposerHintSegments(
 		finiteCount(counts.subagents ?? 0),
 		focusKey !== "",
 	);
-	const segments = panelHintText(parts, focusKey);
-	const help = navActionText(promptKeys, "app.keys.help");
-	if (help) segments.push(`${help} keys`);
-	return segments;
+	const segments = panelHintSegments(parts, focusKey).map((segment) => {
+		if (segment.kind === "agents") return clickableKeysHint(focusKeys, segment.text.slice(focusKey.length));
+		if (segment.kind === "tasks") return slashCommandHint(segment.text);
+		return segment.text;
+	});
+	const optionalIndex = counts.hiddenWorkflow ? segments.length : undefined;
+	if (counts.hiddenWorkflow) segments.push(slashCommandHint("/workflows to see runs"));
+	const helpKeys = navEntryKeyParts(promptKeys, { action: "app.keys.help", label: "" });
+	if (helpKeys.length > 0) segments.push(clickableKeysHint(helpKeys, " keys"));
+	return { segments, optionalIndex };
 }
 
 function finiteCount(value: number): number {

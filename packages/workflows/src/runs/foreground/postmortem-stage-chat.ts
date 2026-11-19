@@ -28,13 +28,20 @@
 
 import { type SessionStore, type WorktreeRootMapping, withWorktreeRootMappings } from "@bastani/atomic";
 import { isReopenableSession } from "../../shared/session-transcript.js";
+import { ownsStageRecord, type StageRecordOwner, stageRecordOwner } from "../../shared/stage-record-owner.js";
 import { stageSessionStore } from "../../shared/stage-session-store.js";
+import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
+import type { Store } from "../../shared/store.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
-import type {
-	AgentSessionEventListener,
-	DetachedStageHandleLease,
-	StageControlHandle,
-	StageControlRegistry,
+import {
+	type AgentSessionEventListener,
+	beginStageRegistrationCheck,
+	type DetachedStageHandleLease,
+	isLatestStageRelease,
+	type ReleasedStageSource,
+	type StageControlHandle,
+	type StageControlRegistry,
+	stageContextMeter,
 } from "./stage-control-registry.js";
 import { StageQueuedUserMessageBuffer, stageQueuedUserMessageCount } from "./stage-queued-user-messages.js";
 import { createStageContext, type StageAdapters } from "./stage-runner.js";
@@ -52,8 +59,18 @@ export type AcquirePostMortemStageHandleResult =
 	| { readonly ok: true; readonly lease: DetachedStageHandleLease }
 	| { readonly ok: false; readonly reason: PostMortemUnavailableReason };
 
+export interface PostMortemAdmission {
+	/** The released peer admitting this turn, when it reopens its own conversation. */
+	readonly source?: ReleasedStageSource;
+	assertCurrent(): void;
+	/** Transfer an admitted ask to the exact handle its own lookup acquired, before yielding. */
+	acquired(current: () => boolean): void;
+}
+
 export interface PostMortemStageChatDeps {
 	readonly registry: StageControlRegistry;
+	readonly store?: Store;
+	readonly stageUiBroker?: StageUiBroker;
 	readonly adapters?: StageAdapters;
 	/** Working directory used when reopening the retained session. */
 	readonly cwd?: string;
@@ -75,7 +92,7 @@ async function reopenableSessionStore(
 	stageId: string,
 	sessionId: string,
 	deps: PostMortemStageChatDeps,
-): Promise<SessionStore | undefined> {
+): Promise<{ store: SessionStore; openedHere?: true } | undefined> {
 	const sessionStore = await stageSessionStore(
 		{
 			sessionStore:
@@ -84,10 +101,10 @@ async function reopenableSessionStore(
 		},
 		deps.defaultSessionDir,
 	);
-	if (await isReopenableSession(sessionStore, sessionId)) return sessionStore;
+	if (await isReopenableSession(sessionStore, sessionId)) return { store: sessionStore };
 	const pooled = await deps.pooledSessionStore?.().catch(() => undefined);
 	if (pooled === undefined) return undefined;
-	if (await isReopenableSession(pooled, sessionId)) return pooled;
+	if (await isReopenableSession(pooled, sessionId)) return { store: pooled, openedHere: true };
 	await pooled.close();
 	return undefined;
 }
@@ -115,6 +132,29 @@ export function isPostMortemEligibleStage(stage: StageSnapshot): boolean {
 	return reopensForPostMortem(stage) && stage.sessionId !== undefined;
 }
 
+function stageRecord(runId: string, stageId: string, deps: PostMortemStageChatDeps): StageSnapshot | undefined {
+	return deps.store?.run(runId)?.stages.find((stage) => stage.id === stageId);
+}
+
+function mayReopen(
+	runId: string,
+	stage: StageSnapshot,
+	deps: PostMortemStageChatDeps,
+	record: StageSnapshot | undefined,
+): boolean {
+	const owner = deps.stageUiBroker?.currentStageOwner(runId, stage.id);
+	const resident = deps.registry.peek(runId, stage.id);
+	if (resident && !resident.isDisposed) {
+		const source = deps.registry.registrationSource?.(resident);
+		const saved = source?.record ?? (resident.stageRecord && stageRecordOwner(resident.stageRecord));
+		if ((deps.store && saved && !ownsStageRecord(saved, record)) || !isLatestStageRelease(source)) return false;
+		if (resident.sessionId !== undefined && stage.sessionId !== undefined && resident.sessionId !== stage.sessionId)
+			return false;
+	}
+	const registered = resident?.isDisposed ? undefined : resident?.stageUiSignal;
+	return registered?.aborted !== true && (owner === undefined || registered === owner);
+}
+
 /**
  * Resolve an interactive post-mortem chat handle for a terminal agent stage.
  *
@@ -127,27 +167,32 @@ export async function ensurePostMortemStageHandle(
 	runId: string,
 	stage: StageSnapshot,
 	deps: PostMortemStageChatDeps,
+	admission?: PostMortemAdmission,
 ): Promise<EnsurePostMortemStageHandleResult> {
-	const generation = deps.registry.generation;
 	if (!reopensForPostMortem(stage)) return { ok: false, reason: "not_terminal" };
+	const record = stageRecord(runId, stage.id, deps);
+	if (!mayReopen(runId, stage, deps, record)) return { ok: false, reason: "closed" };
+	const acquired = (handle: StageControlHandle) => {
+		if (admission) {
+			const source = deps.registry.registrationSource?.(handle);
+			const expected = source?.record ?? (record && stageRecordOwner(record));
+			admission.acquired(
+				() =>
+					deps.registry.peek(runId, stage.id) === handle &&
+					deps.registry.registrationSource?.(handle) === source &&
+					isLatestStageRelease(source) &&
+					(!deps.store || ownsStageRecord(expected, stageRecord(runId, stage.id, deps))),
+			);
+		}
+		return { ok: true as const, handle };
+	};
+	admission?.assertCurrent();
 	const existing = deps.registry.claim(runId, stage.id);
-	if (existing !== undefined && existing.isDisposed !== true) {
-		return { ok: true, handle: existing };
-	}
-	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
-	const sessionId = stage.sessionId;
-	if (sessionId === undefined) return { ok: false, reason: "no_session" };
-	const sessionStore = await reopenableSessionStore(runId, stage.id, sessionId, deps);
-	if (sessionStore === undefined) return { ok: false, reason: "invalid_session" };
-	if (deps.registry.generation !== generation) return { ok: false, reason: "closed" };
-
-	const adapters = deps.adapters;
-	const handle = deps.registry.getOrCreateDetached(runId, stage.id, () =>
-		withWorktreeRootMappings(deps.worktreeRootMappings ?? [], () =>
-			createPostMortemStageHandle(runId, stage, sessionId, adapters, deps.cwd, deps.defaultSessionDir, sessionStore),
-		),
-	);
-	return { ok: true, handle };
+	if (existing !== undefined && existing.isDisposed !== true) return acquired(existing);
+	return withSavedStage(runId, stage, deps, record, (create) => {
+		admission?.assertCurrent();
+		return acquired(deps.registry.getOrCreateDetached(runId, stage.id, create, admission?.source));
+	});
 }
 
 /** Acquire a tentative detached handle for programmatic message admission. */
@@ -156,8 +201,9 @@ export async function acquirePostMortemStageHandle(
 	stage: StageSnapshot,
 	deps: PostMortemStageChatDeps,
 ): Promise<AcquirePostMortemStageHandleResult> {
-	const generation = deps.registry.generation;
 	if (!reopensForPostMortem(stage)) return { ok: false, reason: "not_terminal" };
+	const record = stageRecord(runId, stage.id, deps);
+	if (!mayReopen(runId, stage, deps, record)) return { ok: false, reason: "closed" };
 	const existing = deps.registry.peek(runId, stage.id);
 	if (existing !== undefined && existing.isDisposed !== true) {
 		return {
@@ -165,19 +211,53 @@ export async function acquirePostMortemStageHandle(
 			lease: deps.registry.acquireDetached(runId, stage.id, () => existing),
 		};
 	}
-	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
+	return withSavedStage(runId, stage, deps, record, (create) => ({
+		ok: true,
+		lease: deps.registry.acquireDetached(runId, stage.id, create),
+	}));
+}
+
+async function withSavedStage<T extends { ok: true }>(
+	runId: string,
+	stage: StageSnapshot,
+	deps: PostMortemStageChatDeps,
+	record: StageSnapshot | undefined,
+	register: (create: () => StageControlHandle) => T,
+): Promise<T | { ok: false; reason: PostMortemUnavailableReason }> {
+	const adapters = deps.adapters;
+	if (adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
 	const sessionId = stage.sessionId;
 	if (sessionId === undefined) return { ok: false, reason: "no_session" };
-	const sessionStore = await reopenableSessionStore(runId, stage.id, sessionId, deps);
-	if (sessionStore === undefined) return { ok: false, reason: "invalid_session" };
-	if (deps.registry.generation !== generation) return { ok: false, reason: "closed" };
-	const adapters = deps.adapters;
-	const lease = deps.registry.acquireDetached(runId, stage.id, () =>
-		withWorktreeRootMappings(deps.worktreeRootMappings ?? [], () =>
-			createPostMortemStageHandle(runId, stage, sessionId, adapters, deps.cwd, deps.defaultSessionDir, sessionStore),
-		),
-	);
-	return { ok: true, lease };
+	const check = beginStageRegistrationCheck(deps.registry, runId);
+	const owner: StageRecordOwner | undefined = record && stageRecordOwner(record);
+	let unused: SessionStore | undefined;
+	try {
+		const selected = await reopenableSessionStore(runId, stage.id, sessionId, deps);
+		if (selected?.openedHere) unused = selected.store;
+		const current = stageRecord(runId, stage.id, deps);
+		if (!check.current() || !ownsStageRecord(owner, current) || !mayReopen(runId, stage, deps, current))
+			return { ok: false, reason: "closed" };
+		if (selected === undefined) return { ok: false, reason: "invalid_session" };
+		return register(() => {
+			const handle = withWorktreeRootMappings(deps.worktreeRootMappings ?? [], () =>
+				createPostMortemStageHandle(
+					runId,
+					stage,
+					sessionId,
+					adapters,
+					deps.cwd,
+					deps.defaultSessionDir,
+					selected.store,
+					{ stageUiBroker: deps.stageUiBroker, store: deps.store, record: current },
+				),
+			);
+			unused = undefined;
+			return handle;
+		});
+	} finally {
+		check.release();
+		if (unused) await unused.close();
+	}
 }
 
 /**
@@ -193,11 +273,18 @@ export function createPostMortemStageHandle(
 	cwd: string | undefined,
 	defaultSessionDir: string | undefined,
 	sessionStore?: SessionStore,
+	owner?: { stageUiBroker?: StageUiBroker; store?: Store; record?: StageSnapshot },
 ): StageControlHandle {
+	const uiOwner = owner?.stageUiBroker?.claimStage(runId, stage.id, {
+		store: owner.store,
+		record: owner.record,
+		reopen: true,
+	});
 	const context = createStageContext({
 		runId,
 		stageId: stage.id,
 		stageName: stage.name,
+		stageUiSignal: uiOwner?.signal,
 		adapters,
 		stageOptions: {
 			resumeFromSessionId: sessionId,
@@ -234,6 +321,8 @@ export function createPostMortemStageHandle(
 		stageId: stage.id,
 		stageName: stage.name,
 		status: "completed" as const,
+		stageRecord: owner?.record,
+		stageUiSignal: uiOwner?.signal,
 		sessionStore,
 		get sessionId() {
 			return context.__sessionMeta().sessionId ?? sessionId;
@@ -244,11 +333,17 @@ export function createPostMortemStageHandle(
 		get isStreaming() {
 			return context.isStreaming;
 		},
+		get isTurnLoopBusy() {
+			return context.__turnLoopBusy?.() === true;
+		},
 		get isDisposed() {
 			return disposed;
 		},
 		get messages() {
-			return context.messages;
+			return context.__residentMessages();
+		},
+		contextMeter(displayed) {
+			return stageContextMeter(context.__agentSession(), displayed);
 		},
 		get agentSession() {
 			return context.__agentSession();
@@ -295,6 +390,7 @@ export function createPostMortemStageHandle(
 		async dispose() {
 			if (disposed) return;
 			disposed = true;
+			uiOwner?.release();
 			holds.clear();
 			unsubscribeQueuedUserMessages();
 			queuedUserMessages.clear();
@@ -317,6 +413,7 @@ export function createPostMortemStageHandle(
 					(context.__sessionMeta().sessionId === undefined || context.__idleForRelease())
 				);
 			},
+			chatHolds: holds,
 			holdsTaken: () => holds.holdsTaken,
 			onHoldLifted: (listener: () => void) => holds.onLifted(listener),
 		},

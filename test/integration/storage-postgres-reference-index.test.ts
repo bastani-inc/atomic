@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import type {
 	SqliteDatabase,
@@ -16,6 +17,18 @@ import {
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+
+/**
+ * The snapshot blob store of Atomic 0.9.89, vendored unmodified (test/fixtures/snapshot-store-0.9.89): a release that
+ * shares a Postgres database with this build. Its backfill is 0.9.88's.
+ */
+const release0989 = (await import(
+	pathToFileURL(join(import.meta.dirname, "../fixtures/snapshot-store-0.9.89/worktree-snapshot/blob-store.ts")).href
+)) as {
+	SqlSnapshotBlobStore: {
+		open(database: SqliteDatabase): Promise<{ completeIndex(): Promise<void> }>;
+	};
+};
 
 /**
  * The tables the reference index reads, with only the columns its triggers use. Their stores own the real schemas;
@@ -323,6 +336,61 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			assert.deepEqual(rebuilt, references);
 			const sessions = progress!.find((row) => row.includes("source=session-entries "))!;
 			assert.match(sessions, /^backfilled_through=(\d+) source=session-entries watermark=\1$/);
+		});
+	});
+
+	test("a 0.9.89 backfill running on after this build marked the session index for a rebuild never leaves an index 0.9.89 reads as complete without an entry written since (#5553)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const released = await scope.open();
+			const mine = await scope.open();
+			await createReferencingTables(mine);
+			const insert = (seq: number, executor: SqliteExecutor = mine) =>
+				executor.run(
+					"INSERT INTO session_entries (session_id, seq, entry_id, entry_json) VALUES (?, ?, ?, ?)",
+					"long",
+					seq,
+					`e${seq}`,
+					json({ type: "message", id: `e${seq}`, parentId: seq === 1 ? null : `e${seq - 1}` }),
+				);
+			await mine.transaction(async (transaction) => {
+				for (let seq = 1; seq <= 1_200; seq++) await insert(seq, transaction);
+			});
+			let appended = false;
+			// 0.9.89 installs its index over the entries and runs its backfill. Between two of its transactions the session
+			// entries table loses a trigger, and this build opens the database; then an entry is written.
+			const watched: SqliteDatabase = Object.create(released, {
+				transaction: {
+					value: async (
+						callback: (transaction: SqliteExecutor) => Promise<unknown>,
+						options?: SqliteTransactionOptions,
+					) => {
+						const result = await released.transaction(callback, options);
+						if (!appended && (await mine.get("SELECT 1 AS found FROM snapshot_session_links LIMIT 1"))) {
+							appended = true;
+							await mine.exec(postgresDialect.dropTrigger("session_entries_snapshot_refs", "session_entries"));
+							await SqlSnapshotBlobStore.open(mine);
+							await insert(1_201);
+						}
+						return result;
+					},
+				},
+			});
+			const releasedStore = await release0989.SqlSnapshotBlobStore.open(watched);
+
+			await releasedStore.completeIndex();
+
+			assert.ok(appended, "this build opened the database during 0.9.89's backfill");
+			// 0.9.89's session store finds entries by their id in the index only when this query reads it as complete.
+			const complete = await mine.get(
+				"SELECT CASE WHEN backfilled_through >= watermark THEN 1 ELSE 0 END AS complete FROM snapshot_index_sources WHERE source = 'session-entries'",
+			);
+			const linked = await mine.get(
+				"SELECT 1 AS found FROM snapshot_session_links WHERE session_id = 'long' AND entry_id = 'e1201'",
+			);
+			assert.ok(
+				Number(complete?.complete) !== 1 || linked !== undefined,
+				"0.9.89 reads the session index as complete, and finds no entry by the id of one written since",
+			);
 		});
 	});
 
