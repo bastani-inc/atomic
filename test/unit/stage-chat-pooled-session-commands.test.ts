@@ -1,15 +1,15 @@
-import { stripVTControlCharacters as stripAnsi } from "node:util";
 /**
  * The chat of a stage on a local worker runs its session commands on that stage's session in the
  * worker, as the chat of an in-process stage runs them on its own session (#3996).
  */
 import type { BashResult } from "@bastani/atomic";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, readHintSpans, setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
 import { taskRecord } from "../helpers/task-record.js";
+import { stripVTControlCharacters as stripAnsi } from "../helpers/visible-text.ts";
 import {
 	assert,
 	createStore,
@@ -167,7 +167,17 @@ test("a stop of a worker stage's task that does not reach the worker says so in 
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /npm run build/));
 		assert.match(view.render(120).join("\n"), /x stop/, "the task list offers x");
 		view.handleInput("x");
-		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /again within 3s to stop npm run build/));
+		await vi.waitFor(() =>
+			assert.match(stripAnsi(view.render(120).join("\n")), /again within 3s to stop npm run build/),
+		);
+		const armed = view.render(120).find((row) => stripAnsi(row).includes("again within 3s to stop npm run build"));
+		assert.ok(armed !== undefined);
+		const armedText = stripAnsi(armed);
+		assert.deepEqual(
+			readHintSpans(armed).spans.map((span) => [armedText.slice(span.start, span.end), span.action]),
+			[["x again", { kind: "key", key: "x" }]],
+			"a click on x again confirms the stop, as pressing x does",
+		);
 		view.handleInput("x");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Could not stop the task: The connection/));
 	} finally {
@@ -205,11 +215,11 @@ test("a stop from a task's detail page that does not reach the worker says so, a
 		view.handleInput("\r");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Transcript ·/));
 		view.handleInput("x");
-		assert.doesNotMatch(view.render(120).join("\n"), /again within 3s/);
+		assert.doesNotMatch(stripAnsi(view.render(120).join("\n")), /again within 3s/);
 		view.handleInput("\x1b[D");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Inspect transcript/));
 		view.handleInput("x");
-		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /again within 3s to stop/));
+		await vi.waitFor(() => assert.match(stripAnsi(view.render(120).join("\n")), /again within 3s to stop/));
 		view.handleInput("x");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Could not stop the task: the worker is gone/));
 	} finally {

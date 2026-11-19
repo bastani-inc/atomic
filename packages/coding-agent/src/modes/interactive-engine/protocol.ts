@@ -228,8 +228,11 @@ export type InteractiveEngineCommand =
 			 * predates the field omits it, and the engine TUI keeps reporting "regular".
 			 */
 			hostMode?: TuiMode;
+			/** The display's colour depth, sent on the first frame; the engine's stdout is a pipe. */
+			colorDepth?: number;
 	  }
-	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string }
+	/** A key for the component; `hint` when a click on a key hint sent it, which acts whatever the prompt holds. */
+	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string; hint?: true }
 	/**
 	 * A single left click the host drew on the component, at the row and column within it and its drawn size, on the
 	 * frame numbered `frame`. A click on a frame the engine has since replaced is dropped.
@@ -867,11 +870,20 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			width: value.width,
 			rows: value.rows,
 			...(renderSettings === undefined ? {} : { renderSettings }),
+			...(value.colorDepth === 1 || value.colorDepth === 4 || value.colorDepth === 8 || value.colorDepth === 24
+				? { colorDepth: value.colorDepth }
+				: {}),
 			...(hostMode === undefined ? {} : { hostMode }),
 		};
 	}
 	if (value.type === "engine_custom_input" && typeof value.requestId === "number" && typeof value.data === "string")
-		return { type: value.type, componentId: value.componentId, requestId: value.requestId, data: value.data };
+		return {
+			type: value.type,
+			componentId: value.componentId,
+			requestId: value.requestId,
+			data: value.data,
+			...(value.hint === true ? { hint: true as const } : {}),
+		};
 	if (
 		value.type === "engine_custom_click" &&
 		isCellCount(value.frame) &&

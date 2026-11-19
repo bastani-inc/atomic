@@ -365,6 +365,23 @@ const grandchildRun = (stage: StageSnapshot, parent: Partial<RunSnapshot> = {}) 
 	...parent,
 });
 
+test("a pooled stage replaced during its scoped checkpoint read cannot register the old transcript in the new slot (#5577)", async () => {
+	const pooled = await pooledPostMortem((stage) => [rootRun, childRun, grandchildRun(stage)]);
+	const id = "grandchild-run";
+	const opening = pooled.resolve(id, "stage-1");
+	store.editRun(id, (run) => {
+		const stage = run.stages[0]!;
+		run.stages[0] = {
+			...stage,
+			status: "completed",
+			sessionId: "newer-transcript",
+			workerExecution: { ...stage.workerExecution!, generation: 2 },
+		};
+		return { stageIds: [stage.id] };
+	});
+	assert.deepEqual(await opening, { ok: false, reason: "closed" });
+});
+
 test("a pooled stage's post-mortem chat reopens the last session its root left in the journal, read from its child's scope (#4318)", async () => {
 	const pooled = await pooledPostMortem((stage) => [rootRun, childRun, grandchildRun(stage)]);
 	const result = await pooled.resolve("grandchild-run", "stage-1");

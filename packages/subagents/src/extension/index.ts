@@ -28,6 +28,7 @@ import { answerIntercomChildrenRequests } from "../runs/foreground/intercom-chil
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
 import { bindReleasedChildWakes } from "../runs/foreground/released-child-wakes.js";
 import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
+import { bindSubagentChildOwner, subagentChildOwnerWriter } from "../runs/foreground/subagent-child-owner.js";
 import {
 	endWorkflowRunStageSubagentChildren,
 	saveUnsavedSubagentChildRecords,
@@ -472,6 +473,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			// A subagent's own session launches no children (#4395): it adds nothing to the child index.
 			if (!isSubagentChildSession(ctx)) bindSubagentChildCards(ctx);
 		};
+		let unbindChildOwner: (() => void) | undefined;
 		let stopReleasedChildWakes: (() => void) | undefined;
 		let taskResumer: ReturnType<typeof bindSubagentTaskResumer> | undefined;
 		pi.on("agent_start", () => taskResumer?.ensure());
@@ -487,17 +489,29 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			// a session that was just opened has interrupted children: after a reload its running children are alive.
 			const opened = event.reason === "startup" || event.reason === "resume";
 			if (!isSubagentChildSession(ctx) && ctx.isPresentationOnly !== true) {
-				// Children a workflow stage launched in earlier generations end with it too when it closes for good.
-				watchWorkflowStageSubagentChildren(pi, ctx);
-				// Children an older Atomic recorded in partial records get one complete record, which wakes wait for.
-				void saveUnsavedSubagentChildRecords(pi, subagentChildOwner(ctx).sessionId);
-				// Released children wake through this session: their tool results, Intercom sends and asks (#4326).
-				stopReleasedChildWakes = bindReleasedChildWakes(executorDeps, ctx, pi.events);
-				// A finished child continues from its chat: the message the reader sends resumes it in its own session.
-				await publishExtensionContextEffect(ctx, () => {
+				let startWakes: (() => void) | undefined;
+				const committed = publishExtensionContextEffect(
+					ctx,
+					() => {
+						unbindChildOwner?.();
+						unbindChildOwner = bindSubagentChildOwner(pi, ctx);
+						stopReleasedChildWakes = bindReleasedChildWakes(executorDeps, ctx, pi.events, undefined, (start) => {
+							startWakes = start;
+						});
+					},
+					"commit",
+				);
+				const started = publishExtensionContextEffect(ctx, () => {
+					const writer = subagentChildOwnerWriter(pi, ctx.sessionManager);
+					// Children from earlier generations end with the stage when it closes for good.
+					watchWorkflowStageSubagentChildren(writer, ctx);
+					void saveUnsavedSubagentChildRecords(writer, subagentChildOwner(ctx).sessionId);
+					startWakes?.();
+					// A finished child continues from its chat: the message the reader sends resumes it in its own session.
 					taskResumer?.dispose();
 					taskResumer = bindSubagentTaskResumer(executorDeps, ctx);
 				});
+				await Promise.all([committed, started]);
 				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
 				if (opened)
 					void resumeAwaitingSubagentChildren(
@@ -511,10 +525,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		pi.on("session_recovery_restore", async (_event, ctx) => {
 			// Subagent children never own children; workflow stages carry a policy but do (#3760).
 			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx)) return undefined;
+			const writer = subagentChildOwnerWriter(pi, ctx.sessionManager);
 			const outcomes = await restoreSubagentChildren(executorDeps, ctx);
 			const notices = subagentChildRestoreNotices(outcomes);
 			// Report once: record the children the notices call gone, so later restarts neither retry nor repeat them.
-			await recordReportedGoneSubagentChildren(pi, outcomes);
+			await recordReportedGoneSubagentChildren(writer, outcomes);
 			return { notices };
 		});
 		const unsubscribeChildRestoration = pi.events.on(SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT, (payload) => {
@@ -567,6 +582,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		});
 		eventUnsubscribes.push(unsubscribeRunEnded);
 		pi.on("session_shutdown", (_event, ctx) => {
+			unbindChildOwner?.();
+			unbindChildOwner = undefined;
 			taskResumer?.dispose();
 			taskResumer = undefined;
 			stopReleasedChildWakes?.();

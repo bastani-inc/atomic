@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings, Text, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
@@ -32,6 +31,7 @@ import {
 import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 import { WORKED_LINE, WORKING_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
 import { makeTestTui } from "../support/fake-tui.js";
 
@@ -592,6 +592,27 @@ describe("a live subagent's chat box (#4640)", () => {
 		const idle = await livePage({ isRunning: () => false });
 		assert.ok(!plain(idle.page.render(100, 20)).some((row) => WORKING_MESSAGE.test(row)));
 		idle.page.dispose();
+	});
+
+	test("a subagent chat opened while the session switches models shows the switch until the next request (#5572)", async () => {
+		const phase = {
+			type: "model_fallback_start",
+			from: "primary",
+			to: "fallback",
+			reason: "not found",
+			attempt: 1,
+		} as const;
+		const { page, live } = await livePage({
+			chatSession: { ...(await liveChatSession()), retryStatus: phase },
+			isRunning: () => true,
+		});
+		try {
+			assert.match(text(page.render(100, 20)), /∀ switching model…/);
+			for (const listener of live.listeners) listener({ type: "agent_start" });
+			assert.doesNotMatch(text(page.render(100, 20)), /switching model…/);
+		} finally {
+			page.dispose();
+		}
 	});
 
 	test("a chat opened while its subagent waits to retry shows `retrying…` on the usage row until the next attempt (#5483)", async () => {

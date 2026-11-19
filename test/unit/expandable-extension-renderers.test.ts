@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { getKeybindings, type KeyId, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, type KeyId, setKeybindings, stripHintMarkers } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -24,7 +24,7 @@ function renderNotification(): string {
 		{ expanded: false },
 		theme,
 	);
-	return stripAnsi(component.render(100).join("\n"));
+	return stripAnsi(stripHintMarkers(component.render(100).join("\n")));
 }
 
 function renderWebSearch(): string {
@@ -36,7 +36,7 @@ function renderWebSearch(): string {
 		{ expanded: false, isPartial: false },
 		theme,
 	);
-	return stripAnsi(component.render(100).join("\n"));
+	return stripAnsi(stripHintMarkers(component.render(100).join("\n")));
 }
 
 beforeEach(() => {

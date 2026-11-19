@@ -6,6 +6,7 @@ import type { TaskRecord } from "../../packages/coding-agent/src/core/tasks/cont
 import { bindTaskResumer } from "../../packages/coding-agent/src/core/tasks/task-resumer.js";
 import { taskBoardState } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
 import { TaskNavigation } from "../../packages/coding-agent/src/modes/interactive/components/task-navigation.js";
+import { taskFixture, taskValue } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
 
 function harness(initial: TaskRecord) {
@@ -124,33 +125,33 @@ test("x x on a subagent released while it waits stops it with confirmation, neve
 	assert.deepEqual(h.dismissed, []);
 });
 
-test("a released subagent that was stopped no longer waits: its row is stopped and x dismisses it", () => {
-	const released = taskRecord("released-stopped");
-	released.execution = {
-		kind: "settled",
-		result: {
+test("a released subagent that was stopped no longer waits: its row is stopped and x dismisses it", async () => {
+	const fixture = taskFixture();
+	const lease = await fixture.start();
+	const { taskId } = fixture.supervisor.taskReference(lease);
+	const unbind = bindTaskResumer(fixture.supervisor, {
+		readOnlyReason: () => undefined,
+		resume: async () => ({ ok: true }),
+		isStopped: (id) => id === taskId,
+	});
+	try {
+		fixture.runners[0].result.resolve({
 			kind: "cancelled",
 			cause: "pause",
 			released: { waitingOn: [{ toolCallId: "toolu_1", toolName: "bash" }] },
-		},
-	};
-	const unbind = bindTaskResumer(
-		{},
-		{
-			readOnlyReason: () => undefined,
-			resume: async () => ({ ok: true }),
-			isStopped: (taskId) => taskId === "released-stopped",
-		},
-	);
-	try {
+		});
+		assert.equal(taskValue(await fixture.supervisor.waitForTask(lease)).kind, "settled");
+		fixture.store.drain();
+		const released = fixture.store.getTask(taskId)!;
 		assert.equal(taskBoardState(released), "stopped");
 		assert.equal(taskPanelState(released), "stopped");
 		const h = harness(released);
 		h.navigation.paint([released]);
 		h.navigation.handleInput("x", "tasks");
 		assert.deepEqual(h.cancelled, []);
-		assert.deepEqual(h.dismissed, ["released-stopped"]);
+		assert.deepEqual(h.dismissed, [taskId]);
 	} finally {
 		unbind();
+		await fixture.dispose();
 	}
 });
