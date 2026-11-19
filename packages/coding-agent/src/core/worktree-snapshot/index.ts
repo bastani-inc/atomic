@@ -65,6 +65,7 @@ export {
 	type CollectSnapshotGarbageOptions,
 	collectSnapshotGarbage,
 	DEFAULT_BLOB_GRACE_SECONDS,
+	type PendingChunkMove,
 	runningSnapshotCollection,
 	type ScheduleSnapshotCollectionOptions,
 	SNAPSHOT_COLLECTION_SESSION_DELAY_MS,

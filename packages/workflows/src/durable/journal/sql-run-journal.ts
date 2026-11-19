@@ -391,9 +391,11 @@ export class SqlRunJournal implements RunJournal {
 	}
 
 	private static async initialize(database: SqliteDatabase, t: Tables, prefix?: string): Promise<void> {
+		// Measure space outside the writer: the transaction may need to replace an older session reference index.
+		const dialect = dialectOf(database);
+		const reset = await SqlSnapshotBlobStore.prepareSessionIndexReset(database);
 		// Opening a journal waits for the lock as its writes do: a process starting while another stalls must not fail.
 		await database.transaction(async (tx) => {
-			const dialect = dialectOf(database);
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(${c.schemaVersion} ${dialect.types.int} NOT NULL)`);
 			const versions = await tx.all(`SELECT ${c.schemaVersion} FROM ${t.meta}`);
 			if (versions.length > 1) throw new JournalMetaCorruptError(database.descriptor.location, versions.length);
@@ -403,7 +405,7 @@ export class SqlRunJournal implements RunJournal {
 			// The tables, and a journal of the previous version upgraded to store large payloads in chunks (#4965).
 			await upgradeRunJournalSchema(tx, prefix, dialect);
 			// The snapshot blob table too, so a new journal takes the write lock once (#4325) and opens it lock-free.
-			await SqlSnapshotBlobStore.initialize(tx, prefix, dialect);
+			await SqlSnapshotBlobStore.initialize(tx, prefix, dialect, reset);
 		}, JOURNAL_WRITE_TRANSACTION);
 	}
 
