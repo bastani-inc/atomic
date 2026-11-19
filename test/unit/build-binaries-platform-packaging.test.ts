@@ -75,6 +75,31 @@ test("every compiled target shares the syntax-minified application sidecar", () 
 	assertBuildScriptSyntax();
 });
 
+test("the release app still builds as one file with standalone extension cards (#5658)", () => {
+	const dir = mkdtempSync(join(tmpdir(), "atomic-export-app-"));
+	try {
+		const build = spawnSyncCollect(
+			[
+				"bun",
+				"build",
+				"--target=bun",
+				"--format=cjs",
+				"--minify-syntax",
+				"--external",
+				"mupdf",
+				"--external=*native-modifiers.js",
+				"./dist/bun/cli.js",
+				"--outfile",
+				join(dir, "app.js"),
+			],
+			{ cwd: join(root, "packages/coding-agent") },
+		);
+		assert.equal(build.exitCode, 0, build.stderr.toString());
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 // The host platform's archive ships the bytecode build of the app with its cache; every other archive ships the plain
 // build. Both must be the same bundle, or one platform would run different code.
 test("the bytecode app build is the shared app build plus --bytecode, so every archive runs the same bundle", () => {

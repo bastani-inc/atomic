@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -162,7 +162,7 @@ test.each([
 	},
 );
 
-async function exportSavedMessages(dir: string, messages: unknown[]): Promise<Document> {
+async function exportSavedMessages(dir: string, messages: unknown[], env: NodeJS.ProcessEnv = {}): Promise<Document> {
 	const input = join(dir, "session.jsonl");
 	const entries = [
 		{
@@ -187,7 +187,7 @@ async function exportSavedMessages(dir: string, messages: unknown[]): Promise<Do
 		[fileURLToPath(new URL("../src/cli.ts", import.meta.url)), "--offline", "--export", input, output],
 		{
 			cwd: dir,
-			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: join(dir, "profile") },
+			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: join(dir, "profile"), ...env },
 		},
 	);
 	return exportedDocument(output);
@@ -249,6 +249,29 @@ test("a saved parallel count alone does not generate an unbounded page of empty 
 		assert.equal(card?.querySelectorAll(".tool-header .ansi-line").length, 1);
 		assert.match(card?.querySelector(".tool-header")?.textContent ?? "", /parallel launch/);
 		assert.ok(card?.querySelector("details")?.textContent?.includes(JSON.stringify(args, null, 2)));
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a template installation without the extension cards still exports the original saved arguments (#5658)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "atomic-file-export-assets-"));
+	try {
+		const assets = join(dir, "assets");
+		const templates = join(assets, "src/core/export-html");
+		cpSync(new URL("../src/core/export-html", import.meta.url), templates, { recursive: true });
+		rmSync(join(templates, "extension-cards.mjs"));
+		cpSync(new URL("../src/modes/interactive/theme", import.meta.url), join(assets, "src/modes/interactive/theme"), {
+			recursive: true,
+		});
+		cpSync(new URL("../package.json", import.meta.url), join(assets, "package.json"));
+		const args = { agent: "worker", task: "Inspect the sample" };
+		const message = fauxAssistantMessage([fauxToolCall("subagent", args, { id: "launch" })], {
+			stopReason: "toolUse",
+		});
+		const page = await exportSavedMessages(dir, [message], { ATOMIC_PACKAGE_DIR: assets });
+		const card = page.getElementById("tool-call-launch");
+		assert.ok(card?.textContent?.includes(JSON.stringify(args, null, 2)));
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
