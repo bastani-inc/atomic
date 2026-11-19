@@ -229,8 +229,9 @@ export class ReservedBottomOverlay implements Component {
 		return handler.call(this.inner, data);
 	}
 
-	/** A mouse event on a painted row reaches the wrapped component at the row it drew there. */
+	/** Button gestures reach the wrapped component at the row it drew. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type === "wheel") return undefined;
 		const handler = this.inner.handleMouse;
 		const row = this.sources[Math.floor(event.y)];
 		if (typeof handler !== "function" || row === undefined) return undefined;

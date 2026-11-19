@@ -712,13 +712,6 @@ export function openWorkflowsListing(
 							selector.select(index);
 							finish(item.value);
 						},
-						scroll: (direction) => {
-							const before = selector.getSelected()?.id;
-							selector.move(direction, false);
-							baseTop = selector.getTop();
-							movedSincePaint = true;
-							return selector.getSelected()?.id !== before;
-						},
 					});
 					if (result) tui.requestRender?.();
 					return result;

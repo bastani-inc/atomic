@@ -486,7 +486,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	 * the task's held question below it chooses that answer, as moving there and pressing Enter does.
 	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		const form = this.formAt(event.y);
+		const form = event.type === "wheel" ? undefined : this.formAt(event.y);
 		if (form !== undefined) {
 			const result = form.form.handleMouse?.({ ...event, y: form.row, height: form.height });
 			if (result !== undefined) this.requestRender();

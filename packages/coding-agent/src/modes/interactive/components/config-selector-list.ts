@@ -472,11 +472,6 @@ export class ResourceList implements Component, Focusable {
 				this.selectedIndex = index;
 				this.toggleSelected();
 			},
-			scroll: (direction) => {
-				const before = this.selectedIndex;
-				this.selectedIndex = this.findNextItem(this.selectedIndex, direction);
-				return this.selectedIndex !== before;
-			},
 		});
 	}
 

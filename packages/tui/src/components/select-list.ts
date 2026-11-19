@@ -112,9 +112,16 @@ export class SelectList implements Component {
 		return lines;
 	}
 
-	/** A click on a row selects it and runs it as Enter does; the wheel moves the selection. */
+	/** A click on a row selects it and runs it as Enter does. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.filteredItems.length === 0) return undefined;
+		if (event.type === "wheel" && event.wheelDelta) {
+			const delta = event.wheelDelta < 0 ? -1 : 1;
+			const previousIndex = this.selectedIndex;
+			this.selectedIndex = Math.max(0, Math.min(this.filteredItems.length - 1, this.selectedIndex + delta));
+			if (this.selectedIndex !== previousIndex) this.notifySelectionChange();
+			return { handled: true, render: this.selectedIndex !== previousIndex };
+		}
 		return this.clickableRows.handleMouse(event, {
 			activate: (item) => {
 				// The item drawn under the pointer, wherever it is in the list now.
@@ -126,13 +133,6 @@ export class SelectList implements Component {
 				}
 				const selectedItem = this.filteredItems[this.selectedIndex];
 				if (selectedItem) this.onSelect?.(selectedItem);
-			},
-			scroll: (direction) => {
-				const previousIndex = this.selectedIndex;
-				this.selectedIndex = Math.max(0, Math.min(this.filteredItems.length - 1, this.selectedIndex + direction));
-				if (this.selectedIndex === previousIndex) return false;
-				this.notifySelectionChange();
-				return true;
 			},
 		});
 	}

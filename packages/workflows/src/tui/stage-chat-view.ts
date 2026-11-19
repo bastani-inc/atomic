@@ -137,6 +137,7 @@ export class StageChatView implements Component, Focusable {
 		const dialog = this.customUiRows;
 		const mounted = this.mountedCustomUi?.component;
 		if (
+			event.type !== "wheel" &&
 			dialog !== undefined &&
 			mounted !== undefined &&
 			event.y >= dialog.top &&

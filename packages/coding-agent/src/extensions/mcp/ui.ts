@@ -255,6 +255,7 @@ export class McpManagerView implements McpUi, Component, Focusable {
 
 	/** A click on a menu row runs it, as moving there and pressing Enter does. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type !== "press" && event.type !== "click") return undefined;
 		const result = this.content.handleMouse?.(event);
 		if (result) this.tui.requestRender();
 		return result;

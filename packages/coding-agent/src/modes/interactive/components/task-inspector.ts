@@ -198,9 +198,6 @@ type InspectorClickTarget =
 	| { readonly kind: "action" }
 	| { readonly kind: "choice"; readonly number: number };
 
-/** The wheel reports a terminal sends, so a wheel turn the renderer hands over takes the keyboard's wheel path. */
-const WHEEL_REPORT = { up: "\x1b[<64;1;1M", down: "\x1b[<65;1;1M" } as const;
-
 /** The host owns thinking display; only its default physical key, as a remap may reuse an editor key. */
 function isHostThinkingToggle(data: string): boolean {
 	return matchesKey(data, "ctrl+t") && getKeybindings().matches(data, "app.thinking.toggle");
@@ -885,7 +882,7 @@ export class TaskInspector implements Component {
 	/**
 	 * A click on any row of a block in an open transcript expands or collapses that block. On the list, a click on a
 	 * row opens it as moving there and pressing Enter does; on a task's page, a click on its action runs it as Enter
-	 * does, and a click on a peeked choice picks it as its number does. The wheel moves the selection or the page.
+	 * does, and a click on a peeked choice picks it as its number does.
 	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const transcript = this.transcript;
@@ -913,7 +910,6 @@ export class TaskInspector implements Component {
 				}
 				this.requestRender();
 			},
-			scroll: (direction) => this.handleInput(direction < 0 ? WHEEL_REPORT.up : WHEEL_REPORT.down),
 		});
 	}
 

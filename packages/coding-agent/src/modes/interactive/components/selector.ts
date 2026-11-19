@@ -714,10 +714,16 @@ export class Selector<T> implements Component, Focusable {
 
 	/**
 	 * A click on a row moves the selection there and confirms it, as Enter does; in a multi-select it switches the row's
-	 * checkbox, as space does. The wheel moves the selection.
+	 * checkbox, as space does.
 	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.closed || this.showingHelp) return { handled: true };
+		if (event.type === "wheel" && event.wheelDelta) {
+			const before = this.state.getSelected()?.id;
+			this.state.move(event.wheelDelta < 0 ? -1 : 1, false);
+			this.notifySelectionChange();
+			return { handled: true, render: this.state.getSelected()?.id !== before };
+		}
 		return this.clickableRows.handleMouse(event, {
 			activate: (id) => {
 				const visible = this.state.getVisible();
@@ -729,12 +735,6 @@ export class Selector<T> implements Component, Focusable {
 				this.notifySelectionChange();
 				if (this.state.mode === "multi") this.state.toggle(item.id);
 				else this.confirm();
-			},
-			scroll: (direction) => {
-				const before = this.state.getSelected()?.id;
-				this.state.move(direction, false);
-				this.notifySelectionChange();
-				return this.state.getSelected()?.id !== before;
 			},
 		});
 	}

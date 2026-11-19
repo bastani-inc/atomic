@@ -50,7 +50,7 @@ for (const width of [80, 160]) {
 	});
 }
 
-test("the mouse wheel over the intercom session list moves its selection", async () => {
+test("scrolling over the intercom session list keeps the selected session (#5532)", async () => {
 	const ui = makeClickScreen(100, 40);
 	const picked: Array<string | undefined> = [];
 	const others = [session("b-1", "worker"), session("c-2", "reviewer")];
@@ -61,7 +61,7 @@ test("the mouse wheel over the intercom session list moves its selection", async
 	);
 	await ui.wheel("down", 4, ui.rowOf(/worker \(/));
 	ui.terminal.input("\r");
-	assert.deepEqual(picked, ["reviewer"]);
+	assert.deepEqual(picked, ["worker"]);
 	ui.tui.stop();
 });
 
@@ -128,7 +128,7 @@ test("a click on a choice in the bundled model manager reaches the mounted picke
 	}
 });
 
-test("a click on a bundled model search result picks that model, and the wheel moves the selection", async () => {
+test("a click picks a model search result but scrolling keeps the selection (#5532)", async () => {
 	const ui = makeClickScreen(100, 40);
 	const models: HuggingFaceModel[] = [
 		{ id: "acme/tiny-GGUF", downloads: 10 },
@@ -149,7 +149,7 @@ test("a click on a bundled model search result picks that model, and the wheel m
 	for (const key of "acme") ui.terminal.input(key);
 	ui.tui.renderNow();
 	await ui.wheel("down", 4, ui.rowOf(/acme\/tiny-GGUF/));
-	assert.match(ui.screen()[ui.rowOf(/acme\/small-GGUF/)] ?? "", /❯ acme\/small-GGUF/);
+	assert.match(ui.screen()[ui.rowOf(/acme\/tiny-GGUF/)] ?? "", /❯ acme\/tiny-GGUF/);
 	await ui.click(/acme\/large-GGUF/, "acme/large-GGUF");
 	assert.deepEqual(picked, ["acme/large-GGUF"]);
 	ui.tui.stop();

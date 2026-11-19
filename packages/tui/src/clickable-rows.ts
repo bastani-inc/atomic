@@ -22,15 +22,13 @@ export interface ClickableColumns {
 	readonly end: number;
 }
 
-/** What a list does when one of its rows is clicked or the wheel turns over it. */
+/** What a list does when one of its rows is clicked. */
 export interface ClickableRowActions<T> {
 	/**
 	 * Run `target` the way Enter runs the selected row: move the selection to it, then confirm it, with every
 	 * confirmation step the keyboard has.
 	 */
 	activate(target: T): void;
-	/** Wheel over the list: move the selection, or scroll, one step. Return whether anything changed. */
-	scroll?(direction: -1 | 1): boolean;
 }
 
 /** The rows one render recorded; see {@link ClickableRows.snapshot}. */
@@ -53,7 +51,6 @@ interface RowTarget<T> {
  * - The press is left to the renderer, so a drag across rows still selects their text, and the renderer turns a press
  *   and release into a click only when the screen under the pointer did not change between them.
  * - A double or triple click does not run the row again. A modified click is a selection gesture only.
- * - The wheel over the list moves its selection when the list gives a `scroll` action.
  *
  * A list calls {@link clear} when it starts rendering, {@link add} for each row it draws an item on, and forwards
  * `handleMouse` and `paintedRowKey` here.
@@ -165,16 +162,12 @@ export class ClickableRows<T> {
 	}
 
 	/**
-	 * Run the clicked row, or move the selection on a wheel turn. The press itself is not taken: the renderer keeps it
+	 * Run the clicked row. The press itself is not taken: the renderer keeps it
 	 * for text selection and sends the click only when the pointer was released where it was pressed. A click that
 	 * follows a press on another item, as when the rows moved under the pointer, runs nothing. A click with no press
 	 * before it, as one forwarded from another process, runs the item drawn under it.
 	 */
 	handleMouse(event: TuiMouseEvent, actions: ClickableRowActions<T>): TuiMouseEventResult | undefined {
-		if (event.type === "wheel") {
-			if (!actions.scroll || !event.wheelDelta) return undefined;
-			return { handled: true, render: actions.scroll(event.wheelDelta < 0 ? -1 : 1) };
-		}
 		if (event.type === "press") {
 			this.pressedKey = event.button === "left" ? this.keyAt(event.x, event.y) : undefined;
 			return undefined;

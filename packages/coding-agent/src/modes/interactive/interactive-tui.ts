@@ -557,21 +557,22 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		this.repairOverlayFocus();
 		// An overlay may yield before declining a mouse report. Never replay that report into a gesture that
 		// outlived its modal owner, even if the same overlay has since regained focus.
-		if (isMouseInput && !isMouseWheelInput(data)) {
-			const focus = this.getPointerFocus();
-			const presses = new Map<string, () => boolean>();
+		if (isMouseInput) {
+			const gestures = new Map<string, (() => boolean) | undefined>();
 			for (const report of parseMouseSequences(data) ?? []) {
-				if (!report.isRelease && (report.button & (32 | 64 | 3)) === 0) {
-					presses.set(report.data, this.guardMousePress(report.x, report.y));
-				}
+				if ((report.button & 64) !== 0) continue;
+				const press = !report.isRelease && (report.button & (32 | 3)) === 0;
+				gestures.set(report.data, press ? this.guardMousePress(report.x, report.y) : undefined);
 			}
-			const listener = viewportListener;
-			viewportListener = (report) => {
-				// A coalesced chunk can contain both a press and a wheel. Only the gesture needs this guard.
-				if (isMouseWheelInput(report) || (this.getPointerFocus() === focus && presses.get(report)?.() !== false))
+			if (gestures.size > 0) {
+				const focus = this.getPointerFocus();
+				const listener = viewportListener;
+				viewportListener = (report) => {
+					if (gestures.has(report) && (this.getPointerFocus() !== focus || gestures.get(report)?.() === false))
+						return undefined;
 					return listener(report);
-				return undefined;
-			};
+				};
+			}
 		}
 		const focused = this.getFocusedComponent();
 		const tui = this as unknown as TuiOverlayInternals;
