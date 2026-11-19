@@ -169,6 +169,8 @@ for (const wiring of ["local", "isolated"] as const) {
 
 				const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
 				await submit("first prompt");
+				await submit("/workflow retired-run");
+				assert.equal(providerRequests(rig), 0, "a removed command runs locally even during compaction");
 				await submit("/fixture-actions status");
 				await submit("/settings");
 				await submit("/fixture-actions status");

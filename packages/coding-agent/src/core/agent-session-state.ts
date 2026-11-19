@@ -51,6 +51,7 @@ export function getCallableToolNames(this: AgentSession): string[] {
  */
 
 export function getAllTools(this: AgentSession): ToolInfo[] {
+	const removed = this.settingsManager.getDefaultToolRemovals(this._defaultToolModifiers);
 	return Array.from(this._toolDefinitions.values()).map(({ definition, sourceInfo }) => ({
 		name: definition.name,
 		description: definition.description,
@@ -61,6 +62,7 @@ export function getAllTools(this: AgentSession): ToolInfo[] {
 		promptGuidelines: definition.promptGuidelines,
 		exposure: definition.exposure ?? "direct",
 		namespace: definition.namespace,
+		...(removed.has(definition.name) ? { explicitDefaultOptOut: true } : {}),
 		annotations: definition.annotations,
 		sourceInfo,
 	}));
@@ -401,6 +403,15 @@ export function recordedToolLoadout(session: AgentSession): RecordedToolLoadout 
 	};
 }
 
+/** Although registered by an extension, the bundled codemode follows the user's built-in selection on restore. */
+function followsBuiltinSelection(
+	session: AgentSession,
+	name: string,
+	sourcePath = session._toolDefinitions.get(name)?.sourceInfo.path,
+): boolean {
+	return session._baseToolDefinitions.has(name) || (name === "codemode" && sourcePath === "builtin:codemode");
+}
+
 /**
  * Whether restoring a transcript activates a registered tool its recorded loadout does not list.
  *
@@ -415,8 +426,9 @@ export function activatesAfterRecordedLoadout(
 	recorded: RecordedToolLoadout,
 	name: string,
 	definition: { exposure?: string; defaultActive?: boolean } | undefined,
+	sourcePath?: string,
 ): boolean {
-	if (session._baseToolDefinitions.has(name)) {
+	if (followsBuiltinSelection(session, name, sourcePath)) {
 		return (
 			recorded.mentioned.has(name) &&
 			!recorded.current.includes(name) &&
@@ -459,7 +471,7 @@ export function _restoreToolsFromTranscript(this: AgentSession, options?: { star
 		this._setActiveTools(declared);
 		return;
 	}
-	const restored = declared.filter((name) => !this._baseToolDefinitions.has(name));
+	const restored = declared.filter((name) => !followsBuiltinSelection(this, name));
 	this._pendingToolNames = new Set(restored);
 	this._setActiveTools(applyToolModifiers([...this.getActiveToolNames(), ...restored], modifiers));
 }

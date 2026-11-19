@@ -136,6 +136,8 @@ function inactiveReason(
 	if (input.selection.names.includes(name)) {
 		return `selected by ${input.selection.description}, but deactivated during this session`;
 	}
+	if (tool.sourceInfo?.path === "builtin:codemode" && name === "codemode")
+		return `not selected; ${enableHint(name, input.selection)}`;
 	if (defaultActive === false) return `opt-in; ${enableHint(name, input.selection)}`;
 	if (tool.sourceInfo?.path.startsWith("<builtin:")) return `not selected; ${enableHint(name, input.selection)}`;
 	return "deactivated during this session";
