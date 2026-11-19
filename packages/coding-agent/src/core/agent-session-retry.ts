@@ -10,6 +10,7 @@ import {
 	resolveFallbackModel as resolveConfiguredFallbackModel,
 	resolveFallbackModelWithoutCredentials,
 } from "./fallback-models.ts";
+import { selectFirstPromptModel } from "./first-prompt-model.ts";
 import { NoUsableModelError, type SkippedModel } from "./model-credential-filter.ts";
 import {
 	isContentFilterRefusal,
@@ -514,6 +515,18 @@ export async function _selectModelWithCredentials(this: AgentSession): Promise<v
 			if (retryIsCurrent(this, generation)) this._resolveRetry();
 		}
 		return;
+	}
+	// No configured model can run this prompt. Only now can the session need its private Copilot lookup.
+	const selection = selectFirstPromptModel(this);
+	if (selection) {
+		const generation = this._retryGeneration;
+		const advice = await selection;
+		if (this._disposed || !retryIsCurrent(this, generation) || this.model !== currentModel) return;
+		if (advice) {
+			const error = new NoUsableModelError(skipped);
+			error.message = `${advice}\n\n${error.message}`;
+			throw error;
+		}
 	}
 	throw new NoUsableModelError(skipped);
 }
