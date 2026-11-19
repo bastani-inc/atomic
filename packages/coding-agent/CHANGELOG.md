@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- A workflow stage can no longer launch another layer of subagents. Launch all children from the parent chat with codemode; when a child's result is ready, the parent can launch the next batch from its completion notice.
+
+### Added
+
+- Interactive startup points out earlier workflow files. Ask Atomic to read a file and carry out its steps with codemode and subagents, or describe the procedure in a reusable skill.
+
 ## [0.9.90] - 2026-11-19
 
 Every subagent now runs in the background, a click runs key hints and expands blocks in fullscreen mode, and large stores, retries and interrupts no longer stall Atomic.

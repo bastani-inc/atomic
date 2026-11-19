@@ -124,6 +124,30 @@ async function withPendingProject(
 }
 
 test(
+	"the workflow migration notice waits for the engine's trusted inventory",
+	() =>
+		withPendingProject(
+			async (cli, approveProject, settleSource) => {
+				assert.doesNotMatch(cli.screen(), /Found \d+ legacy workflow files?/);
+				await approveProject();
+				settleSource();
+				await cli.waitForScreen(
+					(screen) => screen.includes("Found 2 legacy workflow files"),
+					STARTUP_TIMEOUT_MS,
+					"the migration hint for the approved project and package",
+				);
+			},
+			(project) => {
+				write(join(project, ".atomic/workflows/check.ts"), "export default {};");
+				const source = join(dirname(project), "source");
+				write(join(source, "workflows/packaged.ts"), "export default {};");
+				write(join(source, ".atomic/workflows/declined.ts"), "export default {};");
+			},
+		),
+	3 * STARTUP_TIMEOUT_MS,
+);
+
+test(
 	"lists and Tab-completes an approved project's resources while an -e source still awaits trust (#5693)",
 	() =>
 		withPendingProject(async (cli, approveProject) => {

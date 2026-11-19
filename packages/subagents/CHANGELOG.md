@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/skill:workflow-files` guides the parent chat through an earlier workflow definition without executing the module, preserving its dependencies, checks, and approval gates.
+
 ## [0.9.90] - 2026-11-19
 
 ### Breaking Changes
