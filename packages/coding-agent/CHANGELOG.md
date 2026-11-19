@@ -16,6 +16,7 @@
 - Interactive startup points out earlier workflow files. Ask Atomic to convert one into a skill that uses codemode and subagents. Project workflows become project skills; global workflows become user skills. Discovery writes nothing and conversion leaves the original unchanged.
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
+- Extension tools can distinguish nested calls from model-issued calls with `ctx.parentToolCallId`.
 
 ### Fixed
 
@@ -25,6 +26,8 @@
 - A worktree pool admission whose temporary record name is already taken leaves that file untouched and writes under a fresh name. On Linux and macOS it used to overwrite the other file and remove its name; on Windows the admission failed ([#5824](https://github.com/bastani-inc/atomic/issues/5824)).
 - The interactive interface now withdraws a folder's resources when an extension registers a `project_trust` handler after the first trust report but before the engine calls the handlers. It waits for the decision before warning that the folder is untrusted ([#5693](https://github.com/bastani-inc/atomic/issues/5693)).
 - Buttons in extension messages, saved entries and custom tool output receive clicks again when the fullscreen chat runs in the terminal UI process. A click the renderer leaves unhandled still opens or folds the block, and tool titles still toggle first. Separate-engine sessions are unchanged ([#5696](https://github.com/bastani-inc/atomic/issues/5696)).
+- On SQLite and local libSQL stores with sufficient free space, upgrading a large snapshot reference index from Atomic 0.9.87 or earlier, or opening one that lost a trigger, no longer freezes Atomic while it clears millions of old rows. Collection releases them in short, resumable batches. Stores with custom schema that depends on the index, or without verifiable disk headroom, keep the previous atomic reset ([#5553](https://github.com/bastani-inc/atomic/issues/5553)).
+- `InteractiveMode.init()` and `run()` now resolve instead of rejecting with `SessionClosed` if you quit the host or dispose the session during its initial extension bind. An event that was starting the UI, including a replayed provider retry, no longer leaves an unhandled rejection on quit or disposal. Replacing the session during that bind still rejects, as does a direct `session.bindExtensions()` call. Track your own shutdown request rather than catching `SessionClosed` to detect it. If you dispose only the session, you can run the same mode again after creating a replacement ([#5697](https://github.com/bastani-inc/atomic/issues/5697), [#5804](https://github.com/bastani-inc/atomic/issues/5804)).
 
 ## [0.9.90] - 2026-11-19
 
