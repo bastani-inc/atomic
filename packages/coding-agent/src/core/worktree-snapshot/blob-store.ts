@@ -10,7 +10,6 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
-import { RUN_JOURNAL_SCHEMA_VERSION, RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED } from "../storage/run-journal.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
@@ -89,9 +88,9 @@ export class MemorySnapshotBlobStore implements SnapshotBlobStore {
 }
 
 /**
- * The tables of one blob table's reference index, all under the blob table's prefix. Triggers on the run journal's
- * and the session store's tables keep them current in the same transaction as each write, so collection reads only
- * these tables and never a journal or a session.
+ * The tables of one blob table's reference index, all under the blob table's prefix. Triggers on the session store's
+ * tables, and on the tables a workflow run journal of an earlier release left in the database, keep them current in the
+ * same transaction as each write, so collection reads only these tables and never a journal or a session.
  */
 export interface SnapshotIndexTables {
 	/**
@@ -1331,15 +1330,16 @@ async function readSourceStates(
 		});
 }
 
-/** The `<prefix>snapshot_blobs` table and its reference index, shared by the session store and run journal of one database. */
+/**
+ * The `<prefix>snapshot_blobs` table and its reference index, shared by the session stores of one database. The index
+ * also counts the references a workflow run journal of an earlier release holds in the same database, so collection
+ * never deletes a blob such a run still needs.
+ */
 export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	private readonly database: SqliteDatabase;
 	private readonly tables: SnapshotIndexTables;
 	private readonly sources: readonly IndexSource[];
 	private readonly dialect: StorageDialect;
-	/** The meta table of the run journal under the same prefix, which a chunked blob's write marks (#5065). */
-	private readonly journalMeta: string;
-	private readonly prefix: string;
 	readonly table: string;
 
 	private constructor(
@@ -1347,15 +1347,11 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		dialect: StorageDialect,
 		tables: SnapshotIndexTables,
 		sources: readonly IndexSource[],
-		journalMeta: string,
-		prefix: string,
 	) {
-		this.prefix = prefix;
 		this.database = database;
 		this.dialect = dialect;
 		this.tables = tables;
 		this.sources = sources;
-		this.journalMeta = journalMeta;
 		this.table = tables.blobs;
 	}
 
@@ -1422,15 +1418,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				{ table: storageMigrationTable(prefix) },
 			);
 		}
-		const journalMeta = renderStorageIdentifiers("journal", { meta: "meta" }, prefix).meta;
-		const store = new SqlSnapshotBlobStore(
-			database,
-			dialect,
-			t,
-			indexSources(prefix, t, dialect),
-			journalMeta,
-			prefix,
-		);
+		const store = new SqlSnapshotBlobStore(database, dialect, t, indexSources(prefix, t, dialect));
 		await store.installIndex();
 		return store;
 	}
@@ -1440,7 +1428,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const tables = snapshotIndexTables(prefix);
 		const { withOfflineSnapshotFile } = await import("../storage/offline-snapshot-file.js");
 		await withOfflineSnapshotFile(file, async (database) => {
-			const store = new SqlSnapshotBlobStore(database, dialectOf(database), tables, [], "", prefix);
+			const store = new SqlSnapshotBlobStore(database, dialectOf(database), tables, []);
 			await store.checkOfflineLayout();
 			await store.moveChunksToRowTable({ graceSeconds: 0 }, true);
 		});
@@ -1492,14 +1480,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	/** A transcript-only handle has no snapshot sources to index. Binding it must not even inspect their tables. */
 	static forTranscriptReader(database: SqliteDatabase & { readonly readOnly: true }): SqlSnapshotBlobStore {
-		const journalMeta = renderStorageIdentifiers("journal", { meta: "meta" }).meta;
-		return new SqlSnapshotBlobStore(database, dialectOf(database), snapshotIndexTables(), [], journalMeta, "");
+		return new SqlSnapshotBlobStore(database, dialectOf(database), snapshotIndexTables(), []);
 	}
 
 	/**
 	 * Creates the blob table and its reference index inside the caller's transaction, and indexes the referencing tables
-	 * that exist, so a store that creates its own tables, such as a new run journal, takes the write lock once for all
-	 * of them.
+	 * that exist, so a store that creates its own tables takes the write lock once for all of them.
 	 */
 	static async initialize(
 		transaction: SqliteExecutor,
@@ -1552,41 +1538,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			await this.database.batch(statements);
 			return;
 		}
-		// Loaded only when a chunked blob is written: the journal's schema module is not in the store's eager graph.
-		const journal = chunked ? await import("../storage/journal-adoption.js") : undefined;
 		await this.database.transaction(async (transaction) => {
-			if (journal) await this.refuseOlderJournals(transaction, journal.upgradeRunJournalSchema);
 			for (const statement of statements) await transaction.run(statement.sql, ...statement.params);
 		});
 	}
-	/**
-	 * Makes the run journal under this store's prefix one that builds before chunked blobs refuse, in the transaction
-	 * that writes a chunked blob: they read one as empty, and open a journal only at the version they know (#5065). A
-	 * database without a journal, such as shared storage before any workflow run, gets a meta row at this build's
-	 * version, as a new journal's would be. A journal an older build created, at the previous version, is upgraded by
-	 * the journal's own upgrade, so its tables are what this build's journal expects. A newer or damaged one is left to
-	 * the journal's open to refuse.
-	 */
-	private async refuseOlderJournals(
-		transaction: SqliteExecutor,
-		upgrade: (transaction: SqliteExecutor, prefix: string, dialect: StorageDialect) => Promise<void>,
-	): Promise<void> {
-		const meta = this.journalMeta;
-		// Probed first, so a role with only DML privileges writes chunked blobs into a journal that has its meta (#5218).
-		const exists = this.dialect.tableExists(meta);
-		if ((await transaction.get(exists.sql, ...exists.params)) === undefined)
-			await transaction.exec(
-				`CREATE TABLE IF NOT EXISTS ${meta}(schema_version ${this.dialect.types.int} NOT NULL)`,
-			);
-		const versions = await transaction.all<SqliteRow & { schema_version: SqliteValue }>(
-			`SELECT schema_version FROM ${meta}`,
-		);
-		if (versions.length === 0)
-			await transaction.run(`INSERT INTO ${meta} (schema_version) VALUES (?)`, RUN_JOURNAL_SCHEMA_VERSION);
-		else if (versions.length === 1 && versions[0]!.schema_version === RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED)
-			await upgrade(transaction, this.prefix, this.dialect);
-	}
-
 	/**
 	 * The blob's bytes, read a chunk per statement when it has chunks, so no response holds more than one chunk. A
 	 * chunked blob whose chunks are not all there, as when a collection deleted it during the read, is not returned.
@@ -2170,8 +2125,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	/**
 	 * Moves an in-row legacy blob to chunks regardless of age. Reads its bytes without the writer and writes at most
 	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} per transaction while readers retain the in-row value. Publishing stamps
-	 * only an unknown age and frees the old value under the writer, with time proportional to the freed size. It marks the
-	 * journal as requiring chunk support, as {@link putBlobs} does. A stopped move leaves chunks the next move reuses.
+	 * only an unknown age and frees the old value under the writer, with time proportional to the freed size. A stopped
+	 * move leaves chunks the next move reuses.
 	 * Gives the event loop a turn after reading the blob's bytes and after every transaction, also when another host
 	 * moved or deleted the blob first (#5530).
 	 */
@@ -2209,7 +2164,6 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			if (!pending) return;
 		}
 		options.signal?.throwIfAborted();
-		const journal = await import("../storage/journal-adoption.js");
 		await this.write(options.pace, async (transaction) => {
 			if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
 			const { changes } = await transaction.run(
@@ -2220,8 +2174,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				hash,
 				chunks,
 			);
-			if (changes > 0) await this.refuseOlderJournals(transaction, journal.upgradeRunJournalSchema);
-			else await this.dropStrayChunks(transaction, [hash]);
+			if (changes === 0) await this.dropStrayChunks(transaction, [hash]);
 		});
 		await this.betweenBatches(options.pace);
 	}

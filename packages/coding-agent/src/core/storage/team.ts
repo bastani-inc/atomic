@@ -1,5 +1,5 @@
 /**
- * Team setup: one settings write that shares workflow runs and Intercom routing through a team database while
+ * Team setup: one settings write that shares Intercom routing through a team database while
  * sessions stay in the local store (`joinTeam`), its exact undo (`leaveTeam`), the layout in effect
  * (`getTeamProfile`), and the shared-database join that `atomic storage join` and `atomic team join` both run.
  */
@@ -36,7 +36,6 @@ import {
 	TeamProfileTimeoutError,
 } from "./errors.js";
 import { defaultSessionDatabasePath, storageHomeDir } from "./file-identity.js";
-import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { processSharedStorageSelectionAsync } from "./process-selection.js";
 import {
 	loadStorageAdapter,
@@ -67,7 +66,12 @@ import {
 	selectStorage,
 	type TeamInputSource,
 } from "./selection.js";
-import { describeStorageSelection, projectTrust, selectIntercomStorage, selectJournal } from "./storage-status.js";
+import {
+	describeStorageSelection,
+	projectTrust,
+	selectIntercomStorage,
+	selectSharedStorage,
+} from "./storage-status.js";
 
 export interface JoinTeamOptions {
 	/** `libsql://`, `https://`, `wss://` or absolute `file:` URL, without a credential. */
@@ -164,14 +168,13 @@ export type TeamProfileName = "individual" | "team" | "ci" | "custom";
 /** The layout in effect, from the selections each domain actually uses. */
 export interface TeamProfile {
 	/**
-	 * `individual`: sessions and workflow runs in the local default store, Intercom on this machine only.
-	 * `team`: sessions in the local default store; workflow runs and Intercom on one shared adapter database.
-	 * `ci`: sessions, workflow runs and Intercom all on one shared adapter database (what `ATOMIC_PROFILE=ci` selects).
+	 * `individual`: sessions in the local default store, Intercom on this machine only.
+	 * `team`: sessions in the local default store; Intercom on one shared adapter database.
+	 * `ci`: sessions and Intercom on one shared adapter database (what `ATOMIC_PROFILE=ci` selects).
 	 * `custom`: anything else.
 	 */
 	readonly profile: TeamProfileName;
 	readonly sessions: string;
-	readonly journal: string;
 	/** `off` when Intercom has no shared selection. */
 	readonly intercom: string;
 }
@@ -606,7 +609,7 @@ async function loadTeamAdapter(agentDir: string, reason: string): Promise<void> 
 
 /**
  * Whether `ATOMIC_PROFILE=ci` still selects the team database in this process. `--storage` and `ATOMIC_STORAGE`
- * outrank it for sessions, workflow runs and the Intercom broker alike, while a domain variable outranks it only for
+ * outrank it for sessions and the Intercom broker alike, while a domain variable outranks it only for
  * its own store. So the profile selects some store exactly when it is the shared selection the broker receives.
  */
 async function teamProfileInEffect(): Promise<boolean> {
@@ -657,7 +660,7 @@ export async function joinTeamWith(
 }
 
 /**
- * Use a team database for workflow runs and Intercom while sessions stay private: checks every input and the
+ * Use a team database for Intercom while sessions stay private: checks every input and the
  * connection first, then sets the global `storage` setting to the team database and `sessions.storage` to the local
  * default store in one settings write, and restarts the Intercom broker so it routes through the team database.
  * Throws {@link TeamProfileConfigError} for an invalid input and {@link TeamProfileError} otherwise; on any thrown
@@ -711,8 +714,12 @@ function isLocalSessionsPin(value: NonNullable<Settings["sessions"]>["storage"])
 
 /** Every token file the given settings reference. */
 function referencedTokenFiles(settings: Settings, agentDir: string): string[] {
-	// Do not remove token files still referenced by an older Atomic installation.
-	const journal = (settings as Settings & { workflows?: { journal?: StorageSettingsSelection } }).workflows?.journal;
+	// A `workflows.journal` selection an earlier release used still references its token file, which leaving keeps.
+	const workflows = (settings as { readonly workflows?: unknown }).workflows;
+	const journal =
+		workflows !== null && typeof workflows === "object" && !Array.isArray(workflows)
+			? (workflows as { readonly journal?: StorageSettingsSelection }).journal
+			: undefined;
 	const sessions = settings.sessions?.storage;
 	const selections: (StorageSettingsSelection | undefined)[] = [
 		settings.storage,
@@ -878,8 +885,6 @@ export function leaveTeam(options: LeaveTeamOptions = {}): Promise<TeamLeaveResu
 }
 
 function isLocalDefault(selection: StorageSelection, agentDir: string, settings?: Settings): boolean {
-	if (selection.kind === "sharded")
-		return resolve(selection.dir) === resolve(defaultJournalStoreDirectory(agentDir, settings));
 	return (
 		selection.kind === "sqlite" &&
 		!selection.prefix &&
@@ -889,8 +894,8 @@ function isLocalDefault(selection: StorageSelection, agentDir: string, settings?
 
 /**
  * The layout in effect for this process and working directory, from the storage each domain selects (process-level
- * selections, `ATOMIC_PROFILE=ci`, trusted project settings and global settings, as sessions, the workflows extension
- * and the Intercom broker resolve them). Reads only; an invalid selection throws its `StorageConfigError`.
+ * selections, `ATOMIC_PROFILE=ci`, trusted project settings and global settings, as sessions and the Intercom broker
+ * resolve them). Reads only; an invalid selection throws its `StorageConfigError`.
  */
 export function selectTeamProfile(options: TeamProfileOptions = {}): TeamProfile {
 	const agentDir = resolve(options.agentDir ?? getAgentDir());
@@ -908,22 +913,26 @@ export function selectTeamProfile(options: TeamProfileOptions = {}): TeamProfile
 	}
 	const merged = manager.getSettings();
 	const sessions = selectSessionStorageWithSettings(cwd, { agentDir, settings: merged }) as StorageSelection;
-	const journal = selectJournal(agentDir, merged);
+	// The shared selection as this directory's settings make it, project settings included: Intercom reads only the
+	// global one, so a project that selects another `storage` makes the layout custom.
+	const selected = selectSharedStorage(agentDir, merged);
 	const intercom = selectIntercomStorage(agentDir, manager.getGlobalSettings().storage);
 	const shared = intercom?.kind === "adapter" ? storageSelectionKey(intercom, agentDir) : undefined;
-	const sharesJournal = shared !== undefined && storageSelectionKey(journal, agentDir) === shared;
+	const sharesStorage =
+		shared !== undefined && selected !== undefined && storageSelectionKey(selected, agentDir) === shared;
 	const profile: TeamProfileName =
-		isLocalDefault(sessions, agentDir, merged) && isLocalDefault(journal, agentDir, merged) && intercom === undefined
+		isLocalDefault(sessions, agentDir, merged) &&
+		(selected === undefined || isLocalDefault(selected, agentDir, merged)) &&
+		intercom === undefined
 			? "individual"
-			: sharesJournal && isLocalDefault(sessions, agentDir, merged)
+			: sharesStorage && isLocalDefault(sessions, agentDir, merged)
 				? "team"
-				: sharesJournal && storageSelectionKey(sessions, agentDir) === shared
+				: sharesStorage && storageSelectionKey(sessions, agentDir) === shared
 					? "ci"
 					: "custom";
 	return {
 		profile,
 		sessions: describeStorageSelection(sessions),
-		journal: describeStorageSelection(journal),
 		intercom: intercom === undefined ? "off" : describeStorageSelection(intercom),
 	};
 }

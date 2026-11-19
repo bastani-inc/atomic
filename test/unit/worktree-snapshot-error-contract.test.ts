@@ -904,14 +904,14 @@ describe("a drift whose automatic restore failed shows that failure (#4245)", ()
 });
 
 describe("blob-store-unsupported names the setting that selects SQLite for its store (#4245)", () => {
-	test("a session store and a workflow journal each get their own fix", () => {
+	test("a session store gets the fix that selects a SQLite session store", () => {
 		assert.equal(
 			new WorkspaceSnapshotError("blob-store-unsupported", "jsonl").hint,
 			'Select a SQLite session store, for example `--session-store <path>` or `"sessions": { "storage": { "path": "sessions.sqlite" } }` in settings.json, to record snapshots.',
 		);
 		assert.equal(
-			new WorkspaceSnapshotError("blob-store-unsupported", "workflow journal").message,
-			'Worktree snapshot unavailable: workflow journal storage cannot hold snapshot blobs (blob-store-unsupported). Select a SQLite workflow journal, for example `"workflows": { "journal": { "path": "workflows/journal.sqlite" } }` in settings.json, to record snapshots.',
+			new WorkspaceSnapshotError("blob-store-unsupported", "jsonl").message,
+			'Worktree snapshot unavailable: jsonl storage cannot hold snapshot blobs (blob-store-unsupported). Select a SQLite session store, for example `--session-store <path>` or `"sessions": { "storage": { "path": "sessions.sqlite" } }` in settings.json, to record snapshots.',
 		);
 	});
 });

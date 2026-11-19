@@ -14,12 +14,16 @@ import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
-import type { RunJournalOption, StorageSelection } from "./storage/provider.js";
-import type { RunJournal } from "./storage/run-journal.js";
+import type { SqliteDatabase } from "./storage/database.js";
+import type { AdapterOptions, SecretRef, StorageSelection } from "./storage/provider.js";
 import type { SessionStore } from "./storage/session/types.js";
 
 /** A `createAgentSession({ storage })` selection: a database path, a caller-owned database, memory, or an adapter. */
-export type SessionStorageOption = Exclude<RunJournalOption, RunJournal>;
+export type SessionStorageOption =
+	| { path: string; prefix?: string }
+	| { database: SqliteDatabase; prefix?: string }
+	| { memory: true }
+	| { adapter: string; options?: AdapterOptions; secrets?: Readonly<Record<string, SecretRef>>; prefix?: string };
 
 export type AtomicBuiltin = "subagents" | "mcp" | "web-access" | "intercom";
 
@@ -37,16 +41,9 @@ export interface CreateAgentSessionOptions {
 	/** Global config directory. Default: ~/.atomic/agent */
 	agentDir?: string;
 	/**
-	 * Workflow journal for this session's `workflow` tool: a file path, a caller-owned database, process-local
-	 * memory, a storage adapter, or a supplied journal. Overrides process-level selections (`ATOMIC_WORKFLOWS_JOURNAL`,
-	 * `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`), the session's `workflows.journal` settings, and the default
-	 * journal file. The caller closes a database or journal it supplies.
-	 */
-	journal?: RunJournalOption;
-	/**
-	 * Storage for this session's sessions and its `workflow` tool's journal, in the form of the top-level `storage`
-	 * setting, for example the selection `teamProfileSelection()` returns. Outranks process-level selections and
-	 * settings; `sessionStore` and `journal` outrank it for their domain. Intercom keeps the process's selection.
+	 * Storage for this session's sessions, in the form of the top-level `storage` setting, for example the selection
+	 * `teamProfileSelection()` returns. Outranks process-level selections and settings; `sessionStore` and
+	 * `sessionManager` outrank it. Intercom keeps the process's selection.
 	 */
 	storage?: SessionStorageOption;
 
