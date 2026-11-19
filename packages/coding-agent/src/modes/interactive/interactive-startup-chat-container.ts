@@ -1,4 +1,4 @@
-import { type ScrollView, type TuiMouseEvent, WindowedContainer } from "@bastani/atomic-tui";
+import { type ScrollView, type TUI, type TuiMouseEvent, WindowedContainer } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { disposeRemoteRenderers } from "../interactive-engine/remote-renderer.ts";
 import { type ContainerMouseResult, handleTranscriptBlockClick } from "./components/transcript-block-clicks.ts";
@@ -11,6 +11,57 @@ import type { Component, Container } from "./interactive-mode-deps.ts";
  */
 export class StartupChatContainer extends WindowedContainer {
 	private startupOutputReleased = false;
+	private abandonPaint?: () => void;
+	/**
+	 * Renderers have already run; `paint` receives the optional read's answer, or nothing once the read is abandoned.
+	 * With `scrollback`, a main-screen renderer may hold one frame that draws this transcript for the answer's rows. It
+	 * holds that frame for at most `timeoutMs`; without a held frame, `paint` waits for the answer. Otherwise, `paint` gets
+	 * the answer only if it arrives within `timeoutMs`.
+	 */
+	awaitChatRecords<T>(
+		page: Promise<T | undefined>,
+		paint: (data?: T) => unknown,
+		scrollback: Pick<TUI, "gateScrollbackFrame" | "requestRender"> | false,
+		timeoutMs: number,
+	): void {
+		this.abandonPaint?.();
+		const receiver: { done?: (data?: T) => void } = {};
+		let answered = false;
+		const abandon = () => gate?.release();
+		const gate = scrollback
+			? scrollback.gateScrollbackFrame?.(this, {
+					timeoutMs,
+					onRelease: () => {
+						delete receiver.done;
+						if (this.abandonPaint === abandon) this.abandonPaint = undefined;
+						if (!answered) paint();
+					},
+				})
+			: undefined;
+		if (gate) {
+			receiver.done = (data) => {
+				answered = true;
+				gate.settle(data === undefined ? undefined : () => void paint(data));
+			};
+			this.abandonPaint = abandon;
+			settlePaint(page, receiver);
+			return;
+		}
+		const finish = (data?: T) => {
+			delete receiver.done;
+			this.abandonPaint = undefined;
+			clearTimeout(timer);
+			if (paint(data) === true && scrollback) scrollback.requestRender();
+		};
+		const timer = setTimeout(finish, timeoutMs);
+		receiver.done = finish;
+		this.abandonPaint = () => finish();
+		settlePaint(page, receiver);
+	}
+	cancelChatRecordPaint(): void {
+		this.abandonPaint?.();
+		this.onVisibleChild = undefined;
+	}
 	private renderedWidth?: number;
 	private counted: { children: Component[]; length: number; count: number } | undefined;
 	private readonly isCounted: (child: Component) => boolean;
@@ -104,7 +155,10 @@ export class StartupChatContainer extends WindowedContainer {
 
 	override render(width: number): string[] {
 		this.renderedWidth = width;
-		return this.startupOutputReleased ? super.render(width) : [];
+		if (!this.startupOutputReleased) return [];
+		// render() requests the entire scrollback; a row window instead observes just the children it returned.
+		if (this.onVisibleChild) for (const child of this.children) this.onVisibleChild(child);
+		return super.render(width);
 	}
 
 	protected override windowChildren(): readonly Component[] {
@@ -113,10 +167,19 @@ export class StartupChatContainer extends WindowedContainer {
 
 	/** A cleared transcript is rebuilt from new rows; the engine-rendered rows it drops are disposed. */
 	override clear(): void {
+		this.cancelChatRecordPaint();
 		disposeRemoteRenderers(this.children);
 		super.clear();
 		this.counted = { children: this.children, length: 0, count: 0 };
 	}
+}
+
+// A never-answering third-party read retains only its empty receiver after the deadline, not the view or its rows.
+function settlePaint<T>(page: Promise<T | undefined>, receiver: { done?: (data?: T) => void }): void {
+	void page.then(
+		(data) => receiver.done?.(data),
+		() => receiver.done?.(),
+	);
 }
 
 interface ChatHistoryBuild {
