@@ -198,12 +198,14 @@ test("bindAgentPanel rebinds to the new extension hub across a real session.relo
 	});
 	let widget: Component | undefined;
 	const currentWidget = (): Component | undefined => widget;
+	const reloaded = Promise.withResolvers<Component>();
 	const ui = {
 		setWidget(_key, content) {
 			widget =
 				typeof content === "function"
 					? content({} as Parameters<Exclude<typeof content, string[] | undefined>>[0], theme)
 					: undefined;
+			if (widget) reloaded.resolve(widget);
 		},
 		requestRender() {},
 	} satisfies Pick<ExtensionUIContext, "setWidget" | "requestRender">;
@@ -224,9 +226,8 @@ test("bindAgentPanel rebinds to the new extension hub across a real session.relo
 			task: "stage verify",
 		});
 		for (const listener of listenersByGeneration[1] ?? []) listener();
-		await Promise.resolve();
-		const mounted = currentWidget();
-		assert.ok(mounted, "panel widget mounts when the reloaded hub source emits an item");
+		const mounted = await reloaded.promise;
+		assert.equal(mounted, currentWidget(), "panel widget mounts when the reloaded hub source emits an item");
 		const rendered = mounted
 			.render(100)
 			.map((line: string) => stripVTControlCharacters(line))

@@ -1248,6 +1248,7 @@ async function forkHandle(
 ): Promise<DurableWorkflowHandle> {
 	const {
 		transitionClaimId: _transitionClaimId,
+		runGeneration: _runGeneration,
 		rootWorkflowId: _rootWorkflowId,
 		sessionFile: _sessionFile,
 		releasedModelOwner: _releasedModelOwner,

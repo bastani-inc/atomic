@@ -161,6 +161,7 @@ export {
 	isTaskTurnInterrupted,
 	OwnerTaskStore,
 	type TaskActivity,
+	taskResumedTurns,
 	watchOwnerTaskStoreBinding,
 } from "./core/tasks/owner-store.js";
 export {
@@ -168,7 +169,7 @@ export {
 	type SavedTaskTranscripts,
 	type TaskTranscriptQuery,
 } from "./core/tasks/saved-transcripts.ts";
-export { belongsToSession, sessionTasks, taskSessionKey } from "./core/tasks/session-scope.js";
+export { belongsToSession, scopedBackgroundTasks, sessionTasks, taskSessionKey } from "./core/tasks/session-scope.js";
 export { automaticWaitBudgetMs, type TaskTranscriptHistory } from "./core/tasks/supervisor.js";
 export { bindTaskResumer, type TaskResumer } from "./core/tasks/task-resumer.ts";
 export {

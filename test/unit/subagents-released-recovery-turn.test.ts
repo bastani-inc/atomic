@@ -267,8 +267,6 @@ function resumeOnReplayAlone(
 						chat.resolve(source);
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		}),
