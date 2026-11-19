@@ -26,6 +26,7 @@ import {
 	sessionResumePlan,
 	sessionTailFrom,
 	stateSeqsBefore,
+	transcriptBranchSpan,
 } from "./session-resume.js";
 import {
 	applySessionSummaryEntries,
@@ -38,6 +39,7 @@ import type {
 	ForkArchiveSource,
 	OversizedSessionEntry,
 	SessionBlob,
+	SessionBranchPageCut,
 	SessionCompactionPoint,
 	SessionCwdMatcher,
 	SessionEntriesPage,
@@ -446,6 +448,13 @@ export class MemorySessionStore implements SessionStore {
 			const tail = read.filter((held) => held.seq >= start).map((held) => held.entry);
 			return sessionTailFrom(index, decodeHeader(record), start, state, tail);
 		}
+	}
+
+	async readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {
+		const record = await this.settledRecord(sessionId);
+		const index = await this.resumeIndex(sessionId, record);
+		if (!index) throw new SessionConflictError(sessionId, cut.leaf, record.lastSeq);
+		return transcriptBranchSpan(sessionId, index, cut);
 	}
 
 	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {

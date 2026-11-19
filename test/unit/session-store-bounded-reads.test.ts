@@ -96,6 +96,49 @@ function compacted(history: number): SessionEntry[] {
 	return entries;
 }
 
+it("a transcript reader pages the selected branch in both directions without reading sibling messages (#5593)", async () => {
+	const store = new MemorySessionStore();
+	try {
+		await store.create(header, [
+			user("root", null, "root", 1),
+			user("sibling", "root", "sibling", 2),
+			user("selected", "root", "selected", 3),
+		]);
+		const bodies = vi.spyOn(store, "readRange");
+		const latest = await readSessionHistory(store, "session", {
+			branchLeafSeq: 3,
+			direction: "backward",
+			adjacent: true,
+		}).next();
+		assert.ok(!latest.done && latest.value.adjacent?.older);
+		assert.deepEqual(
+			latest.value.items.map((x) => x.seq),
+			[3],
+		);
+		const earlier = await readSessionHistory(store, "session", {
+			cursor: latest.value.adjacent.older,
+			adjacent: true,
+		}).next();
+		assert.ok(!earlier.done && earlier.value.adjacent?.newer);
+		assert.deepEqual(
+			earlier.value.items.map((x) => x.seq),
+			[1],
+		);
+		const again = await readSessionHistory(store, "session", { cursor: earlier.value.adjacent.newer }).next();
+		assert.ok(!again.done);
+		assert.deepEqual(
+			again.value.items.map((x) => x.seq),
+			[3],
+		);
+		assert.ok(
+			bodies.mock.calls.every(([, low, high]) => high < 2 || low > 2),
+			"unrelated sibling body was loaded",
+		);
+	} finally {
+		await store.close();
+	}
+});
+
 function tailStart(entries: readonly SessionEntry[]): number {
 	return entries.findIndex((entry) => entry.id === "kept") + 1;
 }
@@ -149,7 +192,7 @@ function temporaryDirectory(): string {
 	return directory;
 }
 
-it("a legacy-store wrapper names a missing bounded reader instead of loading the whole custom store (#5554)", async () => {
+it("a legacy-store wrapper projects the requested window for a snapshot-only custom store (#5554)", async () => {
 	const directory = temporaryDirectory();
 	const backing = new MemorySessionStore();
 	await backing.create(header, compacted(4));
@@ -159,20 +202,28 @@ it("a legacy-store wrapper names a missing bounded reader instead of loading the
 		readRange: undefined,
 		findLatestCompaction: undefined,
 		findEntrySeq: undefined,
-		load: () => {
-			throw new Error("whole session was read");
-		},
+		load: backing.load.bind(backing),
 	});
 	const store = new LegacySessionStore(inner, {
 		legacyDirectory: directory,
 		databasePath: join(directory, "deletions.sqlite"),
 	});
 	try {
-		await assert.rejects(store.readResume(header.id), /must implement readResume/);
-		await assert.rejects(store.readTail(header.id, 1), /must implement readTail/);
-		await assert.rejects(readSessionRange(inner, header.id, 1, 1), /must implement readRange/);
-		await assert.rejects(store.findLatestCompaction(header.id), /must implement findLatestCompaction/);
-		await assert.rejects(store.findEntrySeq(header.id, "kept"), /must implement findEntrySeq/);
+		const resume = await store.readResume(header.id);
+		assert.deepEqual(
+			resume.branch.map(({ entry }) => entry.id),
+			["kept", "kept-answer", "boundary", "after", "after-answer"],
+		);
+		assert.deepEqual(
+			(await store.readTail(header.id, resume.lastSeq)).entries.map((entry) => entry.id),
+			["after-answer"],
+		);
+		assert.deepEqual(
+			(await readSessionRange(inner, header.id, 1, 1)).entries.map((entry) => entry.id),
+			["m0"],
+		);
+		assert.equal((await store.findLatestCompaction(header.id))?.entry.id, "boundary");
+		assert.equal(await store.findEntrySeq(header.id, "kept"), 11);
 	} finally {
 		await store.close();
 	}

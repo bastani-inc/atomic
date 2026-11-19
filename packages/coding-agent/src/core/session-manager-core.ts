@@ -37,6 +37,7 @@ import {
 	buildSessionProjection,
 	buildSessionTree,
 	getBranchPath,
+	getLatestCompactionBoundaryEntry,
 	isLeafMoveEntry,
 	LEAF_MOVE_ENTRY_TYPE,
 } from "./session-manager-history.ts";
@@ -117,8 +118,15 @@ import type {
 	SessionResume,
 	SessionSnapshot,
 	SessionStore,
+	SessionStoredEntry,
 } from "./storage/session/types.js";
 import { SESSION_HISTORY_PAGE_ENTRIES } from "./storage/session/types.js";
+import {
+	type AssistantAnswer,
+	archivedAnswerAt,
+	lastBranchAnswer,
+	savedWindowAnswer,
+} from "./storage/session/window-answer.js";
 import { writeChunksAtomically } from "./storage/transfer-files.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type {
@@ -136,7 +144,13 @@ async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	return (await import("./session-storage.js")).resolveSessionStore(cwd);
 }
 
-type OpenedSession = { readonly resume: SessionResume };
+type SelectedWindow = SessionResume & { readonly priorAnswer?: AssistantAnswer; readonly archiveOnlyEpoch?: true };
+type OpenedSession = { readonly resume: SelectedWindow };
+async function withPriorAnswer(store: SessionStore, resume: SelectedWindow): Promise<SelectedWindow> {
+	return Object.hasOwn(resume, "priorAnswer")
+		? resume
+		: { ...resume, priorAnswer: await savedWindowAnswer(store, resume) };
+}
 async function readStoredSession(
 	store: SessionStore,
 	sessionId: string,
@@ -147,16 +161,15 @@ async function readStoredSession(
 			'Session history: "full" has been removed. Use sessionManager.readHistory() to iterate older entries.',
 		);
 	}
-	if (!store.readResume || !store.readRange) {
-		throw new TypeError(
-			`Session store ${store.descriptor.adapter} must implement readResume and readRange for bounded history`,
-		);
-	}
-	return {
-		resume: await (options?.leafId === undefined
-			? store.readResume(sessionId)
-			: store.readResume(sessionId, options.leafId)),
-	};
+	if (!store.readResume || !store.readRange)
+		return {
+			resume: await (await import("./storage/session/snapshot-history.js")).snapshotWindow(
+				store,
+				sessionId,
+				options?.leafId,
+			),
+		};
+	return { resume: await withPriorAnswer(store, await store.readResume(sessionId, options?.leafId)) };
 }
 
 async function openSessionFileWindow(path: string, cwd: string | undefined, options?: SessionOpenOptions) {
@@ -239,6 +252,9 @@ export class SessionManager {
 	private historyIndex = new SessionHistoryIndex();
 
 	private historyStartSeq = 1;
+	private answerWindowStart = 1;
+	private priorAnswer?: AssistantAnswer;
+	private archiveOnlyEpoch = false;
 
 	private entrySeqs = new Map<string, number>();
 	private historyEpoch: string | undefined;
@@ -309,6 +325,9 @@ export class SessionManager {
 		);
 		this.entrySeqs = new Map(held.map(({ seq, entry }) => [entry.id, seq]));
 		this.historyEpoch = resume.epoch;
+		this.archiveOnlyEpoch = resume.archiveOnlyEpoch === true;
+		this.answerWindowStart = resume.branch[0]?.seq ?? 1;
+		this.priorAnswer = resume.priorAnswer;
 		this.lastEntryId = resume.lastEntryId;
 		const { workflowStarts, ...recovery } = resume.recovery;
 		this.recoveryState = { ...recovery, admissionDigests: "" };
@@ -345,9 +364,12 @@ export class SessionManager {
 		this.deletedFromStore = false;
 		this.appendHalt = undefined;
 		this.historyStartSeq = partial?.fromSeq ?? 1;
+		this.answerWindowStart = 1;
+		this.priorAnswer = undefined;
 		this.entrySeqs = new Map(entries.map((entry, i) => [entry.id, i + 1]));
 		this.lastEntryId = entries.at(-1)?.id ?? null;
 		this.historyEpoch = undefined;
+		this.archiveOnlyEpoch = false;
 		this.recoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
 		this.admissionKeys = new SessionKeyDigests();
 		this.workflowStarts = {};
@@ -393,7 +415,13 @@ export class SessionManager {
 			}
 			let end = start;
 			while (end < watermark && end - start < 4095 && !held.has(end + 1)) end++;
-			const range = await readSessionRange(store, sessionId, start, end);
+			const range = await readSessionRange(
+				store,
+				sessionId,
+				start,
+				end,
+				this.archiveOnlyEpoch ? historyEpoch : undefined,
+			);
 			if (historyEpoch !== undefined && range.epoch !== historyEpoch)
 				throw new SessionConflictError(sessionId, watermark, range.lastSeq);
 			for (const [i, read] of range.entries.entries()) visit(read, range.seqs?.[i] ?? start + i, false);
@@ -438,7 +466,13 @@ export class SessionManager {
 
 	private async refreshStoredTail(): Promise<boolean> {
 		const { store, sessionId, lastSeq, historyEpoch, lastEntryId } = this;
-		const range = await readSessionRange(store, sessionId, Math.max(1, lastSeq), Number.MAX_SAFE_INTEGER);
+		const range = await readSessionRange(
+			store,
+			sessionId,
+			Math.max(1, lastSeq),
+			Number.MAX_SAFE_INTEGER,
+			this.archiveOnlyEpoch ? historyEpoch : undefined,
+		);
 		if (this.sessionId !== sessionId || this.store !== store || this.lastSeq !== lastSeq) return false;
 		if (range.lastSeq < lastSeq || (historyEpoch !== undefined && range.epoch !== historyEpoch)) return false;
 		if (lastSeq > 0 && range.entries[0]?.id !== lastEntryId) return false;
@@ -594,6 +628,8 @@ export class SessionManager {
 		];
 		this.lastSeq = 0;
 		this.historyStartSeq = 1;
+		this.answerWindowStart = 1;
+		this.priorAnswer = undefined;
 		this.omittedTotals = undefined;
 		this.branchLinks = undefined;
 		this._buildIndex();
@@ -686,7 +722,7 @@ export class SessionManager {
 			const header: SessionHeader = { ...previous, internal: true, workflow: validWorkflow };
 			const result = await this.store.updateHeader(this.recordHeader(header), {
 				expectSeq: this.lastSeq,
-				...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
+				...(this.archiveOnlyEpoch || this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
 			});
 			this.lastSeq = result.lastSeq;
 			this.historyEpoch = result.epoch;
@@ -860,7 +896,7 @@ export class SessionManager {
 			try {
 				const written = await this.store.append(this.sessionId, entries, {
 					expectSeq,
-					...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
+					...(this.archiveOnlyEpoch || this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
 				});
 				if (target) this.restoreOpened({ resume: target }, this.sessionFile);
 				this.lastSeq = written.lastSeq;
@@ -920,7 +956,14 @@ export class SessionManager {
 		const keep = new Set([...resume.branch, ...resume.state].map(({ entry }) => entry.id));
 		const start = this.entrySeqs.get(resume.branch[0]!.entry.id)!;
 		const leaf = this.leafId;
-		const path = this.getBranch().filter((entry) => keep.has(entry.id));
+		const current = this.getBranch();
+		const retiringAnswer = lastBranchAnswer(current, (entry) => {
+			const seq = this.entrySeqs.get(entry.id)!;
+			return seq >= this.answerWindowStart && seq < start;
+		});
+		this.priorAnswer = retiringAnswer ?? this.priorAnswer;
+		this.answerWindowStart = start;
+		const path = current.filter((entry) => keep.has(entry.id));
 		const retained: FileEntry[] = [this.fileEntries[0]!];
 		let totals = this.omittedTotals ?? EMPTY_SESSION_HISTORY_TOTALS;
 		for (const entry of entries) {
@@ -969,7 +1012,13 @@ export class SessionManager {
 		for (const entry of entries) this.unconfirmed.add(entry.id);
 		let read: { readonly entries: readonly SessionEntry[]; readonly lastSeq: number };
 		try {
-			read = await readSessionRange(this.store, this.sessionId, Math.max(1, this.lastSeq), Number.MAX_SAFE_INTEGER);
+			read = await readSessionRange(
+				this.store,
+				this.sessionId,
+				Math.max(1, this.lastSeq),
+				Number.MAX_SAFE_INTEGER,
+				this.archiveOnlyEpoch ? this.historyEpoch : undefined,
+			);
 		} catch {
 			// Still unreadable: the next append, at the same `lastSeq`, finds out whether these entries were saved.
 			throw error;
@@ -986,14 +1035,6 @@ export class SessionManager {
 		const saved = tail.some((entry) => own.has(entry.id));
 		const foreign = tail.some((entry) => !this.unconfirmed.has(entry.id));
 		if (target && saved) this.restoreOpened({ resume: target }, this.sessionFile);
-		if (target && !saved && tail.length > 0) {
-			const stop =
-				error instanceof SessionConflictError
-					? error
-					: new SessionConflictError(this.sessionId, expectSeq, read.lastSeq);
-			if (this.appendHaltPolicy?.() === true) this.appendHalt ??= stop;
-			throw stop;
-		}
 		const leafId = saved ? entries.at(-1)!.id : this.leafId;
 		for (const [i, entry] of tail.entries()) {
 			this.entrySeqs.set(entry.id, this.lastSeq + i + 1);
@@ -1006,7 +1047,9 @@ export class SessionManager {
 		this.lastSeq = read.lastSeq;
 		if (saved) return true;
 		const conflict = error instanceof SessionConflictError;
-		if (foreign || (conflict && tail.length === 0)) {
+		// The prepared target describes the old watermark. Keep our original leaf when it lost the race,
+		// but acknowledge the observed tail before reporting the conflict so a retry can prepare a fresh target.
+		if ((target && tail.length > 0) || foreign || (conflict && tail.length === 0)) {
 			const stop = conflict ? error : new SessionConflictError(this.sessionId, expectSeq, this.lastSeq);
 			if (this.appendHaltPolicy?.() === true) this.appendHalt ??= stop;
 			throw stop;
@@ -1143,9 +1186,85 @@ export class SessionManager {
 			);
 			const systemMessage = getCurrentSystemMessage(this.buildSessionProjection().messages);
 			if (systemMessage) entry.systemMessage = { ...systemMessage, timestamp: new Date(entry.timestamp).getTime() };
-			await this._appendEntry(entry);
+			const expanded = await this.expandForBoundary([firstKeptEntryId, coveredThroughEntryId]);
+			if (expanded) precondition?.();
+			await this._appendEntry(entry, expanded);
 			return entry.id;
 		});
+	}
+
+	/** A boundary may name an ancestor before the previous window. Stage that exact branch span before
+	 * committing. The old view and its entry identities remain unchanged if a read or the write fails. */
+	private async expandForBoundary(
+		anchors: readonly (string | null | undefined)[],
+	): Promise<SelectedWindow | undefined> {
+		if (this.answerWindowStart <= 1 || !this.leafId) return;
+		const leaf = this.entrySeqs.get(this.leafId)!;
+		let from = this.answerWindowStart;
+		for (const id of anchors) {
+			if (id == null) continue;
+			const at = await this.findEntrySeq(id);
+			if (at === undefined || at >= from) continue;
+			// A pointer to a sibling does not extend the active window.
+			const match = await this.readHistory({ branchLeafSeq: leaf, fromSeq: at, toSeq: at }).next();
+			if (!match.done) from = at;
+		}
+		if (from === this.answerWindowStart) return;
+		const path = this.getBranch();
+		const onBranch = new Set(path.map((entry) => entry.id));
+		const branch: SessionStoredEntry[] = [];
+		let omitted = this.omittedTotals ?? EMPTY_SESSION_HISTORY_TOTALS;
+		for await (const { items } of this.readHistory({
+			branchLeafSeq: leaf,
+			fromSeq: from,
+			toSeq: this.answerWindowStart - 1,
+		})) {
+			for (const item of items) {
+				const entry =
+					"entry" in item
+						? item.entry
+						: (await readSessionRange(this.store, this.sessionId, item.seq, item.seq, this.historyEpoch))
+								.entries[0]!;
+				const local = this.byId.get(entry.id);
+				branch.push({ seq: item.seq, entry: local ?? entry });
+				if (!local) omitted = addEntryToHistoryTotals(omitted, entry, -1);
+			}
+		}
+		for (const entry of path) {
+			const seq = this.entrySeqs.get(entry.id)!;
+			if (seq >= this.answerWindowStart) branch.push({ seq, entry });
+		}
+		const kept = new Set(branch.map(({ entry }) => entry.id));
+		const first = branch[0]!;
+		const edits = new Map(
+			branch.flatMap(({ seq, entry }) => (entry.type === "context_edit" ? [[entry.targetId, seq] as const] : [])),
+		);
+		const priorAnswer = first.entry.parentId
+			? await archivedAnswerAt(
+					this.store,
+					this.sessionId,
+					this.historyEpoch,
+					this.lastSeq,
+					first.seq,
+					first.entry.parentId,
+					edits,
+				)
+			: undefined;
+		return {
+			header: this.recordHeader(),
+			epoch: this.historyEpoch!,
+			archiveOnlyEpoch: this.archiveOnlyEpoch ? true : undefined,
+			lastSeq: this.lastSeq,
+			lastEntryId: this.lastEntryId,
+			leafId: this.leafId,
+			branch,
+			state: this.getEntries()
+				.filter((entry) => !kept.has(entry.id))
+				.map((entry) => ({ seq: this.entrySeqs.get(entry.id)!, entry, onBranch: onBranch.has(entry.id) })),
+			omitted,
+			priorAnswer,
+			recovery: { ...this.getSessionRecoveryState(), workflowStarts: this.workflowStarts },
+		};
 	}
 
 	/** Save a JSONL backup; database-backed sessions have no file snapshot. */
@@ -1188,18 +1307,41 @@ export class SessionManager {
 			) {
 				throw new SessionEntryError(targetId, "invalid-replacement");
 			}
-			const target = await this.requireEntry(targetId);
-			if (!this.getBranch().some((entry) => entry.id === targetId)) {
-				throw new SessionEntryError(targetId, "inactive");
+			const branch = this.getBranch();
+			const seq = await this.findEntrySeq(targetId);
+			if (seq === undefined) throw new SessionEntryError(targetId, "missing");
+			const held = branch.find((entry) => entry.id === targetId);
+			let targetRole: string | undefined;
+			if (held)
+				targetRole =
+					held.type === "message" ? held.message.role : held.type === "custom_message" ? "custom" : undefined;
+			else {
+				const leaf = this.leafId && this.entrySeqs.get(this.leafId);
+				if (!leaf) throw new SessionEntryError(targetId, "inactive");
+				const next = await this.readHistory({ branchLeafSeq: leaf, fromSeq: seq, toSeq: seq }).next();
+				const item = !next.done && next.value.items[0];
+				if (!item) throw new SessionEntryError(targetId, "inactive");
+				if ("entry" in item)
+					targetRole =
+						item.entry.type === "message"
+							? item.entry.message.role
+							: item.entry.type === "custom_message"
+								? "custom"
+								: undefined;
+				else {
+					const hint = await (await import("./storage/session/chunked-resume-projection.js")).chunkedAnswerHeader(
+						this.readHistoryChunks(item),
+					);
+					targetRole = hint.type === "message" ? hint.role : hint.type === "custom_message" ? "custom" : undefined;
+				}
 			}
-			const editable =
-				target.type === "custom_message" ||
-				(target.type === "message" &&
-					(target.message.role === "user" ||
-						target.message.role === "assistant" ||
-						target.message.role === "toolResult"));
-			if (!editable) throw new SessionEntryError(targetId, "not-editable");
-			const targetRole = target.type === "message" ? target.message.role : "custom";
+			if (
+				targetRole !== "custom" &&
+				targetRole !== "user" &&
+				targetRole !== "toolResult" &&
+				targetRole !== "assistant"
+			)
+				throw new SessionEntryError(targetId, "not-editable");
 			const normalizedReplacement =
 				replacement !== null &&
 				(targetRole === "assistant" || targetRole === "toolResult") &&
@@ -1207,7 +1349,28 @@ export class SessionManager {
 					? { content: [{ type: "text" as const, text: replacement.content }] }
 					: replacement;
 			const entry = createContextEditEntry(targetId, normalizedReplacement, this.byId, this.leafId);
+			const first =
+				targetRole === "assistant" && seq < this.answerWindowStart
+					? branch.find((item) => this.entrySeqs.get(item.id) === this.answerWindowStart)
+					: undefined;
+			const before = first
+				? await archivedAnswerAt(
+						this.store,
+						this.sessionId,
+						this.historyEpoch,
+						this.lastSeq,
+						this.answerWindowStart,
+						first.parentId,
+						new Map(
+							branch.flatMap((item) =>
+								item.type === "context_edit" ? [[item.targetId, this.entrySeqs.get(item.id)!] as const] : [],
+							),
+						),
+						entry,
+					)
+				: undefined;
 			await this._appendEntry(entry);
+			if (first) this.priorAnswer = before;
 			return entry.id;
 		});
 	}
@@ -1571,10 +1734,42 @@ export class SessionManager {
 		return buildSessionTree(this.getEntries(), this.labelsById, this.labelTimestampsById);
 	}
 
-	private async prepareBranchTarget(id: string): Promise<SessionResume | undefined> {
+	/** @internal The raw branch may contain a sparse pre-window assistant needed for model state. It is not proof
+	 * of an unedited answer. Consult only the complete window and the answer recovered for its exact prefix. */
+	getLastBranchAnswer(): string | undefined {
+		if (this.leafId === null) return undefined;
+		return (
+			lastBranchAnswer(this.getBranch(), (entry) => (this.entrySeqs.get(entry.id) ?? 0) >= this.answerWindowStart) ??
+			this.priorAnswer
+		)?.text;
+	}
+
+	private async prepareBranchTarget(id: string): Promise<SelectedWindow | undefined> {
 		if (!this.hasFullHistory() && id !== this.leafId) {
-			if (!this.store.readResume)
-				throw new TypeError(`Session store ${this.store.descriptor.adapter} must implement readResume`);
+			// Rewinding within the complete window does not need the archive. Keep caller-mutated entries
+			// and permit a local move even if the backing store was deleted after this session opened.
+			if (this.byId.has(id)) {
+				const path = this.getBranch();
+				const boundary = getLatestCompactionBoundaryEntry(path);
+				const from = path.findIndex((entry) => entry.id === id);
+				if (
+					from >= 0 &&
+					(!boundary || from >= path.indexOf(boundary)) &&
+					!path.slice(from + 1).some((entry) => entry.type === "context_edit")
+				)
+					return undefined;
+			}
+			if (!this.store.readResume || !this.store.readRange) {
+				const target = await (await import("./storage/session/snapshot-history.js")).snapshotWindow(
+					this.store,
+					this.sessionId,
+					id,
+					this.lastSeq,
+					this.historyEpoch,
+				);
+				if (target.leafId !== id) throw new SessionEntryError(id, "missing");
+				return target;
+			}
 			let resume: SessionResume;
 			if (this.store.readResumeAt) resume = await this.store.readResumeAt(this.sessionId, id, this.lastSeq);
 			else {
@@ -1616,7 +1811,7 @@ export class SessionManager {
 			if (resume.lastSeq !== this.lastSeq || (this.historyEpoch !== undefined && resume.epoch !== this.historyEpoch))
 				throw new SessionConflictError(this.sessionId, this.lastSeq, resume.lastSeq);
 			if (resume.leafId !== id) throw new SessionEntryError(id, "missing");
-			return resume;
+			return withPriorAnswer(this.store, resume);
 		}
 		await this.requireEntry(id);
 		return undefined;

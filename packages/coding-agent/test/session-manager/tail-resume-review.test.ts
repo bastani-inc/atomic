@@ -104,6 +104,35 @@ test("branching to held state and pre-boundary kept messages restores their comp
 	}
 });
 
+test("rewinding within the current window needs no archive and preserves a live entry's identity (#5554)", async () => {
+	const { store, open } = await fixture([
+		user("old", null),
+		boundary("clear", "old", null),
+		user("current", "clear"),
+		user("later", "current"),
+	]);
+	const local = await open();
+	const held = local.getEntry("current");
+	assert.ok(held?.type === "message" && held.message.role === "user");
+	held.message.content = "SDK mutation";
+	await store.delete("session");
+	await local.branch("current");
+	assert.equal(local.getLeafEntry(), held);
+	const last = local.buildSessionContext().messages.at(-1);
+	assert.equal(last?.role === "user" && last.content, "SDK mutation");
+});
+
+test("a later compaction may keep an older span, and live and reopened windows agree (#5554)", async () => {
+	const { open } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
+	const live = await open();
+	await live.appendCompaction("second", "old", 3, { strategy: "verbatim-lines", backend: "summary" } as Parameters<
+		SessionManager["appendCompaction"]
+	>[3]);
+	const restored = await open();
+	assert.deepEqual(live.buildSessionContext(), restored.buildSessionContext());
+	assert.ok(live.getEntry("old"));
+});
+
 test("the source window stays visible while a historical branch write is pending and after it fails (#5554)", async () => {
 	const { open, store } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
 	const session = await open();
@@ -135,6 +164,28 @@ test("the source window stays visible while a historical branch write is pending
 	}
 });
 
+test("a peer append conflicts once when moving to an archived branch, and retry reopens the selected conversation (#5554)", async () => {
+	const { open } = await fixture([
+		user("root", null),
+		user("old", "root"),
+		boundary("clear", "old", null),
+		user("current", "clear"),
+	]);
+	const local = await open();
+	const peer = await open();
+	await peer.appendMessage({ role: "user", content: "other writer", timestamp: 2 });
+	await assert.rejects(local.recordBranch("old"), { name: "SessionConflictError" });
+	assert.equal(local.getLeafId(), "current");
+	await local.recordBranch("old");
+	for (const view of [local, await open()]) {
+		assert.equal(view.getLeafId(), "old");
+		assert.deepEqual(
+			view.buildSessionContext().messages.map((m) => m.role === "user" && m.content),
+			["root", "old"],
+		);
+	}
+});
+
 for (const tier of ["native", "paged", "legacy"] as const) {
 	test(`a stale local branch uses its original watermark with a ${tier} source (#5554)`, async () => {
 		const { store } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
@@ -161,6 +212,28 @@ for (const tier of ["native", "paged", "legacy"] as const) {
 		});
 	});
 }
+
+test("a snapshot-only SDK store opens a window and pages the archive without keeping earlier turns (#5554)", async () => {
+	const { store } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
+	const adapter = Object.assign(
+		Object.create(store) as import("../../src/core/storage/session/types.ts").SessionStore,
+		{
+			readResume: undefined,
+			readResumeAt: undefined,
+			readRange: undefined,
+			readEntrySizes: undefined,
+			readEntryChunk: undefined,
+			findEntrySeq: undefined,
+		},
+	);
+	const load = vi.spyOn(adapter, "load");
+	const view = await SessionManager.open(adapter, "session");
+	assert.equal(load.mock.calls.length, 1);
+	assert.equal(view.getEntry("old"), undefined);
+	assert.equal((await view.readEntry("old"))?.id, "old");
+	assert.equal(view.getEntry("old"), undefined);
+	assert.equal(view.getLeafId(), "current");
+});
 
 test("hydration rejects a same-length replacement instead of merging session generations (#5249)", async () => {
 	const entries = [user("u", null), user("kept", "u"), boundary("c", "kept", "kept")];

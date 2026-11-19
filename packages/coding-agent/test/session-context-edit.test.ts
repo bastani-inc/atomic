@@ -8,6 +8,15 @@ import {
 } from "../src/core/compaction/index.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 
+it("a clear does not turn an archived ancestor into an inactive edit target (#5554)", async () => {
+	const sm = SessionManager.inMemory();
+	const old = await sm.appendMessage({ role: "user", content: "old", timestamp: 1 });
+	await sm.appendCompaction("cleared", null, 10, verbatimDetails);
+	const edit = await sm.appendContextEdit(old, { content: "replaced" });
+	expect(sm.getEntry(edit)).toMatchObject({ type: "context_edit", targetId: old });
+	expect(sm.getEntry(old)).toBeUndefined();
+});
+
 function assistant(text: string): AssistantMessage {
 	return {
 		role: "assistant",
