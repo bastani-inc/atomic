@@ -534,6 +534,8 @@ interface SourceState {
 	readonly installed: boolean;
 	readonly backfilled: boolean;
 	readonly deferred: boolean;
+	/** Installed by another build whose index this build does not trust: an upgrade, or an older build's again. */
+	readonly foreign: boolean;
 	/**
 	 * On SQLite, installed with {@link IndexSource.version} but not backfilled, as by a build of 0.9.88 or 0.9.89 whose
 	 * backfill is not done. This build's backfill removes the row, installs its own triggers and indexes the source again
@@ -1211,6 +1213,7 @@ async function readSourceStates(
 				installed,
 				backfilled,
 				deferred: row !== undefined && (foreign || Number(row.watermark) === -1),
+				foreign,
 				takeover: withholdsVersion(dialect, source) && installed && version !== undefined && !backfilled,
 			};
 		});
@@ -1536,13 +1539,24 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const withholds = withholdsVersion(this.dialect, source);
 		return this.write(pace, async (transaction) => {
 			const [state] = await readSourceStates(transaction, this.dialect, t, [source]);
-			// A source that lost its triggers, or that another build installed, since the loop read the states is left to
-			// the next collection (#5558).
-			if (state === undefined || !state.installed || state.backfilled) return true;
-			const progress = (await transaction.get<SqliteRow & { watermark: number; backfilled_through: number }>(
+			if (state === undefined || state.backfilled) return true;
+			if (state.foreign) {
+				// A build before 0.9.88 installed its own triggers since the loop read the states: the source is installed again
+				// in this transaction, its old rows removed, as at the start of a collection. Left as it is, that build could
+				// index it its way, and builds 0.9.88 and 0.9.89 trust their version row (#5558).
+				await withShortSchemaLockWaits(transaction, this.dialect, () =>
+					installSource(transaction, this.dialect, t, source),
+				);
+				if (holder !== undefined) await this.renewClaim(transaction, holder);
+				return false;
+			}
+			// A source that lost triggers meanwhile is indexed on, as its rows still need this build's statements; the sweep
+			// installs its triggers again before it deletes anything.
+			const progress = await transaction.get<SqliteRow & { watermark: number; backfilled_through: number }>(
 				`SELECT watermark, backfilled_through FROM ${t.sources} WHERE source = ?`,
 				source.name,
-			))!;
+			);
+			if (progress === undefined || progress.watermark < 0) return true;
 			if (state.takeover) {
 				// Installed by a build of 0.9.88 or 0.9.89 whose backfill is not done, which a build before 0.9.88 may have
 				// indexed some of its way: this build indexes it again from its first row, with its own triggers, whose

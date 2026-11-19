@@ -124,6 +124,18 @@ async function indexedPin(database: SqliteDatabase): Promise<string | null | und
 	return row === undefined ? undefined : row.degraded_from;
 }
 
+/**
+ * One batch of the backfill of a released store whose collection is under way: its own batch step, which its
+ * collection runs in a loop, so that a test can interleave another build's transactions between two of them.
+ */
+async function releasedBatch(store: ReleasedBlobStore): Promise<boolean> {
+	const internal = store as unknown as {
+		sources: readonly { readonly name: string }[];
+		backfillBatch(source: unknown, options: object): Promise<boolean>;
+	};
+	return internal.backfillBatch(internal.sources.find((source) => source.name === "session-entries")!, {});
+}
+
 async function linked(database: SqliteDatabase, session: string, entry: string): Promise<boolean> {
 	return (
 		(await database.get(
@@ -388,5 +400,116 @@ describe("released builds sharing the store while this build installs or indexes
 				assert.deepEqual(await store.getBlob(bundle.hash), bundle.data);
 			});
 		}
+
+		for (const entries of [100, 1_200]) {
+			test(`on ${driver} with ${entries} entries, a reference trigger 0.9.87 installs again before this build's first backfill transaction over 0.9.89's index, this build stopping after it, then 0.9.87 and 0.9.89 collecting, leave the bundle a pin keeps (#5558)`, async () => {
+				const mine = await connect(open);
+				const released = await connect(open);
+				const older = await connect(open);
+				const sessions = await SqlSessionStore.open(mine);
+				const bundle = textBlob("the bundle a partly restored worktree still needs");
+				await sessions.snapshotBlobs.putBlobs([bundle]);
+				const padding = chain("message", entries);
+				const lacked = snapshotEntry(
+					"/repo",
+					"S-lacked",
+					syntheticSnapshot("S-lacked", [], { bundle: bundle.hash }),
+					padding.at(-1)!.id,
+				);
+				const derived = { ...snapshotEntry("/repo", "S-derived", undefined, lacked.id), degradedFrom: "S-lacked" };
+				await createSession(sessions, "pinned", [...padding, lacked, derived as SessionEntry]);
+				// 0.9.89 installs its index over the entries; its backfill has not run.
+				await dropSessionIndex(mine);
+				await release0989.SqlSnapshotBlobStore.open(released);
+				let transactions = 0;
+				const controller = new AbortController();
+				const watched: SqliteDatabase = {
+					exec: (sql) => mine.exec(sql),
+					run: (sql, ...params) => mine.run(sql, ...params),
+					get: (sql, ...params) => mine.get(sql, ...params),
+					all: (sql, ...params) => mine.all(sql, ...params),
+					descriptor: mine.descriptor,
+					close: () => mine.close(),
+					transaction: async (callback, options) => {
+						if (++transactions === 1) {
+							// After this build read the states, before its first backfill transaction: the reference trigger goes
+							// missing and 0.9.87 opens the store, which installs its own again.
+							await mine.exec("DROP TRIGGER session_entries_snapshot_refs");
+							await release0987.SqlSnapshotBlobStore.open(older);
+						}
+						const result = await mine.transaction(callback, options);
+						// Atomic exits after this build's first backfill transaction.
+						controller.abort(new Error("Atomic exits"));
+						return result;
+					},
+				};
+				const store = await SqlSnapshotBlobStore.open(watched);
+				// Its collection stops there, whether its index was left for later or not.
+				await store.completeIndex({ signal: controller.signal }).catch(() => undefined);
+				assert.ok(transactions >= 1, "this build ran a backfill transaction");
+
+				await (await release0987.SqlSnapshotBlobStore.open(older)).completeIndex();
+				const deleted = await (await release0989.SqlSnapshotBlobStore.open(released)).collectGarbage({
+					graceSeconds: 0,
+				});
+
+				assert.equal(deleted.includes(bundle.hash), false, "0.9.89 collected the bundle the pin keeps");
+				assert.deepEqual(await store.getBlob(bundle.hash), bundle.data);
+			});
+		}
+
+		test(`on ${driver}, a reference trigger lost before this build's first backfill transaction over 0.9.89's index that 0.9.87 is indexing, then 0.9.89 opening, leave the bundle a pin keeps (#5558)`, async () => {
+			const mine = await connect(open);
+			const released = await connect(open);
+			const older = await connect(open);
+			const sessions = await SqlSessionStore.open(mine);
+			const bundle = textBlob("the bundle a partly restored worktree still needs");
+			await sessions.snapshotBlobs.putBlobs([bundle]);
+			const padding = chain("message", 1_200);
+			const lacked = snapshotEntry(
+				"/repo",
+				"S-lacked",
+				syntheticSnapshot("S-lacked", [], { bundle: bundle.hash }),
+				padding.at(-1)!.id,
+			);
+			const derived = { ...snapshotEntry("/repo", "S-derived", undefined, lacked.id), degradedFrom: "S-lacked" };
+			await createSession(sessions, "pinned", [...padding, lacked, derived as SessionEntry]);
+			// 0.9.89 installs its index; 0.9.87's collection takes it for its own and indexes one batch.
+			await dropSessionIndex(mine);
+			await release0989.SqlSnapshotBlobStore.open(released);
+			const olderStore = await release0987.SqlSnapshotBlobStore.open(older);
+			assert.equal(await releasedBatch(olderStore), false, "0.9.87's backfill has batches left");
+			let transactions = 0;
+			let olderDone = false;
+			const watched: SqliteDatabase = {
+				exec: (sql) => mine.exec(sql),
+				run: (sql, ...params) => mine.run(sql, ...params),
+				get: (sql, ...params) => mine.get(sql, ...params),
+				all: (sql, ...params) => mine.all(sql, ...params),
+				descriptor: mine.descriptor,
+				close: () => mine.close(),
+				transaction: async (callback, options) => {
+					// Before this build's first backfill transaction the reference trigger goes missing; after it, 0.9.89 opens
+					// the store and installs its index again.
+					if (++transactions === 1) await mine.exec("DROP TRIGGER session_entries_snapshot_refs");
+					const result = await mine.transaction(callback, options);
+					if (transactions === 1) await release0989.SqlSnapshotBlobStore.open(released);
+					// 0.9.87's backfill runs a batch between two of this build's.
+					else if (!olderDone) olderDone = await releasedBatch(olderStore);
+					return result;
+				},
+			};
+			const store = await SqlSnapshotBlobStore.open(watched);
+
+			await store.completeIndex();
+			while (!olderDone) olderDone = await releasedBatch(olderStore);
+			const deleted = await store.collectGarbage({ graceSeconds: 0 });
+
+			assert.equal(deleted.includes(bundle.hash), false, "this build collected the bundle the pin keeps");
+			const releasedDeleted = await (await release0989.SqlSnapshotBlobStore.open(released)).collectGarbage({
+				graceSeconds: 0,
+			});
+			assert.equal(releasedDeleted.includes(bundle.hash), false, "0.9.89 collected the bundle the pin keeps");
+		});
 	}
 });
