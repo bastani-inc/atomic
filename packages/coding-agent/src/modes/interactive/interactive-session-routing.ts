@@ -34,6 +34,7 @@ import type { MissingCwdForkSource } from "./interactive-mode-surface.ts";
 import { showQueueRestoreFailure } from "./interactive-queueing.ts";
 import { clearChatForRerender } from "./interactive-render-chat.ts";
 import { onPreliminaryCatalogWithdrawn } from "./interactive-startup-trust.ts";
+import { setSummaryCancellable } from "./interactive-summarization-retry-events.ts";
 import { resolveResumeTarget, workflowResumeSession } from "./resume-catalog.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
@@ -262,6 +263,7 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 					this.defaultEditor.onEscape = () => {
 						this.session.abortBranchSummary();
 					};
+					setSummaryCancellable(this, true);
 					this.chatContainer.addChild(new Spacer(1));
 					summaryLoader = new Loader(
 						this.ui,
@@ -307,6 +309,7 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 						this.statusContainer.clear();
 						mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
 					}
+					setSummaryCancellable(this, false);
 					this.defaultEditor.onEscape = originalOnEscape;
 				}
 			},
