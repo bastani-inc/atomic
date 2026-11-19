@@ -13,6 +13,7 @@ import {
 } from "../../packages/coding-agent/src/index.js";
 import { releasedChildWakeDecided } from "../../packages/subagents/src/runs/foreground/released-child-resume.js";
 import { isSubagentChildRecord } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
+import { collectGarbage } from "../helpers/collect-garbage.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** A real stage session loads the editable subagents extension twice. */
@@ -92,28 +93,27 @@ test.each(["commit", "rollback", "preparing", "refused", "refused-rollback"] as 
 		const gate = Promise.withResolvers<void>();
 		const reached = Promise.withResolvers<void>();
 		const finish = Promise.withResolvers<void>();
-		const refused = Promise.withResolvers<unknown>();
+		const refused = Promise.withResolvers<string>();
+		let attemptedRunner: WeakRef<object> | undefined;
 		const tasks: string[] = [];
 		const start = host.startAgentTask.bind(host);
 		vi.spyOn(host, "startAgentTask").mockImplementation(async (intent, operation, _runner, schedule) => {
 			tasks.push(intent.task);
-			const admit = () =>
-				start(
-					intent,
-					operation,
-					() => ({
-						result: finish.promise.then(() => ({ kind: "cancelled", cause: "user" })),
-						cleanup: finish.promise.then(() => ({ kind: "reaped" })),
-					}),
-					schedule,
-				);
+			const admit = () => {
+				const runner: Parameters<typeof start>[2] = () => ({
+					result: finish.promise.then(() => ({ kind: "cancelled", cause: "user" })),
+					cleanup: finish.promise.then(() => ({ kind: "reaped" })),
+				});
+				attemptedRunner = new WeakRef(runner);
+				return start(intent, operation, runner, schedule);
+			};
 			const admitted = reload === "preparing" ? await admit() : undefined;
 			reached.resolve();
 			await gate.promise;
 			return (
 				admitted ??
 				admit().catch((error: unknown) => {
-					refused.resolve(error);
+					refused.resolve(String(error));
 					throw error;
 				})
 			);
@@ -165,7 +165,10 @@ test.each(["commit", "rollback", "preparing", "refused", "refused-rollback"] as 
 					failOnExtensionErrors: true,
 					beforeSessionStart: async () => {
 						gate.resolve();
-						assert.match(String(await refused.promise), /Task owner is closed/);
+						assert.match(await refused.promise, /Task owner is closed/);
+						assert.ok(attemptedRunner);
+						await collectGarbage(5);
+						assert.equal(attemptedRunner.deref(), undefined, "the waiting wake does not need its refused runner");
 						if (reload === "refused-rollback") throw new Error("reject candidate before session_start");
 					},
 				});

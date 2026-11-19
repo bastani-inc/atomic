@@ -259,10 +259,13 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				const error = new Error("Task owner is closed");
 				const reload = stageAdmission && currentSessionReload(this);
 				if (!reload) throw error;
-				// No task has been admitted. A preserving reload (including rollback) may reopen this very host.
-				const reopened = () => !this._disposed && stageAdmission.isOpen() && !stageAdmission.isParked();
+				// Ordinary refusals do not wait. A wake can join this reload after its runner has unwound.
 				throw Object.assign(error, {
-					[Symbol.for("atomic.tasks/stage-reload@1")]: reload.then(reopened, reopened),
+					[Symbol.for("atomic.tasks/wait-for-stage-reload@1")]: async (wakeId: string) => {
+						await reload.waitForWake(wakeId);
+						if (this._disposed || !stageAdmission.isOpen() || stageAdmission.isParked())
+							throw new Error("Task owner is closed");
+					},
 				});
 			}
 			if (isSubagentChildSession(this)) throw new Error("Subagent delegation is not available inside a subagent");
