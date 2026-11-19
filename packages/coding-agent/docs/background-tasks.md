@@ -171,7 +171,7 @@ Completion adds one notice line to the owning chat without depending on a model 
  ◌ worker is waiting on bash (toolu_01) · 16m 16s
 ```
 
-The main chat, a workflow stage's chat and a subagent's view show the same line. When you reopen an older session, a notice that recorded a release shows `◌`. Atomic 0.9.86 and 0.9.87 recorded releases as pauses, so those notices still show `⏸`. If only the title survives, Atomic shows `◼` when the title matches a stopped subagent whose task description starts with pause or release wording. A timeout duration belongs to a shell, not a subagent, so that wording in an agent's name does not turn its wait into a stop. Notices with a saved body keep their previous interpretation.
+The main chat, a workflow stage's chat and a subagent's view show the same line. When you reopen an older session, a notice that recorded a release shows `◌`. Atomic 0.9.86 and 0.9.87 recorded releases as pauses, so those notices still show `⏸`. If the result and line are missing, Atomic can still show `◼` when a separately saved agent name identifies a stop in the title. For example, `worker killed (non-resumable): paused · awaiting resume: check the queue` identifies a stop if the saved name is `worker`, but not if it is `worker killed (non-resumable):`. This applies to notices with an empty preview and an empty or title-only string for content. Earlier notices that lack a separate name, and notices with a body or preview, keep their previous reading.
 
 The parent model also receives the result context. Delivery retries do not relaunch the child. Workflow completions stay in their owning stage chat, not the main conversation.
 

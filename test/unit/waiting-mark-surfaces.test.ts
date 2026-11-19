@@ -5,7 +5,6 @@ import { beforeAll, test, vi } from "vitest";
 import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
 import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import {
 	TASK_COMPLETION_MESSAGE_TYPE,
 	type TaskCompletionEnvelope,
@@ -41,7 +40,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import savedNotices from "../fixtures/saved-subagent-notices.json" with { type: "json" };
-import { withNodeSqliteDatabase } from "../helpers/storage-database.js";
+import { withDiskSessions } from "../helpers/on-disk-session.js";
 import { taskRecord } from "../helpers/task-record.js";
 import { setupRun } from "./stage-chat-view-helpers.js";
 
@@ -201,7 +200,26 @@ test.each([
 	assert.equal(stripVTControlCharacters(line).trim(), expected);
 });
 
-test("a stopped subagent's title-only notice does not take its outcome from the task description (#5690)", () => {
+test.each(["sweep_worker ops", "sweep_worker docs", "sweep_worker:qa", "sweep_worker:ui"])(
+	"reopened chats keep the complete identity of %s, with and without a separately saved name (#5690)",
+	async (name) => {
+		const title = `Subagent ${name} killed (non-resumable): paused · awaiting resume: A`;
+		for (const fields of [savedNotices.quit087, savedNotices.stopped088]) {
+			await expectReopenedNotice(
+				title,
+				{ notification: { ...fields, title } },
+				`⏸ ${name} killed (non-resumable): paused · awaiting resume`,
+			);
+		}
+		await expectReopenedNotice(
+			title,
+			{ notification: { ...savedNotices.stopped088, title, agentName: name } },
+			`◼ ${name} stopped`,
+		);
+	},
+);
+
+test("a separately saved name identifies a stopped child even when its task starts with pause or wait wording (#5690)", async () => {
 	for (const stop of ["killed (non-resumable)", "timed out", "stopped (session closed)", "stopped"]) {
 		for (const description of [
 			"paused · awaiting resume: check the queue",
@@ -209,10 +227,11 @@ test("a stopped subagent's title-only notice does not take its outcome from the 
 			"released while waiting on bash (queue).",
 		]) {
 			const title = `Subagent worker ${stop}: ${description}`;
-			const saved = completionNoticeFromDetails({ notification: { ...savedNotices.stopped088, title } });
-			assert.ok(saved);
-			const [line] = new TaskCompletionMessage(saved, false).render(120);
-			assert.equal(stripVTControlCharacters(line!).trim(), "◼ worker stopped", title);
+			await expectReopenedNotice(
+				title,
+				{ notification: { ...savedNotices.stopped088, agentName: "worker", title } },
+				"◼ worker stopped",
+			);
 		}
 	}
 	for (const [name, agentName] of [
@@ -231,6 +250,11 @@ test("a stopped subagent's title-only notice does not take its outcome from the 
 });
 
 test.each([
+	...["triage timed out:", "triage stopped (session closed):", "worker killed (non-resumable):"].map((name) => ({
+		notification: savedNotices.pauseOrRelease086,
+		title: `Subagent ${name} paused · awaiting resume: check the queue`,
+		expected: `⏸ ${name} paused · awaiting resume`,
+	})),
 	{
 		title: "Subagent triage timed out after 1 second: released while waiting on bash (ci): Review docs",
 		expected: "◌ triage timed out after 1 second: is waiting on bash (ci)",
@@ -257,11 +281,12 @@ test.each([
 		agentName: "triage\tstopped:",
 		expected: "⏸ triage stopped: paused · awaiting resume",
 	},
-])(
-	"main and detached stage chats reopen '$expected' from the saved title (#5690)",
-	({ title, expected, notification: fields = savedNotices.pause088, ...identity }) =>
-		expectReopenedNotice(title, { notification: { ...fields, ...identity, title } }, expected),
-);
+])("main and detached stage chats reopen '$expected' from the saved title (#5690)", (entry) => {
+	const { title, expected } = entry;
+	const fields = ("notification" in entry ? entry.notification : undefined) ?? savedNotices.pause088;
+	const agentName = "agentName" in entry ? entry.agentName : undefined;
+	return expectReopenedNotice(title, { notification: { ...fields, agentName, title } }, expected);
+});
 
 const { detailsWithoutResult, releasedBody, stoppedBody } = savedNotices.releaseOrStop088;
 const waitTitle = detailsWithoutResult.notification.title;
@@ -304,58 +329,130 @@ test.each([
 	),
 );
 
-test("a saved title split across text blocks is still title-only in both reopened chats (#5690)", () =>
+test("the visible preview preserves a named release even when the message body is just its title (#5690)", () => {
+	const preview = "Checkpoint B remains pending";
+	return expectReopenedNotice(
+		waitTitle,
+		{ ...detailsWithoutResult, notification: { ...detailsWithoutResult.notification, preview } },
+		waitRow,
+		preview,
+	);
+});
+
+test("even a separately saved name does not override a surviving body or preview (#5690)", async () => {
+	const title = "Subagent triage killed (non-resumable): paused · awaiting resume: A";
+	const fields = { ...savedNotices.stopped088, agentName: "triage", title };
+	const original = "⏸ triage killed (non-resumable): paused · awaiting resume";
+	await expectReopenedNotice(`${title}\nRetained text`, { notification: fields }, original);
+	await expectReopenedNotice([{ type: "text", text: title }], { notification: fields }, original);
+	await expectReopenedNotice(
+		title,
+		{ notification: { ...fields, preview: "Checkpoint B" } },
+		original,
+		"Checkpoint B",
+	);
+});
+
+test("a saved completion survives a sparse custom body on reopen and refresh (#5690)", () => {
+	const result: TaskResult = { kind: "completed", output: agentTask(RELEASED).output };
+	const task = agentTask(result);
+	const notification = taskCompletionNotice(envelope(task, result), task);
+	return expectReopenedNotice(Array(1), { result, notification }, "● worker finished · 16m 16s");
+});
+
+test("opening and refreshing a saved pause does not scan its hidden text blocks (#5690)", async () => {
+	const notification = savedNotices.pause089;
+	const body = Array.from({ length: 2048 }, () => ({ type: "text" as const, text: "" }));
+	body.push({ type: "text", text: `${notification.title}\nRetained body` });
+	const startsWith = String.prototype.startsWith;
+	let checks = 0;
+	String.prototype.startsWith = function (this: string, prefix: string, offset?: number) {
+		if (this === notification.title && prefix === "") checks++;
+		return startsWith.call(this, prefix, offset);
+	};
+	try {
+		await expectReopenedNotice(
+			body,
+			{ notification, result: { kind: "cancelled", cause: "pause" } },
+			"⏸ worker paused · awaiting resume · 16m 16s",
+		);
+	} finally {
+		String.prototype.startsWith = startsWith;
+	}
+	assert.equal(checks, 0);
+});
+
+test("a saved title split across blocks cannot disambiguate a stop from a release by triage stopped: (#5690)", () =>
 	expectReopenedNotice(
 		[
 			{ type: "text", text: waitTitle.slice(0, 9) },
 			{ type: "text", text: waitTitle.slice(9) },
 		],
 		detailsWithoutResult,
-		"◼ triage stopped",
+		waitRow,
 	));
 
-async function expectReopenedNotice(body: CustomMessage["content"], details: unknown, expected: string): Promise<void> {
-	await withNodeSqliteDatabase(async (db) => {
-		const writer = await SqlSessionStore.open(db.database);
-		const session = await SessionManager.create(writer, process.cwd());
-		await session.appendCustomMessageEntry(TASK_COMPLETION_MESSAGE_TYPE, body, true, details);
-		const sessionId = session.getSessionId();
-		await writer.close();
+async function expectReopenedNotice(
+	body: CustomMessage["content"],
+	details: unknown,
+	expected: string,
+	preview?: string,
+): Promise<void> {
+	for (const backend of ["sqlite", "jsonl"] as const)
+		await withDiskSessions(backend, async (open) => {
+			const writer = await open();
+			const session = await SessionManager.create(writer.store, process.cwd());
+			await session.appendCustomMessageEntry(TASK_COMPLETION_MESSAGE_TYPE, body, true, details);
+			const sessionId = session.getSessionId();
+			await writer.close();
 
-		const reader = await SqlSessionStore.open(await db.reopen());
-		const main = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
-		const store = createStore();
-		setupRun(store, "run-1", "stage-a", "completed");
-		store.recordStageSession("run-1", "stage-a", { sessionId });
-		const stage = new StageChatView({
-			store,
-			sessionStore: reader,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageId: "stage-a",
-			workflowName: "review",
-			onDetach() {},
-			onClose() {},
-		});
-		try {
-			assert.equal(await main.loadSession(reader, sessionId), true);
-			const notice = (rows: string[]) =>
-				rows.map((row) => stripVTControlCharacters(row).trim()).find((row) => row.includes("triage"));
-			const stageRow = await vi.waitFor(() => {
-				const row = notice(stage.render(120));
-				assert.ok(row, "stage loads its archived notice");
-				return row;
+			const { store: reader } = await open();
+			const main = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
+			const store = createStore();
+			setupRun(store, "run-1", "stage-a", "completed");
+			store.recordStageSession("run-1", "stage-a", { sessionId });
+			const stage = new StageChatView({
+				store,
+				sessionStore: reader,
+				graphTheme: deriveGraphTheme({}),
+				runId: "run-1",
+				stageId: "stage-a",
+				workflowName: "review",
+				onDetach() {},
+				onClose() {},
 			});
-			assert.deepEqual(
-				{ main: notice(main.renderBody(120, 25)), stage: stageRow },
-				{ main: expected, stage: expected },
-			);
-		} finally {
-			stage.dispose();
-			main.dispose();
-			await reader.close();
-		}
-	});
+			try {
+				assert.equal(await main.loadSession(reader, sessionId), true);
+				const notice = (rows: string[]) =>
+					rows.map((row) => stripVTControlCharacters(row).trim()).find((row) => /^[◼⏸◌●!] /u.test(row));
+				const stageRow = await vi.waitFor(() => {
+					const row = notice(stage.render(120));
+					assert.ok(row, "stage loads its archived notice");
+					return row;
+				});
+				assert.deepEqual(
+					{ main: notice(main.renderBody(120, 25)), stage: stageRow },
+					{ main: expected, stage: expected },
+					backend,
+				);
+				if (preview)
+					for (const rows of [main.renderBody(120, 25), stage.render(120)])
+						assert.ok(
+							rows.some((row) => stripVTControlCharacters(row).includes(preview)),
+							preview,
+						);
+				main.toolOutputToggled();
+				stage.invalidate();
+				assert.deepEqual(
+					[notice(main.renderBody(120, 25)), notice(stage.render(120))],
+					[expected, expected],
+					backend,
+				);
+			} finally {
+				stage.dispose();
+				main.dispose();
+			}
+		});
 }
 
 test("the saved result distinguishes a release from punctuation and release wording in a name (#5563)", () => {

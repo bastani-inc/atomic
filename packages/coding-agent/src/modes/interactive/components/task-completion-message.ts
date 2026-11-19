@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import { isProxy } from "node:util/types";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
@@ -32,7 +33,9 @@ function previewRow(row: string): string {
 }
 
 const NOTICE_LINE_STATUSES = new Set(["success", "failure", "stopped", "warning", "paused", "waiting"]);
-const parsedNotices = new WeakMap<object, { titleOnly: boolean; notice: TaskCompletionNotice }>();
+const parsedNotices = new WeakMap<object, TaskCompletionNotice>();
+// A title-only card can have a different header, but it still owns the same expanded child transcript.
+const titleOnlyStopNames = new WeakMap<TaskCompletionNotice, string>();
 
 /**
  * A line's status as saved. Earlier versions saved the line of a subagent released while it waits as paused; its
@@ -57,22 +60,10 @@ function noticeLineFrom(value: unknown): TaskNoticeLine | undefined {
 	};
 }
 
-/** Empty content or an exact copy of the title carries no separate body, even if split across text blocks. */
-function isTitleOnly(content: CustomMessage["content"] | undefined, title: string): boolean {
-	if (typeof content === "string") return content === "" || content === title;
-	let length = 0;
-	for (const block of content ?? []) {
-		if (block.type !== "text" || !title.startsWith(block.text, length)) return false;
-		length += block.text.length;
-	}
-	return length === 0 || length === title.length;
-}
-
-export function completionNoticeFromDetails(
-	details: unknown,
-	content?: CustomMessage["content"],
-): TaskCompletionNotice | undefined {
+export function completionNoticeFromDetails(details: unknown): TaskCompletionNotice | undefined {
 	if (!details || typeof details !== "object" || !("notification" in details)) return undefined;
+	const existing = parsedNotices.get(details);
+	if (existing !== undefined) return existing;
 	const notice = details.notification;
 	if (!notice || typeof notice !== "object") return undefined;
 	if (
@@ -86,9 +77,6 @@ export function completionNoticeFromDetails(
 	)
 		return undefined;
 	if (notice.status !== "completed" && notice.status !== "failed" && notice.status !== "cancelled") return undefined;
-	const titleOnly = isTitleOnly(content, notice.title);
-	const existing = parsedNotices.get(details);
-	if (existing?.titleOnly === titleOnly) return existing.notice;
 	const line = "line" in notice ? noticeLineFrom(notice.line) : undefined;
 	const parsed: TaskCompletionNotice = {
 		title: notice.title,
@@ -105,13 +93,17 @@ export function completionNoticeFromDetails(
 	};
 	if (!line && parsed.status === "cancelled" && parsed.taskKind !== "command") {
 		const result = "result" in details ? details.result : undefined;
-		const stop = legacyStop(parsed.title, result, parsed.agentName, titleOnly);
+		const stop = legacyStop(parsed.title, result);
 		if (stop) {
+			if (result === undefined && parsed.preview === "" && parsed.agentName && stop.agentName) {
+				const name = witnessedStopName(parsed.title, parsed.agentName, stop.agentName);
+				if (name) titleOnlyStopNames.set(parsed, name);
+			}
 			parsed.line = stop.line;
 			if (stop.agentName !== undefined) parsed.agentName = stop.agentName;
 		}
 	}
-	parsedNotices.set(details, { titleOnly, notice: parsed });
+	parsedNotices.set(details, parsed);
 	return parsed;
 }
 
@@ -162,21 +154,19 @@ const PAUSE_WORDING = "paused · awaiting resume";
 const QUIT_WORDING = "quit · paused, awaiting resume";
 // Named agents could time out, but only shells recorded a timeout duration or a restart.
 const AGENT_STOP_SUFFIX =
-	/ (?:killed \(non-resumable\)|timed out|stopped(?: \((?:task owner closed|session closed|workflow stage closed|Atomic shut down)\))?):$/u;
+	/^ (?:killed \(non-resumable\)|timed out|stopped(?: \((?:task owner closed|session closed|workflow stage closed|Atomic shut down)\))?):$/u;
 
-/** A named agent's stop followed by the colon introducing its task, in the legacy writer's spelling. */
-function stoppedAgentName(label: string): string | undefined {
-	const stop = AGENT_STOP_SUFFIX.exec(label);
-	return stop ? label.slice(0, stop.index) : undefined;
+/** A name can itself end in `killed (non-resumable):`. Only a separately saved name fixes the boundary. */
+function witnessedStopName(title: string, savedName: string, label: string): string | undefined {
+	if (!label.endsWith(":") || !AGENT_STOP_SUFFIX.test(label.slice(savedName.length))) return undefined;
+	const name = label.slice(0, savedName.length);
+	if (name !== completionTitleText(savedName)) return undefined;
+	const description = title.slice("Subagent ".length + label.length + 1);
+	return description === completionTitleDescription(description) ? name.trim() : undefined;
 }
 
 /** Before notices had a line, the title held the outcome, followed by `: <task description>` or a final period. */
-function legacyStopWording(
-	title: string,
-	result: unknown,
-	agentName: string | undefined,
-	titleOnly: boolean,
-): string | undefined {
+function legacyStopWording(title: string, result: unknown): string | undefined {
 	if (result !== undefined) {
 		const saved = result as { kind?: string; cause?: string; released?: { waitingOn?: unknown } } | null;
 		if (saved?.kind !== "cancelled") return undefined;
@@ -193,34 +183,19 @@ function legacyStopWording(
 		}
 		return saved.cause === "pause" ? PAUSE_WORDING : saved.cause === "quit" ? QUIT_WORDING : undefined;
 	}
+	// Only the notification survived. Never read a quoted notice in the task description as this task's outcome.
 	const prefix =
 		/^(?:Subagent (.+?)|Background task) (released while waiting on |(?:paused · awaiting resume|quit · paused, awaiting resume)(?=: |\.$))/su.exec(
 			title,
 		);
 	if (!prefix || prefix[1]?.includes(": ")) return undefined;
-	// Only reinterpret a title-only notice. With any separate body, keep the legacy reading.
-	if (titleOnly && prefix[1]) {
-		const name = stoppedAgentName(prefix[1]);
-		const description = title.slice("Subagent ".length + prefix[1].length + 1);
-		if (
-			name !== undefined &&
-			name === completionTitleText(agentName ?? name) &&
-			description === completionTitleDescription(description)
-		)
-			return undefined;
-	}
 	if (prefix[2] !== RELEASE_WORDING) return prefix[2];
 	const calls = /^(a tool call|.+?\))(?:: |\.$)/su.exec(title.slice(prefix[0].length))?.[1];
 	return calls ? RELEASE_WORDING + calls : undefined;
 }
 
-function legacyStop(
-	title: string,
-	result: unknown,
-	agentName: string | undefined,
-	titleOnly: boolean,
-): { line: TaskNoticeLine; agentName?: string } | undefined {
-	const wording = legacyStopWording(title, result, agentName, titleOnly);
+function legacyStop(title: string, result: unknown): { line: TaskNoticeLine; agentName?: string } | undefined {
+	const wording = legacyStopWording(title, result);
 	if (wording === undefined) return undefined;
 	// The space after "Subagent" introduces its name, even if the name itself starts with the recorded outcome.
 	const end = title.indexOf(` ${wording}: `, title.startsWith("Subagent ") ? "Subagent ".length : 0);
@@ -676,6 +651,25 @@ export class TaskCompletionMessage implements Component {
 	private readonly pendingByTask = new Map<TaskId, Promise<void>>();
 	private readonly previewRows = new Map<TaskCompletionNotice, readonly string[]>();
 	private readonly expandedPreviews = new Map<TaskCompletionNotice, ToolBlockMarkdown>();
+	private stoppedName?: string;
+
+	static fromMessage(
+		message: CustomMessage,
+		expanded: boolean,
+		options?: TaskCompletionMessageOptions,
+	): TaskCompletionMessage | undefined {
+		const notice = completionNoticeFromDetails(message.details);
+		if (!notice) return undefined;
+		const card = new TaskCompletionMessage(notice, expanded, options);
+		const name = titleOnlyStopNames.get(notice);
+		if (name !== undefined && !isProxy(message)) {
+			// A plain saved string is positive evidence. Don't invoke an extension getter or scan hidden blocks.
+			const body = Object.getOwnPropertyDescriptor(message, "content");
+			if (body && Object.hasOwn(body, "value") && (body.value === "" || body.value === notice.title))
+				card.stoppedName = name;
+		}
+		return card;
+	}
 
 	constructor(
 		notices: TaskCompletionNotice | readonly TaskCompletionNotice[],
@@ -790,7 +784,9 @@ export class TaskCompletionMessage implements Component {
 			const tail = preview.split("\n").slice(-20).join("\n");
 			return new NoticeLine({ ...spec, ...(tail ? { detail: tail } : {}) }, this.expanded).render(width);
 		}
-		const [line] = new NoticeLine(spec).render(width);
+		const [line] = new NoticeLine(
+			this.stoppedName === undefined ? spec : { status: "stopped", label: this.stoppedName, outcome: "stopped" },
+		).render(width);
 		const taskId = notice.taskId as TaskId;
 		const contentWidth = Math.max(1, width - 6);
 		if (this.expanded) {
