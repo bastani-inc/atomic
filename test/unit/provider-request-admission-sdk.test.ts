@@ -659,17 +659,21 @@ test("a caller deadline in the same millisecond as the slot wins every time on a
 	const outcomes: string[] = [];
 	for (let attempt = 0; attempt < attempts; attempt++) {
 		configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: slotMs });
+		const slotOpensAt = Date.now() + slotMs;
 		assert.equal(tryAdmitProviderRequest(model.provider), 0);
-		const createdAt = Date.now();
-		const deadline = AbortSignal.timeout(slotMs);
-		// Preparing the request takes a while in the same task, as a large request body does, so the slot's wake-up
-		// and the deadline are separate timers that come due in the same millisecond.
-		keepProcessBusyUntil(createdAt + slotMs / 2);
-		const sent = admitted.options.fetch!("https://example.invalid/v1/chat", { signal: deadline }).then(
+		const caller = new AbortController();
+		const sent = admitted.options.fetch!("https://example.invalid/v1/chat", { signal: caller.signal }).then(
 			() => "dispatched",
 			(error: unknown) => (error as Error).name,
 		);
-		keepProcessBusyUntil(createdAt + slotMs + 10);
+		// The request is queued. The caller sets its deadline a little later for the millisecond the slot opens, so the
+		// slot's wake-up and the deadline are separate timers that come due together.
+		keepProcessBusyUntil(slotOpensAt - slotMs / 2);
+		const deadlineSetAt = Date.now();
+		const deadline = AbortSignal.timeout(Math.max(1, slotOpensAt - deadlineSetAt));
+		deadline.addEventListener("abort", () => caller.abort(deadline.reason), { once: true });
+		// The process stays busy until both are due, so both come due in the same timer pass.
+		keepProcessBusyUntil(Math.max(slotOpensAt, deadlineSetAt + 1) + 10);
 		outcomes.push(await sent);
 		configureProviderRequestBudget(model.provider, undefined);
 	}
