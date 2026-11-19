@@ -337,7 +337,7 @@ The `kill` action was removed, and `interrupt` before it. Calls with either are 
 The subagent action "kill" was removed. Use { action: "quit", id } to stop a child gracefully; it stays resumable with { action: "resume", id, message? }.
 ```
 
-Each background launch block follows the child's latest state after `/resume` or `atomic --session <id>`. It distinguishes running, done, failed and stopped work, and identifies paused or interrupted children that can resume. A resumed child updates its original launch block; the control call confirms the action. Expand a block to inspect its retained prompt, tool calls and result. Earlier `pause`, `resume` and `quit` calls keep their own results, and rejected calls show their error.
+Each background launch block follows the child's latest state after `/resume` or `atomic --session <id>`. It distinguishes running, done, failed and stopped work, and identifies paused or interrupted children that can resume. A resumed child updates its original launch block; the control call confirms the action. Expand a block to inspect its retained prompt, tool calls and result. A collapsed block holds only the child's latest state. Only a block you expand reads from the child's saved session, and only the fields it shows: the prompt, the final answer, and each tool call's arguments and result. It does not load the rest of the child's conversation, and it releases those fields when you collapse the block, the block leaves the chat, or you switch or close the session. Earlier `pause`, `resume` and `quit` calls keep their own results, and rejected calls show their error.
 
 A parallel launch keeps a separate `Agent(...)` block for every child, in launch order. A child that could not start shows its failure and short reason; expand for the full text. Other children continue and report their own results. The call itself fails only when no child started.
 
@@ -388,7 +388,12 @@ Children inherit the launching session’s Intercom group across single, paralle
 Subagents can run with fresh or forked context:
 
 - `context: "fresh"` starts a separate in-process child session with only the task and selected agent context.
-- `context: "fork"` creates a branched child session at the parent's last settled entry. After a clear or compaction, the child normally copies only its retained context and settings, the tool changes its branch recorded, and the entries extensions saved on that branch with `pi.appendEntry`. To read earlier turns, follow the boundary's history link or open the parent session. A store without a fork-window reader, or a child whose context refers to a saved tool output from before the boundary, keeps the full branch as before. If the parent session cannot be forked, the launch fails; it does not silently downgrade to fresh context.
+- `context: "fork"` creates a real branched child session from the parent's conversation. It fails fast if the parent session cannot be forked; it does not silently downgrade to fresh context.
+
+A new fork does not own the parent's subagents, pending deliveries or task notices. Its chat does not show the parent's subagent and Intercom cards. If a card contributed text or an image to the model's input, the child still receives that content as context without replaying the delivery. Reopening the **same** saved child is not a new fork.
+
+Every child of a launch forks at the same settled entry, even if it waits for a slot while the parent keeps working. A turn with unanswered tool calls is still in progress and stays with the parent. The child inherits the context at the launch entry, including the model, thinking settings, tool changes and entries extensions saved on its branch with `pi.appendEntry` before the most recent clear. System messages recording earlier tool changes remain available for restoring its tool selection. Earlier conversation turns stay in the parent's saved history.
+To read earlier turns, follow the boundary's history link or open the parent session. A saved tool output named by the retained context is also copied to the child; unrelated retired turns are not.
 
 For adversarial review or research, prefer fresh context so the specialist inspects the repository directly. Use forked context when a writer needs the parent conversation history in a separate branch.
 

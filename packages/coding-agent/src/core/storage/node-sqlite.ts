@@ -1592,6 +1592,40 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		return this.enqueueStatement(() => this.executor.all<T>(sql, ...bound));
 	}
 
+	/** Idle-only housekeeping: do not join a batch, wait behind an operation on this handle or another handle's
+	 * transaction, or get in front of writers already waiting on another process. */
+	async tryMaintenance(callback: (tx: SqliteExecutor) => Promise<void>): Promise<boolean> {
+		const position = this.enqueued;
+		let idle = false;
+		void this.tail.then(() => {
+			idle = true;
+		});
+		await Promise.resolve();
+		if (!idle || this.enqueued !== position || this.closing) return false;
+		return this.enqueueStatement(async () => {
+			const key = this.transactionIdentity;
+			if (typeof key === "string" ? gates.files.has(key) : gates.connections.has(key)) return false;
+			return gateTransaction(key, async () => {
+				if (this.writeQueue && (await this.writeQueue.contendedOffLoop())) return false;
+				const start = performance.now();
+				await this.holderRecord?.trying();
+				try {
+					if (this.attemptBegin() !== undefined) {
+						await this.holderRecord?.free();
+						return false;
+					}
+				} catch (error) {
+					await this.holderRecord?.free();
+					throw error;
+				}
+				this.acquired(start);
+				return new Promise<boolean>((resolve, reject) => {
+					void this.commitAlone({ callback, resolve: () => resolve(true), reject }).catch(reject);
+				});
+			});
+		});
+	}
+
 	/**
 	 * Group commit: transactions queued while earlier work holds the connection join one `BEGIN IMMEDIATE … COMMIT`,
 	 * each inside its own savepoint and in the order they were requested. A transaction that throws rolls back only

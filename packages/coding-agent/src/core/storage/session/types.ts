@@ -33,6 +33,8 @@ export interface SessionRecordHeader {
 	readonly createdAt: string;
 	readonly cwd: string;
 	readonly parentSessionId?: string;
+	/** The parent ID refers to the source store, not necessarily a session that can be opened in this store. */
+	readonly parentInOtherStore?: true;
 	readonly internal?: true;
 	readonly workflow?: SessionWorkflowMetadata;
 }
@@ -143,6 +145,22 @@ export interface SessionBranchSpan {
 }
 
 /** Body-free navigation record. The original entry and any long label stay at their sequence in the store. */
+export interface ChildDisplayLaunch {
+	readonly launchLeafId?: string | null;
+	readonly launchLeafSeq?: number;
+	readonly forked?: boolean;
+}
+export interface ChildDisplayCut {
+	readonly epoch: string;
+	readonly through: number;
+	readonly leaf: number;
+	readonly from: number;
+	readonly earlier: readonly number[];
+	readonly model?: true;
+	readonly boundary?: number;
+	readonly covered?: number;
+}
+
 export interface SessionTreeOutlineEntry {
 	readonly seq: number;
 	readonly id: string;
@@ -244,6 +262,14 @@ export interface SessionRecoveryState {
 	readonly deliveryOpIds?: readonly string[];
 }
 
+export interface SessionForkWindow {
+	readonly header: SessionRecordHeader;
+	readonly entries: SessionEntry[];
+	readonly labels: LabelEntry[];
+	readonly lastSeq: number;
+	readonly epoch?: string;
+}
+
 export interface SessionChildAliases {
 	readonly taskIds: readonly string[];
 	readonly releasedTaskIds: readonly string[];
@@ -255,13 +281,6 @@ export interface SessionChildReadCut {
 	readonly lastSeq: number;
 	readonly seqs: readonly number[];
 	readonly aliases: Readonly<Record<string, SessionChildAliases>>;
-}
-export interface SessionForkWindow {
-	readonly header: SessionRecordHeader;
-	readonly entries: SessionEntry[];
-	readonly labels: LabelEntry[];
-	readonly lastSeq: number;
-	readonly epoch?: string;
 }
 
 /** Where a session's `worktree_snapshot` entries are, as the store's index of its history locates them (#5554). */
@@ -433,8 +452,47 @@ export interface SessionSearchIndex {
 	): Promise<readonly number[] | undefined>;
 }
 
+export interface SessionForkRow {
+	/** Metadata for the listing and the resume index; the exact bytes come from the reference when present. */
+	readonly entry: SessionEntry;
+	readonly reference?: OversizedSessionEntry;
+	readonly edits?: Readonly<Record<string, string | null>>;
+	readonly extraToolCalls?: number;
+	readonly inlineSnapshot?: true;
+}
+export interface SessionForkStream {
+	/** A whole saved session in append order, with sibling branches and labels unchanged. */
+	readonly kind?: "complete-session";
+	/** The reader is bound to the writing transaction when both sides use the same SQL connection. */
+	read(
+		reader: SessionStore,
+		hasWritten: (id: string) => Promise<boolean>,
+		inlineSnapshot?: (ref: OversizedSessionEntry) => Promise<SessionEntry | undefined>,
+	): AsyncIterable<SessionForkRow>;
+}
+export type SessionForkSeed = readonly SessionEntry[] | SessionForkStream;
+
+export interface ForkArchiveSource {
+	readonly store: SessionStore;
+	readonly sessionId: string;
+	readonly epoch?: string;
+	readonly hashes: readonly string[];
+	/** Source positions of archived receipts. The entries supplied to createFork contain only their identifying fields. */
+	readonly receipts: ReadonlyMap<string, OversizedSessionEntry>;
+}
+
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
+	/** Resolve an expanded child card's saved branch and launch boundary without opening its runtime. */
+	readChildDisplayCut?(sessionId: string, launch: ChildDisplayLaunch): Promise<ChildDisplayCut>;
+	/** Create a new child, substituting the original encoded receipt bytes at the marked entry positions.
+	 * Return undefined, without publishing anything, when this source or destination is not supported. */
+	createFork?(
+		header: SessionRecordHeader,
+		entries: SessionForkSeed,
+		source: ForkArchiveSource,
+		location?: string,
+	): Promise<(SessionWriteResult & { readonly remainingBlobs?: readonly string[] }) | undefined>;
 	/** Optional reader-only chat data, owned by a particular incarnation of a session, outside its conversation tree. */
 	readonly chatRecords?: import("./chat-records.js").SessionChatRecords;
 	/**
@@ -520,14 +578,18 @@ export interface SessionStore {
 		options?: { readonly limit?: number; readonly backward?: boolean },
 	): Promise<SessionHistoryPage>;
 	/** A local navigation from a stale manager may select a branch as of its original sequence watermark. */
+	/** Read the branch a forked child needs at its captured entry, with the current labels for copied targets. */
+	readForkWindow?(
+		sessionId: string,
+		entryId: string,
+		options?: { readonly archivedReceipts: true },
+	): Promise<SessionForkWindow | undefined>;
 	readResumeAt?(
 		sessionId: string,
 		leafId: string,
 		throughSeq: number,
 		options?: { deferChildRecords: true },
 	): Promise<SessionResume>;
-	/** Read the branch a forked child needs at its captured entry, with the current labels for copied targets. */
-	readForkWindow?(sessionId: string, entryId: string): Promise<SessionForkWindow | undefined>;
 	findEntrySeq?(sessionId: string, entryId: string): Promise<number | undefined>;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;

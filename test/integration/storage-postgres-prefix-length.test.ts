@@ -8,6 +8,7 @@ import {
 	POSTGRES_MAX_STORAGE_PREFIX_LENGTH,
 	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
 } from "../../packages/coding-agent/src/core/storage/prefix.js";
+import { ensureForkStagingTable } from "../../packages/coding-agent/src/core/storage/session/fork-staging.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SqlSnapshotBlobStore } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
@@ -90,6 +91,7 @@ async function openEveryStore(scope: PostgresScope, prefix: string): Promise<voi
 	const database = await scope.open();
 	await seedLegacyWorkflowTables(database, { prefix });
 	await (await SqlSessionStore.open(database, { prefix })).close();
+	await ensureForkStagingTable(database, postgresDialect, `${prefix}session_fork_staging`);
 	const intercom = await openIntercomBrokerState({ prefix, openDatabase: () => scope.open() });
 	await intercom.bus.close();
 	await intercom.state.close();
