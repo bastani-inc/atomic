@@ -96,6 +96,23 @@ describe("provider request retries", () => {
 		expect(request).toHaveBeenCalledTimes(2);
 	});
 
+	it("does not start an SDK retry when cancellation is due with the server's backoff (#5627)", async () => {
+		vi.useFakeTimers();
+		const controller = new AbortController();
+		const request = vi
+			.fn<() => Promise<string>>()
+			.mockRejectedValueOnce(providerError(429, { "retry-after-ms": "50" }))
+			.mockResolvedValue("ok");
+		const result = retryProviderRequest(request, { maxRetries: 1, signal: controller.signal });
+		await vi.advanceTimersByTimeAsync(0);
+		setTimeout(() => controller.abort(), 50);
+		await Promise.all([
+			assert.rejects(result, { name: "AbortError", message: "Request aborted" }),
+			vi.advanceTimersByTimeAsync(50),
+		]);
+		expect(request).toHaveBeenCalledTimes(1);
+	});
+
 	it("aborts a provider-requested retry delay", async () => {
 		vi.useFakeTimers();
 		const controller = new AbortController();

@@ -32,6 +32,7 @@ import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { admitFetch } from "../utils/request-admission.ts";
+import { sleepForRetry } from "../utils/retry-sleep.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
@@ -193,21 +194,7 @@ function validateRetryDelayMs(delayMs: number, options?: StreamOptions): number 
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(new Error("Request was aborted"));
-			return;
-		}
-		const onAbort = () => {
-			clearTimeout(timeout);
-			reject(new Error("Request was aborted"));
-		};
-		const timeout = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve();
-		}, ms);
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
+	return sleepForRetry(ms, signal, () => new Error("Request was aborted"));
 }
 
 function normalizeTimeoutMs(value: number | undefined): number | undefined {

@@ -365,6 +365,8 @@ Agent-level retries use exponential backoff capped by `retry.maxAgentDelayMs`, i
 
 A GitHub Copilot response that ends early after an attempt that ran 5 minutes or more is a long cut, and repeating it is likely to be cut again. A long cut gets one more retry, and a second one with no successful response in between stops retrying that model: the turn moves to the next `fallbackModels` entry when there is one, and otherwise ends with a message that suggests splitting the work into smaller steps, lowering the thinking effort or setting `fallbackModels`. Cuts after shorter attempts use the `retry.maxRetries` budget as above. Partial output is never replayed; each retry restarts the turn. See [GitHub Copilot errors](/providers#streams-cut-after-a-long-attempt).
 
+If the caller's deadline or cancellation comes due as a provider retry delay ends, Atomic ends the wait without sending another request.
+
 When a provider requests a retry delay longer than `retry.provider.maxRetryDelayMs` (e.g., Google's "quota will reset after 5h"), the request fails immediately with an informative error instead of waiting silently. Set to `0` to disable the cap.
 
 `retry.provider.maxRetries` follows upstream Pi's behavior and defaults to `0` SDK/provider retries. Atomic still performs agent-level retries via `retry.maxRetries`; set `retry.provider.maxRetries` explicitly only when you want the underlying provider SDK to retry before Atomic observes the failure.

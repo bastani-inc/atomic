@@ -402,6 +402,30 @@ describe("retryAssistantCall", () => {
 		]);
 	});
 
+	it("does not start a retry when a busy event loop reaches both the backoff and caller deadline (#5627)", async () => {
+		const produce = vi
+			.fn()
+			.mockResolvedValueOnce(fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }))
+			.mockResolvedValue(fauxAssistantMessage("ok"));
+		const onRetryAttemptStart = vi.fn();
+		const onRetryFinished = vi.fn();
+		const scheduled = Promise.withResolvers<void>();
+		const result = retryAssistantCall(produce, { ...enabled, baseDelayMs: 50 }, AbortSignal.timeout(60), {
+			onRetryScheduled: () => scheduled.resolve(),
+			onRetryAttemptStart,
+			onRetryFinished,
+		});
+		await scheduled.promise;
+		await Promise.resolve(); // Let the retry arm its backoff before holding the event loop.
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
+
+		const message = await result;
+		expect(produce).toHaveBeenCalledTimes(1);
+		expect(message.stopReason).toBe("aborted");
+		expect(onRetryAttemptStart).not.toHaveBeenCalled();
+		expect(onRetryFinished).toHaveBeenCalledWith(false, 1, "terminated");
+	});
+
 	it("aborts backoff sleep via signal, returns an aborted message, and emits onRetryFinished(false)", async () => {
 		const controller = new AbortController();
 		const produce = vi.fn(async () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }));
