@@ -8,7 +8,6 @@ import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { formatModelLabel } from "../../../core/model-label.ts";
-import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import type { TaskElapsedClocks } from "../../../core/tasks/live-elapsed.js";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import {
@@ -20,6 +19,7 @@ import {
 import { getEngineSessionStats } from "../../interactive-engine/engine-session-stats.js";
 import { theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
+import { clickableKeyTextHint } from "./nav-keys.ts";
 import { renderTaskFooter } from "./task-list.js";
 
 export interface FooterRenderStyle {
@@ -277,20 +277,20 @@ export class FooterComponent implements Component {
 	private declare footerData: ReadonlyFooterDataProvider;
 	private declare readonly renderStyle: FooterRenderStyle;
 	private readonly navigationActive: () => boolean;
-	private readonly backgroundTasks: (() => readonly TaskRecord[]) | undefined;
+	private readonly backgroundTasks: (() => Parameters<typeof renderTaskFooter>[0] | undefined) | undefined;
 	private readonly hintSegments: (() => readonly string[]) | undefined;
 	private readonly backgroundTaskClocks: (() => TaskElapsedClocks | undefined) | undefined;
 	private branchCwd: string | undefined;
 	private releaseBranch: (() => void) | undefined;
 	private disposed = false;
 
-	/** `backgroundTasks` names the tasks the footer counts; without it, those of the session's own task store. */
+	/** `backgroundTasks` supplies this chat's task view, or a single snapshot to render. */
 	constructor(
 		session: ChatBoxSession,
 		footerData: ReadonlyFooterDataProvider,
 		renderStyle: FooterRenderStyle = defaultFooterRenderStyle,
 		navigationActive: () => boolean = () => false,
-		backgroundTasks?: () => readonly TaskRecord[],
+		backgroundTasks?: () => Parameters<typeof renderTaskFooter>[0] | undefined,
 		hintSegments?: () => readonly string[],
 		backgroundTaskClocks?: () => TaskElapsedClocks | undefined,
 	) {
@@ -372,7 +372,7 @@ export class FooterComponent implements Component {
 			const interruptKey = working ? keyText("app.interrupt") : "";
 			let statusText = working
 				? interruptKey
-					? this.renderStyle.muted(`${interruptKey} to interrupt`)
+					? this.renderStyle.muted(clickableKeyTextHint(interruptKey, " to interrupt"))
 					: ""
 				: `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
 			if (areExperimentalFeaturesEnabled()) {

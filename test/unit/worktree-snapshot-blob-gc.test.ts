@@ -8,6 +8,7 @@ import type { SessionEntry } from "../../packages/coding-agent/src/core/session-
 import {
 	MemorySnapshotBlobStore,
 	SNAPSHOT_COLLECTION_BATCH,
+	SNAPSHOT_COLLECTION_DELETE_BATCH,
 	SqlSnapshotBlobStore,
 	snapshotBlobHashes,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
@@ -473,7 +474,7 @@ describe("collection runs in batches", () => {
 	});
 
 	test("a collection returns to the event loop between batches, so timers and I/O run during a long one", async () => {
-		await put(...Array.from({ length: SNAPSHOT_COLLECTION_BATCH * 2 + 1 }, (_, index) => `blob-${index}`));
+		await put(...Array.from({ length: SNAPSHOT_COLLECTION_DELETE_BATCH * 2 + 1 }, (_, index) => `blob-${index}`));
 		await ageBlobs(shared.database, blobs().table, DEFAULT_BLOB_GRACE_SECONDS + 10);
 		let ticked = false;
 		const tickedBeforeBatch: boolean[] = [];
@@ -493,7 +494,7 @@ describe("collection runs in batches", () => {
 	});
 
 	test("an aborted collection rejects with the signal's reason, unwrapped, and keeps what earlier batches deleted", async () => {
-		await put(...Array.from({ length: SNAPSHOT_COLLECTION_BATCH + 1 }, (_, index) => `blob-${index}`));
+		await put(...Array.from({ length: SNAPSHOT_COLLECTION_DELETE_BATCH + 1 }, (_, index) => `blob-${index}`));
 		await ageBlobs(shared.database, blobs().table, DEFAULT_BLOB_GRACE_SECONDS + 10);
 		const controller = new AbortController();
 		const reason = new Error("stop");
@@ -510,7 +511,7 @@ describe("collection runs in batches", () => {
 			}),
 			(error: unknown) => error === reason,
 		);
-		assert.deepEqual(batches, [SNAPSHOT_COLLECTION_BATCH]);
+		assert.deepEqual(batches, [SNAPSHOT_COLLECTION_DELETE_BATCH]);
 		assert.equal((await stored()).length, 1);
 		await assert.rejects(
 			collectSnapshotGarbage(blobs(), { signal: AbortSignal.abort(reason) }),

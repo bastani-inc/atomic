@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { CURSOR_MARKER, getKeybindings, setKeybindings, type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -21,6 +20,7 @@ import { taskToolResult } from "../../packages/subagents/src/runs/foreground/tas
 import { AgentBrowser } from "../../packages/subagents/src/tui/agent-browser.js";
 import { moduleDir, readText } from "../helpers/runtime.js";
 import { taskRecord } from "../helpers/task-record.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const agent = (name: string, source: AgentConfig["source"]): AgentConfig => ({
 	name,
@@ -240,7 +240,7 @@ test("wait and task status results use readable displays without relaunch langua
 
 test("orchestrator guidance acknowledges background subagent support", () => {
 	const guidance = DEFAULT_PROMPT_GUIDANCE.join("\n");
-	assert.match(guidance, /Background subagents are supported/);
+	assert.match(guidance, /Subagents always run in the background/);
 	assert.doesNotMatch(guidance, /Foreground execution is the only/);
 });
 
@@ -354,5 +354,8 @@ test("bundled background documentation and guidance do not reintroduce foregroun
 			path,
 		);
 	}
-	assert.match(DEFAULT_PROMPT_GUIDANCE.join("\n"), /automatically yields on budget expiry/);
+	assert.match(
+		DEFAULT_PROMPT_GUIDANCE.join("\n"),
+		/A wait ends when it reaches its budget or the user presses Esc, and the child keeps running/,
+	);
 });

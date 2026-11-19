@@ -3,16 +3,25 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.js";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "../mandatory-runtime-tools.ts";
-import { createSyntheticSourceInfo, getSyntheticPathSource, isSyntheticPath } from "../source-info.ts";
+import {
+	createSyntheticSourceInfo,
+	getResourcePathKeyAsync,
+	getSyntheticPathSource,
+	isSyntheticPath,
+} from "../source-info.ts";
 import { endTimingSpan, startTimingSpan } from "../timings.ts";
+import { getBuiltinExtensionEntryLabel } from "./builtin-extension-entry-labels.ts";
+import { installBuiltinChildRecordWriter } from "./builtin-subagent-record-writer.js";
 import { createExtensionAPI } from "./loader-api.ts";
 import {
 	bindRegistrationCallbacks,
 	copyRegistrations,
 	createInvocationBindings,
+	extensionSource,
 	prepareRegistrationCallbacks,
 	reconcileRegistration,
 	registrationFields,
+	resolveInvocationRuntime,
 } from "./loader-bindings.ts";
 import {
 	emptyWorkflowResourceProvider,
@@ -26,15 +35,16 @@ import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResul
 
 /** Associate extension runtimes with the event bus used to construct their APIs. */
 const runtimeEventBuses = new WeakMap<ExtensionRuntime, EventBus>();
+// Only loading the actual shipped file grants this identity; a custom loader's claimed source path does not.
+const subagentFactories = new WeakSet<ExtensionFactory>();
 
 interface ExtensionSource {
+	identity: symbol;
 	factory: ExtensionFactory;
+	registrationSource: object | string;
 	workflowResourceProvider: WorkflowResourceProviderInput;
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider;
 }
-// Discovery records construction inputs, never a session ownership identity.
-// The symbol survives the supported built/source extension-loader boundary.
-const extensionSource = Symbol.for("atomic.extension-source.v1");
 type DiscoveredExtension = Extension & { [extensionSource]?: ExtensionSource };
 const runtimeSources = Symbol.for("atomic.extension-construction.v1");
 interface Construction {
@@ -46,7 +56,9 @@ type DiscoveryRuntime = ExtensionRuntime & { [runtimeSources]?: Construction[] }
 
 function rememberConstruction(extension: Extension, runtime: ExtensionRuntime, recipe: ExtensionSource): void {
 	prepareRegistrationCallbacks(extension);
-	Object.defineProperty(extension, extensionSource, { value: recipe });
+	// A spread must keep the recipe, but a fresh replay's private receipt is not a change to the descriptor's data.
+	Object.defineProperty(recipe, "identity", { enumerable: false });
+	Object.defineProperty(extension, extensionSource, { value: recipe, enumerable: true });
 	(runtime as DiscoveryRuntime)[runtimeSources] ??= [];
 	const records = (runtime as DiscoveryRuntime)[runtimeSources]!;
 	records.push({ extension, snapshot: copyRegistrations(extension), recipe });
@@ -61,11 +73,24 @@ export async function instantiateExtensions(target: LoadExtensionsResult, cwd: s
 	const records = [...((target.runtime as DiscoveryRuntime)[runtimeSources] ?? [])];
 	try {
 		for (const source of target.extensions) {
-			const index = records.findIndex(
-				(record) => record.extension.path === source.path && record.extension.resolvedPath === source.resolvedPath,
+			const sourceRecipe = (source as DiscoveredExtension)[extensionSource];
+			let index = records.findIndex(
+				(record) =>
+					record.extension === source ||
+					record.recipe === sourceRecipe ||
+					(sourceRecipe?.identity !== undefined && record.recipe.identity === sourceRecipe.identity),
 			);
+			if (index < 0 && !sourceRecipe) {
+				// A loader may project just the public fields. Reuse an unambiguous discovery object, never its label.
+				const candidates = records.filter(
+					({ extension }) =>
+						extension.sourceInfo === source.sourceInfo ||
+						registrationFields.some((field) => source[field] !== undefined && source[field] === extension[field]),
+				);
+				if (candidates.length === 1) index = records.indexOf(candidates[0]);
+			}
 			const construction = index < 0 ? undefined : records.splice(index, 1)[0];
-			const recipe = construction?.recipe ?? (source as DiscoveredExtension)[extensionSource];
+			const recipe = construction?.recipe ?? sourceRecipe;
 			if (!recipe) {
 				// Hand-authored ResourceLoader registrations have no factory recipe.
 				// Their callbacks remain caller code, but registration containers and
@@ -85,6 +110,7 @@ export async function instantiateExtensions(target: LoadExtensionsResult, cwd: s
 				recipe.workflowResourceProvider,
 				recipe.resourceLoaderInheritanceSnapshotProvider,
 				source,
+				recipe.registrationSource,
 			);
 			extensions.push(extension);
 			if (construction) {
@@ -100,6 +126,7 @@ export async function instantiateExtensions(target: LoadExtensionsResult, cwd: s
 			if ([...source.tools.values()].some(isTrustedMandatoryRuntimeTool))
 				markTrustedMandatoryRuntimeExtension(extension);
 			extension.hidden = source.hidden;
+			if (source.replaceable !== undefined) extension.replaceable = source.replaceable;
 		}
 	} catch (error) {
 		const failures = await rollbackExtensionFactories(extensions, cwd);
@@ -172,8 +199,10 @@ async function loadExtension(
 			};
 		}
 
+		if (getBuiltinExtensionEntryLabel(resolvedPath) === "subagents") subagentFactories.add(factory);
 		const factorySpan = startTimingSpan(`loadExtensions.${extensionPath}.factory`, "extensions");
-		const extension = await loadExtensionFromFactory(
+		const extension = await loadOwnedExtensionFromFactory(
+			[],
 			factory,
 			cwd,
 			eventBus,
@@ -182,6 +211,7 @@ async function loadExtension(
 			workflowResourceProvider,
 			resourceLoaderInheritanceSnapshotProvider,
 			createExtension(extensionPath, resolvedPath),
+			await getResourcePathKeyAsync(resolvedPath),
 		);
 		endTimingSpan(factorySpan);
 		return { extension, error: null };
@@ -230,6 +260,7 @@ async function loadOwnedExtensionFromFactory(
 	workflowResourceProvider: WorkflowResourceProviderInput,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	source?: Pick<Extension, "resolvedPath" | "sourceInfo">,
+	registrationSource: object | string = factory,
 ): Promise<Extension> {
 	const extension = createExtension(extensionPath, source?.resolvedPath ?? extensionPath);
 	if (source) extension.sourceInfo = source.sourceInfo;
@@ -241,8 +272,11 @@ async function loadOwnedExtensionFromFactory(
 		eventBus,
 		workflowResourceProvider,
 		resourceLoaderInheritanceSnapshotProvider,
+		registrationSource,
 	);
 	try {
+		if (subagentFactories.has(factory))
+			installBuiltinChildRecordWriter(transaction.api, () => resolveInvocationRuntime(runtime));
 		await factory(transaction.api);
 		transaction.commit();
 	} catch (error) {
@@ -255,7 +289,9 @@ async function loadOwnedExtensionFromFactory(
 		throw factoryRollbackError(error, failures);
 	}
 	rememberConstruction(extension, runtime, {
+		identity: Symbol(),
 		factory,
+		registrationSource,
 		workflowResourceProvider,
 		resourceLoaderInheritanceSnapshotProvider,
 	});

@@ -101,6 +101,53 @@ async function settled(): Promise<void> {
 }
 
 describe("a stage is released when its last hold ends, once its release was asked for (#4642)", () => {
+	test("the first registration's disposer cannot unregister the same handle a second time (#5577)", async () => {
+		const registry = createStageControlRegistry();
+		const { handle } = gatedHandle("a", fakeGate());
+		const stale = registry.register(handle);
+		registry.register(handle);
+		try {
+			stale();
+			assert.equal(registry.peek(RUN, "a"), handle);
+		} finally {
+			await registry.clear();
+		}
+	});
+
+	test("an old registry finishing disposal last cannot announce a released chat over its successor on the same record (#5577)", async () => {
+		const old = createStageControlRegistry();
+		const next = createStageControlRegistry();
+		const record = { id: "a", name: "review", status: "completed" as const, parentIds: [], toolEvents: [] };
+		const announced: string[] = [];
+		old.onStageReleased(() => announced.push("old"));
+		next.onStageReleased(() => announced.push("next"));
+		const started = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		const original = gatedHandle("a", fakeGate()).handle;
+		old.register({
+			...original,
+			stageRecord: record,
+			async dispose() {
+				started.resolve();
+				await finish.promise;
+			},
+		});
+		const releasing = old.releaseIdle(RUN);
+		await started.promise;
+		try {
+			next.register({ ...gatedHandle("a", fakeGate()).handle, stageRecord: record });
+			await next.releaseIdle(RUN);
+			finish.resolve();
+			await releasing;
+			assert.deepEqual(announced, ["next"]);
+		} finally {
+			finish.resolve();
+			await releasing;
+			await next.clear();
+			await old.clear();
+		}
+	});
+
 	test("a hold that lifts releases the stage only after its owner asked for the release", async () => {
 		const registry = createStageControlRegistry();
 		const released: ReleasedStage[] = [];

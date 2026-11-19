@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A `CREATE TRIGGER` sent alone in `exec` now retries after `SQLITE_SCHEMA` while other connections change a libSQL server's schema. Semicolons inside the trigger body no longer make it look like several statements. An `exec` containing additional statements is still never replayed, also when names in the trigger use characters outside ASCII such as combining accents ([#5509](https://github.com/bastani-inc/atomic/issues/5509))
+- Write batches now refresh their schema after taking the write lock. A connection opened before another connection's schema change could otherwise report `no such table` for an existing table, including when a single write retried after `SQLITE_SCHEMA` ([#5536](https://github.com/bastani-inc/atomic/issues/5536))
+- One statement followed by white space outside ASCII after its `;`, such as a byte-order mark or a no-break space, counts as one statement again: it runs again after `SQLITE_SCHEMA` or a busy answer, falls back to a write transaction of its own while other connections keep changing the schema, and a `SELECT` written so runs on the reused stream, as before the trigger change above ([#5676](https://github.com/bastani-inc/atomic/issues/5676))
+
 ## [0.9.89] - 2026-11-18
 
 ### Fixed

@@ -5,6 +5,7 @@ import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { AgentSession, ClearedQueue, CompactionReason } from "../../core/agent-session.js";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type {
+	ExtensionBindings,
 	ModelMutationOptions,
 	PromptDisposition,
 	PromptOptions,
@@ -142,6 +143,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** The engine prepares every resume of this session and builds its blueprints; this mirror only restores the same state. */
 	protected override resumeBlueprints: "build" | "skip" = "skip";
 	private readonly patchedSessions = new WeakSet<AgentSession>();
+	/** Host sessions bound with an extension error listener. Engine errors that arrive before one is bound wait for it. */
+	private readonly errorReportingSessions = new WeakSet<AgentSession>();
+	private readonly heldExtensionErrors: ExtensionError[] = [];
 	private readonly patchedSettingsManagers = new WeakSet<AgentSession["settingsManager"]>();
 	private mirroringPersistedModelDefault = false;
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
@@ -292,6 +296,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// session/model/bash behavior do not need to implement unrelated transport
 		// surfaces.
 		this.client.onInteractiveEngineMessage?.((message) => {
+			if (message.type === "engine_trust_decision") {
+				this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, {
+					[message.scope]: { [message.path]: message.trusted },
+				});
+				return;
+			}
 			if (message.type === "engine_deprecation_warning") {
 				warnDeprecation(message.message, message.once === undefined ? {} : { once: message.once });
 				return;
@@ -382,6 +392,16 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		await this.initializationTail;
 	}
 
+	/** Keep a live engine's report as soon as it arrives, before the caller waits on other engine or session work. */
+	private async getEngineState(): Promise<RpcSessionState> {
+		const generation = this.client.getGeneration?.();
+		const state = await this.client.getState();
+		if (state.trustDecisions && (generation === undefined || this.isCurrentResourceGeneration(generation))) {
+			this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, state.trustDecisions);
+		}
+		return state;
+	}
+
 	private async initializeFromEngineGeneration(generation: number | undefined): Promise<void> {
 		if (this.disposed || (generation !== undefined && !this.isCurrentResourceGeneration(generation))) return;
 		try {
@@ -390,7 +410,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			const modelEpoch = this.modelEpoch;
 			const thinkingEpoch = this.thinkingEpoch;
 			const scope = this.remoteModelCatalog.getScopeSnapshot();
-			const state = await this.client.getState();
+			const state = await this.getEngineState();
+			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			const catalog = await this.client.requestInternal<RpcModelCatalog>({
 				type: "get_available_models",
 				allowPartialResources: true,
@@ -421,7 +442,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
 			this.engineProjectTrustReported = state.projectTrusted !== undefined;
-			this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, state.trustDecisions);
 			if (
 				trustBefore[0] !== session.settingsManager.isProjectTrusted() ||
 				trustBefore[1] !== this.engineProjectTrustReported
@@ -704,7 +724,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 	async synchronize(): Promise<void> {
 		const generation = this.client.getGeneration();
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (!this.isCurrentResourceGeneration(generation)) return;
 		this.remoteSessionFile = state.sessionLocation;
 		this.remoteSessionName = state.sessionName;
@@ -784,7 +804,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override async newSession(options?: { parentSession?: string }): Promise<{ cancelled: boolean }> {
 		const result = await this.client.newSession(options?.parentSession);
 		if (result.cancelled) return result;
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
@@ -803,7 +823,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		if (result.cancelled) return { cancelled: true };
 		this.queueResumeNotices(result.notices ?? []);
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				cwdOverride,
@@ -828,7 +848,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			selectedText = result.text;
 		}
 		if (cancelled) return { cancelled: true };
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
@@ -878,7 +898,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.patchSessionManager(session.sessionManager);
 		this.patchSettingsManager(session.settingsManager);
 		this.sessionStats.track(session);
+		// Optional because focused runtime test doubles stand in for a session without extension bindings.
+		const bindExtensions = session.bindExtensions?.bind(session);
 		Object.defineProperties(session, {
+			...(bindExtensions && {
+				bindExtensions: {
+					configurable: true,
+					value: async (bindings: ExtensionBindings) => {
+						await bindExtensions(bindings);
+						if (!bindings.onError) return;
+						this.errorReportingSessions.add(session);
+						for (const error of this.heldExtensionErrors.splice(0)) session.extensionRunner.emitError(error);
+					},
+				},
+			}),
 			isStreaming: { configurable: true, get: () => this.streaming },
 			isCompacting: { configurable: true, get: () => this.compacting },
 			compactionReason: { configurable: true, get: () => this.compactionReason },
@@ -1090,7 +1123,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						const state =
 							options?.persist === true
 								? await this.syncPersistedModelCatalog(session, nextModel, selected.persistedDefaults)
-								: await this.client.getState();
+								: await this.getEngineState();
 						this.applyThinkingAck(session, epoch, { level: state.thinkingLevel }, false);
 					});
 				},
@@ -1122,7 +1155,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						const state =
 							options?.persist === true
 								? await this.syncPersistedModelCatalog(session, model, result.persistedDefaults)
-								: await this.client.getState();
+								: await this.getEngineState();
 						this.applyThinkingAck(session, epoch, { level: state.thinkingLevel }, false);
 						return { model, thinkingLevel: result.thinkingLevel, isScoped: result.isScoped };
 					});
@@ -1341,7 +1374,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		} finally {
 			this.mirroringPersistedModelDefault = false;
 		}
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (persistedDefaults !== undefined) {
 			session.settingsManager.setModelThinkingLevel(
 				persistedDefaults.provider,
@@ -1403,11 +1436,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (isEngineExtensionError(record)) {
 			// A load failure is part of the engine's resource state, which the host shows with its resource diagnostics.
 			if (isExtensionLoadError(record)) return;
-			session.extensionRunner.emitError({
+			const error = {
 				extensionPath: record.extensionPath,
 				event: record.event,
 				error: record.error,
-			});
+				...(typeof record.stack === "string" && { stack: record.stack }),
+			};
+			// An engine that loads its resources eagerly starts its extensions while this host is still starting up.
+			if (this.errorReportingSessions.has(session)) session.extensionRunner.emitError(error);
+			else this.heldExtensionErrors.push(error);
 			return;
 		}
 		switch (event.type) {

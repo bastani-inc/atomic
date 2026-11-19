@@ -112,8 +112,6 @@ test.each([
 						if (bound.chatSession !== undefined) chat = bound.chatSession as AgentSession;
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		});
@@ -182,8 +180,6 @@ test(
 						if (bound.chatSession !== undefined) chat = bound.chatSession as AgentSession;
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		});

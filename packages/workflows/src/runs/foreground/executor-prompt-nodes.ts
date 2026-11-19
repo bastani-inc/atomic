@@ -181,6 +181,9 @@ export function buildPromptNodeUiAdapter(input: {
 						}
 					: {}),
 		};
+		const owner = input.stageUiBroker.claimStage(input.runId, stageId);
+		const owningRun = input.activeStore.run(input.runId);
+		const isCurrent = () => !owner.signal.aborted && input.activeStore.run(input.runId) === owningRun;
 		let finalized = false;
 		let finalization: Promise<void> | undefined;
 		let unregisterWorkflowExitCleanup = (): void => {};
@@ -206,8 +209,12 @@ export function buildPromptNodeUiAdapter(input: {
 					stageSnapshot.endedAt = Date.now();
 					stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
 				}
-				input.activeStore.recordStageAttachable(input.runId, stageId, false);
-				input.activeStore.recordStageEnd(input.runId, stageSnapshot);
+				if (isCurrent())
+					input.activeStore.batch(() => {
+						input.activeStore.recordStageAttachable(input.runId, stageId, false);
+						input.activeStore.recordStageEnd(input.runId, stageSnapshot);
+					});
+				owner.release();
 				if (input.recordPromptStageEnd !== undefined)
 					await input.recordPromptStageEnd(
 						input.runId,
@@ -289,6 +296,7 @@ export function buildPromptNodeUiAdapter(input: {
 						input.runId,
 						stageId,
 						new Error(`atomic-workflows: prompt ${stageId} skipped by workflow exit`),
+						owner.signal,
 					);
 				}
 				await finalizePromptStage("skipped");
@@ -324,6 +332,7 @@ export function buildPromptNodeUiAdapter(input: {
 
 		try {
 			await input.onPendingStage?.(input.runId, stageSnapshot);
+			owner.signal.throwIfAborted();
 		} catch (err) {
 			applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(err));
 			await finalizePromptStage("failed");
@@ -350,16 +359,20 @@ export function buildPromptNodeUiAdapter(input: {
 					descriptor.factory as unknown as Parameters<StageUiBroker["requestCustomUi"]>[2],
 					descriptor.options as Parameters<StageUiBroker["requestCustomUi"]>[3],
 					mergedSignal.signal,
+					undefined,
+					undefined,
+					owner.signal,
 				);
 				await waitForExplicitResume();
+				owner.signal.throwIfAborted();
 				input.activeStore.recordStagePromptAnswer(input.runId, stageId, prompt, response, {
 					answerSource: "workflow_ui",
 				});
 				await finalizePromptStage("completed", promptStageAnswer(response));
 				return response;
 			} catch (err) {
-				input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
-				input.stageUiBroker.cancelStagePrompt(input.runId, stageId, err);
+				if (isCurrent()) input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
+				input.stageUiBroker.cancelStagePrompt(input.runId, stageId, err, owner.signal);
 				if (mergedSignal.signal.aborted) {
 					input.preserveWorkflowExitSkippedReason(
 						stageSnapshot,
@@ -385,7 +398,7 @@ export function buildPromptNodeUiAdapter(input: {
 			return fallbackForPromptDescriptor(descriptor);
 		}
 
-		const waiter = input.activeStore.awaitStagePendingPrompt(input.runId, stageId, prompt.id);
+		const waiter = input.activeStore.awaitStagePendingPrompt(input.runId, stageId, prompt.id, owner.signal);
 		try {
 			const response = await new Promise<unknown>((resolve, reject) => {
 				const onAbort = (): void => {

@@ -3,6 +3,7 @@
  */
 
 import { type Static, Type } from "typebox";
+import { withoutLegacyWait } from "../runs/foreground/legacy-foreground-wait.js";
 import { warnRemovedRoutingOption } from "../shared/removed-routing-warning.js";
 import {
 	MAX_PARALLEL_TASKS,
@@ -157,23 +158,12 @@ const ControlOverrides = Type.Object({
 
 export const SubagentParams = Type.Object(
 	{
-		// `enum` instead of `Type.Literal`: providers reject the `const` keyword Literal emits (see the
-		// upstream-sync "omits provider-rejected schema keywords" test).
-		wait: Type.Optional(
-			Type.Object(
-				{
-					kind: Type.String({
-						enum: ["background", "foreground"],
-						description: "Wait policy kind. 'background' yields immediately; 'foreground' waits up to budgetMs.",
-					}),
-					budgetMs: Type.Optional(
-						Type.Number({ description: "Foreground wait budget in milliseconds (kind='foreground' only)." }),
-					),
-				},
-				{ additionalProperties: false },
-			),
+		budgetMs: Type.Optional(
+			Type.Number({
+				description:
+					"action='wait' only: how long to wait for the task, in milliseconds; omitted uses the owner's budget. The task keeps running when the wait ends.",
+			}),
 		),
-		budgetMs: Type.Optional(Type.Number({ description: "Foreground wait budget in milliseconds." })),
 		heartbeatMs: Type.Optional(heartbeatSchema("each child; a task's own wins")),
 		agent: Type.Optional(
 			Type.String({ description: "Agent name (SINGLE mode) or target for management get/update/delete" }),
@@ -301,14 +291,15 @@ function withoutRemovedLaunchFields<T extends object>(value: T): T {
 
 /**
  * Reject removed control actions before schema validation, so the error names their replacement
- * instead of reporting an unknown enum value. Fields of removed automatic model routing are dropped.
+ * instead of reporting an unknown enum value. Fields of removed automatic model routing are dropped, and so is the
+ * removed launch `wait`: every launch runs in the background.
  */
 export function prepareSubagentArguments(args: unknown): Static<typeof SubagentParams> {
 	const action = typeof args === "object" && args !== null ? (args as { action?: string }).action : undefined;
 	if (action !== undefined && (REMOVED_SUBAGENT_ACTIONS as readonly string[]).includes(action))
 		throw new Error(removedSubagentActionMessage(action));
 	if (typeof args !== "object" || args === null || Array.isArray(args)) return args as Static<typeof SubagentParams>;
-	const params = withoutRemovedLaunchFields(args as { tasks?: unknown });
+	const params = withoutLegacyWait(withoutRemovedLaunchFields(args as { tasks?: unknown }));
 	const tasks = Array.isArray(params.tasks)
 		? params.tasks.map((task: unknown) =>
 				typeof task === "object" && task !== null && !Array.isArray(task) ? withoutRemovedLaunchFields(task) : task,

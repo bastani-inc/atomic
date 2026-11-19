@@ -1,9 +1,16 @@
-import type { Component } from "@bastani/atomic-tui";
-import { panelHintParts, panelHintText } from "../../../core/tasks/agent-panel-rules.ts";
+import { type Component, clickableKeysHint, stripHintMarkers } from "@bastani/atomic-tui";
+import { panelHintParts, panelHintSegments } from "../../../core/tasks/agent-panel-rules.ts";
 import type { AgentPanelSession } from "../../../core/tasks/agent-panel-source.ts";
 import { type AgentPanelCounts, agentPanelCounts } from "../../rpc/agent-panel-bridge.ts";
 import { theme } from "../theme/theme.js";
-import { isNavHelpKey, type NavKey, type NavKeybindings, navActionText, renderNavKeyOverlay } from "./nav-keys.ts";
+import {
+	isNavHelpKey,
+	type NavKey,
+	type NavKeybindings,
+	navEntryKeyParts,
+	renderNavKeyOverlay,
+	slashCommandHint,
+} from "./nav-keys.ts";
 
 export interface MainComposerKeyState {
 	/** Every row the panel lists, workflow runs included. */
@@ -60,13 +67,24 @@ function promptKeybindings(keybindings: NavKeybindings | undefined): NavKeybindi
 	};
 }
 
+/** The plain text of {@link mainComposerHints}. */
 export function mainComposerHintSegments(
 	keybindings: NavKeybindings | undefined,
 	state?: MainComposerHintSource,
 ): string[] {
+	return mainComposerHints(keybindings, state).map(stripHintMarkers);
+}
+
+/**
+ * The hint segments the main chat shows by its prompt: `↓ N agents` and the counts of what the panel lists, `/tasks to
+ * manage` when the panel has nothing to focus, and `? keys`. A click on a key's segment presses the key, and a click on
+ * the `/tasks` segment runs the command.
+ */
+export function mainComposerHints(keybindings: NavKeybindings | undefined, state?: MainComposerHintSource): string[] {
 	const counts = resolveAgentCounts(keybindings, state);
 	const promptKeys = promptKeybindings(keybindings);
-	const focusKey = navActionText(promptKeys, "app.agents.focus");
+	const focusKeys = navEntryKeyParts(promptKeys, { action: "app.agents.focus", label: "" });
+	const focusKey = focusKeys.map((part) => part.text).join("");
 	const total = finiteCount(counts.total);
 	const parts = panelHintParts(
 		{ total, agents: finiteCount(counts.agents ?? total), needsInput: finiteCount(counts.needsInput) },
@@ -74,9 +92,13 @@ export function mainComposerHintSegments(
 		finiteCount(counts.subagents ?? 0),
 		focusKey !== "",
 	);
-	const segments = panelHintText(parts, focusKey);
-	const help = navActionText(promptKeys, "app.keys.help");
-	if (help) segments.push(`${help} keys`);
+	const segments = panelHintSegments(parts, focusKey).map((segment) => {
+		if (segment.kind === "agents") return clickableKeysHint(focusKeys, segment.text.slice(focusKey.length));
+		if (segment.kind === "tasks") return slashCommandHint(segment.text);
+		return segment.text;
+	});
+	const helpKeys = navEntryKeyParts(promptKeys, { action: "app.keys.help", label: "" });
+	if (helpKeys.length > 0) segments.push(clickableKeysHint(helpKeys, " keys"));
 	return segments;
 }
 
