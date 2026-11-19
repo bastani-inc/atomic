@@ -107,9 +107,11 @@ async function handleManagementRequest(input: {
 				: { ok: false as const, error: { code: "UnknownTask", message: "Task not found in this owner" } };
 		const settledOutput =
 			observed.ok && observed.value.kind === "settled"
-				? await settledTaskOutputText(ctx.getAgentTaskHost?.(), [
-						{ taskId: observed.value.taskId, result: observed.value.result },
-					])
+				? await settledTaskOutputText(
+						ctx.getAgentTaskHost?.(),
+						[{ taskId: observed.value.taskId, result: observed.value.result }],
+						signal,
+					)
 				: "";
 		return {
 			content: [
@@ -160,7 +162,7 @@ async function handleManagementRequest(input: {
 			if (watched.ok) {
 				const records = watched.value.snapshot.tasks.filter((task) => task.ref.taskId === taskId);
 				watched.value.dispose();
-				const settledOutput = await settledTaskOutputText(host, settledOutputsFromRecords(records));
+				const settledOutput = await settledTaskOutputText(host, settledOutputsFromRecords(records), signal);
 				const ownerSessionId = subagentChildOwner(ctx).sessionId;
 				const shown = records.map((record) =>
 					subagentTaskStatusRecord(

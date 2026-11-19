@@ -3158,6 +3158,12 @@ test("waiting for a finished child checks a batch sweep already started by its s
 	try {
 		last.resolve();
 		await reached.promise;
+		const turn = new AbortController();
+		const interrupted = h.call({ action: "wait", id: a.taskId }, turn.signal);
+		setImmediate(() => turn.abort());
+		const escaped = await answeredWithin(interrupted);
+		assert.ok(escaped, "Esc ends a waiting observation even after the host task settled");
+		assert.match(text(escaped), /worktree cleanup.*background/i);
 		const observing = h.call({ action: "wait", id: a.taskId });
 		setImmediate(proceed.resolve);
 		const reply = await observing;

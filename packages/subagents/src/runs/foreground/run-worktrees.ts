@@ -203,6 +203,7 @@ export async function boundedWorktreeReply(
 	runId: string,
 	work: Promise<void> = Promise.resolve(),
 	deadline = Date.now() + WORKTREE_REPLY_WAIT_MS,
+	signal?: AbortSignal,
 ): Promise<string | undefined> {
 	const run = runs.get(runId);
 	if (!run) return undefined;
@@ -215,17 +216,17 @@ export async function boundedWorktreeReply(
 		} while (observed !== run.sweeping);
 		return run.holds.size || run.launching.size ? BATCH_KEPT : undefined;
 	};
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	const interrupted = Promise.withResolvers<string>();
+	const endWait = () => interrupted.resolve(CLEANUP_IN_BACKGROUND);
+	const timer = setTimeout(endWait, Math.max(0, deadline - Date.now()));
+	timer.unref?.();
+	if (signal?.aborted) endWait();
+	else signal?.addEventListener("abort", endWait, { once: true });
 	try {
-		return await Promise.race([
-			finished(),
-			new Promise<string>((resolve) => {
-				timer = setTimeout(() => resolve(CLEANUP_IN_BACKGROUND), Math.max(0, deadline - Date.now()));
-				timer.unref?.();
-			}),
-		]);
+		return await Promise.race([finished(), interrupted.promise]);
 	} finally {
 		clearTimeout(timer);
+		signal?.removeEventListener("abort", endWait);
 	}
 }
 
@@ -233,8 +234,9 @@ export function observeChildWorktreeAtReply(
 	runId: string,
 	index: number,
 	deadline?: number,
+	signal?: AbortSignal,
 ): Promise<string | undefined> {
-	return boundedWorktreeReply(runId, runs.get(runId)?.finishing.get(index), deadline);
+	return boundedWorktreeReply(runId, runs.get(runId)?.finishing.get(index), deadline, signal);
 }
 
 /** The execution's hold ends after session cleanup, even when the reply's deadline expires first. */

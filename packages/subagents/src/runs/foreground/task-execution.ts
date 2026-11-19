@@ -169,6 +169,7 @@ async function readSettledOutput(
 	host: AgentTaskHost,
 	settled: SettledTaskOutput,
 	record: TaskRecord | undefined,
+	signal?: AbortSignal,
 ): Promise<string | undefined> {
 	const output = settled.result.output;
 	if (!output) return undefined;
@@ -178,7 +179,12 @@ async function readSettledOutput(
 	const kept = retainedTaskOutput(output.ownerId, output.taskId);
 	if (kept) {
 		if (kept.worktree)
-			kept.worktreeNote = await observeChildWorktreeAtReply(kept.worktree.runId, kept.worktree.index);
+			kept.worktreeNote = await observeChildWorktreeAtReply(
+				kept.worktree.runId,
+				kept.worktree.index,
+				undefined,
+				signal,
+			);
 		return settledOutputSection(
 			settled.taskId,
 			label,
@@ -213,6 +219,7 @@ async function readSettledOutput(
 export async function settledTaskOutputText(
 	host: AgentTaskHost | undefined,
 	settled: readonly SettledTaskOutput[],
+	signal?: AbortSignal,
 ): Promise<string> {
 	if (!host || settled.length === 0) return "";
 	const records = ownerTaskRecords(new Set(settled.map((entry) => entry.taskId)), host);
@@ -222,6 +229,7 @@ export async function settledTaskOutputText(
 				host,
 				entry,
 				records.find((record) => record.ref.taskId === entry.taskId),
+				signal,
 			),
 		),
 	);
