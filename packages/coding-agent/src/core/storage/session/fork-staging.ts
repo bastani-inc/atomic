@@ -271,6 +271,27 @@ function missingPrivilege(error: unknown): boolean {
 
 let missingStagingHinted = false;
 
+/** Only classify a destination write. A source error, even with this code, is not a reason to copy it again. */
+class StagingDiskFull extends Error {}
+function destinationWrite<T>(work: Promise<T>): Promise<T> {
+	return work.catch((error) => {
+		let cause: unknown = error;
+		for (let depth = 0; depth < 8 && cause && typeof cause === "object"; depth++) {
+			const e = cause as { code?: unknown; errcode?: unknown; rawCode?: unknown; cause?: unknown };
+			if (
+				e.code === "SQLITE_FULL" ||
+				e.code === "53100" ||
+				e.code === "ENOSPC" ||
+				e.errcode === 13 ||
+				e.rawCode === 13
+			)
+				throw new StagingDiskFull("The staging write ran out of space", { cause: error });
+			cause = e.cause;
+		}
+		throw error;
+	});
+}
+
 /**
  * The clone as main makes it, for a role that may not create the staging table and finds none (#5594): the whole
  * source read into one array, then the child created in one transaction; its blobs are left to `copySessionBlobs`, as
@@ -281,8 +302,9 @@ async function wholeSourceFork(
 	header: SessionRecordHeader,
 	stream: SessionForkStream,
 	source: ForkArchiveSource,
+	hint: boolean,
 ): Promise<SessionWriteResult & { readonly remainingBlobs: readonly string[] }> {
-	if (!missingStagingHinted) {
+	if (hint && !missingStagingHinted) {
 		missingStagingHinted = true;
 		globalThis.process?.emitWarning?.(
 			`This database role may not create the fork staging table ${target.table}, so whole-session clones into it are read into memory. Run \`atomic storage migrate\` as the owner role to copy them in bounded batches instead.`,
@@ -374,6 +396,81 @@ function chunkRowReader(
 	});
 }
 
+/** Move the next key ranges in this transaction instead of copying a whole table while all its staged rows
+ * still occupy pages. SQLite can reuse a deleted range for the next one without exposing a partial child.
+ * For entry and search rows idx carries their byte cost; chunks have the store's fixed maximum size. */
+async function moveStaged(
+	target: ForkStagingTarget,
+	tx: SqliteExecutor,
+	transfer: string,
+	child: string,
+	kind: number,
+	count: number,
+	dest: string,
+	columns: string,
+	fields: string,
+	join = "",
+) {
+	if (!count) return;
+	const { table } = target;
+	const chunkBytes = kind === ENTRY_CHUNK ? target.entryChunkBytes : kind === BLOB_CHUNK ? target.blobChunkBytes : 0;
+	const batchRows = chunkBytes ? Math.max(1, Math.floor(FORK_STAGING_BATCH_BYTES / chunkBytes)) : 1024;
+	const where = `transfer_id=? AND kind=${kind} AND (seq,idx)<=(?,?)`;
+	let copied = 0;
+	for (;;) {
+		const keys = await tx.all<SqliteRow & { seq: number; idx: number }>(
+			`SELECT seq,idx FROM ${table} WHERE transfer_id=? AND kind=${kind} ORDER BY seq,idx LIMIT ?`,
+			transfer,
+			batchRows,
+		);
+		if (!keys.length) break;
+		let used = 0,
+			end = 0;
+		for (const key of keys) {
+			const bytes = chunkBytes || (kind === BLOB ? 128 : Number(key.idx)) + STAGED_ROW_BYTES;
+			if (end && used + bytes > FORK_STAGING_BATCH_BYTES) break;
+			used += bytes;
+			end++;
+		}
+		const last = keys[end - 1]!;
+		const args = [transfer, Number(last.seq), Number(last.idx)];
+		// Legacy SQL worktree snapshots may be larger than a batch and must remain a single row. Read
+		// just this row and free its staging pages before allocating its final copy, as on input.
+		if (kind === ENTRY && end === 1 && used > FORK_STAGING_BATCH_BYTES) {
+			const row = await tx.get<SqliteRow & { seq: number; name: string; body: string; size: number }>(
+				`SELECT seq,name,body,size FROM ${table} WHERE ${where}`,
+				...args,
+			);
+			if (!row) throw new StorageError(`Missing staged entry of session ${child}`);
+			await tx.run(`DELETE FROM ${table} WHERE ${where}`, ...args);
+			copied += (
+				await tx.run(
+					`INSERT INTO ${dest} (${columns}) VALUES (?,?,?,?,?)`,
+					child,
+					row.seq,
+					row.name,
+					row.body,
+					row.size,
+				)
+			).changes;
+		} else {
+			const qualified = `s.transfer_id=? AND s.kind=${kind} AND (s.seq,s.idx)<=(?,?)`;
+			copied += (
+				await tx.run(
+					`INSERT INTO ${dest} (${columns}) SELECT ?, ${fields} FROM ${table} s ${join} WHERE ${qualified} ORDER BY s.seq,s.idx`,
+					child,
+					...(join ? [child] : []),
+					...args,
+				)
+			).changes;
+			await tx.run(`DELETE FROM ${table} WHERE ${where}`, ...args);
+		}
+		if (end === keys.length && end < batchRows) break;
+	}
+	if (copied !== count)
+		throw new StorageError(`The staged copy of session ${child} is missing ${dest} rows; nothing was published`);
+}
+
 /**
  * Clone a complete session from `source`, a store on a handle this one cannot prove to be its own connection, as a new
  * child `header.id` (#5594). Each page is read from the source and released before it is written to the staging
@@ -391,59 +488,81 @@ export async function createStagedFork(
 	stream: SessionForkStream,
 	source: ForkArchiveSource,
 ): Promise<SessionWriteResult & { readonly remainingBlobs: readonly string[] }> {
+	try {
+		return await stageAndPublish(target, header, stream, source);
+	} catch (error) {
+		if (!(error instanceof StagingDiskFull)) throw error;
+		// Staging rolled back and released its rows. Retry once with the unstaged copy's exact error and memory behavior.
+		return wholeSourceFork(target, header, stream, source, false);
+	}
+}
+
+async function stageAndPublish(
+	target: ForkStagingTarget,
+	header: SessionRecordHeader,
+	stream: SessionForkStream,
+	source: ForkArchiveSource,
+) {
 	const { database, dialect, table } = target;
 	const options = stagingTransaction(table);
 	if ((await database.get(`SELECT id FROM ${target.tables.sessions} WHERE id = ?`, header.id)) !== undefined)
 		throw new SessionExistsError(header.id);
 	try {
-		await ensureForkStagingTable(database, dialect, table);
+		await destinationWrite(ensureForkStagingTable(database, dialect, table));
 	} catch (error) {
+		if (error instanceof StagingDiskFull) throw error;
 		// Another role, such as the owner's `atomic storage migrate`, may have created it meanwhile: stage into it.
 		const probe = dialect.tableExists(table);
 		if ((await database.get(probe.sql, ...probe.params)) === undefined) {
 			if (!missingPrivilege(error)) throw error;
-			return wholeSourceFork(target, header, stream, source);
+			return wholeSourceFork(target, header, stream, source, true);
 		}
 	}
 	await cleanupForkStaging(database, dialect, table, FORK_STAGING_TRANSFER_CLEANUPS).catch(() => {});
 	const transfer = randomId();
 	const token = randomId();
-	await database.transaction(
-		(tx) =>
-			tx.run(
-				`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body) VALUES (?, ${LEASE}, 0, 0, ?, ${dialect.nowMs} + ?, ?)`,
-				transfer,
-				header.id,
-				FORK_STAGING_LEASE_MS,
-				token,
-			),
-		options,
+	await destinationWrite(
+		database.transaction(
+			(tx) =>
+				tx.run(
+					`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body) VALUES (?, ${LEASE}, 0, 0, ?, ${dialect.nowMs} + ?, ?)`,
+					transfer,
+					header.id,
+					FORK_STAGING_LEASE_MS,
+					token,
+				),
+			options,
+		),
 	);
 
 	/** Writes `rows` in one transaction of the destination, renewing the lease; never while a source read runs. */
 	const write = async (rows: readonly StagedRow[]) => {
-		await database.transaction(async (tx) => {
-			const { changes } = await tx.run(
-				`UPDATE ${table} SET size = ${dialect.nowMs} + ? WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?`,
-				FORK_STAGING_LEASE_MS,
-				transfer,
-				token,
-			);
-			if (changes !== 1) throw lostTransfer(header);
-			for (const row of rows) {
-				await tx.run(
-					`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		await destinationWrite(
+			database.transaction(async (tx) => {
+				const { changes } = await tx.run(
+					`UPDATE ${table} SET size = ${dialect.nowMs} + ? WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?`,
+					FORK_STAGING_LEASE_MS,
 					transfer,
-					row.kind,
-					row.seq,
-					row.idx,
-					row.name ?? null,
-					row.size ?? null,
-					row.body ?? null,
-					(row.data ?? null) as SqliteValue,
+					token,
 				);
-			}
-		}, options);
+				if (changes !== 1) throw lostTransfer(header);
+				for (const row of rows) {
+					await tx.run(
+						`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+						transfer,
+						row.kind,
+						row.seq,
+						row.kind === ENTRY || row.kind === SEARCH_TEXT
+							? Buffer.byteLength(row.body ?? "") + Buffer.byteLength(row.name ?? "")
+							: row.idx,
+						row.name ?? null,
+						row.size ?? null,
+						row.body ?? null,
+						(row.data ?? null) as SqliteValue,
+					);
+				}
+			}, options),
+		);
 	};
 
 	try {
@@ -586,86 +705,70 @@ export async function createStagedFork(
 		}
 		await flush();
 
-		const { epoch } = await target.transaction(async (tx) => {
-			const { tables } = target;
-			// The lease decides between this publication and a cleanup that took the transfer over.
-			const { changes: held } = await tx.run(
-				`UPDATE ${table} SET size = ${dialect.nowMs} + ? WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?`,
-				FORK_STAGING_LEASE_MS,
-				transfer,
-				token,
-			);
-			if (held !== 1) throw lostTransfer(header);
-			if ((await tx.get(`SELECT id FROM ${tables.sessions} WHERE id = ?`, header.id)) !== undefined)
-				throw new SessionExistsError(header.id);
-			const saved = await target.saveSummary(tx, header, seq, summary, index);
-			const expect = async (copied: Promise<{ readonly changes: number }>, rows: number, what: string) => {
-				if ((await copied).changes !== rows)
-					throw new StorageError(
-						`The staged copy of session ${header.id} is missing ${what}; nothing was published`,
-					);
-			};
-			await expect(
-				tx.run(
-					`INSERT INTO ${tables.entries} (session_id, seq, entry_id, entry_json, chunks) SELECT ?, seq, name, body, size FROM ${table} WHERE transfer_id = ? AND kind = ${ENTRY} ORDER BY seq`,
-					header.id,
+		const { epoch } = await destinationWrite(
+			target.transaction(async (tx) => {
+				const { tables } = target;
+				// The lease decides between this publication and a cleanup that took the transfer over.
+				const { changes: held } = await tx.run(
+					`UPDATE ${table} SET size = ${dialect.nowMs} + ? WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?`,
+					FORK_STAGING_LEASE_MS,
 					transfer,
-				),
-				seq,
-				"entries",
-			);
-			if (entryChunkRows > 0)
-				await expect(
-					tx.run(
-						`INSERT INTO ${tables.entryChunks} (session_id, seq, idx, data) SELECT ?, seq, idx, data FROM ${table} WHERE transfer_id = ? AND kind = ${ENTRY_CHUNK} ORDER BY seq, idx`,
-						header.id,
-						transfer,
-					),
+					token,
+				);
+				if (held !== 1) throw lostTransfer(header);
+				if ((await tx.get(`SELECT id FROM ${tables.sessions} WHERE id = ?`, header.id)) !== undefined)
+					throw new SessionExistsError(header.id);
+				const saved = await target.saveSummary(tx, header, seq, summary, index);
+				const move = (
+					kind: number,
+					count: number,
+					destination: string,
+					columns: string,
+					fields: string,
+					join?: string,
+				) => moveStaged(target, tx, transfer, header.id, kind, count, destination, columns, fields, join);
+				await move(
+					ENTRY,
+					seq,
+					tables.entries,
+					"session_id, seq, entry_id, entry_json, chunks",
+					"s.seq, s.name, s.body, s.size",
+				);
+				await move(
+					ENTRY_CHUNK,
 					entryChunkRows,
-					"entry chunks",
+					tables.entryChunks,
+					"session_id, seq, idx, data",
+					"s.seq, s.idx, s.data",
 				);
-			// As `create` does with its first chunked entry: a build that knows only version 1 refuses the database.
-			if (chunkedEntries > 0)
-				await tx.run(
-					`UPDATE ${tables.meta} SET schema_version = ? WHERE schema_version = ?`,
-					target.chunkedSchemaVersion,
-					target.unchunkedSchemaVersion,
-				);
-			if (textRows > 0)
-				await expect(
-					tx.run(
-						`INSERT INTO ${tables.searchTexts} (session_id, seq, text_json) SELECT ?, seq, body FROM ${table} WHERE transfer_id = ? AND kind = ${SEARCH_TEXT} ORDER BY seq`,
-						header.id,
-						transfer,
-					),
-					textRows,
-					"search texts",
-				);
-			if (blobRows > 0) {
-				const legacy = target.legacyBlobData;
-				await expect(
-					tx.run(
-						`INSERT INTO ${tables.blobs} (session_id, hash, bytes, chunks${legacy ? ", data" : ""}) SELECT ?, name, size, idx${legacy ? ", X''" : ""} FROM ${table} WHERE transfer_id = ? AND kind = ${BLOB} ORDER BY seq`,
-						header.id,
-						transfer,
-					),
+				// As `create` does with its first chunked entry: a build that knows only version 1 refuses the database.
+				if (chunkedEntries > 0)
+					await tx.run(
+						`UPDATE ${tables.meta} SET schema_version = ? WHERE schema_version = ?`,
+						target.chunkedSchemaVersion,
+						target.unchunkedSchemaVersion,
+					);
+				await move(SEARCH_TEXT, textRows, tables.searchTexts, "session_id, seq, text_json", "s.seq, s.body");
+				await move(
+					BLOB,
 					blobRows,
-					"blobs",
+					tables.blobs,
+					`session_id, hash, bytes, chunks${target.legacyBlobData ? ", data" : ""}`,
+					`s.name, s.size, s.idx${target.legacyBlobData ? ", X''" : ""}`,
 				);
-			}
-			if (blobChunkRows > 0)
-				await expect(
-					tx.run(
-						`INSERT INTO ${tables.blobChunks} (session_id, hash, idx, data) SELECT ?, h.name, c.idx, c.data FROM ${table} c JOIN ${table} h ON h.transfer_id = c.transfer_id AND h.kind = ${BLOB} AND h.seq = c.seq WHERE c.transfer_id = ? AND c.kind = ${BLOB_CHUNK} ORDER BY c.seq, c.idx`,
-						header.id,
-						transfer,
-					),
+				// A source removed mid-read can leave incomplete chunk rows, never a published blob header.
+				await move(
+					BLOB_CHUNK,
 					blobChunkRows,
-					"blob chunks",
+					tables.blobChunks,
+					"session_id, hash, idx, data",
+					"s.name, s.idx, s.data",
+					`JOIN ${tables.blobs} h ON h.session_id=? AND h.hash=s.name`,
 				);
-			await tx.run(`DELETE FROM ${table} WHERE transfer_id = ?`, transfer);
-			return saved;
-		});
+				await tx.run(`DELETE FROM ${table} WHERE transfer_id = ?`, transfer);
+				return saved;
+			}),
+		);
 		// A session with branches: `create` folds every entry at once, knowing its leaf, and so does a resume's rebuild.
 		// The child is published already; a failure here leaves the rebuild to its first resume.
 		if (index.needsBranchRebuild) await target.rebuildResume(header.id).catch(() => {});
@@ -734,7 +837,13 @@ async function stageBlob(
 			if (part.bytes !== bytes || (!legacy && part.chunks !== chunks) || part.data?.byteLength !== length)
 				throw incomplete(bytes);
 			for (let start = 0; start < length; start += size)
-				await stage({ kind: BLOB_CHUNK, seq: ordinal, idx: idx++, data: part.data.subarray(start, start + size) });
+				await stage({
+					kind: BLOB_CHUNK,
+					seq: ordinal,
+					idx: idx++,
+					name: hash,
+					data: part.data.subarray(start, start + size),
+				});
 			offset += length;
 		}
 		if (idx !== chunks || (first.chunks !== -1 && first.chunks !== chunks)) throw incomplete(bytes);
@@ -749,6 +858,7 @@ async function stageBlob(
 			kind: BLOB_CHUNK,
 			seq: ordinal,
 			idx: index,
+			name: hash,
 			data: data.subarray(index * size, (index + 1) * size),
 		});
 	await stage({ kind: BLOB, seq: ordinal, idx: chunks, name: hash, size: data.byteLength });

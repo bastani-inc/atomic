@@ -975,6 +975,55 @@ for (const backend of storageBackends) {
 		);
 
 		test(
+			"a full staging disk rolls back the private transfer and tries the original clone once",
+			() =>
+				withScope(async (scope) => {
+					const prefix = `${scope.prefix}d_`;
+					const source = await SqlSessionStore.open(await scope.connect(), { prefix: `${scope.prefix}s_` });
+					await source.create(header("src"), [user("u", null, "kept", 1)]);
+					const database = await scope.connect();
+					const entries = renderStorageIdentifiers("sessions", SESSION_TABLES, prefix).entries;
+					const diskFull = Object.assign(
+						new Error("No space for private transfer"),
+						backend.name === "Postgres"
+							? { code: "53100" }
+							: backend.name === "SQLite file"
+								? { code: "ERR_SQLITE_ERROR", errcode: 13 }
+								: { code: "SQLITE_FULL" },
+					);
+					const finalError = new Error("the original clone also failed");
+					let stagedFailures = 0,
+						directWrites = 0,
+						failDirect = false;
+					const dest = await SqlSessionStore.open(
+						instrumented(database, {
+							pause(sql) {
+								if (!sql.startsWith(`INSERT INTO ${entries} `)) return;
+								if (sql.includes("SELECT")) {
+									stagedFailures++;
+									return Promise.reject(diskFull);
+								}
+								directWrites++;
+								if (failDirect) return Promise.reject(finalError);
+							},
+						}),
+						{ prefix },
+					);
+					await stagedClone(source, "src", dest, header("fits", "src"));
+					assert.deepEqual((await dest.load("fits")).entries, (await source.load("src")).entries);
+					assert.deepEqual([stagedFailures, directWrites, await stagedRows(database, prefix)], [1, 1, 0]);
+					failDirect = true;
+					await assert.rejects(
+						stagedClone(source, "src", dest, header("no-room", "src")),
+						(error) => error === finalError,
+					);
+					assert.equal(await dest.readHeader("no-room"), undefined);
+					assert.deepEqual([stagedFailures, directWrites, await stagedRows(database, prefix)], [2, 2, 0]);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
 			"a clone whose source read fails publishes nothing and removes its rows",
 			() =>
 				withScope(async (scope) => {
