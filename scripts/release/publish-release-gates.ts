@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
+import { ReleaseBlocked } from "./cli.js";
 
 export type ReleaseKind = "release" | "prerelease";
 
@@ -31,7 +35,6 @@ export const REQUIRED_CHECK_POLL_INTERVAL_MS = 30_000;
 export const REQUIRED_CHECK_TIMEOUT_MS = 45 * 60_000;
 export const PUBLISH_POLL_INTERVAL_MS = 30_000;
 export const PUBLISH_TIMEOUT_MS = 60 * 60_000;
-export const RELEASE_TOOL_TIMEOUT_BUFFER_MS = 60_000;
 
 export type PullRequestIdentity = {
 	readonly url: string;
@@ -40,7 +43,7 @@ export type PullRequestIdentity = {
 };
 
 export type PreparationInspection =
-	| { readonly mode: "prepare"; readonly summary: string }
+	| { readonly mode: "prepare"; readonly baseSha: string; readonly summary: string }
 	| {
 			readonly mode: "reuse";
 			readonly summary: string;
@@ -51,6 +54,8 @@ export type PreparationInspection =
 export type PreparationReuseState = {
 	readonly worktreeStatus: string;
 	readonly baseSha: string;
+	/** Verified merge base when the remote base has advanced past the preparation parent. */
+	readonly mergeBaseSha?: string;
 	readonly remoteSha?: string;
 	readonly localSha?: string;
 	readonly pullRequests: readonly {
@@ -76,22 +81,25 @@ export function evaluatePreparationReuse(
 	state: PreparationReuseState,
 ): PreparationInspection {
 	if (state.worktreeStatus !== "") {
-		throw new Error(`release checkout is not clean: ${state.worktreeStatus}`);
+		throw new ReleaseBlocked(`release checkout is not clean: ${state.worktreeStatus}`);
 	}
 	if (state.localSha !== undefined && state.remoteSha === undefined) {
-		throw new Error(`local ${release.branch} exists without an exact remote branch and cannot be reused safely`);
+		throw new ReleaseBlocked(
+			`local ${release.branch} exists without an exact remote branch and cannot be reused safely`,
+		);
 	}
 	if (state.localSha !== undefined && state.localSha !== state.remoteSha) {
-		throw new Error(`local ${release.branch} is ${state.localSha}, expected remote ${state.remoteSha}`);
+		throw new ReleaseBlocked(`local ${release.branch} is ${state.localSha}, expected remote ${state.remoteSha}`);
 	}
 	if (state.remoteSha === undefined && state.pullRequests.length === 0) {
 		return {
 			mode: "prepare",
+			baseSha: state.baseSha,
 			summary: `No existing ${release.branch} branch or open PR; prepare from ${state.baseSha}.`,
 		};
 	}
 	if (state.remoteSha === undefined || state.pullRequests.length !== 1) {
-		throw new Error(
+		throw new ReleaseBlocked(
 			`release reuse requires one exact remote branch and one matching open PR; found branch=${state.remoteSha !== undefined}, PRs=${state.pullRequests.length}`,
 		);
 	}
@@ -106,21 +114,21 @@ export function evaluatePreparationReuse(
 		pull.headRef !== release.branch ||
 		pull.headSha !== state.remoteSha
 	) {
-		throw new Error(`open PR identity conflicts with ${release.branch} at ${state.remoteSha}`);
+		throw new ReleaseBlocked(`open PR identity conflicts with ${release.branch} at ${state.remoteSha}`);
 	}
 	const commit = state.commit;
 	if (
 		commit === undefined ||
 		commit.sha !== state.remoteSha ||
 		commit.parents.length !== 1 ||
-		commit.parents[0] !== state.baseSha
+		commit.parents[0] !== (state.mergeBaseSha ?? state.baseSha)
 	) {
-		throw new Error(
+		throw new ReleaseBlocked(
 			`release commit ${state.remoteSha} is not exactly one commit atop origin/${baseRef} ${state.baseSha}`,
 		);
 	}
 	if (commit.changedFiles.length === 0 || commit.changedFiles.some((file) => !/(^|\/)CHANGELOG\.md$/u.test(file))) {
-		throw new Error(
+		throw new ReleaseBlocked(
 			`release commit ${state.remoteSha} is not changelog-only: ${commit.changedFiles.join(", ") || "no files"}`,
 		);
 	}
@@ -134,6 +142,7 @@ export function evaluatePreparationReuse(
 
 export type GateResult = {
 	readonly status: "passed" | "pending" | "failed";
+	readonly lastObservation?: "pending";
 	readonly summary: string;
 	readonly evidenceUrl?: string;
 };
@@ -206,10 +215,6 @@ export type ReleaseBoundary = {
 		readonly signal: AbortSignal;
 	}) => Promise<GateResult>;
 };
-
-function abortError(): Error {
-	return new DOMException("The operation was aborted", "AbortError");
-}
 
 export const systemPollClock: PollClock = {
 	now: () => Date.now(),
@@ -292,6 +297,46 @@ export function evaluateRequiredChecks(
 	};
 }
 
+async function pollGate(
+	label: string,
+	inspect: () => Promise<GateResult>,
+	signal: AbortSignal,
+	clock: PollClock,
+	timeoutMs: number,
+	intervalMs: number,
+): Promise<GateResult> {
+	const startedAt = clock.now();
+	let pending: GateResult | undefined;
+	try {
+		for (;;) {
+			signal.throwIfAborted();
+			const result = await inspect();
+			if (result.status === "failed") return result;
+			signal.throwIfAborted();
+			if (result.status !== "pending") return result;
+			pending = result;
+			const remaining = timeoutMs - (clock.now() - startedAt);
+			if (remaining <= 0) break;
+			await clock.sleep(Math.min(intervalMs, remaining), signal);
+			if (clock.now() - startedAt >= timeoutMs) break;
+		}
+	} catch (error) {
+		// The hard CLI deadline also cancels a GitHub read or sleep. Retain the last
+		// complete observation, but never turn an auth/transport/operator error into pending.
+		if (
+			!signal.aborted ||
+			signal.reason?.name !== "TimeoutError" ||
+			(error !== signal.reason && !(error instanceof Error && error.name === "AbortError"))
+		)
+			throw error;
+	}
+	return {
+		status: "failed",
+		...(pending ? { lastObservation: "pending" as const } : {}),
+		summary: `${label} timed out after ${timeoutMs} ms: ${pending?.summary ?? "No complete observation."}`,
+	};
+}
+
 export async function pollRequiredChecks(input: {
 	readonly inspect: (signal: AbortSignal) => Promise<RequiredChecksSnapshot>;
 	readonly expected: {
@@ -307,16 +352,14 @@ export async function pollRequiredChecks(input: {
 	const clock = input.clock ?? systemPollClock;
 	const timeoutMs = input.timeoutMs ?? REQUIRED_CHECK_TIMEOUT_MS;
 	const intervalMs = input.intervalMs ?? REQUIRED_CHECK_POLL_INTERVAL_MS;
-	const startedAt = clock.now();
-	for (;;) {
-		if (input.signal.aborted) throw input.signal.reason ?? abortError();
-		const result = evaluateRequiredChecks(await input.inspect(input.signal), input.expected);
-		if (result.status !== "pending") return result;
-		if (clock.now() - startedAt >= timeoutMs) {
-			return { status: "failed", summary: `Required CI timed out after ${timeoutMs} ms: ${result.summary}` };
-		}
-		await clock.sleep(Math.min(intervalMs, timeoutMs - (clock.now() - startedAt)), input.signal);
-	}
+	return pollGate(
+		"Required CI",
+		async () => evaluateRequiredChecks(await input.inspect(input.signal), input.expected),
+		input.signal,
+		clock,
+		timeoutMs,
+		intervalMs,
+	);
 }
 
 export function evaluatePublishRuns(
@@ -371,26 +414,20 @@ export async function pollPublish(input: {
 	const clock = input.clock ?? systemPollClock;
 	const timeoutMs = input.timeoutMs ?? PUBLISH_TIMEOUT_MS;
 	const intervalMs = input.intervalMs ?? PUBLISH_POLL_INTERVAL_MS;
-	const startedAt = clock.now();
-	for (;;) {
-		if (input.signal.aborted) throw input.signal.reason ?? abortError();
-		const result = evaluatePublishRuns(await input.inspect(input.signal), input.expected);
-		if (result.status !== "pending") return result;
-		if (clock.now() - startedAt >= timeoutMs) {
-			return { status: "failed", summary: `Publish action timed out after ${timeoutMs} ms: ${result.summary}` };
-		}
-		await clock.sleep(Math.min(intervalMs, timeoutMs - (clock.now() - startedAt)), input.signal);
-	}
+	return pollGate(
+		"Publish action",
+		async () => evaluatePublishRuns(await input.inspect(input.signal), input.expected),
+		input.signal,
+		clock,
+		timeoutMs,
+		intervalMs,
+	);
 }
 
 export type ReleaseCommandResult = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
 
 export type ReleaseCommandTransport = {
-	readonly run: (
-		argv: readonly string[],
-		cwd: string,
-		signal: AbortSignal,
-	) => Promise<ReleaseCommandResult>;
+	readonly run: (argv: readonly string[], cwd: string, signal: AbortSignal) => Promise<ReleaseCommandResult>;
 };
 
 class ReleaseCommandError extends Error {
@@ -415,7 +452,16 @@ async function systemRunCommand(
 	const [command, ...args] = argv;
 	if (command === undefined) throw new Error("release command must not be empty");
 	return await new Promise<ReleaseCommandResult>((resolve, reject) => {
-		const child = spawn(command, args, { cwd, signal, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(command, args, {
+			cwd,
+			signal,
+			// updateWorktree defers cancellation until Git is finished. Do not let a
+			// terminal signal to the CLI's process group interrupt checkout mid-write.
+			detached: command === "git" && (args[0] === "switch" || args[0] === "pull"),
+			windowsHide: true,
+			env: createGitEnvironment(),
+			stdio: ["ignore", "pipe", "pipe"],
+		});
 		let stdout = "";
 		let stderr = "";
 		child.stdout.setEncoding("utf8");
@@ -423,7 +469,9 @@ async function systemRunCommand(
 		child.stdout.on("data", (chunk: string) => (stdout += chunk));
 		child.stderr.on("data", (chunk: string) => (stderr += chunk));
 		child.once("error", reject);
-		child.once("close", (code) => resolve({ exitCode: code ?? -1, stdout: stdout.trim(), stderr: stderr.trim() }));
+		child.once("close", (code) =>
+			resolve({ exitCode: code ?? -1, stdout: args.includes("-z") ? stdout : stdout.trim(), stderr: stderr.trim() }),
+		);
 	});
 }
 
@@ -454,7 +502,8 @@ type ApiPullRequest = {
 	readonly state: string;
 	readonly merged: boolean;
 	readonly base: { readonly ref: string; readonly repo: { readonly full_name: string } };
-	readonly head: { readonly ref: string; readonly sha: string };
+	readonly head: { readonly ref: string; readonly sha: string; readonly repo: { readonly full_name: string } | null };
+	readonly merge_commit_sha: string | null;
 };
 
 type ApiCommit = {
@@ -556,6 +605,13 @@ async function inspectPreparation(input: {
 		input.cwd,
 		input.signal,
 	);
+	if (worktreeStatus !== "") throw new ReleaseBlocked(`release checkout is not clean: ${worktreeStatus}`);
+	if (
+		input.baseRef !== "main" &&
+		(await configuredChecks(input.transport, input.baseRef, input.cwd, input.signal)).length === 0
+	) {
+		throw new ReleaseBlocked(`Required-check protection for ${input.baseRef} is empty.`);
+	}
 	const remoteBranch = await checkedCommand(
 		input.transport,
 		["git", "ls-remote", "--heads", "origin", `refs/heads/${input.release.branch}`],
@@ -611,9 +667,28 @@ async function inspectPreparation(input: {
 			page += 1;
 		}
 	}
+	// The base can advance while CI runs, and the new tip need not exist in this checkout.
+	// Compare immutable SHAs without fetching into the worktree. Only one commit unique to
+	// the release branch is allowed; its sole parent must be the common ancestor.
+	let mergeBaseSha: string | undefined;
+	if (commit?.parents.length === 1 && commit.parents[0].sha !== baseSha && remoteSha !== undefined) {
+		const comparison = await ghJson<{
+			base_commit: { sha: string };
+			merge_base_commit: { sha: string };
+			ahead_by: number;
+		}>(
+			input.transport,
+			`repos/${RELEASE_REPOSITORY}/compare/${baseSha}...${remoteSha}?per_page=1`,
+			input.cwd,
+			input.signal,
+		);
+		if (comparison.base_commit.sha === baseSha && comparison.ahead_by === 1)
+			mergeBaseSha = comparison.merge_base_commit.sha;
+	}
 	return evaluatePreparationReuse(input.release, input.baseRef, {
 		worktreeStatus,
 		baseSha,
+		mergeBaseSha,
 		...(remoteSha === undefined ? {} : { remoteSha }),
 		...(localSha === undefined ? {} : { localSha }),
 		pullRequests: pulls.map((pull) => ({
@@ -800,4 +875,137 @@ export function createReleaseBoundary(cwd: string, options: ReleaseBoundaryOptio
 				...(options.publishIntervalMs === undefined ? {} : { intervalMs: options.publishIntervalMs }),
 			}),
 	};
+}
+
+export async function checkChangelogDiff(cwd: string, baseRef: string, signal: AbortSignal) {
+	const git = (...args: string[]) => checkedCommand(systemReleaseCommandTransport, ["git", ...args], cwd, signal);
+	const [baseSha, ref] = (await git("ls-remote", "--heads", "origin", `refs/heads/${baseRef}`)).split(/\s+/u);
+	if (!/^[0-9a-f]{40}$/u.test(baseSha) || ref !== `refs/heads/${baseRef}`)
+		throw new ReleaseBlocked(`Cannot resolve origin/${baseRef}.`);
+	// Check each side of the index separately: a working-tree revert can conceal a staged change.
+	// Do not collapse renames: the source path must be a changelog too. NUL preserves unusual paths.
+	const paths = (s: string) => s.split("\0").filter(Boolean);
+	const files = new Set(
+		(
+			await Promise.all([
+				git("diff", "--cached", "--no-renames", "--name-only", "-z", baseSha, "--"),
+				git("diff", "--no-renames", "--name-only", "-z", "--"),
+				git("ls-files", "--others", "--exclude-standard", "-z"),
+			])
+		).flatMap(paths),
+	);
+	if (!files.size || [...files].some((file) => !/(^|\/)CHANGELOG\.md$/u.test(file)))
+		throw new ReleaseBlocked(`Expected a nonempty changelog-only diff: ${[...files].join(", ") || "no files"}`);
+	const manifests = paths(await git("ls-files", "-z", "--", ":(glob)packages/*/package.json"));
+	if (!manifests.includes("packages/coding-agent/package.json"))
+		throw new ReleaseBlocked("Missing coding-agent manifest.");
+	for (const path of manifests) {
+		if (JSON.parse(readFileSync(join(cwd, path), "utf8")).version !== "0.0.0")
+			throw new ReleaseBlocked(`Expected ${path} to remain at 0.0.0.`);
+	}
+	return { status: "passed", baseSha, changedFiles: [...files] };
+}
+
+/** Recheck the PR and CI here: a prior skill message is not proof that the head is still safe to merge. */
+export async function mergeExactHead(
+	input: {
+		cwd: string;
+		baseRef: string;
+		pullRequest: PullRequestIdentity;
+		release?: ValidatedRelease;
+		dryRun: boolean;
+		signal: AbortSignal;
+		syncSignal?: AbortSignal;
+	},
+	transport = systemReleaseCommandTransport,
+) {
+	const { cwd, baseRef, pullRequest, signal } = input;
+	const run = (...argv: string[]) => checkedCommand(transport, argv, cwd, signal);
+	const clean = async (checkSignal: AbortSignal) => {
+		const status = await checkedCommand(
+			transport,
+			["git", "status", "--porcelain=v1", "--untracked-files=all"],
+			cwd,
+			checkSignal,
+		);
+		if (status) throw new ReleaseBlocked(`release checkout is not clean: ${status}`);
+	};
+	await clean(signal);
+	const readPr = () =>
+		ghJson<ApiPullRequest>(transport, `repos/${RELEASE_REPOSITORY}/pulls/${pullRequest.number}`, cwd, signal);
+	const initial = await readPr();
+	const [kind, version] = initial.head.ref.split("/");
+	if ((kind !== "release" && kind !== "prerelease") || !version)
+		throw new ReleaseBlocked(`Not a release PR: ${initial.head.ref}`);
+	const release = input.release ?? validateReleaseRequest(kind, version);
+	const verify = (pr: ApiPullRequest) => {
+		if (
+			pr.number !== pullRequest.number ||
+			pr.html_url !== pullRequest.url ||
+			pr.base.repo.full_name !== RELEASE_REPOSITORY ||
+			pr.head.repo?.full_name !== RELEASE_REPOSITORY ||
+			pr.base.ref !== baseRef ||
+			pr.head.ref !== release.branch ||
+			pr.head.sha !== pullRequest.headSha ||
+			(!pr.merged && pr.state !== "open")
+		) {
+			throw new ReleaseBlocked(
+				`Expected open or merged ${pullRequest.url} from ${release.branch} at ${pullRequest.headSha} to ${baseRef}.`,
+			);
+		}
+	};
+	verify(initial);
+	if (!initial.merged) {
+		const preparation = await inspectPreparation({ transport, cwd, release, baseRef, signal });
+		if (
+			preparation.mode !== "reuse" ||
+			preparation.pullRequest.number !== pullRequest.number ||
+			preparation.pullRequest.url !== pullRequest.url ||
+			preparation.pullRequest.headSha !== pullRequest.headSha
+		)
+			throw new ReleaseBlocked("No matching changelog-only preparation to merge.");
+	}
+	const expected = { release, baseRef, pullRequest };
+	const snapshot = await requiredChecksSnapshot({ ...expected, cwd, transport, signal });
+	const ci = evaluateRequiredChecks(snapshot, expected);
+	if (ci.status !== "passed") throw new ReleaseBlocked(ci.summary);
+	let pr = await readPr();
+	verify(pr);
+	if (!pr.merged && (initial.merged || snapshot.pullRequest.merged))
+		throw new ReleaseBlocked("PR merged state changed during verification.");
+	if (input.dryRun)
+		return {
+			status: "passed",
+			dryRun: true,
+			action: pr.merged ? "would-sync-base" : "would-merge-exact-head",
+			pr: pullRequest,
+			summary: ci.summary,
+		};
+	if (!pr.merged) {
+		await run("gh", "pr", "merge", pullRequest.url, "--squash", "--match-head-commit", pullRequest.headSha);
+		pr = await readPr();
+		verify(pr);
+	}
+	if (!pr.merged || !pr.merge_commit_sha || !/^[0-9a-f]{40}$/u.test(pr.merge_commit_sha))
+		throw new ReleaseBlocked("Exact head is not yet provably merged; base not synchronized.");
+	// The PR is merged. A slow sync must not inherit the inspection deadline. Stop at
+	// safe boundaries rather than killing a Git process while it updates the worktree.
+	const syncSignal = input.syncSignal ?? signal;
+	const syncGit = (...args: string[]) => checkedCommand(transport, ["git", ...args], cwd, syncSignal);
+	const updateWorktree = async (...args: string[]) => {
+		syncSignal.throwIfAborted();
+		await checkedCommand(transport, ["git", ...args], cwd, new AbortController().signal);
+		syncSignal.throwIfAborted();
+	};
+	await clean(syncSignal);
+	await updateWorktree("switch", baseRef);
+	await syncGit("fetch", "--no-tags", "origin", `refs/heads/${baseRef}`);
+	await updateWorktree("pull", "--ff-only", "origin", baseRef);
+	await clean(syncSignal);
+	const baseSha = await syncGit("rev-parse", "HEAD");
+	const remote = await syncGit("ls-remote", "--heads", "origin", `refs/heads/${baseRef}`);
+	if (remote !== `${baseSha}\trefs/heads/${baseRef}` || (await syncGit("branch", "--show-current")) !== baseRef)
+		throw new ReleaseBlocked(`Local HEAD does not match origin/${baseRef}.`);
+	await syncGit("merge-base", "--is-ancestor", pr.merge_commit_sha, baseSha);
+	return { status: "passed", baseRef, baseSha, pr: pullRequest };
 }

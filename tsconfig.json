@@ -47,7 +47,7 @@
         "packages/workflows/**/*",
         "test/**/*",
         "examples/**/*",
-        ".atomic/workflows/**/*"
+        "scripts/release/*.ts"
     ],
     "exclude": [
         "node_modules",
