@@ -85,6 +85,8 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	 * and its `getEntries()` is empty. Absent where `getEntries()` holds the history (#5186).
 	 */
 	loadHistory?(): Promise<TaskTranscriptHistory>;
+	/** Saved history, without hydrating the task's session. Its cursors fence the generation and original watermark. */
+	readHistory?: SessionManager["readHistory"];
 
 	loadFullHistory?(): Promise<void>;
 	/** The session's commands now; a settled transcript keeps those it had when it settled. */

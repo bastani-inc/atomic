@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
@@ -295,6 +295,8 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const bound = taskTranscriptSource(task.value);
 			if (!bound.ok) return { ok: false, error: { message: "Transcript unavailable" } };
 			const { session, taskId } = bound.value;
+			if (session.readHistory && !session.subscribe)
+				return savedTranscriptView(session, taskId, session.readHistory.bind(session), cursor);
 			// A finished task keeps its history in its session store, not in memory (#5186).
 			if (session.loadHistory)
 				return session
@@ -440,6 +442,60 @@ function detailText(entries: ReturnType<TaskTranscriptSource["getEntries"]> | un
 		...(promptText === undefined ? {} : { prompt: promptText }),
 		...(outputText === undefined ? {} : { output: outputText }),
 	};
+}
+
+/** One saved page at a time; skipping a page of invisible bookkeeping doesn't keep that page alive. */
+async function savedTranscriptView(
+	session: TaskTranscriptSource,
+	taskId: string,
+	read: NonNullable<TaskTranscriptSource["readHistory"]>,
+	cursor: string | undefined,
+): Promise<TaskViewResult<TaskTranscriptView>> {
+	const sessionId = session.getSessionId();
+	const scope =
+		createHash("sha256")
+			.update(JSON.stringify([taskId, sessionId]))
+			.digest("base64url") + ":";
+	if (cursor !== undefined && !cursor.startsWith(scope))
+		return { ok: false, error: { message: "Transcript cursor belongs to another task or session" } };
+	for await (const page of read({ direction: "backward", cursor: cursor?.slice(scope.length) })) {
+		const messages = page.items.flatMap<AgentMessage>((item) => {
+			if (!("entry" in item))
+				return [
+					{
+						role: "custom",
+						customType: "atomic.oversized-history-entry",
+						display: true,
+						timestamp: 0,
+						content: `Saved entry ${item.seq} is ${item.bytes} bytes. Read the original bytes with the session history reader or export this session.`,
+					},
+				];
+			const { entry } = item;
+			if (entry.type === "message") {
+				const message = entry.message;
+				if (message.role === "user" || message.role === "toolResult") return [message];
+				if (message.role !== "assistant") return [];
+				const content = message.content.filter(
+					(block) => block.type === "text" || block.type === "toolCall" || block.type === "thinking",
+				);
+				return content.length || ["aborted", "error", "length"].includes(message.stopReason)
+					? [{ ...message, content }]
+					: [];
+			}
+			if (
+				(entry.type === "custom_message" && entry.display) ||
+				entry.type === "branch_summary" ||
+				entry.type === "compaction"
+			)
+				return sessionEntryToContextMessages(entry);
+			return [];
+		});
+		if (messages.length || !page.nextCursor)
+			return messages.length || cursor !== undefined
+				? { ok: true, value: { messages, ...(page.nextCursor ? { nextCursor: scope + page.nextCursor } : {}) } }
+				: { ok: false, error: { message: "Transcript unavailable" } };
+	}
+	return { ok: false, error: { message: "Transcript unavailable" } };
 }
 
 /** The page of a task's transcript ending before `cursor`, read from `entries`, its session's history. */

@@ -46,6 +46,45 @@ async function withTranscript(source: TaskTranscriptSource | undefined, check: (
 	}
 }
 
+test("a saved task chat requests a bounded page instead of loading its whole transcript (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 145; i++) await session.appendMessage({ role: "user", content: `saved-${i}`, timestamp: i });
+	const fixture = taskFixture();
+	try {
+		await fixture.start("inspect a saved chat");
+		fixture.runners[0].context.bindTranscript({
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [],
+			readHistory: session.readHistory.bind(session),
+			loadHistory: async () => {
+				throw new Error("whole task transcript loaded");
+			},
+		});
+		const view = ownerTaskViewSource(fixture.store),
+			task = fixture.store.tasks[0]!.ref.taskId;
+		const first = await view.readTaskTranscript(task);
+		assert.ok(first.ok);
+		assert.ok(first.value.messages.length > 0 && first.value.messages.length < 145);
+		assert.ok(first.value.nextCursor);
+		await session.appendMessage({ role: "user", content: "later", timestamp: 200 });
+		let all = [...first.value.messages],
+			cursor: string | undefined = first.value.nextCursor;
+		while (cursor) {
+			const page = await view.readTaskTranscript(task, cursor);
+			assert.ok(page.ok);
+			all = [...page.value.messages, ...all];
+			cursor = page.value.nextCursor;
+		}
+		assert.deepEqual(
+			all.map((m) => (m.role === "user" ? m.content : m.role)),
+			Array.from({ length: 145 }, (_, i) => `saved-${i}`),
+		);
+	} finally {
+		await fixture.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
 // RFC #2884: references retain source identity rather than constructing transcript text.
 test("transcript references use authorized session entries and preserve repeated prompts", async () => {
 	const session = SessionManager.inMemory();
