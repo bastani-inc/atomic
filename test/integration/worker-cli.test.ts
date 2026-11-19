@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -13,11 +13,16 @@ test(
 	() => {
 		const root = makeTempDirectory("worker-cli-");
 		try {
+			const agentDir = join(root, "agent");
+			mkdirSync(agentDir);
+			const settings = join(agentDir, "settings.json");
+			const before = JSON.stringify({ modelRouting: { auto: true } });
+			writeFileSync(settings, before);
 			const result = spawnSyncCollect([bunExecutable(), cli, "worker"], {
 				cwd: root,
 				env: {
 					...process.env,
-					ATOMIC_CODING_AGENT_DIR: join(root, "agent"),
+					ATOMIC_CODING_AGENT_DIR: agentDir,
 					ATOMIC_OFFLINE: "1",
 					ATOMIC_WORKFLOWS_JOURNAL: "",
 					ATOMIC_WORKFLOW_JOURNAL_PATH: "",
@@ -31,6 +36,7 @@ test(
 				/^Error: "atomic worker" was removed in 0\.10\.0 with workflows\.[^\n]*$/,
 			);
 			assert.equal(result.stdout.toString(), "");
+			assert.equal(readFileSync(settings, "utf8"), before, "a retired worker must not migrate settings");
 		} finally {
 			removeTempDirectory(root);
 		}

@@ -451,6 +451,14 @@ export async function main(argv: string[], options?: MainOptions) {
 			});
 		}
 	}
+	if (args[0] === "worker") {
+		console.error(
+			`Error: "${APP_NAME} worker" was removed in 0.10.0 with workflows. Use subagents for delegated work.`,
+		);
+		process.exitCode = 1;
+		await exitAfterCommand();
+		return;
+	}
 	// Before the first settings load, so a removed routing setting is not also reported as ignored. When another process
 	// holds the file, its migration below tries again, and the load's "ignored" warning waits for that.
 	removeSavedModelRoutingSettings(cwd, { retryLater: true });
@@ -491,14 +499,6 @@ export async function main(argv: string[], options?: MainOptions) {
 	if (args[0] === "team") {
 		const { runTeamCommand } = await import("./cli/team-command.js");
 		process.exitCode = await runTeamCommand(args.slice(1), { cwd, agentDir });
-		await exitAfterCommand();
-		return;
-	}
-	if (args[0] === "worker") {
-		console.error(
-			`Error: "${APP_NAME} worker" was removed in 0.10.0 with workflows. Use subagents for delegated work.`,
-		);
-		process.exitCode = 1;
 		await exitAfterCommand();
 		return;
 	}
