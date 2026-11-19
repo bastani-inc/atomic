@@ -145,6 +145,7 @@ function factory(pi: ExtensionAPI): void {
 		resolveDefaultStageSessionDir: runtimeState.resolveDefaultStageSessionDir,
 		store,
 		stageControlRegistry: runState.stageControlRegistry,
+		stageUiBroker: runState.stageUiBroker,
 	};
 	const postMortemHandleResolver = createPostMortemHandleResolver(postMortemResolverDeps);
 	const disposeCompletedRoutes = registerCompletedStageIntercomAskRouter(pi, postMortemHandleResolver);
