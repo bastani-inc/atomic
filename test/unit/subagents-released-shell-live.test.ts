@@ -183,7 +183,6 @@ test(
 				index: 0,
 			},
 			wakeDispatcher: dispatcher,
-			wait: { kind: "background" },
 			recordChild: createSubagentChildRecordSink(
 				{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
 				{ sessionManager: owner, orchestrationContext: undefined },
