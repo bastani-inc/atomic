@@ -11,6 +11,7 @@ import {
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { seedLegacyResumeSession } from "../helpers/legacy-resume-session.js";
+import { postgresTestPassword, postgresUrlFor } from "../helpers/postgres-database.js";
 import { refuseChunkProjection } from "../helpers/resume-projection-limit.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -90,6 +91,46 @@ for (const backend of storageBackends) {
 			await scope.close();
 		}
 	});
+	if (backend.name !== "Postgres") {
+		run(`a wide session key preserves logical chunk order on ${backend.name} (#5590)`, async () => {
+			const scope = await backend.openScope();
+			try {
+				const db = await scope.connect();
+				const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+				const id = "w".repeat(4096);
+				const entries = transcript("");
+				await store.create({ ...header, id }, entries);
+				const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
+				const json = JSON.stringify(entries[0]);
+				const at = json.indexOf("🙂");
+				const pieces = [json.slice(0, at), "🙂", json.slice(at + 2)].map((s) => Buffer.from(s));
+				await db.transaction(async (tx) => {
+					await tx.run(
+						`UPDATE ${tables.entries} SET chunks = 3, entry_json = ? WHERE session_id = ? AND seq = 1`,
+						JSON.stringify({ type: "custom", id: "receipt", parentId: null }),
+						id,
+					);
+					for (const idx of [0, 2, 1])
+						await tx.run(
+							`INSERT INTO ${tables.entryChunks} (session_id,seq,idx,data) VALUES (?,1,?,?)`,
+							id,
+							idx,
+							pieces[idx]!,
+						);
+					await tx.run(`UPDATE ${tables.sessions} SET summary_state = '{}' WHERE id = ?`, id);
+				});
+				const get = db.get.bind(db);
+				db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+					const row = await get<T>(sql, ...args);
+					assert.ok(!(row?.data instanceof Uint8Array), "fitting metadata stays in the database");
+					return row;
+				};
+				assert.deepEqual((await store.readResume(id)).recovery.deliveryOpIds, [op]);
+			} finally {
+				await scope.close();
+			}
+		});
+	}
 	if (backend.name === "Postgres") {
 		run("a resume lookup does not wait for chunk tables it does not read (#5590)", async () => {
 			const scope = await backend.openScope();
@@ -109,9 +150,11 @@ for (const backend of storageBackends) {
 				);
 				const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
 				await db.run(`UPDATE ${tables.sessions} SET summary_state = '{}' WHERE id = ?`, header.id);
-				const schema = (await db.get<{ name: string }>("SELECT current_schema() AS name"))!.name;
-				const address = new URL(db.descriptor.location);
-				address.password = process.env.ATOMIC_TEST_POSTGRES_PASSWORD ?? "";
+				const { schema, name } = (await db.get<{ schema: string; name: string }>(
+					"SELECT current_schema() AS schema, current_database() AS name",
+				))!;
+				const address = new URL(postgresUrlFor(name));
+				address.password = postgresTestPassword ?? "";
 				const locker = new pg.Client({ connectionString: address.href, connectionTimeoutMillis: 5_000 });
 				try {
 					await locker.connect();

@@ -1599,7 +1599,8 @@ export class SqlSessionStore implements SessionStore {
 			// A wide owner key can occupy overflow pages of SQLite's composite chunk index. Walk that index
 			// once for the page, then check lengths and join by integer rowid in the same statement. Only
 			// locations are staged; the bounds below permit at most 512 x 64 distinct (seq,idx) pairs.
-			// Outside this window use the direct checked join, including for non-contiguous sequences.
+			// A positive first_rid means the checked rowids advance exactly with idx. Zero identifies
+			// scattered chunks; a negative value falls back to the direct join outside the bounded window.
 			const keysPerEntry = 64;
 			const through = `?2 + ${SESSION_RESUME_REBUILD.pageEntries}`;
 			const nativePage =
@@ -1610,15 +1611,18 @@ export class SqlSessionStore implements SessionStore {
 					ORDER BY seq,idx),
 				sized AS NOT MATERIALIZED (SELECT page.*, CASE WHEN chunks = 0 THEN NULL
 					WHEN seq <= ${through} AND chunks <= ${keysPerEntry} THEN (
-						SELECT CASE WHEN count(*) = page.chunks AND length(zeroblob(sum(bytes))) IS NOT NULL THEN json_group_array(rid) END
-						FROM (SELECT k.rid,length(c.data) AS bytes FROM keys k CROSS JOIN ${this.tables.entryChunks} c
-							WHERE k.seq = page.seq AND k.idx < page.chunks AND c.rowid = k.rid ORDER BY k.idx LIMIT -1 OFFSET 0))
-					WHEN EXISTS (SELECT 1 ${parts("page")} GROUP BY seq HAVING count(*) = page.chunks AND ${fits}) THEN '' END AS refs
+						SELECT CASE WHEN count(*) = page.chunks AND length(zeroblob(sum(length(c.data)))) IS NOT NULL
+							THEN CASE WHEN min(k.rid) > 0 AND min(k.rid - k.idx) = max(k.rid - k.idx) THEN min(k.rid) ELSE 0 END END
+						FROM keys k CROSS JOIN ${this.tables.entryChunks} c WHERE k.seq = page.seq AND k.idx < page.chunks AND c.rowid = k.rid)
+					WHEN EXISTS (SELECT 1 ${parts("page")} GROUP BY seq HAVING count(*) = page.chunks AND ${fits}) THEN -1 END AS first_rid
 					FROM page LIMIT -1 OFFSET 0),
-				payloads AS MATERIALIZED (SELECT seq,entry_id,CASE WHEN chunks > 0 AND refs IS NULL THEN -chunks ELSE chunks END AS chunks,
-					CASE WHEN refs IS NULL THEN entry_json WHEN refs = '' THEN ${joined} ELSE (
-						SELECT group_concat(CAST((SELECT data FROM ${this.tables.entryChunks} WHERE rowid = ids.value) AS TEXT), '')
-						FROM (SELECT value FROM json_each(sized.refs) ORDER BY CAST(key AS INTEGER) LIMIT -1 OFFSET 0) ids) END AS entry_json FROM sized)
+				payloads AS MATERIALIZED (SELECT seq,entry_id,CASE WHEN chunks > 0 AND first_rid IS NULL THEN -chunks ELSE chunks END AS chunks,
+					CASE WHEN first_rid IS NULL THEN entry_json WHEN first_rid < 0 THEN ${joined}
+					WHEN first_rid > 0 THEN (SELECT group_concat(text, '') FROM (SELECT CAST(data AS TEXT) AS text FROM ${this.tables.entryChunks}
+						WHERE rowid BETWEEN sized.first_rid AND sized.first_rid + (sized.chunks - 1) ORDER BY rowid))
+					ELSE (SELECT group_concat(CAST((SELECT data FROM ${this.tables.entryChunks} WHERE rowid = ids.rid) AS TEXT), '')
+						FROM (SELECT rid FROM keys k WHERE k.seq = sized.seq AND k.idx < sized.chunks ORDER BY k.idx LIMIT -1 OFFSET 0) ids)
+					END AS entry_json FROM sized)
 				${projection}`
 					: directPage;
 			const stubPage = `${page}, payloads AS (SELECT seq,entry_id,-chunks AS chunks,entry_json FROM page) ${projection}`;
