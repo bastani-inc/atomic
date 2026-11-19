@@ -21,10 +21,12 @@ import {
 	readEarlierCompletionIntents,
 	resumeIndexNeedsRefold,
 	type SessionResumeIndex,
+	selectedPagePlan,
 	selectResumeLeaf,
 	sessionResumeFrom,
 	sessionResumePlan,
 	sessionTailFrom,
+	snapshotCutOf,
 	stateSeqsBefore,
 	transcriptBranchSpan,
 } from "./session-resume.js";
@@ -46,10 +48,12 @@ import type {
 	SessionEntryAt,
 	SessionEntryRange,
 	SessionEntrySizes,
+	SessionHistoryPage,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
 	SessionSnapshot,
+	SessionSnapshotCut,
 	SessionStore,
 	SessionStoredEntry,
 	SessionSummary,
@@ -58,7 +62,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import { entrySizeLimit, matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
@@ -427,11 +431,16 @@ export class MemorySessionStore implements SessionStore {
 		return transcriptBranchSpan(sessionId, index, cut);
 	}
 
-	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
+	async readEntrySizes(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		limit?: number,
+	): Promise<SessionEntrySizes> {
 		const record = await this.settledRecord(sessionId);
 		const held = this.held(record);
 		const start = Math.max(1, startSeq);
-		const seqs = seqRange(start, Math.min(endSeq, held.lastSeq, start + SESSION_HISTORY_PAGE_ENTRIES - 1));
+		const seqs = seqRange(start, Math.min(endSeq, held.lastSeq, start + entrySizeLimit(limit) - 1));
 		return {
 			epoch: record.index.epoch,
 			lastSeq: held.lastSeq,
@@ -529,11 +538,92 @@ export class MemorySessionStore implements SessionStore {
 		};
 	}
 
+	async readForkWindow(sessionId: string, entryId: string) {
+		const { indexedForkWindow, rangedForkMetadata, scanForkRecords, locateFork, fullForkWindow } = await import(
+			"./fork-window.js"
+		);
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			if (record.directory && !record.directory.readRange) {
+				const snapshot = await this.decode(sessionId, record);
+				if (!snapshot) continue;
+				return fullForkWindow(snapshot, entryId);
+			}
+			const captured = record.index;
+			let invalid = false;
+			const held = this.held(record);
+			const many = async (seqs: readonly number[]) => {
+				const rows = invalid ? undefined : await this.entriesAt(sessionId, record, seqs);
+				if (!rows) invalid = true;
+				return rows ?? [];
+			};
+			const metadata = rangedForkMetadata(
+				(seq) => this.spanOf(held, seq, seq),
+				(start, n) => this.bytesOf(sessionId, held, start, start + n),
+			);
+			try {
+				const { index, leaf } = await locateFork(captured, entryId, metadata);
+				const window = await indexedForkWindow(
+					decodeHeader(record),
+					index,
+					leaf,
+					(lo, hi) => many(seqRange(lo, hi)),
+					many,
+					metadata,
+					scanForkRecords(metadata),
+				);
+				if (!invalid && this.records.get(sessionId) === record) return window;
+			} catch (error) {
+				if (this.records.get(sessionId) === record && record.file === held.file) throw error;
+			}
+		}
+	}
+
 	async readChildCatalogCut(sessionId: string) {
 		for (;;) {
 			const record = await this.settledRecord(sessionId);
 			const index = await this.resumeIndex(sessionId, record);
 			if (index) return childCatalogCut(index);
+		}
+	}
+	async readSnapshotCut(
+		sessionId: string,
+		options: { readonly leafSeq?: number } = {},
+	): Promise<SessionSnapshotCut | undefined> {
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			const index = await this.resumeIndex(sessionId, record);
+			if (!index) continue;
+			if (options.leafSeq !== undefined && options.leafSeq > index.seq) return undefined;
+			return snapshotCutOf(index, options.leafSeq);
+		}
+	}
+	async readSelectedPage(
+		sessionId: string,
+		seqs: readonly number[],
+		epoch: string,
+		options: { readonly limit?: number; readonly backward?: boolean } = {},
+	): Promise<SessionHistoryPage> {
+		const limit = entrySizeLimit(options.limit);
+		const wanted = options.backward ? seqs.slice(-limit) : seqs.slice(0, limit);
+		if (!wanted.length) return { items: [] };
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			if (record.index.epoch !== epoch) throw new SessionConflictError(sessionId, wanted.at(-1)!, record.lastSeq);
+			const held = this.held(record);
+			const plan = selectedPagePlan(
+				sessionId,
+				wanted,
+				held.lastSeq,
+				(seq) => {
+					const [start, end] = this.spanOf(held, seq, seq);
+					return end - start;
+				},
+				options.backward,
+			);
+			if ("oversized" in plan) return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized }] };
+			const read = await this.entriesAt(sessionId, record, plan.seqs);
+			if (read !== undefined) return { items: read };
 		}
 	}
 	async readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {

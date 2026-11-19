@@ -197,6 +197,55 @@ test("an archived custom tool call shows exactly the argument preview of a loade
 	assert.deepEqual(stored, loaded);
 });
 
+test("archived row previews trim leading whitespace before clipping text, as the ordinary tree does (#5554)", async () => {
+	const s = new Lines(),
+		pad = " \t\n".repeat(1600);
+	s.add({ type: "custom_message", customType: "extension", display: true, content: pad + "custom preview" });
+	s.add({
+		type: "custom_message",
+		customType: "extension",
+		display: true,
+		content: [
+			{ type: "text", text: pad },
+			{ type: "text", text: "joined preview" },
+		],
+	});
+	s.add({ type: "branch_summary", fromId: "old", summary: pad + "branch preview" });
+	s.add({ type: "session_summary", summarizedThroughId: "old", summary: pad + "summary preview" });
+	s.add({
+		type: "message",
+		message: {
+			role: "bashExecution",
+			command: pad + "command preview",
+			output: "",
+			cancelled: false,
+			truncated: false,
+			timestamp: 0,
+		},
+	});
+	s.add({
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [],
+			errorMessage: pad + "error preview",
+			stopReason: "error",
+			provider: "faux",
+			model: "faux",
+			api: "faux",
+			usage,
+			timestamp: 0,
+		},
+	});
+	s.compact();
+	s.user("current");
+	const f = await s.write();
+	const loaded = await loadedRows(f, 120, 40),
+		stored = await storedRows(f, 120, 40);
+	assert.ok(loaded.some((row) => row.includes("command preview")));
+	assert.deepEqual(stored, loaded);
+});
+
 /** A store whose archived reads can be held or failed, counting each entry read for a preview. */
 class ArchiveStore extends MemorySessionStore {
 	previewGate?: PromiseWithResolvers<void>;

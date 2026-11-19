@@ -28,12 +28,13 @@ export async function captureHtmlHistory(sm: SessionManager) {
 		header: { type: "session" as const, ...header },
 		leafId,
 		readHistory: () => historyPages(store, id, cut.epoch, cut.lastSeq, {}),
-		readHistoryChunks: (item: OversizedSessionEntry) => historyChunks(store, id, cut.epoch, item, {}),
+		readHistoryChunks: (item: OversizedSessionEntry, offset = 0) =>
+			historyChunks(store, id, cut.epoch, item, { offset }),
 	};
 }
 
 /** A single output JSON object. Entries can be larger than any page: copy their exact UTF-8 bytes directly to
- * the encoder rather than decoding the historical message or passing it through an extension's renderer. */
+ * the encoder. Only fields exposed to an extension's renderer are replaced, without decoding the rest. */
 export async function* sessionDataBytes(
 	source: Awaited<ReturnType<typeof captureHtmlHistory>>,
 	metadataJson: string,
@@ -50,7 +51,11 @@ export async function* sessionDataBytes(
 			else {
 				if (ordinary || separator) yield Buffer.from(ordinary + separator);
 				ordinary = "";
-				yield* source.readHistoryChunks(item);
+				const patches = inputs?.oversizedPatches(item.seq);
+				if (patches?.length) {
+					const { patchJson } = await import("./json-spans.js");
+					yield* patchJson(source.readHistoryChunks(item), patches);
+				} else yield* source.readHistoryChunks(item);
 			}
 		}
 		if (ordinary) yield Buffer.from(ordinary);

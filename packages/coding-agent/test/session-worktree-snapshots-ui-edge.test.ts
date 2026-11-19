@@ -279,7 +279,11 @@ describe("/export of a session holding only its context window (#5554)", () => {
 			InteractiveMode.prototype as unknown as { handleExportCommand(this: typeof host, text: string): Promise<void> }
 		).handleExportCommand.call(host, `/export ${file}`);
 
-		const described = describeSnapshotExport(manager.getBranch(), manager.getWorktreeSnapshotRecords());
+		// The export no longer loads the session into the manager it exports; describe the whole session separately.
+		const full = await SessionManager.open(manager.getSessionStore(), manager.getSessionId(), undefined, {
+			history: "full",
+		});
+		const described = describeSnapshotExport(full.getBranch(), full.getWorktreeSnapshotRecords());
 		assert.match(described ?? "", /^Includes 4 worktree snapshot\(s\)/);
 		assert.deepEqual(host.statuses, [`Session exported to: ${file}`, described]);
 		assert.equal(window.hasFullHistory(), false, "the window manager still holds only its window");

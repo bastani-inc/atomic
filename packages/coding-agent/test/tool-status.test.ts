@@ -36,6 +36,7 @@ test("exports asynchronous Git status from the SDK (#5377)", async () => {
 
 // The interactive engine binds before extensions load, then loads them with reload({ reason: "startup" }).
 test.each([
+	{ selectedBy: "the standard defaults", settings: {}, tools: undefined },
 	{ selectedBy: "the defaultTools setting", settings: { defaultTools: ["+codemode"] }, tools: undefined },
 	{ selectedBy: "a --tools modifier", settings: {}, tools: ["+codemode"] },
 ])("codemode selected by $selectedBy activates once deferred extensions load", async ({ settings, tools }) => {
@@ -96,7 +97,18 @@ async function withSession<T>(
 	}
 }
 
-test("a selected opt-in tool turned off during the session stays off after reload", async () => {
+test("tool status distinguishes opting out of codemode from an opt-in tool", async () => {
+	await withSession(
+		{ settingsManager: SettingsManager.inMemory({ defaultTools: ["-codemode"] }) },
+		async (session) => {
+			const report = session.getToolStatus();
+			assert.match(report.tools.find((t) => t.name === "codemode")?.inactiveReason ?? "", /^not selected;/);
+			assert.match(report.tools.find((t) => t.name === "tool_search")?.inactiveReason ?? "", /^opt-in;/);
+		},
+	);
+});
+
+test("a selected tool turned off during the session stays off after reload", async () => {
 	await withSession(
 		{ settingsManager: SettingsManager.inMemory({ defaultTools: ["+codemode"] }) },
 		async (session) => {

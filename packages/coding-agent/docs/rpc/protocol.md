@@ -963,7 +963,7 @@ If an extension cancelled the clone:
 
 #### get_fork_messages
 
-Get user messages available for forking in the resident window. To find an older prompt, iterate `get_history_page`; its original entry ID can be passed to `fork`.
+Get user prompts available for forking, including older prompts on every branch. A windowed session obtains them through the same bounded archive reader as `/fork`; long prompts use the picker's short labels. Each original entry ID can be passed to `fork`.
 
 ```json
 {"type": "get_fork_messages"}

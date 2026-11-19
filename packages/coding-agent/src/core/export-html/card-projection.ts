@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Token } from "stream-json/core/parser.js";
 import type { SessionEntry } from "../session-manager.ts";
 import { type Reader, read, skip, stringValue } from "../storage/session/chunked-resume-projection.js";
@@ -63,6 +64,15 @@ const scalar: Selector = function* (t) {
 	yield* skip(t);
 	return true;
 };
+const compareString: Selector = function* (t) {
+	if (t.name !== "startString") {
+		yield* skip(t);
+		return null;
+	}
+	const hash = createHash("sha256");
+	for (let p = yield; p.name === "stringChunk"; p = yield) hash.update(p.value, "utf16le");
+	return hash.digest("hex");
+};
 const string = str(Infinity),
 	tag = str(64);
 const block = fields({
@@ -72,7 +82,7 @@ const block = fields({
 	mimeType: str(0),
 	name: tag,
 	id: string,
-	arguments: fields({ agent: string, task: string, action: scalar, tasks: scalar }),
+	arguments: fields({ agent: compareString, task: compareString, action: scalar, tasks: scalar }),
 });
 // Keep only enough blocks to decide whether there was one launch; together with the last eligible answer block and ordinal.
 const selectContent = (select: Selector) =>
@@ -150,7 +160,15 @@ const toolCalls = arr(fields({ expandedText: scalar, text: scalar }), () => {
 	};
 });
 const results = arr(
-	fields({ agent: string, task: string, status: tag, detached: scalar, finalOutput: text, messages, toolCalls }),
+	fields({
+		agent: compareString,
+		task: compareString,
+		status: tag,
+		detached: scalar,
+		finalOutput: text,
+		messages,
+		toolCalls,
+	}),
 	() => {
 		const r: Value[] = [];
 		return {

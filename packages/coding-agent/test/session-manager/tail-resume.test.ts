@@ -268,6 +268,17 @@ it("a cleared parent keeps completed children's addresses rather than their laun
 		});
 		expect(view.getEntry(id)).toBeUndefined();
 	}
+	const complete = await manager.appendCustomEntry("subagent-child", {
+		...base,
+		state: "running",
+		taskId: "again",
+		terminalStatus: "ok",
+		extra: "updated",
+		launch: { task: "current" },
+	});
+	expect(manager.getArchivedChildCatalog()).toMatchObject([
+		{ entryId: id, coveredBy: complete, taskIds: ["previous", "last"] },
+	]);
 });
 
 it("cold resume never decodes an oversized settled child payload to recover its heading or earlier task aliases (#5554)", async () => {

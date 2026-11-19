@@ -249,9 +249,13 @@ function ownedChildren(manager: ExtensionContext["sessionManager"], owner: strin
 			? manager.getArchivedChildCatalog().filter((child) => child.ownerSessionId === owner)
 			: [];
 	if (catalog.length === 0) return resident;
-	const archived = new Map<string, readonly [number, ArchivedChild]>();
+	const archived = new Map<string, readonly [number, OwnedChild]>();
 	for (const child of catalog) {
 		const overlay = resident.get(child.childId);
+		if (overlay && child.coveredBy && manager.getEntry(child.coveredBy)) {
+			archived.set(child.childId, [child.firstSeq, overlay]);
+			continue;
+		}
 		const { entryId, firstSeq, ownerSessionId, taskIds, releasedTaskIds: _released, ...standing } = child;
 		archived.set(child.childId, [
 			firstSeq,
@@ -337,6 +341,8 @@ async function holdFullRecordOf(ctx: ExtensionContext, child: ArchivedChild): Pr
  */
 function childIdOfEarlierTask(ctx: ExtensionContext, taskId: string): string | undefined {
 	const owner = subagentChildOwner(ctx).sessionId;
+	for (const child of ctx.sessionManager.getArchivedChildCatalog?.() ?? [])
+		if (child.ownerSessionId === owner && child.taskIds.includes(taskId)) return child.childId;
 	for (const child of ownedRecords(ctx).values())
 		if (isArchivedChild(child) && child.taskIds.includes(taskId)) return child.childId;
 	for (const entry of ctx.sessionManager.getEntries()) {

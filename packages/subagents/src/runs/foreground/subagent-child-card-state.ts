@@ -681,7 +681,10 @@ function observeSession(sessionManager: RecordReader & { getEntries(): SessionEn
 	const sessionId = sessionManager.getSessionId();
 	const catalog =
 		typeof sessionManager.getArchivedChildCatalog === "function" ? sessionManager.getArchivedChildCatalog() : [];
-	observeEntries(sessionManager.getEntries(), sessionId, observeArchivedChildren(catalog, sessionId));
+	const earlier = observeArchivedChildren(catalog, sessionId);
+	for (const child of catalog)
+		if (child.coveredBy && sessionManager.getEntry(child.coveredBy)) earlier.delete(child.childId);
+	observeEntries(sessionManager.getEntries(), sessionId, earlier);
 }
 
 /** Read the child records of the session a card is shown in, and keep its store for records and transcripts. */

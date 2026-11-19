@@ -12,6 +12,9 @@ import {
 	SESSION_HISTORY_CHUNK_BYTES,
 	SESSION_HISTORY_PAGE_BYTES,
 	SESSION_HISTORY_PAGE_ENTRIES,
+	SESSION_HISTORY_SCAN_ENTRIES,
+	type SessionBranchSpan,
+	type SessionEntrySizes,
 	type SessionHistoryPage,
 	type SessionHistoryReadOptions,
 	type SessionStore,
@@ -72,10 +75,10 @@ export async function* historyPages(
 		lastSeq = end;
 	let reverse = options.direction === "backward";
 	// A reader that needs only the entries next to a page it shows reads fewer per page; never more than a page holds.
-	const perPage = Math.max(
-		1,
-		Math.min(SESSION_HISTORY_PAGE_ENTRIES, Math.floor(options.limit ?? SESSION_HISTORY_PAGE_ENTRIES)),
-	);
+	const edgeLimit =
+		options.limit === undefined
+			? undefined
+			: Math.max(1, Math.min(SESSION_HISTORY_PAGE_ENTRIES, Math.floor(options.limit)));
 	let stamp = epoch;
 	let scope = epoch === undefined ? undefined : cursorScope(sessionId, epoch);
 	if (options.cursor !== undefined) {
@@ -116,6 +119,16 @@ export async function* historyPages(
 		throw new RangeError("Branch history must start from a sequence in the captured session");
 	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1)
 		throw new RangeError("History sequence must be a safe integer");
+	// A scan asks for more entries a page, never more bytes, and reads a forward branch span once for its whole run:
+	// the stored ancestry cannot change under a pinned generation, and every page's own reads still check it.
+	const pageEntries = options.pageEntries ?? edgeLimit ?? SESSION_HISTORY_PAGE_ENTRIES;
+	if (!Number.isSafeInteger(pageEntries) || pageEntries < 1 || pageEntries > SESSION_HISTORY_SCAN_ENTRIES)
+		throw new RangeError(`History pages hold from 1 to ${SESSION_HISTORY_SCAN_ENTRIES} entries`);
+	const scan = options.pageEntries !== undefined;
+	let pinned: SessionBranchSpan | undefined;
+	// Sizes a forward scan read past the end of its last page, which start its next page when they fill it or reach
+	// the end of the run.
+	let spare: SessionEntrySizes["sizes"] | undefined;
 	while (start <= end) {
 		options.signal?.throwIfAborted();
 		const branchCut =
@@ -124,15 +137,19 @@ export async function* historyPages(
 				: { leaf, first: firstSeq, last: lastSeq, pivot: reverse ? end : start, backward: reverse, epoch: stamp };
 		const span = !branchCut
 			? undefined
-			: store.readBranchSpan
-				? await store.readBranchSpan(sessionId, branchCut)
-				: await (await import("./snapshot-history.js")).snapshotBranchSpan(store, sessionId, branchCut);
+			: pinned && start > pinned.start && start <= pinned.end
+				? { start, end: pinned.end, older: true, newer: pinned.newer }
+				: store.readBranchSpan
+					? await store.readBranchSpan(sessionId, branchCut)
+					: await (await import("./snapshot-history.js")).snapshotBranchSpan(store, sessionId, branchCut);
+		if (scan && !reverse) pinned = span;
 		if (leaf !== undefined) {
 			options.signal?.throwIfAborted();
 			if (!span) return;
 		}
 		const left = span?.start ?? start,
 			right = span?.end ?? end;
+		const perPage = edgeLimit === undefined ? pageEntries : Math.min(edgeLimit, pageEntries);
 		const from = reverse ? Math.max(left, right - perPage + 1) : left;
 		const through = reverse ? right : Math.min(right, left + perPage - 1);
 		let page: SessionHistoryPage["items"];
@@ -158,13 +175,23 @@ export async function* historyPages(
 			low = page[0]!.seq;
 			high = page[page.length - 1]!.seq;
 		} else {
-			const sized = await store.readEntrySizes!(sessionId, from, through);
-			options.signal?.throwIfAborted();
-			stamp ??= sized.epoch;
-			scope ??= cursorScope(sessionId, stamp);
-			if (sized.epoch !== stamp || sized.lastSeq < end)
-				throw new SessionConflictError(sessionId, watermark, sized.lastSeq);
-			const ordered = reverse ? [...sized.sizes].reverse() : sized.sizes;
+			let sizes = spare;
+			if (
+				sizes?.[0]?.seq !== from ||
+				(sizes.at(-1)!.seq < through &&
+					sizes.reduce((sum, size) => sum + size.bytes, 0) <= SESSION_HISTORY_PAGE_BYTES)
+			) {
+				const sized = scan
+					? await store.readEntrySizes!(sessionId, from, through, pageEntries)
+					: await store.readEntrySizes!(sessionId, from, through);
+				options.signal?.throwIfAborted();
+				stamp ??= sized.epoch;
+				scope ??= cursorScope(sessionId, stamp);
+				if (sized.epoch !== stamp || sized.lastSeq < end)
+					throw new SessionConflictError(sessionId, watermark, sized.lastSeq);
+				sizes = sized.sizes;
+			}
+			const ordered = reverse ? [...sizes].reverse() : sizes;
 			const first = ordered[0];
 			const edge = reverse ? through : from;
 			if (!first || first.seq !== edge) throw new Error(`Missing session history at entry ${edge}`);
@@ -173,15 +200,17 @@ export async function* historyPages(
 				low = from;
 				high = through;
 				// Internal raw-reference verification takes byte locators, not decoded conversation payloads.
-				page = sized.sizes.map((s) => ({
-					kind: "oversized" as const,
-					seq: s.seq,
-					bytes: s.bytes,
-					epoch: stamp!,
-					sessionId,
-				}));
+				page = sizes
+					.filter((s) => s.seq >= from && s.seq <= through)
+					.map((s) => ({
+						kind: "oversized" as const,
+						seq: s.seq,
+						bytes: s.bytes,
+						epoch: stamp!,
+						sessionId,
+					}));
 			} else if (first.bytes > SESSION_HISTORY_PAGE_BYTES) {
-				page = [{ kind: "oversized", sessionId, epoch: stamp, seq: edge, bytes: first.bytes }];
+				page = [{ kind: "oversized", sessionId, epoch: stamp!, seq: edge, bytes: first.bytes }];
 			} else {
 				let used = 0;
 				for (const size of ordered) {
@@ -196,6 +225,7 @@ export async function* historyPages(
 					throw new SessionConflictError(sessionId, watermark, range.lastSeq);
 				page = range.entries.map((entry, i) => ({ seq: range.seqs?.[i] ?? low + i, entry }));
 			}
+			if (scan && !reverse) spare = sizes.filter((size) => size.seq > high);
 		}
 		const requestedStart = start,
 			requestedEnd = end;
@@ -236,6 +266,7 @@ export async function* readSessionHistory(
 	// Branch spans may need a separate index snapshot. Never request one from inside a single-connection reader.
 	if (
 		snapshot &&
+		options.pageEntries === undefined &&
 		!referenceMetadataRead(options) &&
 		options.branchLeafSeq === undefined &&
 		!options.cursor?.includes(".p")

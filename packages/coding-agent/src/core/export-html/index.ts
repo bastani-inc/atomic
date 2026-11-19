@@ -215,7 +215,7 @@ async function writeSessionHtml(
 		throw error;
 	});
 	const cards = standalone ? await savedFileCards(source) : undefined;
-	const inputs = opts.toolRenderer ? await renderHtmlInputs(source.readHistory(), opts.toolRenderer) : undefined;
+	const inputs = opts.toolRenderer ? await renderHtmlInputs(source, opts.toolRenderer) : undefined;
 	const presentation = {
 		systemPrompt: state?.systemPrompt,
 		tools: state?.tools?.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),

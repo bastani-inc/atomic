@@ -1,5 +1,10 @@
 import type { Usage } from "@bastani/atomic-ai/compat";
-import type { CompactionEntry, SessionEntry, SessionWorkflowMetadata } from "../../session-manager-types.ts";
+import type {
+	CompactionEntry,
+	LabelEntry,
+	SessionEntry,
+	SessionWorkflowMetadata,
+} from "../../session-manager-types.ts";
 import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
@@ -73,6 +78,15 @@ export interface SessionStoredEntry {
 export const SESSION_HISTORY_PAGE_BYTES = 1024 * 1024;
 export const SESSION_HISTORY_CHUNK_BYTES = 64 * 1024;
 export const SESSION_HISTORY_PAGE_ENTRIES = 64;
+/** The most entries a scan that consumes every page at once, such as an export, may ask for in one page. */
+export const SESSION_HISTORY_SCAN_ENTRIES = 4096;
+
+/** How many sizes one `readEntrySizes` call returns: `SESSION_HISTORY_PAGE_ENTRIES` unless a scan asks for more. */
+export function entrySizeLimit(limit: number | undefined): number {
+	return limit === undefined || !Number.isSafeInteger(limit)
+		? SESSION_HISTORY_PAGE_ENTRIES
+		: Math.min(SESSION_HISTORY_SCAN_ENTRIES, Math.max(1, limit));
+}
 
 /** A stored entry too large for a history page. Its exact bytes are available in chunks, not a truncated entry. */
 export interface OversizedSessionEntry {
@@ -105,6 +119,13 @@ export interface SessionHistoryReadOptions {
 	/** At most this many entries per page (and never more than SESSION_HISTORY_PAGE_ENTRIES). */
 	readonly limit?: number;
 	readonly signal?: AbortSignal;
+	/**
+	 * For a scan that consumes every page at once, such as an export: up to this many entries a page, at most
+	 * `SESSION_HISTORY_SCAN_ENTRIES`, still within `SESSION_HISTORY_PAGE_BYTES`, and one branch span read for each
+	 * contiguous run of the branch. The pages hold the same entries in the same order. Default
+	 * `SESSION_HISTORY_PAGE_ENTRIES`.
+	 */
+	readonly pageEntries?: number;
 }
 
 export interface SessionBranchPageCut {
@@ -194,6 +215,8 @@ export interface SessionCompactionPoint {
 export interface ArchivedChildCatalogEntry {
 	readonly firstSeq: number;
 	readonly entryId: string;
+	/** A later resident observation already covers every field of the archived record. Preserve historical task aliases, but do not reread the earlier payload. */
+	readonly coveredBy?: string;
 	readonly childId: string;
 	readonly ownerSessionId: string;
 	readonly runId: string;
@@ -234,6 +257,26 @@ export interface SessionChildReadCut {
 	readonly lastSeq: number;
 	readonly seqs: readonly number[];
 	readonly aliases: Readonly<Record<string, SessionChildAliases>>;
+}
+export interface SessionForkWindow {
+	readonly header: SessionRecordHeader;
+	readonly entries: SessionEntry[];
+	readonly labels: LabelEntry[];
+	readonly lastSeq: number;
+	readonly epoch?: string;
+}
+
+/** Where a session's `worktree_snapshot` entries are, as the store's index of its history locates them (#5554). */
+export interface SessionSnapshotCut {
+	readonly epoch: string;
+	readonly lastSeq: number;
+	/** The latest entry carrying each snapshot record, by snapshot id, on any branch. */
+	readonly records: Readonly<Record<string, number>>;
+	/**
+	 * In ascending order, every entry that can be a `worktree_snapshot` entry, on the requested branch when one was: a
+	 * superset, so a reader keeps the entries whose type is.
+	 */
+	readonly seqs: readonly number[];
 }
 export interface SessionResume {
 	readonly header: SessionRecordHeader;
@@ -489,15 +532,40 @@ export interface SessionStore {
 	): Promise<readonly (SessionTreeOutlineEntry | { readonly seq: number; readonly streamed: true })[]>;
 	/** Locate a contiguous range on the requested branch without reading neighboring conversation bodies. */
 	readBranchSpan?(sessionId: string, cut: SessionBranchPageCut): Promise<SessionBranchSpan | undefined>;
-	/** Metadata only; a historical page is sized before any entry is decoded. */
-	readEntrySizes?(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes>;
+	/**
+	 * Metadata only; a historical page is sized before any entry is decoded. Returns at most
+	 * `SESSION_HISTORY_PAGE_ENTRIES` sizes, or up to `limit` (at most `SESSION_HISTORY_SCAN_ENTRIES`) for a scan.
+	 */
+	readEntrySizes?(sessionId: string, startSeq: number, endSeq: number, limit?: number): Promise<SessionEntrySizes>;
 	/** Read at most SESSION_HISTORY_CHUNK_BYTES, rejecting a reference to a replaced generation. */
 	readEntryChunk?(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array>;
 
 	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
 	readResume?(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume>;
 	readChildCatalogCut?(sessionId: string): Promise<SessionChildReadCut>;
-	readSelectedPage?(sessionId: string, seqs: readonly number[], epoch: string): Promise<SessionHistoryPage>;
+	/**
+	 * Where the session's snapshot entries are, from the index the store keeps of its history, without reading an entry:
+	 * with `leafSeq`, only those on the branch from that sequence to the root. Undefined when that index does not cover
+	 * the session's history as it stands; a reader then reads the history itself. A store with it reads
+	 * `readSelectedPage` with its `limit` and `backward` options.
+	 */
+	readSnapshotCut?(
+		sessionId: string,
+		options?: { readonly leafSeq?: number },
+	): Promise<SessionSnapshotCut | undefined>;
+	/**
+	 * The entries at `seqs`, ascending, of generation `epoch`, in ascending order: the longest prefix of them (with
+	 * `backward`, suffix) of at most `SESSION_HISTORY_PAGE_ENTRIES` entries (or `limit`, up to
+	 * `SESSION_HISTORY_SCAN_ENTRIES`) and `SESSION_HISTORY_PAGE_BYTES` bytes, or its first (last) entry alone as an
+	 * oversized reference when that is larger. Rejects with `SessionConflictError` when the session is of another
+	 * generation or holds no entry at one of them.
+	 */
+	readSelectedPage?(
+		sessionId: string,
+		seqs: readonly number[],
+		epoch: string,
+		options?: { readonly limit?: number; readonly backward?: boolean },
+	): Promise<SessionHistoryPage>;
 	/** A local navigation from a stale manager may select a branch as of its original sequence watermark. */
 	readResumeAt?(
 		sessionId: string,
@@ -505,6 +573,8 @@ export interface SessionStore {
 		throughSeq: number,
 		options?: { deferChildRecords: true },
 	): Promise<SessionResume>;
+	/** Read the branch a forked child needs at its captured entry, with the current labels for copied targets. */
+	readForkWindow?(sessionId: string, entryId: string): Promise<SessionForkWindow | undefined>;
 	findEntrySeq?(sessionId: string, entryId: string): Promise<number | undefined>;
 	/**
 	 * Earlier entries that may save the same task reference as each candidate, found through the store's entry-ID index

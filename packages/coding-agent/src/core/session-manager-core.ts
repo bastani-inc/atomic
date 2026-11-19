@@ -114,6 +114,7 @@ import {
 import {
 	findWorktreeSnapshotRecords,
 	type StoredWorktreeSnapshotEntry,
+	storeSnapshotIndex,
 	worktreeSnapshotPages,
 } from "./storage/session/snapshot-records.js";
 import type {
@@ -995,6 +996,7 @@ export class SessionManager {
 		for (const [position, entry] of entries.entries()) {
 			this.entrySeqs.set(entry.id, this.lastSeq - entries.length + position + 1);
 			updateWorkflowStarts(this.workflowStarts, entry, this.lastSeq - entries.length + position + 1);
+			this.childArchive.noteResident(entry, this.lastSeq - entries.length + position + 1);
 			this.lastEntryId = entry.id;
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
@@ -1129,6 +1131,7 @@ export class SessionManager {
 		for (const [i, entry] of tail.entries()) {
 			this.entrySeqs.set(entry.id, this.lastSeq + i + 1);
 			updateWorkflowStarts(this.workflowStarts, entry, this.lastSeq + i + 1);
+			this.childArchive.noteResident(entry, this.lastSeq + i + 1);
 		}
 		this.lastEntryId = tail.at(-1)?.id ?? this.lastEntryId;
 		this.fileEntries = [...this.fileEntries, ...tail];
@@ -1964,6 +1967,8 @@ export class SessionManager {
 				historyPages(store, sessionId, historyEpoch, lastSeq, options),
 			chunks: (ref: OversizedSessionEntry, signal?: AbortSignal) =>
 				historyChunks(store, sessionId, historyEpoch, ref, { signal }),
+			// Where the store's index places the snapshot entries of this cut, read without the rest of the history (#5554).
+			snapshotIndex: storeSnapshotIndex(store, sessionId, historyEpoch, lastSeq),
 			async *bytes(seq: number, signal?: AbortSignal): AsyncGenerator<Uint8Array, void> {
 				if (seq < 1 || seq > lastSeq) throw new RangeError("Entry is outside the captured session");
 				if (store.readEntrySizes && store.readEntryChunk) {
@@ -2146,6 +2151,43 @@ export class SessionManager {
 		});
 	}
 
+	/** Branch a child from the committed source, without hydrating its retired conversation. */
+	static async forkContext(
+		store: SessionStore,
+		sessionId: string,
+		leafId: string,
+		cwd: string,
+	): Promise<SessionManager> {
+		if (!store.readForkWindow) {
+			const manager = await SessionManager.open(store, sessionId, cwd);
+			await manager.createBranchedSession(leafId);
+			return manager;
+		}
+		const source = await store.readForkWindow(sessionId, leafId);
+		if (!source || !leafId) throw new SessionEntryError(leafId, "missing");
+		if (source.header.id !== sessionId) throw new SessionIdMismatchError(sessionId, source.header.id);
+		const location = store instanceof JsonlSessionStore ? await store.findFile(sessionId) : undefined;
+		const manager = new SessionManager(store, cwd, location ? dirname(location) : "");
+		validateSessionFileEntries(
+			[{ type: "session", ...source.header }, ...source.entries],
+			location ?? "in-memory session",
+		);
+		const labels = buildSessionIndex(source.labels);
+		await manager.writeBranchedSession(
+			createBranchedSessionState({
+				leafId,
+				cwd: manager.cwd,
+				parentSessionId: sessionId,
+				workflow: classifiedWorkflowMetadata(source.header),
+				path: source.entries,
+				labelsById: labels.labelsById,
+				labelTimestampsById: labels.labelTimestampsById,
+			}),
+			sessionId,
+		);
+		return manager;
+	}
+
 	createBranchedSession(leafId: string): Promise<string | undefined> {
 		return this.runMutation(async () => {
 			await this.loadFullHistory();
@@ -2158,25 +2200,32 @@ export class SessionManager {
 				labelsById: this.labelsById,
 				labelTimestampsById: this.labelTimestampsById,
 			});
-			const header = result.fileEntries[0] as SessionHeader;
-			const entries = getEntriesWithoutHeader(result.fileEntries);
-			const record = this.recordHeader(header);
-			const hashes = sessionBlobHashes(this.store, entries);
-			const store = await this.storeForNewSession();
-			const location =
-				store instanceof JsonlSessionStore
-					? this.sessionDir
-						? createSessionFilePath(this.sessionDir, record.createdAt, record.id)
-						: store.locationFor(record)
-					: undefined;
-			const created = await (store instanceof JsonlSessionStore
-				? store.create(record, entries, location)
-				: store.create(record, entries));
-			await copySessionBlobs(this.store, this.sessionId, store, record.id, hashes);
-			this.store = store;
-			this.restore({ header: record, entries, lastSeq: created.lastSeq, epoch: created.epoch }, location);
-			return this.sessionFile;
+			return this.writeBranchedSession(result, this.sessionId);
 		});
+	}
+
+	private async writeBranchedSession(
+		result: ReturnType<typeof createBranchedSessionState>,
+		parentSessionId: string,
+	): Promise<string | undefined> {
+		const header = result.fileEntries[0] as SessionHeader;
+		const entries = getEntriesWithoutHeader(result.fileEntries);
+		const record = this.recordHeader(header);
+		const hashes = sessionBlobHashes(this.store, entries);
+		const store = await this.storeForNewSession();
+		const location =
+			store instanceof JsonlSessionStore
+				? this.sessionDir
+					? createSessionFilePath(this.sessionDir, record.createdAt, record.id)
+					: store.locationFor(record)
+				: undefined;
+		const created = await (store instanceof JsonlSessionStore
+			? store.create(record, entries, location)
+			: store.create(record, entries));
+		await copySessionBlobs(this.store, parentSessionId, store, record.id, hashes);
+		this.store = store;
+		this.restore({ header: record, entries, lastSeq: created.lastSeq, epoch: created.epoch }, location);
+		return this.sessionFile;
 	}
 
 	async forkTo(cwd: string, sessionDir?: string | SessionStore, options?: NewSessionOptions): Promise<SessionManager> {
