@@ -1517,94 +1517,6 @@ test("an asker that moved to its recipient's broker while away gets the failure 
 	assert.equal(failure.message.replyError, 'Session "recipient" ended before replying');
 });
 
-test("an away asker that comes back while its recipient on another broker ends gets the failure at once, not at a backup poll (#5607)", async () => {
-	const [a, b] = await cluster();
-	const returnAddress = randomUUID();
-	const asker = await a!.connect("asker", { returnAddress });
-	const recipient = await b!.connect("recipient");
-	const ask = message({ expectsReply: true });
-	a!.send(asker, "recipient", ask);
-	await waitFor(() => messageFrames(recipient, ask.id)[0]);
-	b!.router.received(recipient, ask.id);
-	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
-	// The asker is only away (its Atomic session restarts).
-	a!.sessions.delete(asker.info.id);
-	a!.router.sessionLeft(asker, undefined, false);
-	await waitOffline(b!, asker);
-	// Broker b has found the asker away and is writing its failure when the asker registers on broker a again.
-	const outbox = b!.opened.state.outbox;
-	const enqueue = outbox.enqueue.bind(outbox);
-	let writing!: () => void;
-	const failureBeingWritten = new Promise<void>((resolve) => {
-		writing = resolve;
-	});
-	let write!: () => void;
-	const written = new Promise<void>((resolve) => {
-		write = resolve;
-	});
-	Object.assign(outbox, {
-		enqueue: async (row: Parameters<typeof enqueue>[0]) => {
-			if (row.frame.type === "message" && row.frame.message.replyTo === ask.id) {
-				writing();
-				await written;
-			}
-			return enqueue(row);
-		},
-	});
-
-	b!.leave(recipient);
-	await failureBeingWritten;
-	const back = await a!.connect("asker", { returnAddress, id: asker.info.id });
-	write();
-
-	// Well within the backup poll's interval, which would otherwise be the first scan to find the failure.
-	const failure = await waitFor(
-		() => framesOf(back).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
-		OUTBOX_BACKUP_POLL_INTERVAL_MS / 3,
-	);
-	assert.ok(failure.type === "message");
-	assert.equal(failure.message.replyError, 'Session "recipient" ended before replying');
-});
-
-test("a send queued for an offline session that comes back while the send is being written is delivered at once, not at a backup poll (#5607)", async () => {
-	const [a, b] = await cluster();
-	const sender = await a!.connect("sender");
-	const returnAddress = randomUUID();
-	const recipient = await b!.connect("recipient", { returnAddress });
-	b!.leave(recipient);
-	await waitOffline(a!, recipient);
-	// Broker a has found the recipient offline and is writing the send when the recipient registers on broker b again.
-	const state = a!.opened.state;
-	const reserveAndEnqueue = state.reserveAndEnqueue!.bind(state);
-	const sent = message();
-	let writing!: () => void;
-	const sendBeingWritten = new Promise<void>((resolve) => {
-		writing = resolve;
-	});
-	let write!: () => void;
-	const written = new Promise<void>((resolve) => {
-		write = resolve;
-	});
-	Object.assign(state, {
-		reserveAndEnqueue: async (...args: Parameters<typeof reserveAndEnqueue>) => {
-			if (args[0].messageId === sent.id) {
-				writing();
-				await written;
-			}
-			return reserveAndEnqueue(...args);
-		},
-	});
-
-	a!.send(sender, recipient.info.id, sent);
-	await sendBeingWritten;
-	const back = await b!.connect("recipient", { returnAddress, id: recipient.info.id });
-	write();
-
-	assert.equal((await waitFor(() => outcomeOf(sender, sent.id))).type, "queued");
-	// Well within the backup poll's interval, which would otherwise be the first scan to find the send.
-	await waitFor(() => messageFrames(back, sent.id)[0], OUTBOX_BACKUP_POLL_INTERVAL_MS / 3);
-});
-
 /**
  * Counts the statements `database` runs for calls made inside `within`, those of its transactions included: a broker's
  * polls and renewals run outside any send, so what runs inside a send's context is what that send costs.
@@ -1667,7 +1579,9 @@ test("sends queued for a session that stays offline cost the shared database no 
 	try {
 		for (let index = 0; index < sends; index++) {
 			const sent = message({ content: { text: `queued ${index}` } });
-			assert.equal((await within.run(true, () => sendAndSettle(a!, sender, "away", sent))).type, "queued");
+			const outcome = await within.run(true, () => sendAndSettle(a!, sender, "away", sent));
+			assert.ok(outcome.type === "queued");
+			assert.equal(outcome.position, index + 1);
 		}
 		// What a send still does after its sender heard it is queued is counted too.
 		await vi.waitFor(() => assert.ok(statements.count() >= sends * QUEUED_SEND_STATEMENTS), {

@@ -1,156 +1,139 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { BROKER_LEASE_STALE_AFTER_MS } from "../../packages/intercom/broker/multinode-state-store.js";
 import {
+	BROKER_LEASE_STALE_AFTER_MS,
+	KNOWN_SESSION_RETENTION_MS,
+} from "../../packages/intercom/broker/multinode-state-store.js";
+import { openSqlOutboxStore } from "../../packages/intercom/broker/sql-outbox-store.js";
+import { DELIVERED_MESSAGE_TTL_MS } from "../../packages/intercom/retry-policy.js";
+import {
+	TWO_BROKER_STORAGE_PREFIX,
+	type TwoBrokerClient,
 	TwoBrokerHarness,
 	type TwoBrokerHarnessOptions,
 	twoBrokerHarnessStartTimeoutMs,
 } from "../helpers/intercom-two-broker-harness.js";
 
-/**
- * #5607: with multi-node routing, a session that ends tells its askers on other brokers, and an away asker's failure is
- * queued for when it is back. Telling the asker's broker about that queued failure is only a hint: a slow answer of the
- * shared database to it must not hold up the ended session's departure, so other brokers stop listing it at once.
- */
-
-const HARNESS_OPTIONS: TwoBrokerHarnessOptions = { parkablePresenceRead: "b" };
-/** Spawning two real broker processes is the structural cost of this suite. */
+const HARNESS_OPTIONS: TwoBrokerHarnessOptions = {
+	parkablePresenceRead: "b",
+	storageAdapter: resolve(import.meta.dirname, "../fixtures/intercom-queued-store-delay.ts"),
+};
 const REAL_BROKERS_HOOK_TIMEOUT_MS = twoBrokerHarnessStartTimeoutMs(HARNESS_OPTIONS);
-/** Well before its presence would go stale (and drop from the list anyway) had its broker never given it up. */
+/** Before the delayed SQL response, and well before an unreleased lease would age off the peer list. */
 const DEPARTED_WITHIN_MS = BROKER_LEASE_STALE_AFTER_MS / 3;
 const WAIT = { timeout: 15_000, interval: 25 };
-const TEST_TIMEOUT_MS = 90_000;
-
 let harness: TwoBrokerHarness;
-
-// Each broker parks its first matching presence read only.
 beforeEach(async () => {
 	harness = await TwoBrokerHarness.start(HARNESS_OPTIONS);
+	assert.equal(harness.multiNodeRouting, true);
 }, REAL_BROKERS_HOOK_TIMEOUT_MS);
 afterEach(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
 
-const unique = (label: string): string => `${label}-${randomUUID().slice(0, 8)}`;
+async function listed(watcher: TwoBrokerClient, id: string): Promise<boolean> {
+	return (await watcher.client.listSessions()).some((session) => session.id === id);
+}
 
-test(
-	"a recipient that ends while its away asker's broker is slow to answer is no longer listed on other brokers at once (#5607)",
-	async ({ annotate }) => {
-		if (!harness.multiNodeRouting) {
-			await annotate("multi-node routing not advertised: nothing crosses brokers");
-			return;
-		}
-		const group = unique("departure-hint");
-		const asker = await harness.connect("a", unique("asker"), { group });
-		const watcher = await harness.connect("a", unique("watcher"), { group });
-		const recipient = await harness.connect("b", unique("recipient"), { group });
-		const recipientId = recipient.sessionId;
-		const listed = async (id: string) => (await watcher.client.listSessions()).some((session) => session.id === id);
-		const askId = randomUUID();
-		const sent = await asker.client.send(recipientId, { messageId: askId, text: "which port?", expectsReply: true });
-		assert.equal(sent.delivered, true, sent.reason);
+async function goAway(session: TwoBrokerClient, watcher: TwoBrokerClient): Promise<string> {
+	const id = session.sessionId;
+	await session.client.disconnect({ resumable: true });
+	await vi.waitFor(async () => assert.equal(await listed(watcher, id), false), WAIT);
+	return id;
+}
 
-		// The asker is only away (its Atomic session restarts), and the recipient's broker has seen it go.
-		const askerId = asker.sessionId;
-		await asker.client.disconnect({ resumable: true });
-		asker.disconnected = true;
-		await vi.waitFor(
-			async () =>
-				assert.equal(
-					(await recipient.client.listSessions()).some((session) => session.id === askerId),
-					false,
-				),
-			WAIT,
+async function ask(asker: TwoBrokerClient, replier: TwoBrokerClient): Promise<string> {
+	const messageId = randomUUID();
+	const sent = await asker.client.send(replier.sessionId, { messageId, text: "which port?", expectsReply: true });
+	assert.equal(sent.delivered, true, sent.reason);
+	return messageId;
+}
+
+async function queueAwayReply(away: TwoBrokerClient, replier: TwoBrokerClient): Promise<void> {
+	const replyTo = await ask(away, replier);
+	const awayId = await goAway(away, replier);
+	harness.holdPresenceRead(away.returnAddress);
+	const result = await replier.client.send(awayId, { replyTo, text: "3000", requirePendingReply: true });
+	assert.equal(result.queued, true, result.reason);
+}
+
+test("an ended recipient disappears from the peer list and its away asker gets the failure when it returns (#5607)", async () => {
+	const away = await harness.connect("a", "asker");
+	const watcher = await harness.connect("a", "watcher");
+	const recipient = await harness.connect("b", "recipient");
+	const id = recipient.sessionId;
+	const replyTo = await ask(away, recipient);
+	const preferredSessionId = await goAway(away, recipient);
+	assert.equal(await listed(watcher, id), true);
+	harness.holdPresenceRead(away.returnAddress);
+	await harness.disconnect(recipient);
+	await vi.waitFor(async () => assert.equal(await listed(watcher, id), false), { timeout: DEPARTED_WITHIN_MS });
+	const back = await harness.connect("a", away.name, { returnAddress: away.returnAddress, preferredSessionId });
+	await vi.waitFor(() => {
+		const failure = back.received.find((frame) => frame.message.replyTo === replyTo);
+		assert.equal(failure?.message.replyError, `Session "${recipient.name}" ended before replying`);
+	}, WAIT);
+});
+
+test("a queued reply to an away asker does not cost a live reply its acknowledgment (#5607)", async () => {
+	const away = await harness.connect("a", "away");
+	const live = await harness.connect("a", "live");
+	const replier = await harness.connect("b", "replier");
+	const replyTo = await ask(live, replier);
+	await queueAwayReply(away, replier);
+	const messageId = randomUUID();
+	const reply = await replier.client.send(live.sessionId, {
+		messageId,
+		replyTo,
+		text: "4000",
+		requirePendingReply: true,
+	});
+	assert.equal(reply.delivered, true, reply.reason);
+	assert.equal(live.messagesWithId(messageId).length, 1);
+});
+
+test("a replier that disconnects immediately after queuing a reply stops appearing in peer lists (#5607)", async () => {
+	const away = await harness.connect("a", "away");
+	const watcher = await harness.connect("a", "watcher");
+	const replier = await harness.connect("b", "replier");
+	const id = replier.sessionId;
+	await queueAwayReply(away, replier);
+	assert.equal(await listed(watcher, id), true);
+	await harness.disconnect(replier);
+	await vi.waitFor(async () => assert.equal(await listed(watcher, id), false), { timeout: DEPARTED_WITHIN_MS });
+});
+
+test("a queued send reports position one when the row ahead expires after its commit (#5607)", async () => {
+	const sender = await harness.connect("b", "sender");
+	const target = await harness.connect("a", "target");
+	const targetId = await goAway(target, sender);
+	const firstId = randomUUID();
+	const first = await sender.client.send(targetId, { messageId: firstId, text: "one" });
+	assert.equal(first.position, 1);
+	const db = await harness.openSharedStorage("a");
+	const outbox = await openSqlOutboxStore({ database: db, prefix: TWO_BROKER_STORAGE_PREFIX });
+	const secondId = randomUUID();
+	const gate = `${harness.sharedDatabasePath}.hold-enqueue`;
+	writeFileSync(gate, secondId);
+	const sending = sender.client.send(targetId, { messageId: secondId, text: "two" });
+	try {
+		await vi.waitFor(() => assert.ok(existsSync(`${gate}.committed`)), WAIT);
+		// The second row is committed. Move the older row past retention, then run the brokers' normal prune.
+		const updated = await db.run(
+			`UPDATE ${TWO_BROKER_STORAGE_PREFIX}intercom_outbox SET queued_at = queued_at - ? WHERE message_id = ?`,
+			KNOWN_SESSION_RETENTION_MS + 1_000,
+			firstId,
 		);
-		assert.equal(await listed(recipientId), true);
-
-		harness.holdPresenceRead(asker.returnAddress);
-		try {
-			// The recipient ends: its broker queues the away asker's failure, and the shared database is slow to say which
-			// broker the asker is on.
-			await harness.disconnect(recipient);
-			await harness.presenceReadParked(asker.returnAddress);
-
-			await vi.waitFor(async () => assert.equal(await listed(recipientId), false, "the ended recipient is listed"), {
-				timeout: DEPARTED_WITHIN_MS,
-				interval: 25,
-			});
-		} finally {
-			harness.releasePresenceRead();
-		}
-
-		// The asker still gets its failure once it is back.
-		const back = await harness.connect("a", asker.name, {
-			group,
-			returnAddress: asker.returnAddress,
-			preferredSessionId: askerId,
-		});
-		await vi.waitFor(() => {
-			const failure = back.received.find((frame) => frame.message.replyTo === askId);
-			assert.equal(failure?.message.replyError, `Session "${recipient.name}" ended before replying`);
-		}, WAIT);
-	},
-	TEST_TIMEOUT_MS,
-);
-
-test(
-	"a queued reply to an away asker does not delay a reply to a live asker or the replier's departure (#5607)",
-	async () => {
-		assert.equal(harness.multiNodeRouting, true);
-		const group = unique("queued-reply");
-		const away = await harness.connect("a", unique("away"), { group });
-		const live = await harness.connect("a", unique("live"), { group });
-		const replier = await harness.connect("b", unique("replier"), { group });
-		const awayId = away.sessionId;
-		const replierId = replier.sessionId;
-		const firstAsk = randomUUID();
-		const secondAsk = randomUUID();
-		for (const [asker, messageId] of [
-			[away, firstAsk],
-			[live, secondAsk],
-		] as const) {
-			const sent = await asker.client.send(replierId, { messageId, text: "which port?", expectsReply: true });
-			assert.equal(sent.delivered, true, sent.reason);
-		}
-		await away.client.disconnect({ resumable: true });
-		away.disconnected = true;
-		await vi.waitFor(async () => {
-			const peers = await replier.client.listSessions();
-			assert.equal(
-				peers.some((session) => session.id === awayId),
-				false,
-			);
-		}, WAIT);
-
-		harness.holdPresenceRead(away.returnAddress);
-		try {
-			const first = await replier.client.send(awayId, {
-				replyTo: firstAsk,
-				text: "3000",
-				requirePendingReply: true,
-			});
-			assert.equal(first.queued, true, first.reason);
-			await harness.presenceReadParked(away.returnAddress);
-
-			const replyId = randomUUID();
-			const second = await replier.client.send(live.sessionId, {
-				messageId: replyId,
-				replyTo: secondAsk,
-				text: "4000",
-				requirePendingReply: true,
-			});
-			assert.equal(second.delivered, true, second.reason);
-			assert.equal(live.messagesWithId(replyId).length, 1);
-
-			const listed = async () => (await live.client.listSessions()).some((session) => session.id === replierId);
-			assert.equal(await listed(), true);
-			await harness.disconnect(replier);
-			await vi.waitFor(async () => assert.equal(await listed(), false), {
-				timeout: DEPARTED_WITHIN_MS,
-				interval: 25,
-			});
-		} finally {
-			harness.releasePresenceRead();
-		}
-	},
-	TEST_TIMEOUT_MS,
-);
+		assert.equal(updated.changes, 1);
+		await outbox.prune(DELIVERED_MESSAGE_TTL_MS, KNOWN_SESSION_RETENTION_MS);
+		const firstRow = await outbox.read(firstId);
+		assert.ok(firstRow.status === "found" && firstRow.row.state === "failed");
+	} finally {
+		rmSync(gate, { force: true });
+		await sending;
+	}
+	const second = await sending;
+	assert.equal(second.queued, true, second.reason);
+	assert.equal(second.position, 1);
+});

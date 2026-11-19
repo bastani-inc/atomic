@@ -941,10 +941,8 @@ export class MultiNodeRouter {
 				owed: true,
 			});
 			if (enqueued.status === "invalid" || enqueued.status === "full") continue;
-			if (enqueued.status === "inserted") {
-				if (owner.hostBrokerId !== undefined) {
-					await this.bus.publish({ brokerId: owner.hostBrokerId, reason: "outbox", version: enqueued.row.sequence });
-				} else void this.wakeHolderOf(owner.identity, enqueued.row.sequence);
+			if (enqueued.status === "inserted" && owner.hostBrokerId !== undefined) {
+				await this.bus.publish({ brokerId: owner.hostBrokerId, reason: "outbox", version: enqueued.row.sequence });
 			}
 			await this.state.releasedAsks.claim({
 				questionId: ask.questionId,
@@ -1060,10 +1058,8 @@ export class MultiNodeRouter {
 					replyTo: ask.messageId,
 				});
 			}
-			if (enqueued.status === "inserted") {
-				if (hosted !== undefined) {
-					await this.bus.publish({ brokerId: hosted.holderId, reason: "outbox", version: enqueued.row.sequence });
-				} else void this.wakeHolderOf(asker.targetIdentity, enqueued.row.sequence);
+			if (enqueued.status === "inserted" && hosted !== undefined) {
+				await this.bus.publish({ brokerId: hosted.holderId, reason: "outbox", version: enqueued.row.sequence });
 			}
 		}
 	}
@@ -1986,13 +1982,7 @@ export class MultiNodeRouter {
 			this.fail(request, outboxFullReason(enqueued));
 			return;
 		}
-		await this.answerExistingRow(
-			request,
-			{ ...owner, groups: new Set(), gates: {} },
-			digest,
-			enqueued.row,
-			enqueued.status === "inserted" ? enqueued : undefined,
-		);
+		await this.answerExistingRow(request, { ...owner, groups: new Set(), gates: {} }, digest, enqueued.row);
 	}
 
 	/** #4386: a reply that claimed its question but left no row to hand over gives the question back to other replies. */
@@ -2276,7 +2266,7 @@ export class MultiNodeRouter {
 				replyTo: message.replyTo!,
 			});
 		}
-		await this.answerExistingRow(request, target, digest, enqueued.row, enqueued.status === "inserted" ? enqueued : undefined);
+		await this.answerExistingRow(request, target, digest, enqueued.row);
 	}
 
 	/**
@@ -2344,16 +2334,12 @@ export class MultiNodeRouter {
 		return true;
 	}
 
-	/**
-	 * Report a row's current state to its sender, and keep waiting on it until it settles. `inserted`: this send just
-	 * wrote the row.
-	 */
+	/** Report a row's current state to its sender, and keep waiting on it until it settles. */
 	private async answerExistingRow(
 		request: RemoteSendRequest,
 		target: RemoteTarget,
 		digest: string,
 		row: OutboxRow,
-		inserted?: { readonly position?: number },
 	): Promise<void> {
 		const { message } = request;
 		if (row.digest !== digest || row.targetIdentity !== target.identity) {
@@ -2392,12 +2378,7 @@ export class MultiNodeRouter {
 		this.armWaiter(waiter, offline ? DELIVERED_MESSAGE_TTL_MS : RECIPIENT_RECEIPT_TIMEOUT_MS);
 		this.waiters.set(message.id, waiter);
 		if (offline) {
-			if (inserted?.position === undefined) {
-				await this.writeQueued(request.socket, message.id, request.attemptId, target.identity);
-			} else this.host.write(request.socket, queuedFrame(message.id, request.attemptId, inserted.position));
-			// #5607: only the send that wrote the row looks again; its place came with the write, so the look costs no
-			// statement more than queuing did before.
-			if (inserted !== undefined) void this.wakeHolderOf(target.identity, row.sequence);
+			await this.writeQueued(request.socket, message.id, request.attemptId, target.identity);
 			return;
 		}
 		if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
@@ -2406,23 +2387,6 @@ export class MultiNodeRouter {
 		// broker (`wakeWaitingOrigins`), so a send racing its recipient's quit is queued either way. The waiter's own
 		// receipt wait keeps running meanwhile, so slow reads here never hold the sender past it.
 		void this.queueIfRecipientLeft(waiter).catch((error: Error) => this.report(error));
-	}
-
-	/**
-	 * #5607: a row was written for a target that had no live presence when this broker looked. The target may have
-	 * registered since, and its broker's catch-up scan may have run before the row was written, so that broker would not
-	 * find it until a backup poll. Looked up again now the row exists, the broker that holds its presence is told. Only a
-	 * hint: one lookup and at most one hint, which nothing waits for (a departure goes on without it), and a lookup or
-	 * hint that fails leaves the row to that backup poll, as before, and fails nothing else.
-	 */
-	private async wakeHolderOf(targetIdentity: string, version: number): Promise<void> {
-		try {
-			const read = await this.state.leases.read({ kind: "presence", targetIdentity });
-			if (this.closed || read.status !== "found" || read.lease.ageMs >= BROKER_LEASE_STALE_AFTER_MS) return;
-			await this.bus.publish({ brokerId: read.lease.holderId, reason: "outbox", version });
-		} catch (error) {
-			if (!this.closed) this.report(error);
-		}
 	}
 
 	private async writeQueued(
