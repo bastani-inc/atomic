@@ -34,7 +34,12 @@ import type {
 	TaskViewSource,
 } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
-import { type StageRecordOwner, stageRecordIdentity, stageRecordOwner } from "../../shared/stage-record-owner.js";
+import {
+	ownsStageRecord,
+	type StageRecordOwner,
+	stageRecordIdentity,
+	stageRecordOwner,
+} from "../../shared/stage-record-owner.js";
 import { isTerminalStageStatus } from "../../shared/store-internal.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
@@ -284,7 +289,12 @@ export interface StageControlRegistry {
 	 * resolver so repeated attach/send calls single-flight onto one detached
 	 * writer per real stage instead of racing competing sessions.
 	 */
-	getOrCreateDetached(runId: string, stageId: string, create: () => StageControlHandle): StageControlHandle;
+	getOrCreateDetached(
+		runId: string,
+		stageId: string,
+		create: () => StageControlHandle,
+		source?: ReleasedStageSource,
+	): StageControlHandle;
 	/**
 	 * Acquire tentative ownership of a detached handle. A newly-created handle
 	 * stays provisional until one lease commits or an ordinary consumer claims
@@ -398,9 +408,17 @@ export function beginStageRegistrationCheck(registry: StageControlRegistry, runI
 	return { current: () => registry.generation === generation, release() {} };
 }
 
-function releaseSource(runId: string, stageId: string, record?: StageSnapshot): ReleasedStageSource {
+function releaseSource(
+	runId: string,
+	stageId: string,
+	record?: StageSnapshot,
+	continued?: ReleasedStageSource,
+): ReleasedStageSource {
 	// One worker publication shares its lease across the subtree, including runs that reuse a local stage ID.
 	const key = JSON.stringify([runId, stageId]);
+	// An admitted ask opens a new handle, not a new peer. Never advance (or rewind) the watermark for it.
+	if (continued?.key === key && ownsStageRecord(continued.record, record))
+		return { key, generation: continued.generation, record: record && stageRecordOwner(record) };
 	const generation = ++sources.next;
 	if (!record) return { key, generation };
 	const identity = stageRecordIdentity(record);
@@ -509,10 +527,11 @@ export function createStageControlRegistry(): StageControlRegistry {
 		stageId: string,
 		handle: StageControlHandle,
 		fields: Pick<RegistryEntry, "controlsDependencies" | "permanent" | "releaseWanted" | "executionEnded">,
+		continued?: ReleasedStageSource,
 	): RegistryEntry {
 		const entry: RegistryEntry = {
 			handle,
-			source: releaseSource(runId, stageId, handle.stageRecord),
+			source: releaseSource(runId, stageId, handle.stageRecord, continued),
 			...fields,
 			leases: new Set(),
 			epoch: 0,
@@ -757,7 +776,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 				if (existing.size === 0) _byRun.delete(handle.runId);
 			};
 		},
-		getOrCreateDetached(runId: string, stageId: string, create: () => StageControlHandle): StageControlHandle {
+		getOrCreateDetached(runId, stageId, create, source): StageControlHandle {
 			const runMap = ensureRun(runId);
 			const existing = runMap.get(stageId);
 			if (existing !== undefined && existing.handle.isDisposed !== true) {
@@ -769,11 +788,17 @@ export function createStageControlRegistry(): StageControlRegistry {
 				disposeEntryInBackground(existing, "atomic-workflows: stale stage handle dispose failed");
 			}
 			const handle = create();
-			const entry = createEntry(runId, handle.stageId, handle, {
-				controlsDependencies: false,
-				permanent: true,
-				releaseWanted: true,
-			});
+			const entry = createEntry(
+				runId,
+				handle.stageId,
+				handle,
+				{
+					controlsDependencies: false,
+					permanent: true,
+					releaseWanted: true,
+				},
+				source,
+			);
 			markClaimed(runId, handle.stageId, entry);
 			runMap.set(handle.stageId, entry);
 			return handle;

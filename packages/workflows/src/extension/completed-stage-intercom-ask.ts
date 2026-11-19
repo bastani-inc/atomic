@@ -3,7 +3,11 @@ import type {
 	PostMortemAdmission,
 	PostMortemUnavailableReason,
 } from "../runs/foreground/postmortem-stage-chat.js";
-import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
+import {
+	isLatestStageRelease,
+	type ReleasedStageSource,
+	type StageControlHandle,
+} from "../runs/foreground/stage-control-registry.js";
 
 const LATE_STAGE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 const POST_MORTEM_ATTACH_TIMEOUT_MS = 10_000;
@@ -139,15 +143,15 @@ async function withReopenedStage<T>(
 	resolveHandle: CompletedStageHandleResolver,
 	assertActive: () => void,
 	use: (handle: StageControlHandle, check: () => void) => Promise<T>,
-	initialSource?: () => boolean,
+	source?: ReleasedStageSource,
 ): Promise<T> {
-	let current = initialSource;
+	let current = () => isLatestStageRelease(source);
 	const check = () => {
 		assertActive();
-		if (current?.() === false)
-			throw new Error("Intercom ask target is unavailable: the workflow stage was replaced.");
+		if (!current()) throw new Error("Intercom ask target is unavailable: the workflow stage was replaced.");
 	};
 	const admission: PostMortemAdmission = {
+		source,
 		assertCurrent: check,
 		acquired: (held) => {
 			current = held;
@@ -230,7 +234,7 @@ export type CompletedStageAnswerer = (
 	stageId: string,
 	content: string,
 	assertCurrent?: () => void,
-	initialSource?: () => boolean,
+	source?: ReleasedStageSource,
 ) => Promise<string>;
 
 export function createCompletedStageAnswerer(
@@ -238,7 +242,7 @@ export function createCompletedStageAnswerer(
 	assertActive: () => void = () => {},
 ): CompletedStageAnswerer {
 	const queues = new Map<string, Promise<string>>();
-	return (runId, stageId, content, assertCurrent, initialSource) => {
+	return (runId, stageId, content, assertCurrent, source) => {
 		const check = () => {
 			assertActive();
 			assertCurrent?.();
@@ -259,7 +263,7 @@ export function createCompletedStageAnswerer(
 					checkHandle();
 					return reply ?? `Completed workflow stage ${runId}/${stageId} reopened but produced no text answer.`;
 				},
-				initialSource,
+				source,
 			),
 		);
 	};

@@ -24,6 +24,7 @@ import type { PendingPrompt, StageSnapshot } from "../../shared/store-types.js";
 import { elapsedStageMs, rebasedStageStartedAt, stageTimingFields } from "../../shared/timing.js";
 import type { StageOptions, WorkflowArtifact } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
+import { runAttachmentOwner } from "../../shared/workflow-run-ownership.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
 import { sleepOrAbort } from "../shared/retry.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
@@ -480,7 +481,11 @@ export function createWorkflowStageFactory(input: {
 				throw error;
 			}
 		});
-		const owningRun = input.activeStore.run(input.runId);
+		const currentRunOwner = () => {
+			const run = input.activeStore.run(input.runId);
+			return run && runAttachmentOwner(run);
+		};
+		const owningRun = currentRunOwner();
 		const uiOwner = input.stageUiBroker.claimStage(input.runId, stageId, {
 			store: input.activeStore,
 			record: stageSnapshot,
@@ -634,7 +639,7 @@ export function createWorkflowStageFactory(input: {
 			const registered = input.stageRegistry.peek(input.runId, stageId);
 			return (
 				uiOwner.signal.aborted ||
-				input.activeStore.run(input.runId) !== owningRun ||
+				currentRunOwner() !== owningRun ||
 				(registered !== undefined && registered !== stageHandle)
 			);
 		};

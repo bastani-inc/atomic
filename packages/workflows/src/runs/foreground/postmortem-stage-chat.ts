@@ -38,6 +38,7 @@ import {
 	beginStageRegistrationCheck,
 	type DetachedStageHandleLease,
 	isLatestStageRelease,
+	type ReleasedStageSource,
 	type StageControlHandle,
 	type StageControlRegistry,
 } from "./stage-control-registry.js";
@@ -58,6 +59,8 @@ export type AcquirePostMortemStageHandleResult =
 	| { readonly ok: false; readonly reason: PostMortemUnavailableReason };
 
 export interface PostMortemAdmission {
+	/** The released peer admitting this turn, when it reopens its own conversation. */
+	readonly source?: ReleasedStageSource;
 	assertCurrent(): void;
 	/** Transfer an admitted ask to the exact handle its own lookup acquired, before yielding. */
 	acquired(current: () => boolean): void;
@@ -187,7 +190,7 @@ export async function ensurePostMortemStageHandle(
 	if (existing !== undefined && existing.isDisposed !== true) return acquired(existing);
 	return withSavedStage(runId, stage, deps, record, (create) => {
 		admission?.assertCurrent();
-		return acquired(deps.registry.getOrCreateDetached(runId, stage.id, create));
+		return acquired(deps.registry.getOrCreateDetached(runId, stage.id, create, admission?.source));
 	});
 }
 
