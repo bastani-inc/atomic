@@ -462,8 +462,11 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const status = active.agentSession?.retryStatus ?? active.modelSwitch;
 	if (stageWaitsToRetry(active)) ctx.chatHost.hydrateRetryWait(messages, turnStartedAt);
 	else if (status?.type === "model_fallback_start") ctx.chatHost.hydrateModelSwitch(turnStartedAt, messages);
-	else if (active.isStreaming) ctx.chatHost.hydrateRunningTurn(messages, streaming, turnStartedAt);
-	else if (turnStartedAt !== undefined) ctx.chatHost.hydrateModelSwitch(turnStartedAt);
+	else if (active.isStreaming) {
+		// A failed row in the transcript predates a running attempt that has not itself failed.
+		const turn = active.turnState?.();
+		ctx.chatHost.hydrateRunningTurn(messages, streaming, turnStartedAt, turn?.running && !turn.lastAnswerFailed);
+	} else if (turnStartedAt !== undefined) ctx.chatHost.hydrateModelSwitch(turnStartedAt);
 }
 
 /** The calls a stage with its session released waits on: their results arrive when it reopens, so none is interrupted. */

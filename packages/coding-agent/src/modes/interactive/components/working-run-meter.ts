@@ -54,6 +54,7 @@ const RUN_CONTINUING_STOP_REASONS: ReadonlySet<string> = new Set(["toolUse", "pe
 export function runInProgress(
 	messages: readonly MeteredRunMessage[],
 	streaming?: MeteredRunMessage,
+	skipPriorFailures = false,
 ): { readonly startedAt: number | undefined; readonly settledTokens: number; readonly requesting: boolean } {
 	let start = messages.length;
 	// A failed answer the run went on from, with a retry or a fallback model, belongs to the run: only a new prompt
@@ -73,14 +74,17 @@ export function runInProgress(
 	}
 	let startedAt: number | undefined;
 	let settledTokens = 0;
-	for (const message of messages.slice(start)) {
+	const turn = messages.slice(start);
+	for (const message of turn) {
 		if (startedAt === undefined && isTimestamp(message.timestamp)) startedAt = message.timestamp;
 		if (message.role === "assistant") settledTokens += meteredOutputTokens(message);
 	}
 	if (startedAt === undefined && isTimestamp(streaming?.timestamp)) startedAt = streaming.timestamp;
-	const last = messages.at(-1);
-	const requesting =
-		!hasContent(streaming) && start < messages.length && (last?.role === "user" || last?.role === "toolResult");
+	// Earlier failed attempts still count toward the turn, but they are not replies to its current request.
+	const last = skipPriorFailures
+		? turn.findLast((message) => message.role !== "assistant" || !isFailedAttempt(message))
+		: turn.at(-1);
+	const requesting = !hasContent(streaming) && (last?.role === "user" || last?.role === "toolResult");
 	return { startedAt, settledTokens, requesting };
 }
 
