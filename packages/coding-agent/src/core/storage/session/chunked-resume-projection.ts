@@ -323,6 +323,7 @@ export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uin
 			},
 		};
 	const m = object(e.message);
+	if (type === "message" && m.role === "system") return { seq, type, ...link, system: true };
 	if (type === "message" && m.role === "assistant")
 		return {
 			seq,
