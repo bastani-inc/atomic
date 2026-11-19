@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings, Text, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
@@ -32,6 +31,7 @@ import {
 import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 import { WORKED_LINE, WORKING_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
 import { makeTestTui } from "../support/fake-tui.js";
 
@@ -120,7 +120,6 @@ function treeSource(
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		foregroundTask: async () => ({ ok: true, value: { kind: "foreground" } }),
 		cancelTask: async () => ({ ok: true, value: undefined }),
 		stdinAvailable: () => false,
 		writeTaskInput: async () => ({ ok: true, value: { acceptedBytes: 0 } }),
@@ -1003,7 +1002,6 @@ describe("a subagent's task view (#4640)", () => {
 			recentActivity: note("recentActivity", []),
 			activityOmitted: note("activityOmitted", true),
 			subscribe: note("subscribe", () => {}),
-			foregroundTask: note("foregroundTask", Promise.resolve({ ok: true as const, value: { kind: "fg" } })),
 			cancelTask: note("cancelTask", Promise.resolve({ ok: true as const, value: undefined })),
 			stdinAvailable: note("stdinAvailable", true),
 			writeTaskInput: note("writeTaskInput", Promise.resolve({ ok: true as const, value: { acceptedBytes: 3 } })),
@@ -1020,7 +1018,6 @@ describe("a subagent's task view (#4640)", () => {
 		assert.equal(child.activityOmitted(id), true);
 		const listener = () => {};
 		assert.equal(typeof child.subscribe(listener), "function");
-		assert.deepEqual(await child.foregroundTask(id), { ok: true, value: { kind: "fg" } });
 		assert.deepEqual(await child.cancelTask(id), { ok: true, value: undefined });
 		assert.equal(child.stdinAvailable(id), true);
 		assert.deepEqual(await child.writeTaskInput(id, "abc"), { ok: true, value: { acceptedBytes: 3 } });
@@ -1034,7 +1031,6 @@ describe("a subagent's task view (#4640)", () => {
 			"recentActivity:child-shell",
 			"activityOmitted:child-shell",
 			`subscribe:${String(listener)}`,
-			"foregroundTask:child-shell",
 			"cancelTask:child-shell",
 			"stdinAvailable:child-shell",
 			"writeTaskInput:child-shell,abc",

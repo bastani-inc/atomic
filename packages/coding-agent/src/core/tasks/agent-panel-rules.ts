@@ -22,10 +22,12 @@ export function isActivePanelState(state: PanelRowState): boolean {
 }
 
 /**
- * A subagent that stopped but can be resumed: stopped, paused, or its turn interrupted. It is listed while something
- * in the panel is active, and leaves for good once nothing is, until it runs again.
+ * Work that stopped but can be resumed: a subagent stopped, paused, or with its turn interrupted, or a workflow run
+ * paused or blocked on a failed stage. It is listed while something in the panel is active, and leaves for good once
+ * nothing is, until it runs again.
  */
 export function isRestingPanelRow(kind: PanelRowKind, state: PanelRowState): boolean {
+	if (kind === "workflow") return state === "paused";
 	return kind === "agent" && (state === "stopped" || state === "paused");
 }
 
@@ -41,8 +43,8 @@ export interface PanelRowContext {
 
 /**
  * Whether the panel lists a row. `finished` is true for a row that is done, failed or stopped, and not merely
- * interrupted. Shells are never rows; a resting subagent stays only while something is active and it has not left
- * yet; a finished subagent leaves at once; a finished workflow run stays while it is kept; everything else is listed.
+ * interrupted. Shells are never rows; a resting row stays only while something is active and it has not left yet; a
+ * finished subagent leaves at once; a finished workflow run stays while it is kept; everything else is listed.
  */
 export function panelRowListed(
 	kind: PanelRowKind,
@@ -135,13 +137,21 @@ export function panelHintParts(
 	};
 }
 
-/** The worded hint segments for `parts`, in order. `focusKey` names the key that focuses the panel. */
-export function panelHintText(parts: PanelHintParts, focusKey: string): string[] {
-	const segments: string[] = [];
-	if (parts.agents > 0) segments.push(`${focusKey} ${parts.agents} ${parts.agents === 1 ? "agent" : "agents"}`);
-	if (parts.needsInput > 0) segments.push(`${parts.needsInput} needs input`);
-	if (parts.shells > 0) segments.push(`${parts.shells} ${parts.shells === 1 ? "shell" : "shells"}`);
-	if (parts.tasks === "manage") segments.push("/tasks to manage");
-	else if (parts.tasks === "subagents") segments.push("/tasks to see subagents");
+/** One worded hint segment: `agents` follows the focus key, and `tasks` names the /tasks command. */
+export interface PanelHintSegment {
+	readonly kind: "agents" | "needsInput" | "shells" | "tasks";
+	readonly text: string;
+}
+
+/** The worded hint segments for `parts`, in order, by kind. `focusKey` names the key that focuses the panel. */
+export function panelHintSegments(parts: PanelHintParts, focusKey: string): PanelHintSegment[] {
+	const segments: PanelHintSegment[] = [];
+	if (parts.agents > 0)
+		segments.push({ kind: "agents", text: `${focusKey} ${parts.agents} ${parts.agents === 1 ? "agent" : "agents"}` });
+	if (parts.needsInput > 0) segments.push({ kind: "needsInput", text: `${parts.needsInput} needs input` });
+	if (parts.shells > 0)
+		segments.push({ kind: "shells", text: `${parts.shells} ${parts.shells === 1 ? "shell" : "shells"}` });
+	if (parts.tasks === "manage") segments.push({ kind: "tasks", text: "/tasks to manage" });
+	else if (parts.tasks === "subagents") segments.push({ kind: "tasks", text: "/tasks to see subagents" });
 	return segments;
 }

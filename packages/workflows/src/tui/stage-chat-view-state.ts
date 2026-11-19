@@ -328,9 +328,12 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 						excludeFromContext: request.excludeFromContext,
 					});
 				if (!agentSession) throw new Error("no live agent session on this stage");
-				return agentSession.executeBash(request.command, request.onChunk, {
-					excludeFromContext: request.excludeFromContext,
-				});
+				const execute = () =>
+					agentSession.executeBash(request.command, request.onChunk, {
+						excludeFromContext: request.excludeFromContext,
+					});
+				const holds = handle.releaseGate?.chatHolds;
+				return holds ? holds.operation(execute) : execute();
 			},
 			abortBash: async () => {
 				const handle = liveHandle(ctx);
@@ -369,11 +372,15 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 		editorTheme: editorThemeFromGraphTheme(ctx.theme),
 		getChatRenderSettings: () => stageChatRenderSettings(ctx, opts),
 		footerData: ctx.footerData,
-		renderExtraEntry: (entry) =>
-			noticeRow(entry, () => {
-				const settings = stageChatRenderSettings(ctx, opts);
-				return { expanded: settings?.toolOutputExpanded === true, outputPad: settings?.outputPad };
-			}),
+		renderExtraEntry: (entry, expanded) =>
+			noticeRow(
+				entry,
+				() => {
+					const settings = stageChatRenderSettings(ctx, opts);
+					return { expanded: settings?.toolOutputExpanded === true, outputPad: settings?.outputPad };
+				},
+				expanded,
+			),
 		countsAsMessage: stageNoticeCountsAsMessage,
 	});
 }
@@ -739,7 +746,12 @@ async function handleSlashCommand(ctx: StageChatViewContext, text: string): Prom
 						: () => handle.compact!(instructions || undefined);
 			if (compact === undefined) return false;
 			try {
-				await compact();
+				const holds = handle.releaseGate?.chatHolds;
+				if (holds)
+					await holds.operation(async () => {
+						await compact();
+					});
+				else await compact();
 			} catch (error) {
 				// compaction_end owns cancellation/failure UI; a stage that could not start compacting says why.
 				if (handle.agentSession === undefined) ctx.chatHost.showWarning((error as Error).message);

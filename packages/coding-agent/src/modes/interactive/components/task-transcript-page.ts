@@ -1,9 +1,11 @@
 import {
 	getKeybindings,
+	isHintActivation,
 	matchesKey,
 	Text,
 	type KeybindingsManager as TuiKeybindingsManager,
 	type TuiMouseEvent,
+	type TuiMouseEventResult,
 } from "@bastani/atomic-tui";
 import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -30,9 +32,10 @@ import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-h
 import { ScrollableComponentViewport } from "./chat-transcript.js";
 import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
-import { navActionText } from "./nav-keys.ts";
+import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
 import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
+import { repaintAfterSingleClick } from "./transcript-block-clicks.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
 
 /** Where a task's transcript view is mounted: the chat host it builds on and the render settings it inherits. */
@@ -90,8 +93,8 @@ export interface TaskTranscriptPage {
 	/** Interrupts the task's current turn; the task keeps running and waits for its next message. */
 	interrupt(): Promise<TaskViewResult<undefined>>;
 	render(width: number, rows: number): string[];
-	/** A single click at row `event.y` of the last frame `render` drew; true when the page acted on it. */
-	handleMouse?(event: TuiMouseEvent): boolean;
+	/** A single click at row `event.y` of the last frame `render` drew; a result when the page takes it. */
+	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
 	/** What the last frame `render` drew on `row`, such as the transcript entry there; undefined when it cannot say. */
 	paintedRowKey?(row: number): string | undefined;
 	/** Ctrl+O was pressed where the page is shown: its blocks follow the tool-output setting again. */
@@ -183,9 +186,14 @@ async function settled<T>(read: T | Promise<T>): Promise<T> {
 	return read instanceof Promise ? await read : read;
 }
 
-/** Whether the session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */
-function waitsToRetry(session: Pick<ChatBoxSession, "retryAttempt" | "isStreaming"> | undefined): boolean {
-	return session !== undefined && session.retryAttempt > 0 && !session.isStreaming;
+/**
+ * Whether the session waits out an automatic retry's backoff: its retry has started and its next attempt has not. A
+ * session with fallback models keeps its run open through the wait, so it reads as streaming then (#5523).
+ */
+function waitsToRetry(
+	session: Pick<ChatBoxSession, "retryAttempt" | "isStreaming" | "isWaitingToRetry"> | undefined,
+): boolean {
+	return session !== undefined && session.retryAttempt > 0 && (!session.isStreaming || session.isWaitingToRetry);
 }
 
 /**
@@ -216,7 +224,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (task === undefined || waitingOn === undefined) return undefined;
 		const shells = waitingReleasedShells(task, this.source.ownerTasks ?? this.source.tasks);
 		const openKey = navActionText(getKeybindings(), "app.tasks.openWaited");
-		const opens = openKey ? `${openKey} opens` : "/tasks opens";
+		const opens = openKey ? clickableKeyTextHint(openKey, " opens") : "/tasks opens";
 		const shellNote =
 			shells.length === 0
 				? ""
@@ -439,7 +447,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.requestRender();
 			return handled;
 		}
-		if (!this.chat.hasTaskInspector && keybindings.matches(data, "app.agents.focus") && !this.hasDraft()) {
+		if (
+			!this.chat.hasTaskInspector &&
+			keybindings.matches(data, "app.agents.focus") &&
+			(!this.hasDraft() || isHintActivation())
+		) {
 			return this.hasTasks() ? this.chat.openTasks() : true;
 		}
 		// The host owns thinking display; only its default physical key leaves the composer, as in a stage chat.
@@ -471,14 +483,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return handled;
 	}
 
-	/** A single click on a block header in the transcript expands or collapses that block. */
-	handleMouse(event: TuiMouseEvent): boolean {
-		if (event.y < 0 || event.y >= this.bodyRows) return false;
+	/** A single click on any row of a block in the transcript expands or collapses that block. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.y < 0 || event.y >= this.bodyRows) return undefined;
 		// While the task's held question owns input below the transcript, a click on the transcript does nothing.
-		if (!this.chat.hasTaskInspector && this.heldPrompt() !== undefined) return false;
-		const handled = this.chat.handleBodyClick(event);
-		if (handled) this.requestRender();
-		return handled;
+		if (!this.chat.hasTaskInspector && this.heldPrompt() !== undefined) return undefined;
+		return repaintAfterSingleClick(this.chat.handleBodyClick(event), () => this.requestRender());
 	}
 
 	paintedRowKey(row: number): string | undefined {
@@ -635,7 +645,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	interruptible(): boolean {
-		return this.source.interruptTask !== undefined && this.followed?.isRunning?.() === true;
+		// Between two attempts of a retry nothing streams, and Esc cancels the retry, as it does in the main chat.
+		return (
+			this.source.interruptTask !== undefined &&
+			(this.followed?.isRunning?.() === true || this.followed?.chatSession?.isRetrying === true)
+		);
 	}
 
 	async interrupt(): Promise<TaskViewResult<undefined>> {
@@ -704,15 +718,17 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	/**
 	 * A page opened mid-turn missed `agent_start` and `queue_update`, so it reads the turn and the queue now. Between
-	 * two attempts of a retry the session streams nothing, so the page shows the retry's wait instead.
+	 * two attempts of a retry the page shows the retry's wait instead, also while a session with fallback models keeps
+	 * its run open through the wait.
 	 */
 	private hydrateRunningTurn(session: TaskTranscriptSource, messages: TaskTranscriptView["messages"]): void {
-		if (session.isRunning?.() === true) {
+		if (waitsToRetry(session.chatSession)) {
+			setTaskTurnInterrupted(this.source, this.taskId, false);
+			this.chat.hydrateRetryWait();
+		} else if (session.isRunning?.() === true) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.beginExternalPromptLifecycle();
 			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
-		} else if (waitsToRetry(session.chatSession)) {
-			this.chat.hydrateRetryWait();
 		} else if (session.isRunning?.() === false) {
 			const lastAssistant = [...messages]
 				.reverse()

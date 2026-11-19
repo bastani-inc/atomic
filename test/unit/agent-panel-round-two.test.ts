@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, stripHintMarkers } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -29,9 +28,11 @@ import {
 	showAgentPanel,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const plain: AgentPanelStyle = {
-	dim: (text) => text,
+	// Hint lines are compared as the terminal shows them, without their zero-width click markers.
+	dim: (text) => stripHintMarkers(text),
 	text: (text) => text,
 	muted: (text) => text,
 	border: (text) => text,

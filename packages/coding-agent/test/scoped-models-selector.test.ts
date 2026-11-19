@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { setImmediate } from "node:timers/promises";
 import { CURSOR_MARKER, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager, useWindowsKeybindings } from "../src/core/keybindings.js";
 import { ScopedModelsSelectorComponent } from "../src/modes/interactive/components/scoped-models-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { stripAnsi } from "./helpers/visible-text.js";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 const REORDER_UP = useWindowsKeybindings() ? "\x1bq" : "\x1b[1;3A";
@@ -634,7 +635,7 @@ describe("scoped models selector", () => {
 		assert.deepEqual(changes, [[`${provider}/model-a`, `${provider}/model-c`]]);
 	});
 
-	it("serializes async onChange calls and catches rejections with a notice (#5237)", async () => {
+	it("serializes async onChange calls and catches rejections with a notice (#5237, #5519)", async () => {
 		harness = await createHarness({
 			models: [
 				{ id: "model-a", name: "Model A" },
@@ -644,17 +645,27 @@ describe("scoped models selector", () => {
 		const provider = harness.models[0].provider;
 		const modelA = `${provider}/model-a`;
 		const modelB = `${provider}/model-b`;
-		const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-		let saved: string[] | null | "unset" = "unset";
+		// The first save is held until the test releases it, so the order of the saves does not depend on timers.
+		let releaseFirstSave!: () => void;
+		const firstSaveHeld = new Promise<void>((resolve) => {
+			releaseFirstSave = resolve;
+		});
+		let secondSaved!: () => void;
+		const bothSaved = new Promise<void>((resolve) => {
+			secondSaved = resolve;
+		});
 		const calls: Array<string[] | null> = [];
+		const saves: Array<string[] | null> = [];
 		const selector = new ScopedModelsSelectorComponent(
 			{ allModels: [...harness.models], enabledModelIds: [modelA, modelB] },
 			{
 				onChange: async (ids) => {
-					calls.push(ids);
-					await sleep(calls.length === 1 ? 40 : 5);
-					saved = ids;
+					const call = calls.push(ids);
+					if (call === 1) await firstSaveHeld;
+					else await Promise.resolve();
+					saves.push(ids);
+					if (call === 2) secondSaved();
 				},
 				onCancel: () => {},
 			},
@@ -662,9 +673,13 @@ describe("scoped models selector", () => {
 
 		selector.handleInput("\r");
 		selector.handleInput("\x01");
-		await sleep(80);
+		await setImmediate();
+		assert.deepEqual(calls, [[modelB]], "the second change waits until the first one is saved");
+		assert.deepEqual(saves, []);
+		releaseFirstSave();
+		await bothSaved;
 		assert.deepEqual(calls, [[modelB], null]);
-		assert.equal(saved, null);
+		assert.deepEqual(saves, [[modelB], null]);
 
 		const unhandled: unknown[] = [];
 		const onUnhandled = (reason: unknown) => void unhandled.push(reason);
@@ -691,13 +706,13 @@ describe("scoped models selector", () => {
 			);
 
 			failingSelector.handleInput("\r");
-			await sleep(20);
+			await setImmediate();
 			assert.equal(unhandled.length, 0);
 			const errorScreen = stripAnsi(failingSelector.render(160).join("\n"));
 			assert.ok(errorScreen.includes("disk full"), errorScreen);
 
 			failingSelector.handleInput("\x01");
-			await sleep(20);
+			await setImmediate();
 			assert.equal(unhandled.length, 0);
 			assert.deepEqual(savedAfterFailure, [null]);
 			const recoveredScreen = stripAnsi(failingSelector.render(160).join("\n"));

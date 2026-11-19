@@ -13,8 +13,11 @@ async function registerIsolatedTests(): Promise<void> {
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
 	const { mock } = await import("bun:test");
 	const { replaceControlCharacters, stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
-	// The host theme's color environment, which the shared chat-input label reads, parses colors with pi-tui.
-	const { colorToHex, parseColor } = await import("@bastani/atomic-tui/dist/colors.js");
+	// Use real colour conversion for the shared input label and the graph’s status palette.
+	const { colorToHex, colorToRgb, foregroundAnsi, parseColor } = await import("@bastani/atomic-tui/dist/colors.js");
+	// Hint lines mark their keys for clicks with pi-tui's own hint markers.
+	const clickableHints = await import("@bastani/atomic-tui/dist/clickable-hints.js");
+	const { keyInputData } = await import("@bastani/atomic-tui/dist/keys.js");
 	class TestComponent {}
 	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
 		import("@bastani/atomic-tui/dist/components/scroll-view.js"),
@@ -22,7 +25,11 @@ async function registerIsolatedTests(): Promise<void> {
 		import("@bastani/atomic-tui/dist/components/input.js"),
 	]);
 	mock.module("@bastani/atomic-tui", () => ({
+		...clickableHints,
+		keyInputData,
 		colorToHex,
+		colorToRgb,
+		foregroundAnsi,
 		parseColor,
 		Box: TestComponent,
 		Editor: TestComponent,
@@ -69,6 +76,10 @@ async function registerIsolatedTests(): Promise<void> {
 	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
 
 	const navKeys = await import("../../packages/coding-agent/src/modes/interactive/components/nav-keys.js");
+	// Stage chats hand a click on a block to the shared block-click helpers.
+	const { repaintAfterSingleClick, rowsFrom } = await import(
+		"../../packages/coding-agent/src/modes/interactive/components/transcript-block-clicks.js"
+	);
 	const { terminalDisplayText } = await import("../../packages/coding-agent/src/utils/terminal-text.ts");
 	// Workflow colors come from the host's color environment; these checks paint them in true color.
 	const hexColorAnsi = (hex: string, layer: "fg" | "bg") => {
@@ -77,6 +88,8 @@ async function registerIsolatedTests(): Promise<void> {
 	};
 	mock.module("@bastani/atomic", () => ({
 		...navKeys,
+		repaintAfterSingleClick,
+		rowsFrom,
 		sliceHead,
 		terminalDisplayText,
 		hexColorAnsi,

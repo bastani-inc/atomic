@@ -54,6 +54,15 @@ import { createWorkflowBackgroundWarningReporter } from "./workflow-background-w
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
+/** Owner → Intercom: a run's route is withdrawn, so the connection that carried it can close (#5492). */
+const PENDING_STAGE_ROUTE_RETIRED_EVENT = "atomic:workflow-pending-stage-route-retired";
+/**
+ * How many finished invocations keep their routes announced (#5492). A finished run's route still answers a message to
+ * one of its stages with the run's own reason, but every invocation's routes hold one Intercom connection of the
+ * session, so only the most recently finished invocations keep theirs; an older one's routes are retired, which closes
+ * its connection. An invocation that runs again is announced again.
+ */
+export const TERMINAL_INVOCATION_ROUTE_RETENTION = 32;
 /** Broker → owner: the live stages a sticky broadcast was actually written to (D3 ledger input). */
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_ASK_REFUSAL =
@@ -177,6 +186,7 @@ export function registerPendingStageIntercomBridge(
 	// Keep rejected completions separate from the publication cache: failure is not
 	// an absent optional consumer, even if it settled before a stage began waiting.
 	const routeCompletions = new Map<string, Promise<void>>();
+	const pendingRetirements = new Set<Promise<void>>();
 	/**
 	 * Per claimed publication, settles once its consumer answered it, acknowledged or refused, and the event loop has
 	 * turned since it went out. The entry is removed when it settles.
@@ -243,7 +253,69 @@ export function registerPendingStageIntercomBridge(
 	 * again, whichever run changed; an announcement scoped to changed runs publishes them again too.
 	 */
 	const unpublishedRunIds = new Set<string>();
+	/** The invocation each announced run's route belongs to, by run id: what retiring an invocation withdraws. */
+	const announcedRootOf = new Map<string, string>();
+	/** Only order and notice eligibility are needed to select the window; never reread unchanged snapshots for it. */
+	const finishedRoots = new Map<string, number>();
+	const owingRoots = new Set<string>();
+	let retainedRoots = new Set<string>();
+	let retentionChanged = false;
+	let needsBackfill = false;
+	const retireRoute = (runId: string): void => {
+		const rootRunId = announcedRootOf.get(runId);
+		unpublishedRunIds.delete(runId);
+		dropRoute(runId);
+		if (rootRunId === undefined) return;
+		announcedRootOf.delete(runId);
+		const group = workflowInvocationIntercomGroup(rootRunId);
+		const retirement = { runId, group, completion: undefined as Promise<void> | undefined };
+		outsideWorkflowExecutions(() => pi.events?.emit?.(PENDING_STAGE_ROUTE_RETIRED_EVENT, retirement));
+		const completion = retirement.completion;
+		if (completion !== undefined) {
+			pendingRetirements.add(completion);
+			const settled = () => pendingRetirements.delete(completion);
+			void completion.then(settled, settled);
+		}
+	};
+	const noteFinishedRoot = (root: RunSnapshot, owesNotice: boolean, owned = true): void => {
+		const wasCounted = retainedRoots.has(root.id) && !owingRoots.has(root.id);
+		if (!owned || !isTerminalRunStatus(root.status)) {
+			if (wasCounted) needsBackfill = true;
+			if (finishedRoots.delete(root.id)) retentionChanged = true;
+			owingRoots.delete(root.id);
+			return;
+		}
+		const sequence = root.finishSequence ?? root.endedAt ?? root.startedAt;
+		const previous = finishedRoots.get(root.id);
+		if (previous === sequence && owingRoots.has(root.id) === owesNotice) return;
+		if (wasCounted && (owesNotice || (previous !== undefined && sequence < previous))) needsBackfill = true;
+		finishedRoots.set(root.id, sequence);
+		if (owesNotice) owingRoots.add(root.id);
+		else owingRoots.delete(root.id);
+		retentionChanged = true;
+	};
+	/** Decide the whole batch before publishing any route. Owing a sender a notice exempts the invocation, but
+	 * neither discovering nor settling a notice changes when that invocation finished. */
+	const applyRetention = (changed?: Set<string>): void => {
+		if (!retentionChanged) return;
+		// A new finish competes only with the retained window. An older retired run can re-enter it only when a
+		// counted run leaves, becomes exempt or is replaced with an older snapshot.
+		const candidates =
+			changed === undefined || needsBackfill ? finishedRoots.keys() : new Set([...retainedRoots, ...changed]);
+		const recent = [...candidates].filter((id) => finishedRoots.has(id) && !owingRoots.has(id));
+		recent.sort((a, b) => finishedRoots.get(b)! - finishedRoots.get(a)! || (a < b ? -1 : a > b ? 1 : 0));
+		const keep = new Set([...owingRoots, ...recent.slice(0, TERMINAL_INVOCATION_ROUTE_RETENTION)]);
+		// Newly terminal invocations may have live routes even if they were never in the previous finished window.
+		for (const [id, root] of announcedRootOf) {
+			if (finishedRoots.has(root) && !keep.has(root)) retireRoute(id);
+		}
+		for (const root of keep) if (!retainedRoots.has(root)) changed?.add(root);
+		retainedRoots = keep;
+		retentionChanged = false;
+		needsBackfill = false;
+	};
 	const announceRun = (run: RunSnapshot, rootRunId: string, lookups: RouteLookups): void => {
+		if (finishedRoots.has(rootRunId) && !retainedRoots.has(rootRunId)) return;
 		const parentRun = lookups.parentOf(run);
 		const boundary = parentRun?.stages.find((stage) => stage.id === run.parentStageId);
 		const parent =
@@ -341,6 +413,7 @@ export function registerPendingStageIntercomBridge(
 		}
 		// Both the lightweight relay and the direct heavy handler assign this
 		// synchronously. It is observed, never awaited here and never overwritten.
+		announcedRootOf.set(run.id, rootRunId);
 		const completion = announcement.completion;
 		if (completion === undefined) {
 			// No consumer claimed it: an absent event surface or a not-yet-installed
@@ -388,6 +461,10 @@ export function registerPendingStageIntercomBridge(
 			rowRuns: () => runs,
 		};
 		const members = new Map<string, string[]>();
+		const owing = new Set<string>();
+		finishedRoots.clear();
+		owingRoots.clear();
+		retentionChanged = true;
 		for (const run of runs) {
 			const rootRunId = topology.rootOf(run.id);
 			for (const root of new Set([rootRunId, run.rootRunId])) {
@@ -400,9 +477,19 @@ export function registerPendingStageIntercomBridge(
 			if (externalRunRouteOwner(activeStore, run.id) !== undefined || !ownsRun(run.id)) continue;
 			if (rootRunId === undefined) continue;
 			ownedRunIds.add(run.id);
-			announceRun(run, rootRunId, lookups);
+			if (hasSettlementWork(run)) owing.add(rootRunId);
 		}
 		rootRunMembers = members;
+		for (const run of runs) {
+			if (ownedRunIds.has(run.id) && topology.rootOf(run.id) === run.id) noteFinishedRoot(run, owing.has(run.id));
+		}
+		// Withdraw this bridge's old publication before announcing any replacement. A route on another host is
+		// carried by that host's connection; forgetting our local claim alone would leave ours connected.
+		for (const [id, root] of announcedRootOf) {
+			if (!ownedRunIds.has(id) || topology.rootOf(id) !== root) retireRoute(id);
+		}
+		applyRetention();
+		for (const run of runs) if (ownedRunIds.has(run.id)) announceRun(run, topology.rootOf(run.id)!, lookups);
 		// Drop claims for runs with no currently resolvable durable owner, so a removed
 		// and re-added run re-announces instead of inheriting a stale claim.
 		for (const runId of announcedRoutes.keys()) {
@@ -437,11 +524,34 @@ export function registerPendingStageIntercomBridge(
 			},
 			rowRuns: membersOf,
 		};
+		// The retention decision and publication use the same ownership answer for this synchronous pass.
+		const ownership = new Map<string, boolean>();
+		const locallyOwned = (id: string): boolean => {
+			let owned = ownership.get(id);
+			if (owned === undefined) {
+				owned = externalRunRouteOwner(activeStore, id) === undefined && ownsRun(id);
+				ownership.set(id, owned);
+			}
+			return owned;
+		};
+		for (const rootRunId of roots) {
+			const root = activeStore.run(rootRunId);
+			if (root === undefined || topology.rootOf(rootRunId) !== rootRunId) continue;
+			const owned = locallyOwned(rootRunId);
+			const owes =
+				owned &&
+				isTerminalRunStatus(root.status) &&
+				membersOf(rootRunId).some(
+					(run) => topology.rootOf(run.id) === rootRunId && hasSettlementWork(run) && locallyOwned(run.id),
+				);
+			noteFinishedRoot(root, owes, owned);
+		}
+		applyRetention(roots);
 		const position = (runId: string) => activeStore.runPosition(runId) ?? Number.MAX_SAFE_INTEGER;
 		for (const rootRunId of [...roots].sort((left, right) => position(left) - position(right))) {
 			for (const run of membersOf(rootRunId)) {
 				if (topology.rootOf(run.id) !== rootRunId) continue;
-				if (externalRunRouteOwner(activeStore, run.id) !== undefined || !ownsRun(run.id)) dropRoute(run.id);
+				if (!locallyOwned(run.id)) retireRoute(run.id);
 				else announceRun(run, rootRunId, lookups);
 			}
 		}
@@ -459,6 +569,9 @@ export function registerPendingStageIntercomBridge(
 			if (runIds === undefined) unsettledRunIds.clear();
 			else for (const runId of runIds) unsettledRunIds.delete(runId);
 			for (const runId of found) if (hasSettlementWork(activeStore.run(runId))) unsettledRunIds.add(runId);
+			// Settlement writes invalidate their runs. Publish the new window once notices went out, without waiting
+			// for another run to finish; recompute from current snapshots, not the state before the sweep awaited.
+			if (!disposed && found.size > 0) announceIfPending();
 		}
 	};
 	/**
@@ -689,6 +802,7 @@ export function registerPendingStageIntercomBridge(
 			announceIfPending();
 			await Promise.allSettled(routeCompletions.values());
 			await sweepPromise;
+			await Promise.allSettled(pendingRetirements);
 		},
 		/** Announces every route, as after a change of which runs the bridge owns. */
 		refresh: () => announceNow(true),

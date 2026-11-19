@@ -35,6 +35,9 @@ export function statusColor(status: StageDisplayStatus | RunStatus, theme: Graph
 	}
 }
 
+/** The mark of a stage suspended with its session released: the waiting mark a released subagent has (#5489). */
+export const SUSPENDED_STAGE_ICON = "◌";
+
 /** Unicode glyph for each status (no emoji — terminal-stable). */
 export function statusIcon(status: StageDisplayStatus | RunStatus): string {
 	switch (status) {
@@ -45,8 +48,9 @@ export function statusIcon(status: StageDisplayStatus | RunStatus): string {
 		case "awaiting_input":
 			return "？";
 		case "suspended":
-			// The same glyph as the graph header's suspended badge: a stage with its session released is not pending.
-			return "◷";
+			// A stage with its session released waits, as a released subagent does, and shows the same dim mark as one
+			// does in the chat, `/tasks` and the agent panel; it is not pending, and not paused.
+			return SUSPENDED_STAGE_ICON;
 		case "blocked":
 			return "↑";
 		case "skipped":

@@ -244,6 +244,9 @@ const LISTING_SIZE =
 	"length(id) + length(cwd) + length(header_json) + length(modified_at) + length(first_message) + COALESCE(length(name), 0) + COALESCE(length(summary), 0) + COALESCE(length(summarized_through_id), 0) + length(revision) + 256";
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
+/** Local SQLite statements run on the event loop; paced listings scan fewer rows per turn. */
+const LISTING_SCAN_ROWS = 256;
+const LISTING_CWD_PAGE = 2_000;
 const LISTING_CWD_MATCHES = 64;
 const STUB_ENTRY: SessionEntry = {
 	type: "custom",
@@ -996,14 +999,18 @@ export class SqlSessionStore implements SessionStore {
 		);
 		const upper = Number(bound?.upper ?? 0);
 		const seen = new Set<string>();
-		for (let after = 0, limit: number = SESSION_READ_FETCH.first; after < upper; ) {
+		const scanRows = this.listingScanRows(SESSION_READ_FETCH.max);
+		for (let after = 0, limit: number = Math.min(scanRows, SESSION_READ_FETCH.first); after < upper; ) {
 			this.assertListing(query);
 			const rows = await this.database.all<ListingWindowRow>(
-				`WITH keyed AS MATERIALIZED (
-					SELECT ${order} AS ord, row_number() OVER (ORDER BY ${order}) AS key_row,
-						CASE WHEN ${scope.where} THEN ${LISTING_SIZE} END AS size
+				// The scan sizes each session in scope and nothing else. Numbering its rows in the same SELECT would make
+				// SQLite copy every column the size reads, of every scanned session, before the scope is checked (#5480).
+				`WITH scanned AS MATERIALIZED (
+					SELECT ${order} AS ord, CASE WHEN ${scope.where} THEN ${LISTING_SIZE} END AS size
 					FROM ${this.tables.sessions} WHERE ${order} > ? AND ${order} <= ?
 					ORDER BY ${order} LIMIT ?
+				), keyed AS MATERIALIZED (
+					SELECT ord, row_number() OVER (ORDER BY ord) AS key_row, size FROM scanned
 				), bound AS (SELECT max(ord) AS upto FROM keyed),
 				page AS (
 					SELECT ord, key_row, count(*) OVER () AS fetched,
@@ -1049,7 +1056,7 @@ export class SqlSessionStore implements SessionStore {
 				: batchChars - pageChars <= SESSION_READ_PAGE_CHARS * 4
 					? limit
 					: Math.max(SESSION_READ_FETCH.min, Number(last.key_row) * 2);
-			limit = Math.min(SESSION_READ_FETCH.max, next);
+			limit = Math.min(scanRows, next);
 			await yieldTurn();
 		}
 		this.assertListing(query);
@@ -1057,23 +1064,25 @@ export class SqlSessionStore implements SessionStore {
 
 	private async distinctCwds(query: SessionListQuery): Promise<string[]> {
 		const directories = new Set<string>();
-		let complete = true;
+		let complete = !query.withoutSearchText;
+		// The paced listing starts with the indexed scan, without a synchronous DISTINCT over the whole store.
 		// One DISTINCT scan handles ordinary catalogs. If it does not fit, continue by the indexed session ID,
 		// not by an unindexed cwd cursor that would recompute DISTINCT over the table for every page.
-		for await (const page of readSqlCatalogPages<SqliteRow & { cwd: string; directory_count: number | bigint }>(
-			this.database,
-			{
-				sql: `SELECT cwd, count(*) OVER () AS directory_count FROM (SELECT DISTINCT cwd FROM ${this.tables.sessions}) AS directories`,
-				key: "cwd",
-				size: "length(cwd)",
-				signal: query.signal,
-				assertOpen: () => this.assertOpen(),
-			},
-		)) {
-			for (const row of page) directories.add(row.cwd);
-			complete = page.length === Number(page[0]!.directory_count);
-			break;
-		}
+		if (complete)
+			for await (const page of readSqlCatalogPages<SqliteRow & { cwd: string; directory_count: number | bigint }>(
+				this.database,
+				{
+					sql: `SELECT cwd, count(*) OVER () AS directory_count FROM (SELECT DISTINCT cwd FROM ${this.tables.sessions}) AS directories`,
+					key: "cwd",
+					size: "length(cwd)",
+					signal: query.signal,
+					assertOpen: () => this.assertOpen(),
+				},
+			)) {
+				for (const row of page) directories.add(row.cwd);
+				complete = page.length === Number(page[0]!.directory_count);
+				break;
+			}
 		if (!complete) {
 			await yieldTurn();
 			const { value: found } = await reduceSqlCatalog<SqliteRow & { id: string; cwd: string }, Set<string>>(
@@ -1085,7 +1094,11 @@ export class SqlSessionStore implements SessionStore {
 					skipProbe: true,
 					signal: query.signal,
 					assertOpen: () => this.assertOpen(),
-					pageRows: this.database.descriptor.adapter === "node-sqlite" ? 1024 : 4_096,
+					pageRows: query.withoutSearchText
+						? this.listingScanRows(LISTING_CWD_PAGE)
+						: this.database.descriptor.adapter === "node-sqlite"
+							? 1024
+							: 4_096,
 				},
 				() => new Set(),
 				(found, page) => {
@@ -1097,6 +1110,11 @@ export class SqlSessionStore implements SessionStore {
 		}
 		this.assertListing(query);
 		return [...directories];
+	}
+
+	/** The most sessions one statement of a paced listing scans: fewer when the statement holds the event loop. */
+	private listingScanRows(overServer: number): number {
+		return this.database.descriptor.adapter === "node-sqlite" ? LISTING_SCAN_ROWS : overServer;
 	}
 
 	/** Directory resolution and row filtering use one bounded matcher path. */

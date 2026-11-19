@@ -21,6 +21,7 @@ import {
 	AssistantMessageComponent,
 	CountdownTimer,
 	keyText,
+	keyTextHint,
 	Loader,
 	type Message,
 	pickWhimsicalWorkingMessage,
@@ -585,6 +586,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
 					this.addCompactionBoundaryToChat(event.result);
 					if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);
+					this.appendProjectTrustWarning();
 					this.footer.invalidate();
 				}
 				if (event.errorMessage && !manualTakeoverPending) {
@@ -623,7 +625,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			this.statusContainer.clear();
 			this.retryCountdown?.dispose();
 			const retryMessage = (seconds: number) =>
-				`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyText("app.interrupt")} Cancel)`;
+				`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyTextHint("app.interrupt", "Cancel")})`;
 			this.retryLoader = new AtomicWorkingLoader(
 				this.ui,
 				undefined,

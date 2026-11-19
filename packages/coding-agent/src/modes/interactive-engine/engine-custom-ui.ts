@@ -3,6 +3,7 @@ import {
 	isKeyRelease,
 	type OverlayHandle,
 	type OverlayOptions,
+	runAsHintActivation,
 	type Terminal,
 	type TUI,
 	TuiMainScreen,
@@ -17,6 +18,7 @@ import type { ScrollableWidgetComponent, WidgetScrollRequest } from "../../core/
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
+import { runRendererCleanup } from "../interactive/components/renderer-disposal.js";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";
 import { BackgroundRenderLane, BackgroundRenderTui } from "./background-render-lane.ts";
@@ -82,7 +84,12 @@ interface ActiveComponent {
 	staleWhileHidden?: boolean;
 	handlingInput?: boolean;
 	paintAfterInput?: boolean;
+	/** What clicks the component took leave for when they turn out single, by the host's click number. */
+	singleClickActions?: Map<number, TuiMouseEventResult>;
 }
+
+/** Older hosts sent numbered clicks but never told the engine which ones they canceled. */
+const LEGACY_WAITING_SINGLE_CLICKS = 16;
 
 /**
  * The engine-side TUI of one custom component. Its paced renders paint the component once and push the frame to the
@@ -102,6 +109,7 @@ class RemoteComponentTui extends TuiMainScreen {
 }
 
 class RemoteTerminal implements Terminal {
+	colorDepth?: number;
 	columns = 80;
 	rows = 24;
 	kittyProtocolActive = false;
@@ -433,6 +441,7 @@ export class EngineCustomUiService {
 					// A component that caches its lines by width alone would keep the old mode's layout.
 					if (laidOutFor !== command.hostMode) record.tui.invalidate();
 				}
+				if (command.colorDepth !== undefined) record.terminal.colorDepth = command.colorDepth;
 				record.terminal.columns = Math.max(1, command.width);
 				record.terminal.rows = Math.max(1, command.rows);
 				const { componentId, requestId } = command;
@@ -459,7 +468,8 @@ export class EngineCustomUiService {
 						const handleInput = record.component.handleInput as
 							| ((data: string) => boolean | undefined)
 							| undefined;
-						return handleInput?.call(record.component, command.data) === true;
+						const handle = () => handleInput?.call(record.component, command.data) === true;
+						return command.hint === true ? runAsHintActivation(handle) : handle();
 					});
 				} catch {
 					handled = false;
@@ -487,14 +497,14 @@ export class EngineCustomUiService {
 				if (paintedRowKey !== undefined && command.rowKey) {
 					if (paintedRowKey.call(record.component, command.y) !== command.rowKey) break;
 				} else if (command.frame !== record.frame) break;
-				const { x, y, width, height } = command;
+				const { x, y, width, height, clickId } = command;
 				record.handlingInput = true;
 				try {
 					runSynchronousCallback({ kind: "renderer", name: command.componentId }, () => {
 						const handleMouse = record.component.handleMouse as
 							| ((event: TuiMouseEvent) => TuiMouseEventResult | undefined)
 							| undefined;
-						handleMouse?.call(record.component, {
+						const result = handleMouse?.call(record.component, {
 							type: "click",
 							button: "left",
 							x,
@@ -508,9 +518,45 @@ export class EngineCustomUiService {
 							ctrl: false,
 							clickCount: 1,
 						});
+						// Resolved against the frame the host clicked, it acts once the host settles the click. A host from
+						// before clicks were settled numbers none and settles none: its click acts now, as it did there.
+						if (!result?.whenSingleClick) return;
+						if (clickId === undefined) result.whenSingleClick();
+						else {
+							const waiting = record.singleClickActions ?? new Map<number, TuiMouseEventResult>();
+							record.singleClickActions = waiting;
+							waiting.set(clickId, result);
+							if (!command.cancelsClicks && waiting.size > LEGACY_WAITING_SINGLE_CLICKS) {
+								const oldest = waiting.keys().next().value!;
+								const evicted = waiting.get(oldest);
+								waiting.delete(oldest);
+								evicted?.onSingleClickCancel?.();
+							}
+						}
 					});
 				} catch {
 					// A click a component fails to handle changes nothing; the host keeps its frame.
+				} finally {
+					record.handlingInput = false;
+				}
+				if (record.paintAfterInput === true) {
+					record.paintAfterInput = false;
+					this.paintComponent(command.componentId);
+				}
+				break;
+			}
+			case "engine_custom_click_cancel":
+			case "engine_custom_click_settle": {
+				const result = record.singleClickActions?.get(command.clickId);
+				record.singleClickActions?.delete(command.clickId);
+				const action =
+					command.type === "engine_custom_click_cancel" ? result?.onSingleClickCancel : result?.whenSingleClick;
+				if (action === undefined) break;
+				record.handlingInput = true;
+				try {
+					runSynchronousCallback({ kind: "renderer", name: command.componentId }, action);
+				} catch {
+					// A click a component fails to act on changes nothing; the host keeps its frame.
 				} finally {
 					record.handlingInput = false;
 				}
@@ -552,6 +598,8 @@ export class EngineCustomUiService {
 		const record = this.active.get(componentId);
 		if (!record) return;
 		this.active.delete(componentId);
+		for (const result of record.singleClickActions?.values() ?? []) runRendererCleanup(result.onSingleClickCancel);
+		record.singleClickActions?.clear();
 		record.terminal.close();
 		// Claim cancellation before user disposal code can call done() reentrantly.
 		if (resolve) record.resolve(undefined);

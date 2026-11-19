@@ -13,6 +13,7 @@ import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js
 import { RpcResourceReadiness } from "../src/modes/rpc/rpc-resource-readiness.js";
 import { RpcSessionBinding } from "../src/modes/rpc/rpc-session-binding.js";
 import { isRpcTransportFailure, rpcTransportError } from "../src/modes/rpc/rpc-transport-error.js";
+import type { RpcSessionState } from "../src/modes/rpc/rpc-types.js";
 import { createHarness } from "./suite/harness.js";
 
 function frame(message: Parameters<typeof serializeInteractiveEngineMessage>[0]): string {
@@ -39,7 +40,7 @@ function observedRejectionDeferred<T>(): Deferred<T> {
 	return result;
 }
 
-async function createGenerationRuntime() {
+async function createGenerationRuntime(engineState: Partial<RpcSessionState> = {}) {
 	const harness = await createHarness();
 	let generation = 1;
 	const resources = new Map<number, Deferred<void>>([[1, observedRejectionDeferred<void>()]]);
@@ -83,9 +84,10 @@ async function createGenerationRuntime() {
 				pendingMessageCount: 0,
 				queuedMessagesPaused: false,
 				resourceExtensions: [{ path: extensionPaths.get(requestedGeneration)!, hidden: false }],
+				...engineState,
 			};
 		},
-		requestInternal: async () => ({ models: [], scopedModels: [] }),
+		requestInternal: vi.fn(async () => ({ models: [], scopedModels: [] })),
 		getCommands: async () => [],
 		getEntries: async () => ({ entries: [], leafId: null }),
 		prompt,
@@ -135,6 +137,8 @@ async function createGenerationRuntime() {
 			});
 		},
 		restartGate,
+		restart: client.restart,
+		requestInternal: client.requestInternal,
 		emitResourceFailure(message: string) {
 			engineMessageListener?.({ type: "engine_resources_failed", message });
 			resources.get(generation)!.reject(new Error(`Interactive engine resource loading failed: ${message}`));
@@ -661,6 +665,74 @@ describe("interactive engine resource readiness", () => {
 			);
 			expect(matchingFailures).toHaveLength(1);
 		} finally {
+			probe.restartGate.resolve();
+			await probe.runtime.dispose();
+			probe.harness.cleanup();
+		}
+	});
+
+	it("restarts a dead engine with the trust decisions it made in this host session", async () => {
+		const trustDecisions = { projects: { "/work/feature": true }, extensionSources: { "/work/tools": false } };
+		const probe = await createGenerationRuntime({ trustDecisions });
+		try {
+			probe.initializations.get(1)!.resolve();
+			await probe.runtime.initializeFromEngine();
+			probe.retireGeneration(1, false);
+			await vi.waitFor(() => expect(probe.restart).toHaveBeenCalledTimes(1));
+			expect(probe.restart.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ trustDecisions }));
+		} finally {
+			probe.restartGate.resolve();
+			await probe.runtime.dispose();
+			probe.harness.cleanup();
+		}
+	});
+
+	it("keeps reported trust answers when the engine stops during model discovery (#5568)", async () => {
+		const trustDecisions = { projects: { "/work/feature": false }, extensionSources: { "/work/tools": true } };
+		const probe = await createGenerationRuntime({ trustDecisions });
+		const discovering = deferred<void>();
+		const catalog = deferred<{ models: []; scopedModels: [] }>();
+		probe.requestInternal.mockImplementationOnce(() => {
+			discovering.resolve();
+			return catalog.promise;
+		});
+		try {
+			probe.initializations.get(1)!.resolve();
+			const initializing = probe.runtime.initializeFromEngine();
+			await discovering.promise;
+			probe.retireGeneration(1, false);
+			catalog.reject(rpcTransportError("Agent process stopped"));
+			await expect(initializing).rejects.toSatisfy(isRpcTransportFailure);
+			expect(probe.restart).toHaveBeenCalledWith(undefined, expect.objectContaining({ trustDecisions }));
+		} finally {
+			probe.restartGate.resolve();
+			await probe.runtime.dispose();
+			probe.harness.cleanup();
+		}
+	});
+
+	it("keeps answers for both folders when the engine stops during the next state request (#5568)", async () => {
+		const state: Partial<RpcSessionState> = {
+			trustDecisions: { projects: { "/first": true }, extensionSources: {} },
+		};
+		const probe = await createGenerationRuntime(state);
+		try {
+			probe.initializations.get(1)!.resolve();
+			await probe.runtime.initializeFromEngine();
+			state.trustDecisions = { projects: { "/second": false }, extensionSources: { "/extension": true } };
+			await probe.runtime.synchronize();
+
+			probe.initializations.set(1, deferred<void>());
+			const pending = probe.runtime.synchronize();
+			probe.retireGeneration(1, false);
+			const expected = { projects: { "/first": true, "/second": false }, extensionSources: { "/extension": true } };
+			expect(probe.restart).toHaveBeenCalledWith(undefined, expect.objectContaining({ trustDecisions: expected }));
+			state.trustDecisions = { projects: { "/second": true }, extensionSources: {} };
+			probe.initializations.get(1)!.resolve();
+			await pending;
+			expect(probe.runtime.trustDecisions()).toEqual(expected);
+		} finally {
+			probe.initializations.get(1)!.resolve();
 			probe.restartGate.resolve();
 			await probe.runtime.dispose();
 			probe.harness.cleanup();

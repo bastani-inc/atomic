@@ -74,7 +74,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getChatRenderSettings: ChatSessionHostOpts<TExtraEntry>["getChatRenderSettings"];
 	readonly getCwd: (() => string) | undefined;
 	readonly footerData: ReadonlyFooterDataProvider | undefined;
-	readonly renderExtraEntry: ((entry: TExtraEntry) => Component) | undefined;
+	readonly renderExtraEntry: ((entry: TExtraEntry, expanded?: boolean) => Component) | undefined;
 	readonly countsAsMessage: ((entry: TExtraEntry) => boolean) | undefined;
 	readonly tui: TUI | undefined;
 
@@ -137,6 +137,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	 * by its call id, because live output replaces its entry object; other entries by the entry itself.
 	 */
 	expandedOverrides = new Map<string, boolean>();
+	expansionGeneration = 0;
 	expandedEntryOverrides = new WeakMap<object, boolean>();
 	/** The tool-output setting the overrides were made against; changing it (Ctrl+O) drops them. */
 	expandedOverridesFor: boolean | undefined;

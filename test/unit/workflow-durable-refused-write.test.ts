@@ -13,6 +13,7 @@ import { createExtensionRuntime } from "../../packages/workflows/src/extension/r
 import { workflowResumeAction } from "../../packages/workflows/src/extension/workflow-tool-control.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
+import { currentStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { INTERACTIVE_WORKFLOW_POLICY, type WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
@@ -33,6 +34,9 @@ async function releaseRuns(): Promise<void> {
 }
 afterEach(async () => {
 	await releaseRuns();
+	// The runs here are a session's runs, whose stages stay registered for chat until the session ends; end it, or
+	// every test keeps the stages of all the runs before it (about 5 MB a test).
+	await currentStageControlRegistry().clear();
 	store.clear();
 	setDurableBackend(undefined);
 });
@@ -167,7 +171,9 @@ function graph(runs: readonly RunSnapshot[], rootId: string): unknown {
 					candidate.parentRunId === snapshot.id &&
 					snapshot.stages.some(
 						(stage) =>
-							stage.id === candidate.parentStageId && stage.status !== "failed" && stage.status !== "skipped",
+							stage.id === candidate.parentStageId &&
+							(stage.startedChildRunId === candidate.id ||
+								(stage.status !== "failed" && stage.status !== "skipped")),
 					),
 			)
 			.map(visit),

@@ -710,6 +710,8 @@ The same functions are available as `options.keyHint()` and `options.keyText()` 
 
 In renderers, use these instead of importing `keyHint()`, `keyHintIfBound()` or `keyText()` from `@bastani/atomic`. An extension can resolve its own copy of the package, for example from its own `node_modules`, and that copy does not see Atomic's configured keybindings: `app.*` ids then format as `""`. `rawKeyHint(key, description)` formats a literal key string and is safe to import.
 
+In fullscreen mode, a click on a hint from `keyHint()` or `rawKeyHint()` presses the key it names. The hint carries zero-width marks for this, which the renderer removes before writing to the terminal; use `keyText()` for key names you put in plain text, such as a notification or a log line. To make a hint you write as text clickable, pass it through `clickableHintText()` from `@bastani/atomic-tui`, for example `clickableHintText("↑↓ select · enter choose · esc cancel")`.
+
 Use namespaced keybinding ids:
 - Coding-agent ids use the `app.*` namespace, for example `app.tools.expand`, `app.editor.external`, `app.session.rename`
 - Shared TUI ids use the `tui.*` namespace, for example `tui.select.confirm`, `tui.select.cancel`, `tui.input.tab`
@@ -723,7 +725,7 @@ Custom editors and `ctx.ui.custom()` components receive `keybindings: Keybinding
 - Use `Text` with padding `(0, 0)`. The default Box handles padding.
 - Use `\n` for multi-line content.
 - Handle `isPartial` for streaming progress.
-- Support `expanded` for detail on demand.
+- Support `expanded` for detail on demand. Ctrl+O sets it for every block, and a click on your block toggles it for that block alone.
 - Keep default view compact.
 - Read `context.args` in `renderResult` instead of copying args into `context.state`.
 - Use `context.state` only for data that must be shared across call and result slots.

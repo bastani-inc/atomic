@@ -23,6 +23,7 @@ import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { CodeHighlighter, theme } from "../theme/theme.js";
 import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { keyHint, keyText } from "./keybinding-hints.js";
+import { clickableKeyTextHint } from "./nav-keys.ts";
 import { STATUS_MARKERS } from "./notice-line.ts";
 import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
 import {
@@ -35,6 +36,7 @@ import {
 	type ToolGroupRole,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
+import { blockRenderTime, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
@@ -257,7 +259,7 @@ export class ToolExecutionComponent extends Container {
 	markExecutionStarted(startedAt?: number): void {
 		if (this.disposed || this.executionStarted) return;
 		this.executionStarted = true;
-		const now = Date.now();
+		const now = blockRenderTime();
 		this.executionStartedAt = startedAt !== undefined && Number.isFinite(startedAt) ? Math.min(startedAt, now) : now;
 		this.updateDisplay();
 		this.ui.requestRender();
@@ -278,7 +280,9 @@ export class ToolExecutionComponent extends Container {
 		if (!isPartial)
 			this.elapsedMs =
 				result.durationMs ??
-				(this.executionStartedAt === undefined ? undefined : Math.max(0, Date.now() - this.executionStartedAt));
+				(this.executionStartedAt === undefined
+					? undefined
+					: Math.max(0, blockRenderTime() - this.executionStartedAt));
 		this.updateDisplay();
 	}
 
@@ -290,9 +294,9 @@ export class ToolExecutionComponent extends Container {
 		return this.groupRole;
 	}
 
-	/** The block's title row, which `render` draws right after the blank row it leads with. */
-	headerRows(width: number): readonly number[] {
-		return this.render(width).length > 1 ? [1] : [];
+	/** Every row of the block, below the blank row it leads with. */
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(1, this.render(width).length);
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -404,8 +408,8 @@ export class ToolExecutionComponent extends Container {
 			invalidate() {},
 			render(available) {
 				if (available < 1) return [];
-				const full = keys ? theme.fg("dim", `  (${keys} to expand)`) : "";
-				const compact = keys ? theme.fg("dim", ` (${keys})`) : "";
+				const full = keys ? theme.fg("dim", `  (${clickableKeyTextHint(keys, " to expand")})`) : "";
+				const compact = keys ? theme.fg("dim", ` (${clickableKeyTextHint(keys, "")})`) : "";
 				const suffix = visibleWidth(full) < available ? full : visibleWidth(compact) < available ? compact : "";
 				return [`${truncateToWidth(summary, available - visibleWidth(suffix), "…")}${suffix}`];
 			},
@@ -420,7 +424,7 @@ export class ToolExecutionComponent extends Container {
 	private currentElapsedMs(): number | undefined {
 		return (
 			this.elapsedMs ??
-			(this.executionStartedAt === undefined ? undefined : Math.max(0, Date.now() - this.executionStartedAt))
+			(this.executionStartedAt === undefined ? undefined : Math.max(0, blockRenderTime() - this.executionStartedAt))
 		);
 	}
 

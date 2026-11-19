@@ -1,4 +1,5 @@
-import { Box, Text } from "@bastani/atomic-tui";
+import { clickableHintText } from "@bastani/atomic";
+import { Box, clickableKeyTextHint, Text } from "@bastani/atomic-tui";
 import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
@@ -187,7 +188,14 @@ export function renderPausedBody(
 	const callout: string[] = [];
 	callout.push(blankLine(width));
 	callout.push(
-		...bannerLines(ctx, width, "warning", "❚❚", "PAUSED", `enter resumes · ${backToGraphKey(ctx)} return to graph`),
+		...bannerLines(
+			ctx,
+			width,
+			"warning",
+			"❚❚",
+			"PAUSED",
+			`${clickableHintText("enter resumes")} · ${clickableKeyTextHint(backToGraphKey(ctx), " return to graph")}`,
+		),
 	);
 	callout.push(
 		...new Text(
@@ -418,7 +426,7 @@ function renderReducedPrimitivePrompt(
 	const compactTitle = "AWAITING INPUT";
 	if (maxRows === 1) {
 		return {
-			lines: [paint(`${compactTitle} · enter Submit`, ctx.theme.textMuted, { bold: true })],
+			lines: [paint(`${compactTitle} · ${clickableHintText("enter Submit")}`, ctx.theme.textMuted, { bold: true })],
 			totalQuestionRows,
 			visibleQuestionRows: 0,
 		};
@@ -437,7 +445,7 @@ function renderReducedPrimitivePrompt(
 	const messageCount = Math.min(totalQuestionRows, Math.max(1, availableBodyRows - supportingRows));
 	const safeOffset = Math.min(ctx.promptScrollOffset, Math.max(0, totalQuestionRows - messageCount));
 	const responseLine = paint(
-		availableBodyRows >= 3 ? "  response" : "  response · enter Submit",
+		availableBodyRows >= 3 ? "  response" : `  response · ${clickableHintText("enter Submit")}`,
 		ctx.theme.textMuted,
 		{ bold: true },
 	);

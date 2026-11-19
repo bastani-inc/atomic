@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage, AgentTool } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Usage } from "@bastani/atomic-ai/compat";
 import { Container, getKeybindings, setKeybindings, Text } from "@bastani/atomic-tui";
@@ -24,6 +23,7 @@ import {
 import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import { stripVTControlCharacters } from "./helpers/visible-text.js";
 import { createHarness, getUserTexts } from "./suite/harness.js";
 import { assistantMsg, userMsg } from "./utilities.js";
 
@@ -159,6 +159,8 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages, showCache
 			modelRuntime: { getModel: () => undefined },
 		},
 		settingsManager: {
+			// A redraw shows the untrusted-project warning when it applies; this session is trusted.
+			isProjectTrusted: () => true,
 			getShowTerminalProgress: () => false,
 			getClearOnShrink: () => false,
 			getShowCacheMissNotices: () => showCacheMissNotices,
@@ -194,6 +196,7 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages, showCache
 		rebuildChatFromMessages: Reflect.get(InteractiveMode.prototype, "rebuildChatFromMessages"),
 		addCompactionBoundaryToChat: vi.fn(Reflect.get(InteractiveMode.prototype, "addCompactionBoundaryToChat")),
 		addCompactionCostNotice: Reflect.get(InteractiveMode.prototype, "addCompactionCostNotice"),
+		appendProjectTrustWarning: Reflect.get(InteractiveMode.prototype, "appendProjectTrustWarning"),
 	};
 	return { mode, chatContainer, workingLoaders, entries };
 }
@@ -372,6 +375,26 @@ describe("InteractiveMode compaction events", () => {
 			expect(renderedText(chatContainer)).toContain("retained context message");
 		});
 	}
+
+	it("keeps an untrusted project's warning below the compaction boundary", async () => {
+		const projectDir = mkdtempSync(join(tmpdir(), "atomic-compaction-trust-"));
+		try {
+			mkdirSync(join(projectDir, ".atomic"));
+			writeFileSync(join(projectDir, ".atomic", "settings.json"), "{}");
+			const { mode, chatContainer } = makeMode();
+			mode.settingsManager.isProjectTrusted = () => false;
+			mode.sessionManager.getCwd = () => projectDir;
+
+			await emit(mode, { type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false });
+
+			await vi.waitFor(() => expect(renderedText(chatContainer)).toContain("This project is not trusted."));
+			const text = renderedText(chatContainer);
+			expect(text.match(/This project is not trusted\./g)).toHaveLength(1);
+			expect(text.indexOf("⚛ Context compacted")).toBeLessThan(text.indexOf("This project is not trusted."));
+		} finally {
+			rmSync(projectDir, { recursive: true, force: true });
+		}
+	});
 
 	it("shows one boundary and one set of notices when overflow recovery joins a turn-boundary commit (#4851)", async () => {
 		const { mode, chatContainer } = makeMode(persistedContextMessages, true);

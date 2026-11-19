@@ -211,6 +211,8 @@ class AgentSessionBase {
 	protected _longStreamCutRetries = 0;
 	protected _retryPromise: Promise<void> | undefined = undefined;
 	protected _retryResolve: (() => void) | undefined = undefined;
+	/** {@link abortRetry} cancelled the pending retry: no further attempt starts until another failure opens a retry. */
+	protected _retryCancelled = false;
 	protected _bashAbortControllers = new Map<string | symbol, Set<AbortController>>();
 	protected _pendingBashMessages: BashExecutionMessage[] = [];
 	protected _extensionRunner!: ExtensionRunner;

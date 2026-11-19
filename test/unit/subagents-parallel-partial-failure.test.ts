@@ -116,9 +116,9 @@ function harness(options: { host: boolean; failing: ReadonlySet<number> }) {
 	});
 	const params: SubagentParamsLike = {
 		tasks: [1, 2, 3, 4, 5].map((n) => ({ agent: "echo", task: `T${n}` })),
-		wait: { kind: "foreground" },
 	};
 	return {
+		host,
 		started,
 		authorizations,
 		params,
@@ -141,7 +141,6 @@ test("one child's supervisor authorization timeout is its own outcome; its sibli
 	const result = await h.call();
 	assert.equal(h.authorizations.length, 5, "every child asked for authorization");
 	assert.notEqual(result.isError, true, "a partial failure is not a failed call");
-	assert.deepEqual(h.started.sort(), ["T1", "T2", "T4", "T5"]);
 	const outcomes = slots(result).map((slot) => slot.outcome);
 	assert.deepEqual(outcomes[2], {
 		kind: "unstarted",
@@ -149,13 +148,15 @@ test("one child's supervisor authorization timeout is its own outcome; its sibli
 	});
 	for (const index of [0, 1, 3, 4]) {
 		const outcome = outcomes[index]!;
-		assert.ok(outcome.kind === "admitted" && outcome.observation.kind === "settled");
-		assert.equal(outcome.observation.result.kind, "completed");
+		assert.ok(outcome.kind === "admitted");
+		const settled = await h.host.waitForTask(outcome.observation.taskId);
+		assert.ok(settled.ok && settled.value.kind === "settled");
+		assert.equal(settled.value.result.kind, "completed");
 	}
+	assert.deepEqual(h.started.sort(), ["T1", "T2", "T4", "T5"]);
 	const body = text(result);
-	assert.match(body, /1 of 5 children failed to start; the others ran/);
+	assert.match(body, /1 of 5 children failed to start; the others started/);
 	assert.match(body, new RegExp(AUTH_TIMEOUT));
-	for (const task of ["T1", "T2", "T4", "T5"]) assert.match(body, new RegExp(`output:${task}\\b`));
 });
 
 test("the call fails only when every child failed to start, and still lists each child's error (#4697)", async () => {

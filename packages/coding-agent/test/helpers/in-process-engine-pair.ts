@@ -283,6 +283,9 @@ export async function createEngineHostPair(
 		},
 		cleanup: async () => {
 			unsubscribe();
+			// The host runtime listens to process-wide settings until it is disposed; left undisposed, it keeps both
+			// harnesses alive for the rest of the file.
+			await runtime.dispose().catch(() => {});
 			await hostHarness.cleanup().catch(() => {});
 			await engine.cleanup().catch(() => {});
 		},

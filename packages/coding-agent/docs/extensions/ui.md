@@ -428,6 +428,8 @@ pi.registerMessageRenderer("my-extension", (message, options, theme) => {
 });
 ```
 
+In fullscreen mode a click anywhere on the message toggles `expanded` for that message alone, as Ctrl+O does for every block, and Atomic calls your renderer again. If your renderer draws the same rows either way, the click leaves the message as it is.
+
 Messages are sent via `pi.sendMessage()`:
 
 ```typescript

@@ -1,11 +1,12 @@
-import type {
-	Component,
-	OverlayHandle,
-	OverlayOptions,
-	TUI,
-	TuiMode,
-	TuiMouseEvent,
-	TuiMouseEventResult,
+import {
+	type Component,
+	isHintActivation,
+	type OverlayHandle,
+	type OverlayOptions,
+	type TUI,
+	type TuiMode,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 } from "@bastani/atomic-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
@@ -56,6 +57,7 @@ interface PendingInput {
 }
 
 class RemoteComponent implements Component {
+	hostColorDepth?: number;
 	private scrollRequest: WidgetScrollRequest | undefined;
 	getScrollRequest(): WidgetScrollRequest | undefined {
 		return this.scrollRequest;
@@ -79,6 +81,8 @@ class RemoteComponent implements Component {
 	/** What the engine component drew on each row of `lines`, and of the frame the last `render` returned. */
 	private rowKeys: readonly string[] | undefined;
 	private paintedRowKeys: readonly string[] | undefined;
+	/** The number of the last click forwarded to the engine. */
+	private clickId = 0;
 	private dirty = true;
 	private disposed = false;
 	private readonly pendingInputs = new Map<number, PendingInput>();
@@ -142,29 +146,45 @@ class RemoteComponent implements Component {
 		return this.frameClamp.clamp(this.lines, width);
 	}
 
-	/**
-	 * Forward a single click to the engine component, at its row and column there. Presses, drags and multi-clicks stay
-	 * with the host's text selection.
-	 */
 	/** What the engine component drew on `row` of the frame this host painted, when it names its rows. */
 	paintedRowKey(row: number): string | undefined {
 		return this.paintedRowKeys?.[row];
 	}
 
+	/**
+	 * Forward a single click to the engine component, at its row and column there. Presses, drags and multi-clicks stay
+	 * with the host's text selection. The click is numbered: once it stays a single click, the host settles that number,
+	 * and what the component left for that moment runs.
+	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.disposed || !isSingleLeftClick(event) || this.paintedFrame === undefined) return undefined;
 		const rowKey = this.paintedRowKeys?.[Math.floor(event.y)];
+		const clickId = ++this.clickId;
 		this.runtime.sendEngineCommand({
 			type: "engine_custom_click",
 			componentId: this.componentId,
 			frame: this.paintedFrame,
 			...(rowKey === undefined ? {} : { rowKey }),
+			clickId,
+			cancelsClicks: true,
 			x: Math.max(0, Math.floor(event.x)),
 			y: Math.max(0, Math.floor(event.y)),
 			width: Math.max(0, Math.floor(event.width)),
 			height: Math.max(0, Math.floor(event.height)),
 		});
-		return { handled: true };
+		const finish = (type: "engine_custom_click_settle" | "engine_custom_click_cancel") => {
+			if (this.disposed) return;
+			try {
+				this.runtime.sendEngineCommand({ type, componentId: this.componentId, clickId });
+			} catch {
+				// An engine that went away takes no click; the host keeps its frame.
+			}
+		};
+		return {
+			handled: true,
+			whenSingleClick: () => finish("engine_custom_click_settle"),
+			onSingleClickCancel: () => finish("engine_custom_click_cancel"),
+		};
 	}
 
 	handleInput(data: string): Promise<boolean | undefined> {
@@ -182,6 +202,7 @@ class RemoteComponent implements Component {
 				componentId: this.componentId,
 				requestId,
 				data,
+				...(isHintActivation() ? { hint: true as const } : {}),
 			});
 		} catch {
 			this.resolveInput(requestId, false);
@@ -223,6 +244,7 @@ class RemoteComponent implements Component {
 		this.runtime.sendEngineCommand({
 			type: "engine_custom_render",
 			componentId: this.componentId,
+			...(this.requestId === 0 && this.hostColorDepth !== undefined ? { colorDepth: this.hostColorDepth } : {}),
 			requestId: ++this.requestId,
 			width,
 			rows,
@@ -588,6 +610,7 @@ export class RemoteComponentController {
 			this.ui.setWidget(
 				widgetKey,
 				(tui) => {
+					component.hostColorDepth = tui.terminal?.colorDepth;
 					getRows = () => tui.terminal.rows;
 					paintNow = () => tui.requestImmediateRender();
 					return component;
@@ -610,6 +633,7 @@ export class RemoteComponentController {
 						() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 						() => tui.requestImmediateRender(),
 					);
+					component.hostColorDepth = tui.terminal?.colorDepth;
 					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
 					this.mounted.set(componentId, mounted);
 					// Bind this component to the real host terminal so a buffered

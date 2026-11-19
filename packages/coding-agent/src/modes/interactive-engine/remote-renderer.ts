@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
-import { TASK_COMPLETION_MESSAGE_TYPE } from "../../core/tasks/completion.js";
 import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import { sameToolGroupRole, toolGroupRoleKey } from "../interactive/components/tool-group-tracker.ts";
+import { type RowRange, rowsFrom, sameRows } from "../interactive/components/transcript-block-clicks.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type { InteractiveEngineCommand, InteractiveEngineMessage, JsonObject, JsonValue } from "./protocol.ts";
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
@@ -52,15 +52,24 @@ function rememberFrame(key: string, lines: string[]): void {
 	}
 }
 
-/** One engine-message subscription per runtime, routed by component id, however many rows the chat holds. */
-const routesByRuntime = new WeakMap<IsolatedInteractiveRuntime, Map<string, RemoteRenderer>>();
+interface RendererRoutes {
+	rows: Map<string, RemoteRenderer>;
+	clicks: AbortController;
+}
 
-function rendererRoutes(runtime: IsolatedInteractiveRuntime): Map<string, RemoteRenderer> {
+/** One subscription per runtime, routed by component id, however many rows the chat holds. */
+const routesByRuntime = new WeakMap<IsolatedInteractiveRuntime, RendererRoutes>();
+
+function rendererRoutes(runtime: IsolatedInteractiveRuntime): RendererRoutes {
 	let routes = routesByRuntime.get(runtime);
 	if (routes === undefined) {
-		const created = new Map<string, RemoteRenderer>();
+		const created: RendererRoutes = { rows: new Map(), clicks: new AbortController() };
+		runtime.onGenerationEnded?.(({ generation }) => {
+			if (generation === runtime.getEngineGeneration()) created.clicks.abort();
+		});
 		runtime.onEngineMessage((message) => {
-			if ("componentId" in message) created.get(message.componentId)?.receive(message);
+			if (message.type === "engine_bound" && created.clicks.signal.aborted) created.clicks = new AbortController();
+			if ("componentId" in message) created.rows.get(message.componentId)?.receive(message);
 		});
 		routesByRuntime.set(runtime, created);
 		routes = created;
@@ -83,7 +92,7 @@ abstract class RemoteRenderer implements Component {
 	private dirty = true;
 	private disposed = false;
 	private readonly frameClamp = new RemoteFrameWidthClamp();
-	private readonly routes: Map<string, RemoteRenderer>;
+	private readonly routes: RendererRoutes;
 	/**
 	 * What each unanswered request showed (its frame identity, expansion included), by request id. A frame is
 	 * remembered under the identity of the request it answers, not under the row's state when it arrives: a row
@@ -92,6 +101,11 @@ abstract class RemoteRenderer implements Component {
 	private readonly requestIdentities = new Map<number, string>();
 	private readonly requestScopes = new Map<number, string>();
 	private lastScope: string | undefined;
+	/** Each settled click compares both expansions at its own width and data revision. Only the front request is in flight. */
+	private readonly clickChecks: { command: RemoteRenderCommand; baseline?: string[]; changed(): void }[] = [];
+	private toggleAfterChecks = false;
+	private clickCancellation?: AbortSignal;
+	protected expanded = false;
 
 	protected readonly runtime: IsolatedInteractiveRuntime;
 	private readonly requestRender: () => void;
@@ -100,12 +114,42 @@ abstract class RemoteRenderer implements Component {
 		this.runtime = runtime;
 		this.requestRender = requestRender;
 		this.routes = rendererRoutes(runtime);
-		this.routes.set(this.componentId, this);
+		this.routes.rows.set(this.componentId, this);
 	}
 
 	/** An engine message addressed to this row. */
 	receive(message: InteractiveEngineMessage): void {
 		if (message.type === "engine_custom_frame") {
+			const check = this.clickChecks[0];
+			if (check && message.requestId === check.command.requestId) {
+				if (runtimeFrameScope(this.runtime) !== this.lastScope) {
+					this.clearClickChecks();
+					return;
+				}
+				// An older engine sends only the requested rows. Ask it for the other expansion of the same snapshot.
+				if (message.expansionChangesRows === undefined && check.baseline === undefined) {
+					check.baseline = message.lines;
+					check.command = { ...check.command, requestId: ++this.requestId, expanded: !check.command.expanded };
+					this.runtime.sendEngineCommand(check.command);
+					return;
+				}
+				if (message.expansionChangesRows ?? !sameRows(check.baseline!, message.lines)) {
+					this.toggleAfterChecks = !this.toggleAfterChecks;
+				}
+				this.clickChecks.shift();
+				const next = this.clickChecks[0];
+				if (next) this.runtime.sendEngineCommand(next.command);
+				else {
+					if (this.toggleAfterChecks) {
+						this.setExpanded(!this.expanded);
+						check.changed();
+					} else {
+						this.clearClickChecks();
+						this.changed();
+					}
+				}
+				return;
+			}
 			if (message.requestId < this.appliedRequestId) return;
 			const identity = this.requestIdentities.get(message.requestId);
 			const scope = this.requestScopes.get(message.requestId);
@@ -129,11 +173,16 @@ abstract class RemoteRenderer implements Component {
 		const scope = runtimeFrameScope(this.runtime);
 		if (scope !== this.lastScope) {
 			this.lastScope = scope;
+			this.clearClickChecks();
 			this.lines = NOT_RENDERED_YET;
 			this.dirty = true;
 		}
-		if (!this.disposed && (this.dirty || width !== this.width)) {
+		if (width !== this.width) {
 			this.width = width;
+			this.dirty = true;
+		}
+		// Render requests for the same row are coalesced in transit. Do not overwrite an outstanding click check.
+		if (!this.disposed && !this.routes.clicks.signal.aborted && this.dirty && this.clickChecks.length === 0) {
 			this.dirty = false;
 			// A row rebuilt for a row the engine already rendered paints its last frame until the fresh one arrives.
 			const identity = JSON.stringify([scope, this.frameIdentity()]);
@@ -156,15 +205,52 @@ abstract class RemoteRenderer implements Component {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		if (this.routes.get(this.componentId) === this) this.routes.delete(this.componentId);
+		if (this.routes.rows.get(this.componentId) === this) this.routes.rows.delete(this.componentId);
 		this.requestIdentities.clear();
 		this.requestScopes.clear();
+		this.clearClickChecks();
 		this.runtime.sendEngineCommand({ type: "engine_render_dispose", componentId: this.componentId });
 	}
 
 	protected changed(): void {
 		this.markDirty();
 		this.requestRender();
+	}
+
+	private readonly cancelClickChecks = (): void => {
+		this.clearClickChecks();
+		this.requestRender();
+	};
+
+	private readonly clearClickChecks = (): void => {
+		this.clickCancellation?.removeEventListener("abort", this.cancelClickChecks);
+		this.clickCancellation = undefined;
+		this.clickChecks.length = 0;
+		this.toggleAfterChecks = false;
+		this.markDirty();
+	};
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	setExpanded(expanded: boolean): void {
+		this.clearClickChecks(); // An explicit expansion, e.g. Ctrl+O, supersedes outstanding clicks.
+		this.expanded = expanded;
+		this.changed();
+	}
+
+	expandByClick(expanded: boolean, changed: () => void, width = this.width, signal?: AbortSignal): void {
+		if (this.disposed || signal?.aborted || this.routes.clicks.signal.aborted || expanded === this.expanded) return;
+		const command = { ...this.command(++this.requestId, width), compareExpansion: true as const };
+		this.clickChecks.push({ command, changed });
+		if (this.clickChecks.length === 1) {
+			this.clickCancellation = signal
+				? AbortSignal.any([signal, this.routes.clicks.signal])
+				: this.routes.clicks.signal;
+			this.clickCancellation.addEventListener("abort", this.cancelClickChecks, { once: true });
+			this.runtime.sendEngineCommand(command);
+		}
 	}
 
 	protected abstract command(requestId: number, width: number): RemoteRenderCommand;
@@ -197,7 +283,6 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	private argsComplete = false;
 	private groupRole: ToolGroupRole = { kind: "standalone" };
 	private isPartial = true;
-	private expanded = false;
 	private showImages: boolean;
 	private imageWidthCells: number;
 	private outputPad: number;
@@ -253,19 +338,12 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.isPartial = isPartial;
 		this.changed();
 	}
-	setExpanded(expanded: boolean): void {
-		this.expanded = expanded;
-		this.changed();
-	}
-	isExpanded(): boolean {
-		return this.expanded;
-	}
 	getGroupRole(): ToolGroupRole {
 		return this.groupRole;
 	}
-	/** The block's title row: the engine draws the block as `ToolExecutionComponent` does, after a blank row. */
-	headerRows(width: number): readonly number[] {
-		return this.render(width).length > 1 ? [1] : [];
+	/** Every row of the block: the engine draws it as `ToolExecutionComponent` does, after a blank row. */
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(1, this.render(width).length);
 	}
 	setShowImages(show: boolean): void {
 		this.showImages = show;
@@ -315,7 +393,6 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 	readonly ownsLeadingSpacer = true;
 	private readonly message: CustomMessage<unknown>;
 	private contentDigest: string | undefined;
-	private expanded = false;
 	private outputPad: number;
 	constructor(
 		message: CustomMessage<unknown>,
@@ -328,20 +405,14 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 		this.outputPad = outputPad;
 	}
 
-	setExpanded(expanded: boolean): void {
-		this.expanded = expanded;
-		this.changed();
-	}
-	/** A finished-task card expands on a click on its header, as a tool block does. */
-	get expandsOnClick(): boolean {
-		return this.message.customType === TASK_COMPLETION_MESSAGE_TYPE;
-	}
-	isExpanded(): boolean {
-		return this.expanded;
-	}
-	/** The card's `● … finished` row: the engine draws the card after the blank row it leads with. */
-	headerRows(width: number): readonly number[] {
-		return this.expandsOnClick && this.render(width).length > 1 ? [1] : [];
+	/**
+	 * A message expands on a click, as Ctrl+O expands it: the engine draws its card, and a card with nothing more to
+	 * show stays as it is.
+	 */
+	readonly expandsOnClick = true;
+	/** Every row of the card: the engine draws it after the blank row it leads with. */
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(1, this.render(width).length);
 	}
 	setOutputPad(outputPad: number): void {
 		this.outputPad = outputPad;

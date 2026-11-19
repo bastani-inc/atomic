@@ -1,9 +1,10 @@
-import { Box, Container, Markdown, type MarkdownTheme, MouseRegion, Spacer, Text } from "@bastani/atomic-tui";
+import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@bastani/atomic-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import type { BranchSummaryMessage } from "../../../core/messages.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { parenthesizedKeyHint } from "./keybinding-hints.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
+import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /**
  * Component that renders a branch summary message with collapsed/expanded state.
@@ -35,6 +36,18 @@ export class BranchSummaryMessageComponent extends Box {
 		this.messageId = messageId;
 		this.timestamp = timestamp;
 		this.updateDisplay();
+	}
+
+	/** A click anywhere on the branch summary expands or collapses it, as Ctrl+O does. */
+	readonly expandsOnClick = true;
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	/** Every row of the branch summary, its padding included. */
+	clickArea(width: number): RowRange | undefined {
+		return rowsFrom(0, this.render(width).length);
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -88,12 +101,6 @@ export class BranchSummaryMessageComponent extends Box {
 			const hint = parenthesizedKeyHint("app.tools.expand", "Expand");
 			content.addChild(new Text(theme.fg("customMessageText", "Branch summary") + (hint ? ` ${hint}` : ""), 0, 0));
 		}
-		this.addChild(
-			new MouseRegion(content, (event) => {
-				if (event.type !== "click" || event.button !== "left") return undefined;
-				this.setExpanded(!this.expanded);
-				return { handled: true };
-			}),
-		);
+		this.addChild(content);
 	}
 }
