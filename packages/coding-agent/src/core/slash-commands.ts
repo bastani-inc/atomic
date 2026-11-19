@@ -22,11 +22,6 @@ export function parseSlashCommand(text: string): ParsedSlashCommand {
 	return { name: text.slice(1, separator.index), args: text.slice(separator.index + separator[0].length) };
 }
 
-/** Retired names still consume user commands, but never appear in the command catalog. */
-export function isRetiredWorkflowCommand(name: string): boolean {
-	return name === "workflow" || name === "workflows" || name === "workflow-authoring";
-}
-
 export interface SlashCommandInfo {
 	name: string;
 	description?: string;
