@@ -13,6 +13,7 @@ import type { RunSnapshot } from "../shared/store-types.js";
 import { publishRunForOwner, runAttachmentOwner } from "../shared/workflow-run-ownership.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { completedWorkflowRunSnapshots, resolveCompletedWorkflow } from "./completed-catalog.js";
+import { bindRunDurableBackend } from "./run-owner-backend.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 
 export type OpenCompletedDurableResult =
@@ -73,6 +74,9 @@ export async function openCompletedDurableWorkflow(
 		);
 	}
 
+	// The selected run may belong to a different journal than the store's default. Take its finish order from
+	// the same handle as the historical graph, not from the time of this inspection or a later journal write.
+	const finishSequence = deps.durableBackend.getWorkflow(resolved.entry.workflowId)?.finishSequence;
 	const snapshots = await completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry, selectedStore);
 	const existing = [resolved.snapshot, ...snapshots]
 		.map((run) => deps.store.run(run.id))
@@ -88,7 +92,12 @@ export async function openCompletedDurableWorkflow(
 	for (const restored of snapshots) {
 		const previous = deps.store.run(restored.id);
 		if (previous !== undefined) deps.store.removeRun(previous.id);
-		deps.store.recordRunStart(previous ? publishRunForOwner(restored, runAttachmentOwner(previous)) : restored);
+		let run = restored;
+		if (restored.id === snapshot.id) {
+			run = { ...restored, finishSequence: finishSequence ?? restored.endedAt };
+			bindRunDurableBackend(run, deps.durableBackend);
+		}
+		deps.store.recordRunStart(previous ? publishRunForOwner(run, runAttachmentOwner(previous)) : run);
 		registerCompletedChatHandles(restored, deps, selectedStore);
 	}
 	const hasReopenableStage = snapshots.some((run) => run.stages.some((stage) => stage.sessionId !== undefined));
