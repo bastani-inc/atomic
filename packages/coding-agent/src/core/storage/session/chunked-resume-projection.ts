@@ -1,6 +1,7 @@
 import { jsonParser, type Token } from "stream-json/core/parser.js";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import type { SqliteRow, SqliteValue } from "../database.js";
+import type { ForkMetadata } from "./fork-window.js";
 import type { SessionTreeOutlineEntry } from "./types.js";
 
 // A projection only constructs values consumed by the resume fold. The stream parser must not pack
@@ -25,6 +26,7 @@ export type Shape =
 	| "string"
 	| "stringPresent"
 	| "objectPresent"
+	| "hash"
 	| "owner"
 	| "op"
 	| "usage"
@@ -234,7 +236,7 @@ export function* readValue(first: Token, shape: Shape | undefined): Reader<Json>
 					present ||= token.value.trim().length > 0;
 				return present;
 			}
-			return yield* stringValue(shape === "short" ? 64 : Infinity);
+			return yield* stringValue(shape === "short" ? 64 : shape === "hash" ? 65 : Infinity);
 		case "numberValue":
 			return Number(first.value);
 		case "trueValue":
@@ -346,6 +348,72 @@ export async function read<T>(chunks: AsyncIterable<Uint8Array>, reader: Reader<
 		}
 	}
 	throw new SyntaxError("Incomplete chunked session entry");
+}
+
+export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uint8Array>): Promise<ForkMetadata> {
+	const e = object(
+		await read(
+			chunks,
+			(function* (): Reader<Json> {
+				return yield* readValue(yield, {
+					type: "short",
+					customType: "short",
+					details: { strategy: "short" },
+					firstKeptEntryId: true,
+					coveredThroughEntryId: true,
+					targetId: true,
+					label: "truth",
+					data: { hash: "hash", completionId: "op" },
+					id: true,
+					parentId: true,
+					timestamp: true,
+					message: { role: "short", provider: true, model: true },
+				});
+			})(),
+		),
+	);
+	const type = String(e.type);
+	const link = { id: String(e.id), parentId: e.parentId === null ? null : String(e.parentId) };
+	if (type === "label" && typeof e.targetId === "string")
+		return { seq, type, ...link, labelTarget: e.targetId, labelSet: Boolean(e.label) };
+	if (type === "compaction" && object(e.details).strategy === "verbatim-lines")
+		return {
+			seq,
+			type,
+			...link,
+			boundary: {
+				first: typeof e.firstKeptEntryId === "string" ? e.firstKeptEntryId : null,
+				covered: typeof e.coveredThroughEntryId === "string" ? e.coveredThroughEntryId : undefined,
+			},
+		};
+	const m = object(e.message);
+	if (type === "message" && m.role === "assistant")
+		return {
+			seq,
+			type,
+			...link,
+			assistantModel: {
+				type: "model_change",
+				id: String(e.id),
+				parentId: e.parentId === null ? null : String(e.parentId),
+				timestamp: String(e.timestamp),
+				provider: String(m.provider),
+				modelId: String(m.model),
+			},
+		};
+	const hash = object(e.data).hash;
+	return {
+		seq,
+		type,
+		...link,
+		customType: typeof e.customType === "string" ? e.customType : undefined,
+		hash: e.customType === "atomic.tool-output" && typeof hash === "string" ? hash : undefined,
+		completionId:
+			(e.customType === "task-completion-intent" || e.customType === "task-completion-ack") &&
+			typeof object(e.data).completionId === "string"
+				? String(object(e.data).completionId)
+				: undefined,
+	};
 }
 
 function object(value: Json | undefined): Record<string, Json> {

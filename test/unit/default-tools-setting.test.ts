@@ -75,8 +75,8 @@ const BUILTIN_EXTENSION_TOOLS = [
 	"get_search_content",
 ] as const;
 
-/** Registered by Atomic's inline built-in extensions in every loader, but inactive until selected. */
-const OPT_IN_INLINE_BUILTIN_TOOLS = ["codemode", "tool_search"] as const;
+/** Supplied by inline built-in extensions, separately from the package tools above. */
+const INLINE_BUILTIN_TOOLS = ["codemode", "tool_search"] as const;
 
 type ToolOptions = Pick<CreateAgentSessionOptions, "tools" | "excludedTools" | "noTools" | "customTools">;
 
@@ -237,7 +237,7 @@ describe("defaultTools setting", () => {
 					[
 						...registrableToolNames,
 						...BUILTIN_EXTENSION_TOOLS,
-						...OPT_IN_INLINE_BUILTIN_TOOLS,
+						...INLINE_BUILTIN_TOOLS,
 						"dynamic_tool",
 						"sdk_tool",
 						"static_tool",
@@ -356,7 +356,7 @@ describe("defaultTools setting", () => {
 			try {
 				assert.deepEqual(
 					[...session.getActiveToolNames()].sort(),
-					[...getDefaultToolNames(), ...BUILTIN_EXTENSION_TOOLS].sort(),
+					[...getDefaultToolNames(), "codemode", ...BUILTIN_EXTENSION_TOOLS].sort(),
 				);
 			} finally {
 				session.dispose();
@@ -410,7 +410,7 @@ describe("defaultTools setting", () => {
 			try {
 				assert.deepEqual(
 					[...session.getActiveToolNames()].sort(),
-					[...getDefaultToolNames(), ...BUILTIN_EXTENSION_TOOLS].sort(),
+					[...getDefaultToolNames(), "codemode", ...BUILTIN_EXTENSION_TOOLS].sort(),
 					`expected malformed defaultTools ${raw} to fall back to the standard defaults`,
 				);
 			} finally {

@@ -207,6 +207,21 @@ export function defaultToolNamesFor(powerShellAvailable: boolean): readonly Tool
 	];
 }
 
+/** Codemode is an inline extension, but follows the built-in selection (lists, modifiers and suppression),
+ * not the auto-activation policy for other extension tools. A loader that disables it selects nothing missing. */
+export function defaultToolSelectionFor(
+	powerShellAvailable: boolean,
+	loader?: Pick<import("../resource-loader.ts").ResourceLoader, "getExtensions">,
+): readonly string[] {
+	const names = defaultToolNamesFor(powerShellAvailable);
+	const hasCodemode =
+		!loader ||
+		loader
+			.getExtensions()
+			.extensions.some((extension) => extension.path === "builtin:codemode" && extension.tools.has("codemode"));
+	return hasCodemode ? [...names, "codemode"] : names;
+}
+
 export function getDefaultToolNames(options?: { powerShellAvailable?: boolean }): readonly ToolName[] {
 	return defaultToolNamesFor(options?.powerShellAvailable ?? isPowerShellAvailable());
 }

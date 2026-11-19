@@ -62,12 +62,18 @@ export class LegacySessionStore implements SessionStore {
 	readonly readTreeOutline?: SessionStore["readTreeOutline"];
 	readonly readChildCatalogCut?: SessionStore["readChildCatalogCut"];
 	readonly readSelectedPage?: SessionStore["readSelectedPage"];
+	readonly readForkWindow?: SessionStore["readForkWindow"];
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
 		this.legacyDirectory = options.legacyDirectory;
 		this.databasePath = options.databasePath;
-		const { putBlob, getBlob } = inner;
+		const { putBlob, getBlob, readForkWindow } = inner;
+		if (readForkWindow)
+			this.readForkWindow = async (id, entryId) => {
+				await this.convert(id);
+				return readForkWindow.call(inner, id, entryId);
+			};
 		if (putBlob !== undefined && getBlob !== undefined) {
 			this.putBlob = async (sessionId, data) => {
 				await this.convert(sessionId);

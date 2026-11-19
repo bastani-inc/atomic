@@ -10,7 +10,7 @@
  * callable from codemode scripts, which keeps MCP tools out of the model's tool declarations and
  * the codemode description: scripts find the tools with `searchTools()` and the server instructions
  * with `describeNamespace()`. The codemode tool is activated for that unless `autoEnableCodemode` is
- * false. `"deferred"` declares the tools to the model once the `tool_search` tool loads them, and
+ * false or `-codemode` explicitly removed it. `"deferred"` declares the tools to the model once the `tool_search` tool loads them, and
  * activates `tool_search` instead of codemode.
  * `"exposure": "direct"` declares them to the model right away, and `"hidden"` makes them
  * unreachable. `toolExposure` overrides the exposure of single tools. Servers with resources are
@@ -571,11 +571,18 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			if (!needsCodemode && !needsToolSearch) return;
 			// Other extensions' tools of the same names cannot reach MCP tools, so never activate them.
 			const tools = pi.getAllTools();
-			const hasCodemode = tools.some(isCodemodeDiscoveryTool);
+			const codemode = tools.find(isCodemodeDiscoveryTool);
+			const hasCodemode = codemode !== undefined;
 			const hasToolSearch = tools.some(isToolSearchDiscoveryTool);
 			const active = pi.getActiveTools();
 			const activate: string[] = [];
-			if (needsCodemode && hasCodemode && autoEnableCodemode && !active.includes(CODEMODE_TOOL_NAME)) {
+			if (
+				needsCodemode &&
+				codemode &&
+				!codemode.explicitDefaultOptOut &&
+				autoEnableCodemode &&
+				!active.includes(CODEMODE_TOOL_NAME)
+			) {
 				activate.push(CODEMODE_TOOL_NAME);
 			}
 			if (needsToolSearch && hasToolSearch && !active.includes(TOOL_SEARCH_TOOL_NAME)) {
@@ -587,7 +594,12 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			if (hasToolSearch && reachable.includes(TOOL_SEARCH_TOOL_NAME)) return;
 			if (warnedUnreachable) return;
 			warnedUnreachable = true;
-			const reason = needsCodemode && hasCodemode && !autoEnableCodemode ? " (autoEnableCodemode is false)" : "";
+			const reason =
+				needsCodemode && codemode?.explicitDefaultOptOut
+					? " (-codemode removed it from the tool selection)"
+					: needsCodemode && hasCodemode && !autoEnableCodemode
+						? " (autoEnableCodemode is false)"
+						: "";
 			ctx.ui.notify(
 				`MCP tools are only reachable from the codemode or tool_search tool, but neither is active${reason}; they cannot be called.`,
 				"warning",

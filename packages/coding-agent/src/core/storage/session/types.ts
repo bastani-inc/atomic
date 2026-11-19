@@ -1,5 +1,10 @@
 import type { Usage } from "@bastani/atomic-ai/compat";
-import type { CompactionEntry, SessionEntry, SessionWorkflowMetadata } from "../../session-manager-types.ts";
+import type {
+	CompactionEntry,
+	LabelEntry,
+	SessionEntry,
+	SessionWorkflowMetadata,
+} from "../../session-manager-types.ts";
 import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
@@ -235,6 +240,14 @@ export interface SessionChildReadCut {
 	readonly seqs: readonly number[];
 	readonly aliases: Readonly<Record<string, SessionChildAliases>>;
 }
+export interface SessionForkWindow {
+	readonly header: SessionRecordHeader;
+	readonly entries: SessionEntry[];
+	readonly labels: LabelEntry[];
+	readonly lastSeq: number;
+	readonly epoch?: string;
+}
+
 export interface SessionResume {
 	readonly header: SessionRecordHeader;
 	readonly lastSeq: number;
@@ -458,6 +471,8 @@ export interface SessionStore {
 		throughSeq: number,
 		options?: { deferChildRecords: true },
 	): Promise<SessionResume>;
+	/** Read the branch a forked child needs at its captured entry, with the current labels for copied targets. */
+	readForkWindow?(sessionId: string, entryId: string): Promise<SessionForkWindow | undefined>;
 	findEntrySeq?(sessionId: string, entryId: string): Promise<number | undefined>;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;

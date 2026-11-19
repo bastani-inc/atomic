@@ -116,6 +116,7 @@ export type {
 	SessionEntryAt,
 	SessionEntryRange,
 	SessionEntrySizes,
+	SessionForkWindow,
 	SessionHistoryItem,
 	SessionHistoryPage,
 	SessionHistoryReadOptions,
