@@ -7,6 +7,7 @@ import {
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 } from "@bastani/atomic-tui";
+import { chatReceiptWrite } from "../../../core/chat-receipts.js";
 import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
@@ -24,7 +25,7 @@ import {
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import { getOwnerTaskSession, isTaskTurnInterrupted, setTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import type { ChatBoxSession, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
-import { readTaskChatPage, withTaskChatRows } from "../../../core/tasks/task-chat-records.js";
+import { observedTaskChatWrite, readTaskChatPage, withTaskChatRows } from "../../../core/tasks/task-chat-records.js";
 import {
 	launchedTaskViewSource,
 	type TaskTranscriptView,
@@ -67,6 +68,33 @@ export interface TaskTranscriptEnvironment {
 interface UndeliveredMessage {
 	readonly text: string;
 	readonly reason: string;
+}
+
+/** The last live frame is already complete. An archiving child must not replace it with a snapshot that
+ * predates its last diagnostic. Only the view tracks these writes; it immediately releases the live child. */
+class ObservedChatWrites {
+	private count = 0;
+	onIdle?: () => void;
+	get pending(): boolean {
+		return this.count > 0;
+	}
+	observe(write: Promise<void>): void {
+		this.count++;
+		observeChatWrite(write, new WeakRef(this));
+	}
+	settle(): void {
+		if (--this.count === 0) {
+			const ready = this.onIdle;
+			this.onIdle = undefined;
+			ready?.();
+		}
+	}
+}
+function observeChatWrite(write: Promise<void>, view: WeakRef<ObservedChatWrites>): void {
+	void write.then(
+		() => view.deref()?.settle(),
+		() => view.deref()?.settle(),
+	);
 }
 
 const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
@@ -244,6 +272,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly requestRender: () => void;
 	private followed?: TaskTranscriptSource;
 	private followedSessionId?: string;
+	private observedWrites?: ObservedChatWrites;
 	private unsubscribe?: () => void;
 	private cursor?: string;
 	readonly #notices = new TaskTranscriptNotices();
@@ -395,6 +424,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.reloadPending = true;
 			return;
 		}
+		if (this.observedWrites?.pending && this.deferArchiveRead(this.source.followTaskTranscript(this.taskId))) return;
 		this.loading = true;
 		try {
 			// A synchronous read subscribes in the same turn, so no event queued during the read is missed.
@@ -414,9 +444,35 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		}
 	}
 
+	private deferArchiveRead(follow: ReturnType<TaskViewSource["followTaskTranscript"]>): boolean {
+		const writes = this.observedWrites;
+		if (
+			!writes?.pending ||
+			!follow?.historyOnly ||
+			!this.followedSessionId ||
+			follow.session?.getSessionId() !== this.followedSessionId
+		)
+			return false;
+		if (this.followed) {
+			this.unsubscribe?.();
+			this.unsubscribe = undefined;
+			this.followed = undefined;
+			this.chat.resetFollowedSession({ preserveWorkedRun: true });
+			this.chat.refreshTaskStore();
+		}
+		writes.onIdle = () => {
+			if (!this.disposed) {
+				observedTaskChatWrite(this);
+				this.refresh();
+			}
+		};
+		return true;
+	}
+
 	refresh(): void {
 		if (this.disposed) return;
 		const follow = this.source.followTaskTranscript(this.taskId);
+		if (this.deferArchiveRead(follow)) return;
 		if (follow?.session !== undefined && follow.session === this.followed) return;
 		// Reading a history-only transcript again replaces what is shown, so it waits while the reader is above the end.
 		if (follow?.historyOnly === true && this.chat.bodyScrollFromBottom() > 0) {
@@ -599,6 +655,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptDrafts.set(this.source, kept);
 		}
 		this.disposed = true;
+		if (this.observedWrites) this.observedWrites.onIdle = undefined;
+		this.observedWrites = undefined;
 		this.#notices.reset();
 		this.unsubscribePrompts();
 		this.unsubscribe?.();
@@ -666,6 +724,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			return;
 		}
 		const follow = this.source.followTaskTranscript(this.taskId);
+		if (this.deferArchiveRead(follow)) return;
 		// A reader who moved above the end while this read was on its way keeps their rows until they return.
 		if (follow?.historyOnly === true && this.chat.bodyScrollFromBottom() > 0) {
 			this.behind = true;
@@ -680,6 +739,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const sessionChanged =
 			session !== this.followed || (!sameConversation && nextSessionId !== this.followedSessionId);
 		if (sessionChanged) {
+			if (this.observedWrites) {
+				this.observedWrites.onIdle = undefined;
+				this.observedWrites = undefined;
+			}
 			this.unsubscribe?.();
 			this.unsubscribe = undefined;
 			this.followed = session;
@@ -713,6 +776,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			} else if (event.type === "agent_end" && turnAborted && session.isRunning?.() !== true) {
 				turnAborted = false;
 				setTaskTurnInterrupted(this.source, this.taskId, true);
+			}
+			const write = chatReceiptWrite(event);
+			if (write) {
+				this.observedWrites ??= new ObservedChatWrites();
+				this.observedWrites.observe(write);
 			}
 			this.chat.applyTaskAgentEvent(event);
 			this.requestRender();

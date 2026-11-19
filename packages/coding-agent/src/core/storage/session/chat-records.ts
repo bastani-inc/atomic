@@ -114,9 +114,9 @@ export function saveChatRecord(
 	scope: { store: SessionChatRecords; owner: ChatRecordOwner },
 	anchor: string,
 	record: ChatRecord,
-): void {
+): Promise<void> | undefined {
 	try {
-		void scope.store.append(scope.owner, anchor, record).catch(() => {});
+		return scope.store.append(scope.owner, anchor, record).catch(() => {});
 	} catch {
 		/* Display-only storage is best effort. */
 	}

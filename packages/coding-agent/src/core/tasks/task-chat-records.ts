@@ -44,6 +44,10 @@ export function withTaskChatRows(receiver: object, result: object, render: () =>
 }
 export const chatPageRequest = asyncScope<{ scope?: Scope; view: WeakRef<object> }>();
 const inspectedFiles = new WeakMap<object, { file: string; id: string; present: Promise<boolean> }>();
+/** Only a genuinely observed display write invalidates a file lookup that might have preceded it. */
+export function observedTaskChatWrite(view: object): void {
+	inspectedFiles.delete(view);
+}
 /** The two ordinary task transcript APIs keep their synchronous/rejection behavior and their data. Only a mounted
  * task chat asks the native projection to remember where its displayed records came from. */
 export function readTaskChatPage(

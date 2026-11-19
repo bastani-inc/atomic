@@ -349,6 +349,77 @@ test("fullscreen shows its primary rows immediately and still accepts a late dis
 	await vi.waitFor(() => assert.equal(rows(mode).filter((l) => l.includes("Discovered late")).length, 1));
 });
 
+test("a mounted subagent keeps its displayed retry error while handing off to an archive that cannot see the write yet (#5649)", async () => {
+	const h = await createHarness({ settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } } });
+	cleanups.push(() => h.cleanup());
+	const tasks = taskFixture();
+	cleanups.push(() => tasks.dispose());
+	await tasks.start("Child chat");
+	const manager = h.sessionManager;
+	const scope = manager.chatRecordScope();
+	assert.ok(scope);
+	const append = scope.store.append.bind(scope.store);
+	const entered = Promise.withResolvers<void>(),
+		publish = Promise.withResolvers<void>();
+	vi.spyOn(scope.store, "append").mockImplementation(async (...args) => {
+		entered.resolve();
+		await publish.promise;
+		return append(...args);
+	});
+	let subscriptions = 0,
+		archivedReads = 0;
+	const read = {
+		getSessionId: () => manager.getSessionId(),
+		getEntries: () => manager.getEntries(),
+		chatSession: h.session,
+	};
+	tasks.runners[0].context.bindTranscript({
+		...read,
+		subscribe(listener) {
+			subscriptions++;
+			const off = h.session.subscribe(listener);
+			return () => {
+				subscriptions--;
+				off();
+			};
+		},
+	});
+	const page = new TaskAgentTranscriptPage(
+		ownerTaskViewSource(tasks.store),
+		tasks.store.tasks[0]!.ref.taskId,
+		taskTranscriptEnvironment(),
+		() => {},
+	);
+	cleanups.push(() => page.dispose());
+	await page.load();
+	const fail = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" });
+	h.setResponses([fail(), fail()]);
+	const count = () => page.render(140, 32).filter((l) => l.includes("Retry failed after")).length;
+	try {
+		await h.session.prompt("child");
+		await entered.promise;
+		assert.equal(count(), 1);
+		tasks.runners[0].context.bindTranscript({
+			...read,
+			getEntries: () => {
+				archivedReads++;
+				return manager.getEntries();
+			},
+		});
+		page.refresh();
+		await new Promise<void>((r) => setImmediate(r));
+		assert.equal(subscriptions, 0, "release the live session while its optional write is pending");
+		assert.equal(count(), 1, "the already shown row must not disappear");
+		publish.resolve();
+		await vi.waitFor(() => {
+			assert.ok(archivedReads > 0);
+			assert.equal(count(), 1);
+		});
+	} finally {
+		publish.resolve();
+	}
+});
+
 test("a main chat reopened after a notice overtakes its admitted prompt keeps live order (#5668)", async () => {
 	const h = await createHarness({ settings: { retry: { enabled: false } } });
 	cleanups.push(() => h.cleanup());

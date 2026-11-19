@@ -95,8 +95,8 @@ export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 		if (scope) {
 			const anchor = manager.getLeafId() ?? "",
 				id = crypto.randomUUID();
-			bindChatReceipt(event, { anchor, id });
-			saveChatRecord(scope, anchor, { kind: "line", id, ...notice });
+			const saved = saveChatRecord(scope, anchor, { kind: "line", id, ...notice });
+			bindChatReceipt(event, { anchor, id }, saved);
 		}
 	}
 	for (const l of this._eventListeners) {

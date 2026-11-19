@@ -94,9 +94,14 @@ async function openPage(
 				},
 			})
 		: owner;
+	let nextPaint = Promise.withResolvers<void>();
 	const inspector = new TaskInspector(
 		source,
-		() => {},
+		() => {
+			const previous = nextPaint;
+			nextPaint = Promise.withResolvers<void>();
+			previous.resolve();
+		},
 		() => {},
 		undefined,
 		() => environment,
@@ -116,6 +121,15 @@ async function openPage(
 	let disposed = false;
 	const page = {
 		frame,
+		/** A file database may still be reading its first page after any fixed number of event-loop turns. */
+		async whenVisible(text: string) {
+			for (;;) {
+				const next = nextPaint.promise;
+				const rows = frame();
+				if (rows.some((row) => row.includes(text))) return rows;
+				await next;
+			}
+		},
 		/** Paints, lets the reads the paint started settle, and paints again. */
 		async lines() {
 			for (let i = 0; i < 3; i++) {
@@ -210,7 +224,7 @@ test("a finished subagent's page on the default store draws the saved line of th
 	assert.ok(scope);
 	await scope.store.append(scope.owner, saved.getLeafId()!, line("Error: Retry failed after 1 attempts: outage"));
 	const page = await openPage(finished);
-	assert.deepEqual(order(await page.lines(), ["read the file", "done", "Retry failed"]), [
+	assert.deepEqual(order(await page.whenVisible("Retry failed"), ["read the file", "done", "Retry failed"]), [
 		"read the file",
 		"done",
 		"Retry failed",
