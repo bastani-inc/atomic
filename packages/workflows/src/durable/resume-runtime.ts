@@ -236,12 +236,14 @@ async function resumeAtMark(
 				return { ok: false, reason: "stale", message: `Workflow ${id} has no valid journal state.` };
 		}
 	}
+	// A journal opened by an earlier bundle has only the ordinary running, job and version checks.
+	const tracksStarts = typeof backend.resumeObservationKey === "function";
 	const live = store.run(id);
 	const finishing = jobs.get(id);
 	const settling =
 		finishing !== undefined &&
-		(handle?.status === "failed" || live?.status === "failed" || live?.blockedAt !== undefined);
-	if (!settling && handle?.status === "running" && hasActiveLiveRun(store, id))
+		(handle?.status === "failed" || live?.status === "failed" || (tracksStarts && live?.blockedAt !== undefined));
+	if ((!tracksStarts || !settling) && handle?.status === "running" && hasActiveLiveRun(store, id))
 		return alreadyRunningResult(handle.name, id);
 	if (handle !== undefined) {
 		const controls = deps.baseRunOpts.stageControlRegistry ?? stageControlRegistry;
@@ -255,8 +257,10 @@ async function resumeAtMark(
 		// A resume being admitted now, or admitted since the request saw the run, replaced what the request saw: the job
 		// is that replacement, or will be, not the attempt that failed or blocked, and the run reads as that attempt only
 		// until the replacement starts. The request waits for nothing and starts nothing (#5534).
-		if (hasResumeClaim(backend, id)) return pendingResumeResult(id);
-		if (resumed(backend, id)) return alreadyResumedResult(handle?.name ?? live?.name ?? id, id);
+		if (tracksStarts) {
+			if (hasResumeClaim(backend, id)) return pendingResumeResult(id);
+			if (resumed(backend, id)) return alreadyResumedResult(handle?.name ?? live?.name ?? id, id);
+		}
 		// The failure or block can reach a caller before the old attempt finishes its persistence and releases its
 		// lease: a blocked run's journal still says `running` until then. Wait for that attempt before admitting a
 		// replacement, then discard its now-stale catalog version.
@@ -264,7 +268,8 @@ async function resumeAtMark(
 		await raceAbort(backend.hydrateWorkflow(id, { checkHeader: true }), deps.signal);
 		handle = backend.getWorkflow(id);
 		if (handle !== undefined) selected = resumableEntryFromHandle(handle);
-		if (handle?.status === "running" && hasActiveLiveRun(store, id)) return alreadyRunningResult(handle.name, id);
+		if (tracksStarts && handle?.status === "running" && hasActiveLiveRun(store, id))
+			return alreadyRunningResult(handle.name, id);
 	}
 	// The resumable list can omit an owned run even if its failed attempt finished between listing and admission.
 	// An exact id identifies the run independently of that list. Keep a listed version for its stale-write check.
@@ -299,7 +304,7 @@ async function resumeAtMark(
 	if (pending.has(id) || unsettledResumeClaims.get(backend)?.has(id) || jobs.has(id)) return pendingResumeResult(id);
 	// Exactly one replacement per block or failure (#5534): of the requests that saw it, the first one here is admitted,
 	// in this turn, and every other one is told it was resumed, however long its own reads took.
-	if (resumed(backend, id)) return alreadyResumedResult(handle?.name ?? id, id);
+	if (tracksStarts && resumed(backend, id)) return alreadyResumedResult(handle?.name ?? id, id);
 	pending.add(id);
 	// #5149: an abort releases the caller only until the executor is admitted; from then on the resume has succeeded.
 	let admitted = false;

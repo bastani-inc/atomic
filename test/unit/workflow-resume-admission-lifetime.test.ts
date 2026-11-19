@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { releaseDurableBackendsHeldBy } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { type ResumeAdmissionMark, withResumeAdmissionMark } from "../../packages/workflows/src/durable/run-claims.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { createDurableResumeRuntime } from "../../packages/workflows/src/extension/runtime-durable-resume.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend } from "../helpers/store-backend.js";
 
 const definition = workflow({
@@ -20,6 +24,52 @@ const definition = workflow({
 		await ctx.tool("check", {}, async () => true);
 		return {};
 	},
+});
+
+test("a runtime reusing an older journal backend acknowledges the retry it started (#5534)", async () => {
+	const directory = makeTempDirectory("resume-reload-");
+	const store = createStore();
+	const jobs = createJobTracker();
+	let attempts = 0;
+	const retry = workflow({
+		name: "reload-retry",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await ctx.tool("retry", {}, async () => {
+				if (++attempts === 1) throw new Error("first attempt failed");
+				return true;
+			});
+			return {};
+		},
+	});
+	const options = { definitions: [retry], store, jobs, journal: { path: join(directory, "journal.sqlite") } };
+	try {
+		const first = createExtensionRuntime(options);
+		const started = await first.dispatch({ action: "run", workflow: retry.name, inputs: {} });
+		assert.ok("runId" in started && typeof started.runId === "string");
+		const id = started.runId;
+		await jobs.get(id)?.promise;
+		const backend = first.durableBackend();
+		assert.equal(backend.getWorkflow(id)?.status, "failed");
+		// The process cache can outlive the bundle that opened this SQLite journal.
+		Object.defineProperty(backend, "resumeObservationKey", { value: undefined });
+		const second = createExtensionRuntime(options);
+		await second.prepareDurableCatalog!();
+		assert.equal(second.durableBackend(), backend);
+		try {
+			const reply = await second.resumeDurableWorkflow!(id);
+			assert.ok(reply.ok, reply.message);
+		} finally {
+			await jobs.get(id)?.promise;
+		}
+		assert.equal(backend.getWorkflow(id)?.status, "completed");
+		assert.equal(attempts, 2);
+	} finally {
+		await releaseDurableBackendsHeldBy(store);
+		removeTempDirectory(directory);
+	}
 });
 
 async function register(journal: JournalTestBackend, workflowId: string): Promise<void> {
@@ -187,6 +237,62 @@ async function finish(journal: JournalTestBackend, id: string) {
 	await jobs.get(id)?.promise;
 	assert.equal(journal.getWorkflow(id)?.status, "completed");
 }
+
+test.each([sharedId, sharedId.slice(0, 8)])(
+	"a lookup for %s still choosing its journal retains no journal entries for retired runs (#5534)",
+	async (target) => {
+		const selected = await JournalTestBackend.create();
+		const store = createStore();
+		const choosing = Promise.withResolvers<void>();
+		const ready = Promise.withResolvers<void>();
+		const runtime = createDurableResumeRuntime({
+			registry: createRegistry([definition]),
+			store,
+			jobs: createJobTracker(),
+			runtimeCwd: process.cwd(),
+			baseRunOpts: () => ({ store }),
+			ensureReady: async () => {
+				choosing.resolve();
+				await ready.promise;
+				return selected;
+			},
+		});
+		const controller = new AbortController();
+		const pending = runtime.resumeDurableWorkflow(target, { signal: controller.signal });
+		try {
+			await Promise.race([choosing.promise, pending.then(() => assert.fail("lookup did not wait for its journal"))]);
+			const matched = await JournalTestBackend.create();
+			const control = await JournalTestBackend.create();
+			const otherId = sharedId.replace("55340000", "deadbeef");
+			await finish(matched, sharedId);
+			await matched.deleteWorkflow(sharedId);
+			await finish(control, otherId);
+			await control.deleteWorkflow(otherId);
+			assert.equal(matched.getWorkflow(sharedId), undefined);
+			assert.equal(control.getWorkflow(otherId), undefined);
+
+			// Inspect only tables used by the next real start, keeping neither a table nor a row alive.
+			// A journal-wide cache common to both retired runs is not a lookup receipt.
+			const probe = await JournalTestBackend.create();
+			const set = WeakMap.prototype.set;
+			let extra = 0;
+			try {
+				WeakMap.prototype.set = function (key, value) {
+					if (key === probe && this.has(matched) && !this.has(control)) extra++;
+					return set.call(this, key, value);
+				};
+				await finish(probe, target === sharedId ? sharedId : `${target}-0000-4000-8000-000000000001`);
+			} finally {
+				WeakMap.prototype.set = set;
+			}
+			assert.equal(extra, 0);
+		} finally {
+			controller.abort(new Error("cancelled resume"));
+			ready.resolve();
+			await assert.rejects(pending, /cancelled resume/);
+		}
+	},
+);
 
 test("an overlapping resume retains no stamps for runs removed from other open journals (#5534)", async () => {
 	const held = await pausedLookups(sharedId);

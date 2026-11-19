@@ -2,7 +2,7 @@
  * In-process claims on durable runs. A resume and a fork of the same run exclude each other: a run
  * claimed for one is busy for the other until the claim settles.
  */
-import { RUN_ID_PREFIX_LENGTH } from "../shared/run-id.js";
+import { isRunIdPrefix, RUN_ID_PREFIX_LENGTH } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 
@@ -73,36 +73,41 @@ export async function withResumeAdmissionMark<T>(
 		if (backend !== undefined) bindResumeAdmission(inherited, backend, target);
 		return request(inherited);
 	}
+	if (backend && typeof backend.resumeObservationKey !== "function") return request(() => false);
 	let selected = target.toLowerCase();
-	let receipts: WeakMap<DurableWorkflowBackend, WeakSet<object>> | undefined = new WeakMap();
+	// Key by row first: a long-lived journal must not keep an empty receipt bucket after its run ends.
+	let receipts: WeakMap<object, WeakSet<DurableWorkflowBackend>> | undefined;
 	const observe: Observer = (journal, row) => {
-		if (!receipts) return;
-		let rows = receipts.get(journal);
-		if (!rows) {
-			rows = new WeakSet();
-			receipts.set(journal, rows);
+		receipts ??= new WeakMap();
+		let owners = receipts.get(row);
+		if (!owners) {
+			owners = new WeakSet();
+			receipts.set(row, owners);
 		}
-		rows.add(row);
+		owners.add(journal);
 	};
-	const mark: ResumeAdmissionMark = (journal, id) => {
-		const rows = receipts?.get(journal);
-		if (!rows) return false;
-		const row = journal.resumeObservationKey(id);
-		return row !== undefined && rows.has(row);
+	const observedRow = (journal: DurableWorkflowBackend, id: string) => {
+		if (!receipts || (backend !== undefined && backend !== journal)) return undefined;
+		const row = journal.resumeObservationKey?.(id);
+		return row && receipts.get(row)?.has(journal) ? row : undefined;
 	};
+	const mark: ResumeAdmissionMark = (journal, id) => observedRow(journal, id) !== undefined;
 	let unsubscribe: (() => void) | undefined = subscribe(backend, selected, observe);
 	bindings.set(mark, (journal, id) => {
 		// A nested adapter may still receive the original prefix after its outer lookup resolved it.
 		const requested = id.toLowerCase();
 		const selector = selected.startsWith(requested) ? selected : requested;
 		if (!unsubscribe || (journal === backend && selector === selected)) return;
-		const rows = receipts?.get(journal);
+		if (typeof journal.resumeObservationKey !== "function") {
+			release();
+			return;
+		}
 		unsubscribe();
-		receipts = new WeakMap();
-		if (rows && selector === selected) receipts.set(journal, rows);
-		else if (rows) {
-			const row = journal.resumeObservationKey(id);
-			if (row && rows.has(row)) observe(journal, row);
+		if (backend !== undefined && backend !== journal) receipts = undefined;
+		else if (selector !== selected || !isRunIdPrefix(selector)) {
+			const row = observedRow(journal, id);
+			receipts = undefined;
+			if (row) observe(journal, row);
 		}
 		backend = journal;
 		selected = selector;
@@ -127,6 +132,7 @@ export async function withResumeAdmissionMark<T>(
 
 /** A pending claim excludes competitors but is not a replacement until an executor actually starts. */
 export function recordResumeStart(backend: DurableWorkflowBackend, runId: string): void {
+	if (typeof backend.resumeObservationKey !== "function") return;
 	const row = backend.resumeObservationKey(runId);
 	if (!row) return;
 	const id = runId.toLowerCase();

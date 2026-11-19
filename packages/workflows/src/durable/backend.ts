@@ -307,8 +307,8 @@ export interface CatalogReadOptions {
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
 	readonly persistent: boolean;
-	/** Process-local identity of a resumable journal row. It survives refresh, but not completion or removal. */
-	resumeObservationKey(workflowId: string): object | undefined;
+	/** Identity of this backend's unfinished row. Older backends retained across a bundle reload do not expose it. */
+	resumeObservationKey?(workflowId: string): object | undefined;
 	/** The root journal used for snapshot blobs and full-sequence frontier reads, when available. */
 	readonly snapshotJournal?: RunJournal;
 	workflowOwnership(
