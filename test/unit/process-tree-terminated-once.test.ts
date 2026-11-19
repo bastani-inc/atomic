@@ -58,7 +58,11 @@ vi.mock("../../packages/coding-agent/src/core/process-tree-containment.ts", asyn
 });
 
 import { resolveConfigValueUncachedAsync } from "../../packages/coding-agent/src/core/resolve-config-value.js";
-import { openStepLog, runLoggedProcess } from "../../packages/coding-agent/src/core/resume/blueprint/process.ts";
+import {
+	openStepLog,
+	runLoggedProcess,
+	stepProcessWatcher,
+} from "../../packages/coding-agent/src/core/resume/blueprint/process.ts";
 import {
 	cleanupWorktrees,
 	createWorktrees,
@@ -188,6 +192,41 @@ test.skipIf(process.platform === "win32")(
 			if (hookPid > 0) kill(hookPid);
 			if (setup) await cleanupWorktrees(setup);
 			rmSync(root, { recursive: true, force: true });
+		}
+	},
+);
+
+test.skipIf(process.platform !== "win32")(
+	"aborting a missing blueprint command does not warn about surviving descendants (#5664)",
+	async () => {
+		const directory = realpathSync(mkdtempSync(join(tmpdir(), "process-tree-missing-step-")));
+		const log = await openStepLog(join(directory, "step.log"));
+		const warning = vi.spyOn(process, "emitWarning");
+		try {
+			const controller = new AbortController();
+			const reason = new Error("resume cancelled");
+			const pids: number[] = [];
+			const pending = stepProcessWatcher.run(
+				(pid) => pids.push(pid),
+				() =>
+					runLoggedProcess(
+						{ command: join(directory, "missing.exe"), args: [], cwd: directory, env: process.env },
+						log,
+						{ timeoutMs: PROCESS_START_WAIT_MS, signal: controller.signal },
+					),
+			);
+			// Node delivers the spawn error before this tick, but its promise handler has not settled the step yet.
+			process.nextTick(() => controller.abort(reason));
+			await assert.rejects(pending, (error: unknown) => error === reason);
+			assert.deepEqual(pids, []);
+			const descendantsWarnings = warning.mock.calls.filter(([message]) =>
+				/descendants may still be running/i.test(String(message)),
+			);
+			assert.deepEqual(descendantsWarnings, []);
+		} finally {
+			warning.mockRestore();
+			await log.close();
+			rmSync(directory, { recursive: true, force: true });
 		}
 	},
 );

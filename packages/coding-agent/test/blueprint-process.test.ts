@@ -371,6 +371,35 @@ describe("running a logged process (#4588)", () => {
 		},
 	);
 
+	test.skipIf(process.platform !== "linux")(
+		"a refused program is not started when its retry deadline passes during system suspend (#5678, #5707)",
+		async () => {
+			const held = heldNode();
+			const wall = vi.spyOn(Date, "now").mockReturnValue(1_000);
+			const monotonic = vi.spyOn(performance, "now").mockReturnValue(0);
+			try {
+				const { result, tries } = await counting(
+					() => execute(held.run('console.log("started")'), { timeoutMs: 200 }),
+					(attempt) => {
+						if (attempt !== 2) return;
+						// Linux's monotonic clock counts the 50 ms retry delay, but not the 350 ms spent asleep.
+						wall.mockReturnValue(1_400);
+						monotonic.mockReturnValue(50);
+						held.release();
+					},
+				);
+				assert.equal(tries, 2);
+				assert.equal((result.exit.spawnError as NodeJS.ErrnoException | undefined)?.code, "ETXTBSY");
+				assert.equal(result.output, "");
+				assert.equal(result.exit.elapsedMs, 400);
+			} finally {
+				monotonic.mockRestore();
+				wall.mockRestore();
+				held.release();
+			}
+		},
+	);
+
 	test.skipIf(!refusesHeldPrograms)(
 		"cancelling a refused program while it waits to be tried again, or as it is tried again, rejects with the reason and never starts it (#5608)",
 		async () => {

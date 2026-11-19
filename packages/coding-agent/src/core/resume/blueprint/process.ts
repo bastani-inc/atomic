@@ -132,8 +132,11 @@ export async function runLoggedProcess(
 	options: LoggedProcessOptions,
 ): Promise<ProcessExit> {
 	options.signal?.throwIfAborted();
+	const wallStartedAt = Date.now();
 	const startedAt = performance.now();
 	const elapsedMs = () => performance.now() - startedAt;
+	// The wall clock counts time asleep; the monotonic clock keeps a backward correction from extending a retry.
+	const retryElapsedMs = () => Math.max(Date.now() - wallStartedAt, elapsedMs());
 	const copiesOutput = copiesOutputToLog(process.platform);
 	let started: ChildProcess;
 	// How long the step waited to try again before its process started: that time counts toward its timeout.
@@ -144,7 +147,7 @@ export async function runLoggedProcess(
 		// Also cancelled while it waited to try again, or by what ran in between: then nothing may start.
 		options.signal?.throwIfAborted();
 		if (refusal !== undefined) {
-			waitedMs = elapsedMs();
+			waitedMs = retryElapsedMs();
 			// A try that wakes late, as when the event loop was busy, starts nothing once the step's time is up.
 			if (waitedMs >= options.timeoutMs) {
 				return {
@@ -171,7 +174,7 @@ export async function runLoggedProcess(
 			break;
 		} catch (error) {
 			// spawn throws, rather than emitting "error", when the system refuses at once (EPERM, EBUSY, ETXTBSY, ENOTDIR).
-			const elapsed = elapsedMs();
+			const elapsed = retryElapsedMs();
 			refusal = error as Error;
 			if (!triesStartAgain(error, tries, elapsed, options.timeoutMs)) {
 				return {
@@ -200,7 +203,8 @@ export async function runLoggedProcess(
 			stopped = true;
 			// Terminating the tree ends every process in it, and closing it ends any left: it is terminated at most once.
 			if (!treeTerminated) treeTerminated = tree?.terminate() === true;
-			if (treeTerminated) return;
+			// A failed spawn can have an exit code even though no process was created.
+			if (treeTerminated || child.pid === undefined) return;
 			// Once the command's exit is reported, its pid may name another process: nothing is killed by that pid.
 			const exited = child.exitCode !== null || child.signalCode !== null;
 			if (process.platform === "win32" && tree === undefined && exited && !warnedAboutDescendants) {
