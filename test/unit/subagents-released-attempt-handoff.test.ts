@@ -41,8 +41,6 @@ function taskHooks(overrides: Partial<TaskExecutionHooks> = {}): TaskExecutionHo
 		onExecution(execution) {
 			pending.push(execution.cleanup);
 		},
-		yieldTaskWait() {},
-		isParentObserving: () => false,
 		...overrides,
 	};
 }

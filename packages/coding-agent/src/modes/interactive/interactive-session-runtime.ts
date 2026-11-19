@@ -88,6 +88,8 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 		onError: (error) => {
 			this.showExtensionError(error.extensionPath, error.error, error.stack);
 		},
+		// A user works in this session: a failing startup handler is shown like any other extension error.
+		reportStartupErrors: true,
 	});
 
 	setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
@@ -210,7 +212,15 @@ InteractiveModeBase.prototype.renderCurrentSessionState = function (this: Intera
 		}
 	}
 	this.renderInitialMessages();
+	showRestartExtensionErrors(this);
 };
+
+/** Shows again, below the transcript a session switch or reload redrew, the extension errors reported while it ran. */
+export function showRestartExtensionErrors(mode: InteractiveModeBase): void {
+	const rows = mode.restartExtensionErrors ?? [];
+	mode.restartExtensionErrors = undefined;
+	for (const row of rows) if (!mode.chatContainer.children.includes(row)) mode.chatContainer.addChild(row);
+}
 
 function recoveryCount(count: number, singular: string, plural: string): string {
 	return `${count} ${count === 1 ? singular : plural}`;
