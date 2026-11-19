@@ -61,9 +61,8 @@ export type ExecuteBurstLaunch = (
 ) => Promise<SubagentToolResult>;
 
 /**
- * The burst's calls by the `wait` each passed, in order of first appearance. Before every launch ran in the background,
- * calls with different waits launched as separate runs; calls that still pass one keep doing so, so that a field such
- * as `concurrency` they do not share cannot fail them together (#5686). Calls that pass none form one group.
+ * The burst's calls by the `wait` each passed, in order of first appearance; calls that pass none form one group.
+ * Before every launch ran in the background, calls with different waits launched as separate runs (#5686).
  */
 function byLegacyWait(items: BurstItem[]): BurstItem[][] {
 	const groups: BurstItem[][] = [];
@@ -545,7 +544,7 @@ export function createExecutionBurstDispatcher(input: {
 		if (retry !== undefined) await run(retry, finish);
 	};
 
-	const runGroup = (items: BurstItem[]): Promise<void> =>
+	const runCollected = (items: BurstItem[]): Promise<void> =>
 		new Promise((done) => {
 			run(items.length > 1 ? items.map(collectMixedCall) : items, done).catch(() => done());
 		});
@@ -553,8 +552,13 @@ export function createExecutionBurstDispatcher(input: {
 	const runBurst = async (items: BurstItem[]): Promise<void> => {
 		input.setActive(true);
 		try {
-			// Each group is its own run, one after another; within a group, calls merge as any burst's do.
-			for (const group of byLegacyWait(items)) await runGroup(group);
+			const groups = byLegacyWait(items);
+			// A burst whose calls merge runs as one, as every burst does. Only calls that passed different `wait` values
+			// and cannot merge launch by `wait` as separate runs, side by side, as they did before every launch ran in the
+			// background; otherwise a field they do not share would fail them all (#5686).
+			if (groups.length > 1 && mergeBurst(items.map(collectMixedCall)).error !== undefined)
+				await Promise.all(groups.map(runCollected));
+			else await runCollected(items);
 		} finally {
 			input.setActive(false);
 		}

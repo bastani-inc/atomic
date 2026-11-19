@@ -1332,6 +1332,85 @@ test.each([
 	},
 );
 
+test("sibling calls that can merge run together when only one passes a wait, so a child can wait for its sibling (#5686)", async () => {
+	const bStarted = Promise.withResolvers<void>();
+	const events: string[] = [];
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task) => {
+			events.push(`start:${task}`);
+			if (task === "B") bStarted.resolve();
+			if (task === "A") {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					const cause = await Promise.race([
+						bStarted.promise.then(() => "B"),
+						new Promise<string>((resolve) => {
+							timer = setTimeout(() => resolve("timeout"), 3_000);
+						}),
+					]);
+					events.push(`A-unblocked:${cause}`);
+				} finally {
+					clearTimeout(timer);
+				}
+			}
+			return result(agentName, task);
+		},
+	});
+	try {
+		const outputs = await Promise.all([
+			execute(harness, "A", {
+				agent: "echo",
+				task: "A",
+				concurrency: 2,
+				wait: { kind: "background" },
+			} as SubagentParamsLike),
+			execute(harness, "B", { agent: "echo", task: "B", concurrency: 2 }),
+		]);
+		assert.deepEqual(
+			outputs.map((output) => output.isError === true),
+			[false, false],
+		);
+		assert.ok(events.includes("A-unblocked:B"), JSON.stringify(events));
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("cancelling a later sibling call ends it at once while a call that passed a wait still runs (#5686)", async () => {
+	const started = Promise.withResolvers<void>();
+	const finish = Promise.withResolvers<void>();
+	const later = new AbortController();
+	const reason = new Error("caller cancelled");
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task) => {
+			if (task === "A") started.resolve();
+			await finish.promise;
+			return result(agentName, task);
+		},
+	});
+	const first = execute(harness, "first", {
+		agent: "echo",
+		task: "A",
+		wait: { kind: "background" },
+	} as SubagentParamsLike);
+	const second = harness.executor
+		.execute("later", { agent: "echo", task: "B" }, later.signal, undefined, harness.ctx)
+		.then(
+			() => "returned",
+			(error) => (error === reason ? "cancelled" : "error"),
+		);
+	try {
+		await started.promise;
+		later.abort(reason);
+		const observed = await Promise.race([second, waitForImmediate().then(() => "still-pending")]);
+		assert.equal(observed, "cancelled");
+	} finally {
+		finish.resolve();
+		await Promise.all([first, second]);
+		harness.cleanup();
+	}
+});
+
 test("calls that pass the same wait still merge, and still fail together on a field they do not share (#5686)", async () => {
 	let launches = 0;
 	const harness = makeHarness({

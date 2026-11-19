@@ -311,6 +311,43 @@ test("through the agent loop, a call that asks to wait and a sibling that does n
 	assert.deepEqual([...parent.started].sort(), ["with-wait", "without-wait"]);
 });
 
+test("through the agent loop, sibling calls that can merge keep their shared concurrency of one when only one passes a wait (#5686)", async () => {
+	const sessionManager = SessionManager.inMemory();
+	const parent = parentWithBlockedChildren({ sessionManager });
+	const subagent: AgentTool = {
+		name: "subagent",
+		label: "Subagent",
+		description: "Launch a subagent",
+		parameters: SubagentParams,
+		prepareArguments: prepareSubagentArguments,
+		execute: (id, params, signal) => parent.directCall(id, params as SubagentParamsLike, signal),
+	};
+	const harness = await createHarness({ sessionManager, tools: [subagent] });
+	cleanups.push(() => harness.cleanup());
+	harness.setResponses([
+		fauxAssistantMessage(
+			[
+				fauxToolCall("subagent", { agent: "echo", task: "A", concurrency: 1, wait: { kind: "background" } }),
+				fauxToolCall("subagent", { agent: "echo", task: "B", concurrency: 1 }),
+			],
+			{ stopReason: "toolUse" },
+		),
+		fauxAssistantMessage("done"),
+	]);
+	await harness.session.prompt("Launch them");
+	const results = harness.session.messages.filter((message) => message.role === "toolResult");
+	assert.equal(results.length, 2);
+	assert.ok(
+		results.every((message) => message.role === "toolResult" && !message.isError),
+		results.map((message) => getMessageText(message)).join(" | "),
+	);
+	const deadline = Date.now() + 500;
+	while (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.deepEqual(parent.started, ["A"], "a shared concurrency of one starts B only once A ends");
+	parent.release();
+	await vi.waitFor(() => assert.deepEqual(parent.started, ["A", "B"]));
+});
+
 test("without a task host, a launch that asks to wait in the foreground still waits for its child, so it gets no note", async () => {
 	const parent = parentWithBlockedChildren({ taskHost: false });
 	parent.release();

@@ -677,3 +677,34 @@ test("a sibling aborted while its message's failed merged run is checked never l
 	assert.match(await settledOutput(call, single(later).observation.taskId), /output:later/);
 	assert.deepEqual(launched, ["later"]);
 });
+
+test("sibling calls that merge share one concurrency limit, also when only one of them passes a wait (#5686)", async () => {
+	const release = Promise.withResolvers<void>();
+	const started: string[] = [];
+	const { call } = harness(
+		async (_cwd, _agents, _agent, task) => {
+			started.push(task);
+			await release.promise;
+			return childResult(task);
+		},
+		undefined,
+		1,
+	);
+	cleanups.push(() => release.resolve());
+	const outputs = await Promise.all([
+		call("with-wait", { agent: "echo", task: "A", wait: { kind: "background" } } as SubagentParamsLike),
+		call("without-wait", { agent: "echo", task: "B" }),
+	]);
+	assert.deepEqual(
+		outputs.map((output) => output.isError === true),
+		[false, false],
+		outputs.map(text).join(" | "),
+	);
+	const deadline = Date.now() + 500;
+	while (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.deepEqual(started, ["A"], "a limit of one starts the second child only once the first ends");
+	release.resolve();
+	const settled = Date.now() + 10_000;
+	while (started.length < 2 && Date.now() < settled) await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.deepEqual(started, ["A", "B"]);
+});

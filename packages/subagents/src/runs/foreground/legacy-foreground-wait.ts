@@ -52,8 +52,8 @@ function issuedCallArguments(
  * The launch to run, without the `wait` it may still pass, and whether this very call asked to wait in the foreground:
  * in the arguments an extension or SDK caller passed, or in the saved assistant message that issued a model's call.
  * Nothing is remembered between calls, so no other launch is ever told about it. `wait` is the value the call passed,
- * from the same two places (undefined when it passed none): sibling calls that passed different values launch as
- * separate runs, as they did before the launch `wait` was removed (#5686).
+ * from the same two places (undefined when it passed none): sibling calls that cannot launch together launch by it
+ * as separate runs, as they did before the launch `wait` was removed (#5686).
  */
 export function takeLegacyForegroundWait(
 	toolCallId: string,
