@@ -340,6 +340,13 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			const { name: command, args } = text.startsWith("/") ? parseSlashCommand(text) : { name: "", args: "" };
 			const argument = args.trim() || undefined;
 			const bare = (name: string) => command === name && args === "";
+			if (command === "workflows" || command === "workflow-authoring") {
+				this.editor.setText("");
+				this.showStatus(
+					"Workflows are now skills. Ask Atomic to convert your old workflow files into skills for use with codemode and subagents.",
+				);
+				return;
+			}
 			if (command === "tasks") {
 				if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
 					await this.runtimeHost.openTaskInspector(argument);

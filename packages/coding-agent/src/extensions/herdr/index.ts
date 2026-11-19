@@ -1,6 +1,7 @@
 import { APP_NAME } from "../../config.js";
 import { getExtensionContextOwner, publishExtensionContextEffect } from "../../core/extensions/runner-context.ts";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "../../core/extensions/types.ts";
+import { isUnpublishedWorkflowSnapshot } from "../../core/extensions/workflow-activity-hub.js";
 import type { WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
 import { sqliteSessionResumeArgs } from "../../core/session-resume-args.js";
 import { SETTINGS_DEFAULTS } from "../../core/settings-defaults.ts";
@@ -151,7 +152,9 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			lease = ctx.observeWorkflowActivity((frame) => {
 				if (current !== generation) return;
 				if (frame.kind === "snapshot") {
-					availability = frame.availability;
+					// With no workflow source, the session and its tasks fully describe the pane.
+					// A registered source in recovery must still keep its last pane report.
+					availability = isUnpublishedWorkflowSnapshot(frame) ? "ready" : frame.availability;
 					roots.clear();
 					if (frame.availability === "ready") {
 						for (const root of frame.roots) updateRoot(root);
