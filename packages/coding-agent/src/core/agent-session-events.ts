@@ -730,13 +730,8 @@ export function _disconnectFromAgent(this: AgentSession): void {
  */
 
 const shutdownEventFailures = new WeakMap<AgentSession, Error[]>();
-const sessionClosures = new WeakMap<object, Promise<void>>();
+const sessionClosures = new WeakMap<AgentSession, Promise<void>>();
 const sessionRetirements = new WeakMap<AgentSession, Promise<void>>();
-
-/** A close has started; this session will not accept another extension bind. */
-export function isAgentSessionClosed(session: object): boolean {
-	return sessionClosures.has(session);
-}
 
 /** Shared terminal boundary for direct SDK disposal and runtime replacement. */
 export function closeAgentSession(

@@ -17,7 +17,6 @@ initTheme("dark");
 function createGateMode(): InteractiveMode {
 	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode;
 	Object.assign(mode, {
-		runtimeHost: { session: {} },
 		workingRunMeter: new WorkingRunMeter(),
 		chatContainer: new StartupChatContainer(),
 		resourceDisclosureContainer: new Container(),
@@ -127,6 +126,37 @@ test("failed eager startup releases notifications when disclosure never renders"
 	assert.ok(output.includes("warning survives startup failure"), output);
 	assert.ok(!output.includes("RESOURCES"), output);
 });
+
+test.each([true, false])(
+	"eager rebind can renew session access or show its failure (renew: %s) (#5697)",
+	async (renew) => {
+		const mode = createGateMode();
+		const unavailable = new Error("session unavailable");
+		let available = false;
+		Object.defineProperty(mode, "session", {
+			get() {
+				if (!available) throw unavailable;
+				return {};
+			},
+		});
+		Object.assign(mode, {
+			rebindCurrentSession: async () => {
+				available = renew;
+				return mode.session;
+			},
+			showLoadedResources() {},
+			showStartupNoticesIfNeeded() {},
+			reportModelCatalogWarning() {},
+		});
+		if (renew) {
+			await bindInitialEagerSession(mode);
+		} else {
+			await assert.rejects(bindInitialEagerSession(mode), (error) => error === unavailable);
+			mode.showError("could not start");
+			assert.match(normalizeGateOutput(mode.chatContainer), /could not start/);
+		}
+	},
+);
 
 test("failed deferred startup releases notifications when disclosure never renders", async () => {
 	const mode = createGateMode();

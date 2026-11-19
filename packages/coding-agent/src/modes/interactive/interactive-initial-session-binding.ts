@@ -1,21 +1,12 @@
-import { type InitialExtensionBind, initialExtensionBind } from "../../core/extension-bind-close.ts";
-import { sessionQuitSignal } from "../../core/session-lifecycle-work.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 
 /** Bind the eager startup session without letting the reusable runtime path append its disclosure. */
-export async function bindInitialEagerSession(mode: InteractiveModeBase): Promise<"closed" | "bound"> {
-	const session = mode.session;
-	const quit = sessionQuitSignal(mode.runtimeHost);
-	const bind: InitialExtensionBind = { session, isQuitting: () => mode.isShuttingDown || quit.aborted };
+export async function bindInitialEagerSession(mode: InteractiveModeBase): Promise<void> {
 	try {
 		mode.initialStartupBinding = true;
 		try {
-			await initialExtensionBind.run(new WeakRef(bind), () => mode.rebindCurrentSession());
-		} catch (error) {
-			if (bind.cancelled === undefined || error !== bind.cancelled) throw error;
-			if (mode.session === session) return "closed";
-			// The replacement installed its own binding. Finish the startup display for it.
+			await mode.rebindCurrentSession();
 		} finally {
 			mode.initialStartupBinding = false;
 		}
@@ -28,7 +19,6 @@ export async function bindInitialEagerSession(mode: InteractiveModeBase): Promis
 		// A suppressed derived `-fast` duplicate is a startup notice, so it renders here on the eager
 		// path and again after deferred extension loading on the other branch of `run()`.
 		mode.reportModelCatalogWarning(mode.startupNoticesContainer);
-		return "bound";
 	} finally {
 		releaseStartupChatOutput(mode);
 	}

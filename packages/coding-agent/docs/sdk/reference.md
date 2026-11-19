@@ -993,8 +993,6 @@ const mode = new InteractiveMode(runtime, {
 await mode.run();
 ```
 
-If the runtime closes while interactive startup is binding extensions, `run()` returns without entering the input loop. Other binding errors still propagate.
-
 ### runPrintMode
 
 Single-shot mode: send prompts, output result, exit:

@@ -1,5 +1,4 @@
 import { APP_NAME, detectInstallChangeAsync, VERSION } from "../../config.js";
-import { isAgentSessionClosed } from "../../core/agent-session-events.ts";
 import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
@@ -137,11 +136,31 @@ function createToolComponent(
 			);
 }
 
+function isSessionClosed(error: unknown): boolean {
+	try {
+		return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "SessionClosed";
+	} catch {
+		return false; // An SDK error can have a throwing code getter, or be a revoked proxy.
+	}
+}
+
 InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveModeBase): void {
 	refreshInteractiveTasks(this);
 	const session = this.session;
-	const unsubscribe = session.subscribe(async (event) => {
-		await this.handleEvent(event);
+	const unsubscribe = session.subscribe((event) => {
+		const delivery: Promise<void> = (async () => {
+			try {
+				await this.handleEvent(event);
+			} catch (error) {
+				if (isSessionClosed(error)) {
+					// The session doesn't await its listeners. Observe this delivery without changing its rejection.
+					// An SDK override can throw synchronously, before delivery is assigned.
+					queueMicrotask(() => void delivery.catch(() => {}));
+				}
+				throw error;
+			}
+		})();
+		return delivery;
 	});
 	// Workflow runs execute outside the main agent loop, so their activity feeds the status separately.
 	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
@@ -173,9 +192,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 ): Promise<void> {
 	if ("parentToolCallId" in event && event.parentToolCallId && event.type.startsWith("tool_execution_")) return;
 	if (!this.isInitialized) {
-		const session = this.session;
 		await this.init();
-		if (this.isShuttingDown || isAgentSessionClosed(session)) return;
 	}
 
 	this.footer.invalidate();

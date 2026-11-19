@@ -296,6 +296,47 @@ test.each(["bindExtensions", "run", "quitting run"] as const)(
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
 
+test(
+	"startup propagates a separate reload's error when a discovery decorator refreshes the catalog (#5697)",
+	async () => {
+		const { mode } = await createMode((pi) => pi.on("resources_discover", () => ({})));
+		const session = mode.session;
+		const runner = session.extensionRunner;
+		const discover = runner.emitResourcesDiscover.bind(runner);
+		const refreshing = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		let reloadError: unknown;
+		runner.emitResourcesDiscover = async (...args) => {
+			if (args[1] === "reload") {
+				refreshing.resolve();
+				await release.promise;
+				return discover(...args);
+			}
+			const paths = await discover(...args);
+			try {
+				await session.extendResourcesFromExtensions("reload");
+			} catch (error) {
+				reloadError = error;
+				throw error;
+			}
+			return paths;
+		};
+		try {
+			const run = mode.run();
+			await Promise.race([refreshing.promise, run]);
+			const closed = mode.runtimeHost.dispose();
+			release.resolve();
+			await Promise.all([
+				assert.rejects(run, (error) => reloadError !== undefined && error === reloadError),
+				closed,
+			]);
+		} finally {
+			release.resolve();
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
 test.each(["before run", "during session_start", "before a later runtime quit"] as const)(
 	"disposing the SDK session %s rejects interactive startup with the original error (#5697)",
 	async (timing) => {
@@ -429,7 +470,7 @@ test(
 );
 
 test.each([false, true])(
-	"stopping the interactive host while an eager session_start is pending exits normally (resource discovery: %s) (#5697)",
+	"run preserves its bind rejection when the host quits during session_start (resource discovery: %s) (#5697)",
 	async (discoversResources) => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -444,15 +485,18 @@ test.each([false, true])(
 			throw new Error(`process.exit(${code})`);
 		});
 		try {
+			const bind = vi.spyOn(mode.session, "bindExtensions");
 			const run = mode.run();
 			await Promise.race([entered.promise, run]);
 			const quit = assert.rejects(mode.shutdown({ fromSignal: true }), /process\.exit\(0\)/);
 			release.resolve();
-			try {
-				await run;
-			} finally {
-				await quit;
-			}
+			await Promise.all([
+				assert.rejects(run, (error) => {
+					assert.ok(error instanceof Error && "code" in error && error.code === "SessionClosed");
+					return error === bind.mock.settledResults[0]?.value;
+				}),
+				quit,
+			]);
 		} finally {
 			release.resolve();
 			exit.mockRestore();
@@ -462,13 +506,83 @@ test.each([false, true])(
 );
 
 test(
-	"an event awaiting interactive startup settles without showing work for a closed session (#5697)",
+	"a live event can initialize a host that renews its session access in init (#5697)",
 	async () => {
 		const { mode } = await createMode(() => {});
-		const event = mode.handleEvent({ type: "agent_start" });
-		// Close in the same turn, before startup resumes to bind the extensions.
-		await Promise.all([event, mode.runtimeHost.dispose()]);
-		assert.equal(mode.workingRunMeter.snapshot(), undefined);
+		const session = mode.session;
+		let available = false;
+		const lease = vi.spyOn(mode.runtimeHost, "session", "get").mockImplementation(() => {
+			if (!available) throw new Error("session unavailable until init");
+			return session;
+		});
+		const init = mode.init.bind(mode);
+		vi.spyOn(mode, "init").mockImplementation(() => {
+			available = true;
+			return init();
+		});
+		try {
+			await mode.handleEvent({ type: "agent_start" });
+			assert.ok(mode.workingRunMeter.snapshot());
+		} finally {
+			lease.mockRestore();
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"an SDK host awaiting its interactive subscriber receives the original rejection (#5697)",
+	async () => {
+		const { mode } = await createMode(() => {});
+		const subscribe = vi.spyOn(mode.session, "subscribe");
+		mode.subscribeToAgent();
+		const listener = subscribe.mock.calls[0][0];
+		assert.ok(typeof listener === "function");
+		const revoked = Proxy.revocable(new Error("discovery failed"), {});
+		revoked.revoke();
+		for (const reason of [Object.assign(new Error("closed"), { code: "SessionClosed" }), revoked.proxy]) {
+			mode.handleEvent = () => {
+				throw reason;
+			};
+			const same = await Promise.resolve(listener({ type: "agent_start" })).then(
+				() => false,
+				(error: unknown) => error === reason,
+			);
+			assert.ok(same);
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"closing during an event's startup rejects the event without an unhandled subscriber rejection (#5697)",
+	async () => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const { mode } = await createMode((pi) => {
+			pi.on("session_start", async () => {
+				entered.resolve();
+				await release.promise;
+			});
+		});
+		const handle = vi.spyOn(mode, "handleEvent");
+		const unhandled: unknown[] = [];
+		const record = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", record);
+		try {
+			mode.subscribeToAgent();
+			mode.session.clearQueue(); // Publishes a queue_update; the session does not await its subscribers.
+			const event = handle.mock.results[0].value;
+			await Promise.race([entered.promise, event]);
+			const closed = mode.runtimeHost.dispose();
+			release.resolve();
+			await Promise.all([assert.rejects(event, { code: "SessionClosed" }), closed]);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.deepEqual(unhandled, []);
+		} finally {
+			release.resolve();
+			process.off("unhandledRejection", record);
+		}
 	},
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );

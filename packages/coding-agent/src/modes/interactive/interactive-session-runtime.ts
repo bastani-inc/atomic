@@ -1,6 +1,5 @@
 import { setCapabilityOverrides } from "@bastani/atomic-tui";
-import type { ExtensionBindings, SessionRecoveryReport } from "../../core/agent-session-types.js";
-import { initialExtensionBindings } from "../../core/extension-bind-close.ts";
+import type { SessionRecoveryReport } from "../../core/agent-session-types.js";
 import type { SessionRecoveryReason, ToolRenderers } from "../../core/extensions/types.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
@@ -16,7 +15,7 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 	const uiContext = this.createExtensionUIContext();
 	const session = this.session;
 	this.runtimeHost?.setProjectTrustContextFactory?.((cwd) => this.createProjectTrustContext(cwd));
-	const bindings = (): ExtensionBindings => ({
+	await this.session.bindExtensions({
 		onUIPrompt: (event) => {
 			if (!(this.runtimeHost instanceof IsolatedInteractiveRuntime) && this.session === session) {
 				this.programStatus.handleUIPrompt(event);
@@ -92,7 +91,6 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 		// A user works in this session: a failing startup handler is shown like any other extension error.
 		reportStartupErrors: true,
 	});
-	await this.session.bindExtensions(initialExtensionBindings(session, bindings()));
 
 	setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
 	this.setupAutocompleteProvider();
