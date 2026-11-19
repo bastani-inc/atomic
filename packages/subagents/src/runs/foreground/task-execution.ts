@@ -348,6 +348,8 @@ function taskTranscriptSource(
 		getEntries: () => session.getEntries(),
 		...(session.loadHistory ? { loadHistory: session.loadHistory.bind(session) } : {}),
 		...(session.readHistory ? { readHistory: session.readHistory.bind(session) } : {}),
+		...(session.readHistoryChunks ? { readHistoryChunks: session.readHistoryChunks.bind(session) } : {}),
+		...(session.getFallbackEntries ? { getFallbackEntries: session.getFallbackEntries.bind(session) } : {}),
 		...(session.loadFullHistory ? { loadFullHistory: session.loadFullHistory.bind(session) } : {}),
 		...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
 		...(session.getStreamingMessage ? { getStreamingMessage: session.getStreamingMessage.bind(session) } : {}),

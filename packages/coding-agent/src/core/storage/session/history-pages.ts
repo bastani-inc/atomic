@@ -32,11 +32,13 @@ export async function* historyPages(
 		);
 	let start = Math.max(1, options.fromSeq ?? 1);
 	let end = Math.min(watermark, options.toSeq ?? watermark);
+	let firstSeq = start,
+		lastSeq = end;
 	let reverse = options.direction === "backward";
 	let stamp = epoch;
 	let scope = epoch === undefined ? undefined : cursorScope(sessionId, epoch);
 	if (options.cursor !== undefined) {
-		const match = /^([A-Za-z0-9_-]+)\.(\d+)\.(\d+)(\.b)?$/.exec(options.cursor);
+		const match = /^([A-Za-z0-9_-]+)\.(\d+)\.(\d+)(\.b)?(?:\.(\d+)\.(\d+))?$/.exec(options.cursor);
 		if (
 			!match ||
 			match[1] !== scope ||
@@ -48,7 +50,18 @@ export async function* historyPages(
 		start = Number(match[2]);
 		end = Number(match[3]);
 		reverse = Boolean(match[4]);
-		if (end > watermark || start > end) throw new TypeError("Invalid history cursor range");
+		firstSeq = match[5] === undefined ? start : Number(match[5]);
+		lastSeq = match[6] === undefined ? end : Number(match[6]);
+		if (
+			!Number.isSafeInteger(firstSeq) ||
+			!Number.isSafeInteger(lastSeq) ||
+			firstSeq < 1 ||
+			firstSeq > start ||
+			lastSeq < end ||
+			lastSeq > watermark ||
+			start > end
+		)
+			throw new TypeError("Invalid history cursor range");
 	}
 	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1)
 		throw new RangeError("History sequence must be a safe integer");
@@ -87,7 +100,20 @@ export async function* historyPages(
 		}
 		if (reverse) end = low - 1;
 		else start = high + 1;
-		yield { items: page, ...(start <= end ? { nextCursor: `${scope}.${start}.${end}${reverse ? ".b" : ""}` } : {}) };
+		const cursorFor = (from: number, to: number, backward: boolean) =>
+			`${scope}.${from}.${to}${backward ? ".b" : ""}${options.adjacent ? `.${firstSeq}.${lastSeq}` : ""}`;
+		yield {
+			items: page,
+			...(start <= end ? { nextCursor: cursorFor(start, end, reverse) } : {}),
+			...(options.adjacent
+				? {
+						adjacent: {
+							...(low > firstSeq ? { older: cursorFor(firstSeq, low - 1, true) } : {}),
+							...(high < lastSeq ? { newer: cursorFor(high + 1, lastSeq, false) } : {}),
+						},
+					}
+				: {}),
+		};
 		if (start <= end) await yieldToEventLoop();
 	}
 }

@@ -27,6 +27,7 @@
 - In fullscreen mode, a click anywhere on a block that Ctrl+O expands now opens or folds it, not only a click on its header: its title, its output and its `… +N lines` row alike. This covers tool calls, grouped-call summaries, finished-agent cards, `!` shell commands, Intercom messages, task and workflow heartbeats, workflow, subagent and stage notices, skill blocks, branch summaries, compaction boundaries, extension message cards and entries, task rows and the startup resource list, in the main chat (isolated engine included), `/tasks` transcripts, subagent chats and stage chats. A click takes effect about half a second after the press, once it cannot be the start of a double-click, so double- and triple-clicks select a word or a line without opening anything; drags still select and link clicks still open the link. A block with nothing more to show ignores the click and the chat keeps following its latest output. Skill blocks, branch summaries and compaction boundaries, which already toggled on any click, now wait the same way, so a double-click on them selects text.
 
 - Non-fullscreen chats show where to read or export older messages that were never printed in the terminal's scrollback ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
+- Opening or scrolling a saved database-backed task chat no longer keeps every page you visit. You can scroll back to an evicted page or jump to the latest messages with Ctrl+End ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
 
 ### Fixed
 

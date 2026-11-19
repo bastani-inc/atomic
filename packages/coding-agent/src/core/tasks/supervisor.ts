@@ -88,6 +88,9 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	loadHistory?(): Promise<TaskTranscriptHistory>;
 	/** Saved history, without hydrating the task's session. Its cursors fence the generation and original watermark. */
 	readHistory?: SessionManager["readHistory"];
+	readHistoryChunks?: SessionManager["readHistoryChunks"];
+	/** The task's own retained prompt/answer if its saved session disappears. */
+	getFallbackEntries?: TaskTranscriptSource["getEntries"];
 
 	loadFullHistory?(): Promise<void>;
 	/** The session's commands now; a settled transcript keeps those it had when it settled. */
@@ -278,12 +281,22 @@ const environment = {
 /** Reads only history bound by the admitted runner, never a caller-selected session. */
 export function taskTranscriptSource(
 	task: TaskLease,
-): C.Result<{ session: TaskTranscriptSource; taskId: C.TaskId }, C.Failure<"UnknownTask" | "TranscriptUnavailable">> {
+): C.Result<
+	{ session: TaskTranscriptSource; taskId: C.TaskId; inheritedThroughId?: string },
+	C.Failure<"UnknownTask" | "TranscriptUnavailable">
+> {
 	const state = environment.tasks.get(task);
 	if (!state) return { ok: false, error: { code: "UnknownTask", message: "Unknown task" } };
 	if (!state.transcript)
 		return { ok: false, error: { code: "TranscriptUnavailable", message: "Transcript unavailable" } };
-	return { ok: true, value: { session: state.transcript, taskId: state.ref.taskId } };
+	return {
+		ok: true,
+		value: {
+			session: state.transcript,
+			taskId: state.ref.taskId,
+			...(typeof state.inherited?.throughId === "string" ? { inheritedThroughId: state.inherited.throughId } : {}),
+		},
+	};
 }
 
 const NO_STATUSES: ReadonlyMap<string, string> = new Map();

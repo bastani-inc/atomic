@@ -158,6 +158,10 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 
 	replaceTranscriptWindow(messages: Parameters<LiveChatEntriesController["replaceMessages"]>[0]): void {
 		this.liveChat.replaceMessages(messages, this.extraEntries);
+		this.releaseRetiredRows();
+	}
+
+	releaseRetiredRows(): void {
 		this.bodyViewport.retainSegmentAnchors(this.transcriptComponent, new Set(this.transcript));
 		this.transcriptComponent.invalidate();
 		this.replacedEntryKeys.clear();
@@ -187,6 +191,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 			pinnedPrompt: pinnedPromptLine,
 			requestRender: () => this.requestRender?.(),
 			onNearTop: () => opts.onNearTop?.(),
+			onNearBottom: () => opts.onNearBottom?.(),
 		});
 		this.requestRender = opts.requestRender;
 		this.getAgentSession = opts.getAgentSession;

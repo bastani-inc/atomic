@@ -67,6 +67,11 @@ test("a saved task chat requests a bounded page instead of loading its whole tra
 		assert.ok(first.value.messages.length > 0 && first.value.messages.length < 145);
 		assert.ok(first.value.nextCursor);
 		await session.appendMessage({ role: "user", content: "later", timestamp: 200 });
+		const older = await view.readTaskTranscript(task, first.value.nextCursor);
+		assert.ok(older.ok && older.value.newerCursor, "a reader cannot revisit a page once it evicts it");
+		const forward = await view.readTaskTranscript(task, older.value.newerCursor);
+		assert.ok(forward.ok);
+		assert.deepEqual(forward.value.messages, first.value.messages, "a later append must not enter the pinned page");
 		let all = [...first.value.messages],
 			cursor: string | undefined = first.value.nextCursor;
 		while (cursor) {

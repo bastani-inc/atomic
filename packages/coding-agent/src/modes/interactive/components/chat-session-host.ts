@@ -222,6 +222,41 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.requestRender?.();
 	}
 
+	/** Own one page displayed by a saved transcript. A page is discarded only after the viewport leaves it. */
+	showSavedPage(
+		messages: readonly AgentSnapshotMessage[],
+		edge: "latest" | "older" | "newer",
+	): { visible: () => boolean; discard: () => void } {
+		const { state } = this;
+		const before = state.transcript.length;
+		if (edge === "latest") this.replaceMessages(messages);
+		else if (edge === "older") this.prependMessages(messages);
+		else {
+			const count = countableTranscriptLength(state);
+			this.appendMessages(messages);
+			state.newMessages.historyPrepended(countableTranscriptLength(state) - count);
+		}
+		const owned = new Set(
+			edge === "latest"
+				? state.transcript.filter((e) => !state.extraEntries.includes(e as TExtraEntry))
+				: edge === "older"
+					? state.transcript.slice(0, state.transcript.length - before)
+					: state.transcript.slice(before),
+		);
+		return {
+			visible: () => state.bodyViewport.paintsSegments(state.transcriptComponent, owned),
+			discard: () => {
+				state.liveChat.dropSavedEntries(owned);
+				state.releaseRetiredRows();
+				syncFirstUserEntry(state);
+				state.firstUserEntryExactText = state.firstUserEntry?.text;
+				state.seenFirstRawUser = state.firstUserEntry !== undefined;
+				state.newMessages.replaced(countableTranscriptLength(state));
+				owned.clear();
+			},
+		};
+	}
+
 	resetFollowedSession(options?: { readonly preserveWorkedRun?: boolean }): void {
 		if (options?.preserveWorkedRun) {
 			if (this.state.workedRun === undefined) {

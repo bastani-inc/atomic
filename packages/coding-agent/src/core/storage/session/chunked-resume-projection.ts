@@ -380,6 +380,40 @@ export async function chunkedBranchState(chunks: () => AsyncIterable<Uint8Array>
 	return entry as unknown as SessionEntry;
 }
 
+/** Read only the identity comparison and message role needed for a task's first prompt and last response. */
+export async function chunkedTaskDetailFields(
+	chunks: () => AsyncIterable<Uint8Array>,
+	throughId?: string,
+): Promise<{ inheritedEnd: boolean; role: string }> {
+	const type = await read(chunks(), discriminator("type"));
+	const inheritedEnd =
+		throughId === undefined
+			? false
+			: await read(
+					chunks(),
+					(function* (): Reader<boolean> {
+						if ((yield).name !== "startObject") return false;
+						while ((yield).name !== "endObject") {
+							const key = yield* stringValue(3),
+								value = yield;
+							if (key !== "id" || value.name !== "startString") {
+								yield* skip(value);
+								continue;
+							}
+							let at = 0,
+								match = true;
+							for (let t = yield; t.name === "stringChunk"; t = yield) {
+								if (!throughId.startsWith(t.value, at)) match = false;
+								at += t.value.length;
+							}
+							return match && at === throughId.length;
+						}
+						return false;
+					})(),
+				);
+	return { inheritedEnd, role: type === "message" ? await read(chunks(), discriminator("role", "message")) : "" };
+}
+
 /** Fill the inline projection of the stub with the streamed fields. No reconstructed value is sent back to SQL. */
 export async function chunkedResumeProjection(
 	stub: SqliteRow,

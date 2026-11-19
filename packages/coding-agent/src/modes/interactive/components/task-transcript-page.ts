@@ -247,6 +247,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private followedSessionId?: string;
 	private unsubscribe?: () => void;
 	private cursor?: string;
+	private newerCursor?: string;
+	private windowGeneration = 0;
+	private readonly savedPages: { older?: string; newer?: string; visible(): boolean; discard(): void }[] = [];
 	private loading = false;
 	private reloadPending = false;
 	private loadingEarlier = false;
@@ -331,7 +334,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			workingTokenCount: () => source.tasks.find((task) => task.ref.taskId === taskId)?.metrics?.tokenCount,
 			// A finished subagent's chat stays live, and a message resumes it; one stopped for good is read-only.
 			isDisabled: () => source.sendTaskMessage === undefined || this.readOnlyReason() !== undefined,
-			onNearTop: () => this.loadEarlier(),
+			onNearTop: () => this.loadAdjacent("older"),
+			onNearBottom: () => this.loadAdjacent("newer"),
 			// A subagent's `/tasks` lists the tasks it launched, as a stage chat's lists the stage's own.
 			getTaskSource: () => launchedTaskViewSource(source, taskId),
 			// The completion a stage chat offers, from the subagent's own cwd and skills.
@@ -418,7 +422,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const follow = this.source.followTaskTranscript(this.taskId);
 		if (follow?.session !== undefined && follow.session === this.followed) return;
 		// Reading a history-only transcript again replaces what is shown, so it waits while the reader is above the end.
-		if (follow?.historyOnly === true && this.chat.bodyScrollFromBottom() > 0) {
+		if (follow?.historyOnly === true && (this.newerCursor !== undefined || this.chat.bodyScrollFromBottom() > 0)) {
 			this.behind = true;
 			return;
 		}
@@ -427,7 +431,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	handleInput(data: string): boolean {
 		const handled = this.route(data);
-		if (this.behind && this.chat.bodyScrollFromBottom() === 0) {
+		if (this.behind && this.newerCursor === undefined && this.chat.bodyScrollFromBottom() === 0) {
 			this.behind = false;
 			void this.load();
 		}
@@ -436,6 +440,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	private route(data: string): boolean {
 		if (data === TRANSCRIPT_JUMP_TO_END_URL) {
+			if (this.newerCursor !== undefined) this.goToLatestSavedPage();
 			this.chat.scrollToBottom();
 			this.requestRender();
 			return true;
@@ -468,6 +473,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			}
 			form.handleInput(data);
 			this.requestRender();
+			return true;
+		}
+		if (
+			!this.chat.hasTaskInspector &&
+			this.newerCursor !== undefined &&
+			keybindings.matches(data, "tui.altScreen.bottom")
+		) {
+			this.goToLatestSavedPage();
 			return true;
 		}
 		// A read-only chat scrolls and keeps its keys, but takes no typing: nothing it sends could reach the task.
@@ -594,6 +607,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptDrafts.set(this.source, kept);
 		}
 		this.disposed = true;
+		this.savedPages.length = 0;
 		this.unsubscribePrompts();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
@@ -680,8 +694,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.chat.resetFollowedSession({ preserveWorkedRun: sameConversation && session === undefined });
 		}
 		this.followedSessionId = nextSessionId;
+		this.windowGeneration++;
+		this.savedPages.length = 0;
+		this.newerCursor = undefined;
 		this.cursor = page.value.nextCursor;
-		this.chat.replaceMessages(page.value.messages, { preserveUnread: !sessionChanged });
+		if (page.value.savedWindow && !session) this.attachSavedPage(page.value, "latest");
+		else this.chat.replaceMessages(page.value.messages, { preserveUnread: !sessionChanged });
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
 			page.value.compactionReason,
@@ -737,24 +755,59 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.chat.applyAgentEvent({ type: "queue_update", steering: queued.steering, followUp: queued.followUp });
 	}
 
-	private loadEarlier(): void {
-		const cursor = this.cursor;
+	private goToLatestSavedPage(): void {
+		this.windowGeneration++;
+		this.newerCursor = undefined;
+		this.behind = false;
+		this.chat.scrollToBottom();
+		void this.load();
+	}
+
+	private attachSavedPage(page: TaskTranscriptView, edge: "latest" | "older" | "newer"): void {
+		const shown = {
+			...this.chat.showSavedPage(page.messages, edge),
+			older: page.nextCursor,
+			newer: page.newerCursor,
+		};
+		if (edge === "older") this.savedPages.unshift(shown);
+		else this.savedPages.push(shown);
+		// Keep the viewport and an adjacent page. A tall screen can span more: never evict a painted row.
+		while (this.savedPages.length > 2) {
+			const far = edge === "older" ? this.savedPages.at(-1)! : this.savedPages[0]!;
+			if (far.visible()) break;
+			if (edge === "older") this.savedPages.pop();
+			else this.savedPages.shift();
+			far.discard();
+		}
+		this.cursor = this.savedPages[0]?.older;
+		this.newerCursor = this.savedPages.at(-1)?.newer;
+	}
+
+	private loadAdjacent(edge: "older" | "newer"): void {
+		const current = () => (edge === "older" ? this.cursor : this.newerCursor);
+		const cursor = current();
+		const generation = this.windowGeneration;
 		if (cursor === undefined || this.loadingEarlier || this.loading || this.disposed) return;
 		this.loadingEarlier = true;
 		void (async () => {
 			try {
 				const page = await settled(this.source.readTaskTranscript(this.taskId, cursor));
-				if (this.disposed || cursor !== this.cursor) return;
+				if (this.disposed || generation !== this.windowGeneration || cursor !== current()) return;
 				if (!page.ok) {
-					this.cursor = undefined;
+					if (edge === "older") this.cursor = undefined;
+					else this.newerCursor = undefined;
 					this.status = page.error.message;
 					return;
 				}
-				this.cursor = page.value.nextCursor;
-				this.chat.prependMessages(page.value.messages);
+				if (page.value.savedWindow && this.savedPages.length) this.attachSavedPage(page.value, edge);
+				else {
+					this.cursor = page.value.nextCursor;
+					this.chat.prependMessages(page.value.messages);
+				}
 			} catch (error) {
-				if (this.disposed) return;
-				this.cursor = undefined;
+				if (this.disposed || generation !== this.windowGeneration || cursor !== current()) return;
+				if (edge === "older") this.cursor = undefined;
+				else this.newerCursor = undefined;
 				this.status = error instanceof Error ? error.message : String(error);
 			} finally {
 				this.loadingEarlier = false;

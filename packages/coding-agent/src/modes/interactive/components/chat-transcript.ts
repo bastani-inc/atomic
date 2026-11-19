@@ -560,6 +560,7 @@ export interface ScrollableComponentViewportOptions {
 	readonly requestRender?: () => void;
 	/** Called after a render whose first row lies within one viewport of the top. */
 	readonly onNearTop?: () => void;
+	readonly onNearBottom?: () => void;
 	/** Milliseconds, for wheel velocity and the `"auto"` scrollbar. Default `performance.now()`. */
 	readonly now?: () => number;
 	/** Whether `"auto"` wheel scrolling accelerates; by default only where the terminal does not already. */
@@ -636,6 +637,23 @@ export class ScrollableComponentViewport implements Component {
 		}
 		if (gap) segments.push({ id: Symbol(), rows: gap });
 		this.lastComponentSegments = this.lastComponentSegments.map((original, i) => (i === index ? segments : original));
+	}
+
+	/** Whether any of these segments belonged to the last painted body. Do not evict an on-screen page. */
+	paintsSegments(component: Component, ids: ReadonlySet<unknown>): boolean {
+		if (!this.lastPaint) return true;
+		const index = this.components.indexOf(component);
+		const ranges = this.lastComponentSegments[index];
+		if (!ranges) return false;
+		let top = this.lastComponentRowCounts.slice(0, index).reduce((a, b) => a + b, 0);
+		const { start, contentRows } = this.lastPaint;
+		for (const seg of ranges) {
+			const end = top + seg.rows;
+			if (top >= start + contentRows) break;
+			if (end > start && ids.has(seg.id)) return true;
+			top = end;
+		}
+		return false;
 	}
 
 	setVisibleRows(rows: number): void {
@@ -847,6 +865,7 @@ export class ScrollableComponentViewport implements Component {
 		while (visible.length < contentRows + pin.length) visible.push(" ".repeat(contentWidth));
 		const painted = this.paintScrollbar(visible, width, scrollbar, { lineCount, start, maxScroll });
 		if (start < this.visibleRows) this.options.onNearTop?.();
+		if (!this.pinnedToTop && maxScroll - start < this.visibleRows) this.options.onNearBottom?.();
 		return [...painted, ...indicator];
 	}
 

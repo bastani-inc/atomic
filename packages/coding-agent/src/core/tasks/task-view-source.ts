@@ -38,6 +38,10 @@ export interface TaskTranscriptView {
 	readonly messages: readonly AgentMessage[];
 	/** Cursor of the page before this one, when earlier messages are retained. */
 	readonly nextCursor?: string;
+	/** Cursor of the page after this one, within a saved transcript's pinned snapshot. */
+	readonly newerCursor?: string;
+	/** True when evicted pages can be reread in either direction. */
+	readonly savedWindow?: true;
 	/** On the latest page: why the task's session is compacting at the time of the read. */
 	readonly compactionReason?: CompactionReason;
 	readonly compactionStartedAt?: number;
@@ -275,6 +279,13 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		taskDetailText(id) {
 			const task = lease(id);
 			if (!task.ok) return {};
+			const source = taskTranscriptSource(task.value);
+			if (source.ok && source.value.session.readHistory && source.value.session.loadHistory) {
+				const { session, inheritedThroughId } = source.value;
+				return savedTaskDetailText(session, inheritedThroughId).catch(() =>
+					detailText(session.getFallbackEntries?.()),
+				);
+			}
 			// A finished task keeps its history in its session store, not in memory (#5186).
 			if (taskTranscriptSourceLoads(task.value))
 				return loadTaskOwnTranscriptEntries(task.value).then((entries) => detailText(entries));
@@ -286,7 +297,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const bound = taskTranscriptSource(task.value);
 			if (!bound.ok) return { ok: false, error: { message: "Transcript unavailable" } };
 			const { session, taskId } = bound.value;
-			if (session.readHistory && !session.subscribe)
+			if (session.readHistory && session.loadHistory && !session.subscribe)
 				return savedTranscriptView(session, taskId, session.readHistory.bind(session), cursor);
 			// A finished task keeps its history in its session store, not in memory (#5186).
 			if (session.loadHistory)
@@ -297,8 +308,6 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 							? transcriptView(session, taskId, history.entries, cursor)
 							: { ok: false, error: { message: history.unavailable } },
 					);
-			if (session.loadFullHistory)
-				return session.loadFullHistory().then(() => transcriptView(session, taskId, session.getEntries(), cursor));
 			return transcriptView(session, taskId, session.getEntries(), cursor);
 		},
 		followTaskTranscript(id) {
@@ -435,6 +444,45 @@ function detailText(entries: ReturnType<TaskTranscriptSource["getEntries"]> | un
 	};
 }
 
+async function savedTaskDetailText(
+	session: TaskTranscriptSource,
+	throughId: string | undefined,
+): Promise<TaskDetailText> {
+	let own = throughId === undefined,
+		prompt: string | undefined,
+		output: string | undefined;
+	for await (const { items } of session.readHistory!()) {
+		for (const item of items) {
+			if ("entry" in item) {
+				const { entry } = item;
+				if (!own) {
+					if (entry.id === throughId) own = true;
+					continue;
+				}
+				if (entry.type !== "message") continue;
+				if (prompt === undefined && entry.message.role === "user") prompt = messageText(entry.message);
+				if (entry.message.role === "assistant") output = messageText(entry.message);
+			} else {
+				if (!session.readHistoryChunks)
+					throw new TypeError("The task history source must implement readHistoryChunks for oversized entries");
+				const { chunkedTaskDetailFields } = await import("../storage/session/chunked-resume-projection.js");
+				const info = await chunkedTaskDetailFields(
+					() => session.readHistoryChunks!(item),
+					own ? undefined : throughId,
+				);
+				if (!own) {
+					if (info.inheritedEnd) own = true;
+					continue;
+				}
+				const ref = `Saved entry ${item.seq} is ${item.bytes} bytes. Open its session history or export the session for the original bytes.`;
+				if (prompt === undefined && info.role === "user") prompt = ref;
+				if (info.role === "assistant") output = ref;
+			}
+		}
+	}
+	return { ...(prompt !== undefined ? { prompt } : {}), ...(output !== undefined ? { output } : {}) };
+}
+
 /** One saved page at a time; skipping a page of invisible bookkeeping doesn't keep that page alive. */
 async function savedTranscriptView(
 	session: TaskTranscriptSource,
@@ -449,7 +497,10 @@ async function savedTranscriptView(
 			.digest("base64url") + ":";
 	if (cursor !== undefined && !cursor.startsWith(scope))
 		return { ok: false, error: { message: "Transcript cursor belongs to another task or session" } };
-	for await (const page of read({ direction: "backward", cursor: cursor?.slice(scope.length) })) {
+	for await (const page of read({
+		...(cursor === undefined ? { direction: "backward" as const } : { cursor: cursor.slice(scope.length) }),
+		adjacent: true,
+	})) {
 		const messages = page.items.flatMap<AgentMessage>((item) => {
 			if (!("entry" in item))
 				return [
@@ -481,10 +532,20 @@ async function savedTranscriptView(
 				return sessionEntryToContextMessages(entry);
 			return [];
 		});
-		if (messages.length || !page.nextCursor)
-			return messages.length || cursor !== undefined
-				? { ok: true, value: { messages, ...(page.nextCursor ? { nextCursor: scope + page.nextCursor } : {}) } }
-				: { ok: false, error: { message: "Transcript unavailable" } };
+		if (messages.length || !page.nextCursor) {
+			if (!messages.length && cursor === undefined)
+				return { ok: false, error: { message: "Transcript unavailable" } };
+			const older = page.adjacent ? page.adjacent.older : page.nextCursor;
+			return {
+				ok: true,
+				value: {
+					messages,
+					...(page.adjacent ? { savedWindow: true as const } : {}),
+					...(older ? { nextCursor: scope + older } : {}),
+					...(page.adjacent?.newer ? { newerCursor: scope + page.adjacent.newer } : {}),
+				},
+			};
+		}
 	}
 	return { ok: false, error: { message: "Transcript unavailable" } };
 }

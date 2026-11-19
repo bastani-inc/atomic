@@ -22,6 +22,7 @@ import {
 	ownerTaskViewSource,
 	type TaskViewSource,
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import type { TaskTranscriptEnvironment } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
@@ -187,6 +188,43 @@ test("PageUp is a plain scroll and earlier history loads near the top under the 
 		assert.equal(reads.length, 3, "nothing is left to load before the first retained message");
 	} finally {
 		await host.dispose();
+	}
+});
+
+test("a saved task chat evicts pages outside the screen and can scroll back to the latest messages (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 512; i++)
+		await session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
+	let chat: ChatSessionHost | undefined;
+	const host = await openTranscript(
+		{
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [],
+			readHistory: session.readHistory.bind(session),
+			loadHistory: async () => {
+				throw new Error("whole transcript loaded");
+			},
+		},
+		{ environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) } },
+	);
+	try {
+		assert.ok(chat);
+		assert.match(host.text(), /M-511/);
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 20 && !host.text().includes("M-000"); i++) await flush();
+		assert.match(host.text(), /M-000/);
+		const held = chat.renderBodyRows(80, 0, chat.bodyRowCount(80)).join("\n");
+		assert.doesNotMatch(
+			held,
+			/M-511/,
+			"the invisible latest page is still held after scrolling through eight saved pages",
+		);
+		host.inspector.handleInput(CTRL_END);
+		for (let i = 0; i < 20 && !host.text().includes("M-511"); i++) await flush();
+		assert.match(host.text(), /M-511/);
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
 	}
 });
 

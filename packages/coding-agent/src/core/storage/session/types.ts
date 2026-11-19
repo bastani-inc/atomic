@@ -80,11 +80,15 @@ export type SessionHistoryItem = SessionStoredEntry | OversizedSessionEntry;
 export interface SessionHistoryPage {
 	readonly items: readonly SessionHistoryItem[];
 	readonly nextCursor?: string;
+	/** Adjacent ranges in the original snapshot, when the read requested them. */
+	readonly adjacent?: { readonly older?: string; readonly newer?: string };
 }
 
 export interface SessionHistoryReadOptions {
 	/** Order in which pages are visited. The entries within each page always remain chronological. */
 	readonly direction?: "forward" | "backward";
+	/** Include cursors to read in either direction without keeping earlier pages or a cursor stack. */
+	readonly adjacent?: boolean;
 	readonly fromSeq?: number;
 	readonly toSeq?: number;
 	readonly cursor?: string;

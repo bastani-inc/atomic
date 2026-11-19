@@ -434,6 +434,18 @@ export class LiveChatEntriesController {
 		this.streamingAssistantIndex = undefined;
 		this.reindexPendingTools();
 	}
+	/** Remove a saved page, preserving the entry identities anchoring the pages that remain. */
+	dropSavedEntries(page: ReadonlySet<LiveChatEntry>): void {
+		const streaming =
+			this.streamingAssistantIndex === undefined ? undefined : this.entries[this.streamingAssistantIndex];
+		const retained = this.entries.filter((entry) => !page.has(entry));
+		this.entries.splice(0, this.entries.length, ...retained);
+		this.streamingAssistantIndex =
+			streaming && retained.includes(streaming) ? retained.indexOf(streaming) : undefined;
+		this.tracker.reset();
+		this.carriedToolBreak = groupChatEntries(this.entries, this.tracker);
+		this.reindexPendingTools();
+	}
 	appendUserText(text: string): void {
 		this.entries.push({ role: "user", kind: "user", text });
 		this.tracker.break();

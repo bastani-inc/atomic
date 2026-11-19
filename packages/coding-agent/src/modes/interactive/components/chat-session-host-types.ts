@@ -133,6 +133,8 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 		| undefined;
 	/** Called when the body shows rows within one viewport of its top, so earlier history can load. */
 	onNearTop?: () => void;
+	/** A saved transcript may also have an evicted page below the one on screen. */
+	onNearBottom?: () => void;
 	getCwd?: () => string;
 	footerData?: ReadonlyFooterDataProvider;
 	/**

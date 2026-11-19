@@ -33,7 +33,7 @@ import {
 	sliceHead,
 	watchHeldPromptAttention,
 } from "@bastani/atomic";
-import { readSessionHistory } from "@bastani/atomic/storage";
+import { readSessionHistory, readSessionHistoryChunks } from "@bastani/atomic/storage";
 import {
 	type Api,
 	type AssistantMessage,
@@ -1111,7 +1111,11 @@ function settledTranscript(
 		getSessionId: () => sessionId,
 		getEntries: () => [],
 		...(store !== undefined && unsaved === undefined
-			? { readHistory: (options) => readSessionHistory(store, sessionId, options) }
+			? {
+					readHistory: (options) => readSessionHistory(store, sessionId, options),
+					readHistoryChunks: (ref, options) => readSessionHistoryChunks(store, ref, options),
+					getFallbackEntries: () => kept,
+				}
 			: {}),
 		loadHistory: async () => {
 			try {
@@ -1186,7 +1190,12 @@ function releasedTranscript(manager: SessionManager, commands: TranscriptCommand
 	return {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
-		...(store !== undefined ? { readHistory: (options) => readSessionHistory(store, sessionId, options) } : {}),
+		...(store !== undefined
+			? {
+					readHistory: (options) => readSessionHistory(store, sessionId, options),
+					readHistoryChunks: (ref, options) => readSessionHistoryChunks(store, ref, options),
+				}
+			: {}),
 		...(store === undefined && sessionFile === undefined
 			? {}
 			: {
