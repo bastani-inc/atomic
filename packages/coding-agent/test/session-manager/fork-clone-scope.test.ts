@@ -27,6 +27,9 @@ test("a whole clone isolates edits to its resident rows without retaining a seco
 		for (let i = 0; i < 128; i++)
 			await parent.appendMessage({ role: "user", content: `${i}:${"x".repeat(256 * 1024)}`, timestamp: i });
 		const id = await parent.appendCustomEntry("fixture", { nested: { value: "original" }, list: [1, 2] });
+		const held = parent.getEntry(id);
+		assert.ok(held?.type === "custom");
+		(held.data as { nested: { value: string } }).nested.value = "edited before clone";
 		await collectGarbage(3);
 		const baseline = process.memoryUsage().heapUsed;
 		const child = await parent.forkTo(dir, dest);
@@ -41,9 +44,13 @@ test("a whole clone isolates edits to its resident rows without retaining a seco
 		assert.ok(own?.type === "custom" && copy?.type === "custom");
 		const original = own.data as { nested: { value: string }; list: number[] },
 			cloned = copy.data as typeof original;
+		assert.equal(cloned.nested.value, "edited before clone");
+		const stored = (await dest.load(child.getSessionId())).entries.at(-1);
+		assert.ok(stored?.type === "custom");
+		assert.deepEqual(stored.data, cloned, "the published row must match the captured SDK view");
 		cloned.nested.value = "child";
 		original.list.push(3);
-		assert.equal(original.nested.value, "original");
+		assert.equal(original.nested.value, "edited before clone");
 		assert.deepEqual(cloned.list, [1, 2]);
 		assert.equal(child.getEntries().length, 129);
 		assert.equal(parent.getEntries().length, 129);

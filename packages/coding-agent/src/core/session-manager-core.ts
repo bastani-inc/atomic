@@ -2583,6 +2583,7 @@ export class SessionManager {
 								sessionId,
 								epoch,
 								through,
+								captured,
 							);
 			if (relation === "different") manager.markForkOrigin(source);
 			const hashes = "read" in data ? [] : sessionBlobHashes(source, data);
