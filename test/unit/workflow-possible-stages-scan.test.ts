@@ -389,36 +389,15 @@ for (const extension of ["ts", "js"]) {
 	}
 }
 
-// Regression #3001: use real package build output, not a hand-written JavaScript proxy.
-test("#3001 packaged builtin JavaScript discovers warm/rest names", async () => {
-	const bundled = join(BUILTIN_DIR, "..", "..", "coding-agent", "dist", "builtin", "workflows", "builtin");
-	for (const [name, patterns] of [
-		["adversarial-verification", ["verifier-*-*-*", "verifier-*-*-*-reask-*"]],
-		["tournament", ["judge-*-*-*-r*"]],
-	] as const) {
-		const entry = join(bundled, `${name}.js`);
-		assert.ok(existsSync(entry), "Run npm run build before the unit suite");
-		const result = await scanPossibleStagesFromSource(entry);
-		for (const pattern of patterns) assert.ok(result.stages.includes(pattern), JSON.stringify(result));
-		assert.equal(
-			result.warnings.some((warning) => /"(?:warmSteps|restSteps)"/.test(warning)),
-			false,
-		);
-	}
-});
-
 // Regression #3001: goal imports scoring prompts, not the warm-first helper from that same module.
-test("#3001 source and bundled goal do not warn on an unused annotated helper or invent its stages", async () => {
-	const bundled = join(BUILTIN_DIR, "..", "..", "coding-agent", "dist", "builtin", "workflows", "builtin");
-	for (const entry of [join(BUILTIN_DIR, "goal.ts"), join(bundled, "goal.js")]) {
-		const result = await scanPossibleStagesFromSource(entry);
-		assert.ok(result.stages.includes("orchestrator-*"));
-		assert.deepEqual(result.warnings, []);
-		assert.equal(
-			result.stages.some((name) => /(?:verifier-|judge-)/.test(name)),
-			false,
-		);
-	}
+test("#3001 goal does not warn on an unused annotated helper or invent its stages", async () => {
+	const result = await scanPossibleStagesFromSource(join(BUILTIN_DIR, "goal.ts"));
+	assert.ok(result.stages.includes("orchestrator-*"));
+	assert.deepEqual(result.warnings, []);
+	assert.equal(
+		result.stages.some((name) => /(?:verifier-|judge-)/.test(name)),
+		false,
+	);
 });
 
 // ---------------------------------------------------------------------------

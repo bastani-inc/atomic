@@ -24,7 +24,7 @@ This page starts RPC mode and walks one client end to end. The rest is split by 
 - [RPC protocol](/rpc/protocol) — every command, event, type, and error contract.
 - [RPC extension UI protocol](/rpc/extension-ui) — drive extension-rendered UI over RPC.
 - [RPC client examples](/rpc/examples) — additional client implementations.
-- [Stored summaries and workflow history](/rpc/protocol#stored-summaries-and-workflow-history) — read session and workflow summaries without starting a model turn.
+- [Stored session summaries](/rpc/protocol#stored-session-summaries) — read session summaries without starting a model turn.
 
 Not sure RPC is the right integration mode? Compare it with the SDK and JSON mode on [Programmatic use](/programmatic).
 
@@ -40,9 +40,9 @@ Common options:
 - `--name <name>` / `-n <name>`: Set the session display name at startup
 - `--no-session`: No resumable session; [released history may use disk](/sessions)
 - `--session-dir <path>`: Custom session storage directory
-- `--storage '<json>'` / `--storage-file <path>`: Select storage for this process's sessions and workflow runs
+- `--storage '<json>'` / `--storage-file <path>`: Select storage for this process's sessions
 
-To give an RPC child its own store without changing the user's settings, start it with `ATOMIC_STORAGE` (or `--storage`) holding the same JSON selection as the shared `storage` setting, for example an adapter selection with `secrets` read from `{ "env": ... }`. The child keeps its sessions and workflow runs there, and `list_sessions` and `list_workflow_runs` report that store. An `atomic` started without the selection keeps using its settings. An invalid selection fails at startup with `StorageConfigError` naming the variable or flag. See [Selecting storage per process](/storage#selecting-storage-per-process).
+To give an RPC child its own store without changing the user's settings, start it with `ATOMIC_STORAGE` (or `--storage`) holding the same JSON selection as the shared `storage` setting, for example an adapter selection with `secrets` read from `{ "env": ... }`. The child keeps its sessions there, and `list_sessions` reports that store. An `atomic` started without the selection keeps using its settings. An invalid selection fails at startup with `StorageConfigError` naming the variable or flag. See [Selecting storage per process](/storage#selecting-storage-per-process).
 
 ## Protocol Overview
 

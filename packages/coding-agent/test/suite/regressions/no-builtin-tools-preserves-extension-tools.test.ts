@@ -63,7 +63,7 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 			cwd: tempDir,
 			agentDir,
 			// #3105: isolate coding defaults from optional shipped extension tools.
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, "web-access": false },
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager,
@@ -135,7 +135,7 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 			noTools: "builtin",
 		});
 
-		// #3105: service composition includes all five shipped packages.
+		// #3105: suppressing the core tools does not remove tools from the shipped extensions.
 		expect(session.getActiveToolNames().sort()).toEqual([
 			"code_search",
 			"fetch_content",
@@ -143,7 +143,6 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 			"intercom",
 			"subagent",
 			"web_search",
-			"workflow",
 		]);
 		// Native MCP contributes a manager command; tools appear only for configured servers.
 		expect(session.extensionRunner?.getCommand("mcp")).toBeDefined();

@@ -36,7 +36,7 @@ class StageDefaultResourceLoader extends DefaultResourceLoader implements PiSdkR
 	}
 }
 
-const STAGE_BUILTINS = { workflows: false, subagents: false, "web-access": false, intercom: false } as const;
+const STAGE_BUILTINS = { subagents: false, "web-access": false, intercom: false } as const;
 
 let root = "";
 

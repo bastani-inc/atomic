@@ -312,7 +312,7 @@ test("entry_appended is emitted and agent_settled follows agent_end", async () =
 			agentDir: dir,
 			settingsManager: settings,
 			resourceLoader: loader,
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: true },
+			builtins: { subagents: false, mcp: false, "web-access": false, intercom: true },
 			modelRuntime,
 			sessionManager: SessionManager.inMemory(dir),
 			model,

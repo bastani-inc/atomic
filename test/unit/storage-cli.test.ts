@@ -90,6 +90,23 @@ function storage(args: string[]) {
 	return run((log, error) => runStorageCommand(args, { cwd: project, agentDir, log, error }));
 }
 
+test("storage migrate initializes sessions and Intercom without the workflow runtime", async () => {
+	const path = join(root, "shared.sqlite");
+	writeSettings({
+		storage: { adapter: resolve(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"), options: { path } },
+	});
+	const result = await storage(["migrate"]);
+	assert.equal(result.code, 0, result.err);
+	const database = await openNodeSqliteDatabase(path);
+	try {
+		const tables = (await database.all("SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) => row.name);
+		assert.ok(tables.includes("session_sessions"));
+		assert.ok(tables.includes("intercom_known_sessions"));
+	} finally {
+		await database.close();
+	}
+});
+
 describe("atomic storage and atomic intercom arguments", () => {
 	test("parse the storage subcommands and their options (#3857)", () => {
 		assert.deepEqual(parseStorageCommand([]), { kind: "help" });

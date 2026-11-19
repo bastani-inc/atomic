@@ -134,7 +134,7 @@ export const child = workflow({
 			modelRuntime,
 			model: modelRuntime.getModel("pool-fixture", "fixture")!,
 			settingsManager: SettingsManager.inMemory({ sessionSummary: { enabled: false }, retry: { enabled: false } }),
-			builtins: { workflows: false, subagents: true, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: true, mcp: false, intercom: false, "web-access": false },
 		} as never);
 		return { text: await stage.complete("Start the build and the helper in the background") };
 	},
