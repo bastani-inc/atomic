@@ -53,7 +53,7 @@ if (mode === "borrowed") {
 		await setImmediate();
 		Bun.gc(true);
 	}
-	assert.equal(typeof borrowed.refresh, "function");
+	assert.equal(borrowed.refresh?.name, "refreshModels");
 	console.log(JSON.stringify({ runtime: !!borrowed.owner.deref(), credentials: !!borrowed.credentials.deref() }));
 } else if (mode === "account-fifo") {
 	const { createAgentSession } = await import("../../src/core/sdk.js");

@@ -98,6 +98,59 @@ it("selects a missing account model for the requesting SDK session, not the shar
 	await assert.rejects(readFile(join(cwd, "models-store.json")), { code: "ENOENT" });
 });
 
+const receivers = {
+	plain: (rt) => rt,
+	transparent: (rt) => new Proxy(rt, {}),
+	logging: (rt) => new Proxy(rt, { get: (target, key, receiver) => Reflect.get(target, key, receiver) }),
+	bound: (rt) =>
+		new Proxy(rt, {
+			get(target, key) {
+				const value = Reflect.get(target, key);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		}),
+	derived: (rt) => Object.create(rt) as ModelRuntime,
+} satisfies Record<string, (rt: ModelRuntime) => ModelRuntime>;
+
+it.each(Object.entries(receivers))("refreshes and prompts with a %s runtime receiver (#5685)", async (_name, wrap) => {
+	const known = "gemini-3.8-flash";
+	const requests: string[] = [];
+	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+		const request = new Request(input, init);
+		requests.push(`${request.method} ${request.url}`);
+		assert.equal((await request.json()).model, known);
+		return chatResponse();
+	});
+	const modelRuntime = wrap(await runtime());
+	assert.deepEqual(await modelRuntime.refresh({ allowNetwork: false }), { aborted: false, errors: new Map() });
+	const { session } = await start(modelRuntime, undefined, {
+		settingsManager: SettingsManager.inMemory({ defaultProvider: provider, defaultModel: known }),
+	});
+	try {
+		assert.deepEqual(requests, []);
+		await session.prompt("hello");
+		assert.deepEqual(requests, ["POST http://127.0.0.1:9/account/chat/completions"]);
+		const reply = session.messages.findLast((message) => message.role === "assistant");
+		assert.equal(reply?.content[0]?.type === "text" && reply.content[0].text, "fixture-ok");
+	} finally {
+		await session.dispose();
+	}
+});
+
+it("finishes the background cache refresh when a proxied runtime unregisters a provider (#5685)", async () => {
+	const read = vi.fn(async () => undefined);
+	const real = await ModelRuntime.create({
+		credentials: AuthStorage.inMemory(),
+		modelsPath: null,
+		refreshOnCreate: false,
+		modelsStore: { read, write: async () => {}, delete: async () => {} },
+	});
+	const proxy = new Proxy(real, {});
+	proxy.unregisterProvider("removed-provider");
+	await proxy.whenRegistrationRefreshesSettled();
+	assert.ok(read.mock.calls.length > 0);
+});
+
 it("uses its own cache observation through an async runtime decorator without reading its diagnostics (#5685)", async () => {
 	const modelRuntime = await runtime();
 	const refresh = modelRuntime.refresh.bind(modelRuntime);
@@ -387,6 +440,46 @@ it("a superseded session restore cannot claim a miss observed before it started 
 		release.resolve();
 		await newer;
 		await (await creating).session.dispose();
+	}
+});
+
+it("reads an inherited model option once, after restoring the runtime (#5685)", async () => {
+	const modelRuntime = await runtime();
+	const selected = modelRuntime.getModel(provider, "gemini-3.8-flash");
+	assert.ok(selected);
+	const marker = Symbol("session options");
+	const options = {
+		[marker]: true,
+		modelRuntime,
+		agentDir: cwd,
+		cwd,
+		builtins,
+		sessionManager: SessionManager.inMemory(cwd),
+	};
+	const refresh = vi.spyOn(modelRuntime, "refresh");
+	const reads: number[] = [];
+	// The SDK snapshots enumerable own options. An inherited default stays a getter on that snapshot.
+	Object.defineProperty(Object.prototype, "model", {
+		configurable: true,
+		get(this: { [marker]?: boolean }) {
+			if (!this[marker]) return undefined;
+			reads.push(refresh.mock.calls.length);
+			return selected;
+		},
+		set(value) {
+			Object.defineProperty(this, "model", { value, writable: true, enumerable: true, configurable: true });
+		},
+	});
+	try {
+		const { session } = await createAgentSession(options);
+		try {
+			assert.equal(session.model?.id, selected.id);
+			assert.deepEqual(reads, [1]);
+		} finally {
+			await session.dispose();
+		}
+	} finally {
+		Reflect.deleteProperty(Object.prototype, "model");
 	}
 });
 

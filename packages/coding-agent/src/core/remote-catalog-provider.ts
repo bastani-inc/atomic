@@ -398,7 +398,7 @@ export function withDiscoveredModels(provider: Provider, discover: DiscoverModel
 		getModels: () => withDiscovered(provider.getModels()).filter((model) => isModelType(model, "chat")),
 		getAllModels: () => withDiscovered(catalogModels()),
 		refreshModelsAuth: "credential",
-		refreshModels: async function restoreDiscovered(context) {
+		refreshModels: async function refreshModels(context) {
 			const stored = context.stored;
 			const saved = (stored?.models ?? []).filter(
 				(model) => model.provider === provider.id && isDiscoveredModel(model),
@@ -411,7 +411,7 @@ export function withDiscoveredModels(provider: Provider, discover: DiscoverModel
 				!(await context.publish({
 					update: () => {
 						discovered = saved;
-						const observation = observations?.get(restoreDiscovered);
+						const observation = observations?.get(refreshModels);
 						if (observation) {
 							observation.missing = !context.allowNetwork && stored === undefined;
 							if (observation.missing && observation.publishing) {

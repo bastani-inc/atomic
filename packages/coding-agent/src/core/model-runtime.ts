@@ -1377,7 +1377,7 @@ export class ModelRuntime implements Models {
 		} else this.rebuildProviders();
 		const refreshOptions = { ...options, allowNetwork: options.allowNetwork ?? this.isNetworkRefreshEnabled() };
 		if (receipt) this.#accountCatalog ??= observeAccountCatalog(this.defaultBuiltins.get("github-copilot"));
-		const observation = this.#accountCatalog;
+		const observation = #accountCatalog in this ? this.#accountCatalog : undefined;
 		// A later Copilot pass supersedes this pass's publisher; unrelated scoped refreshes do not.
 		if (
 			observation &&

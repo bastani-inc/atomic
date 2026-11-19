@@ -96,6 +96,13 @@ it("prints using the missing model named by saved settings (#5685)", async () =>
 	assert.deepEqual(wires, ["GET /account/models", "POST /account/chat/completions"]);
 }, 90_000);
 
+it("prints cache advice and exits without an account lookup when there is no input (#5685)", async () => {
+	const out = await print(["--no-session"]);
+	assert.equal(out.code, 1);
+	assert.match(out.stderr, /atomic update --models/);
+	assert.deepEqual(wires, []);
+}, 90_000);
+
 it("a fatal print startup diagnostic does not request the account list (#5685)", async () => {
 	const extension = join(cwd, "broken.ts");
 	await writeFile(extension, 'export default function broken() { throw new Error("fixture failed to load"); }');

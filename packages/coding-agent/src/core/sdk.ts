@@ -365,9 +365,14 @@ async function constructAgentSession(
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
+	// createScopedSession already copied own options. Don't invoke an inherited model getter before selection.
+	const ownsModel = Object.hasOwn(options, "model");
+	let model = ownsModel ? options.model : undefined;
 	const restore = { allowNetwork: false };
 	const observing =
-		recoverMissingModel && !options.model && ModelRuntime[sessionAccountCheckpoint](modelRuntime)
+		recoverMissingModel &&
+		(ownsModel ? !model : !("model" in options)) &&
+		ModelRuntime[sessionAccountCheckpoint](modelRuntime)
 			? sessionLifecycleCreation.getStore()
 			: undefined;
 	let missingCatalog = false;
@@ -461,7 +466,7 @@ async function constructAgentSession(
 	const hasExistingSession = existingMessages.length > 0;
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
 
-	let model = options.model;
+	if (!ownsModel) model = options.model;
 	let missingAccountModel: string | undefined;
 	let modelFallbackMessage: string | undefined;
 	let modelFallbackReason: import("./model-resolver-types.ts").ModelFallbackReason | undefined;
