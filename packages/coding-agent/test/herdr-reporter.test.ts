@@ -4,9 +4,40 @@ import { createEventBus } from "../src/core/event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.js";
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
+import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import { arg, fakeHerdr } from "./helpers/herdr.js";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
+
+test("a fresh SDK session reports its idle identity without a workflow publisher", async () => {
+	const fake = await fakeHerdr();
+	try {
+		const extensionsResult = await createTestExtensionsResult(
+			[createHerdrExtension({ env: fake.env, enabled: () => true })],
+			fake.dir,
+		);
+		const { session } = await createAgentSession({
+			cwd: fake.dir,
+			agentDir: fake.dir,
+			sessionManager: SessionManager.inMemory(fake.dir),
+			settingsManager: SettingsManager.inMemory(),
+			resourceLoader: createTestResourceLoader({ extensionsResult }),
+			extensionBindings: { mode: "tui", uiContext: { ...noOpUIContext } },
+		});
+		try {
+			const [call] = await fake.waitFor(1);
+			assert.equal(call.args[1], "report-agent");
+			assert.equal(arg(call.args, "--state"), "idle");
+			assert.equal(arg(call.args, "--agent-session-id"), session.sessionId);
+		} finally {
+			await session.dispose();
+		}
+	} finally {
+		await fake.dispose();
+	}
+});
 
 // #2891: activation must not retain a previous session's approval wait.
 test("reactivating a reporter resets prompt state", async () => {
@@ -140,8 +171,9 @@ test("extension reload and engine replacement fence late predecessor callbacks a
 			runner.setUIContext({ ...noOpUIContext }, "tui");
 			runners.push(runner);
 			await runner.emit({ type: "session_start", reason: generation ? "reload" : "startup" });
+			await fake.waitFor(2 * generation + 1);
 			await runner.emit({ type: "agent_start" });
-			await fake.waitFor(2 * (generation + 1));
+			await fake.waitFor(2 * generation + 2);
 			const previous = runners[generation - 1];
 			if (previous) {
 				await previous.emit({ type: "agent_start" });
@@ -162,6 +194,10 @@ test("extension reload and engine replacement fence late predecessor callbacks a
 				"report-agent",
 				"release-agent",
 			],
+		);
+		assert.deepEqual(
+			calls.slice(0, -1).map((call) => arg(call.args, "--state")),
+			["idle", "working", "idle", "working", "idle", "working"],
 		);
 		const seq = calls.map((call) => Number(arg(call.args, "--seq")));
 		// Every admitted command, release included, takes a strictly increasing sequence across reload and replacement.

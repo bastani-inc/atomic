@@ -78,19 +78,19 @@ export default function workflowCommandExtension(api: ExtensionAPI): void {
 		},
 	});
 
-	api.registerCommand("workflows", {
-		description: "Browse running and completed workflows",
+	api.registerCommand("fixture-actions", {
+		description: "List fixture actions",
 		handler: async (args, ctx) => {
-			recordInvocation("workflows", args);
-			ctx.ui.notify?.(`workflows handled in child: ${args}`, "info");
+			recordInvocation("fixture-actions", args);
+			ctx.ui.notify?.(`fixture-actions handled in child: ${args}`, "info");
 		},
 	});
 
-	api.registerCommand("workflow-authoring", {
-		description: "Load the reference for writing workflow definitions",
+	api.registerCommand("fixture-authoring", {
+		description: "Show the fixture reference",
 		handler: async (args, ctx) => {
-			recordInvocation("workflow-authoring", args);
-			ctx.ui.notify?.(`workflow-authoring handled in child: ${args}`, "info");
+			recordInvocation("fixture-authoring", args);
+			ctx.ui.notify?.(`fixture-authoring handled in child: ${args}`, "info");
 		},
 	});
 }

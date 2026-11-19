@@ -287,6 +287,7 @@ export type InteractiveEngineCommand =
 			requestId: number;
 			width: number;
 			message: JsonObject;
+			reopenedStopName?: string;
 			expanded: boolean;
 			compareExpansion?: true;
 			outputPad: number;
@@ -915,6 +916,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			requestId: value.requestId,
 			width: value.width,
 			message: value.message,
+			...(typeof value.reopenedStopName === "string" ? { reopenedStopName: value.reopenedStopName } : {}),
 			...(value.compareExpansion === true ? { compareExpansion: true } : {}),
 			expanded: value.expanded,
 			outputPad: value.outputPad,
