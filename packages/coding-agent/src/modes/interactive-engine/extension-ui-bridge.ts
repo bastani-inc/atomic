@@ -163,10 +163,13 @@ export function withHostProjectTrustPrompt<T>(
 		: runtime.session.extensionRunner.withProjectTrustPrompt(kind, title, run);
 }
 
-export async function waitForInteractiveEngineBound(runtime: AgentSessionRuntime): Promise<void> {
+export async function waitForInteractiveEngineBound(
+	runtime: AgentSessionRuntime,
+	preview?: (lines: string[]) => void,
+): Promise<void> {
 	if (!(runtime instanceof IsolatedInteractiveRuntime)) return;
 	await runtime.waitUntilBound();
-	await runtime.initializeFromEngine();
+	await runtime.initializeFromEngine(undefined, preview);
 }
 
 export async function waitForInteractiveEngineProjectTrust(runtime: AgentSessionRuntime): Promise<void> {

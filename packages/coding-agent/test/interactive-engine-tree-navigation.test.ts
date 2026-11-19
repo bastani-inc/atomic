@@ -166,6 +166,52 @@ test("an unsaved isolated host keeps its private archive and can append locally 
 	assert.equal(host.getLeafEntry()?.type, "message");
 });
 
+test("an unsaved host refresh reads only new engine rows and keeps an earlier host view independent (#5554)", async () => {
+	const manager = SessionManager.inMemory("/project");
+	for (let i = 0; i < 80; i++) await manager.appendMessage({ role: "user", content: `archived ${i}`, timestamp: i });
+	await manager.appendCompaction("clear", null, 100, { strategy: "verbatim-lines" });
+	const initial = await manager.appendMessage({ role: "user", content: "current", timestamp: 81 });
+	pair = await createEngineHostPair({ sessionManager: manager });
+	await pair.runtime.initializeFromEngine();
+	const earlier = pair.runtime.session.sessionManager;
+	assert.equal(earlier.getLeafId(), initial);
+	const local = await earlier.appendMessage({ role: "user", content: "host local", timestamp: 82 });
+	const next = await manager.appendMessage({ role: "user", content: "new engine turn", timestamp: 83 });
+	const history = vi.spyOn(manager, "readHistory");
+	await pair.runtime.initializeFromEngine();
+	const current = pair.runtime.session.sessionManager;
+	assert.equal(current.getLeafId(), next);
+	assert.equal(await current.findEntrySeq(local), undefined);
+	assert.equal(await earlier.findEntrySeq(next), undefined);
+	for (const [options] of history.mock.calls) {
+		const from = options?.fromSeq ?? Number(options?.cursor?.split(".")[1]);
+		assert.ok(from > 82, `read an already mirrored row at ${from}`);
+	}
+});
+
+test("a first private attachment exposes the current transcript even while its archive transfer is stopped (#5554)", async () => {
+	const manager = SessionManager.inMemory("/project");
+	await manager.appendMessage({ role: "user", content: "retired".repeat(200_000), timestamp: 1 });
+	await manager.appendCompaction("clear", null, 100, { strategy: "verbatim-lines" });
+	await manager.appendMessage({ role: "user", content: "current visible request", timestamp: 2 });
+	pair = await createEngineHostPair({ sessionManager: manager });
+	pair.failCommand("get_history_chunk", "transfer stopped");
+	let preview: string[] = [];
+	await assert.rejects(
+		() =>
+			pair!.runtime.initializeFromEngine(undefined, (lines: string[]) => {
+				preview = lines;
+			}),
+		/transfer stopped/,
+	);
+	assert.deepEqual(preview, ["current visible request"]);
+	assert.equal(
+		pair.runtime.session.sessionManager.getEntryCount(),
+		0,
+		"a failed transfer must not publish the new manager",
+	);
+});
+
 test("/tree with No summary shows only the selected branch in a saved session (#3325)", async () => {
 	const { current, engineManager } = await createSavedPair();
 	pair = current;

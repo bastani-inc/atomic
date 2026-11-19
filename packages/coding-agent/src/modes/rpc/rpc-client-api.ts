@@ -30,6 +30,7 @@ import type {
 	RpcHistoryPage,
 	RpcLoginProviderResult,
 	RpcLogoutProviderResult,
+	RpcMirrorPosition,
 	RpcModelCatalog,
 	RpcModelRefreshResult,
 	RpcPersistedModelDefaults,
@@ -281,16 +282,29 @@ export abstract class RpcClientApi {
 		).messages;
 	}
 	async getEntries(since?: string): Promise<{ entries: SessionEntry[]; leafId: string | null }>;
-	async getEntries(options: { readonly windowOnly: true }): Promise<RpcContextWindow>;
-	async getEntries(options?: string | { readonly windowOnly: true }): Promise<RpcContextWindow> {
+	async getEntries(options: {
+		readonly windowOnly: true;
+		readonly mirror?: RpcMirrorPosition;
+	}): Promise<RpcContextWindow>;
+	async getEntries(
+		options?: string | { readonly windowOnly: true; readonly mirror?: RpcMirrorPosition },
+	): Promise<RpcContextWindow> {
 		return this.data(
 			await this.request(
-				typeof options === "object" ? { type: "get_context_window" } : { type: "get_entries", since: options },
+				typeof options === "object"
+					? { type: "get_context_window", ...(options.mirror && { mirror: options.mirror }) }
+					: { type: "get_entries", since: options },
 			),
 		);
 	}
 	async getHistoryPage(
-		options: { readonly cursor?: string; readonly fromSeq?: number; readonly toSeq?: number } = {},
+		options: {
+			readonly cursor?: string;
+			readonly fromSeq?: number;
+			readonly toSeq?: number;
+			readonly pageEntries?: number;
+			readonly privateCut?: import("../../core/storage/session/memory-session-store.js").PrivateMirrorCut;
+		} = {},
 	): Promise<RpcHistoryPage> {
 		return this.data(await this.request({ type: "get_history_page", ...options }));
 	}

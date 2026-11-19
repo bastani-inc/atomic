@@ -99,12 +99,31 @@ export type RpcSessionInfo = Omit<SessionInfo, "created" | "modified"> & {
 	modified: string;
 };
 
-export type RpcHistoryPage = SessionHistoryPage;
+export type RpcHistoryPage = SessionHistoryPage & {
+	privateBytes?: import("../../core/storage/session/memory-session-store.js").PrivateMirrorPage;
+};
+export interface RpcMirrorPosition {
+	epoch?: string;
+	lastSeq: number;
+	preview?: boolean;
+}
 export interface RpcContextWindow {
 	entries: SessionEntry[];
 	leafId: string | null;
 	/** Only for an unsaved session with archived rows: the generation-pinned cursor and positions of current rows. */
-	privateArchive?: { sessionId: string; cursor: string; seqs: number[] };
+	privateArchive?: {
+		sessionId: string;
+		cursor: string;
+		seqs: number[];
+		epoch?: string;
+		lastSeq?: number;
+		fromSeq?: number;
+		summary?: import("../../core/storage/session/session-summary.js").SessionSummaryState;
+		firstPage?: RpcHistoryPage;
+		preview?: string[];
+		overridesOnly?: boolean;
+		completeWindow?: boolean;
+	};
 }
 export interface RpcHistoryChunk {
 	readonly data: string;
@@ -212,8 +231,16 @@ export type RpcCommand =
 	| { id?: string; type: "clone" }
 	| { id?: string; type: "get_fork_messages" }
 	| { id?: string; type: "get_entries"; since?: string }
-	| { id?: string; type: "get_history_page"; cursor?: string; fromSeq?: number; toSeq?: number }
-	| { id?: string; type: "get_context_window" }
+	| {
+			id?: string;
+			type: "get_history_page";
+			cursor?: string;
+			fromSeq?: number;
+			toSeq?: number;
+			pageEntries?: number;
+			privateCut?: import("../../core/storage/session/memory-session-store.js").PrivateMirrorCut;
+	  }
+	| { id?: string; type: "get_context_window"; mirror?: RpcMirrorPosition }
 	| { id?: string; type: "get_history_chunk"; reference: OversizedSessionEntry; offset: number }
 	| { id?: string; type: "get_tree" }
 	| { id?: string; type: "get_last_assistant_text" }
