@@ -34,6 +34,8 @@ import {
 	defaultSystemPromptMode,
 	discoverAgentsAll,
 	frontmatterNameForConfig,
+	type PackageAgentOrigin,
+	packageAgentInScope,
 } from "./agents.js";
 
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
@@ -54,7 +56,9 @@ function isMutableDefinition<T extends { source: AgentSource }>(value: T): value
 	return value.source === "user" || value.source === "project";
 }
 
-async function resolveTarget<T extends { source: AgentSource; filePath: string; name: string }>(
+async function resolveTarget<
+	T extends { source: AgentSource; filePath: string; name: string; packageOrigin?: PackageAgentOrigin },
+>(
 	name: string,
 	matches: T[],
 	cwd: string,
@@ -63,6 +67,12 @@ async function resolveTarget<T extends { source: AgentSource; filePath: string; 
 ): Promise<MutableDefinition<T> | SubagentToolResult> {
 	const mutable = matches.filter(isMutableDefinition);
 	if (mutable.length === 0) {
+		const packaged = matches.find((match) => match.packageOrigin !== undefined);
+		if (packaged?.packageOrigin)
+			return result(
+				`Agent '${packaged.name}' is provided by package ${packaged.packageOrigin.source} and cannot be modified. Create an agent with the same full name in user or project scope to override it.`,
+				true,
+			);
 		if (matches.length > 0)
 			return result(
 				`Agent '${name}' is builtin and cannot be modified. Create a same-named agent in user or project scope to override it.`,
@@ -105,6 +115,17 @@ async function renamePath(
 	return { filePath };
 }
 
+const PACKAGE_SCOPE_LABELS: Record<PackageAgentOrigin["scope"], string> = {
+	user: "global",
+	project: "project",
+	temporary: "temporary",
+};
+
+/** The list label of an agent's source: its scope, or the package that ships it. */
+function sourceLabel(agent: AgentConfig): string {
+	return agent.packageOrigin ? `package ${agent.packageOrigin.source}` : agent.source;
+}
+
 function formatAgentDetail(agent: AgentConfig): string {
 	const tools = [...(agent.tools ?? []), ...(agent.mcpDirectTools ?? []).map((t) => `mcp:${t}`)];
 	const lines: string[] = [
@@ -115,6 +136,9 @@ function formatAgentDetail(agent: AgentConfig): string {
 	if (agent.packageName) {
 		lines.push(`Local name: ${frontmatterNameForConfig(agent)}`);
 		lines.push(`Package: ${agent.packageName}`);
+	}
+	if (agent.packageOrigin) {
+		lines.push(`Package source: ${agent.packageOrigin.source} (${PACKAGE_SCOPE_LABELS[agent.packageOrigin.scope]})`);
 	}
 	if (agent.model) lines.push(`Model: ${agent.model}`);
 	if (agent.fallbackModels?.length) lines.push(`Fallback models: ${agent.fallbackModels.join(", ")}`);
@@ -140,6 +164,7 @@ function definitionSummary(agent: AgentConfig) {
 		name: agent.name,
 		description: agent.description,
 		scope: agent.source,
+		...(agent.packageOrigin ? { package: agent.packageOrigin.source } : {}),
 		executable: !agent.disabled,
 		...(agent.model ? { model: agent.model } : {}),
 		...(agent.defaultContext ? { defaultContext: agent.defaultContext } : {}),
@@ -154,14 +179,21 @@ export async function handleList(
 	const scope = normalizeListScope(params.agentScope) ?? "both";
 	const d = await discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
 	const agents = allAgents(d)
-		.filter((agent) => !agent.disabled && (scope === "both" || agent.source === "builtin" || agent.source === scope))
+		.filter(
+			(agent) =>
+				!agent.disabled &&
+				(scope === "both" ||
+					agent.source === "builtin" ||
+					agent.source === scope ||
+					(agent.source === "package" && packageAgentInScope(agent, scope))),
+		)
 		.sort((a, b) => a.name.localeCompare(b.name));
 	const lines = [
 		"Executable agents:",
 		...(agents.length
 			? agents.map(
 					(agent) =>
-						`- ${agent.name} (${agent.source}${agent.defaultContext ? `, context: ${agent.defaultContext}` : ""}): ${agent.description}`,
+						`- ${agent.name} (${sourceLabel(agent)}${agent.defaultContext ? `, context: ${agent.defaultContext}` : ""}): ${agent.description}`,
 				)
 			: ["- (none)"]),
 	];
@@ -239,6 +271,9 @@ export async function handleCreate(params: ManagementParams, ctx: ManagementCont
 	const warnings: string[] = [];
 	if (d.builtin.some((a) => a.name === runtimeName))
 		warnings.push(`Note: this shadows the builtin agent '${runtimeName}'.`);
+	const packaged = d.package.find((a) => a.name === runtimeName);
+	if (packaged?.packageOrigin)
+		warnings.push(`Note: this shadows the package agent '${runtimeName}' from ${packaged.packageOrigin.source}.`);
 	const agent: AgentConfig = {
 		name: runtimeName,
 		localName: name,

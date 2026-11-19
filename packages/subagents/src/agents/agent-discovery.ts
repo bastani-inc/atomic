@@ -1,8 +1,13 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { getEnvValue } from "@bastani/atomic";
+import { getEnvValue, type PackageAgentFile } from "@bastani/atomic";
 import { pathExists } from "../shared/path-exists.js";
-import { type AgentLoadDiagnostic, loadAgentsFromDir, loadAgentsFromDirWithDiagnostics } from "./agent-loaders.js";
+import {
+	type AgentLoadDiagnostic,
+	loadAgentsFromDir,
+	loadAgentsFromDirWithDiagnostics,
+	loadPackageAgentsWithDiagnostics,
+} from "./agent-loaders.js";
 import { applyBuiltinOverrides, readMergedSubagentSettings } from "./agent-overrides.js";
 import {
 	BUILTIN_AGENTS_DIR,
@@ -27,14 +32,46 @@ export interface AgentDiscoveryOptions {
 	 * project settings' agent overrides are not read.
 	 */
 	readonly projectTrusted: boolean;
+	/**
+	 * The agent files installed packages ship, in the host's discovery order. Those of project-installed packages are
+	 * left out when the project is not trusted.
+	 */
+	readonly packageAgents?: readonly PackageAgentFile[];
 }
 
 /**
  * The discovery options for a host context: its project trust decision, or
- * trusted for a host without one.
+ * trusted for a host without one, and the agent files its installed packages ship.
  */
-export function contextAgentDiscoveryOptions(ctx: { isProjectTrusted?: () => boolean }): AgentDiscoveryOptions {
-	return { projectTrusted: ctx.isProjectTrusted?.() ?? true };
+export function contextAgentDiscoveryOptions(ctx: {
+	isProjectTrusted?: () => boolean;
+	getPackageAgents?: () => readonly PackageAgentFile[];
+}): AgentDiscoveryOptions {
+	const packageAgents = ctx.getPackageAgents?.() ?? [];
+	return {
+		projectTrusted: ctx.isProjectTrusted?.() ?? true,
+		...(packageAgents.length > 0 ? { packageAgents } : {}),
+	};
+}
+
+/** Package agent files the discovery may offer: none of a project-installed package in an untrusted project. */
+function trustedPackageAgentFiles(options: AgentDiscoveryOptions): readonly PackageAgentFile[] {
+	const files = options.packageAgents ?? [];
+	return options.projectTrusted ? files : files.filter((file) => file.scope !== "project");
+}
+
+/** Whether a package agent belongs to an agent scope: `-e` packages belong to every scope. */
+export function packageAgentInScope(agent: Pick<AgentConfig, "packageOrigin">, scope: AgentScope): boolean {
+	const installed = agent.packageOrigin?.scope;
+	return scope === "both" || installed === "temporary" || installed === scope;
+}
+
+async function loadPackageAgents(options: AgentDiscoveryOptions): Promise<{
+	agents: AgentConfig[];
+	diagnostics: AgentLoadDiagnostic[];
+}> {
+	const files = trustedPackageAgentFiles(options);
+	return files.length > 0 ? loadPackageAgentsWithDiagnostics(files) : { agents: [], diagnostics: [] };
 }
 
 /** Nothing of the project is read when it is not trusted. */
@@ -90,9 +127,14 @@ export async function discoverAgents(
 	const userAgents = [...userAgentsOld, ...userAgentsNew];
 
 	const projectAgents = scope === "user" ? [] : await loadAgentsFromDirs(projectAgentDirs, "project");
-	const agents = mergeAgentsForScope(scope, userAgents, projectAgents, builtinAgents).filter(
-		(agent) => agent.disabled !== true,
-	);
+	const merged = mergeAgentsForScope(scope, userAgents, projectAgents, builtinAgents);
+	const agents = merged.filter((agent) => agent.disabled !== true);
+	// Package agents come last and never replace a definition of the same full name: user and project agents win.
+	const packageAgents = (await loadPackageAgents(options)).agents.filter((agent) => packageAgentInScope(agent, scope));
+	if (packageAgents.length > 0) {
+		const names = new Set(merged.map((agent) => agent.name));
+		for (const agent of packageAgents) if (!names.has(agent.name)) agents.push(agent);
+	}
 
 	return { agents, projectAgentsDir };
 }
@@ -104,6 +146,8 @@ export async function discoverAgentsAll(
 	builtin: AgentConfig[];
 	user: AgentConfig[];
 	project: AgentConfig[];
+	/** Agents installed packages ship; shown and run, never modified. */
+	package: AgentConfig[];
 	userDir: string;
 	projectDir: string | null;
 	userSettingsPath: string;
@@ -147,6 +191,8 @@ export async function discoverAgentsAll(
 		}
 	}
 	const project = Array.from(projectMap.values());
+	const packageLoad = await loadPackageAgents(options);
+	diagnostics.push(...packageLoad.diagnostics);
 
 	const legacyUserAgentDir = userDirOld[0]!;
 	// ATOMIC_CODING_AGENT_DIR is already applied by getUserAgentDirs(); prefer that resolved path over ~/.agents.
@@ -160,6 +206,7 @@ export async function discoverAgentsAll(
 		builtin,
 		user,
 		project,
+		package: packageLoad.agents,
 		userDir,
 		projectDir,
 		userSettingsPath,

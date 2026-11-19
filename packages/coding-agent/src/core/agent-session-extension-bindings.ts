@@ -779,6 +779,7 @@ export function _bindExtensionCore(
 			getDecisionModel: () => this.settingsManager.getDecisionModel(),
 			getHttpIdleTimeoutMs: () => this.settingsManager.getHttpIdleTimeoutMs(),
 			getSkillCatalog: () => getSkillCatalog(publication?.resourceLoader ?? this._resourceLoader),
+			getPackageAgents: () => (publication?.resourceLoader ?? this._resourceLoader).getPackageAgents?.() ?? [],
 			getSystemPromptOptions: () => this._baseSystemPromptOptions,
 		},
 		{

@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { stripBom } from "../utils/text.ts";
 import { createExtensionRuntime, type PackageMcpServerSource } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
 import type { McpServerContribution } from "./mcp-servers.ts";
@@ -11,11 +14,23 @@ import type {
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { resolveResourcePath } from "./resource-loader-paths.ts";
-import type { DefaultResourceLoaderInheritanceSnapshot, ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
+import type {
+	DefaultResourceLoaderInheritanceSnapshot,
+	PackageAgentFile,
+	ResourceLoaderReloadOptions,
+} from "./resource-loader-types.ts";
 import { createSourceInfo } from "./source-info.ts";
 
 export function emptyResolvedPaths(): PackageDiscovery {
-	return { extensions: [], skills: [], prompts: [], themes: [], legacyWorkflowFiles: [], mcpServers: [] };
+	return {
+		extensions: [],
+		skills: [],
+		prompts: [],
+		themes: [],
+		legacyWorkflowFiles: [],
+		agents: [],
+		mcpServers: [],
+	};
 }
 
 export async function resolvePackageResourcePaths(
@@ -65,6 +80,7 @@ function markBundledResources(paths: PackageDiscovery): PackageDiscovery {
 		prompts: mark(paths.prompts),
 		themes: mark(paths.themes),
 		legacyWorkflowFiles: mark(paths.legacyWorkflowFiles),
+		agents: mark(paths.agents),
 		mcpServers: mark(paths.mcpServers),
 	};
 }
@@ -80,8 +96,8 @@ export async function resolveTrustedBorrowedProjectLocalSources(
 		includeProjectLocalResources: true,
 	});
 	const resourcesBySource = new Map<string, ResolvedResource[]>();
-	const { extensions, skills, prompts, themes, legacyWorkflowFiles } = cliExtensionPaths;
-	for (const resources of [extensions, skills, prompts, themes, legacyWorkflowFiles]) {
+	const { extensions, skills, prompts, themes, legacyWorkflowFiles, agents } = cliExtensionPaths;
+	for (const resources of [extensions, skills, prompts, themes, legacyWorkflowFiles, agents]) {
 		for (const resource of resources) {
 			if (!resource.metadata.borrowedProjectLocal) {
 				continue;
@@ -120,6 +136,7 @@ export function filterBorrowedProjectLocalResources(
 		prompts: filterResources(paths.prompts),
 		themes: filterResources(paths.themes),
 		legacyWorkflowFiles: filterResources(paths.legacyWorkflowFiles),
+		agents: filterResources(paths.agents),
 		mcpServers: filterResources(paths.mcpServers),
 		installFailures: paths.installFailures,
 	};
@@ -146,6 +163,50 @@ export function collectMcpServerContributions(
 		});
 	}
 	return [...contributions.values()];
+}
+
+async function readPackageJsonName(packageRoot: string): Promise<string | undefined> {
+	try {
+		const pkg: unknown = JSON.parse(stripBom(await readFile(join(packageRoot, "package.json"), "utf-8")));
+		const name = typeof pkg === "object" && pkg !== null ? (pkg as { name?: unknown }).name : undefined;
+		return typeof name === "string" && name.trim() ? name : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Enabled package agent files in discovery order (`-e` packages first, then project-installed, then global), each
+ * once, with the package it came from. Only package resources count: a manifest `agents` entry is the only way a
+ * definition gets here.
+ */
+export async function collectPackageAgentFiles(
+	...resourceLists: ReadonlyArray<readonly ResolvedResource[]>
+): Promise<PackageAgentFile[]> {
+	const files: PackageAgentFile[] = [];
+	const seen = new Set<string>();
+	const packageNames = new Map<string, Promise<string | undefined>>();
+	for (const resources of resourceLists) {
+		for (const { path, enabled, metadata } of resources) {
+			const packageRoot = metadata.packageRoot;
+			if (!enabled || metadata.origin !== "package" || !packageRoot || seen.has(path)) continue;
+			seen.add(path);
+			let packageName = packageNames.get(packageRoot);
+			if (!packageName) {
+				packageName = readPackageJsonName(packageRoot);
+				packageNames.set(packageRoot, packageName);
+			}
+			const name = await packageName;
+			files.push({
+				path,
+				source: metadata.source,
+				scope: metadata.scope,
+				packageRoot,
+				...(name === undefined ? {} : { packageName: name }),
+			});
+		}
+	}
+	return files;
 }
 
 export function createPackageMcpServerSource(loader: DefaultResourceLoader): PackageMcpServerSource {
