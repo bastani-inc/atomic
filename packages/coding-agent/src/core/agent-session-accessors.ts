@@ -1,6 +1,7 @@
 import { unsavedHostNotices } from "./agent-session-host-notices.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
+import { hostNoticeFromEntry } from "./host-notices.ts";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 
@@ -82,21 +83,41 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 					saving && this._messagesAwaitingPersistence.has(saving.message) ? saving.previousLeaf : undefined;
 				const { entries, messages } = this.sessionManager.buildSessionProjection("transcript", beforeSave);
 				const pending = this.messages.filter((message) => this._messagesAwaitingPersistence.has(message));
-				// A line about how a turn ended that is still being saved is part of the transcript already (#5649).
-				const notices = unsavedHostNotices(
-					this,
-					entries.map(({ sourceEntry }) => sourceEntry),
-				);
-				if (pending.length === 0 && notices.length === 0) return messages;
 				const saved = new Set(entries.map(({ sourceEntry }) => sourceEntry.id));
-				return [
-					...messages,
-					...pending.filter((message) => {
+				// Lines about how a turn ended are part of the transcript once shown: those saved after the pinned leaf,
+				// and those still being saved (#5649).
+				const noticesAfterPin =
+					beforeSave === undefined
+						? []
+						: this.sessionManager
+								.buildSessionProjection("transcript")
+								.entries.filter(
+									({ sourceEntry }) =>
+										!saved.has(sourceEntry.id) && hostNoticeFromEntry(sourceEntry) !== undefined,
+								);
+				const unsavedNotices = unsavedHostNotices(
+					this,
+					[...entries, ...noticesAfterPin].map(({ sourceEntry }) => sourceEntry),
+				);
+				if (pending.length === 0 && beforeSave === undefined && unsavedNotices.length === 0) return messages;
+				// An independent delivery can save a notice after the pinned leaf and publish it while the input's
+				// write is still outstanding. Its source ID distinguishes it from both the prefix and the pending input.
+				const tail = new Set(pending);
+				if (beforeSave !== undefined) {
+					for (const message of this.messages) {
 						const id = this._entryIdsByMessage.get(message);
-						return id === undefined || !saved.has(id);
-					}),
-					...notices,
-				];
+						if (id !== undefined && !saved.has(id)) tail.add(message);
+					}
+				}
+				for (const message of tail) {
+					const id = this._entryIdsByMessage.get(message);
+					if (id !== undefined && saved.has(id)) continue;
+					if (id !== undefined) saved.add(id);
+					messages.push(message);
+				}
+				for (const notice of noticesAfterPin) messages.push(...notice.messages);
+				messages.push(...unsavedNotices);
+				return messages;
 			},
 		},
 		steeringMode: {
