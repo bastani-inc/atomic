@@ -66,7 +66,7 @@ declare module "./interactive-mode-base.ts" {
 		getBuiltInCommandConflictDiagnostics(extensionRunner: ExtensionRunner): ResourceDiagnostic[];
 		createBaseAutocompleteProvider(): AutocompleteProvider;
 		buildRemoteSlashCommands(localCommands: SlashCommand[]): SlashCommand[];
-		setupAutocompleteProvider(): void;
+		setupAutocompleteProvider(options?: { preserveSelection?: boolean }): void;
 		showStartupNoticesIfNeeded(targetContainer?: Container): void;
 		reportModelCatalogWarning(targetContainer?: Container): void;
 		reportedModelCatalogWarning: string | undefined;
@@ -278,6 +278,7 @@ declare module "./interactive-mode-base.ts" {
 			options?: {
 				updateFooter?: boolean;
 				populateHistory?: boolean;
+				preserveViewportInput?: boolean;
 				suppressCompactionBoundary?: VerbatimCompactionResult;
 			},
 		): void;
@@ -298,6 +299,7 @@ declare module "./interactive-mode-base.ts" {
 		rebuildChatFromMessages(options?: {
 			suppressCompactionBoundary?: VerbatimCompactionResult;
 			resetStartupDisclosure?: boolean;
+			preserveViewportInput?: boolean;
 		}): void;
 		handleCtrlC(): void;
 		handleSigintSignal(): void;

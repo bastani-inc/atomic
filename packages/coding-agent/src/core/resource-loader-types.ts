@@ -16,6 +16,8 @@ export interface ResourceExtensionPaths {
 }
 
 export interface ResourceLoaderReloadOptions {
+	/** The host just loaded or removed its project settings layer. Keep the existing user settings for this read. */
+	useLoadedSettings?: true;
 	/**
 	 * Skip loading extension code during this reload, leaving the loader with an
 	 * empty extension set. Skills, prompts, themes, context files, and prompt
