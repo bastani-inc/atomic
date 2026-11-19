@@ -37,7 +37,7 @@ import {
 	workspaceSandbox,
 } from "../helpers/workspace-repos.ts";
 
-const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 
 let dirs: WorkspaceSandboxDirs;
 let faux: ReturnType<typeof registerFauxProvider>;

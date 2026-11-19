@@ -80,7 +80,7 @@ test.each(["commit", "rollback", "preparing"] as const)(
 			orchestrationContext: { ...orchestration, constraints: { disableWorkflowTool: true } },
 			builtins: {
 				subagents: reload === "preparing",
-				workflows: false,
+
 				intercom: false,
 				mcp: false,
 				"web-access": false,

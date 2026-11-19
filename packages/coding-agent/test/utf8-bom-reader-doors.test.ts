@@ -33,14 +33,14 @@ describe("UTF-8 BOM reader doors", () => {
 
 	it("recognizes app identity and extension manifests", async () => {
 		const appDirectory = temporaryDirectory("packages");
-		const companionDirectory = join(appDirectory, "packages", "workflows");
+		const companionDirectory = join(appDirectory, "packages", "subagents");
 		const extensionDirectory = join(appDirectory, "extension");
 		mkdirSync(companionDirectory, { recursive: true });
 		mkdirSync(extensionDirectory, { recursive: true });
 		writeFileSync(join(appDirectory, "package.json"), `\uFEFF${JSON.stringify({ name: "@bastani/atomic" })}`);
 		writeFileSync(
 			join(companionDirectory, "package.json"),
-			`\uFEFF${JSON.stringify({ name: "@bastani/workflows" })}`,
+			`\uFEFF${JSON.stringify({ name: "@bastani/subagents" })}`,
 		);
 		writeFileSync(
 			join(extensionDirectory, "package.json"),

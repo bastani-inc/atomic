@@ -29,7 +29,7 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
-const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 const ANSWER = "ci passed; merging";
 /**
  * Structural cost: every attempt runs on the real `AgentSession` runtime, and the two attempts that block wait out the

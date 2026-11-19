@@ -38,7 +38,6 @@ afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 test("a compiled binary starts the Intercom broker from its shipped builtin, not a surviving build tree (#3917)", async () => {
 	const { getBuiltinPackagePaths } = await import("../src/core/builtin-packages.js");
 	const [intercomDir] = getBuiltinPackagePaths({
-		workflows: false,
 		subagents: false,
 		mcp: false,
 		"web-access": false,

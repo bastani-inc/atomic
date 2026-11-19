@@ -207,6 +207,9 @@ test(
 		try {
 			let loaded = await createTestExtensionsResult(
 				[
+					(pi) => {
+						pi.registerWorkflowActivityPublisher().publishSnapshot({ availability: "ready", roots: [] });
+					},
 					createHerdrExtension({
 						env: fake.env,
 						enabled: () => true,
@@ -480,6 +483,9 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 			let candidateRetired = false;
 			const loaded = await createTestExtensionsResult(
 				[
+					(pi) => {
+						pi.registerWorkflowActivityPublisher().publishSnapshot({ availability: "ready", roots: [] });
+					},
 					createHerdrExtension({
 						env: fake.env,
 						enabled: () => true,

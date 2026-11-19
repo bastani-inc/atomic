@@ -24,7 +24,7 @@ import { adoptStore, currentWorkflowStore, store } from "../../packages/workflow
 import type { WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
-const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 
 interface StageRunOutcome {
 	readonly runId: string;

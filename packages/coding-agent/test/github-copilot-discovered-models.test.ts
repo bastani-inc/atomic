@@ -25,7 +25,7 @@ const API_KEY: Credential = { type: "api_key", key: "github_pat_example_token" }
 const OAUTH_ACCESS = "tid=example;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com";
 /** A real built-in Copilot model, read from the catalog so the test names no model itself. */
 const CATALOG_MODEL_ID = Object.keys(GITHUB_COPILOT_MODELS)[0] ?? "";
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 function accountEntry(
 	id: string,

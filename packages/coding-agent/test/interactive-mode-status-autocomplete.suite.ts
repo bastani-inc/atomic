@@ -460,8 +460,8 @@ process.stdout.write(found.join("\\n"));
 	});
 });
 
-describe("InteractiveMode deferred workflow autocomplete", () => {
-	function createDeferredWorkflowProvider(): AutocompleteProvider {
+describe("InteractiveMode deferred command autocomplete", () => {
+	function createDeferredProvider(): AutocompleteProvider {
 		const fakeThis: any = {
 			deferredStartupPending: true,
 			session: {
@@ -487,34 +487,9 @@ describe("InteractiveMode deferred workflow autocomplete", () => {
 		return suggestions?.items.map((item) => item.value) ?? [];
 	}
 
-	test("offers only /workflows and /workflow-authoring before the workflow extension implementation loads (#5224)", async () => {
-		const provider = createDeferredWorkflowProvider();
-
-		const wor = await provider.getSuggestions(["/wor"], 0, "/wor".length, {
-			signal: new AbortController().signal,
-		});
-		expect(
-			wor?.items
-				.filter((item) => item.value.startsWith("workflow"))
-				.map((item) => ({ value: item.value, description: item.description })),
-		).toEqual([
-			{ value: "workflows", description: "Browse running and completed workflows" },
-			{ value: "workflow-authoring", description: "Load the reference for writing workflow definitions" },
-		]);
-		expect(wor?.items.some((item) => item.value === "workflow")).toBe(false);
-
-		const bareWorkflow = await provider.getSuggestions(["/workflow"], 0, "/workflow".length, {
-			signal: new AbortController().signal,
-		});
-		expect(bareWorkflow?.completeOnConfirm).toBe(false);
-		expect(bareWorkflow?.items.map((item) => item.value)).toEqual(["workflows", "workflow-authoring"]);
-
-		expect(await suggestionValues(provider, "/workflow ")).toEqual([]);
-		expect(await suggestionValues(provider, "/workflow list")).toEqual([]);
-		expect(await suggestionValues(provider, "/workflow fa")).toEqual([]);
-		expect(await suggestionValues(provider, "/workflow inputs fa")).toEqual([]);
-		expect(await suggestionValues(provider, "/workflow fan-out-and-synthesize p")).toEqual([]);
-		expect(await suggestionValues(provider, "/workflows ")).toEqual([]);
-		expect(await suggestionValues(provider, "/workflow-authoring ")).toEqual([]);
+	test("offers bundled commands without advertising workflow commands before startup completes", async () => {
+		const provider = createDeferredProvider();
+		expect(await suggestionValues(provider, "/agents")).toContain("agents");
+		expect(await suggestionValues(provider, "/workflow")).toEqual([]);
 	});
 });

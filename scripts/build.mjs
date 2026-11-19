@@ -169,8 +169,6 @@ export const BUILD_STEPS = [
 			"packages/coding-agent/scripts",
 			"packages/coding-agent/package.json",
 			"packages/coding-agent/tsconfig.build.json",
-			"packages/coding-agent/tsconfig.workflows-types.json",
-			"packages/workflows",
 			"packages/subagents",
 			"packages/mcp",
 			"packages/web-access",
