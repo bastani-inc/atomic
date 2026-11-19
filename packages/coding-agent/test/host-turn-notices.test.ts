@@ -207,6 +207,8 @@ test("a cancelled manual compaction reopens as the line the chat showed (#5649)"
 	await vi.waitFor(async () =>
 		assert.deepEqual(rows((await reopen()).buildSessionProjection("transcript").messages), live),
 	);
+	// A stage chat opened now reads the live session's transcript, which edits nothing here.
+	assert.deepEqual(rows(harness.session.transcriptMessages), live);
 });
 
 test("which session events leave a line in the chat, and which say nothing (#5649)", () => {
