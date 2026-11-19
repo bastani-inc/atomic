@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { panelCounts } from "../../packages/coding-agent/src/core/tasks/agent-panel-rules.ts";
 import {
@@ -306,14 +306,51 @@ describe("a paused or blocked workflow run rests like a paused subagent (#5490)"
 		assert.deepEqual(panel.ids(), []);
 		assert.deepEqual(modelIds(idle), []);
 		assert.equal(agentPanelCounts(panel.session).total, 0);
-		assert.deepEqual(panel.hint(), ["? keys"]);
+		assert.deepEqual(panel.hint(), ["/workflows to see runs", "? keys"]);
 	});
 
 	test("alone, it does not keep the panel up (#5490)", () => {
 		const panel = panelSession([run("paused")]);
 		assert.deepEqual(panel.ids(), []);
 		assert.deepEqual(modelIds([run("paused")]), []);
-		assert.deepEqual(panel.hint(), ["? keys"]);
+		assert.deepEqual(panel.hint(), ["/workflows to see runs", "? keys"]);
+	});
+
+	test("both hosts point to /workflows while a paused run is missing from the panel (#5710)", async () => {
+		const fixture = taskFixture();
+		try {
+			await fixture.start("keeps running");
+			const panel = panelSession([run("paused")]);
+			bindOwnerTaskStore(panel.session, fixture.store);
+			let hostHint: string[] = [];
+			const dispose = bindAgentPanel(panel.session, { setWidget() {}, requestRender() {} } as never, (counts) => {
+				const message = parseInteractiveEngineMessage(
+					serializeInteractiveEngineMessage({ type: "engine_agent_panel_state", ...counts }).trim(),
+				);
+				if (message?.type === "engine_agent_panel_state") {
+					hostHint = mainComposerHintSegments(keybindings, () => engineAgentPanelCounts(message));
+				}
+			});
+			const expectHints = async (...expected: string[]) => {
+				assert.deepEqual(panel.hint(), expected);
+				await vi.waitFor(() => assert.deepEqual(hostHint, expected));
+			};
+			try {
+				await expectHints("↓ 1 agent", "? keys");
+				await fixture.settle(0);
+				assert.deepEqual(panel.ids(), []);
+				await expectHints("/tasks to see subagents", "/workflows to see runs", "? keys");
+				panel.set([run("paused"), agent("new", "running")]);
+				assert.deepEqual(panel.ids(), ["ext:new"]);
+				await expectHints("↓ 1 agent", "/workflows to see runs", "? keys");
+				panel.set([agent("new", "running")]);
+				await expectHints("↓ 1 agent", "? keys");
+			} finally {
+				dispose();
+			}
+		} finally {
+			await fixture.dispose();
+		}
 	});
 
 	test("stays listed while another workflow run or a background shell is active (#5490)", () => {

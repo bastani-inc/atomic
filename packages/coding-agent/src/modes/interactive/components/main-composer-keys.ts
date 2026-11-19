@@ -22,11 +22,12 @@ export interface MainComposerKeyState {
 	readonly shells?: number;
 	/** The chat's subagents in /tasks, listed in the panel or not. */
 	readonly subagents?: number;
+	readonly hiddenWorkflow?: boolean;
 	readonly working: boolean;
 }
 
 export type MainComposerHintSource =
-	| Pick<MainComposerKeyState, "agentRows" | "agents" | "needsInput" | "shells" | "subagents">
+	| Pick<MainComposerKeyState, "agentRows" | "agents" | "needsInput" | "shells" | "subagents" | "hiddenWorkflow">
 	| (AgentPanelSession & object)
 	| (() => AgentPanelCounts);
 
@@ -49,6 +50,7 @@ function resolveAgentCounts(
 				needsInput: source.needsInput ?? 0,
 				shells: source.shells ?? 0,
 				subagents: source.subagents ?? 0,
+				hiddenWorkflow: source.hiddenWorkflow,
 			};
 		}
 		return agentPanelCounts(source as AgentPanelSession & object);
@@ -97,6 +99,7 @@ export function mainComposerHints(keybindings: NavKeybindings | undefined, state
 		if (segment.kind === "tasks") return slashCommandHint(segment.text);
 		return segment.text;
 	});
+	if (counts.hiddenWorkflow) segments.push(slashCommandHint("/workflows to see runs"));
 	const helpKeys = navEntryKeyParts(promptKeys, { action: "app.keys.help", label: "" });
 	if (helpKeys.length > 0) segments.push(clickableKeysHint(helpKeys, " keys"));
 	return segments;
