@@ -6,6 +6,7 @@ import { defaultTaskHeartbeatMs, type TaskHeartbeatDelivery, TaskHeartbeatMonito
 import { cancelPausedOwnerTasks } from "./pause.js";
 import {
 	automaticWaitBudgetMs,
+	DEFAULT_AGENT_WAIT_BUDGET_MS,
 	type FakeExecution,
 	type FakeRunnerContext,
 	type OwnerLease,
@@ -176,6 +177,11 @@ export class AgentTaskHost {
 	/** The automatic foreground budget this owner gives a command wait that names none (bash's default); `undefined` waits until settled. */
 	get commandWaitBudgetMs(): number | undefined {
 		return automaticWaitBudgetMs(this.binding.tasks?.wait, true);
+	}
+
+	/** Budget for an explicit bounded observation, including when this owner's normal policy waits until settled. */
+	get boundedAgentWaitBudgetMs(): number {
+		return automaticWaitBudgetMs(this.binding.tasks?.wait, false) ?? DEFAULT_AGENT_WAIT_BUDGET_MS;
 	}
 
 	/** Let inbound routing reach SDK admission instead of waiting for this owner to become idle. */
