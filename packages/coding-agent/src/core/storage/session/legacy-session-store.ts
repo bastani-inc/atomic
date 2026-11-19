@@ -1,4 +1,5 @@
 import { access, stat } from "node:fs/promises";
+import { isProxy } from "node:util/types";
 import { createSessionCwdMatcherAsync } from "../../../utils/canonical-path.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
@@ -152,7 +153,7 @@ export class LegacySessionStore implements SessionStore {
 		await this.convert(sessionId);
 		if (this.inner.readResume) return this.inner.readResume(sessionId, leafId);
 		const snapshot = await this.inner.load(sessionId);
-		return sessionResumeOf(snapshot.header, snapshot.entries, leafId);
+		return sessionResumeOf(snapshot.header, snapshot.entries, leafId, undefined, isProxy);
 	}
 	async findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {
 		await this.convert(sessionId);

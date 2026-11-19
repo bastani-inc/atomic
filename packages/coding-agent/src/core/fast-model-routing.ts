@@ -233,6 +233,7 @@ function buildFastRouteBaseProviderOptions(
 		streamDeadlineMs: options?.streamDeadlineMs,
 		maxRetries: options?.maxRetries,
 		maxRetryDelayMs: options?.maxRetryDelayMs,
+		...(options?.retryDeadline === undefined ? {} : { retryDeadline: options.retryDeadline }),
 		metadata: options?.metadata,
 	};
 	return usesChatGptCodexTransport(model) ? withChatGptCodexTransportRouting(model, providerOptions) : providerOptions;

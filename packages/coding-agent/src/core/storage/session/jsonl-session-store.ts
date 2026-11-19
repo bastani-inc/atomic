@@ -58,6 +58,7 @@ import {
 	foreignResumeIds,
 	isSessionResumeIndex,
 	latestCompactionOf,
+	readEarlierCompletionIntents,
 	resumeIndexNeedsRefold,
 	type SessionResumeIndex,
 	sessionResumeFrom,
@@ -1008,7 +1009,10 @@ export class JsonlSessionStore implements SessionStore {
 			const branch = read.filter((held) => inBranch.has(held.seq));
 			const state = read.filter((held) => !inBranch.has(held.seq));
 			const leaf = leafSeq > 0 ? (branch.find((held) => held.seq === leafSeq)?.entry.id ?? null) : null;
-			return sessionResumeFrom(index, header, branch, state, leaf);
+			const resume = sessionResumeFrom(index, header, branch, state, leaf);
+			if (resume.compaction)
+				await readEarlierCompletionIntents(index, resume, (seqs) => this.entriesAt(path, jsonl, seqs, true));
+			return resume;
 		});
 	}
 
@@ -1305,12 +1309,18 @@ export class JsonlSessionStore implements SessionStore {
 		else this.indexes.set(path, next);
 	}
 
-	private async entriesAt(path: string, jsonl: JsonlIndex, seqs: readonly number[]): Promise<SessionStoredEntry[]> {
+	private async entriesAt(
+		path: string,
+		jsonl: JsonlIndex,
+		seqs: readonly number[],
+		exactRevision = false,
+	): Promise<SessionStoredEntry[]> {
 		const wanted = [...new Set(seqs.filter((seq) => seq >= 1 && seq <= jsonl.index.seq))].sort((a, b) => a - b);
 		const entries: SessionStoredEntry[] = [];
 		if (wanted.length === 0) return entries;
 		const file = await open(path, "r");
 		try {
+			if (exactRevision && !matchesIndexRevision(await file.stat({ bigint: true }), jsonl)) return [];
 			let index = 0;
 			while (index < wanted.length) {
 				const first = wanted[index] as number;
@@ -1318,6 +1328,7 @@ export class JsonlSessionStore implements SessionStore {
 				let next = index + 1;
 				while (next < wanted.length) {
 					const candidate = wanted[next] as number;
+					if (exactRevision && candidate !== last + 1) break;
 					if (spanStart(jsonl, candidate) - spanEnd(jsonl, last) > READ_GAP_BYTES) break;
 					if (spanEnd(jsonl, candidate) - spanStart(jsonl, first) > SCAN_WINDOW_BYTES && candidate !== first)
 						break;
@@ -1333,6 +1344,7 @@ export class JsonlSessionStore implements SessionStore {
 				}
 				index = next;
 			}
+			if (exactRevision && !matchesIndexRevision(await file.stat({ bigint: true }), jsonl)) return [];
 		} finally {
 			await file.close();
 		}
@@ -1979,6 +1991,15 @@ function statMtimeMs(fs: Pick<SessionLockFs, "stat">, path: string): Promise<num
 
 function seqRange(first: number, last: number): number[] {
 	return last < first ? [] : Array.from({ length: last - first + 1 }, (_, offset) => first + offset);
+}
+
+function matchesIndexRevision(stats: BigIntStats, index: JsonlIndex): boolean {
+	return (
+		index.identity === `${stats.dev}:${stats.ino}` &&
+		index.birthtimeNs === String(stats.birthtimeNs) &&
+		index.fileSize === Number(stats.size) &&
+		index.mtimeNs === String(stats.mtimeNs)
+	);
 }
 
 function spanStart(jsonl: JsonlIndex, seq: number): number {

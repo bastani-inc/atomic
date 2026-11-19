@@ -13,6 +13,7 @@ import { afterEach, beforeAll, test, vi } from "vitest";
 import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { setCallbackActivityReporter } from "../src/core/callback-activity.js";
+import type { MessageRenderer } from "../src/core/extensions/types.js";
 import type { CustomMessage } from "../src/core/messages.js";
 import {
 	supersedeBlockClicks,
@@ -53,7 +54,7 @@ const lines = (count: number, label: string) =>
  * `frames.hold()` keeps what the engine sends back from reaching the host, as a busy engine or a slow pipe does, until
  * `frames.release()`.
  */
-function isolatedEngine() {
+function isolatedEngine(renderers: Readonly<Record<string, MessageRenderer>> = {}) {
 	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
 	const ended = new Set<(event: { generation: number }) => void>();
 	let generation = 1;
@@ -81,7 +82,7 @@ function isolatedEngine() {
 						})
 					: customType === "intercom_message"
 						? renderIntercomCustomMessage
-						: undefined,
+						: renderers[customType],
 		},
 		getToolDefinition: () => undefined,
 		sessionManager: { getCwd: () => "/workspace" },
@@ -156,8 +157,8 @@ function intercomMessage(text: string): CustomMessage<unknown> {
 }
 
 /** The main chat of an isolated session: rows the engine draws, in a following transcript, under the real renderer. */
-async function mountIsolatedChat() {
-	const { runtime, frames } = isolatedEngine();
+async function mountIsolatedChat(renderers?: Readonly<Record<string, MessageRenderer>>) {
+	const { runtime, frames } = isolatedEngine(renderers);
 	const terminal = new RecordingTerminal();
 	terminal.columns = 100;
 	terminal.rows = 60;
@@ -239,6 +240,22 @@ async function mountIsolatedChat() {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("an isolated renderer sends rows, not its click handler; its block still expands (#5696)", async () => {
+	const handleMouse = vi.fn(() => ({ handled: true }));
+	const chat = await mountIsolatedChat({
+		approval: (_message, { expanded }) => ({
+			invalidate() {},
+			render: () => ["[ Approve ]", ...(expanded ? ["Approval details"] : [])],
+			handleMouse,
+		}),
+	});
+	chat.message({ ...intercomMessage("review"), customType: "approval" });
+	await chat.waitFor(/\[ Approve \]/);
+	await chat.click(/\[ Approve \]/, "Approve");
+	await chat.waitFor(/Approval details/);
+	assert.equal(handleMouse.mock.calls.length, 0);
+});
 
 test("an isolated row not redrawn since a resize compares at the transcript's settlement width (#5562)", async () => {
 	const { runtime } = isolatedEngine();

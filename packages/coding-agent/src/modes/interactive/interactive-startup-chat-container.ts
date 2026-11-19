@@ -82,6 +82,7 @@ export class StartupChatContainer extends WindowedContainer {
 	 */
 	override handleMouse(event: TuiMouseEvent): ContainerMouseResult {
 		if (event.type === "press" || event.type === "click") {
+			let offered = false;
 			const handled = handleTranscriptBlockClick(
 				this,
 				this,
@@ -92,8 +93,13 @@ export class StartupChatContainer extends WindowedContainer {
 					const view = this.transcriptView();
 					if (expanded && view?.isFollowingEnd) view.scrollTo(view.scrollTop, { disableFollow: true });
 				},
+				(target, click) => {
+					offered = true;
+					return target.handleMouse(click);
+				},
 			);
-			if (handled) return handled;
+			// An extension can decline and remove its row. Don't offer it the same click again via super.
+			if (handled || offered) return handled;
 		}
 		return super.handleMouse(event);
 	}

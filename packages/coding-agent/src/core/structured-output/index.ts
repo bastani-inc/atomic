@@ -14,6 +14,7 @@ import { Check } from "typebox/value";
 import { raceWithAbortSignal } from "../../utils/abort.js";
 import { reportDebugAsync as reportDebug } from "../debug.ts";
 import { DecisionOutputError, DecisionProviderError, isDecisionError } from "../decision/errors.js";
+import { assistantRetryAttempt } from "../provider-request-admission.js";
 import { type JsonObject, STRUCTURED_OUTPUT_TOOL_NAME } from "../tools/structured-output.ts";
 import { compileChoiceSchema } from "./choice-schema.js";
 import { abortFailure, type DecisionTrace, resolveDecisionDeadlineMs, withinDecisionDeadline } from "./deadline.js";
@@ -111,6 +112,8 @@ async function inferChat<T extends TSchema>(
 		parameters: request.schema,
 	};
 	let response: AssistantMessage;
+	const retryOptions = trace.retryDeadline === undefined ? undefined : { retryDeadline: trace.retryDeadline };
+	let callCount = 0;
 	assertActive();
 	try {
 		response = await retryAssistantCall(
@@ -143,6 +146,8 @@ async function inferChat<T extends TSchema>(
 						},
 						{
 							signal,
+							...retryOptions,
+							...(retryOptions && callCount++ > 0 ? { [assistantRetryAttempt]: true } : {}),
 							maxRetries: 0,
 							transport: "sse",
 							toolChoice: "auto",
@@ -163,6 +168,7 @@ async function inferChat<T extends TSchema>(
 			},
 			request.retry ?? DEFAULT_DECISION_RETRY,
 			signal,
+			retryOptions,
 		);
 	} catch (error) {
 		signal.throwIfAborted();
@@ -355,6 +361,7 @@ async function inferClassifier<T extends TSchema>(
 			{ state: request.state, questions },
 			{
 				signal,
+				...(trace.retryDeadline === undefined ? {} : { retryDeadline: trace.retryDeadline }),
 				maxRetries:
 					request.retry?.enabled === false ? 0 : (request.retry?.maxRetries ?? DEFAULT_DECISION_RETRY.maxRetries),
 			},
@@ -407,8 +414,11 @@ export async function generateStructuredOutput<T extends TSchema>(
 ): Promise<StructuredOutputResult<Static<T>>> {
 	assertNotCancelled(request.signal);
 	const timeoutMs = resolveDecisionDeadlineMs(request.timeoutMs);
-	return withinDecisionDeadline(request.signal, timeoutMs, ({ signal, trace }) =>
-		generateWithinDeadline({ ...request, signal }, trace),
+	return withinDecisionDeadline(
+		request.signal,
+		timeoutMs,
+		({ signal, trace }) => generateWithinDeadline({ ...request, signal }, trace),
+		{ guardProviderRetries: true },
 	);
 }
 
