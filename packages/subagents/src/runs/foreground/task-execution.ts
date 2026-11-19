@@ -8,6 +8,7 @@ import {
 	sessionStartStepText,
 	spanElapsedMs,
 } from "@bastani/atomic";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import type {
 	Cleanup,
 	ModelParallelResponse,
@@ -17,7 +18,7 @@ import type {
 	TaskRecord,
 	TaskResult,
 } from "../../../../coding-agent/src/core/tasks/contracts.js";
-import type { TaskTranscriptSource } from "../../../../coding-agent/src/core/tasks/supervisor.js";
+import type { TaskLease, TaskTranscriptSource } from "../../../../coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../agents/agents.js";
 import { sendTaskTranscriptMessage } from "../../intercom/task-message.js";
 import { checkLaunchCwd } from "../../shared/launch-cwd.js";
@@ -72,7 +73,12 @@ import {
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
-import { INLINE_TASK_OUTPUT_MAX_BYTES, retainedTaskOutput, retainTaskOutput } from "./task-output-retention.js";
+import {
+	INLINE_TASK_OUTPUT_MAX_BYTES,
+	retainedTaskOutput,
+	retainTaskOutput,
+	wasTaskOutputEvicted,
+} from "./task-output-retention.js";
 
 export { INLINE_TASK_OUTPUT_MAX_BYTES } from "./task-output-retention.js";
 
@@ -160,6 +166,23 @@ function settledOutputSection(
 	return lines.join("\n");
 }
 
+/** A verified copy already owned by the task's transcript. Neither the task nor any output stays alive for this lookup. */
+const transcriptOutputs = new WeakMap<TaskLease, WeakRef<{ text: string }>>();
+
+function rememberTranscriptOutput(
+	lease: WeakRef<TaskLease>,
+	ref: TaskRecord["ref"],
+	reply: AssistantMessage | undefined,
+): void {
+	if (!reply) return;
+	const kept = retainedTaskOutput(ref.ownerId, ref.taskId);
+	if (!kept || kept.totalBytes > INLINE_TASK_OUTPUT_MAX_BYTES) return;
+	const part = reply.content.find((block) => block.type === "text" && block.text === kept.head);
+	if (part?.type !== "text") return;
+	const task = lease.deref();
+	if (task) transcriptOutputs.set(task, new WeakRef(part));
+}
+
 async function readSettledOutput(
 	host: AgentTaskHost,
 	settled: SettledTaskOutput,
@@ -186,12 +209,33 @@ async function readSettledOutput(
 	const unavailable = (reason: string) => `Output of ${settled.taskId} (${label}) is unavailable: ${reason}`;
 	const lease = host.resolveTask(settled.taskId);
 	if (!lease.ok) return unavailable(lease.error.message);
+	const head = transcriptOutputs.get(lease.value)?.deref()?.text;
+	const total = Number(output.byteCount);
+	if (
+		head !== undefined &&
+		head.length <= total &&
+		total <= INLINE_TASK_OUTPUT_MAX_BYTES &&
+		Buffer.byteLength(head) === total
+	)
+		return settledOutputSection(settled.taskId, label, { head, shown: total, total }, ranOn);
 	try {
 		const page = await host.ownerBinding.supervisor.readTaskOutput(lease.value, {
 			start: "0",
 			maximumBytes: INLINE_TASK_OUTPUT_MAX_BYTES,
 		});
-		if (!page.ok) return unavailable(page.error.message);
+		if (!page.ok) {
+			if (
+				page.error.code === "OutputUnavailable" &&
+				record?.kind === "agent" &&
+				!(settled.result.kind === "cancelled" && settled.result.released) &&
+				wasTaskOutputEvicted(lease.value)
+			) {
+				return unavailable(
+					`The private copy is no longer in the recent output cache. See the earlier result or open /tasks ${settled.taskId} for the child's transcript.`,
+				);
+			}
+			return unavailable(page.error.message);
+		}
 		const decoder = new TextDecoder();
 		const head =
 			page.value.chunks.map((chunk) => decoder.decode(chunk.bytes, { stream: true })).join("") + decoder.decode();
@@ -470,7 +514,7 @@ export async function runAgentTask(input: {
 	/** The dispatcher a released child's results wake it through; by default the process's one dispatcher. */
 	wakeDispatcher?: AgentWakeDispatcher;
 }): Promise<ModelSingleResponse> {
-	const registered = Promise.withResolvers<void>();
+	const registered = Promise.withResolvers<WeakRef<TaskLease>>();
 	const childCwd = input.options.cwd ?? input.cwd;
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<
@@ -707,9 +751,10 @@ export async function runAgentTask(input: {
 					startedAt: dispatchedAt,
 					stepStartedAt: dispatchedAt,
 				});
-				const result = registered.promise.then(async (): Promise<TaskResult> => {
+				const result = registered.promise.then(async (lease): Promise<TaskResult> => {
 					try {
 						const ownerSessionId = input.recordChild?.ownerSessionId;
+						let settledReply: WeakRef<AssistantMessage> | undefined;
 						const running = input.runtime.runSync(input.cwd, input.agents, input.agent, input.task, {
 							...input.options,
 							elapsedSpan,
@@ -732,7 +777,7 @@ export async function runAgentTask(input: {
 								taskId: context.ref.taskId,
 								signal: context.signal,
 								reportActivity: context.reportActivity,
-								bindTranscript: (session) =>
+								bindTranscript: (session) => {
 									context.bindTranscript(
 										taskTranscriptSource(
 											session,
@@ -740,7 +785,11 @@ export async function runAgentTask(input: {
 											input.options.intercomSessionName,
 											input.options.intercomEvents,
 										),
-									),
+									);
+									settledReply = session.settledReply && new WeakRef(session.settledReply);
+									// Disposal may bind the settled transcript before or after the task publishes its output.
+									rememberTranscriptOutput(lease, context.ref, session.settledReply);
+								},
 								setExtensionStatus: context.setExtensionStatus,
 								clearExtensionStatuses: context.clearExtensionStatuses,
 								bindChildSession: (session) => {
@@ -870,7 +919,10 @@ export async function runAgentTask(input: {
 								wokenWith,
 							);
 						const text = getSingleResultOutput(child);
-						if (!released) await retainTaskOutput(child, text, context.ref);
+						if (!released) {
+							await retainTaskOutput(child, text, context.ref, lease);
+							rememberTranscriptOutput(lease, context.ref, settledReply?.deref());
+						}
 						const bytes = Buffer.from(text);
 						context.reportActivity({
 							reportId: "terminal-output",
@@ -971,8 +1023,10 @@ export async function runAgentTask(input: {
 			intercomTarget: input.options.intercomSessionName,
 		});
 	if (queuedAtAdmission) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
-	const observation = input.host.observeAgentLaunch(started.value.taskId, undefined, () => registered.resolve());
-	registered.resolve();
+	const lease = new WeakRef(started.value.lease);
+	const register = () => registered.resolve(lease);
+	const observation = input.host.observeAgentLaunch(started.value.taskId, undefined, register);
+	register();
 	ticket?.onObserved();
 	if (ticket) await ticket.admitted;
 	const observed = await observation;
