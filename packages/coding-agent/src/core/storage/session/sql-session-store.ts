@@ -5,6 +5,7 @@ import { dialectOf, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
+import { readCatalogPages, retryCatalogRead } from "../run-journal.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
 import { sha256Hex } from "./blob-hash.js";
 import {
@@ -1022,7 +1023,7 @@ export class SqlSessionStore implements SessionStore {
 		const scanRows = this.listingScanRows(SESSION_READ_FETCH.max);
 		for (let after = 0, limit: number = Math.min(scanRows, SESSION_READ_FETCH.first); after < upper; ) {
 			this.assertListing(query);
-			const rows = await this.database.all<ListingWindowRow>(
+			const rows = await scope.all<ListingWindowRow>(
 				// The scan sizes each session in scope and nothing else. Numbering its rows in the same SELECT would make
 				// SQLite copy every column the size reads, of every scanned session, before the scope is checked (#5480).
 				`WITH scanned AS MATERIALIZED (
@@ -1080,23 +1081,45 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	private async distinctCwds(paced: boolean, query: SessionListQuery): Promise<string[]> {
-		if (!paced)
-			return (
-				await this.database.all<SqliteRow & { cwd: string }>(`SELECT DISTINCT cwd FROM ${this.tables.sessions}`)
-			).map((project) => project.cwd);
+		const check = () => this.assertListing(query);
+		if (!paced) {
+			const sql = `SELECT DISTINCT cwd FROM ${this.tables.sessions}`;
+			const rows = await retryCatalogRead(
+				this.database,
+				() => this.database.all<SqliteRow & { cwd: string }>(sql),
+				(tx, limit) => readCatalogPages<SqliteRow & { cwd: string }>(tx, sql, [], "cwd", limit, check),
+				this.listingScanRows(LISTING_CWD_PAGE),
+				check,
+			);
+			check();
+			return rows.map((row) => row.cwd);
+		}
 		const order = this.dialect.rowOrder();
 		const page = this.listingScanRows(LISTING_CWD_PAGE);
 		const cwds = new Set<string>();
 		for (let after = 0; ; ) {
 			this.assertListing(query);
-			const rows = await this.database.all<SqliteRow & { ord: number | bigint; cwd: string }>(
-				`SELECT ${order} AS ord, cwd FROM ${this.tables.sessions} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`,
-				after,
-				page,
+			const read = (reader: SqliteExecutor, limit: number) =>
+				reader.all<SqliteRow & { ord: number | bigint; cwd: string }>(
+					`SELECT ${order} AS ord, cwd FROM ${this.tables.sessions} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`,
+					after,
+					limit,
+				);
+			let acceptedLimit = page;
+			const rows = await retryCatalogRead(
+				this.database,
+				() => read(this.database, page),
+				(tx, limit) => {
+					acceptedLimit = limit;
+					return read(tx, limit);
+				},
+				Math.max(1, Math.floor(page / 2)),
+				check,
 			);
+			check();
 			for (const row of rows) cwds.add(row.cwd);
 			await yieldTurn();
-			if (rows.length < page) return [...cwds];
+			if (rows.length < acceptedLimit) return [...cwds];
 			after = Number(rows.at(-1)!.ord);
 		}
 	}
@@ -1113,6 +1136,7 @@ export class SqlSessionStore implements SessionStore {
 		| {
 				readonly where: string;
 				readonly params: SqliteValue[];
+				readonly all: SqliteExecutor["all"];
 				readonly inScope: (row: ListingRow) => Promise<boolean> | boolean;
 		  }
 		| undefined
@@ -1124,6 +1148,7 @@ export class SqlSessionStore implements SessionStore {
 		let projectCwds: string[] | undefined;
 		if (matchesCwd) {
 			const distinct = await this.distinctCwds(paced, query);
+			this.assertListing(query);
 			// A paced listing resolves a few spellings at a time, with a turn of the event loop between them: resolving
 			// each of a store's thousands of projects at once filled turns with their file system callbacks (#5480).
 			const slice = paced ? LISTING_CWD_MATCHES : Math.max(1, distinct.length);
@@ -1142,8 +1167,39 @@ export class SqlSessionStore implements SessionStore {
 			if (projectCwds.length === 0) return undefined;
 		}
 		const idPrefix = query.idPrefix?.toLowerCase();
+		const directories = projectCwds;
+		const directoryFilter = directories ? ` AND cwd IN (${directories.map(() => "?").join(", ")})` : "";
+		let packed: string | undefined;
+		const all = async <Row extends SqliteRow>(sql: string, ...params: SqliteValue[]): Promise<Row[]> => {
+			if (!directories) return this.database.all<Row>(sql, ...params);
+			if (packed === undefined) {
+				try {
+					return await this.database.all<Row>(sql, ...params);
+				} catch (error) {
+					// SQLite reports its variable-number limit at prepare time. Keep cwd in SQL even on retry.
+					if (
+						!(
+							error instanceof Error &&
+							error.cause instanceof Error &&
+							/\btoo many SQL variables\b/i.test(error.cause.message)
+						)
+					)
+						throw error;
+					packed = JSON.stringify(directories);
+				}
+			}
+			const compact = sql.replace(
+				directoryFilter,
+				` AND cwd IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
+			);
+			return this.database.transaction(
+				(tx) => tx.all<Row>(compact, params[0]!, packed!, ...params.slice(directories.length + 1)),
+				{ readOnly: true },
+			);
+		};
 		return {
-			where: `(? = 1 OR internal = 0)${projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : ""}${idPrefix === undefined ? "" : " AND substr(lower(id), 1, ?) = ?"}`,
+			all,
+			where: `(? = 1 OR internal = 0)${directoryFilter}${idPrefix === undefined ? "" : " AND substr(lower(id), 1, ?) = ?"}`,
 			params: [
 				query.includeInternal ? 1 : 0,
 				...(projectCwds ?? []),
@@ -1157,13 +1213,13 @@ export class SqlSessionStore implements SessionStore {
 	private async readScope(query: SessionListQuery, listedBefore: boolean): Promise<readonly string[]> {
 		const resolved = await this.scopeOf(query, false);
 		if (resolved === undefined) return [];
-		const { where: scope, params, inScope } = resolved;
+		const { where: scope, params, inScope, all } = resolved;
 		const filterInScope = async (rows: readonly ListingRow[]): Promise<ListingRow[]> => {
 			const kept = await Promise.all(rows.map(async (row) => ((await inScope(row)) ? row : undefined)));
 			return kept.filter((row): row is ListingRow => row !== undefined);
 		};
 		if (listedBefore) {
-			const rows = await filterInScope(await this.readListingRows(scope, params));
+			const rows = await filterInScope(await this.readListingRows(scope, params, query, all));
 			this.assertListing(query);
 			const stale = rows.filter((row) => this.summaries.get(row.id)?.version !== listingVersion(row));
 			// A few changed sessions are read by id; when most changed, one scan of the scope is cheaper.
@@ -1171,7 +1227,9 @@ export class SqlSessionStore implements SessionStore {
 				for (let start = 0; start < stale.length; start += LISTING_FETCH_BATCH) {
 					const ids = stale.slice(start, start + LISTING_FETCH_BATCH).map((row) => row.id);
 					const fetched = new Set(
-						(await this.readSummaries(`id IN (${ids.map(() => "?").join(", ")})`, ids)).map((row) => row.id),
+						(await this.readSummaries(`id IN (${ids.map(() => "?").join(", ")})`, ids, query)).map(
+							(row) => row.id,
+						),
 					);
 					// A session deleted after the light read must not be listed from an older cached copy.
 					for (const id of ids) if (!fetched.has(id)) this.summaries.delete(id);
@@ -1180,7 +1238,7 @@ export class SqlSessionStore implements SessionStore {
 				return rows.flatMap((row) => (this.summaries.has(row.id) ? [row.id] : []));
 			}
 		}
-		const rows = await filterInScope(await this.readSummaries(scope, params));
+		const rows = await filterInScope(await this.readSummaries(scope, params, query, all));
 		this.assertListing(query);
 		return rows.map((row) => row.id);
 	}
@@ -1191,11 +1249,17 @@ export class SqlSessionStore implements SessionStore {
 	 * {@link SESSION_READ_PAGE_CHARS}, the first always, so that no response passes a libSQL server's limit however many
 	 * sessions there are (#4954) and no statement reads more than its batch.
 	 */
-	private async readListingRows(where: string, params: readonly SqliteValue[]): Promise<ListingRow[]> {
+	private async readListingRows(
+		where: string,
+		params: readonly SqliteValue[],
+		query: SessionListQuery,
+		all: SqliteExecutor["all"],
+	): Promise<ListingRow[]> {
 		const order = this.dialect.rowOrder();
 		const rows: ListingRow[] = [];
 		for (let after = 0, limit: number = SESSION_READ_FETCH.first; ; ) {
-			const page = await this.database.all<ListingRow & PageRow>(
+			this.assertListing(query);
+			const page = await all<ListingRow & PageRow>(
 				`WITH sized AS MATERIALIZED (
 					SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size
 					FROM ${this.tables.sessions} WHERE (${where}) AND ${order} > ? ORDER BY ord LIMIT ?
@@ -1225,12 +1289,18 @@ export class SqlSessionStore implements SessionStore {
 	 * {@link readListingRows} reads, search text counted. A session whose search text alone is longer than a page has
 	 * it read in pages of its own and joined here rather than by the database, whose string limit it may pass (#4954).
 	 */
-	private async readSummaries(where: string, params: readonly SqliteValue[]): Promise<readonly SummaryRow[]> {
+	private async readSummaries(
+		where: string,
+		params: readonly SqliteValue[],
+		query: SessionListQuery,
+		all: SqliteExecutor["all"] = this.database.all.bind(this.database),
+	): Promise<readonly SummaryRow[]> {
 		const order = this.dialect.rowOrder();
 		const rows: SummaryRow[] = [];
 		for (let after = 0, limit: number = SESSION_READ_FETCH.first; ; ) {
 			// Combine encoded strings only at read time, preserving NUL and lone surrogates verbatim.
-			const page = await this.database.all<SummaryRow & PageRow & { search_texts_json: string | null }>(
+			this.assertListing(query);
+			const page = await all<SummaryRow & PageRow & { search_texts_json: string | null }>(
 				`WITH keyed AS MATERIALIZED (
 					SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size
 					FROM ${this.tables.sessions} AS s WHERE (${where}) AND ${order} > ? ORDER BY ord LIMIT ?
@@ -1256,9 +1326,12 @@ export class SqlSessionStore implements SessionStore {
 				SESSION_READ_PAGE_CHARS,
 				limit,
 			);
+			this.assertListing(query);
 			for (const row of page) {
 				const summaryRow =
-					row.search_texts_json === null ? { ...row, search_texts_json: await this.readSearchTexts(row.id) } : row;
+					row.search_texts_json === null
+						? { ...row, search_texts_json: await this.readSearchTexts(row.id, query) }
+						: row;
 				this.summaries.set(row.id, { version: listingVersion(summaryRow), summary: summaryFromRow(summaryRow) });
 				rows.push(summaryRow);
 			}
@@ -1270,19 +1343,38 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	/** A session's search texts as one JSON array, read in pages of at most {@link SESSION_READ_PAGE_CHARS}. */
-	private async readSearchTexts(sessionId: string): Promise<string> {
-		const sizes = await this.database.all<SizedRow & { seq: number }>(
-			`SELECT seq, length(text_json) AS size FROM ${this.tables.searchTexts} WHERE session_id = ? ORDER BY seq`,
-			sessionId,
+	private async readSearchTexts(sessionId: string, query: SessionListQuery): Promise<string> {
+		const check = () => this.assertListing(query);
+		const sql = `SELECT seq, length(text_json) AS size FROM ${this.tables.searchTexts} WHERE session_id = ?`;
+		const sizes = await retryCatalogRead(
+			this.database,
+			() => this.database.all<SizedRow & { seq: number }>(`${sql} ORDER BY seq`, sessionId),
+			(tx, limit) => readCatalogPages<SizedRow & { seq: number }>(tx, sql, [sessionId], "seq", limit, check),
+			SESSION_READ_FETCH.max,
+			check,
 		);
+		check();
 		const texts: string[] = [];
 		for (const page of pagesOf(sizes)) {
-			const rows = await this.database.all<SqliteRow & { text_json: string }>(
-				`SELECT text_json FROM ${this.tables.searchTexts} WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq`,
-				sessionId,
-				page[0]!.seq,
-				page.at(-1)!.seq,
+			const from = `FROM ${this.tables.searchTexts} WHERE session_id = ? AND seq >= ? AND seq <= ?`;
+			const params = [sessionId, page[0]!.seq, page.at(-1)!.seq];
+			const rows = await retryCatalogRead(
+				this.database,
+				() =>
+					this.database.all<SqliteRow & { text_json: string }>(`SELECT text_json ${from} ORDER BY seq`, ...params),
+				(tx, limit) =>
+					readCatalogPages<SqliteRow & { text_json: string }>(
+						tx,
+						`SELECT seq,text_json ${from}`,
+						params,
+						"seq",
+						limit,
+						check,
+					),
+				SESSION_READ_FETCH.max,
+				check,
 			);
+			check();
 			for (const row of rows) texts.push(row.text_json);
 		}
 		return `[${texts.join(",")}]`;
@@ -2034,9 +2126,13 @@ class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
 	async list(sessionId: string): Promise<readonly SessionOpenMarkerAge[]> {
 		this.assertOpen();
 		const now = dialectOf(this.database).nowMs;
-		const rows = await this.database.all<OpenMarkerRow>(
-			`SELECT token, pid, host, ${now} - heartbeat_at AS age_ms FROM ${this.table} WHERE session_id = ?`,
-			sessionId,
+		const sql = `SELECT token, pid, host, ${now} - heartbeat_at AS age_ms FROM ${this.table} WHERE session_id = ?`;
+		const rows = await retryCatalogRead(
+			this.database,
+			() => this.database.all<OpenMarkerRow>(sql, sessionId),
+			(tx, limit) => readCatalogPages<OpenMarkerRow>(tx, sql, [sessionId], "token", limit, this.assertOpen),
+			256,
+			this.assertOpen,
 		);
 		return rows.map((row) => ({ token: row.token, pid: Number(row.pid), host: row.host, ageMs: Number(row.age_ms) }));
 	}

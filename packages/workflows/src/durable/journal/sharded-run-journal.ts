@@ -445,21 +445,30 @@ export class ShardedRunJournal implements RunJournal {
 	 * does not list yet, from the first shard that holds it. A shard that cannot be opened is skipped and recorded in
 	 * `unavailableShards()`; its runs still fail with the typed reason when they are used.
 	 */
-	async listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]> {
+	async listRuns(filter?: { cwd?: string }, options?: { signal?: AbortSignal }): Promise<readonly RunSummary[]> {
 		this.assertOpen();
+		options?.signal?.throwIfAborted();
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return this.operation(async () => {
-			const [records, owners] = await Promise.all([this.catalog.shards(), this.catalog.owners()]);
+			const [records, owners] = await Promise.all([this.catalog.shards(options), this.catalog.owners(options)]);
 			const listed = new Map<string, RunSummary>();
 			for (const record of records) {
+				options?.signal?.throwIfAborted();
 				const journal = await this.listable(record);
-				if (journal === undefined) continue;
-				for (const run of await journal.listRuns(filter)) {
-					const owner = owners.get(run.runId);
-					if (owner === undefined ? listed.has(run.runId) : owner !== record.id) continue;
-					listed.set(run.runId, run);
+				options?.signal?.throwIfAborted();
+				if (journal !== undefined) {
+					const rows = await journal.listRuns(filter, options);
+					options?.signal?.throwIfAborted();
+					for (const run of rows) {
+						const owner = owners.get(run.runId);
+						if (owner === undefined ? listed.has(run.runId) : owner !== record.id) continue;
+						listed.set(run.runId, run);
+					}
 				}
+				if (options?.signal) await nextTurn();
+				options?.signal?.throwIfAborted();
 			}
+			options?.signal?.throwIfAborted();
 			return [...listed.values()].sort(byRunId);
 		});
 	}
