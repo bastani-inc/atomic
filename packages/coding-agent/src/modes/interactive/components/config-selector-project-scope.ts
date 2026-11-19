@@ -13,8 +13,7 @@ function setProjectPaths(settings: SettingsManager, type: ResourceType, paths: s
 	if (type === "extensions") settings.setProjectExtensionPaths(paths);
 	else if (type === "skills") settings.setProjectSkillPaths(paths);
 	else if (type === "prompts") settings.setProjectPromptTemplatePaths(paths);
-	else if (type === "themes") settings.setProjectThemePaths(paths);
-	else settings.setProjectWorkflowPaths(paths);
+	else settings.setProjectThemePaths(paths);
 }
 
 function packagePattern(item: ResourceItem): string {
@@ -59,7 +58,7 @@ export function toggleProjectResource(
 		return;
 	}
 	const configured = settings.getProjectSettings()[item.resourceType];
-	const current = [...(Array.isArray(configured) ? configured : (configured?.paths ?? []))];
+	const current = [...(configured ?? [])];
 	const projectBase = join(cwd, CONFIG_DIR_NAME);
 	const pattern =
 		item.path.startsWith(BUILTIN_PATH_PREFIX) || item.metadata.scope === "user"
