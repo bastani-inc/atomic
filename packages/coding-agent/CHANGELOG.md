@@ -4,8 +4,17 @@
 
 ### Breaking Changes
 
+- The `subagents` builtin now ships the 11 general-purpose skills previously bundled with `workflows`. Default `/skill:` names and contents are unchanged. SDK hosts that disable `subagents` also disable those skills; to keep the skills without allowing delegation, leave `subagents` enabled and set `excludedTools: ["subagent"]`.
+- Atomic no longer ships the `workflow` tool, `/workflows`, `/workflow-authoring`, or the F2 workflow shortcut. Workflows are now skills: ask Atomic to convert an old definition into a skill that uses codemode and subagents. The original file stays untouched. Use `/tasks` to inspect background work and `/resume` to reopen a saved session, not a workflow run.
+- The SDK no longer accepts `workflows` in the `builtins` option. Remove that key from session options. The `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin` and `@bastani/atomic/workflows/builtin/*` imports are no longer published; keep a pre-0.10 installation if you still need to execute a definition with the old SDK.
+- RPC no longer accepts `list_workflow_runs`, `get_workflow_run_summary`, `get_workflow_resume_entries`, `resume_workflow_from_picker` or `delete_workflow_from_picker`. `RpcClient.listWorkflowRuns()` and `getWorkflowRunSummary()` are removed. For saved conversations, use `list_sessions`, `get_session_summary` and `switch_session`.
+- `atomic storage migrate` still sets up sessions and Intercom, but no longer creates workflow or worker-pool tables. Existing workflow data is not deleted.
 - Removed `atomic worker start`, `status`, `metrics` and `controller`, the standalone workflow worker entry point, and the worker fleet deployment examples. Stop worker services and autoscalers before upgrading. Ask Atomic to delegate work to subagents instead; there is no remote worker pool to configure.
 - Unset `ATOMIC_WORKFLOWS_JOURNAL`, `ATOMIC_WORKFLOW_JOURNAL_PATH` and `ATOMIC_WORKFLOW_ARTIFACT_DIR` in launch scripts; startup warns once if they are still set. Other workflow and pool variables, including `ATOMIC_WORKFLOW_DEBUG` and `ATOMIC_DEBUG_POOLED_WATCH`, no longer enable tracing or classify new sessions. Extensions no longer receive `WORKFLOW_STAGE_SUBAGENT_GUARD_ENV`, `WORKFLOW_SESSION_METADATA_ENV`, `workflowSessionMetadataFromEnv`, or the `workflow`, `pooled-watch` and `pool` debug areas. Use `--debug` or `ATOMIC_DEBUG=1` for the supported areas.
+
+### Added
+
+- The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 
 ## [0.9.90] - 2026-11-19
 

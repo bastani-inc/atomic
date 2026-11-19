@@ -24,7 +24,7 @@ import { makeMockSession } from "./stage-runner-helpers.js";
 const SOURCE = "openai";
 const MODEL_ID = "gpt-5-mini";
 const USAGE_LIMIT = "The usage limit has been reached";
-const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 const ACCOUNTS = {
 	stagePrimary: `${SOURCE}-1`,
 	stageFallback: `${SOURCE}-2`,

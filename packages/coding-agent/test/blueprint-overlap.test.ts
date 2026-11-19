@@ -442,7 +442,7 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 		const { createAgentSession } = await import("../src/core/sdk.ts");
 		const { session } = await createAgentSession({
 			agentDir: sandbox.path("agent"),
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 			settingsManager: SettingsManager.inMemory({ defaultProjectTrust: "always" }),
 			sessionManager: await SessionManager.open(manager.getSessionStore(), manager.getSessionId()),
 		});

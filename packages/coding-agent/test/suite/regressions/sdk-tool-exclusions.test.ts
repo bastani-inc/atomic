@@ -75,7 +75,7 @@ describe("SDK tool exclusions", () => {
 			cwd: tempDir,
 			agentDir,
 			// #3105: this fixture isolates coding-tool exclusions and Intercom.
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, "web-access": false },
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager,

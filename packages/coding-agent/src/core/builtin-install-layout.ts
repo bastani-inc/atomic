@@ -1,10 +1,9 @@
-export const BUILTIN_PACKAGE_DIR_NAMES = ["workflows", "subagents", "mcp", "web-access", "intercom"] as const;
+export const BUILTIN_PACKAGE_DIR_NAMES = ["subagents", "mcp", "web-access", "intercom"] as const;
 
 export type BuiltinPackageDirName = (typeof BUILTIN_PACKAGE_DIR_NAMES)[number];
 
 /** Source-checkout extension entries. Discovery still loads these in a git tree. */
 export const SOURCE_EXTENSION_ENTRIES = {
-	workflows: "src/extension/index.ts",
 	subagents: "src/extension/index.ts",
 	mcp: "index.ts",
 	"web-access": "index.ts",
@@ -13,23 +12,12 @@ export const SOURCE_EXTENSION_ENTRIES = {
 
 /** Installed/npm extension entries after copy-builtin-packages prebundles them. */
 export const INSTALLED_EXTENSION_ENTRIES = {
-	workflows: "src/extension/index.bundle.mjs",
 	subagents: "src/extension/index.bundle.mjs",
 	mcp: "index.bundle.mjs",
 	"web-access": "index.bundle.mjs",
 	intercom: "index.bundle.mjs",
 } as const satisfies Record<BuiltinPackageDirName, string>;
 
-export const WORKFLOWS_SDK_BUNDLE_ENTRY = "src/index.js";
-/**
- * Local worker entrypoints beside the two workflow bundles. Each bundle forks
- * `./local-worker-entry.mjs` relative to its own `import.meta.url`, so the
- * extension bundle and the SDK bundle each need a runnable sibling.
- */
-export const WORKFLOWS_LOCAL_WORKER_ENTRIES = [
-	"src/extension/local-worker-entry.mjs",
-	"src/local-worker-entry.mjs",
-] as const;
 export const INTERCOM_BROKER_BUNDLE_ENTRY = "broker/broker.bundle.mjs";
 
 export function requiredEntriesForBuiltin(dirName: BuiltinPackageDirName): readonly string[] {

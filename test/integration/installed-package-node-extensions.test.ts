@@ -222,7 +222,8 @@ runTest(
 			assert.equal(exitCode, 0, `first start failed:\n${output}`);
 			assert.ok(!output.includes("Failed to load extension"), `extension load failure:\n${output}`);
 			const tools = requestedTools[0] ?? [];
-			for (const builtinTool of ["workflow", "subagent", "web_search", "fetch_content", "intercom"]) {
+			assert.ok(!tools.includes("workflow"));
+			for (const builtinTool of ["subagent", "web_search", "fetch_content", "intercom"]) {
 				assert.ok(tools.includes(builtinTool), `builtin tool ${builtinTool} missing from ${tools.join(",")}`);
 			}
 			// The builtins ship prebundled and load natively, so a first start has nothing to transpile.
@@ -468,8 +469,6 @@ runTest(
 			"consumer-parity-types.mts",
 			"consumer-parity.mjs",
 			"sdk-host-fixture-support.mjs",
-			"sdk-host-durable-workflow.ts",
-			"sdk-host-built-node.mjs",
 			"sdk-host-lazy-mcp.mjs",
 			"sdk-host-web-owners.mjs",
 			"sdk-host-web-unavailable.mjs",

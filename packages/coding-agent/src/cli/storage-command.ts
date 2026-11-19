@@ -68,7 +68,6 @@ import {
 	type TransferredIds,
 } from "../core/storage/transfer-files.js";
 import { importStorage, sessionsTransferDirectory, workflowsTransferDirectory } from "../core/storage-transfer.ts";
-import { loadWorkerHostModule, type WorkerHostModule } from "./worker-command.js";
 
 export { LIBSQL_ADAPTER_PACKAGE, STORAGE_TOKEN_FILE };
 
@@ -444,8 +443,6 @@ export interface StorageCommandOptions {
 	readonly error?: (line: string) => void;
 	/** Defaults to the bundled Intercom package's broker control. */
 	readonly loadControl?: () => Promise<IntercomBrokerControl>;
-	/** `migrate`: defaults to the bundled workflows package's public entry. */
-	readonly loadWorkerModule?: () => Promise<Pick<WorkerHostModule, "migrateWorkflowStorage">>;
 	/** `migrate`: defaults to the bundled Intercom package's broker state opener. */
 	readonly loadBrokerState?: () => Promise<BrokerStateModule>;
 }
@@ -742,10 +739,6 @@ async function migrate(
 		await opened.close();
 	}
 	await (await new StorageProvider().openSessionStore(selection, { agentDir, domain: "sessions" })).close();
-	const workflows = await (options.loadWorkerModule ?? loadWorkerHostModule)();
-	if (workflows.migrateWorkflowStorage === undefined)
-		throw new Error("The bundled workflows package cannot migrate storage; reinstall Atomic.");
-	await workflows.migrateWorkflowStorage({ ...(settings === undefined ? {} : { journal: settings }), agentDir });
 	const intercom = await (options.loadBrokerState ?? loadBrokerStateModule)();
 	const broker = await intercom.openIntercomBrokerState({
 		...(selection.prefix === undefined ? {} : { prefix: selection.prefix }),

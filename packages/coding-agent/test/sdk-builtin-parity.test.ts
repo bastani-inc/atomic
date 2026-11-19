@@ -67,7 +67,11 @@ test("default SDK creation returns an Atomic AgentSession with builtin tools and
 		});
 		try {
 			assert.ok(session instanceof AgentSession);
-			for (const name of ["workflow", "subagent", "intercom", "web_search", "fetch_content"]) {
+			assert.equal(session.getToolDefinition("workflow"), undefined);
+			assert.equal(session.extensionRunner.getCommand("workflows"), undefined);
+			assert.equal(session.extensionRunner.getCommand("workflow-authoring"), undefined);
+			assert.equal(session.extensionRunner.getShortcuts({}).has("f2"), false);
+			for (const name of ["subagent", "intercom", "web_search", "fetch_content"]) {
 				assert.ok(
 					session.getAllTools().some((tool) => tool.name === name),
 					`missing builtin ${name}`,
@@ -171,9 +175,9 @@ test(
 				const builtins = session.resourceLoader
 					.getExtensions()
 					.extensions.filter((extension) => extension.sourceInfo.configurationOrigin === "bundled");
-				assert.equal(builtins.length, 5);
-				assert.equal(new Set(builtins.map((extension) => extension.resolvedPath)).size, 5);
-				assert.ok(session.getAllTools().some((tool) => tool.name === "workflow"));
+				assert.equal(builtins.length, 4);
+				assert.equal(new Set(builtins.map((extension) => extension.resolvedPath)).size, 4);
+				assert.ok(session.getAllTools().some((tool) => tool.name === "subagent"));
 				assert.ok(session.systemPrompt.startsWith("Caller-owned prompt"));
 				assert.deepEqual(loader.getExtensions().extensions, originalExtensions);
 				await Promise.all([session.bindExtensions({}), session.bindExtensions({})]);
@@ -184,7 +188,7 @@ test(
 					session.resourceLoader
 						.getExtensions()
 						.extensions.filter((extension) => extension.sourceInfo.configurationOrigin === "bundled").length,
-					5,
+					4,
 				);
 				assert.deepEqual(reasons, ["startup", "reload"]);
 			} finally {
@@ -208,7 +212,7 @@ test("CLI service creation supplies the same default builtin families", async ()
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 		});
 		try {
-			for (const name of ["workflow", "subagent", "intercom", "web_search"])
+			for (const name of ["subagent", "intercom", "web_search"])
 				assert.ok(session.getActiveToolNames().includes(name), name);
 			assert.ok(session.extensionRunner?.getCommand("mcp"));
 		} finally {
@@ -227,13 +231,13 @@ test("missing shipped builtin assets reject with the package identity", async ()
 		await assert.rejects(
 			createAgentSession({ cwd, agentDir: join(cwd, "agent"), sessionManager: SessionManager.inMemory(cwd) }),
 			(error: Error & { code?: string }) =>
-				error.code === "BuiltinUnavailable" && error.message.includes("@bastani/workflows"),
+				error.code === "BuiltinUnavailable" && error.message.includes("@bastani/subagents"),
 		);
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: join(cwd, "agent"),
 			sessionManager: SessionManager.inMemory(cwd),
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 		});
 		try {
 			assert.equal(packageExtensionCount(session.resourceLoader), 0);
@@ -570,7 +574,6 @@ test(
 test.each(["inherited getter", "nonenumerable"])("builtin %s false flags survive reload", async (shape) => {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-flag-shape-"));
 	class Selection {
-		workflows = false;
 		mcp = false;
 		"web-access" = false;
 		intercom = false;
@@ -645,7 +648,6 @@ test.each(["preferred", "dist"])(
 			const originalArray = loader.getExtensions().extensions;
 			const originalSkills = loader.getSkills().skills;
 			const builtins = Object.freeze({
-				workflows: false,
 				subagents: false,
 				mcp: false,
 				"web-access": false,
@@ -689,15 +691,7 @@ test.each(["preferred", "dist"])(
 	REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS,
 );
 
-const extensionToolNames = [
-	"workflow",
-	"subagent",
-	"web_search",
-	"code_search",
-	"fetch_content",
-	"get_search_content",
-	"intercom",
-];
+const extensionToolNames = ["subagent", "web_search", "code_search", "fetch_content", "get_search_content", "intercom"];
 // #3105: active selection is independent from composition and must survive reload unchanged.
 test.each<{
 	name: string;
@@ -769,7 +763,7 @@ test.each<{
 			try {
 				assert.deepEqual([...session.getActiveToolNames()].sort(), [...expected].sort());
 				if (options.tools && options.noTools !== "all") assert.deepEqual(session.getActiveToolNames(), expected);
-				assert.ok(session.resourceLoader.getExtensions().extensions.length >= 5);
+				assert.ok(session.resourceLoader.getExtensions().extensions.length >= 4);
 				await session.reload();
 				assert.deepEqual([...session.getActiveToolNames()].sort(), [...expected].sort());
 				for (const excluded of options.excludedTools ?? [])
@@ -788,8 +782,7 @@ test.each<{
 // #3105: omitted keys, empty selection and explicit true all retain shipped descriptor order.
 test.each<Partial<Record<AtomicBuiltin, boolean>>>([
 	{},
-	{ workflows: true, subagents: true, mcp: true, "web-access": true, intercom: true },
-	{ workflows: false },
+	{ subagents: true, mcp: true, "web-access": true, intercom: true },
 	{ subagents: false },
 	{ mcp: false },
 	{ "web-access": false },
@@ -810,7 +803,6 @@ test.each<Partial<Record<AtomicBuiltin, boolean>>>([
 			try {
 				for (let generation = 0; generation < 2; generation++) {
 					for (const [family, tool] of [
-						["workflows", "workflow"],
 						["subagents", "subagent"],
 						["web-access", "web_search"],
 						["intercom", "intercom"],
@@ -856,7 +848,7 @@ test("SDK host callback answers a questionnaire without rendering", async () => 
 			sessionManager: SessionManager.inMemory(cwd),
 			settingsManager: SettingsManager.inMemory(),
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			extensionBindings: {
 				humanInput: {
 					confirm: async () => false,
@@ -926,7 +918,7 @@ async function hostSession(bindings: ExtensionBindings = {}, options: CreateAgen
 			resourceLoader: loader,
 			sessionManager: SessionManager.inMemory(cwd),
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			extensionBindings: bindings,
 			...options,
 		});
@@ -1377,7 +1369,7 @@ test("SDK startup hooks can await human input without rendering", async () => {
 			resourceLoader: loader,
 			sessionManager: SessionManager.inMemory(cwd),
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			extensionBindings: { humanInput: callbackHost({ input: async () => "  initial " }) },
 		});
 		try {
@@ -1496,7 +1488,7 @@ test("child session inherits callback and config without resurrecting disabled b
 	});
 	try {
 		const options = fixture.contexts[0]!.getChildSessionOptions!({
-			builtins: { intercom: true, workflows: true },
+			builtins: { intercom: true },
 			sessionManager: SessionManager.inMemory(fixture.session.sessionManager.getCwd()),
 		});
 		const { session: child } = await createAgentSession(options);
@@ -1749,7 +1741,7 @@ test("public disposal awaits shutdown once and seals admission synchronously", a
 		resourceLoader,
 		settingsManager,
 		sessionManager: SessionManager.inMemory(cwd),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	try {
 		const closing = session.dispose();
@@ -1804,7 +1796,7 @@ test.each(["none", "diagnostic", "error"] as const)(
 			],
 		});
 		await resourceLoader.reload();
-		const builtins = { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false };
+		const builtins = { subagents: false, mcp: false, intercom: false, "web-access": false };
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: join(cwd, "agent"),
@@ -1877,7 +1869,7 @@ test("public disposal aborts and drains active shell work and pending human inpu
 		agentDir: join(cwd, "agent"),
 		sessionManager: SessionManager.inMemory(cwd),
 		settingsManager: SettingsManager.inMemory(),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		extensionBindings: {
 			humanInput: {
 				confirm: async () => false,
@@ -1952,7 +1944,7 @@ test("public disposal cancels a queued child without dispatching it", async () =
 		agentDir: join(cwd, "agent"),
 		sessionManager: SessionManager.inMemory(cwd),
 		settingsManager: SettingsManager.inMemory(),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	let dispatch!: () => Promise<void>;
 	let started = 0;
@@ -2020,7 +2012,7 @@ test("independent loaders sharing an event bus retain distinct scopes across rel
 				settingsManager,
 				resourceLoader,
 				sessionManager: SessionManager.inMemory(cwd),
-				builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+				builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			});
 			sessions.push(session);
 		}
@@ -2064,7 +2056,7 @@ test.each(["input", "before_agent_start"] as const)("disposal drains suspended %
 		modelRuntime,
 		model: modelRuntime.getModels("anthropic")[0],
 		sessionManager: SessionManager.inMemory(cwd),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	const provider = vi.spyOn(modelRuntime, "streamSimple").mockImplementation(() => {
 		throw new Error("provider sentinel");
@@ -2147,7 +2139,7 @@ test.each([
 		settingsManager,
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	const reload = session.reload({ beforeSessionStart: phase === "before" ? suspend : undefined });
 	const outcome = reload.then(
@@ -2227,7 +2219,7 @@ test("an admitted slash command can reload without waiting on its own prompt", a
 		settingsManager,
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	}));
 	try {
 		await session.prompt("/reload-self");
@@ -2267,7 +2259,7 @@ test("disposal retains a reload candidate cleanup failure after reload has rejec
 		settingsManager,
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	try {
 		await assert.rejects(
@@ -2319,7 +2311,7 @@ test("reload publication cannot admit an overlapping reload", async () => {
 		settingsManager,
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	const first = session.reload();
 	try {
@@ -2372,7 +2364,7 @@ test("compaction drains admitted hooks and refuses terminal admission", async ()
 		resourceLoader,
 		sessionManager,
 		model: getModel("anthropic", "claude-sonnet-4-5")!,
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	await sessionManager.appendMessage({
 		role: "user",
@@ -2434,7 +2426,7 @@ test("tree navigation drains preflight and refuses a retired generation", async 
 		settingsManager,
 		resourceLoader,
 		sessionManager,
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	const target = await sessionManager.appendMessage({ role: "user", content: "first", timestamp: 0 });
 	await sessionManager.appendMessage({ role: "user", content: "second", timestamp: 1 });
@@ -2508,7 +2500,7 @@ test.each(["subclass", "instance"])(
 					settingsManager,
 					resourceLoader,
 					sessionManager: SessionManager.inMemory(cwd),
-					builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+					builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 				})
 			).session;
 		const a = await create(loader);
@@ -2610,7 +2602,7 @@ export default function(pi) {
 			agentDir,
 			sessionManager: SessionManager.inMemory(cwd),
 			settingsManager: SettingsManager.inMemory(),
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			tools: [],
 		});
 		try {
@@ -2708,7 +2700,7 @@ test.each(["thinking", "name", "bus", "observer", "forwarded observer", "context
 			resourceLoader,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 			sessionManager: SessionManager.inMemory(cwd),
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			tools: [],
 		});
 		if (kind === "thinking") assert.equal(await session.setThinkingLevel("high"), undefined);
@@ -2778,7 +2770,7 @@ test.each(["path", "inline"] as const)("failed %s factory rejects with original 
 						agentDir,
 						settingsManager,
 						sessionManager: SessionManager.inMemory(cwd),
-						builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+						builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 						tools: [],
 					});
 		await assert.rejects(creation, (error: Error & { code?: string }) => {
@@ -2867,7 +2859,7 @@ test("closing preserves queued message persistence and completion hooks", async 
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
 		tools: [],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	try {
 		const turn = session.prompt("preserve this prompt");
@@ -2940,7 +2932,7 @@ test.each(["override", "cleanup"] as const)("failed reload preparation releases 
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
 		tools: [],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	try {
 		fail = true;
@@ -3021,7 +3013,7 @@ test.each([1, 2])("disposal cancels %i admitted background summaries without wai
 		settingsManager: SettingsManager.inMemory({ sessionSummary: { enabled: true } }),
 		sessionManager: await SessionManager.create(cwd, join(cwd, "sessions")),
 		tools: [],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		extensionBindings: { mode: "rpc" },
 	});
 	try {
@@ -3129,7 +3121,7 @@ test("closing preserves admitted tool results", async () => {
 				},
 			},
 		],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	try {
 		session.setActiveToolsByName(["fixture_effect"]);
@@ -3195,7 +3187,7 @@ test.each([false, true])(
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(cwd),
 			tools: [],
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
 		try {
 			assert.deepEqual([...active], [1, 2]);
@@ -3290,7 +3282,7 @@ test.each([1, 2])(
 						modelRuntime,
 						model: getModel("anthropic", "claude-sonnet-4-5"),
 						resourceLoader,
-						builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+						builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 					})),
 					services: { cwd, agentDir: cwd, settingsManager, modelRuntime, resourceLoader, diagnostics: [] },
 					diagnostics: [],
@@ -3403,7 +3395,7 @@ test.each(["activate", "commit", "settings", "activate-cleanup"])("reload public
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
 		tools: [],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	if (mode === "settings") {
 		const prepare = settingsManager.prepareReload.bind(settingsManager);
@@ -3487,7 +3479,7 @@ test.each(["error", "diagnostic"] as const)(
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(cwd),
 			tools: [],
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
 		await session.bindExtensions({
 			[observerFailure === "error" ? "onError" : "onDiagnostic"]: () => {
@@ -3566,7 +3558,7 @@ test("public reload retains late commit and observer failures during retirement 
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
 		tools: [],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	await session.bindExtensions({
 		onError: () => {
@@ -3653,7 +3645,7 @@ test.each(["shutdown"] as const)("public reload retains commit and %s failures (
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
 		tools: [],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	try {
 		const failure = await session.reload().catch((error: unknown) => error);
@@ -3740,7 +3732,7 @@ test.each(["failure", "shutdown", "invalidation", "observation", "control"])(
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(cwd),
 			tools: [],
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
 		const oldRunner = session.extensionRunner;
 		const invalidate = oldRunner.invalidate.bind(oldRunner);
@@ -3817,7 +3809,7 @@ test.each(["success", "failure", "cleanup"])("reload preparation transfers every
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
 		tools: [],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	try {
 		const reload = session.reload(
@@ -3893,7 +3885,7 @@ test.each([false, true])("failed reload candidate drains callbacks before cleanu
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
 		tools: [],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	candidate = true;
 	let settled = false;
@@ -3996,7 +3988,7 @@ test.each([false, true])("self reload retains invoking continuation cleanup: %s"
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
 		tools: [],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	}));
 	const prompt = session.prompt("/reload-acquire");
 	let close: Promise<void> | undefined;
@@ -4093,7 +4085,7 @@ test.each(["subset", "none", "all", "startup", "cleanup"])(
 				resourceLoader: loader,
 				sessionManager: SessionManager.inMemory(cwd),
 				tools: [],
-				builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+				builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			});
 			if (mode === "startup" || mode === "cleanup") {
 				await assert.rejects(creation, (error: Error & { code?: string }) => {
@@ -4185,7 +4177,7 @@ test.each(["subset", "none", "all", "rollback", "cleanup"])(
 			resourceLoader: loader,
 			sessionManager: SessionManager.inMemory(cwd),
 			tools: [],
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
 		try {
 			const reload = session.reload({
@@ -4267,7 +4259,7 @@ test.each(["close", "reload", "rollback", "cancel"])(
 			resourceLoader: loader,
 			sessionManager: SessionManager.inMemory(cwd),
 			tools: [],
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
 		const exec = () => api.exec(process.execPath, ["-e", 'process.stdout.write("allowed")']);
 		let operation: Promise<void> | undefined;
@@ -4359,7 +4351,7 @@ test("direct extension execution drains before shutdown", async () => {
 		resourceLoader: loader,
 		sessionManager: SessionManager.inMemory(cwd),
 		tools: [],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	const child = api.exec(process.execPath, [
 		"-e",
@@ -4439,7 +4431,7 @@ test("retired replacement cleanup cannot deliver successor events", async () => 
 					sessionManager,
 					sessionStartEvent,
 					tools: [],
-					builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+					builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 				})),
 				services: { cwd, agentDir: cwd, settingsManager, modelRuntime, resourceLoader, diagnostics: [] },
 				diagnostics: [],
@@ -4627,7 +4619,7 @@ test.each(["close", "close-error", "candidate", "factory"])(
 			resourceLoader: loader,
 			sessionManager: SessionManager.inMemory(cwd),
 			tools: [],
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
 		const teardown =
 			mode === "factory"
@@ -4734,7 +4726,7 @@ test.each(["manual", "invalidate", "throwing", "invalidate-throwing"])(
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(cwd),
 			tools: [],
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
 		const extension = session.resourceLoader.getExtensions().extensions[0];
 		const ledger = (extension as unknown as Record<symbol, { releases: Set<() => void> }>)[
@@ -4823,7 +4815,7 @@ test("factory rollback drains admitted callbacks before shutdown", async () => {
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
 		tools: [],
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	try {
 		await started;
@@ -4940,7 +4932,7 @@ test.each(["creation", "creation-error", "replay", "ordinary", "transaction", "t
 						resourceLoader,
 						sessionManager: SessionManager.inMemory(cwd),
 						tools: [],
-						builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+						builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 						initialContextTransform() {
 							throw primary;
 						},
@@ -5091,7 +5083,7 @@ test.each([false, true])(
 			resourceLoader: loader,
 			sessionManager: SessionManager.inMemory(cwd),
 			tools: [],
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		}).then(
 			(result) => {
 				session = result.session;
@@ -5214,7 +5206,7 @@ test.each(["dispose", "reload", "control", "error", "replay", "replay-error"])(
 			modelRuntime,
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(cwd),
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			tools: [],
 		});
 		let settled = false;
@@ -5343,7 +5335,7 @@ async function startSdkMcpServer() {
 	};
 }
 
-const mcpOnlyBuiltins = { workflows: false, subagents: false, intercom: false, "web-access": false };
+const mcpOnlyBuiltins = { subagents: false, intercom: false, "web-access": false };
 
 test(
 	"SDK native MCP discovers enabled configured tools, calls them and reconnects on reload",
@@ -5528,7 +5520,7 @@ test("web results survive sibling initialization and overlapping close", async (
 		cwd: root,
 		agentDir: join(root, "agent"),
 		settingsManager: SettingsManager.inMemory(),
-		builtinPackagePaths: getBuiltinPackagePaths({ workflows: false, subagents: false, mcp: false, intercom: false }),
+		builtinPackagePaths: getBuiltinPackagePaths({ subagents: false, mcp: false, intercom: false }),
 	});
 	await resourceLoader.reload();
 	try {
@@ -5542,7 +5534,7 @@ test("web results survive sibling initialization and overlapping close", async (
 				resourceLoader,
 				settingsManager: SettingsManager.inMemory(),
 				model: getModel("anthropic", "claude-sonnet-4-5")!,
-				builtins: { workflows: false, subagents: false, mcp: false, intercom: false },
+				builtins: { subagents: false, mcp: false, intercom: false },
 			});
 			sessions.push(session);
 		}

@@ -824,8 +824,6 @@ jobs:
           "$smoke_dir/atomic/atomic" --version
           bun run scripts/assert-builtin-set.ts "$smoke_dir/atomic/builtin"
           for required_path in \
-            builtin/workflows/package.json \
-            builtin/workflows/src/extension/index.bundle.mjs \
             builtin/subagents/package.json \
             builtin/subagents/src/extension/index.bundle.mjs \
             builtin/mcp/package.json \
@@ -876,8 +874,6 @@ jobs:
           }
           bun run scripts/assert-builtin-set.ts (Join-Path $smokeDir "builtin")
           foreach ($requiredPath in @(
-            "builtin/workflows/package.json",
-            "builtin/workflows/src/extension/index.bundle.mjs",
             "builtin/subagents/package.json",
             "builtin/subagents/src/extension/index.bundle.mjs",
             "builtin/mcp/package.json",
