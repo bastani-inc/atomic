@@ -6,6 +6,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ### Added
 
+- In fullscreen mode, a click on a session in the Intercom session list picks it, and the wheel moves the selection.
 - In fullscreen mode, a click on a key in the intercom session list's and message dialog's hint rows, such as `Enter: Send` or `Escape: Close`, presses that key
 
 ### Fixed

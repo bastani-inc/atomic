@@ -382,7 +382,8 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 
 			const pressResult = selector.handleMouse(mouseEvent("press", targetY, wrapWidth, lines.length));
 			const clickResult = selector.handleMouse(mouseEvent("click", targetY, wrapWidth, lines.length));
-			assert.deepEqual(pressResult, { handled: true, focus: true });
+			// The press is left to the renderer's text selection; the click that follows it runs the row.
+			assert.equal(pressResult, undefined);
 			assert.deepEqual(clickResult, { handled: true });
 			assert.deepEqual(chosen, ["c"]);
 		}
@@ -481,7 +482,7 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 
 		const lines = selector.render(80);
 		const betaY = lines.findIndex((line) => plain(line).includes("beta"));
-		selector.handleMouse(mouseEvent("press", betaY, 80, lines.length));
+		selector.handleMouse(mouseEvent("click", betaY, 80, lines.length, { clickCount: 1 }));
 		assert.deepEqual(changes, ["beta", undefined, "alpha", "delta", "alpha", "beta"]);
 
 		const singleEnabled = new Selector<string>({

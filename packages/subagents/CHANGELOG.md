@@ -6,6 +6,10 @@
 
 - Every `subagent` launch now runs in the background. The call returns once each child is admitted, with its task id, and the child reports by its completion notice. A subagent the agent needs next is therefore listed below the prompt and in `/tasks` like any other, where you can open its chat, message it or stop it. The launch `wait` option is gone: a call that still passes `wait: { kind: "foreground" }`, as an older saved prompt, agent or workflow may, runs in the background, and the first line of its result says so. To use a child's result in the same turn, wait for it with `subagent({ action: "wait", id })`. A subagent's `contact_supervisor` decision or interview now always waits for the supervisor's reply in the same child, instead of ending a single child with a fresh-subagent handoff; only an SDK session without a task host, which still runs its subagents directly and waits for them as before, keeps that handoff.
 
+### Added
+
+- In fullscreen mode, a click on an agent in `/agents` opens its details, and the wheel moves the selection.
+
 ### Changed
 
 - The bundled `tdd` skill now names tautological tests, whose expected value is recomputed the way the code computes it, as an anti-pattern, with a checklist item and an example, from its upstream skill. Its frontmatter and a new `LICENSE.txt` credit the two MIT-licensed skills it is adapted from.

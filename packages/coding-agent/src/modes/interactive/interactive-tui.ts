@@ -118,6 +118,7 @@ export interface InteractiveTuiOptions {
 	terminal?: Terminal;
 	copyOnSelect?: boolean;
 	wheelScrollLines?: WheelScrollLines;
+	getInlineDialog?: () => Component | undefined;
 	onRightClickPaste?: () => void;
 	onOverlayInternalUiAction?: (url: string) => InternalUiActionResult;
 	onInternalUiAction?: (url: string) => InternalUiActionResult;
@@ -554,6 +555,22 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		// overlay-focus repair before reading the focused component so a resize
 		// cannot send a gated key to an invisible overlay.
 		this.repairOverlayFocus();
+		// An overlay may yield before declining a mouse report. Never replay that report into a gesture that
+		// outlived its modal owner, even if the same overlay has since regained focus.
+		if (isMouseInput) {
+			const focus = this.getPointerFocus();
+			const presses = new Map<string, () => boolean>();
+			for (const report of parseMouseSequences(data) ?? []) {
+				if (!report.isRelease && (report.button & (32 | 64 | 3)) === 0) {
+					presses.set(report.data, this.guardMousePress(report.x, report.y));
+				}
+			}
+			const listener = viewportListener;
+			viewportListener = (report) => {
+				if (this.getPointerFocus() === focus && presses.get(report)?.() !== false) return listener(report);
+				return undefined;
+			};
+		}
 		const focused = this.getFocusedComponent();
 		const tui = this as unknown as TuiOverlayInternals;
 		if (focused?.handleInput && (!isKeyRelease(data) || focused.wantsKeyRelease === true)) {
@@ -645,6 +662,7 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 					onInternalUiAction: options.onInternalUiAction,
 					openUrl: openBrowser,
 				}),
+			getInlineDialog: options.getInlineDialog,
 			onRightClickPaste: options.onRightClickPaste,
 			copyOnSelect: options.copyOnSelect,
 			wheelScrollLines: options.wheelScrollLines ?? "auto",

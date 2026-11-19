@@ -17,6 +17,7 @@ import {
 	Text,
 	type TUI,
 	type TuiAltScreen,
+	type TuiMouseEvent,
 	VStack,
 } from "@bastani/atomic-tui";
 import { test } from "vitest";
@@ -337,9 +338,12 @@ async function makeFullscreenGraphFixture(options: BridgeOptions = {}): Promise<
 			detached.count++;
 		},
 	});
+	// As the workflow overlay adapter mounts the graph: input, clicks and the rows it drew all reach it.
 	void bridge.child.custom(() => ({
 		render: (width: number) => graph.render(width),
 		handleInput: (data: string) => graph.handleInput(data),
+		handleMouse: (event: TuiMouseEvent) => graph.handleMouse(event),
+		paintedRowKey: (row: number) => graph.paintedRowKey(row),
 		invalidate: () => graph.invalidate(),
 		dispose: () => graph.dispose(),
 	}));
@@ -562,13 +566,34 @@ test("fullscreen forwards a modified SGR release to close overlay selection", as
 });
 
 test("fullscreen skips application selection for modified overlay clicks", async () => {
-	const { host, overlay, tui, terminal } = await makeFullscreenGraphFixture();
+	// An overlay that takes every input, as one that handles its own clicks does: the graph leaves presses to selection.
+	const bridge = makeBridge({ fullscreen: true });
+	void bridge.child.custom(
+		() => ({
+			render: () => ["selectable overlay"],
+			handleInput: () => true,
+			invalidate: () => {},
+		}),
+		{ overlay: true },
+	);
+	await flush();
+	const host = bridge.hostComponent;
+	const tui = bridge.tui;
+	const terminal = bridge.terminal;
+	assert.ok(host, "remote overlay did not mount on the host");
+	assert.ok(tui, "fullscreen renderer did not mount");
+	assert.ok(terminal, "fullscreen terminal did not mount");
+	tui.setLayoutRoot(new Text("transcript", 0, 0));
+	const overlay = tui.showOverlay(host, { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 });
+	tui.start();
+	tui.renderNow();
 	try {
+		await flush();
 		const lines = host.render(terminal.columns).map((line) => stripTerminalSequences(line));
-		const targetRow = lines.findIndex((line) => line.includes("stage-0"));
-		assert.ok(targetRow >= 0, "workflow overlay did not render a selectable row");
-		const targetCol = lines[targetRow]!.indexOf("stage-0");
-		assert.ok(targetCol >= 0, "workflow overlay did not render selectable text");
+		const targetRow = lines.findIndex((line) => line.includes("selectable overlay"));
+		assert.ok(targetRow >= 0, "overlay did not render selectable text");
+		const targetCol = lines[targetRow]!.indexOf("selectable overlay");
+		assert.ok(targetCol >= 0, "overlay text was not found");
 
 		for (const button of [4, 8, 16]) {
 			terminal.input(sgrMouse(button, targetCol, targetRow));
@@ -961,6 +986,45 @@ test("fullscreen overlay fallback returns the default editor result", () => {
 	const thinking = makeProductionThinkingHandler(new KeybindingsManager(), false);
 	assert.equal(thinking.mode.defaultEditor.actionHandlers.has("app.thinking.toggle"), false);
 	assert.equal(thinking.handler("\x14"), false);
+});
+
+test("a slow inline wheel reply scrolls only on a real decline (#5532)", async () => {
+	const bridge = makeBridge({ stallInput: true });
+	void bridge.child.custom(() => ({
+		render: () => ["List row"],
+		invalidate() {},
+		paintedRowKey: () => "list-row",
+		handleMouse: (event: TuiMouseEvent) => ({ handled: event.wheelDelta === 1 }),
+	}));
+	await flush();
+	const row = bridge.hostComponent;
+	assert.ok(row);
+	row.render(40);
+	const scrolled: number[] = [];
+	for (const delta of [1, -1]) {
+		row.handleMouse?.({
+			type: "wheel",
+			button: "none",
+			x: 0,
+			y: 0,
+			screenX: 0,
+			screenY: 0,
+			width: 40,
+			height: 1,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			wheelDelta: delta,
+			onWheelUnhandled: () => scrolled.push(delta),
+		});
+	}
+	await sleep(REMOTE_INPUT_REPLY_TIMEOUT_MS + 20);
+	assert.deepEqual(scrolled, [], "a pending reply is not a decline");
+	for (const command of bridge.childCommands.filter((c) => c.type === "engine_custom_input")) {
+		bridge.child.handleLine(serializeInteractiveEngineFrame(command));
+	}
+	await flush();
+	assert.deepEqual(scrolled, [-1]);
 });
 
 test("an unresponsive remote child falls back to the viewport and keeps later input routable", async () => {

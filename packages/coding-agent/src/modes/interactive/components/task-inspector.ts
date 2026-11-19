@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import {
+	ClickableRows,
 	type Component,
 	getKeybindings,
 	Input,
@@ -45,6 +46,7 @@ import {
 	renderNavHintLine,
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
+import { rowKeyInput } from "./row-key-input.ts";
 import {
 	type PeekContent,
 	renderBoardRow,
@@ -188,6 +190,15 @@ export const TASK_CHAT_OVERLAY_KEYS: readonly NavKey[] = [
 	{ action: "app.agents.chord", label: "then the stop-all key: stop all background work" },
 ];
 
+/** What a click on the board or a task's page lands on: a listed row, the chosen action, or a peeked choice. */
+type InspectorClickTarget =
+	| { readonly kind: "row"; readonly id: string }
+	| { readonly kind: "action" }
+	| { readonly kind: "choice"; readonly number: number };
+
+/** The wheel reports a terminal sends, so a wheel turn the renderer hands over takes the keyboard's wheel path. */
+const WHEEL_REPORT = { up: "\x1b[<64;1;1M", down: "\x1b[<65;1;1M" } as const;
+
 /** The host owns thinking display; only its default physical key, as a remap may reuse an editor key. */
 function isHostThinkingToggle(data: string): boolean {
 	return matchesKey(data, "ctrl+t") && getKeybindings().matches(data, "app.thinking.toggle");
@@ -226,6 +237,8 @@ export class TaskInspector implements Component {
 	private transcript?: TaskTranscriptPage;
 	/** The frame row the open transcript started on in the last `renderViewport`, while one was drawn. */
 	private transcriptTop: number | undefined;
+	/** The rows, action and peeked choices the last `renderViewport` drew outside a transcript. */
+	private readonly clickableRows = new ClickableRows<InspectorClickTarget>();
 	private status = "";
 	/** A failure shown once on the task pages, until the next key. */
 	private failureNotice = "";
@@ -867,16 +880,45 @@ export class TaskInspector implements Component {
 		}
 		if (current()) this.requestRender();
 	}
-	/** A click on any row of a block in an open transcript expands or collapses that block. */
+	/**
+	 * A click on any row of a block in an open transcript expands or collapses that block. On the list, a click on a
+	 * row opens it as moving there and pressing Enter does; on a task's page, a click on its action runs it as Enter
+	 * does, and a click on a peeked choice picks it as its number does. The wheel moves the selection or the page.
+	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const transcript = this.transcript;
 		const top = this.transcriptTop;
-		if (transcript?.handleMouse === undefined || top === undefined || this.helpOpen) return undefined;
-		if (this.navigation.focus.kind !== "detail") return undefined;
-		const result = transcript.handleMouse({ ...event, y: event.y - top });
-		if (result === undefined) return undefined;
-		this.requestRender();
-		return repaintAfterSingleClick(result, () => this.requestRender());
+		if (this.helpOpen) return undefined;
+		if (transcript !== undefined && this.navigation.focus.kind === "detail") {
+			if (transcript.handleMouse === undefined || top === undefined) return undefined;
+			const result = transcript.handleMouse({ ...event, y: event.y - top });
+			if (result === undefined) return undefined;
+			this.requestRender();
+			return repaintAfterSingleClick(result, () => this.requestRender());
+		}
+		return this.clickableRows.handleMouse(event, {
+			activate: (target) => {
+				if (target.kind === "choice") this.handleInput(String(target.number));
+				else if (target.kind === "action") this.pressOpenKey();
+				else if (this.navigation.focus.kind === "tasks" && !this.filtering && !this.sending) {
+					if (this.selectedRow()?.id !== target.id) {
+						// Moving there with the arrows closes a peek and drops a stop waiting for its second press.
+						if (this.peekId !== undefined) this.closePeek();
+						this.navigation.stopConfirm.reset();
+						this.navigation.select(target.id);
+					}
+					this.pressOpenKey();
+				}
+				this.requestRender();
+			},
+			scroll: (direction) => this.handleInput(direction < 0 ? WHEEL_REPORT.up : WHEEL_REPORT.down),
+		});
+	}
+
+	/** The key that opens the selected row, whichever key that is bound to, through the keyboard's own path. */
+	private pressOpenKey(): void {
+		const input = rowKeyInput("app.list.open");
+		if (input !== undefined) this.handleInput(input);
 	}
 
 	/** Ctrl+O was pressed: the open transcript's blocks follow the tool-output setting again. */
@@ -884,13 +926,16 @@ export class TaskInspector implements Component {
 		this.transcript?.toolOutputToggled?.();
 	}
 
-	/** What the last frame drew on `row` of the open transcript, named by the transcript; undefined elsewhere. */
+	/** What the last frame drew on `row`: what the open transcript names there, or the row, action or choice. */
 	paintedRowKey(row: number): string | undefined {
 		const transcript = this.transcript;
 		const top = this.transcriptTop;
-		if (transcript?.paintedRowKey === undefined || top === undefined || this.helpOpen) return undefined;
-		if (this.navigation.focus.kind !== "detail") return undefined;
-		return transcript.paintedRowKey(row - top);
+		if (this.helpOpen) return undefined;
+		if (transcript !== undefined && this.navigation.focus.kind === "detail") {
+			if (transcript.paintedRowKey === undefined || top === undefined) return undefined;
+			return transcript.paintedRowKey(row - top);
+		}
+		return this.clickableRows.paintedRowKey(row);
 	}
 
 	/** Every key belongs to the inspector except the host's thinking toggle when it leaves that alone. */
@@ -1650,6 +1695,7 @@ export class TaskInspector implements Component {
 		].slice(0, Math.max(1, budget));
 	}
 	renderViewport(width: number, budget: number): string[] {
+		this.clickableRows.clear();
 		if (this.transcript && this.navigation.focus.kind === "detail")
 			return this.renderTranscriptPage(width, budget, this.transcript);
 		this.transcriptTop = undefined;
@@ -1696,10 +1742,14 @@ export class TaskInspector implements Component {
 		const footer = renderNavHintLine(keys, width, style, getKeybindings());
 		const notice = this.failureNotice || this.stopNotice();
 		const failure = notice ? [theme.fg("warning", truncateToWidth(notice, width))] : [];
-		if (!framed)
-			return [...compactSummary, ...view, ...actionRow, footer, ...failure, ...statusRows]
-				.map((line) => truncateToWidth(line, width))
-				.slice(-Math.max(1, budget));
+		if (!framed) {
+			const page = [...compactSummary, ...view, ...actionRow, footer, ...failure, ...statusRows];
+			const shown = page.slice(-Math.max(1, budget));
+			const actionLine = compactSummary.length + view.length - (page.length - shown.length);
+			if (action !== undefined && actionLine >= 0) this.clickableRows.add(actionLine, { kind: "action" }, action);
+			return shown.map((line) => truncateToWidth(line, width));
+		}
+		if (action !== undefined) this.clickableRows.add(2 + view.length, { kind: "action" }, action);
 		const title = current ? `${taskDisplayText(taskLabel(current))} › ${taskDisplayText(current.title)}` : "Tasks";
 		const heading = ` ${truncateToWidth(title, Math.max(1, width - 5))} `;
 		const border = (text: string) => theme.fg("borderMuted", text);
@@ -1987,6 +2037,15 @@ export class TaskInspector implements Component {
 					: ` ${renderBoardRow(this.withBoardElapsed(line), line.id === selected?.id, width - 1)}`,
 			),
 		);
+		const windowTop = shortViewport ? 0 : head.length;
+		for (const [index, line] of slice.entries()) {
+			if (typeof line !== "string") this.clickableRows.add(windowTop + index, { kind: "row", id: line.id }, line.id);
+		}
+		for (const [index, choice] of visibleChoices.entries()) {
+			const line = firstChoiceLine + index - start;
+			if (line >= 0 && line < slice.length && replyValue === "")
+				this.clickableRows.add(windowTop + line, { kind: "choice", number: index + 1 }, `choice\u0000${choice}`);
+		}
 		if (shortViewport) {
 			const shortHint = lineBudget >= 2 ? footer.slice(-1) : [];
 			return [...renderedWindow, ...shortHint].slice(0, lineBudget);

@@ -289,6 +289,8 @@ const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 };
 
 const ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS = 20;
+/** What the terminal sends for Enter. A click on an autocomplete row presses it. */
+const ENTER_INPUT = "\r";
 const DEFAULT_AUTOCOMPLETE_TRIGGER_CHARACTERS = ["@", "#"];
 // Unquoted completions end at whitespace or CJK punctuation; quoted paths may contain either.
 const unquotedAutocompleteSuffixRegex = new RegExp(`(?:(?!${autocompleteSeparatorRegex.source}).)*`, "u");
@@ -876,40 +878,7 @@ export class Editor implements Component, Focusable {
 				return;
 			}
 
-			if (kb.matches(data, "tui.select.confirm")) {
-				if (
-					!this.autocompleteCompleteOnConfirm &&
-					!this.autocompleteSelectionMoved &&
-					this.autocompletePrefix.startsWith("/")
-				) {
-					this.cancelAutocomplete();
-				} else {
-					const selected = this.autocompleteList.getSelectedItem();
-					if (selected && this.autocompleteProvider) {
-						this.pushUndoSnapshot();
-						this.lastAction = null;
-						const result = this.autocompleteProvider.applyCompletion(
-							this.state.lines,
-							this.state.cursorLine,
-							this.state.cursorCol,
-							selected,
-							this.autocompletePrefix,
-						);
-						this.state.lines = result.lines;
-						this.state.cursorLine = result.cursorLine;
-						this.setCursorCol(result.cursorCol);
-
-						if (this.autocompletePrefix.startsWith("/")) {
-							this.cancelAutocomplete();
-							// Fall through to submit
-						} else {
-							this.cancelAutocomplete();
-							if (this.onChange) this.onChange(this.getText());
-							return;
-						}
-					}
-				}
-			}
+			if (kb.matches(data, "tui.select.confirm") && !this.confirmAutocomplete()) return;
 		}
 
 		// Tab - trigger completion
@@ -1444,6 +1413,40 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+	}
+
+	/**
+	 * Enter on the open autocomplete menu: complete the selected row. Returns whether the key goes on to submit, as it
+	 * does for a slash command.
+	 */
+	private confirmAutocomplete(): boolean {
+		if (
+			!this.autocompleteCompleteOnConfirm &&
+			!this.autocompleteSelectionMoved &&
+			this.autocompletePrefix.startsWith("/")
+		) {
+			this.cancelAutocomplete();
+			return true;
+		}
+		const selected = this.autocompleteList?.getSelectedItem();
+		if (!selected || !this.autocompleteProvider) return true;
+		this.pushUndoSnapshot();
+		this.lastAction = null;
+		const result = this.autocompleteProvider.applyCompletion(
+			this.state.lines,
+			this.state.cursorLine,
+			this.state.cursorCol,
+			selected,
+			this.autocompletePrefix,
+		);
+		this.state.lines = result.lines;
+		this.state.cursorLine = result.cursorLine;
+		this.setCursorCol(result.cursorCol);
+		const submits = this.autocompletePrefix.startsWith("/");
+		this.cancelAutocomplete();
+		if (submits) return true;
+		if (this.onChange) this.onChange(this.getText());
+		return false;
 	}
 
 	private shouldSubmitOnBackslashEnter(data: string, kb: ReturnType<typeof getKeybindings>): boolean {
@@ -2341,22 +2344,13 @@ export class Editor implements Component, Focusable {
 	): SelectList {
 		const layout = prefix.startsWith("/") ? SLASH_COMMAND_SELECT_LIST_LAYOUT : undefined;
 		const list = new SelectList(items, this.autocompleteMaxVisible, this.theme.selectList, layout);
-		list.onSelect = (selected) => {
-			if (!this.autocompleteProvider) return;
-			this.pushUndoSnapshot();
-			this.lastAction = null;
-			const result = this.autocompleteProvider.applyCompletion(
-				this.state.lines,
-				this.state.cursorLine,
-				this.state.cursorCol,
-				selected,
-				this.autocompletePrefix,
-			);
-			this.state.lines = result.lines;
-			this.state.cursorLine = result.cursorLine;
-			this.setCursorCol(result.cursorCol);
-			this.cancelAutocomplete();
-			this.onChange?.(this.getText());
+		// The list calls this only for a click on a row, which it has just selected. Enter never reaches it: the editor
+		// handles the confirm key itself. A click is Enter on that row, so it runs a slash command the way Enter does
+		// once the selection moved there, and inserts a file path the same way.
+		list.onSelect = () => {
+			this.autocompleteSelectionMoved = true;
+			if (getKeybindings().matches(ENTER_INPUT, "tui.select.confirm")) this.handleInput(ENTER_INPUT);
+			else this.confirmAutocomplete();
 		};
 		return list;
 	}
