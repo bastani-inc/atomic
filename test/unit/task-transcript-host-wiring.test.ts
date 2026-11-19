@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { SessionManager, type SessionMessageEntry } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
@@ -69,6 +69,51 @@ test("a page that cuts an assistant message keeps only the content blocks inside
 			assert.deepEqual(message.content[0], { type: "text", text: "block-1" });
 		},
 	);
+});
+
+test("a reopened task includes shell output, displayed notices and the error of an unreadable reply (#5613)", async () => {
+	const shell = {
+		role: "bashExecution" as const,
+		command: "echo hello",
+		output: "hello",
+		exitCode: 0,
+		cancelled: false,
+		truncated: false,
+		timestamp: 1,
+	};
+	const warning = {
+		role: "custom" as const,
+		customType: "warning",
+		content: "retry notice",
+		display: true,
+		timestamp: 2,
+	};
+	const summary = { role: "branchSummary" as const, summary: "previous turn", fromId: null, timestamp: 3 };
+	const failure = {
+		role: "assistant" as const,
+		content: [{ type: "unrecognized" }] as never,
+		api: "openai-completions" as const,
+		provider: "fixture",
+		model: "fixture",
+		errorMessage: "529 overloaded",
+		stopReason: "error" as const,
+		timestamp: 4,
+		usage,
+	};
+	const entries = [shell, warning, { ...warning, display: false }, summary, failure].map(
+		(message, index): SessionMessageEntry => ({
+			type: "message",
+			id: `m${index}`,
+			parentId: index ? `m${index - 1}` : null,
+			timestamp: new Date(index).toISOString(),
+			message,
+		}),
+	);
+	await withTaskView({ getSessionId: () => "saved", getEntries: () => entries }, async (view, taskId) => {
+		const page = await view.readTaskTranscript(taskId);
+		assert.ok(page.ok);
+		assert.deepEqual(page.value.messages, [shell, warning, summary, { ...failure, content: [] }]);
+	});
 });
 
 test("a transcript that cannot report a compaction reason carries no compactionReason key (#4521)", async () => {

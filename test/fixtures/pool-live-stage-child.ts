@@ -31,10 +31,12 @@ async function released(gatePath: string, signal: AbortSignal | undefined): Prom
 export const child = workflow({
 	name: "pool-live-stage-child",
 	description: "Local worker stage that streams slowly",
-	inputs: { gatePath: Type.String(), failPrimary: Type.Optional(Type.Boolean()) },
+	inputs: { gatePath: Type.String(), failPrimary: Type.Optional(Type.Boolean()), failFirstAt: Type.Optional(Type.String()) },
 	outputs: { text: Type.String() },
 	async run(ctx) {
 		const options = await poolStageOptions(ctx.cwd!, false, process.pid);
+		let failFirstAt = ctx.inputs.failFirstAt;
+		if (failFirstAt !== undefined) options.settingsManager.setRetryEnabled(true);
 		options.modelRuntime.registerProvider("pool-fixture", {
 			api: "openai-completions",
 			baseUrl: "https://example.invalid",
@@ -68,6 +70,15 @@ export const child = workflow({
 					},
 				});
 				void (async () => {
+					if (failFirstAt !== undefined) {
+						const gate = failFirstAt;
+						failFirstAt = undefined;
+						const failed = await released(gate, streamOptions?.signal);
+						const reason = failed ? "error" : "aborted";
+						stream.push({ type: "error", reason, error: { ...partial(""), content: [], stopReason: reason, errorMessage: "529 overloaded" } });
+						stream.end();
+						return;
+					}
 					const full = LIVE_STAGE_FIRST_DELTA + LIVE_STAGE_SECOND_DELTA;
 					stream.push({ type: "start", partial: partial("") });
 					stream.push({ type: "text_start", contentIndex: 0, partial: partial("") });

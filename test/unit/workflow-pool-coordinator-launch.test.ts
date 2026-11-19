@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
 import type { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { join } from "node:path";
 import type { PassThrough } from "node:stream";
 import { afterEach, test, vi } from "vitest";
@@ -352,7 +353,7 @@ test("a coordinator killed by a signal is lost with that signal (#4327)", async 
 	}
 });
 
-test("a pool keeps its coordinator's log when the pool failed or its close was refused (#4327)", async () => {
+test("a pool keeps its coordinator's log when the pool failed or its close was refused (#4327, #5648)", async () => {
 	for (const ending of ["pool failure", "refused close"] as const) {
 		const directory = makeTempDirectory("pool-coordinator-log-");
 		const { pool, backend, logPath } = await preparedPool(directory);
@@ -361,7 +362,7 @@ test("a pool keeps its coordinator's log when the pool failed or its close was r
 			const refusal = serializeError(new WorkerRetryLimitError({ reason: "worker-crashes", attempts: 4, limit: 3 }));
 			if (ending === "pool failure") launch.emit!({ kind: "failure", error: refusal });
 			else launch.closeError = refusal;
-			await new Promise((resolve) => setTimeout(resolve, 20));
+			await vi.waitFor(() => access(logPath), { timeout: LOG_DRAIN_TIMEOUT_MS });
 			const closed = await pool.close().then(
 				() => undefined,
 				(error: unknown) => error,
