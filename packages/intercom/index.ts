@@ -9,7 +9,6 @@ import { contactSupervisorCallMayDetach, intercomCallMayDetach } from "./detacha
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
 import { rejectLazyResultRelay } from "./lazy-subagent-ack.js";
 import { isIntercomBrokerTimeout, isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
-import { IntercomWarmUpExhaustedError } from "./warm-up-exhaustion.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import {
 	type AwaitIntercomPeerRequest,
@@ -96,14 +95,11 @@ export {
 	isIntercomRecipientGoneErrorCode,
 	isRetryableIntercomRecipientGoneError,
 	isSubagentRecipientDisconnectedError,
-	isStageRecipientReleasedError,
 	isSubagentRecipientEndedError,
 	isSubagentRecipientOwnerSuspendedError,
 	readSerializedIntercomRecipientGoneError,
 	rehydrateIntercomRecipientGoneError,
 	type SerializedIntercomRecipientGoneError,
-	type StageRecipientReleasedCode,
-	StageRecipientReleasedError,
 	SUBAGENT_ENDED_OUTCOMES,
 	type SubagentEndedOutcome,
 	type SubagentRecipientDisconnectedCode,
@@ -150,10 +146,6 @@ type SessionSnapshot = LifecycleSnapshot<"session_start"> & { generation: number
 type IntercomHeavyHandle = HeavyHandle<CapturedHeavy>;
 type HeavyAttempt = { lease: IntercomLease; promise: Promise<IntercomHeavyHandle> };
 type ReplayAttempt = { lease: IntercomLease; heavy: CapturedHeavy; promise: Promise<void> };
-/** The stage's durable pre-start delivery, as the host hands it to a workflow-stage session. */
-type WorkflowStagePendingDelivery = NonNullable<
-	NonNullable<ExtensionContext["orchestrationContext"]>["pendingStageDelivery"]
->;
 type ActiveLifecycleState = {
 	turnStart: LifecycleSnapshot<"turn_start"> | null;
 	agentStart: LifecycleSnapshot<"agent_start"> | null;
@@ -162,12 +154,6 @@ type ActiveLifecycleState = {
 };
 interface LightweightIntercomOptions {
 	importHeavy?: () => Promise<{ default: (pi: ExtensionAPI) => void | Promise<void> }>;
-	/**
-	 * Internal test seam: the warm-up retry schedule in milliseconds. Production
-	 * uses the shared reconnect backoff; a test supplies short delays so the
-	 * bounded retry can be driven without waiting out the real schedule.
-	 */
-	warmUpRetryDelaysMs?: readonly number[];
 }
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -177,66 +163,6 @@ interface SupervisorAuthorizationRequest {
 	completion?: Promise<unknown>;
 }
 
-const WORKFLOW_STAGE_LATE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
-const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
-/** #5492: a finished run's route was withdrawn; only a loaded runtime holds routes, so nothing loads for it. */
-const PENDING_STAGE_ROUTE_RETIRED_EVENT = "atomic:workflow-pending-stage-route-retired";
-const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
-const ROUTE_RETRY_OUTCOME_EVENT = "atomic:intercom-route-retry-outcome";
-const RELEASED_STAGE_EVENT = "atomic:workflow-released-stage";
-
-interface PendingStageUndeliverableRelay {
-	handled?: boolean;
-	completion?: Promise<boolean>;
-	runId?: string;
-	senderId?: string;
-	senderRegistrationName?: string;
-	senderReturnAddress?: string;
-	messageId?: string;
-	notificationId?: string;
-	reason?: string;
-}
-
-function isPendingStageUndeliverableRelay(value: unknown): value is PendingStageUndeliverableRelay &
-	Required<Pick<PendingStageUndeliverableRelay, "runId" | "senderId" | "messageId" | "notificationId" | "reason">> {
-	if (typeof value !== "object" || value === null) return false;
-	const event = value as PendingStageUndeliverableRelay;
-	return (
-		typeof event.runId === "string" &&
-		typeof event.senderId === "string" &&
-		(event.senderRegistrationName === undefined || typeof event.senderRegistrationName === "string") &&
-		(event.senderReturnAddress === undefined || typeof event.senderReturnAddress === "string") &&
-		typeof event.messageId === "string" &&
-		typeof event.notificationId === "string" &&
-		typeof event.reason === "string"
-	);
-}
-
-interface WorkflowStageLateMessageEvent {
-	handled?: boolean;
-	completion?: Promise<void>;
-	workflowRunId?: string;
-	workflowStageId?: string;
-	messages?: Array<{
-		customType?: string;
-		content?: string;
-		details?: { message?: { expectsReply?: boolean } };
-	}>;
-}
-
-function isCompletedStageAskRoute(event: WorkflowStageLateMessageEvent): boolean {
-	return typeof event.workflowRunId === "string"
-		&& event.workflowRunId.length > 0
-		&& typeof event.workflowStageId === "string"
-		&& event.workflowStageId.length > 0
-		&& Array.isArray(event.messages)
-		&& event.messages.length > 0
-		&& event.messages.every((message) =>
-			message.customType === "intercom_message"
-			&& typeof message.content === "string"
-			&& message.details?.message?.expectsReply === true,
-		);
-}
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 
 const SUBAGENT_ENV_PREFIX = `${APP_NAME.toUpperCase()}_SUBAGENT_`;
@@ -308,7 +234,7 @@ function reportDiagnostic(
  * A recoverable broker disconnect is not a relay failure the user can act on:
  * the lazy heavy attempt has already been discarded, so the next relay or tool
  * call reconnects on its own. Rendering it would dump an alarming
- * "Intercom event relay failed ... Client disconnected" into the stage UI for
+ * "Intercom event relay failed ... Client disconnected" into the session UI for
  * work nobody requested. Every other failure — protocol, authentication,
  * configuration, a non-recoverable import, or a terminal relay error — is still
  * reported. The caller-facing acknowledgement is emitted either way, so a
@@ -347,17 +273,6 @@ class BrokerOutage {
 		this.reported = false;
 	}
 }
-
-/**
- * Bounded attempts for the workflow-stage warm-up retry.
- *
- * A stage that carries queued pending messages parks on
- * `pendingStageDelivery.ready()`, which only a successful heavy-module replay
- * resolves. Silently discarding a recoverable warm-up disconnect would leave
- * that stage waiting with no owner and no signal, so the wrapper retries on the
- * shared reconnect backoff and reports once when the attempts run out.
- */
-const WARM_UP_RETRY_ATTEMPTS = 5;
 
 export default function intercom(pi: ExtensionAPI, options: LightweightIntercomOptions = {}) {
   const inheritedDelegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
@@ -532,35 +447,6 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		);
 		return promise;
 	}
-	type WarmUpRetry = { lease: IntercomLease; generation: number; timer: ReturnType<typeof setTimeout> | null; cancelled: boolean };
-	let warmUpRetry: WarmUpRetry | null = null;
-	function cancelWarmUpRetry(): void {
-		if (!warmUpRetry) return;
-		warmUpRetry.cancelled = true;
-		if (warmUpRetry.timer) clearTimeout(warmUpRetry.timer);
-		warmUpRetry = null;
-	}
-	function warmUpRetryDelay(attempt: number): number | undefined {
-		const schedule = options.warmUpRetryDelaysMs;
-		if (schedule) return schedule[attempt];
-		return attempt < WARM_UP_RETRY_ATTEMPTS ? reconnectDelayMs(attempt) : undefined;
-	}
-	/**
-	 * Own the recovery for a workflow-stage warm-up that lost the broker.
-	 *
-	 * `session_start` returns immediately so the host is not blocked on backoff,
-	 * and exactly one retry chain runs per lease: each attempt re-checks that the
-	 * lease and lifecycle generation are still current, so shutdown, reload, and
-	 * session replacement abort it silently instead of racing a stale context or
-	 * building a second client. A success drains the stage's pending deliveries
-	 * through the normal `session_start` replay.
-	 *
-	 * Running out of attempts is terminal, and it belongs to the stage rather
-	 * than to the console: the extension hands the delivery owner a typed reason
-	 * so the stage fails at its own lifecycle boundary. Writing the diagnostic
-	 * here instead put raw extension text into the root session's transcript and
-	 * still left the stage waiting on `pendingStageDelivery.ready()` forever.
-	 */
 	/**
 	 * An admitted child registers on Intercom before its first turn, so its supervisor and peers can list and steer it
 	 * and what they send it is in hand when that turn starts. A host that runs the child's start (`startup`) keeps
@@ -600,74 +486,6 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			}
 		}
 		if (current()) startup?.enterStep("creating-session");
-	}
-	function scheduleWarmUpRetry(
-		ctx: ExtensionContext,
-		lease: IntercomLease,
-		generation: number,
-		pendingStageDelivery: WorkflowStagePendingDelivery,
-		initialError: unknown,
-	): void {
-		const staleFor = (owner: WarmUpRetry): boolean =>
-			owner.cancelled ||
-			activeLease !== owner.lease ||
-			owner.lease.retired ||
-			sessionSnapshot?.generation !== owner.generation;
-		const state: WarmUpRetry = { lease, generation, timer: null, cancelled: false };
-		// #5096: a stale session's failure must not take the slot, and a stale owner
-		// must not keep the current session from scheduling its own retry chain.
-		if (staleFor(state)) return;
-		if (warmUpRetry && !staleFor(warmUpRetry)) return;
-		cancelWarmUpRetry();
-		warmUpRetry = state;
-		let lastError: unknown = initialError;
-		const clearOwner = (): void => {
-			if (warmUpRetry === state) warmUpRetry = null;
-		};
-		const stale = (): boolean => staleFor(state);
-		const attemptAt = (attempt: number): void => {
-			const delay = warmUpRetryDelay(attempt);
-			if (delay === undefined) {
-				clearOwner();
-				const exhausted = new IntercomWarmUpExhaustedError(
-					attempt,
-					lastError instanceof Error ? { cause: lastError } : undefined,
-				);
-				try {
-					pendingStageDelivery.fail(exhausted);
-				} catch {
-					// `fail` is part of the delivery contract, so this is a host that
-					// violates it. Nothing here may write to the transcript, and this runs
-					// inside a timer callback where a throw would become an
-					// uncaughtException; the offending host keeps its own parked stage.
-				}
-				return;
-			}
-			const timer = setTimeout(() => {
-				state.timer = null;
-				if (stale()) {
-					clearOwner();
-					return;
-				}
-				void loadHeavy(ctx).then(clearOwner, (error: unknown) => {
-					lastError = error;
-					if (stale()) {
-						clearOwner();
-						return;
-					}
-					// A non-recoverable failure is already reported by loadHeavy's own
-					// rejection handler; retrying it would only repeat that diagnostic.
-					if (!isRecoverableIntercomDisconnect(error)) {
-						clearOwner();
-						return;
-					}
-					attemptAt(attempt + 1);
-				});
-			}, delay);
-			timer.unref?.();
-			state.timer = timer;
-		};
-		attemptAt(0);
 	}
   let typedContactSupervisorRegistered = hasSubagentIntercomEnv();
   const activateTypedContactSupervisor = (): void => {
@@ -717,25 +535,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
     const generation = ++lifecycleGeneration;
     sessionSnapshot = { event, ctx, generation, lease };
 		shutdownDiagnosticRoute = undefined;
-    cancelWarmUpRetry();
-    if (ctx.orchestrationContext?.kind === "workflow-stage" && ctx.orchestrationContext.pendingStageDelivery !== undefined) {
-      const pendingStageDelivery = ctx.orchestrationContext.pendingStageDelivery;
-      try {
-        await loadHeavy(ctx);
-      } catch (error) {
-        // Eager stage warm-up is Intercom's own initiative, not the user's.
-        // Letting a recoverable disconnect escape would make the host runner
-        // report a `session_start` extension error and paint "Client
-        // disconnected" over a stage that is still running. Recovery is not
-        // left to chance either: this branch hands the failure to a bounded
-        // retry owner, because a stage carrying queued messages parks on
-        // `pendingStageDelivery.ready()` until a replay delivers them, and
-        // that owner signals the same delivery when its attempts run out.
-        // Everything else still escapes.
-        if (!isRecoverableIntercomDisconnect(error)) throw error;
-        scheduleWarmUpRetry(ctx, lease, generation, pendingStageDelivery, error);
-      }
-    } else if (typedIdentity) {
+    if (typedIdentity) {
       await registerAdmittedChild(ctx, lease, generation);
     } else if (loadedHeavy) {
       await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
@@ -747,7 +547,6 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		const diagnosticRoute = captureDiagnosticRoute(ctx);
 		retireLifecycleLease(lease, { event, ctx, generation, diagnosticRoute });
 		shutdownDiagnosticRoute = diagnosticRoute;
-		cancelWarmUpRetry();
 		const retiredHeavy = loadedHeavy?.heavy ?? null;
 		const retiredAttempt = heavyAttempt?.lease === lease ? heavyAttempt.promise : null;
 		const retiredReplay = replayAttempt?.lease === lease ? replayAttempt.promise : null;
@@ -1015,101 +814,18 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		const restored = await awaitRestoredIntercomPeers(pi.events, ctx.sessionManager.getSessionId());
 		return planIntercomRecoveryReplay(event.pending, peers, restored);
 	});
-	pi.events.on(ROUTE_RETRY_OUTCOME_EVENT, (payload) => {
-		const outcome = payload as { error?: Error } | undefined;
-		if (outcome?.error === undefined) {
-			brokerOutage.recovered();
-			return;
-		}
-		if (!isIntercomBrokerTimeout(outcome.error)) return;
-		const ctx = latestLifecycleContext();
-		const diagnosticRoute = ctx ? captureDiagnosticRoute(ctx) : shutdownDiagnosticRoute ?? "console";
-		reportBackgroundRelayFailure(diagnosticRoute, PENDING_STAGE_ROUTE_EVENT, outcome.error);
-	});
-	pi.events.on(PENDING_STAGE_UNDELIVERABLE_EVENT, (payload) => {
-		if (!isPendingStageUndeliverableRelay(payload) || payload.handled === true) return;
-		payload.handled = true;
-		const forwarded = { ...payload, handled: false, completion: undefined };
-		const ctx = latestLifecycleContext();
-		const diagnosticRoute = ctx ? captureDiagnosticRoute(ctx) : shutdownDiagnosticRoute ?? "console";
-		payload.completion = loadHeavy(ctx)
-			.then(async (handle) => {
-				handle.assertCurrent();
-				await dispatchEventHandlers(handle.heavy, PENDING_STAGE_UNDELIVERABLE_EVENT, forwarded);
-				handle.assertCurrent();
-				return forwarded.handled === true && forwarded.completion !== undefined
-					? await forwarded.completion
-					: false;
-			})
-			.catch((error) => {
-				reportBackgroundRelayFailure(diagnosticRoute, PENDING_STAGE_UNDELIVERABLE_EVENT, error);
-				return false;
-			});
-	});
-	/**
-	 * #5492: per run, the dispatch of its latest route or retirement event. Each dispatch is reserved when its event is
-	 * emitted and runs after the one before it, so a run's events reach the runtime in the order they were emitted however
-	 * long loading the runtime takes, and a retirement emitted while its route is still on its way waits for it.
-	 */
-	const runRouteDispatches = new Map<string, Promise<void>>();
-	function dispatchInRunOrder<T>(runId: string, dispatch: () => Promise<T>): Promise<T> {
-		const previous = runRouteDispatches.get(runId);
-		const next = previous === undefined ? dispatch() : previous.then(dispatch);
-		const settled = next.then(
-			() => {},
-			() => {},
-		);
-		runRouteDispatches.set(runId, settled);
-		void settled.then(() => {
-			if (runRouteDispatches.get(runId) === settled) runRouteDispatches.delete(runId);
-		});
-		return next;
-	}
-	const routeRunId = (payload: unknown): string | undefined => {
-		const runId = payload && typeof payload === "object" ? (payload as { runId?: unknown }).runId : undefined;
-		return typeof runId === "string" && runId.length > 0 ? runId : undefined;
-	};
-	pi.events.on(PENDING_STAGE_ROUTE_RETIRED_EVENT, (payload) => {
-		const runId = routeRunId(payload);
-		// Only a runtime that is loaded or loading holds routes, and a route on its way reserved its run's dispatch.
-		if (runId === undefined || (loadedHeavy === null && heavyAttempt === null && !runRouteDispatches.has(runId))) return;
-		const completion = dispatchInRunOrder(runId, async () => {
-			const handle = loadedHeavy ?? (await heavyAttempt?.promise.catch(() => null)) ?? null;
-			if (handle === null) return;
-			handle.assertCurrent();
-			await dispatchEventHandlers(handle.heavy, PENDING_STAGE_ROUTE_RETIRED_EVENT, payload as object);
-		});
-		(payload as { completion?: Promise<void> }).completion = completion;
-		void completion.catch(() => {});
-	});
-	for (const eventName of [
-		SUBAGENT_CONTROL_INTERCOM_EVENT,
-		SUBAGENT_RESULT_INTERCOM_EVENT,
-		PENDING_STAGE_ROUTE_EVENT,
-		RELEASED_STAGE_EVENT,
-	] as const) {
+	for (const eventName of [SUBAGENT_CONTROL_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_EVENT] as const) {
 		pi.events.on(eventName, (payload) => {
 			const ctx = latestLifecycleContext();
 			const diagnosticRoute = ctx ? captureDiagnosticRoute(ctx) : shutdownDiagnosticRoute ?? "console";
 			const loaded = loadHeavy(ctx);
 			void loaded.catch(() => {});
-			const dispatch = async (): Promise<void> => {
+			const completion = (async (): Promise<void> => {
 				const handle = await loaded;
 				handle.assertCurrent();
 				await dispatchEventHandlers(handle.heavy, eventName, payload);
 				handle.assertCurrent();
-			};
-			const runId = eventName === PENDING_STAGE_ROUTE_EVENT ? routeRunId(payload) : undefined;
-			const dispatched = runId === undefined ? dispatch() : dispatchInRunOrder(runId, dispatch);
-			const completion = dispatched.then(async () => {
-				if (eventName === PENDING_STAGE_ROUTE_EVENT && payload && typeof payload === "object") {
-					const routeCompletion = (payload as { completion?: Promise<void> }).completion;
-					if (routeCompletion !== undefined && routeCompletion !== completion) await routeCompletion;
-				}
-			});
-			if (eventName === PENDING_STAGE_ROUTE_EVENT && payload && typeof payload === "object") {
-				(payload as { completion?: Promise<void> }).completion = completion;
-			}
+			})();
 			void completion.then(
 				() => brokerOutage.recovered(),
 				(error) => {
@@ -1119,20 +835,6 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			);
 		});
 	}
-	pi.events.on(WORKFLOW_STAGE_LATE_MESSAGE_EVENT, (payload) => {
-		if (!payload || typeof payload !== "object") return;
-		const event = payload as WorkflowStageLateMessageEvent;
-		// A completed-stage blocking ask belongs to the workflow post-mortem
-		// router. It must remain unclaimed when Intercom registers first, while
-		// every event already claimed by an earlier listener keeps its owner.
-		if (event.handled === true || isCompletedStageAskRoute(event)) return;
-		event.handled = true;
-		event.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
-			handle.assertCurrent();
-			await dispatchEventHandlers(handle.heavy, WORKFLOW_STAGE_LATE_MESSAGE_EVENT, payload);
-			handle.assertCurrent();
-		});
-	});
 	// Heavy Intercom state stays unloaded until the model or user invokes an
 	// Intercom tool, command, shortcut, or relay that needs it.
 	pi.registerTool({
@@ -1145,7 +847,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
 Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker, ${RETURN_PATH_TOOL_NOTE}. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
-For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes remain supported. \`send\` also takes a name glob (\`subagent-worker-*\`, or \`*\` for every session visible in your groups except you) and \`subagents:*\` (every running, released or paused subagent this session launched) or \`subagents:<runId>/*\` (those of one run); each recipient gets its own direct send, the result lists every recipient's outcome, a glob matching no session is an error naming close names, a name glob (\`*\` included) matching more than one session needs \`broadcast: true\` (without it the send is refused with the list of matches; \`subagents:\` and \`workflow:\` targets broadcast without it), and patterns never reach outside your groups. Workflow-stage targets use \`workflow:<rootRunId>/<segment>[/<segment>...]\`; \`*\` matches one segment and \`**\` any depth. Use \`intercom list\` inside the invocation group to see live, pending, and possible future targets with queued counts. \`workflow:<rootRunId>/**\` reaches live stages now and remains sticky for every future stage until root termination; valid targets outside the known set still queue and settle undeliverable at terminal only if never delivered; a note appears only when the target looks like a typo of a known stage. Use \`ask\` only on live targets.
+For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes remain supported. \`send\` also takes a name glob (\`subagent-worker-*\`, or \`*\` for every session visible in your groups except you) and \`subagents:*\` (every running, released or paused subagent this session launched) or \`subagents:<runId>/*\` (those of one run); each recipient gets its own direct send, the result lists every recipient's outcome, a glob matching no session is an error naming close names, a name glob (\`*\` included) matching more than one session needs \`broadcast: true\` (without it the send is refused with the list of matches; \`subagents:\` targets broadcast without it), and patterns never reach outside your groups.
 ${ASK_DESCRIPTION}
 For send/ask/reply, Intercom retries recoverable disconnects internally up to three times with the same operation identity. Each new tool call is a new operation. If recovery ends with an unknown delivery outcome, do not repeat it automatically.
 Usage:
@@ -1165,9 +867,9 @@ ${ASK_USAGE}
 		promptSnippet: `Use to coordinate with other local agent sessions in your intercom group. ${ASK_PROMPT_SNIPPET} Send/ask/reply retry reconnects internally; do not automatically repeat an unknown delivery outcome.`,
 		parameters: Type.Object({
 			action: Type.String({ description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', 'cancel', or 'status'" }),
-			to: Type.Optional(Type.String({ description: "Live session name, exact full session ID, unique 8-hex session UUID prefix, or `workflow:<rootRunId>/<segment>[/<segment>...]` path; `*` matches one segment and `**` any depth. Send also takes a session-name glob (`subagent-worker-*`, `*`) or `subagents:*` / `subagents:<runId>/*` for the subagents this session launched; ask needs one exact target. Send queues sticky pending/future delivery and `workflow:<rootRunId>/**` broadcasts to live and future stages; use `ask` only on live targets (for 'send', 'ask', or targeted 'reply')" })),
+			to: Type.Optional(Type.String({ description: "Live session name, exact full session ID, or unique 8-hex session UUID prefix. Send also takes a session-name glob (`subagent-worker-*`, `*`) or `subagents:*` / `subagents:<runId>/*` for the subagents this session launched; ask needs one exact target (for 'send', 'ask', or targeted 'reply')" })),
 			message: Type.Optional(Type.String({ description: "Message to send (for 'send', 'ask', or 'reply' action)" })),
-			broadcast: Type.Optional(Type.Boolean({ description: "For 'send' to a session-name glob: true to reach every match. Without it, a glob that matches more than one session is refused with the list of matches. `subagents:` and `workflow:` targets broadcast without it." })),
+			broadcast: Type.Optional(Type.Boolean({ description: "For 'send' to a session-name glob: true to reach every match. Without it, a glob that matches more than one session is refused with the list of matches. `subagents:` targets broadcast without it." })),
 			attachments: Type.Optional(Type.Array(Type.Object({
 				type: Type.Union([Type.Literal("file"), Type.Literal("snippet"), Type.Literal("context")]),
 				name: Type.String(),

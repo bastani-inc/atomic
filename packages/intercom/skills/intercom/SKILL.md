@@ -18,7 +18,7 @@ sessions for delegation, context sharing, and collaborative workflows.
 When you are supervising with the `subagent` skill, delegated child agents can
 escalate to you via `contact_supervisor` if the subagent runtime supplied child
 bridge metadata. This skill covers how to handle those orchestrator-side
-escalations, and how children and workflow stages talk to each other as peers.
+escalations, and how children talk to each other as peers.
 
 ## When to Use
 
@@ -26,7 +26,7 @@ escalations, and how children and workflow stages talk to each other as peers.
 - **Context handoffs**: Send findings from a research session to an execution session
 - **Clarification loops**: Worker asks questions, planner answers, work continues
 - **Multi-session workflows**: Coordinate between specialized sessions (frontend/backend, research/implementation)
-- **Peer coordination**: Sibling subagents or workflow stages debate findings, hand off evidence, divide ownership, and learn from each other without routing through the supervisor
+- **Peer coordination**: Sibling subagents debate findings, hand off evidence, divide ownership, and learn from each other without routing through the supervisor
 
 ## Core Patterns
 
@@ -72,7 +72,7 @@ intercom({
 
 ### Pattern 2: Quick Status Check
 
-Before sending, verify who's connected. Full session UUIDs or their unique 8-hex prefixes can be used as targets. Each list row leads with a copyable full session ID or canonical workflow path. Names are secondary; redundant generated aliases are omitted from the list but remain valid targets.
+Before sending, verify who's connected. Full session UUIDs or their unique 8-hex prefixes can be used as targets. Each list row leads with a copyable full session ID. Names are secondary; redundant generated aliases are omitted from the list but remain valid targets.
 
 ```typescript
 intercom({ action: "list" })
@@ -80,24 +80,7 @@ intercom({ action: "list" })
 intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which option should I use?" })
 ```
 
-Live sessions accept an exact full Intercom session ID, a unique 8-hex prefix of a visible UUID-backed session, or an exact case-insensitive name. Ambiguous prefixes require a listed full UUID. For workflow stages, first join `workflow:<rootRunId>` and use `intercom({ action: "list" })`: materialized stages appear as `PENDING` or `RUNNING` with canonical `workflow:<rootRunId>/<segment>[/<segment>...]` targets and actual groups, followed by possible future targets with queued counts. The invocation context can control owned isolated subgroups by exact target, while sibling subgroups and other runs remain isolated. Use queued `send` for `PENDING` or future targets; `ask` is supported only for `RUNNING`, where an exact correlated reply returns to the invocation asker.
-
-### Deliver to workflow stages that have not started
-
-Send material updates through Intercom to every affected workflow stage, including stages that have not started. Before steering, join the invocation group `workflow:<rootRunId>` (discover it with the Intercom `groups` action), then use `intercom list` there to see live, pending, and possible future targets.
-
-```typescript
-intercom({
-  action: "send",
-  to: "workflow:<rootRunId>/reviewer",
-  message: "Scope changed: preserve raw amendment text in the verification oracle."
-})
-// → queued, distinct from live-session delivered, with the FIFO position
-```
-
-Each path segment may be a stage name, a run id, or a glob: `*` matches one segment and may be embedded (`reviewer-*`), while `**` matches any depth. When shared scope or acceptance criteria change, broadcast one authoritative update to `workflow:<rootRunId>/**` (or a narrower pattern) rather than enumerating stages. The broadcast reaches every live stage immediately and remains sticky for every future matching stage, including nested children, until the root run terminates. Other name or pattern sends have the same every-future-match behavior.
-
-A syntactically valid target outside the persisted possible-stage set is accepted speculatively: the queued acknowledgment carries `prediction: "unknown"` (or `"predicted"` when the decision model expects the path) and shows no warning. A line appears only when the target looks like a typo of a known stage. At terminal settlement, an entry that never delivered produces the correlated undeliverable notification; an entry delivered at least once does not. A stage receives queued messages through the ordinary inbound path before its first model turn under **Messages received before you started**, with real sender identity and a `Sent:` timestamp. Only same-workflow-group sessions may queue messages. Each target holds at most 50 queued messages; the next send is refused rather than evicting one. Resume/replay, broker restart, and stage-attempt restart preserve exactly-once delivery per message and materialized stage. Use `ask` only for a live target: pending, future, and pattern asks return `pending_stage_ask_unsupported`.
+Live sessions accept an exact full Intercom session ID, a unique 8-hex prefix of a visible UUID-backed session, or an exact case-insensitive name. Ambiguous prefixes require a listed full UUID. Workflow stage targets (`workflow:<rootRunId>/...`) were removed with workflows in Atomic 0.10.0 and are refused.
 
 ### Runtime named groups
 
@@ -119,11 +102,11 @@ intercom({ action: "leave" })
 
 ### Answer a sender outside your groups
 
-A message can reach you from a session outside your groups: the session that launched a workflow run writing to its stages, a supervisor answering its child, or a child reporting to its supervisor. Answer it with `send` or `ask` to the name or ID its message shows, without joining a group. This return path leads only to that sender, allows up to 3 messages within 30 minutes of its latest message to you, and reopens with a fresh count each time it writes again. Pattern sends (name globs, `subagents:*`) never use it, and a session with a host-set reach policy never uses it.
+A message can reach you from a session outside your groups: a session whose host-set reach policy reaches your group, a supervisor answering its child, or a child reporting to its supervisor. Answer it with `send` or `ask` to the name or ID its message shows, without joining a group. This return path leads only to that sender, allows up to 3 messages within 30 minutes of its latest message to you, and reopens with a fresh count each time it writes again. Pattern sends (name globs, `subagents:*`) never use it, and a session with a host-set reach policy never uses it.
 
 ```typescript
-// The launcher of your workflow run wrote to you; answer it by the name its message showed.
-intercom({ action: "send", to: "main-session", message: "Stage done: report written to research/notes.md" })
+// A session outside your groups wrote to you; answer it by the name its message showed.
+intercom({ action: "send", to: "main-session", message: "Done: report written to research/notes.md" })
 ```
 
 After the window or the message count runs out, a send is refused with `<sender> is outside your intercom groups and its return path has closed`. Wait for the sender to write again, or, for a longer exchange, have it join your group.
@@ -159,7 +142,7 @@ intercom({ action: "send", to: "subagents:*", message: "Scope changed: skip the 
 intercom({ action: "send", to: "subagents:<runId>/*", message: "Wrap up and report" })
 ```
 
-The result lists each recipient's outcome (delivered, queued, or not delivered with the reason). A glob that matches no session is an error that lists close names. A name glob that matches more than one session, `*` included, sends nothing without `broadcast: true` and lists the matches instead: pick one exact name for a private message, or add `broadcast: true` when every match should get it. A glob that matches one session sends to it. `subagents:` and `workflow:` targets broadcast without the flag. `ask` takes only one exact target.
+The result lists each recipient's outcome (delivered, queued, or not delivered with the reason). A glob that matches no session is an error that lists close names. A name glob that matches more than one session, `*` included, sends nothing without `broadcast: true` and lists the matches instead: pick one exact name for a private message, or add `broadcast: true` when every match should get it. A glob that matches one session sends to it. `subagents:` targets broadcast without the flag. `ask` takes only one exact target.
 
 ### Pattern 5: Send with Attachments
 
@@ -257,20 +240,20 @@ Use constructive quorum when several fresh-context reviewers judge the same arti
 1. Each reviewer inspects independently and records a preliminary verdict before reading sibling findings or verdicts.
 2. Run exactly one bounded evidence-exchange round: share concrete findings and evidence, challenge blocking claims, surface missed defects, and correct objective/acceptance-criteria misreadings. Do not continue into a second round.
 3. Change a verdict only through evidence, never deference. Each reviewer emits its own final structured verdict and records whether the round changed it and which evidence caused the change.
-4. Let the deterministic reducer count final votes; this pattern does not change quorum counts or the `stop_review_loop` contract.
+4. Let the orchestrator count the final verdicts; this pattern does not change how they are counted.
 
-In Atomic workflows, each invocation has its own Intercom group, and parallel stages and delegated subagents inherit it when Intercom is available. Sibling reviewers can therefore coordinate without custom group wiring. See the [constructive quorum workflow pattern](../../../coding-agent/docs/workflows/reliable-design.md#common-workflow-patterns).
+Subagents launched in one parallel set share an Intercom group when Intercom is available, so sibling reviewers can coordinate without custom group wiring.
 
-### Pattern 8: Peer Coordination Between Subagents and Workflow Stages
+### Pattern 8: Peer Coordination Between Subagents
 
-Peer-to-peer (swarm) is the default topology inside a delegation. There are no limits on communication between agents; it is encouraged whenever you need to. The supervisor is not a message relay: relaying adds latency, loses detail, and fills the supervisor's context, so siblings exchange evidence directly and self-organize. Children launched in one parallel set (or one explicit `group`) share an Intercom group, and workflow stages share their invocation group `workflow:<rootRunId>`; delegated subagents inside a stage inherit it. Any of them can list live siblings and message them directly. `contact_supervisor` is reserved for the supervisor; peer traffic uses ordinary `intercom`.
+Peer-to-peer (swarm) is the default topology inside a delegation. There are no limits on communication between agents; it is encouraged whenever you need to. The supervisor is not a message relay: relaying adds latency, loses detail, and fills the supervisor's context, so siblings exchange evidence directly and self-organize. Children launched in one parallel set (or one explicit `group`) share an Intercom group. Any of them can list live siblings and message them directly. `contact_supervisor` is reserved for the supervisor; peer traffic uses ordinary `intercom`.
 
 ```typescript
-// Any child or stage: discover who is live in your group
+// Any child: discover who is live in your group
 intercom({ action: "list" })
 
-// Broadcast: share a finding with every live sibling in the workflow
-intercom({ action: "send", to: "workflow:<rootRunId>/**", message: "Root cause confirmed: cache key omits tenant id (src/cache.ts:52). Adjust your angle." })
+// Broadcast: share a finding with every live sibling in your group
+intercom({ action: "send", to: "*", message: "Root cause confirmed: cache key omits tenant id (src/cache.ts:52). Adjust your angle.", broadcast: true })
 
 // Connect: pass what you found to the sibling who needs it
 intercom({ action: "send", to: "codebase-analyzer-2", message: "Null handling lives in src/auth/session.ts:40-118 and src/auth/refresh.ts:12-60. Start there." })
@@ -291,10 +274,9 @@ How a swarm works:
 - Broadcast findings, claim files or expensive steps, hand work along a chain, ask and answer each other, and debate disagreements for as long as it is useful.
 - Decide on evidence, not deference. A peer's approval, rejection, or claim is input to inspect, not a verdict to copy, and each agent still returns its own result.
 - `contact_supervisor` is for supervisor decisions; explicit user approval gates and authorization for destructive or external actions still apply.
-- Inside a workflow, `send` to a known pending sibling queues until it starts, and `ask` to a completed sibling that retains a valid conversation reopens it for a post-mortem turn. Named stage subgroups isolate their members from sibling subgroups.
 - Choose `delivery` per `send`/`ask` by urgency. The default `"steer"` arrives after the recipient's current tool calls finish and never cancels its work. Use `"interrupt"` when it must stop now (an urgent correction or a stop order), and `"followUp"` when the message can wait until it finishes (low priority, "after you're done").
 - Peer asks and one blocking supervisor request may wait concurrently in the same child; mutual asks work when both sides process inbound work.
-- Scale with the task. For very complex work or requested heavy parallelism, hundreds or thousands of agents self-organize into teams (named groups, per-stage subagent sets, child workflows) and coordinate peer-to-peer like an organization. Groups have no member limit; team members reach their lead with `contact_supervisor`, and leads talk to each other in their shared group.
+- Scale with the task. For very complex work or requested heavy parallelism, hundreds or thousands of agents self-organize into teams (named groups, nested subagent sets) and coordinate peer-to-peer like an organization. Groups have no member limit; team members reach their lead with `contact_supervisor`, and leads talk to each other in their shared group.
 
 ## Key Differences
 
@@ -303,15 +285,13 @@ How a swarm works:
 | `join` | Adds or creates a named membership in place | Sessions need another shared routing group |
 | `leave` | Removes one named membership, or resets to home when omitted | Stop sharing one group or restore startup membership |
 | `groups` | Lists every available group with counts and membership markers | Discover a group instead of guessing its name |
-| `send` | Fire-and-forget to a live session, or durable sticky delivery to `workflow:<rootRunId>/<segment>[/<segment>...]`; globs and `**` broadcasts cover live and future matches | You don't need a response |
-| `ask` | Returns once delivered (or with the reply if it comes within `wait`); the reply otherwise arrives later as a message. Refused for an unstarted stage | You need an answer |
+| `send` | Fire-and-forget to a live session; a name glob or `subagents:` target reaches every live match | You don't need a response |
+| `ask` | Returns once delivered (or with the reply if it comes within `wait`); the reply otherwise arrives later as a message | You need an answer |
 | `reply` | Responds to the active or pending inbound ask; `to` accepts an exact name/full session ID or unique 8-hex session UUID prefix | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks and your own pending asks | You need to see who is waiting, or what you are still waiting for |
 | `cancel` | Cancels one of your pending asks by `askId`; a later reply is shown once, marked late | You no longer need the answer |
 | `list` | Returns all sessions sharing any membership, with full IDs and live status | Discover targets or choose an idle peer |
 | `status` | Returns connection state and every current membership | Troubleshooting |
-
-Inside workflows, `ask` may target a sibling stage that has already completed. If that stage retains a valid conversation, Atomic automatically schedules a post-mortem turn there and preserves the exact child-to-child reply thread; do not send a separate workflow follow-up. Missing, deleted, non-resumable, or failed-to-reopen completed targets return an actionable error. A parent or unrelated session cannot satisfy the pending ask.
 
 ## Optional: Visible Peer Sessions via cmux, tmux, or psmux (Windows rewrite of tmux that has fully parity with tmux)
 
@@ -411,7 +391,7 @@ If neither `cmux` nor `tmux` is available, skip this path and use normal `interc
 
 ### `ask` Limitations
 
-- **Terminal noninteractive children**: Completed, failed, interrupted, or cancelled subagents cannot reply, even if listed as `idle`. New asks fail immediately; an admitted ask fails if the child terminates before replying. Launch a fresh child with explicit context. Live interactive idle sessions and reply-capable workflow post-mortem conversations remain askable; `send` semantics are unchanged.
+- **Terminal noninteractive children**: Completed, failed, interrupted, or cancelled subagents cannot reply, even if listed as `idle`. New asks fail immediately; an admitted ask fails if the child terminates before replying. Launch a fresh child with explicit context. Live interactive idle sessions remain askable; `send` semantics are unchanged.
 - **Never blocks**: `ask` returns once delivered. `wait` works as in `bash`: omitted waits up to the automatic yield (default 10s), `{ kind: "foreground", budgetMs }` up to a budget, `{ kind: "background" }` not at all. An ask has no expiry; its reply arrives later as a message starting `Reply to your ask <id> from <name>`, and a refusal or an ended recipient as `Your ask <id> to <name> failed`
 - **Bounded waiting**: Up to `maxPendingAsks` calls (default: 6) may wait for a reply at once; further asks are still delivered and their replies arrive as messages
 - **Exact correlation**: Same-target and mixed-target asks may run together; out-of-order replies and peer disconnects settle only the matching sender/message pair

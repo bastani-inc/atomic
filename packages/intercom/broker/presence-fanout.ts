@@ -33,7 +33,7 @@ interface PendingPresence {
 
 /**
  * Per-recipient presence coalescing (#5146). The broker's own session state changes at once, so every decision it
- * makes (list, ask liveness, released-child holds, stage routing) reads fresh presence; only the frames that tell
+ * makes (list, ask liveness, released-child holds) reads fresh presence; only the frames that tell
  * clients about it are gathered. The frames keep their 0.9.71 shape, one `presence_update` per session, so an older
  * client converges on the latest state just as a current one does.
  */
