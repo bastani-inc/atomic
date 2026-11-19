@@ -9,6 +9,7 @@ import tempfile
 import time
 from unittest.mock import patch
 
+from scripts import run_eval
 from scripts.run_eval import run_single_query
 
 scenario = sys.argv[1]
@@ -37,6 +38,22 @@ def resume_reader(*args):
     return result
 
 
-with tempfile.TemporaryDirectory() as root, patch("subprocess.Popen", start_producer), patch("select.select", resume_reader):
+read_output = run_eval._Output.read
+
+
+def resume_output_reader(output, timeout):
+    # The evaluator waits on its output reader rather than select().
+    result = read_output(output, timeout)
+    if scenario == "late" and result:
+        time.sleep(1.1)  # The reader is not scheduled again until after its one-second deadline.
+    return result
+
+
+with (
+    tempfile.TemporaryDirectory() as root,
+    patch("subprocess.Popen", start_producer),
+    patch("select.select", resume_reader),
+    patch.object(run_eval._Output, "read", resume_output_reader),
+):
     timeout = int(sys.argv[2]) if len(sys.argv) > 2 else (1 if scenario == "late" else 30)
     print(run_single_query("query", "sample", "sample skill", timeout, root))

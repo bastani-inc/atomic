@@ -17,7 +17,7 @@ from pathlib import Path
 
 from scripts.generate_report import generate_html
 from scripts.improve_description import improve_description
-from scripts.run_eval import find_project_root, run_eval
+from scripts.run_eval import find_project_root, run_cancellable, run_eval
 from scripts.utils import parse_skill_md
 
 
@@ -325,4 +325,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cancellable(main)
