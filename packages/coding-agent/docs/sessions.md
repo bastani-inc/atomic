@@ -66,8 +66,6 @@ const { session } = await createAgentSession({
 
 Use `{ kind: "memory" }` for an explicit ephemeral SDK session or `{ kind: "jsonl", dir: "/data/sessions" }` for JSONL. An existing `sessionManager` remains caller-owned and bypasses store selection.
 
-When the host uses the default store, stages also use the default SQLite database unless they explicitly choose a directory.
-
 For the JSONL file format and SessionManager API, see [Session Format](/session-format).
 
 ## Session Commands
@@ -217,7 +215,7 @@ For example, to work on something else while the search runs, use the usual shel
 
 Use `bash({ action: "wait", id })` with the returned shell task ID, or `kill({ id })` to stop it. A refused command does not invalidate a page or cursor you already obtained from `search`.
 
-Use the path of an existing local Atomic session database with the standard (unprefixed) tables, not a workflow journal or a server URL. The session ID must contain only ASCII letters, digits, hyphens or underscores. The command does not guess the store from an SDK session or open a session from another project. If the transcript's stored write revision changes during the scan, the command stops rather than printing a page from another revision. A migrated session with no write revision returns its first page and leaves the cursor for manual use. For all other selectors and stores, including JSONL, memory, remote stores, session listings and workflow runs, keep following the URLs with the original `read` or `search` tool. Neither those tools nor manual cursor follows start a background task.
+Use the path of an existing local Atomic session database with the standard (unprefixed) tables, not a server URL. The session ID must contain only ASCII letters, digits, hyphens or underscores. The command does not guess the store from an SDK session or open a session from another project. If the transcript's stored write revision changes during the scan, the command stops rather than printing a page from another revision. A migrated session with no write revision returns its first page and leaves the cursor for manual use. For all other selectors and stores, including JSONL, memory, remote stores and session listings, keep following the URLs with the original `read` or `search` tool. Neither those tools nor manual cursor follows start a background task.
 
 ## Naming Sessions
 
@@ -287,7 +285,7 @@ Selecting an assistant, tool, compaction, or other non-user entry:
 
 Selecting the root user message resets the leaf to an empty conversation and places the original prompt in the editor.
 
-The chat, the tree's current marker, `/session`, and the context indicator switch to the selected branch as soon as you navigate. The move is saved, so quitting, resuming, or continuing the session before you send another message reopens it on the selected branch, and the abandoned turns stay out of the next request. Workflow runs started on the abandoned branch keep running and stay listed for the session. While a branch summary is being generated, Escape cancels it and reopens the tree at your selection.
+The chat, the tree's current marker, `/session`, and the context indicator switch to the selected branch as soon as you navigate. The move is saved, so quitting, resuming, or continuing the session before you send another message reopens it on the selected branch, and the abandoned turns stay out of the next request. While a branch summary is being generated, Escape cancels it and reopens the tree at your selection.
 
 ## `/tree`, `/fork`, and `/clone`
 
