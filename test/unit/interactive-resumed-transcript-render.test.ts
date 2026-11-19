@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { Message } from "@bastani/atomic-ai/compat";
-import { MULTI_CLICK_INTERVAL_MS, ScrollView, type TuiAltScreen } from "@bastani/atomic-tui";
+import { MULTI_CLICK_INTERVAL_MS, ScrollView, type TuiAltScreen, WindowedContainer } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
@@ -1039,6 +1039,45 @@ test("rows a reader keeps through a compaction are saved rows that a selection c
 	await settle(tui, (lines) => lines.some((line) => line.includes("Context cleared")));
 	assert.equal(await tui.copyActiveSelectionToClipboard(), true);
 	assert.equal(copies.at(-1), copies[0]);
+});
+
+test("copying saved rows draws only the selected pages, releasing each page's renderers before the next (#5593)", async () => {
+	const { mode, tui } = await openResumedSession(0);
+	let built = 0,
+		live = 0,
+		peak = 0;
+	Object.assign(mode.session.extensionRunner, {
+		getMessageRenderer: (type: string) =>
+			type === "copy-line"
+				? (message: { content: string }) => {
+						built++;
+						peak = Math.max(peak, ++live);
+						return {
+							historyReplayable: true,
+							render: () => [message.content],
+							invalidate() {},
+							dispose() {
+								live--;
+							},
+						};
+					}
+				: undefined,
+	});
+	for (let i = 1; i <= 180; i++) await mode.sessionManager.appendCustomMessageEntry("copy-line", `line ${i}`, true);
+	await mode.sessionManager.appendCompaction("cut", null, 100, CLEARED);
+	mode.renderInitialMessages();
+	tui.renderNow();
+	assert.ok(mode.documentContainer instanceof WindowedContainer);
+	const anchor = mode.documentContainer
+		.layoutWindow({ width: COLUMNS, height: ROWS, top: 0, followEnd: false, requestRender: () => {} })
+		.historyAnchor?.();
+	assert.ok(anchor);
+	const narrow = await anchor.read(177, 178);
+	assert.match(narrow.flatMap((block) => block.lines).join("\n"), /line 178/);
+	assert.equal(built, 2, "a two-row copy deep in a turn does not draw the preceding conversation");
+	await anchor.read(1, 180);
+	assert.ok(peak <= 64, `a long selection held ${peak} transient widgets`);
+	assert.equal(live, 0, "copy-only widgets are released");
 });
 
 test("a copy draws a selected tool card whose result is saved pages after its call as the whole transcript does (#5593)", async () => {

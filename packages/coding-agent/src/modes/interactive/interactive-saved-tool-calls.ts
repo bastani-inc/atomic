@@ -28,6 +28,7 @@ function isArgumentsCard(component: Component): component is ArgumentsCard {
 
 /** The chat the saved pages are drawn in: it says whether a row is laid out in it now. */
 type SavedChat = Container & { windowRowSpan?(component: Component): unknown };
+type EdgeRead = string | SessionHistoryReadOptions;
 
 /** The saved session the pages are read from. */
 interface SavedHistory {
@@ -174,7 +175,13 @@ interface SavedPageCalls {
 	/** Results drawn alone, whose calls may end the page before it: their entries, cards and saved rows. */
 	readonly results: Map<
 		string,
-		{ readonly entry: ToolChatEntry; readonly card: ArgumentsCard | undefined; readonly key: string; filled: boolean }
+		{
+			readonly entry: ToolChatEntry;
+			readonly card: ArgumentsCard | undefined;
+			readonly key: string;
+			filled: boolean;
+			readonly matched?: () => void;
+		}
 	>;
 	/** The page's first prompt or reply: a later result answers no call made before the page. */
 	turn?: ChatMessageEntry;
@@ -291,8 +298,15 @@ export class SavedPageCallsBuilder {
 	}
 
 	/** `components` draw a result whose call is not on this page; `key` is its saved row. */
-	drewResult(entry: ToolChatEntry, components: readonly Component[], key: string): void {
-		this.calls.results.set(entry.toolCallId, { entry, card: components.find(isArgumentsCard), key, filled: false });
+	drewResult(entry: ToolChatEntry, components: readonly Component[], key: string, matched?: () => void): void {
+		if (this.transient && this.calls.turn) return;
+		this.calls.results.set(entry.toolCallId, {
+			entry,
+			card: components.find(isArgumentsCard),
+			key,
+			filled: false,
+			matched,
+		});
 	}
 
 	/** `entry` was drawn: the next prompt or reply ends what can answer a call of the page before. */
@@ -340,7 +354,7 @@ export class SavedPageCallsBuilder {
 	 */
 	async settle(
 		manager: SavedHistory,
-		adjacent: { readonly older?: string; readonly newer?: string } | undefined,
+		adjacent: { readonly older?: EdgeRead; readonly newer?: EdgeRead } | undefined,
 		alive: () => boolean,
 	): Promise<void> {
 		const page = this.calls;
@@ -369,8 +383,13 @@ function joinPages(older: SavedPageCalls, newer: SavedPageCalls): void {
 }
 
 /** The one saved entry a single-entry read from `cursor` returns, with the cursors next to it. */
-async function readOneEntry(manager: SavedHistory, cursor: string) {
-	const reader = manager.readHistory({ cursor, adjacent: true, limit: 1 });
+async function readOneEntry(manager: SavedHistory, edge: EdgeRead, signal?: AbortSignal) {
+	const reader = manager.readHistory({
+		...(typeof edge === "string" ? { cursor: edge } : edge),
+		adjacent: true,
+		limit: 1,
+		signal,
+	});
 	let page: SessionHistoryPage;
 	try {
 		const next = await reader.next();
@@ -379,7 +398,7 @@ async function readOneEntry(manager: SavedHistory, cursor: string) {
 	} finally {
 		await reader.return();
 	}
-	const [item] = (await withOversizedToolResults(manager, page)).items;
+	const [item] = (await withOversizedToolResults(manager, page, signal)).items;
 	return { entry: item && "entry" in item ? item.entry : undefined, seq: item?.seq, adjacent: page.adjacent };
 }
 
@@ -388,16 +407,17 @@ async function readAfter(
 	mode: InteractiveModeBase,
 	manager: SavedHistory,
 	page: SavedPageCalls,
-	cursor: string,
+	cursor: EdgeRead,
 	alive: () => boolean,
 	strict = false,
 ): Promise<void> {
 	const waiting = () => [...page.held.values()].filter((slot) => slot.waiting);
-	let next: string | undefined = cursor;
+	const signal = typeof cursor === "string" ? undefined : cursor.signal;
+	let next: EdgeRead | undefined = cursor;
 	try {
 		// No cap: entries are read one at a time, bounded each, until the result or a real turn boundary decides.
 		while (next !== undefined && waiting().length > 0) {
-			const read = await readOneEntry(manager, next);
+			const read = await readOneEntry(manager, next, signal);
 			if (!alive()) {
 				if (strict) throw new Error("The saved history closed while it was read");
 				return;
@@ -427,15 +447,21 @@ async function readAfter(
 async function readBefore(
 	mode: InteractiveModeBase,
 	manager: SavedHistory,
-	needing: readonly { readonly entry: ToolChatEntry; readonly card: ArgumentsCard | undefined; filled: boolean }[],
-	cursor: string,
+	needing: readonly {
+		readonly entry: ToolChatEntry;
+		readonly card: ArgumentsCard | undefined;
+		filled: boolean;
+		readonly matched?: () => void;
+	}[],
+	cursor: EdgeRead,
 	alive: () => boolean,
 	strict = false,
 ): Promise<void> {
-	let next: string | undefined = cursor;
+	const signal = typeof cursor === "string" ? undefined : cursor.signal;
+	let next: EdgeRead | undefined = cursor;
 	try {
 		while (next !== undefined) {
-			const read = await readOneEntry(manager, next);
+			const read = await readOneEntry(manager, next, signal);
 			if (!alive()) {
 				if (strict) throw new Error("The saved history closed while it was read");
 				return;
@@ -451,7 +477,8 @@ async function readBefore(
 				const result = needing.find((candidate) => candidate.entry.toolCallId === block.id);
 				if (result === undefined || result.filled) continue;
 				result.filled = true;
-				result.card?.updateArgs(block.arguments);
+				if (result.matched) result.matched();
+				else result.card?.updateArgs(block.arguments);
 			}
 			mode.ui.requestRender();
 			return;

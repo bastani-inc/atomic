@@ -1028,7 +1028,7 @@ function savedChatComponents(
 		const saved = { seqs: new Map(entries.map((e, i) => [e, seqs[i]!])), owners: new WeakMap<object, string>() };
 		const steps = planTranscript(mode, entries, { saved });
 		const held = new Set(
-			adjacent?.newer
+			adjacent?.newer || copy?.edges.newer
 				? callsAwaitingLaterResults(steps.flatMap((step) => (step.kind === "entry" ? [step.entry] : [])))
 				: [],
 		);
@@ -1068,15 +1068,30 @@ function savedChatComponents(
 			const alone = step.kind === "entry" && step.entry.kind === "tool" && isResultWithoutCall(step.entry);
 			if (key) {
 				if (!copy && !kept) exceptions.remember(key, drawn, savedLeaf(key));
-				if (copy || alone) mark(drawn, key, alone);
+				if (copy || alone) {
+					// The widget is owned by its saved result, but the document places a paired card at its call.
+					const at =
+						copy && step.kind === "entry" && step.entry.kind === "tool" ? savedRowKey(step.entry) : undefined;
+					mark(drawn, at ?? key, alone);
+				}
 				followChosenExpansion(mode, exceptions, key, drawn);
 			}
 			if (step.kind !== "entry") continue;
-			if (key && alone && step.entry.kind === "tool") calls.drewResult(step.entry, drawn, key);
+			if (key && alone && step.entry.kind === "tool")
+				calls.drewResult(
+					step.entry,
+					drawn,
+					key,
+					copy
+						? () => {
+								for (const child of drawn) copy.positions.delete(child);
+							}
+						: undefined,
+				);
 			calls.drew(step.entry);
 		}
 		const page = scratch.children.slice(1);
-		if (copy) copy.settled = calls.settle(mode.sessionManager, adjacent, copy.alive);
+		if (copy) copy.settled = calls.settle(mode.sessionManager, copy.edges, copy.alive);
 		else if (page.length > 0) page.unshift(calls.finish(mode.sessionManager, adjacent));
 		return page;
 	} finally {

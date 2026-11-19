@@ -41,6 +41,7 @@ export interface SavedCopyDraw {
 	readonly positions: Map<Component, HistoryLeaf>;
 	/** Whether what the copy reads still belongs to the saved history shown. */
 	readonly alive: () => boolean;
+	readonly edges: { older?: SessionHistoryReadOptions; newer?: SessionHistoryReadOptions };
 	settled?: Promise<void>;
 }
 
@@ -321,6 +322,7 @@ class SavedChatHistory {
 	private readonly marker = new Text("Earlier messages are saved above this point.", 1, 0);
 	private readonly pages: MountedPage[] = [];
 	private pending?: AbortController;
+	private readonly lifetime = new AbortController();
 	private readonly counter?: NewMessageCounter;
 	private readonly mode: InteractiveModeBase;
 	private readonly manager: SessionManager;
@@ -365,10 +367,8 @@ class SavedChatHistory {
 
 	/**
 	 * Draw the saved rows of entries `from` through `to` at `width` for a copy, as the whole transcript draws them,
-	 * without mounting them or keeping new renderer instances. A tool card is drawn at its call with its result: the
-	 * draw starts at the prompt that opened the turn holding `from`, so a result in range meets its call, and a call in
-	 * range whose result is saved later reads on one entry at a time until the result or the turn's end decides. Each
-	 * read is bounded; together they span the selected entries and the turn they start in.
+	 * without mounting them or keeping new renderer instances. Release each page before reading the next; only the
+	 * selected output accumulates. A cut tool pair reads individually past the page edge to place its card at the call.
 	 */
 	async readRows(from: number, to: number, width: number): Promise<HistoryRowsBlock[]> {
 		const alive = () => this.mode.sessionManager === this.manager && this.chat.children.includes(this.marker);
@@ -376,57 +376,52 @@ class SavedChatHistory {
 		if (!alive()) throw closed();
 		const last = Math.min(to, this.through);
 		if (from > last) return [];
-		const start = await this.turnStart(from, alive);
-		const items: SessionHistoryItem[] = [];
-		let newer: string | undefined;
-		const read = this.manager.readHistory({
-			branchLeafSeq: this.leaf,
-			fromSeq: start,
+		const blocks: HistoryRowsBlock[] = [];
+		const branchLeafSeq = this.leaf,
+			signal = this.lifetime.signal;
+		for await (const page of this.manager.readHistory({
+			branchLeafSeq,
+			fromSeq: Math.max(1, from),
 			toSeq: last,
 			direction: "forward",
-			adjacent: true,
-		});
-		for await (const page of read) {
+			signal,
+		})) {
 			if (!alive()) throw closed();
-			items.push(...(await withOversizedToolResults(this.manager, page)).items);
-			newer = page.adjacent?.newer;
-		}
-		const copy: SavedCopyDraw = { positions: new Map(), alive };
-		const components = this.draw(
-			this.mode,
-			items.map(entryForDisplay),
-			items.map((item) => item.seq),
-			this.exceptions,
-			newer === undefined ? undefined : { newer },
-			copy,
-		);
-		try {
-			await copy.settled;
+			const { items } = await withOversizedToolResults(this.manager, page, signal);
 			if (!alive()) throw closed();
-			const blocks: HistoryRowsBlock[] = [];
-			for (const component of components) {
-				const position = copy.positions.get(component);
-				if (position && position.seq >= from && position.seq <= last)
-					blocks.push({ position, lines: component.render(width) });
-			}
-			return blocks;
-		} finally {
-			for (const component of components) if (!this.exceptions.keeps(component)) disposeRenderer(component);
-		}
-	}
-
-	/** The prompt that opened the turn holding entry `seq`, read back a page at a time; the session's start if none. */
-	private async turnStart(seq: number, alive: () => boolean): Promise<number> {
-		if (seq <= 1) return 1;
-		const read = this.manager.readHistory({ branchLeafSeq: this.leaf, toSeq: seq - 1, direction: "backward" });
-		for await (const page of read) {
-			if (!alive()) throw new Error("Saved history is no longer shown");
-			for (let index = page.items.length - 1; index >= 0; index--) {
-				const item = page.items[index]!;
-				if ("entry" in item && item.entry.type === "message" && item.entry.message.role === "user") return item.seq;
+			const first = items[0]?.seq,
+				end = items.at(-1)?.seq;
+			if (first === undefined || end === undefined) continue;
+			const copy: SavedCopyDraw = {
+				positions: new Map(),
+				alive,
+				edges: {
+					...(first > 1 ? { older: { branchLeafSeq, toSeq: first - 1, direction: "backward", signal } } : {}),
+					...(end < this.through
+						? { newer: { branchLeafSeq, fromSeq: end + 1, toSeq: this.through, direction: "forward", signal } }
+						: {}),
+				},
+			};
+			const components = this.draw(
+				this.mode,
+				items.map(entryForDisplay),
+				items.map((item) => item.seq),
+				this.exceptions,
+				undefined,
+				copy,
+			);
+			try {
+				await copy.settled;
+				if (!alive()) throw closed();
+				for (const component of components) {
+					const position = copy.positions.get(component);
+					if (position) blocks.push({ position, lines: component.render(width) });
+				}
+			} finally {
+				for (const component of components) if (!this.exceptions.keeps(component)) disposeRenderer(component);
 			}
 		}
-		return 1;
+		return blocks;
 	}
 
 	private navigate(direction: Direction): void {
@@ -615,6 +610,7 @@ class SavedChatHistory {
 		this.pending = undefined;
 	}
 	dispose(): void {
+		this.lifetime.abort();
 		this.cancel();
 		this.clearPages();
 		this.chat.removeChild(this.marker);
