@@ -1,3 +1,4 @@
+import { displayRunStatus } from "../shared/display-run-status.js";
 import type {
 	PendingWorkflowRunStatusResolver,
 	WorkflowBoundarySegmentsResolver,
@@ -9,7 +10,7 @@ import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import { createRunIndicatorStatusResolver, runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { sortRunsByStatus } from "../shared/run-order.js";
-import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, RunStatus, StageSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import { boundedToolTitleText } from "../shared/tool-payload-bounds.js";
 import type { FlatBandBadge, ProgressCell } from "./chat-surface.js";
@@ -50,16 +51,39 @@ function isQuitRun(run: RunSnapshot): boolean {
  * surface: one panel plus one card per run.
  */
 export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatusListOpts = {}): string {
+	if (opts.indicatorStatuses !== undefined) return renderSavedStatusList(runs, opts);
+	const statuses = new Map<RunSnapshot, RunStatus>();
+	return renderRunCards(runs, opts, (run) => {
+		const known = statuses.get(run);
+		if (known !== undefined) return known;
+		const status = displayRunStatus(run);
+		statuses.set(run, status);
+		return status;
+	});
+}
+
+/** A transcript card is a captured result, not a live view. */
+export function renderSavedStatusList(runs: readonly RunSnapshot[], opts: RenderStatusListOpts): string {
+	return renderRunCards(runs, opts, effectiveRunStatus);
+}
+
+function renderRunCards(
+	runs: readonly RunSnapshot[],
+	opts: RenderStatusListOpts,
+	statusOf: (run: RunSnapshot) => RunStatus,
+): string {
 	const now = opts.now ?? Date.now();
 	const width = effectiveWidth(opts.width);
 	const cardWidth = Math.max(20, width - 4);
 
-	const sorted = sortRuns(runs, opts);
+	const indicator = createRunIndicatorStatusResolver(opts.allRuns ?? runs, statusOf);
+	const indicatorOf = (run: RunSnapshot) => opts.indicatorStatuses?.[run.id] ?? indicator(run);
+	const sorted = sortRunsByStatus(runs, (run) => run, indicatorOf);
 	const resolveBoundarySegments: WorkflowBoundarySegmentsResolver =
 		opts.resolveBoundarySegments ?? ((runId) => workflowBoundarySegments(runs, runId));
 
 	// Header counts span the whole snapshot, not just the display window.
-	const counts = countBuckets(runs);
+	const counts = countBuckets(runs, statusOf);
 	const subtitle = `${sorted.length} run${sorted.length === 1 ? "" : "s"}`;
 	const badges: FlatBandBadge[] | undefined = opts.theme ? themedBadges(counts, opts.theme) : plainBadges(counts);
 
@@ -70,14 +94,16 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 	} else {
 		for (let i = 0; i < sorted.length; i++) {
 			if (i > 0) body.push("");
+			const run = sorted[i]!;
 			body.push(
 				...renderRunEntry(
-					sorted[i]!,
+					run,
 					now,
 					cardWidth,
 					opts.theme,
 					opts.allRuns ?? runs,
-					opts.indicatorStatuses,
+					statusOf(run),
+					opts.indicatorStatuses?.[run.id] ?? runIndicatorStatus(run, opts.allRuns ?? runs, statusOf),
 					opts.owningRunStatus,
 					resolveBoundarySegments,
 				),
@@ -110,13 +136,13 @@ function renderRunEntry(
 	width: number,
 	theme: GraphTheme | undefined,
 	allRuns: readonly RunSnapshot[],
-	indicatorStatuses?: Readonly<Record<string, RunIndicatorStatus>>,
+	status: RunStatus,
+	indicatorStatus: RunIndicatorStatus,
 	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
 	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): string[] {
 	const bodyWidth = effectiveWidth(width);
 	const interior = Math.max(8, bodyWidth - 4);
-	const indicatorStatus = indicatorStatuses?.[run.id] ?? runIndicatorStatus(run, allRuns);
 	const glyph = statusIconForRun(run, indicatorStatus);
 	const glyphFg = theme ? hexToAnsi(runAccent(run, theme, indicatorStatus)) : "";
 	const accent = theme ? hexToAnsi(theme.accent) : "";
@@ -135,7 +161,7 @@ function renderRunEntry(
 		return `   ${accent}${chunk}${RESET}`;
 	});
 
-	const trailing = runTrailing(run, theme);
+	const trailing = runTrailing(run, status, theme);
 	const trailingText = truncateToWidth(trailing?.text ?? "", Math.max(0, interior - 1), ELLIPSIS);
 	const nameBudget = Math.max(1, interior - 3 - visibleWidth(trailingText) - (trailingText ? 2 : 0));
 	const name = truncateToWidth(boundedToolTitleText(run.name, nameBudget * 4), nameBudget, ELLIPSIS);
@@ -145,13 +171,13 @@ function renderRunEntry(
 	const identity = `   ${nameSeg}${trailingSeg ? `  ${trailingSeg}` : ""}`;
 
 	const mode = run.stages.length > 1 ? "chain " : "single";
-	const rawMeta = runCardMeta(run, now);
+	const rawMeta = runCardMeta(run, status, now);
 	const modeW = mode.length + 4;
 	const maxMetaW = Math.max(0, interior - modeW - 3);
 	const meta = truncateToWidth(rawMeta, maxMetaW, ELLIPSIS);
 	const metaW = visibleWidth(meta);
 	const stripBudget = Math.max(0, interior - modeW - metaW - 2);
-	const strip = progressStrip(stageCells(run), stripBudget, theme);
+	const strip = progressStrip(stageCells(run, status), stripBudget, theme);
 	const usedLeftW = modeW + visibleWidth(strip);
 	const gap = Math.max(metaW > 0 ? 1 : 0, interior - usedLeftW - metaW);
 	const modeSeg = theme ? `${muted}${mode}${reset}` : mode;
@@ -250,11 +276,15 @@ function runAccent(run: RunSnapshot, theme: GraphTheme | undefined, indicatorSta
 	return statusColor(indicatorStatus, theme);
 }
 
-function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?: string } | undefined {
-	const runState = runStateIndicator(run);
+function runTrailing(
+	run: RunSnapshot,
+	status: RunStatus,
+	theme?: GraphTheme,
+): { text: string; fg?: string } | undefined {
+	const runState = runStateIndicator(run, status);
 	if (runState !== undefined)
 		return { text: runState.text, fg: theme === undefined ? undefined : runStateColor(runState, theme) };
-	switch (effectiveRunStatus(run)) {
+	switch (status) {
 		case "completed":
 			return { text: "✓ completed", fg: theme?.success };
 		case "running":
@@ -272,7 +302,7 @@ function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?:
 	}
 }
 
-function runCardMeta(run: RunSnapshot, now: number): string {
+function runCardMeta(run: RunSnapshot, status: RunStatus, now: number): string {
 	// Builds the right-aligned meta tail.
 	//   running  → `3/8 · review-a · 1m42s`
 	//   paused   → `3/8 · review-a · 1m42s` (elapsed is frozen by pausedAt)
@@ -293,7 +323,7 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 				: undefined;
 
 	if (isQuitRun(run)) return run.resumable === false ? "not resumable" : "resumable via /resume";
-	if (effectiveRunStatus(run) === "running") {
+	if (status === "running") {
 		if (isChain) parts.push(`${done}/${total}`);
 		const labels = runningStageLabels(run);
 		if (labels) parts.push(labels);
@@ -301,7 +331,7 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 		return parts.join(" · ");
 	}
 
-	if (effectiveRunStatus(run) === "paused") {
+	if (status === "paused") {
 		if (isChain) parts.push(`${done}/${total}`);
 		const labels = pausedStageLabels(run);
 		if (labels) parts.push(labels);
@@ -309,7 +339,7 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 		return parts.join(" · ");
 	}
 
-	if (effectiveRunStatus(run) === "failed" || effectiveRunStatus(run) === "killed") {
+	if (status === "failed" || status === "killed") {
 		if (run.exitReason !== undefined && run.exitReason.length > 0 && run.exited === true)
 			parts.push(boundedToolTitleText(run.exitReason));
 		const failed = run.stages.find((s) => s.status === "failed");
@@ -322,7 +352,7 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 		return parts.join(" · ");
 	}
 
-	if (["completed", "skipped", "cancelled", "blocked"].includes(effectiveRunStatus(run))) {
+	if (["completed", "skipped", "cancelled", "blocked"].includes(status)) {
 		if (run.exitReason !== undefined && run.exitReason.length > 0) parts.push(boundedToolTitleText(run.exitReason));
 		if (!isChain && run.stages[0]) parts.push(boundedToolTitleText(run.stages[0].name));
 		const dur = lastStageDuration(run, now);
@@ -371,9 +401,9 @@ function stageDurationString(stage: StageSnapshot, now: number): string | undefi
 	return elapsed === undefined ? undefined : fmtDuration(elapsed);
 }
 
-function stageCells(run: RunSnapshot): ProgressCell[] {
+function stageCells(run: RunSnapshot, status: RunStatus): ProgressCell[] {
 	if (run.stages.length === 0) {
-		return [{ status: effectiveRunStatus(run) }];
+		return [{ status }];
 	}
 	return run.stages.map((s) => ({ status: s.status }));
 }
@@ -402,10 +432,10 @@ interface Counts {
 	pending: number;
 }
 
-function countBuckets(runs: readonly RunSnapshot[]): Counts {
+function countBuckets(runs: readonly RunSnapshot[], statusOf: (run: RunSnapshot) => RunStatus): Counts {
 	const c: Counts = { active: 0, paused: 0, quit: 0, completed: 0, blocked: 0, failed: 0, stopped: 0, pending: 0 };
 	for (const r of runs) {
-		const status = effectiveRunStatus(r);
+		const status = statusOf(r);
 		if (isQuitRun(r)) c.quit++;
 		else if (status === "killed" || status === "cancelled") c.stopped++;
 		else if (r.endedAt === undefined) {
@@ -456,15 +486,6 @@ function plainBadges(c: Counts): FlatBandBadge[] {
 // ---------------------------------------------------------------------------
 // Sorting + helpers
 // ---------------------------------------------------------------------------
-
-function sortRuns(runs: readonly RunSnapshot[], opts: RenderStatusListOpts): RunSnapshot[] {
-	const statusOf = createRunIndicatorStatusResolver(opts.allRuns ?? runs);
-	return sortRunsByStatus(
-		runs,
-		(run) => run,
-		(run) => opts.indicatorStatuses?.[run.id] ?? statusOf(run),
-	);
-}
 
 function renderStatusHintRows(id: string, theme: GraphTheme | undefined, width: number): string[] {
 	const budget = Math.max(1, width - 4);

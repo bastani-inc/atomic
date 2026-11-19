@@ -14,7 +14,7 @@ import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-w
 import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
-	renderChatMessageEntry,
+	renderHostedChatEntry,
 } from "./chat-message-renderer.ts";
 import {
 	hasChatSessionTransientModal,
@@ -439,9 +439,10 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 			expanded === undefined
 				? chatMessageRenderOptions(state, isStreaming)
 				: { ...chatMessageRenderOptions(state, isStreaming), toolOutputExpanded: expanded };
-		const component = renderChatMessageEntry(
+		const component = renderHostedChatEntry(
 			streamingWindowedEntry(state, entry, isStreaming),
 			entry.kind === "tool" || entry.kind === "custom" ? { ...options, ui: entryTui(state, entry) } : options,
+			state.assistantCard,
 		);
 		const echoed = resolveEchoedInitialPrompt(state);
 		if (

@@ -9,9 +9,11 @@ import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "
 import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
+import { originalHistoryNote } from "./history-search-wire.js";
 import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
 import {
+	type HistoryNoteWindow,
 	type InternalResourceContext,
 	isInternalUrl,
 	parseArchiveSelector,
@@ -352,6 +354,24 @@ async function searchFileLineRanges(
 
 const SEARCH_ROW_PATH = /^(.+?)(?::\d+: |-\d+- |:(?!\/\/)[^:]+: )/;
 
+function historyWindow(first: number, end: number): HistoryNoteWindow {
+	return {
+		first,
+		end,
+		includes(lines, note) {
+			const wanted = SEARCH_ROW_PATH.exec(note)?.[1];
+			const paths = new Set<string>();
+			for (const line of lines) {
+				const path = SEARCH_ROW_PATH.exec(line)?.[1];
+				if (!path || paths.has(path)) continue;
+				if (path === wanted) return paths.size >= first && paths.size < end;
+				paths.add(path);
+			}
+			return false;
+		},
+	};
+}
+
 function groupSearchOutput(text: string): SearchOutputGroup[] {
 	const groups: SearchOutputGroup[] = [];
 	const byPath = new Map<string, SearchOutputGroup>();
@@ -505,8 +525,9 @@ function dedupeRenderedSearchOutput(content: string): string {
 		const row = line.match(/^(.+?)(?::(\d+): |-(\d+)- )/);
 		let key = "";
 		if (row) {
+			const comparable = row[2] === "0" && row[1]!.startsWith("history://") ? originalHistoryNote(line) : undefined;
 			const base = row[1]!.startsWith("history://")
-				? `${row[1]}:${row[2] ?? row[3]}:${line.slice(row[0].length)}`
+				? `${row[1]}:${row[2] ?? row[3]}:${(comparable ?? line).slice(row[0].length)}`
 				: `${row[1]}:${row[2] ?? row[3]}`;
 			if (row[1]!.startsWith("history://")) {
 				const count = (blockCounts.get(base) ?? 0) + 1;
@@ -619,6 +640,7 @@ export function createSearchToolDefinition(
 										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
 										...(signal === undefined ? {} : { signal }),
 									},
+									historyWindow(0, 0),
 								);
 					return groupSearchOutput(filterTargetLineRanges(text, target, contextBefore, contextAfter)).length > 0;
 				}
@@ -694,6 +716,10 @@ export function createSearchToolDefinition(
 										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
 										...(signal === undefined ? {} : { signal }),
 									},
+									historyWindow(
+										Math.max(0, skip - groups.length),
+										skip > 0 ? skip + limit - groups.length : remaining,
+									),
 								);
 					if (archive && target.archive) text = text.split(archive.archivePath).join(target.archive.archivePath);
 					if (target.sqlite)

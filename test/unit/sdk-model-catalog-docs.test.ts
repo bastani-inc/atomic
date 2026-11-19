@@ -43,7 +43,7 @@ describe("ModelRuntime catalog SDK documentation", () => {
 	test("documented allowModelNetwork default of false matches the implementation", () => {
 		assert.match(sdkDocs, /`allowModelNetwork` \(default `false`\)/u);
 		// Only an explicit true opts in; every other value — including omitted — stays offline.
-		assert.match(modelRuntimeSource, /options\.allowModelNetwork === true/u);
+		assert.match(modelRuntimeSource, /const refreshFromNetwork = allowModelNetwork === true/u);
 	});
 
 	test("documented four-hour throttle matches REMOTE_CATALOG_REFRESH_INTERVAL_MS", () => {

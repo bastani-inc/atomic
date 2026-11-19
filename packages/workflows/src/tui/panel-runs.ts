@@ -318,10 +318,21 @@ function isPublishedGraphRuns(runs: readonly RunSnapshot[]): boolean {
 	return true;
 }
 
-function toStoreSnapshot(runsOrSnapshot: readonly RunSnapshot[] | StoreSnapshot): {
+type RunMarkerSamples = Map<RunSnapshot, Pick<RunSnapshot, "blockedAt">>;
+
+function toStoreSnapshot(
+	runsOrSnapshot: readonly RunSnapshot[] | StoreSnapshot,
+	markerSamples?: RunMarkerSamples,
+): {
 	readonly snapshot: StoreSnapshot;
 	readonly cacheKey: object | undefined;
 } {
+	function snapshotRun(run: RunSnapshot): RunSnapshot {
+		const sampled = { ...run };
+		if (markerSamples !== undefined && "blockedAt" in sampled)
+			markerSamples.set(run, { blockedAt: sampled.blockedAt });
+		return sampled;
+	}
 	if (Array.isArray(runsOrSnapshot)) {
 		const runs = runsOrSnapshot as readonly RunSnapshot[];
 		if (isPublishedGraphRuns(runs)) {
@@ -331,13 +342,13 @@ function toStoreSnapshot(runsOrSnapshot: readonly RunSnapshot[] | StoreSnapshot)
 			};
 		}
 		return {
-			snapshot: { runs: runs.map((run) => ({ ...run })), notices: EMPTY_NOTICES, version: 0 },
+			snapshot: { runs: runs.map(snapshotRun), notices: EMPTY_NOTICES, version: 0 },
 			cacheKey: undefined,
 		};
 	}
 	const snapshot = runsOrSnapshot as StoreSnapshot;
 	if (graphSnapshotLineage(snapshot) !== undefined) return { snapshot, cacheKey: snapshot.runs };
-	return { snapshot: { ...snapshot, runs: snapshot.runs.map((run) => ({ ...run })) }, cacheKey: undefined };
+	return { snapshot: { ...snapshot, runs: snapshot.runs.map(snapshotRun) }, cacheKey: undefined };
 }
 
 export function panelItemsFromSnapshot(
@@ -345,8 +356,9 @@ export function panelItemsFromSnapshot(
 	now = Date.now(),
 	scope?: Set<string> | object,
 	pendingStageTokens?: PendingStageTokenReader,
+	markerSamples?: RunMarkerSamples,
 ): AgentPanelItem[] {
-	const { snapshot, cacheKey } = toStoreSnapshot(runsOrSnapshot);
+	const { snapshot, cacheKey } = toStoreSnapshot(runsOrSnapshot, markerSamples);
 	const viewed = resolveViewedWorkflowRuns(scope);
 	const store = resolveStore(scope);
 	if (viewed.size > 0) {

@@ -196,6 +196,38 @@ function stageMetadata(details: unknown) {
 	])[0]!;
 }
 
+test("a fitting stage checkpoint needs no extra member lists or identity comparisons (#5691)", () => {
+	const data = Array.from({ length: 2048 }, (_, i) => i % 10);
+	const answer = {
+		toolCallId: "ci",
+		toolName: "watch",
+		isError: false,
+		result: { content: [], details: data, structuredContent: data },
+	};
+	const push = Array.prototype.push;
+	const is = Object.is;
+	let pushed = 0;
+	let compared = 0;
+	let record: ReturnType<typeof recordStageWaitToolResults>[number] | undefined;
+	try {
+		Array.prototype.push = function (...items) {
+			pushed += items.length;
+			return push.apply(this, items);
+		};
+		Object.is = (a, b) => {
+			compared++;
+			return is(a, b);
+		};
+		[record] = recordStageWaitToolResults([answer]);
+	} finally {
+		Array.prototype.push = push;
+		Object.is = is;
+	}
+	assert.deepEqual(record?.details, data);
+	assert.deepEqual(record?.structuredContent, data);
+	assert.deepEqual([pushed, compared], [0, 0]);
+});
+
 test("stage checkpoints reject object proxies before enumerating any of their keys (#5486)", () => {
 	let enumerations = 0;
 	const proxy = new Proxy(

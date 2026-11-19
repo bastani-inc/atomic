@@ -1,4 +1,5 @@
 import { isWorkflowRunResumable, type WorkflowRunResumeCandidate } from "../durable/resume-eligibility.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { createRunIndicatorStatusResolver } from "../shared/run-indicator-status.js";
 import { sortRunsByStatus } from "../shared/run-order.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
@@ -50,7 +51,7 @@ export function selectRunsForPicker(
 			rows.push({ run: r, bucket: "terminal" });
 		}
 	}
-	return sortRunsByStatus(rows, (row) => row.run, createRunIndicatorStatusResolver(runs));
+	return sortRunsByStatus(rows, (row) => row.run, createRunIndicatorStatusResolver(runs, effectiveRunStatus));
 }
 
 function runCandidate(run: RunSnapshot): RunSnapshot {

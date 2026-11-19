@@ -52,6 +52,8 @@ export interface ChatSessionHostStateCallbacks<TExtraEntry extends ChatTranscrip
 }
 
 export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = never> {
+	/** Only a mounted task with a split failed reply needs a specialized assistant card. */
+	declare assistantCard?: typeof import("./assistant-message.ts").AssistantMessageComponent;
 	readonly style: ChatSessionHostStyle;
 	readonly commands: ChatSessionHostCommands;
 	readonly requestRender: (() => void) | undefined;
