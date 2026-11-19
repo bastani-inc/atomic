@@ -387,6 +387,7 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 		"/guides/worker-hosts",
 		"/guides/worker-fleets-postgres",
 		"/computer-use",
+		"/verification",
 	],
 	"/skills": ["/skills/authoring"],
 	"/subagents": ["/subagents/authoring"],
@@ -554,10 +555,9 @@ describe("docs information architecture (#2847)", () => {
 	test("retired workflow bookmarks lead to live orchestration or conversion instructions", () => {
 		const redirects = new Map(docsJson.redirects?.map(({ source, destination }) => [source, destination]));
 		for (const [destination, sources] of [
-			[
-				"/orchestration",
-				["/workflows", "/guides/workflows", "/workflows/reliable-design", "/workflows/verification"],
-			],
+			["/orchestration", ["/workflows", "/guides/workflows"]],
+			["/orchestration/patterns", ["/workflows/reliable-design"]],
+			["/verification", ["/workflows/verification"]],
 			[
 				"/orchestration/migrating-workflows",
 				["/workflows/authoring", "/workflows/builtins", "/workflows/operations", "/workflows/api-reference"],
@@ -568,6 +568,17 @@ describe("docs information architecture (#2847)", () => {
 				assert.equal(redirects.get(source), destination, source);
 				assert.ok(!routeToSlug.has(source), `${source} must not also serve obsolete instructions`);
 			}
+		}
+		for (const anchor of [
+			"select-the-verification-environment",
+			"terminal-contracts",
+			"reproduce-stage-skill-terminal-evidence",
+			"desktop-safety",
+		]) {
+			assert.ok(
+				anchorResolves("/verification", anchor),
+				`an old verification bookmark must still land at #${anchor}`,
+			);
 		}
 	});
 
@@ -651,7 +662,7 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			50,
+			51,
 			"migration routes, additions, and the storage API have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");

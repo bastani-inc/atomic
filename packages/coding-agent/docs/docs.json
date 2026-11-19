@@ -58,7 +58,8 @@
               "guides/team-setup",
               "guides/worker-hosts",
               "guides/worker-fleets-postgres",
-              "computer-use"
+              "computer-use",
+              "verification"
             ]
           },
           {
@@ -261,8 +262,8 @@
     { "source": "/guides/workflows", "destination": "/orchestration" },
     { "source": "/workflows/builtins", "destination": "/orchestration/migrating-workflows" },
     { "source": "/workflows/authoring", "destination": "/orchestration/migrating-workflows" },
-    { "source": "/workflows/reliable-design", "destination": "/orchestration" },
-    { "source": "/workflows/verification", "destination": "/orchestration" },
+    { "source": "/workflows/reliable-design", "destination": "/orchestration/patterns" },
+    { "source": "/workflows/verification", "destination": "/verification" },
     { "source": "/workflows/operations", "destination": "/orchestration/migrating-workflows" },
     { "source": "/workflows/api-reference", "destination": "/orchestration/migrating-workflows" },
     {

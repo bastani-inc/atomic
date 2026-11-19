@@ -7,7 +7,7 @@ description: "Use desktop apps, browsers, and terminals with Atomic on macOS, Li
 
 Atomic can work in applications, not just edit code. Computer use can create a Blender scene, build a presentation, edit a video, operate a desktop app, or move work between applications. Browser and terminal automation cover related tasks with more direct controls.
 
-This guide explains tool selection, setup, and safe operation. To check a software change, reproduce the actual user interaction and save the observed result.
+This guide explains tool selection, setup, and safe operation. For choosing checks, reproducing the user interaction, and reporting the observed result, see [Verification and evidence](/verification).
 
 Jump to [application scripting](#application-scripting-and-apis), [desktop automation](#desktop-automation-with-agent-desktop), [browser automation](#browser-automation-with-agent-browser), [terminal automation](#terminal-automation-with-herdr), or [creative workflows](#creative-work-and-computer-use-workflows). Platform setup: [macOS](#macos), [Linux](#linux), [Windows](#windows).
 
