@@ -2060,6 +2060,32 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		assert.equal(await claim, true, "what the database answered during the stall is read before the bound passes");
 	});
 
+	test("a broker that stalls while it reads whether a session is connected through another broker still reads the answer (#5607)", async () => {
+		const node = await startNode(await cluster());
+		const elsewhere = session("elsewhere");
+		const identity = deliveryTargetIdentity(elsewhere);
+		const taken = await node.state.leases.acquire(
+			{ kind: "presence", targetIdentity: identity, session: elsewhere.info },
+			"another-broker",
+			BROKER_LEASE_STALE_AFTER_MS,
+		);
+		assert.equal(taken.status, "acquired");
+		const leases = node.state.leases;
+		const read = leases.read.bind(leases);
+		vi.spyOn(leases, "read").mockImplementationOnce(async (...args) => {
+			// The database answers at once, but this broker then does not run for longer than any of its lookups waits.
+			setTimeout(() => stallEventLoop(SESSION_ID_CLAIM_BOUND_MS + STALL_PAST_BOUND_MS), 0);
+			await databaseAnswer();
+			return read(...args);
+		});
+
+		assert.equal(
+			await node.router.identityPresentElsewhere(identity),
+			true,
+			"the broker's own stall is not the database's time",
+		);
+	});
+
 	test("a database that does not answer still ends the claim of a broker that keeps running late, with a fresh id (#5607)", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());

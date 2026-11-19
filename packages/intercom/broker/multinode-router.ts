@@ -973,8 +973,10 @@ export class MultiNodeRouter {
 				owed: true,
 			});
 			if (enqueued.status === "invalid" || enqueued.status === "full") continue;
-			if (enqueued.status === "inserted" && owner.hostBrokerId !== undefined) {
-				await this.bus.publish({ brokerId: owner.hostBrokerId, reason: "outbox", version: enqueued.row.sequence });
+			if (enqueued.status === "inserted") {
+				if (owner.hostBrokerId !== undefined) {
+					await this.bus.publish({ brokerId: owner.hostBrokerId, reason: "outbox", version: enqueued.row.sequence });
+				} else await this.wakeHolderOf(owner.identity, enqueued.row.sequence);
 			}
 			await this.state.releasedAsks.claim({
 				questionId: ask.questionId,
@@ -1090,8 +1092,10 @@ export class MultiNodeRouter {
 					replyTo: ask.messageId,
 				});
 			}
-			if (enqueued.status === "inserted" && hosted !== undefined) {
-				await this.bus.publish({ brokerId: hosted.holderId, reason: "outbox", version: enqueued.row.sequence });
+			if (enqueued.status === "inserted") {
+				if (hosted !== undefined) {
+					await this.bus.publish({ brokerId: hosted.holderId, reason: "outbox", version: enqueued.row.sequence });
+				} else await this.wakeHolderOf(asker.targetIdentity, enqueued.row.sequence);
 			}
 		}
 	}
@@ -1296,14 +1300,13 @@ export class MultiNodeRouter {
 	 * Whether another broker holds the live presence of `targetIdentity`: a registration of that identity is connected
 	 * there. Read behind what this broker already queued for the identity, without holding up what it queues next, so a
 	 * slow read never delays a later registration of it. A database that fails or does not answer within
-	 * `REMOTE_SESSIONS_BOUND_MS` counts as no, and its late answer is ignored.
+	 * `REMOTE_SESSIONS_BOUND_MS` of this broker's running time (#5607) counts as no, and its late answer is ignored.
 	 */
 	identityPresentElsewhere(targetIdentity: string): Promise<boolean> {
 		if (this.closed) return Promise.resolve(false);
 		const earlier = this.serials.get(targetIdentity) ?? Promise.resolve();
 		return new Promise((resolve) => {
-			const bound = setTimeout(() => resolve(false), REMOTE_SESSIONS_BOUND_MS);
-			bound.unref?.();
+			const cancelBound = runningTimeBound(REMOTE_SESSIONS_BOUND_MS, () => resolve(false));
 			void earlier
 				.then(() => this.state.leases.read({ kind: "presence", targetIdentity }))
 				.then(
@@ -1318,7 +1321,7 @@ export class MultiNodeRouter {
 						resolve(false);
 					},
 				)
-				.finally(() => clearTimeout(bound));
+				.finally(cancelBound);
 		});
 	}
 
@@ -2410,6 +2413,7 @@ export class MultiNodeRouter {
 		this.waiters.set(message.id, waiter);
 		if (offline) {
 			await this.writeQueued(request.socket, message.id, request.attemptId, target.identity);
+			await this.wakeHolderOf(target.identity, row.sequence);
 			return;
 		}
 		if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
@@ -2418,6 +2422,22 @@ export class MultiNodeRouter {
 		// broker (`wakeWaitingOrigins`), so a send racing its recipient's quit is queued either way. The waiter's own
 		// receipt wait keeps running meanwhile, so slow reads here never hold the sender past it.
 		void this.queueIfRecipientLeft(waiter).catch((error: Error) => this.report(error));
+	}
+
+	/**
+	 * #5607: a row was written for a target that had no live presence when this broker looked. The target may have
+	 * registered since, and its broker's catch-up scan may have run before the row was written, so that broker would not
+	 * find it until a backup poll. Looked up again now the row exists, the broker that holds its presence is told. Only a
+	 * hint: a lookup or hint that fails leaves the row to that backup poll, as before, and fails nothing else.
+	 */
+	private async wakeHolderOf(targetIdentity: string, version: number): Promise<void> {
+		try {
+			const read = await this.state.leases.read({ kind: "presence", targetIdentity });
+			if (read.status !== "found" || read.lease.ageMs >= BROKER_LEASE_STALE_AFTER_MS) return;
+			await this.bus.publish({ brokerId: read.lease.holderId, reason: "outbox", version });
+		} catch (error) {
+			this.report(error);
+		}
 	}
 
 	private async writeQueued(
