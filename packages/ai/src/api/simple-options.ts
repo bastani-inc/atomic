@@ -75,6 +75,7 @@ export function buildBaseOptions(
 		streamDeadlineMs: options?.streamDeadlineMs,
 		maxRetries: options?.maxRetries,
 		maxRetryDelayMs: options?.maxRetryDelayMs,
+		...(options?.retryDeadline === undefined ? {} : { retryDeadline: options.retryDeadline }),
 		metadata: options?.metadata,
 		env: options?.env,
 	};

@@ -20,7 +20,8 @@ import type {
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
-import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 
 interface OpenRouterGeneratedImage {
@@ -59,7 +60,8 @@ export const generateImages: ImagesFunction<ImagesOptions> = async (
 		if (!apiKey) {
 			throw new Error(`No API key for provider: ${model.provider}`);
 		}
-		const client = createClient(model, apiKey, options?.headers, options?.fetch, options?.identity);
+		const retryTransport = ProviderRetryTransport.for(options);
+		const client = createClient(model, apiKey, options?.headers, retryTransport?.fetch ?? options?.fetch, options?.identity);
 		let params = buildParams(model, context);
 		const nextParams = await options?.onPayload?.(params, model);
 		if (nextParams !== undefined) {
@@ -80,6 +82,7 @@ export const generateImages: ImagesFunction<ImagesOptions> = async (
 				maxRetryDelayMs: options?.maxRetryDelayMs,
 				signal: options?.signal,
 			},
+			retryTransport,
 		);
 		await options?.onResponse?.({ status: rawResponse.status, headers: headersToRecord(rawResponse.headers) }, model);
 
@@ -111,7 +114,7 @@ export const generateImages: ImagesFunction<ImagesOptions> = async (
 
 		return output;
 	} catch (error) {
-		output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+		output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 		output.errorMessage = formatProviderError(normalizeProviderError(error));
 		return output;
 	}

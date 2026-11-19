@@ -565,6 +565,38 @@ describe("pi 1.2.0 wheel input under a focused overlay", () => {
  * `false`, rather than consuming the key and freezing the transcript.
  */
 describe("an asynchronous overlay handler", () => {
+	test("a delayed raw press cannot start a choice in the next showing of the dialog (#5643)", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			const events: string[] = [];
+			const press = "\x1b[<0;2;1M";
+			const release = "\x1b[<0;2;1m";
+			const answer = Promise.withResolvers<boolean>();
+			const handle = fixture.tui.showOverlay(
+				{
+					render: () => ["Choose red"],
+					invalidate() {},
+					handleInput: (data) => (data === press ? answer.promise : false),
+					handleMouse(event) {
+						events.push(event.type);
+						return { handled: true };
+					},
+				},
+				{ anchor: "top-left", width: 10 },
+			);
+			fixture.tui.renderNow();
+			fixture.terminal.input(press);
+			handle.setHidden(true);
+			handle.setHidden(false);
+			answer.resolve(false);
+			await Promise.resolve();
+			fixture.terminal.input(release);
+			expect(events).toEqual(["press", "release"]);
+		} finally {
+			fixture.stop();
+		}
+	});
+
 	test("a handler resolving undefined still pages the transcript", async () => {
 		const fixture = createFixture({ mountOverlay: false });
 		try {
@@ -737,7 +769,7 @@ describe("pi-tui 0.84.2 transcript search is disabled", () => {
  * open question for Atomic is the other direction: does the chunk-splitting
  * replay in `routeViewportInput` take a reassembled sequence apart again?
  *
- * It does not. `replayMouseInput` splits only a chunk whose every byte is a
+ * It does not. The viewport replay splits only a chunk whose every byte is a
  * mouse report; both sequences below survive a decline intact and still match
  * the action they are bound to. **Outcome: no breakage, no fix needed.**
  */

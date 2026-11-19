@@ -54,7 +54,8 @@ import {
 	type OpenRouterUsageAccounting,
 } from "../utils/openrouter-cost.ts";
 import { getAtomicEnvValue, getProviderEnvValue } from "../utils/provider-env.ts";
-import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -1049,6 +1050,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			if (thinkingOffFallback) {
 				appendThinkingOffFallbackDiagnostic(output, thinkingOffFallback.level, thinkingOffFallback.effort);
 			}
+			const retryTransport = options?.client ? undefined : ProviderRetryTransport.for(options);
 			let client: Anthropic;
 			let isOAuth: boolean;
 			let usageModel = model;
@@ -1100,6 +1102,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					federation,
 					options?.identity,
 					threadSessionId !== undefined,
+					retryTransport,
 				);
 				client = created.client;
 				isOAuth = created.isOAuthToken;
@@ -1121,8 +1124,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					{
 						maxRetries: options?.maxRetries,
 						maxRetryDelayMs: options?.maxRetryDelayMs,
+						retryDeadline: options?.retryDeadline,
 						signal: streamDeadline.signal,
 					},
+					retryTransport,
 				);
 			let disablePreferredStrictTools = hasExceededStrictToolLimits(options?.sessionId);
 			let response: Response;
@@ -1441,7 +1446,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			) {
 				recordInputTransformations(output, inputTransformations);
 			}
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? withCauseDetail(error) : JSON.stringify(error);
 			appendProviderResponseFailureDiagnostic(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
@@ -1569,6 +1574,7 @@ function createClient(
 	federation?: AnthropicFederationConfig,
 	identity?: ClientIdentity,
 	useMessageThreads = false,
+	retryTransport?: ProviderRetryTransport,
 ): { client: Anthropic; isOAuthToken: boolean } {
 	// Adaptive thinking models have interleaved thinking built in, so skip the beta header.
 	const needsInterleavedBeta = interleavedThinking && model.compat?.forceAdaptiveThinking !== true;
@@ -1600,7 +1606,7 @@ function createClient(
 			authToken: apiKey ?? null,
 			baseURL: model.baseUrl,
 			dangerouslyAllowBrowser: true,
-			fetch,
+			fetch: retryTransport?.fetch ?? fetch,
 			defaultHeaders: mergeHeaders(
 				getIdentityHeaders(model, identity),
 				{
@@ -1624,7 +1630,7 @@ function createClient(
 			authToken: apiKey,
 			baseURL: model.baseUrl,
 			dangerouslyAllowBrowser: true,
-			fetch,
+			fetch: retryTransport?.fetch ?? fetch,
 			defaultHeaders: mergeHeaders(
 				{
 					accept: "application/json",
@@ -1672,7 +1678,7 @@ function createClient(
 			});
 			federationClient = { key, fetch, client };
 		}
-		return { client: federationClient.client.withOptions({ defaultHeaders, fetch }), isOAuthToken: false };
+		return { client: federationClient.client.withOptions({ defaultHeaders, fetch: retryTransport?.fetch ?? fetch }), isOAuthToken: false };
 	}
 
 	const client = new AtomicAnthropic({
@@ -1680,7 +1686,7 @@ function createClient(
 		authToken: null,
 		baseURL: model.baseUrl,
 		dangerouslyAllowBrowser: true,
-		fetch,
+		fetch: retryTransport?.fetch ?? fetch,
 		defaultHeaders,
 	});
 
