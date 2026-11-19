@@ -4,6 +4,7 @@ import type { BudgetDimension, BudgetReport } from "../shared/budget.js";
 import {
 	actionableReturnedStatusText,
 	effectiveRunStatus,
+	hasRecordedRunBlock,
 	isReturnedBlockedWorkflowStatus,
 	normalizeReturnedWorkflowStatus,
 	structuredRecoverableWorkflowFailureText,
@@ -584,9 +585,8 @@ function terminalNoticeKind(run: RunSnapshot): "completed" | "failed" | "blocked
 
 function isActiveRecoverableBlockedRun(run: RunSnapshot): boolean {
 	return (
-		run.blockedAt !== undefined &&
-		((run.status === "running" && effectiveRunStatus(run) === "blocked") ||
-			structuredRecoverableWorkflowFailureText(run) !== undefined)
+		hasRecordedRunBlock(run) ||
+		(run.blockedAt !== undefined && structuredRecoverableWorkflowFailureText(run) !== undefined)
 	);
 }
 

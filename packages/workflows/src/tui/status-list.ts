@@ -5,7 +5,7 @@ import type {
 import { pendingWorkflowStageStatuses, workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { poolCoordinationLine } from "../shared/pool-coordination.js";
 import { formatStagePredictionStatus, stagePredictionStatus } from "../shared/possible-stage-prediction.js";
-import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { effectiveRunStatus, hasRecordedRunBlock } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import { createRunIndicatorStatusResolver, runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { sortRunsByStatus } from "../shared/run-order.js";
@@ -116,7 +116,7 @@ function renderRunEntry(
 ): string[] {
 	const bodyWidth = effectiveWidth(width);
 	const interior = Math.max(8, bodyWidth - 4);
-	const indicatorStatus = indicatorStatuses?.[run.id] ?? runIndicatorStatus(run, allRuns);
+	const indicatorStatus = savedIndicatorStatus(run, indicatorStatuses) ?? runIndicatorStatus(run, allRuns);
 	const glyph = statusIconForRun(run, indicatorStatus);
 	const glyphFg = theme ? hexToAnsi(runAccent(run, theme, indicatorStatus)) : "";
 	const accent = theme ? hexToAnsi(theme.accent) : "";
@@ -457,12 +457,21 @@ function plainBadges(c: Counts): FlatBandBadge[] {
 // Sorting + helpers
 // ---------------------------------------------------------------------------
 
+function savedIndicatorStatus(
+	run: RunSnapshot,
+	statuses: RenderStatusListOpts["indicatorStatuses"],
+): RunIndicatorStatus | undefined {
+	const saved = statuses?.[run.id];
+	// Older status cards could save a working indicator for a blocked run. Keep saved hidden-child input otherwise.
+	return (saved === "running" || saved === "awaiting_input") && hasRecordedRunBlock(run) ? "blocked" : saved;
+}
+
 function sortRuns(runs: readonly RunSnapshot[], opts: RenderStatusListOpts): RunSnapshot[] {
 	const statusOf = createRunIndicatorStatusResolver(opts.allRuns ?? runs);
 	return sortRunsByStatus(
 		runs,
 		(run) => run,
-		(run) => opts.indicatorStatuses?.[run.id] ?? statusOf(run),
+		(run) => savedIndicatorStatus(run, opts.indicatorStatuses) ?? statusOf(run),
 	);
 }
 

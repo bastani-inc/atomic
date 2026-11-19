@@ -20,6 +20,7 @@ import {
 import type { WorkflowToolArgs } from "../../packages/workflows/src/extension/public-types.js";
 import { renderCall, workflowCallLabel } from "../../packages/workflows/src/extension/render-call.js";
 import type { WorkflowRegisteredToolResult } from "../../packages/workflows/src/extension/render-result.js";
+import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import {
 	callComponent,
 	parseDefinitionError,
@@ -901,6 +902,22 @@ describe("the workflow tool's result line (#5224)", () => {
 
 describe("every workflow action reads as one line collapsed and unboxed when expanded (#5224)", () => {
 	const now = START;
+	test("a saved status tally honors a block recorded on its own run (#5534)", () => {
+		const store = runningStore();
+		store.recordRunBlocked(RUN_ID, "session store unavailable", {
+			failureKind: "unknown",
+			failureRecoverability: "recoverable",
+			resumable: true,
+			blockedAt: START,
+		});
+		const marked = store.run(RUN_ID)!;
+		const row = { ...summarizeRunSnapshot(marked, now), status: "running" as const };
+		const tally = (snapshots: (typeof marked)[]) =>
+			summarizeWorkflowResult({ action: "status", filter: "all", runs: [row], snapshots }, { now }).text;
+		assert.equal(tally([marked]), "1 run · 1 blocked");
+		assert.equal(tally([{ ...marked, id: "other-run" }]), "1 run · 1 running");
+		assert.equal(tally([]), "1 run · 1 running");
+	});
 	const cases: Array<[string, WorkflowRegisteredToolResult, RegExp]> = [
 		[
 			"list",

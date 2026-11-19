@@ -8,7 +8,7 @@ import {
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import { meter_run, type RunUsageTree } from "../shared/budget-meter.js";
-import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { effectiveRunStatus, hasRecordedRunBlock } from "../shared/returned-run-status.js";
 import type { StoreInvalidationListener } from "../shared/store-public-types.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { stripTerminalSequences } from "../shared/terminal-controls.js";
@@ -522,9 +522,13 @@ function summarizeRunResult(
 	}
 }
 
-function countBy<T>(items: readonly T[], key: (item: T) => string): string {
+function countBy<T>(items: readonly T[], key: (item: T, index: number) => string): string {
 	const counts = new Map<string, number>();
-	for (const item of items) counts.set(key(item), (counts.get(key(item)) ?? 0) + 1);
+	let index = 0;
+	for (const item of items) {
+		const name = key(item, index++);
+		counts.set(name, (counts.get(name) ?? 0) + 1);
+	}
 	return [...counts].map(([name, count]) => `${count} ${name.replaceAll("_", " ")}`).join(" · ");
 }
 
@@ -582,7 +586,13 @@ export function summarizeWorkflowResult(
 						tone: "info",
 						text: join(
 							plural(result.runs.length, "run"),
-							countBy(result.runs, (run) => run.status),
+							countBy(result.runs, (run, index) => {
+								// An older status result can say running even though its paired snapshot records a block.
+								const snapshot = run.status === "running" ? result.snapshots?.[index] : undefined;
+								return snapshot && hasRecordedRunBlock(snapshot) && snapshot.id === run.runId
+									? "blocked"
+									: run.status;
+							}),
 						),
 					};
 		case "statusSummary":
