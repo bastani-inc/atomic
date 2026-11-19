@@ -1,5 +1,5 @@
 import { WindowedContainer } from "@bastani/atomic-tui";
-import { ThemedText } from "./components/themed-text.ts";
+import { ThemedText } from "./components/themed-text.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Component,
