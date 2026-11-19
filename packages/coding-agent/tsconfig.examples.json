@@ -4,7 +4,6 @@
 		"noEmit": true,
 		"paths": {
 			"@bastani/atomic": ["./src/index.ts"],
-			"@bastani/atomic/hooks": ["./src/core/hooks/index.ts"],
 			"@bastani/atomic-ai": ["../ai/src/index.ts"],
 			"typebox": ["../../node_modules/typebox"]
 		},
