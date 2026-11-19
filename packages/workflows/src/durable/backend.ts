@@ -781,6 +781,8 @@ class JournalProjection {
 		const forkedFrom = handle.forkedFrom ?? existing?.handle.forkedFrom;
 		const workspace = handle.workspace ?? existing?.handle.workspace;
 		const snapshot = handle.snapshot ?? existing?.handle.snapshot;
+		// An existing run's format is immutable, including an older writer's absence of the flag.
+		const launchStepKeys = existing === undefined ? handle.launchStepKeys : existing.handle.launchStepKeys;
 		const full: DurableWorkflowHandle = {
 			workflowId: handle.workflowId,
 			name: handle.name,
@@ -788,6 +790,7 @@ class JournalProjection {
 			createdAt: handle.createdAt,
 			status: handle.status,
 			transitionClaimId: handle.transitionClaimId ?? existing?.handle.transitionClaimId,
+			...(launchStepKeys === true ? { launchStepKeys } : {}),
 			...((handle.runGeneration ?? existing?.handle.runGeneration) !== undefined
 				? { runGeneration: Math.max(handle.runGeneration ?? 0, existing?.handle.runGeneration ?? 0) }
 				: {}),

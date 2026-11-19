@@ -146,6 +146,7 @@ import type {
 	WorkflowInputValues,
 	WorkflowOutputValues,
 	WorkflowRunContext,
+	WorkflowTaskStep,
 } from "../shared/types.js";
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
@@ -162,6 +163,7 @@ import { createParallelPrimitive } from "./primitives/parallel.js";
 import { createWorkflowEventPrimitives } from "./primitives/subscribe.js";
 import { createSubscriberReports } from "./primitives/subscriber-report.js";
 import { createWorkflowTaskRunners } from "./primitives/task.js";
+import { reserveTaskSteps } from "./primitives/task-step-keys.js";
 import { buildExitGatedUiContext } from "./primitives/ui.js";
 import { createChildWorkflowRunner } from "./primitives/workflow.js";
 import { createContinuationReplayIndex } from "./replay.js";
@@ -1372,7 +1374,17 @@ async function executeRun(
 			return stage;
 		},
 	});
-	const gatedTask: typeof durableTask = (...args) => whenRunning(() => durableTask(...args));
+	let reserveGroupStep: ((name: string) => string) | undefined;
+	let groupOrdinal = 0;
+	const groupKeys = (steps: readonly WorkflowTaskStep[]) =>
+		reserveGroupStep === undefined || ownController.signal.aborted
+			? undefined
+			: reserveTaskSteps(steps, ++groupOrdinal, reserveGroupStep);
+	const gatedTask: typeof durableTask = (name, options, scope, reserved) => {
+		const key =
+			reserved ?? (typeof name === "string" && !ownController.signal.aborted ? reserveGroupStep?.(name) : undefined);
+		return whenRunning(() => durableTask(name, options, scope, key));
+	};
 	const chain = createChainPrimitive({ runtime, task: gatedTask });
 	const parallel = createParallelPrimitive({ runtime, task: gatedTask });
 	const ui = buildExitGatedUiContext({
@@ -1520,9 +1532,15 @@ async function executeRun(
 			stageByContext.set(context, { id: () => deferredId, context });
 			return context;
 		},
-		task: (...args) => rejectionScope.watch(gatedTask(...args)),
-		chain: (...args) => rejectionScope.watch(whenRunning(() => chain(...args))),
-		parallel: (...args) => rejectionScope.watch(whenRunning(() => parallel(...args))),
+		task: (name, options) => rejectionScope.watch(gatedTask(name, options)),
+		chain: (steps, options) => {
+			const keys = groupKeys(steps);
+			return rejectionScope.watch(whenRunning(() => chain(steps, options, keys)));
+		},
+		parallel: (steps, options) => {
+			const keys = groupKeys(steps);
+			return rejectionScope.watch(whenRunning(() => parallel(steps, options, keys)));
+		},
 		workflow: (...args) =>
 			rejectionScope.watch(
 				whenRunning(() => {
@@ -1770,6 +1788,7 @@ async function executeRun(
 				const { branch: _invocationBranch, ...invocationPaths } = invocationMetadata;
 				const registration = {
 					...durableRootRegistration,
+					launchStepKeys: true as const,
 					...(runSnapshot.runGeneration !== undefined ? { runGeneration: runSnapshot.runGeneration } : {}),
 					...(definitionSource === undefined ? {} : { definitionSource }),
 					modelOwner: runSnapshot.modelOwner,
@@ -1796,6 +1815,14 @@ async function executeRun(
 			await beginDurableWorkflowAttempt(durableBackend, runId);
 		}
 		durableRootAdmitted = true;
+		// The stored registration wins even if this executor had not yet seen it. Shared placement can admit an
+		// older worker later; its children must retain admission-order keys regardless of the current fleet.
+		const keyRoot = rootBackend.getWorkflow(opts.parentRun?.rootRunId ?? runId);
+		if (
+			keyRoot?.launchStepKeys === true &&
+			(opts.parentRun === undefined || keyRoot.resources?.workers?.placement !== "shared")
+		)
+			reserveGroupStep = (name) => stageReplayKeyGenerator(`task:${name}`);
 		if (dispatcher?.prepare !== undefined)
 			await raceAbort(dispatcher.prepare(runId, activeStore), ownController.signal);
 		activeStore.recordRunExecutionState(runId, {

@@ -275,7 +275,7 @@ ctx.chain(
 ): Promise<WorkflowTaskResult[]>;
 ```
 
-Runs named task steps in sequence. The first missing task uses `{task}` from chain options; later missing tasks use `{previous}`.
+Runs named task steps in sequence. The first missing task uses `{task}` from chain options; later missing tasks use `{previous}`. Overlapping chains in a new run keep their own saved results when steps share a name, even if the run stopped before its first chain. Runs started by older releases and children in shared worker pools keep the order in which the steps started.
 
 ### `ctx.parallel(steps, options?)`
 
@@ -286,7 +286,7 @@ ctx.parallel(
 ): Promise<WorkflowTaskResult[]>;
 ```
 
-Runs named task steps concurrently, subject to `concurrency` and `failFast`. The call snapshots the current graph frontier at fan-out, so every branch uses the same parent set even when queued or allowed to continue after a sibling failure; downstream stages depend on all settled branches.
+Runs named task steps concurrently, subject to `concurrency` and `failFast`. The call snapshots the current graph frontier at fan-out, so every branch uses the same parent set even when queued or allowed to continue after a sibling failure; downstream stages depend on all settled branches. As with `ctx.chain`, overlapping parallels in a new run replay each group's own steps regardless of which worker got a slot first. Shared-pool children keep using slot order because an older worker can take over.
 
 ### `ctx.workflow(definition, options?)`
 
