@@ -4,6 +4,14 @@ import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
 
+/** Yield between archive pages, including in browser-backed custom stores. */
+export function yieldSessionTurn(): Promise<void> {
+	return new Promise((resolve) => {
+		if (typeof setImmediate === "function") setImmediate(resolve);
+		else setTimeout(resolve, 0);
+	});
+}
+
 /** @internal Platform-owned stores inject filesystem identity without coupling portable adapters to it. */
 export type SessionCwdMatcher = (cwd: string) => (candidate: string | undefined) => boolean | Promise<boolean>;
 

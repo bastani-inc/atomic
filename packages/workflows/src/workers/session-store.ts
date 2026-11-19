@@ -127,21 +127,6 @@ export function workerSessionStore(input: {
 				}
 			: {}),
 		...(input.reader.searchIndex !== undefined ? { searchIndex: input.reader.searchIndex } : {}),
-		...(input.reader.readEntrySizes
-			? {
-					readEntrySizes: synced((id: string, first: number, last: number) =>
-						input.reader.readEntrySizes!(id, first, last),
-					),
-				}
-			: {}),
-		...(input.reader.readEntryChunk
-			? {
-					readEntryChunk: async (reference, offset) => {
-						await sync(reference.sessionId);
-						return input.reader.readEntryChunk!(reference, offset);
-					},
-				}
-			: {}),
 		...(input.reader.readResume
 			? { readResume: synced((id: string, leafId?: string) => input.reader.readResume!(id, leafId)) }
 			: {}),
@@ -153,8 +138,8 @@ export function workerSessionStore(input: {
 		input.reader.findLatestCompaction !== undefined
 			? {
 					readTail: synced((id: string, fromSeq: number) => input.reader.readTail!(id, fromSeq)),
-					readRange: synced((id: string, startSeq: number, endSeq: number, epoch?: string) =>
-						input.reader.readRange!(id, startSeq, endSeq, epoch),
+					readRange: synced((id: string, startSeq: number, endSeq: number) =>
+						input.reader.readRange!(id, startSeq, endSeq),
 					),
 					findLatestCompaction: synced((id: string, leafId?: string) =>
 						input.reader.findLatestCompaction!(id, leafId),

@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
+import { hash } from "fast-sha256";
 import type { CompactionEntry, SessionEntry } from "../../session-manager-types.ts";
 import { SessionConflictError } from "./errors.js";
 import { SessionKeyDigests } from "./key-digests.js";
@@ -448,7 +448,7 @@ export function updateWorkflowStarts(open: Record<string, number>, entry: Sessio
 		return;
 	const data = record(entry.data);
 	if (typeof data.runId !== "string") return;
-	const key = createHash("sha256").update(data.runId, "utf16le").digest("hex").slice(0, 32);
+	const key = Buffer.from(hash(Buffer.from(data.runId, "utf16le")).subarray(0, 16)).toString("hex");
 	if (entry.customType === "workflow.run.end") delete open[key];
 	else if (typeof data.name === "string" && typeof data.ts === "number") open[key] = seq;
 }
@@ -768,6 +768,15 @@ export function latestCompactionOf(
 	return undefined;
 }
 
+/** Compatibility for the synchronous workflow resume scan: an in-flight run launched on an abandoned
+ * branch still belongs to this session. Its end removes the position. Remove with the workflow extension. */
+function legacyOffBranchWorkflowStarts(
+	index: SessionResumeIndex,
+	ranges: readonly (readonly [number, number])[],
+): number[] {
+	return Object.values(index.workflowStarts).filter((seq) => !onBranch(ranges, seq));
+}
+
 export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number, windowOnly = false): number[] {
 	const ranges = branchRanges(index, index.leafSeq);
 	const lastAssistant = index.assistants.findLast((at) => onBranch(ranges, at));
@@ -777,6 +786,7 @@ export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number, wind
 	const retained = [
 		index.nameSeq,
 		index.summarySeq,
+		...legacyOffBranchWorkflowStarts(index, ranges),
 		lastAssistant,
 		...index.intents.map(([, seq]) => seq),
 		...Object.entries(index.latest).flatMap(([key, seqs]) => {

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { hash } from "fast-sha256";
 import { historyChunks, historyPages } from "./history-pages.js";
 import type { SessionResumeIndex } from "./session-resume.js";
 import { foldSessionResume, selectResumeLeaf, sessionResumeFrom, sessionResumePlan } from "./session-resume.js";
@@ -15,7 +15,7 @@ export async function pinnedBranchResume(
 ): Promise<SessionResume> {
 	const sessionId = header.id;
 	const positions = new Map<string, number>();
-	const key = (id: string) => createHash("sha256").update(id, "utf16le").digest("hex");
+	const key = (id: string) => Buffer.from(hash(Buffer.from(id, "utf16le"))).toString("hex");
 	let extraCalls = 0;
 	async function* fields(firstPass: boolean) {
 		for await (const { items } of historyPages(store, sessionId, epoch, through, {})) {

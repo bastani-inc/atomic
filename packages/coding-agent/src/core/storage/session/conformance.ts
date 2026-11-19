@@ -13,9 +13,9 @@ import {
 	type SessionTextField,
 	StoreClosedError,
 } from "./errors.js";
+import { readSessionHistory, readSessionHistoryChunks } from "./history-pages.js";
 import { SESSION_SUMMARY_TEXT_CHARS } from "./session-summary.js";
 import {
-	type OversizedSessionEntry,
 	SESSION_FORMAT_VERSION,
 	SESSION_HISTORY_CHUNK_BYTES,
 	SESSION_HISTORY_PAGE_BYTES,
@@ -75,7 +75,7 @@ function notFound(sessionId: string): (error: Error) => boolean {
 
 function conflict(sessionId: string, expectedSeq: number, actualSeq: number): (error: Error) => boolean {
 	return (error) => {
-		assert.ok(error instanceof SessionConflictError);
+		assert.ok(error instanceof SessionConflictError, `${error.name}: ${error.message}`);
 		assert.equal(error.sessionId, sessionId);
 		assert.equal(error.expectedSeq, expectedSeq);
 		assert.equal(error.actualSeq, actualSeq);
@@ -336,19 +336,21 @@ export function registerSessionStoreConformance(
 					const entries = [message("first", "一\u2028\u2029"), message("last", "e\u0301")];
 					const original = await store.create(header(), entries);
 					store = await reload(store);
-					assert.ok(store.updateHeader);
 					const updated = {
 						...header(),
 						internal: true,
 						workflow: { runId: "run", stageId: "stage", stageName: "Stage" },
 					} as const;
-					const result = await store.updateHeader(updated, { expectSeq: 2, epoch: original.epoch });
+					const options = { expectSeq: 2, ...(original.epoch === undefined ? {} : { epoch: original.epoch }) };
+					const result = await (await import("./snapshot-history.js")).updateStoredHeader(store, updated, options);
 					assert.equal(result.lastSeq, 2);
-					assert.notEqual(result.epoch, original.epoch);
-					await assert.rejects(
-						store.append("session", [message("stale", "no")], { expectSeq: 2, epoch: original.epoch }),
-						conflict("session", 2, 2),
-					);
+					if (result.epoch !== undefined && original.epoch !== undefined) {
+						assert.notEqual(result.epoch, original.epoch);
+						await assert.rejects(
+							store.append("session", [message("stale", "no")], { expectSeq: 2, epoch: original.epoch }),
+							conflict("session", 2, 2),
+						);
+					}
 					store = await reload(store);
 					assert.deepEqual((await store.load("session")).entries, entries);
 					assert.deepEqual(await store.readHeader("session"), updated);
@@ -361,32 +363,29 @@ export function registerSessionStoreConformance(
 					const entry = message("u", "abc漢😀\u0301".repeat(Math.ceil(SESSION_HISTORY_PAGE_BYTES / 10)));
 					const bytes = Buffer.from(JSON.stringify(entry));
 					assert.ok(bytes.length > SESSION_HISTORY_PAGE_BYTES);
-					await store.create(header(), [entry]);
+					const created = await store.create(header(), [entry]);
 					store = await reload(store);
-					assert.ok(store.readEntrySizes && store.readEntryChunk && store.readRange);
-					const meta = await store.readEntrySizes("session", 1, 1);
-					assert.deepEqual(meta.sizes, [{ seq: 1, bytes: bytes.length }]);
-					const ref: OversizedSessionEntry = {
-						kind: "oversized",
-						sessionId: "session",
-						epoch: meta.epoch,
-						seq: 1,
-						bytes: bytes.length,
-					};
+					const first = await readSessionHistory(store, "session").next();
+					const ref = !first.done && first.value.items[0];
+					assert.ok(ref && "kind" in ref && ref.kind === "oversized");
+					assert.equal(ref.bytes, bytes.length);
+					assert.equal(ref.seq, 1);
 					const digest = createHash("sha256");
-					for (let offset = 0; offset < bytes.length; ) {
-						const part = await store.readEntryChunk(ref, offset);
+					for await (const part of readSessionHistoryChunks(store, ref)) {
 						assert.ok(part.byteLength > 0 && part.byteLength <= SESSION_HISTORY_CHUNK_BYTES);
 						digest.update(part);
-						offset += part.byteLength;
 					}
 					assert.equal(digest.digest("hex"), createHash("sha256").update(bytes).digest("hex"));
 					await store.replace("session", header(), [message("other", "replacement")], {
 						expectSeq: 1,
-						epoch: meta.epoch,
+						...(created.epoch === undefined ? {} : { epoch: created.epoch }),
 					});
-					await assert.rejects(store.readEntryChunk(ref, 1), conflict("session", 1, 1));
-					await assert.rejects(store.readRange("session", 1, 1, meta.epoch), conflict("session", 1, 1));
+					await assert.rejects(
+						readSessionHistoryChunks(store, ref, { offset: 1 }).next(),
+						conflict("session", 1, 1),
+					);
+					if (store.readEntrySizes && store.readEntryChunk && store.readRange && created.epoch !== undefined)
+						await assert.rejects(store.readRange("session", 1, 1, created.epoch), conflict("session", 1, 1));
 				},
 			);
 

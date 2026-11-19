@@ -709,10 +709,9 @@ export class SessionManager {
 			if (classifiedWorkflowMetadata(previous)) return;
 			const validWorkflow = validSessionWorkflowMetadata(workflow);
 			if (!validWorkflow) return;
-			if (!this.store.updateHeader)
-				throw new TypeError(`Session store ${this.store.descriptor.adapter} must implement updateHeader`);
 			const header: SessionHeader = { ...previous, internal: true, workflow: validWorkflow };
-			const result = await this.store.updateHeader(this.recordHeader(header), {
+			const { updateStoredHeader } = await import("./storage/session/snapshot-history.js");
+			const result = await updateStoredHeader(this.store, this.recordHeader(header), {
 				expectSeq: this.lastSeq,
 				...(this.archiveOnlyEpoch || this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
 			});
@@ -1721,19 +1720,126 @@ export class SessionManager {
 		return getEntriesWithoutHeader(this.fileEntries);
 	}
 
+	/** @internal Explicitly selected entries may be oversized. This never hydrates the manager. */
+	async readSelectedEntry(id: string): Promise<SessionEntry | undefined> {
+		const held = this.byId.get(id);
+		if (held) return held;
+		const { store, sessionId, historyEpoch, lastSeq } = this;
+		const seq = await this.findEntrySeq(id);
+		if (seq === undefined || seq > lastSeq) return undefined;
+		const page = await readSessionRange(store, sessionId, seq, seq, historyEpoch);
+		if (historyEpoch !== undefined && page.epoch !== historyEpoch)
+			throw new SessionConflictError(sessionId, lastSeq, page.lastSeq);
+		return page.entries[0]?.id === id ? page.entries[0] : undefined;
+	}
+
+	/** The public summarizer/extension hook takes a real array. Materialize only the selected abandoned
+	 * segment, only when that consumer exists. Common ancestry is a positional intersection, not a body read. */
+	async readAbandonedSegment(
+		oldLeaf: string | null,
+		targetId: string,
+	): Promise<{ entries: SessionEntry[]; commonAncestorId: string | null }> {
+		const { store, sessionId, historyEpoch, lastSeq } = this;
+		if (!oldLeaf) return { entries: [], commonAncestorId: null };
+		const [old, target] = await Promise.all([this.findEntrySeq(oldLeaf), this.findEntrySeq(targetId)]);
+		if (old === undefined || target === undefined) return { entries: [], commonAncestorId: null };
+		const span = (leaf: number, pivot: number) => {
+			const cut = { leaf, first: 1, last: leaf, backward: true, pivot, epoch: historyEpoch };
+			return store.readBranchSpan
+				? store.readBranchSpan(sessionId, cut)
+				: import("./storage/session/snapshot-history.js").then(({ snapshotBranchSpan }) =>
+						snapshotBranchSpan(store, sessionId, cut),
+					);
+		};
+		let common = 0;
+		for (let pivot = Math.min(old, target); pivot > 0; ) {
+			const [a, b] = await Promise.all([span(old, pivot), span(target, pivot)]);
+			if (!a || !b) break;
+			if (Math.max(a.start, b.start) <= Math.min(a.end, b.end)) {
+				common = Math.min(a.end, b.end);
+				break;
+			}
+			pivot = Math.min(a.end, b.end);
+		}
+		let commonAncestorId: string | null = null;
+		const entries: SessionEntry[] = [];
+		for await (const { items } of historyPages(store, sessionId, historyEpoch, lastSeq, {
+			branchLeafSeq: old,
+			fromSeq: Math.max(1, common),
+			toSeq: old,
+		}))
+			for (const item of items) {
+				if (item.seq === common && !("entry" in item)) {
+					commonAncestorId = (
+						await (
+							await import("./storage/session/chunked-resume-projection.js")
+						).chunkedAnswerHeader(historyChunks(store, sessionId, historyEpoch, item, {}))
+					).id;
+					continue;
+				}
+				const entry =
+					"entry" in item
+						? item.entry
+						: (await readSessionRange(store, sessionId, item.seq, item.seq, historyEpoch)).entries[0]!;
+				if (item.seq === common) commonAncestorId = entry.id;
+				else entries.push(this.byId.get(entry.id) ?? entry);
+			}
+		return { entries, commonAncestorId };
+	}
+
+	/** @internal Capture all readers before an explicit archive view awaits. An open selector can outlive a
+	 * manager switch; its previews and its search must still be from the same tree as the headings. */
+	captureArchive() {
+		const { store, sessionId, historyEpoch, lastSeq, leafId } = this;
+		const held = new Map(this.getEntries().map((entry) => [this.entrySeqs.get(entry.id)!, entry]));
+		return {
+			sessionId,
+			leafId,
+			through: lastSeq,
+			held,
+			async *outline(signal?: AbortSignal) {
+				const { treeOutlineEntry, treeOutlinePages } = await import("./storage/session/tree-outline.js");
+				for await (const page of treeOutlinePages(store, sessionId, historyEpoch, lastSeq, signal))
+					yield page.map((row) => {
+						const local = held.get(row.seq);
+						return local ? treeOutlineEntry(row.seq, local) : row;
+					});
+			},
+			pages: (options: SessionHistoryReadOptions = {}) =>
+				historyPages(store, sessionId, historyEpoch, lastSeq, options),
+			chunks: (ref: OversizedSessionEntry, signal?: AbortSignal) =>
+				historyChunks(store, sessionId, historyEpoch, ref, { signal }),
+			async *bytes(seq: number, signal?: AbortSignal): AsyncGenerator<Uint8Array, void> {
+				if (seq < 1 || seq > lastSeq) throw new RangeError("Entry is outside the captured session");
+				if (store.readEntrySizes && store.readEntryChunk) {
+					const size = await store.readEntrySizes(sessionId, seq, seq);
+					if (
+						(historyEpoch !== undefined && size.epoch !== historyEpoch) ||
+						size.lastSeq < lastSeq ||
+						size.sizes[0]?.seq !== seq
+					)
+						throw new SessionConflictError(sessionId, lastSeq, size.lastSeq);
+					yield* historyChunks(
+						store,
+						sessionId,
+						size.epoch,
+						{ kind: "oversized", sessionId, epoch: size.epoch, seq, bytes: size.sizes[0].bytes },
+						{ signal },
+					);
+				} else {
+					const r = await readSessionRange(store, sessionId, seq, seq, historyEpoch);
+					if (historyEpoch !== undefined && r.epoch !== historyEpoch)
+						throw new SessionConflictError(sessionId, lastSeq, r.lastSeq);
+					yield Buffer.from(JSON.stringify(r.entries[0]));
+				}
+			},
+		};
+	}
+
 	/** Read the topology at this view's cut, not the body of every entry. Current SDK objects can have
 	 * local edits, so their outline takes precedence over the durable projection. */
 	readTreeOutline(signal?: AbortSignal) {
-		const { store, sessionId, historyEpoch, lastSeq } = this;
-		const held = new Map(this.getEntries().map((entry) => [this.entrySeqs.get(entry.id)!, entry]));
-		return (async function* () {
-			const { treeOutlineEntry, treeOutlinePages } = await import("./storage/session/tree-outline.js");
-			for await (const page of treeOutlinePages(store, sessionId, historyEpoch, lastSeq, signal))
-				yield page.map((row) => {
-					const local = held.get(row.seq);
-					return local ? treeOutlineEntry(row.seq, local) : row;
-				});
-		})();
+		return this.captureArchive().outline(signal);
 	}
 
 	/** Get the session as a tree structure. Returns a shallow defensive copy of all entries. */

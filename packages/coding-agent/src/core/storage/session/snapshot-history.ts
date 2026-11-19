@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { Hash } from "fast-sha256";
 import { getBranchPath } from "../../session-manager-history.ts";
 import { SessionConflictError } from "./errors.js";
 import { foldSessionResume, sessionResumeOf, transcriptBranchSpan } from "./session-resume.js";
@@ -9,8 +9,10 @@ import {
 	SESSION_HISTORY_PAGE_ENTRIES,
 	type SessionBranchPageCut,
 	type SessionHistoryItem,
+	type SessionRecordHeader,
 	type SessionSnapshot,
 	type SessionStore,
+	type SessionWriteOptions,
 } from "./types.js";
 import { type AssistantAnswer, lastBranchAnswer } from "./window-answer.js";
 
@@ -18,9 +20,11 @@ import { type AssistantAnswer, lastBranchAnswer } from "./window-answer.js";
  * this stamp is for reads only and must never be passed to the adapter as its write epoch. */
 export function snapshotStamp(snapshot: SessionSnapshot, through = snapshot.lastSeq): string {
 	if (snapshot.epoch !== undefined) return snapshot.epoch;
-	const hash = createHash("sha256").update(JSON.stringify(snapshot.header));
-	for (let i = 0; i < through; i++) hash.update("\n").update(JSON.stringify(snapshot.entries[i]));
-	return `snapshot/${through}/${hash.digest("base64url")}`;
+	const encoder = new TextEncoder();
+	const hash = new Hash().update(encoder.encode(JSON.stringify(snapshot.header)));
+	const separator = Uint8Array.of(10);
+	for (let i = 0; i < through; i++) hash.update(separator).update(encoder.encode(JSON.stringify(snapshot.entries[i])));
+	return `snapshot/${through}/${Buffer.from(hash.digest()).toString("base64url")}`;
 }
 
 export function assertSnapshotCut(snapshot: SessionSnapshot, expected: string | undefined, through: number): void {
@@ -116,6 +120,16 @@ export async function snapshotOutline(store: SessionStore, id: string, from: num
 	assertSnapshotCut(snapshot, epoch, to);
 	const { treeOutlineEntry } = await import("./tree-outline.js");
 	return snapshot.entries.slice(from - 1, to).map((entry, i) => treeOutlineEntry(from + i, entry));
+}
+
+export async function updateStoredHeader(
+	store: SessionStore,
+	header: SessionRecordHeader,
+	options: SessionWriteOptions,
+) {
+	if (store.updateHeader) return store.updateHeader(header, options);
+	const snapshot = await store.load(header.id);
+	return store.replace(header.id, header, snapshot.entries, options);
 }
 
 export async function snapshotHead(store: SessionStore, id: string) {

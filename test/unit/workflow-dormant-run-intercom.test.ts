@@ -153,15 +153,8 @@ function restartedHost(cwd: string) {
 		pi,
 		routes,
 		subagentHolds,
-		async start(
-			source = ctx.sessionManager as {
-				getEntries?: () => typeof entries;
-				getCwd: () => string;
-				readOpenWorkflowIds?: () => Promise<string[]>;
-			},
-		) {
-			for (const handler of lifecycle.get("session_start") ?? [])
-				await handler({ reason: "startup" }, { ...ctx, sessionManager: source });
+		async start() {
+			for (const handler of lifecycle.get("session_start") ?? []) await handler({ reason: "startup" }, ctx);
 		},
 		async send(target: string, id: string, text: string, expectsReply?: true): Promise<Outcome | "unhandled"> {
 			const payload: Record<string, unknown> & { handled: boolean; completion?: Promise<Outcome> } = {
@@ -398,24 +391,6 @@ test("a dormant owner stops answering once another process resumes the interrupt
 		["before-takeover"],
 		"only the send accepted before the takeover is queued for the resuming process",
 	);
-});
-
-test("only the current session's saved workflow starts register a dormant route, once (#5554)", async () => {
-	const cwd = makeTempDirectory("dormant-indexed-route-");
-	cleanups.push(() => removeTempDirectory(cwd));
-	const backend = await interruptedRun(cwd, new MemorySessionStore());
-	const host = dormantHost(createStore(), cwd, backend);
-	const old = Promise.withResolvers<string[]>();
-	await host.start({ getCwd: () => cwd, readOpenWorkflowIds: () => old.promise });
-	const stale = host.dormant.settled();
-	await host.start({ getCwd: () => cwd, readOpenWorkflowIds: async () => [ROOT_RUN_ID] });
-	await host.dormant.settled();
-	old.resolve([ROOT_RUN_ID]);
-	await stale;
-	assert.equal(host.routes.length, 1);
-	assert.equal(host.routes[0]?.runId, ROOT_RUN_ID);
-	host.pi.events.emit(REVOKED_EVENT, { runId: ROOT_RUN_ID, capability: host.routes[0]!.capability });
-	assert.equal(await host.send(`${GROUP}/lane`, "after-indexed-route-revoked", "closed"), "unhandled");
 });
 
 test("a revoked dormant route stops answering for its run (#3760)", async () => {

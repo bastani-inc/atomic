@@ -15,7 +15,6 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { guardSessionDatabase } from "./format-fence.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import {
 	branchRanges,
@@ -124,9 +123,36 @@ type SummaryStateRow = HeaderRow & { summary_state: string };
 type ResumeRow = SummaryStateRow & { revision: string };
 
 type StoredSummaryState = SessionSummaryState & {
-	readonly resume?: SessionResumeIndex;
+	readonly resume?: SessionResumeIndex | { readonly version: number; readonly seq: number; readonly epoch?: string };
+	readonly windowResume?: SessionResumeIndex;
 	readonly epoch?: string;
 };
+
+function windowIndex(state: StoredSummaryState, seq: number): SessionResumeIndex | undefined {
+	return isSessionResumeIndex(state.windowResume, seq)
+		? state.windowResume
+		: isSessionResumeIndex(state.resume, seq)
+			? state.resume
+			: undefined;
+}
+
+/** An older client rebuilds summary_state.resume in its own format. Do not evict that valid projection
+ * on a read: once either side sees a version-5 index, keep this version in its own field. */
+function windowFields(
+	previous: StoredSummaryState | undefined,
+	index: SessionResumeIndex | undefined,
+	seq: number,
+	epoch: string,
+): Pick<StoredSummaryState, "resume" | "windowResume"> {
+	if (previous?.resume?.version === 5 || previous?.windowResume) {
+		const older = previous.resume;
+		return {
+			...(older?.version === 5 && older.seq === seq && older.epoch === epoch ? { resume: older } : {}),
+			...(index ? { windowResume: index } : {}),
+		};
+	}
+	return index ? { resume: index } : {};
+}
 
 interface ResumeSource {
 	readonly header: SessionRecordHeader;
@@ -558,7 +584,6 @@ export class SqlSessionStore implements SessionStore {
 				{ table: storageMigrationTable(options.prefix), acceptNewer: true },
 			);
 		}
-		database = guardSessionDatabase(database, tables.meta, SESSION_SCHEMA_VERSION_UNCHUNKED, SESSION_SCHEMA_VERSION);
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
 		const searchIndex = await SqlSessionSearchIndex.open(database, tables, options.prefix);
 		const store = new SqlSessionStore(
@@ -615,7 +640,10 @@ export class SqlSessionStore implements SessionStore {
 	 * since this store opened it, and what it writes then is not this build's to read or write (#5065).
 	 */
 	private transaction<T>(body: (tx: SqliteExecutor) => Promise<T>, options: SqliteTransactionOptions): Promise<T> {
-		return this.database.transaction(body, options);
+		return this.database.transaction(async (tx) => {
+			await this.assertReadableSchema(tx);
+			return body(tx);
+		}, options);
 	}
 
 	private assertReadableSchema(executor: SqliteExecutor): Promise<void> {
@@ -670,7 +698,13 @@ export class SqlSessionStore implements SessionStore {
 				sessionId,
 				{ header: JSON.parse(previous.header_json) as SessionRecordHeader, entries, lastSeq },
 				summaryState,
-				await this.appendedResume(tx, sessionId, summaryState.resume, previous.last_seq, entries),
+				await this.appendedResume(
+					tx,
+					sessionId,
+					windowIndex(summaryState, previous.last_seq),
+					previous.last_seq,
+					entries,
+				),
 			);
 			await this.insertEntries(tx, sessionId, entries, previous.last_seq, texts);
 			return { lastSeq };
@@ -706,12 +740,13 @@ export class SqlSessionStore implements SessionStore {
 		return this.transaction(async (tx) => {
 			const { row, state } = await this.forWrite(tx, header.id, options, true);
 			const epoch = newRevision();
+			const resume = windowIndex(state, row.last_seq);
 			await this.saveSummary(
 				tx,
 				header.id,
 				{ header, entries: [], lastSeq: row.last_seq },
 				{ ...state, epoch } as StoredSummaryState,
-				state.resume && { ...state.resume, epoch },
+				resume && { ...resume, epoch },
 			);
 			return { lastSeq: row.last_seq, epoch };
 		}, SESSION_TRANSACTION);
@@ -1441,7 +1476,7 @@ export class SqlSessionStore implements SessionStore {
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
-		const stored = (JSON.parse(row.summary_state) as StoredSummaryState).resume;
+		const stored = windowIndex(JSON.parse(row.summary_state) as StoredSummaryState, Number(row.last_seq));
 		const remembered = this.resumeIndexes.get(sessionId);
 		const index = isSessionResumeIndex(stored, Number(row.last_seq))
 			? stored
@@ -1466,11 +1501,11 @@ export class SqlSessionStore implements SessionStore {
 			if (!row) throw new SessionNotFoundError(sessionId);
 			const state = JSON.parse(row.summary_state) as StoredSummaryState;
 			const remembered = this.resumeIndexes.get(sessionId);
-			const currentIndex = isSessionResumeIndex(state.resume, Number(row.last_seq))
-				? state.resume
-				: remembered?.revision === row.revision && isSessionResumeIndex(remembered.index, Number(row.last_seq))
+			const currentIndex =
+				windowIndex(state, Number(row.last_seq)) ??
+				(remembered?.revision === row.revision && isSessionResumeIndex(remembered.index, Number(row.last_seq))
 					? remembered.index
-					: undefined;
+					: undefined);
 			const limit = throughSeq ?? Number(row.last_seq);
 			if (limit > Number(row.last_seq)) throw new SessionConflictError(sessionId, limit, Number(row.last_seq));
 			const selected =
@@ -1868,7 +1903,7 @@ export class SqlSessionStore implements SessionStore {
 			await this.database
 				.run(
 					`UPDATE ${this.tables.sessions} SET summary_state = ? WHERE id = ? AND revision = ? AND last_seq = ?`,
-					JSON.stringify({ ...state, resume: index, epoch: index.epoch }),
+					JSON.stringify({ ...state, ...windowFields(state, index, index.seq, index.epoch), epoch: index.epoch }),
 					sessionId,
 					row.revision,
 					row.last_seq,
@@ -2288,7 +2323,11 @@ export class SqlSessionStore implements SessionStore {
 		const { state: listed, texts } = applySessionSummaryEntries(previous, snapshot.entries);
 		const resume = previous === undefined ? foldSessionResume(undefined, snapshot.entries) : appendedResume;
 		const epoch = resume?.epoch ?? (previous as StoredSummaryState | undefined)?.epoch ?? newRevision();
-		const state: StoredSummaryState = resume === undefined ? { ...listed, epoch } : { ...listed, resume, epoch };
+		const state: StoredSummaryState = {
+			...listed,
+			...windowFields(previous as StoredSummaryState | undefined, resume, lastSeq, epoch),
+			epoch,
+		};
 		const summary = materializeSessionSummaryMetadata(header, state);
 		await tx.run(
 			`INSERT INTO ${this.tables.sessions}

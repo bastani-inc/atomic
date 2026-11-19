@@ -1,9 +1,9 @@
-import { yieldToEventLoop } from "../../../utils/event-loop.js";
 import {
 	SESSION_HISTORY_CHUNK_BYTES,
 	SESSION_HISTORY_PAGE_BYTES,
 	SESSION_HISTORY_PAGE_ENTRIES,
 	type SessionStoredEntry,
+	yieldSessionTurn as yieldToEventLoop,
 } from "./types.js";
 
 /** A scan of a known session generation. Read whole entries only while a page fits the history budget. A single
