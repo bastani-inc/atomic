@@ -85,6 +85,7 @@ import {
 	type StorageFailureCause,
 	StorageRollbackError,
 } from "./storage/errors.js";
+import { ChildCatalog } from "./storage/session/child-catalog.js";
 import { validateSessionEntryStructure } from "./storage/session/entry-structure.js";
 import {
 	SessionConflictError,
@@ -110,6 +111,11 @@ import {
 	sessionResumeOf,
 	updateWorkflowStarts,
 } from "./storage/session/session-resume.js";
+import {
+	findWorktreeSnapshotRecords,
+	type StoredWorktreeSnapshotEntry,
+	worktreeSnapshotPages,
+} from "./storage/session/snapshot-records.js";
 import type {
 	OversizedSessionEntry,
 	SessionBlob,
@@ -147,12 +153,19 @@ async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	return (await import("./session-storage.js")).resolveSessionStore(cwd);
 }
 
-type SelectedWindow = SessionResume & { readonly priorAnswer?: AssistantAnswer; readonly archiveOnlyEpoch?: true };
+type SelectedWindow = SessionResume & {
+	readonly priorAnswer?: AssistantAnswer;
+	readonly archiveOnlyEpoch?: true;
+	readonly childArchive?: ChildCatalog;
+};
 type OpenedSession = { readonly resume: SelectedWindow } | { readonly snapshot: SessionSnapshot };
 async function withPriorAnswer(store: SessionStore, resume: SelectedWindow): Promise<SelectedWindow> {
+	const selected = resume.deferredChildren
+		? await (await import("./storage/session/child-reader.js")).resolveDeferredChildren(store, resume)
+		: resume;
 	return Object.hasOwn(resume, "priorAnswer")
-		? resume
-		: { ...resume, priorAnswer: await savedWindowAnswer(store, resume) };
+		? selected
+		: { ...selected, priorAnswer: await savedWindowAnswer(store, selected) };
 }
 async function readStoredSession(
 	store: SessionStore,
@@ -163,7 +176,9 @@ async function readStoredSession(
 	if (options?.history === "full") return { snapshot: await store.load(sessionId) };
 	if (!store.readResume || !store.readRange)
 		return { resume: await (await import("./storage/session/snapshot-history.js")).snapshotWindow(store, sessionId) };
-	return { resume: await withPriorAnswer(store, await store.readResume(sessionId)) };
+	return {
+		resume: await withPriorAnswer(store, await store.readResume(sessionId, undefined, { deferChildRecords: true })),
+	};
 }
 
 async function openSessionFileWindow(path: string, cwd: string | undefined, options?: SessionOpenOptions) {
@@ -248,6 +263,7 @@ export class SessionManager {
 	private historyStartSeq = 1;
 	private answerWindowStart = 1;
 	private priorAnswer?: AssistantAnswer;
+	private childArchive = new ChildCatalog();
 	private archiveOnlyEpoch = false;
 
 	private entrySeqs = new Map<string, number>();
@@ -314,7 +330,10 @@ export class SessionManager {
 			return;
 		}
 		const resume = opened.resume;
-		const held = [...resume.state, ...resume.branch].sort((a, b) => a.seq - b.seq);
+		const catalog = resume.childArchive ?? new ChildCatalog();
+		const archived = catalog.retire(resume.state, resume.branch);
+		const state = resume.state.filter(({ entry }) => !archived.has(entry.id));
+		const held = [...state, ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.restoreHistory(
 			resume.header,
 			held.map(({ entry }) => entry),
@@ -322,6 +341,7 @@ export class SessionManager {
 			location,
 		);
 		this.entrySeqs = new Map(held.map(({ seq, entry }) => [entry.id, seq]));
+		this.childArchive = catalog;
 		this.historyEpoch = resume.epoch;
 		this.archiveOnlyEpoch = resume.archiveOnlyEpoch === true;
 		this.answerWindowStart = resume.branch[0]?.seq ?? 1;
@@ -338,7 +358,7 @@ export class SessionManager {
 		this.historyStartSeq = held.length < resume.lastSeq ? (resume.branch[0]?.seq ?? resume.lastSeq + 1) : 1;
 		if (held.length < resume.lastSeq && this.historyStartSeq === 1) this.historyStartSeq = 2;
 		this.omittedTotals = held.length < resume.lastSeq ? resume.omitted : undefined;
-		const path = [...resume.state.filter((e) => e.onBranch), ...resume.branch].sort((a, b) => a.seq - b.seq);
+		const path = [...state.filter((e) => e.onBranch), ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.branchLinks = new Map(path.slice(1).map((held, i) => [held.entry.id, path[i]!.entry.id]));
 		this.leafId = resume.leafId;
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
@@ -356,6 +376,7 @@ export class SessionManager {
 			readonly links: ReadonlyMap<string, string>;
 		},
 	): void {
+		this.childArchive = new ChildCatalog();
 		this.fileEntries = [{ type: "session", ...header }, ...entries];
 		this.sessionId = header.id;
 		this.lastSeq = lastSeq;
@@ -536,6 +557,35 @@ export class SessionManager {
 	getSessionRecoveryState(): SessionRecoveryState {
 		return { ...this.recoveryState, admissionDigests: this.admissionKeys.serialize() };
 	}
+	/** @internal Body-free terminal child headings. A newer resident observation supersedes its archived heading. */
+	getArchivedChildCatalog() {
+		return this.childArchive.rows();
+	}
+	/** @internal An explicit terminal action obtains one logical child record, including legacy partial observations. */
+	async readArchivedChildRecord(entryId: string): Promise<SessionEntry | undefined> {
+		const seqs = this.childArchive.positions(entryId);
+		if (!seqs) return;
+		const { store, sessionId, historyEpoch, lastSeq } = this;
+		let result: Extract<SessionEntry, { type: "custom" }> | undefined;
+		for (const seq of seqs) {
+			const page = await readSessionRange(store, sessionId, seq, seq, historyEpoch);
+			const entry = page.entries[0];
+			if (
+				page.lastSeq < lastSeq ||
+				(historyEpoch !== undefined && historyEpoch !== page.epoch) ||
+				entry?.type !== "custom" ||
+				entry.customType !== "subagent-child"
+			)
+				throw new SessionConflictError(sessionId, lastSeq, page.lastSeq);
+			result = {
+				...entry,
+				data: { ...(result?.data as Record<string, unknown>), ...(entry.data as Record<string, unknown>) },
+			};
+		}
+		if (result?.id !== entryId) throw new SessionConflictError(sessionId, lastSeq, lastSeq);
+		return result;
+	}
+
 	/** Read the identities of interrupted runs from their saved starts only when recovery is requested. */
 	async readOpenWorkflowIds(): Promise<string[]> {
 		const { store, sessionId, historyEpoch, lastSeq } = this;
@@ -650,6 +700,7 @@ export class SessionManager {
 			),
 		];
 		this.lastSeq = 0;
+		this.childArchive = new ChildCatalog();
 		this.historyStartSeq = 1;
 		this.answerWindowStart = 1;
 		this.priorAnswer = undefined;
@@ -974,7 +1025,15 @@ export class SessionManager {
 				...new Set([...(this.recoveryState.deliveryOpIds ?? []), ...(resume.recovery.deliveryOpIds ?? [])]),
 			],
 		};
-		const keep = new Set([...resume.branch, ...resume.state].map(({ entry }) => entry.id));
+		const branchIds = new Set(resume.branch.map(({ entry }) => entry.id));
+		const actual = entries.map((entry) => ({ entry, seq: this.entrySeqs.get(entry.id)! }));
+		const archived = this.childArchive.retire(
+			actual.filter(({ entry }) => !branchIds.has(entry.id)),
+			actual.filter(({ entry }) => branchIds.has(entry.id)),
+		);
+		const keep = new Set(
+			[...resume.branch, ...resume.state].map(({ entry }) => entry.id).filter((id) => !archived.has(id)),
+		);
 		const start = this.entrySeqs.get(resume.branch[0]!.entry.id)!;
 		const leaf = this.leafId;
 		const current = this.getBranch();
@@ -1275,6 +1334,7 @@ export class SessionManager {
 			header: this.recordHeader(),
 			epoch: this.historyEpoch!,
 			archiveOnlyEpoch: this.archiveOnlyEpoch ? true : undefined,
+			childArchive: this.childArchive,
 			lastSeq: this.lastSeq,
 			lastEntryId: this.lastEntryId,
 			leafId: this.leafId,
@@ -1464,7 +1524,7 @@ export class SessionManager {
 			if (snapshot !== undefined && snapshot.id !== snapshotId) {
 				throw new WorkspaceConfigError("sdk", "snapshot", "a snapshot whose id is snapshotId");
 			}
-			if (snapshot === undefined && !this.getWorktreeSnapshotRecords().has(snapshotId)) {
+			if (snapshot === undefined && !(await this.hasWorktreeSnapshotRecord(snapshotId))) {
 				throw new WorkspaceConfigError("sdk", "snapshotId", "the id of a snapshot recorded in this session");
 			}
 			if (restore !== undefined && (restore.to !== root || restore.snapshotId !== snapshotId)) {
@@ -1478,7 +1538,7 @@ export class SessionManager {
 			}
 			if (
 				degradedFrom !== undefined &&
-				(degradedFrom === snapshotId || !this.getWorktreeSnapshotRecords().has(degradedFrom))
+				(degradedFrom === snapshotId || !(await this.hasWorktreeSnapshotRecord(degradedFrom)))
 			) {
 				throw new WorkspaceConfigError(
 					"sdk",
@@ -1513,9 +1573,60 @@ export class SessionManager {
 		return this.historyIndex.worktreePathContinuations(this.leafId, this.byId, this.branchLinks);
 	}
 
-	/** Every snapshot record in the session, by id. */
+	/**
+	 * The snapshot records this manager holds, by id: every one in the session while it holds the whole history, else
+	 * those its current resume depends on (the latest snapshot of each checkout root on the active branch and the ones
+	 * its restores name) and those its window's entries carry. Use {@link loadWorktreeSnapshotRecords} or
+	 * {@link readWorktreeSnapshotPages} for any other record of the session.
+	 */
 	getWorktreeSnapshotRecords(): Map<string, WorktreeSnapshot> {
 		return this.historyIndex.worktreeSnapshotRecords(this.fileEntries);
+	}
+
+	/**
+	 * The record of each of `ids` the session holds, from the latest entry carrying it on any branch, read from the store
+	 * when this manager does not hold it. An id the session never recorded is left out. Rejects with the store's error
+	 * (`StorageUnavailableError` names its adapter and location) when the store cannot be read.
+	 */
+	async loadWorktreeSnapshotRecords(
+		ids: Iterable<string>,
+		options: { readonly signal?: AbortSignal } = {},
+	): Promise<Map<string, WorktreeSnapshot>> {
+		const held = this.getWorktreeSnapshotRecords();
+		const records = new Map<string, WorktreeSnapshot>();
+		const missing: string[] = [];
+		for (const id of new Set(ids)) {
+			const record = held.get(id);
+			if (record === undefined) missing.push(id);
+			else records.set(id, record);
+		}
+		if (missing.length === 0 || this.hasFullHistory()) return records;
+		for (const [id, record] of await findWorktreeSnapshotRecords(this.captureArchive(), missing, options))
+			records.set(id, record);
+		return records;
+	}
+
+	/**
+	 * The session's `worktree_snapshot` entries, held or stored, a page at a time, as the session stands when the read
+	 * starts: every one in append order, or with `branch` those on the active branch. Pages are not kept by the manager.
+	 * Rejects with the store's error when the store cannot be read.
+	 */
+	readWorktreeSnapshotPages(
+		options: {
+			readonly branch?: boolean;
+			readonly direction?: "forward" | "backward";
+			readonly signal?: AbortSignal;
+		} = {},
+	): AsyncGenerator<readonly StoredWorktreeSnapshotEntry[], void> {
+		const { branch, ...read } = options;
+		if (!branch) return worktreeSnapshotPages(this.captureArchive(), read);
+		const leafSeq = this.leafId === null ? undefined : this.entrySeqs.get(this.leafId);
+		if (leafSeq === undefined) return (async function* () {})();
+		return worktreeSnapshotPages(this.captureArchive(), { ...read, branchLeafSeq: leafSeq });
+	}
+
+	private async hasWorktreeSnapshotRecord(id: string): Promise<boolean> {
+		return (await this.loadWorktreeSnapshotRecords([id])).has(id);
 	}
 
 	/** The latest snapshot of each checkout root on the active branch, keyed by the root it was last recorded under. */
@@ -1914,9 +2025,10 @@ export class SessionManager {
 				return target;
 			}
 			let resume: SessionResume;
-			if (this.store.readResumeAt) resume = await this.store.readResumeAt(this.sessionId, id, this.lastSeq);
+			if (this.store.readResumeAt)
+				resume = await this.store.readResumeAt(this.sessionId, id, this.lastSeq, { deferChildRecords: true });
 			else {
-				resume = await this.store.readResume(this.sessionId, id);
+				resume = await this.store.readResume(this.sessionId, id, { deferChildRecords: true });
 				if (
 					resume.lastSeq > this.lastSeq &&
 					(this.historyEpoch === undefined || resume.epoch === this.historyEpoch)

@@ -5,9 +5,12 @@ import { stripVTControlCharacters } from "node:util";
 import { Container, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import type { AgentSession } from "../src/core/agent-session.ts";
+import { exportToJsonl } from "../src/core/agent-session-export.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionEntry, SessionTreeNode, WorktreeSnapshotEntry } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { describeSnapshotExport } from "../src/core/session-worktree-snapshots.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import type { SessionStore } from "../src/core/storage/session/types.ts";
@@ -221,6 +224,65 @@ describe("/export of a session file", () => {
 		const html = exportHost(manager);
 		await exportCommand.call(html, "/export");
 		assert.deepEqual(html.statuses, ["Session exported to: /tmp/out.html"]);
+	});
+});
+
+describe("/export of a session holding only its context window (#5554)", () => {
+	test("states what the export file carries, every snapshot of the branch included", async () => {
+		const { clone, manager } = await recorded();
+		const blobs = manager.getSessionStore().snapshotBlobs;
+		for (const text of ["two\n", "three\n", "four\n"]) {
+			writeFileSync(join(clone, "a.txt"), text);
+			const result = await captureWorktreeSnapshot(clone, { blobs });
+			const snapshot = (result as { snapshot: WorktreeSnapshot }).snapshot;
+			await manager.appendWorktreeSnapshot(clone, snapshot.id, snapshot);
+			await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+		}
+		await manager.appendCompaction("compacted", null, 1000, {
+			strategy: "verbatim-lines",
+			promptVersion: 6,
+			parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+			stats: {
+				linesBefore: 2,
+				linesDeleted: 1,
+				linesKept: 1,
+				rangeCount: 1,
+				tokensBefore: 100,
+				tokensAfter: 50,
+				percentReduction: 50,
+			},
+			rung: "planned",
+		});
+		const window = await SessionManager.open(manager.getSessionStore(), manager.getSessionId());
+		assert.equal(window.hasFullHistory(), false);
+		const file = sandbox.path("export.jsonl");
+		const host = {
+			session: {
+				exportToJsonl: async (path: string) => {
+					await exportToJsonl.call({ sessionManager: manager } as unknown as AgentSession, path);
+					return path;
+				},
+				exportToHtml: async () => "/tmp/out.html",
+			},
+			sessionManager: window,
+			statuses: [] as string[],
+			showStatus: (message: string) => host.statuses.push(message),
+			showError: (message: string) => host.statuses.push(`error: ${message}`),
+			getPathCommandArgument: (text: string, command: string) =>
+				(Reflect.get(InteractiveMode.prototype, "getPathCommandArgument") as (t: string, c: string) => string).call(
+					host,
+					text,
+					command,
+				),
+		};
+		await (
+			InteractiveMode.prototype as unknown as { handleExportCommand(this: typeof host, text: string): Promise<void> }
+		).handleExportCommand.call(host, `/export ${file}`);
+
+		const described = describeSnapshotExport(manager.getBranch(), manager.getWorktreeSnapshotRecords());
+		assert.match(described ?? "", /^Includes 4 worktree snapshot\(s\)/);
+		assert.deepEqual(host.statuses, [`Session exported to: ${file}`, described]);
+		assert.equal(window.hasFullHistory(), false, "the window manager still holds only its window");
 	});
 });
 

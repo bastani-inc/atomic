@@ -2,7 +2,7 @@ import { formatModelLabel } from "../../../core/model-label.ts";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
 import { formatReadLineRange } from "../../../core/tools/render-utils.ts";
 import { shortenHomePath } from "../../../utils/paths.ts";
-import { theme } from "../theme/theme.js";
+import { type ThemeColor, theme } from "../theme/theme.js";
 import type { ToolCallInfo } from "./tree-selector-types.ts";
 
 export function getSearchableText(node: SessionTreeNode): string {
@@ -165,6 +165,45 @@ export function getEntryDisplayText(
 			result = "";
 	}
 
+	return isSelected ? theme.bold(result) : result;
+}
+
+// The fixed start of each row's full text, so a stored row keeps its place and colour while its text is read.
+const pendingFrames: Record<string, readonly [ThemeColor, string, string]> = {
+	user: ["accent", "user: ", ""],
+	assistant: ["success", "assistant: ", ""],
+	toolResult: ["muted", "[", "]"],
+	bashExecution: ["dim", "[bash]: ", ""],
+	custom_message: ["customMessageLabel", "[", "]"],
+	compaction: ["borderAccent", "[compaction: ", "]"],
+	branch_summary: ["warning", "[branch summary]: ", ""],
+	model_change: ["dim", "[model: ", "]"],
+	thinking_level_change: ["dim", "[thinking: ", "]"],
+	custom: ["dim", "[custom: ", "]"],
+	context_edit: ["dim", "[context ", "]"],
+	label: ["dim", "[label: ", "]"],
+	session_info: ["dim", "[title: ", "]"],
+	session_summary: ["dim", "[session summary]: ", ""],
+	worktree_snapshot: ["dim", "[snapshot: ", "]"],
+};
+
+/** A stored row whose text is still being read (…), or could not be read (unavailable). */
+export function getPendingDisplayText(
+	row: { readonly type: string; readonly role?: string } | undefined,
+	isSelected: boolean,
+	failed: boolean,
+): string {
+	const gap = failed ? theme.fg("error", "unavailable") : theme.fg("dim", "…");
+	const kind = row?.type === "message" ? row.role : row?.type;
+	const frame = kind !== undefined && Object.hasOwn(pendingFrames, kind) ? pendingFrames[kind] : undefined;
+	let result: string;
+	if (frame) {
+		const [color, open, close] = frame;
+		result = theme.fg(color, open) + gap + (close ? theme.fg(color, close) : "");
+	} else if (row?.type === "message" && !failed) {
+		// Any other role shows just its name, which the outline already has.
+		result = theme.fg("dim", `[${row.role}]`);
+	} else result = gap;
 	return isSelected ? theme.bold(result) : result;
 }
 

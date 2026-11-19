@@ -52,6 +52,33 @@ function transcript(padding: string): SessionEntry[] {
 
 for (const backend of storageBackends) {
 	const run = backend.skipReason === undefined ? test : test.skip;
+	run(`tree headings and sparse state pages preserve saved addresses on ${backend.name} (#5554)`, async () => {
+		const scope = await backend.openScope();
+		try {
+			const db = await scope.connect(),
+				store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+			const entries = transcript("p".repeat(2 * SESSION_ENTRY_CHUNK_BYTES));
+			const written = await store.create(header, entries);
+			assert.ok(written.epoch);
+			const outline = await store.readTreeOutline(header.id, 1, 3, written.epoch);
+			assert.deepEqual(
+				outline.map((r) => ("streamed" in r ? [r.seq, "stream"] : [r.seq, r.id, r.parentId])),
+				[
+					[1, "stream"],
+					[2, "kept", "receipt"],
+					[3, "boundary", "kept"],
+				],
+			);
+			const giant = (await store.readSelectedPage(header.id, [1, 3], written.epoch)).items;
+			assert.ok(giant.length === 1 && "kind" in giant[0]! && giant[0].kind === "oversized");
+			assert.deepEqual(
+				(await store.readSelectedPage(header.id, [2, 3], written.epoch)).items,
+				entries.slice(1).map((entry, i) => ({ entry, seq: i + 2 })),
+			);
+		} finally {
+			await scope.close();
+		}
+	});
 	run(`a malformed inline field does not reread fitting entries on ${backend.name} (#5590)`, async () => {
 		const scope = await backend.openScope();
 		try {

@@ -12,7 +12,7 @@ import {
 import { inspectInProcessChildStatus } from "../inprocess/control-status.js";
 import { takeLegacyForegroundWait, withLegacyForegroundWaitNote } from "./legacy-foreground-wait.js";
 import { registerNamedRunWorktrees } from "./run-worktrees.js";
-import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
+import { subagentChildIntercomTargetOfTask } from "./subagent-child-card-state.js";
 import { subagentChildOwner } from "./subagent-child-records.js";
 import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
@@ -178,11 +178,7 @@ async function handleManagementRequest(input: {
 				const settledOutput = await settledTaskOutputText(host, settledOutputsFromRecords(records));
 				const ownerSessionId = subagentChildOwner(ctx).sessionId;
 				const shown = records.map((record) =>
-					subagentTaskStatusRecord(
-						record,
-						subagentChildRecordsOf(ownerSessionId).find((child) => child.taskId === record.ref.taskId)
-							?.intercomTarget,
-					),
+					subagentTaskStatusRecord(record, subagentChildIntercomTargetOfTask(ownerSessionId, record.ref.taskId)),
 				);
 				const starting = shown.flatMap((record) =>
 					record.start === undefined

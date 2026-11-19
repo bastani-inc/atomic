@@ -411,6 +411,8 @@ export type ReadonlySessionManager = Pick<
 	| "readHistoryChunks"
 	| "getLastSeq"
 	| "getSessionRecoveryState"
+	| "getArchivedChildCatalog"
+	| "readArchivedChildRecord"
 	| "getAdmissionKeys"
 	| "readOpenWorkflowIds"
 >;

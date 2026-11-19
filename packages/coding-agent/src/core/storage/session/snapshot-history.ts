@@ -1,4 +1,5 @@
 import { getBranchPath } from "../../session-manager-history.ts";
+import { ChildCatalog } from "./child-catalog.js";
 import { foldSessionResume, sessionResumeOf, transcriptBranchSpan } from "./session-resume.js";
 import { assertSnapshotCut, snapshotStamp } from "./snapshot-cut.js";
 import type { SessionBranchPageCut, SessionRecordHeader, SessionStore, SessionWriteOptions } from "./types.js";
@@ -18,6 +19,16 @@ export async function snapshotWindow(
 	assertSnapshotCut(snapshot, expected, cut);
 	const entries = cut === snapshot.entries.length ? snapshot.entries : snapshot.entries.slice(0, cut);
 	const resume = sessionResumeOf(snapshot.header, entries, leaf);
+	const childArchive = new ChildCatalog();
+	const branchIds = new Set(resume.branch.map(({ entry }) => entry.id));
+	childArchive.retire(
+		entries.flatMap((entry, i) =>
+			entry.type === "custom" && entry.customType === "subagent-child" && !branchIds.has(entry.id)
+				? [{ entry, seq: i + 1 }]
+				: [],
+		),
+		resume.branch,
+	);
 	let priorAnswer: AssistantAnswer | undefined;
 	if (resume.compaction && resume.leafId) {
 		const resident = new Set(resume.branch.map(({ entry }) => entry.id));
@@ -26,6 +37,7 @@ export async function snapshotWindow(
 	}
 	return {
 		...resume,
+		childArchive,
 		epoch: snapshotStamp(snapshot, cut),
 		...(snapshot.epoch === undefined ? { archiveOnlyEpoch: true as const } : {}),
 		priorAnswer,
