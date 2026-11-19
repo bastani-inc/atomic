@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Snapshot collection reports when there is too little space to move an old chunk table. On a closed local SQLite file, `atomic storage move-snapshot-chunks <sqlite-file>` can finish the move with room for one copy and a batch of log records instead of two copies ([#5700](https://github.com/bastani-inc/atomic/issues/5700)).
+
 ## [0.9.90] - 2026-11-19
 
 Every subagent now runs in the background, a click runs key hints and expands blocks in fullscreen mode, and large stores, retries and interrupts no longer stall Atomic.
