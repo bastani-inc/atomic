@@ -97,9 +97,9 @@ When opening a PR:
 - Call out breaking changes, migration steps, or follow-up work.
 - Open the PR as a draft while it is still changing. A draft runs no test jobs; mark it ready for review when it is done, and the full test run starts then.
 
-## Workflows contributions
+## Repository skills
 
-Looking to contribute workflows? Check out the atomic-workflows repo [here](https://github.com/lavaman131/atomic-workflows).
+The release procedures live in [`.agents/skills/`](.agents/skills): use `/skill:publish-release` for a release and `/skill:release-docs` for a hosted docs refresh. When changing a procedure, update its `SKILL.md`, and put deterministic Git, GitHub or docs checks in [`scripts/release/`](scripts/release) with tests. Test against existing refs; do not merge, tag or publish to verify a change.
 
 ## Questions
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,7 +18,7 @@ import {
 	type StaleDocTask,
 	type UpdateArtifactStatus,
 	verifyReleaseDocsPr,
-} from "../../.atomic/workflows/lib/release-docs.js";
+} from "../../scripts/release/release-docs.js";
 import { bunExecutable } from "../helpers/runtime.js";
 
 const task = (id: string, ownerDocs: string[]): StaleDocTask => ({
@@ -56,7 +56,24 @@ const commitAll = (repo: string, message: string): void => {
 	]);
 };
 
-describe("release-docs workflow guards", () => {
+describe("release-docs guards", () => {
+	test("CLI preflight blocks untracked changes on a docs branch even when status normally hides them", () => {
+		const repo = mkdtempSync(join(tmpdir(), "release-docs-dirty-"));
+		try {
+			runGit(repo, ["init", "--quiet", "-b", "feature/docs"]);
+			runGit(repo, ["config", "status.showUntrackedFiles", "no"]);
+			writeFileSync(join(repo, "notes.txt"), "not part of the docs change");
+			const result = spawnSync(
+				bunExecutable(),
+				[join(process.cwd(), "scripts/release/release-docs.ts"), "preflight"],
+				{ cwd: repo, env: createGitEnvironment(), encoding: "utf8" },
+			);
+			assert.equal(result.status, 1);
+			assert.match(result.stderr, /dirty working tree[\s\S]*notes\.txt/u);
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
+	});
 	test("refuses to resolve a current branch from detached HEAD", () => {
 		const repo = mkdtempSync(join(tmpdir(), "release-docs-detached-"));
 		try {
@@ -95,7 +112,7 @@ describe("release-docs workflow guards", () => {
 			commitAll(ambientRepo, "initial");
 			runGit(ambientRepo, ["checkout", "--detach", "HEAD", "--quiet"]);
 
-			const moduleUrl = pathToFileURL(join(process.cwd(), ".atomic/workflows/lib/release-docs.ts")).href;
+			const moduleUrl = pathToFileURL(join(process.cwd(), "scripts/release/release-docs.ts")).href;
 			writeFileSync(
 				scriptPath,
 				[
