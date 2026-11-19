@@ -5,7 +5,7 @@ import type { WorkflowRunDetail } from "../src/core/extensions/workflow-run-cont
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION, type SessionRecordHeader } from "../src/core/storage/session/types.js";
-import { createHistoryRouter, type WorkflowRunHistory } from "../src/core/tools/history-protocol.js";
+import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
 import type { InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
 
 const PROJECT = resolve("/projects/regex-anchor");
@@ -42,7 +42,7 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 				"\n",
 			);
 			await store.create(header("anchor"), [message("e1", body), message("e2", "tail")]);
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 			const matchRows = async (pattern: string): Promise<string[]> => {
 				const out = (await router.search?.("history://sessions/anchor", request(pattern))) ?? "";
 				return out.split("\n").filter((line) => /^history:\/\/sessions\/anchor:[\d.]+: line-/.test(line));
@@ -77,7 +77,7 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 				header("anchored-lookbehind-lines"),
 				Array.from({ length: 60 }, (_, index) => message(`e${index}`, "x\n".repeat(800))),
 			);
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 			for (const id of ["anchored-lookbehind", "anchored-lookbehind-lines"]) {
 				const out = await router.search?.(`history://sessions/${id}`, request("(?s)^(?=.*(?<!not )approvedXYZ)"));
 				assert.ok(out);
@@ -100,7 +100,7 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 				message("e2", "needle here"),
 				message("e3", body),
 			]);
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 			const matchRows = async (pattern: string): Promise<string[]> => {
 				const out = (await router.search?.("history://sessions/lookbehind", request(pattern))) ?? "";
 				return out.split("\n").filter((line) => /^history:\/\/sessions\/lookbehind:[1-9][\d.]*: /.test(line));
@@ -131,42 +131,15 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 		const store = new MemorySessionStore();
 		try {
 			await store.create(header("quantified"), [message("e1", "needle\nB")]);
-			const detail: WorkflowRunDetail = {
-				runId: "run-quantified",
-				name: "flow",
-				status: "failed",
-				startedAt: BASE,
-				endedAt: BASE + 1_000,
-				stages: [],
-				error: "needle\nB",
-			};
-			const workflows: WorkflowRunHistory = {
-				listRuns: async () => [
-					{
-						runId: detail.runId,
-						name: detail.name,
-						status: detail.status,
-						startedAt: BASE,
-						elapsedMs: 1_000,
-						activeStages: [],
-						awaitingInput: [],
-						awaitingInputCount: 0,
-					},
-				],
-				getRun: async () => detail,
-			};
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => workflows });
-			for (const [url, label] of [
-				["history://sessions/quantified", "history://sessions/quantified:1"],
-				["history://workflows/run-quantified", "history://workflows/run-quantified:"],
-			] as const) {
-				for (const pattern of ["\\A?needle\\n", "(?s)\\A*needle", "(?s)needle\\nB\\z?", "(?s)needle\\nB\\z*"]) {
-					const out = (await router.search?.(url, request(pattern))) ?? "";
-					assert.ok(
-						out.split("\n").some((line) => line.startsWith(label) && line.endsWith(": needle")),
-						`${url} ${pattern}: ${out}`,
-					);
-				}
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
+			const url = "history://sessions/quantified";
+			const label = `${url}:1`;
+			for (const pattern of ["\\A?needle\\n", "(?s)\\A*needle", "(?s)needle\\nB\\z?", "(?s)needle\\nB\\z*"]) {
+				const out = (await router.search?.(url, request(pattern))) ?? "";
+				assert.ok(
+					out.split("\n").some((line) => line.startsWith(label) && line.endsWith(": needle")),
+					`${url} ${pattern}: ${out}`,
+				);
 			}
 		} finally {
 			await store.close();
@@ -181,7 +154,7 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 			await store.create(header("indented"), [message("e1", `needle\n${block(" ", BODY_LINES)}`)]);
 			await store.create(header("lettered"), [message("e1", `needle\n${block("a", BODY_LINES)}`)]);
 			await store.create(header("short"), [message("e1", `needle\n${block(" ", 20)}\nend`)]);
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 			const matchRows = async (id: string, pattern: string): Promise<string[]> => {
 				const out = (await router.search?.(`history://sessions/${id}`, request(pattern))) ?? "";
 				return out.split("\n").filter((line) => line.startsWith(`history://sessions/${id}:1: needle`));
@@ -204,7 +177,7 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 				"\n",
 			);
 			await store.create(header("anchor"), [message("e1", body), message("e2", "tail")]);
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 			const matchRows = async (pattern: string): Promise<string[]> => {
 				const out = (await router.search?.("history://sessions/anchor", request(pattern))) ?? "";
 				return out.split("\n").filter((line) => /^history:\/\/sessions\/anchor:[\d.]+: line-/.test(line));
@@ -260,7 +233,7 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 				"\n",
 			);
 			await store.create(header("cut"), [message("e1", `size y\n${body}`), message("e2", "tail")]);
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 			const matchRows = async (pattern: string): Promise<string[]> => {
 				const out = (await router.search?.("history://sessions/cut", request(pattern))) ?? "";
 				return out.split("\n").filter((line) => /^history:\/\/sessions\/cut:[1-9][\d.]*: /.test(line));
@@ -323,56 +296,5 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 		} finally {
 			await store.close();
 		}
-	});
-
-	it("applies the same window cut and anchor dialect to multi-line workflow run searches (#5250)", async () => {
-		const body = Array.from({ length: BODY_LINES }, (_, index) => `line-${index + 1} ${"x".repeat(90)}`).join("\n");
-		const detail: WorkflowRunDetail = {
-			runId: "run-cut",
-			name: "flow",
-			status: "failed",
-			startedAt: BASE,
-			endedAt: BASE + 1_000,
-			stages: [],
-			error: `${body}\ntail`,
-		};
-		const workflows: WorkflowRunHistory = {
-			listRuns: async () => [
-				{
-					runId: detail.runId,
-					name: detail.name,
-					status: detail.status,
-					startedAt: BASE,
-					elapsedMs: 1_000,
-					activeStages: [],
-					awaitingInput: [],
-					awaitingInputCount: 0,
-				},
-			],
-			getRun: async () => detail,
-		};
-		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => workflows });
-		const matchRows = async (pattern: string): Promise<string[]> => {
-			const out = (await router.search?.("history://workflows/run-cut", request(pattern))) ?? "";
-			return out.split("\n").filter((line) => /^history:\/\/workflows\/run-cut:[1-9]\d*: /.test(line));
-		};
-
-		assert.deepEqual(await matchRows("(?s)line-5 .*x$"), []);
-		assert.deepEqual(await matchRows("(?s)(?P<w>line-5) .*x$"), []);
-		assert.deepEqual(await matchRows("(?s)line-5 .*x(?![\\s\\S])"), []);
-		assert.deepEqual(await matchRows("line-5 x+\\n(?:line-\\d+ x+\\n)*.*$"), []);
-		assert.equal((await matchRows("(?s)line-5 x+(?!.*foo$)")).length, 1);
-		assert.equal((await matchRows("(?s)line-2995 .*tail\\z")).length, 1);
-		assert.equal((await matchRows("(?s)(?P<w>line-2995) .*tail\\z")).length, 1);
-		assert.deepEqual(await matchRows("(?s)\\A# workflow run run-cut\\nname"), [
-			"history://workflows/run-cut:1: # workflow run run-cut",
-		]);
-		assert.deepEqual(await matchRows("(?s)\\Aline-\\d+ "), []);
-		assert.deepEqual(await matchRows("(?s)\\A(?P<w>line-\\d+) "), []);
-		assert.deepEqual(await matchRows("(?s)line-2900 (?<=^line-[\\s\\S]*)"), []);
-		assert.deepEqual(await matchRows("(?s)line-2900 (?<=\\Aline-[\\s\\S]*)"), []);
-		assert.deepEqual(await matchRows("(?s)(?<=^# workflow run run-cut\\n)name"), [
-			"history://workflows/run-cut:2: name: flow",
-		]);
 	});
 });

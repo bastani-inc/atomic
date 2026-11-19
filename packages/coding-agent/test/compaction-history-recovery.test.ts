@@ -157,7 +157,6 @@ describe("recovery from session history after a clear", () => {
 			cwd,
 			currentSessionId: session.sessionId,
 			sessionStore: () => session.sessionManager.getSessionStore(),
-			workflows: () => undefined,
 		});
 	}
 

@@ -305,7 +305,6 @@ const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
 	web_search: "WebSearch",
 	fetch_content: "Fetch",
 	subagent: "Agent",
-	workflow: "Workflow",
 	intercom: "Intercom",
 	contact_supervisor: "Supervisor",
 };

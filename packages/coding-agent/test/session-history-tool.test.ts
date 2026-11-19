@@ -57,7 +57,6 @@ async function createStoreWithSession(
 		cwd: PROJECT,
 		currentSessionId: sessionId,
 		sessionStore: () => store,
-		workflows: () => undefined,
 		budget,
 	});
 	return { store, router };

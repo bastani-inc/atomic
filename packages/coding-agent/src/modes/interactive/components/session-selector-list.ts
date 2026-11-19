@@ -167,13 +167,10 @@ export class SessionList implements Component, Focusable {
 	}
 	private allSessions: SessionInfo[] = [];
 	private filteredSessions: FlatSessionNode[] = [];
-	private mixedSessionCount = 0;
-	private mixedWorkflowCount = 0;
 	private selectedIndex: number = 0;
 	private selectionTouched = false;
 	private pendingSelectedPath?: string;
 	private pendingSelectedId?: string;
-	private pendingSelectedWorkflow?: boolean;
 	private searchInput: Input;
 	private showCwd = false;
 	private sortMode: SortMode = "threaded";
@@ -187,7 +184,7 @@ export class SessionList implements Component, Focusable {
 	private listComplete = false;
 	private selectionSettled = false;
 	private deletingSessionPath?: string;
-	private deletingWorkflowId?: string;
+	private deletingRunId?: string;
 	private currentSession?: { id: string; directory?: string };
 	public onSelect?: (session: SessionInfo) => void;
 	public onCancel?: () => void;
@@ -196,7 +193,7 @@ export class SessionList implements Component, Focusable {
 	public onToggleSort?: () => void;
 	public onToggleNameFilter?: () => void;
 	public onTogglePath?: (showPath: boolean) => void;
-	public onDeleteConfirmationChange?: (path: string | null, isWorkflow?: boolean) => void;
+	public onDeleteConfirmationChange?: (path: string | null) => void;
 	public onDeletePendingChange?: () => void;
 	public onDeleteSession?: (sessionPath: string, session: SessionInfo) => Promise<void>;
 	public onRenameSession?: (session: SessionInfo) => void;
@@ -243,15 +240,8 @@ export class SessionList implements Component, Focusable {
 		return getKeybindings();
 	}
 
-	private isWorkflowSession(session: SessionInfo): boolean {
-		return this.variant === "runs" || session.resumeKind === "workflow";
-	}
-
 	private isSameSession(left: SessionInfo, right: SessionInfo): boolean {
-		if (left === right) return true;
-		const leftWorkflow = this.isWorkflowSession(left);
-		if (leftWorkflow !== this.isWorkflowSession(right)) return false;
-		return leftWorkflow ? left.id === right.id : left.path === right.path;
+		return left === right || (this.variant === "runs" ? left.id === right.id : left.path === right.path);
 	}
 
 	private createSearchInput(): Input {
@@ -269,25 +259,20 @@ export class SessionList implements Component, Focusable {
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		const selectedPath = selected?.path;
 		const selectedId = selected?.id;
-		const selectedWorkflow = selected ? this.isWorkflowSession(selected) : undefined;
 		this.searchInput = this.createSearchInput();
 		this.filterSessions("");
-		const index = this.findSessionIndex(selectedPath, selectedId, selectedWorkflow);
+		const index = this.findSessionIndex(selectedPath, selectedId);
 		if (index >= 0) this.selectedIndex = index;
 	}
 
-	private findSessionIndex(path: string | undefined, id?: string, isWorkflow?: boolean): number {
+	private findSessionIndex(path: string | undefined, id?: string): number {
 		if (!path && !id) return -1;
 		if (path) {
-			const byPath = this.filteredSessions.findIndex(
-				(node) =>
-					node.session.path === path &&
-					(isWorkflow === undefined || this.isWorkflowSession(node.session) === isWorkflow),
-			);
+			const byPath = this.filteredSessions.findIndex((node) => node.session.path === path);
 			if (byPath >= 0) return byPath;
 		}
-		if (!(this.variant === "runs" || isWorkflow) || !id) return -1;
-		return this.filteredSessions.findIndex((node) => this.isWorkflowSession(node.session) && node.session.id === id);
+		if (this.variant !== "runs" || !id) return -1;
+		return this.filteredSessions.findIndex((node) => node.session.id === id);
 	}
 
 	setSortMode(sortMode: SortMode): void {
@@ -299,11 +284,7 @@ export class SessionList implements Component, Focusable {
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		this.nameFilter = nameFilter;
 		this.filterSessions(this.searchInput.getValue());
-		const index = this.findSessionIndex(
-			selected?.path,
-			selected?.id,
-			selected ? this.isWorkflowSession(selected) : undefined,
-		);
+		const index = this.findSessionIndex(selected?.path, selected?.id);
 		if (index >= 0) this.selectedIndex = index;
 	}
 
@@ -313,7 +294,6 @@ export class SessionList implements Component, Focusable {
 			if (!this.selectionTouched) {
 				this.pendingSelectedPath = undefined;
 				this.pendingSelectedId = undefined;
-				this.pendingSelectedWorkflow = undefined;
 			}
 		}
 		this.replaceSessions(sessions, showCwd, partial);
@@ -330,9 +310,6 @@ export class SessionList implements Component, Focusable {
 		const keepSelected = this.selectionTouched || this.selectionSettled;
 		const selectedPath = keepSelected ? (this.pendingSelectedPath ?? currentSelected?.path) : undefined;
 		const selectedId = keepSelected ? (this.pendingSelectedId ?? currentSelected?.id) : undefined;
-		const selectedWorkflow = keepSelected
-			? (this.pendingSelectedWorkflow ?? (currentSelected ? this.isWorkflowSession(currentSelected) : undefined))
-			: undefined;
 		this.allSessions = sessions;
 		this.showCwd = showCwd;
 		this.filterSessions(this.searchInput.getValue());
@@ -343,16 +320,14 @@ export class SessionList implements Component, Focusable {
 			this.setConfirmingDeleteSession(match?.session ?? null);
 		}
 		if (!selectedPath && !selectedId) return;
-		const selectedIndex = this.findSessionIndex(selectedPath, selectedId, selectedWorkflow);
+		const selectedIndex = this.findSessionIndex(selectedPath, selectedId);
 		if (selectedIndex >= 0) {
 			this.selectedIndex = selectedIndex;
 			this.pendingSelectedPath = undefined;
 			this.pendingSelectedId = undefined;
-			this.pendingSelectedWorkflow = undefined;
 		} else {
 			this.pendingSelectedPath = partial ? selectedPath : undefined;
 			this.pendingSelectedId = partial ? selectedId : undefined;
-			this.pendingSelectedWorkflow = partial ? selectedWorkflow : undefined;
 		}
 	}
 
@@ -371,11 +346,7 @@ export class SessionList implements Component, Focusable {
 				const idDiff = left.id.localeCompare(right.id);
 				return idDiff !== 0 ? idDiff : left.path.localeCompare(right.path);
 			};
-			const rawSessions = this.allSessions.filter(
-				(session) => !this.isWorkflowSession(session) && (this.nameFilter === "all" || hasSessionName(session)),
-			);
-			const rawWorkflows = this.allSessions.filter((session) => this.isWorkflowSession(session));
-
+			const rawSessions = this.allSessions.filter((session) => this.nameFilter === "all" || hasSessionName(session));
 			let sessionNodes: FlatSessionNode[];
 			if (this.sortMode === "threaded" && !trimmed) {
 				sessionNodes = flattenSessionTree(buildSessionTree(rawSessions));
@@ -398,29 +369,7 @@ export class SessionList implements Component, Focusable {
 					}));
 			}
 
-			let workflowNodes: FlatSessionNode[];
-			if (this.sortMode === "relevance" && trimmed) {
-				workflowNodes = filterAndSortSessions(rawWorkflows, query, "relevance", "all").map((session) => ({
-					session,
-					depth: 0,
-					isLast: true,
-					ancestorContinues: [],
-				}));
-			} else {
-				workflowNodes = rawWorkflows
-					.filter(matchesQuery)
-					.sort(byNewest)
-					.map((session) => ({
-						session,
-						depth: 0,
-						isLast: true,
-						ancestorContinues: [],
-					}));
-			}
-
-			this.mixedSessionCount = sessionNodes.length;
-			this.mixedWorkflowCount = workflowNodes.length;
-			this.filteredSessions = [...sessionNodes, ...workflowNodes];
+			this.filteredSessions = sessionNodes;
 			this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredSessions.length - 1));
 			if (this.filteredSessions.length === 0) this.previewOpen = false;
 			return;
@@ -449,16 +398,16 @@ export class SessionList implements Component, Focusable {
 
 	private setConfirmingDeleteSession(session: SessionInfo | null): void {
 		this.confirmingDeleteSession = session;
-		this.onDeleteConfirmationChange?.(session?.path ?? null, session ? this.isWorkflowSession(session) : false);
+		this.onDeleteConfirmationChange?.(session?.path ?? null);
 	}
 
 	private hasPendingDelete(): boolean {
-		return this.deletingSessionPath !== undefined || this.deletingWorkflowId !== undefined;
+		return this.deletingSessionPath !== undefined || this.deletingRunId !== undefined;
 	}
 
 	private isDeleting(session: SessionInfo): boolean {
-		if (this.isWorkflowSession(session)) {
-			return this.deletingWorkflowId !== undefined && session.id === this.deletingWorkflowId;
+		if (this.variant === "runs") {
+			return this.deletingRunId !== undefined && session.id === this.deletingRunId;
 		}
 		return this.deletingSessionPath !== undefined && session.path === this.deletingSessionPath;
 	}
@@ -472,8 +421,8 @@ export class SessionList implements Component, Focusable {
 	private async deleteSession(session: SessionInfo): Promise<void> {
 		const onDelete = this.onDeleteSession;
 		if (!onDelete || this.hasPendingDelete()) return;
-		if (this.isWorkflowSession(session)) {
-			this.deletingWorkflowId = session.id;
+		if (this.variant === "runs") {
+			this.deletingRunId = session.id;
 		} else {
 			this.deletingSessionPath = session.path;
 		}
@@ -484,7 +433,7 @@ export class SessionList implements Component, Focusable {
 			this.onError?.(`Failed to delete: ${error instanceof Error ? error.message : String(error)}`);
 		} finally {
 			this.deletingSessionPath = undefined;
-			this.deletingWorkflowId = undefined;
+			this.deletingRunId = undefined;
 			this.onDeletePendingChange?.();
 		}
 	}
@@ -503,7 +452,7 @@ export class SessionList implements Component, Focusable {
 	}
 
 	private isCurrentSession(session: SessionInfo): boolean {
-		if (this.isWorkflowSession(session)) return false;
+		if (this.variant === "runs") return false;
 		if (this.currentSession === undefined || session.id !== this.currentSession.id) return false;
 		const directory = this.currentSession.directory;
 		if (directory === undefined) return true;
@@ -587,7 +536,7 @@ export class SessionList implements Component, Focusable {
 
 	private emptyText(): string {
 		if (this.searchInput.getValue().trim()) return `No matches for "${this.searchInput.getValue().trim()}"`;
-		if (this.variant === "runs") return "No workflow runs to resume.";
+		if (this.variant === "runs") return "No runs to resume.";
 		const showAll = clickableKeyTextHint(keyText("app.session.toggleNamedFilter"), " show all");
 		const allFolders = clickableKeyTextHint(keyText("tui.input.tab"), " all folders");
 		if (this.nameFilter === "named") {
@@ -626,24 +575,14 @@ export class SessionList implements Component, Focusable {
 		const { start, end } = this.visibleRange();
 		if (start > 0) lines.push(`  ${theme.fg("dim", `↑ ${start} more`)}`);
 		const headerRoom = Math.max(1, width - 2);
-		if (this.variant === "mixed" && start === 0 && this.mixedSessionCount === 0) {
-			lines.push(`  ${theme.bold(theme.fg("muted", fitText("Sessions (0)", headerRoom)))}`);
+		if (this.variant === "mixed") {
+			lines.push(
+				`  ${theme.bold(theme.fg("muted", fitText(`Sessions (${this.filteredSessions.length})`, headerRoom)))}`,
+			);
 		}
-		let lastGroup: "sessions" | "workflows" | undefined;
 		for (let i = start; i < end; i++) {
 			const node = this.filteredSessions[i]!;
 			const session = node.session;
-			if (this.variant === "mixed") {
-				const group = this.isWorkflowSession(session) ? "workflows" : "sessions";
-				if (group !== lastGroup) {
-					const label =
-						group === "sessions"
-							? `Sessions (${this.mixedSessionCount})`
-							: `Workflow runs (${this.mixedWorkflowCount})`;
-					lines.push(`  ${theme.bold(theme.fg("muted", fitText(label, headerRoom)))}`);
-					lastGroup = group;
-				}
-			}
 			const isSelected = i === this.selectedIndex;
 			const isConfirmingDelete =
 				this.confirmingDeleteSession !== null && this.isSameSession(session, this.confirmingDeleteSession);
@@ -734,17 +673,17 @@ export class SessionList implements Component, Focusable {
 		add(sessionRowTitle(selected), (text) => theme.bold(theme.fg("text", text)), 3);
 		if (selected.detail !== undefined) add(selected.detail, (text) => theme.fg("muted", text), 4);
 		else if (selected.summary) add(selected.summary, (text) => theme.fg("text", text), 6);
-		const isWorkflow = this.isWorkflowSession(selected);
+		const isRun = this.variant === "runs";
 		const facts: string[] = [];
 		facts.push(`Created ${selected.created.toLocaleString()} · updated ${ageText(selected.modified)}`);
-		if (selected.detail === undefined && !isWorkflow)
+		if (selected.detail === undefined && !isRun)
 			facts.push(`${selected.messageCount} ${selected.messageCount === 1 ? "message" : "messages"}`);
 		const pathFact = (path: string): string => {
 			const text = cleanText(shortenPath(path));
 			return wrapTextWithAnsi(text, room).length > 2 ? truncatePathStart(text, room) : text;
 		};
-		if (selected.cwd && !isWorkflow) facts.push(pathFact(selected.cwd));
-		if (!isWorkflow) facts.push(pathFact(selected.path));
+		if (selected.cwd && !isRun) facts.push(pathFact(selected.cwd));
+		if (!isRun) facts.push(pathFact(selected.path));
 		else facts.push(selected.id);
 		for (const fact of facts) add(fact, (text) => theme.fg("dim", text), 2);
 		return ["", rule, ...body, end];
@@ -755,7 +694,7 @@ export class SessionList implements Component, Focusable {
 		const kb = this.activeKeybindings();
 		const query = this.searchInput.getValue();
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
-		const isSession = selected !== undefined && !this.isWorkflowSession(selected);
+		const isSession = selected !== undefined;
 		const claimed = new Set([keybindingIdentity("ctrl+c")]);
 		const actionKeys = (action: string): readonly KeyId[] => (kb.getKeys?.(action) ?? []) as readonly KeyId[];
 		const claim = (action: string, enabled: boolean): void => {
@@ -794,8 +733,7 @@ export class SessionList implements Component, Focusable {
 		const kb = this.activeKeybindings();
 		const selected = this.filteredSessions[this.selectedIndex];
 		const selectedDeleting = selected !== undefined && this.isDeleting(selected.session);
-		const selectedIsWorkflow = selected !== undefined && this.isWorkflowSession(selected.session);
-		const selectedIsSession = selected !== undefined && !selectedIsWorkflow;
+		const selectedIsSession = selected !== undefined;
 		const query = this.searchInput.getValue();
 		const cancel = navFirstKeyText(kb, "tui.select.cancel") || "esc";
 		const core: NavKey[] = [];
@@ -887,7 +825,7 @@ export class SessionList implements Component, Focusable {
 			});
 			entries.push({ action: "app.session.togglePath", label: this.showPath ? "hide path" : "path" });
 		}
-		if (selected && this.canRename && !this.isWorkflowSession(selected.session) && !selectedDeleting)
+		if (selected && this.canRename && this.variant !== "runs" && !selectedDeleting)
 			entries.push({ action: "app.session.rename", label: "rename" });
 		if (
 			selected &&
@@ -1002,9 +940,7 @@ export class SessionList implements Component, Focusable {
 
 		// Ctrl+P: toggle path display
 		if (kb.matches(keyData, "app.session.togglePath")) {
-			const canTogglePath =
-				this.variant === "sessions" ||
-				(this.variant === "mixed" && selected !== undefined && !this.isWorkflowSession(selected.session));
+			const canTogglePath = this.variant === "sessions" || (this.variant === "mixed" && selected !== undefined);
 			if (!canTogglePath) return true;
 			this.showPath = !this.showPath;
 			this.onTogglePath?.(this.showPath);
@@ -1019,16 +955,10 @@ export class SessionList implements Component, Focusable {
 
 		// Rename selected session
 		if (kb.matches(keyData, "app.session.rename")) {
-			if (
-				selected &&
-				this.canRename &&
-				!this.isWorkflowSession(selected.session) &&
-				!this.isDeleting(selected.session)
-			) {
+			if (selected && this.canRename && this.variant !== "runs" && !this.isDeleting(selected.session)) {
 				this.selectionTouched = true;
 				this.pendingSelectedPath = selected.session.path;
 				this.pendingSelectedId = selected.session.id;
-				this.pendingSelectedWorkflow = false;
 				this.onRenameSession?.(selected.session);
 			}
 			return true;
@@ -1049,7 +979,6 @@ export class SessionList implements Component, Focusable {
 		this.selectionTouched = true;
 		this.pendingSelectedPath = undefined;
 		this.pendingSelectedId = undefined;
-		this.pendingSelectedWorkflow = undefined;
 		// Up arrow
 		if (kb.matches(keyData, "tui.select.up")) {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
@@ -1091,7 +1020,6 @@ export class SessionList implements Component, Focusable {
 		const previous = this.filteredSessions[this.selectedIndex]?.session;
 		const previousPath = previous?.path;
 		const previousId = previous?.id;
-		const previousWorkflow = previous ? this.isWorkflowSession(previous) : undefined;
 		this.searchInput.handleInput(keyData);
 		const query = this.searchInput.getValue();
 		this.filterSessions(query);
@@ -1100,7 +1028,7 @@ export class SessionList implements Component, Focusable {
 			this.selectedIndex = 0;
 			return;
 		}
-		const kept = this.findSessionIndex(previousPath, previousId, previousWorkflow);
+		const kept = this.findSessionIndex(previousPath, previousId);
 		this.selectedIndex = kept >= 0 ? kept : 0;
 	}
 }

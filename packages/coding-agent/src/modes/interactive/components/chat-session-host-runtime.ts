@@ -1,6 +1,5 @@
 import { atomicWorkingFrame, watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
-import { finalizeTerminalWorkflowToolEntries } from "./chat-session-host-terminal-cleanup.ts";
 import type { ChatSessionSubmitMode } from "./chat-session-host-types.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 
@@ -178,23 +177,6 @@ export function syncChatSessionAnimationTick<TExtraEntry extends ChatTranscriptE
 		return;
 	}
 	if (!active) clearChatSessionAnimation(state);
-}
-
-export function clearChatSessionBusyForTerminalWorkflowStage<TExtraEntry extends ChatTranscriptEntryLike>(
-	state: ChatSessionHostState<TExtraEntry>,
-): void {
-	state.sdkBusy = false;
-	state.workingMessage = undefined;
-	state.compacting = false;
-	state.workingRunMeter.stop();
-	stopChatSessionWorkingLifecycle(state);
-	if (finalizeTerminalWorkflowToolEntries(state.transcript)) {
-		state.transcriptComponent.invalidate();
-	}
-	state.liveChat.clearPendingTools();
-	state.statusMessage = "";
-	if (state.noticeMessage !== state.lastWarningMessage) state.noticeMessage = "";
-	syncChatSessionAnimationTick(state);
 }
 
 export function disposeChatSession<TExtraEntry extends ChatTranscriptEntryLike>(

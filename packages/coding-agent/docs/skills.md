@@ -17,6 +17,7 @@ Read this page to install and use skills, then continue:
 
 - [Locations](#locations)
 - [How Skills Work](#how-skills-work)
+- [Skills as workflows](#skills-as-workflows)
 - [Skill Commands](#skill-commands)
 - [Skill Structure](/skills/authoring#skill-structure)
 - [Frontmatter](/skills/reference#frontmatter)
@@ -79,6 +80,12 @@ For project-level Claude Code skills, add to `.atomic/settings.json` (legacy `.p
 4. The agent follows the instructions, using relative paths to reference scripts and assets
 
 This is progressive disclosure: only descriptions are always in context, full instructions load on-demand.
+
+### Skills as workflows
+
+A `SKILL.md` can describe a procedure for the parent chat to carry out with codemode and subagents. No workflow definition is needed. State the inputs, which steps depend on others, how to check the result, and when to stop. Loading a skill does not enable tools or grant permission for actions.
+
+For example, a `review-guide` skill might say: “Ask one child per platform to check the guide against the CLI. Wait for their results, verify the commands they flag, then return a table of discrepancies. Don't edit the guide.” Invoke it as `/skill:review-guide docs/install.md`. See [Orchestration](/orchestration) for the corresponding script and how work continues after a child finishes.
 
 ### Built-in prompt engineering guidance
 

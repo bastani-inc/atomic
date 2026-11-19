@@ -47,7 +47,6 @@ import {
 	transcriptEntryName,
 } from "./chat-session-host-rendering.ts";
 import {
-	clearChatSessionBusyForTerminalWorkflowStage,
 	disposeChatSession,
 	isChatSessionBashRunning,
 	isChatSessionStreaming,
@@ -727,10 +726,6 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	syncAnimationTick(): void {
 		syncChatSessionAnimationTick(this.state);
-	}
-
-	clearBusyForTerminalWorkflowStage(): void {
-		clearChatSessionBusyForTerminalWorkflowStage(this.state);
 	}
 
 	snapshotInterruptedTurn(): ChatSessionInterruptedTurnSnapshot | undefined {
