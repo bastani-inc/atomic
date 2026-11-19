@@ -9,6 +9,7 @@ import {
 	WindowedContainer,
 } from "@bastani/atomic-tui";
 import type { SessionEntry, SessionManager } from "../../core/session-manager.ts";
+import { chatPosition } from "../../core/storage/session/chat-records.js";
 import type {
 	SessionHistoryItem,
 	SessionHistoryPage,
@@ -16,8 +17,13 @@ import type {
 } from "../../core/storage/session/types.js";
 import { rowSource, savedRowKey, savedSeqOf } from "../../core/tasks/transcript-origin.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
-import { ChatReaderLayout, chatDecorationRow } from "./chat-reader-layout.js";
-import { type ChatPageDecorations, readMountedAnchors, sessionChatMount } from "./chat-reader-records.js";
+import { boundChatLayout, ChatReaderLayout, chatDecorationRow } from "./chat-reader-layout.js";
+import {
+	type ChatMount,
+	type ChatPageDecorations,
+	readMountedAnchors,
+	sessionChatMount,
+} from "./chat-reader-records.js";
 import { parkedRun } from "./components/parked-rows.ts";
 import { SavedRendererInstances } from "./components/saved-renderer-instances.js";
 
@@ -38,7 +44,52 @@ type Draw = (
 	adjacent: { readonly older?: string; readonly newer?: string } | undefined,
 	copy?: SavedCopyDraw,
 	records?: SavedPageRecords,
+	earlier?: SavedPageEarlier,
 ) => Component[];
+
+/**
+ * The saved entries right before a page, in order, for its first replies' warnings: a prompt-cache miss and dropped
+ * thinking compare a reply with the request and reply before it, which may be on the page before. `root`: nothing
+ * is saved before them on the branch.
+ */
+export interface SavedPageEarlier {
+	readonly entries: readonly SessionEntry[];
+	readonly root: boolean;
+}
+
+/** At most this many saved entries before a page are read for its first replies: one turn's reply, results and prompt. */
+const EARLIER_ENTRIES = 16;
+
+/**
+ * One bounded read of the entries right before a page, made only when its replies' warnings are shown. A reply whose
+ * predecessor the read does not reach draws no warning that depends on it, as the whole chat does without one.
+ */
+async function readEarlierEntries(
+	mode: InteractiveModeBase,
+	manager: SessionManager,
+	leaf: number,
+	entries: readonly SessionEntry[],
+	first: number | undefined,
+	signal?: AbortSignal,
+): Promise<SavedPageEarlier | undefined> {
+	if (first === undefined || !mode.settingsManager.getShowCacheMissNotices()) return undefined;
+	if (!entries.some((entry) => entry.type === "message" && entry.message.role === "assistant")) return undefined;
+	if (first <= 1) return { entries: [], root: true };
+	const read = manager.readHistory({
+		branchLeafSeq: leaf,
+		toSeq: first - 1,
+		direction: "backward",
+		limit: EARLIER_ENTRIES,
+		signal,
+	});
+	try {
+		const next = await read.next();
+		if (next.done) return { entries: [], root: true };
+		return { entries: next.value.items.map(entryForDisplay), root: next.value.nextCursor === undefined };
+	} finally {
+		await read.return();
+	}
+}
 
 /** The saved reader-only lines of one page's entries, read with the page and drawn with it, as the whole chat
  * draws them. `root`: the page starts the conversation, so it also shows what was saved before any entry. */
@@ -47,23 +98,61 @@ export interface SavedPageRecords {
 	readonly data: ChatPageDecorations;
 }
 
-/** Read the saved lines of a page's entries with the page. They are not cached: they leave with its rows. */
+/** Read the saved lines of a page's entries with the page. They are not cached: they leave with its rows.
+ * `back`: the page was read back, so the prompt it starts with may have overtaken notices ending the page before. */
 async function readPageRecords(
 	mode: InteractiveModeBase,
 	manager: SessionManager,
 	entries: SessionEntry[],
 	root: boolean,
+	back = false,
 ): Promise<SavedPageRecords | undefined> {
 	if (mode.sessionManager !== manager || entries.length === 0) return undefined;
 	const mount = sessionChatMount(mode, manager);
 	if (!mount) return undefined;
 	const positions = new ChatReaderLayout(entries, new Container(), { root });
+	const targets = positions.orderTargets();
+	if (back && chatPosition(entries[0]!).role === "prompt" && !targets.includes(entries[0]!.id))
+		targets.push(entries[0]!.id);
 	const data = await readMountedAnchors(
 		{ scope: mount.scope, present: mount.present, records: new Map() },
 		positions.anchors(),
-		positions.orderTargets(),
+		targets,
 	);
 	return data ? { root, data } : undefined;
+}
+
+/**
+ * A prompt is drawn above the notices that overtook it on their way to storage (#5682) by a page holding both, so a
+ * page does not end between them: read on, it stops before such notices when their prompt is past its end; read back,
+ * it starts after such a prompt when their first notice is before its start. The next read continues from that edge.
+ * A page keeps at least one entry, so a run longer than a page stays where the store cut it.
+ */
+function keepOvertakenRuns(
+	direction: Direction,
+	items: readonly SessionHistoryItem[],
+	before: ReadonlyMap<string, string> | undefined,
+): readonly SessionHistoryItem[] {
+	if (!before?.size || items.length < 2) return items;
+	const at = items.map((item) => chatPosition(entryForDisplay(item)));
+	const ids = new Set(at.map((position) => position.id));
+	const linked = (i: number) => at[i]!.parentId === at[i - 1]!.id;
+	if (direction === "older") {
+		let prompt = 0;
+		while (at[prompt]?.role === "notice" && (prompt === 0 || linked(prompt))) prompt++;
+		const first = at[prompt];
+		if (first?.role !== "prompt" || (prompt > 0 && !linked(prompt)) || prompt + 1 >= items.length) return items;
+		for (const [anchor, id] of before) if (id === first.id && !ids.has(anchor)) return items.slice(prompt + 1);
+		return items;
+	}
+	let start = at.length - 1;
+	if (at[start]!.role !== "notice") return items;
+	while (start > 1 && at[start - 1]!.role === "notice" && linked(start)) start--;
+	for (let i = start; i < at.length; i++) {
+		const prompt = before.get(at[i]!.id);
+		if (prompt !== undefined && !ids.has(prompt)) return items.slice(0, i);
+	}
+	return items;
 }
 
 /** Saved entries drawn for a copy, not mounted: where each row belongs, and the reads its edge cards still need. */
@@ -307,12 +396,41 @@ export function parkViewport(mode: InteractiveModeBase, context: readonly Sessio
 		const record = chatDecorationRow(child);
 		if (record) shown.add(record.id);
 	}
+	for (const id of readKeptLines(mode, moving, shown)) shown.add(id);
 	return {
 		parked: retired.length ? { rows: retired, first: run.first, last: run.last } : undefined,
 		adopted: kept,
 		keys: adopted,
 		shownRecords: shown,
 	};
+}
+
+/**
+ * A saved line whose read was still in flight when the compaction came was never drawn: the drawing that read it is
+ * cleared. Read again the lines of the rows the reader keeps that show none yet, bounded to those rows, and draw each
+ * after its row as that drawing would have, in the page those rows form or in the new context that adopts them.
+ * Returns the anchors read, which the new context then leaves to these rows, as it does the lines they show.
+ */
+function readKeptLines(mode: InteractiveModeBase, rows: ReadonlySet<Component>, shown: ReadonlySet<string>): string[] {
+	const layout = boundChatLayout(mode);
+	const mount = layout && sessionChatMount(mode, mode.sessionManager);
+	const anchors = (mount && layout?.anchorsAfter(rows, shown)) || [];
+	if (!mount || !layout || !anchors.length) return [];
+	// The lines leave with their rows, as a saved page's do: an answer already read is used, nothing is cached.
+	const records: ChatMount["records"] = new Map();
+	for (const id of anchors) {
+		const known = mount.records.get(id);
+		if (known) records.set(id, known);
+	}
+	const chat = mode.chatContainer;
+	void readMountedAnchors({ scope: mount.scope, present: mount.present, records }, anchors).then((data) => {
+		if (!data?.after.size || mode.chatContainer !== chat) return;
+		const drawn = new Set(chat.children);
+		if (!layout.apply(chat, { after: data.after, before: new Map() })) return;
+		mounts.get(mode)?.joinLines(chat.children.filter((child) => !drawn.has(child)));
+		mode.ui.requestRender();
+	});
+	return anchors;
 }
 
 /**
@@ -360,12 +478,15 @@ function entryForDisplay(item: SessionHistoryItem): SessionEntry {
 interface VisiblePage {
 	readonly page: SessionHistoryPage;
 	readonly records?: SavedPageRecords;
+	readonly earlier?: SavedPageEarlier;
 }
 
 async function readVisiblePage(
 	mode: InteractiveModeBase,
 	manager: SessionManager,
+	leaf: number,
 	options: SessionHistoryReadOptions,
+	direction: Direction,
 ): Promise<VisiblePage | undefined> {
 	const read = manager.readHistory(options);
 	let page: SessionHistoryPage | undefined;
@@ -378,9 +499,14 @@ async function readVisiblePage(
 	if (!page) return undefined;
 	page = await withOversizedToolResults(manager, page, options.signal);
 	options.signal?.throwIfAborted();
-	// The page's saved lines arrive with it, so it is drawn once, with each line where the whole chat shows it.
-	const records = await readPageRecords(mode, manager, page.items.map(entryForDisplay), page.items[0]?.seq === 1);
-	return { page, records };
+	// The page's saved lines and the entries before it arrive with it, so it is drawn once, as the whole chat draws it.
+	const entries = page.items.map(entryForDisplay),
+		first = page.items[0]?.seq;
+	const [records, earlier] = await Promise.all([
+		readPageRecords(mode, manager, entries, first === 1, direction === "older"),
+		readEarlierEntries(mode, manager, leaf, entries, first, options.signal),
+	]);
+	return { page, records, earlier };
 }
 
 /** Network I/O owns only its abort signal and a weak return address, not the terminal and every rendered row. */
@@ -393,7 +519,7 @@ function requestPage(
 ): void {
 	void read.then(
 		(page) => {
-			if (!signal.aborted) owner.deref()?.publish(direction, page?.page, range, page?.records);
+			if (!signal.aborted) owner.deref()?.publish(direction, page?.page, range, page?.records, page?.earlier);
 		},
 		(error) => {
 			if (!signal.aborted) owner.deref()?.failed(error);
@@ -472,15 +598,14 @@ class SavedChatHistory {
 			if (!alive()) throw closed();
 			const { items } = await withOversizedToolResults(this.manager, page, signal);
 			if (!alive()) throw closed();
-			const records = await readPageRecords(
-				this.mode,
-				this.manager,
-				items.map(entryForDisplay),
-				items[0]?.seq === 1,
-			);
-			if (!alive()) throw closed();
-			const first = items[0]?.seq,
+			const entries = items.map(entryForDisplay),
+				first = items[0]?.seq,
 				end = items.at(-1)?.seq;
+			const [records, earlier] = await Promise.all([
+				readPageRecords(this.mode, this.manager, entries, first === 1),
+				readEarlierEntries(this.mode, this.manager, branchLeafSeq, entries, first, signal),
+			]);
+			if (!alive()) throw closed();
 			if (first === undefined || end === undefined) continue;
 			const copy: SavedCopyDraw = {
 				positions: new Map(),
@@ -494,12 +619,13 @@ class SavedChatHistory {
 			};
 			const components = this.draw(
 				this.mode,
-				items.map(entryForDisplay),
+				entries,
 				items.map((item) => item.seq),
 				this.exceptions,
 				undefined,
 				copy,
 				records,
+				earlier,
 			);
 			try {
 				await copy.settled;
@@ -544,7 +670,13 @@ class SavedChatHistory {
 			controller.signal,
 			direction,
 			request,
-			readVisiblePage(this.mode, this.manager, { ...request.options, adjacent: true, signal: controller.signal }),
+			readVisiblePage(
+				this.mode,
+				this.manager,
+				this.leaf,
+				{ ...request.options, adjacent: true, signal: controller.signal },
+				direction,
+			),
 		);
 	}
 
@@ -588,9 +720,35 @@ class SavedChatHistory {
 	 */
 	park(parked: ParkedRows): void {
 		const children = [...parked.rows];
-		// They are saved rows now, marked as a drawn page marks them: a row without a saved source (a spacer, a
-		// decoration) belongs to the entry of the next row that has one, as it was drawn before that row, and rows
-		// after the last such row follow it.
+		this.markParked(children);
+		this.chat.insertChildren(this.chat.children.indexOf(this.marker) + 1, children);
+		this.pages.push({ children, first: parked.first, last: parked.last, from: parked.first, to: parked.last });
+	}
+
+	/** Saved lines drawn after rows of a parked page once it is mounted join that page, where they are drawn. */
+	joinLines(lines: readonly Component[]): void {
+		for (let index = 0; index < this.pages.length; index++) {
+			const page = this.pages[index]!;
+			const rows = new Set(page.children);
+			const joining = new Set(
+				lines.filter((line) => {
+					const after = chatDecorationRow(line)?.after;
+					return after !== undefined && rows.has(after);
+				}),
+			);
+			if (!joining.size) continue;
+			const children = this.chat.children.filter((child) => rows.has(child) || joining.has(child));
+			this.markParked(children);
+			this.pages[index] = { ...page, children };
+		}
+	}
+
+	/**
+	 * Parked rows are saved rows, marked as a drawn page marks them: a row without a saved source (a spacer, a
+	 * decoration) belongs to the entry of the next row that has one, as it was drawn before that row, and rows after
+	 * the last such row follow it.
+	 */
+	private markParked(children: readonly Component[]): void {
 		const source = this.exceptions.source;
 		let pending: Component[] = [];
 		let at: { seq: number; block: number; parts: number } | undefined;
@@ -607,8 +765,6 @@ class SavedChatHistory {
 		if (at)
 			for (let index = 0; index < pending.length; index++)
 				WindowedContainer.markHistoryComponent(pending[index]!, source, at.seq, at.block, at.parts + index);
-		this.chat.insertChildren(this.chat.children.indexOf(this.marker) + 1, children);
-		this.pages.push({ children, first: parked.first, last: parked.last, from: parked.first, to: parked.last });
 	}
 
 	markerRow(): Component {
@@ -630,28 +786,34 @@ class SavedChatHistory {
 		page: SessionHistoryPage | undefined,
 		range: { readonly from: number; readonly to: number },
 		records?: SavedPageRecords,
+		earlier?: SavedPageEarlier,
 	): void {
 		this.pending = undefined;
 		const at = this.chat.children.indexOf(this.marker);
 		if (!page || at < 0 || this.mode.sessionManager !== this.manager) return;
 		if (direction === "start") this.clearPages();
+		const items = keepOvertakenRuns(direction, page.items, records?.data.before);
+		const older = items[0] === page.items[0],
+			newer = items.at(-1) === page.items.at(-1);
 		const children = this.draw(
 			this.mode,
-			page.items.map(entryForDisplay),
-			page.items.map((item) => item.seq),
+			items.map(entryForDisplay),
+			items.map((item) => item.seq),
 			this.exceptions,
 			page.adjacent,
 			undefined,
 			records,
+			earlier,
 		);
+		// An edge cut short continues with a range read from the page's own edge, not with the store's cursor.
 		const mounted: MountedPage = {
 			children,
-			older: page.adjacent?.older,
-			newer: page.adjacent?.newer,
-			first: page.items[0]?.seq ?? range.from,
-			last: page.items.at(-1)?.seq ?? range.to,
-			from: range.from,
-			to: range.to,
+			older: older ? page.adjacent?.older : undefined,
+			newer: newer ? page.adjacent?.newer : undefined,
+			first: items[0]?.seq ?? range.from,
+			last: items.at(-1)?.seq ?? range.to,
+			from: older ? range.from : items[0]!.seq,
+			to: newer ? range.to : items.at(-1)!.seq,
 		};
 		if (direction === "newer") {
 			const previous = this.pages.findLast((mountedPage) => mountedPage.children.length)?.children.at(-1);
@@ -668,7 +830,10 @@ class SavedChatHistory {
 			this.drop(direction === "older" ? this.pages.pop()! : this.pages.shift()!);
 		}
 		if (direction === "start" || this.view.isFollowingEnd)
-			this.view.scrollTo(direction === "start" ? 0 : this.view.scrollTop, { disableFollow: true });
+			this.view.scrollTo(direction === "start" ? 0 : this.view.scrollTop, {
+				disableFollow: true,
+				exact: direction === "start",
+			});
 		this.mode.ui.requestRender();
 	}
 
@@ -679,15 +844,15 @@ class SavedChatHistory {
 		);
 		this.mode.ui.requestRender();
 	}
+	/** Whether the page may be on screen. One mounted since the last frame has no place yet: the reader may be on it. */
 	private painted(page: MountedPage): boolean {
 		const first = page.children[0],
 			last = page.children.at(-1);
 		if (!first || !last) return false;
 		const from = this.chat.windowRowSpan(first),
 			to = this.chat.windowRowSpan(last);
-		return (
-			!!from && !!to && from.top < this.view.scrollTop + this.view.viewportHeight && to.bottom > this.view.scrollTop
-		);
+		if (!from || !to) return true;
+		return from.top < this.view.scrollTop + this.view.viewportHeight && to.bottom > this.view.scrollTop;
 	}
 	private drop(page: MountedPage): void {
 		for (const child of page.children) {

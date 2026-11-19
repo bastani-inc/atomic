@@ -169,6 +169,21 @@ class InProcessEngineClient extends RpcClientApi {
 		return () => {};
 	}
 
+	/** This engine draws no UI of its own: an interactive host over it receives no engine messages or UI requests. */
+	onInteractiveEngineMessage(): () => void {
+		return () => {};
+	}
+
+	onInteractiveEngineKeybindingState(): () => void {
+		return () => {};
+	}
+
+	onExtensionUIRequest(): () => void {
+		return () => {};
+	}
+
+	sendInteractiveEngineCommand(): void {}
+
 	getGeneration(): number {
 		return 1;
 	}

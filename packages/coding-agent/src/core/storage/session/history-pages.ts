@@ -262,7 +262,7 @@ export async function* historyPages(
 		const hasNext = reverse ? hasOlder : hasNewer;
 		const cursorFor = (from: number, to: number, backward: boolean) =>
 			`${scope}.${from}.${to}${backward ? ".b" : ""}${options.adjacent || leaf !== undefined ? `.${firstSeq}.${lastSeq}` : ""}${leaf === undefined ? "" : `.p${leaf}`}${snapshotOnly ? `.s${cut}` : ""}`;
-		// Only a whole store can carry a task-reference watcher; a forked file's partial reader never has one.
+		// Only a whole store answers the reference lookups a watcher makes in the snapshot of this page.
 		if ("load" in store) observeReferenceCut(options, store, sessionId, stamp, cut);
 		const read: SessionHistoryPage = {
 			items: page,

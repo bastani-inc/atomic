@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { Message } from "@bastani/atomic-ai/compat";
 import { MULTI_CLICK_INTERVAL_MS, ScrollView, type TuiAltScreen, WindowedContainer } from "@bastani/atomic-tui";
-import { afterEach, beforeAll, test } from "vitest";
+import { afterEach, beforeAll, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { type FileEntry, SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
@@ -15,6 +17,7 @@ import { UserMessageComponent } from "../../packages/coding-agent/src/modes/inte
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { releaseStartupChatOutput } from "../../packages/coding-agent/src/modes/interactive/interactive-startup-chat-container.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { createEngineHostPair } from "../../packages/coding-agent/test/helpers/in-process-engine-pair.ts";
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
 import { stripTerminalSequences } from "../../packages/tui/src/utils.ts";
 import { measureStringWork } from "../../packages/tui/test/string-work.ts";
@@ -364,6 +367,51 @@ async function appendSavedHistory(
 	});
 	await manager.appendMessage({ role: "user", content: "at the end", timestamp: 200 });
 }
+
+test.each(["wheel", "wheel with reads between its events", "keys"] as const)(
+	"walking the saved pages down and then up by %s shows every saved row, in order, without a gap (#5593)",
+	async (input) => {
+		const { mode, tui, transcript, terminal } = await openResumedSession(0);
+		await appendSavedHistory(mode.sessionManager, 300, {});
+		mode.renderInitialMessages();
+		// The prompts a frame shows, top to bottom; the prompt pinned over the first row is not a row of its own.
+		const prompts = () =>
+			plainScreen(tui).flatMap((line) => {
+				const seq = line.trimStart().startsWith("↑") ? undefined : /P-(\d{3})/.exec(line)?.[1];
+				return seq === undefined ? [] : [Number(seq)];
+			});
+		for (const down of [true, false]) {
+			if (down) transcript.scrollToStart();
+			else transcript.scrollToEnd();
+			await settle(tui, (lines) => lines.some((line) => (down ? /P-001/ : /at the end/).test(line)));
+			const seen = new Set(prompts());
+			let previous = prompts();
+			for (let step = 0; down ? !seen.has(300) : !seen.has(1); step++) {
+				assert.ok(step < 400, `never reached the ${down ? "end" : "start"}: ${[...seen].length} rows seen`);
+				// A wheel notch sends several events at once; the page they reach is read before the next frame, and a
+				// fast store can answer between two of them.
+				if (input === "keys") terminal.input(down ? "\x1b[6~" : "\x1b[5~");
+				else
+					for (let event = 0; event < 4; event++) {
+						terminal.input(`\x1b[<${down ? 65 : 64};10;10M`);
+						if (input !== "wheel") await nextTurn();
+					}
+				for (let turn = 0; turn < 3; turn++) {
+					await nextTurn();
+					tui.renderNow();
+				}
+				const shown = prompts();
+				if (shown.length && previous.length) {
+					const gap = down ? shown[0]! - previous.at(-1)! : previous[0]! - shown.at(-1)!;
+					assert.ok(gap <= 1, `${down ? "down" : "up"}: from P-${previous.join(",")} to P-${shown.join(",")}`);
+				}
+				for (const seq of shown) seen.add(seq);
+				if (shown.length) previous = shown;
+			}
+			assert.equal(seen.size, 300, `every saved row was shown walking ${down ? "down" : "up"}`);
+		}
+	},
+);
 
 const thirtyLines = (label: string) => Array.from({ length: 30 }, (_, i) => `${label} line ${i + 1}`).join("\n");
 
@@ -1272,6 +1320,114 @@ test("a compaction while the reader is above the end keeps the saved lines they 
 	}
 	inPlace([95, 96]);
 });
+
+test.each([
+	["in-process", "keeps"],
+	["in-process", "retires"],
+	["isolated", "keeps"],
+	["isolated", "retires"],
+] as const)(
+	"on the %s host, a saved line still being read when a compaction %s the reply the reader is on is drawn after that reply (#5593)",
+	async (host, compaction) => {
+		const root = await mkdtemp(join(tmpdir(), "atomic-parked-read-"));
+		const manager = await SessionManager.create(root, join(root, "sessions"));
+		const ids: string[] = [];
+		const assistant = { api: "openai-completions", provider: "scripted", model: "scripted", stopReason: "stop" };
+		const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 };
+		for (let turn = 0; turn < 100; turn++) {
+			const prompt = [{ type: "text", text: `Turn ${turn}: check the loader` }];
+			ids.push(await manager.appendMessage({ role: "user", content: prompt, timestamp: turn } as Message));
+			const reply = [{ type: "text", text: `Answer ${turn}\n\nline one\n\nline two` }];
+			const cost = { ...usage, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+			const message = { role: "assistant", ...assistant, usage: cost, content: reply, timestamp: turn };
+			ids.push(await manager.appendMessage(message as Message));
+		}
+		const answer = ids[2 * 95 + 1]!;
+		const scope = manager.chatRecordScope();
+		assert.ok(scope, "the session keeps reader-only records");
+		const line = {
+			kind: "line",
+			level: "error",
+			text: "Error: Retry failed after 3 attempts: SAVED-AFTER-95",
+		} as const;
+		await scope.store.append(scope.owner, answer, line);
+		const pair = await createEngineHostPair({
+			sessionManager: manager,
+			hostSessionManager: await SessionManager.open(manager.getSessionFile()!),
+		});
+		const session = host === "isolated" ? pair.runtime.session : pair.engine.session;
+		const terminal = new RecordingTerminal();
+		terminal.columns = COLUMNS;
+		terminal.rows = ROWS;
+		const inProcess = { ...runtimeHostFor(session.sessionManager), session } as AgentSessionRuntime;
+		const mode = new InteractiveMode(host === "isolated" ? (pair.runtime as AgentSessionRuntime) : inProcess, {
+			terminal,
+		});
+		mode.isInitialized = true;
+		const tui = mode.ui as unknown as TuiAltScreen;
+		const transcript = new ScrollView(mode.documentContainer, { follow: "end", primary: true });
+		mode.transcriptScrollView = transcript;
+		tui.setLayoutRoot(transcript);
+		releaseStartupChatOutput(mode);
+		tui.start();
+		const unsubscribe = session.subscribe((event) => void mode.handleEvent(event as AgentSessionEvent));
+		// The line's read is held, as a slow store holds it, until the compaction has redrawn the chat.
+		const store = mode.sessionManager.chatRecordScope()!.store;
+		const held = Promise.withResolvers<void>();
+		let reads = 0;
+		const read = store.read.bind(store);
+		store.read = async (owner, anchors) => {
+			if (anchors.includes(answer)) {
+				reads++;
+				await held.promise;
+			}
+			return read(owner, anchors);
+		};
+		try {
+			mode.renderInitialMessages();
+			await fillIn(mode, 100);
+			let screen = await settle(tui, () => true);
+			for (let i = 0; i < 80 && !screen.some((row) => row.includes("Answer 95")); i++) {
+				transcript.scrollBy(-3);
+				screen = await settle(tui, () => true);
+			}
+			assert.ok(screen.some((row) => row.includes("Answer 95")) && !transcript.isFollowingEnd, screen.join("\n"));
+			assert.equal(reads, 1, "the line of answer 95 is being read");
+			const kept = compaction === "keeps" ? ids[2 * 94]! : null;
+			await pair.engine.sessionManager.appendCompaction("new context", kept, 100, CLEARED);
+			const result = { ...CLEARED, compactedText: "new context", firstKeptEntryId: kept, tokensBefore: 100 };
+			const end = { type: "compaction_end", reason: "manual", aborted: false, willRetry: false, result };
+			if (host === "isolated") pair.engineOutput(end);
+			else await mode.handleEvent(end as AgentSessionEvent);
+			await vi.waitFor(() => assert.match(mode.chatContainer.render(COLUMNS).join("\n"), /Context cleared/));
+			tui.renderNow();
+			assert.ok(
+				plainScreen(tui).some((row) => row.includes("Answer 95")),
+				"the reader keeps the reply",
+			);
+			held.resolve();
+			screen = await settle(tui, (rows) => rows.some((row) => row.includes("SAVED-AFTER-95")));
+			const document = mode.documentContainer.render(COLUMNS).map((row) => stripTerminalSequences(row));
+			const at = (text: string) => document.findIndex((row) => row.includes(text));
+			assert.equal(document.filter((row) => row.includes("SAVED-AFTER-95")).length, 1, document.join("\n"));
+			assert.ok(at("Answer 95") < at("SAVED-AFTER-95") && at("SAVED-AFTER-95") < at("Turn 96: check"));
+			if (compaction === "retires") {
+				// The line joined the page of retired rows: it leaves with them.
+				transcript.scrollToEnd();
+				await settle(tui, (rows) => rows.some((row) => row.includes("Context cleared")));
+				assert.doesNotMatch(
+					stripTerminalSequences(mode.chatContainer.render(COLUMNS).join("\n")),
+					/Answer 95|SAVED-AFTER-95/,
+				);
+			}
+		} finally {
+			unsubscribe();
+			tui.stop();
+			await pair.cleanup();
+			await rm(root, { force: true, recursive: true, maxRetries: 5 });
+		}
+	},
+);
 
 test.each([false, true])(
 	"a copy across a saved tool card whose result is too large for a page has the card's rows, as on screen (jump: %s) (#5593)",
