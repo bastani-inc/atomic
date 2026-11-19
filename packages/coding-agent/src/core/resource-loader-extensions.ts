@@ -1,4 +1,5 @@
 import type { KeyId } from "@bastani/atomic-tui";
+import llamaExtension, { finishLlamaAfterQuit } from "../extensions/llama/index.js";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { OverlappingResourceType } from "./diagnostics.ts";
@@ -35,8 +36,6 @@ export async function loadExtensionPaths(
 		state.agentDir,
 	);
 	for (const path of paths.filter((path) => path.startsWith(BUILTIN_PATH_PREFIX))) {
-		// The previous file or builtin factory may have yielded while the interactive session quit.
-		if (startupSessionQuit?.()) break;
 		const builtin = state.extensionFactories.find(
 			(input) =>
 				typeof input !== "function" && input.builtin && input.name === path.slice(BUILTIN_PATH_PREFIX.length),
@@ -46,8 +45,9 @@ export async function loadExtensionPaths(
 			continue;
 		}
 		try {
+			const factory = builtin.factory;
 			const extension = await loadExtensionFromFactory(
-				builtin.factory,
+				factory === llamaExtension && startupSessionQuit?.() ? finishLlamaAfterQuit : factory,
 				state.cwd,
 				state.eventBus,
 				result.runtime,

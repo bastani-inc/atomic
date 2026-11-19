@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
@@ -10,9 +10,9 @@ import { makeTempDirectory, moduleDir } from "../helpers/runtime.js";
 const PACKAGE = join(moduleDir(import.meta.url), "../../packages/coding-agent");
 const CLI_TIMEOUT_MS = 90_000;
 
-test(
-	"quitting while post-trust extension loading resumes exits cleanly (#5639)",
-	async () => {
+test.each(["CLI", "embedding with a pending flush"])(
+	"quitting while post-trust extension loading resumes exits cleanly (%s, #5639)",
+	async (host) => {
 		const root = makeTempDirectory("atomic-quit-during-startup-");
 		const agentDir = join(root, "agent");
 		const project = join(root, "project");
@@ -36,7 +36,15 @@ export default (pi) => pi.on("session_shutdown", event => {
 			);
 			program = startPtyProgram({
 				executable: process.execPath,
-				args: [join(PACKAGE, "dist/cli.js"), "--offline", "--no-mcp", "-e", extension],
+				args: [
+					...(host === "CLI"
+						? [join(PACKAGE, "dist/cli.js")]
+						: [join(moduleDir(import.meta.url), "../fixtures/startup-flush.mjs"), root]),
+					"--offline",
+					"--no-mcp",
+					"-e",
+					extension,
+				],
 				cwd: project,
 				env: {
 					HOME: root,
@@ -76,6 +84,7 @@ export default async function () {
 			assert.equal(exit.timedOut, false, program.screen());
 			assert.equal(exit.exitCode, 0, program.screen());
 			assert.ok(existsSync(quitting), "the session ran its quit hook");
+			if (host !== "CLI") assert.equal(readFileSync(join(root, "exported"), "utf8"), "accepted before quit");
 		} finally {
 			program?.kill();
 			await program?.exited;

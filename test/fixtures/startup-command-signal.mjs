@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@bastani/atomic-ai/compat";
 import { prepareAgentSessionServices } from "../../packages/coding-agent/dist/core/agent-session-services.js";
-import { isSessionQuitting } from "../../packages/coding-agent/dist/core/session-lifecycle-work.js";
+import { isSessionQuitting } from "../../packages/coding-agent/dist/core/agent-session-events.js";
 import {
 	AuthStorage,
 	createAgentSessionFromServices,
@@ -37,7 +37,7 @@ try {
 			resourceLoaderOptions: {
 				builtinPackagePaths: [],
 				noExtensions: true,
-				additionalExtensionPaths: names.map((name) => `builtin:${name}`),
+				additionalExtensionPaths: [...names, "llama.cpp"].map((name) => `builtin:${name}`),
 				extensionFactories: [
 					(pi) => pi.registerCommand("inspect", {
 						description: "inspect",
@@ -99,6 +99,8 @@ try {
 	for (const cleanup of cleanups) cleanup();
 	await completeTrust();
 	assert.deepEqual(loaded, names, "command cleanup must not prevent the remaining builtins from loading");
+	const finalServices = await prepare();
+	assert.ok(finalServices.resourceLoader.getExtensions().extensions.some((extension) => extension.commands.has("llama")));
 	assert.equal(reads, 0, "discovery must not reacquire the command's signal");
 } finally {
 	globalThis.AbortController = NativeController;

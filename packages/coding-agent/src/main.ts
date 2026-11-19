@@ -44,6 +44,7 @@ import {
 	VERSION,
 } from "./config.js";
 import type { AgentSession } from "./core/agent-session.js";
+import { isSessionQuitting } from "./core/agent-session-events.ts";
 import type { CreateAgentSessionRuntimeFactory } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
@@ -73,7 +74,7 @@ import { resumeFailureMessage } from "./core/resume/failure.ts";
 import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
 import { recordResumeTimings } from "./core/resume/timings.ts";
 import { findMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
-import { isSessionQuitting, ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
+import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
 import type { SessionManager } from "./core/session-manager.ts";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "./core/session-manager-errors.js";
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
