@@ -290,6 +290,7 @@ export function createCodemodeToolDefinition(
 		parameters: codemodeSchema,
 		exposure: "model-only",
 		concurrency: "exclusive",
+		// Selected with the ordinary built-in defaults; never activate independently of that selection.
 		defaultActive: false,
 		promptSnippet: "Run JavaScript that calls script-callable tools, filters results, or batches independent calls",
 		promptGuidelines: [

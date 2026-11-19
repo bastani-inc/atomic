@@ -1,5 +1,6 @@
+import { isPowerShellAvailable } from "../utils/shell.ts";
 import type { Settings } from "./settings-types.ts";
-import { getDefaultToolNames } from "./tools/index.js";
+import { defaultToolSelectionFor } from "./tools/index.js";
 
 export function isToolModifier(entry: string): boolean {
 	return entry.startsWith("+") || entry.startsWith("-");
@@ -31,7 +32,10 @@ export function resolveDefaultToolsWith(entries: string[], inherited: readonly s
 	return applyToolModifiers(plain.length > 0 || entries.length === 0 ? plain : inherited, entries);
 }
 
-export function resolveDefaultTools(entries: string[], inherited: readonly string[] = getDefaultToolNames()): string[] {
+export function resolveDefaultTools(
+	entries: string[],
+	inherited: readonly string[] = defaultToolSelectionFor(isPowerShellAvailable()),
+): string[] {
 	return resolveDefaultToolsWith(entries, inherited);
 }
 
