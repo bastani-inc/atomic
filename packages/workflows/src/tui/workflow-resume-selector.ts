@@ -495,7 +495,14 @@ function liveRunSession(
 		session: {
 			title: workflowRowTitle(run.name, run.id, identity, cwd, options),
 			detail,
-			...(handle === undefined ? {} : { resumeSelection: { updatedAt: saved?.updatedAt ?? handle.updatedAt } }),
+			...(handle === undefined
+				? {}
+				: {
+						resumeSelection: {
+							updatedAt: saved?.updatedAt ?? handle.updatedAt,
+							attempt: (saved ?? handle).resumeAttempt ?? 0,
+						},
+					}),
 			path: `workflow-live:${run.id}`,
 			id: run.id,
 			cwd: "Live",
@@ -567,7 +574,7 @@ export function durableWorkflowSession(
 				reason ? `✗ ${reason}` : undefined,
 				summary?.replace(/\s+/g, " ").trim(),
 			]),
-			resumeSelection: { updatedAt: entry.updatedAt },
+			resumeSelection: { updatedAt: entry.updatedAt, attempt: entry.resumeAttempt ?? 0 },
 			path: `workflow-${kind}:${entry.workflowId}`,
 			id: entry.workflowId,
 			cwd: kind === "completed" ? "Completed" : "Durable",

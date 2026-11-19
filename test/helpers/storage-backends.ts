@@ -24,6 +24,8 @@ import { makeTempDirectory, removeTempDirectory } from "./runtime.js";
 export interface StorageBackendScope {
 	/** The table prefix every store opened in this scope uses, so scopes on one shared server never collide. */
 	readonly prefix: string;
+	/** The same database, for a test process that cannot share this connection. */
+	readonly location: { readonly kind: "sqlite" | "libsql" | "postgres"; readonly target: string };
 	/** Another connection to this scope's database, as a second host would open; closed with the scope. */
 	connect(): Promise<SqliteDatabase>;
 	/** Closes every connection and removes everything the scope wrote. */
@@ -83,6 +85,7 @@ export const sqliteFileBackend: StorageBackend = {
 		const pool = connections(() => openNodeSqliteDatabase(path));
 		return {
 			prefix: scopePrefix(),
+			location: { kind: "sqlite", target: path },
 			connect: pool.connect,
 			async close() {
 				try {
@@ -181,6 +184,7 @@ function libsqlServerBackend(): StorageBackend {
 			const pool = connections(() => openLibsqlDatabase({ url }));
 			return {
 				prefix,
+				location: { kind: "libsql", target: url },
 				connect: pool.connect,
 				async close() {
 					try {
@@ -243,6 +247,7 @@ function postgresBackend(): StorageBackend {
 			const pool = connections(() => open(url.href));
 			return {
 				prefix: scopePrefix(),
+				location: { kind: "postgres", target: url.href },
 				connect: pool.connect,
 				async close() {
 					try {

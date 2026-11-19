@@ -2,7 +2,7 @@
  * In-process claims on durable runs. A resume and a fork of the same run exclude each other: a run
  * claimed for one is busy for the other until the claim settles.
  */
-import { RUN_ID_PREFIX_LENGTH } from "../shared/run-id.js";
+import { isFullRunId, isRunIdPrefix, RUN_ID_PREFIX_LENGTH } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 
@@ -55,6 +55,16 @@ function subscribe(backend: DurableWorkflowBackend | undefined, target: string, 
 
 const bindings = new WeakMap<ResumeAdmissionMark, (backend: DurableWorkflowBackend, target: string) => void>();
 
+/** Only an already visible attempt is an observation. A cold lookup can still discover a run for the first time. */
+function observedAttempt(journal: DurableWorkflowBackend, target: string) {
+	const run = isFullRunId(target)
+		? journal.getWorkflow(target)
+		: isRunIdPrefix(target)
+			? journal.cachedResumePrefix?.(target.toLowerCase())
+			: undefined;
+	return run === undefined ? undefined : { id: run.workflowId, attempt: run.resumeAttempt ?? 0 };
+}
+
 /** Narrow a pending selector as soon as its journal or canonical ID becomes known, without losing a start it saw. */
 export function bindResumeAdmission(mark: ResumeAdmissionMark, backend: DurableWorkflowBackend, target: string): void {
 	bindings.get(mark)?.(backend, target);
@@ -74,6 +84,7 @@ export async function withResumeAdmissionMark<T>(
 		return request(inherited);
 	}
 	let selected = target.toLowerCase();
+	let initial = backend === undefined ? undefined : observedAttempt(backend, target);
 	let receipts: WeakMap<DurableWorkflowBackend, WeakSet<object>> | undefined = new WeakMap();
 	const observe: Observer = (journal, row) => {
 		if (!receipts) return;
@@ -85,6 +96,14 @@ export async function withResumeAdmissionMark<T>(
 		rows.add(row);
 	};
 	const mark: ResumeAdmissionMark = (journal, id) => {
+		if (initial?.id === id && journal === backend) {
+			const current = journal.getWorkflow(id);
+			if (
+				(current?.status === "blocked" || current?.status === "failed") &&
+				(current.resumeAttempt ?? 0) > initial.attempt
+			)
+				return true;
+		}
 		const rows = receipts?.get(journal);
 		if (!rows) return false;
 		const row = journal.resumeObservationKey(id);
@@ -95,7 +114,10 @@ export async function withResumeAdmissionMark<T>(
 		// A nested adapter may still receive the original prefix after its outer lookup resolved it.
 		const requested = id.toLowerCase();
 		const selector = selected.startsWith(requested) ? selected : requested;
-		if (!unsubscribe || (journal === backend && selector === selected)) return;
+		if (!unsubscribe) return;
+		if (journal !== backend || initial === undefined || (selector !== selected && initial.id !== id))
+			initial = observedAttempt(journal, id);
+		if (journal === backend && selector === selected) return;
 		const rows = receipts?.get(journal);
 		unsubscribe();
 		receipts = new WeakMap();
@@ -113,6 +135,7 @@ export async function withResumeAdmissionMark<T>(
 		unsubscribe = undefined;
 		receipts = undefined;
 		backend = undefined;
+		initial = undefined;
 		bindings.delete(mark);
 	};
 	if (signal?.aborted) release();

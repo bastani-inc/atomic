@@ -1,7 +1,12 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { staleResumeSelectionMessage } from "../durable/resume-runtime.js";
-import { DurableBackendNotInitializedError, requireStoreDurableBackend } from "../durable/store-backend.js";
+import { withResumeAdmissionMark } from "../durable/run-claims.js";
+import {
+	availableStoreDurableBackend,
+	DurableBackendNotInitializedError,
+	requireStoreDurableBackend,
+} from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { hasPendingDurableResumeTransition } from "../runs/background/durable-resume-transition.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
@@ -48,9 +53,37 @@ export async function handleRunControlCommand(
 	reporter: WorkflowCommandReporter,
 	deps: WorkflowRunControlDeps,
 	expectedUpdatedAt?: number,
+	expectedResumeAttempt?: number,
 ): Promise<boolean> {
+	const selection: DurableResumeCommandOptions = {
+		...(expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt }),
+		...(expectedResumeAttempt === undefined ? {} : { expectedResumeAttempt }),
+	};
 	const owner = deps.owner ?? captureWorkflowOwnerResources();
-	deps = { ...deps, owner };
+	const target = action === "resume" ? rest.find((token) => token !== ACCEPT_ENTRY_CHANGES_FLAG) : undefined;
+	const request = (options: DurableResumeCommandOptions) =>
+		executeRunControlCommand(action, rest, ctx, reporter, { ...deps, owner }, options);
+	return target === undefined
+		? request(selection)
+		: withResumeAdmissionMark(
+				target,
+				undefined,
+				(admissionMark) => request({ ...selection, admissionMark }),
+				undefined,
+				availableStoreDurableBackend(owner.store, target),
+			);
+}
+
+async function executeRunControlCommand(
+	action: "quit" | "pause" | "resume",
+	rest: string[],
+	ctx: PiCommandContext,
+	reporter: WorkflowCommandReporter,
+	deps: WorkflowRunControlDeps & { owner: NonNullable<WorkflowRunControlDeps["owner"]> },
+	selection: DurableResumeCommandOptions,
+): Promise<boolean> {
+	const { owner } = deps;
+	const { expectedUpdatedAt } = selection;
 	const { store, toolControlRegistry } = owner;
 	const shadowDeps = {
 		jobs: owner.jobs,
@@ -233,7 +266,7 @@ export async function handleRunControlCommand(
 		const args = acceptEntryChanges ? rest.filter((token) => token !== ACCEPT_ENTRY_CHANGES_FLAG) : rest;
 		const resumeOptions: DurableResumeCommandOptions = {
 			...(acceptEntryChanges ? { acceptEntryChanges: true } : {}),
-			...(expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt }),
+			...selection,
 		};
 		const durableResume = (workflowId: string | undefined, catalog?: WorkflowResumeCatalog) =>
 			handleDurableResume(workflowId, ctx, reporter, deps, catalog, resumeOptions);

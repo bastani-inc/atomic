@@ -7,6 +7,7 @@ import { openCompletedDurableWorkflow } from "../durable/completed-inspection.js
 import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { type DurableWorkflowDeleteOutcome, deleteDurableWorkflowIfSafe } from "../durable/retention-policy.js";
+import type { ResumeAdmissionMark } from "../durable/run-claims.js";
 import { isSdkReleasedRunAdoptableAsync } from "../durable/sdk-recovery-scope.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
@@ -286,6 +287,8 @@ export interface WorkflowResumeCatalog {
 export const ACCEPT_ENTRY_CHANGES_FLAG = "--accept-entry-changes";
 
 export interface DurableResumeCommandOptions {
+	readonly admissionMark?: ResumeAdmissionMark;
+	readonly expectedResumeAttempt?: number;
 	readonly expectedUpdatedAt?: number;
 	readonly acceptEntryChanges?: boolean;
 }

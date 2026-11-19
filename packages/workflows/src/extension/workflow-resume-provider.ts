@@ -1,5 +1,7 @@
 import type { ExtensionCommandContext } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { staleResumeSelectionMessage } from "../durable/resume-runtime.js";
+import { withResumeAdmissionMark } from "../durable/run-claims.js";
 import {
 	availableStoreDurableBackend,
 	DurableBackendNotInitializedError,
@@ -187,72 +189,93 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 		}
 	};
 
-	return {
-		async listResumeEntries(target?: string): Promise<readonly PiHostSessionPickerRow[]> {
-			const owner = resolveOwner();
-			// A failed job may finish before the catalog that saw its running version returns.
-			pinSavingAttempts(owner);
-			const activeCtx = deps.context();
-			await ensureResourcesLoaded(activeCtx);
-			const runtime = deps.runtimeForContext(activeCtx);
-			const cleanTarget =
-				target === undefined
-					? undefined
-					: stripWorkflowPathPrefix(target.trim().split(/\s+/)[0] ?? "") || undefined;
-			const catalog = await prepareWorkflowResumeCatalog(runtime, new Set(), cleanTarget);
-			const backend = availableStoreDurableBackend(owner.store);
-			const shadowDeps = {
-				jobs: owner.jobs,
-				stageControls: owner.stageControlRegistry,
-				toolControls: owner.toolControlRegistry,
+	const list = async (
+		owner: WorkflowOwnerResources,
+		cleanTarget?: string,
+	): Promise<readonly PiHostSessionPickerRow[]> => {
+		// A failed job may finish before the catalog that saw its running version returns.
+		pinSavingAttempts(owner);
+		const activeCtx = deps.context();
+		await ensureResourcesLoaded(activeCtx);
+		const runtime = deps.runtimeForContext(activeCtx);
+		const catalog = await prepareWorkflowResumeCatalog(runtime, new Set(), cleanTarget);
+		const backend = availableStoreDurableBackend(owner.store);
+		const shadowDeps = {
+			jobs: owner.jobs,
+			stageControls: owner.stageControlRegistry,
+			toolControls: owner.toolControlRegistry,
+			backend,
+		};
+		const live = collectResumePickerLiveRuns(owner.store, shadowDeps);
+		const resumable = catalog.resumable.filter((entry) => !live.suppressedLiveIds.has(entry.workflowId));
+		const formatItems = (overviewCheckpoints?: ReadonlyMap<string, readonly DurableCheckpoint[]>) =>
+			workflowResumeSelectorItems(
+				live.liveRuns,
+				resumable,
+				catalog.completed,
+				owner.store.runs(),
 				backend,
-			};
-			const live = collectResumePickerLiveRuns(owner.store, shadowDeps);
-			const resumable = catalog.resumable.filter((entry) => !live.suppressedLiveIds.has(entry.workflowId));
-			const formatItems = (overviewCheckpoints?: ReadonlyMap<string, readonly DurableCheckpoint[]>) =>
-				workflowResumeSelectorItems(
-					live.liveRuns,
-					resumable,
-					catalog.completed,
-					owner.store.runs(),
-					backend,
-					undefined,
-					{
-						overviewCheckpoints,
-						includeCompletedWithoutResumable: cleanTarget !== undefined,
-						resolveDescription: (name, cwd) =>
-							cwd === undefined || cwd === (activeCtx?.cwd ?? process.cwd())
-								? runtime.registry.get(name)?.description
-								: undefined,
-					},
-				);
-			const visible = formatItems();
-			// Overview reads can outlast an attempt; keep the version that produced the row, not a later handle.
-			const selections = new Map(visible.map(({ session }) => [session.id, session.resumeSelection]));
-			// Also capture a failure first published while the catalog was loading.
-			pinSavingAttempts(owner);
-			// Direct /resume resolves across sessions and all stored roots, not just the rows offered in the picker.
-			const match = resolveRunIdTarget(cleanTarget ?? "", catalog.inspectableIds ?? []);
-			const matchedIds = match.kind === "ambiguous" ? match.matches : isResolvedRunId(match) ? [match.runId] : [];
-			const hidden = matchedIds.flatMap((id) => {
-				const handle = selections.has(id) ? undefined : backend?.getWorkflow(id);
-				return handle === undefined
-					? []
-					: [durableWorkflowSession(handle, "durable", Date.now(), owner.store.run(id), backend)];
-			});
-			if (selections.size === 0) return hidden.map(toWorkflowPickerRow);
-			const overviewCheckpoints = await savedRunOverviews(
-				backend,
-				[...resumable, ...catalog.completed].filter((entry) => selections.has(entry.workflowId)),
-				cleanTarget,
+				undefined,
+				{
+					overviewCheckpoints,
+					includeCompletedWithoutResumable: cleanTarget !== undefined,
+					resolveDescription: (name, cwd) =>
+						cwd === undefined || cwd === (activeCtx?.cwd ?? process.cwd())
+							? runtime.registry.get(name)?.description
+							: undefined,
+				},
 			);
-			return [
-				...formatItems(overviewCheckpoints).map((item) => ({
-					...toWorkflowPickerRow(item),
-					resumeSelection: selections.get(item.session.id),
-				})),
-				...hidden.map(toWorkflowPickerRow),
-			];
+		const visible = formatItems();
+		// Overview reads can outlast an attempt; keep the version that produced the row, not a later handle.
+		const selections = new Map(visible.map(({ session }) => [session.id, session.resumeSelection]));
+		// Also capture a failure first published while the catalog was loading.
+		pinSavingAttempts(owner);
+		// Direct /resume resolves across sessions and all stored roots, not just the rows offered in the picker.
+		const match = resolveRunIdTarget(cleanTarget ?? "", catalog.inspectableIds ?? []);
+		const matchedIds = match.kind === "ambiguous" ? match.matches : isResolvedRunId(match) ? [match.runId] : [];
+		const hidden = matchedIds.flatMap((id) => {
+			const handle = selections.has(id) ? undefined : backend?.getWorkflow(id);
+			return handle === undefined
+				? []
+				: [durableWorkflowSession(handle, "durable", Date.now(), owner.store.run(id), backend)];
+		});
+		if (selections.size === 0) return hidden.map(toWorkflowPickerRow);
+		const overviewCheckpoints = await savedRunOverviews(
+			backend,
+			[...resumable, ...catalog.completed].filter((entry) => selections.has(entry.workflowId)),
+			cleanTarget,
+		);
+		return [
+			...formatItems(overviewCheckpoints).map((item) => ({
+				...toWorkflowPickerRow(item),
+				resumeSelection: selections.get(item.session.id),
+			})),
+			...hidden.map(toWorkflowPickerRow),
+		];
+	};
+
+	return {
+		listResumeEntries(target) {
+			const owner = resolveOwner();
+			const id = stripWorkflowPathPrefix(target?.trim().split(/\s+/)[0] ?? "");
+			if (!id) return list(owner);
+			return withResumeAdmissionMark(
+				id,
+				undefined,
+				async (mark) => {
+					const rows = await list(owner, id);
+					const normalized = id.toLowerCase();
+					return rows.map((row) => {
+						if (!row.resumeSelection || !row.id.toLowerCase().startsWith(normalized)) return row;
+						const backend = availableStoreDurableBackend(owner.store, row.id);
+						return backend && mark(backend, row.id)
+							? { ...row, resumeSelection: { ...row.resumeSelection, attempt: "replaced" as const } }
+							: row;
+					});
+				},
+				undefined,
+				availableStoreDurableBackend(owner.store, id),
+			);
 		},
 
 		async resumeFromPicker(
@@ -274,6 +297,7 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 			if (!targetId) {
 				throw new Error("Workflow run not found: (empty)");
 			}
+			if (selection?.attempt === "replaced") throw new Error(staleResumeSelectionMessage(targetId));
 			const tokens = [targetId, ...rawTokens.slice(1)];
 			const owner = resolveOwner();
 			const commandCtx = mergeCommandContext(deps.context(), rawCtx);
@@ -291,7 +315,15 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 			const listedRun = owner.store.run(targetId);
 			const settled = listedRun && selection && settlingVersions.get(listedRun)?.get(selection.updatedAt);
 			const expectedUpdatedAt = settled === undefined ? selection?.updatedAt : await settled;
-			await handleRunControlCommand("resume", tokens, commandCtx, reporter, { ...deps, owner }, expectedUpdatedAt);
+			await handleRunControlCommand(
+				"resume",
+				tokens,
+				commandCtx,
+				reporter,
+				{ ...deps, owner },
+				expectedUpdatedAt,
+				selection?.attempt,
+			);
 			if (reportedError !== undefined) {
 				throw new Error(formatPickerResumeError(targetId, reportedError));
 			}

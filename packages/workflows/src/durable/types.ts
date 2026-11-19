@@ -39,6 +39,8 @@ export interface DurableWorkflowDefinitionSource {
  * (a run id); internal nested workflow ids are abstracted away from users.
  */
 export interface DurableWorkflowHandle {
+	/** The attempt admitted by the last resume claim; absent before the first resume. */
+	readonly resumeAttempt?: number;
 	/** Latest pause or block occurrence of this run, preserved when its executor changes. */
 	readonly runGeneration?: number;
 	/** Top-level workflow id used by `/workflow resume <id>`. */
@@ -437,6 +439,7 @@ export interface DurableWorkflowMetadata {
 
 /** Resume catalog entry. */
 export interface ResumableWorkflowEntry {
+	readonly resumeAttempt?: number;
 	readonly workflowId: string;
 	readonly name: string;
 	readonly inputs?: WorkflowSerializableObject;

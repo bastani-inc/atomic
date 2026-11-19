@@ -161,6 +161,7 @@ export interface ExtensionRuntime extends DurableResumeRuntime {
 export interface RuntimeDispatchOptions {
 	/** A picker selection may only resume the journal version it listed. */
 	readonly expectedUpdatedAt?: number;
+	readonly expectedResumeAttempt?: number;
 	/** Session identity that owns a model-tool launch and its lifecycle controls. */
 	readonly modelOwner?: string;
 	readonly policy?: WorkflowExecutionPolicy;
@@ -411,6 +412,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				jobs,
 				admissionMark,
 				expectedUpdatedAt: options?.expectedUpdatedAt,
+				expectedResumeAttempt: options?.expectedResumeAttempt,
 				signal: options?.signal,
 				onRunAccepted: options?.onRunAccepted,
 				baseRunOpts: {

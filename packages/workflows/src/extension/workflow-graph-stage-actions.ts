@@ -87,6 +87,8 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 		},
 		retry(runId, stageId) {
 			return withResumeAdmissionMark(runId, undefined, async (admissionMark) => {
+				const backend = availableStoreDurableBackend(owner.store, runId);
+				if (backend !== undefined) bindResumeAdmission(admissionMark, backend, runId);
 				await ensureWorkflowResourcesVisible();
 				const runtime = deps.runtime();
 				if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };

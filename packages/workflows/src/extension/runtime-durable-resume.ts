@@ -112,6 +112,7 @@ export interface DurableResumeRuntime {
 			/** The attempt selected before the caller loaded its workflow resources. */
 			readonly selectedEntry?: ResumableWorkflowEntry;
 			readonly expectedUpdatedAt?: number;
+			readonly expectedResumeAttempt?: number;
 		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
@@ -323,6 +324,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						registry: deps.registry,
 						admissionMark,
 						expectedUpdatedAt: options?.expectedUpdatedAt,
+						expectedResumeAttempt: options?.expectedResumeAttempt,
 						signal: options?.signal,
 						onRunAccepted: options?.onRunAccepted,
 						onBeforeResume: options?.onBeforeResume,

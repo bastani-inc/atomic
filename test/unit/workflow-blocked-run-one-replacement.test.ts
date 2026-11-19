@@ -301,32 +301,36 @@ describe("two resumes of the same block start one replacement (#5534)", () => {
 		assert.equal(attempts.count, 2, "no third attempt");
 	});
 
-	test("a request made while another request's replacement starts, whose own reads end after that replacement blocked again, resumes nothing", async () => {
-		const { attempts, store, jobs, runId, runtime, holdNextRead } = await recordedBlock();
-		const accepted = Promise.withResolvers<{ hold: ReturnType<typeof holdNextRead> }>();
-		// From the caller's side, as soon as the first request's replacement is accepted: the run still reads as its
-		// block, and the second request's own journal read is held.
-		const second = accepted.promise.then(() => runtime.resumeDurableWorkflow(runId, { actor: "user" }));
-		const first = await runtime.resumeFailedRun(runId, undefined, {
-			onRunAccepted() {
-				assert.equal(effectiveRunStatus(store.run(runId)!), "blocked");
-				accepted.resolve({ hold: holdNextRead() });
-			},
-		});
-		assert.ok(first.ok, first.message);
-		const { hold } = await accepted.promise;
-		await hold.reading.promise;
-		await jobs.get(runId)?.promise;
-		assert.equal(attempts.count, 2);
-		assert.equal(effectiveRunStatus(store.run(runId)!), "blocked", "the replacement blocked again");
-		hold.release.resolve();
+	for (const selector of ["full ID", "capitalized short ID"] as const)
+		test(`a ${selector} request made while another replacement starts does not resume a later block (#5661)`, async () => {
+			const { attempts, store, jobs, runId, runtime, holdNextRead } = await recordedBlock(
+				"abcdef01-2222-4333-8444-abcdefabcdef",
+			);
+			const target = selector === "full ID" ? runId : runId.slice(0, 8).toUpperCase();
+			const accepted = Promise.withResolvers<{ hold: ReturnType<typeof holdNextRead> }>();
+			// From the caller's side, as soon as the first request's replacement is accepted: the run still reads as its
+			// block, and the second request's own journal read is held.
+			const second = accepted.promise.then(() => runtime.resumeDurableWorkflow(target, { actor: "user" }));
+			const first = await runtime.resumeFailedRun(runId, undefined, {
+				onRunAccepted() {
+					assert.equal(effectiveRunStatus(store.run(runId)!), "blocked");
+					accepted.resolve({ hold: holdNextRead() });
+				},
+			});
+			assert.ok(first.ok, first.message);
+			const { hold } = await accepted.promise;
+			await hold.reading.promise;
+			await jobs.get(runId)?.promise;
+			assert.equal(attempts.count, 2);
+			assert.equal(effectiveRunStatus(store.run(runId)!), "blocked", "the replacement blocked again");
+			hold.release.resolve();
 
-		const late = await second;
-		await jobs.get(runId)?.promise;
-		assert.equal(late.ok, false, JSON.stringify(late));
-		assert.match(late.message, /already resumed/);
-		assert.equal(attempts.count, 2, "no third attempt");
-	});
+			const late = await second;
+			await jobs.get(runId)?.promise;
+			assert.equal(late.ok, false, JSON.stringify(late));
+			assert.match(late.message, /already resumed/);
+			assert.equal(attempts.count, 2, "no third attempt");
+		});
 
 	test("a run that blocks again after its resume is resumed again by a request made after that block", async () => {
 		const { attempts, store, jobs, runId, runtime } = await recordedBlock();

@@ -85,6 +85,7 @@ export function staleResumeSelectionMessage(id: string): string {
 
 export interface ResumeDurableDeps {
 	readonly expectedUpdatedAt?: number;
+	readonly expectedResumeAttempt?: number;
 	readonly registry: WorkflowRegistry;
 	/** Base run options forwarded to the detached runner (store, persistence, …). */
 	readonly baseRunOpts: RunOpts & { readonly jobs?: JobTracker };
@@ -277,7 +278,10 @@ async function resumeAtMark(
 			return alreadyRunningResult(handle.name, id);
 		selected = resumableEntryFromHandle(handle);
 	}
-	if (deps.expectedUpdatedAt !== undefined && handle?.updatedAt !== deps.expectedUpdatedAt)
+	if (
+		(deps.expectedUpdatedAt !== undefined && handle?.updatedAt !== deps.expectedUpdatedAt) ||
+		(deps.expectedResumeAttempt !== undefined && (handle?.resumeAttempt ?? 0) !== deps.expectedResumeAttempt)
+	)
 		return { ok: false, reason: "stale", message: staleResumeSelectionMessage(id) };
 	const resolved = selected;
 	if (hasForkClaim(backend, id))
@@ -449,6 +453,10 @@ async function resumeDurableWorkflowClaimed(
 		...(handle.invocationCwd !== undefined ? { cwd: handle.invocationCwd } : {}),
 	});
 	if (unreopenable !== undefined) return unreopenable;
+	// The same conditional journal write claims this occurrence and identifies its replacement to other processes.
+	const expected = deps.expectedResumeAttempt ?? resolved.resumeAttempt ?? handle.resumeAttempt ?? 0;
+	const claim = { expected, next: expected + 1 };
+	const withdrawal = { expected: claim.next, next: expected };
 	const sourceFailure = {
 		error: handle.error,
 		exited: handle.exited,
@@ -479,6 +487,7 @@ async function resumeDurableWorkflowClaimed(
 				handle.status,
 				handle.modelOwner,
 				handle.releasedModelOwner,
+				withdrawal,
 			);
 			if (restored) onRestored?.();
 			return restored;
@@ -504,6 +513,8 @@ async function resumeDurableWorkflowClaimed(
 				current.updatedAt,
 				restoreOwner ? handle.modelOwner : undefined,
 				restoreOwner ? handle.releasedModelOwner : undefined,
+				undefined,
+				withdrawal,
 			);
 			if (restored) onRestored?.();
 			return restored;
@@ -516,6 +527,7 @@ async function resumeDurableWorkflowClaimed(
 			sourceFailure,
 			undefined,
 			finishSequence,
+			expected,
 		);
 		onRestored?.();
 		return true;
@@ -538,6 +550,9 @@ async function resumeDurableWorkflowClaimed(
 				undefined,
 				deps.expectedUpdatedAt ?? resolved.updatedAt,
 				adopting ? requestedOwner : undefined,
+				undefined,
+				undefined,
+				claim,
 			);
 			// #5149: an aborted adoption is rolled back too, restoring its status and its previous owner.
 			if (claimed && deps.signal?.aborted) await rollbackStartup(undefined, true);
@@ -554,6 +569,11 @@ async function resumeDurableWorkflowClaimed(
 		};
 	}
 	if (!claimed) {
+		if (
+			deps.expectedUpdatedAt === undefined &&
+			(backend.getWorkflow(resolved.workflowId)?.resumeAttempt ?? 0) > expected
+		)
+			return alreadyResumedResult(handle.name, resolved.workflowId);
 		return {
 			ok: false,
 			reason: "stale",
@@ -742,7 +762,13 @@ async function resumeIntoFork(
 		fork = await forkDurableRun(deps.durableBackend, {
 			source: "cli",
 			validateSource: (source) => {
-				if (selectionChanged !== undefined && source.updatedAt !== deps.expectedUpdatedAt) throw selectionChanged;
+				if (
+					selectionChanged !== undefined &&
+					(source.updatedAt !== deps.expectedUpdatedAt ||
+						(deps.expectedResumeAttempt !== undefined &&
+							(source.resumeAttempt ?? 0) !== deps.expectedResumeAttempt))
+				)
+					throw selectionChanged;
 			},
 			runId: handle.workflowId,
 			cwd: currentCwd,
@@ -765,6 +791,7 @@ async function resumeIntoFork(
 		{
 			...deps,
 			expectedUpdatedAt: undefined,
+			expectedResumeAttempt: undefined,
 			confirmCrossProjectFork: undefined,
 			resolveDefinition: async () => fork.definition,
 			onBeforeResume:

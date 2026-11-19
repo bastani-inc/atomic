@@ -2,6 +2,7 @@
 
 import { type FileHandle, open } from "node:fs/promises";
 import type { JournalShardUnavailableError, RunJournal } from "@bastani/atomic/storage";
+import { RUN_ID_PREFIX_LENGTH } from "../shared/run-id.js";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { completedRunAttempt, stampCheckpointAttempt, workflowAttemptOf } from "./attempt-identity.js";
@@ -303,12 +304,20 @@ export interface CatalogReadOptions {
 	readonly signal?: AbortSignal;
 }
 
+/** A claim advances the observed attempt; a claim that started nothing restores it. */
+export interface ResumeAttemptChange {
+	readonly expected: number;
+	readonly next: number;
+}
+
 /** Await mutations before observing their persisted result. */
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
 	readonly persistent: boolean;
 	/** Process-local identity of a resumable journal row. It survives refresh, but not completion or removal. */
 	resumeObservationKey(workflowId: string): object | undefined;
+	/** A unique cached failed or blocked root for a short selector; the catalog still decides ambiguity. */
+	cachedResumePrefix?(lowercasePrefix: string): DurableWorkflowHandle | undefined;
 	/** The root journal used for snapshot blobs and full-sequence frontier reads, when available. */
 	readonly snapshotJournal?: RunJournal;
 	workflowOwnership(
@@ -342,6 +351,7 @@ export interface DurableWorkflowBackend {
 		status: DurableWorkflowStatus,
 		modelOwner: string | undefined,
 		releasedModelOwner: string | undefined,
+		attempt?: ResumeAttemptChange,
 	): Promise<boolean>;
 	/** Persist one logical run's pending-stage transition under its durable owner. */
 	persistPendingStageMessages(
@@ -484,6 +494,7 @@ export interface DurableWorkflowBackend {
 		failure?: DurableWorkflowFailureMetadata,
 		runGeneration?: number,
 		finishSequence?: number,
+		resumeAttempt?: number,
 	): Promise<void>;
 	/**
 	 * Atomically update status only when the authoritative status is expected.
@@ -491,7 +502,8 @@ export interface DurableWorkflowBackend {
 	 * the session owning the run was disposed, so another session may adopt it; `null` clears that record.
 	 * Without either, a run that stays paused keeps its release, and a running run whose owner's process died
 	 * (its executor's lease expired unreleased) is released by that owner as it is paused (#5167). A run that
-	 * leaves paused, or is handed to a new `modelOwner`, loses its release.
+	 * leaves paused, or is handed to a new `modelOwner`, loses its release. A resume also compares and advances
+	 * its attempt here, in the same journal write; a withdrawn claim restores that attempt.
 	 */
 	commitWorkflowStatusTransition(
 		workflowId: string,
@@ -503,6 +515,7 @@ export interface DurableWorkflowBackend {
 		modelOwner?: string,
 		releasedModelOwner?: string | null,
 		runGeneration?: number,
+		attempt?: ResumeAttemptChange,
 	): Promise<boolean>;
 	/** Atomically adjust unresolved UI prompt count, clamped at zero. */
 	commitPendingPromptAdjustment(workflowId: string, delta: number): Promise<void>;
@@ -770,6 +783,8 @@ export function createJournalProjection() {
 
 class JournalProjection {
 	private readonly workflows = new Map<string, JournalWorkflowRecord>();
+	/** Only roots showing a block or failure. Starting a short-ID request must not scan the journal's cached runs. */
+	private readonly stoppedByPrefix = new Map<string, Set<string>>();
 	private readonly deletedWorkflowIds = new Set<string>();
 	private readonly pendingReceipts = new Map<string, Map<string, PendingStageMessage>>();
 	private readonly stickyReceipts = new PendingStageReceiptIndex();
@@ -790,6 +805,7 @@ class JournalProjection {
 			createdAt: handle.createdAt,
 			status: handle.status,
 			transitionClaimId: handle.transitionClaimId ?? existing?.handle.transitionClaimId,
+			resumeAttempt: handle.resumeAttempt ?? existing?.handle.resumeAttempt,
 			...((handle.runGeneration ?? existing?.handle.runGeneration) !== undefined
 				? { runGeneration: Math.max(handle.runGeneration ?? 0, existing?.handle.runGeneration ?? 0) }
 				: {}),
@@ -872,7 +888,8 @@ class JournalProjection {
 			...(handle.ownerLiveness !== undefined ? { ownerLiveness: handle.ownerLiveness } : {}),
 		};
 		if (existing) this.publishHandle(existing, full);
-		else
+		else {
+			this.indexStoppedRoot(undefined, full);
 			this.workflows.set(handle.workflowId, {
 				handle: full,
 				checkpoints: new Map(),
@@ -884,6 +901,7 @@ class JournalProjection {
 				released: 0,
 				attempt: 0,
 			});
+		}
 	}
 	applyWorkflowSnapshot(handle: DurableWorkflowHandle): void {
 		if (!this.workflows.has(handle.workflowId)) this.registerWorkflow(handle, true);
@@ -1287,10 +1305,29 @@ class JournalProjection {
 	}
 
 	private publishHandle(row: JournalWorkflowRecord, handle: DurableWorkflowHandle): void {
+		this.indexStoppedRoot(row.handle, handle);
 		// Pending resumes have only weak references to the unfinished row. Completion retires it, not any other row.
 		if (handle.status === "completed" && row.handle.status !== "completed")
 			this.workflows.set(handle.workflowId, { ...row, handle });
 		else row.handle = handle;
+	}
+
+	private indexStoppedRoot(previous?: DurableWorkflowHandle, current?: DurableWorkflowHandle): void {
+		const before = isStoppedRoot(previous);
+		const after = isStoppedRoot(current);
+		if (before === after) return;
+		const id = (after ? current! : previous!).workflowId;
+		const prefix = id.slice(0, RUN_ID_PREFIX_LENGTH).toLowerCase();
+		const bucket = this.stoppedByPrefix.get(prefix);
+		if (after) {
+			if (bucket === undefined) this.stoppedByPrefix.set(prefix, new Set([id]));
+			else bucket.add(id);
+		} else if (bucket?.delete(id) && bucket.size === 0) this.stoppedByPrefix.delete(prefix);
+	}
+
+	cachedResumePrefix(lowercasePrefix: string): DurableWorkflowHandle | undefined {
+		const ids = this.stoppedByPrefix.get(lowercasePrefix);
+		return ids?.size === 1 ? this.getWorkflow(ids.values().next().value!) : undefined;
 	}
 
 	resumeObservationKey(workflowId: string): JournalWorkflowRecord | undefined {
@@ -1339,6 +1376,7 @@ class JournalProjection {
 		failure?: DurableWorkflowFailureMetadata,
 		runGeneration?: number,
 		finishSequence?: number,
+		resumeAttempt?: number,
 	): void {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return;
@@ -1359,6 +1397,7 @@ class JournalProjection {
 			status,
 			finishSequence: finishSequence ?? (status === rec.handle.status ? rec.handle.finishSequence : undefined),
 			transitionClaimId: status === rec.handle.status ? rec.handle.transitionClaimId : crypto.randomUUID(),
+			...(resumeAttempt === undefined ? {} : { resumeAttempt: resumeAttempt || undefined }),
 			updatedAt: Math.max(Date.now(), rec.handle.updatedAt + 1),
 			...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
 			...(resumable !== undefined ? { resumable } : {}),
@@ -1431,6 +1470,7 @@ class JournalProjection {
 	}
 
 	async deleteWorkflow(workflowId: string): Promise<void> {
+		this.indexStoppedRoot(this.getWorkflow(workflowId));
 		this.workflows.delete(workflowId);
 		this.pendingReceipts.delete(workflowId);
 		this.stickyReceipts.delete(workflowId);
@@ -1455,6 +1495,7 @@ class JournalProjection {
 			else into.set(workflowId, value);
 		};
 		// A direct rebuild removes the old catalog entry and appends the rebuilt one.
+		this.indexStoppedRoot(this.getWorkflow(workflowId), staged.getWorkflow(workflowId));
 		this.workflows.delete(workflowId);
 		take(this.workflows, staged.workflows);
 		take(this.pendingReceipts, staged.pendingReceipts);
@@ -1467,12 +1508,17 @@ class JournalProjection {
 
 	reset(): void {
 		this.workflows.clear();
+		this.stoppedByPrefix.clear();
 		this.pendingReceipts.clear();
 		this.stickyReceipts.clear();
 		this.stickyDeliveryCounts.clear();
 		for (const workflowId of this.stickyDeliveryCountVersions.keys()) this.bumpDeliveryCountVersion(workflowId);
 		this.deletedWorkflowIds.clear();
 	}
+}
+
+function isStoppedRoot(handle?: DurableWorkflowHandle): boolean {
+	return handle !== undefined && (handle.status === "failed" || handle.status === "blocked") && isRootWorkflow(handle);
 }
 
 function isRootWorkflow(handle: DurableWorkflowHandle): boolean {
@@ -1534,6 +1580,7 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 		name: handle.name,
 		inputs: handle.inputs,
 		status: handle.status,
+		...(handle.resumeAttempt === undefined ? {} : { resumeAttempt: handle.resumeAttempt }),
 		completedCheckpoints: handle.completedCheckpoints,
 		pendingPrompts: handle.pendingPrompts,
 		...(handle.sessionFile !== undefined ? { sessionFile: handle.sessionFile } : {}),

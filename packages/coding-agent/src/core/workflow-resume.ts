@@ -61,9 +61,15 @@ export function parseHostSessionPickerRow(value: HostSessionPickerRowCandidate):
 	let selection: HostSessionPickerRow["resumeSelection"];
 	if (resumeSelection !== undefined) {
 		if (!isCandidateObject(resumeSelection)) return undefined;
-		const { updatedAt } = resumeSelection;
+		const { updatedAt, attempt } = resumeSelection;
 		if (typeof updatedAt !== "number" || !Number.isFinite(updatedAt)) return undefined;
-		selection = { updatedAt };
+		if (
+			attempt !== undefined &&
+			attempt !== "replaced" &&
+			(typeof attempt !== "number" || !Number.isSafeInteger(attempt) || attempt < 0)
+		)
+			return undefined;
+		selection = { updatedAt, ...(attempt === undefined ? {} : { attempt }) };
 	}
 	if (
 		messageColor !== undefined &&

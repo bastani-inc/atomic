@@ -177,6 +177,73 @@ test.each(["between listing and picking", "during the pick's lookup"] as const)(
 	},
 );
 
+test.each(["direct request", "isolated host"] as const)(
+	"%s keeps the first admission when a replacement blocks during its initial lookup (#5628)",
+	async (route) => {
+		const { backend, runtime, deps, ctx, mode, provider, errors, executeBody, definition } =
+			await publicResumeFixture(true);
+		await backend.commitWorkflowRegistration({
+			workflowId: id,
+			name: definition.name,
+			inputs: {},
+			createdAt: 1,
+			status: "failed",
+			resumable: true,
+		});
+		await backend.releaseWorkflow(id);
+		if (route === "isolated host") {
+			const execute = makeExecuteWorkflowTool(
+				runtime,
+				() => undefined,
+				deps.ensureWorkflowResourcesLoaded,
+				deps.owner,
+			);
+			const pair = await createEngineHostPair({
+				engineExtensions: [
+					(pi) => {
+						pi.registerWorkflowRunControl({
+							...createSessionRunControl({ ...deps.owner, context: () => ctx, execute }),
+							...provider,
+						});
+					},
+				],
+			});
+			onTestFinished(() => pair.cleanup());
+			mode.runtimeHost = pair.runtime;
+		}
+		const lookup = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		vi.spyOn(deps, "ensureWorkflowResourcesLoaded").mockImplementationOnce(async () => {
+			lookup.resolve();
+			await release.promise;
+		});
+		const target = id.slice(0, 8).toUpperCase();
+		const delayed =
+			route === "isolated host"
+				? InteractiveModeBase.prototype.handleResumeTarget.call(mode, target)
+				: handleRunControlCommand(
+						"resume",
+						[target],
+						ctx,
+						{ info() {}, error: (message) => errors.push(message) },
+						deps,
+					);
+		try {
+			await lookup.promise;
+			const first = await runtime.resumeDurableWorkflow(id, { definition, durableBackend: backend });
+			assert.ok(first.ok, first.message);
+			await deps.owner.jobs.get(id)?.promise;
+			assert.equal(backend.getWorkflow(id)?.status, "blocked");
+		} finally {
+			release.resolve();
+			await delayed;
+			await deps.owner.jobs.get(id)?.promise;
+		}
+		assert.equal(executeBody.mock.calls.length, 1, errors.join("\n"));
+		assert.match(errors.join("\n"), /already resumed|changed.*refresh/i);
+	},
+);
+
 test("a local run without progress cannot hide a stored prefix collision from the resume command (#5569)", async () => {
 	const { backend, deps, ctx, errors, definition, executeBody } = await publicResumeFixture();
 	const other = id.replace("1111", "3333");

@@ -13,6 +13,7 @@ import {
 	type DurableWorkflowBackend,
 	migrateStageSessionCheckpoint,
 	normalizedCheckpoint,
+	type ResumeAttemptChange,
 	replacePendingStageMessagesForRun,
 	type WorkflowRegistrationInput,
 } from "../backend.js";
@@ -1185,8 +1186,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		status: DurableWorkflowStatus,
 		modelOwner: string | undefined,
 		releasedModelOwner: string | undefined,
+		attempt?: ResumeAttemptChange,
 	): Promise<boolean> {
-		return this.serialize(runId, () => this.rollBackAdoption(runId, adopter, status, modelOwner, releasedModelOwner));
+		return this.serialize(runId, () =>
+			this.rollBackAdoption(runId, adopter, status, modelOwner, releasedModelOwner, attempt),
+		);
 	}
 	private *rollBackAdoption(
 		runId: string,
@@ -1194,6 +1198,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		status: DurableWorkflowStatus,
 		modelOwner: string | undefined,
 		releasedModelOwner: string | undefined,
+		attempt?: ResumeAttemptChange,
 	): Operation<boolean> {
 		yield* this.refresh(runId);
 		const current = this.projection.getWorkflow(runId);
@@ -1212,6 +1217,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			current.updatedAt,
 			modelOwner,
 			released,
+			undefined,
+			attempt,
 		);
 	}
 	/** Mark that this backend took `runId` up to run it: it registered the run, or wrote it running again (#5167). */
@@ -1298,9 +1305,19 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		failure?: DurableWorkflowFailureMetadata,
 		runGeneration?: number,
 		finishSequence?: number,
+		resumeAttempt?: number,
 	): Promise<void> {
 		return this.serialize(runId, () =>
-			this.setStatus(runId, status, pendingPrompts, resumable, failure, runGeneration, finishSequence),
+			this.setStatus(
+				runId,
+				status,
+				pendingPrompts,
+				resumable,
+				failure,
+				runGeneration,
+				finishSequence,
+				resumeAttempt,
+			),
 		);
 	}
 	private *setStatus(
@@ -1311,9 +1328,19 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		failure?: DurableWorkflowFailureMetadata,
 		runGeneration?: number,
 		finishSequence?: number,
+		resumeAttempt?: number,
 	): Operation<void> {
 		const draft = yield* this.draft(runId);
-		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable, failure, runGeneration, finishSequence);
+		draft.setWorkflowStatus(
+			runId,
+			status,
+			pendingPrompts,
+			resumable,
+			failure,
+			runGeneration,
+			finishSequence,
+			resumeAttempt,
+		);
 		const handle = draft.getWorkflow(runId);
 		if (handle) yield* this.snapshot(handle);
 	}
@@ -1327,6 +1354,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		modelOwner?: string,
 		releasedModelOwner?: string | null,
 		runGeneration?: number,
+		attempt?: ResumeAttemptChange,
 	): Promise<boolean> {
 		return await this.serialize(runId, () =>
 			this.transition(
@@ -1339,6 +1367,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				modelOwner,
 				releasedModelOwner,
 				runGeneration,
+				attempt,
 			),
 		);
 	}
@@ -1352,12 +1381,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		modelOwner?: string,
 		releasedModelOwner?: string | null,
 		runGeneration?: number,
+		attempt?: ResumeAttemptChange,
 	): Operation<boolean> {
 		yield* this.refresh(runId);
 		const current = this.projection.getWorkflow(runId);
 		if (
 			!current ||
 			!expected.includes(current.status) ||
+			(attempt !== undefined && (current.resumeAttempt ?? 0) !== attempt.expected) ||
 			(expectedUpdatedAt !== undefined && current.updatedAt !== expectedUpdatedAt)
 		)
 			return false;
@@ -1376,11 +1407,21 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (
 			!acquired ||
 			!expected.includes(acquired.status) ||
+			(attempt !== undefined && (acquired.resumeAttempt ?? 0) !== attempt.expected) ||
 			(expectedUpdatedAt !== undefined && acquired.updatedAt !== expectedUpdatedAt)
 		)
 			return false;
 		const seq = this.sequences.get(runId) ?? 0;
-		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable, undefined, runGeneration);
+		draft.setWorkflowStatus(
+			runId,
+			status,
+			pendingPrompts,
+			resumable,
+			undefined,
+			runGeneration,
+			undefined,
+			attempt?.next,
+		);
 		const { releasedModelOwner: _oldRelease, ...handle } = draft.getWorkflow(runId)!;
 		// A run written running from another status is taken up here; a run leaving running is no longer run here. A write
 		// that keeps a running run running (an answer, an adoption claim) takes nothing up.
@@ -1674,6 +1715,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (own === undefined || keys === undefined) return;
 		own.retained.delete(scope);
 		this.projection.forgetCheckpoints(runId, keys);
+	}
+	cachedResumePrefix(lowercasePrefix: string) {
+		return this.projection.cachedResumePrefix(lowercasePrefix);
 	}
 	resumeObservationKey(runId: string): object | undefined {
 		return this.projection.resumeObservationKey(runId);
