@@ -121,141 +121,11 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 	}
 });
 
-test("cached workflow rows advance between source changes and stop while paused (#5224, #5239)", () => {
-	let now = 0;
-	const panel = new AgentPanelModel(() => now);
-	const row = {
-		id: "run:cached-workflow-clock",
-		kind: "workflow" as const,
-		state: "running" as const,
-		name: "ship",
-		task: "stage publish",
-		elapsedMs: 5000,
-	};
-	assert.equal(panel.rows([row])[0]?.elapsedMs, 5000);
-	now = 10_000;
-	assert.equal(panel.rows([row])[0]?.elapsedMs, 15_000);
-	const paused = { ...row, state: "paused" as const, elapsedMs: 15_000 };
-	// A paused run is listed while other work is active (#5490): a running background shell, which is not a row.
-	const shell = { id: "ext:sh", kind: "shell" as const, state: "running" as const, name: "shell", task: "sleep 300" };
-	assert.equal(panel.rows([paused, shell])[0]?.elapsedMs, 15_000);
-	now += 60_000;
-	assert.equal(panel.rows([paused, shell])[0]?.elapsedMs, 15_000);
-	const resumed = { ...row, state: "running" as const, elapsedMs: 15_000 };
-	assert.equal(panel.rows([resumed])[0]?.elapsedMs, 15_000);
-	now += 1000;
-	assert.equal(panel.rows([resumed])[0]?.elapsedMs, 16_000);
-	// A finished run stays until it has been viewed.
-	assert.equal(panel.rows([{ ...row, state: "done", elapsedMs: 16_000 }], () => true)[0]?.elapsedMs, 16_000);
-});
-
-test("workflow and extension rows that finish or pause while the panel is hidden show their reported elapsed time (#5224, #5239)", () => {
-	let now = 100_000;
-	const shell: AgentPanelItem = { id: "ext:sh", kind: "shell", state: "running", name: "shell", task: "sleep 300" };
-	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-	const hub = new AgentPanelSourceHub();
-	let notifySource = () => {};
-	let items: AgentPanelItem[] = [
-		{
-			id: "run:hidden-finish",
-			kind: "workflow",
-			state: "running",
-			name: "deploy",
-			task: "stage build",
-			elapsedMs: 0,
-		},
-		{ id: "run:hidden-pause", kind: "workflow", state: "running", name: "audit", task: "stage verify", elapsedMs: 0 },
-		// A paused run is listed while other work is active (#5490): a running background shell, which is not a row.
-		shell,
-	];
-	hub.register({
-		items: () => items,
-		subscribe: (listener) => {
-			notifySource = listener;
-			return () => {};
-		},
-	});
-	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-	const dispose = bindAgentPanel(session, {
-		setWidget() {},
-		requestRender() {},
-	} as never);
-	try {
-		assert.deepEqual(
-			agentPanelRows(session).map((row) => `${row.id}:${row.elapsedMs}`),
-			["run:hidden-pause:0", "run:hidden-finish:0"],
-		);
-		now = 110_000;
-		assert.deepEqual(
-			agentPanelRows(session).map((row) => `${row.id}:${row.elapsedMs}`),
-			["run:hidden-pause:10000", "run:hidden-finish:10000"],
-		);
-		now = 112_000;
-		setAgentPanelVisible(session, false);
-		now = 120_000;
-		items = [
-			{
-				id: "run:hidden-finish",
-				kind: "workflow",
-				state: "done",
-				name: "deploy",
-				task: "stage build",
-				elapsedMs: 20_000,
-				endedAt: 120_000,
-			},
-			{
-				id: "run:hidden-pause",
-				kind: "workflow",
-				state: "paused",
-				name: "audit",
-				task: "stage verify",
-				elapsedMs: 20_000,
-			},
-			shell,
-		];
-		notifySource();
-		now = 180_000;
-		setAgentPanelVisible(session, true);
-		assert.deepEqual(
-			agentPanelRows(session).map((row) => `${row.id}:${row.elapsedMs}`),
-			["run:hidden-pause:20000", "run:hidden-finish:20000"],
-		);
-		now = 190_000;
-		items = [
-			items[0]!,
-			{
-				id: "run:hidden-pause",
-				kind: "workflow",
-				state: "running",
-				name: "audit",
-				task: "stage verify",
-				elapsedMs: 20_000,
-			},
-			shell,
-		];
-		notifySource();
-		assert.deepEqual(
-			agentPanelRows(session).map((row) => `${row.id}:${row.elapsedMs}`),
-			["run:hidden-pause:20000", "run:hidden-finish:20000"],
-		);
-		now = 195_000;
-		assert.deepEqual(
-			agentPanelRows(session).map((row) => `${row.id}:${row.elapsedMs}`),
-			["run:hidden-pause:25000", "run:hidden-finish:20000"],
-		);
-	} finally {
-		dispose();
-		hub.dispose();
-		clock.mockRestore();
-	}
-});
-
-test("running extension rows published while the panel is hidden keep accurate elapsed time without over-counting read-time sources (#5224, #5239)", async () => {
+test("running extension rows published while the panel is hidden keep accurate elapsed time across a hidden update (#5224, #5239)", async () => {
 	let now = 0;
 	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const hub = new AgentPanelSourceHub();
 	let notifyPublished = () => {};
-	let notifyReadTime = () => {};
 	let publishedItems: AgentPanelItem[] = [
 		{
 			id: "ext:publish-time",
@@ -273,22 +143,6 @@ test("running extension rows published while the panel is hidden keep accurate e
 			return () => {};
 		},
 	});
-	hub.register({
-		items: () => [
-			{
-				id: "run:read-time",
-				kind: "workflow",
-				state: "running",
-				name: "deploy",
-				task: "stage build",
-				elapsedMs: now,
-			},
-		],
-		subscribe: (listener) => {
-			notifyReadTime = listener;
-			return () => {};
-		},
-	});
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 	const dispose = bindAgentPanel(session, {
 		setWidget() {},
@@ -297,7 +151,7 @@ test("running extension rows published while the panel is hidden keep accurate e
 	try {
 		assert.deepEqual(
 			agentPanelRows(session).map((row) => `${row.id}:${row.elapsedMs}`),
-			["run:read-time:0", "ext:publish-time:0"],
+			["ext:publish-time:0"],
 		);
 		now = 10_000;
 		setAgentPanelVisible(session, false);
@@ -313,13 +167,12 @@ test("running extension rows published while the panel is hidden keep accurate e
 			},
 		];
 		notifyPublished();
-		notifyReadTime();
 		await Promise.resolve();
 		now = 120_000;
 		setAgentPanelVisible(session, true);
 		assert.deepEqual(
 			agentPanelRows(session).map((row) => `${row.id}:${row.elapsedMs}`),
-			["run:read-time:120000", "ext:publish-time:120000"],
+			["ext:publish-time:120000"],
 		);
 	} finally {
 		dispose();

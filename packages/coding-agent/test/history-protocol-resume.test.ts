@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { describe, it, vi } from "vitest";
+import { describe, it } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";

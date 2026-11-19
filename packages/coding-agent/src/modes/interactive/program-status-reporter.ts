@@ -32,6 +32,9 @@ export class ProgramStatusReporter {
 				this.runActive = true;
 				this.runResult = { state: "done" };
 				break;
+			case "message_start":
+				if (event.message.role !== "user") return;
+				break;
 			case "message_end":
 				if (event.message.role !== "assistant") return;
 				this.runResult =

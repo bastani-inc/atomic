@@ -260,10 +260,10 @@ export class InteractiveModeBase {
 	private readonly onOverlayInternalUiAction = (url: string): InternalUiActionResult =>
 		handleFocusedOverlayInternalUiAction(this.renderer, url);
 
-	/** Dispatch the host thinking action after a focused workflow overlay declines input. */
+	/** Dispatch the host thinking action after a focused overlay declines input. */
 	handleOverlayUnhandledInput(data: string): boolean {
 		if (isKeyRelease(data) || !this.keybindings.matches(data, "app.thinking.toggle")) return false;
-		// Reuse the default editor's action dispatcher even while a workflow
+		// Reuse the default editor's action dispatcher even while an
 		// overlay owns focus. This keeps the host binding and its user remap as
 		// the source of truth instead of calling the implementation directly.
 		return this.defaultEditor.handleInput(data);

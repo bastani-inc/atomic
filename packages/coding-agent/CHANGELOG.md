@@ -23,6 +23,7 @@
 - `/resume` now lists sessions only. Workflow runs no longer appear in the agent panel, `/tasks`, terminal program status, `/settings` or `/config`. To continue work, resume the parent session and inspect its subagents in `/tasks`.
 - `history://` searches session transcripts only. Existing `history://workflows` links explain the removal; old workflow stores are left untouched. Use `history://sessions` to recall the conversation.
 - Workflow definitions are no longer loadable resources. Atomic ignores the old `workflows` and `intercom.showUnknownTargetWarnings` settings. Package manifests and package filters no longer load workflows; package a skill for repeated use instead. Existing files can stay in place: ask the agent to convert an old definition into a project or global skill that runs with codemode and subagents. Nothing is written automatically at startup.
+- `/resume` now lists sessions only. The agent panel, `/tasks` and terminal program status no longer show workflow runs. `/settings` and `atomic config` no longer offer workflow options. To continue work, resume the parent session and inspect its subagents in `/tasks`.
 
 ### Added
 

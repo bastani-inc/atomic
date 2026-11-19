@@ -50,7 +50,7 @@ const row = (id: string, state: AgentPanelItem["state"] = "running"): AgentPanel
 	elapsedMs: 1_000,
 });
 
-test("workflow panel elapsed advances every second through repeated cached projections (#5239)", () => {
+test("extension agent elapsed time advances every second through repeated cached projections (#5239)", () => {
 	let now = 100_000;
 	const date = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const hub = new AgentPanelSourceHub();
