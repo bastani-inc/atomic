@@ -4,7 +4,7 @@ import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { type GitToolStatus, getGitStatus, getGitStatusAsync } from "../utils/tools-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";
-import { isSubagentChildSession } from "./agent-session-tasks.ts";
+import { isSubagentChildSession } from "./agent-session-tasks.js";
 import { syncSessionHistoryTool } from "./agent-session-tool-registry.ts";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.js";

@@ -1,4 +1,4 @@
-import type { HostSessionPickerRow } from "./extensions/ui-types.ts";
+import type { HostSessionPickerRow } from "./extensions/ui-types.js";
 
 export type HostSessionPickerRowCandidate =
 	| HostSessionPickerRow
