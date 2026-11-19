@@ -82,6 +82,10 @@ export interface WindowRows {
 export interface WindowRequest {
 	readonly width: number;
 	readonly top: number;
+	/** Rows the reader scrolled by since the last layout, when `top` is the last top moved by them. */
+	readonly moved?: number;
+	/** Show the row at `top` itself, whatever changed above it since the last layout. */
+	readonly exact?: boolean;
 	readonly height: number;
 	readonly followEnd: boolean;
 	readonly requestRender: () => void;
@@ -214,7 +218,11 @@ export class WindowedContainer extends Container {
 		const width = Math.max(1, Math.floor(request.width));
 		const height = Math.max(0, Math.floor(request.height));
 		this.requestRender = request.requestRender;
-		const anchor = request.top === this.lastTop ? this.locateAnchor(request.top) : undefined;
+		// A scroll moves from the rows the reader saw, wherever rows added or removed above have put them since.
+		const anchor =
+			!request.exact && (request.top === this.lastTop || request.moved !== undefined)
+				? this.scrollAnchor(this.lastTop, height)
+				: undefined;
 		if (width !== this.width) {
 			this.width = width;
 			for (const entry of this.laidOut) entry.current = false;
@@ -460,6 +468,23 @@ export class WindowedContainer extends Container {
 		return entry ? { entry, within: Math.max(0, top - (this.offsets[index] ?? 0)) } : undefined;
 	}
 
+	/**
+	 * The row that keeps the reader's place when rows change before the next frame: the row at `top`, or, while a
+	 * history anchor is on screen, the first row after it. Saved pages are mounted right after that anchor, so the rows
+	 * the reader saw below it keep their place, not the rows above it.
+	 */
+	private scrollAnchor(top: number, height: number): { entry: Entry; within: number } | undefined {
+		const at = this.locateAnchor(top);
+		if (!at) return undefined;
+		for (let index = this.indexAt(Math.max(0, top)); index < this.laidOut.length; index++) {
+			if ((this.offsets[index] ?? 0) >= top + height) break;
+			if (!historyAnchors.has(this.laidOut[index]!.component)) continue;
+			const next = this.laidOut[index + 1];
+			return next ? { entry: next, within: top - (this.offsets[index + 1] ?? 0) } : at;
+		}
+		return at;
+	}
+
 	private topFor(
 		request: WindowRequest,
 		anchor: { entry: Entry; within: number } | undefined,
@@ -469,7 +494,10 @@ export class WindowedContainer extends Container {
 		if (request.followEnd) return maxTop;
 		let top = Math.floor(request.top);
 		if (anchor && this.laidOut[anchor.entry.index] === anchor.entry) {
-			top = (this.offsets[anchor.entry.index] ?? 0) + Math.min(anchor.within, Math.max(0, anchor.entry.height - 1));
+			top =
+				(this.offsets[anchor.entry.index] ?? 0) +
+				Math.min(anchor.within, Math.max(0, anchor.entry.height - 1)) +
+				(request.moved ?? 0);
 		}
 		return Math.max(0, Math.min(maxTop, top));
 	}

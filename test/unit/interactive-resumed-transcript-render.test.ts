@@ -368,6 +368,51 @@ async function appendSavedHistory(
 	await manager.appendMessage({ role: "user", content: "at the end", timestamp: 200 });
 }
 
+test.each(["wheel", "wheel with reads between its events", "keys"] as const)(
+	"walking the saved pages down and then up by %s shows every saved row, in order, without a gap (#5593)",
+	async (input) => {
+		const { mode, tui, transcript, terminal } = await openResumedSession(0);
+		await appendSavedHistory(mode.sessionManager, 300, {});
+		mode.renderInitialMessages();
+		// The prompts a frame shows, top to bottom; the prompt pinned over the first row is not a row of its own.
+		const prompts = () =>
+			plainScreen(tui).flatMap((line) => {
+				const seq = line.trimStart().startsWith("↑") ? undefined : /P-(\d{3})/.exec(line)?.[1];
+				return seq === undefined ? [] : [Number(seq)];
+			});
+		for (const down of [true, false]) {
+			if (down) transcript.scrollToStart();
+			else transcript.scrollToEnd();
+			await settle(tui, (lines) => lines.some((line) => (down ? /P-001/ : /at the end/).test(line)));
+			const seen = new Set(prompts());
+			let previous = prompts();
+			for (let step = 0; down ? !seen.has(300) : !seen.has(1); step++) {
+				assert.ok(step < 400, `never reached the ${down ? "end" : "start"}: ${[...seen].length} rows seen`);
+				// A wheel notch sends several events at once; the page they reach is read before the next frame, and a
+				// fast store can answer between two of them.
+				if (input === "keys") terminal.input(down ? "\x1b[6~" : "\x1b[5~");
+				else
+					for (let event = 0; event < 4; event++) {
+						terminal.input(`\x1b[<${down ? 65 : 64};10;10M`);
+						if (input !== "wheel") await nextTurn();
+					}
+				for (let turn = 0; turn < 3; turn++) {
+					await nextTurn();
+					tui.renderNow();
+				}
+				const shown = prompts();
+				if (shown.length && previous.length) {
+					const gap = down ? shown[0]! - previous.at(-1)! : previous[0]! - shown.at(-1)!;
+					assert.ok(gap <= 1, `${down ? "down" : "up"}: from P-${previous.join(",")} to P-${shown.join(",")}`);
+				}
+				for (const seq of shown) seen.add(seq);
+				if (shown.length) previous = shown;
+			}
+			assert.equal(seen.size, 300, `every saved row was shown walking ${down ? "down" : "up"}`);
+		}
+	},
+);
+
 const thirtyLines = (label: string) => Array.from({ length: 30 }, (_, i) => `${label} line ${i + 1}`).join("\n");
 
 test("saved pages of the main chat draw each call once, finished, with its arguments and its click's expansion, read in either direction (#5593)", async () => {

@@ -830,7 +830,10 @@ class SavedChatHistory {
 			this.drop(direction === "older" ? this.pages.pop()! : this.pages.shift()!);
 		}
 		if (direction === "start" || this.view.isFollowingEnd)
-			this.view.scrollTo(direction === "start" ? 0 : this.view.scrollTop, { disableFollow: true });
+			this.view.scrollTo(direction === "start" ? 0 : this.view.scrollTop, {
+				disableFollow: true,
+				exact: direction === "start",
+			});
 		this.mode.ui.requestRender();
 	}
 
@@ -841,15 +844,15 @@ class SavedChatHistory {
 		);
 		this.mode.ui.requestRender();
 	}
+	/** Whether the page may be on screen. One mounted since the last frame has no place yet: the reader may be on it. */
 	private painted(page: MountedPage): boolean {
 		const first = page.children[0],
 			last = page.children.at(-1);
 		if (!first || !last) return false;
 		const from = this.chat.windowRowSpan(first),
 			to = this.chat.windowRowSpan(last);
-		return (
-			!!from && !!to && from.top < this.view.scrollTop + this.view.viewportHeight && to.bottom > this.view.scrollTop
-		);
+		if (!from || !to) return true;
+		return from.top < this.view.scrollTop + this.view.viewportHeight && to.bottom > this.view.scrollTop;
 	}
 	private drop(page: MountedPage): void {
 		for (const child of page.children) {
