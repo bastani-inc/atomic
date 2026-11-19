@@ -270,7 +270,7 @@ subagent({ action: "resume", id: "<child-id>", message: "Focus on the failing te
 
 Paused, quit, interrupted, completed, and failed children are resumable, including a paused child that you later quit. So are children whose session you closed or switched away from, whether Atomic exited or crashed, or you used `/new`, `/resume` to another session, or `/fork`; they are restored when that session reopens. Subagents of a workflow stage that was paused or quit, including by Atomic exiting or a session switch, stay resumable too: the stage agent can continue them with `resume`, and resuming the run after Atomic restarts restores them with the stage. These children are terminal, and `resume` returns an error that says why:
 
-- **Killed**: cancelled for good by an owner or batch cancellation. Stopping a subagent from `/tasks` quits it resumably instead.
+- **Killed**: cancelled for good by an owner or batch cancellation. Confirming a stop in the agent panel or `/tasks` quits the subagent resumably instead.
 - **Stage ended**: the workflow stage that launched it finished, or its run ended or was cancelled. This covers every subagent of that stage, including ones you paused or quit, and also a run killed while it waited, after a restart, to be resumed. The error reads `<agent> (<child-id>, <intercom-name>) is terminal and cannot be resumed: its workflow stage ended (the stage finished, or its run ended or was cancelled). Launch a fresh subagent if its work is still needed.`
 - **Gone**: it could not be restored after a restart.
 
