@@ -544,24 +544,22 @@ export function createExecutionBurstDispatcher(input: {
 		if (retry !== undefined) await run(retry, finish);
 	};
 
-	const runCollected = (items: BurstItem[]): Promise<void> =>
-		new Promise((done) => {
-			run(items.length > 1 ? items.map(collectMixedCall) : items, done).catch(() => done());
-		});
-
-	const runBurst = async (items: BurstItem[]): Promise<void> => {
+	const runBurst = (items: BurstItem[]): void => {
 		input.setActive(true);
-		try {
-			const groups = byLegacyWait(items);
-			// A burst whose calls merge runs as one, as every burst does. Only calls that passed different `wait` values
-			// and cannot merge launch by `wait` as separate runs, side by side, as they did before every launch ran in the
-			// background; otherwise a field they do not share would fail them all (#5686).
-			if (groups.length > 1 && mergeBurst(items.map(collectMixedCall)).error !== undefined)
-				await Promise.all(groups.map(runCollected));
-			else await runCollected(items);
-		} finally {
-			input.setActive(false);
-		}
+		const burst = items.length > 1 ? items.map(collectMixedCall) : items;
+		const groups = byLegacyWait(burst);
+		// A burst whose calls merge runs as one, as every burst does. Only calls that passed different `wait` values and
+		// cannot merge launch by `wait` as separate runs, side by side, as they did before every launch ran in the
+		// background; otherwise a field they do not share would fail them all (#5686). Each keeps its collected task list,
+		// so a call with both `agent` and `tasks` launches all of its children also when it is alone in its group.
+		const runs = groups.length > 1 && mergeBurst(burst).error !== undefined ? groups : [burst];
+		// The last run to finish frees the executor in the same step, so a call made once its result arrives is not
+		// refused as a duplicate.
+		let remaining = runs.length;
+		const finish = (): void => {
+			if (--remaining === 0) input.setActive(false);
+		};
+		for (const items of runs) void run(items, finish);
 	};
 
 	const flush = (): void => {

@@ -1411,6 +1411,67 @@ test("cancelling a later sibling call ends it at once while a call that passed a
 	}
 });
 
+test.each([
+	{ name: "can merge", concurrency: undefined },
+	{ name: "cannot merge", concurrency: 1 },
+])(
+	"a call with both agent and tasks that passes a wait starts all its children next to a sibling it $name with (#5686)",
+	async ({ concurrency }) => {
+		const launches: string[] = [];
+		const harness = makeHarness({
+			runSync: async (_parentCwd, _agents, agentName, task) => {
+				launches.push(task);
+				return result(agentName, task);
+			},
+		});
+		try {
+			// A caller that still passes the removed launch `wait`.
+			const mixed = {
+				agent: "echo",
+				task: "top",
+				tasks: [{ agent: "echo", task: "listed" }],
+				...(concurrency === undefined ? {} : { concurrency }),
+				wait: { kind: "background" },
+			};
+			const outputs = await Promise.all([
+				execute(harness, "mixed", mixed as SubagentParamsLike),
+				execute(harness, "other", { agent: "echo", task: "other" }),
+			]);
+			assert.deepEqual(
+				outputs.map((output) => output.isError === true),
+				[false, false],
+			);
+			assert.deepEqual(launches.slice().sort(), ["listed", "other", "top"]);
+		} finally {
+			harness.cleanup();
+		}
+	},
+);
+
+test("a call made as soon as the last of a split burst's calls returns is not refused as a duplicate (#5686)", async () => {
+	const release = Promise.withResolvers<void>();
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task) => {
+			if (task === "B") await release.promise;
+			return result(agentName, task);
+		},
+	});
+	try {
+		// A caller that still passes the removed launch `wait`, and differs from its sibling in `concurrency`.
+		const withWait = { agent: "echo", task: "A", concurrency: 1, wait: { kind: "background" } };
+		const first = execute(harness, "a", withWait as SubagentParamsLike);
+		const second = execute(harness, "b", { agent: "echo", task: "B" });
+		assert.equal((await first).isError, undefined);
+		release.resolve();
+		assert.equal((await second).isError, undefined);
+		const third = await execute(harness, "c", { agent: "echo", task: "C" });
+		assert.equal(third.isError, undefined, JSON.stringify(third.content));
+	} finally {
+		release.resolve();
+		harness.cleanup();
+	}
+});
+
 test("calls that pass the same wait still merge, and still fail together on a field they do not share (#5686)", async () => {
 	let launches = 0;
 	const harness = makeHarness({
