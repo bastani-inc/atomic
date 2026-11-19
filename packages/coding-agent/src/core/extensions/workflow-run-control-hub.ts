@@ -12,6 +12,7 @@ import {
 	WorkflowRunControlUnavailableError,
 	type WorkflowRunDetail,
 	type WorkflowRunListFilter,
+	type WorkflowRunListOptions,
 	type WorkflowRunPauseOptions,
 	type WorkflowRunResumeOptions,
 	type WorkflowRunStageSummary,
@@ -142,8 +143,11 @@ export class SessionWorkflowsHandle implements SessionWorkflows {
 		for (const lease of leases) lease.close();
 	}
 
-	async listRuns(filter?: WorkflowRunListFilter): Promise<readonly WorkflowRunSummary[]> {
-		return this.control().listRuns(filter);
+	async listRuns(
+		filter?: WorkflowRunListFilter,
+		options?: WorkflowRunListOptions,
+	): Promise<readonly WorkflowRunSummary[]> {
+		return this.control().listRuns(filter, options);
 	}
 
 	async getRun(runId: string): Promise<WorkflowRunDetail> {

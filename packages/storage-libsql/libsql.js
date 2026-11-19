@@ -1,5 +1,7 @@
 // @ts-check
+import { statfs } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { createSqliteDatabase, redactSecrets, StorageAdapterLoadError, switchToWriteAheadLog } from "@bastani/atomic/storage";
@@ -747,9 +749,24 @@ async function writeBatch(hrana, api, client, batched) {
  * @param {() => Promise<ReusedStream | undefined>} [shared] the stream statements outside a transaction reuse
  * @param {(batched: readonly import("@bastani/atomic/storage").SqliteStatement[]) => Promise<import("@bastani/atomic/storage").SqliteDriverResult[]>} [locked]
  *   runs statements in one write transaction, where no other connection can change the schema
+ * @param {(separate: readonly string[]) => Promise<StoppedStatement | undefined>} [stepped] runs statements in order
+ *   in one request, each committing on its own (`stepBatch`)
  * @returns {import("@bastani/atomic/storage").SqliteDriverExecutor}
  */
-function statements(connection, watch, single = watch, shared = async () => undefined, locked) {
+function statements(connection, watch, single = watch, shared = async () => undefined, locked, stepped) {
+	/**
+	 * An `exec` of one statement, which wrote nothing when it fails, as one `execute` did.
+	 * @param {string} sql
+	 */
+	const one = (sql) =>
+		single(
+			async () => (await connection()).executeMultiple(sql),
+			locked !== undefined && rerunsLocked(sql)
+				? async () => {
+						await locked([{ sql, params: [] }]);
+					}
+				: undefined,
+		);
 	return {
 		execute: (sql, params) =>
 			single(
@@ -762,20 +779,175 @@ function statements(connection, watch, single = watch, shared = async () => unde
 				// so sent as it was it could keep meeting a changed schema for as long as other connections keep changing it.
 				locked !== undefined && rerunsLocked(sql) ? async () => (await locked([{ sql, params }]))[0] : undefined,
 			),
-		// An `exec` of one statement wrote nothing when it fails, as one `execute` did; one of several statements may
-		// fail after the statements before it committed.
-		executeMultiple: (sql) =>
-			isOneStatement(sql)
-				? single(
-						async () => (await connection()).executeMultiple(sql),
-						locked !== undefined && rerunsLocked(sql)
-							? async () => {
-									await locked([{ sql, params: [] }]);
-								}
-							: undefined,
-					)
-				: watch(async () => (await connection()).executeMultiple(sql)),
+		// One of several statements may fail after the statements before it committed, so the text is never sent again.
+		// On a server, outside a transaction, a text that `separateStatements` splits is sent as its statements, in
+		// one request that runs them in order and stops at the first that fails, as the server runs the text. A
+		// statement the server refused without running it, with `SQLITE_SCHEMA` while other connections change the
+		// schema (#5652) or busy, then runs again on its own as an `exec` of one statement does, and the statements
+		// after it go on in a request of their own: a statement that ran is never sent again.
+		executeMultiple: async (sql) => {
+			if (isOneStatement(sql)) return one(sql);
+			const separate = stepped === undefined ? undefined : separateStatements(sql);
+			const whole = () => watch(async () => (await connection()).executeMultiple(sql));
+			if (stepped === undefined || separate === undefined) return whole();
+			for (let next = 0; next < separate.length; ) {
+				/** @type {number} */
+				let failed = next;
+				try {
+					/** @type {StoppedStatement | undefined} */
+					let stopped;
+					try {
+						stopped = await watch(() => stepped(separate.slice(next)));
+					} catch (error) {
+						// The server reads every statement of a request before it runs any, so statements it could not read ran
+						// none. It reads the whole text differently: it tells where in the text a syntax error is, and runs the
+						// statements before an unfinished last one. So the text is sent as it is, and the caller gets the
+						// server's own answer for it.
+						if (next === 0 && UNREAD_CODES.has(/** @type {{ readonly code?: unknown }} */ (error)?.code)) return whole();
+						throw error;
+					}
+					if (stopped === undefined) return;
+					failed = next + stopped.index;
+					if (!isBusy(stopped.error) && !isSchemaChanged(stopped.error)) throw stopped.error;
+					await one(separate[failed]);
+					next = failed + 1;
+				} catch (error) {
+					if (failed > 0 && typeof error === "object" && error !== null) partlyApplied.add(error);
+					throw error;
+				}
+			}
+		},
 	};
+}
+
+/**
+ * The statement of a `stepBatch` that did not run, by its index among the statements sent, and the server's answer.
+ * @typedef {{ index: number, error: unknown }} StoppedStatement
+ */
+
+/**
+ * Runs `separate`, statements that each commit on their own, in order in one request on a stream of its own, as the
+ * server runs an `exec` of their text: the server reads every statement before it runs any, so a text it cannot read
+ * runs nothing, and a statement runs only when the one before it succeeded.
+ * @param {typeof import("@libsql/hrana-client")} hrana
+ * @param {typeof import("@libsql/core/api")} api
+ * @param {import("@libsql/hrana-client").Client} client
+ * @param {readonly string[]} separate
+ * @returns {Promise<StoppedStatement | undefined>} the first statement that did not run, or undefined when all ran
+ */
+async function stepBatch(hrana, api, client, separate) {
+	/** @param {unknown} error */
+	const mapped = (error) =>
+		error instanceof hrana.ClientError
+			? new api.LibsqlError(error.message, hranaCode(hrana, error), undefined, undefined, error)
+			: error;
+	const stream = client.openStream();
+	const { ran, executed } = (() => {
+		try {
+			const batch = stream.batch(false);
+			/** @type {import("@libsql/hrana-client").BatchStep | undefined} */
+			let last;
+			const ran = separate.map((sql) => {
+				const step = batch.step();
+				if (last !== undefined) step.condition(hrana.BatchCond.ok(last));
+				last = step;
+				return settle(step.run(sql));
+			});
+			return { ran, executed: batch.execute() };
+		} finally {
+			stream.closeGracefully();
+		}
+	})();
+	try {
+		await executed;
+	} catch (error) {
+		throw mapped(error);
+	}
+	for (const [index, outcome] of (await Promise.all(ran)).entries()) {
+		if (!outcome.ok) return { index, error: mapped(outcome.error) };
+		if (outcome.value === undefined)
+			return {
+				index,
+				error: new api.LibsqlError("Statement in a batch was not executed", "TRANSACTION_CLOSED"),
+			};
+	}
+	return undefined;
+}
+
+/**
+ * The codes a server answers a request with when it cannot read its statements, which it reads before it runs any.
+ * @type {ReadonlySet<unknown>}
+ */
+const UNREAD_CODES = new Set(["SQL_PARSE_ERROR", "SQL_NO_STATEMENT", "SQL_MANY_STATEMENTS"]);
+
+/**
+ * Failures of an `exec` of several statements after statements of it committed. A transient failure among them is
+ * reported with an unknown outcome even when the request that failed never reached the server, so the facade does not
+ * run the whole `exec` again.
+ * @type {WeakSet<object>}
+ */
+const partlyApplied = new WeakSet();
+
+/**
+ * The keywords that start a statement `separateStatements` may send apart from the ones before it: statements whose
+ * effect is in the database, which another connection sees once it committed, and which return no rows.
+ */
+const SEPARABLE_KEYWORDS = new Set(["CREATE", "DROP", "ALTER", "INSERT", "UPDATE", "DELETE", "REPLACE"]);
+/**
+ * Names, quoted or not, that tie a statement to the connection that ran the statements before it: a temporary table,
+ * view or trigger, and the functions that read what that connection did last or load code into it.
+ */
+const CONNECTION_NAMES = new Set(["TEMP", "TEMPORARY", "LAST_INSERT_ROWID", "CHANGES", "TOTAL_CHANGES", "LOAD_EXTENSION"]);
+/** The keyword after which a write returns rows. */
+const RETURNING_KEYWORD = "RETURNING";
+
+/**
+ * The statements of `sql`, an `exec` of several, each as the server reads it on its own, or undefined when they must
+ * run on one connection or are not told apart exactly. Each statement starts with one of `SEPARABLE_KEYWORDS`, no
+ * name of `CONNECTION_NAMES` and no `RETURNING_KEYWORD` appears in the text, quoted or not, the text's tokens are
+ * SQLite's (`statementSpans`), and each statement passes `isOneStatement` on its own. A statement ends at the `;`
+ * after it, and a `CREATE TRIGGER` at the first `END` right after a `;`, as in SQLite's grammar. Settings such as a
+ * `PRAGMA`, transaction control and temporary tables hold on one connection only, which statements sent again apart
+ * from the ones before them may not share, so a text with one of them is not split. Nor is a text with a statement
+ * that returns rows: a server describes the columns of each statement sent apart, which together may pass the size it
+ * answers in one response, and describes none for the statements of a text. Each statement starts where the server's
+ * reading of the text starts it, right after the `;` before it (the first at the text's start), so a failure the
+ * server reports at a place in the statement is at the same place as in the text.
+ * @param {string} sql
+ * @returns {string[] | undefined}
+ */
+function separateStatements(sql) {
+	const spans = statementSpans(sql);
+	if (spans === undefined) return undefined;
+	for (const { start, end } of spans) {
+		const text = sql.slice(start, end);
+		const name = Object.hasOwn(QUOTE_END, text[0]) ? text.slice(1, -1) : text;
+		const upper = name.toUpperCase();
+		if (CONNECTION_NAMES.has(upper) || upper === RETURNING_KEYWORD) return undefined;
+	}
+	/** @type {string[]} */
+	const separate = [];
+	let from = 0;
+	for (let index = 0; index < spans.length; ) {
+		if (spans[index].token === ";") {
+			index++;
+			continue;
+		}
+		if (!SEPARABLE_KEYWORDS.has(spans[index].token)) return undefined;
+		let last = index;
+		if (spans[index].token === "CREATE" && spans[index + 1]?.token === "TRIGGER") {
+			while (last + 1 < spans.length && !(spans[last].token === ";" && spans[last + 1].token === "END")) last++;
+			if (last + 1 >= spans.length) return undefined;
+			last++;
+			if (last + 1 < spans.length && spans[last + 1].token !== ";") return undefined;
+		} else while (last + 1 < spans.length && spans[last + 1].token !== ";") last++;
+		const statement = sql.slice(from, spans[last].end);
+		if (!isOneStatement(statement)) return undefined;
+		separate.push(statement);
+		from = spans[last + 1]?.end ?? sql.length;
+		index = last + 1;
+	}
+	return separate.length > 1 ? separate : undefined;
 }
 
 /** The keyword of a statement that writes and runs the same inside a write transaction as on its own. */
@@ -804,12 +976,14 @@ function rerunsLocked(sql) {
 /**
  * Whether `sql` is one statement: it has no `;` but at its end, or it is one `CREATE TRIGGER`, whose body holds a `;`
  * after each of its statements. Otherwise a `;` in a literal or a comment also counts, so several statements are never
- * taken for one.
+ * taken for one. After the last `;`, any white space counts as none, a no-break space or a byte-order mark too (#5676):
+ * SQLite skips a byte-order mark and fails on any other such character, and sqld runs such a text as one statement,
+ * so none of them can start another statement that runs.
  * @param {string} sql
  */
 function isOneStatement(sql) {
 	const first = sql.indexOf(";");
-	return first === -1 || /^[ \t\n\f\r;]*$/.test(sql.slice(first)) || isOneTrigger(sql);
+	return first === -1 || /^[\s;]*$/.test(sql.slice(first)) || isOneTrigger(sql);
 }
 
 /** The keyword that starts a `CREATE TRIGGER`. */
@@ -850,8 +1024,17 @@ function isWordCode(code) {
  * @returns {string[] | undefined}
  */
 function statementTokens(sql) {
+	return statementSpans(sql)?.map(({ token }) => token);
+}
+
+/**
+ * The tokens `statementTokens` reads in `sql`, each with where it starts and ends in `sql`.
+ * @param {string} sql
+ * @returns {{ token: string, start: number, end: number }[] | undefined}
+ */
+function statementSpans(sql) {
 	if (sql.includes("\0")) return undefined;
-	/** @type {string[]} */
+	/** @type {{ token: string, start: number, end: number }[]} */
 	const tokens = [];
 	let index = 0;
 	while (index < sql.length) {
@@ -869,17 +1052,17 @@ function statementTokens(sql) {
 			// token here that is the same token's rest to SQLite. Neither is `;` or a word.
 			const end = sql.indexOf(QUOTE_END[character], index + 1);
 			if (end === -1) return undefined;
-			tokens.push("");
+			tokens.push({ token: "", start: index, end: end + 1 });
 			index = end + 1;
 		} else if (character === ";" || SQL_PUNCTUATION.includes(character)) {
-			tokens.push(character === ";" ? ";" : "");
+			tokens.push({ token: character === ";" ? ";" : "", start: index, end: index + 1 });
 			index++;
 		} else if (character !== "$" && character !== "\uFEFF" && isWordCode(sql.charCodeAt(index))) {
 			// A number is read as a word: SQLite reads the letters and digits that follow a number's own as part of it.
 			let end = index + 1;
 			while (end < sql.length && isWordCode(sql.charCodeAt(end))) end++;
 			const word = sql.slice(index, end);
-			tokens.push(/^[A-Za-z]+$/.test(word) ? word.toUpperCase() : "");
+			tokens.push({ token: /^[A-Za-z]+$/.test(word) ? word.toUpperCase() : "", start: index, end });
 			index = end;
 		} else return undefined;
 	}
@@ -1244,11 +1427,24 @@ const CONNECTION_LOST = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "UND_ERR_SO
 /**
  * The failure, as one that passes, when the server ended the stream or transaction of a process that stalled, or the
  * connection to the server could not be made or broke, or something between answered HTTP 5xx; read from each error's
- * `code`, `name` and `status` along the cause chain, never from its message.
+ * `code`, `name` and `status` along the cause chain, never from its message. A failure of an `exec` of several
+ * statements after some of them committed (`partlyApplied`) has an unknown outcome.
  * @param {import("@bastani/atomic/storage").StorageFailureCause} failure
  * @returns {import("@bastani/atomic/storage").SqliteDriverTransientFailure | undefined}
  */
 function transientFailure(failure) {
+	const transient = transientCause(failure);
+	return transient !== undefined && typeof failure === "object" && failure !== null && partlyApplied.has(failure)
+		? { ...transient, outcome: "unknown" }
+		: transient;
+}
+
+/**
+ * `transientFailure` of one request.
+ * @param {import("@bastani/atomic/storage").StorageFailureCause} failure
+ * @returns {import("@bastani/atomic/storage").SqliteDriverTransientFailure | undefined}
+ */
+function transientCause(failure) {
 	/** @type {unknown} */
 	let current = failure;
 	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
@@ -1268,6 +1464,26 @@ function transientFailure(failure) {
 		current = cause;
 	}
 	return undefined;
+}
+
+/**
+ * The bytes this process may still write on the file system that holds the database file a `file:` URL names (where a
+ * link to it points, and where its write-ahead log goes), or undefined for a database in memory or when the file system
+ * does not say.
+ * @param {string} url
+ * @returns {Promise<number | undefined>}
+ */
+async function freeBytesOfFile(url) {
+	try {
+		const file = url.split("?")[0] ?? "";
+		const path = /^file:\/\//i.test(file) ? fileURLToPath(file) : decodeURIComponent(file.slice("file:".length));
+		if (path === "" || path === ":memory:") return undefined;
+		// The file itself, not its directory: a link to a database on another file system measures that file system.
+		const { bavail, bsize } = await statfs(path);
+		return Number(bavail) * Number(bsize);
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -1452,12 +1668,21 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		redact,
 		transientFailure,
 		payloadLimits: local ? LOCAL_PAYLOAD_LIMITS : SERVER_PAYLOAD_LIMITS,
+		// A server's disk is not this process's to see.
+		...(local ? { freeBytes: () => freeBytesOfFile(url) } : {}),
 		// A server's batch the busy lock ended: the facade sends it again within the caller's `lockWaitMs`.
 		lockBusy: (failure) => !local && isLockBusy(failure),
 		// One statement outside a transaction, run alone or as an `exec` of one statement, that waited out the busy
-		// timeout wrote nothing and runs again. Several statements in one `exec` do not: the ones before the failed
-		// statement were committed.
-		...statements(connection, watch, waitForLock, shared, local ? undefined : writeTransaction),
+		// timeout wrote nothing and runs again. Several statements in one `exec` are never sent again as a whole: the
+		// ones before the failed statement were committed. On a server, the failed statement alone may be (`statements`).
+		...statements(
+			connection,
+			watch,
+			waitForLock,
+			shared,
+			local ? undefined : writeTransaction,
+			protocol === undefined ? undefined : (separate) => stepBatch(protocol[0], protocol[3], remote(), separate),
+		),
 		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way. Only
 		// its `BEGIN IMMEDIATE` waits for the write lock, so a batch the busy timeout ended wrote nothing (`lockBusy`). A
 		// server's batch counts against this process's writes in flight to that server, unless it has priority.
@@ -1484,8 +1709,8 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 				() => true,
 			);
 		},
-		async beginTransaction() {
-			const begin = async () => (await connection()).transaction("write");
+		async beginTransaction(options) {
+			const begin = async () => (await connection()).transaction(options?.readOnly === true ? "read" : "write");
 			let transaction = await waitForLock(begin);
 			// A server's transaction sends its `BEGIN IMMEDIATE` with its first statement. A server that answers that busy
 			// fails the statement and the client closes the transaction, having run nothing of it, so the statement runs

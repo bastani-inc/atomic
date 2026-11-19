@@ -24,6 +24,7 @@ import type { TruncationResult } from "../../../core/tools/truncate.ts";
 import { getCwdRelativePath, resolvePath, shortenHomePath } from "../../../utils/paths.ts";
 import { singleLineDisplayText, terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { type CodeHighlighter, getLanguageFromPath, highlightCode, type Theme, theme } from "../theme/theme.js";
+import { slashCommandHint } from "./nav-keys.ts";
 import { collapseToolBlockLines, TOOL_BLOCK_LIMITS, ToolBlockRecords, type ToolBlockStatus } from "./tool-block.ts";
 import { formatWorkingElapsed } from "./working-run-meter.ts";
 
@@ -1079,7 +1080,7 @@ function presentBash(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 		const taskId = asString(asRecord(asRecord(input.result?.details)?.observation)?.taskId);
 		// Shells are managed in /tasks; the agent panel lists subagents and workflow runs only.
 		const manage = taskId !== undefined && taskId !== "" && input.canManageTask?.(taskId) === true;
-		const bgLine = `${theme.fg("text", "Running in background")}${manage ? theme.fg("dim", " · /tasks to manage") : ""}`;
+		const bgLine = `${theme.fg("text", "Running in background")}${manage ? theme.fg("dim", ` · ${slashCommandHint("/tasks to manage")}`) : ""}`;
 		const hasOutput = classified.output !== "" && classified.output !== EMPTY_OUTPUT_TEXT;
 		const outputLines = hasOutput
 			? collapseToolBlockLines(

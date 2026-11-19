@@ -375,7 +375,9 @@ for (const subject of commitSubjects) {
 
 for (const subject of commitSubjects)
 	test(`a host that ships its checkpoints on ${subject.name} keeps one with snapshots only while their blobs are stored, and ships it after them (#4768)`, async () => {
-		const { blobs, queue, lease, attempt, tool, recorded, stored } = await claimedAttempt(subject);
+		const { journal, blobs, queue, lease, attempt, tool, recorded, stored } = await claimedAttempt(subject);
+		const worker = await JournalDurableBackend.open(journal, { ownsJournal: false, runs: ["root"] });
+		closers.push(() => worker.close());
 		const shard = await ShipShard.open(":memory:", "root");
 		const shipping = new CheckpointShipping(shard, {
 			intervalMs: 60_000,
@@ -400,7 +402,9 @@ for (const subject of commitSubjects)
 		// recorded without its snapshot, and the collection is reported, so no recorded snapshot names a blob the store lacks.
 		const late = textBlob("collected while unshipped");
 		await blobs.putBlobs([late]);
-		assert.equal((await keep(3, [syntheticSnapshot("late", [late.hash])])).local, true);
+		const local = tool(3, [syntheticSnapshot("late", [late.hash])]);
+		assert.equal((await shipping.commit(attempt, { kind: "checkpoint", checkpoint: local }, direct)).local, true);
+		worker.noteRecordedCheckpoint(local);
 		await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
 		const warnings: unknown[] = [];
 		const warn = vi.spyOn(process, "emitWarning").mockImplementation((warning) => {
@@ -409,6 +413,13 @@ for (const subject of commitSubjects)
 		await shipping.flush(attempt);
 		warn.mockRestore();
 		const shipped = await recorded();
+		await worker.catchUpWorkflow("root");
+		const fresh = await JournalDurableBackend.open(journal, { ownsJournal: false, runs: ["root"] });
+		closers.push(() => fresh.close());
+		assert.deepEqual(
+			worker.getToolCheckpoint("root", local.argsHash),
+			fresh.getToolCheckpoint("root", local.argsHash),
+		);
 		assert.deepEqual(
 			shipped.map((checkpoint) => [checkpoint.checkpointId.split(":").at(-1), checkpoint.worktreeSnapshots?.length]),
 			[

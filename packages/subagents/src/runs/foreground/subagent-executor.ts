@@ -286,7 +286,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 } {
 	const deps: ResolvedExecutorDeps = { ...rawDeps, runtime: resolveSubagentExecutorRuntimeDeps(rawDeps.runtime) };
 	const execute = async (
-		id: string,
+		_id: string,
 		params: SubagentParamsLike,
 		signal: AbortSignal,
 		onUpdate: ((r: SubagentToolResult) => void) | undefined,
@@ -325,14 +325,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			},
 		});
 		if (named.error) return named.error;
-		const built = await prepareExecutionContext({
-			params: named.params,
-			ctx,
-			signal,
-			onUpdate,
-			deps,
-			toolCallId: id,
-		});
+		const built = await prepareExecutionContext({ params: named.params, ctx, signal, onUpdate, deps });
 		if (built.error) return built.error;
 		const prepared = built.prepared!;
 		// A named worktree is recorded with its child, like a `worktree: true` one, but never removed (#5202).
@@ -386,7 +379,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			// told so. Without one the call still runs its children directly and waits for them, so nothing changed.
 			const legacy = takeLegacyForegroundWait(id, params, ctx);
 			const result = await (invalidHeartbeatResult(legacy.params) ??
-				executeWithBurstCollection(id, legacy.params, signal, onUpdate, ctx));
+				executeWithBurstCollection(id, legacy.params, signal, onUpdate, ctx, legacy.wait));
 			return legacy.foreground && ctx.getAgentTaskHost ? withLegacyForegroundWaitNote(result) : result;
 		},
 	};

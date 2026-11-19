@@ -81,6 +81,7 @@ import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./sta
 import { stageSessionQueueUpdateEvent } from "./stage-queued-user-messages.js";
 import { StageArtifactCapture } from "./stage-runner-artifact-capture.js";
 import { candidateLabel, modelAttemptReasoning } from "./stage-runner-candidate.js";
+import { StageFallbackTurn } from "./stage-runner-fallback-turn.js";
 import { StageMessageAdmission } from "./stage-runner-message-admission.js";
 import {
 	hasAssistantMessageSince,
@@ -160,6 +161,8 @@ export const WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE = "atomic:workflow-stage-close
 export const WORKFLOW_STAGE_END_CHILDREN_STATE = "atomic:workflow-stage-end-children";
 
 interface CandidateWalk {
+	/** Only a walk serving an existing prompt can announce that turn's switch. */
+	readonly turn?: StageFallbackTurn;
 	readonly remaining: Set<number>;
 	readonly rateLimitFailures: Map<number, number>;
 	/** Candidates dropped only because their rate-limit budget ran out. */
@@ -451,6 +454,10 @@ export class StageSessionController {
 	/** Removes this stage's listener from the run's abort signal. */
 	private unbindAbortSignal: (() => void) | undefined;
 	private sessionInternalRetries = 0;
+	/** Requests (`agent_start`) the stage's sessions started, whichever session ran them. */
+	private agentRunsStarted = 0;
+	/** The prompt walking the model candidates now, whose turn may wait to switch models. */
+	private fallbackTurn: StageFallbackTurn | undefined;
 	private unresolvedContextOverflowMessage: string | undefined;
 	private generationSealed = false;
 	private disposed = false;
@@ -482,6 +489,7 @@ export class StageSessionController {
 	private sharedOrchestrationContext: CreateAgentSessionOptions["orchestrationContext"];
 	private resumeCurrentSession = false;
 	private readonly modelAttempts: WorkflowModelAttempt[] = [];
+	private backoff: Extract<StageSessionEvent, { type: "auto_retry_start" }> | undefined;
 	private readonly rateLimitProviders = new Set<string>();
 	private rateLimitWait: { provider: string; until: number } | undefined;
 	private readonly modelWarnings: string[] = [];
@@ -700,9 +708,9 @@ export class StageSessionController {
 		// succeeds, instead of being cleared with the pending batch (issue #2812).
 		this.modelWarnings.push(...this.pendingFallbackWarnings);
 		this.pendingFallbackWarnings.length = 0;
-		await this.disposeCurrentSession(index + 1);
+		const advance = await this.disposeCurrentSession(index + 1);
 		this.notifyModelFallbackMetaChange();
-		return true;
+		return advance;
 	}
 	requireSession(property: string): StageSessionRuntime {
 		if (!this.session) unavailableSync(property);
@@ -715,6 +723,10 @@ export class StageSessionController {
 			fallback,
 			this.residencyState?.terminatingToolCallIds ?? NO_TERMINATING_TOOL_CALLS,
 		);
+	}
+
+	waitsToRetry(): boolean {
+		return this.backoff !== undefined;
 	}
 
 	subscribe(listener: (event: StageSessionEvent) => void): () => void {
@@ -1850,11 +1862,38 @@ export class StageSessionController {
 		if (wait === undefined && this.sessionReleased()) await this.ensureSession();
 	}
 
+	/**
+	 * Prompt the stage on its model candidates. The walk replaces a failed candidate's session, and the turn says that it
+	 * goes on in the next one ({@link StageFallbackTurn}), so the stage's chat keeps counting it.
+	 */
 	private async promptSegment(
 		text: string,
 		sdkOptions: PromptOptions | undefined,
 		consumer: AgentSessionConsumer = "prompt",
 		newSessionText?: string,
+	): Promise<void> {
+		const turn = new StageFallbackTurn(
+			() => this.agentRunsStarted,
+			(event) => {
+				for (const listener of this.pendingListeners) listener(event);
+			},
+		);
+		const outerTurn = this.fallbackTurn;
+		this.fallbackTurn = turn;
+		try {
+			await this.promptCandidates(text, sdkOptions, consumer, newSessionText, turn);
+		} finally {
+			turn.ended();
+			this.fallbackTurn = outerTurn;
+		}
+	}
+
+	private async promptCandidates(
+		text: string,
+		sdkOptions: PromptOptions | undefined,
+		consumer: AgentSessionConsumer,
+		newSessionText: string | undefined,
+		turn: StageFallbackTurn,
 	): Promise<void> {
 		if (
 			this.session !== undefined &&
@@ -1935,7 +1974,7 @@ export class StageSessionController {
 			promptText = message;
 			promptOptions = resumeMessageOptions(sdkOptions);
 		};
-		const walk = this.candidateWalk(candidates, this.activeCandidateIndex ?? 0);
+		const walk = this.candidateWalk(candidates, this.activeCandidateIndex ?? 0, turn);
 		if (await this.tryResumeCurrentSession(promptText, promptOptions, candidates, walk)) return;
 		// A follow-up written for the conversation it continues (a structured-output
 		// correction) cannot stand alone in a session that never saw the stage
@@ -1965,8 +2004,11 @@ export class StageSessionController {
 			this.pendingCreationResumeMessage = undefined;
 			const candidate = candidates[index]!;
 			try {
-				if (this.session !== undefined && this.activeCandidateIndex !== index)
-					await this.disposeCurrentSession(index);
+				if (this.session !== undefined && this.activeCandidateIndex !== index) {
+					if (!(await this.disposeCurrentSession(index, candidate, turn))) return;
+					useResumeMessage(this.pendingCreationResumeMessage);
+					this.pendingCreationResumeMessage = undefined;
+				}
 				const created =
 					this.session && this.activeCandidateIndex === index
 						? this.session
@@ -2093,6 +2135,8 @@ export class StageSessionController {
 		}
 	}
 	requestPause(): Promise<void> {
+		// A pause stops a turn that waits to switch models: the request after the pause starts a turn of its own.
+		this.fallbackTurn?.ended();
 		const pause = this.pauseControl.requestPause();
 		const resume = this.pauseControl.currentResume();
 		if (resume !== undefined) {
@@ -2296,12 +2340,17 @@ export class StageSessionController {
 		const index = session.messages.indexOf(retained);
 		if (index >= 0) session.messages.splice(index, 1);
 	}
-	private candidateWalk(candidates: readonly WorkflowResolvedModelCandidate[], start: number): CandidateWalk {
+	private candidateWalk(
+		candidates: readonly WorkflowResolvedModelCandidate[],
+		start: number,
+		turn?: StageFallbackTurn,
+	): CandidateWalk {
 		for (const candidate of candidates) {
 			const provider = workflowProviderId(candidate.value);
 			if (provider !== undefined) this.rateLimitProviders.add(provider);
 		}
 		return {
+			turn,
 			remaining: new Set(candidates.map((_, index) => index).filter((index) => index >= start)),
 			rateLimitFailures: new Map(),
 			rateLimited: new Set(),
@@ -2477,7 +2526,11 @@ export class StageSessionController {
 		}
 	}
 
-	private async sleepForThrownErrorRetry(delayMs: number, state: ThrownErrorRetryState): Promise<void> {
+	private async sleepForThrownErrorRetry(
+		delayMs: number,
+		state: ThrownErrorRetryState,
+		event?: Extract<StageSessionEvent, { type: "auto_retry_start" }>,
+	): Promise<void> {
 		this.residency.thrownErrorRetryStates.add(state);
 		const currentResume = this.pauseControl.currentResume();
 		if (currentResume !== undefined) {
@@ -2485,9 +2538,18 @@ export class StageSessionController {
 			state.controller.abort(new ThrownErrorRetryPaused(currentResume));
 		}
 		try {
+			if (event && !state.controller.signal.aborted) {
+				this.backoff = event;
+				for (const listener of this.pendingListeners) listener(event);
+			}
 			await sleepOrAbort(delayMs, state.controller.signal);
 		} finally {
 			this.residency.thrownErrorRetryStates.delete(state);
+			if (event && this.backoff === event) {
+				this.backoff = undefined;
+				for (const listener of this.pendingListeners)
+					listener({ type: "auto_retry_end", success: !state.controller.signal.aborted, attempt: event.attempt });
+			}
 		}
 	}
 
@@ -2513,6 +2575,7 @@ export class StageSessionController {
 		this.residency.thrownErrorRetryStates.add(state);
 		try {
 			await this.waitForProvider(this.currentModelValue());
+			state.controller.signal.throwIfAborted();
 			await continuationSession._runAgentContinue();
 		} catch (error) {
 			const resume = state.pauseResume ?? this.pauseControl.currentResume();
@@ -2625,8 +2688,9 @@ export class StageSessionController {
 					this.restoreSessionMessages(activeSession, messagesBeforeAttempt, nextText, false, true);
 					throw error;
 				}
+				const settings = this.retrySettings();
 				const decision = nextRetryDecision(
-					this.retrySettings(),
+					settings,
 					retryAttempt,
 					sameCandidateRetryable,
 					workflowRetryHint(error),
@@ -2659,7 +2723,12 @@ export class StageSessionController {
 				const state: ThrownErrorRetryState = { controller: new AbortController() };
 				let pauseResume: RetryPauseResume | undefined;
 				try {
-					await this.sleepForThrownErrorRetry(decision.delayMs, state);
+					await this.sleepForThrownErrorRetry(decision.delayMs, state, {
+						type: "auto_retry_start",
+						...decision,
+						maxAttempts: settings!.maxRetries,
+						errorMessage: errorMessage(error),
+					});
 				} catch (sleepError) {
 					if (sleepError instanceof ThrownErrorRetryPaused) pauseResume = sleepError.resume;
 					else {
@@ -3023,10 +3092,11 @@ export class StageSessionController {
 				// A stage refused its queued Intercom instructions will be refused them
 				// by every retry, so the terminal delivery failure is never eligible —
 				// independent of what the shared model-failure classifier makes of it.
+				const settings = this.retrySettings();
 				const decision = isWorkflowPendingStageDeliveryFailure(error)
 					? undefined
 					: nextRetryDecision(
-							this.retrySettings(),
+							settings,
 							retryAttempt,
 							isRetryableSameCandidateFailure(error),
 							workflowRetryHint(error),
@@ -3046,7 +3116,12 @@ export class StageSessionController {
 				retryAttempt = decision.attempt;
 				const state: ThrownErrorRetryState = { controller: new AbortController() };
 				try {
-					await this.sleepForThrownErrorRetry(decision.delayMs, state);
+					await this.sleepForThrownErrorRetry(decision.delayMs, state, {
+						type: "auto_retry_start",
+						...decision,
+						maxAttempts: settings!.maxRetries,
+						errorMessage: errorMessage(error),
+					});
 				} catch (sleepError) {
 					if (sleepError instanceof ThrownErrorRetryPaused) {
 						const resumed = await sleepError.resume;
@@ -3311,6 +3386,7 @@ export class StageSessionController {
 				} catch {}
 			}
 			this.lastActivityAt = performance.now();
+			if (event.type === "agent_start") this.agentRunsStarted += 1;
 			if (event.type === "auto_retry_start") this.sessionInternalRetries += 1;
 			if (event.type === "model_fallback_start") applyingFallback = true;
 			// SDK effort-only fallbacks suppress model_changed, but emit thinking_level_changed
@@ -3338,7 +3414,23 @@ export class StageSessionController {
 		return result.session;
 	}
 
-	private async disposeCurrentSession(nextCandidateIndex: number | undefined): Promise<void> {
+	/** Retire the failed session. Only an uncancelled objective or explicit replacement text advances the walk. */
+	private async disposeCurrentSession(
+		nextCandidateIndex: number | undefined,
+		candidate?: WorkflowResolvedModelCandidate,
+		turn?: StageFallbackTurn,
+	): Promise<boolean> {
+		const resumed = await this.pauseControl.whileRetiring(() => {
+			// The switch is interruptible before shutdown yields, including from the announcement itself.
+			if (candidate !== undefined) turn?.switchTo(candidate, nextCandidateIndex ?? 0, this.modelAttempts.at(-1));
+			return this.retireCurrentSession(nextCandidateIndex);
+		});
+		if (resumed === undefined) return true;
+		this.pendingCreationResumeMessage = resumed.message;
+		return resumed.message !== undefined;
+	}
+
+	private async retireCurrentSession(nextCandidateIndex: number | undefined): Promise<void> {
 		// A later prompt must not replace a rejected cleanup barrier with an empty shutdown.
 		if (this.sessionShutdownPromise !== undefined) await this.sessionShutdownPromise;
 		const startGeneration = this.abortGeneration;
@@ -3411,16 +3503,20 @@ export class StageSessionController {
 			const promptStartEntries = storedEntryCount(activeSession);
 			this.lastPromptStartIndex = promptStartIndex;
 			this.unresolvedContextOverflowMessage = undefined;
+			const state: ThrownErrorRetryState = { controller: new AbortController() };
+			this.residency.thrownErrorRetryStates.add(state);
 			try {
 				this.reportStartupPhase("first-dispatch");
 				// A live resume loops here without returning through the outer retry guard.
 				await this.waitForProvider(this.currentModelValue());
+				state.controller.signal.throwIfAborted();
 				const detachedResults = this.pendingDetachedResults;
-				this.pendingDetachedResults = undefined;
 				if (detachedResults !== undefined && activeSession.resumeDetachedTurn !== undefined) {
 					// A resume message that replaced the continuation reaches the turn as steering, after the results.
 					if (nextText !== initialText)
 						await activeSession.steer(nextText, undefined, { expandPromptTemplates: false });
+					state.controller.signal.throwIfAborted();
+					this.pendingDetachedResults = undefined;
 					await this.continueFromResults(activeSession, activeSession.resumeDetachedTurn, detachedResults);
 				} else if (activeSession.isWaitingOnDetachedResults?.() === true) {
 					// A prompt now would move the transcript past a call whose result is still to come (#4580). Handing the
@@ -3431,7 +3527,7 @@ export class StageSessionController {
 						await activeSession.steer(nextText, undefined, { expandPromptTemplates: false });
 					return { terminalScanStartIndex: promptStartIndex };
 				} else await activeSession.prompt(nextText, nextOptions);
-				const pendingPauseAfterPrompt = this.pauseControl.currentResume();
+				const pendingPauseAfterPrompt = state.pauseResume ?? this.pauseControl.currentResume();
 				if (pendingPauseAfterPrompt) {
 					const resumed = await pendingPauseAfterPrompt;
 					await resumed.runnerOwnedDeliverySettlement;
@@ -3448,7 +3544,9 @@ export class StageSessionController {
 				// The results come back with the reopened session; a pause holds that reopening.
 				if (err instanceof DetachedResultsNotSaved) throw err;
 				const pendingPauseAfterThrow =
-					err instanceof ThrownErrorRetryPaused ? err.resume : this.pauseControl.currentResume();
+					err instanceof ThrownErrorRetryPaused
+						? err.resume
+						: (state.pauseResume ?? this.pauseControl.currentResume());
 				if (pendingPauseAfterThrow) {
 					const resumed = await pendingPauseAfterThrow;
 					await resumed.runnerOwnedDeliverySettlement;
@@ -3460,6 +3558,8 @@ export class StageSessionController {
 				}
 				this.throwUnresolvedContextOverflowIfPresent();
 				throw err;
+			} finally {
+				this.residency.thrownErrorRetryStates.delete(state);
 			}
 		}
 		return { terminalScanStartIndex: activeSession.messages.length };
@@ -3481,10 +3581,8 @@ export class StageSessionController {
 			const start = walk.rateLimitFailures.has(currentIndex) ? 0 : currentIndex;
 			const index = await this.selectReadyCandidate(candidates, walk, start);
 			if (index === undefined) return true;
-			if (index !== this.activeCandidateIndex) {
-				await this.disposeCurrentSession(index);
-				return false;
-			}
+			if (index !== this.activeCandidateIndex)
+				return !(await this.disposeCurrentSession(index, candidates[index], walk.turn));
 			const resumedText = this.pendingCreationResumeMessage;
 			this.pendingCreationResumeMessage = undefined;
 			if (resumedText !== undefined) {
@@ -3579,8 +3677,11 @@ export class StageSessionController {
 					? `[fallback] resume on ${resumedLabel} failed: ${message}. Restarting fallback from ${candidateLabel(candidates[0]!)}.`
 					: `[fallback] resume on ${resumedLabel} failed: ${message}. Retrying with ${candidateLabel(candidates[resumedOverflowNextIndex]!)}.`,
 			);
-			await this.disposeCurrentSession(resumedOverflowNextIndex);
-			return false;
+			return !(await this.disposeCurrentSession(
+				resumedOverflowNextIndex,
+				candidates[resumedOverflowNextIndex ?? 0],
+				walk.turn,
+			));
 		}
 	}
 
@@ -3661,8 +3762,7 @@ export class StageSessionController {
 		this.pendingFallbackWarnings.push(
 			`[fallback] ${candidateLabel(candidate)} failed: ${message}. Retrying with ${candidateLabel(nextCandidate)}.`,
 		);
-		await this.disposeCurrentSession(nextIndex);
-		return "retry";
+		return (await this.disposeCurrentSession(nextIndex, nextCandidate, walk?.turn)) ? "retry" : "handled";
 	}
 
 	private capturedStructuredOutputForAttempt(): boolean {

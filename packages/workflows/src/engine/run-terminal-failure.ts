@@ -36,7 +36,7 @@ export async function finalizeTerminalFailure(input: {
 			: (runSnapshot.toolNodes.find((node) => node.id === metadata.failedToolNodeId) ??
 				(input.failedToolNode?.id === metadata.failedToolNodeId ? input.failedToolNode : undefined));
 	const recorded = store.recordRunEnd(runId, "failed", undefined, metadata.errorMessage, metadata);
-	await appendRunEndWhenRecorded(persistence, recorded, {
+	await appendRunEndWhenRecorded(persistence, recorded, runSnapshot, {
 		runId,
 		runGeneration: runSnapshot.runGeneration,
 		status: "failed",

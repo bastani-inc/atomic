@@ -1,3 +1,6 @@
+import { convertToLlm } from "@bastani/atomic";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 	"You are a child subagent, not the parent orchestrator.",
 	"The parent session owns delegation, orchestration, review fanout, and follow-up worker launches.",
@@ -14,6 +17,15 @@ export const CHILD_FANOUT_BOUNDARY_INSTRUCTIONS = [
 	"If you need to edit files, call the actual edit/write tools. Do not print tool-call syntax, patches, or pseudo-tool calls as text.",
 ].join("\n");
 
+const PARENT_ONLY_CUSTOM_MESSAGE_TYPES = new Set([
+	"subagent-orchestration-instructions",
+	"subagent-slash-result",
+	"subagent-slash-text-result",
+	"subagent-notify",
+	"subagent_control_notice",
+	"subagent-control",
+	"subagent-control-notice",
+]);
 const SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN = /<name>\s*subagent(?:@[^<\s]*)?\s*<\/name>/;
 const PROJECT_CONTEXT_HEADER = "\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n";
 const SKILLS_HEADER = "\n\nThe following skills provide specialized instructions for specific tasks.";
@@ -107,6 +119,102 @@ export function rewriteSubagentPrompt(prompt: string, options: PromptRewriteOpti
 	return `${boundary}\n\n${rewritten}`;
 }
 
+function isParentOnlySubagentMessage(message: unknown): boolean {
+	const m = message as { role?: string; customType?: string };
+	return (
+		m?.role === "custom" && typeof m.customType === "string" && PARENT_ONLY_CUSTOM_MESSAGE_TYPES.has(m.customType)
+	);
+}
+
+function isSubagentToolResultMessage(message: unknown): boolean {
+	const m = message as { role?: string; toolName?: string };
+	return m?.role === "toolResult" && m.toolName === "subagent";
+}
+
+function isSubagentToolCallBlock(block: unknown): boolean {
+	const b = block as { type?: string; name?: string };
+	return b?.type === "toolCall" && b.name === "subagent";
+}
+
+function stripAssistantSubagentToolCallBlocks<T>(message: T): T | undefined {
+	const m = message as { role?: string; content?: unknown };
+	if (m?.role !== "assistant" || !Array.isArray(m.content)) return message;
+	const filteredContent = m.content.filter((block) => !isSubagentToolCallBlock(block));
+	if (filteredContent.length === m.content.length) return message;
+	if (filteredContent.length === 0) return undefined;
+	return { ...m, content: filteredContent } as T;
+}
+
+function isAssistantMessage(message: unknown): boolean {
+	return (message as { role?: string })?.role === "assistant";
+}
+
+/**
+ * Whether the model sees `message` as something between two assistant turns: a tool result, or a message it reads as
+ * a user turn. A message the model never sees, or a system message, leaves the turns around it adjacent.
+ */
+function separatesAssistantTurns(message: unknown): boolean {
+	const role = (message as { role?: string })?.role;
+	if (role === "toolResult") return true;
+	if (role === "assistant" || role === "system") return false;
+	return convertToLlm([message as AgentMessage]).some((converted) => converted.role === "user");
+}
+
+function isReasoningBlock(block: unknown): boolean {
+	const type = (block as { type?: string })?.type;
+	return type === "thinking" || type === "redacted_thinking";
+}
+
+/** The assistant message without its reasoning blocks, or undefined when nothing else is left. */
+function withoutReasoning<T>(message: T): T | undefined {
+	const m = message as { content?: unknown };
+	if (!Array.isArray(m.content)) return message;
+	const content = m.content.filter((block) => !isReasoningBlock(block));
+	if (content.length === m.content.length) return message;
+	if (content.length === 0) return undefined;
+	return { ...m, content } as T;
+}
+
+/** Remove parent-only orchestration without joining earlier thinking to the next assistant turn (#5481). */
+export function stripParentOnlySubagentMessages<T>(messages: T[], preserveFanoutToolHistory = false): T[] {
+	let changed = false;
+	// Walk backwards so we already know what follows a removed separator. If the earlier turn
+	// becomes empty, we can continue to its predecessor without repeatedly scanning the same history.
+	let nextIsAssistant = false;
+	let separatorRemoved = false;
+	const filtered: T[] = [];
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index]!;
+		if (
+			isParentOnlySubagentMessage(message) ||
+			(!preserveFanoutToolHistory && isSubagentToolResultMessage(message))
+		) {
+			changed = true;
+			if (nextIsAssistant && !separatorRemoved && separatesAssistantTurns(message)) separatorRemoved = true;
+			continue;
+		}
+		let stripped = preserveFanoutToolHistory ? message : stripAssistantSubagentToolCallBlocks(message);
+		if (stripped !== undefined && isAssistantMessage(stripped)) {
+			if (separatorRemoved) stripped = withoutReasoning(stripped);
+			if (stripped !== undefined) {
+				nextIsAssistant = true;
+				separatorRemoved = false;
+			}
+		} else if (stripped !== undefined && nextIsAssistant && separatesAssistantTurns(stripped)) {
+			nextIsAssistant = false;
+			separatorRemoved = false;
+		}
+		if (stripped !== message) changed = true;
+		if (stripped !== undefined) filtered.push(stripped);
+	}
+	return changed ? filtered.reverse() : messages;
+}
+
+export interface InProcessChildPromptBehavior {
+	readonly systemPromptTransform: (prompt: string) => string;
+	readonly initialContextTransform: (messages: AgentMessage[]) => AgentMessage[];
+}
+
 export function createInProcessChildSystemPromptTransform(
 	policy: ChildPromptPolicy,
 	explicitSkillInjection = "",
@@ -121,14 +229,10 @@ export function createInProcessChildSystemPromptTransform(
 	};
 }
 
-/**
- * The session options that make a session an admitted in-process child: its rewritten system prompt. A forked child's
- * inherited conversation is left exactly as the parent would send it (#5481); what it must not act on is covered by
- * the boundary instructions and the child's tool policy.
- */
-export function createInProcessChildPromptBehavior(
-	policy: ChildPromptPolicy,
-	explicitSkillInjection = "",
-): { readonly systemPromptTransform: (prompt: string) => string } {
-	return { systemPromptTransform: createInProcessChildSystemPromptTransform(policy, explicitSkillInjection) };
+/** Build the construction-time transforms for one admitted in-process child. */
+export function createInProcessChildPromptBehavior(policy: ChildPromptPolicy): InProcessChildPromptBehavior {
+	return {
+		systemPromptTransform: createInProcessChildSystemPromptTransform(policy),
+		initialContextTransform: (messages) => stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized),
+	};
 }

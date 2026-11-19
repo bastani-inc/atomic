@@ -39,8 +39,6 @@ export type WorkflowTaskPrimitive = (
 	name: string,
 	options: WorkflowTaskOptions,
 	stageFailFastScope?: ParallelFailFastScope,
-	/** The task's replay key, when its launch reserved it before the task started: a parallel's step (#5481). */
-	reservedReplayKey?: string,
 ) => Promise<WorkflowTaskResult>;
 
 export interface WorkflowTaskRunners {
