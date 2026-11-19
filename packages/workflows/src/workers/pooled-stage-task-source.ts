@@ -1,4 +1,6 @@
+import { isProxy } from "node:util/types";
 import {
+	bindTaskTranscriptFragments,
 	type PublishedChatActivity,
 	rehydrateTaskMessageError,
 	scopedBackgroundTasks,
@@ -11,6 +13,7 @@ import {
 	type TaskOutputView,
 	type TaskRecord,
 	type TaskTranscriptFollow,
+	type TaskTranscriptFragments,
 	type TaskTranscriptView,
 	type TaskViewResult,
 	type TaskViewSource,
@@ -121,7 +124,15 @@ export class PooledStageTaskSource implements TaskViewSource {
 	}
 	async readTaskTranscript(id: TaskId, cursor?: string): Promise<TaskViewResult<TaskTranscriptView>> {
 		const reply = await this.request(id, { kind: "transcript", ...(cursor === undefined ? {} : { cursor }) });
-		return reply.ok ? (reply.value.kind === "transcript" ? reply.value.result : unexpected()) : reply;
+		if (!reply.ok) return reply;
+		if (reply.value.kind !== "transcript") return unexpected();
+		const { result } = reply.value;
+		// Only the worker's plain data envelope carries these positions; never probe the SDK page itself.
+		const fragments: TaskTranscriptFragments | undefined = isProxy(reply.value)
+			? undefined
+			: Object.getOwnPropertyDescriptor(reply.value, "fragments")?.value;
+		if (fragments) bindTaskTranscriptFragments(result, fragments);
+		return result;
 	}
 	/** An agent task's transcript is read again from the worker whenever its tasks change. */
 	followTaskTranscript(id: TaskId): TaskTranscriptFollow | undefined {

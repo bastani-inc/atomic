@@ -10,6 +10,7 @@ import {
 	TaskMessageError,
 	type TaskViewSource,
 	taskResumedTurns,
+	taskTranscriptFragments,
 	watchOwnerTaskStoreBinding,
 } from "@bastani/atomic";
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
@@ -96,11 +97,14 @@ export async function runStageTaskAction(
 				result.ok && action.cursor === undefined
 					? source.followTaskTranscript(taskId)?.session?.getStreamingMessage?.()
 					: undefined;
-			if (!result.ok || streaming === undefined || streaming.role !== "assistant")
-				return { kind: "transcript", result };
+			const fragments = taskTranscriptFragments(result);
 			return {
 				kind: "transcript",
-				result: { ok: true, value: { ...result.value, messages: [...result.value.messages, streaming] } },
+				result:
+					result.ok && streaming?.role === "assistant"
+						? { ok: true, value: { ...result.value, messages: [...result.value.messages, streaming] } }
+						: result,
+				...(fragments && { fragments }),
 			};
 		}
 	}
