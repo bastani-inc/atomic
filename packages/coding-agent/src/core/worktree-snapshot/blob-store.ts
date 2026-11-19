@@ -14,6 +14,44 @@ import { RUN_JOURNAL_SCHEMA_VERSION, RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED } from
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
+/** A trigger or view, by its exact name. */
+interface SchemaObject {
+	readonly type: "trigger" | "view";
+	readonly name: string;
+}
+
+/**
+ * The key under which a failed rename's error carries the trigger or view that stopped it, once confirmed in the
+ * database (#5622); `WorkspaceCollectionError` names it in its hint. A `Symbol.for` key, shared without an import.
+ */
+const RENAME_BLOCKER = Symbol.for("atomic-snapshots/rename-blocker@1");
+
+/** What SQLite writes after an object's name when the object stops a schema change only once the change is made. */
+const RENAME_BLOCKER_WHEN = [" after rename", " after drop column"];
+
+/**
+ * Every trigger or view that `error`, a failed rename, or an error it wraps can name. SQLite names a trigger or view
+ * that no longer compiles, such as one that refers to a dropped table, as `error in <type> <name>[ <when>]: <reason>`,
+ * and drivers add their own prefix. The name is not quoted, so `error in view sales after rename: …` can name a view
+ * `sales after rename` or a view `sales`, and a name can hold `: `. Only the database can tell which object it is.
+ */
+function renameBlockerCandidates(error: unknown): SchemaObject[] {
+	const candidates: SchemaObject[] = [];
+	let current = error;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth++, current = current.cause)
+		for (const match of current.message.matchAll(/\berror in (trigger|view) /gu)) {
+			const type = match[1] as SchemaObject["type"];
+			const rest = current.message.slice(match.index + match[0].length);
+			for (let end = rest.indexOf(": "); end !== -1; end = rest.indexOf(": ", end + 1)) {
+				const name = rest.slice(0, end);
+				candidates.push({ type, name });
+				for (const when of RENAME_BLOCKER_WHEN)
+					if (name.endsWith(when)) candidates.push({ type, name: name.slice(0, -when.length) });
+			}
+		}
+	return candidates;
+}
+
 /** Every blob hash a snapshot needs to be restored: its chain's patches and its bundle. */
 export function snapshotBlobHashes(snapshot: WorktreeSnapshot): string[] {
 	const hashes = snapshot.chain.flatMap((link) => (link.patch === null ? [] : [link.patch]));
@@ -1851,8 +1889,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				// installed are dropped, and the current one is installed again on the new table.
 				await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs));
 				await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete_all`, t.blobs));
-				await transaction.exec(`ALTER TABLE ${t.blobChunks} RENAME TO ${retired}`);
-				await transaction.exec(`ALTER TABLE ${next} RENAME TO ${t.blobChunks}`);
+				try {
+					await transaction.exec(`ALTER TABLE ${t.blobChunks} RENAME TO ${retired}`);
+					await transaction.exec(`ALTER TABLE ${next} RENAME TO ${t.blobChunks}`);
+				} catch (error) {
+					await this.confirmRenameBlocker(transaction, error);
+					throw error;
+				}
 				await transaction.exec(this.dialect.renderTrigger(chunksDeleteTrigger(t)));
 				return true;
 			});
@@ -1860,6 +1903,34 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			if (moved) break;
 		}
 		await this.dropRetiredChunks(options);
+	}
+
+	/**
+	 * Records on `error`, a rename that failed in `transaction`, the trigger or view SQLite named in it, when the schema
+	 * holds exactly one trigger or view that the error's words can name (#5622). The failed statement left the
+	 * transaction open on the schema SQLite checked, so that object is the one SQLite named. Otherwise, or when the schema
+	 * cannot be read, nothing is recorded and the collection warning names no object.
+	 */
+	private async confirmRenameBlocker(transaction: SqliteExecutor, error: unknown): Promise<void> {
+		const candidates = renameBlockerCandidates(error);
+		if (candidates.length === 0) return;
+		const names = JSON.stringify([...new Set(candidates.map((candidate) => candidate.name))]);
+		const objects = (schema: string) =>
+			`SELECT type, name FROM ${schema} WHERE type IN ('trigger', 'view') AND name IN (SELECT value FROM ${this.dialect.jsonValues("?")})`;
+		const rows = await transaction
+			.all<SqliteRow & SchemaObject>(
+				`${objects("sqlite_master")} UNION ALL ${objects("sqlite_temp_master")}`,
+				names,
+				names,
+			)
+			.catch(() => undefined);
+		if (rows === undefined) return;
+		const named = rows.filter((row) =>
+			candidates.some((candidate) => candidate.type === row.type && candidate.name === row.name),
+		);
+		const [only] = named;
+		if (named.length === 1 && only !== undefined && typeof error === "object" && error !== null)
+			Reflect.defineProperty(error, RENAME_BLOCKER, { value: { type: only.type, name: only.name } });
 	}
 
 	/**
