@@ -22,6 +22,7 @@
 - A parallel `subagent` call that fails before any child starts shows its error on its card, collapsed and expanded, instead of a `Stopped` row for each task.
 - A subagent resume now refuses a running child without waiting for a sibling to save or for the child to register on Intercom. A workflow-stage reload during a wake no longer lets a second resume launch the same child. If the child is not running yet, Esc ends a pending resume even during a sibling save, without reopening the child or sending its message ([#5560](https://github.com/bastani-inc/atomic/issues/5560))
 - The tmux skill's `wait-for-text.sh` now times out even if checking the timer, validating the pattern, or capturing the pane stalls. It rejects late matches, reports the last complete pane capture, and stops its own worker when interrupted. `-T 0` does not inspect the pane ([#5566](https://github.com/bastani-inc/atomic/issues/5566)).
+- On Windows, a worktree setup hook stopped for its output size has its process tree terminated once, also when its timeout comes before the hook ends ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
 
 ## [0.9.89] - 2026-11-18
 
