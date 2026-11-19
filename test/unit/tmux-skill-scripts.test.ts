@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
+import { moduleDir, readStreamText, sleep, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
 const scripts = resolve(moduleDir(import.meta.url), "../../packages/subagents/skills/tmux/scripts");
 /** The wait an invalid pattern must not sit out; failing at once has to take well under half of it. */
@@ -75,10 +84,42 @@ function run(script: string, args: readonly string[], env: Record<string, string
 	});
 	return {
 		exitCode: result.exitCode,
+		signalCode: result.signalCode,
 		stdout: result.stdout.toString(),
 		stderr: result.stderr.toString(),
 		elapsedMs: performance.now() - started,
 	};
+}
+
+/** Start a script without waiting for it; `detached` gives it its own process group, as a terminal or runner does. */
+function start(argv: readonly string[], env: Record<string, string> = {}, detached = false) {
+	const child = spawnProcess(argv, {
+		env: { PATH: `${stubBin}:${process.env.PATH ?? ""}`, HOME: dir, TMPDIR: dir, ...env },
+		stdout: "pipe",
+		stderr: "pipe",
+		detached,
+	});
+	// Resolves when every process holding the script's output has let go of it.
+	const output = Promise.all([readStreamText(child.stdout), readStreamText(child.stderr)]);
+	return { child, output };
+}
+
+/** Replace the stand-in tmux with one that also counts its pane captures in $HOME/captures. */
+function countCaptures(): () => number {
+	const log = join(dir, "captures");
+	writeFileSync(
+		join(stubBin, "tmux"),
+		`#!/usr/bin/env bash\necho capture >>"$HOME/captures"\nprintf '%s\\n' "\${STUB_PANE:-}"\n`,
+	);
+	return () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).length : 0);
+}
+
+async function until(condition: () => boolean): Promise<void> {
+	const deadline = performance.now() + 10_000;
+	while (!condition()) {
+		if (performance.now() > deadline) throw new Error("timed out waiting for the condition");
+		await sleep(20);
+	}
 }
 
 async function listen(path: string): Promise<void> {
@@ -242,39 +283,41 @@ echo working
 	});
 
 	test("wait-for-text keeps the last complete snapshot when a replacement is interrupted (#5566)", () => {
-		const bashEnv = join(dir, "file-limit");
-		writeFileSync(bashEnv, "ulimit -f 1\n");
+		// The replacement prints part of the pane, then stalls until the deadline cuts it off.
 		writeFileSync(
 			join(stubBin, "tmux"),
-			'#!/bin/sh\nif [ -f "$HOME/probed" ]; then yes incomplete | head -n 600; else touch "$HOME/probed"; echo working; fi\n',
+			'#!/bin/sh\nif [ -f "$HOME/probed" ]; then yes incomplete | head -n 600; exec sleep 60; fi\ntouch "$HOME/probed"; echo working\n',
 		);
-		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "1", "-i", "0.01"], {
-			BASH_ENV: bashEnv,
-		});
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "1", "-i", "0.01"]);
 		assert.equal(result.exitCode, 1);
 		assert.match(result.stderr, /Last 1000 lines from s:\nworking\n$/u);
 	});
 
-	test("wait-for-text removes scratch when interrupted just after allocation (#5566)", () => {
-		const bashEnv = join(dir, "interrupt-allocation");
+	test("wait-for-text leaves nothing behind when interrupted as it starts (#5566)", () => {
+		const bashEnv = join(dir, "interrupt-start");
+		const tmp = join(dir, "tmp");
+		mkdirSync(tmp);
 		writeFileSync(
 			bashEnv,
-			`trap 'if [[ $BASH_SUBSHELL == 0 && -n \${scratch:-} && -d $scratch && ! -f $HOME/allocated ]]; then echo "$scratch" >"$HOME/allocated"; builtin kill -TERM "$$"; fi' DEBUG\n`,
+			`trap 'if [[ $BASH_COMMAND == "exec 3< <(watch_pane)" && ! -f $HOME/interrupted ]]; then touch "$HOME/interrupted"; builtin kill -TERM "$$"; fi' DEBUG\n`,
 		);
-		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready"], { BASH_ENV: bashEnv });
-		assert.notEqual(result.exitCode, 0);
-		assert.equal(existsSync(readFileSync(join(dir, "allocated"), "utf8").trim()), false);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "8"], { BASH_ENV: bashEnv, TMPDIR: tmp });
+		assert.ok(existsSync(join(dir, "interrupted")));
+		assert.equal(result.signalCode, "SIGTERM");
+		assert.ok(result.elapsedMs < 6_000, `took ${Math.round(result.elapsedMs)} ms`);
+		assert.deepEqual(readdirSync(tmp), []);
 	});
 
 	test("wait-for-text cancels its worker even if interrupted during launch (#5566)", () => {
 		const bashEnv = join(dir, "interrupt-launch");
-		// Interrupt this shell at launch and again just before it stops its own worker.
+		// Interrupt this shell once its worker exists but before it records the PID, and again
+		// when it asks the worker to stop.
 		writeFileSync(
 			bashEnv,
 			`
-interrupt() { if [[ $BASH_SUBSHELL == 0 && ! -f "$HOME/interrupted" && -n $(jobs -p) ]]; then touch "$HOME/interrupted"; builtin kill -TERM "$$"; fi; }
+interrupt() { if [[ $BASH_COMMAND == 'worker=$!' && ! -f "$HOME/interrupted" ]]; then touch "$HOME/interrupted"; builtin kill -TERM "$$"; fi; }
 kill() {
-  if [[ $1 == -KILL && ! -f "$HOME/interrupted-again" ]]; then touch "$HOME/interrupted-again"; builtin kill -HUP "$$"; fi
+  if [[ $1 == -TERM && -n \${worker:-} && ! -f "$HOME/interrupted-again" ]]; then touch "$HOME/interrupted-again"; builtin kill -HUP "$$"; fi
   builtin kill "$@"
 }
 trap interrupt DEBUG
@@ -287,9 +330,9 @@ trap interrupt DEBUG
 		assert.ok(result.elapsedMs < 6_000, `worker still held the pipes for ${Math.round(result.elapsedMs)} ms`);
 	});
 
-	test("wait-for-text stops a running capture even when it cannot record cancellation (#5566)", () => {
+	test("wait-for-text stops a running capture when interrupted during it (#5566)", () => {
 		const bashEnv = join(dir, "interrupt-capture");
-		writeFileSync(bashEnv, `tmux() { rm -rf -- "$scratch"; builtin kill -TERM "$$"; exec /bin/sleep 8; }\n`);
+		writeFileSync(bashEnv, `tmux() { builtin kill -TERM "$$"; exec /bin/sleep 8; }\n`);
 		const result = run("wait-for-text.sh", ["-t", "s", "-p", "missing", "-T", "8"], { BASH_ENV: bashEnv });
 		assert.notEqual(result.exitCode, 0);
 		assert.ok(result.elapsedMs < 6_000, `capture still held the pipes for ${Math.round(result.elapsedMs)} ms`);
@@ -297,27 +340,122 @@ trap interrupt DEBUG
 
 	test("wait-for-text does not poll after cancellation races worker startup (#5566)", () => {
 		const bashEnv = join(dir, "interrupt-launch");
-		// Hold the worker at startup until the signal has been delivered. Its new children
-		// therefore cannot receive that earlier signal: they must observe cancellation.
+		// Hold the worker at startup until it has been asked to stop: it must not poll after that.
 		writeFileSync(
 			bashEnv,
 			`
 interrupt() {
-  if [[ $BASH_SUBSHELL == 0 && ! -f "$HOME/interrupted" && -n $(jobs -p) ]]; then
+  if [[ $BASH_COMMAND == 'worker=$!' && ! -f "$HOME/interrupted" ]]; then
     touch "$HOME/interrupted"; builtin kill -TERM "$$"
-  elif [[ $BASH_SUBSHELL == 1 && $BASH_COMMAND == 'set +m' ]]; then
+  elif [[ $BASH_COMMAND == 'timer=$!' ]]; then
     while [[ ! -f "$HOME/delivered" ]]; do /bin/sleep .01; done
   fi
 }
-kill() { if [[ $1 == -KILL ]]; then touch "$HOME/delivered"; return 0; fi; builtin kill "$@"; }
+kill() { if [[ $1 == -TERM && -n \${worker:-} ]]; then touch "$HOME/delivered"; fi; builtin kill "$@"; }
 set -T
 trap interrupt DEBUG
 `,
 		);
+		writeFileSync(join(stubBin, "tmux"), '#!/bin/sh\ntouch "$HOME/probed"\n');
 		const result = run("wait-for-text.sh", ["-t", "s", "-p", "missing", "-T", "8"], { BASH_ENV: bashEnv });
 		assert.ok(existsSync(join(dir, "interrupted")));
+		assert.ok(existsSync(join(dir, "delivered")));
+		assert.equal(existsSync(join(dir, "probed")), false);
 		assert.notEqual(result.exitCode, 0);
 		assert.ok(result.elapsedMs < 6_000, `worker still held the pipes for ${Math.round(result.elapsedMs)} ms`);
+	});
+
+	test("wait-for-text finds a marker on screen when TMPDIR is missing or full (#5566)", () => {
+		const missing = run("wait-for-text.sh", ["-t", "s", "-F", "-p", "DONE", "-T", "3"], {
+			STUB_PANE: "build DONE",
+			TMPDIR: join(dir, "missing"),
+		});
+		assert.equal(missing.exitCode, 0, missing.stderr);
+		// No file can grow, as on a full disk.
+		const bashEnv = join(dir, "no-space");
+		writeFileSync(bashEnv, "ulimit -f 0\n");
+		const full = run("wait-for-text.sh", ["-t", "s", "-F", "-p", "DONE", "-T", "3"], {
+			STUB_PANE: "build DONE",
+			BASH_ENV: bashEnv,
+		});
+		assert.equal(full.exitCode, 0, full.stderr);
+	});
+
+	test("wait-for-text interrupted by Ctrl-C stops the script that called it (#5566)", async () => {
+		const captures = countCaptures();
+		const caller = join(dir, "caller.sh");
+		writeFileSync(
+			caller,
+			'for i in 1 2 3; do bash "$1" -t s -F -p never -T 3 -i 0.1; echo "continued after wait $i"; done\n',
+		);
+		const { child, output } = start(
+			["bash", caller, join(scripts, "wait-for-text.sh")],
+			{ STUB_PANE: "working" },
+			true,
+		);
+		await until(() => captures() > 0);
+		// A terminal sends Ctrl-C to its whole foreground process group.
+		process.kill(-(child.pid as number), "SIGINT");
+		const [stdout] = await output;
+		await child.exited;
+		assert.equal(child.signalCode, "SIGINT");
+		assert.doesNotMatch(stdout, /continued/u);
+	});
+
+	test("wait-for-text leaves nothing running or behind when its process group is killed (#5566)", async () => {
+		const captures = countCaptures();
+		const tmp = join(dir, "tmp");
+		mkdirSync(tmp);
+		const { child, output } = start(
+			["bash", join(scripts, "wait-for-text.sh"), "-t", "s", "-F", "-p", "never", "-T", "8", "-i", "0.1"],
+			{ STUB_PANE: "working", TMPDIR: tmp },
+			true,
+		);
+		await until(() => captures() > 0);
+		const killedAt = performance.now();
+		process.kill(-(child.pid as number), "SIGKILL");
+		await output;
+		const openFor = performance.now() - killedAt;
+		await child.exited;
+		const capturesAtClose = captures();
+		await sleep(1_000);
+		assert.ok(openFor < 3_000, `its output stayed open ${Math.round(openFor)} ms after the kill`);
+		assert.equal(captures(), capturesAtClose, "it kept capturing the pane after the kill");
+		assert.deepEqual(readdirSync(tmp), []);
+	});
+
+	test("wait-for-text stops polling soon after the helper alone is killed (#5566)", async () => {
+		const captures = countCaptures();
+		const { child, output } = start(
+			["bash", join(scripts, "wait-for-text.sh"), "-t", "s", "-F", "-p", "never", "-T", "8", "-i", "0.1"],
+			{ STUB_PANE: "working" },
+		);
+		await until(() => captures() > 0);
+		const killedAt = performance.now();
+		child.kill("SIGKILL");
+		await output;
+		const openFor = performance.now() - killedAt;
+		await child.exited;
+		const capturesAtClose = captures();
+		await sleep(1_000);
+		assert.ok(openFor < 3_000, `its output stayed open ${Math.round(openFor)} ms after the kill`);
+		assert.equal(captures(), capturesAtClose, "it kept capturing the pane after the kill");
+	});
+
+	test("wait-for-text ends by the signal that stopped it (#5566)", async () => {
+		for (const signal of ["SIGTERM", "SIGHUP"] as const) {
+			rmSync(join(dir, "captures"), { force: true });
+			const captures = countCaptures();
+			const { child, output } = start(
+				["bash", join(scripts, "wait-for-text.sh"), "-t", "s", "-F", "-p", "never", "-T", "8", "-i", "0.1"],
+				{ STUB_PANE: "working" },
+			);
+			await until(() => captures() > 0);
+			child.kill(signal);
+			await output;
+			await child.exited;
+			assert.equal(child.signalCode, signal);
+		}
 	});
 
 	test("wait-for-text never counts a failed pane capture as a match", () => {
