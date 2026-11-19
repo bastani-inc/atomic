@@ -16,6 +16,7 @@ import {
 	foreignResumeIds,
 	isSessionResumeIndex,
 	latestCompactionOf,
+	readEarlierCompletionIntents,
 	refoldSessionResume,
 	resumeIndexNeedsRefold,
 	type SessionResumeIndex,
@@ -478,7 +479,13 @@ export class MemorySessionStore implements SessionStore {
 			const branch = read.filter((held) => inBranch.has(held.seq));
 			const state = read.filter((held) => !inBranch.has(held.seq));
 			const leaf = leafSeq > 0 ? (branch.find((held) => held.seq === leafSeq)?.entry.id ?? null) : null;
-			return sessionResumeFrom(index, decodeHeader(record), branch, state, leaf);
+			const resume = sessionResumeFrom(index, decodeHeader(record), branch, state, leaf);
+			if (
+				resume.compaction &&
+				!(await readEarlierCompletionIntents(index, resume, (seqs) => this.entriesAt(sessionId, record, seqs)))
+			)
+				continue;
+			return resume;
 		}
 	}
 

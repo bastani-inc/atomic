@@ -1,3 +1,4 @@
+import type { RetryDeadline } from "@bastani/atomic-ai";
 import { type DecisionPhase, DecisionTimeoutError } from "../decision/errors.js";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 
@@ -69,6 +70,7 @@ export class DecisionAttempt {
 /** How every generation of one decision ended and how long it took, across repairs, retries and candidates. */
 export class DecisionTrace {
 	private readonly attempts: DecisionAttempt[] = [];
+	declare retryDeadline?: RetryDeadline;
 
 	get size(): number {
 		return this.attempts.length;
@@ -113,6 +115,7 @@ export async function withinDecisionDeadline<T>(
 	callerSignal: AbortSignal | undefined,
 	timeoutMs: number,
 	run: (decision: DecisionRun) => Promise<T>,
+	options?: { guardProviderRetries: true },
 ): Promise<T> {
 	const controller = new AbortController();
 	const trace = new DecisionTrace();
@@ -120,18 +123,17 @@ export async function withinDecisionDeadline<T>(
 	if (callerSignal?.aborted) forwardCallerAbort();
 	else callerSignal?.addEventListener("abort", forwardCallerAbort, { once: true });
 	const startedAt = performance.now();
-	const timer = setTimeout(
-		() =>
-			controller.abort(
-				new DecisionTimeoutError({
-					timeoutMs,
-					elapsedMs: Math.round(performance.now() - startedAt),
-					phase: trace.phase,
-					attempts: trace.describe(),
-				}),
-			),
-		timeoutMs,
-	);
+	const expire = () =>
+		controller.abort(
+			new DecisionTimeoutError({
+				timeoutMs,
+				elapsedMs: Math.round(performance.now() - startedAt),
+				phase: trace.phase,
+				attempts: trace.describe(),
+			}),
+		);
+	if (options?.guardProviderRetries) trace.retryDeadline = { at: startedAt + timeoutMs, onExpired: expire };
+	const timer = setTimeout(expire, timeoutMs);
 	try {
 		return await run({ signal: controller.signal, trace });
 	} finally {

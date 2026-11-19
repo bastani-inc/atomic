@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Codemode scripts can launch single or parallel subagents, get task IDs immediately, observe or control their session's children, and resume a child from its saved session. Scripts can inspect agent definitions and the configured model catalog; creating or changing definitions still requires a direct call.
+
 ### Changed
 
 - A subagent launched with `context: "fork"` starts faster and copies less data after a clear or compaction. Its saved session keeps the conversation through its original fork point, without duplicating retired turns. Earlier history remains in the parent session ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).

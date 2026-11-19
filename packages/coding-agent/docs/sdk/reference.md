@@ -224,6 +224,7 @@ Specify which tools to expose by name:
 - Built-in tool names enabled by default: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`
 - `find` discovers filesystem paths by glob; `search` searches file contents with regex patterns across files, directories, globs, and internal URLs.
 - `builtins` selects shipped packages independently of tools: keys are `workflows`, `subagents`, `mcp`, `web-access`, and `intercom`. Omitted, `{}`, and omitted keys enable packages. A `false` value removes that package's extensions and resources, including on reload; `true` enables it.
+- The `subagents` builtin ships `bro`, `create-spec`, `how`, `impeccable`, `prompt-engineer`, `research-codebase`, `show-me`, `skill-creator`, `teach`, `unslop`, and `why`. If you want the skills but not the delegation tool, leave the package enabled and set `excludedTools: ["subagent"]`. If you disable the whole package, install independent copies of the skills you need in your [skills directory](/skills#locations).
 - `tools` accepts an allowlist of coding, extension, and custom tool names or `*` patterns. `tools: []` exposes none, including Intercom. A list containing only `+name`/`-name` entries instead changes the resolved defaults, for example `tools: ["+codemode", "-write"]`. Modifiers take exact names, cannot be mixed with plain entries, and apply to reloaded defaults too. Invalid lists throw. Extension/custom tools and MCP exposure retain their default behavior with modifiers.
 - `excludedTools` removes matching names from the registry and active selection. Exclusions win over `tools`; unknown names are ignored.
 - `noTools: "all"` exposes no tools, even with a nonempty `tools` allowlist or modifiers. It does not remove package resources or authorize services.
@@ -1018,6 +1019,10 @@ const mode = new InteractiveMode(runtime, {
 
 await mode.run();
 ```
+
+If you quit the host or call `session.dispose()` during the initial interactive extension bind, `await mode.init()` or `await mode.run()` returns normally. The disposed session does not enter the input loop. This also applies when an incoming event or a pending provider retry started the UI. Track your own shutdown request instead of catching `SessionClosed` to detect it.
+
+Replacing the session during the initial bind is not a quit: the interrupted startup still rejects. If you dispose only the session and then create a replacement with `await runtime.newSession()`, call `mode.run()` again to accept input for the replacement. Direct `session.bindExtensions()` and `mode.handleEvent(event)` calls still reject on close, so custom handlers can catch startup failures and report errors from their recovery work.
 
 ### runPrintMode
 

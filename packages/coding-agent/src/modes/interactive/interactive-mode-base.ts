@@ -482,6 +482,8 @@ export class InteractiveModeBase {
 	// Deferred extension load state (first paint happens before extensions load)
 	deferredStartupPending = false;
 	initialStartupBinding = false;
+	// Keep the initial bind and its waiters on the same session even if a replacement binds before they return.
+	sessionStartup = { cancelled: false };
 	/**
 	 * Extension error rows shown since a reload or session switch reset the extension UI. Finishing the switch or reload
 	 * redraws the transcript, so the errors its extensions reported while starting are shown again after it.
@@ -727,6 +729,7 @@ export class InteractiveModeBase {
 			this.resetExtensionUI();
 		});
 		this.runtimeHost.setRebindSession(async () => {
+			this.sessionStartup = { cancelled: false };
 			await this.rebindCurrentSession();
 			// A rebound session can carry a different settings manager; re-apply
 			// the theme so the live selection tracks the session that is current.

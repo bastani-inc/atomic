@@ -10,7 +10,8 @@ import {
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
-import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
@@ -94,7 +95,8 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			if (!apiKey) {
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
-			const client = createClient(model, apiKey, options);
+			const retryTransport = ProviderRetryTransport.for(options);
+			const client = createClient(model, apiKey, retryTransport ? { ...options, fetch: retryTransport.fetch } : options);
 			const grammarToolInputProperties = createGrammarToolInputProperties(
 				getDeclaredTools(normalizedContext.messages),
 				model.compat?.supportsOpenAIGrammarTools ?? false,
@@ -122,6 +124,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
 				},
+				retryTransport,
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
@@ -151,7 +154,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatAzureOpenAIError(error);
 			appendProviderResponseFailureDiagnostic(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;

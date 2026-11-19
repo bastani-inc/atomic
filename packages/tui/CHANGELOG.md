@@ -4,6 +4,11 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Fixed
+
+- Hiding and showing a fullscreen dialog before the next paint cancels a held single click and any pending single-click action on that dialog. A control that took the press still receives its release; double- and triple-click text selection keeps its clipboard behavior ([#5643](https://github.com/bastani-inc/atomic/issues/5643)).
+- Whole-line key hints recognize a tab or Unicode space between a named key and its label. In `esc / a destination`, an unbound `a` starts the slash key's label. In `1/2 / esc pick`, bound digits and Escape are clickable; numeric ratios stay plain ([#5656](https://github.com/bastani-inc/atomic/issues/5656)).
+
 ## [0.9.90] - 2026-11-19
 
 ### Added

@@ -104,10 +104,10 @@ describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
 		);
 	});
 
-	test("always resolves the launcher bundled with this package, never a project copy", () => {
+	test("always resolves the bundled Impeccable launcher, never a project copy", () => {
 		const resolved = liveLauncherPath();
 		assert.match(resolved, /skills[/\\]impeccable[/\\]scripts[/\\]impeccable(?:\.cmd)?$/);
-		assert.ok(existsSync(resolved), "the bundled engine launcher must ship with this package");
+		assert.ok(existsSync(resolved), "the bundled engine launcher must exist");
 		assert.match(liveLauncherPath("linux"), /[/\\]impeccable$/);
 		assert.match(liveLauncherPath("darwin"), /[/\\]impeccable$/);
 		assert.match(liveLauncherPath("win32"), /[/\\]impeccable\.cmd$/, "Windows runs the .cmd launcher");

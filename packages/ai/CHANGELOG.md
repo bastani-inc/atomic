@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Added
+
+- Provider requests and `retryAssistantCall()` accept `retryDeadline`, an absolute `performance.now()` timestamp. An Atomic-managed backoff retry that reaches the deadline is not sent, even if the caller's abort timer has not fired. Omitting it keeps the original retry timing ([#5627](https://github.com/bastani-inc/atomic/issues/5627)).
+
 ## [0.9.89] - 2026-11-18
 
 ### Added

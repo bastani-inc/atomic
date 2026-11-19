@@ -24,7 +24,8 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { getAtomicEnvValue } from "../utils/provider-env.ts";
-import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
@@ -228,13 +229,14 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				getDeclaredTools(normalizedContext.messages),
 				compat.supportsOpenAIGrammarTools,
 			);
+			const retryTransport = ProviderRetryTransport.for(options);
 			const client = createClient(
 				model,
 				normalizedContext,
 				apiKey,
 				options?.headers,
 				options?.identity,
-				options?.fetch,
+				retryTransport?.fetch ?? options?.fetch,
 				cacheSessionId,
 				options?.apiKey,
 			);
@@ -265,7 +267,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
-				});
+				}, retryTransport);
 			// Every attempt reports its HTTP response before its body is consumed, and the message stream starts
 			// once. A streamed request reports a rejected service_tier as an `error` event after HTTP 200, so the
 			// response preamble is read before the request counts as accepted.
@@ -320,7 +322,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			const errorMessage = formatProviderError(
 				normalizeProviderError(error),

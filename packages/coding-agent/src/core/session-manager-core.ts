@@ -1254,6 +1254,7 @@ export class SessionManager {
 			() => {
 				visible = true;
 			},
+			this.recoveryState,
 		);
 		if (leafId === this.leafId) this.projectedEdits = { leafId, visible };
 		return projection;
