@@ -29,6 +29,7 @@ import {
 	type ProcessExit,
 	runLoggedProcess,
 	startsProcessGroup,
+	stepProcessWatcher,
 	stepStartingWatcher,
 } from "../src/core/resume/blueprint/process.ts";
 import { getShellConfig } from "../src/utils/shell.ts";
@@ -268,26 +269,98 @@ describe("running a logged process (#4588)", () => {
 	);
 
 	test.skipIf(!refusesHeldPrograms)(
-		"a program the system keeps refusing to start resolves with the refusal once the tries run out (#5608)",
+		"a program the system keeps refusing to start resolves with the refusal within about half a second, however long each try takes (#5608)",
+		async () => {
+			const sleeper = new Int32Array(new SharedArrayBuffer(4));
+			for (const tryMs of [0, 100]) {
+				const held = heldNode();
+				try {
+					const controller = new AbortController();
+					const { result, tries } = await counting(
+						() =>
+							execute(held.run('console.log("started")'), {
+								timeoutMs: STEADY_TIMEOUT_MS,
+								signal: controller.signal,
+							}),
+						() => {
+							if (tryMs > 0) Atomics.wait(sleeper, 0, 0, tryMs);
+						},
+					);
+					const what = `each try taking ${tryMs} ms`;
+					assert.equal((result.exit.spawnError as NodeJS.ErrnoException).code, held.refusal, what);
+					assert.equal(result.exit.exitStatus, null, what);
+					assert.equal(result.exit.timedOut, false, what);
+					assert.equal(result.output, "", what);
+					assert.ok(tries > 1 && tries <= 10, `${what}: tried ${tries} times`);
+					// Tries stop half a second after the first; the rest is room for a busy machine.
+					assert.ok(result.exit.elapsedMs < 1_000, `${what}: refused after ${result.exit.elapsedMs} ms`);
+					assert.equal(getEventListeners(controller.signal, "abort").length, 0, what);
+				} finally {
+					held.release();
+				}
+			}
+		},
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"a program Windows keeps refusing to start with EPERM resolves with the refusal within about half a second (#5608)",
+		async () => {
+			const refused = refusedNode();
+			try {
+				const { result, tries } = await counting(() =>
+					execute(nodeProcess('console.log("started")', { command: refused.command })),
+				);
+				assert.equal((result.exit.spawnError as NodeJS.ErrnoException).code, "EPERM");
+				assert.equal(result.exit.spawnError?.message, "spawn EPERM");
+				assert.equal(result.exit.timedOut, false);
+				assert.equal(result.output, "");
+				assert.ok(tries > 1 && tries <= 10, `tried ${tries} times`);
+				assert.ok(result.exit.elapsedMs < 1_000, `refused after ${result.exit.elapsedMs} ms`);
+			} finally {
+				refused.allow();
+			}
+		},
+	);
+
+	test.skipIf(!refusesHeldPrograms)(
+		"a refused program is never started once the step's time has run out, even when its next try wakes late (#5678)",
 		async () => {
 			const held = heldNode();
+			const marker = path("started late");
+			const timeoutMs = 200;
+			const sleeper = new Int32Array(new SharedArrayBuffer(4));
+			const started: number[] = [];
 			try {
-				const controller = new AbortController();
-				const { result, tries } = await counting(() =>
-					execute(held.run('console.log("started")'), {
-						timeoutMs: STEADY_TIMEOUT_MS,
-						signal: controller.signal,
-					}),
+				const { result } = await counting(
+					() =>
+						stepProcessWatcher.run(
+							(pid, running) => {
+								if (running) started.push(pid);
+							},
+							() =>
+								execute(held.run('require("node:fs").writeFileSync(process.argv[1], "")', [marker]), {
+									timeoutMs,
+								}),
+						),
+					(tries) => {
+						if (tries !== 1) return;
+						// While it waits to be tried again, the program is released and the event loop stays busy past the
+						// step's timeout, so the next try wakes after it.
+						setTimeout(() => {
+							held.release();
+							Atomics.wait(sleeper, 0, 0, timeoutMs + 150);
+						}, 10);
+					},
 				);
+				assert.deepEqual(started, []);
 				assert.equal((result.exit.spawnError as NodeJS.ErrnoException).code, held.refusal);
 				assert.equal(result.exit.exitStatus, null);
 				assert.equal(result.exit.timedOut, false);
 				assert.equal(result.output, "");
-				assert.ok(tries > 1, `tried ${tries} times`);
-				assert.equal(getEventListeners(controller.signal, "abort").length, 0);
 			} finally {
 				held.release();
 			}
+			assert.equal(existsSync(marker), false);
 		},
 	);
 
@@ -332,7 +405,8 @@ describe("running a logged process (#4588)", () => {
 		"the time a refused program waits to be tried again counts toward the step's timeout (#5608)",
 		async () => {
 			const held = heldNode();
-			const timeoutMs = 2_000;
+			const timeoutMs = 3_000;
+			const waitedMs = 2_000;
 			const sleeper = new Int32Array(new SharedArrayBuffer(4));
 			let firstTry = 0;
 			try {
@@ -341,8 +415,8 @@ describe("running a logged process (#4588)", () => {
 					(tries) => {
 						if (tries === 1) firstTry = Date.now();
 						if (tries !== 2) return;
-						// The second try starts once the whole timeout has passed since the first.
-						const left = firstTry + timeoutMs - Date.now();
+						// The second try starts two of the step's three seconds after the first.
+						const left = firstTry + waitedMs - Date.now();
 						if (left > 0) Atomics.wait(sleeper, 0, 0, left);
 						held.release();
 					},
@@ -350,8 +424,8 @@ describe("running a logged process (#4588)", () => {
 				assert.equal(tries, 2);
 				assert.equal(result.exit.timedOut, true);
 				assert.equal(result.exit.spawnError, undefined);
-				// Stopped as soon as it started, not after a second whole timeout of its own.
-				assert.ok(result.exit.elapsedMs < 2 * timeoutMs, `stopped after ${result.exit.elapsedMs} ms`);
+				// Stopped once the step's time ran out, not after a whole timeout of its own.
+				assert.ok(result.exit.elapsedMs < waitedMs + timeoutMs, `stopped after ${result.exit.elapsedMs} ms`);
 			} finally {
 				held.release();
 			}
