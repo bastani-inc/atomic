@@ -18,6 +18,7 @@ import {
 } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js";
+import type { ToolRenderers } from "../src/core/extensions/tool-types.js";
 import type { MessageRenderer } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionEntry } from "../src/core/session-manager.js";
@@ -28,6 +29,7 @@ import { CustomEntryComponent } from "../src/modes/interactive/components/custom
 import {
 	type ClickExpandableBlock,
 	clickableBlocksView,
+	supersedeBlockClicks,
 } from "../src/modes/interactive/components/transcript-block-clicks.js";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.js";
 import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
@@ -37,7 +39,7 @@ import { ExpandableText } from "../src/modes/interactive/interactive-mode-helper
 import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.js";
-import { getLayoutFrame, RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
+import { getLayoutFrame, RecordingTerminal, transcriptSiblingReads } from "./helpers/interactive-fullscreen-layout.js";
 
 const browser = vi.hoisted(() => ({ openBrowser: vi.fn<(url: string) => void>() }));
 vi.mock("../src/utils/open-browser.ts", () => browser);
@@ -57,6 +59,7 @@ function makeMode(
 	requestRender: () => void,
 	transcriptView: () => ScrollView | undefined,
 	messageRenderers: Readonly<Record<string, MessageRenderer>> = {},
+	toolRenderers: Readonly<Record<string, ToolRenderers>> = {},
 ) {
 	const chatContainer = new StartupChatContainer(isChatMessageComponent, transcriptView);
 	chatContainer.releaseStartupOutput();
@@ -107,7 +110,7 @@ function makeMode(
 		mermaidMarkdownTransformerMode: "streaming",
 		getMarkdownTransformers: proto("getMarkdownTransformers"),
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
-		getRegisteredToolDefinition: () => undefined,
+		getRegisteredToolDefinition: (name: string) => toolRenderers[name],
 		maybeShowAssistantDiagnostics: vi.fn(),
 		maybeShowInstallChangeWarning: vi.fn(),
 		updatePendingMessagesDisplay: vi.fn(),
@@ -181,7 +184,11 @@ const lines = (count: number, label: string) =>
 async function mountChat(
 	columns: number,
 	rows: number,
-	outputs: { readonly second?: string; readonly messageRenderers?: Readonly<Record<string, MessageRenderer>> } = {},
+	outputs: {
+		readonly second?: string;
+		readonly messageRenderers?: Readonly<Record<string, MessageRenderer>>;
+		readonly toolRenderers?: Readonly<Record<string, ToolRenderers>>;
+	} = {},
 ) {
 	const terminal = new RecordingTerminal();
 	terminal.columns = columns;
@@ -199,6 +206,7 @@ async function mountChat(
 		() => tui.requestRender(),
 		() => transcript,
 		outputs.messageRenderers,
+		outputs.toolRenderers,
 	);
 	const document = new WindowedContainer();
 	document.addChild(mode.chatContainer);
@@ -294,6 +302,31 @@ async function mountChat(
 }
 
 describe("clicking transcript blocks in the main chat", () => {
+	test("a modified or superseded click on the last message reads no transcript siblings (#5696)", async () => {
+		const chat = await mountChat(100, 24);
+		try {
+			const container = chat.mode.chatContainer;
+			for (let i = 0; i < 32; i++) container.addChild(new Text(`message ${i}`, 0, 0));
+			chat.tui.renderNow();
+			const row = chat.rowOf(/message 31/) + 1;
+			assert.equal(
+				transcriptSiblingReads(container, () => {
+					chat.terminal.input(`\x1b[<4;2;${row}M`);
+					chat.terminal.input(`\x1b[<4;2;${row}m`);
+				}),
+				0,
+			);
+			chat.press(5, row - 1);
+			supersedeBlockClicks(container);
+			assert.equal(
+				transcriptSiblingReads(container, () => chat.release(5, row - 1)),
+				0,
+			);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
 	test("a click on a tool block's header expands it and a second click collapses it, leaving the other blocks alone", async () => {
 		const chat = await mountChat(100, 60);
 		try {
@@ -1142,6 +1175,140 @@ describe("clicking other blocks Ctrl+O expands in the main chat", () => {
 			assert.ok(shown(), screen().join("\n"));
 		} finally {
 			tui.stop();
+		}
+	});
+});
+
+/** A control an extension draws, such as a button, that takes its own clicks on its first row and counts them. */
+function extensionButton(lines: readonly string[]) {
+	const button = {
+		clicks: 0,
+		render: (width: number) => lines.map((line) => line.slice(0, width)),
+		invalidate() {},
+		handleMouse(event: { readonly type: string; readonly y: number }) {
+			if (event.type !== "click" || event.y !== 0) return undefined;
+			button.clicks += 1;
+			return { handled: true };
+		},
+	};
+	return button;
+}
+
+describe("controls an extension draws inside a block of the main chat (#5696)", () => {
+	test("a button in an extension's message gets the clicks it takes, and a click it leaves still opens the message (#5696)", async () => {
+		const button = extensionButton(["[ Approve ]"]);
+		const renderer: MessageRenderer = (_message, { expanded }) => {
+			const drawn = extensionButton(
+				expanded
+					? ["[ Approve ]", "Plan: rename the cache keys", "Step 2 detail"]
+					: ["[ Approve ]", "Plan: rename the cache keys"],
+			);
+			drawn.handleMouse = (event) => button.handleMouse(event);
+			return drawn as never;
+		};
+		const chat = await mountChat(100, 60, { messageRenderers: { approval: renderer } });
+		try {
+			const custom = { role: "custom", customType: "approval", content: "approve?", display: true, timestamp: 1 };
+			await emit(chat.mode, { type: "message_start", message: custom });
+			await emit(chat.mode, { type: "message_end", message: custom });
+			chat.tui.renderNow();
+			const opened = () => chat.screen().some((line) => line.includes("Step 2 detail"));
+
+			const row = chat.rowOf(/\[ Approve \]/);
+			chat.click(chat.columnOf(row, "Approve"), row);
+			assert.equal(button.clicks, 1, `the button took the click:\n${chat.screen().join("\n")}`);
+			assert.ok(!opened(), `a click the button took does not open the message:\n${chat.screen().join("\n")}`);
+			chat.click(chat.columnOf(row, "Approve"), row);
+			assert.equal(button.clicks, 2);
+
+			const plan = chat.rowOf(/Plan: rename the cache keys/);
+			chat.click(chat.columnOf(plan, "rename"), plan);
+			assert.equal(button.clicks, 2, "a row the button does not draw is not its click");
+			assert.ok(opened(), `a click nothing inside takes opens the message:\n${chat.screen().join("\n")}`);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	for (const change of ["removed", "zero-height"] as const) {
+		test(`an extension's ${change} button gets no click before the next paint (#5696)`, async () => {
+			const label = ["[ Approve ]"];
+			const button = extensionButton(label);
+			const panel = new Container();
+			panel.addChild(new Text("Approval request", 0, 0));
+			panel.addChild(button);
+			const chat = await mountChat(100, 60, { messageRenderers: { approval: () => panel } });
+			try {
+				mode(chat).addMessageToChat({
+					role: "custom",
+					customType: "approval",
+					content: "approve?",
+					display: true,
+					timestamp: 1,
+				});
+				chat.tui.renderNow();
+				const row = chat.rowOf(/\[ Approve \]/);
+				const column = chat.columnOf(row, "Approve");
+				chat.press(column, row);
+				setTimeout(() => {
+					if (change === "removed") panel.removeChild(button);
+					else label.length = 0;
+					chat.tui.requestRender();
+				}, 1);
+				vi.advanceTimersByTime(1);
+				assert.match(chat.screen()[row]!, /\[ Approve \]/, "the requested repaint is still pending");
+				chat.release(column, row);
+				chat.settle();
+				assert.equal(button.clicks, 0);
+			} finally {
+				chat.tui.stop();
+			}
+		});
+	}
+
+	test("a click on the title row of a tool block its renderer draws opens it, and a control below takes its own click (#5696)", async () => {
+		const call = extensionButton(["\u25cf Deploy(staging)"]);
+		const result = extensionButton(["[ Roll back ]"]);
+		const toolRenderers: Record<string, ToolRenderers> = {
+			// A tool whose renderers draw the whole block, so the components they return are the block's own rows.
+			deploy: {
+				renderShell: "self",
+				renderCall: () => call as never,
+				renderResult: (_result, { expanded }) => {
+					const drawn = extensionButton(
+						expanded
+							? ["[ Roll back ]", "deployed 3 services", "service list"]
+							: ["[ Roll back ]", "deployed 3 services"],
+					);
+					drawn.handleMouse = (event) => result.handleMouse(event);
+					return drawn as never;
+				},
+			},
+		};
+		const chat = await mountChat(100, 60, { toolRenderers });
+		try {
+			await toolTurn(
+				chat.mode,
+				fauxAssistantMessage([fauxToolCall("deploy", { target: "staging" }, { id: "deploy-1" })], {
+					stopReason: "toolUse",
+				}),
+				() => "ok",
+			);
+			chat.tui.renderNow();
+			const opened = () => chat.screen().some((line) => line.includes("service list"));
+			assert.ok(!opened(), chat.screen().join("\n"));
+
+			const title = chat.rowOf(/Deploy\(staging\)/);
+			chat.click(chat.columnOf(title, "Deploy"), title);
+			assert.equal(call.clicks, 0, "the title row opens the block before the control drawn on it sees the click");
+			assert.ok(opened(), `the title row opens the block:\n${chat.screen().join("\n")}`);
+
+			const rollBack = chat.rowOf(/\[ Roll back \]/);
+			chat.click(chat.columnOf(rollBack, "Roll"), rollBack);
+			assert.equal(result.clicks, 1, "a control below the title row takes its click");
+			assert.ok(opened(), `and the block stays open:\n${chat.screen().join("\n")}`);
+		} finally {
+			chat.tui.stop();
 		}
 	});
 });
