@@ -98,6 +98,12 @@ export type RpcSessionInfo = Omit<SessionInfo, "created" | "modified"> & {
 };
 
 export type RpcHistoryPage = SessionHistoryPage & { readonly leafId: string | null };
+export interface RpcContextWindow {
+	entries: SessionEntry[];
+	leafId: string | null;
+	/** Only for an unsaved session with archived rows: the generation-pinned cursor and positions of current rows. */
+	privateArchive?: { sessionId: string; cursor: string; seqs: number[] };
+}
 export interface RpcForkMessagePage {
 	readonly items: readonly (
 		| { readonly seq: number; readonly entryId: string; readonly text: string }
@@ -563,7 +569,7 @@ export type RpcResponse =
 			type: "response";
 			command: "get_context_window";
 			success: true;
-			data: { entries: SessionEntry[]; leafId: string | null };
+			data: RpcContextWindow;
 	  }
 	| { id?: string; type: "response"; command: "get_history_chunk"; success: true; data: RpcHistoryChunk }
 	| {

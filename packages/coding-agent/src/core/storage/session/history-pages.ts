@@ -19,6 +19,11 @@ function cursorScope(sessionId: string, epoch: string): string {
 		.digest("base64url");
 }
 
+/** Start a portable iteration over the captured generation without reading its first page yet. */
+export function firstHistoryCursor(sessionId: string, epoch: string, throughSeq: number): string {
+	return `${cursorScope(sessionId, epoch)}.1.${throughSeq}`;
+}
+
 /** A lazy sequence of pages of the generation and watermark the caller observed. Metadata is sized before any
  * payload read. A new generation is rejected by readRange inside the same snapshot that reads the payload. */
 export async function* historyPages(

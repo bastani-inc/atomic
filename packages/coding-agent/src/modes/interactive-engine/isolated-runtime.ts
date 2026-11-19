@@ -17,9 +17,10 @@ import type { ExtensionError, HostSessionPickerRow } from "../../core/extensions
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
-import { SessionManager } from "../../core/session-manager.ts";
+import { type SessionEntry, SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
 import { retryStatusUpdate, type SessionRetryStatus } from "../../core/session-retry-status.js";
+import type { OversizedSessionEntry } from "../../core/storage/session/types.js";
 import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
@@ -43,6 +44,7 @@ import type {
 	RpcEvent,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcHistoryPage,
 	RpcModelCatalog,
 	RpcPersistedModelDefaults,
 	RpcResourceExtension,
@@ -1502,16 +1504,59 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 * (#4703).
 	 */
 	private async openUnpersistedSessionView(current: SessionManager): Promise<SessionManager> {
-		const { entries, leafId } = await this.client.getEntries({ windowOnly: true });
+		const { entries, leafId, privateArchive } = await this.client.getEntries({ windowOnly: true });
 		const header = current.getHeader();
-		const view = await SessionManager.inMemory(
-			current.getCwd(),
-			undefined,
-			header ? [{ ...header, id: this.remoteSessionId ?? header.id }, ...entries] : entries,
-		);
+		const id = privateArchive?.sessionId ?? this.remoteSessionId ?? header?.id;
+		const headers = header ? [{ ...header, id: id ?? header.id }] : [];
+		const cwd = current.getCwd();
+		let view: SessionManager;
+		if (!privateArchive) {
+			view = await SessionManager.inMemory(cwd, undefined, [...headers, ...entries]);
+		} else {
+			// The engine's unsaved archive disappears if the engine dies. Keep a separate private, writable
+			// host backend as before; never proxy host-local writes or spill private SDK data to disk.
+			const seed = await SessionManager.inMemory(cwd, { id: privateArchive.sessionId }, headers);
+			const store = seed.getSessionStore();
+			try {
+				const currentRows = new Map(privateArchive.seqs.map((seq, index) => [seq, entries[index]!]));
+				let last = 0;
+				let cursor: string | undefined = privateArchive.cursor;
+				do {
+					const page: RpcHistoryPage = await this.client.getEntries({ cursor });
+					const batch: SessionEntry[] = [];
+					for (const item of page.items) {
+						if (item.seq !== last + batch.length + 1) throw new Error("Incomplete unsaved engine history");
+						batch.push(
+							currentRows.get(item.seq) ?? ("entry" in item ? item.entry : await this.readUnsavedEntry(item)),
+						);
+					}
+					last = (await store.append(privateArchive.sessionId, batch, { expectSeq: last })).lastSeq;
+					cursor = page.nextCursor;
+				} while (cursor !== undefined);
+				view = await SessionManager.open(store, privateArchive.sessionId, cwd);
+			} catch (error) {
+				await store.close();
+				throw error;
+			}
+		}
 		if (leafId === null) await view.resetLeaf();
 		else if (leafId !== view.getLeafId()) await view.branch(leafId);
 		return view;
+	}
+
+	private async readUnsavedEntry(ref: OversizedSessionEntry): Promise<SessionEntry> {
+		const decoder = new TextDecoder("utf-8", { fatal: true });
+		let json = "";
+		for (let offset = 0; offset < ref.bytes; ) {
+			const result = await this.client.getHistoryChunk(ref, offset);
+			const chunk = Buffer.from(result.data, "base64");
+			const end = offset + chunk.length;
+			if (end <= offset || end > ref.bytes || (result.nextOffset ?? ref.bytes) !== end)
+				throw new Error("Incomplete unsaved engine entry");
+			json += decoder.decode(chunk, { stream: end < ref.bytes });
+			offset = end;
+		}
+		return JSON.parse(json) as SessionEntry;
 	}
 
 	private observeEvent(event: RpcEvent): void {

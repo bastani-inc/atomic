@@ -125,6 +125,47 @@ async function assertHostFollowsBranch(current: EngineHostPair, expected: string
 	);
 }
 
+test("an unsaved isolated host keeps its private archive and can append locally after its engine store closes (#5554)", async () => {
+	const stamp = new Date(0).toISOString();
+	const manager = await SessionManager.inMemory("/project", { id: "engine" }, [
+		{ type: "session", id: "engine", version: 4, cwd: "/project", createdAt: stamp },
+		{
+			type: "message",
+			id: "old",
+			parentId: null,
+			timestamp: stamp,
+			message: { role: "user", content: "old archive", timestamp: 1 },
+		},
+		{
+			type: "compaction",
+			id: "clear",
+			parentId: "old",
+			timestamp: stamp,
+			summary: "clear",
+			tokensBefore: 100,
+			firstKeptEntryId: null,
+			details: { strategy: "verbatim-lines" },
+		},
+		{
+			type: "message",
+			id: "now",
+			parentId: "clear",
+			timestamp: stamp,
+			message: { role: "user", content: "current", timestamp: 2 },
+		},
+	]);
+	pair = await createEngineHostPair({ sessionManager: manager });
+	await pair.runtime.initializeFromEngine();
+	const host = pair.runtime.session.sessionManager;
+	assert.notEqual(host.getSessionStore(), manager.getSessionStore());
+	await manager.getSessionStore().close();
+	assert.equal(await host.findEntrySeq("old"), 1);
+	assert.equal(host.getEntrySeq("now"), 3);
+	await host.appendMessage({ role: "user", content: "local only", timestamp: 3 });
+	assert.equal(host.getLastSeq(), 4);
+	assert.equal(host.getLeafEntry()?.type, "message");
+});
+
 test("/tree with No summary shows only the selected branch in a saved session (#3325)", async () => {
 	const { current, engineManager } = await createSavedPair();
 	pair = current;
