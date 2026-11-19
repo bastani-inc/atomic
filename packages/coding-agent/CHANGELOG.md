@@ -17,6 +17,7 @@
 ### Changed
 
 - Closing or switching sessions no longer needs to describe a worktree child as reaped while Git is still using its checkout. Even if the close requested the stop, the receipt can say `already-finishing` instead. Children without temporary worktrees keep their usual close receipts ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
+- Custom session stores can implement `readForkWindow(sessionId, entryId)` to supply a subagent's retained branch and labels without opening the whole parent. Stores without the method keep their existing fork behavior ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
 
 ### Fixed
 
