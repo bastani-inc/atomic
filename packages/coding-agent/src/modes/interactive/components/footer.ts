@@ -8,7 +8,6 @@ import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { formatModelLabel } from "../../../core/model-label.ts";
-import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import type { TaskElapsedClocks } from "../../../core/tasks/live-elapsed.js";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import {
@@ -277,20 +276,20 @@ export class FooterComponent implements Component {
 	private declare footerData: ReadonlyFooterDataProvider;
 	private declare readonly renderStyle: FooterRenderStyle;
 	private readonly navigationActive: () => boolean;
-	private readonly backgroundTasks: (() => readonly TaskRecord[]) | undefined;
+	private readonly backgroundTasks: (() => Parameters<typeof renderTaskFooter>[0] | undefined) | undefined;
 	private readonly hintSegments: (() => readonly string[]) | undefined;
 	private readonly backgroundTaskClocks: (() => TaskElapsedClocks | undefined) | undefined;
 	private branchCwd: string | undefined;
 	private releaseBranch: (() => void) | undefined;
 	private disposed = false;
 
-	/** `backgroundTasks` names the tasks the footer counts; without it, those of the session's own task store. */
+	/** `backgroundTasks` supplies this chat's task view, or a single snapshot to render. */
 	constructor(
 		session: ChatBoxSession,
 		footerData: ReadonlyFooterDataProvider,
 		renderStyle: FooterRenderStyle = defaultFooterRenderStyle,
 		navigationActive: () => boolean = () => false,
-		backgroundTasks?: () => readonly TaskRecord[],
+		backgroundTasks?: () => Parameters<typeof renderTaskFooter>[0] | undefined,
 		hintSegments?: () => readonly string[],
 		backgroundTaskClocks?: () => TaskElapsedClocks | undefined,
 	) {

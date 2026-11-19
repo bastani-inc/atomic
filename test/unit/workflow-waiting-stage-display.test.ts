@@ -3,6 +3,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { STATUS_MARKERS } from "../../packages/coding-agent/src/modes/interactive/components/notice-line.js";
 import { summarizeStage } from "../../packages/workflows/src/extension/workflow-stage-results.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
@@ -13,7 +14,7 @@ import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.j
 import { renderHeader } from "../../packages/workflows/src/tui/header.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
-import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
+import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { renderSwitcher } from "../../packages/workflows/src/tui/switcher.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -128,12 +129,16 @@ test("the status text names the suspended stages of a run whose stages all wait 
 	assert.doesNotMatch(statusText(run([stage("busy", "running")])), /suspended \(/);
 });
 
-test("a suspended stage shows the suspended glyph, not the pending one, in node cards, status rows and the strip (#4309, #4589)", () => {
-	assert.equal(statusIcon("suspended"), "◷");
+test("a suspended stage shows the waiting mark a released subagent has, not the pending one, in node cards, status rows, the switcher, the strip and the header (#4309, #4589, #5489)", () => {
+	const mark = STATUS_MARKERS.waiting.glyph;
+	assert.equal(statusIcon("suspended"), mark);
 	assert.notEqual(statusIcon("suspended"), statusIcon("pending"));
+	// Dim, as the chat's waiting mark is; a paused stage keeps the graph's own paused icon.
+	assert.equal(statusColor("suspended", theme), theme.dim);
+	assert.equal(statusIcon("paused"), "❚❚");
 
 	const waiting = stage("ci", "suspended", TOOL_WAIT);
-	assert.match(plain(renderNodeCard(waiting, { theme, width: 26 })), /◷ suspended/);
+	assert.match(plain(renderNodeCard(waiting, { theme, width: 26 })), new RegExp(`${mark} suspended`));
 	assert.match(plain(renderNodeCard(stage("later", "pending"), { theme, width: 26 })), /○ pending/);
 
 	const detail = plain(
@@ -151,17 +156,18 @@ test("a suspended stage shows the suspended glyph, not the pending one, in node 
 			{ theme, now: NOW, width: 100 },
 		),
 	);
-	assert.match(detail, /◷ ci\s+suspended/);
+	assert.match(detail, new RegExp(`${mark} ci\\s+suspended`));
 	assert.match(detail, /○ later\s+pending/);
 
 	assert.match(
 		plain(renderSwitcher([waiting], { query: "", selectedIndex: -1 }, { theme, width: 60 })),
-		/◷ ci\s+suspended/,
+		new RegExp(`${mark} ci\\s+suspended`),
 	);
 	assert.equal(
 		plain(progressStrip([{ status: "suspended" }, { status: "pending" }, { status: "running" }], 40)),
-		"[◷][○][●]",
+		`[${mark}][○][●]`,
 	);
-	assert.equal(plain(progressStrip([{ status: "suspended" }], 40, theme)), "[◷]");
-	assert.match(plain(renderHeader(run([waiting]), { theme, width: 100 })), /◷ 1/);
+	assert.equal(plain(progressStrip([{ status: "suspended" }], 40, theme)), `[${mark}]`);
+	assert.match(plain(renderHeader(run([waiting]), { theme, width: 100 })), new RegExp(`${mark} 1`));
+	assert.doesNotMatch(plain(renderHeader(run([waiting]), { theme, width: 100 })), /◷/);
 });

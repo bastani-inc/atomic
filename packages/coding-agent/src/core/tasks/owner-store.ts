@@ -17,7 +17,7 @@ import {
 	taskClockRunning,
 	taskClocksFor,
 } from "./live-elapsed.js";
-import { sessionTasks } from "./session-scope.js";
+import { scopedBackgroundTasks, sessionTasks } from "./session-scope.js";
 import {
 	type OwnerLease,
 	type TaskLease,
@@ -89,7 +89,10 @@ export class OwnerTaskStore {
 	}
 	/** This session's own background tasks. Background membership survives foreground waits and terminal cleanup. */
 	get backgroundTasks(): TaskRecord[] {
-		return this.tasks.filter((task) => this.inBackground(task));
+		return scopedBackgroundTasks(
+			this,
+			this.tasks.filter((task) => this.inBackground(task)),
+		);
 	}
 	/** Every task of the owner, including the shells subagents running in it launched. */
 	get ownerTasks(): TaskRecord[] {
@@ -337,6 +340,7 @@ export function getOwnerTaskSession(target: object): object | undefined {
 }
 export function isTaskTurnInterrupted(task: TaskRecord): boolean {
 	if (task.kind !== "agent" || task.execution.kind !== "running") return false;
+	if (task.turnInterrupted === true) return true;
 	const clocks = taskClockOf(task);
 	return clocks !== undefined && interruptedByClock.get(clocks)?.has(task.ref.taskId) === true;
 }
@@ -345,6 +349,7 @@ export function isTaskTurnInterrupted(task: TaskRecord): boolean {
  * subagent rests from: a turn resumed and interrupted or stopped again rests from a new one, however briefly it ran.
  */
 export function taskResumedTurns(task: TaskRecord): number | undefined {
+	if (task.resumedTurns !== undefined) return task.resumedTurns;
 	const clocks = taskClockOf(task);
 	return clocks === undefined ? undefined : resumedTurnsByClock.get(clocks)?.get(task.ref.taskId);
 }

@@ -99,7 +99,7 @@ async function ownerWith(records: Array<Partial<SubagentChildRecord>>, host?: ob
 	for (const overrides of records)
 		await sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, record(ownerSessionId, overrides));
 	const ctx = { sessionManager, ...(host ? { getAgentTaskHost: () => host } : {}) } as unknown as ExtensionContext;
-	return { ctx, ownerSessionId };
+	return { ctx, ownerSessionId, sessionManager };
 }
 
 const intercomWake: AgentWake = { id: "wake-1", kind: "intercom" };
@@ -197,6 +197,45 @@ test("a wake acknowledges the broker only for a child that has an Intercom name 
 				.map((entry) => entry.data),
 			expected,
 		);
+		stop();
+	}
+});
+
+test("a wake of a child that finished on its own, for a result that arrived late, confirms nothing to the broker (#5551)", async () => {
+	// Its woken session registered on Intercom, which ended its reservation: the broker holds nothing to extend.
+	const { ctx, ownerSessionId, sessionManager } = await ownerWith([{ terminalStatus: "ok", waitingOn: [] }]);
+	restoreState.outcome = { kind: "terminal", record: record(ownerSessionId, { terminalStatus: "ok" }) };
+	const events = bus();
+	const dispatcher = new AgentWakeDispatcher();
+	const saving = {
+		pi: {
+			appendEntry: async (customType: string, data: unknown) => {
+				await sessionManager.appendCustomEntry(customType, data);
+			},
+		},
+	} as unknown as SubagentChildRestoreDeps;
+	const stop = bindReleasedChildWakes(saving, ctx, events, dispatcher);
+	try {
+		await dispatcher.deliver(subagentWakeKey(ownerSessionId, "run:0"), {
+			id: "tool-result:ci-1",
+			kind: "tool-result",
+			toolResult: {
+				toolCallId: "ci-1",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "done" }], details: undefined },
+				isError: false,
+			},
+		});
+		assert.deepEqual(
+			restoreState.calls.map((call) => call.childId),
+			["run:0"],
+			"the child is woken to read the late result",
+		);
+		assert.deepEqual(
+			events.emitted.filter((entry) => entry.channel === SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT),
+			[],
+		);
+	} finally {
 		stop();
 	}
 });
