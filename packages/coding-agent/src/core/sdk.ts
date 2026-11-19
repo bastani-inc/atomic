@@ -573,7 +573,7 @@ async function constructAgentSession(
 
 	// `defaultTools` narrows only the initial BUILT-IN selection. It must not
 	// narrow `allowedToolNames`: a narrow allowlist would drop every extension
-	// and SDK custom tool (workflow, subagent, intercom, mcp, web_search, ...)
+	// and SDK custom tool (subagent, intercom, mcp, web_search, ...)
 	// for any user who configures it (upstream 4d9aa837 + companion fix 541045ae).
 	const toolListError = options.tools ? getToolListError(options.tools) : undefined;
 	if (toolListError) throw new Error(`Invalid tools option: ${toolListError}`);
@@ -848,7 +848,7 @@ async function constructAgentSession(
 				}
 				const env = auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined;
 				const cacheRetentionEnv = getAtomicEnvValue("CACHE_RETENTION", env);
-				// Shared by main chat, workflow stages and subagents; provider capability gates still apply.
+				// Shared by the main chat and subagents; provider capability gates still apply.
 				const cacheRetention =
 					streamOptions?.cacheRetention ??
 					(cacheRetentionEnv === "none"
