@@ -18,6 +18,7 @@
 - A worktree pool admission whose temporary record name is already taken leaves that file untouched and writes under a fresh name. On Linux and macOS it used to overwrite the other file and remove its name; on Windows the admission failed ([#5824](https://github.com/bastani-inc/atomic/issues/5824)).
 - The interactive interface now withdraws a folder's resources when an extension registers a `project_trust` handler after the first trust report but before the engine calls the handlers. It waits for the decision before warning that the folder is untrusted ([#5693](https://github.com/bastani-inc/atomic/issues/5693)).
 - Buttons in extension messages, saved entries and custom tool output receive clicks again when the fullscreen chat runs in the terminal UI process. A click the renderer leaves unhandled still opens or folds the block, and tool titles still toggle first. Separate-engine sessions are unchanged ([#5696](https://github.com/bastani-inc/atomic/issues/5696)).
+- Reopened subagent notices from older sessions no longer show a stopped child as paused just because its task description begins with pause or wait wording. For a notice with only its title left, Atomic uses the matching stop on the same branch. If the stop predates the open window, its acknowledgement must still be in the window; otherwise the old label remains ([#5690](https://github.com/bastani-inc/atomic/issues/5690)).
 
 ## [0.9.90] - 2026-11-19
 
