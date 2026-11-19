@@ -1,4 +1,5 @@
 import { jsonParser, type Token } from "stream-json/core/parser.js";
+import type { SessionEntry } from "../../session-manager-types.js";
 import type { SqliteRow, SqliteValue } from "../database.js";
 
 // A projection only constructs values consumed by the resume fold. The stream parser must not pack
@@ -229,8 +230,10 @@ function* discriminator(key: string, parent?: string): Reader<string> {
 	return "";
 }
 
-function* project(type: string, customType: string, role: string): Reader<Json> {
-	const fields: Record<string, Shape> = { type: true, parentId: true, timestamp: true };
+function* project(type: string, customType: string, role: string, branchStateOnly = false): Reader<Json> {
+	const fields: Record<string, Shape> = branchStateOnly
+		? { type: true, id: true }
+		: { type: true, parentId: true, timestamp: true };
 	switch (type) {
 		case "custom": {
 			const data = field(customFields, customType);
@@ -264,8 +267,9 @@ function* project(type: string, customType: string, role: string): Reader<Json> 
 			fields.targetId = true;
 			break;
 		case "message":
-			fields.message =
-				role === "assistant"
+			fields.message = branchStateOnly
+				? { role: "short", toolCallId: "string" }
+				: role === "assistant"
 					? { role: true, provider: true, model: true, usage: true, content: "tools" }
 					: role === "toolResult"
 						? { role: true, toolCallId: true, usage: "usage" }
@@ -283,6 +287,7 @@ function* project(type: string, customType: string, role: string): Reader<Json> 
 			fields.usage = "usage";
 			break;
 	}
+	if (branchStateOnly) delete fields.usage;
 	return yield* readValue(yield, fields);
 }
 
@@ -363,6 +368,16 @@ export async function readChunkedWorkflowRunId(chunks: AsyncIterable<Uint8Array>
 	);
 	const id = object(object(selected).data).runId;
 	return typeof id === "string" ? id : undefined;
+}
+
+/** Only the fields consumed by the branch-state fold, without converting JSON strings to a SQL dialect's text. */
+export async function chunkedBranchState(chunks: () => AsyncIterable<Uint8Array>): Promise<SessionEntry> {
+	const type = await read(chunks(), discriminator("type"));
+	const custom = type === "custom" || type === "custom_message";
+	const customType = custom ? await read(chunks(), discriminator("customType")) : "";
+	const entry = object(await read(chunks(), project(type, customType, "", true)));
+	if (custom) entry.customType = customType;
+	return entry as unknown as SessionEntry;
 }
 
 /** Fill the inline projection of the stub with the streamed fields. No reconstructed value is sent back to SQL. */

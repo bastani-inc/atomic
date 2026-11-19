@@ -507,7 +507,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			() => control.state,
 			{
 				// Through the attempt's own store, which ships what the attempt wrote of the session first (#4768).
-				entries: async (sessionId) => (await (attemptSessions ?? sessions).load(sessionId)).entries,
+				sessionStore: () => attemptSessions ?? sessions,
 				turnStarted: (handle) => turnStarted.has(handle),
 				prompts: () => prompts,
 				inbox: () => remoteInbox,

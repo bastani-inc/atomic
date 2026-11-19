@@ -302,21 +302,16 @@ export function registerSessionStoreConformance(
 			});
 
 			check(
-				"bounds newly assigned session and entry ids by UTF-8 bytes before publishing them (#5554)",
+				"round-trips long Unicode IDs on create and append without changing the links (#5554)",
 				async (store, reload) => {
-					const limit = 4096;
-					const fits = "漢".repeat(Math.floor(limit / 3)) + "x";
-					assert.equal(Buffer.byteLength(fits), limit);
-					const tooLong = fits + "a";
-					await assert.rejects(store.create(header(tooLong), []), /4096.*bytes/);
-					await store.create(header(fits), [message(fits, "kept")]);
-					await assert.rejects(
-						store.append(fits, [message(tooLong, "not stored")], { expectSeq: 1 }),
-						/4096.*bytes/,
-					);
+					const id = "漢".repeat(1500);
+					const first = message(id + "a", "first");
+					const next = { ...message(id + "b", "next"), parentId: first.id };
+					await store.create(header(id), [first]);
+					await store.append(id, [next], { expectSeq: 1 });
 					store = await reload(store);
-					assert.equal((await store.load(fits)).lastSeq, 1);
-					assert.equal(await store.readHeader(tooLong), undefined);
+					assert.equal((await store.readHeader(id))?.id, id);
+					assert.deepEqual((await store.readRange!(id, 1, 2)).entries, [first, next]);
 				},
 			);
 

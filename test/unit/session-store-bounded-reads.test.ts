@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import { SessionSpillError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import {
+	readSessionHistory,
+	readSessionHistoryChunks,
+} from "../../packages/coding-agent/src/core/storage/session/history-pages.js";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { LegacySessionStore } from "../../packages/coding-agent/src/core/storage/session/legacy-session-store.js";
 import {
@@ -174,6 +178,32 @@ it("a legacy-store wrapper names a missing bounded reader instead of loading the
 	}
 });
 
+it("a read-only transcript can follow bounded pages and exact entry chunks without opening a session (#5554)", async () => {
+	const store = new MemorySessionStore();
+	const first = user("old", null, "保存".repeat(250_000), 1),
+		last = user("last", "old", "current", 2);
+	await store.create(header, [first, last]);
+	const resume = vi.spyOn(store, "readResume").mockRejectedValue(new Error("opened live recovery"));
+	const full = vi.spyOn(store, "load").mockRejectedValue(new Error("loaded whole transcript"));
+	try {
+		const end = await readSessionHistory(store, header.id, { direction: "backward" }).next();
+		assert.ok(!end.done && end.value.nextCursor);
+		assert.deepEqual(end.value.items, [{ seq: 2, entry: last }]);
+		const head = await readSessionHistory(store, header.id, { cursor: end.value.nextCursor }).next();
+		const item = head.value?.items[0];
+		assert.ok(item && "kind" in item);
+		const chunks = [];
+		for await (const chunk of readSessionHistoryChunks(store, item)) chunks.push(chunk);
+		assert.ok(Buffer.concat(chunks).equals(Buffer.from(JSON.stringify(first))));
+		assert.equal(resume.mock.calls.length, 0);
+		assert.equal(full.mock.calls.length, 0);
+	} finally {
+		resume.mockRestore();
+		full.mockRestore();
+		await store.close();
+	}
+});
+
 function spillFiles(): {
 	readonly historyFiles: SessionHistoryFiles;
 	readonly files: Map<number, Uint8Array>;
@@ -222,6 +252,43 @@ function spillFiles(): {
 			delete (directory as { readRange?: unknown }).readRange;
 		},
 	};
+}
+
+for (const backend of ["memory", "jsonl"] as const) {
+	it(`an older ${backend} fork point can be resumed without decoding a giant message outside its window (#5554)`, async () => {
+		const spill = spillFiles();
+		const store =
+			backend === "memory"
+				? new MemorySessionStore(undefined, spill.historyFiles)
+				: await JsonlSessionStore.open(temporaryDirectory(), { exactDirectory: true });
+		const entries = compacted(22);
+		const cold = entries[2]!;
+		assert.ok(cold.type === "message" && cold.message.role === "user");
+		cold.message.content = "giant-retired-body".repeat(130_000);
+		const point = entries.at(-1)!.id;
+		entries.push(user("other", "m0", "other branch", 200));
+		await store.create(header, entries);
+		await store.readResume(header.id);
+		if (store instanceof MemorySessionStore) await store.releaseSession(header.id);
+		const expected = withoutEpoch(sessionResumeOf(header, entries, point));
+		const parse = JSON.parse;
+		const spy = vi.spyOn(JSON, "parse").mockImplementation((text, reviver) => {
+			assert.ok(
+				text.length < 1_048_576 || !text.includes("giant-retired-body"),
+				"decoded a giant retired conversation message",
+			);
+			return parse(text, reviver);
+		});
+		try {
+			const selected = await store.readResume(header.id, point);
+			assert.deepEqual(withoutEpoch(selected), expected);
+			assert.equal(spill.wholeReads(), 0);
+			assert.equal((await store.readResume(header.id)).leafId, "other");
+		} finally {
+			spy.mockRestore();
+			await store.close();
+		}
+	});
 }
 
 describe("bounded memory session reads (#5249)", () => {

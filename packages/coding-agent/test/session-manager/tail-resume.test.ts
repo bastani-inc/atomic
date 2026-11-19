@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
@@ -14,6 +15,7 @@ import {
 } from "../../src/core/session-manager.ts";
 import { getBranchPath } from "../../src/core/session-manager-history.ts";
 import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.js";
+import { MemorySessionStore } from "../../src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../../src/core/storage/session/sql-session-store.js";
 import {
 	SESSION_HISTORY_CHUNK_BYTES,
@@ -237,6 +239,57 @@ it("a giant historical entry is an exact byte stream, never one decoded entry (#
 	}
 	expect(offset).toBe(expected.length);
 	expect(manager.getEntry(id)).toBeUndefined();
+});
+
+it("2 MiB entry identities survive create, append, import, seed, copy and fork unchanged (#5554)", async () => {
+	const store = await sqlStore();
+	const dir = mkdtempSync(join(tmpdir(), "atomic-long-identity-"));
+	directories.push(dir);
+	const timestamp = new Date(0).toISOString();
+	const header = { id: "long-ids", version: 4 as const, createdAt: timestamp, cwd: dir };
+	const ids = ["a", "b"].map((char) => char.repeat(2 * 1024 * 1024));
+	const entries: SessionEntry[] = ids.map((id, i) => ({
+		type: "message",
+		id,
+		parentId: i ? ids[0]! : null,
+		timestamp,
+		message: { role: "user", content: `message ${i}`, timestamp: i },
+	}));
+	await store.create(header, [entries[0]!]);
+	await store.append(header.id, [entries[1]!], { expectSeq: 1 });
+	const source = await SessionManager.open(store, header.id);
+	const file = join(dir, "export.jsonl");
+	await writeFile(
+		file,
+		[{ type: "session", ...header }, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+	);
+	const target = new MemorySessionStore();
+	closers.push(() => target.close());
+	const imported = await SessionManager.importFromJsonl(file, dir, target);
+	const seeded = await SessionManager.inMemory(dir, undefined, entries);
+	const forked = await source.forkTo(dir, target);
+	const copied = new MemorySessionStore();
+	closers.push(() => copied.close());
+	await imported.rebindStore(copied, false);
+	for (const manager of [source, imported, seeded, forked]) {
+		const branch = manager.getBranch();
+		expect(branch.length).toBe(2);
+		expect(branch[0]!.id === ids[0] && branch[1]!.id === ids[1] && branch[1]!.parentId === ids[0]).toBe(true);
+	}
+	await source.appendCompaction("cleared", null, 100, details);
+	const firstWindow = source.getEntries();
+	expect(firstWindow.length).toBe(1);
+	expect(firstWindow[0]!.parentId === ids[1]).toBe(true);
+	await source.appendMessage({ role: "user", content: "later", timestamp: 3 });
+	await source.appendCompaction("cleared again", null, 100, details);
+	expect(source.getEntryCount()).toBe(1);
+	expect(Buffer.byteLength(JSON.stringify(source.getEntries()))).toBeLessThan(4096);
+	const result = await source.readHistory({ fromSeq: 2, toSeq: 2 }).next();
+	const ref = result.value?.items[0];
+	if (!ref || !("kind" in ref)) throw new Error("historical identity did not use a bounded entry reference");
+	const chunks = [];
+	for await (const chunk of source.readHistoryChunks(ref)) chunks.push(chunk);
+	expect(Buffer.concat(chunks).equals(Buffer.from(JSON.stringify(entries[1])))).toBe(true);
 });
 
 it("a seeded private session yields while storing its input and initially owns only the current window (#5554)", async () => {

@@ -1,4 +1,5 @@
 import type { SessionStore } from "@bastani/atomic";
+import { readSessionHistory, readSessionHistoryChunks } from "@bastani/atomic/storage";
 
 interface SessionTranscriptEntry {
 	readonly type?: string;
@@ -12,8 +13,18 @@ interface SessionTranscriptEntry {
 
 export async function isReopenableSession(store: SessionStore, sessionId: string): Promise<boolean> {
 	try {
-		const snapshot = await store.load(sessionId);
-		return snapshot.header.id === sessionId && snapshot.entries.some(isUsableContextMessage);
+		if ((await store.readHeader(sessionId))?.id !== sessionId) return false;
+		for await (const { items } of readSessionHistory(store, sessionId)) {
+			for (const item of items) {
+				if ("entry" in item) {
+					if (isUsableContextMessage(item.entry)) return true;
+				} else {
+					const { hasUsableMessageInChunks } = await import("./session-transcript-chunks.js");
+					if (await hasUsableMessageInChunks(readSessionHistoryChunks(store, item))) return true;
+				}
+			}
+		}
+		return false;
 	} catch {
 		return false;
 	}

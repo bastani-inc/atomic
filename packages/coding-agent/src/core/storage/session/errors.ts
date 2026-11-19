@@ -1,4 +1,4 @@
-import { SESSION_FORMAT_VERSION, SESSION_ID_MAX_BYTES, type StorageDescriptor } from "./types.js";
+import { SESSION_FORMAT_VERSION, type StorageDescriptor } from "./types.js";
 
 export type SessionJsonValue =
 	| null
@@ -104,14 +104,10 @@ export type SessionTextField =
 
 export class SessionInvalidTextError extends Error {
 	readonly field: SessionTextField;
-	readonly reason: "nul-character" | "ill-formed-unicode" | "id-too-long";
+	readonly reason: "nul-character" | "ill-formed-unicode";
 
-	constructor(field: SessionTextField, reason: "nul-character" | "ill-formed-unicode" | "id-too-long") {
-		super(
-			reason === "id-too-long"
-				? `Invalid session text: ${field} exceeds the ${SESSION_ID_MAX_BYTES} UTF-8 bytes allowed for a new ID`
-				: `Invalid session text: ${field} (${reason})`,
-		);
+	constructor(field: SessionTextField, reason: "nul-character" | "ill-formed-unicode") {
+		super(`Invalid session text: ${field} (${reason})`);
 		this.name = "SessionInvalidTextError";
 		this.field = field;
 		this.reason = reason;

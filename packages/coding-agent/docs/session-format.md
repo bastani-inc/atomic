@@ -16,7 +16,7 @@ For an explicitly selected JSONL store, sessions can be removed by deleting thei
 
 Delete individual sessions from `/resume`: select a session, press `CTRL+D`, then confirm. Database stores delete the selected session record. JSONL stores use the `trash` CLI when available.
 
-Newly assigned session and entry IDs must fit in 4,096 UTF-8 bytes. Existing sessions remain readable; a parent link can still refer to an older stored ID.
+An entry in the current window keeps its exact `id` and `parentId` strings. A multi-megabyte ID counts toward that window's memory even when its message is short, or when the only current record referencing it is a compaction boundary. Atomic does not shorten these IDs when copying or importing a session.
 
 ## Session Version
 
@@ -545,6 +545,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `hasFullHistory()` - Whether every stored entry is held
 - `readHistory({ fromSeq?, toSeq?, direction?, signal? }?)` - Iterate pages between the inclusive bounds. Use `direction: "backward"` to start with the latest page and page toward the start; entries within each page always stay in append order. A page has `items` and, when there are more, `nextCursor`. To resume a stopped read, pass `{ cursor: nextCursor }` without new bounds. Items are `{ seq, entry }` except that an entry over 1 MiB is an oversized reference with `kind: "oversized"`, `seq` and `bytes`, not a truncated entry. A replaced or recreated session is rejected rather than mixing generations
 - `readHistoryChunks(reference, { offset?, signal? }?)` - Read an oversized entry’s original encoded bytes in chunks of at most 64 KiB. Track the number of bytes consumed to resume at a byte offset; use a streaming text decoder when decoding UTF-8
+- For a read-only view with a `SessionStore` but no session manager, import `readSessionHistory(store, sessionId, options?)` and `readSessionHistoryChunks(store, reference, options?)` from `@bastani/atomic/storage`. They expose the same pages and byte chunks without opening a live session.
 - `readEntry(id)` - Read one entry by ID, including one outside the window, or return `undefined` if it is missing
 - `getOmittedHistoryTotals()` - Usage and message counts of the entries a `{ history: "tail" }` open left out, or `undefined` when every entry is held
 - `getLastSeq()` - The session's last stored sequence, including entries not in memory
