@@ -114,6 +114,7 @@ interface SelectionPoint {
 	row: number;
 	col: number;
 	scrollView?: ScrollView;
+	trackRow?: () => number | undefined;
 	/** Whether this point lies between terminal cells rather than on a cell. */
 	boundary?: boolean;
 }
@@ -1467,9 +1468,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		);
 		if (visibleBottom < visibleTop) return undefined;
 		const pointerRow = Math.max(visibleTop, Math.min(visibleBottom, y));
-		const maxContentRow = Math.max(0, (getScrollContentRows(box)?.length ?? 1) - 1);
+		const lines = getScrollContentRows(box);
+		const maxContentRow = Math.max(0, (lines?.length ?? 1) - 1);
+		const row = Math.max(0, Math.min(maxContentRow, scrollView.scrollTop + pointerRow - box.rect.y));
 		return {
-			row: Math.max(0, Math.min(maxContentRow, scrollView.scrollTop + pointerRow - box.rect.y)),
+			row,
+			...(scrollView.hasHistoryNavigation ? { trackRow: lines?.trackRow?.(row) } : {}),
 			col: Math.max(0, Math.min(box.rect.width - 1, x - box.rect.x)),
 			scrollView,
 		};
@@ -1809,6 +1813,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private getSelectionBounds(): { start: SelectionPoint; end: SelectionPoint } | undefined {
 		if (!this.selectionAnchor || !this.selectionFocus) return undefined;
 		if (this.selectionAnchor.scrollView !== this.selectionFocus.scrollView) return undefined;
+		this.selectionAnchor.row = this.selectionAnchor.trackRow?.() ?? this.selectionAnchor.row;
+		this.selectionFocus.row = this.selectionFocus.trackRow?.() ?? this.selectionFocus.row;
 		const anchorBeforeFocus =
 			this.selectionAnchor.row < this.selectionFocus.row ||
 			(this.selectionAnchor.row === this.selectionFocus.row && this.selectionAnchor.col < this.selectionFocus.col);

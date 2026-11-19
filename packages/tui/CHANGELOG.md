@@ -6,6 +6,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Added
 
+- A stateless component returned by a chat renderer can declare `historyReplayable: true` so that saved pages can recreate it without keeping the original instance ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
 - Components in a `WindowedContainer` can set `selectionTextMayChangeOnReplay` to keep a fullscreen selection faithful to the text the user saw, even when the component is recreated before copying ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
 
 ## [0.9.90] - 2026-11-19

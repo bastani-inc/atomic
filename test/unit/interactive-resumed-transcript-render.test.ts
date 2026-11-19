@@ -237,6 +237,64 @@ test("the main chat can scroll to saved messages before its current context and 
 	assert.doesNotMatch(mode.documentContainer.render(COLUMNS).join("\n"), /Turn 0:/);
 });
 
+test.each([false, true])(
+	"returning to an archived extension card preserves its instance unless it opted into replay (%s, #5593)",
+	async (replayable) => {
+		const { mode, tui, transcript } = await openResumedSession(0);
+		const manager = mode.sessionManager;
+		let created = 0;
+		Object.assign(mode.session.extensionRunner, {
+			getMessageRenderer: (kind: string) =>
+				kind === "private-card"
+					? () => {
+							const serial = ++created;
+							return {
+								historyReplayable: replayable,
+								render: () => [`private card ${serial}`],
+								invalidate() {},
+							};
+						}
+					: undefined,
+		});
+		await manager.appendCustomMessageEntry("private-card", "card", true);
+		for (let i = 0; i < 100; i++) await manager.appendMessage({ role: "user", content: `saved-${i}`, timestamp: i });
+		await manager.appendCompaction("cut", null, 100, {
+			strategy: "verbatim-lines",
+			promptVersion: 7,
+			parameters: { query: "test" },
+			stats: {
+				linesBefore: 1,
+				linesDeleted: 1,
+				linesKept: 0,
+				rangeCount: 0,
+				tokensBefore: 100,
+				tokensAfter: 2,
+				percentReduction: 98,
+			},
+			form: "cleared",
+		});
+		await manager.appendMessage({ role: "user", content: "at the end", timestamp: 200 });
+		mode.renderInitialMessages();
+		tui.renderNow();
+		const visit = async () => {
+			transcript.scrollToStart();
+			for (let i = 0; i < 35; i++) {
+				await nextTurn();
+				tui.renderNow();
+				const serial = /private card (\d+)/.exec(tui.getScreenLines().join("\n"))?.[1];
+				if (serial) return serial;
+			}
+			throw new Error("saved card was not shown");
+		};
+		const first = await visit();
+		transcript.scrollToEnd();
+		await nextTurn();
+		tui.renderNow();
+		const second = await visit();
+		assert.equal(second === first, !replayable);
+	},
+);
+
 test("a frame after the first renders what the viewport shows, however long the resumed transcript", async () => {
 	for (const turns of TURNS) {
 		const { mode, tui, transcript } = await openResumedSession(turns);

@@ -70,6 +70,10 @@ export class ScrollView extends Container {
 		this.scrollbarHideDelayMs = Math.max(0, Math.floor(options.scrollbarHideDelayMs ?? 1000));
 	}
 
+	get hasHistoryNavigation(): boolean {
+		return this.historyNavigation !== undefined;
+	}
+
 	get scrollTop(): number {
 		return this.currentScrollTop;
 	}

@@ -3,6 +3,8 @@ import { type Component, Container } from "../tui.ts";
 export interface WindowRows {
 	readonly length: number;
 	at(index: number): string | undefined;
+	/** A weak position within a painted leaf; resolving it never draws or requests history. */
+	trackRow?(index: number): (() => number | undefined) | undefined;
 	/** Visit already rendered, non-replayable rows of an active selection, without requesting historical content. */
 	visitVolatileRows?(first: number, last: number, visit: (row: number, line: string, renderer: symbol) => void): void;
 }
@@ -36,6 +38,18 @@ interface Entry {
 	height: number;
 	index: number;
 	renderedIn: number;
+}
+
+function weakRowPosition(
+	owner: WeakRef<WindowedContainer>,
+	leaf: WeakRef<Component>,
+	within: number,
+): () => number | undefined {
+	return () => {
+		const component = leaf.deref();
+		const span = component && owner.deref()?.windowRowSpan(component);
+		return span && span.bottom > span.top ? span.top + Math.min(within, span.bottom - span.top - 1) : undefined;
+	};
 }
 
 const entries = new WeakMap<Component, Entry>();
@@ -123,6 +137,12 @@ export class WindowedContainer extends Container {
 			top,
 			length,
 			at: (index) => this.rowAt(index),
+			trackRow: (index) => {
+				if (index < 0 || index >= length) return undefined;
+				const anchor = this.locateAnchor(index);
+				if (!anchor) return undefined;
+				return weakRowPosition(new WeakRef(this), new WeakRef(anchor.entry.component), anchor.within);
+			},
 			visitVolatileRows: (first, last, visit) => {
 				if (!length || first >= length || last < 0) return;
 				for (let i = this.indexAt(Math.max(0, first)); i < this.laidOut.length; i++) {

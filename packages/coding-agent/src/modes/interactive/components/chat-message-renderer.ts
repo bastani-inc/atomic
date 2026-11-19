@@ -108,13 +108,14 @@ type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
 export interface ChatEntryGrouping {
 	readonly tracker?: ToolGroupTracker;
 	readonly groupBash?: boolean;
+	readonly onSourceRow?: (entry: ChatMessageEntry, message: AgentMessage, block: number) => void;
 }
 export function chatEntriesFromAgentMessages(
 	messages: readonly AgentMessage[],
 	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
 	grouping: ChatEntryGrouping = {},
 ): ChatMessageEntry[] {
-	const entries = buildChatEntries(messages, messageMeta);
+	const entries = buildChatEntries(messages, messageMeta, grouping.onSourceRow);
 	groupChatEntries(entries, grouping.tracker ?? new ToolGroupTracker({ groupBash: grouping.groupBash }));
 	return entries;
 }
@@ -182,11 +183,13 @@ function inferInterruptedToolActivity(
 function buildChatEntries(
 	messages: readonly AgentMessage[],
 	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
+	onSourceRow?: ChatEntryGrouping["onSourceRow"],
 ): ChatMessageEntry[] {
 	const entries: ChatMessageEntry[] = [];
 	const pendingTools = new Map<string, Extract<ChatMessageEntry, { kind: "tool" }>>();
 	for (const message of messages) {
 		if (isLegacyCompactionSummaryMessage(message)) continue;
+		const first = entries.length;
 		switch (message.role) {
 			case "assistant": {
 				const meta = messageMeta?.get(message);
@@ -296,6 +299,7 @@ function buildChatEntries(
 				break;
 			}
 		}
+		if (onSourceRow) for (let i = first; i < entries.length; i++) onSourceRow(entries[i]!, message, i - first);
 	}
 	return entries;
 }

@@ -58,7 +58,11 @@ import {
 	UserMessageComponent,
 	type VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
-import { installSavedChatHistory, releaseSavedChatHistory } from "./interactive-saved-chat-history.ts";
+import {
+	installSavedChatHistory,
+	releaseSavedChatHistory,
+	type SavedRendererInstances,
+} from "./interactive-saved-chat-history.ts";
 import { StartupChatContainer, trackChatHistoryBuild } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { refreshInteractiveTasks } from "./interactive-task-projection.js";
@@ -779,7 +783,11 @@ const HISTORY_SLICE_STEPS = 24;
 function planTranscript(
 	mode: InteractiveModeBase,
 	sessionEntries: SessionEntry[],
-	options: { populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult; saved?: boolean },
+	options: {
+		populateHistory?: boolean;
+		suppressCompactionBoundary?: VerbatimCompactionResult;
+		saved?: { seqs: Map<SessionEntry, number>; owners: WeakMap<object, string> };
+	},
 ): TranscriptStep[] {
 	const steps: TranscriptStep[] = [];
 	const grouping: MainToolGrouping = options.saved
@@ -793,6 +801,7 @@ function planTranscript(
 	if (!options.saved) resetMainToolGroup(mode);
 	let messageBuffer: AgentMessage[] = [];
 	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
+	const messageSeq = options.saved ? new Map<AgentMessage, number>() : undefined;
 	let firstMessage = true;
 	const flushMessages = (): void => {
 		if (options.suppressCompactionBoundary && firstMessage) {
@@ -805,7 +814,16 @@ function planTranscript(
 		firstMessage = false;
 		if (options.saved) grouping.tracker.break();
 		else breakMainToolGroup(mode);
-		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta, { tracker: grouping.tracker })) {
+		const saved = options.saved;
+		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta, {
+			tracker: grouping.tracker,
+			...(saved && messageSeq
+				? {
+						onSourceRow: (e: ChatMessageEntry, message: AgentMessage, block: number) =>
+							saved.owners.set(e, `${messageSeq.get(message)}:${block}`),
+					}
+				: {}),
+		})) {
 			if (entry.kind === "tool" && entry.isPartial !== false) {
 				const startedAt = grouping.starts.get(entry.toolCallId);
 				if (startedAt !== undefined) {
@@ -827,10 +845,14 @@ function planTranscript(
 			// An unrendered record between a tool call and its result must not split them into two cards.
 			if (!mode.session.extensionRunner.getEntryRenderer(entry.customType)) continue;
 			flushMessages();
+			if (options.saved) options.saved.owners.set(entry, `${options.saved.seqs.get(entry)}:entry`);
 			steps.push({ kind: "custom", entry });
 		} else {
 			const messages = sessionEntryToContextMessages(entry);
-			for (const message of messages) messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
+			for (const message of messages) {
+				messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
+				if (options.saved) messageSeq?.set(message, options.saved.seqs.get(entry)!);
+			}
 			messageBuffer.push(...messages);
 			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
 				flushMessages();
@@ -873,12 +895,28 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 }
 
 /** Render an archived page on its own. Never register historical tools as pending in the live turn. */
-function savedChatComponents(mode: InteractiveModeBase, entries: SessionEntry[]): Component[] {
+function savedChatComponents(
+	mode: InteractiveModeBase,
+	entries: SessionEntry[],
+	seqs: number[],
+	exceptions: SavedRendererInstances,
+): Component[] {
 	const scratch = new Container();
 	const chat = mode.chatContainer;
 	try {
 		mode.chatContainer = scratch;
-		for (const step of planTranscript(mode, entries, { saved: true })) addTranscriptStep(mode, step, false, true);
+		const saved = { seqs: new Map(entries.map((e, i) => [e, seqs[i]!])), owners: new WeakMap<object, string>() };
+		for (const step of planTranscript(mode, entries, { saved })) {
+			const key = step.kind === "cost" ? undefined : saved.owners.get(step.entry);
+			const kept = key && exceptions.get(key);
+			if (kept) {
+				for (const component of kept) scratch.addChild(component);
+				continue;
+			}
+			const index = scratch.children.length;
+			addTranscriptStep(mode, step, false, true);
+			if (key) exceptions.remember(key, scratch.children.slice(index));
+		}
 		return scratch.children;
 	} finally {
 		mode.chatContainer = chat;

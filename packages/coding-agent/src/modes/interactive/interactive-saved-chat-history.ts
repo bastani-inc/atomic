@@ -5,13 +5,81 @@ import type {
 	SessionHistoryPage,
 	SessionHistoryReadOptions,
 } from "../../core/storage/session/types.js";
+import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { NewMessageCounter } from "./components/jump-to-latest.ts";
 import { disposeRenderer } from "./components/renderer-disposal.js";
 import { type InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 
 type Direction = "older" | "newer" | "start" | "end";
-type Draw = (mode: InteractiveModeBase, entries: SessionEntry[]) => Component[];
+type Draw = (
+	mode: InteractiveModeBase,
+	entries: SessionEntry[],
+	seqs: number[],
+	exceptions: SavedRendererInstances,
+) => Component[];
+
+/** A renderer may keep widget state that is not in the stored row. Only these exceptions (not stock rows or
+ * their page) survive eviction, keyed by the saved occurrence and sub-block within this session. */
+export class SavedRendererInstances {
+	private readonly kept = new Map<string, Component[]>();
+	private readonly owner = new WeakMap<Component, string>();
+	private readonly retired = new WeakSet<Component[]>();
+	get(key: string): Component[] | undefined {
+		const group = this.kept.get(key);
+		if (group) this.retired.delete(group);
+		return group;
+	}
+	private needed(c: Component): boolean {
+		return (
+			c.selectionTextMayChangeOnReplay === true &&
+			c.historyReplayable !== true &&
+			!((c instanceof RemoteToolExecutionComponent || c instanceof RemoteCustomMessageComponent) && c.unrendered)
+		);
+	}
+	settle(key: string): void {
+		const group = this.kept.get(key);
+		if (!group || !this.retired.has(group) || group.some((c) => this.needed(c))) return;
+		this.kept.delete(key);
+		for (const component of group) disposeRenderer(component);
+	}
+	remember(key: string, components: Component[]): void {
+		if (
+			!components.some(
+				(component) => component.selectionTextMayChangeOnReplay === true && component.historyReplayable !== true,
+			)
+		)
+			return;
+		this.kept.set(key, components);
+		for (const component of components) {
+			this.owner.set(component, key);
+			if (component instanceof RemoteToolExecutionComponent || component instanceof RemoteCustomMessageComponent) {
+				const weak = new WeakRef(this);
+				component.onReplayabilityChange(() => weak.deref()?.settle(key));
+			}
+		}
+	}
+	protect(component: Component): boolean {
+		const key = this.owner.get(component);
+		if (!key) return false;
+		const group = this.kept.get(key);
+		if (!group) return false;
+		if (group.some((c) => this.needed(c))) {
+			this.retired.add(group);
+			return true;
+		}
+		this.kept.delete(key);
+		return false;
+	}
+	dispose(): void {
+		for (const group of this.kept.values()) for (const component of group) disposeRenderer(component);
+		this.kept.clear();
+	}
+}
+const exceptionsByHost = new WeakMap<
+	InteractiveModeBase,
+	{ manager: SessionManager; id: string; exceptions: SavedRendererInstances }
+>();
 interface MountedPage {
 	readonly children: Component[];
 	readonly older?: string;
@@ -19,14 +87,21 @@ interface MountedPage {
 }
 const mounts = new WeakMap<InteractiveModeBase, SavedChatHistory>();
 
-export function releaseSavedChatHistory(mode: InteractiveModeBase): void {
+export function releaseSavedChatHistory(mode: InteractiveModeBase, closed = false): void {
 	mounts.get(mode)?.dispose();
 	mounts.delete(mode);
+	if (closed) {
+		exceptionsByHost.get(mode)?.exceptions.dispose();
+		exceptionsByHost.delete(mode);
+	}
 }
 
 /** A clear can retain some entries from before its boundary. Don't repeat them above the boundary. */
 export function installSavedChatHistory(mode: InteractiveModeBase, context: SessionEntry[], draw: Draw): void {
-	releaseSavedChatHistory(mode);
+	const old = exceptionsByHost.get(mode);
+	const changed =
+		old !== undefined && (old.manager !== mode.sessionManager || old.id !== mode.sessionManager.getSessionId());
+	releaseSavedChatHistory(mode, changed);
 	const chat = mode.chatContainer;
 	const view = mode.transcriptScrollView;
 	const boundary = context[0];
@@ -43,7 +118,14 @@ export function installSavedChatHistory(mode: InteractiveModeBase, context: Sess
 	let first = leaf;
 	for (const entry of context) first = Math.min(first, manager.getEntrySeq(entry.id) ?? first);
 	if (first <= 1) return;
-	const history = new SavedChatHistory(mode, manager, chat, view, draw, leaf, first - 1);
+	const id = manager.getSessionId();
+	let kept = exceptionsByHost.get(mode);
+	if (!kept || kept.manager !== manager || kept.id !== id) {
+		kept?.exceptions.dispose();
+		kept = { manager, id, exceptions: new SavedRendererInstances() };
+		exceptionsByHost.set(mode, kept);
+	}
+	const history = new SavedChatHistory(mode, manager, chat, view, draw, leaf, first - 1, kept.exceptions);
 	mounts.set(mode, history);
 }
 
@@ -103,6 +185,7 @@ class SavedChatHistory {
 	private readonly draw: Draw;
 	private readonly leaf: number;
 	private readonly through: number;
+	private readonly exceptions: SavedRendererInstances;
 	constructor(
 		mode: InteractiveModeBase,
 		manager: SessionManager,
@@ -111,7 +194,9 @@ class SavedChatHistory {
 		draw: Draw,
 		leaf: number,
 		through: number,
+		exceptions: SavedRendererInstances,
 	) {
+		this.exceptions = exceptions;
 		this.mode = mode;
 		this.manager = manager;
 		this.chat = chat;
@@ -135,7 +220,7 @@ class SavedChatHistory {
 			this.dispose();
 			return;
 		}
-		if (direction === "start") this.cancel();
+		if (direction === "start" || (direction === "newer" && this.view.isFollowingEnd)) this.cancel();
 		else if (this.pending) return;
 		const cursor = direction === "older" ? this.pages[0]?.older : this.pages.at(-1)?.newer;
 		if ((direction === "newer" && !cursor) || (direction === "older" && this.pages.length && !cursor)) return;
@@ -169,7 +254,12 @@ class SavedChatHistory {
 		const at = this.chat.children.indexOf(this.marker);
 		if (!page || at < 0 || this.mode.sessionManager !== this.manager) return;
 		if (direction === "start") this.clearPages();
-		const children = this.draw(this.mode, page.items.map(entryForDisplay));
+		const children = this.draw(
+			this.mode,
+			page.items.map(entryForDisplay),
+			page.items.map((item) => item.seq),
+			this.exceptions,
+		);
 		const mounted: MountedPage = { children, older: page.adjacent?.older, newer: page.adjacent?.newer };
 		if (direction === "newer") {
 			const previous = this.pages.at(-1)?.children.at(-1);
@@ -210,7 +300,7 @@ class SavedChatHistory {
 	private drop(page: MountedPage): void {
 		for (const child of page.children) {
 			this.chat.removeChild(child);
-			disposeRenderer(child);
+			if (!this.exceptions.protect(child)) disposeRenderer(child);
 		}
 		this.counter?.historyPrepended(-page.children.filter(isChatMessageComponent).length);
 	}

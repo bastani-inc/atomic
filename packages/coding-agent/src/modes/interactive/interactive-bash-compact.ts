@@ -163,7 +163,7 @@ InteractiveModeBase.prototype.stop = function (
 	this: InteractiveModeBase,
 	fullscreenExitOutput: FullscreenExitOutput = this.settingsManager.getFullscreenExitOutput(),
 ): void {
-	releaseSavedChatHistory(this);
+	releaseSavedChatHistory(this, true);
 	this.disposeActiveSelector();
 	this.disposeInteractiveEngineHost();
 	this.disposeInteractiveEngineHost = () => {};

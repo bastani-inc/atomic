@@ -133,6 +133,8 @@ export type InteractiveEngineMessage =
 			lines: string[];
 			/** For a row's click check, whether changing only its expansion changes these rows. */
 			expansionChangesRows?: boolean;
+			/** Only sent in response to a historical row asking whether its renderer can be recreated. */
+			historyReplayable?: true;
 			scrollRequest?: WidgetScrollRequest;
 			/** The frame's number, counting the component's frames from 1; a click names the frame it landed on. */
 			frame?: number;
@@ -270,6 +272,7 @@ export type InteractiveEngineCommand =
 			toolName: string;
 			toolCallId: string;
 			compareExpansion?: true;
+			inspectHistoryReplay?: true;
 			rendererTaskId?: string;
 			args: JsonValue;
 			result?: JsonObject;
@@ -291,6 +294,7 @@ export type InteractiveEngineCommand =
 			message: JsonObject;
 			expanded: boolean;
 			compareExpansion?: true;
+			inspectHistoryReplay?: true;
 			outputPad: number;
 	  }
 	| { type: "engine_render_dispose"; componentId: string }
@@ -712,6 +716,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						componentId: value.componentId,
 						requestId: value.requestId,
 						lines: value.lines,
+						...(value.historyReplayable === true ? { historyReplayable: true } : {}),
 						...(typeof value.expansionChangesRows === "boolean"
 							? { expansionChangesRows: value.expansionChangesRows }
 							: {}),
@@ -970,6 +975,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			requestId: value.requestId,
 			width: value.width,
 			toolName: value.toolName,
+			...(value.inspectHistoryReplay === true ? { inspectHistoryReplay: true } : {}),
 			...(value.compareExpansion === true ? { compareExpansion: true } : {}),
 			...(value.rendererTaskId === undefined ? {} : { rendererTaskId: value.rendererTaskId }),
 			toolCallId: value.toolCallId,
@@ -1003,6 +1009,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			requestId: value.requestId,
 			width: value.width,
 			message: value.message,
+			...(value.inspectHistoryReplay === true ? { inspectHistoryReplay: true } : {}),
 			...(value.compareExpansion === true ? { compareExpansion: true } : {}),
 			expanded: value.expanded,
 			outputPad: value.outputPad,

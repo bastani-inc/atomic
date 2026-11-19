@@ -9,7 +9,7 @@ import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { createMarkdownTransform, hasExtensionMarkdownTransform } from "./markdown-transform.ts";
-import { disposeRenderer } from "./renderer-disposal.js";
+import { declaresHistoryReplayable, disposeRenderer } from "./renderer-disposal.js";
 import { TaskCompletionMessage, type TaskCompletionMessageOptions } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 import { ToolBlock } from "./tool-block.ts";
@@ -32,6 +32,9 @@ function isRenderableComponent(value: unknown): value is Component {
  */
 export class CustomMessageComponent extends Container {
 	readonly ownsLeadingSpacer = true;
+	get historyReplayable(): boolean {
+		return !this.selectionTextMayChangeOnReplay || declaresHistoryReplayable(this.customComponent);
+	}
 	get selectionTextMayChangeOnReplay(): boolean {
 		return this.customRenderer !== undefined || hasExtensionMarkdownTransform(this.markdownTransformers);
 	}

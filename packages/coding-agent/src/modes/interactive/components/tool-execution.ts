@@ -25,7 +25,7 @@ import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { clickableKeyTextHint } from "./nav-keys.ts";
 import { STATUS_MARKERS } from "./notice-line.ts";
-import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
+import { declaresHistoryReplayable, disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
 import {
 	collapseToolBlockLines,
 	componentNeedsWorkingClock,
@@ -76,6 +76,13 @@ function blockStatusMarkPrefix(): RegExp {
 }
 
 export class ToolExecutionComponent extends Container {
+	get historyReplayable(): boolean {
+		if (!this.toolDefinition) return true;
+		return (
+			(!this.toolDefinition.renderCall || declaresHistoryReplayable(this.callRendererComponent)) &&
+			(!this.toolDefinition.renderResult || declaresHistoryReplayable(this.resultRendererComponent))
+		);
+	}
 	get selectionTextMayChangeOnReplay(): boolean {
 		return this.toolDefinition !== undefined;
 	}

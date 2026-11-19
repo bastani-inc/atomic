@@ -1097,37 +1097,41 @@ function withArchivedPages(
 			);
 		});
 	if (file === undefined) return source;
-	return withTaskTranscriptArchive(source, async (project) => {
-		let records: SessionEntry[];
-		let entries: SessionEntry[];
-		try {
-			// Release the file before projecting the page: a writer may need to rename over it on Windows.
-			records = await readSessionFileEntries(file, sessionId);
-			entries = withUnsavedAnswer(records, unsaved);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return {
-				ok: false,
-				error: {
-					message: message.startsWith("History unavailable:") ? message : await historyUnavailable(file, error),
+	return withTaskTranscriptArchive(
+		source,
+		async (project) => {
+			let records: SessionEntry[];
+			let entries: SessionEntry[];
+			try {
+				// Release the file before projecting the page: a writer may need to rename over it on Windows.
+				records = await readSessionFileEntries(file, sessionId);
+				entries = withUnsavedAnswer(records, unsaved);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return {
+					ok: false,
+					error: {
+						message: message.startsWith("History unavailable:") ? message : await historyUnavailable(file, error),
+					},
+				};
+			}
+			return project(
+				entries,
+				records.length,
+				// A projector that only understands file generations must not equate two independent reads.
+				async () => randomUUID(),
+				(_generation, row) => {
+					// Identify only the selected, captured row. Reopening its path here can block a rename on Windows.
+					try {
+						return createHash("sha256").update(JSON.stringify(records[row])).digest("base64url");
+					} catch {
+						return undefined;
+					}
 				},
-			};
-		}
-		return project(
-			entries,
-			records.length,
-			// A projector that only understands file generations must not equate two independent reads.
-			async () => randomUUID(),
-			(_generation, row) => {
-				// Identify only the selected, captured row. Reopening its path here can block a rename on Windows.
-				try {
-					return createHash("sha256").update(JSON.stringify(records[row])).digest("base64url");
-				} catch {
-					return undefined;
-				}
-			},
-		);
-	});
+			);
+		},
+		{ path: file, sessionId, unsaved },
+	);
 }
 
 /** The entry a task view shows for a final answer its child's session could not save (#5210). */
@@ -1194,9 +1198,9 @@ function settledTranscript(
 			? {
 					readHistory: (options) => readSessionHistory(store, sessionId, options),
 					readHistoryChunks: (ref, options) => readSessionHistoryChunks(store, ref, options),
-					getFallbackEntries: () => kept,
 				}
 			: {}),
+		getFallbackEntries: () => kept,
 		...(last?.type === "message" && last.message.role === "assistant" ? { settledReply: last.message } : {}),
 		loadHistory: async () => {
 			try {

@@ -682,6 +682,72 @@ test.each(savedHistoryCases)(
 	},
 );
 
+test("a settled child's file pages do not accumulate, and a replacement file belonging to a different session is refused (#5593)", async () => {
+	const root = makeTempDirectory("task-window-file-");
+	let host: Awaited<ReturnType<typeof openTranscript>> | undefined;
+	try {
+		let source: TaskTranscriptSource | undefined;
+		let cleanup: Promise<Cleanup> | undefined;
+		const child = await runSingleInProcess(root, agent, "file transcript", {
+			cwd: root,
+			sessionDir: root,
+			runId: "saved-file-window",
+			testSession: { output: "done" },
+			taskExecution: {
+				signal: new AbortController().signal,
+				reportActivity() {},
+				bindTranscript(s) {
+					source = s;
+				},
+				onExecution(run) {
+					cleanup = run.cleanup;
+				},
+			},
+		});
+		await cleanup;
+		assert.ok(source && child.sessionFile);
+		const manager = await SessionManager.open(child.sessionFile);
+		for (let i = 0; i < 320; i++)
+			await manager.appendMessage({
+				role: "user",
+				content: `file-turn-${String(i).padStart(3, "0")}`,
+				timestamp: i,
+			});
+		await manager.getSessionStore().close();
+		let chat: ChatSessionHost | undefined;
+		host = await openTranscript(source, {
+			environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) },
+		});
+		for (let i = 0; i < 100 && !host.text().includes("file-turn-319"); i++)
+			await new Promise((r) => setTimeout(r, 5));
+		assert.match(host.text(), /file-turn-319/);
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		for (let i = 0; i < 100 && !host.text().includes("file-turn-000"); i++)
+			await new Promise((r) => setTimeout(r, 5));
+		assert.match(host.text(), /file-turn-000/);
+		assert.ok(chat && chat.entries().length <= 200, "a file-backed chat retained every visited page");
+		const file = child.sessionFile;
+		execFileSync(process.execPath, [
+			"-e",
+			"const fs=require('node:fs');const file=process.argv[1];const [header,...rest]=fs.readFileSync(file,'utf8').split('\\n');fs.writeFileSync(file,[JSON.stringify({...JSON.parse(header),id:'unrelated-session'}),...rest].join('\\n').replaceAll('file-turn-','wrong-session-'))",
+			file,
+		]);
+		host.inspector.handleInput(CTRL_END);
+		for (let i = 0; i < 40; i++) {
+			host.frame();
+			await new Promise((r) => setTimeout(r, 5));
+			if (host.text().includes("another session")) break;
+		}
+		assert.doesNotMatch(host.text(), /wrong-session-/);
+		assert.match(host.text(), /another session/);
+	} finally {
+		await host?.dispose();
+		clearSubagentControls();
+		removeTempDirectory(root);
+	}
+});
+
 test("a draft snapshot's text never stands in for the settled reply's tool card (#5651)", async () => {
 	const session = SessionManager.inMemory();
 	const texts = Array.from({ length: 101 }, (_, i) => ({ type: "text" as const, text: `part-${i}` }));

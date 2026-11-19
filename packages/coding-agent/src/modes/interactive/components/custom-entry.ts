@@ -4,11 +4,15 @@ import type { EntryRenderer } from "../../../core/extensions/types.ts";
 import type { CustomEntry } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
+import { declaresHistoryReplayable } from "./renderer-disposal.js";
 import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /** Renders an extension-owned persistent session entry. */
 export class CustomEntryComponent extends Container {
 	readonly selectionTextMayChangeOnReplay = true;
+	get historyReplayable(): boolean {
+		return declaresHistoryReplayable(this.customComponent);
+	}
 	private customComponent?: Component;
 	private expanded = false;
 	private outputPad: number;

@@ -22,6 +22,7 @@ import {
 	watchTaskExtensionStatuses,
 } from "./supervisor.js";
 import { loadArchiveSnapshot } from "./task-archive-snapshot.ts";
+import type { FileTaskPage } from "./task-file-history.js";
 import { taskResumer } from "./task-resumer.ts";
 import { taskTranscriptPageWithCuts } from "./transcript.js";
 
@@ -67,6 +68,12 @@ type ArchiveReader = (
 	) => PageResult | Promise<PageResult>,
 	loadSnapshot: typeof loadArchiveSnapshot,
 ) => Promise<PageResult>;
+interface FileArchive {
+	readonly path: string;
+	readonly sessionId: string;
+	readonly unsaved?: Entries[number];
+}
+const fileArchives = new WeakMap<TaskTranscriptSource, FileArchive>();
 const archives = new WeakMap<
 	TaskTranscriptSource,
 	{ load: TaskTranscriptSource["loadHistory"]; read: ArchiveReader }
@@ -83,9 +90,14 @@ function archiveReader(source: TaskTranscriptSource): ArchiveReader | undefined 
 export function withTaskTranscriptArchive<T extends TaskTranscriptSource>(
 	source: T,
 	reader: ArchiveReader | TaskTranscriptSource,
+	file?: FileArchive,
 ): T {
 	const archive = typeof reader === "function" ? reader : archiveReader(reader);
-	if (archive) archives.set(source, { load: source.loadHistory, read: archive });
+	if (archive) {
+		archives.set(source, { load: source.loadHistory, read: archive });
+		const bound = file ?? (typeof reader === "function" ? undefined : fileArchives.get(reader));
+		if (bound) fileArchives.set(source, bound);
+	}
 	return source;
 }
 
@@ -351,6 +363,21 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const task = lease(id);
 			if (!task.ok) return {};
 			const source = taskTranscriptSource(task.value);
+			if (source.ok) {
+				const { session, inheritedThroughId } = source.value;
+				const file = fileArchives.get(session);
+				if (file && archiveReader(session))
+					return import("./task-file-history.js")
+						.then(({ taskFileDetail }) =>
+							taskFileDetail(file.path, file.sessionId, inheritedThroughId, messageText),
+						)
+						.then((value) =>
+							file.unsaved?.type === "message" && file.unsaved.message.role === "assistant"
+								? { ...value, output: messageText(file.unsaved.message) }
+								: value,
+						)
+						.catch(() => detailText(session.getFallbackEntries?.()));
+			}
 			if (source.ok && source.value.session.readHistory && source.value.session.loadHistory) {
 				const { session, inheritedThroughId } = source.value;
 				return savedTaskDetailText(session, inheritedThroughId).catch(() =>
@@ -368,6 +395,17 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const bound = taskTranscriptSource(task.value);
 			if (!bound.ok) return { ok: false, error: { message: "Transcript unavailable" } };
 			const { session, taskId } = bound.value;
+			const file = fileArchives.get(session);
+			if (file && archiveReader(session) && !session.subscribe)
+				return import("./task-file-history.js").then(({ taskFilePages }) =>
+					savedTranscriptView(
+						session,
+						taskId,
+						(opts) => taskFilePages(file.path, file.sessionId, opts ?? {}),
+						cursor,
+						file,
+					),
+				);
 			if (session.readHistory && ((session.loadHistory && !session.subscribe) || cursor?.includes(":")))
 				return savedTranscriptView(session, taskId, session.readHistory.bind(session), cursor);
 			// A finished task keeps its history in its session store, not in memory (#5186).
@@ -571,10 +609,13 @@ function savedTaskScope(taskId: string, sessionId: string): string {
 async function savedTranscriptView(
 	session: TaskTranscriptSource,
 	taskId: string,
-	read: NonNullable<TaskTranscriptSource["readHistory"]>,
+	read: (
+		options: Parameters<NonNullable<TaskTranscriptSource["readHistory"]>>[0],
+	) => AsyncIterable<import("../storage/session/types.js").SessionHistoryPage | FileTaskPage>,
 	cursor: string | undefined,
+	file?: FileArchive,
 ): Promise<TaskViewResult<TaskTranscriptView>> {
-	const sessionId = session.getSessionId();
+	const sessionId = file?.sessionId ?? session.getSessionId();
 	const scope = savedTaskScope(taskId, sessionId);
 	if (cursor !== undefined && !cursor.startsWith(scope))
 		return { ok: false, error: { message: "Transcript cursor belongs to another task or session" } };
@@ -603,10 +644,16 @@ async function savedTranscriptView(
 							customType: "atomic.oversized-history-entry",
 							display: true,
 							timestamp: 0,
-							content: `Saved entry ${item.seq} is ${item.bytes} bytes. Read the original bytes with the session history reader or export this session.`,
+							content: `${file ? `Saved file entry at byte ${item.seq}` : `Saved entry ${item.seq}`} is ${item.bytes} bytes. Read the original bytes with the session history reader or export this session.`,
 						},
 					},
 		);
+		const unsaved = file?.unsaved;
+		if (!page.adjacent?.newer && unsaved?.type === "message") {
+			const last = entries.findLast((e) => e.type === "message");
+			if (last?.type !== "message" || JSON.stringify(last.message) !== JSON.stringify(unsaved.message))
+				entries.push(unsaved);
+		}
 		let from = 0,
 			end = 0,
 			count = 0;
@@ -619,6 +666,11 @@ async function savedTranscriptView(
 				storedRows: entries.length,
 				collect(row, notice) {
 					// The cursor's source fingerprint identifies this generation. The sequence identifies its saved reply.
+					if (file) {
+						// Main identifies a file's split failed reply by its captured record bytes, even after a rename.
+						notice.occurrence = `${createHash("sha256").update(JSON.stringify(entries[row])).digest("base64url")}:${page.items[row]?.seq ?? "unsaved"}`;
+						return;
+					}
 					const generation = page.adjacent?.current?.split(".", 1)[0];
 					notice.occurrence = generation ? `${generation}:${page.items[row]!.seq}` : randomUUID();
 				},

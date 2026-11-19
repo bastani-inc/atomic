@@ -155,6 +155,9 @@ export class EngineRenderService {
 				type: "engine_custom_frame",
 				componentId: command.componentId,
 				requestId: command.requestId,
+				...(command.inspectHistoryReplay && this.records.get(command.componentId)?.component.historyReplayable
+					? { historyReplayable: true as const }
+					: {}),
 				...frame,
 			});
 		} catch {

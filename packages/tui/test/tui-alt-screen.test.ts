@@ -1684,6 +1684,39 @@ describe("TuiAltScreen", () => {
 		}
 	});
 
+	it("keeps selected cells on their original chat rows when an earlier page arrives (#5593)", async () => {
+		const terminal = new RecordingTerminal(30, 5);
+		const document = new WindowedContainer();
+		document.addChild(new Text("select this", 0, 0));
+		document.addChild(new Text("next line", 0, 0));
+		const view = new ScrollView(document, { primary: true });
+		view.setHistoryNavigation(() => {});
+		let copied = "";
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			copyOnSelect: false,
+			copySelection: async (text) => {
+				copied = text;
+				return true;
+			},
+		});
+		tui.setLayoutRoot(view);
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<0;1;1M");
+			terminal.sendInput("\x1b[<32;6;1M");
+			terminal.sendInput("\x1b[<0;6;1m");
+			await terminal.waitForRender();
+			document.children.unshift(new Text("earlier row", 0, 0));
+			tui.requestRender();
+			await terminal.waitForRender();
+			assert.ok(await tui.copyActiveSelectionToClipboard());
+			assert.equal(copied, "select");
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("copies selected volatile rows twice after their components change and forgets them on reset (#5593)", async () => {
 		const terminal = new RecordingTerminal(30, 4);
 		const copied: string[] = [];

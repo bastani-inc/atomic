@@ -85,6 +85,19 @@ function jsonValue(value: unknown): JsonValue {
 
 abstract class RemoteRenderer implements Component {
 	readonly selectionTextMayChangeOnReplay = true;
+	private inspectHistoryReplay = false;
+	private canReplay = false;
+	private releaseIfRetired?: () => void;
+	get historyReplayable(): boolean {
+		this.inspectHistoryReplay = true;
+		return this.canReplay;
+	}
+	onReplayabilityChange(release: () => void): void {
+		this.releaseIfRetired = release;
+	}
+	get unrendered(): boolean {
+		return this.requestId === 0;
+	}
 	protected readonly componentId = `remote_renderer_${++nextRemoteRendererId}`;
 	private lines = NOT_RENDERED_YET;
 	private width = 0;
@@ -163,7 +176,9 @@ abstract class RemoteRenderer implements Component {
 			rememberFrame(identity, message.lines);
 			if (scope !== runtimeFrameScope(this.runtime)) return;
 			this.appliedRequestId = message.requestId;
+			this.canReplay = message.historyReplayable === true;
 			this.lines = message.lines;
+			if (this.canReplay) this.releaseIfRetired?.();
 			this.requestRender();
 		} else if (message.type === "engine_custom_invalidate") {
 			this.changed();
@@ -190,7 +205,10 @@ abstract class RemoteRenderer implements Component {
 			if (this.lines === NOT_RENDERED_YET) this.lines = recentFrames.get(identity) ?? NOT_RENDERED_YET;
 			this.requestIdentities.set(++this.requestId, identity);
 			this.requestScopes.set(this.requestId, scope);
-			this.runtime.sendEngineCommand(this.command(this.requestId, width));
+			const request = this.command(this.requestId, width);
+			this.runtime.sendEngineCommand(
+				this.inspectHistoryReplay ? { ...request, inspectHistoryReplay: true } : request,
+			);
 		}
 		// The engine child re-renders asynchronously; until the fresh frame
 		// arrives, the previous frame may be wrapped for an older terminal
@@ -206,6 +224,7 @@ abstract class RemoteRenderer implements Component {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.releaseIfRetired = undefined;
 		if (this.routes.rows.get(this.componentId) === this) this.routes.rows.delete(this.componentId);
 		this.requestIdentities.clear();
 		this.requestScopes.clear();
