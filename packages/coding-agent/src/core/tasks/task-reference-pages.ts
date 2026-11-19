@@ -71,13 +71,6 @@ function visible(entry: SessionEntry, index?: number): boolean {
 		);
 	return !taskEntryReferences(entry, "", false).next().done;
 }
-type NativeNeedle = { seq: number; contentIndex?: number; suffixChars?: number };
-type IndexedStore = ReferenceCut["store"] & {
-	findTaskReferenceDuplicateCandidates?: (
-		id: string,
-		q: { epoch: string; throughSeq: number; candidates: readonly NativeNeedle[]; afterSeq?: number; limit?: number },
-	) => Promise<{ seqs: readonly number[]; nextAfterSeq?: number } | undefined>;
-};
 async function* metadata(cut: ReferenceCut, batch: readonly Candidate[], max: number): AsyncGenerator<RawRow, void> {
 	const { store, sessionId, epoch, through } = cut;
 	const rows = async function* (from: number, to: number, selected?: Set<number>) {
@@ -90,7 +83,7 @@ async function* metadata(cut: ReferenceCut, batch: readonly Candidate[], max: nu
 			yield { ...size, chunks: () => historyChunks(store, sessionId, epoch, ref, {}) };
 		}
 	};
-	const find = (store as IndexedStore).findTaskReferenceDuplicateCandidates;
+	const find = store.findTaskReferenceDuplicateCandidates;
 	if (find && batch.every((c) => c.seq <= through)) {
 		const candidates = batch.map(({ seq, item }) => ({
 			seq,
@@ -147,7 +140,7 @@ async function shadows(
 	};
 	if (cut?.store.readEntrySizes && cut.store.readEntryChunk && batch.every((c) => c.seq <= cut.through))
 		for await (const row of metadata(cut, batch, max)) await visit(row);
-	else for await (const page of reader(undefined, true)) for (const row of page.rows) await visit(row);
+	else for await (const page of reader(batch[0]?.at, true)) for (const row of page.rows) await visit(row);
 	for (const candidate of batch)
 		if ((first.get(candidate.item.id) ?? Infinity) < candidate.seq) skipped.add(candidate);
 	return skipped;
@@ -166,11 +159,15 @@ async function locate(reader: RawTaskReader, key: string): Promise<{ at?: string
 		const cut = page.cut;
 		if (
 			firstPacket &&
-			cut &&
-			(cut.store as IndexedStore).findTaskReferenceDuplicateCandidates &&
+			cut?.store.findTaskReferenceDuplicateCandidates &&
 			cut.store.findEntrySeq &&
 			cut.store.readEntryChunk &&
-			Buffer.byteLength(key) <= 64 * 1024
+			Buffer.byteLength(key) <= 64 * 1024 &&
+			(await cut.store.findTaskReferenceDuplicateCandidates(cut.sessionId, {
+				epoch: cut.epoch,
+				throughSeq: cut.through,
+				candidates: [],
+			})) !== undefined
 		) {
 			// Use the entry index for both legal roots of a colon-suffixed public item. Never bind a giant caller ID.
 			const hits: Candidate[] = [];
@@ -230,6 +227,20 @@ async function locate(reader: RawTaskReader, key: string): Promise<{ at?: string
 	}
 	return first;
 }
+function detached(item: TaskTranscriptItem): TaskTranscriptItem {
+	const copy = (id: string) => {
+		const encoding = id.isWellFormed() ? "utf8" : "utf16le";
+		return Buffer.from(id, encoding).toString(encoding);
+	};
+	const entryId = copy(item.source.entryId),
+		part = item.source.contentIndex;
+	return {
+		...item,
+		id: part === undefined ? entryId : `${entryId}:${part}`,
+		source: { ...item.source, entryId },
+		...(typeof item.toolCallId === "string" ? { toolCallId: copy(item.toolCallId) } : {}),
+	};
+}
 const weight = (item: TaskTranscriptItem) => Buffer.byteLength(item.id) + Buffer.byteLength(item.toolCallId ?? "");
 /** The continuation remains the legacy task/session/item tuple. Nothing is retained between calls. */
 export async function savedTaskReferences(
@@ -279,7 +290,7 @@ export async function savedTaskReferences(
 			more = true;
 			return false;
 		}
-		batch.push({ item, seq: row.seq, at: page.current });
+		batch.push({ item: detached(item), seq: row.seq, at: page.current });
 		bytes += n;
 		return true;
 	};
