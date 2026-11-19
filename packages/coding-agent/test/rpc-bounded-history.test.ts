@@ -63,6 +63,14 @@ test("RPC pages a compacted session's saved entries without putting them back in
 			received,
 			entries.map((entry) => entry.id),
 		);
+		const last = await manager.readHistory({ direction: "backward" }).next();
+		assert.ok(!last.done);
+		assert.equal(last.value.items.at(-1)?.seq, entries.length, "the latest page ends at the stored watermark");
+		assert.ok(last.value.nextCursor);
+		await manager.appendMessage({ role: "user", content: "later", timestamp: 2 });
+		const previous = await manager.readHistory({ cursor: last.value.nextCursor }).next();
+		assert.ok(!previous.done);
+		assert.equal(previous.value.items.at(-1)?.seq, last.value.items[0]!.seq - 1);
 	} finally {
 		await harness.cleanup();
 		await store.close();

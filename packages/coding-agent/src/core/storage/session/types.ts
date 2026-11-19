@@ -84,6 +84,8 @@ export interface SessionHistoryPage {
 }
 
 export interface SessionHistoryReadOptions {
+	/** Order in which pages are visited. The entries within each page always remain chronological. */
+	readonly direction?: "forward" | "backward";
 	readonly fromSeq?: number;
 	readonly toSeq?: number;
 	readonly cursor?: string;
