@@ -2,7 +2,13 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
 import { dialectOf, type StorageDialect } from "../dialect.js";
-import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
+import {
+	SessionBlobError,
+	StorageError,
+	StorageInvalidTextError,
+	StoragePayloadTooLargeError,
+	StorageSchemaVersionError,
+} from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
@@ -1063,22 +1069,28 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	private async distinctCwds(query: SessionListQuery): Promise<string[]> {
-		const sql = `SELECT DISTINCT cwd FROM ${this.tables.sessions}`;
-		const order = this.dialect.rowOrder();
+		this.assertListing(query);
 		const pageRows = this.listingScanRows(LISTING_CWD_PAGE);
+		const options = { pageRows, size: "length(cwd)", signal: query.signal, assertOpen: () => this.assertOpen() };
+		if (!query.withoutSearchText) {
+			const sql = `SELECT DISTINCT cwd FROM ${this.tables.sessions}`;
+			let rows: (SqliteRow & { cwd: string })[];
+			try {
+				rows = await this.database.all<SqliteRow & { cwd: string }>(sql);
+			} catch (error) {
+				this.assertListing(query);
+				if (!(error instanceof StoragePayloadTooLargeError) || error.kind !== "response") throw error;
+				rows = await readSqlCatalog(this.database, { ...options, sql, key: "cwd", skipProbe: true });
+			}
+			this.assertListing(query);
+			return rows.map((row) => row.cwd);
+		}
+		const order = this.dialect.rowOrder();
 		const paced = `SELECT ${order} AS ord, cwd FROM ${this.tables.sessions}`;
 		const page = `${paced} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`;
 		const { value: found } = await reduceSqlCatalog<SqliteRow & { cwd: string }, Set<string>>(
 			this.database,
-			{
-				...(query.withoutSearchText
-					? { sql: paced, first: { sql: page, limit: pageRows }, pacedPage: () => page, key: "ord", start: 0 }
-					: { sql, first: { sql }, key: "cwd" }),
-				size: "length(cwd)",
-				signal: query.signal,
-				assertOpen: () => this.assertOpen(),
-				pageRows,
-			},
+			{ ...options, sql: paced, first: { sql: page, limit: pageRows }, pacedPage: () => page, key: "ord", start: 0 },
 			() => new Set(),
 			(found, page) => {
 				for (const row of page) found.add(row.cwd);
@@ -1102,12 +1114,24 @@ export class SqlSessionStore implements SessionStore {
 		const kept: Row[] = [];
 		for (let start = 0; start < rows.length; start += LISTING_CWD_MATCHES) {
 			this.assertListing(query);
-			const matched = await Promise.all(
-				rows.slice(start, start + LISTING_CWD_MATCHES).map(async (row) => ((await matches(row)) ? row : undefined)),
-			);
-			this.assertListing(query);
-			for (const row of matched) if (row !== undefined) kept.push(row);
-			if (start + LISTING_CWD_MATCHES < rows.length) await yieldTurn();
+			const end = Math.min(start + LISTING_CWD_MATCHES, rows.length);
+			for (let index = start; index < end; index++) {
+				const row = rows[index]!;
+				const matched = matches(row);
+				if (typeof matched === "boolean") {
+					if (matched) kept.push(row);
+					continue;
+				}
+				// Only an asynchronous matcher needs promises for its batch. Observe every match, even if a
+				// later call throws, and consume the results in listing order rather than settlement order.
+				const tail = rows.slice(index + 1, end);
+				const accepted = await Promise.all([matched, ...tail.map(async (candidate) => matches(candidate))]);
+				this.assertListing(query);
+				for (let offset = 0; offset < accepted.length; offset++)
+					if (accepted[offset]) kept.push(rows[index + offset]!);
+				break;
+			}
+			if (end < rows.length) await yieldTurn();
 		}
 		this.assertListing(query);
 		return kept;
