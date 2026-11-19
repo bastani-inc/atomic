@@ -1,3 +1,4 @@
+import { isProxy } from "node:util/types";
 import { anthropicAssistantReplayContent } from "@bastani/atomic-ai/api/anthropic-assistant-content";
 import { isProducedByModel } from "@bastani/atomic-ai/api/transform-messages";
 import type { Api, AssistantMessage, Message, Model } from "@bastani/atomic-ai/compat";
@@ -62,25 +63,11 @@ function readReplayThinkingBlock(block: unknown, allowEmptySignature = false): R
 	return { type: "thinking", thinking: block.thinking, signature: block.thinkingSignature };
 }
 
-function isSignedWireBlock(block: AnthropicContentBlock): boolean {
+function isSignedWireBlock(block: unknown): boolean {
+	if (!isObject(block)) return false;
 	const signature =
 		block.type === "thinking" ? block.signature : block.type === "redacted_thinking" ? block.data : undefined;
 	return typeof signature === "string" && signature.trim().length > 0;
-}
-
-function matchesSignedBlock(
-	original: ReplayThinkingBlock | undefined,
-	wire: AnthropicContentBlock | undefined,
-): boolean {
-	return (
-		!!original &&
-		!!wire &&
-		original.type === wire.type &&
-		isSignedWireBlock(original) &&
-		(original.type === "thinking"
-			? original.signature === wire.signature && original.thinking === wire.thinking
-			: original.data === wire.data)
-	);
 }
 
 function hasReplayThinkingBlock(message: AssistantMessage, allowEmptySignature: boolean): boolean {
@@ -146,7 +133,6 @@ function repairAssistantContent(
 	originalMessage: AssistantMessage,
 	providerBlocks: readonly AnthropicContentBlock[],
 	allowEmptySignature: boolean,
-	forkCandidate?: { onlySignedThinking: boolean },
 ): AnthropicContentBlock[] {
 	const repaired: AnthropicContentBlock[] = [];
 	let providerIndex = 0;
@@ -160,11 +146,6 @@ function repairAssistantContent(
 		// Thinking before the final marker is not in the payload and must not be restored into it:
 		// echoing thinking from both sides of the boundary is rejected outright.
 		const replayBlock = precedesBoundary ? undefined : readReplayThinkingBlock(originalBlock, allowEmptySignature);
-		// Check the single candidate during the existing repair pass. The first other block
-		// rules it out; no separate walk of its content (or any earlier assistant) is needed.
-		if (forkCandidate?.onlySignedThinking) {
-			forkCandidate.onlySignedThinking = matchesSignedBlock(replayBlock, providerBlocks[index]);
-		}
 		if (replayBlock) {
 			if (isThinkingLikeAnthropicBlock(providerBlocks[providerIndex])) {
 				providerIndex += 1;
@@ -225,12 +206,41 @@ function getAnthropicMessages(payload: unknown): unknown[] | undefined {
 	return Array.isArray(payload.messages) ? payload.messages : undefined;
 }
 
-/** Undefined for another role; null for an assistant that is not a block-restoration target. */
-function getAnthropicAssistantContent(message: unknown): AnthropicContentBlock[] | null | undefined {
+function getAnthropicAssistantContent(message: unknown, unaligned?: () => void): AnthropicContentBlock[] | undefined {
 	if (!isObject(message) || message.role !== "assistant") return undefined;
-	if (!Array.isArray(message.content)) return null;
-	const content = message.content.filter(isAnthropicContentBlock);
-	return content.length === message.content.length ? content : null;
+	if (Array.isArray(message.content)) {
+		const content = message.content.filter(isAnthropicContentBlock);
+		if (content.length === message.content.length) return content;
+	}
+	unaligned?.();
+	return undefined;
+}
+
+/** A hook can supply array subclasses and accessors. Use only a real array's own data slots for authority. */
+function tailData<T>(rows: readonly T[], offset: number): T | undefined {
+	return !isProxy(rows) && Array.isArray(rows)
+		? Object.getOwnPropertyDescriptor(rows, rows.length - offset)?.value
+		: undefined;
+}
+
+interface WirePair {
+	model: string;
+	index: number;
+	earlier: object;
+	later: object;
+	earlierContent: string;
+	laterContent: string;
+}
+
+/** Temporary receipt shared only by the two ordinary restoration passes around a provider hook. */
+export interface ForkReplayHook {
+	original?: WirePair;
+	matched?: WirePair;
+}
+
+function directModel(payload: unknown): unknown {
+	// Native Anthropic payloads use an own data field. Do not execute a hook's accessor or proxy trap.
+	return isObject(payload) && !isProxy(payload) ? Object.getOwnPropertyDescriptor(payload, "model")?.value : undefined;
 }
 
 /**
@@ -251,6 +261,7 @@ export function restoreAnthropicReplayThinkingBlocks(
 	sourceMessages: readonly Message[],
 	model: Model<Api>,
 	forkBoundaries?: ForkReplayPair,
+	hook?: ForkReplayHook,
 ): unknown {
 	if (model.api !== "anthropic-messages") return payload;
 
@@ -258,17 +269,18 @@ export function restoreAnthropicReplayThinkingBlocks(
 	if (!payloadMessages) return payload;
 
 	let allAssistantRowsAligned = true;
+	// A string-content assistant is valid but isn't a block-restoration target. Don't infer
+	// a final pair from an incomplete list. Ordinary restoration still gets exactly main's rows.
+	const unaligned =
+		forkBoundaries &&
+		(() => {
+			allAssistantRowsAligned = false;
+		});
 	const assistantPayloads = payloadMessages
-		.map((message, index) => {
-			const content = getAnthropicAssistantContent(message);
-			// String content is a valid assistant turn too. It is not a block-restoration
-			// target, but we cannot omit a row by ordinals from an incomplete assistant list.
-			if (content === null) allAssistantRowsAligned = false;
-			return { message, index, content };
-		})
+		.map((message, index) => ({ message, index, content: getAnthropicAssistantContent(message, unaligned) }))
 		.filter(
 			(entry): entry is { message: JsonObject; index: number; content: AnthropicContentBlock[] } =>
-				entry.content != null && isObject(entry.message),
+				entry.content !== undefined && isObject(entry.message),
 		);
 
 	if (assistantPayloads.length === 0) return payload;
@@ -286,10 +298,14 @@ export function restoreAnthropicReplayThinkingBlocks(
 
 	// Claude joins adjacent assistants. Only a removed boundary in the latest *emitted* pair
 	// can need the fork repair. An aborted reply may not emit at all; a visible user separates them.
-	const earlier = forkBoundaries && allAssistantRowsAligned && assistantPayloads.at(-2);
-	const latest = earlier && assistantPayloads.at(-1)!;
-	const source = earlier && emittingSourceAssistants.at(-2);
-	const laterSource = earlier && emittingSourceAssistants.at(-1);
+	const earlier = forkBoundaries && allAssistantRowsAligned && tailData(assistantPayloads, 2);
+	const latest = earlier && tailData(assistantPayloads, 1);
+	const source = earlier && tailData(emittingSourceAssistants, 2);
+	const laterSource = earlier && tailData(emittingSourceAssistants, 1);
+	const sourceBlocks = source && !isProxy(source) && Object.getOwnPropertyDescriptor(source, "content")?.value;
+	const sourceLength = sourceBlocks && !isProxy(sourceBlocks) && Array.isArray(sourceBlocks) ? sourceBlocks.length : 0;
+	const original = hook?.original;
+	const wireModel = earlier && directModel(payload);
 	const candidate =
 		earlier &&
 		source &&
@@ -298,14 +314,19 @@ export function restoreAnthropicReplayThinkingBlocks(
 		forkBoundaries.earlier.deref() === source &&
 		laterSource &&
 		forkBoundaries.later.deref() === laterSource &&
-		isProducedByModel(laterSource, model) &&
 		acceptsForkReplay(model) &&
-		earlier.content.length > 0 &&
-		earlier.content.length === source.content.length &&
-		matchesSignedBlock(readReplayThinkingBlock(laterSource.content[0], allowEmptySignature), latest.content[0])
+		sourceLength > 0 &&
+		typeof wireModel === "string" &&
+		wireModel === (model.fastRoute?.upstreamModelId ?? model.id) &&
+		(!original ||
+			(original.model === wireModel &&
+				original.index === earlier.index &&
+				original.earlier === earlier.message &&
+				original.later === latest.message))
 			? earlier
 			: undefined;
-	let omitIndex: number | undefined;
+	let earlierContent: string | undefined;
+	let laterContent: string | undefined;
 
 	for (const [assistantPayloadOrdinal, sourceMessage] of emittingSourceAssistants.entries()) {
 		const payloadAssistant = assistantPayloads[assistantPayloadOrdinal];
@@ -316,15 +337,31 @@ export function restoreAnthropicReplayThinkingBlocks(
 		// signed blocks, protecting against equal-count ordinal misalignment.
 		if (!nonThinkingBlocksAlign(sourceMessage, payloadAssistant.content)) continue;
 
-		const forkCandidate = payloadAssistant === candidate ? { onlySignedThinking: true } : undefined;
-		const repairedContent = repairAssistantContent(
-			sourceMessage,
-			payloadAssistant.content,
-			allowEmptySignature,
-			forkCandidate,
-		);
-		if (forkCandidate?.onlySignedThinking) omitIndex = payloadAssistant.index;
-		if (JSON.stringify(repairedContent) === JSON.stringify(payloadAssistant.content)) continue;
+		const repairedContent = repairAssistantContent(sourceMessage, payloadAssistant.content, allowEmptySignature);
+		const restored = JSON.stringify(repairedContent);
+		const received = JSON.stringify(payloadAssistant.content);
+		// Inspect the bytes the ordinary guard already read, not hook-controlled getters a second time.
+		if (
+			candidate &&
+			typeof received === "string" &&
+			restored === received &&
+			(payloadAssistant === earlier || payloadAssistant === latest)
+		) {
+			// These are the exact bytes main just compared with its source-restored version. An
+			// ambiguous/repaired row is not a receipt, and checking the JSON doesn't invoke a getter.
+			const blocks: unknown = JSON.parse(received);
+			if (!Array.isArray(blocks)) continue;
+			if (payloadAssistant === earlier) {
+				if (
+					(!original || original.earlierContent === received) &&
+					blocks.length === sourceLength &&
+					blocks.every(isSignedWireBlock)
+				)
+					earlierContent = received;
+			} else if ((!original || original.laterContent === received) && blocks[0] && isSignedWireBlock(blocks[0]))
+				laterContent = received;
+		}
+		if (restored === received) continue;
 
 		nextPayloadMessages ??= [...payloadMessages];
 		nextPayloadMessages[payloadAssistant.index] = {
@@ -333,9 +370,22 @@ export function restoreAnthropicReplayThinkingBlocks(
 		};
 	}
 
-	if (omitIndex !== undefined) {
-		nextPayloadMessages ??= [...payloadMessages];
-		nextPayloadMessages.splice(omitIndex, 1);
+	if (
+		hook &&
+		candidate &&
+		latest &&
+		typeof wireModel === "string" &&
+		earlierContent !== undefined &&
+		laterContent !== undefined
+	) {
+		hook.matched = {
+			model: wireModel,
+			index: candidate.index,
+			earlier: (nextPayloadMessages?.[candidate.index] ?? candidate.message) as object,
+			later: (nextPayloadMessages?.[latest.index] ?? latest.message) as object,
+			earlierContent,
+			laterContent,
+		};
 	}
 
 	if (!nextPayloadMessages || !isObject(payload)) return payload;
