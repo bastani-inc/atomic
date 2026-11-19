@@ -17,6 +17,7 @@ type Shape =
 	| "short"
 	| "string"
 	| "stringPresent"
+	| "objectPresent"
 	| "owner"
 	| "op"
 	| "usage"
@@ -124,6 +125,10 @@ function* embedded(shape: Shape, tool = false): Reader<Json> {
 }
 
 function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
+	if (shape === "objectPresent") {
+		yield* skip(first);
+		return first.name === "startObject";
+	}
 	if (shape === "stringPresent") {
 		yield* skip(first);
 		return first.name === "startString" ? "" : null;
@@ -240,6 +245,13 @@ function* project(type: string, customType: string, role: string): Reader<Json> 
 				...(customType === "subagent-slash-result" ? { requestId: true } : {}),
 				...(customType === "intercom_message" ? { message: protocolMessage, historyOnly: true } : {}),
 			};
+			break;
+		case "worktree_snapshot":
+			fields.root = true;
+			fields.snapshotId = true;
+			fields.captureMs = "number";
+			fields.degradedFrom = "truth";
+			fields.snapshot = fields.restore = fields.unrestored = "objectPresent";
 			break;
 		case "thinking_level_change":
 			fields.thinkingLevel = true;
@@ -368,6 +380,10 @@ export async function chunkedResumeProjection(
 	const result: Record<string, SqliteValue> = { ...stub };
 	for (const [key, value] of Object.entries(entry)) {
 		const column = `resume_${key.toLowerCase()}`;
+		if (type === "worktree_snapshot" && ["snapshot", "restore", "unrestored"].includes(key)) {
+			result[column] = value ? (key === "snapshot" ? "{}" : 1) : null;
+			continue;
+		}
 		if (key !== "data" && key !== "details" && key !== "message") {
 			const v = extracted(value, postgres);
 			result[column] = v !== null && typeof v === "object" ? JSON.stringify(v) : (v as SqliteValue);

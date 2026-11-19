@@ -129,6 +129,23 @@ for (const [name, backend] of Object.entries(backends)) {
 	});
 }
 
+test("copying a session between stores does not expand its live window, on success or failure (#5554)", async () => {
+	const { manager } = await tailResumed(backends.memory!);
+	const closed = new MemorySessionStore();
+	await closed.close();
+	await assert.rejects(manager.rebindStore(closed, false));
+	assert.equal(manager.hasFullHistory(), false, "a failed copy left old messages resident in its source");
+	const destination = new MemorySessionStore();
+	cleanups.push(() => destination.close());
+	await manager.rebindStore(destination, false);
+	assert.equal(manager.hasFullHistory(), false, "a successful copy hydrated retired messages into the live manager");
+	assert.deepEqual(
+		await storedIds(destination, manager.getSessionId()),
+		history.map((entry) => entry.id),
+	);
+	assert.equal(manager.getEntry("a"), undefined);
+});
+
 test("a JSONL backup streams earlier entries without bringing them back into the open window (#5554)", async () => {
 	const { store, manager } = await tailResumed(backends.jsonl!);
 	assert.ok(store instanceof JsonlSessionStore);

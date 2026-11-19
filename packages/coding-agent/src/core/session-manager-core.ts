@@ -708,21 +708,35 @@ export class SessionManager {
 		}
 	}
 
+	/** A compatible store takes a caller-owned array for a cross-store copy. Keep that input out of the live window,
+	 * including if the destination write fails. The source watermark belongs to the manager, not a later appender. */
+	private async compatibilityCopyEntries(): Promise<SessionEntry[]> {
+		if (this.hasFullHistory()) return this.getEntries();
+		const entries: SessionEntry[] = [];
+		await this.forEachStoredEntry(1, (entry) => entries.push(entry));
+		return entries;
+	}
+
 	/** @internal Finalize provisional startup storage after project trust resolves. */
 	rebindStore(store: SessionStore, removeProvisionalRecord: boolean): Promise<void> {
 		return this.runMutation(async () => {
 			if (store === this.store) return;
-			await this.loadFullHistory();
 			const header = this.recordHeader();
-			const entries = this.getEntries();
+			const entries = await this.compatibilityCopyEntries();
 			const hashes = sessionBlobHashes(this.store, entries);
 			assertSessionBlobStore(store, this.sessionId, hashes.length);
 			const result = await store.create(header, entries);
 			await copySessionBlobs(this.store, this.sessionId, store, this.sessionId, hashes);
+			const opened = await readStoredSession(store, this.sessionId, undefined);
+			if (
+				opened.resume.lastSeq !== result.lastSeq ||
+				(result.epoch !== undefined && opened.resume.epoch !== result.epoch)
+			)
+				throw new SessionConflictError(this.sessionId, result.lastSeq, opened.resume.lastSeq);
 			if (removeProvisionalRecord) await this.store.delete(this.sessionId);
 			this.store = store;
 			this.sessionDir = store instanceof JsonlSessionStore ? store.descriptor.location : "";
-			this.restore({ header, entries, lastSeq: result.lastSeq, epoch: result.epoch });
+			this.restoreOpened(opened);
 		});
 	}
 
