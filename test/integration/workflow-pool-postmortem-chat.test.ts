@@ -15,17 +15,22 @@ import {
 	completedWorkflowRunSnapshots,
 	listOpenableCompletedWorkflows,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
+import { openCompletedDurableWorkflow } from "../../packages/workflows/src/durable/completed-inspection.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createPostMortemHandleResolver } from "../../packages/workflows/src/extension/postmortem-deps.js";
+import { resolveStageTarget } from "../../packages/workflows/src/extension/workflow-targets.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { AgentSessionAdapter } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
@@ -51,6 +56,93 @@ function pooledAgentStage(store: Store): { readonly runId: string; readonly stag
 		for (const stage of candidate.stages) if (stage.name === "agent") return { runId: candidate.id, stage };
 	return undefined;
 }
+
+test(
+	"a pooled chat that started on resume opens from the completed workflow journal (#5647)",
+	async () => {
+		const directory = makeTempDirectory("pool-resumed-chat-");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const store = createStore();
+		bindStoreDurableBackend(store, backend);
+		const runId = testRunId("resumed-chat");
+		const options = { runId, cwd: directory, store, durableBackend: backend };
+		const childPath = fileURLToPath(new URL("../fixtures/pool-live-stage-child.ts", import.meta.url));
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "failedChild",
+			digest: await definitionDigest(childPath),
+		});
+		const parent = workflow({
+			name: "resumed-chat-root",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				try {
+					await ctx.workflow(child);
+				} catch (error) {
+					if (!String(error).includes("failed after the agent stage")) throw error;
+				}
+				return {};
+			},
+		});
+		const sessions = await JsonlSessionStore.open(join(directory, "host-sessions"), { exactDirectory: true });
+		const poolOptions = { journalPath: path, workers: 1, coordinator: "in-process" as const };
+		let pool = new LocalWorkerPool(backend, { ...poolOptions, definitions: [] });
+		try {
+			const refused = await run(parent, {}, options);
+			assert.match(refused.error ?? "", /not importable/);
+			const boundary = refused.stages[0]!.id;
+			await pool.close();
+			pool = new LocalWorkerPool(backend, {
+				...poolOptions,
+				definitions: [{ path: childPath, exportName: "failedChild", definition: child }],
+			});
+			const jobs = createJobTracker();
+			let completion: Promise<unknown> | undefined;
+			const accepted = await resumeDurableWorkflow(runId, {
+				registry: createRegistry().register(parent),
+				baseRunOpts: options,
+				durableBackend: backend,
+				jobs,
+				onRunAccepted: (id) => {
+					completion = jobs.get(id)?.promise;
+				},
+			});
+			assert.ok(accepted.ok, accepted.message);
+			await completion;
+			assert.equal(store.run(runId)?.status, "completed");
+			const agent = pooledAgentStage(store);
+			assert.ok(agent?.stage.sessionId && agent.stage.workerExecution);
+			const reopened = await openCompletedDurableWorkflow(runId, {
+				store,
+				durableBackend: backend,
+				sessionStore: sessions,
+				cwd: directory,
+			});
+			assert.ok(reopened.ok, reopened.message);
+			assert.deepEqual(resolveStageTarget(runId, "agent", store), {
+				ok: true,
+				runId: agent.runId,
+				stageId: agent.stage.id,
+			});
+			const pane = await createPostMortemHandleResolver({
+				store,
+				adapters: { agentSession: unopenedAdapter, sessionStore: sessions },
+				resolveDefaultStageSessionDir: () => undefined,
+				stageControlRegistry: createStageControlRegistry(),
+			})(runId, boundary);
+			assert.equal(pane?.ok, true);
+		} finally {
+			await pool.close();
+			await sessions.close();
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
 
 test.skipIf(process.platform === "win32")(
 	"a finished pooled stage reopens for post-mortem chat in the same process and after a restart (#3996)",

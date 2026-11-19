@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import { test } from "vitest";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { REMOTE_QUESTION } from "../fixtures/shared-pool-child.js";
 import { type BudgetedProcess, expectExitedCleanly, spawnWithinBudget } from "../helpers/budgeted-process.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
@@ -514,6 +515,69 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 	TYPED_FAILURE_BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"the root shows a finished child from another host even if none of its activity arrived (#5662)",
+	async () => {
+		const s = scenario("shared-pool-missing-activity", poolTestBudgetMs(2).waitMs);
+		let host: BudgetedProcess | undefined;
+		try {
+			host = startHost(s, "B", 1, { SHARED_POOL_RESTORE: s.directory });
+			await until("host B", s.deadline, () => existsSync(join(s.directory, "host-ready-B")), [host]);
+			// Drop only activity from B. Claims, checkpoints and the child's final result use the real shared journal.
+			const database = await openLibsqlDatabase({ url: s.url });
+			try {
+				await database.exec(`CREATE TRIGGER lose_activity BEFORE INSERT ON ${PREFIX}wf_runs_pool_activity
+					BEGIN SELECT RAISE(IGNORE); END`);
+			} finally {
+				await database.close();
+			}
+			const root = spawnWithinBudget(
+				[process.execPath, rootFixture, "start", s.directory, "1", "1", "scale"],
+				{
+					cwd: s.directory,
+					stdout: "ignore",
+					env: s.env("A", {
+						SHARED_POOL_BINDING: JSON.stringify(BINDING),
+						SHARED_POOL_REPORT_LIVE_CHILDREN: "1",
+						SHARED_POOL_STEPS: "1",
+					}),
+				},
+				s.deadline,
+			);
+			await expectExitedCleanly(root);
+			const outcome = await readJson<{
+				status: string;
+				children: { status: string; host: string }[];
+				liveChildren: { boundary: string; child?: RunSnapshot }[];
+			}>(join(s.directory, "outcome-start.json"));
+			assert.equal(outcome.status, "completed");
+			assert.deepEqual([outcome.children[0]?.host, outcome.children[0]?.status], ["B", "completed"]);
+			const [boundary] = outcome.liveChildren;
+			const child = boundary?.child;
+			assert.ok(child, "the root's live store holds the child that finished on host B");
+			assert.deepEqual(
+				[child.name, child.parentRunId, child.parentStageId],
+				["shared-pool-scale-child", s.root, boundary.boundary],
+			);
+			assert.deepEqual(
+				[child.status, child.result, child.inputs],
+				["completed", { host: "B" }, { index: 0, steps: 1 }],
+			);
+			assert.ok(child.startedAt > 0 && child.endedAt !== undefined && child.endedAt >= child.startedAt);
+			assert.deepEqual(
+				child.toolNodes.map((tool) => [tool.name, tool.status]),
+				[["step-0", "completed"]],
+			);
+			await stopHost(host);
+			host = undefined;
+		} finally {
+			host?.process.kill("SIGKILL");
+			removeTempDirectory(s.directory);
+		}
+	},
+	poolTestBudgetMs(2).timeoutMs,
 );
 
 /** How many Intercom cards from the root's operator that carry `body` the stage's model saw. */
