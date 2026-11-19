@@ -50,9 +50,8 @@ export function stopChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscri
 }
 
 /**
- * Begin a Working lifecycle for a prompt this host did not submit itself —
- * currently a workflow-authored `sendUserMessage()` accepted on an idle
- * retained stage. Mirrors the manual submit path so an accepted delivery paints
+ * Begin a Working lifecycle for a prompt this host did not submit itself.
+ * Mirrors the manual submit path so an accepted delivery paints
  * immediately and then hands the same visible period to the agent turn.
  *
  * Returns the lifecycle generation that identifies this delivery. Pass it back

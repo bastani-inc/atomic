@@ -947,10 +947,7 @@ describe("resume deletion completion after closing (#5256)", () => {
 
 	it("hides delete in a mixed picker with canDelete disabled on non-current sessions (#5256)", () => {
 		const picker = mount(
-			[
-				makeSession({ id: "s1", firstMessage: "alpha" }),
-				makeSession({ id: "s2", firstMessage: "beta" }),
-			],
+			[makeSession({ id: "s1", firstMessage: "alpha" }), makeSession({ id: "s2", firstMessage: "beta" })],
 			{
 				variant: "mixed",
 				rename: true,

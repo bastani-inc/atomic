@@ -295,7 +295,7 @@ test("extension panel sources validate malformed items and isolate throwing sour
 
 test("showAgentPanel notifies when the extension refuses to open a row or throws (#5224)", async () => {
 	initTheme("dark");
-	let now = 10_000;
+	const now = 10_000;
 	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	try {
 		const hub = new AgentPanelSourceHub();

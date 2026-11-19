@@ -6,7 +6,7 @@ Extensions are TypeScript modules that extend Atomic's behavior. They can subscr
 
 > **Placement for /reload:** Put extensions in `~/.atomic/agent/extensions/` (global) or `.atomic/extensions/` (project-local) for auto-discovery; legacy `.pi` paths remain supported. Use `atomic -e ./path.ts` only for quick tests. Extensions in auto-discovered locations can be hot-reloaded with `/reload`. `/reload` runs the current contents of each extension file and the local modules it imports. That includes plain JavaScript (`.mjs`, `.cjs`, and `.js` that is ESM in a `"type": "module"` package or CommonJS): Atomic evaluates it through its own transform, as it does TypeScript, instead of leaving it to Node or Bun, which would keep the first version until the process exits. ESM keeps `import.meta.url`, strict mode, top-level await and imports of Node builtins and packages; CommonJS keeps `require`, `module.exports`, `__filename`, `__dirname` and sloppy mode. A package the extension imports by name resolves from the importing file as Node or Bun would, and only falls back to Atomic's own copy of a host package when none is installed. Packages imported by name, JavaScript under `node_modules` outside the extension's own package, and modules loaded through a `createRequire()` require still load once per process, so restart Atomic after editing those.
 
-If `/reload` reports `Reload retiring cleanup failed`, its error includes the extension cleanup cause. The replacement extensions and updated settings remain active, and running workflows and joined Intercom groups stay available. Fix the reported extension cleanup error before reloading again.
+If `/reload` reports `Reload retiring cleanup failed`, its error includes the extension cleanup cause. The replacement extensions and updated settings remain active, and joined Intercom groups stay available. Fix the reported extension cleanup error before reloading again.
 
 If an optional extension fails to import or initialize during interactive startup or `/reload`, Atomic skips it and shows its path and the reason under `[Extension issues]` while keeping the session available. Fix the extension or its dependencies, then use `/reload` again. Print mode (`-p`) and standalone RPC mode (`--mode rpc`) instead report the named failure and exit with status 1, so scripts do not silently run without a requested extension. Required built-in failures and failed cleanup still stop startup.
 
@@ -35,7 +35,7 @@ Legacy extensions can import the running host API from either `@mariozechner/pi-
 
 See [examples/extensions/](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions) for working implementations.
 
-Atomic also ships an environment-gated [Herdr reporter](/herdr). It combines settled agent activity, extension prompt events, and observed workflow roots under one parent pane owner. It defers to loaded community or legacy reporters and can be disabled with `herdr.enabled` in settings. See [Herdr setup](/herdr#setup) for the supported version and [status indicators](/herdr#status-indicators) for reported activity.
+Atomic also ships an environment-gated [Herdr reporter](/herdr). It reports the parent session’s activity, running tasks, and approval requests in its pane. It defers to loaded community or legacy reporters and can be disabled with `herdr.enabled` in settings. See [Herdr setup](/herdr#setup) for the supported version and [status indicators](/herdr#status-indicators) for reported activity.
 
 ## Where to go next
 
@@ -66,7 +66,6 @@ If an extension is heavier than you need, compare the lighter mechanisms on [Bui
   - [Agent Events](/extensions/events#agent-events)
   - [Model Events](/extensions/events#model-events)
   - [Tool Events](/extensions/events#tool-events)
-- [Workflow activity and lifecycle hooks](/extensions/events#workflow-activity-and-lifecycle-hooks)
 - [ExtensionContext](/extensions/api-reference#extensioncontext)
 - [ExtensionCommandContext](/extensions/api-reference#extensioncommandcontext)
 - [ExtensionAPI Methods](/extensions/api-reference#extensionapi-methods)
@@ -80,16 +79,15 @@ If an extension is heavier than you need, compare the lighter mechanisms on [Bui
 
 ## Startup and lazy discovery
 
-Built-in MCP, workflow, subagent, web-access, and Intercom commands are available at startup. Their first use may wait for discovery or connection.
+Built-in MCP, subagent, web-access, and Intercom commands are available at startup. Their first use may wait for discovery or connection.
 
-Commands still wait for the resources they need before returning results. These include workflow definition lists, named workflow runs and inputs, failed or durable workflow resume, MCP tool calls, and explicit reload flows.
+Commands still wait for the resources they need before returning results. These include MCP tool calls and explicit reloads.
 
 Discovery scope depends on the operation:
 
 - Enabled MCP servers connect in the background when a session starts. The first prompt waits up to 10 seconds for servers with direct tools.
 - Codemode waits for the MCP namespaces a script names; `searchTools()` and `ALL_TOOLS` require all enabled servers. Tool search and resource tools also wait for discovery.
 - `/mcp` provides server management; `/mcp login`, `/mcp logout`, and `/mcp reconnect` accept an optional server name. Completion lists actions and eligible servers.
-- Paused live-workflow resume and pickers bypass full workflow discovery.
 - Autocomplete falls back to current/admin completions when lazy discovery fails.
 
 Failed connections can be retried with `/mcp reconnect`; dropped MCP connections reconnect on the next call. Web-access batches with no successful items report a tool error; partial successes retain their completed items.
@@ -109,7 +107,7 @@ The first is a remote custom UI. While an engine-owned `ctx.ui.custom()` compone
 - A component mounted with `handlesCtrlC: true` receives the press and keeps its own Skip, Close, or cancel binding. If that same component is still holding input on the next press, that press closes it, so a declared component cannot trap the keyboard either.
 - A component that did not declare it is closed by the first press, through the ordinary close path: its `ctx.ui.custom()` promise resolves with `undefined`, the child is told the component closed, the editor comes back, and the engine keeps running — including any other component that generation has mounted below or above this one.
 
-Declare `handlesCtrlC` whenever your component's hint row offers `ctrl+c` for anything. This is a migration for existing components: an extension that already bound Ctrl+C keeps that binding only by adding the option. The bundled workflow surfaces declare it. Native host selectors, dialogs, input forms, session pickers, and unrelated native overlays are unaffected: they keep Ctrl+C as their own cancel.
+Declare `handlesCtrlC` whenever your component's hint row offers `ctrl+c` for anything. This is a migration for existing components: an extension that already bound Ctrl+C keeps that binding only by adding the option. Native host selectors, dialogs, input forms, session pickers, and unrelated native overlays are unaffected: they keep Ctrl+C as their own cancel.
 
 ```typescript
 await ctx.ui.custom<string | undefined>(
@@ -233,7 +231,7 @@ A trusted project `"+builtin:codemode"` entry can override a global exclusion. E
 
 Codemode and tool search are replaceable: an extension that registers the same tool, command, or flag can take over. Atomic reports the replacement and names its owner. Disable that extension through `atomic config` when you want the built-in implementation instead.
 
-These symbolic names do not replace Atomic's bundled MCP, workflow, subagent, web-access, or Intercom resources. There are no corresponding `builtin:mcp`, `builtin:workflows`, or `builtin:subagents` aliases. Keep using the existing package controls and MCP configuration.
+These symbolic names do not replace Atomic's bundled MCP, subagent, web-access, or Intercom resources. There are no corresponding `builtin:mcp` or `builtin:subagents` aliases. Keep using the existing package controls and MCP configuration.
 
 To share extensions via npm or git as Atomic packages, see [Atomic packages](/packages).
 
@@ -773,7 +771,3 @@ In non-interactive modes, check `ctx.hasUI` before using UI methods.
 ## Examples Reference
 
 Moved to [Extension examples](/extensions/examples#examples-reference).
-
-## Workflow activity and lifecycle hooks
-
-Moved to [Extension events](/extensions/events#workflow-activity-and-lifecycle-hooks).

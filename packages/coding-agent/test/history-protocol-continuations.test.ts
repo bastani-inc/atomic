@@ -17,7 +17,6 @@ const PROJECT = resolve("/projects/history-continuations");
 const BASE = Date.parse("2026-11-01T00:00:00.000Z");
 const STORE_WAIT_BUDGET_MS = 50;
 const CALL_LIMIT = 200;
-const OVERSIZE_DIAGNOSTIC = "[History response cannot fit its byte budget";
 
 interface Gate {
 	readonly opened: Promise<void>;

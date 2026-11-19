@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { it, vi } from "vitest";
+import { it } from "vitest";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";

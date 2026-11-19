@@ -27,12 +27,14 @@
 - `/resume` now lists sessions only. Workflow runs no longer appear in the agent panel, `/tasks`, terminal program status, `/settings` or `/config`. To continue work, resume the parent session and inspect its subagents in `/tasks`.
 - `history://` searches session transcripts only. Existing `history://workflows` links explain the removal; old workflow stores are left untouched. Use `history://sessions` to recall the conversation.
 - Workflow definitions are no longer loadable resources. Atomic ignores the old `workflows` and `intercom.showUnknownTargetWarnings` settings. Package manifests and package filters no longer load workflows; package a skill for repeated use instead. Existing files can stay in place: ask the agent to convert an old definition into a project or global skill that runs with codemode and subagents. Nothing is written automatically at startup.
+- `/resume` now lists sessions only. The agent panel, `/tasks` and terminal program status no longer show workflow runs. `/settings` and `atomic config` no longer offer workflow options. To continue work, resume the parent session and inspect its subagents in `/tasks`.
 
 ### Added
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Interactive startup points out earlier workflow files. Ask Atomic to read a file and carry out its steps with codemode and subagents, or describe the procedure in a reusable skill.
 - Extension tools can distinguish nested calls from model-issued calls with `ctx.parentToolCallId`.
+- Interactive startup points out earlier workflow files. Ask Atomic to convert one into a skill that uses codemode and subagents. Project workflows become project skills; global workflows become user skills. Discovery writes nothing and conversion leaves the original unchanged.
 
 ## [0.9.90] - 2026-11-19
 
