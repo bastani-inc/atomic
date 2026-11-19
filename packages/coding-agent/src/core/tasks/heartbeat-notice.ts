@@ -138,6 +138,14 @@ export function formatTaskHeartbeatStatus(task: TaskHeartbeatTask): string {
 export const TASK_HEARTBEAT_GUIDANCE =
 	"This is a periodic check, not a failure signal. For each task, judge whether it is still making progress or is " +
 	"runaway, stale, or stuck. If it is progressing, continue your current work and let it run. Otherwise inspect it " +
+	"(/tasks, or the shell or subagent `wait` action with its task ID), steer it (for a subagent, send it an Intercom " +
+	'message, or pause it and resume it with a message), or stop it (`kill({ id })` for a shell, `subagent({ action: "quit", id })` ' +
+	"for a subagent). Do not relaunch a duplicate of a task that is still running.";
+
+/** The guidance of a heartbeat that names a background search: a search is waited on and stopped like a shell. */
+export const TASK_HEARTBEAT_SEARCH_GUIDANCE =
+	"This is a periodic check, not a failure signal. For each task, judge whether it is still making progress or is " +
+	"runaway, stale, or stuck. If it is progressing, continue your current work and let it run. Otherwise inspect it " +
 	"(/tasks, or the shell, search or subagent `wait` action with its task ID), steer it (for a subagent, send it an Intercom " +
 	'message, or pause it and resume it with a message), or stop it (`kill({ id })` for a shell or search, `subagent({ action: "quit", id })` ' +
 	"for a subagent). Do not relaunch a duplicate of a task that is still running.";
@@ -165,6 +173,7 @@ export function formatTaskHeartbeat(details: TaskHeartbeatDetails): string {
 			`Also still running: ${named.join("; ")}${unnamed > 0 ? `; and ${unnamed} more` : ""}. Inspect them with /tasks.`,
 		);
 	}
-	lines.push("", TASK_HEARTBEAT_GUIDANCE);
+	const namesTool = [...details.tasks, ...details.more].some((task) => task.kind === "tool");
+	lines.push("", namesTool ? TASK_HEARTBEAT_SEARCH_GUIDANCE : TASK_HEARTBEAT_GUIDANCE);
 	return lines.join("\n");
 }

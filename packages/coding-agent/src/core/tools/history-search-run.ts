@@ -17,7 +17,7 @@ import { ToolTaskOutput } from "../tasks/supervisor.js";
 import { lookupOwnedTask, type SupervisedCommandOwner } from "./bash-pty-native.js";
 import { type HistorySearchRun, historySearchWork } from "./history-search-task.ts";
 import { PersistedOutputFile, truncateBufferAtUtf8Boundary } from "./persisted-output-file.ts";
-import type { SearchToolDetails } from "./search-details.ts";
+import { buildSearchDetails, type SearchToolDetails } from "./search-details.ts";
 import { TaskToolError } from "./shell-task-status.ts";
 import { executeSupervisedToolTask } from "./tool-task.ts";
 import { formatSize } from "./truncate.ts";
@@ -58,6 +58,15 @@ export type HistorySearchDetails = SearchToolDetails & {
 	timeoutSeconds?: number;
 };
 
+/** How a finished search's result reads where it stands for one `search` call: its details, and the page `skip` selects. */
+export interface HistorySearchShape {
+	readonly cwd: string;
+	/** What the call searched, as its result's details name it: its URLs without their `:N-M` selections. */
+	readonly scopePath: string;
+	/** The page of everything the search found that the call's `skip` selects, with that page's details. */
+	readonly skipPage?: (text: string) => { readonly text: string; readonly details: SearchToolDetails };
+}
+
 export interface HistorySearchCall extends HistorySearchRun {
 	readonly timeoutSeconds: number;
 	readonly wait?: WaitPolicy;
@@ -65,6 +74,7 @@ export interface HistorySearchCall extends HistorySearchRun {
 	readonly owner: SupervisedCommandOwner | undefined;
 	readonly tempDir: string | undefined;
 	readonly onUpdate?: (text: string) => void;
+	readonly shape?: HistorySearchShape;
 }
 
 /**
@@ -194,6 +204,8 @@ function remember<V>(map: Map<string, V>, key: string, value: V): void {
 
 /** The execution timeout each background search launched in this process runs under, by task id. */
 const launchTimeouts = new Map<string, number>();
+/** How the result of each background search launched in this process reads once it ends, by task id. */
+const launchShapes = new Map<string, HistorySearchShape>();
 
 function stillRunning(taskId: string, timeoutSeconds: number | undefined): string {
 	const timeout =
@@ -241,6 +253,38 @@ function settledResult(
 	};
 }
 
+/**
+ * The result of a search the call observed, from all it printed: the page its `skip` selects once it has finished, and
+ * once it has ended the details a search result carries (what it covered, each match's location, the text shown).
+ */
+async function historyResult(
+	observation: WaitOutcome,
+	text: string,
+	timeoutSeconds: number | undefined,
+	tempDir: string | undefined,
+	shape: HistorySearchShape | undefined,
+): Promise<AgentToolResult<HistorySearchDetails>> {
+	if (shape?.skipPage && observation.kind === "settled" && observation.result.kind === "completed") {
+		const page = shape.skipPage(text);
+		return {
+			content: [{ type: "text", text: page.text }],
+			details: {
+				...page.details,
+				observation,
+				...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+				...matchCounts(page.text),
+			},
+		};
+	}
+	const result = settledResult(observation, await formatHistoryOutput(text, tempDir), timeoutSeconds);
+	if (shape === undefined || observation.kind !== "settled") return result;
+	const shown = result.content.map((item) => (item.type === "text" ? item.text : "")).join("\n");
+	return {
+		...result,
+		details: { ...buildSearchDetails(undefined, shown, shape.cwd, shape.scopePath), ...result.details },
+	};
+}
+
 /** Run a history:// search: as a task of `call.owner` when it can run one, else in the foreground. */
 export async function runHistorySearch(call: HistorySearchCall): Promise<AgentToolResult<HistorySearchDetails>> {
 	// What the call observed, kept to the same bound as a tool task's output; the rest is counted, not kept.
@@ -267,9 +311,11 @@ export async function runHistorySearch(call: HistorySearchCall): Promise<AgentTo
 			onData: collect,
 			work,
 		});
-		if (result.observation?.kind === "yielded") remember(launchTimeouts, result.taskId, call.timeoutSeconds);
-		const formatted = await formatHistoryOutput(outputText(output), call.tempDir);
-		return settledResult(result.observation!, formatted, call.timeoutSeconds);
+		if (result.observation?.kind === "yielded") {
+			remember(launchTimeouts, result.taskId, call.timeoutSeconds);
+			if (call.shape !== undefined) remember(launchShapes, result.taskId, call.shape);
+		}
+		return historyResult(result.observation!, outputText(output), call.timeoutSeconds, call.tempDir, call.shape);
 	}
 	// No owner runs it as a task: it runs here until it ends, as an unbound bash command waits until it completes.
 	const stop = new AbortController();
@@ -286,11 +332,10 @@ export async function runHistorySearch(call: HistorySearchCall): Promise<AgentTo
 		call.signal?.removeEventListener("abort", forward);
 	}
 	if (call.signal?.aborted && ended === "stopped") throw new Error("aborted");
-	const formatted = await formatHistoryOutput(outputText(output), call.tempDir);
 	const cause =
 		ended === "finished" ? undefined : stop.signal.reason === "execution-timeout" ? "execution-timeout" : "user";
 	const outputRef = { ownerId: "" as never, taskId, artifactId: "", byteCount: "0", omittedRanges: [] };
-	return settledResult(
+	return historyResult(
 		{
 			kind: "settled",
 			taskId,
@@ -299,8 +344,10 @@ export async function runHistorySearch(call: HistorySearchCall): Promise<AgentTo
 					? { kind: "completed", output: outputRef }
 					: { kind: "cancelled", cause, output: outputRef },
 		},
-		formatted,
+		outputText(output),
 		call.timeoutSeconds,
+		call.tempDir,
+		call.shape,
 	);
 }
 
@@ -362,13 +409,14 @@ export async function waitForHistorySearch(
 			offset = page.value.nextOffset;
 		}
 		const timeoutSeconds = launchTimeouts.get(id);
+		const shape = launchShapes.get(id);
 		if (observed.value.kind === "yielded") remember(shownThrough, id, offset);
 		else {
 			shownThrough.delete(id);
 			launchTimeouts.delete(id);
+			launchShapes.delete(id);
 		}
-		const output = await formatHistoryOutput(pages.join(""), tempDir);
-		return settledResult(observed.value, output, timeoutSeconds);
+		return historyResult(observed.value, pages.join(""), timeoutSeconds, tempDir, shape);
 	} finally {
 		signal?.removeEventListener("abort", abort);
 	}

@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { TOOL_TASK_OUTPUT_MAX_BYTES } from "../tasks/supervisor.js";
 import { type InternalResourceContext, searchInternalSelector } from "./resource-selectors.ts";
+import { splitLineRangeSelector } from "./search-line-ranges.ts";
 import type { ToolTaskWork } from "./tool-task.ts";
 import { formatSize } from "./truncate.ts";
 
@@ -131,8 +132,10 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 			const startedAt = performance.now();
 			let text: string;
 			try {
+				// A router gets the URL and its `:N-M` selection apart, as a single search call hands them over.
+				const { path, lineRanges } = splitLineRangeSelector(url);
 				text = await searchInternalSelector(
-					url,
+					path,
 					run.cwd,
 					run.pattern,
 					run.ignoreCase,
@@ -140,7 +143,7 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 					run.resources,
 					run.contextBefore,
 					run.contextAfter,
-					{ signal, timeBudgetMs: stepMs },
+					{ ...(lineRanges === undefined ? {} : { ranges: lineRanges }), signal, timeBudgetMs: stepMs },
 				);
 			} catch (error) {
 				if (signal.aborted) {
@@ -184,8 +187,9 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 				const note = followedStopNote(line);
 				return note === undefined ? [] : [note];
 			});
-			const shown = kept.join("\n").trim();
-			if (shown.length > 0 && shown !== "No matches found") print(shown);
+			// Only the blank lines around what is left go: a line keeps its own text, trailing spaces included.
+			const shown = kept.join("\n").replace(/^\n+|\n+$/g, "");
+			if (shown.trim().length > 0 && shown !== "No matches found") print(shown);
 			// What this step stopped at is searched before anything queued after it, so results stay in order.
 			pending.unshift(...next);
 		}

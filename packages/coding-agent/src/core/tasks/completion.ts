@@ -419,9 +419,13 @@ export function formatTaskCompletion(
 		waitingOn
 			? `Nothing stopped it: it was released while waiting on ${waitingOn}, and it wakes by itself when that finishes and goes on with its task. Nothing needs to be done meanwhile; its next notice reports what it did.`
 			: interruptedByRestart
-				? `Atomic restarted while this workflow stage was released, so this ${kind === "tool" ? toolName || "tool call" : "command"} no longer runs and its result and output were not kept. If its result is still needed, run it again.`
+				? kind === "tool"
+					? `Atomic restarted while this workflow stage was released, so this ${toolName || "tool call"} no longer runs and its result and output were not kept. If its result is still needed, run it again.`
+					: "Atomic restarted while this workflow stage was released, so this command no longer runs and its result and output were not kept. If its result is still needed, run the command again."
 				: interruptedByPause
-					? `A pause interrupted this ${kind === "tool" ? toolName || "tool call" : "command"} before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, running it again if its result is still needed.`
+					? kind === "tool"
+						? `A pause interrupted this ${toolName || "tool call"} before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, running it again if its result is still needed.`
+						: "A pause interrupted this command before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, re-running the command if its result is still needed."
 					: pausedUnknownKind
 						? "A pause stopped this task before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed."
 						: resumable

@@ -108,9 +108,9 @@ const WHOLE_SESSION_ENTRY_LIMIT = 2_000;
 const DISCOVERY_TTL_MS = 60_000;
 const MAX_PARKED_DISCOVERIES = 16;
 const QUERY_KEYS: Readonly<Record<"sessions" | "workflows" | "root", readonly string[]>> = {
-	sessions: ["limit", "offset", "project", "cursor", "session", "after", "created", "listing"],
-	workflows: ["limit", "offset", "cursor", "run", "started"],
-	root: ["limit", "offset", "project", "cursor", "created", "listing"],
+	sessions: ["limit", "offset", "project", "cursor", "session", "after", "listing"],
+	workflows: ["limit", "offset", "cursor", "run"],
+	root: ["limit", "offset", "project", "cursor", "listing"],
 };
 const CURSOR = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?$/;
 
@@ -126,10 +126,6 @@ interface HistoryTarget {
 	readonly run?: string;
 	readonly after?: SessionKey;
 	readonly cursor?: HistoryCursor;
-	/** Where a workflow search chain stands in start order (`started=`); see {@link StartedKey}. */
-	readonly started?: StartedKey;
-	/** Where a session search chain stands in creation order (`created=`); see {@link CreatedKey}. */
-	readonly created?: CreatedKey;
 	/** The session listing a stopped discovery parked for this chain (`listing=<n>`); only this chain adopts it. */
 	readonly listing?: number;
 }
@@ -153,53 +149,6 @@ function sessionKey(summary: SessionSummary): SessionKey {
 
 function compareSessionKeys(a: SessionKey, b: SessionKey): number {
 	return b.activeMs - a.activeMs || b.createdMs - a.createdMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-}
-
-/**
- * Where a search chain stands among sessions in creation order, newest first (`created=<createdMs>.<id>`). A session's
- * creation never changes, so a session the chain has not reached cannot move past this position, as one with new
- * activity could in the activity order sessions are listed in; and a session created after the chain started sorts
- * before it, so the chain leaves it out.
- */
-interface CreatedKey {
-	readonly createdMs: number;
-	readonly id: string;
-}
-
-const CREATED_KEY = /^(-?\d+)(?:\.(.+))?$/s;
-
-function createdKeyOf(summary: SessionSummary): CreatedKey {
-	return { createdMs: Math.trunc(timeMs(summary.createdAt)), id: summary.id };
-}
-
-function compareCreatedKeys(a: CreatedKey, b: CreatedKey): number {
-	return b.createdMs - a.createdMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-}
-
-function isCreatedKey(key: ChainKey): key is CreatedKey {
-	return "createdMs" in key && !("activeMs" in key);
-}
-
-/**
- * Where a workflow search chain stands among runs ordered by start, newest first, ties by run id
- * (`started=<startedAtMs>.<runId>`): the run the continuation names, searched from there inclusive. A run's start never
- * changes, so removing or starting runs between calls cannot make the chain skip or repeat one.
- */
-interface StartedKey {
-	readonly startedMs: number;
-	readonly runId: string;
-}
-
-/** A position a continuation carries: an activity key (earlier versions), a creation key or a start key. */
-type ChainKey = SessionKey | CreatedKey | StartedKey;
-
-function startedKeyOf(run: Pick<WorkflowRunSummary, "startedAt" | "runId">): StartedKey {
-	// Whole milliseconds, as a continuation writes them, so a run sorts where its own position names it.
-	return { startedMs: Math.trunc(run.startedAt), runId: run.runId };
-}
-
-function compareStartedKeys(a: StartedKey, b: StartedKey): number {
-	return b.startedMs - a.startedMs || (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0);
 }
 
 function sessionKeyText(key: SessionKey, pinned?: string): string {
@@ -302,18 +251,6 @@ function parseTarget(url: string): HistoryTarget {
 	const afterId = afterMatch?.[3] ?? session;
 	if (afterText !== null && (!afterMatch || afterId === undefined))
 		throw new Error(`history after must be the position a session search gave: ${afterText}`);
-	const createdText = params.get("created");
-	const createdMatch = createdText === null ? undefined : CREATED_KEY.exec(createdText);
-	// A position in the session the continuation is pinned to leaves its id to `session=`.
-	const createdId = createdMatch?.[2] ?? session;
-	if (createdText !== null && (!createdMatch || createdId === undefined))
-		throw new Error(`history created must be the position a session search gave: ${createdText}`);
-	const startedText = params.get("started");
-	const startedMatch = startedText === null ? undefined : CREATED_KEY.exec(startedText);
-	// A position at the run the continuation is pinned to leaves its id to `run=`.
-	const startedRunId = startedMatch?.[2] ?? run;
-	if (startedText !== null && (!startedMatch || startedRunId === undefined))
-		throw new Error(`history started must be the position a workflow search gave: ${startedText}`);
 	const listingText = params.get("listing");
 	const listing = listingText === null ? undefined : Number(listingText);
 	if (listingText !== null && (!/^\d+$/.test(listingText) || !Number.isSafeInteger(listing)))
@@ -333,12 +270,6 @@ function parseTarget(url: string): HistoryTarget {
 		...(session === undefined ? {} : { session }),
 		...(run === undefined ? {} : { run }),
 		...(listing === undefined ? {} : { listing }),
-		...(createdMatch && createdId !== undefined
-			? { created: { createdMs: Number(createdMatch[1]), id: createdId } }
-			: {}),
-		...(startedMatch && startedRunId !== undefined
-			? { started: { startedMs: Number(startedMatch[1]), runId: startedRunId } }
-			: {}),
 		...(afterMatch && afterId !== undefined
 			? { after: { activeMs: Number(afterMatch[1]), createdMs: Number(afterMatch[2]), id: afterId } }
 			: {}),
@@ -388,7 +319,7 @@ function pageUrl(
 	cursor?: string,
 	ranges?: readonly SeqRange[],
 	pinned?: string,
-	after?: ChainKey,
+	after?: SessionKey,
 	listing?: number,
 ): string {
 	const params = new URLSearchParams();
@@ -397,13 +328,7 @@ function pageUrl(
 	if (domain === "sessions" && target.project !== undefined) params.set("project", target.project);
 	if (pinned !== undefined) params.set(domain === "sessions" ? "session" : "run", pinned);
 	if (cursor !== undefined) params.set("cursor", cursor);
-	if (after !== undefined) {
-		if ("startedMs" in after)
-			params.set("started", after.runId === pinned ? String(after.startedMs) : `${after.startedMs}.${after.runId}`);
-		else if (isCreatedKey(after))
-			params.set("created", after.id === pinned ? String(after.createdMs) : `${after.createdMs}.${after.id}`);
-		else params.set("after", sessionKeyText(after, pinned));
-	}
+	if (after !== undefined) params.set("after", sessionKeyText(after, pinned));
 	if (listing !== undefined) params.set("listing", String(listing));
 	const query = params.toString();
 	return `history://${domain}${query ? `?${query}` : ""}${ranges && ranges.length > 0 ? `:${rangeText(ranges)}` : ""}`;
@@ -1472,7 +1397,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		}
 		if (adopted && wanted !== undefined && !runs.some((run) => run.runId.startsWith(wanted)))
 			return recentRuns(budget, undefined, true);
-		return [...runs].sort((a, b) => compareStartedKeys(startedKeyOf(a), startedKeyOf(b)));
+		return [...runs].sort((a, b) => b.startedAt - a.startedAt);
 	}
 
 	async function belongsToProjectRun(runId: string, budget: HistoryCallBudget): Promise<boolean> {
@@ -1668,7 +1593,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		unreadable: number,
 		ranges?: readonly SeqRange[],
 		nextPin?: string,
-		after?: ChainKey,
+		after?: SessionKey,
 	): string[] {
 		const end = target.offset + shown;
 		if (target.offset === 0 && end >= total && unreadable === 0) return [];
@@ -1812,7 +1737,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				discovered.stopped.cursor,
 				request.ranges,
 				pin,
-				target.created ?? target.after,
+				target.after,
 				discovered.stopped.listing,
 			);
 			const lines = [
@@ -1824,32 +1749,26 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			return () => lines;
 		}
 		const store = requireStore();
-		// A search chain walks sessions in creation order (see CreatedKey); the listing it reads them from is ordered by
-		// activity. A continuation from an earlier version names an activity position, which may have skipped sessions
-		// since: the chain starts again from the top and says so, never skipping one silently.
-		const ordered = discovered.sessions
-			.filter((summary) => summary.id !== sources.currentSessionId)
-			.map((summary) => ({ summary, key: createdKeyOf(summary) }))
-			.sort((a, b) => compareCreatedKeys(a.key, b.key));
-		const candidates = ordered.map((item) => item.summary);
-		const candidateKeys = ordered.map((item) => item.key);
-		const legacyAfter = target.created === undefined && target.after !== undefined;
-		const resuming = target.cursor !== undefined && target.cursor.first > 0 && !legacyAfter;
+		const candidateKeys: SessionKey[] = [];
+		const candidates = discovered.sessions.filter((summary, index) => {
+			if (summary.id === sources.currentSessionId) return false;
+			candidateKeys.push(discovered.keys[index]!);
+			return true;
+		});
+		const resuming = target.cursor !== undefined && target.cursor.first > 0;
 		const pinnedAt =
 			resuming && target.session !== undefined
 				? candidates.findIndex((summary) => summary.id === target.session)
 				: -1;
 		const pinnedGone = resuming && target.session !== undefined && pinnedAt === -1;
 		const pinned = pinnedAt === -1 ? undefined : candidates[pinnedAt];
-		const after = target.created;
+		const after = target.after;
 		const restStart =
 			after !== undefined
-				? candidateKeys.findIndex((key) => compareCreatedKeys(key, after) > 0)
-				: legacyAfter
-					? 0
-					: pinned !== undefined
-						? Math.max(target.offset, pinnedAt) + 1
-						: target.offset;
+				? candidateKeys.findIndex((key) => compareSessionKeys(key, after) > 0)
+				: pinned !== undefined
+					? Math.max(target.offset, pinnedAt) + 1
+					: target.offset;
 		const restFrom = restStart === -1 ? candidates.length : restStart;
 		const scope: HistoryTarget = { ...target, offset: pinned === undefined ? restFrom : Math.max(0, restFrom - 1) };
 		const rest = candidates
@@ -1857,21 +1776,14 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			.filter((summary) => summary.id !== pinned?.id)
 			.slice(0, target.limit - (pinned === undefined ? 0 : 1));
 		const window = pinned === undefined ? rest : [pinned, ...rest];
-		const positionOf = (index: number): CreatedKey | undefined =>
-			index === 0 && pinned !== undefined ? (after ?? candidateKeys[restFrom - 1]) : createdKeyOf(window[index]!);
+		const positionOf = (index: number): SessionKey | undefined =>
+			index === 0 && pinned !== undefined ? (after ?? candidateKeys[restFrom - 1]) : sessionKey(window[index]!);
 		const out: string[] = [];
-		const notes: string[] = [
-			...(pinnedGone
-				? [
-						`${pageUrl("sessions", scope, scope.offset)}:0: [session ${target.session} is no longer listed, so the search could not resume in it; it continued with the sessions after it]`,
-					]
-				: []),
-			...(legacyAfter
-				? [
-						`${pageUrl("sessions", scope, scope.offset)}:0: [this continuation came from an earlier version, so the search started again from the first session and may show sessions it already showed]`,
-					]
-				: []),
-		];
+		const notes: string[] = pinnedGone
+			? [
+					`${pageUrl("sessions", scope, scope.offset)}:0: [session ${target.session} is no longer listed, so the search could not resume in it; it continued with the sessions after it]`,
+				]
+			: [];
 		for (const note of notes) budget.spend(lineBytes(note));
 		budget.releaseReserve();
 		let windowCut = false;
@@ -2243,39 +2155,22 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			return [...unreadableNotes, ...stopLines, ...lines];
 		}
 		const runs = await recentRuns(budget);
-		// A chain walks runs by start (see StartedKey). A `run=` continuation from an earlier version names an offset
-		// that removed or started runs may have moved: the chain starts again from the top and says so.
-		const started = target.started;
-		const legacyRun = target.run !== undefined && started === undefined;
-		const from =
-			started === undefined ? -1 : runs.findIndex((run) => compareStartedKeys(startedKeyOf(run), started) >= 0);
-		const startIndex = started !== undefined ? (from === -1 ? runs.length : from) : legacyRun ? 0 : target.offset;
-		const pinnedHere = target.run !== undefined && !legacyRun && runs[startIndex]?.runId === target.run;
-		const pinnedGone = target.run !== undefined && !legacyRun && !pinnedHere;
-		const scope: HistoryTarget = { ...target, offset: startIndex };
-		const resume = pinnedHere ? start : undefined;
+		const pinnedAt = target.run === undefined ? -1 : runs.findIndex((run) => run.runId === target.run);
+		const pinnedGone = target.run !== undefined && pinnedAt === -1;
+		const scope: HistoryTarget = pinnedAt === -1 ? target : { ...target, offset: pinnedAt };
+		const resume = pinnedGone ? undefined : start;
 		const resumeCursor = resume === undefined || target.cursor === undefined ? undefined : cursorText(target.cursor);
 		const window = runs.slice(scope.offset, scope.offset + scope.limit);
 		const nextRun = runs[scope.offset + window.length];
 		budget.spend(Math.max(0, ...[...window, ...(nextRun ? [nextRun] : [])].map((run) => runPinBytes(run.runId))));
-		const notes = [
-			...(pinnedGone
-				? [
-						charged(
-							budget,
-							`${pageUrl("workflows", scope, scope.offset)}:0: [run ${target.run} is no longer listed, so the search could not resume in it; it continued with the runs after it]`,
-						),
-					]
-				: []),
-			...(legacyRun
-				? [
-						charged(
-							budget,
-							`${pageUrl("workflows", scope, scope.offset)}:0: [this continuation came from an earlier version, so the search started again from the newest run and may show runs it already showed]`,
-						),
-					]
-				: []),
-		];
+		const notes = pinnedGone
+			? [
+					charged(
+						budget,
+						`${pageUrl("workflows", scope, scope.offset)}:0: [run ${target.run} is no longer listed, so the search could not resume in it; it continued with the runs after it]`,
+					),
+				]
+			: [];
 		const out: string[] = [];
 		let unreadable = 0;
 		const stoppedAt = (
@@ -2300,15 +2195,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 								searched,
 								unreadable,
 								reason,
-								pageUrl(
-									"workflows",
-									scope,
-									scope.offset + index,
-									cursor,
-									request.ranges,
-									run.runId,
-									startedKeyOf(run),
-								),
+								pageUrl("workflows", scope, scope.offset + index, cursor, request.ranges, run.runId),
 								`${inRun ? ` in history://workflows/${run.runId}` : ""}${clause}`,
 							),
 						skipped,
@@ -2351,16 +2238,9 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			}
 		}
 		return [
-			...coverage(
-				"workflows",
-				scope,
-				runs.length,
-				window.length,
-				unreadable,
-				request.ranges,
-				nextRun?.runId,
-				nextRun === undefined ? undefined : startedKeyOf(nextRun),
-			).map((line) => charged(budget, line)),
+			...coverage("workflows", scope, runs.length, window.length, unreadable, request.ranges, nextRun?.runId).map(
+				(line) => charged(budget, line),
+			),
 			...notes,
 			...out,
 		];

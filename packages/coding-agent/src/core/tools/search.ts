@@ -560,6 +560,39 @@ function formatSearchGroups(groups: SearchOutputGroup[], limit: number, perFileL
 		.join("\n");
 }
 
+/**
+ * The page `skip` selects from all a history:// search found, as a search call pages the matches of its targets: the
+ * next {@link DEFAULT_LIMIT} sessions, runs or notes after the first `skip`, and how to page further.
+ */
+function historySkipPage(
+	text: string,
+	skip: number,
+	cwd: string,
+	scopePath: string,
+): { text: string; details: SearchToolDetails } {
+	const limit = DEFAULT_LIMIT;
+	const groups = groupSearchOutput(text);
+	const details: SearchToolDetails = {};
+	const renderedPages: string[] = [];
+	let remainingMatches = limit;
+	for (const group of groups.slice(skip)) {
+		if (remainingMatches <= 0) break;
+		const raw = formatSearchGroups([group], 1);
+		remainingMatches--;
+		if (raw) renderedPages.push(raw);
+	}
+	const hasMorePages = groups.slice(skip + limit).length > 0;
+	const output = `${renderedPages.join("\n\n") || `No more results (skip=${skip})`}${hasMorePages ? `\n\n${continuationHint(limit, skip)}` : ""}`;
+	if (hasMorePages) markFileLimit(details, limit);
+	const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
+	let content = truncation.content;
+	if (truncation.truncated) {
+		details.truncation = truncation;
+		content += `\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]`;
+	}
+	return { text: content, details: buildSearchDetails(details, content, cwd, scopePath) };
+}
+
 function filterTargetLineRanges(
 	text: string,
 	target: SearchTarget | undefined,
@@ -664,7 +697,12 @@ export function createSearchToolDefinition(
 			// A search of history:// alone runs to its end, observed like a shell command; other targets search here.
 			const rawPaths = await normalizePaths(params.paths, executionCwd);
 			if (rawPaths.length > 0 && rawPaths.every((path) => path.startsWith("history://"))) {
+				// Its URLs and skip are checked, and its result named and paged, as a single search call does.
+				const historyTargets: SearchTarget[] = [];
+				for (const path of rawPaths) historyTargets.push(await normalizeSearchTarget(path, executionCwd));
+				const skip = normalizeSkip(params.skip);
 				validateBashWait(params.wait, owner?.startToolTask !== undefined);
+				const scopePath = historyTargets.map((target) => target.path).join(", ");
 				return runHistorySearch({
 					urls: rawPaths,
 					pattern: params.pattern,
@@ -678,6 +716,13 @@ export function createSearchToolDefinition(
 					...(signal === undefined ? {} : { signal }),
 					owner,
 					tempDir,
+					shape: {
+						cwd: executionCwd,
+						scopePath,
+						...(skip > 0
+							? { skipPage: (text: string) => historySkipPage(text, skip, executionCwd, scopePath) }
+							: {}),
+					},
 					...(onUpdate === undefined
 						? {}
 						: {

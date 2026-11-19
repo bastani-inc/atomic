@@ -3,13 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, it } from "vitest";
-import type { WorkflowRunDetail, WorkflowRunSummary } from "../src/core/extensions/workflow-run-control.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION, type SessionStore } from "../src/core/storage/session/types.js";
-import { createHistoryRouter, type WorkflowRunHistory } from "../src/core/tools/history-protocol.js";
+import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
 import type { InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
 
 /**
@@ -98,42 +97,6 @@ describe("history:// continuation chains cover each entry once", () => {
 		);
 	}
 
-	for (const first of ["history://sessions?limit=2", "history://sessions"]) {
-		it(`a session the chain has not reached yet that gets new activity is still searched, once (${first})`, async () => {
-			const store = new MemorySessionStore();
-			for (let n = 1; n <= 6; n++) await addSession(store, `s${n}`, BASE + n * 60_000, [`needle s${n}`]);
-			const router = createHistoryRouter({
-				cwd: PROJECT,
-				sessionStore: () => store,
-				workflows: () => undefined,
-				...(first.includes("limit") ? {} : { budget: { bytes: 600 } }),
-			});
-			const urls: string[] = [];
-			const outputs: string[] = [];
-			let url: string | undefined = first;
-			let touched = false;
-			for (let call = 0; url !== undefined && call < 30; call++) {
-				urls.push(url);
-				const out = (await router.search!(url, request("needle"))) ?? "";
-				outputs.push(out);
-				// After the first call, the oldest session, which the chain has not reached, gets a new entry.
-				if (!touched) {
-					touched = true;
-					await store.append("s1", [message("s1-late", "nothing to find", BASE + 1000 * 60_000)], {
-						expectSeq: 1,
-					});
-				}
-				url = continuation(out);
-			}
-			const rows = outputs.flatMap((out) => [...out.matchAll(/: (needle s\d)$/gm)].map((match) => match[1]!));
-			assert.deepEqual(
-				[...rows].sort(),
-				["needle s1", "needle s2", "needle s3", "needle s4", "needle s5", "needle s6"],
-				`${urls.join("\n")}\n---\n${outputs.join("\n---\n")}`,
-			);
-		});
-	}
-
 	it("a session created after a search chain started is left out of it", async () => {
 		const store = new MemorySessionStore();
 		for (let n = 1; n <= 4; n++) await addSession(store, `s${n}`, BASE + n * 60_000, [`needle s${n}`]);
@@ -149,68 +112,6 @@ describe("history:// continuation chains cover each entry once", () => {
 		const rows = outputs.flatMap((out) => [...out.matchAll(/: (needle \w+)$/gm)].map((match) => match[1]!));
 		assert.deepEqual([...rows].sort(), ["needle s1", "needle s2", "needle s3", "needle s4"], outputs.join("\n---\n"));
 	});
-
-	const summary = (runId: string, startedAt: number): WorkflowRunSummary => ({
-		runId,
-		name: `flow ${runId}`,
-		status: "completed",
-		startedAt,
-		elapsedMs: 1,
-		activeStages: [],
-		awaitingInput: [],
-		awaitingInputCount: 0,
-	});
-	const detail = (runId: string, startedAt: number): WorkflowRunDetail => ({
-		runId,
-		name: `flow ${runId}`,
-		status: "completed",
-		startedAt,
-		endedAt: startedAt + 1,
-		summary: `needle ${runId}`,
-		inputs: {},
-		stages: [],
-	});
-
-	for (const change of [
-		"the run it resumes at and a run it searched are removed",
-		"the run it resumes at is removed and a run starts",
-	] as const) {
-		it(`a workflow search chain covers every run once when ${change}`, async () => {
-			const runs = new Map<string, number>();
-			for (let n = 1; n <= 5; n++) runs.set(`r${n}`, BASE + n * 60_000);
-			const control: WorkflowRunHistory = {
-				listRuns: async () => [...runs].map(([id, at]) => summary(id, at)),
-				listProjectRuns: async () => [...runs].map(([id, at]) => summary(id, at)),
-				getRun: async (id) => detail(id, runs.get(id) ?? BASE),
-			};
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => control });
-			const outputs: string[] = [];
-			let url: string | undefined = "history://workflows?limit=2";
-			let changed = false;
-			for (let call = 0; url !== undefined && call < 20; call++) {
-				const out = (await router.search!(url, request("needle"))) ?? "";
-				outputs.push(out);
-				if (!changed) {
-					changed = true;
-					runs.delete("r3");
-					if (change.includes("searched")) runs.delete("r5");
-					else runs.set("r6", BASE + 100 * 60_000);
-				}
-				url = continuation(out);
-			}
-			const rows = outputs.flatMap((out) => [...out.matchAll(/summary: (needle r\d)$/gm)].map((match) => match[1]!));
-			assert.deepEqual(
-				rows.filter((row, index) => rows.indexOf(row) !== index),
-				[],
-				outputs.join("\n---\n"),
-			);
-			assert.deepEqual(
-				[...new Set(rows)].filter((row) => row !== "needle r3").sort(),
-				["needle r1", "needle r2", "needle r4", "needle r5"],
-				outputs.join("\n---\n"),
-			);
-		});
-	}
 
 	it("more chains than the store parks listings for each still finish listing the sessions", async () => {
 		const store = new MemorySessionStore();

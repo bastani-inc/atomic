@@ -175,7 +175,7 @@ describe("history:// stop and skipped-entry notes under tight budgets (#5250)", 
 		const first = (await router.search!("history://sessions", request("needle"))) ?? "";
 		assert.match(
 			first,
-			/^history:\/\/sessions:0: \[searched sessions 1-2 of 3, 1 unreadable; the row budget ran out; continue with (history:\/\/sessions\?offset=2&created=\S+)\]$/m,
+			/^history:\/\/sessions:0: \[searched sessions 1-2 of 3, 1 unreadable; the row budget ran out; continue with (history:\/\/sessions\?offset=2&after=\S+)\]$/m,
 		);
 		assert.ok(first.split("\n").includes("history://sessions/s2:1: needle first"), first);
 		const next = continuation(first);
@@ -202,7 +202,7 @@ describe("history:// stop and skipped-entry notes under tight budgets (#5250)", 
 		assert.ok(Buffer.byteLength(first) <= 500, `${Buffer.byteLength(first)}: ${first}`);
 		assert.match(
 			first,
-			/^history:\/\/sessions:0: \[searched sessions 1-3 of 4, 2 unreadable; the byte budget ran out; continue with history:\/\/sessions\?offset=3&created=\S+\]$/m,
+			/^history:\/\/sessions:0: \[searched sessions 1-3 of 4, 2 unreadable; the byte budget ran out; continue with history:\/\/sessions\?offset=3&after=\S+\]$/m,
 		);
 		assert.ok(first.split("\n").includes(`history://sessions/s2:1: needle ${"b".repeat(185)}`), first);
 		assert.ok(!first.includes("history://sessions/s4:"), first);
@@ -229,7 +229,7 @@ describe("history:// stop and skipped-entry notes under tight budgets (#5250)", 
 		);
 		assert.match(
 			trimmedCheckpoint,
-			/^history:\/\/sessions:0: \[searched sessions 1-2 of 2, 1 unreadable; the byte budget ran out at entry 2 of 2 in history:\/\/sessions\/c2; continue with history:\/\/sessions\?offset=1&session=c2&cursor=2&created=\S+\]$/m,
+			/^history:\/\/sessions:0: \[searched sessions 1-2 of 2, 1 unreadable; the byte budget ran out at entry 2 of 2 in history:\/\/sessions\/c2; continue with history:\/\/sessions\?offset=1&session=c2&cursor=2&after=\S+\]$/m,
 		);
 		await checkpointStore.close();
 	});

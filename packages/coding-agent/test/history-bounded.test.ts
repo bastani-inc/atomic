@@ -865,11 +865,9 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			Array.from({ length: 8 }, (_, index) =>
 				message(`${name}-${index + 1}`, "user", `pin needle ${name} ${index + 1}`, at + index * 1000),
 			);
-		// A search chain walks sessions newest-created first.
-		const created = (name: string, at: number) => ({ ...header(name), createdAt: new Date(at).toISOString() });
-		await store.create(created("s-old", BASE), entries("s-old", BASE));
-		await store.create(created("s-mid", BASE + 100_000), entries("s-mid", BASE + 100_000));
-		await store.create(created("s-new", BASE + 200_000), entries("s-new", BASE + 200_000));
+		await store.create(header("s-old"), entries("s-old", BASE));
+		await store.create(header("s-mid"), entries("s-mid", BASE + 100_000));
+		await store.create(header("s-new"), entries("s-new", BASE + 200_000));
 		const first = historyOver(store, { rows: 15 });
 		const stopped = (await first.router.search?.("history://sessions", first.request("pin needle"))) ?? "";
 		const url = /continue with (history:\/\/sessions\?\S+?)\]$/m.exec(stopped)?.[1];

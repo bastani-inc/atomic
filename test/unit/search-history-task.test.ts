@@ -7,8 +7,10 @@ import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { TaskOutputDecoder } from "../../packages/coding-agent/src/core/tasks/command-output.js";
+import { formatTaskCompletion } from "../../packages/coding-agent/src/core/tasks/completion.js";
 import { toolOutputExcerpt } from "../../packages/coding-agent/src/core/tasks/completion-message.js";
 import type { SettlementReceipt, TaskId, TaskRecord } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { formatTaskHeartbeat } from "../../packages/coding-agent/src/core/tasks/heartbeat-notice.js";
 import { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { TOOL_TASK_OUTPUT_MAX_BYTES } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
@@ -816,4 +818,53 @@ test("a task's output read page by page never joins the bytes on the two sides o
 		omittedRanges: [],
 	});
 	assert.equal(before + after + decoder.end(), "\uFFFD\n[Output omitted: bytes 2-10]\n\uFFFDAB");
+});
+
+test("a background history search's skip pages what it found once a wait sees it end (#5479)", async () => {
+	const owner = host(10_000);
+	const router = pagedRouter(4);
+	try {
+		const tool = searchTool(owner).search;
+		const launched = await run(
+			tool,
+			{ pattern: "needle", paths: "history://sessions", skip: 2, wait: { kind: "background" } },
+			router.context,
+		);
+		const id = (launched.details as { observation: { taskId: string } }).observation.taskId;
+		const waited = await run(tool, { action: "wait", id, budgetMs: 10_000 }, router.context);
+		assert.equal(text(waited), "history://sessions/s2:1: needle 2\n\nhistory://sessions/s3:1: needle 3");
+	} finally {
+		await owner.close("session-close");
+	}
+});
+
+test("a heartbeat or pause notice that names a background search says how to wait for and stop a search (#5479)", () => {
+	const search = { taskId: "s", kind: "tool" as const, toolName: "search", title: "search needle in history://" };
+	const shell = { taskId: "t", kind: "command" as const, title: "job" };
+	const beat = (tasks: object[], more: object[]) =>
+		formatTaskHeartbeat({
+			scheduledAt: 0,
+			tasks: tasks.map((task) => ({ ...task, elapsedMs: 60_000, intervalMs: 60_000 })) as never,
+			more: more as never,
+			moreCount: more.length,
+		});
+	for (const text of [beat([search], []), beat([shell], [search])]) {
+		assert.match(text, /the shell, search or subagent `wait` action/);
+		assert.match(text, /`kill\(\{ id \}\)` for a shell or search,/);
+	}
+	const paused = {
+		completionId: "c",
+		taskId: "s",
+		ownerId: "o",
+		taskKind: "tool" as const,
+		toolName: "search",
+		result: { kind: "cancelled" as const, cause: "pause" as const },
+		display: false as const,
+	};
+	const task = { kind: "tool" as const, title: "search needle", toolName: "search" };
+	assert.match(formatTaskCompletion(paused as never, task), /A pause interrupted this search before it finished/);
+	assert.match(
+		formatTaskCompletion({ ...paused, interruptedByRestart: true } as never, task),
+		/so this search no longer runs and its result and output were not kept\. If its result is still needed, run it again\./,
+	);
 });

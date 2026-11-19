@@ -1401,12 +1401,7 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 			getRun: async (runId) => detail(runId, BASE, `needle ${runId} one\nneedle ${runId} two`),
 		};
 		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => workflows });
-		// The continuation names where the gone run started: the runs after it are searched from their start.
-		const output =
-			(await router.search!(
-				`history://workflows?run=run-gone&cursor=0.40&started=${BASE + 3000}`,
-				request("needle"),
-			)) ?? "";
+		const output = (await router.search!("history://workflows?run=run-gone&cursor=0.40", request("needle"))) ?? "";
 		assert.match(
 			output,
 			/^history:\/\/workflows:0: \[run run-gone is no longer listed, so the search could not resume in it; it continued with the runs after it\]$/m,
@@ -1415,18 +1410,6 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 			found([output], /(needle run-\w \w+)$/gm),
 			["needle run-b one", "needle run-b two", "needle run-c one", "needle run-c two"],
 			output,
-		);
-		// A continuation from an earlier version names only an offset, which removed runs may have moved: the search
-		// starts again from the newest run and says it may repeat, never skipping one.
-		const legacy = (await router.search!("history://workflows?run=run-gone&cursor=0.40", request("needle"))) ?? "";
-		assert.match(
-			legacy,
-			/^history:\/\/workflows:0: \[this continuation came from an earlier version, so the search started again from the newest run and may show runs it already showed\]$/m,
-		);
-		assertEachOnce(
-			found([legacy], /(needle run-\w \w+)$/gm),
-			["needle run-b one", "needle run-b two", "needle run-c one", "needle run-c two"],
-			legacy,
 		);
 	});
 
