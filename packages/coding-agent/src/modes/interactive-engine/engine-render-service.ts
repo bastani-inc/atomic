@@ -6,7 +6,8 @@ import type { CustomMessage } from "../../core/messages.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import type { OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
-import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
+import { taskTranscriptSource } from "../../core/tasks/supervisor.js";
+import { readTaskCompletionHistory } from "../../core/tasks/task-completion-history.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
 import { disposeRenderer, runRendererCleanup } from "../interactive/components/renderer-disposal.js";
@@ -352,9 +353,9 @@ export class EngineRenderService {
 						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
 						return lease?.ok ? taskTranscriptSource(lease.value).ok : false;
 					},
-					loadTranscript: async (taskId) => {
+					loadTranscript: async (taskId, options) => {
 						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
-						return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
+						return lease?.ok ? readTaskCompletionHistory(lease.value, options?.signal) : undefined;
 					},
 					getToolDefinition: (name) =>
 						session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),

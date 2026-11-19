@@ -3,11 +3,8 @@ import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth }
 import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskSession, getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
-import {
-	type ChatBoxSession,
-	loadTaskOwnTranscriptHistory,
-	taskTranscriptSource,
-} from "../../../core/tasks/supervisor.js";
+import { type ChatBoxSession, taskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import { readTaskCompletionHistory } from "../../../core/tasks/task-completion-history.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
 import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
@@ -567,12 +564,12 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 			if (lease?.ok && taskTranscriptSource(lease.value).ok) return true;
 			return inherited?.hasTaskTranscript?.(taskId) ?? false;
 		},
-		loadTaskTranscript: async (taskId: TaskId) => {
+		loadTaskTranscript: async (taskId: TaskId, options?: { readonly signal?: AbortSignal }) => {
 			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);
 			const lease = store?.resolveTask(taskId);
-			if (lease?.ok) return loadTaskOwnTranscriptHistory(lease.value);
-			return inherited?.loadTaskTranscript?.(taskId);
+			if (lease?.ok) return readTaskCompletionHistory(lease.value, options?.signal);
+			return inherited?.loadTaskTranscript?.(taskId, options);
 		},
 	};
 }
