@@ -7,7 +7,11 @@ export const ownedSessionPermits = new WeakMap<object, () => Promise<void>>();
 export const ownedSessionManagerStores = new WeakMap<object, SessionStore>();
 
 const currentWork = new AsyncLocalStorage<ReadonlySet<Promise<void>>>();
-const reloads = new WeakMap<object, Promise<void>>();
+interface SessionReload {
+	readonly result: Promise<void>;
+	waitForWake(id: string): Promise<void>;
+}
+const reloads = new WeakMap<object, SessionReload>();
 const reloadCleanupFailures = new WeakMap<object, unknown[]>();
 const reloadRetirements = new WeakMap<object, Set<Promise<void>>>();
 const work = new WeakMap<object, Set<Promise<void>>>();
@@ -59,11 +63,32 @@ export function hasSessionReload(session: object): boolean {
 	return reloads.has(session);
 }
 
+export function currentSessionReload(session: object): SessionReload | undefined {
+	return reloads.get(session);
+}
+
 export function trackSessionReload(session: object, operation: () => Promise<void>): Promise<void> {
 	const result = operation();
-	reloads.set(session, result);
+	let wakes: Map<string, PromiseWithResolvers<void>> | undefined;
+	const reload: SessionReload = {
+		result,
+		waitForWake(id) {
+			if (reloads.get(session) !== reload) return Promise.resolve();
+			wakes ??= new Map();
+			let wake = wakes.get(id);
+			if (!wake) {
+				wake = Promise.withResolvers<void>();
+				wakes.set(id, wake);
+			}
+			return wake.promise;
+		},
+	};
+	reloads.set(session, reload);
+	// Use the reload's own settlement handler, not a reaction in each refused task runner's async context.
 	const forget = () => {
-		if (reloads.get(session) === result) reloads.delete(session);
+		if (reloads.get(session) === reload) reloads.delete(session);
+		for (const wake of wakes?.values() ?? []) wake.resolve();
+		wakes = undefined;
 	};
 	void result.then(forget, (error: unknown) => {
 		if (error instanceof Error && "code" in error && error.code === "ShutdownFailed") {
@@ -97,7 +122,7 @@ export function retireSessionReloadGeneration(session: object, cleanup: () => Pr
 
 export async function drainSessionReload(session: object): Promise<void> {
 	// Preparation errors belong to the reload caller; failed rollback also belongs to final cleanup.
-	await reloads.get(session)?.catch(() => {});
+	await reloads.get(session)?.result.catch(() => {});
 	const pending = reloadRetirements.get(session);
 	while (pending?.size) await Promise.all(pending);
 	const failures = reloadCleanupFailures.get(session);

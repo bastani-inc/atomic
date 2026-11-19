@@ -13,14 +13,17 @@ import {
 } from "../../packages/coding-agent/src/index.js";
 import { releasedChildWakeDecided } from "../../packages/subagents/src/runs/foreground/released-child-resume.js";
 import { isSubagentChildRecord } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
+import { collectGarbage } from "../helpers/collect-garbage.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** A real stage session loads the editable subagents extension twice. */
 const STAGE_RELOAD_TIMEOUT_MS = 120_000;
 
-test.each(["commit", "rollback", "preparing"] as const)(
-	"a wake admitted after workflow stage reload %s saves the live task once (#5609)",
+test.each(["commit", "rollback", "preparing", "refused", "refused-rollback"] as const)(
+	"a wake admitted across workflow stage reload %s saves the live task once (#5609, #5629)",
 	async (reload) => {
+		const fenced = reload === "refused" || reload === "refused-rollback";
+		const builtin = reload === "preparing" || fenced;
 		const cwd = makeTempDirectory("atomic-stage-wake-");
 		const agentDir = join(cwd, "profile");
 		const entry = join(cwd, "subagents.ts");
@@ -42,7 +45,7 @@ test.each(["commit", "rollback", "preparing"] as const)(
 		);
 		await writeFile(
 			entry,
-			`import subagents from ${JSON.stringify(extension)};\nimport { agentWakeDispatcher } from "@bastani/atomic";\nexport default pi => { ${reload === "preparing" ? "" : "subagents(pi);"} pi.events.on("test:dispatcher", request => { request.value = agentWakeDispatcher(); request.privateWriter = Reflect.has(pi, Symbol.for("atomic.subagents/acquire-child-record-writer@1")); }); };\n`,
+			`import subagents from ${JSON.stringify(extension)};\nimport { agentWakeDispatcher } from "@bastani/atomic";\nexport default pi => { ${builtin ? "" : "subagents(pi);"} pi.events.on("test:dispatcher", request => { request.value = agentWakeDispatcher(); request.privateWriter = Reflect.has(pi, Symbol.for("atomic.subagents/acquire-child-record-writer@1")); }); };\n`,
 		);
 		await child.appendMessage({ role: "user", content: "original task", timestamp: Date.now() });
 		await manager.appendCustomEntry("subagent-child", {
@@ -65,7 +68,7 @@ test.each(["commit", "rollback", "preparing"] as const)(
 			settingsManager,
 			eventBus: bus,
 			builtinPackagePaths: [],
-			additionalExtensionPaths: reload === "preparing" ? [extension, entry] : [entry],
+			additionalExtensionPaths: builtin ? [extension, entry] : [entry],
 			noSkills: true,
 			noThemes: true,
 			noPromptTemplates: true,
@@ -79,7 +82,7 @@ test.each(["commit", "rollback", "preparing"] as const)(
 			resourceLoader: loader,
 			orchestrationContext: { ...orchestration, constraints: { disableWorkflowTool: true } },
 			builtins: {
-				subagents: reload === "preparing",
+				subagents: builtin,
 				workflows: false,
 				intercom: false,
 				mcp: false,
@@ -90,24 +93,30 @@ test.each(["commit", "rollback", "preparing"] as const)(
 		const gate = Promise.withResolvers<void>();
 		const reached = Promise.withResolvers<void>();
 		const finish = Promise.withResolvers<void>();
+		const refused = Promise.withResolvers<string>();
+		let attemptedRunner: WeakRef<object> | undefined;
 		const tasks: string[] = [];
 		const start = host.startAgentTask.bind(host);
 		vi.spyOn(host, "startAgentTask").mockImplementation(async (intent, operation, _runner, schedule) => {
 			tasks.push(intent.task);
-			const admit = () =>
-				start(
-					intent,
-					operation,
-					() => ({
-						result: finish.promise.then(() => ({ kind: "cancelled", cause: "user" })),
-						cleanup: finish.promise.then(() => ({ kind: "reaped" })),
-					}),
-					schedule,
-				);
+			const admit = () => {
+				const runner: Parameters<typeof start>[2] = () => ({
+					result: finish.promise.then(() => ({ kind: "cancelled", cause: "user" })),
+					cleanup: finish.promise.then(() => ({ kind: "reaped" })),
+				});
+				attemptedRunner = new WeakRef(runner);
+				return start(intent, operation, runner, schedule);
+			};
 			const admitted = reload === "preparing" ? await admit() : undefined;
 			reached.resolve();
 			await gate.promise;
-			return admitted ?? admit();
+			return (
+				admitted ??
+				admit().catch((error: unknown) => {
+					refused.resolve(String(error));
+					throw error;
+				})
+			);
 		});
 		const wakeKey = `subagents/${manager.getSessionId()}:${id}`;
 		let wake: Promise<void> | undefined;
@@ -130,6 +139,7 @@ test.each(["commit", "rollback", "preparing"] as const)(
 					isError: false,
 				},
 			});
+			void wake.catch(() => {});
 			await Promise.race([reached.promise, wake.then(() => assert.fail("wake ended before admission"))]);
 			await appendFile(entry, "\n// Reload this extension while the owner is admitting the wake.\n");
 			const previous = session.extensionRunner;
@@ -150,6 +160,20 @@ test.each(["commit", "rollback", "preparing"] as const)(
 					session.reload({ failOnExtensionErrors: true }),
 					/reject candidate after session_start/,
 				);
+			} else if (fenced) {
+				const reloading = session.reload({
+					failOnExtensionErrors: true,
+					beforeSessionStart: async () => {
+						gate.resolve();
+						assert.match(await refused.promise, /Task owner is closed/);
+						assert.ok(attemptedRunner);
+						await collectGarbage(5);
+						assert.equal(attemptedRunner.deref(), undefined, "the waiting wake does not need its refused runner");
+						if (reload === "refused-rollback") throw new Error("reject candidate before session_start");
+					},
+				});
+				if (reload === "refused-rollback") await assert.rejects(reloading, /reject candidate before session_start/);
+				else await reloading;
 			} else if (reload === "preparing") {
 				await session.reload({
 					failOnExtensionErrors: true,
@@ -161,7 +185,7 @@ test.each(["commit", "rollback", "preparing"] as const)(
 			} else await session.reload({ failOnExtensionErrors: true });
 			assert.equal(session.getAgentTaskHost(), host, "the workflow stage keeps its task host");
 			const runner = session.extensionRunner;
-			assert.equal(runner === previous, reload === "rollback");
+			assert.equal(runner === previous, reload === "rollback" || reload === "refused-rollback");
 			const tool = runner.getToolDefinition("subagent");
 			assert.ok(tool);
 			const resume = tool.execute(
@@ -185,8 +209,8 @@ test.each(["commit", "rollback", "preparing"] as const)(
 			assert.equal(running.length, 1);
 			assert.ok(answer.isError, JSON.stringify(answer.content));
 			assert.match(JSON.stringify(answer.content), new RegExp(`already running as task ${running[0]?.taskId}`));
-			assert.equal(tasks.length, 1);
-			assert.match(tasks[0]!, /checks finished/);
+			assert.equal(tasks.length, fenced ? 2 : 1);
+			assert.equal(tasks.at(-1)?.match(/checks finished/g)?.length, 1);
 			finish.resolve();
 			await wake;
 			assert.equal((await records()).length, 1);
