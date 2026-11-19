@@ -5,7 +5,6 @@ import {
 	detectCacheMiss,
 	formatCacheMissNotice,
 } from "../../core/cache-stats.ts";
-import { settleTurnOutcome } from "../../core/host-notice-window.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
@@ -31,6 +30,7 @@ import {
 	Loader,
 	type Message,
 	pickWhimsicalWorkingMessage,
+	Spacer,
 	Text,
 	ToolExecutionComponent,
 	theme,
@@ -50,6 +50,8 @@ import { handleSummarizationRetryEvent } from "./interactive-summarization-retry
 import { disposeInteractiveTasks, refreshInteractiveTasks } from "./interactive-task-projection.js";
 import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./streaming-assistant-message.ts";
 
+/** Reasons that mean there is nothing to snapshot, which keep the session exactly as it behaves without snapshots. */
+const WORKSPACE_ABSENCE_CODES: ReadonlySet<string> = new Set(["not-installed", "not-a-repository", "unborn-head"]);
 interface MainTurnToolBatch {
 	readonly pending: Map<string, string>;
 	aborted: string[];
@@ -422,7 +424,6 @@ InteractiveModeBase.prototype.handleEvent = async function (
 								createCacheMissModelSource(this.session.modelRuntime),
 							)
 						: undefined;
-			if (event.message.role === "custom") settleTurnOutcome(this, event.message);
 			this.workingRunMeter.settled(event.message);
 			if (this.streamingComponent && event.message.role === "assistant") {
 				this.streamingMessage = event.message;
@@ -634,15 +635,30 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.statusContainer.clear();
 				mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
 			}
-			// `result` and `errorMessage` are independent: a committed boundary stays visible when a later step
-			// failed, such as the post-tool hard-limit check (#4977). The session shows the failure or the
-			// cancellation after this, as a line it saves (#5649).
-			if (!event.aborted && event.result) {
-				this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
-				this.addCompactionBoundaryToChat(event.result);
-				if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);
-				this.appendProjectTrustWarning();
-				this.footer.invalidate();
+			if (event.aborted) {
+				if (event.reason === "manual") {
+					this.showError("Compaction cancelled");
+				} else if (!manualTakeoverPending) {
+					this.showStatus("Auto-compaction cancelled");
+				}
+			} else {
+				// `result` and `errorMessage` are independent: a committed boundary stays visible when a
+				// later step failed, such as the post-tool hard-limit check (#4977).
+				if (event.result) {
+					this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
+					this.addCompactionBoundaryToChat(event.result);
+					if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);
+					this.appendProjectTrustWarning();
+					this.footer.invalidate();
+				}
+				if (event.errorMessage && !manualTakeoverPending) {
+					if (event.reason === "manual") {
+						this.showError(event.errorMessage);
+					} else {
+						this.chatContainer.addChild(new Spacer(1));
+						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
+					}
+				}
 			}
 			// Post-tool compaction resumes the same active run, so no new
 			// agent_start event will recreate the working loader. A successful
@@ -716,6 +732,10 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 		}
 
+		case "worktree_snapshot_unavailable": {
+			if (!WORKSPACE_ABSENCE_CODES.has(event.reason.code ?? "")) this.showWarning(event.reason.message);
+			break;
+		}
 		case "model_fallback_end": {
 			if (!event.success) this.workingRunMeter.stop();
 			// A fallback settles after the fallback model's turn ended, whose worked row stays. Only the switch's own
@@ -748,10 +768,11 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.statusContainer.clear();
 				mountEndedTurn(this, event.success ? undefined : this.workingRunMeter.endedRunSnapshot());
 			}
-			// The session shows a final failure as a line it saves (#5649); a success shows the response.
+			// Show error only on final failure (success shows normal response)
 			if (!event.success) {
 				this.workingRunMeter.stop();
 				this.workingRunMeter.endTurn();
+				this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 			}
 			this.ui.requestRender();
 			break;
@@ -760,9 +781,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		case "agent_continue_error": {
 			this.workingRunMeter.stop();
 			this.stopWorkingLoader();
-			// A held message an isolated engine could not send stays queued; its error is shown, not saved, as the
-			// local host shows its own (#4251). The session shows any other failure as a line it saves (#5649).
-			if (event.queuedMessage === true) this.showError(event.errorMessage);
+			this.showError(event.errorMessage);
 			this.ui.requestRender();
 			break;
 		}

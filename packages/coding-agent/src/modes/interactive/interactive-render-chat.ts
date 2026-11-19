@@ -1,17 +1,14 @@
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { TUI } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
-import { unsavedHostNotices } from "../../core/agent-session-host-notices.ts";
 import {
 	collectCacheMisses,
 	countDroppedThinkingBlocks,
 	createCacheMissModelSource,
 	formatCacheMissNotice,
 } from "../../core/cache-stats.ts";
-import { retainTurnOutcome } from "../../core/host-notice-window.ts";
-import { hostNoticeFromMessage, hostNoticeMessageFromEntry } from "../../core/host-notices.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
-import { type CustomMessage, isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
+import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { projectTrustWarningVisible } from "../../core/project-trust-state.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
@@ -524,29 +521,13 @@ InteractiveModeBase.prototype.addRenderedChatEntry = function (
 	this: InteractiveModeBase,
 	entry: ChatMessageEntry,
 ): Component {
-	if (entry.kind === "custom" && hostNoticeFromMessage(entry.message)) {
-		const notice = mainNoticeComponent(this, entry.message);
-		this.chatContainer.addChild(notice);
-		return notice;
-	}
 	const component = renderChatMessageEntry(entry, this.chatMessageRenderOptions());
-	const notCounted = entry.kind === "custom" && isVerbatimCompactionMessage(entry.message);
-	if (entry.kind !== "system" && !notCounted) {
+	if (entry.kind !== "system" && !(entry.kind === "custom" && isVerbatimCompactionMessage(entry.message))) {
 		messageComponents.add(component);
 	}
 	addChatTranscriptEntry(this.chatContainer, component, entry.role);
 	return component;
 };
-
-function mainNoticeComponent(mode: InteractiveModeBase, message: CustomMessage): CustomMessageComponent {
-	const copy = retainTurnOutcome(mode, message, () => {
-		component.invalidate();
-		mode.ui.requestRender();
-	});
-	const component = new CustomMessageComponent(copy, undefined, mode.getMarkdownThemeWithSettings(), mode.outputPad);
-	component.setExpanded(mode.toolOutputExpanded);
-	return component;
-}
 
 InteractiveModeBase.prototype.addCompactionBoundaryToChat = function (
 	this: InteractiveModeBase,
@@ -623,10 +604,6 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 			break;
 		}
 		case "custom": {
-			if (message.display && hostNoticeFromMessage(message)) {
-				this.chatContainer.addChild(mainNoticeComponent(this, message));
-				break;
-			}
 			if (message.display) {
 				const component =
 					this.runtimeHost instanceof IsolatedInteractiveRuntime
@@ -846,12 +823,7 @@ function planTranscript(
 		messageBuffer = [];
 	};
 	for (const entry of sessionEntries) {
-		const notice = hostNoticeMessageFromEntry(entry);
-		if (notice !== undefined) {
-			// A line Atomic wrote about how a turn ended shows where it was written, as it did live (#5649).
-			messageMeta.set(notice, { id: entry.id, timestamp: entry.timestamp });
-			messageBuffer.push(notice);
-		} else if (entry.type === "custom") {
+		if (entry.type === "custom") {
 			// An unrendered record between a tool call and its result must not split them into two cards.
 			if (!mode.session.extensionRunner.getEntryRenderer(entry.customType)) continue;
 			flushMessages();
@@ -871,8 +843,6 @@ function planTranscript(
 			}
 		}
 	}
-	// A line the session has shown and is still saving keeps its place at the end, after everything saved (#5649).
-	messageBuffer.push(...unsavedHostNotices(mode.session, sessionEntries));
 	flushMessages();
 	return steps;
 }

@@ -104,45 +104,6 @@ function pool(present: (delivered: readonly PooledStageDelivery[]) => readonly s
 	};
 }
 
-test("a pooled stage keeps the live error in its open chat and the stored row for a later attachment (#5649)", async () => {
-	const fake = pool(() => []);
-	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
-	assert.ok(opened.ok);
-	const text = `Compaction failed: ${"path/".repeat(1050)} ENOSPC`;
-	const row = {
-		role: "custom" as const,
-		customType: "atomic.turn-outcome.v1",
-		content: text,
-		display: true,
-		timestamp: 123,
-		details: { level: "error", text },
-	};
-	const live: unknown[] = [];
-	opened.handle.subscribe((event) => {
-		if (event.type === "message_end" && event.message.role === "custom") live.push(event.message.content);
-	});
-	fake.events(1, { type: "message_start", message: { ...row, details: { ...row.details, pendingId: "outcome" } } });
-	fake.events(2, { type: "message_end", message: { ...row, details: { ...row.details, settlesId: "outcome" } } });
-	const stored = `${text.slice(0, 4093)}…`;
-	fake.events(3, {
-		type: "entry_appended",
-		entry: {
-			type: "custom",
-			customType: row.customType,
-			id: "outcome",
-			parentId: null,
-			timestamp: new Date(123).toISOString(),
-			data: { level: "error", text: stored },
-		},
-	});
-	assert.deepEqual(live, [text]);
-	assert.equal(opened.handle.messages.length, 1);
-	const saved = opened.handle.messages[0];
-	assert.ok(saved.role === "custom");
-	assert.equal(saved.content, stored);
-	assert.equal((saved.details as { location?: string }).location, undefined);
-});
-
 test("after its worker dies the handle reconnects and redelivers, once each and in order, what the replacement lacks (#3996)", async () => {
 	// The replacement's session already holds the first message (its op was recorded before the kill).
 	const fake = pool((delivered) => [delivered[0]!.op]);

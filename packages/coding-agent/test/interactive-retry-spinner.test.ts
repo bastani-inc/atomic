@@ -75,8 +75,7 @@ for (const success of [true, false]) {
 		assert.equal(mode.retryCountdown, undefined);
 		assert.doesNotMatch(rendered(mode), /∀|Retrying/);
 		assert.equal(vi.getTimerCount(), 0);
-		// The session shows a final failure as a line it saves; this handler only cleans up (#5649).
-		assert.equal(mode.showError.mock.calls.length, 0);
+		assert.equal(mode.showError.mock.calls.length, success ? 0 : 1);
 	});
 }
 
