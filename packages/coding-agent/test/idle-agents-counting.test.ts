@@ -618,8 +618,13 @@ describe("a released agent's history leaves process memory (#4502)", () => {
 			await waves(2, promptBytes);
 			const after = await sample();
 			const agents = AGENTS_PER_WAVE * 2;
+			const { entries } = await h.store.inner.load(last);
+			const userContent = entries.flatMap((entry) =>
+				entry.type === "message" && entry.message.role === "user" ? [entry.message.content] : [],
+			);
 			const added = {
-				historyBytes: Buffer.byteLength(JSON.stringify((await h.store.inner.load(last)).entries)) - 2,
+				historyBytes: Buffer.byteLength(JSON.stringify(entries)) - 2,
+				userContentBytes: Buffer.byteLength(JSON.stringify(userContent)),
 				headerBytes: Buffer.byteLength(JSON.stringify(await h.store.inner.readHeader(last))),
 				buffers: wholeCountPerAgent(after.ArrayBuffer - before.ArrayBuffer, agents),
 				promises: wholeCountPerAgent(after.Promise - before.Promise, agents),
@@ -639,10 +644,8 @@ describe("a released agent's history leaves process memory (#4502)", () => {
 			const group = await releasedGroups(true);
 			const short = await group(0);
 			const long = await group(LONGER_PROMPT_BYTES);
-			assert.ok(
-				long.historyBytes - short.historyBytes >= TURNS * LONGER_PROMPT_BYTES,
-				`${long.historyBytes} vs ${short.historyBytes} bytes`,
-			);
+			// Check the padding on the saved prompts themselves: tool durations and token counts can differ in width.
+			assert.equal(long.userContentBytes - short.userContentBytes, TURNS * LONGER_PROMPT_BYTES);
 			for (const run of [short, long]) {
 				assert.equal(run.inMemory, run.headerBytes);
 				assert.ok(run.inMemory <= RELEASED_AGENT_RESIDENT_HISTORY_BYTES, `${run.inMemory} history bytes in memory`);

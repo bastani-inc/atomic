@@ -53,6 +53,8 @@ export interface IntercomEventBus {
 export const INTERCOM_DETACH_REQUEST_EVENT = "pi-intercom:detach-request";
 export const PARENT_ASK_HANDOFF_REQUEST_EVENT = "subagent:parent-ask-handoff-request";
 export const SUBAGENT_COMPLETE_EVENT = "subagent:complete";
+/** The execution has ended, but Atomic has not yet released its temporary worktree. */
+export const SUBAGENT_FINISHING_EVENT = "subagent:finishing";
 export const INTERCOM_DETACH_RESPONSE_EVENT = "pi-intercom:detach-response";
 export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
 export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
