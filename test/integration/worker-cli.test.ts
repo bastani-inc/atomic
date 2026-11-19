@@ -1,82 +1,110 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
+/**
+ * Names Atomic removed with workflows get no message of their own: each behaves exactly as a name Atomic never had,
+ * through the same code path, so the comparison below runs both in fresh, identical directories.
+ */
 const cli = fileURLToPath(new URL("../../packages/coding-agent/src/cli.ts", import.meta.url));
 const CLI_STARTUP_TIMEOUT_MS = 60_000;
 
+interface Run {
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+	/** Every file the run left in the agent directory (a holder record named by its process ID as `<holder>`). */
+	files: string[];
+	settings: string;
+}
+
+function listFiles(dir: string, base = dir): string[] {
+	return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+		const path = join(dir, entry.name);
+		if (entry.isDirectory()) return entry.name === "cache" && dir === base ? [] : listFiles(path, base);
+		return [
+			relative(base, path)
+				.replaceAll("\\", "/")
+				.replace(/-holders\/\d+-\d+$/, "-holders/<holder>"),
+		];
+	});
+}
+
+/** One CLI run in a fresh directory whose global settings still carry a setting startup migrates. */
+function run(args: string[], env: Record<string, string> = {}): Run {
+	const root = makeTempDirectory("removed-cli-name-");
+	try {
+		const agentDir = join(root, "agent");
+		const home = join(root, "home");
+		mkdirSync(agentDir);
+		mkdirSync(home);
+		const settings = join(agentDir, "settings.json");
+		writeFileSync(settings, JSON.stringify({ modelRouting: { auto: true } }));
+		const values = Object.fromEntries(
+			Object.entries(env).map(([name, value]) => [name, value.replaceAll("<root>", root)]),
+		);
+		const result = spawnSyncCollect([bunExecutable(), cli, ...args], {
+			cwd: root,
+			env: {
+				...process.env,
+				...values,
+				HOME: home,
+				USERPROFILE: home,
+				ATOMIC_CODING_AGENT_DIR: agentDir,
+				ATOMIC_OFFLINE: "1",
+			},
+			timeout: CLI_STARTUP_TIMEOUT_MS,
+		});
+		const normalize = (text: string) => text.replaceAll(root, "<root>").replaceAll("\\", "/");
+		return {
+			exitCode: result.exitCode,
+			stdout: normalize(result.stdout.toString()),
+			stderr: normalize(result.stderr.toString()),
+			files: listFiles(agentDir).sort(),
+			settings: readFileSync(settings, "utf8"),
+		};
+	} finally {
+		removeTempDirectory(root);
+	}
+}
+
 test(
-	"atomic worker reports its removal instead of starting a host or treating worker as a prompt",
+	"atomic worker runs exactly like any other first word",
 	() => {
-		const root = makeTempDirectory("worker-cli-");
-		try {
-			const agentDir = join(root, "agent");
-			mkdirSync(agentDir);
-			const settings = join(agentDir, "settings.json");
-			const before = JSON.stringify({ modelRouting: { auto: true } });
-			writeFileSync(settings, before);
-			const result = spawnSyncCollect([bunExecutable(), cli, "worker"], {
-				cwd: root,
-				env: {
-					...process.env,
-					ATOMIC_CODING_AGENT_DIR: agentDir,
-					ATOMIC_OFFLINE: "1",
-					ATOMIC_WORKFLOWS_JOURNAL: "",
-					ATOMIC_WORKFLOW_JOURNAL_PATH: "",
-					ATOMIC_WORKFLOW_ARTIFACT_DIR: "",
+		for (const tail of [[], ["--help"], ["start", "--slots", "2"]]) {
+			const unknown = run(["never-a-command", ...tail]);
+			const worker = run(["worker", ...tail]);
+			const label = ["worker", ...tail].join(" ");
+			assert.deepEqual(
+				worker,
+				{
+					...unknown,
+					stdout: unknown.stdout.replaceAll("never-a-command", "worker"),
+					stderr: unknown.stderr.replaceAll("never-a-command", "worker"),
 				},
-				timeout: CLI_STARTUP_TIMEOUT_MS,
-			});
-			assert.equal(result.exitCode, 1, result.stderr.toString());
-			assert.match(
-				result.stderr.toString().trim(),
-				/^Error: "atomic worker" was removed in 0\.10\.0 with workflows\.[^\n]*$/,
+				label,
 			);
-			assert.equal(result.stdout.toString(), "");
-			assert.equal(readFileSync(settings, "utf8"), before, "a retired worker must not migrate settings");
-		} finally {
-			removeTempDirectory(root);
 		}
 	},
-	CLI_STARTUP_TIMEOUT_MS,
+	6 * CLI_STARTUP_TIMEOUT_MS,
 );
 
 test(
-	"startup warns once about retired public workflow variables without printing their values",
+	"the workflow environment variables are ignored like any variable Atomic never read",
 	() => {
-		const root = makeTempDirectory("removed-workflow-env-");
-		try {
-			const agentDir = join(root, "agent");
-			mkdirSync(agentDir);
-			const removed = {
-				ATOMIC_WORKFLOWS_JOURNAL: "private-journal-selection",
-				ATOMIC_WORKFLOW_JOURNAL_PATH: "private-journal-path",
-				ATOMIC_WORKFLOW_ARTIFACT_DIR: "private-artifact-path",
-			};
-			const run = () =>
-				spawnSyncCollect([bunExecutable(), cli, "blueprint", "--help"], {
-					cwd: root,
-					env: { ...process.env, ...removed, ATOMIC_CODING_AGENT_DIR: agentDir, ATOMIC_OFFLINE: "1" },
-					timeout: CLI_STARTUP_TIMEOUT_MS,
-				});
-			const first = run();
-			assert.equal(first.exitCode, 0, first.stderr.toString());
-			const warning = first.stderr.toString().trim();
-			assert.match(warning, /^[^\n]*removed in 0\.10\.0[^\n]*$/i);
-			for (const [name, value] of Object.entries(removed)) {
-				assert.ok(warning.includes(name), warning);
-				assert.ok(!warning.includes(value), "the warning must not expose the old selection or path");
-			}
-			const again = run();
-			assert.equal(again.exitCode, 0, again.stderr.toString());
-			assert.equal(again.stderr.toString(), "");
-			assert.equal(again.stdout.toString(), first.stdout.toString());
-		} finally {
-			removeTempDirectory(root);
+		const values = ['{"path":"journal.sqlite"}', "<root>/legacy-journal.sqlite", "<root>/artifacts"];
+		const removed = ["ATOMIC_WORKFLOWS_JOURNAL", "ATOMIC_WORKFLOW_JOURNAL_PATH", "ATOMIC_WORKFLOW_ARTIFACT_DIR"];
+		const unknown = ["ATOMIC_NEVER_A_VARIABLE_1", "ATOMIC_NEVER_A_VARIABLE_2", "ATOMIC_NEVER_A_VARIABLE_3"];
+		const env = (names: string[]) => Object.fromEntries(names.map((name, index) => [name, values[index]!]));
+		for (const args of [
+			["storage", "status"],
+			["blueprint", "--help"],
+		]) {
+			assert.deepEqual(run(args, env(removed)), run(args, env(unknown)), args.join(" "));
 		}
 	},
-	2 * CLI_STARTUP_TIMEOUT_MS,
+	4 * CLI_STARTUP_TIMEOUT_MS,
 );
