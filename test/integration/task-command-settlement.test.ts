@@ -168,7 +168,7 @@ test.runIf(process.platform !== "win32").each(["user", "owner-close", "execution
 	},
 );
 
-test.runIf(process.platform !== "win32").each(["session-close", "stage-close", "app-shutdown"] as const)(
+test.runIf(process.platform !== "win32").each(["session-close", "app-shutdown"] as const)(
 	"a command cancelled by its owner's %s names that close in its settlement, its wait, its close and kill receipts (#4639)",
 	async (closeCause) => {
 		const h = harness();
@@ -269,7 +269,7 @@ test.runIf(process.platform !== "win32")(
 				{ kind: "cancelled" }
 			>;
 			assert.deepEqual(stopped, { kind: "cancelled", cause: "user" });
-			value(await h.supervisor.closeTaskOwner(h.owner, "stage-close"));
+			value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
 			const killed = value(await h.supervisor.cancelTask(task, "user"));
 			assert.deepEqual(killed.execution, { kind: "settled", result: h.settlements[0]!.receipt.result });
 		} finally {

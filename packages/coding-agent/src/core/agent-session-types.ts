@@ -9,7 +9,6 @@ import type {
 	ExtensionMode,
 	ExtensionUIContext,
 	InputSource,
-	OrchestrationContext,
 	SessionStartEvent,
 	ShutdownHandler,
 	SubagentChildPolicy,
@@ -274,7 +273,7 @@ export interface AgentSessionConfig {
 	subagentPolicy?: SubagentChildPolicy;
 	/** Parent-issued shell task owner for an in-process subagent child. */
 	parentCommandTaskOwner?: import("./tasks/child-command-owner.js").ChildCommandTaskOwner;
-	/** The launching session's project history, read by history:// in a workflow stage or a subagent. */
+	/** The launching session's project history, read by history:// in a subagent. */
 	inheritedHistory?: import("./tools/history-protocol.ts").ProjectHistory;
 	resourceAdmission?: import("./sdk-types.ts").ResourceAdmission;
 	/** Resolved workspace binding; a read-only binding refuses file-writing tools. */
@@ -286,7 +285,6 @@ export interface AgentSessionConfig {
 	 * durable transcript stays unchanged; only derived context is filtered.
 	 */
 	contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
-	orchestrationContext?: OrchestrationContext;
 	intercomPolicy?: import("./intercom-policy.ts").SessionIntercomPolicy;
 	/** Resolved worktree snapshot settings; default: the settings manager's `snapshots.*`. */
 	worktreeSnapshots?: import("./worktree-snapshot/types.ts").WorktreeSnapshotSettings;

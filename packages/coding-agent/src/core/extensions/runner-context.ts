@@ -27,7 +27,6 @@ import type {
 	ExtensionContext,
 	ExtensionMode,
 	ExtensionUIContext,
-	OrchestrationContext,
 	SubagentChildPolicy,
 } from "./types.ts";
 export interface ExtensionContextSource {
@@ -48,7 +47,6 @@ export interface ExtensionContextSource {
 	getModel(): Model<Api> | undefined;
 	getScopedModels(): readonly ScopedModel[];
 	getThinkingLevel(): ThinkingLevel | undefined;
-	getOrchestrationContext(): OrchestrationContext | undefined;
 	getSubagentPolicy(): SubagentChildPolicy | undefined;
 	getIntercomPolicy?(): import("../intercom-policy.ts").IntercomPolicyView | undefined;
 	isIdle(): boolean;
@@ -308,10 +306,6 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 				createArtifactRouter(() => [artifactsDir]),
 				sessionRouters,
 			);
-		},
-		get orchestrationContext() {
-			source.assertActive();
-			return source.getOrchestrationContext();
 		},
 		get subagentPolicy() {
 			source.assertActive();

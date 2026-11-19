@@ -42,7 +42,7 @@ function whatToRecover(input: BoundaryTextInput): string[] {
 	const url = historyUrl(input.sessionId);
 	return [
 		"Recover what you need, in this order:",
-		`1. Every <keepContext> span, verbatim and whole: search ${url} for "keepContext". Tagged text is what the user or a workflow marked as needed for the rest of the task.`,
+		`1. Every <keepContext> span, verbatim and whole: search ${url} for "keepContext". Tagged text is what the user marked as needed for the rest of the task.`,
 		"2. The user's objectives and latest requests; constraints and prohibitions (what must and must not be done); decisions and the reasons for them; identifiers such as branches, worktrees, pull requests, run ids, file paths and commands; open work and blockers; and tool results you still need.",
 		"Prefer the most recent records, at the end of the range: later requests supersede earlier ones, and an approach that was abandoned stays abandoned. Assistant text holds decisions and rationale, not only tool output.",
 	];

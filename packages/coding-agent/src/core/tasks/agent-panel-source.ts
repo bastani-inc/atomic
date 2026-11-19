@@ -25,7 +25,7 @@ export type AgentPanelState =
 
 export interface AgentPanelItem {
 	readonly id: string;
-	readonly kind: "agent" | "shell" | "workflow";
+	readonly kind: "agent" | "shell";
 	readonly state: AgentPanelState;
 	readonly name: string;
 	readonly task: string;
@@ -41,7 +41,6 @@ export interface AgentPanelItem {
 	readonly waitingOn?: string;
 	readonly queued?: number;
 	readonly endedAt?: number;
-	readonly viewed?: boolean;
 	/**
 	 * An identity of the row's latest run: it changes whenever the row runs again (resumed, woken or sent a follow-up),
 	 * however briefly. A stopped or paused row that left the panel is listed again once it changes, even when the panel
@@ -823,8 +822,6 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	drainThenable(reason);
 	const waitingOn = row.waitingOn;
 	drainThenable(waitingOn);
-	const viewed = row.viewed;
-	drainThenable(viewed);
 	const queued = row.queued;
 	drainThenable(queued);
 	const endedAt = row.endedAt;
@@ -837,7 +834,7 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 		id.length === 0 ||
 		id === "main" ||
 		id.startsWith(taskPrefix) ||
-		(kind !== "agent" && kind !== "shell" && kind !== "workflow") ||
+		(kind !== "agent" && kind !== "shell") ||
 		(state !== "running" &&
 			state !== "queued" &&
 			state !== "input" &&
@@ -857,7 +854,6 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 		(promptId !== undefined && typeof promptId !== "string") ||
 		(reason !== undefined && typeof reason !== "string") ||
 		(waitingOn !== undefined && typeof waitingOn !== "string") ||
-		(viewed !== undefined && typeof viewed !== "boolean") ||
 		(runGeneration !== undefined && typeof runGeneration !== "string") ||
 		progress === false ||
 		choices === false
@@ -882,7 +878,6 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	if (waitingOn !== undefined) item.waitingOn = waitingOn;
 	if (queued !== undefined) item.queued = queued;
 	if (endedAt !== undefined) item.endedAt = endedAt;
-	if (viewed !== undefined) item.viewed = viewed;
 	if (runGeneration !== undefined) item.runGeneration = runGeneration;
 	if (elapsedMs !== undefined && (state === "running" || state === "input" || state === "stopping")) {
 		itemSampleTimes.set(item, readAt);
@@ -1036,17 +1031,7 @@ function dismissedTaskIds(session: object): ReadonlySet<TaskId> {
 	return ids;
 }
 
-const viewedBySession = new WeakMap<object, Set<string>>();
 const hubBindingListeners = new WeakMap<object, Set<() => void>>();
-
-export function viewedAgentPanelItems(session: object): Set<string> {
-	let viewed = viewedBySession.get(session);
-	if (viewed === undefined) {
-		viewed = new Set();
-		viewedBySession.set(session, viewed);
-	}
-	return viewed;
-}
 
 export function notifyAgentPanelSourceHubRebound(session: object): void {
 	for (const listener of [...(hubBindingListeners.get(session) ?? [])]) safelyCall(listener);
@@ -1148,7 +1133,7 @@ export function agentPanelExtensionItems(
 	const clocks = extensionClocksBySession.get(session);
 	let clockIds: Set<string> | undefined;
 	for (const item of items) {
-		if (item.kind === "workflow" || item.state === "queued") continue;
+		if (item.state === "queued") continue;
 		const owned = sessionExtensionClocks(session);
 		clockIds ??= new Set();
 		clockIds.add(item.id);
@@ -1164,14 +1149,8 @@ export function agentPanelExtensionItems(
 	}
 	if (clockIds !== undefined) extensionClocksBySession.get(session)?.prune(clockIds);
 	else clocks?.clear();
-	const viewed = viewedBySession.get(session);
 	const liveIds =
-		!hasSourceError && ((viewed !== undefined && viewed.size > 0) || (hasDismissed && sources.length > 0))
-			? new Set(items.map((item) => item.id))
-			: undefined;
-	if (viewed !== undefined && viewed.size > 0 && liveIds !== undefined) {
-		for (const id of [...viewed]) if (!liveIds.has(id)) viewed.delete(id);
-	}
+		!hasSourceError && hasDismissed && sources.length > 0 ? new Set(items.map((item) => item.id)) : undefined;
 	if (hasDismissed) {
 		if (liveIds !== undefined) {
 			for (const id of [...dismissed]) {
@@ -1338,7 +1317,6 @@ export function openAgentPanelItem(
 				report?.(sourceError(error));
 			});
 		}
-		viewedAgentPanelItems(session).add(id);
 		notifyAgentPanelChanged(session);
 		return true;
 	} catch (error) {

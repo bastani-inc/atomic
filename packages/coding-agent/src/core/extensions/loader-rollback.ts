@@ -82,7 +82,6 @@ function rollbackContext(cwd: string) {
 		getModel: () => undefined,
 		getScopedModels: () => [],
 		getThinkingLevel: () => undefined,
-		getOrchestrationContext: () => undefined,
 		getSubagentPolicy: () => undefined,
 		isIdle: () => true,
 		isProjectTrusted: () => false,

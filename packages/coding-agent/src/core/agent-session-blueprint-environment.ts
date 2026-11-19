@@ -7,8 +7,7 @@ import { mapRestoredPathAsync } from "./session-worktree-snapshots.ts";
 
 /**
  * The bash prefix that gives the session's shell the variables the blueprint builds of its restored worktrees wrote to
- * `$ENVRC` (#4588); undefined when the session has no such worktree or no agent directory to look in. A stage of a resumed workflow run and a pooled child have
- * no restores of their own on their session: theirs come from the run, or from the restored worktree they run in.
+ * `$ENVRC` (#4588); undefined when the session has no such worktree or no agent directory to look in.
  */
 export async function blueprintEnvironmentPrefix(session: AgentSession): Promise<string | undefined> {
 	const agentDir = session._storageAgentDir;

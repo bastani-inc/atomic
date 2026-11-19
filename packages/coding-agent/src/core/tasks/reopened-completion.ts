@@ -100,13 +100,9 @@ function stopWitness(intent: unknown, isProxy?: CompletionProxyCheck): StopWitne
 			wording = "timed out";
 			break;
 		case "owner-close": {
-			const ownerClose = field(result, "ownerClose");
-			if (
-				ownerClose !== undefined &&
-				ownerClose !== "session-close" &&
-				ownerClose !== "stage-close" &&
-				ownerClose !== "app-shutdown"
-			)
+			const storedClose = field(result, "ownerClose");
+			const ownerClose = storedClose === "stage-close" ? "session-close" : storedClose;
+			if (ownerClose !== undefined && ownerClose !== "session-close" && ownerClose !== "app-shutdown")
 				return undefined;
 			wording = `stopped (${cancelReasonText({ kind: "cancelled", cause, ownerClose })})`;
 			break;

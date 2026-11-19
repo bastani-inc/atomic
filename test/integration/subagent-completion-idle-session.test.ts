@@ -6,7 +6,7 @@ import type { OperationId, TaskResult } from "../../packages/coding-agent/src/co
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
 
 for (const restored of [false, true]) {
-	test(`${restored ? "restored idle stage completions are shown after resume recovery without a parent turn or blocking subsequent notices (#3427, #3760)" : "live idle stage completions trigger parent turns without blocking subsequent notices (#3427)"}`, async () => {
+	test(`${restored ? "restored idle session completions are shown after resume recovery without a parent turn or blocking subsequent notices (#3427, #3760)" : "live idle session completions trigger parent turns without blocking subsequent notices (#3427)"}`, async () => {
 		const manager = SessionManager.inMemory();
 		let completionId = "idle-restored-completion";
 		let liveTaskId: string | undefined;
@@ -22,19 +22,12 @@ for (const restored of [false, true]) {
 		}
 		const harness = await createHarness({
 			sessionManager: manager,
-			orchestrationContext: {
-				kind: "workflow-stage",
-				workflowRunId: "idle-run",
-				workflowStageId: "idle-stage",
-				workflowStageName: "Idle stage",
-				constraints: { disableWorkflowTool: true },
-			},
 		});
 		harness.setResponses(Array.from({ length: 5 }, () => fauxAssistantMessage("IDLE-PARENT-REPLY")));
 		try {
 			const host = harness.session.getAgentTaskHost();
 			if (restored) {
-				const report = await harness.session.startPendingRecovery("workflow_stage_resume");
+				const report = await harness.session.startPendingRecovery("resume");
 				assert.equal(report.completions, 1);
 			} else {
 				const gate = Promise.withResolvers<TaskResult>();
@@ -126,16 +119,8 @@ for (const restored of [false, true]) {
 }
 
 for (const triggerTurn of [false, undefined]) {
-	test(`idle stage keyed notices with triggerTurn=${triggerTurn} do not start parent turns (#3427)`, async () => {
-		const harness = await createHarness({
-			orchestrationContext: {
-				kind: "workflow-stage",
-				workflowRunId: "display-run",
-				workflowStageId: "display-stage",
-				workflowStageName: "Display stage",
-				constraints: { disableWorkflowTool: true },
-			},
-		});
+	test(`idle session keyed notices with triggerTurn=${triggerTurn} do not start parent turns (#3427)`, async () => {
+		const harness = await createHarness({});
 		harness.setResponses([fauxAssistantMessage("UNEXPECTED-TURN")]);
 		try {
 			await harness.session.sendCustomMessage(

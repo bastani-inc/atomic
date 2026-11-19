@@ -87,7 +87,6 @@ export type {
 	MessageRenderOptions,
 	ModelSelectEvent,
 	ModelSelectSource,
-	OrchestrationContext,
 	PendingRecoveryDelivery,
 	PowerShellToolCallEvent,
 	ProjectTrustContext,
@@ -167,8 +166,6 @@ export type {
 	WidgetPlacement,
 	WidgetScrollRequest,
 	WidgetScrollState,
-	WorkflowPendingStageDelivery,
-	WorkflowStageOrchestrationContext,
 	WorkingIndicatorOptions,
 	WriteToolCallEvent,
 } from "./core/extensions/index.js";

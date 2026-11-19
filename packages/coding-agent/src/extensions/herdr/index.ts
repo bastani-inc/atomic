@@ -80,7 +80,7 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			if (retiredRunners.has(runner)) return;
 			if (boundSessionManager && ctx.sessionManager !== boundSessionManager) return;
 			const environment = captureHerdrEnvironment(options.env ?? process.env);
-			if (!environment || ctx.mode !== "tui" || !ctx.hasUI || ctx.subagentPolicy || ctx.orchestrationContext) return;
+			if (!environment || ctx.mode !== "tui" || !ctx.hasUI || ctx.subagentPolicy) return;
 			const isEnabled = (options.enabled ?? enabled)(ctx);
 			if (typeof isEnabled !== "boolean") {
 				const stopped = stops.get(runner);

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -94,34 +94,6 @@ describe("SessionManager.newSession with custom id", () => {
 		expect(session.getHeader()!.id).toBe(session.getSessionId());
 	});
 
-	it("inherits valid workflow classification when branching a persisted stage session", async () => {
-		const tempDir = mkdtempSync(join(tmpdir(), "pi-session-manager-"));
-		const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
-		const session = await SessionManager.create(tempDir, tempDir, { internal: true, workflow });
-		await session.appendMessage({ role: "user", content: "task", timestamp: Date.now() });
-		const leafId = await session.appendMessage({
-			role: "assistant",
-			content: [{ type: "text", text: "done" }],
-			api: "openai-responses",
-			provider: "openai",
-			model: "gpt-5.4",
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: Date.now(),
-		});
-
-		const branchPath = (await session.createBranchedSession(leafId))!;
-		const firstLine = readFileSync(branchPath, "utf8").split("\n")[0];
-		expect(JSON.parse(firstLine!)).toMatchObject({ internal: true, workflow });
-	});
-
 	it("generates a UUIDv7 id when forking from another session file", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-session-manager-"));
 		const sourcePath = join(tempDir, "source.jsonl");
@@ -191,27 +163,6 @@ describe("SessionManager.newSession with custom id", () => {
 		const sessionFile = forked.getSessionFile()!;
 		expect(sessionFile).toContain("forked-session-id");
 		expect(basename(sessionFile)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_forked-session-id\.jsonl$/);
-	});
-
-	it("persists valid workflow classification in the initial fork header", async () => {
-		const tempDir = mkdtempSync(join(tmpdir(), "pi-session-manager-"));
-		const sourcePath = join(tempDir, "source.jsonl");
-		writeFileSync(
-			sourcePath,
-			`${JSON.stringify({
-				type: "session",
-				version: 4,
-				id: "source-session-id",
-				createdAt: new Date().toISOString(),
-				cwd: tempDir,
-			})}\n`,
-		);
-		const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
-
-		const forked = await SessionManager.forkFrom(sourcePath, tempDir, tempDir, { internal: true, workflow });
-		const firstLine = readFileSync(forked.getSessionFile()!, "utf8").split("\n")[0];
-
-		expect(JSON.parse(firstLine!)).toMatchObject({ internal: true, workflow });
 	});
 
 	it("keeps ordinary forks visible and unclassified", async () => {

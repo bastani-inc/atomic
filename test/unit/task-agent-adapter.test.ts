@@ -8,7 +8,6 @@ import type {
 	SettlementReceipt,
 	TaskResult,
 } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 
 const intent = { kind: "agent" as const, agent: "worker", task: "Work" };
 const operation = () => randomUUID() as OperationId;
@@ -91,36 +90,6 @@ test("yielded agent observes the original result without another start", async (
 	assert.deepEqual(waited, { ok: true, value: { kind: "settled", taskId: started.value.taskId, result: terminal } });
 	cleanup.resolve({ kind: "reaped" });
 	assert.equal((await owner.close("session-close")).ok, true);
-});
-
-// RFC #2884: stage replacement shares lifetime, but a fresh generation never does.
-test("boundary replacement retains original owner and session while closure fences launches", async () => {
-	const boundary = new WorkflowStageAdmissionBoundary();
-	const fresh = new WorkflowStageAdmissionBoundary();
-	const session = randomUUID();
-	boundary.bindTaskIdentity(session, "run", "stage");
-	fresh.bindTaskIdentity(session, "run", "stage");
-	const binding = { authorizeLaunch() {} };
-	const owner = boundary.bindAgentTaskHost(binding);
-	boundary.bindTaskIdentity("replacement", "run", "stage");
-	assert.equal(boundary.bindAgentTaskHost(binding), owner);
-	const distinct = fresh.bindAgentTaskHost(binding);
-	const first = owner.watchOwnerTasks();
-	const second = distinct.watchOwnerTasks();
-	assert.ok(first.ok && second.ok);
-	assert.notEqual(first.value.snapshot.ownerId, second.value.snapshot.ownerId);
-	assert.equal(first.value.snapshot.scope.sessionId, session);
-	assert.notDeepEqual(first.value.snapshot.scope, second.value.snapshot.scope);
-	first.value.dispose();
-	second.value.dispose();
-	await boundary.close();
-	const rejected = await owner.startAgentTask(intent, operation(), () => {
-		throw new Error("closed runner");
-	});
-	assert.ok(!rejected.ok);
-	assert.equal(rejected.error.code, "OwnerClosing");
-	assert.throws(() => boundary.bindAgentTaskHost(binding), /closed/);
-	await fresh.close();
 });
 
 // RFC #2884: trusted adapter never bypasses the existing launch guard.

@@ -4,7 +4,7 @@ import type { OwnerCloseCause, ResourceFailure, TaskId } from "./contracts.js";
 export type TaskCleanupErrorCode = "task_cleanup_unconfirmed";
 
 /**
- * What was confirming the cleanup: an owner closing for that cause, a workflow stage pausing its tasks, or a command
+ * What was confirming the cleanup: an owner closing for that cause, a task owner pausing its tasks, or a command
  * admission waiting behind permits that unconfirmed cleanup holds.
  */
 export type TaskCleanupPhase = OwnerCloseCause | "stage-pause" | "command-admission";
@@ -19,7 +19,6 @@ const TASK_CLEANUP_ERROR_NAME = "TaskCleanupError";
 const TASK_CLEANUP_ADMISSION_TIMEOUT_ERROR_NAME = "TaskCleanupAdmissionTimeoutError";
 const TASK_CLEANUP_PHASES: ReadonlySet<string> = new Set<TaskCleanupPhase>([
 	"session-close",
-	"stage-close",
 	"app-shutdown",
 	"stage-pause",
 	"command-admission",
@@ -152,6 +151,7 @@ export function rehydrateTaskCleanupError(value: unknown): TaskCleanupError | un
 		return phase === "command-admission" && isDuration(timeoutMs) && isDuration(elapsedMs)
 			? new TaskCleanupAdmissionTimeoutError(failures, { timeoutMs, elapsedMs })
 			: undefined;
+	if (phase === "stage-close") return new TaskCleanupError("session-close", failures);
 	if (!TASK_CLEANUP_PHASES.has(phase as TaskCleanupPhase)) return undefined;
 	return new TaskCleanupError(phase as TaskCleanupPhase, failures);
 }

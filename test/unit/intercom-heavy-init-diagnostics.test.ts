@@ -144,7 +144,6 @@ function guardedContext(mode: ExtensionContext["mode"]) {
 			},
 		}),
 		getSubagentPolicy: () => undefined,
-		getOrchestrationContext: () => undefined,
 	} as ExtensionContextSource);
 	return {
 		ctx,
