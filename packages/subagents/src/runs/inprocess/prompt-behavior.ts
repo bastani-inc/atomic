@@ -1,3 +1,4 @@
+import { markThinkingBeforeRemovedForkBoundary } from "@bastani/atomic";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
@@ -154,6 +155,8 @@ export function stripParentOnlySubagentMessages<T>(messages: T[], preserveFanout
 			(!preserveFanoutToolHistory && isSubagentToolResultMessage(message))
 		) {
 			changed = true;
+			const index = filtered.length - 1;
+			if (index >= 0) filtered[index] = markThinkingBeforeRemovedForkBoundary(filtered[index]!, message);
 			continue;
 		}
 		const stripped = preserveFanoutToolHistory ? message : stripAssistantSubagentToolCallBlocks(message);

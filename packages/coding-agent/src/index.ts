@@ -405,6 +405,7 @@ export {
 	agentWakeDispatcher,
 	wakeKeyNamespace,
 } from "./core/agent-wake-dispatcher.ts";
+export { markThinkingBeforeRemovedForkBoundary } from "./core/anthropic-thinking-guard.ts";
 // Auth and model runtime
 export { AuthStorage, readStoredCredential } from "./core/auth-storage.ts";
 export {

@@ -3,6 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
+import {
+	type Api,
+	type AssistantMessage,
+	getModel,
+	type Message,
+	type Model,
+	streamSimple,
+} from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader.js";
 import type { ResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
@@ -16,7 +24,9 @@ import {
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
 	createInProcessChildPromptBehavior,
 	createInProcessChildSystemPromptTransform,
+	stripParentOnlySubagentMessages,
 } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
+import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 
 const tempDirs: string[] = [];
 
@@ -84,11 +94,11 @@ async function createChildSession(
 	return session;
 }
 
-describe("in-process child prompt construction", () => {
-	afterEach(() => {
-		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-	});
+afterEach(() => {
+	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
+describe("in-process child prompt construction", () => {
 	test("constructs the normal boundary and strips project context, skills, and orchestration skill by policy", async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-child-prompt-"));
 		tempDirs.push(root);
@@ -183,6 +193,361 @@ describe("in-process child prompt construction", () => {
 				),
 				true,
 			);
+		} finally {
+			session.dispose();
+		}
+	});
+});
+
+interface PayloadMessage {
+	type?: string;
+	role: string;
+	content: unknown;
+}
+
+const copilotOpus = getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
+
+const zeroUsage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+/** A parent turn produced by the model the forked child runs on, so its signed thinking is replayed to the child. */
+function parentTurn(content: AssistantMessage["content"]): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: copilotOpus.api,
+		provider: copilotOpus.provider,
+		model: copilotOpus.id,
+		usage: zeroUsage,
+		stopReason: content.some((block) => block.type === "toolCall") ? "toolUse" : "stop",
+		timestamp: Date.now(),
+	};
+}
+
+function parentToolResult(toolCallId: string, toolName: string, text: string): Message {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName,
+		content: [{ type: "text", text }],
+		isError: false,
+		timestamp: Date.now(),
+	};
+}
+
+type ChildSession = Awaited<ReturnType<typeof createChildSession>>;
+
+/** Capture the destination's payload after the same conversion and payload hooks used by the session. */
+async function childFirstRequest(session: ChildSession, model: Model<Api> = copilotOpus): Promise<PayloadMessage[]> {
+	let payload: { messages?: PayloadMessage[]; input?: PayloadMessage[] } | undefined;
+	await streamSimple(
+		model,
+		{
+			messages: await session.agent.convertToLlm([
+				...session.messages,
+				{ role: "user", content: "The child's task.", timestamp: 1 },
+			]),
+		},
+		{
+			apiKey: "credential-free-test-key",
+			reasoning: "xhigh",
+			onPayload: async (body, target) => {
+				payload = ((await session.agent.onPayload?.(body, target)) ?? body) as typeof payload;
+				throw new Error("Request captured before sending");
+			},
+		},
+	).result();
+	const messages = payload?.messages ?? payload?.input;
+	if (!messages) throw new Error("no request payload was built");
+	return messages;
+}
+
+function forkParent(): SessionManager {
+	const root = mkdtempSync(join(tmpdir(), "atomic-fork-thinking-"));
+	tempDirs.push(root);
+	return SessionManager.inMemory(root);
+}
+
+function assistantTurns(request: PayloadMessage[]) {
+	return request.filter((message) => message.role === "assistant").map((message) => message.content);
+}
+
+async function forkChild(parent: SessionManager): Promise<Awaited<ReturnType<typeof createAgentSession>>["session"]> {
+	const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+	return createChildSession({}, child);
+}
+
+describe("forked child's first request replays the parent's thinking (#5481)", () => {
+	test("an aborted reply after a notice does not replace the latest signed answer, even on reopen (#5481)", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-reopen-thinking-"));
+		tempDirs.push(root);
+		const parent = await SessionManager.create(root, join(root, "sessions"));
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Check the result.", thinkingSignature: "sig-answer" },
+				{ type: "text", text: "Done." },
+			]),
+		);
+		await parent.appendCustomMessageEntry("subagent-notify", "Worker finished.", true);
+		await parent.appendMessage({ ...parentTurn([]), stopReason: "aborted" });
+		await parent.appendMessage({ role: "user", content: "Continue.", timestamp: 1 });
+		const child = (await createForkContextResolver(parent, "fork").sessionManagerForIndex(0))!;
+		for (const reopen of [false, true]) {
+			const session = await createChildSession(
+				{},
+				reopen ? await SessionManager.open(child.getSessionFile()!) : child,
+			);
+			try {
+				assert.deepEqual(assistantTurns(await childFirstRequest(session)), [
+					[
+						{ type: "thinking", thinking: "Check the result.", signature: "sig-answer" },
+						{ type: "text", text: "Done." },
+					],
+				]);
+			} finally {
+				await session.dispose();
+			}
+		}
+	});
+
+	test.each(["fork", "fresh"] as const)(
+		"Responses keeps encrypted reasoning across a notice in a reopened %s child (#5481)",
+		async (kind) => {
+			const root = mkdtempSync(join(tmpdir(), "atomic-responses-thinking-"));
+			tempDirs.push(root);
+			const parent = await SessionManager.create(root, join(root, "sessions"));
+			const model: Model<"openai-responses"> = {
+				id: "gpt-6.2-astra",
+				name: "GPT-6.2 Astra",
+				api: "openai-responses",
+				provider: "github-copilot",
+				baseUrl: "https://example.invalid",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: zeroUsage.cost,
+				contextWindow: 1_050_000,
+				maxTokens: 128_000,
+			};
+			const item = { type: "reasoning", id: "rs_first", encrypted_content: "opaque", summary: [] };
+			const first = {
+				...parentTurn([
+					{ type: "thinking", thinking: "", thinkingSignature: JSON.stringify(item) },
+					{ type: "text", text: "First." },
+				]),
+				model: model.id,
+				provider: model.provider,
+				api: model.api,
+			};
+			await parent.appendMessage(first);
+			await parent.appendCustomMessageEntry("subagent-notify", "Worker finished.", true);
+			await parent.appendMessage({ ...first, content: [{ type: "text", text: "Second." }] });
+			const child =
+				kind === "fork" ? (await createForkContextResolver(parent, kind).sessionManagerForIndex(0))! : parent;
+			const session = await createChildSession({}, await SessionManager.open(child.getSessionFile()!));
+			try {
+				const request = await childFirstRequest(session, model);
+				assert.deepEqual(
+					request.find((entry) => entry.type === "reasoning"),
+					item,
+				);
+			} finally {
+				await session.dispose();
+			}
+		},
+	);
+
+	test("unsigned thinking remains readable text across a removed notice (#5481)", async () => {
+		const parent = forkParent();
+		await parent.appendMessage(
+			parentTurn([{ type: "thinking", thinking: "Handoff code: 730.", thinkingSignature: "" }]),
+		);
+		await parent.appendCustomMessageEntry("subagent-notify", "Worker finished.", true);
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Review.", thinkingSignature: "sig-review" },
+				{ type: "text", text: "Done." },
+			]),
+		);
+		const session = await forkChild(parent);
+		try {
+			assert.deepEqual(assistantTurns(await childFirstRequest(session))[0], [
+				{ type: "text", text: "Handoff code: 730." },
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("projecting an ordinary fork does not visit the content blocks of user messages (#5481)", () => {
+		let reads = 0;
+		const content = Array.from({ length: 1024 }, () => ({
+			get type() {
+				reads++;
+				return "text" as const;
+			},
+			text: "a",
+		}));
+		const messages = Array.from({ length: 128 }, () => [
+			{ role: "user", content, timestamp: 1 },
+			parentTurn([{ type: "text", text: "OK" }]),
+		]).flat();
+		assert.equal(stripParentOnlySubagentMessages(messages), messages);
+		assert.equal(reads, 0);
+	});
+
+	test("a signed subagent call does not join the next turn on same-model or cross-provider forks (#5481)", async () => {
+		const parent = forkParent();
+		await parent.appendMessage({ role: "user", content: "Fix the failing test.", timestamp: Date.now() });
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Launch a reviewer first.", thinkingSignature: "sig-launch" },
+				{ type: "toolCall", id: "toolu_launch", name: "subagent", arguments: { agent: "reviewer" } },
+			]),
+		);
+		await parent.appendMessage(parentToolResult("toolu_launch", "subagent", "Launched reviewer."));
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Now list the files.", thinkingSignature: "sig-list" },
+				{ type: "thinking", thinking: "", thinkingSignature: "opaque-list", redacted: true },
+				{ type: "toolCall", id: "toolu_ls", name: "bash", arguments: { command: "ls" } },
+			]),
+		);
+		await parent.appendMessage(parentToolResult("toolu_ls", "bash", "a.ts"));
+		// The turn that launches the forked child is still in flight.
+		await parent.appendMessage(
+			parentTurn([{ type: "toolCall", id: "toolu_fork", name: "subagent", arguments: { agent: "worker" } }]),
+		);
+
+		const session = await forkChild(parent);
+		try {
+			const tool = { type: "tool_use", id: "toolu_ls", name: "bash", input: { command: "ls" } };
+			const same = await childFirstRequest(session);
+			assert.deepEqual(assistantTurns(same), [
+				[
+					{ type: "thinking", thinking: "Now list the files.", signature: "sig-list" },
+					{ type: "redacted_thinking", data: "opaque-list" },
+					tool,
+				],
+			]);
+			assert.doesNotMatch(JSON.stringify(same), /Launched reviewer/);
+			const other = getModel("anthropic", "claude-opus-5-5") as Model<"anthropic-messages">;
+			assert.deepEqual(assistantTurns(await childFirstRequest(session, other)), [[tool]]);
+
+			// Once the child has answered, this is no longer its latest assistant turn.
+			await session.sessionManager.appendMessage(parentTurn([{ type: "text", text: "Child answer." }]));
+			session.refreshContext();
+			assert.deepEqual(assistantTurns(await childFirstRequest(session))[0], [
+				{ type: "thinking", thinking: "Launch a reviewer first.", signature: "sig-launch" },
+			]);
+		} finally {
+			await session.dispose();
+		}
+		// Child policy alone does not make a session a fork.
+		const fresh = await createChildSession({}, parent);
+		try {
+			assert.deepEqual(assistantTurns(await childFirstRequest(fresh))[0], [
+				{ type: "thinking", thinking: "Launch a reviewer first.", signature: "sig-launch" },
+			]);
+		} finally {
+			await fresh.dispose();
+		}
+	});
+
+	test("a removed parent-only notice never changes a turn with both thinking and text (#5481)", async () => {
+		const parent = forkParent();
+		await parent.appendMessage({ role: "user", content: "Report the status.", timestamp: Date.now() });
+		await parent.appendMessage(
+			parentTurn([{ type: "thinking", thinking: "Start here.", thinkingSignature: "sig-first" }]),
+		);
+		await parent.appendCustomMessageEntry("subagent-notify", "Earlier parent notice.", true);
+		await parent.appendMessage({ role: "user", content: "Check the review.", timestamp: Date.now() });
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Summarize the status.", thinkingSignature: "sig-status" },
+				{ type: "text", text: "Waiting on the reviewer." },
+			]),
+		);
+		await parent.appendCustomMessageEntry("subagent-notify", "The reviewer finished.", true);
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Read the review.", thinkingSignature: "sig-review" },
+				{ type: "toolCall", id: "toolu_cat", name: "bash", arguments: { command: "cat review.md" } },
+			]),
+		);
+		await parent.appendMessage(parentToolResult("toolu_cat", "bash", "Looks good."));
+		await parent.appendMessage(
+			parentTurn([{ type: "toolCall", id: "toolu_fork", name: "subagent", arguments: { agent: "worker" } }]),
+		);
+
+		const session = await forkChild(parent);
+		try {
+			const request = await childFirstRequest(session);
+
+			assert.doesNotMatch(JSON.stringify(request), /Earlier parent notice|The reviewer finished/);
+			assert.deepEqual(assistantTurns(request), [
+				[{ type: "thinking", thinking: "Start here.", signature: "sig-first" }],
+				[
+					{ type: "thinking", thinking: "Summarize the status.", signature: "sig-status" },
+					{ type: "text", text: "Waiting on the reviewer." },
+				],
+				[
+					{ type: "thinking", thinking: "Read the review.", signature: "sig-review" },
+					{ type: "tool_use", id: "toolu_cat", name: "bash", input: { command: "cat review.md" } },
+				],
+			]);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	test("omitting a thinking-only turn leaves the complete turn before it alone (#5481)", async () => {
+		const parent = forkParent();
+		await parent.appendMessage({ role: "user", content: "Report, then delegate.", timestamp: Date.now() });
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Report first.", thinkingSignature: "sig-report" },
+				{ type: "text", text: "Two tests fail." },
+			]),
+		);
+		// Nothing the model reads separates these two turns in the parent either.
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Delegate the fix.", thinkingSignature: "sig-delegate" },
+				{ type: "toolCall", id: "toolu_launch", name: "subagent", arguments: { agent: "worker" } },
+			]),
+		);
+		await parent.appendMessage(parentToolResult("toolu_launch", "subagent", "Launched worker."));
+		await parent.appendMessage(
+			parentTurn([
+				{ type: "thinking", thinking: "Check the log.", thinkingSignature: "sig-log" },
+				{ type: "toolCall", id: "toolu_log", name: "bash", arguments: { command: "git log -1" } },
+			]),
+		);
+		await parent.appendMessage(parentToolResult("toolu_log", "bash", "abc123"));
+		await parent.appendMessage(
+			parentTurn([{ type: "toolCall", id: "toolu_fork", name: "subagent", arguments: { agent: "worker" } }]),
+		);
+
+		const session = await forkChild(parent);
+		try {
+			const request = await childFirstRequest(session);
+
+			assert.deepEqual(assistantTurns(request), [
+				[
+					{ type: "thinking", thinking: "Report first.", signature: "sig-report" },
+					{ type: "text", text: "Two tests fail." },
+				],
+				[
+					{ type: "thinking", thinking: "Check the log.", signature: "sig-log" },
+					{ type: "tool_use", id: "toolu_log", name: "bash", input: { command: "git log -1" } },
+				],
+			]);
 		} finally {
 			session.dispose();
 		}

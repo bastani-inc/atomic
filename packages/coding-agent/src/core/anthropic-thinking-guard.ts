@@ -60,6 +60,34 @@ function readReplayThinkingBlock(block: unknown, allowEmptySignature = false): R
 	return { type: "thinking", thinking: block.thinking, signature: block.thinkingSignature };
 }
 
+// Keep provenance on the projected copy, not the stored transcript. Spreads during request conversion
+// retain the symbol (including across separately loaded extension modules); JSON never emits it.
+const removedForkBoundary = Symbol.for("@bastani/atomic/removed-fork-boundary");
+
+/** A removed tool result or visible parent notice can join this thinking-only message to the next reply. */
+export function markThinkingBeforeRemovedForkBoundary<T>(message: T, removed: unknown): T {
+	if (!isObject(message) || message.role !== "assistant" || !Array.isArray(message.content)) return message;
+	if (!message.content.length || !message.content.every((block) => readReplayThinkingBlock(block) !== undefined))
+		return message;
+	// Built-in parent notices start with a visible label. If neither end proves that a notice
+	// would emit, leave the turn alone rather than searching arbitrary user-like content.
+	if (
+		!isObject(removed) ||
+		(removed.role !== "toolResult" &&
+			(removed.excludeFromContext === true ||
+				typeof removed.content !== "string" ||
+				(!removed.content.at(0)?.trim() && !removed.content.at(-1)?.trim())))
+	)
+		return message;
+	return { ...message, [removedForkBoundary]: true };
+}
+
+function isSignedWireBlock(block: AnthropicContentBlock): boolean {
+	const signature =
+		block.type === "thinking" ? block.signature : block.type === "redacted_thinking" ? block.data : undefined;
+	return typeof signature === "string" && signature.trim().length > 0;
+}
+
 function hasReplayThinkingBlock(message: AssistantMessage, allowEmptySignature: boolean): boolean {
 	return message.content.some((block) => readReplayThinkingBlock(block, allowEmptySignature) !== undefined);
 }
@@ -220,6 +248,7 @@ export function restoreAnthropicReplayThinkingBlocks(
 	payload: unknown,
 	sourceMessages: readonly Message[],
 	model: Model<Api>,
+	forkedChild = false,
 ): unknown {
 	if (model.api !== "anthropic-messages") return payload;
 
@@ -263,6 +292,29 @@ export function restoreAnthropicReplayThinkingBlocks(
 			...payloadAssistant.message,
 			content: repairedContent,
 		};
+	}
+
+	// Claude joins adjacent assistant messages. Only the earlier, orphaned thinking-only message of
+	// the *latest emitted* turn is unsafe. Work from actual payload ordinals: aborted/empty rows do
+	// not count, and a user message that really went on the wire must keep the turns separate.
+	const earlier = assistantPayloads.at(-2);
+	const latest = assistantPayloads.at(-1)!;
+	const source = emittingSourceAssistants.at(-2);
+	if (
+		forkedChild &&
+		(model.provider === "github-copilot" || model.provider === "anthropic" || model.provider === "anthropic-api") &&
+		(model.fastRoute?.upstreamModelId ?? model.id).startsWith("claude-") &&
+		earlier &&
+		source &&
+		removedForkBoundary in source &&
+		isProducedByModel(source, model) &&
+		earlier.index + 1 === latest.index &&
+		earlier.content.length > 0 &&
+		earlier.content.every(isSignedWireBlock) &&
+		latest.content.some(isSignedWireBlock)
+	) {
+		nextPayloadMessages ??= [...payloadMessages];
+		nextPayloadMessages.splice(earlier.index, 1);
 	}
 
 	if (!nextPayloadMessages || !isObject(payload)) return payload;
