@@ -11,6 +11,7 @@ import {
 	completionIdOf,
 	intentForAcknowledgement,
 	isBranchCustomState,
+	isExtensionCustomState,
 	latestCompactionOf,
 	type SessionResumeIndex,
 } from "./session-resume.js";
@@ -29,6 +30,7 @@ export interface ForkMetadata {
 	readonly label?: LabelEntry;
 	readonly labelTarget?: string;
 	readonly labelSet?: boolean;
+	readonly system?: boolean;
 }
 
 export function forkMetadata(seq: number, entry: SessionEntry): ForkMetadata {
@@ -57,6 +59,8 @@ export function forkMetadata(seq: number, entry: SessionEntry): ForkMetadata {
 			...(entry.customType === "atomic.tool-output" && typeof hash === "string" ? { hash } : {}),
 		};
 	}
+	if (entry.type === "message" && entry.message.role === "system")
+		return { seq, type: entry.type, ...link, system: true };
 	if (entry.type === "message" && entry.message.role === "assistant")
 		return {
 			seq,
@@ -137,7 +141,8 @@ export async function locateFork(
 		first = -1,
 		covered = -1;
 	const jumps: Array<readonly [number, number, number]> = [];
-	const states: number[] = [];
+	const states: number[] = [],
+		extensions: number[] = [];
 	const waitingAcks = new Map<string, number>(),
 		acks: Array<readonly [number, number]> = [];
 	let labels = false,
@@ -173,10 +178,12 @@ export async function locateFork(
 				summarySeq = m.type === "branch_summary" ? null : m.seq;
 			if (unindexed) {
 				if (m.type === "custom" && m.customType === "workspace_binding") bindings = true;
+				if (m.type === "custom" && isExtensionCustomState(m.customType)) extensions.push(m.seq);
 				if (
 					m.type === "thinking_level_change" ||
 					m.type === "model_change" ||
 					m.type === "worktree_snapshot" ||
+					m.system ||
 					(m.type === "custom" && isBranchCustomState(m.customType))
 				)
 					states.push(m.seq);
@@ -209,6 +216,7 @@ export async function locateFork(
 			acks: unindexed ? acks.sort((a, b) => a[1] - b[1]) : index.acks,
 			nameSeq,
 			summarySeq: summarySeq ?? undefined,
+			...(unindexed ? { extensionState: extensions.reverse() } : {}),
 		},
 		extras: { labels, bindings, branchCatalog: true },
 	};
@@ -331,16 +339,24 @@ export async function indexedForkWindow(
 				catalogTypes.push("session_summary", "branch_summary");
 		}
 		let nameSeq: number | undefined, summarySeq: number | undefined;
-		if (bindings || wanted.size || catalogTypes.length) {
+		// Extensions restore the state they saved with `pi.appendEntry` from their branch, as they could from the
+		// complete-branch copy. An index an earlier build saved does not list those entries, so find them below.
+		const extensionState = index.extensionState;
+		for (const seq of extensionState ?? []) if (seq < start && onEarlierBranch(seq)) keep.add(seq);
+		if (!extensionState || bindings || wanted.size || catalogTypes.length) {
 			for await (const meta of scan(
 				before,
 				[...(bindings ? ["workspace_binding"] : []), ...(wanted.size ? ["atomic.tool-output"] : [])],
-				catalogTypes,
+				extensionState ? catalogTypes : [...catalogTypes, "custom"],
 			)) {
 				if (meta.type === "session_info") nameSeq = meta.seq;
 				else if (meta.type === "session_summary") summarySeq = meta.seq;
 				else if (meta.type === "branch_summary") summarySeq = undefined;
-				if (meta.customType === "workspace_binding" && onEarlierBranch(meta.seq)) keep.add(meta.seq);
+				if (
+					(meta.customType === "workspace_binding" || isExtensionCustomState(meta.customType)) &&
+					onEarlierBranch(meta.seq)
+				)
+					keep.add(meta.seq);
 				if (meta.hash && wanted.has(meta.hash)) {
 					archived = true;
 					break;
@@ -351,8 +367,9 @@ export async function indexedForkWindow(
 			for (const row of await earlierStopEvidence(index, rows, onEarlierBranch, readMany)) rows.push(row);
 			if (nameSeq) keep.add(nameSeq);
 			if (summarySeq) keep.add(summarySeq);
-			// The branch-state index contains tool policies, codemode writes, snapshots and explicit thinking/model changes.
-			// Only the effective model is needed; it can also come from a covered assistant response. Don't load that answer.
+			// The branch-state index contains tool policies, codemode writes, snapshots, explicit thinking/model changes and
+			// system messages, whose tool loadout a restore replays. Only the effective model is needed; it can also come
+			// from a covered assistant response. Don't load that answer.
 			const transition = await modelPosition(index, before, metadata);
 			const earlier = new Set<number>();
 			if (transition !== undefined) earlier.add(transition);
@@ -370,7 +387,7 @@ export async function indexedForkWindow(
 					else if (
 						m.type === "model_change"
 							? m.seq === transition
-							: m.type === "worktree_snapshot" || m.type === "custom"
+							: m.type === "worktree_snapshot" || m.type === "custom" || m.system
 					)
 						keep.add(m.seq);
 					else if (m.type === "thinking_level_change") thinking = m.seq;
