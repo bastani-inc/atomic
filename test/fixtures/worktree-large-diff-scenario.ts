@@ -13,14 +13,8 @@ import {
 	diffWorktrees as diffSubagentWorktrees,
 	formatWorktreeDiffSummary as formatSubagentWorktreeDiffSummary,
 } from "../../packages/subagents/src/runs/shared/worktree.js";
-import {
-	cleanupWorktrees as cleanupWorkflowWorktrees,
-	createWorktrees as createWorkflowWorktrees,
-	diffWorktrees as diffWorkflowWorktrees,
-	formatWorktreeDiffSummary as formatWorkflowWorktreeDiffSummary,
-} from "../../packages/workflows/src/runs/shared/worktree.js";
 
-export type WorktreeModule = "subagents" | "workflows";
+export type WorktreeModule = "subagents";
 
 export interface LargeDiffScenarioResult {
 	readonly summary: string;
@@ -66,7 +60,7 @@ export interface FailedCaptureScenarioResult {
 	readonly worktreeKept: boolean;
 	readonly workKept: boolean;
 	readonly captureError: string | undefined;
-	/** Subagents only: whether a later sweep, once capture works again, saved the work and removed the worktree. */
+	/** Whether a later sweep, once capture works again, saved the work and removed the worktree. */
 	readonly laterSweepSavedWork?: boolean;
 }
 
@@ -99,21 +93,12 @@ function largeGeneratedFile(): string {
 	return `${lines.join("\n")}\n`;
 }
 
-function modules(module: WorktreeModule) {
-	return module === "subagents"
-		? {
-				create: createSubagentWorktrees,
-				diff: diffSubagentWorktrees,
-				cleanup: cleanupSubagentWorktrees,
-				format: formatSubagentWorktreeDiffSummary,
-			}
-		: {
-				create: createWorkflowWorktrees,
-				diff: diffWorkflowWorktrees,
-				cleanup: cleanupWorkflowWorktrees,
-				format: formatWorkflowWorktreeDiffSummary,
-			};
-}
+const api = {
+	create: createSubagentWorktrees,
+	diff: diffSubagentWorktrees,
+	cleanup: cleanupSubagentWorktrees,
+	format: formatSubagentWorktreeDiffSummary,
+};
 
 /**
  * Two worktree tasks, one adding a ~2 MB file and one a small file; their diffs are captured and their worktrees
@@ -121,7 +106,6 @@ function modules(module: WorktreeModule) {
  */
 export async function runLargeDiffScenario(root: string, module: WorktreeModule): Promise<LargeDiffScenarioResult> {
 	const repo = createScenarioRepository(root);
-	const api = modules(module);
 	// The third task changes nothing.
 	const setup = await api.create(repo, `large-${module}`, 3);
 	const large = largeGeneratedFile();
@@ -160,7 +144,6 @@ export async function runFailedCaptureScenario(
 	module: WorktreeModule,
 ): Promise<FailedCaptureScenarioResult> {
 	const repo = createScenarioRepository(root);
-	const api = modules(module);
 	const runId = `failed-${module}`;
 	const setup = await api.create(repo, runId, 1);
 	const worktree = setup.worktrees[0]!;
@@ -169,11 +152,7 @@ export async function runFailedCaptureScenario(
 	writeFileSync(join(gitDir, "index.lock"), "");
 	const diffsDir = join(root, "diffs");
 	const diffs = await api.diff(setup, ["worker"], diffsDir);
-	if (module === "subagents") {
-		await registerRunWorktrees(runId, setup, { diffsDir, agents: ["worker"] }).release();
-	} else {
-		await api.cleanup(setup);
-	}
+	await registerRunWorktrees(runId, setup, { diffsDir, agents: ["worker"] }).release();
 	const diff = diffs[0] as { captureError?: string } | undefined;
 	const result = {
 		summary: api.format(diffs),
@@ -182,7 +161,6 @@ export async function runFailedCaptureScenario(
 		workKept: existsSync(join(worktree.path, "work.txt")),
 		captureError: diff?.captureError,
 	};
-	if (module === "workflows") return result;
 	// The index unlocks; the next execution's release sweeps the run again.
 	rmSync(join(gitDir, "index.lock"));
 	await holdRunWorktree(runId, 0)();
@@ -223,7 +201,6 @@ export async function runWorktreeIncludeScenario(
 		for (let file = 0; file < 200; file++) writeFileSync(join(directory, `${name}-${file}.js`), "");
 	}
 	const listing = git(repo, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"]);
-	const api = modules(module);
 	const setup = await api.create(repo, `include-${module}`, 1);
 	const envPath = join(setup.worktrees[0]!.path, ".env");
 	const envCopied = existsSync(envPath) && readFileSync(envPath, "utf-8") === "SECRET=1\n";
@@ -247,7 +224,6 @@ export async function runManyFilesScenario(root: string, module: WorktreeModule)
 	// Quoting is git's default; set it so a global `core.quotePath false` cannot shrink the listing under 1 MiB.
 	// The paths are longer than Windows' 260 characters, which Git for Windows handles only with this setting.
 	git(repo, ["config", "core.longpaths", "true"]);
-	const api = modules(module);
 	const setup = await api.create(repo, `many-${module}`, 1);
 	// Each component is 240 UTF-8 bytes, under the 255-byte file name limit; the whole path stays under macOS' 1,024.
 	const component = "語".repeat(80);
@@ -281,7 +257,6 @@ export async function runNoisyHookScenario(root: string, module: WorktreeModule)
 	const repo = createScenarioRepository(root);
 	const hook = join(root, "noisy-hook.sh");
 	writeFileSync(hook, "#!/bin/sh\nhead -c 2000000 /dev/zero | tr '\\0' x >&2\necho '{}'\n", { mode: 0o755 });
-	const api = modules(module);
 	try {
 		const setup = await api.create(repo, `hook-${module}`, 1, { setupHook: { hookPath: hook } });
 		const created = existsSync(setup.worktrees[0]!.path);
@@ -302,7 +277,6 @@ export async function runBrokenIncludeScenario(
 ): Promise<BrokenIncludeScenarioResult> {
 	const repo = createScenarioRepository(root);
 	mkdirSync(join(repo, ".worktreeinclude"));
-	const api = modules(module);
 	let setup: Awaited<ReturnType<typeof api.create>>;
 	try {
 		setup = await api.create(repo, `broken-${module}`, 1);

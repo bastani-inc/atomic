@@ -699,8 +699,6 @@ describe("snapshot blobs under a libSQL server's size limits (#4954)", () => {
 	});
 });
 
-describe("workflow journal reads under a libSQL server's size limits (#4954)", () => {});
-
 describe("a database written with chunked entries is refused by older builds (#4954)", () => {
 	/**
 	 * What an older build checks when it opens the session tables of a SQLite or libSQL database: every row of the
