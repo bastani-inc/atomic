@@ -222,7 +222,7 @@ const child = spawn("atomic", ["-p", "Fix the failing test"], {
 });
 ```
 
-A selection with an in-memory token cannot be reopened by [local workflow workers](/workflows/operations#local-workflow-workers), which run in other processes; use `tokenFile` or `tokenEnv` for pooled runs. See [Team setup errors](/storage#team-setup-errors) for the typed errors these functions throw.
+A selection with an in-memory token cannot be reopened by an earlier installation's local workflow workers, which run in other processes; use `tokenFile` or `tokenEnv` for pooled runs. See [Team setup errors](/storage#team-setup-errors) for the typed errors these functions throw.
 
 ## Security
 

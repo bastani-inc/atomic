@@ -26,7 +26,7 @@ This page covers the concepts and normal use of compaction and branch summarizat
 
 ## When compaction runs
 
-- **Automatic threshold:** when estimated context usage exceeds the model's context window minus `compaction.reserveTokens`. Atomic checks after tool results are added, before the follow-up request, and before every new request. A response that ends over the threshold stays the session's last answer, so `prompt()` callers, RPC `get_last_assistant_text`, `/copy` and workflow stages read it; the context is cleared just before the next request: a new prompt, queued input, an extension's interrupt message, or the continuation after a tool's result. When a provider reports all-zero usage, Atomic estimates the visible message size instead of skipping the check.
+- **Automatic threshold:** when estimated context usage exceeds the model's context window minus `compaction.reserveTokens`. Atomic checks after tool results are added, before the follow-up request, and before every new request. A response that ends over the threshold stays the session's last answer, so `prompt()` callers, RPC `get_last_assistant_text` and `/copy` can read it; the context is cleared just before the next request: a new prompt, queued input, an extension's interrupt message, or the continuation after a tool's result. When a provider reports all-zero usage, Atomic estimates the visible message size instead of skipping the check.
 - **Overflow:** a provider context-overflow error compacts and then retries the interrupted turn, once per turn.
 - **Truncated response:** a `length` stop before the model's requested output cap gets one compact-and-retry. If there is nothing to compact, Atomic makes at most one direct continuation instead.
 - **Manual:** `/compact [instructions]`, `ctx.compact()`, `session.compact()`, or RPC `{ "type": "compact" }`.
@@ -37,7 +37,7 @@ Queued input resumes when the active run becomes idle after automatic compaction
 
 Automatic continuations belong to the original prompt, including repeated output-cap continuations. The prompt and `agent_settled` lifecycle finish only after the entire chain drains, so status integrations such as [Herdr](/herdr) stay working through quiet response waits and continuation gaps.
 
-Concurrent manual SDK requests share one run and result; `abortCompaction()` cancels it for all waiters, except that while a compactor request runs it stops the request and the context is cleared instead. A manual request during automatic compaction cancels the automatic work and its pending continuation, then runs after the active work settles. If the automatic boundary already committed, the manual run follows it. In the TUI, `/compact` can take over automatic compaction but refuses a second manual compaction or branch summary. Ordinary text, prompt templates and skills remain queued until compaction finishes, fails, or is cancelled. Commands that do not send a prompt, such as `/settings`, `/tasks` and `/workflows`, run at once. A session command such as `/new` also runs at once and cancels the compaction. A user message that reaches the session while it compacts, whether from an SDK `prompt()`, an RPC `prompt` or an extension's `sendUserMessage()`, waits until compaction ends, then goes out once, in arrival order. If an earlier waiting message has started a turn by then, a message sent without `streamingBehavior` or `deliverAs` is queued behind it as steering. Waiting messages appear in `getSteeringMessages()`/`getFollowUpMessages()` and `queue_update`, and `clearQueue()` returns them without sending them. Before the TUI runs an extension command during compaction, it hands the messages already typed to the session, so a message the command sends goes out after them.
+Concurrent manual SDK requests share one run and result; `abortCompaction()` cancels it for all waiters, except that while a compactor request runs it stops the request and the context is cleared instead. A manual request during automatic compaction cancels the automatic work and its pending continuation, then runs after the active work settles. If the automatic boundary already committed, the manual run follows it. In the TUI, `/compact` can take over automatic compaction but refuses a second manual compaction or branch summary. Ordinary text, prompt templates and skills remain queued until compaction finishes, fails, or is cancelled. Commands that do not send a prompt, such as `/settings` and `/tasks`, run at once. A session command such as `/new` also runs at once and cancels the compaction. A user message that reaches the session while it compacts, whether from an SDK `prompt()`, an RPC `prompt` or an extension's `sendUserMessage()`, waits until compaction ends, then goes out once, in arrival order. If an earlier waiting message has started a turn by then, a message sent without `streamingBehavior` or `deliverAs` is queued behind it as steering. Waiting messages appear in `getSteeringMessages()`/`getFollowUpMessages()` and `queue_update`, and `clearQueue()` returns them without sending them. Before the TUI runs an extension command during compaction, it hands the messages already typed to the session, so a message the command sends goes out after them.
 
 SDK `prepareNextTurn` and `prepareNextTurnWithContext` callbacks receive the rebuilt context after a compaction between tool calls. A `finishTurn` decision of `{ action: "end" }` leaves queued input pending until an explicit prompt or continuation. Mid-turn compaction resumes streaming without another user action.
 
@@ -73,7 +73,7 @@ See [Recalling earlier work](/sessions#recalling-earlier-work) for how `history:
 
 ### Agents without read or search
 
-Some agents cannot read their history with their own tools, such as a subagent or workflow stage whose tool allowlist leaves out `read` or `search`. After its first clear, such an agent gets one read-only tool, `session_history`, and a resumed session gets it whenever its resumed tools leave out `read` or `search`. `{"pattern": "<regex>"}` searches its own session's history and `{"lines": "N-M"}` reads a saved-entry range of it, despite the parameter's name. To continue a bounded read, pass `{"lines": "<continuation URL>"}`. To continue a search, pass `{"pattern": "<same regex>", "lines": "<continuation URL>"}`. The tool reaches no other session, workflow run, file or project, and the agent's other tools stay as they were.
+Some agents cannot read their history with their own tools, such as a subagent whose tool allowlist leaves out `read` or `search`. After its first clear, such an agent gets one read-only tool, `session_history`, and a resumed session gets it whenever its resumed tools leave out `read` or `search`. `{"pattern": "<regex>"}` searches its own session's history and `{"lines": "N-M"}` reads a saved-entry range of it, despite the parameter's name. To continue a bounded read, pass `{"lines": "<continuation URL>"}`. To continue a search, pass `{"pattern": "<same regex>", "lines": "<continuation URL>"}`. The tool reaches no other session, file or project, and the agent's other tools stay as they were.
 
 ## Context compacted
 
@@ -120,11 +120,9 @@ The tags change nothing automatically: no text is protected or kept in context. 
 - Put each tag on its own line.
 - Tag constraints, prohibitions, acceptance criteria and identifiers that the rest of the task depends on. Keep the spans short and pass bulk material through files, so the tagged text stays quick to recover.
 
-Workflow authors can use the `keepContext()` helper; see [Recover the contract after compaction](/workflows/reliable-design#recover-the-contract-after-compaction).
-
 ## The boundary in the chat
 
-The main chat, subagent views in `/tasks`, and workflow stage chats show one line for each boundary:
+The main chat and subagent views in `/tasks` show one line for each boundary:
 
 ```text
 ⚛ Context cleared · 182k tokens
