@@ -110,13 +110,13 @@ test("a codemode script lists intercom sessions and filters them by cwd (#5087)"
 	const { harness } = await intercomHarness();
 	const result = await runScript(
 		harness,
-		'const listed = await tools.intercom({ action: "list" }); return [listed.action, listed.groups, listed.workflowStages, listed.sessions.find((session) => session.self), listed.sessions.filter((session) => session.cwd === "/repo/api")];',
+		'const listed = await tools.intercom({ action: "list" }); return [listed.action, listed.groups, Object.keys(listed), listed.sessions.find((session) => session.self), listed.sessions.filter((session) => session.cwd === "/repo/api")];',
 	);
 	assert.equal(result.isError, false, result.text);
-	const [action, groups, stages, self, filtered] = lastJson(result.text) as unknown[];
+	const [action, groups, keys, self, filtered] = lastJson(result.text) as unknown[];
 	assert.equal(action, "list");
 	assert.deepEqual(groups, ["default"]);
-	assert.deepEqual(stages, []);
+	assert.deepEqual(keys, ["action", "groups", "sessions"]);
 	assert.deepEqual(self, {
 		sessionId: SELF_ID,
 		name: "orchestrator",
@@ -157,7 +157,7 @@ test("a codemode script reads intercom status and pending asks as structured val
 	);
 	const result = await runScript(
 		harness,
-		'const status = await tools.intercom({ action: "status" }); const pending = await tools.intercom({ action: "pending" }); const peek = await tools.intercom({ action: "list", group: "team" }); return { status: [status.action, status.sessionId, status.groups, status.sessions[2], status.outboundAsks], pending, peek: [peek.action, peek.peekGroup, peek.groups, peek.sessions[3], peek.workflowStages] };',
+		'const status = await tools.intercom({ action: "status" }); const pending = await tools.intercom({ action: "pending" }); const peek = await tools.intercom({ action: "list", group: "team" }); return { status: [status.action, status.sessionId, status.groups, status.sessions[2], status.outboundAsks], pending, peek: [peek.action, peek.peekGroup, peek.groups, peek.sessions[3]] };',
 	);
 	assert.equal(result.isError, false, result.text);
 	assert.deepEqual(lastJson(result.text), {
@@ -187,7 +187,6 @@ test("a codemode script reads intercom status and pending asks as structured val
 				groups: ["default"],
 				self: false,
 			},
-			[],
 		],
 	});
 });
@@ -211,15 +210,15 @@ test("a codemode script sends to two exact targets and gets one structured outco
 	assert.deepEqual(sent, [{ to: "b2c3d4e5-1111-4222-8333-000000000002", text: "rebase on main" }]);
 });
 
-test("codemode refuses intercom sends to globs, subagents and workflow patterns (#5087)", async () => {
+test("codemode refuses intercom sends to globs and subagents (#5087)", async () => {
 	const { harness, sent } = await intercomHarness();
 	const result = await runScript(
 		harness,
-		'return await Promise.all(["worker-*", "*", "subagents:*", "workflow:run-1/**"].map((to) => tools.intercom({ action: "send", to, message: "hi" }).then(() => "sent", (error) => error.message)));',
+		'return await Promise.all(["worker-*", "*", "subagents:*"].map((to) => tools.intercom({ action: "send", to, message: "hi" }).then(() => "sent", (error) => error.message)));',
 	);
 	assert.equal(result.isError, false, result.text);
 	const errors = lastJson(result.text) as string[];
-	assert.equal(errors.length, 4);
+	assert.equal(errors.length, 3);
 	for (const error of errors) assert.match(error, /Scripts may send only to an exact target/);
 	assert.deepEqual(sent, []);
 });

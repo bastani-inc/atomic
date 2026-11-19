@@ -4,12 +4,11 @@ import {
 	refuseIntercomScriptCall,
 	scriptSendOutcome,
 	scriptSessionEntry,
-	scriptWorkflowStage,
 } from "../../packages/intercom/codemode-access.js";
 
 test("scripts may call intercom list, status, pending and exact-target send (#5087)", () => {
 	for (const action of ["list", "status", "pending"]) assert.equal(refuseIntercomScriptCall({ action }), undefined);
-	for (const to of ["worker-web", "a1b2c3d4", "a1b2c3d4-1111-4222-8333-000000000001", "workflow:run-1/review"])
+	for (const to of ["worker-web", "a1b2c3d4", "a1b2c3d4-1111-4222-8333-000000000001"])
 		assert.equal(refuseIntercomScriptCall({ action: "send", to }), undefined, to);
 	assert.equal(refuseIntercomScriptCall({ action: "send" }), undefined);
 });
@@ -24,10 +23,10 @@ test("scripts may not call the model-only intercom actions (#5087)", () => {
 });
 
 test("scripts may not send to patterns or answer asks with replyTo (#5087)", () => {
-	for (const to of ["worker-*", " * ", "subagents:*", "subagents:run-1/*", "subagents:x", "workflow:run-1/**"]) {
+	for (const to of ["worker-*", " * ", "subagents:*", "subagents:run-1/*", "subagents:x"]) {
 		assert.equal(
 			refuseIntercomScriptCall({ action: "send", to }),
-			`Scripts may send only to an exact target: a live session name, a full session id or unique 8-hex prefix, or a workflow stage path without "*" or "**". "${to.trim()}" is a pattern; send to each recipient by its exact name, or call the intercom tool directly to send to a pattern.`,
+			`Scripts may send only to an exact target: a live session name, or a full session id or unique 8-hex prefix. "${to.trim()}" is a pattern; send to each recipient by its exact name, or call the intercom tool directly to send to a pattern.`,
 		);
 	}
 	assert.match(
@@ -81,31 +80,6 @@ test("script session entries report presence, groups and reply capability (#5087
 		state: "idle",
 		groups: ["team"],
 		self: false,
-	});
-});
-
-test("script workflow stages keep their target, lifecycle and session (#5087)", () => {
-	const stage = {
-		kind: "workflow-stage" as const,
-		runId: "r",
-		stageId: "s",
-		stageName: "review",
-		target: "workflow:r/review",
-		lifecycle: "running" as const,
-		group: "workflow:r",
-	};
-	assert.deepEqual(scriptWorkflowStage(stage), {
-		target: "workflow:r/review",
-		stageName: "review",
-		lifecycle: "running",
-		group: "workflow:r",
-	});
-	assert.deepEqual(scriptWorkflowStage({ ...stage, sessionId: "abc" }), {
-		target: "workflow:r/review",
-		stageName: "review",
-		lifecycle: "running",
-		group: "workflow:r",
-		sessionId: "abc",
 	});
 });
 

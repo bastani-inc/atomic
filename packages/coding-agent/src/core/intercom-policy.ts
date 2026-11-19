@@ -27,13 +27,13 @@ export type IntercomReachApplier = (reachable: readonly string[]) => Promise<voi
 /** The policy as extensions see it on `ExtensionContext.intercomPolicy`. */
 export interface IntercomPolicyView {
 	/**
-	 * The session's home group: the host's `group`, or for a workflow stage or subagent started by a session with a
-	 * policy, its own stage or subagent group (falling back to its parent's home group).
+	 * The session's home group: the host's `group`, or for a subagent started by a session with a policy, its own
+	 * subagent group (falling back to its parent's home group).
 	 */
 	readonly home: string;
-	/** The groups the session may reach besides its home; always empty for a workflow stage or subagent. */
+	/** The groups the session may reach besides its home; always empty for a subagent. */
 	readonly reachable: readonly string[];
-	/** Whether this is the policy of a workflow stage or subagent started by a session with a policy. */
+	/** Whether this is the policy of a subagent started by a session with a policy. */
 	readonly child: boolean;
 	/** The group a subagent of this session gets for a requested group: its home, or a subgroup under it. */
 	childGroup(requested: string | undefined): string;
@@ -129,7 +129,7 @@ export class SessionIntercomPolicy implements IntercomPolicyView {
 		const inherited = parent.reachable.find((reachable) => reachable === group || isSubgroupOf(group, reachable));
 		if (inherited !== undefined)
 			throw new IntercomPolicyError(
-				`A workflow stage or subagent can't use group ${group}: its parent reaches ${inherited}, and a child never gains its parent's reachable groups`,
+				`A subagent can't use group ${group}: its parent reaches ${inherited}, and a child never gains its parent's reachable groups`,
 			);
 		return new SessionIntercomPolicy(group, [], true);
 	}
@@ -150,7 +150,7 @@ export class SessionIntercomPolicy implements IntercomPolicyView {
 	}
 
 	async setReachable(groups: readonly string[]): Promise<void> {
-		if (this.child) throw new IntercomPolicyError("A workflow stage or subagent reaches only its own group");
+		if (this.child) throw new IntercomPolicyError("A subagent reaches only its own group");
 		const error = reachableError(groups);
 		if (error !== undefined) throw new IntercomPolicyError(error.replace("intercom.reachable", "reachable"));
 		this.reachableGroups = normalizedReachable(this.home, groups);

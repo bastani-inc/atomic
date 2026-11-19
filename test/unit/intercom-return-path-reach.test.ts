@@ -61,12 +61,6 @@ function brokerOf(...members: BrokerConnectedSession[]) {
 			undefined,
 			undefined,
 			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
 			authority,
 		);
 		return outcome;

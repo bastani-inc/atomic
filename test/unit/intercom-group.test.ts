@@ -113,30 +113,19 @@ test("home resolution ignores a joined runtime entry and gives admitted policy t
 			{
 				...sessionContext,
 				subagentPolicy: { intercomGroup: "policyGroup" },
-				orchestrationContext: { intercomGroup: "contextGroup" },
 			},
 		),
 		"policyGroup",
 	);
 });
 
-test("resolveHomeGroup precedence: subagentPolicy > orchestrationContext > env > config > default", () => {
+test("resolveHomeGroup precedence: subagentPolicy > env > config > default", () => {
 	setEnv("ATOMIC_INTERCOM_GROUP", undefined);
 	setEnv("PI_INTERCOM_GROUP", undefined);
 
 	setEnv("ATOMIC_INTERCOM_GROUP", "envGroup");
 	assert.equal(
-		resolveHomeGroup({ group: "configGroup" }, { orchestrationContext: { intercomGroup: "ctxGroup" } }),
-		"ctxGroup",
-	);
-	assert.equal(
-		resolveHomeGroup(
-			{ group: "configGroup" },
-			{
-				subagentPolicy: { intercomGroup: "policyGroup" },
-				orchestrationContext: { intercomGroup: "ctxGroup" },
-			},
-		),
+		resolveHomeGroup({ group: "configGroup" }, { subagentPolicy: { intercomGroup: "policyGroup" } }),
 		"policyGroup",
 	);
 
@@ -158,7 +147,7 @@ test("a defined-but-empty ATOMIC_INTERCOM_GROUP shadows the legacy PI_INTERCOM_G
 
 	assert.equal(resolveHomeGroup({ group: "configured" }, {}), "configured");
 	assert.equal(resolveHomeGroup(undefined, {}), DEFAULT_GROUP);
-	assert.equal(resolveHomeGroup({ group: "configured" }, { orchestrationContext: { intercomGroup: "ctx" } }), "ctx");
+	assert.equal(resolveHomeGroup({ group: "configured" }, { subagentPolicy: { intercomGroup: "ctx" } }), "ctx");
 
 	setEnv("ATOMIC_INTERCOM_GROUP", "   ");
 	assert.equal(resolveHomeGroup({ group: "configured" }, {}), "configured");

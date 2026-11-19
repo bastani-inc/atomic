@@ -84,8 +84,8 @@ export class RecipientReceipts<Recipient> {
 	}
 
 	/**
-	 * The recipient this message was written to reports it is still saving it (for example a pooled stage whose
-	 * journal commit waits behind other writers): the sender keeps waiting another full receipt wait instead of
+	 * The recipient this message was written to reports it is still saving it (for example a journal commit that waits
+	 * behind other writers): the sender keeps waiting another full receipt wait instead of
 	 * hearing the outcome is uncertain. A recipient that dies stops reporting, so its wait still ends; and no save
 	 * holds a sender past `RECIPIENT_SAVE_MAX_WAIT_MS` (#3983).
 	 */

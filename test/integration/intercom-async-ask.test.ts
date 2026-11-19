@@ -61,8 +61,6 @@ function session(options: {
 	readonly automaticBudgetMs?: number;
 	/** False for a session that is not saved (`--no-session`), which cannot be resumed once it ends. */
 	readonly saved?: boolean;
-	/** A workflow stage's orchestration context, as the stage runner gives its session. */
-	readonly orchestrationContext?: object;
 	/** An admitted subagent child's policy, as its launcher gives its session. */
 	readonly subagentPolicy?: object;
 }) {
@@ -86,7 +84,6 @@ function session(options: {
 			...(options.saved === false ? { getSessionStore: () => ({ descriptor: { adapter: "memory" } }) } : {}),
 		},
 		ui: { confirm: async () => true, notify() {} },
-		...(options.orchestrationContext === undefined ? {} : { orchestrationContext: options.orchestrationContext }),
 		...(options.subagentPolicy === undefined ? {} : { subagentPolicy: options.subagentPolicy }),
 		...(options.automaticBudgetMs === undefined
 			? {}
