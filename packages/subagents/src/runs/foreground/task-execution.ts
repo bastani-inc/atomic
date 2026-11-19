@@ -505,6 +505,7 @@ export async function runAgentTask(input: {
 			forked,
 			state,
 			elapsedMs: recordSpan ? spanElapsedMs(recordSpan) : 0,
+			elapsedSpan: recordSpan ? { ...recordSpan } : null,
 			cwd: childCwd,
 			taskId,
 			...childSession,
@@ -652,7 +653,7 @@ export async function runAgentTask(input: {
 				const elapsedSpan: TaskElapsedSpan = { dispatchedAt: Date.now() };
 				recordSpan = elapsedSpan;
 				dispatched = true;
-				queuedChildren.delete(context.ref.taskId);
+				if (queuedChildren.delete(context.ref.taskId)) recordChildTask(context.ref.taskId, "running");
 				// This execution owns the child's worktree now; a stopped child's worktree was kept for it until here.
 				claimRunWorktree(runId, index);
 				const cleaned = Promise.withResolvers<Cleanup>();
@@ -719,6 +720,7 @@ export async function runAgentTask(input: {
 						const running = input.runtime.runSync(input.cwd, input.agents, input.agent, input.task, {
 							...input.options,
 							elapsedSpan,
+							onElapsedSpanChanged: () => recordChild("running"),
 							cwdVerdict,
 							// A background child is released while it waits, and its owner wakes it (#4326).
 							...(input.options.releaseWhenWaiting === undefined &&
@@ -730,6 +732,7 @@ export async function runAgentTask(input: {
 								reserveReleasedChildTargets(input.options, childSession.childSessionId, undefined, false),
 							signal: context.signal,
 							taskExecution: {
+								taskId: context.ref.taskId,
 								signal: context.signal,
 								reportActivity: context.reportActivity,
 								bindTranscript: (session) =>

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
-import type { TUI } from "@bastani/atomic-tui";
 import { afterEach, test, vi } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
-import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
@@ -17,28 +17,30 @@ import {
 	TaskHeartbeatMonitor,
 } from "../../packages/coding-agent/src/core/tasks/heartbeat.js";
 import { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import { taskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { taskMetricsText } from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
-import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
-import {
-	renderSubagentToolCall,
-	renderSubagentToolResult,
-} from "../../packages/subagents/src/extension/tool-rendering.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
-import { runOwnerlessChild } from "../../packages/subagents/src/runs/foreground/ownerless-children.js";
+import {
+	isLiveOwnerlessChild,
+	runOwnerlessChild,
+	stopOwnerlessChild,
+	takeStoppedQueuedOwnerlessChild,
+} from "../../packages/subagents/src/runs/foreground/ownerless-children.js";
 import { subagentReleasePolicy } from "../../packages/subagents/src/runs/foreground/released-children.js";
-import { createSubagentChildRecordSink } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
-import type { SubagentParamsLike } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
+import {
+	createSubagentChildRecordSink,
+	type SubagentChildRecordInput,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import { runAgentTask, taskToolResult } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
-import type { Details, SingleResult, TaskExecutionHooks } from "../../packages/subagents/src/shared/types.js";
-import type { SubagentResultRenderState } from "../../packages/subagents/src/tui/render.js";
+import { getArtifactPaths } from "../../packages/subagents/src/shared/artifacts.js";
+import type { SingleResult, TaskExecutionHooks } from "../../packages/subagents/src/shared/types.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { agent } from "../helpers/released-task-launch.js";
 import { sleep } from "../helpers/runtime.js";
+import { subagentLaunchCard } from "../helpers/subagent-launch-card.js";
 
 /** A live child loads its real resources; that is the structural cost of these tests. */
 const LIVE_CHILD_TIMEOUT_MS = 120_000;
@@ -53,8 +55,8 @@ afterEach(() => {
 });
 
 async function until(predicate: () => boolean): Promise<void> {
-	const deadline = Date.now() + CONDITION_WAIT_MS;
-	while (!predicate() && Date.now() < deadline) await sleep(5);
+	const deadline = performance.now() + CONDITION_WAIT_MS;
+	while (!predicate() && performance.now() < deadline) await sleep(5);
 	assert.ok(predicate(), "condition never held");
 }
 
@@ -73,27 +75,7 @@ function metricsHooks(signal: AbortSignal, reports: number[]): TaskExecutionHook
 }
 
 function paintLaunchCard(cwd: string, receipt: ReturnType<typeof taskToolResult>, host?: AgentTaskHost): string {
-	initTheme("dark");
-	const definition: ToolDefinition<typeof SubagentParams, Details, SubagentResultRenderState> = {
-		name: "subagent",
-		label: "Subagent",
-		description: "Subagent launch card",
-		parameters: SubagentParams,
-		execute: async () => {
-			throw new Error("Rendering must not execute the tool");
-		},
-		renderCall: (args, theme, context) => renderSubagentToolCall(args as SubagentParamsLike, theme, context),
-		renderResult: renderSubagentToolResult,
-	};
-	const card = new ToolExecutionComponent(
-		"subagent",
-		"elapsed-card",
-		{ agent: "waiter", task: "watch CI" },
-		{ getTaskRecord: (id) => host?.taskRecords().find((task) => task.ref.taskId === id) },
-		definition,
-		{ requestRender() {} } as TUI,
-		cwd,
-	);
+	const card = subagentLaunchCard(cwd, { agent: "waiter", task: "watch CI" }, host);
 	try {
 		card.updateResult({ ...receipt, isError: false });
 		return stripVTControlCharacters(card.render(120).join("\n"));
@@ -178,6 +160,316 @@ test("an SDK launch without a task host saves the same elapsed time as its resul
 		assert.equal(result.progressSummary?.durationMs, 1800);
 		assert.equal(saved, 1800);
 	} finally {
+		clock.mockRestore();
+	}
+});
+
+test("an SDK child stopped in the queue after handoff has zero running time (#5570)", async () => {
+	const detach = new AbortController();
+	const exited = Promise.withResolvers<SingleResult>();
+	const records: SubagentChildRecordInput[] = [];
+	let dispatch: (() => Promise<void>) | undefined;
+	const launch = runOwnerlessChild({
+		cwd: process.cwd(),
+		agent: agent.name,
+		task: "stand by",
+		options: {
+			runId: "sdk-queued-handoff",
+			intercomDetachSignal: detach.signal,
+			onDetachedExit: (result) => exited.resolve(result),
+		},
+		schedule: (run) => {
+			dispatch = run;
+		},
+		runSync: () => {
+			throw new Error("a child stopped before dispatch must not start");
+		},
+		recordChild: { record: (r) => records.push(r) },
+	});
+	detach.abort();
+	assert.equal((await launch.result).detached, true);
+	assert.ok(await stopOwnerlessChild(launch.launchId, "quit"));
+	takeStoppedQueuedOwnerlessChild(launch.launchId);
+	assert.ok(dispatch);
+	await dispatch();
+	assert.deepEqual(
+		records.filter((r) => r.state === "terminal").map((r) => [r.terminalStatus, r.elapsedMs]),
+		[["quit", 0]],
+	);
+	assert.equal((await exited.promise).progressSummary?.durationMs, 0);
+});
+
+test("a dispatched SDK child's startup refusal carries the same duration as its record (#5570)", async () => {
+	const env = await liveChildEnvironment(cleanups);
+	let now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	let saved: number | undefined;
+	try {
+		const launch = runOwnerlessChild({
+			cwd: env.root,
+			agent: agent.name,
+			task: "stand by",
+			options: env.options("sdk-refusal", { cwd: join(env.root, "missing") }),
+			runSync: (task, options) => {
+				now += 3700;
+				return runSingleInProcess(env.root, agent, task, options);
+			},
+			recordChild: {
+				record: (r) => {
+					if (r.state === "terminal") saved = r.elapsedMs;
+				},
+			},
+		});
+		const result = await launch.result;
+		assert.equal(result.status, "error");
+		assert.match(result.error ?? "", /cwd/i);
+		assert.equal(saved, 3700);
+		assert.equal(result.progressSummary?.durationMs, saved);
+	} finally {
+		clock.mockRestore();
+	}
+});
+
+test.each(["completion", "pause"] as const)("an SDK handoff keeps the launch live until %s (#5570)", async (end) => {
+	const env = await liveChildEnvironment(cleanups);
+	const owner = SessionManager.inMemory(env.root);
+	const sink = createSubagentChildRecordSink(
+		{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
+		{ sessionManager: owner, orchestrationContext: undefined },
+	);
+	const card = subagentLaunchCard(env.root, { agent: agent.name, task: "stand by" });
+	const detach = new AbortController();
+	const gate = Promise.withResolvers<void>();
+	const started = Promise.withResolvers<void>();
+	const exited = Promise.withResolvers<SingleResult>();
+	const records: SubagentChildRecordInput[] = [];
+	let now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const launch = runOwnerlessChild({
+		cwd: env.root,
+		agent: agent.name,
+		task: "stand by",
+		options: env.options("sdk-detach", {
+			index: 3,
+			intercomDetachSignal: detach.signal,
+			testSession: {
+				output: "done",
+				promptGate: gate.promise,
+				abortResolvesPrompt: true,
+				onSession: () => started.resolve(),
+			},
+			onDetachedExit: (result) => exited.resolve(result),
+		}),
+		...(end === "pause"
+			? {
+					schedule: (dispatch: () => Promise<void>) => {
+						void dispatch();
+					},
+				}
+			: {}),
+		runSync: (task, options) => runSingleInProcess(env.root, agent, task, options),
+		recordChild: {
+			record: (record) => {
+				records.push(record);
+				sink.record(record);
+			},
+		},
+	});
+	try {
+		await started.promise;
+		now += 2300;
+		detach.abort();
+		const handoff = await launch.result;
+		assert.equal(handoff.detached, true);
+		assert.equal(handoff.progress?.durationMs, 2300);
+		assert.equal(records.filter((r) => r.state === "terminal").length, 0);
+		assert.ok(isLiveOwnerlessChild(launch.launchId));
+		now += 4000;
+		card.updateResult({
+			content: [],
+			details: { mode: "single", runId: "sdk-detach", results: [handoff] },
+			isError: false,
+		});
+		assert.match(stripVTControlCharacters(card.render(120).join("\n")), /Running[^\n]*6s/);
+		if (end === "pause") assert.ok(await stopOwnerlessChild(launch.launchId, "paused"));
+		else gate.resolve();
+		const final = await exited.promise;
+		assert.equal(final.progressSummary?.durationMs, 6300);
+		assert.equal(final.progress?.index, handoff.progress?.index, "final progress stays with the same parallel child");
+		assert.deepEqual(
+			records.filter((r) => r.state === "terminal").map((r) => [r.terminalStatus, r.elapsedMs]),
+			[[end === "pause" ? "paused" : "ok", 6300]],
+		);
+		assert.equal(isLiveOwnerlessChild(launch.launchId), false);
+		now += 8000;
+		assert.match(
+			stripVTControlCharacters(card.render(120).join("\n")),
+			end === "pause" ? /Paused[^\n]*6s/ : /Done[^\n]*6s/,
+		);
+	} finally {
+		gate.resolve();
+		await exited.promise;
+		await sink.flushed?.();
+		card.dispose();
+		clock.mockRestore();
+	}
+});
+
+test("an SDK child still records its exit if saving output after a handoff fails (#5570)", async () => {
+	const env = await liveChildEnvironment(cleanups);
+	const runId = "sdk-detached-output";
+	const detach = new AbortController();
+	const gate = Promise.withResolvers<void>();
+	const started = Promise.withResolvers<void>();
+	const failedSave = Promise.withResolvers<void>();
+	const log = vi.spyOn(console, "error").mockImplementation((message) => {
+		if (message === "atomic-subagents: detached child exit handling failed") failedSave.resolve();
+	});
+	let final: SingleResult | undefined;
+	let saved: SubagentChildRecordInput | undefined;
+	try {
+		const launch = runOwnerlessChild({
+			cwd: env.root,
+			agent: agent.name,
+			task: "stand by",
+			options: env.options(runId, {
+				artifactsDir: env.root,
+				intercomDetachSignal: detach.signal,
+				testSession: { output: "done", promptGate: gate.promise, onSession: () => started.resolve() },
+				onDetachedExit: (result) => {
+					final = result;
+				},
+			}),
+			runSync: (task, options) => runSingleInProcess(env.root, agent, task, options),
+			recordChild: {
+				record: (r) => {
+					if (r.state === "terminal") saved = r;
+				},
+			},
+		});
+		await started.promise;
+		detach.abort();
+		assert.equal((await launch.result).detached, true);
+		await mkdir(getArtifactPaths(env.root, runId, agent.name).metadataPath);
+		gate.resolve();
+		await failedSave.promise;
+		assert.equal(saved?.terminalStatus, "ok");
+		assert.equal(final?.progressSummary?.durationMs, saved.elapsedMs);
+		assert.equal(isLiveOwnerlessChild(launch.launchId), false);
+	} finally {
+		gate.resolve();
+		log.mockRestore();
+	}
+});
+
+test("a foreground launch card counts silent work between progress updates (#5570)", async () => {
+	const env = await liveChildEnvironment(cleanups);
+	const host = new AgentTaskHost({
+		scope: { kind: "session", sessionId: "foreground-elapsed" },
+		authorizeLaunch() {},
+	});
+	const card = subagentLaunchCard(env.root, { agent: agent.name, task: "stand by" }, host);
+	card.markExecutionStarted();
+	const gate = Promise.withResolvers<void>();
+	const started = Promise.withResolvers<void>();
+	const reported = Promise.withResolvers<void>();
+	let now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const run = runAgentTask({
+		host,
+		cwd: env.root,
+		agents: [agent],
+		agent: agent.name,
+		task: "stand by",
+		wait: { kind: "foreground", budgetMs: 100_000 },
+		options: env.options("silent-elapsed", {
+			testSession: { output: "done", promptGate: gate.promise, onSession: () => started.resolve() },
+			onUpdate: (update) => {
+				card.updateResult({ ...update, isError: false }, true);
+				if (update.details?.progress?.length) reported.resolve();
+			},
+		}),
+		runtime: {
+			runSync: (...args) => {
+				now += 2200;
+				return runSync(...args);
+			},
+		},
+	});
+	try {
+		await Promise.all([started.promise, reported.promise]);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		now += 5200;
+		assert.equal(host.taskRecords()[0]?.metrics?.elapsedMs, 7400);
+		assert.match(stripVTControlCharacters(card.render(120).join("\n")), /Running[^\n]*7s/);
+	} finally {
+		gate.resolve();
+		await run;
+		card.dispose();
+		await host.close("session-close");
+		clock.mockRestore();
+	}
+});
+
+test("a launch card outside the task host freezes on turn interrupt and follows the next turn (#5570)", async () => {
+	const env = await liveChildEnvironment(cleanups);
+	const owner = SessionManager.inMemory(env.root);
+	const host = new AgentTaskHost({
+		scope: { kind: "session", sessionId: owner.getSessionId() },
+		authorizeLaunch() {},
+	});
+	const gate = Promise.withResolvers<void>();
+	let prompt: ((message: string) => Promise<void>) | undefined;
+	let now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	try {
+		const response = await runAgentTask({
+			host,
+			cwd: env.root,
+			agent: agent.name,
+			task: "stand by",
+			agents: [agent],
+			wait: { kind: "background" },
+			runtime: { runSync },
+			options: env.options("elapsed-next-turn", {
+				testSession: {
+					output: "done",
+					promptGate: gate.promise,
+					abortResolvesPrompt: true,
+					abortEndsTurnOnly: true,
+					onSession: (session) => {
+						prompt = (message) => session.prompt(message);
+					},
+				},
+			}),
+			recordChild: createSubagentChildRecordSink(
+				{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
+				{ sessionManager: owner, orchestrationContext: undefined },
+			),
+		});
+		assert.ok(response.kind === "admitted");
+		const lease = host.resolveTask(response.observation.taskId);
+		assert.ok(lease.ok);
+		const source = () => {
+			const bound = taskTranscriptSource(lease.value);
+			return bound.ok ? bound.value.session : undefined;
+		};
+		const receipt = taskToolResult(response, host);
+		await until(() => source()?.isRunning?.() === true);
+		now += 2300;
+		await source()!.interruptTurn!();
+		now += 60_000;
+		assert.match(paintLaunchCard(env.root, receipt), /Stopped[^\n]*2s/);
+		assert.ok(prompt);
+		const resumed = prompt("continue");
+		await until(() => source()?.isRunning?.() === true);
+		now += 7400;
+		assert.match(paintLaunchCard(env.root, receipt), /Running[^\n]*7s/);
+		gate.resolve();
+		await resumed;
+	} finally {
+		gate.resolve();
+		await host.close("session-close");
 		clock.mockRestore();
 	}
 });
@@ -276,6 +568,8 @@ test(
 		let now = Date.now();
 		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 		let opening = false;
+		const partial = subagentLaunchCard(env.root, { agent: agent.name, task: "watch CI" }, host);
+		let cleanupCard: string | undefined;
 		class TimedStore extends MemorySessionStore {
 			override async readResume(...args: Parameters<MemorySessionStore["readResume"]>) {
 				if (opening) {
@@ -286,6 +580,7 @@ test(
 			}
 			override async releaseSession(id: string) {
 				now += 30_000;
+				cleanupCard = stripVTControlCharacters(partial.render(120).join("\n"));
 				await super.releaseSession(id);
 			}
 		}
@@ -305,6 +600,10 @@ test(
 				agent: "waiter",
 				task: "watch CI",
 				options: env.options("elapsed-resume", {
+					onUpdate: (update) => {
+						if (update.details?.results[0]?.status === "continued")
+							partial.updateResult({ ...structuredClone(update), isError: false }, true);
+					},
 					sessionManager,
 					resumeSession: true,
 					releaseWhenWaiting: subagentReleasePolicy(10),
@@ -340,6 +639,11 @@ test(
 				},
 				row,
 			);
+			assert.match(
+				cleanupCard ?? "",
+				/ · 2s\b/,
+				"a progress update sent across the engine boundary must not count cleanup",
+			);
 			assert.equal(notice.line?.elapsedMs, 2100);
 			assert.equal(taskMetricsText(row).split(" · ")[0], "2s");
 			assert.equal(new AgentPanelModel().withElapsed(taskPanelItem(row)).elapsedMs, 2100);
@@ -350,6 +654,7 @@ test(
 			assert.equal(taskToolResult(response, host).details?.taskRecords?.[0]?.metrics?.elapsedMs, 2100);
 		} finally {
 			clock.mockRestore();
+			partial.dispose();
 			view.dispose();
 			await host.close("session-close");
 		}

@@ -39,6 +39,7 @@ export interface SubagentChildIndexEntry {
 	readonly ownerSessionId?: string;
 	readonly state: SubagentChildRecord["state"];
 	readonly elapsedMs?: number;
+	readonly elapsedSpan?: SubagentChildRecord["elapsedSpan"];
 	readonly cwd: string;
 	readonly taskId?: string;
 	readonly terminalStatus?: string;
@@ -189,6 +190,7 @@ function projectionOf(
 		...(ownerSessionId === undefined ? {} : { ownerSessionId }),
 		state: record.state,
 		...(record.elapsedMs === undefined ? {} : { elapsedMs: record.elapsedMs }),
+		...(record.elapsedSpan === undefined ? {} : { elapsedSpan: record.elapsedSpan }),
 		cwd: record.cwd,
 		...(record.taskId === undefined ? {} : { taskId: record.taskId }),
 		...(record.terminalStatus === undefined ? {} : { terminalStatus: record.terminalStatus }),

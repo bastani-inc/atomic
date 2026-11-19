@@ -8,6 +8,7 @@ import {
 	SessionManager,
 	type SessionStore,
 	sliceHead,
+	type TaskElapsedSpan,
 	type WorktreeRootMapping,
 } from "@bastani/atomic";
 import type { AgentSource } from "../../agents/agent-types.js";
@@ -126,6 +127,8 @@ export interface SubagentChildRecord {
 	readonly state: "running" | "terminal";
 	/** Time of this execution at the record, retained for launch cards after the task host is gone. */
 	readonly elapsedMs?: number;
+	/** The span of this launch; null while queued, superseding any earlier launch of the same child. */
+	readonly elapsedSpan?: TaskElapsedSpan | null;
 	readonly cwd: string;
 	readonly owner: SubagentChildOwner;
 	readonly taskId?: string;

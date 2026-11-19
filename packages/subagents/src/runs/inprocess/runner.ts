@@ -175,6 +175,7 @@ export interface TestSessionOptions {
 export interface ChildSpec {
 	readonly taskName: string;
 	readonly elapsedSpan?: TaskElapsedSpan;
+	readonly onElapsedSpanChanged?: () => void;
 	/** The child id (`<runId>:<index>`) run control knows the child by; `status` names the child by it. */
 	readonly childId?: string;
 	readonly task: string;
@@ -2310,6 +2311,7 @@ export class SubagentControlRuntime {
 							resumed = true;
 							elapsedSpan.dispatchedAt = Date.now();
 							delete elapsedSpan.endedAt;
+							admitted.spec.onElapsedSpanChanged?.();
 							refreshElapsed?.();
 						},
 						...(prepared === undefined
@@ -2325,6 +2327,7 @@ export class SubagentControlRuntime {
 				await transcriptSession.interruptTurn();
 				if (!resumed && generation === interruptGeneration) {
 					elapsedSpan.endedAt ??= Date.now();
+					admitted.spec.onElapsedSpanChanged?.();
 					refreshElapsed?.();
 				}
 			};
@@ -2752,7 +2755,10 @@ export class SubagentControlRuntime {
 			};
 		} finally {
 			// Release, stop and completion precede session disposal. A stalled start still has a retry to decide.
-			if (!retryableStart) finishElapsedSpan(elapsedSpan, taskHooks, finalProgress);
+			if (!retryableStart) {
+				finishElapsedSpan(elapsedSpan, taskHooks, finalProgress);
+				admitted.spec.onElapsedSpanChanged?.();
+			}
 			startBudget.end();
 			// End reply capability before asynchronous cleanup or extension invalidation.
 			executionEnded.abort();
