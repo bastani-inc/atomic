@@ -77,8 +77,8 @@ function engineBridgeClient(handle: ReturnType<typeof createRpcCommandHandler>) 
 		onGenerationEnded: () => () => {},
 		getCommands: async () => [],
 		async getEntries() {
-			const response = await handle({ id: "get-entries", type: "get_entries" });
-			assertRpcSuccess(response, "get_entries");
+			const response = await handle({ id: "get-window", type: "get_context_window" });
+			assertRpcSuccess(response, "get_context_window");
 			return response.data;
 		},
 		async getState() {

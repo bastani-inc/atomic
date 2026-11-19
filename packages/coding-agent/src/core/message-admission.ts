@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { SessionKeyDigests } from "./storage/session/key-digests.js";
 
 interface PersistedAdmission {
 	readonly type: string;
@@ -14,7 +15,7 @@ function admissionKeys(entries: Iterable<PersistedAdmission>): string[] {
 /** Ordered, idempotent admission of subagent messages and task notices. */
 export class MessageAdmissionBoundary {
 	private open = true;
-	private readonly completed: Set<string>;
+	private readonly completed = new SessionKeyDigests();
 	private readonly inFlight = new Map<string, Promise<void>>();
 	private readonly pending = new Set<Promise<void>>();
 	private readonly invocationContext = new AsyncLocalStorage<string>();
@@ -22,12 +23,18 @@ export class MessageAdmissionBoundary {
 	private readonly awaitedTurnContext = new AsyncLocalStorage<{ active: boolean }>();
 	private readonly messageDeliveries = new Set<Promise<void>>();
 	private messageDeliveryTail: Promise<void> | undefined;
-	private constructor(completedKeys: Iterable<string>) {
-		this.completed = new Set(completedKeys);
+	private constructor(completedKeys: Iterable<string>, encoded?: string) {
+		if (encoded) this.completed.mergeEncoded(encoded);
+		for (const key of completedKeys) this.completed.add(key);
 	}
 
-	static restore(entries: Iterable<PersistedAdmission>, keys: Iterable<string> = []): MessageAdmissionBoundary {
-		return new MessageAdmissionBoundary([...keys, ...admissionKeys(entries)]);
+	/** `encoded` holds the packed admission-key digests a resume keeps for entries outside its window. */
+	static restore(
+		entries: Iterable<PersistedAdmission>,
+		keys: Iterable<string> = [],
+		encoded?: string,
+	): MessageAdmissionBoundary {
+		return new MessageAdmissionBoundary([...keys, ...admissionKeys(entries)], encoded);
 	}
 
 	/** One FIFO position for an external operation, including its retry waits. */

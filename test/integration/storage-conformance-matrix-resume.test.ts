@@ -52,6 +52,33 @@ function transcript(padding: string): SessionEntry[] {
 
 for (const backend of storageBackends) {
 	const run = backend.skipReason === undefined ? test : test.skip;
+	run(`tree headings and sparse state pages preserve saved addresses on ${backend.name} (#5554)`, async () => {
+		const scope = await backend.openScope();
+		try {
+			const db = await scope.connect(),
+				store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+			const entries = transcript("p".repeat(2 * SESSION_ENTRY_CHUNK_BYTES));
+			const written = await store.create(header, entries);
+			assert.ok(written.epoch);
+			const outline = await store.readTreeOutline(header.id, 1, 3, written.epoch);
+			assert.deepEqual(
+				outline.map((r) => ("streamed" in r ? [r.seq, "stream"] : [r.seq, r.id, r.parentId])),
+				[
+					[1, "stream"],
+					[2, "kept", "receipt"],
+					[3, "boundary", "kept"],
+				],
+			);
+			const giant = (await store.readSelectedPage(header.id, [1, 3], written.epoch)).items;
+			assert.ok(giant.length === 1 && "kind" in giant[0]! && giant[0].kind === "oversized");
+			assert.deepEqual(
+				(await store.readSelectedPage(header.id, [2, 3], written.epoch)).items,
+				entries.slice(1).map((entry, i) => ({ entry, seq: i + 2 })),
+			);
+		} finally {
+			await scope.close();
+		}
+	});
 	run(`a malformed inline field does not reread fitting entries on ${backend.name} (#5590)`, async () => {
 		const scope = await backend.openScope();
 		try {
@@ -511,12 +538,27 @@ for (const backend of storageBackends) {
 					const table = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).sessions;
 					const conn = await scope.connect();
 					const reader = await SqlSessionStore.open(conn, { prefix: scope.prefix });
-					const execute = conn.run.bind(conn);
 					let readerWrites = 0;
-					conn.run = (sql, ...args) => {
-						readerWrites++;
-						return execute(sql, ...args);
-					};
+					const countWrites =
+						(execute: typeof conn.run): typeof conn.run =>
+						(sql, ...args) => {
+							readerWrites++;
+							return execute(sql, ...args);
+						};
+					conn.run = countWrites(conn.run.bind(conn));
+					// Publication can be a standalone statement or run in the store's format-fenced transaction.
+					const transaction = conn.transaction.bind(conn);
+					conn.transaction = (body, options) =>
+						transaction(
+							(tx) =>
+								body({
+									exec: tx.exec.bind(tx),
+									get: tx.get.bind(tx),
+									all: tx.all.bind(tx),
+									run: countWrites(tx.run.bind(tx)),
+								}),
+							options,
+						);
 					// Count lock acquisitions, not milliseconds waiting for an unrelated writer or a CI worker.
 					const competingBody = "n".repeat(SESSION_ENTRY_CHUNK_BYTES + SESSION_ENTRY_CHUNK_BYTES / 2);
 					const competingAppends = 6;
@@ -576,6 +618,9 @@ for (const backend of storageBackends) {
 					["task-completion-ack", { completionId: "intent" }],
 					["web-search-results", { id: "search", timestamp: 2, type: "fetch", urls: ["url"] }],
 					["workflow.run.start", { runId: 1e-8 }],
+					["workflow.run.start", { runId: "bad-name", name: { name: "not a string" }, ts: 1 }],
+					["workflow.run.start", { runId: "bad-ts", name: "work", ts: "1" }],
+					["workflow.run.start", { runId: "waiting", name: "work", ts: 1 }],
 				];
 				const entries: SessionEntry[] = protocols.map(([customType, data], i) => ({
 					type: "custom",
@@ -585,6 +630,43 @@ for (const backend of storageBackends) {
 					id: `c${i}`,
 					parentId: i ? `c${i - 1}` : null,
 				}));
+				const root = "/checkout";
+				const snapshot = {
+					version: 1 as const,
+					id: "snapshot",
+					root,
+					remotes: [],
+					branch: null,
+					head: "head",
+					snapshot: "commit",
+					tree: "tree",
+					envHash: "env",
+					delta: { base: "head", patch: null, bytes: 0 },
+					chain: [],
+					bundle: null,
+					omitted: [],
+					filters: null,
+					capturedAt: timestamp,
+				};
+				entries.push({
+					type: "worktree_snapshot",
+					timestamp,
+					id: "snapshot-record",
+					parentId: entries.at(-1)!.id,
+					root,
+					snapshotId: snapshot.id,
+					captureMs: 42,
+					snapshot,
+				});
+				entries.push({
+					type: "worktree_snapshot",
+					timestamp,
+					id: "snapshot-restore",
+					parentId: "snapshot-record",
+					root,
+					snapshotId: snapshot.id,
+					restore: { from: root, to: "/restored", snapshotId: snapshot.id, tree: "tree", restoredAt: timestamp },
+				});
 				entries.push({
 					type: "custom_message",
 					timestamp,
@@ -661,6 +743,11 @@ for (const backend of storageBackends) {
 					}
 				};
 				const inline = await rebuild();
+				assert.deepEqual(
+					Object.values(JSON.parse(inline).workflowStarts),
+					[protocols.length],
+					"only a valid workflow start may reopen a run",
+				);
 				// Change only the physical representation. The old SQL projection still serves as an independent oracle.
 				await db.transaction(async (tx) => {
 					for (const [i, entry] of entries.entries()) {

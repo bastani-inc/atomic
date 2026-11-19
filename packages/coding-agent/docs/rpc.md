@@ -15,6 +15,8 @@ Closing stdin, `SIGTERM` and `SIGHUP` each start an orderly shutdown that dispos
 
 [`abort`](/rpc/protocol#abort) holds queued messages, as Esc does in the TUI, so a client can abort and then close stdin: a completion notice still queued is saved for the next session rather than failing the shutdown.
 
+`get_entries`, `get_tree` and `get_fork_messages` retain their existing response shapes (`entries`, `tree` and `messages`). On a compacted or branched session `get_entries` and `get_tree` describe the resident window; `get_fork_messages` still includes prompts from older branches, using the picker's bounded labels. To read older entries, use [`get_history_page`](/rpc/protocol#get_history_page), follow `nextCursor`, and use `get_history_chunk` for oversized items.
+
 ## Where to go next
 
 This page starts RPC mode and walks one client end to end. The rest is split by job:

@@ -194,10 +194,15 @@ export function applyTreeFilter(state: TreeListState): void {
 	}
 
 	const searchTokens = state.searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
+	const storedMatches = state.archive?.matches(state.searchQuery, () => applyTreeFilter(state));
 
 	state.filteredNodes = state.flatNodes.filter((flatNode) => {
 		const entry = flatNode.node.entry;
 		const isCurrentLeaf = entry.id === state.currentLeafId;
+		const heading = state.archive?.rows.get(entry.id);
+		const type = heading?.type ?? entry.type,
+			role = heading?.role ?? (entry.type === "message" ? entry.message.role : undefined);
+		if (heading?.hideAssistant && !isCurrentLeaf) return false;
 
 		// Skip assistant messages with only tool calls (no text) unless error/aborted
 		// Always show current leaf so active position is visible
@@ -215,22 +220,22 @@ export function applyTreeFilter(state: TreeListState): void {
 		let passesFilter = true;
 		// Entry types hidden in default view (settings/bookkeeping)
 		const isSettingsEntry =
-			entry.type === "label" ||
-			entry.type === "context_edit" ||
-			entry.type === "custom" ||
-			entry.type === "model_change" ||
-			entry.type === "thinking_level_change" ||
-			entry.type === "session_info" ||
-			entry.type === "worktree_snapshot";
+			type === "label" ||
+			type === "context_edit" ||
+			type === "custom" ||
+			type === "model_change" ||
+			type === "thinking_level_change" ||
+			type === "session_info" ||
+			type === "worktree_snapshot";
 
 		switch (state.filterMode) {
 			case "user-only":
 				// Just user messages
-				passesFilter = entry.type === "message" && entry.message.role === "user";
+				passesFilter = type === "message" && role === "user";
 				break;
 			case "no-tools":
 				// Default minus tool results
-				passesFilter = !isSettingsEntry && !(entry.type === "message" && entry.message.role === "toolResult");
+				passesFilter = !isSettingsEntry && !(type === "message" && role === "toolResult");
 				break;
 			case "labeled-only":
 				// Just labeled entries
@@ -250,6 +255,7 @@ export function applyTreeFilter(state: TreeListState): void {
 
 		// Apply search filter
 		if (searchTokens.length > 0) {
+			if (state.archive) return storedMatches?.has(entry.id) ?? false;
 			const nodeText = getSearchableText(flatNode.node).toLowerCase();
 			return searchTokens.every((token) => nodeText.includes(token));
 		}

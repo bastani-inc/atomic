@@ -96,6 +96,13 @@ export interface ResumeNotice {
 	readonly message: string;
 }
 
+/** A fork into a different store does not publish an address or credentials for its source. */
+export function parentHistoryNotices(manager: Pick<SessionManager, "getHeader">): ResumeNotice[] {
+	return manager.getHeader()?.parentInOtherStore
+		? [{ type: "info", message: "Parent history is in its original store or is no longer available." }]
+		: [];
+}
+
 export interface PrepareSessionResumeOptions {
 	readonly entryPoint: ResumeEntryPoint;
 	/** Where the resume was started: the requested target when it is a checkout of the session's repository. */
@@ -828,7 +835,11 @@ async function recordReuse(sessionManager: SessionManager, mapping: WorktreeRoot
 
 type SessionCheckouts = Pick<
 	SessionManager,
-	"getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords" | "getSessionId"
+	| "getBranch"
+	| "getWorktreeRootMappings"
+	| "getWorktreeSnapshotRecords"
+	| "getSessionId"
+	| "loadWorktreeSnapshotRecords"
 >;
 
 /** The session's checkouts as they are once `mapping`, not yet recorded, is. */
@@ -838,6 +849,7 @@ function withMapping(sessionManager: SessionManager, mapping: WorktreeRootMappin
 		getBranch: () => sessionManager.getBranch(),
 		getSessionId: () => sessionManager.getSessionId(),
 		getWorktreeSnapshotRecords: () => sessionManager.getWorktreeSnapshotRecords(),
+		loadWorktreeSnapshotRecords: (ids, options) => sessionManager.loadWorktreeSnapshotRecords(ids, options),
 		getWorktreeRootMappings: () => [...sessionManager.getWorktreeRootMappings(), mapping],
 	};
 }

@@ -1,10 +1,12 @@
+import { createReadStream } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { createInterface } from "node:readline";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts";
 import { timeCheckoutRestore } from "./resume/timings.ts";
 import type { SessionManager } from "./session-manager.ts";
-import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";
+import type { SessionEntry, WorktreeRestoreHostWarning, WorktreeSnapshotEntry } from "./session-manager-types.ts";
 import { isStorageError } from "./storage/errors.js";
 import { readSessionTail } from "./storage/session/session-resume.js";
 import type { SessionRecordHeader, SessionStore } from "./storage/session/types.js";
@@ -69,8 +71,10 @@ import {
 } from "./worktree-snapshot/pool.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
+	type RestoreDegradedWorktreeOptions,
 	type RestoreWorktreeSnapshotOptions,
 	removeRestoredWorktree,
+	restoreDegradedWorktree,
 	restoreDegradedWorktreeAt,
 	restoreWorktree,
 	restoreWorktreeAt,
@@ -545,6 +549,85 @@ function* originalRoot(root: string, mappings: readonly WorktreeRootMapping[]): 
 
 export { DEGRADED_RESTORE_RETENTION_DAYS };
 
+/**
+ * What a session manager holding only its window reads from its store (#5554): the snapshot records and entries its
+ * resume does not hold. Readers without it, such as test doubles, hold every record they have.
+ */
+type ArchivedSnapshotRecords = Partial<
+	Pick<SessionManager, "hasFullHistory" | "loadWorktreeSnapshotRecords" | "readWorktreeSnapshotPages">
+>;
+
+/** The session's records of `ids` and every other record the manager holds; held ones are not read again. */
+async function snapshotRecordsOf(
+	sessionManager: Pick<SessionManager, "getWorktreeSnapshotRecords"> & ArchivedSnapshotRecords,
+	ids: Iterable<string>,
+	signal?: AbortSignal,
+): Promise<Map<string, WorktreeSnapshot>> {
+	const records = sessionManager.getWorktreeSnapshotRecords();
+	const missing = [...new Set(ids)].filter((id) => !records.has(id));
+	if (missing.length === 0 || sessionManager.loadWorktreeSnapshotRecords === undefined) return records;
+	for (const [id, record] of await sessionManager.loadWorktreeSnapshotRecords(missing, { signal }))
+		records.set(id, record);
+	return records;
+}
+
+/** The snapshot entries of the active branch, oldest first, read from the store for a manager holding only its window. */
+async function branchSnapshotEntries(
+	sessionManager: Pick<SessionManager, "getBranch"> & ArchivedSnapshotRecords,
+	signal?: AbortSignal,
+): Promise<WorktreeSnapshotEntry[]> {
+	if (sessionManager.hasFullHistory?.() !== false || sessionManager.readWorktreeSnapshotPages === undefined)
+		return sessionManager.getBranch().filter((entry) => entry.type === "worktree_snapshot");
+	const entries: WorktreeSnapshotEntry[] = [];
+	for await (const page of sessionManager.readWorktreeSnapshotPages({ branch: true, signal }))
+		for (const { entry } of page) entries.push(entry);
+	return entries;
+}
+
+/**
+ * The blobs a restore of the session's snapshots reads: `primary`'s, then those the session's entries carry inline, as
+ * an imported session file carries them. A manager holding only its window reads the inline blobs of its stored
+ * entries once, on the first blob neither `primary` nor its own entries hold, and only for this store's lifetime.
+ */
+export function archivedSnapshotBlobs(
+	sessionManager: SessionManager,
+	primary: SnapshotBlobStore | undefined,
+): SnapshotBlobStore {
+	const held = sessionSnapshotBlobs(primary, sessionManager.getEntries());
+	if (sessionManager.hasFullHistory()) return held;
+	let archived: Promise<Map<string, string>> | undefined;
+	const stored = (): Promise<Map<string, string>> => {
+		archived ??= (async () => {
+			const blobs = new Map<string, string>();
+			for await (const page of sessionManager.readWorktreeSnapshotPages())
+				for (const { entry } of page)
+					for (const [hash, base64] of Object.entries(entry.blobs ?? {})) blobs.set(hash, base64);
+			return blobs;
+		})();
+		return archived;
+	};
+	return {
+		putBlobs: (blobs) => held.putBlobs(blobs),
+		getBlob: async (hash) => {
+			const data = await held.getBlob(hash);
+			if (data !== undefined) return data;
+			const base64 = (await stored()).get(hash);
+			return base64 === undefined ? undefined : new Uint8Array(Buffer.from(base64, "base64"));
+		},
+		refreshBlobs: async (hashes) => {
+			if (primary !== undefined) return primary.refreshBlobs(hashes);
+			if (await held.refreshBlobs(hashes)) return true;
+			const own = new Set(await held.listBlobHashes());
+			const inline = await stored();
+			return hashes.every((hash) => own.has(hash) || inline.has(hash));
+		},
+		listBlobHashes: async () =>
+			primary !== undefined
+				? primary.listBlobHashes()
+				: [...new Set([...(await held.listBlobHashes()), ...(await stored()).keys()])],
+	};
+}
+
 const DEGRADED_RESTORE_RETENTION_MS = DEGRADED_RESTORE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 /**
@@ -665,8 +748,12 @@ export async function recordPendingCarriedWork(
 	options: { readonly settings: WorktreeSnapshotSettings; readonly storeDir: string; readonly signal?: AbortSignal },
 ): Promise<void> {
 	const mappings = sessionManager.getWorktreeRootMappings();
-	const records = sessionManager.getWorktreeSnapshotRecords();
-	for (const [original, checkout] of await runCanonicalStepsAsync(checkoutRecords(sessionManager, mappings))) {
+	const checkouts = await runCanonicalStepsAsync(checkoutRecords(sessionManager, mappings));
+	const records = await snapshotRecordsOf(
+		sessionManager,
+		[...checkouts.values()].flatMap((checkout) => (checkout.pin === undefined ? [] : [checkout.pin.snapshotId])),
+	);
+	for (const [original, checkout] of checkouts) {
 		const pin = checkout.pin;
 		if (pin?.work === undefined || pin.kept || pin.lapsed) continue;
 		const root = await mapRestoredPathAsync(original, mappings);
@@ -723,24 +810,25 @@ function* latestSnapshotIdsByCheckout(
  * `getLatestWorktreeSnapshots` keys them: the latest, or the snapshot a resume restored only partly while that pin
  * stands (#4922). A pinned snapshot whose record is missing leaves the latest in its place.
  */
-export function latestRestoreTargets(
+export async function latestRestoreTargets(
 	sessionManager: Pick<
 		SessionManager,
 		"getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords" | "getLatestWorktreeSnapshots"
-	>,
+	> &
+		ArchivedSnapshotRecords,
 ): Promise<Map<string, WorktreeSnapshot>> {
-	return runCanonicalStepsAsync(restoreTargets(sessionManager));
+	const mappings = sessionManager.getWorktreeRootMappings();
+	const checkouts = await runCanonicalStepsAsync(checkoutRecords(sessionManager, mappings));
+	const records = await snapshotRecordsOf(sessionManager, [...checkouts.values()].map(restoreTargetId));
+	return runCanonicalStepsAsync(restoreTargets(sessionManager, mappings, checkouts, records));
 }
 
 function* restoreTargets(
-	sessionManager: Pick<
-		SessionManager,
-		"getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords" | "getLatestWorktreeSnapshots"
-	>,
+	sessionManager: Pick<SessionManager, "getLatestWorktreeSnapshots">,
+	mappings: readonly WorktreeRootMapping[],
+	checkouts: ReadonlyMap<string, CheckoutRecord>,
+	records: ReadonlyMap<string, WorktreeSnapshot>,
 ): CanonicalSteps<Map<string, WorktreeSnapshot>> {
-	const mappings = sessionManager.getWorktreeRootMappings();
-	const records = sessionManager.getWorktreeSnapshotRecords();
-	const checkouts = yield* checkoutRecords(sessionManager, mappings);
 	const targets = new Map<string, WorktreeSnapshot>();
 	for (const [root, snapshot] of sessionManager.getLatestWorktreeSnapshots()) {
 		const checkout = checkouts.get(yield* originalRoot(root, mappings));
@@ -827,19 +915,23 @@ function* lapsedRestores(
 }
 
 /** The checkouts on the active branch whose latest snapshot the session holds no record of, where they are now (#4733). */
-export function missingSnapshotRecords(
-	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
+export async function missingSnapshotRecords(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords"> &
+		ArchivedSnapshotRecords,
 ): Promise<MissingSnapshotRecord[]> {
-	return runCanonicalStepsAsync(missingRecordsOf(sessionManager));
+	const mappings = sessionManager.getWorktreeRootMappings();
+	const latestIds = await runCanonicalStepsAsync(latestSnapshotIdsByCheckout(sessionManager, mappings));
+	const records = await snapshotRecordsOf(sessionManager, latestIds.values());
+	return runCanonicalStepsAsync(missingRecordsOf(mappings, latestIds, records));
 }
 
 function* missingRecordsOf(
-	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
+	mappings: readonly WorktreeRootMapping[],
+	latestIds: ReadonlyMap<string, string>,
+	records: ReadonlyMap<string, WorktreeSnapshot>,
 ): CanonicalSteps<MissingSnapshotRecord[]> {
-	const mappings = sessionManager.getWorktreeRootMappings();
-	const records = sessionManager.getWorktreeSnapshotRecords();
 	const missing: MissingSnapshotRecord[] = [];
-	for (const [original, snapshotId] of yield* latestSnapshotIdsByCheckout(sessionManager, mappings)) {
+	for (const [original, snapshotId] of latestIds) {
 		if (!records.has(snapshotId)) missing.push({ root: yield* restoredPath(original, mappings), snapshotId });
 	}
 	return missing;
@@ -849,19 +941,23 @@ function* missingRecordsOf(
  * The latest snapshot of each checkout on the active branch, keyed by where that checkout is now: a checkout restored
  * elsewhere appears once, under its newest location. A snapshot whose record is missing is left out.
  */
-export function currentWorktreeSnapshots(
-	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
+export async function currentWorktreeSnapshots(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords"> &
+		ArchivedSnapshotRecords,
 ): Promise<Map<string, WorktreeSnapshot>> {
-	return runCanonicalStepsAsync(currentSnapshots(sessionManager));
+	const mappings = sessionManager.getWorktreeRootMappings();
+	const latestIds = await runCanonicalStepsAsync(latestSnapshotIdsByCheckout(sessionManager, mappings));
+	const records = await snapshotRecordsOf(sessionManager, latestIds.values());
+	return runCanonicalStepsAsync(currentSnapshots(mappings, latestIds, records));
 }
 
 function* currentSnapshots(
-	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
+	mappings: readonly WorktreeRootMapping[],
+	latestIds: ReadonlyMap<string, string>,
+	records: ReadonlyMap<string, WorktreeSnapshot>,
 ): CanonicalSteps<Map<string, WorktreeSnapshot>> {
-	const mappings = sessionManager.getWorktreeRootMappings();
-	const records = sessionManager.getWorktreeSnapshotRecords();
 	const current = new Map<string, WorktreeSnapshot>();
-	for (const [original, snapshotId] of yield* latestSnapshotIdsByCheckout(sessionManager, mappings)) {
+	for (const [original, snapshotId] of latestIds) {
 		const snapshot = records.get(snapshotId);
 		if (snapshot) current.set(yield* restoredPath(original, mappings), snapshot);
 	}
@@ -955,22 +1051,39 @@ export interface ResumeSessionWorktreeOptions {
 
 /**
  * The commits of every earlier snapshot of the checkout on the branch, newest first and each once, to restore when its
- * own is out of reach (#4744). The restore stops at the first it holds or fetches, so a nearer one costs no more.
+ * own is out of reach (#4744). The restore stops at the first it holds or fetches, so a nearer one costs no more. A
+ * manager holding only its window reads the branch's earlier snapshot entries and their records from the store.
  */
-function* earlierSnapshotHeads(
-	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeSnapshotRecords">,
+async function earlierSnapshotHeads(
+	sessionManager: SessionManager,
 	original: string,
 	mappings: readonly WorktreeRootMapping[],
 	snapshot: WorktreeSnapshot,
-): CanonicalSteps<string[]> {
-	const records = sessionManager.getWorktreeSnapshotRecords();
+	signal: AbortSignal | undefined,
+): Promise<string[]> {
+	const branch = (await branchSnapshotEntries(sessionManager, signal)).reverse();
+	const entries = await runCanonicalStepsAsync(entriesOfCheckout(branch, original, mappings));
+	const records = await snapshotRecordsOf(
+		sessionManager,
+		entries.map((entry) => entry.snapshotId),
+		signal,
+	);
 	const heads: string[] = [];
-	for (const entry of [...sessionManager.getBranch()].reverse()) {
-		if (entry.type !== "worktree_snapshot" || (yield* originalRoot(entry.root, mappings)) !== original) continue;
+	for (const entry of entries) {
 		const head = records.get(entry.snapshotId)?.head;
 		if (head !== undefined && head !== snapshot.head) heads.push(head);
 	}
 	return [...new Set(heads)];
+}
+
+function* entriesOfCheckout(
+	entries: readonly WorktreeSnapshotEntry[],
+	original: string,
+	mappings: readonly WorktreeRootMapping[],
+): CanonicalSteps<WorktreeSnapshotEntry[]> {
+	const found: WorktreeSnapshotEntry[] = [];
+	for (const entry of entries) if ((yield* originalRoot(entry.root, mappings)) === original) found.push(entry);
+	return found;
 }
 
 /**
@@ -988,9 +1101,13 @@ export async function resumeSessionWorktree(
 	if (options.pool) await holdSessionWorktrees(sessionManager, sessionManager, storeDir, options.signal);
 	const pending = options.pendingMappings ?? [];
 	const existing = [...sessionManager.getWorktreeRootMappings(), ...pending];
-	const records = sessionManager.getWorktreeSnapshotRecords();
 	const checkouts = await runCanonicalStepsAsync(checkoutRecords(sessionManager, existing));
 	const latestIds = await runCanonicalStepsAsync(latestSnapshotIdsByCheckout(sessionManager, existing));
+	const records = await snapshotRecordsOf(
+		sessionManager,
+		[...latestIds.values(), ...[...checkouts.values()].map((checkout) => checkout.pin?.work ?? checkout.latest)],
+		options.signal,
+	);
 	const latest = new Map<string, WorktreeSnapshot>();
 	// The work done in a partly restored worktree of the pinned snapshot `snapshot`, which this resume restores when
 	// `snapshot` cannot be, and puts on top of it when it can (#4922).
@@ -1092,10 +1209,7 @@ export async function resumeSessionWorktree(
 					},
 					error,
 				);
-			const blobs = sessionSnapshotBlobs(
-				sessionManager.getSessionStore().snapshotBlobs,
-				sessionManager.getEntries(),
-			);
+			const blobs = archivedSnapshotBlobs(sessionManager, sessionManager.getSessionStore().snapshotBlobs);
 			let restored: Extract<BestWorktreeRestore, { status: "restored" }>;
 			let lease: WorktreeLease | undefined;
 			let claimed = false;
@@ -1104,22 +1218,30 @@ export async function resumeSessionWorktree(
 			let restoredFrom = snapshot;
 			// The exact state, else the best this host can restore, else continue without the checkout.
 			const restoreFresh = async (slot: WorktreeLease | undefined) => {
+				// The commits of the checkout's earlier snapshots are read, from the store for a manager holding only its
+				// window, only once the exact restore failed and a degraded one tries them (#5554).
+				let candidates: Promise<string[]> | undefined;
+				const degrade =
+					slot === undefined
+						? restoreDegradedWorktree
+						: (
+								degraded: WorktreeSnapshot,
+								failure: WorkspaceRestoreError,
+								restoreOptions: RestoreDegradedWorktreeOptions,
+							) => restoreDegradedWorktreeAt(degraded, failure, slot.path, restoreOptions);
 				const ladder: RestoreBestWorktreeOptions = {
 					blobs,
 					storeDir: options.storeDir,
 					signal: options.signal,
-					candidates: await runCanonicalStepsAsync(
-						earlierSnapshotHeads(sessionManager, original, existing, snapshot),
-					),
 					// Carrying work over writes into the worktree, so a pinned restore downloads first.
 					...(pinned === undefined ? { deferLfs: options.deferLfs } : {}),
 					...(slot === undefined
 						? {}
-						: {
-								restore: (target, restoreOptions) => restoreWorktreeAt(target, slot.path, restoreOptions),
-								restoreDegraded: (degraded, failure, restoreOptions) =>
-									restoreDegradedWorktreeAt(degraded, failure, slot.path, restoreOptions),
-							}),
+						: { restore: (target, restoreOptions) => restoreWorktreeAt(target, slot.path, restoreOptions) }),
+					restoreDegraded: async (degraded, failure, restoreOptions) => {
+						candidates ??= earlierSnapshotHeads(sessionManager, original, existing, snapshot, options.signal);
+						return degrade(degraded, failure, { ...restoreOptions, candidates: await candidates });
+					},
 				};
 				if (pinned === undefined) return restoreBestWorktree(snapshot, ladder);
 				return restorePinnedWorktree(snapshot, pinned.work, ladder, (work) => {
@@ -1645,15 +1767,33 @@ export async function inlineSnapshotBlobs(
 	records: ReadonlyMap<string, WorktreeSnapshot>,
 	store: SnapshotBlobStore | undefined,
 ): Promise<SessionEntry[]> {
-	const emittedRecords = new Set<string>();
-	const emittedBlobs = new Set<string>();
+	const inline = snapshotBlobInliner();
 	const result: SessionEntry[] = [];
 	for (const entry of entries) {
-		if (entry.type !== "worktree_snapshot") {
-			result.push(entry);
-			continue;
-		}
-		const record = entry.snapshot ?? records.get(entry.snapshotId);
+		result.push(
+			entry.type === "worktree_snapshot"
+				? await inline(entry, entry.snapshot ?? records.get(entry.snapshotId), store)
+				: entry,
+		);
+	}
+	return result;
+}
+
+type SnapshotEntry = Extract<SessionEntry, { type: "worktree_snapshot" }>;
+
+/**
+ * {@link inlineSnapshotBlobs} one entry at a time, for an export that streams its entries: each call returns the
+ * snapshot entry as `inlineSnapshotBlobs` returns it at that position, given `record`, the entry's own record or the
+ * session's record of its snapshot, and the entries passed before. Without `blobs` only the record is carried.
+ */
+export function snapshotBlobInliner(): (
+	entry: SnapshotEntry,
+	record: WorktreeSnapshot | undefined,
+	blobs: Pick<SnapshotBlobStore, "getBlob"> | undefined,
+) => Promise<SnapshotEntry> {
+	const emittedRecords = new Set<string>();
+	const emittedBlobs = new Set<string>();
+	return async (entry, record, store) => {
 		const { blobs: _carried, snapshot: _record, ...rest } = entry;
 		const blobs: Record<string, string> = {};
 		if (record && store) {
@@ -1667,13 +1807,12 @@ export async function inlineSnapshotBlobs(
 		}
 		const carryRecord = record !== undefined && !emittedRecords.has(record.id);
 		if (record) emittedRecords.add(record.id);
-		result.push({
+		return {
 			...rest,
 			...(carryRecord ? { snapshot: record } : {}),
 			...(Object.keys(blobs).length > 0 ? { blobs } : {}),
-		});
-	}
-	return result;
+		};
+	};
 }
 
 /**
@@ -1767,6 +1906,24 @@ export function describeSnapshotExport(
 	if (snapshots.size === 0) return undefined;
 	const bytes = [...blobBytes.values()].reduce((sum, size) => sum + size, 0);
 	return `Includes ${snapshots.size} worktree snapshot(s) of ${[...roots].join(", ")}: ${bytes} bytes of patch and bundle content${omitted > 0 ? `, ${omitted} omitted item(s) not included` : ""}`;
+}
+
+/**
+ * What the session export file at `path` carries, as {@link describeSnapshotExport} states it for the entries it was
+ * written from: an export carries each snapshot's record with its first entry. The file is read a line at a time, so
+ * a manager holding only its window states it without reading the session's history again (#5554).
+ */
+export async function describeExportedSnapshots(path: string): Promise<string | undefined> {
+	const first = new Map<string, WorktreeSnapshotEntry>();
+	const lines = createInterface({ input: createReadStream(path), crlfDelay: Number.POSITIVE_INFINITY });
+	for await (const line of lines) {
+		if (!line.includes('"worktree_snapshot"')) continue;
+		const entry = JSON.parse(line) as SessionEntry;
+		if (entry.type !== "worktree_snapshot" || first.has(entry.snapshotId)) continue;
+		const { blobs: _content, ...described } = entry;
+		first.set(entry.snapshotId, described);
+	}
+	return describeSnapshotExport([...first.values()], new Map());
 }
 
 export type WorktreeSnapshotComparison =
@@ -2026,11 +2183,8 @@ function* storedBranchSnapshots(
 		if (entry.type === "worktree_snapshot" && entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
 	}
 	const mappings = restoreMappings(branch);
-	const current = yield* currentSnapshots({
-		getBranch: () => [...branch],
-		getWorktreeRootMappings: () => mappings,
-		getWorktreeSnapshotRecords: () => records,
-	});
+	const latestIds = yield* latestSnapshotIdsByCheckout({ getBranch: () => [...branch] }, mappings);
+	const current = yield* currentSnapshots(mappings, latestIds, records);
 	return { mappings, current };
 }
 

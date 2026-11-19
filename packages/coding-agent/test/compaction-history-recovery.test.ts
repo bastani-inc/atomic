@@ -209,7 +209,7 @@ describe("recovery from session history after a clear", () => {
 			assert.ok(boundary?.includes(result.compactedText), boundary);
 			assert.equal(session.sessionManager.getLastSeq(), history.totalEntries);
 			assert.deepEqual(
-				session.sessionManager.getEntries().slice(0, entriesBefore),
+				(await session.sessionManager.getSessionStore().load(session.sessionId)).entries.slice(0, entriesBefore),
 				earlierEntries,
 				"every earlier entry is unchanged",
 			);

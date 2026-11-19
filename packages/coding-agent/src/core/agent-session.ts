@@ -404,7 +404,8 @@ class AgentSessionBase {
 			if (config.subagentPolicy?.executionEnded !== undefined) {
 				const admission = MessageAdmissionBoundary.restore(
 					this.sessionManager.getBranch(),
-					this.sessionManager.getSessionRecoveryState?.().admissionKeys,
+					undefined,
+					this.sessionManager.getSessionRecoveryState?.().admissionDigests,
 				);
 				this._subagentMessageAdmission = admission;
 				this._subagentPolicy = {

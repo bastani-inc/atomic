@@ -389,12 +389,12 @@ test("a compacted chat shows its earlier stop without carrying that evidence int
 			await compactEarlierReceipts(session);
 		},
 		"receipt",
-		(reopened) => {
+		async (reopened) => {
 			const entry = reopened
 				.getBranch()
 				.find((e) => e.type === "custom_message" && e.customType === "task-completion");
 			assert.ok(entry);
-			const other = SessionManager.inMemory(process.cwd(), undefined, [entry]);
+			const other = await SessionManager.inMemory(process.cwd(), undefined, [entry]);
 			const message = other.buildSessionContext().messages.find((m) => m.role === "custom");
 			assert.ok(message);
 			const card = TaskCompletionMessage.fromMessage(message, false);
@@ -588,7 +588,7 @@ async function expectReopenedNotice(
 	preview?: string,
 	beforeNotice?: (session: SessionManager) => Promise<void>,
 	admissionKey?: string,
-	onReopen?: (session: SessionManager) => void,
+	onReopen?: (session: SessionManager) => void | Promise<void>,
 ): Promise<void> {
 	for (const backend of ["sqlite", "jsonl"] as const)
 		await withDiskSessions(backend, async (open) => {
@@ -609,7 +609,7 @@ async function expectReopenedNotice(
 			await writer.close();
 
 			const { store: reader } = await open();
-			if (onReopen) onReopen(await SessionManager.open(reader, sessionId, undefined, { history: "tail" }));
+			if (onReopen) await onReopen(await SessionManager.open(reader, sessionId, undefined, { history: "tail" }));
 			const main = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
 			try {
 				assert.equal(await main.loadSession(reader, sessionId), true);

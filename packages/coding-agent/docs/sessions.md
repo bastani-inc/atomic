@@ -83,6 +83,8 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 
+An HTML export reads saved entries in pages. If extensions render tool calls or results, memory use during the export can also grow with the arguments and results passed to those renderers. They share mutable objects, so the exported conversation reflects their final values without changing the saved session. For an independent backup that does not invoke chat renderers, use `atomic storage export`.
+
 ## Resuming and Deleting Sessions
 
 `/resume` opens an interactive picker titled **Resume**. It shows the current folder's sessions under **Sessions**, newest first, with a count. ↑ and ↓ select a session, and typing filters the list. The hint reads `space preview · enter resume · type to search · esc cancel`, followed by as many of the selected row's other keys as fit, such as `tab scope`, `ctrl+r rename` and `ctrl+d delete`. When some keys do not fit, the line ends with `? keys`, and `?` lists every key that works. While you type a search, `?` is part of the search, so the line shows `f1 keys` and F1 opens the list instead. Tab changes folder scope and Ctrl+N toggles named sessions. `atomic -r` opens the session picker at startup.
@@ -296,7 +298,9 @@ The chat, the tree's current marker, `/session`, and the context indicator switc
 | Typical use | Explore alternatives in place | Start a new session from an earlier prompt | Duplicate current work before continuing |
 | Summary | Optional branch summary | None | None |
 
-Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone` when you want a separate session.
+Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone` when you want a separate session. Both copy the complete path from the session's first entry to the selected point, including its worktree snapshots, into a new session; other branches stay only in the original session.
+
+`atomic --fork <id>`, **Fork** for a session whose working directory is missing, and the SDK's `forkTo` into the same store copy the whole saved session, every branch included. Only a fork into a store that Atomic can tell is a different store copies less: the current context, without the parent's retired turns or private task records. Such a fork records its parent ID, but the parent history stays in the original store and may no longer be available if that store was temporary; resuming the fork says `Parent history is in its original store or is no longer available.` When Atomic cannot tell whether two stores are the same, it copies the whole session. For a complete, independent copy, use `atomic storage export` and `atomic storage import` instead.
 
 `/fork` opens **Fork from message** with the newest user message selected. Type to filter the messages by their text, use ↑ and ↓ to choose, and press Enter to copy the conversation up to that message into a new session. Esc clears the search, then closes the picker.
 

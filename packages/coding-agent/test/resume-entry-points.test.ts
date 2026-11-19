@@ -184,6 +184,31 @@ async function readWithTools(session: AgentSession, path: string): Promise<strin
 }
 
 describe("openCliSession (#4329)", () => {
+	test("resuming a cross-store fork explains where the parent history went (#5594)", async () => {
+		const parent = SessionManager.inMemory(sandbox.root);
+		await parent.appendMessage({ role: "user", content: "current", timestamp: 1 });
+		const target = await resolveSessionStore(sandbox.root, {
+			agentDir: sandbox.path("agent"),
+			sessionStore: sqliteSelection("fork-target"),
+		});
+		cleanups.push(() => target.close());
+		const child = await parent.forkTo(sandbox.root, target);
+		await parent.getSessionStore().close();
+		const reopened = await openCliSession(parseArgs(["--session", child.getSessionId()]), sandbox.root, settings(), {
+			agentDir: sandbox.path("agent"),
+			sessionStorage: target,
+			trusted: () => false,
+			claim: false,
+		});
+		assert.notEqual(reopened, "cancelled");
+		assert.ok(
+			reopened !== "cancelled" &&
+				reopened.notices.some(
+					({ message }) => message === "Parent history is in its original store or is no longer available.",
+				),
+		);
+	});
+
 	test("a new session runs no resume preflight and prepares nothing", async () => {
 		const io = new CountingIo();
 		const opened = await openCliSession(parseArgs([]), sandbox.root, settings(), {

@@ -84,14 +84,52 @@ export {
 	type TeamStorageSelection,
 	teamProfileSelection,
 } from "./selection.js";
+export type { ExpandedChildCall, ExpandedChildDetails } from "./session/expanded-child-details.js";
+export async function readExpandedChildDetails(
+	...args: Parameters<typeof import("./session/expanded-child-details.js").readExpandedChildDetails>
+) {
+	return (await import("./session/expanded-child-details.js")).readExpandedChildDetails(...args);
+}
+export async function readSavedChildLaunch(
+	...args: Parameters<typeof import("./session/expanded-child-details.js").readSavedChildLaunch>
+) {
+	return (await import("./session/expanded-child-details.js")).readSavedChildLaunch(...args);
+}
+export async function readSessionChildCatalog(
+	...args: Parameters<typeof import("./session/child-reader.js").readSessionChildCatalog>
+) {
+	return (await import("./session/child-reader.js")).readSessionChildCatalog(...args);
+}
+export async function findInSessionHistory(
+	...args: Parameters<typeof import("./session/history-pages.js").findInSessionHistory>
+) {
+	return (await import("./session/history-pages.js")).findInSessionHistory(...args);
+}
+// Ordinary storage setup does not open a transcript reader or import its encoders.
+export async function* readSessionHistory(
+	...args: Parameters<typeof import("./session/history-pages.js").readSessionHistory>
+) {
+	yield* (await import("./session/history-pages.js")).readSessionHistory(...args);
+}
+export async function* readSessionHistoryChunks(
+	...args: Parameters<typeof import("./session/history-pages.js").readSessionHistoryChunks>
+) {
+	yield* (await import("./session/history-pages.js")).readSessionHistoryChunks(...args);
+}
 export type {
+	ArchivedChildCatalogEntry,
+	OversizedSessionEntry,
 	SessionBlob,
 	SessionCompactionPoint,
 	SessionEntriesPage,
 	SessionEntriesQuery,
 	SessionEntryAt,
 	SessionEntryRange,
+	SessionEntrySizes,
 	SessionForkWindow,
+	SessionHistoryItem,
+	SessionHistoryPage,
+	SessionHistoryReadOptions,
 	SessionHistoryTotals,
 	SessionRecoveryState,
 	SessionResume,

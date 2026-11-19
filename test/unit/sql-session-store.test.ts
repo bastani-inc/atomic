@@ -101,6 +101,28 @@ for (const shared of [false, true]) {
 	);
 }
 
+test("paged history reads on an already-open SQL store refuse a newer session format (#5554)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		const store = await SqlSessionStore.open(database);
+		try {
+			await store.create(header, [message("first", "saved")]);
+			await database.run("UPDATE session_meta SET schema_version = ?", SESSION_SCHEMA_VERSION + 1);
+			const newer = (error: Error) =>
+				error instanceof StorageSchemaVersionError && /newer Atomic/i.test(error.message);
+			for (const read of [
+				() => store.readTreeOutline(header.id, 1, 1),
+				() => store.readEntrySizes(header.id, 1, 1),
+				() => store.readResumeAt(header.id, "first", 1),
+				() => store.readRange(header.id, 1, 1),
+			])
+				await assert.rejects(read(), newer);
+			assert.equal((await database.get("SELECT count(*) AS n FROM session_entries"))?.n, 1);
+		} finally {
+			await store.close();
+		}
+	});
+});
+
 test("SQL sessions list materialized summaries after create, append and replace without reading entries", async () => {
 	await withNodeSqliteDatabase(async ({ database }) => {
 		const store = await SqlSessionStore.open(database);

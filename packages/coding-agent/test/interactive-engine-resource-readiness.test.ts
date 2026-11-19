@@ -304,6 +304,9 @@ describe("interactive engine resource readiness", () => {
 				success: true,
 				data: { entries: [], leafId: null },
 			});
+			const view = await handle({ id: "window", type: "get_context_window" });
+			assert.ok(view?.success && view.command === "get_context_window");
+			assert.deepEqual(view.data, { entries: [], leafId: null });
 			assert.equal(waitForResources.mock.calls.length, 0);
 		} finally {
 			harness.cleanup();

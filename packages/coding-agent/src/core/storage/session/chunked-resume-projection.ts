@@ -1,12 +1,15 @@
 import { jsonParser, type Token } from "stream-json/core/parser.js";
+import type { SessionEntry } from "../../session-manager-types.ts";
 import type { SqliteRow, SqliteValue } from "../database.js";
 import type { ForkMetadata } from "./fork-window.js";
+import type { SessionTreeOutlineEntry } from "./types.js";
 
 // A projection only constructs values consumed by the resume fold. The stream parser must not pack
 // strings or keys: even a single unselected JSON string (or property name) can span many chunks.
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Fields = { readonly [key: string]: Shape };
-type Shape =
+export type Shape =
+	| ((first: Token) => Reader<Json>)
 	| true
 	| Fields
 	| "child"
@@ -16,12 +19,20 @@ type Shape =
 	| "array"
 	| "truth"
 	| "short"
+	| "answerText"
+	| "searchText"
+	| "nonBlank"
+	| "treeContent"
+	| "labelPreview"
+	| "string"
+	| "stringPresent"
+	| "objectPresent"
 	| "hash"
 	| "owner"
 	| "op"
 	| "usage"
 	| "number";
-type Reader<T> = Generator<void, T, Token>;
+export type Reader<T> = Generator<void, T, Token>;
 
 const protocolMessage = { id: true, replyTo: true, expectsReply: true } as const;
 const usageTotals = {
@@ -39,6 +50,8 @@ const childFields = {
 	runId: "short",
 	childId: true,
 	state: "short",
+	taskId: "string",
+	terminalStatus: "short",
 	owner: "owner",
 } as const;
 const customFields: Fields = {
@@ -57,10 +70,8 @@ const customFields: Fields = {
 	intercom_ask_settled: { askId: true },
 	intercom_sent: { message: protocolMessage },
 	intercom_reply_wait: { toolCallId: true },
-	"workflow.run.start": { runId: true },
-	"workflow.stage.start": { runId: true },
-	"workflow.stage.end": { runId: true },
-	"workflow.run.end": { runId: true },
+	"workflow.run.start": { runId: "string", name: "stringPresent", ts: "number" },
+	"workflow.run.end": { runId: "string" },
 	"workflow-stage-parked-tasks": { tasks: "tasks" },
 	"task-completion-intent": { completionId: true, ownerId: true, taskId: true },
 	"task-completion-ack": { completionId: true },
@@ -71,7 +82,7 @@ function field(fields: Fields, key: string): Shape | undefined {
 }
 
 /** Consume the rest of one value without retaining any constituent token or nesting frame. */
-function* skip(first: Token): Reader<void> {
+export function* skip(first: Token): Reader<void> {
 	let depth = first.name.startsWith("start") ? 1 : 0;
 	while (depth > 0) {
 		const { name } = yield;
@@ -80,7 +91,7 @@ function* skip(first: Token): Reader<void> {
 	}
 }
 
-function* stringValue(limit = Infinity): Reader<string> {
+export function* stringValue(limit = Infinity): Reader<string> {
 	let value = "";
 	for (let token = yield; token.name === "stringChunk"; token = yield) {
 		if (value.length < limit) value += token.value.slice(0, limit - value.length);
@@ -125,10 +136,19 @@ function* embedded(shape: Shape, tool = false): Reader<Json> {
 	return result ?? "not JSON";
 }
 
-function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
+export function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
+	if (typeof shape === "function") return yield* shape(first);
+	if (shape === "objectPresent") {
+		yield* skip(first);
+		return first.name === "startObject";
+	}
+	if (shape === "stringPresent") {
+		yield* skip(first);
+		return first.name === "startString" ? "" : null;
+	}
 	if (
 		shape === undefined ||
-		(shape === "op" && first.name !== "startString") ||
+		((shape === "op" || shape === "string") && first.name !== "startString") ||
 		(shape === "number" && first.name !== "numberValue") ||
 		(shape === "tools" && first.name !== "startArray")
 	) {
@@ -163,6 +183,43 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 			return out;
 		}
 		case "startArray": {
+			if (shape === "searchText") {
+				let text = "",
+					seen = false;
+				for (let part = yield; part.name !== "endArray"; part = yield) {
+					if (text.length >= 65537) {
+						yield* skip(part);
+						continue;
+					}
+					const b = object(yield* readValue(part, { type: "short", text: "searchText" }));
+					if (b.type === "text" && typeof b.text === "string") {
+						if (seen) text += " ";
+						text += b.text.slice(0, 65537 - text.length);
+						seen = true;
+					}
+				}
+				return text;
+			}
+			if (shape === "treeContent") {
+				let present = false;
+				const calls: string[] = [];
+				for (let token = yield; token.name !== "endArray"; token = yield) {
+					const block = object(
+						yield* readValue(token, { type: "short", id: "string", ...(present ? {} : { text: "nonBlank" }) }),
+					);
+					present ||= block.type === "text" && block.text === true;
+					if (block.type === "toolCall" && typeof block.id === "string") calls.push(block.id);
+				}
+				return { present, calls };
+			}
+			if (shape === "answerText") {
+				let text = "";
+				for (let token = yield; token.name !== "endArray"; token = yield) {
+					const block = object(yield* readValue(token, { type: "short", text: "string" }));
+					if (block.type === "text" && typeof block.text === "string") text += block.text;
+				}
+				return text;
+			}
 			const out: Json[] = [];
 			let tools = 0;
 			for (let token = yield; token.name !== "endArray"; token = yield) {
@@ -190,7 +247,16 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 			if (shape === "owner" || shape === "tasks" || shape === "groups" || shape === "usage")
 				return JSON.stringify(yield* embedded(shape));
 			if (shape === "truth") return (yield* stringValue(1)) === "" ? "" : "x";
-			return yield* stringValue(shape === "short" ? 64 : shape === "hash" ? 65 : Infinity);
+			if (shape === "labelPreview") return yield* stringValue(128);
+			if (shape === "nonBlank" || shape === "treeContent") {
+				let present = false;
+				for (let token = yield; token.name === "stringChunk"; token = yield)
+					present ||= token.value.trim().length > 0;
+				return present;
+			}
+			return yield* stringValue(
+				shape === "short" ? 64 : shape === "hash" ? 65 : shape === "searchText" ? 65537 : Infinity,
+			);
 		case "numberValue":
 			return Number(first.value);
 		case "trueValue":
@@ -222,8 +288,17 @@ function* discriminator(key: string, parent?: string): Reader<string> {
 	return "";
 }
 
-function* project(type: string, customType: string, role: string): Reader<Json> {
-	const fields: Record<string, Shape> = { type: true, parentId: true, timestamp: true };
+function* project(
+	type: string,
+	customType: string,
+	role: string,
+	branchStateOnly = false,
+	includeId = false,
+): Reader<Json> {
+	const fields: Record<string, Shape> = branchStateOnly
+		? { type: true, id: true }
+		: { type: true, parentId: true, timestamp: true };
+	if (includeId) fields.id = true;
 	switch (type) {
 		case "custom": {
 			const data = field(customFields, customType);
@@ -239,6 +314,13 @@ function* project(type: string, customType: string, role: string): Reader<Json> 
 				...(customType === "intercom_message" ? { message: protocolMessage, historyOnly: true } : {}),
 			};
 			break;
+		case "worktree_snapshot":
+			fields.root = true;
+			fields.snapshotId = true;
+			fields.captureMs = "number";
+			fields.degradedFrom = "truth";
+			fields.snapshot = fields.restore = fields.unrestored = "objectPresent";
+			break;
 		case "thinking_level_change":
 			fields.thinkingLevel = true;
 			break;
@@ -250,12 +332,15 @@ function* project(type: string, customType: string, role: string): Reader<Json> 
 			fields.targetId = true;
 			break;
 		case "message":
-			fields.message =
-				role === "assistant"
+			fields.message = branchStateOnly
+				? { role: "short", toolCallId: "string" }
+				: role === "assistant"
 					? { role: true, provider: true, model: true, usage: true, content: "tools" }
 					: role === "toolResult"
 						? { role: true, toolCallId: true, usage: "usage" }
-						: { role: "short" };
+						: role === "system"
+							? { role: "short", toolsAdded: "truth", toolsRemoved: "truth" }
+							: { role: "short" };
 			break;
 		case "compaction":
 			fields.firstKeptEntryId = true;
@@ -269,12 +354,13 @@ function* project(type: string, customType: string, role: string): Reader<Json> 
 			fields.usage = "usage";
 			break;
 	}
+	if (branchStateOnly) delete fields.usage;
 	return yield* readValue(yield, fields);
 }
 
 // Limit the number of short tokens a single tokenizer call can return as well as the bytes read from storage.
 const TOKEN_PAGE_BYTES = 16 * 1024;
-async function read<T>(chunks: AsyncIterable<Uint8Array>, reader: Reader<T>): Promise<T> {
+export async function read<T>(chunks: AsyncIterable<Uint8Array>, reader: Reader<T>): Promise<T> {
 	const decoder = new TextDecoder("utf-8", { fatal: true });
 	const consume = feed(reader);
 	for await (const chunk of chunks) {
@@ -422,6 +508,302 @@ function extracted(value: Json | undefined, postgres: boolean): Json {
 	return typeof value === "boolean" ? Number(value) : value;
 }
 
+/** Test the exact saved ID against caller-owned text without retaining the entry, even when the ID spans chunks. */
+export function chunkedEntryHasId(chunks: AsyncIterable<Uint8Array>, id: string): Promise<boolean> {
+	return read(
+		chunks,
+		(function* (): Reader<boolean> {
+			if ((yield).name !== "startObject") throw new SyntaxError("Expected a session entry");
+			let matched = false;
+			while ((yield).name !== "endObject") {
+				const key = yield* stringValue(3);
+				const first = yield;
+				if (key !== "id" || first.name !== "startString") {
+					if (key === "id") matched = false;
+					yield* skip(first);
+					continue;
+				}
+				let offset = 0;
+				matched = true;
+				for (let part = yield; part.name === "stringChunk"; part = yield) {
+					if (!id.startsWith(part.value, offset)) matched = false;
+					offset += part.value.length;
+				}
+				matched = matched && offset === id.length;
+			}
+			return matched;
+		})(),
+	);
+}
+
+/** Read an interrupted run's exact JSON string without decoding its unrelated start inputs or normalizing SQL text. */
+export async function readChunkedWorkflowRunId(chunks: AsyncIterable<Uint8Array>): Promise<string | undefined> {
+	const selected = await read(
+		chunks,
+		(function* (): Reader<Json> {
+			return yield* readValue(yield, { data: { runId: "string" } });
+		})(),
+	);
+	const id = object(object(selected).data).runId;
+	return typeof id === "string" ? id : undefined;
+}
+
+/** Only the fields consumed by the branch-state fold, without converting JSON strings to a SQL dialect's text. */
+export async function chunkedBranchState(chunks: () => AsyncIterable<Uint8Array>): Promise<SessionEntry> {
+	const type = await read(chunks(), discriminator("type"));
+	const custom = type === "custom" || type === "custom_message";
+	const customType = custom ? await read(chunks(), discriminator("customType")) : "";
+	const entry = object(await read(chunks(), project(type, customType, "", true)));
+	if (custom) entry.customType = customType;
+	return entry as unknown as SessionEntry;
+}
+
+/** Identity and parent of a historical entry, plus its hash when it is a tool-output receipt. Never collect the receipt's inline bytes here. */
+export async function chunkedForkLink(
+	chunks: () => AsyncIterable<Uint8Array>,
+): Promise<{ id?: string; parentId?: string | null; timestamp?: string; hash?: string; anchor: boolean }> {
+	const selected = object(
+		await read(
+			chunks(),
+			(function* (): Reader<Json> {
+				return yield* readValue(yield, {
+					id: "string",
+					parentId: "string",
+					timestamp: "string",
+					type: "short",
+					customType: "short",
+					data: { hash: "short" },
+				});
+			})(),
+		),
+	);
+	const hash =
+		selected.type === "custom" && selected.customType === "atomic.tool-output"
+			? object(selected.data).hash
+			: undefined;
+	return {
+		id: typeof selected.id === "string" ? selected.id : undefined,
+		parentId: typeof selected.parentId === "string" ? selected.parentId : null,
+		timestamp: typeof selected.timestamp === "string" ? selected.timestamp : undefined,
+		hash: typeof hash === "string" ? hash : undefined,
+		anchor: selected.type === "custom" && selected.customType === "atomic.fork-anchor",
+	};
+}
+
+/** Fold a pinned prefix that has no native resume index. Read the stored ID, ancestry and billing fields, never
+ * the message body. The tool-call count is kept separate so no array of dummy content blocks is allocated. */
+export async function chunkedPrefixFields(
+	chunks: () => AsyncIterable<Uint8Array>,
+): Promise<{ entry: SessionEntry; toolCalls: number }> {
+	const type = await read(chunks(), discriminator("type"));
+	const custom = type === "custom" || type === "custom_message";
+	const customType = custom ? await read(chunks(), discriminator("customType")) : "";
+	const role = type === "message" ? await read(chunks(), discriminator("role", "message")) : "";
+	const value = object(await read(chunks(), project(type, customType, role, false, true)));
+	if (custom) value.customType = customType;
+	if (type === "worktree_snapshot" && !value.snapshot) delete value.snapshot;
+	const count = object(value.message).content;
+	return { entry: value as unknown as SessionEntry, toolCalls: typeof count === "number" ? count : 0 };
+}
+
+export async function chunkedTreeOutline(
+	seq: number,
+	chunks: AsyncIterable<Uint8Array>,
+): Promise<SessionTreeOutlineEntry> {
+	const e = object(
+		await read(
+			chunks,
+			(function* (): Reader<Json> {
+				return yield* readValue(yield, {
+					id: "string",
+					parentId: "string",
+					type: "short",
+					timestamp: "string",
+					customType: "short",
+					targetId: "string",
+					label: "labelPreview",
+					message: { role: "short", stopReason: "short", content: "treeContent" },
+				});
+			})(),
+		),
+	);
+	const m = object(e.message);
+	const content = object(m.content);
+	return {
+		seq,
+		id: String(e.id),
+		parentId: typeof e.parentId === "string" ? e.parentId : null,
+		timestamp: String(e.timestamp),
+		type: e.type as SessionEntry["type"],
+		...(e.type === "message"
+			? {
+					role: String(m.role),
+					...(m.role === "assistant" && Array.isArray(content.calls) && content.calls.length
+						? { callIds: content.calls as string[] }
+						: {}),
+					...(m.role === "assistant" &&
+					!(m.content === true || content.present) &&
+					(!m.stopReason || m.stopReason === "stop" || m.stopReason === "toolUse")
+						? { hideAssistant: true }
+						: {}),
+				}
+			: {}),
+		...(e.type === "custom" && e.customType === "atomic.leaf" ? { leafMove: true } : {}),
+		...(e.type === "custom" && e.customType === "subagent-child" ? { childRecord: true } : {}),
+		...(e.type === "label"
+			? { labelTarget: String(e.targetId), label: typeof e.label === "string" ? e.label : undefined }
+			: {}),
+	};
+}
+
+const hasItems: Shape = function* (t) {
+	if (t.name !== "startArray") {
+		yield* skip(t);
+		return null;
+	}
+	let present = false;
+	for (let token = yield; token.name !== "endArray"; token = yield) {
+		present = true;
+		yield* skip(token);
+	}
+	return present ? [true] : [];
+};
+// Unknown property names (not values) identify the older observations needed to reconstruct a partial record.
+const retainingKeys = (fields: Fields): Shape =>
+	function* (t) {
+		if (t.name !== "startObject") {
+			yield* skip(t);
+			return null;
+		}
+		const data: Record<string, Json> = Object.create(null);
+		while ((yield).name !== "endObject") {
+			const key = yield* stringValue();
+			data[key] = yield* readValue(yield, field(fields, key));
+		}
+		return data;
+	};
+export async function chunkedChildHeading(chunks: AsyncIterable<Uint8Array>): Promise<SessionEntry> {
+	const e = await read(
+		chunks,
+		(function* (): Reader<Json> {
+			return yield* readValue(yield, {
+				id: "string",
+				type: "short",
+				customType: "short",
+				data: retainingKeys({
+					waitingOn: hasItems,
+					stillRunning: hasItems,
+					heldToolResults: hasItems,
+					wakeFailure: { taskId: "string" },
+					worktree: { named: "truth" },
+					heldMessages: { taskId: "string", messages: hasItems },
+					version: "number",
+					childId: "string",
+					runId: "string",
+					index: "number",
+					agent: "string",
+					cwd: "string",
+					state: "short",
+					owner: { kind: "short", sessionId: "string" },
+					terminalStatus: "string",
+					taskId: "string",
+					childSessionId: "string",
+					childSessionFile: "string",
+					intercomTarget: "string",
+					intercomGroup: "string",
+					releasedIntercomId: "string",
+					elapsedMs: "number",
+					elapsedSpan: { dispatchedAt: "number", endedAt: "number" },
+				}),
+			});
+		})(),
+	);
+	return e as unknown as SessionEntry;
+}
+
+export async function chunkedAnswerHeader(chunks: AsyncIterable<Uint8Array>) {
+	const entry = object(
+		await read(
+			chunks,
+			(function* (): Reader<Json> {
+				return yield* readValue(yield, {
+					id: "string",
+					parentId: "string",
+					type: "short",
+					targetId: "string",
+					message: { role: "short", stopReason: "short" },
+				});
+			})(),
+		),
+	);
+	const msg = object(entry.message);
+	return {
+		id: String(entry.id),
+		parentId: typeof entry.parentId === "string" ? entry.parentId : null,
+		type: String(entry.type),
+		targetId: entry.type === "context_edit" && typeof entry.targetId === "string" ? entry.targetId : undefined,
+		role: typeof msg.role === "string" ? msg.role : undefined,
+		stop: msg.stopReason === "stop",
+	};
+}
+
+/** Once a candidate is selected, keep only the text that /copy may actually return, not tool arguments or images. */
+export async function chunkedAnswerContent(
+	chunks: AsyncIterable<Uint8Array>,
+	edit: boolean,
+): Promise<string | null | undefined> {
+	const field = edit ? "replacement" : "message";
+	const entry = object(
+		await read(
+			chunks,
+			(function* (): Reader<Json> {
+				return yield* readValue(yield, { [field]: { content: "answerText" } });
+			})(),
+		),
+	);
+	if (edit && entry.replacement === null) return null;
+	const text = object(entry[field]).content;
+	return typeof text === "string" ? text.trim() || undefined : undefined;
+}
+
+/** The bounded listing contribution and index fields of a raw backup row. The original bytes, not
+ * these fields, are written into the child. Model usage/tool counts remain from the resume projection. */
+export async function forkSeedFields(chunks: () => AsyncIterable<Uint8Array>) {
+	const { entry, toolCalls } = await chunkedPrefixFields(chunks);
+	const extra = object(
+		await read(
+			chunks(),
+			(function* (): Reader<Json> {
+				return yield* readValue(
+					yield,
+					entry.type === "message"
+						? { message: { timestamp: "number", content: "searchText" } }
+						: entry.type === "session_info"
+							? { name: "string" }
+							: entry.type === "session_summary"
+								? { summary: "string", summarizedThroughId: "string" }
+								: entry.type === "custom" && entry.customType === "atomic.tool-output"
+									? { data: { hash: "hash" } }
+									: {},
+				);
+			})(),
+		),
+	);
+	if (entry.type === "message") {
+		const fields = object(extra.message);
+		Object.assign(entry.message, {
+			timestamp: fields.timestamp,
+			content:
+				typeof fields.content === "string"
+					? entry.message.role === "assistant"
+						? [{ type: "text", text: fields.content }]
+						: fields.content
+					: [],
+		});
+	} else Object.assign(entry, extra);
+	return { entry, extraToolCalls: toolCalls };
+}
+
 /** Fill the inline projection of the stub with the streamed fields. No reconstructed value is sent back to SQL. */
 export async function chunkedResumeProjection(
 	stub: SqliteRow,
@@ -437,6 +819,10 @@ export async function chunkedResumeProjection(
 	const result: Record<string, SqliteValue> = { ...stub };
 	for (const [key, value] of Object.entries(entry)) {
 		const column = `resume_${key.toLowerCase()}`;
+		if (type === "worktree_snapshot" && ["snapshot", "restore", "unrestored"].includes(key)) {
+			result[column] = value ? (key === "snapshot" ? "{}" : 1) : null;
+			continue;
+		}
 		if (key !== "data" && key !== "details" && key !== "message") {
 			const v = extracted(value, postgres);
 			result[column] = v !== null && typeof v === "object" ? JSON.stringify(v) : (v as SqliteValue);
@@ -450,7 +836,7 @@ export async function chunkedResumeProjection(
 			result.resume_compactiondetails = extracted(source.strategy, postgres) as SqliteValue;
 		for (const [field, v] of Object.entries(source)) {
 			if (!Object.hasOwn(projected, field)) continue;
-			if (key === "data" && ["version", "index", "timestamp"].includes(field))
+			if (key === "data" && ["version", "index", "timestamp", "ts"].includes(field))
 				projected[field] = typeof v === "number" ? v : null;
 			else if (key === "data" && ["queries", "urls"].includes(field))
 				projected[field] = Array.isArray(v) ? "[]" : null;

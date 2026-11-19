@@ -53,24 +53,25 @@ export async function navigateTree(
 	if (targetId === oldLeafId) {
 		return { cancelled: false };
 	}
-	await this.sessionManager.loadFullHistory();
-
 	// Model required for summarization
 	if (options.summarize && !this.model) {
 		throw new Error("No model available for summarization");
 	}
 
-	const targetEntry = this.sessionManager.getEntry(targetId);
+	const targetEntry =
+		this.sessionManager.getEntry(targetId) ?? (await this.sessionManager.readSelectedEntry(targetId));
 	if (!targetEntry) {
 		throw new Error(`Entry ${targetId} not found`);
 	}
 
 	// Collect entries to summarize (from old leaf to common ancestor)
-	const { entries: entriesToSummarize, commonAncestorId } = collectEntriesForBranchSummary(
-		this.sessionManager,
-		oldLeafId,
-		targetId,
-	);
+	const beforeTree = this._extensionRunner.hasHandlers("session_before_tree");
+	const { entries: entriesToSummarize, commonAncestorId } =
+		!beforeTree && !options.summarize
+			? { entries: [], commonAncestorId: null }
+			: this.sessionManager.hasFullHistory()
+				? collectEntriesForBranchSummary(this.sessionManager, oldLeafId, targetId)
+				: await this.sessionManager.readAbandonedSegment(oldLeafId, targetId);
 
 	// Prepare event data - mutable so extensions can override
 	let customInstructions = options.customInstructions;
@@ -110,7 +111,7 @@ export async function navigateTree(
 		let fromExtension = false;
 
 		// Emit session_before_tree event
-		if (this._extensionRunner.hasHandlers("session_before_tree")) {
+		if (beforeTree) {
 			const result = (await this._extensionRunner.emit({
 				type: "session_before_tree",
 				preparation,

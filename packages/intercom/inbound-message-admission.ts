@@ -1,4 +1,9 @@
+import { createHash } from "node:crypto";
 import { InMemoryDeliveredMessageCache } from "./broker/delivered-message-cache.js";
+
+function digest(key: string): string {
+  return createHash("sha256").update(key, "utf16le").digest("hex").slice(0,32);
+}
 import { isMessage, isSessionInfo } from "./broker/client-message-validation.js";
 import type { Message, SessionInfo } from "./types.js";
 
@@ -33,9 +38,12 @@ export class InboundMessageAdmission {
   private readonly pending = new Map<string, PendingInboundMessage>();
   private readonly persistentlyDelivered = new Set<string>();
 
-  restore(entries: Iterable<unknown>, delivered: Iterable<string> = []): void {
+  private saved?: {has(key:string):boolean};
+
+  restore(entries: Iterable<unknown>, delivered: Iterable<string> = [], saved?: {has(key:string):boolean}): void {
     this.persistentlyDelivered.clear();
- for(const id of delivered)this.persistentlyDelivered.add(id);
+    this.saved=saved;
+    for(const id of delivered)this.persistentlyDelivered.add(digest(id));
     for (const value of entries) {
       if (typeof value !== "object" || value === null) continue;
       const entry = value as PersistedInboundMessageEntry;
@@ -44,12 +52,12 @@ export class InboundMessageAdmission {
       const details = entry.details as { readonly from?: unknown; readonly message?: unknown };
       if (!isSessionInfo(details.from) || !isMessage(details.message)) continue;
       if (entry.stageAdmissionKey !== `intercom:${details.message.id}`) continue;
-      this.persistentlyDelivered.add(details.message.id);
+      this.persistentlyDelivered.add(digest(details.message.id));
     }
   }
 
   admit(from: SessionInfo, message: Message): InboundMessageAdmissionResult {
-    if (this.persistentlyDelivered.has(message.id)) return { kind: "duplicate" };
+    if (this.saved?.has(`intercom:${message.id}`) || this.persistentlyDelivered.has(digest(message.id))) return { kind: "duplicate" };
     const signature = JSON.stringify({ from: from.id, message });
     if (this.delivered.lookup(message.id, signature) !== "miss") return { kind: "duplicate" };
     const pending = this.pending.get(message.id);
@@ -84,7 +92,7 @@ export class InboundMessageAdmission {
     if (pending?.reservation !== reservation) return;
     this.pending.delete(reservation.messageId);
     this.delivered.record(reservation.messageId, reservation.signature);
-    this.persistentlyDelivered.add(reservation.messageId);
+    this.persistentlyDelivered.add(digest(reservation.messageId));
     pending.resolve();
   }
 

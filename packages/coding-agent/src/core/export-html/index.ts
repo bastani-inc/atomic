@@ -1,22 +1,24 @@
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { open, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import type { AgentState } from "@bastani/atomic-agent-core";
-import type { ToolCall } from "@bastani/atomic-ai/compat";
-import { existsSync, writeFileSync } from "fs";
-import { readFile, writeFile } from "fs/promises";
 import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDirAsync } from "../../config.js";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/interactive/theme/theme.js";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
-import type { ToolDefinition } from "../extensions/types.ts";
-import type { SessionEntry } from "../session-manager.ts";
 import { SessionManager } from "../session-manager.ts";
 import { SessionNotFoundError } from "../storage/session/errors.js";
-import { type SavedAgentCard, savedAgentCards } from "./saved-agent-cards.js";
+import { renderHtmlInputs } from "./render-inputs.js";
+import { type SavedAgentCard, savedFileCards } from "./saved-agent-cards.js";
+import { captureHtmlHistory, encodeSessionData, sessionDataBytes } from "./session-data.js";
 
 /**
  * Interface for rendering custom tools to HTML.
  * Used by agent-session to pre-render extension tool output.
  */
 export interface ToolHtmlRenderer {
+	/** Discard transient renderer state for a call after its output has been written. */
+	releaseCall?(toolCallId: string): void;
 	/** Render a tool call to HTML. Returns undefined if tool has no custom renderer. */
 	renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined;
 	/** Render a tool result to HTML. Returns collapsed/expanded or undefined if tool has no custom renderer. */
@@ -27,13 +29,6 @@ export interface ToolHtmlRenderer {
 		details: unknown,
 		isError: boolean,
 	): { collapsed?: string; expanded?: string } | undefined;
-}
-
-/** Pre-rendered HTML for a custom tool call and result */
-interface RenderedToolHtml {
-	callHtml?: string;
-	resultHtmlCollapsed?: string;
-	resultHtmlExpanded?: string;
 }
 
 export interface ExportOptions {
@@ -131,20 +126,8 @@ function generateThemeVars(themeName?: string): string {
 	return lines.join("\n      ");
 }
 
-interface SessionData {
-	header: ReturnType<SessionManager["getHeader"]>;
-	entries: ReturnType<SessionManager["getEntries"]>;
-	leafId: string | null;
-	systemPrompt?: string;
-	tools?: Array<Pick<ToolDefinition, "name" | "description" | "parameters">>;
-	/** Pre-rendered HTML for custom tool calls/results, keyed by tool call ID */
-	renderedTools?: Record<string, RenderedToolHtml>;
-}
-
-/**
- * Core HTML generation logic shared by both export functions.
- */
-async function generateHtml(sessionData: SessionData, themeName?: string, cards?: SavedAgentCard[]): Promise<string> {
+/** The fixed HTML before and after the streamed session data. */
+async function htmlTemplate(themeName?: string, cards?: SavedAgentCard[]): Promise<readonly [string, string, boolean]> {
 	const templateDir = await getExportTemplateDirAsync();
 	const [template, templateCss, templateJs, markedJs, markedCjkFriendlyJs, hljsJs] = await Promise.all(
 		[
@@ -165,10 +148,8 @@ async function generateHtml(sessionData: SessionData, themeName?: string, cards?
 	const containerBg = themeExport.cardBg ?? derivedExportColors.cardBg;
 	const infoBg = themeExport.infoBg ?? derivedExportColors.infoBg;
 
-	// Keep the ordinary viewer asset verbatim. Only a file containing a proven card needs the
-	// alternate row painter. Older/custom template installations keep their ordinary export.
 	let viewer = templateJs;
-	let payload: SessionData & { savedAgentCards?: SavedAgentCard[] } = sessionData;
+	let includesCards = false;
 	const toolRow = /function renderToolCall\(call\) \{\r?\n +const result = findToolResult\(call\.id\);/;
 	const startRows = "        const fragment = document.createDocumentFragment();";
 	const paintedRows = "        messagesEl.appendChild(fragment);";
@@ -185,12 +166,9 @@ async function generateHtml(sessionData: SessionData, themeName?: string, cards?
 				.replace(startRows, () => `${startRows}\n        acceptedCards = null;`)
 				.replace(paintedRows, () => `${paintedRows}\n        paintSavedAgentCards();`)
 				.replace(initialRender, () => `${cardViewer}\n${initialRender}`);
-			payload = { ...sessionData, savedAgentCards: cards };
+			includesCards = true;
 		}
 	}
-
-	// Base64 encode session data to avoid escaping issues
-	const sessionDataBase64 = Buffer.from(JSON.stringify(payload)).toString("base64");
 
 	// Build the CSS with theme variables injected
 	const css = templateCss
@@ -199,73 +177,17 @@ async function generateHtml(sessionData: SessionData, themeName?: string, cards?
 		.replace("{{CONTAINER_BG}}", () => containerBg)
 		.replace("{{INFO_BG}}", () => infoBg);
 
-	return template
-		.replace("{{CSS}}", () => css)
-		.replace("{{JS}}", () => viewer)
-		.replace("{{SESSION_DATA}}", () => sessionDataBase64)
-		.replace("{{MARKED_JS}}", () => markedJs)
-		.replace("{{MARKED_CJK_FRIENDLY_JS}}", () => markedCjkFriendlyJs)
-		.replace("{{HIGHLIGHT_JS}}", () => hljsJs);
-}
-
-/** Tools rendered directly by the HTML template (not pre-rendered via TUI→ANSI→HTML pipeline) */
-const TEMPLATE_RENDERED_TOOLS = new Set(["bash", "read", "write", "edit", "ls"]);
-
-/**
- * Pre-render custom tools to HTML using their TUI renderers.
- */
-function preRenderCustomTools(
-	entries: SessionEntry[],
-	toolRenderer: ToolHtmlRenderer,
-): Record<string, RenderedToolHtml> {
-	const renderedTools: Record<string, RenderedToolHtml> = {};
-	const toolCalls = new Map<string, ToolCall>();
-
-	for (const entry of entries) {
-		if (entry.type !== "message") continue;
-		const msg = entry.message;
-
-		// Find tool calls in assistant messages
-		if (msg.role === "assistant" && Array.isArray(msg.content)) {
-			for (const block of msg.content) {
-				if (block.type === "toolCall" && !TEMPLATE_RENDERED_TOOLS.has(block.name)) {
-					toolCalls.set(block.id, block);
-					const callHtml = toolRenderer.renderCall(block.id, block.name, block.arguments);
-					if (callHtml) {
-						renderedTools[block.id] = { callHtml };
-					}
-				}
-			}
-		}
-
-		// Find tool results
-		if (msg.role === "toolResult" && msg.toolCallId) {
-			const toolName = msg.toolName || "";
-			// Only render if we have a pre-rendered call OR it's not template-rendered
-			const existing = renderedTools[msg.toolCallId];
-			if (existing || !TEMPLATE_RENDERED_TOOLS.has(toolName)) {
-				const rendered = toolRenderer.renderResult(
-					msg.toolCallId,
-					toolName,
-					msg.content,
-					msg.details,
-					msg.isError || false,
-				);
-				if (rendered) {
-					const call = toolCalls.get(msg.toolCallId);
-					const callHtml = call ? toolRenderer.renderCall(msg.toolCallId, call.name, call.arguments) : undefined;
-					renderedTools[msg.toolCallId] = {
-						...existing,
-						...(callHtml !== undefined ? { callHtml } : {}),
-						resultHtmlCollapsed: rendered.collapsed,
-						resultHtmlExpanded: rendered.expanded,
-					};
-				}
-			}
-		}
-	}
-
-	return renderedTools;
+	const [prefix, suffix] = template.split("{{SESSION_DATA}}");
+	if (prefix === undefined || suffix === undefined)
+		throw new Error("Session export template is missing its data slot");
+	const fill = (part: string) =>
+		part
+			.replace("{{CSS}}", () => css)
+			.replace("{{JS}}", () => viewer)
+			.replace("{{MARKED_JS}}", () => markedJs)
+			.replace("{{MARKED_CJK_FRIENDLY_JS}}", () => markedCjkFriendlyJs)
+			.replace("{{HIGHLIGHT_JS}}", () => hljsJs);
+	return [fill(prefix), fill(suffix), includesCards];
 }
 
 /**
@@ -277,47 +199,63 @@ export async function exportSessionToHtml(
 	state?: AgentState,
 	options?: ExportOptions | string,
 ): Promise<string> {
-	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
+	return writeSessionHtml(sm, state, typeof options === "string" ? { outputPath: options } : options || {});
+}
 
-	const snapshot = await sm
-		.getSessionStore()
-		.load(sm.getSessionId())
-		.catch((error: Error) => {
-			if (error instanceof SessionNotFoundError)
-				throw new Error("Nothing to export yet - start a conversation first");
-			throw error;
-		});
-	const entries = [...snapshot.entries];
-
-	// Pre-render custom tools if a tool renderer is provided
-	let renderedTools: Record<string, RenderedToolHtml> | undefined;
-	if (opts.toolRenderer) {
-		renderedTools = preRenderCustomTools(entries, opts.toolRenderer);
-		// Only include if we actually rendered something
-		if (Object.keys(renderedTools).length === 0) {
-			renderedTools = undefined;
-		}
-	}
-
-	const sessionData: SessionData = {
-		header: { type: "session", ...snapshot.header },
-		entries,
-		leafId: sm.getLeafId(),
+async function writeSessionHtml(
+	sm: SessionManager,
+	state: AgentState | undefined,
+	opts: ExportOptions,
+	standalone = false,
+) {
+	const sessionFile = sm.getSessionFile();
+	const sessionBasename = sessionFile ? basename(sessionFile, ".jsonl") : sm.getSessionId();
+	const source = await captureHtmlHistory(sm).catch((error: Error) => {
+		if (error instanceof SessionNotFoundError) throw new Error("Nothing to export yet - start a conversation first");
+		throw error;
+	});
+	const cards = standalone ? await savedFileCards(source) : undefined;
+	const inputs = opts.toolRenderer ? await renderHtmlInputs(source, opts.toolRenderer) : undefined;
+	const presentation = {
 		systemPrompt: state?.systemPrompt,
 		tools: state?.tools?.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
-		renderedTools,
 	};
-
-	const html = await generateHtml(sessionData, opts.themeName);
+	const [prefix, suffix, includesCards] = await htmlTemplate(opts.themeName, cards);
+	inputs?.freezeInputs();
+	const metadataJson = JSON.stringify({
+		leafId: source.leafId,
+		...presentation,
+		savedAgentCards: includesCards ? cards : undefined,
+	});
 
 	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
 	if (!outputPath) {
-		const sessionFile = sm.getSessionFile();
-		const sessionBasename = sessionFile ? basename(sessionFile, ".jsonl") : sm.getSessionId();
 		outputPath = `${APP_NAME}-session-${sessionBasename}.html`;
 	}
 
-	await writeFile(outputPath, html, "utf8");
+	const target = await realpath(outputPath).catch(() => outputPath);
+	const mode = await stat(target).then(
+		(s) => s.mode & 0o7777,
+		() => 0o600,
+	);
+	const partial = `${target}.${randomUUID()}.partial`;
+	try {
+		const output = await open(partial, "wx", 0o600);
+		try {
+			await output.writeFile(prefix);
+			for await (const encoded of encodeSessionData(sessionDataBytes(source, metadataJson, inputs)))
+				await output.writeFile(encoded);
+			await output.writeFile(suffix);
+			await output.chmod(mode);
+		} finally {
+			await output.close();
+		}
+		await rename(partial, target);
+	} catch (error) {
+		await rm(partial, { force: true });
+		if (error instanceof SessionNotFoundError) throw new Error("Nothing to export yet - start a conversation first");
+		throw error;
+	}
 	return outputPath;
 }
 
@@ -334,15 +272,6 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 	}
 
 	const sm = await SessionManager.open(resolvedInputPath);
-	const sessionData: SessionData = {
-		header: sm.getHeader(),
-		entries: sm.getEntries(),
-		leafId: sm.getLeafId(),
-		systemPrompt: undefined,
-		tools: undefined,
-	};
-
-	const html = await generateHtml(sessionData, opts.themeName, savedAgentCards(sm, sessionData.entries));
 
 	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
 	if (!outputPath) {
@@ -350,6 +279,9 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		outputPath = `${APP_NAME}-session-${inputBasename}.html`;
 	}
 
-	writeFileSync(outputPath, html, "utf8");
-	return outputPath;
+	try {
+		return await writeSessionHtml(sm, undefined, { ...opts, outputPath }, true);
+	} finally {
+		await sm.getSessionStore().close();
+	}
 }

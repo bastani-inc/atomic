@@ -48,8 +48,12 @@ import {
 import { RELEASED_CHILD_REPLY_EVENT, type ReleasedChildReplyRequest } from "./released-reply-protocol.js";
 import {
 	indexSubagentChildOwner,
+	loadSubagentChildRecord,
 	reservationRecordLookup,
+	type SubagentChildStanding,
+	subagentChildIdForTarget,
 	subagentChildRecordForTarget,
+	subagentChildRecordNeedsRead,
 	subagentChildRecordOf,
 	subagentChildRecordsOf,
 } from "./subagent-child-card-state.js";
@@ -140,7 +144,10 @@ export function bindReleasedChildWakes(
 					holdFailuresTold.delete(childName);
 			}
 		}
-		const untold: Array<{ readonly childName: string; readonly record: SubagentChildRecord }> = [];
+		const untold: Array<{
+			readonly childName: string;
+			readonly record: SubagentChildRecord | SubagentChildStanding;
+		}> = [];
 		for (const childName of failure.childNames) {
 			const record = recordOf(childName);
 			if (record === undefined) continue;
@@ -326,9 +333,10 @@ export function bindReleasedChildWakes(
 		const childName = (payload as { readonly childName?: string } | null)?.childName;
 		if (typeof childName !== "string") return;
 		indexSubagentChildOwner(ctx);
-		let record: SubagentChildRecord | undefined;
+		// Found by its index entry: a child whose records left the owner's window is read when its wake runs.
+		let childId: string | undefined;
 		try {
-			record = subagentChildRecordForTarget(ownerSessionId, childName);
+			childId = subagentChildIdForTarget(ownerSessionId, childName);
 		} catch (error) {
 			// A child whose record cannot be read is not woken; its owner is told why, as of any wake that fails.
 			observeChildRecordFailure(
@@ -343,9 +351,9 @@ export function bindReleasedChildWakes(
 			);
 			return;
 		}
-		if (record === undefined) return;
+		if (childId === undefined) return;
 		void dispatcher
-			.deliver(subagentWakeKey(ownerSessionId, record.childId), { id: `intercom:${randomUUID()}`, kind: "intercom" })
+			.deliver(subagentWakeKey(ownerSessionId, childId), { id: `intercom:${randomUUID()}`, kind: "intercom" })
 			.catch((error) => dispatcher.reportUnobservedFailure(error));
 	});
 	const unsubscribeReply = events.on(RELEASED_CHILD_REPLY_EVENT, (payload) => {
@@ -354,7 +362,12 @@ export function bindReleasedChildWakes(
 		request.completion = (async () => {
 			await subagentChildRecordsAppended(ownerSessionId);
 			indexSubagentChildOwner(ctx);
-			const record = subagentChildRecordForTarget(ownerSessionId, request.childName);
+			const childId = subagentChildIdForTarget(ownerSessionId, request.childName);
+			// A child whose records left the owner's window is read from it; its reply is recorded over its latest record.
+			const record =
+				childId !== undefined && subagentChildRecordNeedsRead(ownerSessionId, childId)
+					? await loadSubagentChildRecord(ownerSessionId, childId)
+					: subagentChildRecordForTarget(ownerSessionId, request.childName);
 			const call = record?.waitingOn?.find((item) => item.replyWait?.questionId === request.replyTo);
 			if (record === undefined) return false;
 			// #4751: the child's `ask` already returned, so the reply is an ordinary message: the broker holds it for the

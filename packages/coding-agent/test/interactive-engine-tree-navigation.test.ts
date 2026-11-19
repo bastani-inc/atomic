@@ -125,6 +125,118 @@ async function assertHostFollowsBranch(current: EngineHostPair, expected: string
 	);
 }
 
+test("an unsaved isolated host keeps its private archive and can append locally after its engine store closes (#5554)", async () => {
+	const stamp = new Date(0).toISOString();
+	const manager = await SessionManager.inMemory("/project", { id: "engine" }, [
+		{ type: "session", id: "engine", version: 4, cwd: "/project", createdAt: stamp },
+		{
+			type: "message",
+			id: "old",
+			parentId: null,
+			timestamp: stamp,
+			message: { role: "user", content: "old archive", timestamp: 1 },
+		},
+		{
+			type: "compaction",
+			id: "clear",
+			parentId: "old",
+			timestamp: stamp,
+			summary: "clear",
+			tokensBefore: 100,
+			firstKeptEntryId: null,
+			details: { strategy: "verbatim-lines" },
+		},
+		{
+			type: "message",
+			id: "now",
+			parentId: "clear",
+			timestamp: stamp,
+			message: { role: "user", content: "current", timestamp: 2 },
+		},
+	]);
+	pair = await createEngineHostPair({ sessionManager: manager });
+	await pair.runtime.initializeFromEngine();
+	const host = pair.runtime.session.sessionManager;
+	assert.notEqual(host.getSessionStore(), manager.getSessionStore());
+	await manager.getSessionStore().close();
+	assert.equal(await host.findEntrySeq("old"), 1);
+	assert.equal(host.getEntrySeq("now"), 3);
+	await host.appendMessage({ role: "user", content: "local only", timestamp: 3 });
+	assert.equal(host.getLastSeq(), 4);
+	assert.equal(host.getLeafEntry()?.type, "message");
+});
+
+test("an unsaved host refresh reads only new engine rows and keeps an earlier host view independent (#5554)", async () => {
+	const manager = SessionManager.inMemory("/project");
+	for (let i = 0; i < 80; i++) await manager.appendMessage({ role: "user", content: `archived ${i}`, timestamp: i });
+	await manager.appendCompaction("clear", null, 100, { strategy: "verbatim-lines" });
+	const initial = await manager.appendMessage({ role: "user", content: "current", timestamp: 81 });
+	pair = await createEngineHostPair({ sessionManager: manager });
+	await pair.runtime.initializeFromEngine();
+	const earlier = pair.runtime.session.sessionManager;
+	assert.equal(earlier.getLeafId(), initial);
+	const local = await earlier.appendMessage({ role: "user", content: "host local", timestamp: 82 });
+	const next = await manager.appendMessage({ role: "user", content: "new engine turn", timestamp: 83 });
+	const history = vi.spyOn(manager, "readHistory");
+	await pair.runtime.initializeFromEngine();
+	const current = pair.runtime.session.sessionManager;
+	assert.equal(current.getLeafId(), next);
+	assert.equal(await current.findEntrySeq(local), undefined);
+	assert.equal(await earlier.findEntrySeq(next), undefined);
+	for (const [options] of history.mock.calls) {
+		const from = options?.fromSeq ?? Number(options?.cursor?.split(".")[1]);
+		assert.ok(from > 82, `read an already mirrored row at ${from}`);
+	}
+});
+
+test("refreshing a private mirror after a branch change does not decode the retired branch again (#5554)", async () => {
+	const manager = SessionManager.inMemory("/project");
+	const root = await manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
+	await manager.appendMessage({ role: "user", content: "retired unique payload", timestamp: 2 });
+	await manager.branch(root);
+	await manager.appendMessage({ role: "user", content: "different branch", timestamp: 3 });
+	await manager.appendCompaction("clear", null, 120, { strategy: "verbatim-lines" });
+	pair = await createEngineHostPair({ sessionManager: manager });
+	await pair.runtime.initializeFromEngine();
+	const parse = JSON.parse;
+	let retired = 0;
+	const reader = vi.spyOn(JSON, "parse").mockImplementation((text, reviver) => {
+		if (typeof text === "string" && text.startsWith("[{") && text.includes("retired unique payload")) retired++;
+		return parse(text, reviver);
+	});
+	try {
+		const next = await manager.appendMessage({ role: "user", content: "current", timestamp: 4 });
+		await pair.runtime.initializeFromEngine();
+		assert.equal(pair.runtime.session.sessionManager.getLeafId(), next);
+		assert.equal(retired, 0, "warm refresh reread archived branch bodies");
+	} finally {
+		reader.mockRestore();
+	}
+});
+
+test("a first private attachment exposes the current transcript even while its archive transfer is stopped (#5554)", async () => {
+	const manager = SessionManager.inMemory("/project");
+	await manager.appendMessage({ role: "user", content: "retired".repeat(200_000), timestamp: 1 });
+	await manager.appendCompaction("clear", null, 100, { strategy: "verbatim-lines" });
+	await manager.appendMessage({ role: "user", content: "current visible request", timestamp: 2 });
+	pair = await createEngineHostPair({ sessionManager: manager });
+	pair.failCommand("get_history_chunk", "transfer stopped");
+	let preview: string[] = [];
+	await assert.rejects(
+		() =>
+			pair!.runtime.initializeFromEngine(undefined, (lines: string[]) => {
+				preview = lines;
+			}),
+		/transfer stopped/,
+	);
+	assert.deepEqual(preview, ["current visible request"]);
+	assert.equal(
+		pair.runtime.session.sessionManager.getEntryCount(),
+		0,
+		"a failed transfer must not publish the new manager",
+	);
+});
+
 test("/tree with No summary shows only the selected branch in a saved session (#3325)", async () => {
 	const { current, engineManager } = await createSavedPair();
 	pair = current;

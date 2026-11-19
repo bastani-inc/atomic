@@ -173,9 +173,16 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 	initialSelectedId?: string,
 ): Promise<void> {
 	await this.ensureDeferredStartupComplete();
-	await this.sessionManager.loadFullHistory?.();
-	const tree = this.sessionManager.getTree();
-	const realLeafId = this.sessionManager.getLeafId();
+	const archived =
+		this.sessionManager.hasFullHistory?.() === false
+			? await (await import("./components/stored-tree-view.js")).StoredTreeView.open(this.sessionManager)
+			: undefined;
+	const tree = archived?.tree ?? this.sessionManager.getTree();
+	const realLeafId = archived ? archived.leaf : this.sessionManager.getLeafId();
+	if (archived) {
+		archived.view.onUpdate = () => this.ui.requestRender();
+		archived.view.onError = (error) => this.showError(error.message);
+	}
 	const initialFilterMode = this.settingsManager.getTreeFilterMode();
 
 	if (tree.length === 0) {
@@ -316,6 +323,7 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 			},
 			initialSelectedId,
 			initialFilterMode,
+			archived?.view,
 		);
 		selector.onLabelError = (error) => this.showError(error.message);
 		selector.onLabelUpdate = () => this.ui.requestRender();
@@ -323,7 +331,14 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 			selector.getTreeList().updateInitialFilter(this.settingsManager.getTreeFilterMode());
 			this.ui.requestRender();
 		});
-		return { component: selector, focus: selector, dispose };
+		return {
+			component: selector,
+			focus: selector,
+			dispose: () => {
+				archived?.view.dispose();
+				dispose?.();
+			},
+		};
 	});
 };
 
@@ -489,6 +504,7 @@ function finishMissingCwdResume(mode: InteractiveModeBase, status: string): void
 		mode.clearFirstRunOnboardingUi();
 	}
 	mode.showStatus(status);
+	showSessionNotices(mode, mode.runtimeHost.takeResumeNotices());
 	mode.startSessionRecovery("resume");
 }
 
