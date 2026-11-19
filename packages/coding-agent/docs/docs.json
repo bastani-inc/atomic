@@ -57,8 +57,6 @@
               "background-tasks",
               "guides/intercom",
               "guides/team-setup",
-              "guides/worker-hosts",
-              "guides/worker-fleets-postgres",
               "computer-use"
             ]
           },

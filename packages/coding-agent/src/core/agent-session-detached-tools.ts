@@ -708,7 +708,7 @@ function reportStaleDetachedCall(
 	call: Pick<DetachedToolCall, "toolCallId" | "toolName">,
 	reason: StaleDetachedCallReason = "transcript-moved",
 ): void {
-	reportDebug("workflow", "stale-detached-call", {
+	reportDebug("engine", "stale-detached-call", {
 		sessionId: session.sessionManager.getSessionId(),
 		toolCallId: call.toolCallId,
 		toolName: call.toolName,
