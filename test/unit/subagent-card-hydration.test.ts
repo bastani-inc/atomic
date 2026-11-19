@@ -582,6 +582,7 @@ async function finishedScriptChild(runId: string, taskId: string) {
 		state: "terminal",
 		terminalStatus: "ok",
 		taskId,
+		task: `task for ${runId}`,
 		childSessionId: childSession.getSessionId(),
 	});
 	return { store, manager };
@@ -664,9 +665,9 @@ async function engineNotice(manager: SessionManager, message: object, expected: 
 test("after a restart, a finished subagent's notice shows the child's saved prompt and tool calls, as its launch card does (#5525)", async () => {
 	initTheme("dark");
 	const { store, manager } = await finishedScriptChild("hynotice", "task-1-0-1");
+	const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
 	try {
 		bindSubagentChildCards({ sessionManager: manager });
-		registerSavedTaskTranscripts(savedSubagentTranscripts);
 		// No task of this process runs as task-1-0-1: the notice reads the child's own session, named by its record.
 		const shown = await engineNotice(
 			manager,
@@ -695,6 +696,7 @@ test("after a restart, a finished subagent's notice shows the child's saved prom
 		);
 		assert.match(named, /Prompt Script the hynotice audit/);
 	} finally {
+		unregister();
 		await store.close();
 	}
 });
@@ -702,9 +704,9 @@ test("after a restart, a finished subagent's notice shows the child's saved prom
 test("after a restart, a finished subagent's notice saved before notices named their child finds the child by its task id, unless two children ran as it (#5525)", async () => {
 	initTheme("dark");
 	const { store, manager } = await finishedScriptChild("hyolder", "task-1-0-7");
+	const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
 	try {
 		bindSubagentChildCards({ sessionManager: manager });
-		registerSavedTaskTranscripts(savedSubagentTranscripts);
 		const shown = await engineNotice(manager, savedNotice("hyolder", "task-1-0-7", undefined), /const v19 = 19; \)/);
 		assert.match(shown, /Prompt Script the hyolder audit .*Tool calls ● codemode\( const v0 = 0;/);
 
@@ -725,6 +727,35 @@ test("after a restart, a finished subagent's notice saved before notices named t
 		);
 		assert.doesNotMatch(ambiguous, /codemode\(/);
 	} finally {
+		unregister();
+		await store.close();
+	}
+});
+
+test("a legacy notice cannot read a different saved child's prompt through a reused task id (#5531)", async () => {
+	const taskId = "task-reused-legacy";
+	const { store, manager } = await finishedScriptChild("shapes-reader", taskId);
+	const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
+	try {
+		bindSubagentChildCards({ sessionManager: manager });
+		const matching = { taskId, agentName: "shapes-reader", subject: "task for shapes-reader" };
+		assert.equal(hasTaskTranscript(undefined, { ...matching, ownerSessionId: manager.getSessionId() }), true);
+		assert.equal(
+			hasTaskTranscript(undefined, { ...matching, ownerSessionId: "another-owner" }),
+			false,
+			"another owner's records cannot supply the prompt",
+		);
+		for (const [agentName, subject] of [
+			["worker", "restart 0"],
+			["worker", "task for shapes-reader"],
+			["shapes-reader", "restart 0"],
+		]) {
+			const notice = { taskId, agentName, subject };
+			assert.equal(hasTaskTranscript(undefined, notice), false, "only the original notice preview is available");
+			assert.equal(await loadTaskTranscript(undefined, notice), undefined, "no other child's prompt or calls");
+		}
+	} finally {
+		unregister();
 		await store.close();
 	}
 });

@@ -470,11 +470,17 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 		hasTaskTranscript: isolated
 			? undefined
 			: (taskId, notice) =>
-					hasTaskTranscript(getOwnerTaskStore(this.session), noticeTranscriptQuery(taskId, notice)),
+					hasTaskTranscript(
+						getOwnerTaskStore(this.session),
+						noticeTranscriptQuery(taskId, notice, this.session.sessionId),
+					),
 		loadTaskTranscript: isolated
 			? undefined
 			: (taskId, notice) =>
-					loadTaskTranscript(getOwnerTaskStore(this.session), noticeTranscriptQuery(taskId, notice)),
+					loadTaskTranscript(
+						getOwnerTaskStore(this.session),
+						noticeTranscriptQuery(taskId, notice, this.session.sessionId),
+					),
 		getCustomMessageRenderer: isolated
 			? undefined
 			: (customType) => this.session.extensionRunner.getMessageRenderer(customType),
@@ -619,11 +625,14 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 								undefined,
 								{
 									hasTranscript: (taskId, notice) =>
-										hasTaskTranscript(getOwnerTaskStore(this.session), noticeTranscriptQuery(taskId, notice)),
+										hasTaskTranscript(
+											getOwnerTaskStore(this.session),
+											noticeTranscriptQuery(taskId, notice, this.session.sessionId),
+										),
 									loadTranscript: (taskId, notice) =>
 										loadTaskTranscript(
 											getOwnerTaskStore(this.session),
-											noticeTranscriptQuery(taskId, notice),
+											noticeTranscriptQuery(taskId, notice, this.session.sessionId),
 										),
 									getToolDefinition: (toolName) => this.getRegisteredToolDefinition(toolName),
 									cwd: this.sessionManager.getCwd(),

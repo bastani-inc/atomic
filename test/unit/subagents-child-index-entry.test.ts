@@ -16,6 +16,7 @@ import {
 	observeSubagentChildRecord,
 	readableSubagentChildRecordOf,
 	registerSubagentChildRecordReader,
+	savedSubagentTranscripts,
 	settleSubagentChildRecord,
 	subagentChildCardRecord,
 	subagentChildCardStateSizes,
@@ -413,6 +414,36 @@ describe("a released child's index entry (#4395)", () => {
 		assert.equal(subagentChildCardRecord(undefined, "ix-task-4")?.childId, "ix-tasks:0", "found by walking");
 		assert.equal(subagentChildCardRecord(undefined, "ix-task-unknown"), undefined);
 		assert.equal(subagentChildCardRecord("ix-tasks:0", "ix-task-unknown")?.childId, "ix-tasks:0");
+	});
+
+	test("releasing the same child under new wake task IDs retains no task aliases, even after rebind (#4395)", async () => {
+		const owner = session();
+		const before = subagentChildCardStateSizes();
+		const sink = createSubagentChildRecordSink(writingHost(owner), { sessionManager: owner });
+		assert.ok(sink.flushed);
+		for (let i = 0; i < 128; i++) {
+			const row = input({
+				runId: "ix-woken",
+				taskId: `ix-wake-${i}`,
+				task: `wake ${i}`,
+				childSessionId: "ix-woken-session",
+			});
+			sink.record(row);
+			sink.record({ ...row, state: "terminal", terminalStatus: "released" });
+			await sink.flushed();
+		}
+		for (const bind of [false, true]) {
+			if (bind) bindSubagentChildCards({ sessionManager: owner });
+			assert.equal(
+				savedSubagentTranscripts(owner).has({ taskId: "ix-wake-0", agentName: "worker", subject: "wake 0" }),
+				true,
+				"the first attempt is still discoverable from its saved record",
+			);
+			const after = subagentChildCardStateSizes();
+			assert.equal(after.records, before.records + 1);
+			assert.equal(after.taskIds, before.taskIds);
+			assert.equal(after.otherIndexKeys, before.otherIndexKeys, "no other strong map retains those task numbers");
+		}
 	});
 
 	test("a copy shadowed by the owner's own record indexes none of its task ids", async () => {

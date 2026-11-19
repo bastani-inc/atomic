@@ -520,8 +520,8 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 		hasTaskTranscript: (taskId: TaskId, notice?: TaskCompletionNotice) => {
 			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);
-			const task = noticeTranscriptQuery(taskId, notice);
-			if (store?.resolveTask(taskId).ok && hasTaskTranscript(store, task)) return true;
+			const task = noticeTranscriptQuery(taskId, notice, session?.sessionManager.getSessionId());
+			if (session && hasTaskTranscript(store, task)) return true;
 			// A task gone from this process, as after a restart, shows what was saved of it.
 			return inherited?.hasTaskTranscript
 				? inherited.hasTaskTranscript(taskId, notice)
@@ -530,8 +530,8 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 		loadTaskTranscript: async (taskId: TaskId, notice?: TaskCompletionNotice) => {
 			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);
-			const task = noticeTranscriptQuery(taskId, notice);
-			if (store?.resolveTask(taskId).ok && hasTaskTranscript(store, task)) return loadTaskTranscript(store, task);
+			const task = noticeTranscriptQuery(taskId, notice, session?.sessionManager.getSessionId());
+			if (session && hasTaskTranscript(store, task)) return loadTaskTranscript(store, task);
 			return inherited?.loadTaskTranscript
 				? inherited.loadTaskTranscript(taskId, notice)
 				: loadTaskTranscript(undefined, task);

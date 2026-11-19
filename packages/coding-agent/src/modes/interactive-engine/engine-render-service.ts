@@ -347,9 +347,15 @@ export class EngineRenderService {
 				undefined,
 				{
 					hasTranscript: (taskId, notice) =>
-						hasTaskTranscript(getOwnerTaskStore(session), noticeTranscriptQuery(taskId, notice)),
+						hasTaskTranscript(
+							getOwnerTaskStore(session),
+							noticeTranscriptQuery(taskId, notice, session.sessionManager.getSessionId()),
+						),
 					loadTranscript: (taskId, notice) =>
-						loadTaskTranscript(getOwnerTaskStore(session), noticeTranscriptQuery(taskId, notice)),
+						loadTaskTranscript(
+							getOwnerTaskStore(session),
+							noticeTranscriptQuery(taskId, notice, session.sessionManager.getSessionId()),
+						),
 					getToolDefinition: (name) =>
 						session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
 					cwd: session.sessionManager.getCwd(),

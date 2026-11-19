@@ -11,6 +11,8 @@ import {
 /** The task a view asks about: its id, and what the view knows of it to tell it from another task with that id. */
 export interface TaskTranscriptQuery {
 	readonly taskId: string;
+	/** The session displaying this notice; another session may have reused the same task number. */
+	readonly ownerSessionId?: string;
 	/**
 	 * The operation that launched it, such as a subagent's child id. A later process numbers its tasks from the start
 	 * again, so a task id alone can name another task than the one the view is about.
@@ -21,14 +23,25 @@ export interface TaskTranscriptQuery {
 	readonly subject?: string;
 }
 
-/** What a finished task's notice knows of its task. */
-export function noticeTranscriptQuery(taskId: string, notice: TaskCompletionNotice | undefined): TaskTranscriptQuery {
-	return {
+const noticeQueries = new WeakMap<TaskCompletionNotice, TaskTranscriptQuery>();
+
+/** A stable query for the lifetime of the displayed notice, so repainting it need not repeat a legacy lookup. */
+export function noticeTranscriptQuery(
+	taskId: string,
+	notice: TaskCompletionNotice | undefined,
+	ownerSessionId?: string,
+): TaskTranscriptQuery {
+	const cached = notice && noticeQueries.get(notice);
+	if (cached && cached.taskId === taskId && cached.ownerSessionId === ownerSessionId) return cached;
+	const query = {
 		taskId,
+		...(ownerSessionId === undefined ? {} : { ownerSessionId }),
 		...(notice?.launchId === undefined ? {} : { launchId: notice.launchId }),
 		...(notice?.agentName === undefined ? {} : { agentName: notice.agentName }),
 		...(notice?.line?.subject === undefined ? {} : { subject: notice.line.subject }),
 	};
+	if (notice) noticeQueries.set(notice, query);
+	return query;
 }
 
 /**
@@ -37,12 +50,13 @@ export function noticeTranscriptQuery(taskId: string, notice: TaskCompletionNoti
  * tool calls once the task itself is gone.
  */
 export interface SavedTaskTranscripts {
+	readonly ownerSessionId?: string;
 	/** Whether a transcript of the task was saved, answered from what is in memory, without reading it. */
 	has(task: TaskTranscriptQuery): boolean;
 	/** The task's saved transcript, read when a view shows it; undefined when none was saved. */
 	load(task: TaskTranscriptQuery): Promise<TaskTranscriptHistory | undefined>;
 	/** Whether more than one task this source knows of ran under `taskId`, in this process or an earlier one. */
-	ranAsSeveral?(taskId: string): boolean;
+	ranAsSeveral?(taskId: string, notice: TaskTranscriptQuery): boolean;
 }
 
 // One registry per process, whichever loader loaded this module: the extension that registers and the views that read
@@ -53,6 +67,17 @@ function sources(): Set<SavedTaskTranscripts> {
 	const scope = globalThis as { [SOURCES]?: Set<SavedTaskTranscripts> };
 	scope[SOURCES] ??= new Set();
 	return scope[SOURCES];
+}
+
+function* sourcesFor(task: TaskTranscriptQuery): Iterable<SavedTaskTranscripts> {
+	for (const source of sources()) {
+		if (
+			task.ownerSessionId === undefined ||
+			source.ownerSessionId === undefined ||
+			source.ownerSessionId === task.ownerSessionId
+		)
+			yield source;
+	}
 }
 
 /** Lets views read saved transcripts from `source`; returns the function that stops it. */
@@ -71,10 +96,9 @@ function runningTask(store: OwnerTaskStore | undefined, task: TaskTranscriptQuer
 	if (task.launchId !== undefined) return record?.launchOperationId === task.launchId ? lease.value : undefined;
 	// An older notice names no launch: a running task of another agent or title is not the one it is about, and when
 	// several tasks ran under its id, the running one cannot be told from the others.
-	for (const source of sources()) if (source.ranAsSeveral?.(task.taskId)) return undefined;
-	if (record === undefined) return lease.value;
-	if (task.agentName !== undefined && record.agentName !== task.agentName) return undefined;
-	if (task.subject !== undefined && noticeSubject(record.title) !== task.subject) return undefined;
+	if (record && task.agentName !== undefined && record.agentName !== task.agentName) return undefined;
+	if (record && task.subject !== undefined && noticeSubject(record.title) !== task.subject) return undefined;
+	for (const source of sourcesFor(task)) if (source.ranAsSeveral?.(task.taskId, task)) return undefined;
 	return lease.value;
 }
 
@@ -85,7 +109,7 @@ function runningTask(store: OwnerTaskStore | undefined, task: TaskTranscriptQuer
 export function hasTaskTranscript(store: OwnerTaskStore | undefined, task: TaskTranscriptQuery): boolean {
 	const lease = runningTask(store, task);
 	if (lease !== undefined) return taskTranscriptSource(lease).ok;
-	for (const source of sources()) if (source.has(task)) return true;
+	for (const source of sourcesFor(task)) if (source.has(task)) return true;
 	return false;
 }
 
@@ -99,7 +123,7 @@ export async function loadTaskTranscript(
 ): Promise<TaskTranscriptHistory | undefined> {
 	const lease = runningTask(store, task);
 	if (lease !== undefined) return loadTaskOwnTranscriptHistory(lease);
-	for (const source of sources()) {
+	for (const source of sourcesFor(task)) {
 		if (!source.has(task)) continue;
 		const saved = await source.load(task);
 		if (saved !== undefined) return saved;
