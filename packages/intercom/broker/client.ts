@@ -92,6 +92,7 @@ import {
 export const BROKER_CONNECT_TIMEOUT_MS = 10_000;
 /** How long an acknowledged pending-stage route registration waits for the broker's answer. */
 export const PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS = 10_000;
+let reportedConnectionLevelRetirement = false;
 const GROUP_REQUEST_TIMEOUT_MS = 5000;
 const PRESENCE_ACK_TIMEOUT_MS = 5000;
 const RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS = 5000;
@@ -493,6 +494,7 @@ export class IntercomClient extends EventEmitter {
 	private readonly heardOutcomes = new Map<string, "heard" | "saved">();
 	/** The broker of the current registration answers a pending-stage route registration that carries a `requestId`. */
 	private brokerAcknowledgesPendingStageRoutes = false;
+	private brokerWithdrawsPendingStageRoutes = false;
 	private readonly multiplexesPendingStageRoutes: boolean;
 	/** #3906: the broker of the current registration refuses a pending-stage route without ending the connection. */
 	private brokerRefusesPendingStageRoutesInPlace = false;
@@ -801,6 +803,7 @@ export class IntercomClient extends EventEmitter {
         this._supervisorSessionId = null;
         this.brokerAcknowledgesReceipt = false;
         this.brokerAcknowledgesPendingStageRoutes = false;
+        this.brokerWithdrawsPendingStageRoutes = false;
         this.brokerRefusesPendingStageRoutesInPlace = false;
         this.brokerAnswersStatus = false;
         this._multiNodeRouting = undefined;
@@ -943,6 +946,7 @@ export class IntercomClient extends EventEmitter {
           || (brokerMessage.supervisorSessionId !== undefined && typeof brokerMessage.supervisorSessionId !== "string")
           || (brokerMessage.acknowledgesReceipt !== undefined && brokerMessage.acknowledgesReceipt !== true)
           || (brokerMessage.acknowledgesPendingStageRoutes !== undefined && brokerMessage.acknowledgesPendingStageRoutes !== true)
+          || (brokerMessage.withdrawsPendingStageRoutes !== undefined && brokerMessage.withdrawsPendingStageRoutes !== true)
           || (brokerMessage.refusesPendingStageRoutesInPlace !== undefined && brokerMessage.refusesPendingStageRoutesInPlace !== true)
           || (brokerMessage.brokerStatus !== undefined && brokerMessage.brokerStatus !== true)
           || (brokerMessage.claimsWorkflowInvocations !== undefined && brokerMessage.claimsWorkflowInvocations !== true)
@@ -984,6 +988,7 @@ export class IntercomClient extends EventEmitter {
           if (heard === "heard" && this.acknowledgesReceipt) this.heardOutcomes.delete(messageId);
         }
         this.brokerAcknowledgesPendingStageRoutes = brokerMessage.acknowledgesPendingStageRoutes === true;
+        this.brokerWithdrawsPendingStageRoutes = brokerMessage.withdrawsPendingStageRoutes === true;
         this.brokerRefusesPendingStageRoutesInPlace = brokerMessage.refusesPendingStageRoutesInPlace === true;
         this.brokerAnswersStatus = brokerMessage.brokerStatus === true;
         this._multiNodeRouting = brokerMessage.multiNodeRouting as BrokerMultiNodeStatus["status"] | undefined;
@@ -2029,9 +2034,11 @@ export class IntercomClient extends EventEmitter {
 	parent?: WorkflowRunParentAnnouncement,
 	dormant?: boolean,
 	launcherCapability?: string,
+	generation?: string,
   ): void {
 	writeMessage(this.requireActiveSocket(), {
 		type: "register_pending_stage_route",
+		...(this.brokerWithdrawsPendingStageRoutes ? { generation } : {}),
 		runId,
 		group,
 		capability,
@@ -2058,6 +2065,7 @@ export class IntercomClient extends EventEmitter {
 		dormant?: boolean,
 		/** #4006: the launcher-only secret, held by the process that launched the run and never by its stages. */
 		launcherCapability?: string,
+		generation?: string,
 	): Promise<void> {
 		let socket: net.Socket;
 		try {
@@ -2067,7 +2075,7 @@ export class IntercomClient extends EventEmitter {
 		}
 		if (!this.brokerAcknowledgesPendingStageRoutes) {
 			try {
-				this.registerPendingStageRoute(runId, group, capability, stages, possibleStages, parent, dormant, launcherCapability);
+				this.registerPendingStageRoute(runId, group, capability, stages, possibleStages, parent, dormant, launcherCapability, generation);
 			} catch (error) {
 				return Promise.reject(toError(error));
 			}
@@ -2109,6 +2117,7 @@ export class IntercomClient extends EventEmitter {
 				writeMessage(socket, {
 					type: "register_pending_stage_route",
 					requestId,
+					...(this.brokerWithdrawsPendingStageRoutes ? { generation } : {}),
 					runId,
 					group,
 					capability,
@@ -2128,6 +2137,38 @@ export class IntercomClient extends EventEmitter {
 			}
 		});
 	}
+
+  /** Retire one registration without closing a connection that carries other runs. */
+  async withdrawPendingStageRoute(runId: string, generation: string): Promise<void> {
+    if (!this.isConnected()) return; // Closing the socket already retires every registration it owned.
+    if (!this.brokerWithdrawsPendingStageRoutes) {
+      if (!reportedConnectionLevelRetirement) {
+        reportedConnectionLevelRetirement = true;
+        console.warn("The running Intercom broker retires workflow routes only when their connection closes. Run `atomic intercom restart` to enable individual route retirement.");
+      }
+      return;
+    }
+    const socket = this.requireActiveSocket();
+    const requestId = randomUUID();
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        void this.requestTimeout(socket, new Error("Pending-stage route withdrawal timeout")).then((error) => {
+          if (this.pendingStageRouteRegistrations.delete(requestId)) reject(error);
+        });
+      }, PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS);
+      this.pendingStageRouteRegistrations.set(requestId, {
+        resolve: () => { clearTimeout(timeout); resolve(); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, { type: "withdraw_pending_stage_route", requestId, runId, generation });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingStageRouteRegistrations.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
 
   /**
    * #4006: prove with the run's launcher capability (registered with the run's route, never given to its

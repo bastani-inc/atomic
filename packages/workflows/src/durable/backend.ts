@@ -469,6 +469,7 @@ export interface DurableWorkflowBackend {
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
 		runGeneration?: number,
+		finishSequence?: number,
 	): Promise<void>;
 	/**
 	 * Atomically update status only when the authoritative status is expected.
@@ -752,6 +753,7 @@ class JournalProjection {
 			...((handle.runGeneration ?? existing?.handle.runGeneration) !== undefined
 				? { runGeneration: Math.max(handle.runGeneration ?? 0, existing?.handle.runGeneration ?? 0) }
 				: {}),
+			...(handle.finishSequence === undefined ? {} : { finishSequence: handle.finishSequence }),
 			...((handle.definitionSource ?? existing?.handle.definitionSource) !== undefined
 				? { definitionSource: handle.definitionSource ?? existing?.handle.definitionSource }
 				: {}),
@@ -1164,6 +1166,7 @@ class JournalProjection {
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
 		runGeneration?: number,
+		finishSequence?: number,
 	): void {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return;
@@ -1182,6 +1185,7 @@ class JournalProjection {
 				? {}
 				: { runGeneration: Math.max(runGeneration, rec.handle.runGeneration ?? 0) }),
 			status,
+			finishSequence: finishSequence ?? (status === rec.handle.status ? rec.handle.finishSequence : undefined),
 			transitionClaimId: status === rec.handle.status ? rec.handle.transitionClaimId : crypto.randomUUID(),
 			updatedAt: Math.max(Date.now(), rec.handle.updatedAt + 1),
 			...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
@@ -1221,6 +1225,7 @@ class JournalProjection {
 			status: h.status,
 			...(h.transitionClaimId !== undefined ? { transitionClaimId: h.transitionClaimId } : {}),
 			...(h.runGeneration !== undefined ? { runGeneration: h.runGeneration } : {}),
+			...(h.finishSequence !== undefined ? { finishSequence: h.finishSequence } : {}),
 			createdAt: h.createdAt,
 			completedCheckpoints: h.completedCheckpoints,
 			pendingPrompts: h.pendingPrompts,

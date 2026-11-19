@@ -89,7 +89,7 @@ const SnapshotSettingsSchema = Type.Object({
 	autoCollect: Type.Optional(
 		Type.Boolean({
 			description:
-				"Delete snapshot blobs that no retained snapshot references when a session closes or a workflow run finishes.",
+				"Delete snapshot blobs that no retained snapshot references, in the background of an interactive session, after a session closes, and when a workflow run finishes.",
 			default: SETTINGS_DEFAULTS.snapshots.autoCollect,
 		}),
 	),

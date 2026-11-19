@@ -14,7 +14,7 @@ import {
 import { colorEnvironment } from "../theme/color-utils.ts";
 import { isUserPromptRow } from "./jump-to-latest.ts";
 import { disposeRenderer as disposeComponent } from "./renderer-disposal.js";
-import { type ClickExpandableBlock, clickedBlocks } from "./transcript-block-clicks.ts";
+import { type ClickExpandableBlock, clickUnit, isClickExpandableBlock } from "./transcript-block-clicks.ts";
 import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**
@@ -288,7 +288,13 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	clickedEntries(
 		width: number,
 		row: number,
-	): { readonly entries: readonly TEntry[]; readonly blocks: readonly ClickExpandableBlock[] } | undefined {
+	):
+		| {
+				readonly target: TEntry;
+				readonly entries: readonly TEntry[];
+				readonly blocks: readonly ClickExpandableBlock[];
+		  }
+		| undefined {
 		const painted = this.paintedLayout;
 		if (!this.supportsRowWindow || row < 0 || painted === undefined || painted.width !== width) return undefined;
 		// The rows as last drawn, which is what the reader saw: entries that arrived since are not drawn yet.
@@ -298,8 +304,23 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		if (block === undefined) return undefined;
 		const bodyRow = row - (painted.starts[index] ?? 0) - (block.spaced ? 1 : 0);
 		if (bodyRow < 0 || bodyRow >= block.body.length) return undefined;
+		if (!isClickExpandableBlock(block.component)) return undefined;
+		const area = block.component.clickArea(width);
+		if (!area || bodyRow < area.start || bodyRow >= area.end) return undefined;
+		return this.clickGroupAt(blocks, index);
+	}
+
+	/** The target's current group and data, at the width of the body that will expand. */
+	currentClickGroup(width: number, entry: TEntry) {
+		this.measureRows(width);
+		return this.clickGroupAt(this.blockCache, this.entries.indexOf(entry));
+	}
+
+	private clickGroupAt(blocks: readonly (CachedChatTranscriptBlock<TEntry> | undefined)[], index: number) {
+		const target = blocks[index]?.entry;
+		if (target === undefined) return undefined;
 		const components = blocks.map((candidate) => candidate?.component ?? EMPTY_COMPONENT);
-		const unit = clickedBlocks(components, index, width, bodyRow);
+		const unit = clickUnit(components, index);
 		if (unit === undefined) return undefined;
 		const entryOf = new Map<Component, TEntry>();
 		for (const candidate of blocks) if (candidate !== undefined) entryOf.set(candidate.component, candidate.entry);
@@ -307,7 +328,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 			const entry = entryOf.get(component);
 			return entry === undefined ? [] : [entry];
 		});
-		return { entries, blocks: unit };
+		return { target, entries, blocks: unit };
 	}
 
 	requestEntryRender(entry: TEntry): void {
@@ -822,6 +843,11 @@ export class ScrollableComponentViewport implements Component {
 			stackRow -= rows;
 		}
 		return undefined;
+	}
+
+	/** The content width the last frame gave its transcript, after reserving any scrollbar. */
+	get paintedContentWidth(): number {
+		return this.lastWidth;
 	}
 
 	/** The first stack row the last frame drew, for holding the view where it is. */
