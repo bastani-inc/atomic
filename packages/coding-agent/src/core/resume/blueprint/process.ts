@@ -222,15 +222,16 @@ export async function runLoggedProcess(
 			}
 			killChildProcessTree(child, exited);
 		};
-		// A positive fraction still admits a retry, but timers take whole milliseconds. Node turns an overflow into 1 ms.
-		const delayMs = Math.floor(options.timeoutMs - waitedMs);
-		const timer = setTimeout(
-			() => {
-				timedOut = true;
-				stop();
-			},
-			delayMs >= 1 ? Math.min(delayMs, MAX_TIMER_MS) : 1,
-		);
+		const { timeoutMs } = options;
+		const remainingMs = Math.max(0, timeoutMs - waitedMs);
+		// Clamp finite budgets to the timer range, but let the runtime diagnose an invalid timeout itself.
+		const delayMs = Number.isFinite(timeoutMs)
+			? Math.max(1, Math.min(MAX_TIMER_MS, Math.floor(remainingMs)))
+			: remainingMs;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			stop();
+		}, delayMs);
 		const onAbort = () => stop();
 		if (copiesOutput) {
 			const fail = (what: string, error: Error) => {
