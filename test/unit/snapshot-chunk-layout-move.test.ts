@@ -106,6 +106,7 @@ afterEach(async () => {
 function afterEachTransaction(database: SqliteDatabase, afterCommit: () => void | Promise<void>): SqliteDatabase {
 	return {
 		descriptor: database.descriptor,
+		freeBytes: database.freeBytes?.bind(database),
 		exec: database.exec.bind(database),
 		run: database.run.bind(database),
 		get: database.get.bind(database),
@@ -126,6 +127,7 @@ function afterEachTransaction(database: SqliteDatabase, afterCommit: () => void 
 function underPageLimit(database: SqliteDatabase, limit: () => number): SqliteDatabase {
 	return {
 		descriptor: database.descriptor,
+		freeBytes: database.freeBytes?.bind(database),
 		exec: database.exec.bind(database),
 		run: database.run.bind(database),
 		get: database.get.bind(database),
@@ -612,6 +614,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 					const paused: SqliteDatabase = {
 						...database,
 						descriptor: database.descriptor,
+						freeBytes: database.freeBytes?.bind(database),
 						exec: database.exec.bind(database),
 						run: database.run.bind(database),
 						all: database.all.bind(database),
@@ -731,6 +734,22 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				reportedFree.bytes = needed;
 				await store.collectGarbage({ graceSeconds: 3_600 });
 				assert.equal(await layoutOf(database), "rowid", "room enough: the move");
+			});
+
+			test("a database whose free-space reading fails is collected as one whose disk Atomic cannot see (#5694)", async () => {
+				const database = await release0989Store();
+				const before = await chunkRows(database);
+				const unreadable: SqliteDatabase = {
+					...afterEachTransaction(database, () => {}),
+					freeBytes: () => Promise.reject(new Error("the file system did not answer")),
+				};
+				const store = await SqlSnapshotBlobStore.open(unreadable, prefix);
+				assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), []);
+				// What is left to copy is within the headroom, which a database whose disk Atomic cannot see moves.
+				assert.equal(await layoutOf(database), "rowid");
+				assert.deepEqual(await chunkTables(database), [chunks]);
+				assert.deepEqual(await chunkRows(database), before);
+				await assertEveryBlobReads(store, STORED, "this version");
 			});
 		});
 	}

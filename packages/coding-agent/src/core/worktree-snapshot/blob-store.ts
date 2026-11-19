@@ -1,5 +1,3 @@
-import { statfs } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -288,28 +286,6 @@ function isStorageSpaceFailure(error: unknown): boolean {
 		cause = (cause as { cause?: unknown }).cause;
 	}
 	return false;
-}
-
-/**
- * The bytes this process may still write on the file system that holds a SQLite or libSQL database file (where a link
- * to it points, and where its write-ahead log goes), or undefined for a database that is no local file (a libSQL server,
- * Postgres, memory) or when the file system does not say.
- */
-async function freeBytesBeside({ adapter, location }: StorageDescriptor): Promise<number | undefined> {
-	try {
-		let path: string | undefined;
-		if (adapter === "node-sqlite") path = location;
-		else if (adapter === "libsql" && /^file:/i.test(location)) {
-			const file = location.split("?")[0] ?? "";
-			path = /^file:\/\//i.test(file) ? fileURLToPath(file) : decodeURIComponent(file.slice("file:".length));
-		}
-		if (path === undefined || path === "" || path === ":memory:") return undefined;
-		// The file itself, not its directory: a link to a database on another file system measures that file system.
-		const { bavail, bsize } = await statfs(path);
-		return Number(bavail) * Number(bsize);
-	} catch {
-		return undefined;
-	}
 }
 
 /** Rows of one referencing table that one backfill transaction indexes. */
@@ -1597,9 +1573,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Whether the file system of a SQLite or libSQL database file has room to copy what is left of the chunk table to the
 	 * row layout (#5694): the copy grows the file by the bytes its free pages do not hold, and the write-ahead log can
 	 * hold every page the copy writes until a checkpoint moves them into the file, with
-	 * {@link SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES} left over. A database whose disk this process cannot see, such as a
-	 * libSQL server, moves only what is left of a table no larger than that headroom: the move must never be what fills
-	 * a disk, and the old layout works as before.
+	 * {@link SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES} left over; the database's own `freeBytes` says how much the file system
+	 * holds. A database whose disk this process cannot see, such as a libSQL server, moves only what is left of a table
+	 * no larger than that headroom: the move must never be what fills a disk, and the old layout works as before.
 	 */
 	private async roomForChunkCopy(next: string): Promise<boolean> {
 		const rowsOf = async (table: string) =>
@@ -1627,7 +1603,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					throw error;
 				});
 		const left = rows * SNAPSHOT_BLOB_CHUNK_BYTES;
-		const free = await freeBytesBeside(this.database.descriptor);
+		let free: number | undefined;
+		try {
+			free = await this.database.freeBytes?.();
+		} catch {
+			// A reading that fails is no reading: the collection goes on as for a disk this process cannot see.
+			free = undefined;
+		}
 		if (free === undefined) return left <= SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES;
 		const freePages = await this.database.get<SqliteRow & { bytes: number }>(
 			"SELECT (SELECT freelist_count FROM pragma_freelist_count()) * (SELECT page_size FROM pragma_page_size()) AS bytes",

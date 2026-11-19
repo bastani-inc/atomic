@@ -1,5 +1,7 @@
 // @ts-check
+import { statfs } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { createSqliteDatabase, redactSecrets, StorageAdapterLoadError, switchToWriteAheadLog } from "@bastani/atomic/storage";
@@ -1271,6 +1273,26 @@ function transientFailure(failure) {
 }
 
 /**
+ * The bytes this process may still write on the file system that holds the database file a `file:` URL names (where a
+ * link to it points, and where its write-ahead log goes), or undefined for a database in memory or when the file system
+ * does not say.
+ * @param {string} url
+ * @returns {Promise<number | undefined>}
+ */
+async function freeBytesOfFile(url) {
+	try {
+		const file = url.split("?")[0] ?? "";
+		const path = /^file:\/\//i.test(file) ? fileURLToPath(file) : decodeURIComponent(file.slice("file:".length));
+		if (path === "" || path === ":memory:") return undefined;
+		// The file itself, not its directory: a link to a database on another file system measures that file system.
+		const { bavail, bsize } = await statfs(path);
+		return Number(bavail) * Number(bsize);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * @param {LibsqlDatabaseOptions} options
  * @returns {Promise<import("@bastani/atomic/storage").SqliteDatabase>}
  */
@@ -1452,6 +1474,8 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		redact,
 		transientFailure,
 		payloadLimits: local ? LOCAL_PAYLOAD_LIMITS : SERVER_PAYLOAD_LIMITS,
+		// A server's disk is not this process's to see.
+		...(local ? { freeBytes: () => freeBytesOfFile(url) } : {}),
 		// A server's batch the busy lock ended: the facade sends it again within the caller's `lockWaitMs`.
 		lockBusy: (failure) => !local && isLockBusy(failure),
 		// One statement outside a transaction, run alone or as an `exec` of one statement, that waited out the busy
