@@ -349,18 +349,21 @@ test.each(["node-sqlite", "libsql"] as const)(
 /**
  * `database`, recording from `arm()` on the statements of a collection that hold the event loop for as long as their
  * batch or their blob is large, and the turns of the event loop between them. Such a statement is a write transaction
- * (recorded when its callback ends), a statement that walks sessions, and a read of a blob's bytes. A turn counts while
- * no transaction is open, or while the callback of the open one waits between its statements; not while a transaction
- * waits for the write lock or commits.
+ * (recorded when its callback ends, with the statements it ran), a statement that walks sessions outside a write
+ * transaction, and a read of a blob's bytes. A turn counts while no transaction is open; not while a transaction waits
+ * for the write lock or commits. A turn while the callback of a write transaction runs, which holds the write lock, is
+ * recorded apart (#5530).
  */
 function heavyStatementTimeline(database: SqliteDatabase) {
 	const events: string[] = [];
 	let armed = false;
 	let transactions = 0;
 	let callbacks = 0;
+	let turnsHoldingTheWriteLock = 0;
 	const tick = () => {
 		if (!armed) return;
-		if (transactions === 0 || callbacks > 0) events.push("turn");
+		if (callbacks > 0) turnsHoldingTheWriteLock++;
+		else if (transactions === 0) events.push("turn");
 		setImmediate(tick);
 	};
 	// The statement that walks sessions follows their open leaves, which no other statement names.
@@ -368,7 +371,7 @@ function heavyStatementTimeline(database: SqliteDatabase) {
 		sql.includes("open_anchors(") ? "session walk" : /^\s*SELECT data FROM/u.test(sql) ? "blob read" : undefined;
 	const note = <T>(sql: string, result: T): T => {
 		const kind = heavy(sql);
-		if (armed && kind !== undefined) events.push(kind);
+		if (armed && kind !== undefined && callbacks === 0) events.push(kind);
 		return result;
 	};
 	const wrap = (executor: SqliteExecutor): SqliteExecutor => ({
@@ -406,7 +409,10 @@ function heavyStatementTimeline(database: SqliteDatabase) {
 			armed = true;
 			setImmediate(tick);
 		},
-		/** The pairs of heavy statements that ran with no turn between them, each as `first -> second`, in order. */
+		/**
+		 * The pairs of heavy statements that ran with no turn between them, each as `first -> second`, in order, and the
+		 * turns the event loop got while a write transaction's callback ran.
+		 */
 		stop: () => {
 			armed = false;
 			const stacked: string[] = [];
@@ -418,13 +424,13 @@ function heavyStatementTimeline(database: SqliteDatabase) {
 					previous = event;
 				}
 			}
-			return { stacked, kinds: new Set(events) };
+			return { stacked, kinds: new Set(events), turnsHoldingTheWriteLock };
 		},
 	};
 }
 
 test(
-	"a collection gives the event loop a turn between any two statements that hold it, from indexing through deleting to moving legacy blobs (#5530)",
+	"a collection gives the event loop a turn between any two statements that hold it, and none while it holds the write lock, from indexing through deleting to moving legacy blobs (#5530)",
 	async () => {
 		const store = await openSharedSnapshotDatabase(join(directory, "phases.sqlite"));
 		const lease = await startRun(store.journal, "run");
@@ -471,7 +477,7 @@ test(
 			const blobs = await SqlSnapshotBlobStore.open(timeline.database);
 			timeline.arm();
 			const deleted = await blobs.collectGarbage({ graceSeconds: 0 });
-			const { stacked, kinds } = timeline.stop();
+			const { stacked, kinds, turnsHoldingTheWriteLock } = timeline.stop();
 
 			assert.deepEqual([...deleted].sort(), [...dropped, ...orphans].map((blob) => blob.hash).sort());
 			assert.deepEqual(
@@ -480,6 +486,7 @@ test(
 				"the collection indexed, walked sessions, deleted, stamped and moved",
 			);
 			assert.deepEqual(stacked, [], "statements that ran in one turn of the event loop");
+			assert.equal(turnsHoldingTheWriteLock, 0, "turns of the event loop while a write transaction held the lock");
 		} finally {
 			await store.database.close();
 		}

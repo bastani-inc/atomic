@@ -136,10 +136,11 @@ const PAGE = { statements: 3 } as const;
  */
 const WALK = { statements: 2 } as const;
 /**
- * Each delete batch's transaction after its index check: the sessions naming its blobs, what walking them costs, the
- * blobs of the batch their retained snapshots name, and the delete (#5530).
+ * Each delete batch's transaction after its index check: one statement for the blobs of the batch it keeps, those the
+ * retained snapshots of the sessions the sweep walked for them name and those another session names, and the delete
+ * (#5530).
  */
-const BATCH = { statements: 4 } as const;
+const BATCH = { statements: 2 } as const;
 
 const summary = (measured: { statements: readonly CountedStatement[]; rows: number; transactions: number }) => ({
 	statements: measured.statements.length,
@@ -167,12 +168,12 @@ describe("collection cost follows the number of snapshots, never the number of j
 		assert.deepEqual(summary(after.fullScan), { statements: 90, rows: 40_027, transactions: 1 });
 		// At either length, collection checks the index twice and reads one page of the 16 aged blobs. It keeps the 8 the
 		// failed run retains, walks the one session that names 4 of the other 8 and keeps the 1 its latest snapshot
-		// retains, and deletes the other 7 in one batch, which walks that session again in its transaction.
+		// retains, and deletes the other 7 in one batch, which walks that session again in one statement of its transaction.
 		for (const { collection } of measured) {
 			assert.deepEqual(summary(collection), {
 				statements:
 					2 * INDEX_CHECK.statements + AGE_CHECK.statements + PAGE.statements + WALK.statements + BATCH.statements,
-				rows: 2 * INDEX_CHECK.rows + AGE_CHECK.rows + (16 + 8 + 4) + (1 + 1) + (1 + 1 + 0 + 7),
+				rows: 2 * INDEX_CHECK.rows + AGE_CHECK.rows + (16 + 8 + 4) + (1 + 1) + (0 + 7),
 				transactions: 1,
 			});
 			assert.equal(collection.result.deleted.length, 7);
@@ -234,40 +235,32 @@ describe("collection cost follows the number of snapshots, never the number of j
 		assert.deepEqual(summary(small), {
 			statements:
 				2 * INDEX_CHECK.statements + AGE_CHECK.statements + PAGE.statements + WALK.statements + BATCH.statements,
-			rows: 2 * INDEX_CHECK.rows + AGE_CHECK.rows + (16 + 8 + 4) + (1 + 1) + (1 + 1 + 0 + 7),
+			rows: 2 * INDEX_CHECK.rows + AGE_CHECK.rows + (16 + 8 + 4) + (1 + 1) + (0 + 7),
 			transactions: 1,
 		});
 		assert.equal(large.result.deleted.length, 150 + 149);
 		// Three pages hold the 600 aged blobs: 300 of them the failed run keeps, and the one session names 150 of the
 		// other 300. The 299 the rest leaves are deleted in batches of at most SNAPSHOT_COLLECTION_DELETE_BATCH, a page's
-		// last batch possibly smaller. The session is walked once to nominate and again in each batch that names it.
+		// last batch possibly smaller.
 		const pages = Math.ceil(600 / SNAPSHOT_COLLECTION_BATCH);
 		const deletes = large.statements.filter((statement) => statement.sql.startsWith("DELETE"));
 		const batches = deletes.length;
 		assert.ok(deletes.every((statement) => statement.rows <= SNAPSHOT_COLLECTION_DELETE_BATCH));
 		assert.ok(batches >= Math.ceil(299 / SNAPSHOT_COLLECTION_DELETE_BATCH));
 		assert.ok(batches <= Math.ceil(299 / SNAPSHOT_COLLECTION_DELETE_BATCH) + pages - 1);
-		// Each batch checks the index, reads the sessions naming its blobs and deletes, in its transaction; a batch that
-		// the session names also reads what walking it costs and the blobs of the batch it retains (none).
-		const namedBatches =
-			large.statements.filter((statement) => statement.sql.startsWith("SELECT DISTINCT record.hash")).length - 1;
-		assert.ok(namedBatches > 0 && namedBatches <= batches);
+		// Each batch checks the index, finds the blobs of the batch it keeps (none) and deletes, in its transaction. The
+		// session is walked once to nominate; then one statement of each batch's transaction walks the sessions the sweep
+		// walked for the batch's blobs: that session, or none for a batch of blobs no session names (#5530).
+		const walks = large.statements.filter((statement) => statement.sql.includes("open_anchors(")).length;
+		assert.equal(walks, 1 + batches);
 		assert.deepEqual(summary(large), {
 			statements:
 				INDEX_CHECK.statements +
 				AGE_CHECK.statements +
 				pages * PAGE.statements +
 				WALK.statements +
-				batches * (INDEX_CHECK.statements + 2) +
-				namedBatches * 2,
-			rows:
-				INDEX_CHECK.rows +
-				AGE_CHECK.rows +
-				(600 + 300 + 150) +
-				(1 + 1) +
-				batches * INDEX_CHECK.rows +
-				namedBatches * (1 + 1 + 0) +
-				299,
+				batches * (INDEX_CHECK.statements + BATCH.statements),
+			rows: INDEX_CHECK.rows + AGE_CHECK.rows + (600 + 300 + 150) + (1 + 1) + batches * INDEX_CHECK.rows + 299,
 			transactions: batches,
 		});
 	});
