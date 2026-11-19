@@ -35,6 +35,11 @@ export function createParallelPrimitive(input: {
 	 * forked steps are, before it starts any step (#5481).
 	 */
 	readonly durable?: DurableLaunchRun;
+	/**
+	 * False in a run resumed from a record that has results but no launch-time keys, such as one an earlier release
+	 * started: its steps take their replay keys when they start, as they were recorded, so the run finds its results.
+	 */
+	readonly reservesStepKeys?: boolean;
 }): (steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions) => Promise<WorkflowTaskResult[]> {
 	return async (
 		steps: readonly WorkflowTaskStep[],
@@ -77,7 +82,9 @@ export function createParallelPrimitive(input: {
 		const replayKeys = new Map(
 			launchedSteps.map((step) => [
 				step,
-				durable === undefined ? undefined : reserveTaskReplayKey(durable.nextReplayKey, step.name),
+				durable === undefined || input.reservesStepKeys === false
+					? undefined
+					: reserveTaskReplayKey(durable.nextReplayKey, step.name),
 			]),
 		);
 		// One fork point for the whole parallel: a step that waits for a slot, or starts after the run resumed, forks

@@ -22,6 +22,7 @@ import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { initializeDurableBackendReadingSettings } from "../durable/factory.js";
 import { JournalDurableBackend, JournalOwnershipError } from "../durable/journal/journal-backend.js";
+import { launchReplayKeys } from "../durable/launch-replay-keys.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
 import {
@@ -1334,11 +1335,38 @@ async function executeRun(
 			return stage;
 		},
 	});
-	const gatedTask: typeof durableTask = (...args) => whenRunning(() => durableTask(...args));
+	// A run resumed from a record that has results but no launch-time keys, such as one an earlier release started,
+	// keeps taking its steps' keys when they start, as it recorded its results (#5481).
+	let launchKeysRecord: Promise<void> | undefined;
+	const launchKeys = launchReplayKeys({
+		backend: durableBackend,
+		workflowId: runId,
+		priorCheckpoints,
+		nextReplayKey: (name) => stageReplayKeyGenerator(name),
+		recorded: (write) => {
+			const record = write.catch((error: unknown) => {
+				cachedStageFailure ??= error instanceof Error ? error : new Error(String(error));
+				throw cachedStageFailure;
+			});
+			launchKeysRecord = record;
+			record.then(
+				() => {
+					if (launchKeysRecord === record) launchKeysRecord = undefined;
+				},
+				() => {},
+			);
+		},
+	});
+	// A task's key can follow keys a launch took: no task starts before the run's record of that is durable, and none
+	// starts once the record failed, which fails the run.
+	const gatedTask: typeof durableTask = (...args) =>
+		whenRunning(() =>
+			launchKeysRecord === undefined ? durableTask(...args) : launchKeysRecord.then(() => gatedTask(...args)),
+		);
 	const chain = createChainPrimitive({
 		runtime,
 		task: gatedTask,
-		nextReplayKey: (name) => stageReplayKeyGenerator(name),
+		...(launchKeys === undefined ? {} : { nextReplayKey: launchKeys }),
 	});
 	const parallel = createParallelPrimitive({
 		runtime,
@@ -1346,8 +1374,9 @@ async function executeRun(
 		durable: {
 			backend: durableBackend,
 			workflowId: runId,
-			nextReplayKey: (name) => stageReplayKeyGenerator(name),
+			nextReplayKey: launchKeys ?? ((name) => stageReplayKeyGenerator(name)),
 		},
+		reservesStepKeys: launchKeys !== undefined,
 	});
 	const ui = buildExitGatedUiContext({
 		opts,

@@ -275,7 +275,7 @@ ctx.chain(
 ): Promise<WorkflowTaskResult[]>;
 ```
 
-Runs named task steps in sequence. The first missing task uses `{task}` from chain options; later missing tasks use `{previous}`. Every step takes its place in the run's record when `ctx.chain` is called, so a resumed run replays each step's own result, also when another chain with steps of the same name ran at the same time.
+Runs named task steps in sequence. The first missing task uses `{task}` from chain options; later missing tasks use `{previous}`. Every step takes its place in the run's record when `ctx.chain` is called, so a resumed run replays each step's own result, also when another chain with steps of the same name ran at the same time. A run resumed from a record that has results but no such places yet, such as a run an earlier release started, keeps giving each step its place when the step starts, as it did when it recorded its results.
 
 ### `ctx.parallel(steps, options?)`
 
@@ -286,7 +286,7 @@ ctx.parallel(
 ): Promise<WorkflowTaskResult[]>;
 ```
 
-Runs named task steps concurrently, subject to `concurrency` and `failFast`. The call snapshots the current graph frontier at fan-out, so every branch uses the same parent set even when queued or allowed to continue after a sibling failure; downstream stages depend on all settled branches. Every step takes its place in the run's record when `ctx.parallel` is called, so a resumed run replays each step's own result whatever order the steps start in, also when another parallel with steps of the same name ran at the same time.
+Runs named task steps concurrently, subject to `concurrency` and `failFast`. The call snapshots the current graph frontier at fan-out, so every branch uses the same parent set even when queued or allowed to continue after a sibling failure; downstream stages depend on all settled branches. Every step takes its place in the run's record when `ctx.parallel` is called, so a resumed run replays each step's own result whatever order the steps start in, also when another parallel with steps of the same name ran at the same time. A run resumed from a record that has results but no such places yet, such as a run an earlier release started, keeps giving each step its place when the step starts, as it did when it recorded its results.
 
 ### `ctx.workflow(definition, options?)`
 

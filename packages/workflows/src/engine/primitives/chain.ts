@@ -17,7 +17,8 @@ export function createChainPrimitive(input: {
 	/**
 	 * The run's replay keys. A chain launched in a durable run reserves its steps' keys when it is launched, so a step
 	 * that starts when the one before it ends replays its own result, also while another chain with the same step names
-	 * runs (#5481).
+	 * runs (#5481). Absent in a run resumed from a record that has results but no launch-time keys, such as one an
+	 * earlier release started: its steps take their keys when they start, as they were recorded.
 	 */
 	readonly nextReplayKey?: (name: string) => string;
 }): (steps: readonly WorkflowTaskStep[], options?: WorkflowChainOptions) => Promise<WorkflowTaskResult[]> {

@@ -26,6 +26,7 @@ import {
 	validStageGroup,
 	workflowChildFromDraft,
 } from "./completed-catalog-stage-groups.js";
+import { isLaunchReplayKeysCheckpointHash } from "./launch-replay-keys.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { resolveDurableEntry } from "./resume-runtime.js";
 import { durableRunResult, RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
@@ -54,6 +55,7 @@ function isReservedRunCheckpointHash(argsHash: string): boolean {
 		argsHash.endsWith(FORK_POINT_CHECKPOINT_SUFFIX) ||
 		argsHash.endsWith(FORK_SOURCE_CHECKPOINT_SUFFIX) ||
 		argsHash.endsWith(FAN_OUT_FORK_SOURCES_SUFFIX) ||
+		isLaunchReplayKeysCheckpointHash(argsHash) ||
 		isSubscriptionCheckpointHash(argsHash)
 	);
 }
