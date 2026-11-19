@@ -180,19 +180,21 @@ export function settledOutputsFromRecords(records: readonly TaskRecord[]): Settl
 	);
 }
 
+interface OutputExcerpt {
+	head: string;
+	shown: number;
+	total: number;
+	path?: string;
+	requestedPath?: string;
+	saveError?: string;
+}
+
 function settledOutputSection(
 	taskId: TaskId,
 	label: string,
-	output: {
-		head: string;
-		shown: number;
-		total: number;
-		path?: string;
-		requestedPath?: string;
-		saveError?: string;
-		worktreeNote?: string;
-	},
+	output: OutputExcerpt,
 	ranOn: string | undefined,
+	worktreeNote?: string,
 ): string {
 	const truncated =
 		output.shown < output.total
@@ -200,7 +202,7 @@ function settledOutputSection(
 			: "";
 	// Keep the observation in the header, not in the answer a replayed card extracts from this section.
 	const lines = [
-		`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):${output.worktreeNote ? ` ${output.worktreeNote}` : ""}`,
+		`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):${worktreeNote ? ` ${worktreeNote}` : ""}`,
 	];
 	if (ranOn) lines.push(ranOn);
 	if (output.requestedPath) lines.push(`Requested output: ${output.requestedPath}`);
@@ -227,44 +229,16 @@ function rememberTranscriptOutput(
 	if (task) transcriptOutputs.set(task, new WeakRef(part));
 }
 
-async function readSettledOutput(
+export async function readSettledOutput(
 	host: AgentTaskHost,
 	settled: SettledTaskOutput,
 	record: TaskRecord | undefined,
-	signal?: AbortSignal,
-): Promise<string | undefined> {
+): Promise<OutputExcerpt | { unavailable: string } | undefined> {
 	const output = settled.result.output;
-	const kept = output && retainedTaskOutput(output.ownerId, output.taskId);
-	const tree = kept
-		? kept.worktree
-		: record?.kind === "agent"
-			? subagentChildCardRecord(undefined, settled.taskId)
-			: undefined;
-	const observeWorktree = () => tree && observeChildWorktreeAtReply(tree.runId, tree.index, undefined, signal);
-	if (!output) {
-		const note = await observeWorktree();
-		return note ? `${settled.taskId}: ${note}` : undefined;
-	}
-	const label = subagentTaskResultLabel(settled.result);
-	// A child that ran on another model than its launch asked for says so beside its output (#4188).
-	const ranOn = ranOnModelLine(record);
-	if (kept) {
-		return settledOutputSection(
-			settled.taskId,
-			label,
-			{
-				...kept,
-				worktreeNote: await observeWorktree(),
-				shown: Math.min(kept.totalBytes, INLINE_TASK_OUTPUT_MAX_BYTES),
-				total: kept.totalBytes,
-			},
-			ranOn,
-		);
-	}
-	const unavailable = async (reason: string) =>
-		[`Output of ${settled.taskId} (${label}) is unavailable: ${reason}`, await observeWorktree()]
-			.filter(Boolean)
-			.join("\n");
+	if (!output) return undefined;
+	const kept = retainedTaskOutput(output.ownerId, output.taskId);
+	if (kept) return { ...kept, shown: Math.min(kept.totalBytes, INLINE_TASK_OUTPUT_MAX_BYTES), total: kept.totalBytes };
+	const unavailable = (reason: string) => ({ unavailable: reason });
 	const lease = host.resolveTask(settled.taskId);
 	if (!lease.ok) return unavailable(lease.error.message);
 	const head = transcriptOutputs.get(lease.value)?.deref()?.text;
@@ -275,12 +249,7 @@ async function readSettledOutput(
 		total <= INLINE_TASK_OUTPUT_MAX_BYTES &&
 		Buffer.byteLength(head) === total
 	)
-		return settledOutputSection(
-			settled.taskId,
-			label,
-			{ head, shown: total, total, worktreeNote: await observeWorktree() },
-			ranOn,
-		);
+		return { head, shown: total, total };
 	try {
 		const page = await host.ownerBinding.supervisor.readTaskOutput(lease.value, {
 			start: "0",
@@ -303,12 +272,7 @@ async function readSettledOutput(
 		const head =
 			page.value.chunks.map((chunk) => decoder.decode(chunk.bytes, { stream: true })).join("") + decoder.decode();
 		const shown = page.value.chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0);
-		return settledOutputSection(
-			settled.taskId,
-			label,
-			{ head, shown, total: Number(output.byteCount), worktreeNote: await observeWorktree() },
-			ranOn,
-		);
+		return { head, shown, total: Number(output.byteCount) };
 	} catch (error) {
 		return unavailable(error instanceof Error ? error.message : String(error));
 	}
@@ -323,14 +287,25 @@ export async function settledTaskOutputText(
 	if (!host || settled.length === 0) return "";
 	const records = ownerTaskRecords(new Set(settled.map((entry) => entry.taskId)), host);
 	const sections = await Promise.all(
-		settled.map((entry) =>
-			readSettledOutput(
-				host,
-				entry,
-				records.find((record) => record.ref.taskId === entry.taskId),
-				signal,
-			),
-		),
+		settled.map(async (entry) => {
+			const record = records.find((item) => item.ref.taskId === entry.taskId);
+			const ref = entry.result.output;
+			const kept = ref && retainedTaskOutput(ref.ownerId, ref.taskId);
+			const tree = kept
+				? kept.worktree
+				: record?.kind === "agent"
+					? subagentChildCardRecord(undefined, entry.taskId)
+					: undefined;
+			const output = await readSettledOutput(host, entry, record);
+			const note = tree && (await observeChildWorktreeAtReply(tree.runId, tree.index, undefined, signal));
+			if (!output) return note ? `${entry.taskId}: ${note}` : undefined;
+			const label = subagentTaskResultLabel(entry.result);
+			return "unavailable" in output
+				? [`Output of ${entry.taskId} (${label}) is unavailable: ${output.unavailable}`, note]
+						.filter(Boolean)
+						.join("\n")
+				: settledOutputSection(entry.taskId, label, output, ranOnModelLine(record), note);
+		}),
 	);
 	const present = sections.filter((section): section is string => section !== undefined);
 	return present.length ? `\n\n${present.join("\n\n")}` : "";

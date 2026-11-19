@@ -211,6 +211,28 @@ Review the current diff with fresh-context specialists: analyze correctness, ins
 
 Compose those review and research passes with the `subagent` tool. Treat them as parent-side recipes, not bundled slash commands.
 
+## From codemode scripts
+
+When `codemode` and `subagent` are active, `tools.subagent()` launches the same background children as a direct call. It resolves at admission, **not** at completion. Children belong to the parent session, not the script: they keep running if it returns, throws, or times out. Each child sends its completion notice to the parent. A subagent cannot use its own script to delegate further.
+
+```js
+const { tasks } = await tools.subagent({
+  tasks: [{ agent: "worker", task: "Check the examples" }, { agent: "worker", task: "Check the links" }],
+  group: true,
+});
+store("checks", tasks);
+return tasks;
+```
+
+A single `{ agent, task }` launch returns the same `{ action: "launch", tasks }` shape. Each admitted slot has `agent`, `state` (`admitted` or `queued`), a `taskId` for this attempt, a stable `childId`, and an `intercomTarget` when messaging is available. Children in the same group can message each other. A refused slot has `state: "refused"` and a `reason`; failures before admission can reject the whole call. Do not retry successful siblings.
+
+- `list` returns executable `agents`; `get` with `agent` returns matching `definitions`. `models` returns the configured catalog, with `fullId`, `isCurrent`, and `availableThinkingLevels`. Creating, updating, and deleting definitions requires a direct tool call.
+- `status` returns `children` launched by this session, including their state and an available `resumeCall`. Pass `id` for one child. After reopening the parent, rediscover its children this way instead of repeating a launch, even if the script failed before storing its receipt.
+- `wait` takes a **task** id and optional `budgetMs` (the owner's agent wait budget, normally 30 seconds; `0` checks immediately). A script deadline can stop it sooner. An owner configured to wait indefinitely uses a 30-second default in scripts. An `outcome` of `settled` includes `result.status` and available output; `outputPath`, when present, points to the full output beyond the excerpt. `running` means observation yielded; ending a wait or interrupting its script does not stop the child.
+- `pause` and `quit` take `id` or `all: true` for this session's children. `resume` takes `id` and an optional `message`; it continues the child's saved session and returns the new task id in `children`. Use `id`, not the legacy `runId` alias, from scripts.
+
+For temporary worktrees, `status` can show `finishing` while `wait` still returns `running`. A `worktreeNote` on a status row or wait reply, or `worktreeNotes` on a stop reply, tells you when cleanup is pending or another child still holds the batch. Do not remove the directory while either is true. These notes are separate from the child's output.
+
 ## Waiting and control
 
 A launch returns once its children are admitted. To use a child's result in the same turn, wait for it explicitly; the wait ends when the child settles, when its budget runs out, or when you press Esc, and the child keeps running in the last two cases.
@@ -361,7 +383,7 @@ After a confirmed `x` stop settles, the owning chat receives a **quit · awaitin
 
 Atomic applies the same delegation policy to any parent chat or workflow stage that orchestrates subagents. A named agent uses the model and fallback sequence declared by its agent definition, so the orchestrator normally omits the subagent tool's explicit `model` argument. An override needs either the user's exact model request or a documented task-specific reason recorded before launch; model diversity alone is not enough.
 
-When a task needs a specific model, the orchestrator calls `workflow({ action: "models" })` when that tool is available. It may pin only a returned `fullId` and may add a thinking suffix only when the model entry lists that level. When the catalog tool is unavailable, the catalog is empty, or no catalog model fits, the child stays unpinned and the orchestrator reports the limit instead of inventing a model or inspecting credentials.
+When a task needs a specific model, the orchestrator calls `subagent({ action: "models" })`. It may pin only a returned `fullId` and may add a thinking suffix only when the model entry lists that level. When the catalog tool is unavailable, the catalog is empty, or no catalog model fits, the child stays unpinned and the orchestrator reports the limit instead of inventing a model or inspecting credentials.
 
 Each workflow invocation automatically receives one stable, non-`"default"` Intercom group as typed admission policy. Its stages and delegated children carry that group across single, parallel, and follow-up work unless a call explicitly overrides `group`. Outside workflows, children inherit the launching session's resolved group. This isolates workflow runs from unrelated runs and the main chat while `contact_supervisor` retains its authorized cross-group route.
 

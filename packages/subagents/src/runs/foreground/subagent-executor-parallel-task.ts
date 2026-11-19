@@ -30,7 +30,7 @@ import { runOwnerlessChild } from "./ownerless-children.js";
 import { boundedWorktreeReply, type registerRunWorktrees } from "./run-worktrees.js";
 import { holdStartingChild, type StartingChildHold } from "./subagent-child-hold.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
-import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
+import { isScriptSubagentCall, type SubagentExecutorRuntimeDeps, type TaskParam } from "./subagent-executor-types.js";
 import { resolveParallelTaskCwd } from "./subagent-executor-worktree.js";
 import { runAgentTask } from "./task-execution.js";
 
@@ -337,6 +337,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			runOptions.intercomDetachSignal = undefined;
 			runOptions.onIntercomDetachCommit = undefined;
 			let terminalChild: SingleResult | undefined;
+			if (isScriptSubagentCall(input.ctx)) input.signal.throwIfAborted();
 			const response = await runAgentTask({
 				host,
 				cwd: input.ctx.cwd,

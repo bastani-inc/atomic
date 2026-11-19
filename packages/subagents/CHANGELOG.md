@@ -6,6 +6,10 @@
 
 - A managed worktree child's terminal report now means Atomic has finished using its directory. Extensions that unblock Git filters or pause reservations must listen for `subagent:finishing` instead of waiting for the terminal report. Atomic's cleanup Git commands set `ATOMIC_SUBAGENT_WORKTREE_PHASE=finishing`. A filter that waits for terminal without switching can still stall; the tool reports pending cleanup, not a finished task ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 
+### Added
+
+- Codemode scripts can launch single or parallel subagents, get task IDs immediately, observe or control their session's children, and resume a child from its saved session. Scripts can inspect agent definitions and the configured model catalog; creating or changing definitions still requires a direct call.
+
 ### Fixed
 
 - Temporary worktree children now report completion, pause, or quit after cleanup rather than while Atomic still has the directory open. The reply explains when a sibling keeps the batch open or cleanup continues in the background; Esc still ends the wait immediately ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).

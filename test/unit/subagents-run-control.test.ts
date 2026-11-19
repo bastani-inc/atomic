@@ -3858,6 +3858,29 @@ test("a filter helper can use finishing without waiting for the child's complete
 		);
 		assert.notEqual(taskExecutionKind(h, taskId), "settled");
 		assert.equal(h.latest(child.childId)?.state, "running");
+		const script = createSubagentExecutor(h.deps);
+		const scriptContext = { ...h.ctx, parentToolCallId: "codemode" };
+		const scriptWait = (budgetMs: number) =>
+			script.execute(
+				"script-wait",
+				{ action: "wait", id: taskId, budgetMs },
+				new AbortController().signal,
+				undefined,
+				scriptContext,
+			);
+		const pending = JSON.parse(text(await scriptWait(0)));
+		assert.equal(pending.outcome, "running");
+		assert.match(pending.worktreeNote, /cleanup continues in the background/i);
+		const status = await script.execute(
+			"script-status",
+			{ action: "status", id: taskId },
+			new AbortController().signal,
+			undefined,
+			scriptContext,
+		);
+		const [scriptChild] = JSON.parse(text(status)).children;
+		assert.equal(scriptChild.state, "finishing");
+		assert.equal(scriptChild.resumable, false);
 		const lateStop = h.host.cancelTask(taskId as TaskId, "user");
 		filter.release();
 		await completion;
@@ -3869,6 +3892,10 @@ test("a filter helper can use finishing without waiting for the child's complete
 		);
 		const published = await h.host.waitForTask(taskId as TaskId);
 		assert.ok(published.ok && published.value.kind === "settled" && published.value.result.kind === "completed");
+		const scriptReply = JSON.parse(text(await scriptWait(0)));
+		assert.equal(scriptReply.outcome, "settled");
+		assert.equal(scriptReply.result.output, "finished");
+		assert.equal(scriptReply.worktreeNote, undefined);
 		assert.match(readFileSync(savedPatches(child)[0]!, "utf8"), /\+preserve this edit/);
 	} finally {
 		filter.release();

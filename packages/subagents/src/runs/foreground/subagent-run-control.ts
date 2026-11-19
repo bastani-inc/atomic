@@ -31,6 +31,7 @@ import {
 import { subagentWakeKey } from "./released-children.js";
 import {
 	childWorktreeFinishing,
+	currentChildWorktreeNote,
 	finishingWorktreeStatus,
 	observeChildWorktreeAtReply,
 	parkRunWorktree,
@@ -234,6 +235,54 @@ export function subagentChildOfTask(
 	return terminal === undefined
 		? { childId: record.childId }
 		: { childId: record.childId, readOnlyReason: `${label(record)} cannot take messages: ${terminal}.` };
+}
+
+/** A script can rediscover its session's children even after their original host tasks are gone. */
+export async function subagentScriptChildren(ctx: ExtensionContext, id?: string) {
+	const owner = subagentChildOwner(ctx).sessionId;
+	await subagentChildRecordsAppended(owner);
+	const records = ownedRecords(ctx);
+	const live = liveResumeAdmissions(ctx, owner);
+	const all = new Map<string, SubagentChildRecord | AdmittedSubagentChild>([...records, ...live]);
+	const found = id === undefined ? undefined : resolveRecord(all, id);
+	if (id !== undefined && typeof found !== "object")
+		throw new Error(typeof found === "string" ? found : `No child found in this session for '${id}'.`);
+	const children = typeof found === "object" ? [found] : [...all.values()];
+	return children.map((record) => {
+		const saved = records.get(record.childId);
+		const tree = saved?.worktree && !saved.worktree.named && saved.taskId === record.taskId ? saved : undefined;
+		let state: string;
+		if (tree && finishingWorktreeStatus(tree)) state = "finishing";
+		else if ("ownerSessionId" in record) state = isQueuedSubagentChild(record.taskId) ? "starting" : "running";
+		else if (record.state === "running")
+			state = subagentChildRestoring(owner, record.childId) ? "starting" : "awaiting-resume";
+		else if (stoppedAs(record) || record.terminalStatus === "interrupted") state = "awaiting-resume";
+		else if (isReleased(record)) state = "released";
+		else if (record.terminalStatus === SUBAGENT_CHILD_GONE_STATUS) state = "gone";
+		else if (record.terminalStatus === "ok") state = "completed";
+		else if (record.terminalStatus === "error") state = "failed";
+		else state = "cancelled";
+		const worktreeNote =
+			tree && (state === "finishing" || tree.state === "terminal")
+				? currentChildWorktreeNote(tree.runId, tree.index)
+				: undefined;
+		const resumable =
+			state !== "running" &&
+			state !== "starting" &&
+			state !== "finishing" &&
+			"state" in record &&
+			!NON_RESUMABLE_STATUSES.has(record.terminalStatus ?? "");
+		return {
+			childId: record.childId,
+			agent: record.agent,
+			state,
+			resumable,
+			...(worktreeNote ? { worktreeNote } : {}),
+			...(record.taskId ? { taskId: record.taskId } : {}),
+			...(record.intercomTarget ? { intercomTarget: record.intercomTarget } : {}),
+			...(resumable ? { resumeCall: { action: "resume", id: record.childId } } : {}),
+		};
+	});
 }
 
 /** Run ids of the children this session launched: the only runs its `status` shows and its run control reaches. */
