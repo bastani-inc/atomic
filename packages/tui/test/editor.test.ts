@@ -2841,6 +2841,33 @@ describe("Editor component", () => {
 			assert.equal(submitted, "/global");
 		});
 
+		it("does not carry navigation from an earlier prefix into a pending new lookup (#5693)", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const old = Promise.withResolvers<null>();
+			const choices = (prefix: string, ...names: string[]) => ({
+				prefix,
+				items: names.map((value) => ({ value, label: value })),
+			});
+			editor.setAutocompleteProvider({
+				getSuggestions: ([text]) =>
+					text === "/global" ? old.promise : choices("/globa", "/globalone", "/globaltwo"),
+				applyCompletion,
+			});
+			for (const ch of "/globa") editor.handleInput(ch);
+			await flushAutocomplete();
+			editor.handleInput("\x1b[B");
+			editor.handleInput("l");
+			await flushAutocomplete();
+			editor.setAutocompleteProvider(
+				{ getSuggestions: () => choices("/global", "/global", "/globalone", "/globaltwo"), applyCompletion },
+				{ preserveSelection: true },
+			);
+			old.resolve(null);
+			await flushAutocomplete();
+			editor.handleInput("\t");
+			assert.equal(editor.getText(), "/global");
+		});
+
 		it("completes the pressed file when a catalog refresh moves it to another row (#5693)", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			const files = Array.from({ length: 18 }, (_, i) => `@demo${String(i).padStart(2, "0")}.txt`);

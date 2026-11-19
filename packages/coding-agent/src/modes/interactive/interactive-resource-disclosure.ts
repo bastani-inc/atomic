@@ -92,6 +92,8 @@ export class DiagnosticSection extends WindowedContainer {
 		super();
 		this.name = name;
 		this.heading = new ThemedText(() => theme.fg("warning", `[${name}]`));
+		// Reload listings can append this section directly to the transcript, outside the startup slot.
+		this.trackWindowStructure();
 	}
 
 	update(buildRows: () => ResourceRow[]): void {

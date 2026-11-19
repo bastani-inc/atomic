@@ -383,7 +383,7 @@ export class Editor implements Component, Focusable {
 	private autocompletePrefix: string = "";
 	private autocompleteCompleteOnConfirm = true;
 	private autocompleteSelectionMoved = false;
-	private autocompletePointerSelection = false;
+	private autocompleteChoiceForQuery = false;
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteAbort?: AbortController;
 	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
@@ -757,7 +757,7 @@ export class Editor implements Component, Focusable {
 				height: this.renderedAutocompleteHeight,
 			});
 			if (result?.handled && (event.type === "press" || (event.type === "wheel" && result.render))) {
-				this.autocompletePointerSelection = true;
+				this.autocompleteChoiceForQuery = true;
 			}
 			return result ? { ...result, focus: true } : undefined;
 		}
@@ -881,6 +881,7 @@ export class Editor implements Component, Focusable {
 				kb.matches(data, "tui.select.pageDown")
 			) {
 				this.autocompleteSelectionMoved = true;
+				this.autocompleteChoiceForQuery = true;
 				this.autocompleteList.handleInput(data);
 				return;
 			}
@@ -2434,6 +2435,7 @@ export class Editor implements Component, Focusable {
 
 		this.cancelAutocompleteRequest();
 		this.pendingAutocomplete = options;
+		if (!options.preserveSelection) this.autocompleteChoiceForQuery = false;
 		const startToken = ++this.autocompleteStartToken;
 
 		const debounceMs = this.getAutocompleteDebounceMs(options);
@@ -2570,13 +2572,12 @@ export class Editor implements Component, Focusable {
 	): void {
 		// Read the live selection: navigation may have moved it while the provider was answering.
 		const list = options.preserveSelection ? this.autocompleteList : undefined;
-		const selected =
-			this.autocompleteSelectionMoved || this.autocompletePointerSelection ? list?.getSelectedItem() : undefined;
+		const selected = this.autocompleteChoiceForQuery ? list?.getSelectedItem() : undefined;
 		const retainedIndex = selected ? suggestions.items.findIndex((item) => item.value === selected.value) : -1;
 		this.autocompletePrefix = suggestions.prefix;
 		this.autocompleteCompleteOnConfirm = suggestions.completeOnConfirm !== false;
 		this.autocompleteSelectionMoved = retainedIndex >= 0 && this.autocompleteSelectionMoved;
-		this.autocompletePointerSelection = retainedIndex >= 0 && this.autocompletePointerSelection;
+		this.autocompleteChoiceForQuery = retainedIndex >= 0;
 		if (list) {
 			list.setItems(
 				suggestions.items,
@@ -2619,7 +2620,7 @@ export class Editor implements Component, Focusable {
 		this.autocompletePrefix = "";
 		this.autocompleteCompleteOnConfirm = true;
 		this.autocompleteSelectionMoved = false;
-		this.autocompletePointerSelection = false;
+		this.autocompleteChoiceForQuery = false;
 	}
 
 	private cancelAutocomplete(): void {

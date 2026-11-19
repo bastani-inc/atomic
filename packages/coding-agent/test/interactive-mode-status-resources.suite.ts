@@ -188,39 +188,46 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).not.toContain("/tmp/skill/SKILL.md");
 	});
 
-	test("a settled fullscreen frame does not visit warnings above the viewport (#5693)", () => {
-		const mode = createShowLoadedResourcesThis({
-			quietStartup: false,
-			skillDiagnostics: Array.from({ length: 10_000 }, (_, i) => ({ type: "warning", message: `warning ${i}` })),
-		});
-		const chat = new WindowedContainer();
-		const disclosure = new WindowedContainer();
-		chat.addChild(disclosure);
-		mode.resourceDisclosureContainer = disclosure;
-		mode.formatDiagnostics = InteractiveMode.prototype.formatDiagnostics;
-		InteractiveMode.prototype.showLoadedResources.call(mode, { force: true, targetContainer: disclosure });
-		for (let i = 0; i < 200; i++) chat.addChild(new Text(`history ${i}`, 0, 0));
-		let visits = 0;
-		const countReads = (section: Container) => {
-			for (const child of section.children) if (child instanceof Container) countReads(child);
-			section.children = new Proxy(section.children, {
-				get(target, key, receiver) {
-					if (typeof key === "string" && /^\d+$/.test(key)) visits++;
-					return Reflect.get(target, key, receiver);
-				},
+	test.each(["startup", "reload"])(
+		"a settled fullscreen frame does not visit %s warnings above the viewport (#5693)",
+		(source) => {
+			const mode = createShowLoadedResourcesThis({
+				quietStartup: false,
+				skillDiagnostics: Array.from({ length: 10_000 }, (_, i) => ({ type: "warning", message: `warning ${i}` })),
 			});
-		};
-		countReads(disclosure);
-		const frame = () =>
-			chat.layoutWindow({ top: 0, width: 100, height: 30, followEnd: true, requestRender: () => {} });
-		frame();
-		chat.settleRows();
-		frame();
-		visits = 0;
-		const next = frame();
-		expect(next.at(next.top + 29)?.trim()).toBe("history 199");
-		expect(visits).toBe(0);
-	});
+			const chat = new WindowedContainer();
+			const disclosure = new WindowedContainer();
+			chat.addChild(disclosure);
+			mode.resourceDisclosureContainer = disclosure;
+			mode.chatContainer = chat;
+			mode.formatDiagnostics = InteractiveMode.prototype.formatDiagnostics;
+			InteractiveMode.prototype.showLoadedResources.call(mode, {
+				force: true,
+				targetContainer: source === "startup" ? disclosure : undefined,
+			});
+			for (let i = 0; i < 200; i++) chat.addChild(new Text(`history ${i}`, 0, 0));
+			let visits = 0;
+			const countReads = (section: Container) => {
+				for (const child of section.children) if (child instanceof Container) countReads(child);
+				section.children = new Proxy(section.children, {
+					get(target, key, receiver) {
+						if (typeof key === "string" && /^\d+$/.test(key)) visits++;
+						return Reflect.get(target, key, receiver);
+					},
+				});
+			};
+			for (const child of chat.children) if (child instanceof Container) countReads(child);
+			const frame = () =>
+				chat.layoutWindow({ top: 0, width: 100, height: 30, followEnd: true, requestRender: () => {} });
+			frame();
+			chat.settleRows();
+			frame();
+			visits = 0;
+			const next = frame();
+			expect(next.at(next.top + 29)?.trim()).toBe("history 199");
+			expect(visits).toBe(0);
+		},
+	);
 
 	test("the visible diagnostic stays anchored when approval adds earlier resources and warnings (#5693)", () => {
 		const warnings = Array.from({ length: 60 }, (_, i) => ({
