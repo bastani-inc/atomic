@@ -411,6 +411,52 @@ describe("a resumed run replays its results under the replay keys its journal re
 		});
 	});
 
+	test("a shared pool child records its first group in the order an older worker can replay (#5683)", async () => {
+		const backend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath()));
+		try {
+			const root = "shared-root";
+			await backend.commitWorkflowRegistration({
+				workflowId: root,
+				name: root,
+				inputs: {},
+				status: "running",
+				createdAt: 1,
+				launchStepKeys: true,
+				resources: { workers: { placement: "shared" } },
+			});
+			const outputs: string[] = [];
+			const result = await run(
+				program("chain", "child", outputs),
+				{},
+				{
+					runId: "child",
+					store: createStore(),
+					durableBackend: backend,
+					durableScope: { rootWorkflowId: root, scopePrefix: "workflow:child:1" },
+					parentRun: { runId: root, stageId: "boundary", rootRunId: root },
+					adapters: {
+						prompt: {
+							prompt: async (text, meta) => {
+								if (meta?.stageName === "a") throw new Error("a fails");
+								return text;
+							},
+						},
+					},
+				},
+			);
+			assert.equal(result.status, "failed");
+			assert.deepEqual(outputs, ["first b", "second b"]);
+			// The group's b never started. An older worker reads the two standalone results at ordinals 1 and 2.
+			for (const [i, expected] of outputs.entries())
+				assert.equal(
+					backend.getStageCheckpoint(root, `workflow:child:1:task:stage:task:b:${i + 1}`)?.result,
+					expected,
+				);
+		} finally {
+			await backend.close();
+		}
+	});
+
 	test("a writer that has not seen an older run cannot change its step order by registering it again (#5683)", async () => {
 		const path = journalPath();
 		const runId = "late-registration";

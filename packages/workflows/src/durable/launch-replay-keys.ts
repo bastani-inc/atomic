@@ -16,14 +16,14 @@ export function isLaunchReplayKeysCheckpointHash(argsHash: string): boolean {
 }
 
 /**
- * Returns a launch-time allocator for runs registered for launch keys, runs with the launch checkpoint, and empty
- * journals. Older runs with saved work but neither marker take keys at admission instead. The first launch still
+ * A scope's own launch checkpoint takes precedence. Otherwise use the registered order, or, for older registrations,
+ * launch order only when the journal has no previous checkpoints. The first launch in launch order still
  * writes the checkpoint if absent; `recorded` holds tasks until the write succeeds and fails the run on refusal.
  */
 export function launchReplayKeys(input: {
 	readonly backend: DurableWorkflowBackend;
 	readonly workflowId: string;
-	readonly registeredForLaunchKeys: boolean;
+	readonly registeredOrder: "launch" | "admission" | undefined;
 	/** The run's records when it started. */
 	readonly priorCheckpoints: readonly DurableCheckpoint[];
 	readonly nextReplayKey: (name: string) => string;
@@ -32,7 +32,12 @@ export function launchReplayKeys(input: {
 	let marked = input.priorCheckpoints.some(
 		(checkpoint) => checkpoint.kind === "tool" && checkpoint.argsHash === LAUNCH_REPLAY_KEYS_CHECKPOINT_NAME,
 	);
-	if (!input.registeredForLaunchKeys && !marked && input.priorCheckpoints.length > 0) return undefined;
+	if (
+		!marked &&
+		(input.registeredOrder === "admission" ||
+			(input.registeredOrder === undefined && input.priorCheckpoints.length > 0))
+	)
+		return undefined;
 	return (name) => {
 		if (!marked) {
 			marked = true;

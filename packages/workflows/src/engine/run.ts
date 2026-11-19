@@ -1393,11 +1393,19 @@ async function executeRun(
 	// A child uses its root's registration; its first group may come after a restart too.
 	const replayKeyRoot =
 		opts.parentRun === undefined ? existingRootHandle : rootBackend.getWorkflow(opts.parentRun.rootRunId);
+	// Shared placement admits hosts by workflow definition, not by their step-key format. An older host can
+	// join even after this attempt: only inherit launch order where the root controls the worker version.
+	const registeredOrder =
+		replayKeyRoot?.launchStepKeys !== true
+			? undefined
+			: opts.parentRun !== undefined && replayKeyRoot.resources?.workers?.placement === "shared"
+				? "admission"
+				: "launch";
 	let launchKeysRecord: Promise<void> | undefined;
 	const launchKeys = launchReplayKeys({
 		backend: durableBackend,
 		workflowId: runId,
-		registeredForLaunchKeys: replayKeyRoot?.launchStepKeys === true,
+		registeredOrder,
 		priorCheckpoints,
 		nextReplayKey: (name) => stageReplayKeyGenerator(name),
 		recorded: (write) => {

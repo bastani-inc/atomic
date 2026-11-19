@@ -38,7 +38,7 @@ export interface DurableWorkflowDefinitionSource {
  * (a run id); internal nested workflow ids are abstracted away from users.
  */
 export interface DurableWorkflowHandle {
-	/** Set at creation when chains and parallels in this run tree take step keys at launch. */
+	/** Set at creation for launch-order step keys on the root and its version-compatible workers. */
 	readonly launchStepKeys?: true;
 	/** Latest pause or block occurrence of this run, preserved when its executor changes. */
 	readonly runGeneration?: number;

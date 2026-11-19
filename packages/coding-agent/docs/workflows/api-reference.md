@@ -275,7 +275,7 @@ ctx.chain(
 ): Promise<WorkflowTaskResult[]>;
 ```
 
-Runs named task steps in sequence. The first missing task uses `{task}` from chain options; later missing tasks use `{previous}`. Every step takes its place in the run's record when `ctx.chain` is called, so a resumed run replays each step's own result, also when another chain with steps of the same name ran at the same time. This also holds if the run stopped before its first chain. When resuming an older run, Atomic keeps the order it used to record its results.
+Runs named task steps in sequence. The first missing task uses `{task}` from chain options; later missing tasks use `{previous}`. Every step takes its place in the run's record when `ctx.chain` is called, so a resumed run replays each step's own result, also when another chain with steps of the same name ran at the same time. This also holds if the run stopped before its first chain. Older runs keep their recorded order. Children in a shared worker pool use admission order unless they already recorded launch order, so an older worker can take over.
 
 ### `ctx.parallel(steps, options?)`
 
@@ -286,7 +286,7 @@ ctx.parallel(
 ): Promise<WorkflowTaskResult[]>;
 ```
 
-Runs named task steps concurrently, subject to `concurrency` and `failFast`. The call snapshots the current graph frontier at fan-out, so every branch uses the same parent set even when queued or allowed to continue after a sibling failure; downstream stages depend on all settled branches. Every step takes its place in the run's record when `ctx.parallel` is called, so a resumed run replays each step's own result whatever order the steps start in, also when another parallel with steps of the same name ran at the same time. This also holds if the run stopped before its first parallel. Runs that recorded results in slot order in an earlier release still replay in slot order. In those older runs, a cached step replays without waiting for a fork record; a step that needs to run live still waits for the record. When forked and fresh groups run concurrently, their queued steps keep the same replay order. A fresh step's prompt is expanded only when it gets a slot.
+Runs named task steps concurrently, subject to `concurrency` and `failFast`. The call snapshots the current graph frontier at fan-out, so every branch uses the same parent set even when queued or allowed to continue after a sibling failure; downstream stages depend on all settled branches. Every step takes its place in the run's record when `ctx.parallel` is called, so a resumed run replays each step's own result whatever order the steps start in, also when another parallel with steps of the same name ran at the same time. This also holds if the run stopped before its first parallel. Children in a shared worker pool use slot order unless they already recorded launch order, since an older worker can take over. Runs that recorded results in slot order in an earlier release still replay in slot order. In those older runs, a cached step replays without waiting for a fork record; a step that needs to run live still waits for the record. When forked and fresh groups run concurrently, their queued steps keep the same replay order. A fresh step's prompt is expanded only when it gets a slot.
 
 ### `ctx.workflow(definition, options?)`
 
