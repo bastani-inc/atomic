@@ -68,6 +68,7 @@ export class LegacySessionStore implements SessionStore {
 	readonly readChildDisplayCut?: SessionStore["readChildDisplayCut"];
 	readonly readChildCatalogCut?: SessionStore["readChildCatalogCut"];
 	readonly readSelectedPage?: SessionStore["readSelectedPage"];
+	readonly readScanPage?: SessionStore["readScanPage"];
 	readonly readSnapshotCut?: SessionStore["readSnapshotCut"];
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
@@ -101,6 +102,13 @@ export class LegacySessionStore implements SessionStore {
 			this.readSelectedPage = async (id, seqs, epoch, options) => {
 				await this.convert(id);
 				return inner.readSelectedPage!(id, seqs, epoch, options);
+			};
+		if (inner.readScanPage)
+			this.readScanPage = async (id, startSeq, endSeq, epoch, limit, select) => {
+				await this.convert(id);
+				return select === undefined
+					? inner.readScanPage!(id, startSeq, endSeq, epoch, limit)
+					: inner.readScanPage!(id, startSeq, endSeq, epoch, limit, select);
 			};
 		if (inner.readSnapshotCut)
 			this.readSnapshotCut = async (id, options) => {
@@ -255,9 +263,12 @@ export class LegacySessionStore implements SessionStore {
 		};
 	}
 
-	async readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
+	async readEntryChunk(reference: OversizedSessionEntry, offset: number, bytes?: number): Promise<Uint8Array> {
 		await this.convert(reference.sessionId);
-		if (this.inner.readEntryChunk) return this.inner.readEntryChunk(reference, offset);
+		if (this.inner.readEntryChunk)
+			return bytes === undefined
+				? this.inner.readEntryChunk(reference, offset)
+				: this.inner.readEntryChunk(reference, offset, bytes);
 		return (await import("./snapshot-history.js")).snapshotChunk(this.inner, reference, offset);
 	}
 

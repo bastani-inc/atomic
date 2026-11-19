@@ -19,12 +19,16 @@ import {
 	type SessionHistoryPage,
 	type SessionHistoryReadOptions,
 	type SessionStore,
+	type SessionToolUseSelection,
 	yieldSessionTurn as yieldToEventLoop,
 } from "./types.js";
 
 export type SessionHistorySource =
 	| SessionStore
-	| Pick<SessionStore, "descriptor" | "readBranchSpan" | "readEntrySizes" | "readEntryChunk" | "readRange">;
+	| Pick<
+			SessionStore,
+			"descriptor" | "readBranchSpan" | "readEntrySizes" | "readEntryChunk" | "readRange" | "readScanPage"
+	  >;
 
 function snapshotSource(store: SessionHistorySource): SessionStore {
 	if ("load" in store) return store;
@@ -151,6 +155,10 @@ export async function* historyPages(
 	// Sizes a forward scan read past the end of its last page, which start its next page when they fill it or reach
 	// the end of the run.
 	let spare: SessionEntrySizes["sizes"] | undefined;
+	// A store that reads a scan's page in one statement sizes `scanLimit` entries for it: a little more than the last page
+	// held when bytes cut it, twice as many when its entry limit did, so sizes are not read for thousands of entries
+	// past each page.
+	let scanLimit = pageEntries;
 	while (start <= end) {
 		options.signal?.throwIfAborted();
 		const branchCut =
@@ -200,6 +208,18 @@ export async function* historyPages(
 			page = result.items;
 			low = page[0]!.seq;
 			high = page[page.length - 1]!.seq;
+		} else if (scan && !reverse && store.readScanPage && stamp !== undefined) {
+			// One read a page: the generation, the watermark, the sizes and the entries come from one snapshot (#5571).
+			const read = await store.readScanPage(sessionId, from, through, stamp, scanLimit);
+			options.signal?.throwIfAborted();
+			if (read.lastSeq < end) throw new SessionConflictError(sessionId, watermark, read.lastSeq);
+			page = read.items;
+			if (page[0]?.seq !== from) throw new Error(`Missing session history at entry ${from}`);
+			low = from;
+			high = page[page.length - 1]!.seq;
+			if (page.length === scanLimit) scanLimit = Math.min(pageEntries, scanLimit * 2);
+			else if (high < through && "entry" in page[0]!)
+				scanLimit = Math.min(pageEntries, Math.ceil(page.length * 1.25) + 16);
 		} else {
 			let sizes = spare;
 			if (
@@ -314,6 +334,60 @@ export async function findInSessionHistory(
 	return undefined;
 }
 
+/**
+ * The entries of generation `epoch` through `watermark` that `select` selects, in pages of one read each: a reader that
+ * needs only those does not receive the others at all (#5571).
+ */
+export async function* selectedHistoryPages(
+	store: Required<Pick<SessionStore, "readScanPage">>,
+	sessionId: string,
+	epoch: string,
+	watermark: number,
+	select: SessionToolUseSelection,
+): AsyncGenerator<SessionHistoryPage, void> {
+	let start = 1;
+	let limit = SESSION_HISTORY_SCAN_ENTRIES;
+	while (start <= watermark) {
+		const read = await store.readScanPage(sessionId, start, watermark, epoch, limit, select);
+		if (read.lastSeq < watermark) throw new SessionConflictError(sessionId, watermark, read.lastSeq);
+		const { items } = read;
+		if (read.throughSeq < (items.at(-1)?.seq ?? start) || (items[0]?.seq ?? start) < start)
+			throw new Error(`Missing session history at entry ${start}`);
+		if (items.length) yield { items };
+		if (items.length === limit) limit = Math.min(SESSION_HISTORY_SCAN_ENTRIES, limit * 2);
+		else if (items.length && read.throughSeq < watermark && "entry" in items[0]!)
+			limit = Math.min(SESSION_HISTORY_SCAN_ENTRIES, Math.ceil(items.length * 1.25) + 16);
+		start = read.throughSeq + 1;
+		if (start <= watermark) await yieldToEventLoop();
+	}
+}
+
+/**
+ * `pages`, each read while the one before it is consumed: the store's read and the consumer's work overlap instead of
+ * waiting on each other. At most two pages are held. A read that fails is thrown where its page would have been.
+ */
+export async function* readAhead<T>(pages: AsyncGenerator<T, void>): AsyncGenerator<T, void> {
+	const ahead = () => {
+		const next = pages.next();
+		next.catch(() => {});
+		return next;
+	};
+	let next = ahead();
+	try {
+		for (;;) {
+			const page = await next;
+			if (page.done) return;
+			next = ahead();
+			// The reader takes a turn between pages before it reads: let it send that read before a consumer that works
+			// through the page without awaiting anything, such as an export's first pass, would otherwise delay it.
+			await yieldToEventLoop();
+			yield page.value;
+		}
+	} finally {
+		await pages.return(undefined);
+	}
+}
+
 /** Read an existing saved session without creating a live session manager, model context or recovery bindings. */
 export async function* readSessionHistory(
 	store: SessionStore,
@@ -376,8 +450,18 @@ export async function* historyChunks(
 	sessionId: string,
 	epoch: string | undefined,
 	reference: OversizedSessionEntry,
-	options: { readonly offset?: number; readonly signal?: AbortSignal },
+	options: {
+		readonly offset?: number;
+		readonly signal?: AbortSignal;
+		/**
+		 * Read up to this many bytes at a time, at most `SESSION_HISTORY_PAGE_BYTES`, from a store that can: a reader that
+		 * streams the whole entry, such as an export, makes a few round trips to a database server instead of one every
+		 * `SESSION_HISTORY_CHUNK_BYTES` (#5571). Default `SESSION_HISTORY_CHUNK_BYTES`.
+		 */
+		readonly bytes?: number;
+	},
 ): AsyncGenerator<Uint8Array, void> {
+	const bytes = Math.min(options.bytes ?? SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_BYTES);
 	if (
 		reference.sessionId !== sessionId ||
 		(store.readEntrySizes && store.readRange && epoch !== undefined && reference.epoch !== epoch)
@@ -390,17 +474,21 @@ export async function* historyChunks(
 		!Number.isSafeInteger(reference.bytes) ||
 		offset > reference.bytes ||
 		!Number.isSafeInteger(reference.seq) ||
-		reference.seq < 1
+		reference.seq < 1 ||
+		!Number.isSafeInteger(bytes) ||
+		bytes < 1
 	)
 		throw new RangeError("Invalid historical entry byte range");
 	while (offset < reference.bytes) {
 		options.signal?.throwIfAborted();
 		const data =
 			store.readEntryChunk && store.readEntrySizes && store.readRange
-				? await store.readEntryChunk(reference, offset)
+				? bytes === SESSION_HISTORY_CHUNK_BYTES
+					? await store.readEntryChunk(reference, offset)
+					: await store.readEntryChunk(reference, offset, bytes)
 				: await snapshotChunk(snapshotSource(store), reference, offset);
 		options.signal?.throwIfAborted();
-		if (!data.length || data.length > SESSION_HISTORY_CHUNK_BYTES || offset + data.length > reference.bytes)
+		if (!data.length || data.length > bytes || offset + data.length > reference.bytes)
 			throw new Error(`Incomplete or invalid historical entry ${reference.seq}`);
 		offset += data.length;
 		yield data;

@@ -185,6 +185,23 @@ export interface SessionEntrySizes {
 	readonly sizes: readonly { readonly seq: number; readonly bytes: number }[];
 }
 
+/**
+ * The entries a scan reads for a reader that needs only tool calls and results, as an HTML export's renderer inputs
+ * pass does: every tool result message, every assistant message with a tool call whose name is not in `exceptCalls`,
+ * and every entry larger than a page. A store may return more entries than these, in order, never fewer.
+ */
+export interface SessionToolUseSelection {
+	readonly exceptCalls: readonly string[];
+}
+
+/** A page of a forward scan and the session's watermark, from one read of the generation the scan started on. */
+export interface SessionScanPage {
+	readonly lastSeq: number;
+	/** The last sequence the page accounts for: its last entry, or a later one when no entry after it up to there was asked for. */
+	readonly throughSeq: number;
+	readonly items: readonly SessionHistoryItem[];
+}
+
 export interface SessionStateEntry extends SessionStoredEntry {
 	readonly onBranch: boolean;
 }
@@ -597,8 +614,29 @@ export interface SessionStore {
 	 * `SESSION_HISTORY_PAGE_ENTRIES` sizes, or up to `limit` (at most `SESSION_HISTORY_SCAN_ENTRIES`) for a scan.
 	 */
 	readEntrySizes?(sessionId: string, startSeq: number, endSeq: number, limit?: number): Promise<SessionEntrySizes>;
-	/** Read at most SESSION_HISTORY_CHUNK_BYTES, rejecting a reference to a replaced generation. */
-	readEntryChunk?(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array>;
+	/**
+	 * One page of a forward scan of generation `epoch` in a single read, which is its own snapshot: the longest run of
+	 * entries from `startSeq` through at most `endSeq` of at most `limit` entries (at most `SESSION_HISTORY_SCAN_ENTRIES`)
+	 * and `SESSION_HISTORY_PAGE_BYTES` bytes, or the entry at `startSeq` alone as an oversized reference when it is
+	 * larger, with the session's watermark. Rejects with `SessionConflictError` when the session is of another generation.
+	 * With `select`, only the entries it selects count: a reader that needs only those skips the others without
+	 * receiving them. A store whose reads are round
+	 * trips implements it so a scan costs one read a page, not a size read and a range read in transactions of their own
+	 * (#5571).
+	 */
+	readScanPage?(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		epoch: string,
+		limit: number,
+		select?: SessionToolUseSelection,
+	): Promise<SessionScanPage>;
+	/**
+	 * Read at most `bytes` (`SESSION_HISTORY_CHUNK_BYTES` when absent, at most `SESSION_HISTORY_PAGE_BYTES`; a store may
+	 * return fewer, never none before the end), rejecting a reference to a replaced generation.
+	 */
+	readEntryChunk?(reference: OversizedSessionEntry, offset: number, bytes?: number): Promise<Uint8Array>;
 
 	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
 	readResume?(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume>;
