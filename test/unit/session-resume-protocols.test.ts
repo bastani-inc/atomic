@@ -6,6 +6,7 @@ import { sessionResumeOf } from "../../packages/coding-agent/src/core/storage/se
 import { pendingTaskCompletionIntents } from "../../packages/coding-agent/src/core/tasks/completion.ts";
 import { unconsumedIntercomInbox } from "../../packages/intercom/durable-inbox.ts";
 import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.ts";
+import { OutboundAsks } from "../../packages/intercom/outbound-asks.ts";
 import { ReplyTracker, restorePendingInboundAsks } from "../../packages/intercom/reply-tracker.ts";
 import { scanInFlightRuns } from "../../packages/workflows/src/shared/persistence-restore.ts";
 
@@ -137,6 +138,34 @@ test("a cleared window does not retain workflow inputs or completed stage output
 		"workflow payloads are resident before recovery asks for them",
 	);
 	assert.deepEqual(Object.values(restored.recovery.workflowStarts ?? {}), [1]);
+});
+
+test("an empty reply tag on ordinary Intercom sends does not retain every consumed message after a clear (#5554)", () => {
+	const from = { id: "peer", cwd: "/p", model: "m", pid: 1, startedAt: 1, lastActivity: 1 };
+	for (const hasMatchingAsk of [false, true]) {
+		const s = session();
+		for (let i = 0; i < 30; i++) {
+			const message = { id: `msg-${i}`, timestamp: i, replyTo: "", content: { text: "normal send".repeat(500) } };
+			s.custom("intercom_inbox", { from, message, receivedAt: i });
+			s.card(`received-${i}`, "intercom_message", { from, message });
+		}
+		if (hasMatchingAsk)
+			s.custom("intercom_ask", {
+				askId: "",
+				sessionId: "s",
+				to: "peer",
+				recipientId: "peer",
+				question: "historic ask",
+				askedAt: 0,
+			});
+		const kept = s.resume().state.map((x) => x.entry);
+		if (!hasMatchingAsk)
+			assert.equal(kept.length, 0, "ordinary sends kept all their bodies under an empty reply tag");
+		const state = (entries: SessionEntry[]) =>
+			new OutboundAsks({ entries: () => entries, sessionId: () => "s", append: async () => {} }).find("")?.state;
+		assert.equal(state(kept), state(s.entries));
+		assert.equal(state(kept), hasMatchingAsk ? "answered" : undefined);
+	}
 });
 
 test("resume keeps child insertion order and merged state without rewriting its entries (#5249)", () => {

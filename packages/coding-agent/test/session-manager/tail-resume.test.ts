@@ -186,6 +186,23 @@ it("a cleared parent releases a giant workflow identity after its route ends (#5
 	expect(JSON.stringify(resume).length).toBeLessThan(SESSION_HISTORY_PAGE_BYTES);
 });
 
+it("live stage and Intercom receipts survive repeated clears without retaining their message bodies (#5554)", async () => {
+	const store = await sqlStore();
+	const live = await SessionManager.create(store, "/project");
+	for (const n of [1, 2]) {
+		await live.appendCustomEntry("atomic-pooled-delivery-op", { op: `op${n}` });
+		await live.appendCustomMessageEntry("intercom_message", `m${n}`, true, { message: { id: `m${n}` } });
+		await live.appendCompaction(`clear${n}`, null, 100, details);
+	}
+	const reopened = await SessionManager.open(store, live.getSessionId());
+	for (const holder of [live, reopened]) {
+		const recovery = holder.getSessionRecoveryState();
+		expect(recovery.intercomDeliveredIds).toEqual(["m1", "m2"]);
+		expect(recovery.deliveryOpIds).toEqual(["op1", "op2"]);
+		expect(holder.getEntries().map((entry) => entry.type)).toEqual(["compaction"]);
+	}
+});
+
 it("a default open reads the same window as a tail open without reading the whole store (#5554)", async () => {
 	const store = await sqlStore();
 	const { id, firstPreTail } = await compactedSession(store);

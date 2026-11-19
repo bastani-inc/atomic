@@ -890,6 +890,15 @@ export class SessionManager {
 		const resume = sessionResumeOf(this.recordHeader(), linked, this.leafId ?? undefined);
 		if (!resume.compaction) return;
 		this.admissionKeys.mergeEncoded(resume.recovery.admissionDigests);
+		this.recoveryState = {
+			...this.recoveryState,
+			intercomDeliveredIds: [
+				...new Set([...this.recoveryState.intercomDeliveredIds, ...resume.recovery.intercomDeliveredIds]),
+			],
+			deliveryOpIds: [
+				...new Set([...(this.recoveryState.deliveryOpIds ?? []), ...(resume.recovery.deliveryOpIds ?? [])]),
+			],
+		};
 		const keep = new Set([...resume.branch, ...resume.state].map(({ entry }) => entry.id));
 		const boundarySeq = this.entrySeqs.get(resume.compaction.entry.id)!;
 		const start = this.entrySeqs.get(resume.branch[0]!.entry.id)!;
