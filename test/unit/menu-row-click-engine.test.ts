@@ -4,7 +4,7 @@
  * mirror of the engine component and the engine's custom-UI service joined by an in-process message pump.
  */
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings, type TuiMouseEvent } from "@bastani/atomic-tui";
+import { getKeybindings, ScrollView, setKeybindings, Text, type TuiMouseEvent, VStack } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type {
 	ExtensionCommandContext,
@@ -71,16 +71,32 @@ test("a click on a row of a list shown from the engine runs it, and the host pai
 	}
 });
 
-test("a non-capturing engine pane leaves focus in the composer until its first click", async () => {
+test("an engine preview receives the wheel before its first click, then accepts a click from the composer (#5532)", async () => {
 	const ui = makeClickScreen();
 	const composer = ui.tui.getFocusedComponent();
+	assert.ok(composer);
+	const transcript = new ScrollView(new Text(Array.from({ length: 100 }, (_, i) => `Line ${i}`).join("\n"), 0, 0), {
+		primary: true,
+		follow: "end",
+	});
+	ui.tui.setLayoutRoot(
+		new VStack([
+			{ component: transcript, grow: 1, basis: 0 },
+			{ component: composer, basis: 1 },
+		]),
+	);
+	let position = 2;
 	const events: string[] = [];
 	const shown = await showFromEngine(
 		ui,
 		() => ({
-			render: () => ["Choose this pane"],
+			render: () => [`Preview ${position}`],
 			invalidate() {},
 			handleInput(data: string) {
+				if (data.startsWith("\x1b[<64;")) {
+					position--;
+					return true;
+				}
 				events.push(data);
 				return true;
 			},
@@ -96,8 +112,15 @@ test("a non-capturing engine pane leaves focus in the composer until its first c
 		{ anchor: "top-right", width: 20, nonCapturing: true },
 	);
 	try {
-		assert.ok(ui.tui.getFocusedComponent() === composer, "the engine pane must not take focus on mount");
-		await ui.click("Choose this pane");
+		const row = ui.rowOf("Preview 2");
+		const top = transcript.scrollTop;
+		assert.ok(top > 0);
+		await ui.wheel("up", ui.columnOf(row, "Preview"), row);
+		await settle(ui);
+		assert.deepEqual({ position, top: transcript.scrollTop }, { position: 1, top });
+
+		ui.focusComposer();
+		await ui.click("Preview 1");
 		ui.terminal.input("a");
 		await settle(ui);
 		assert.deepEqual(events, ["clicked", "a"]);

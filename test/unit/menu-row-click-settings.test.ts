@@ -4,7 +4,16 @@
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { getKeybindings, MULTI_CLICK_INTERVAL_MS, type SettingItem, setKeybindings } from "@bastani/atomic-tui";
+import {
+	getKeybindings,
+	Input,
+	MULTI_CLICK_INTERVAL_MS,
+	SelectList,
+	type SettingItem,
+	SettingsList,
+	setKeybindings,
+	Text,
+} from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -14,7 +23,12 @@ import {
 import { HostInputFormComponent } from "../../packages/coding-agent/src/modes/interactive/components/host-input-form.js";
 import { SettingsPicker } from "../../packages/coding-agent/src/modes/interactive/components/settings-picker.js";
 import { SelectSubmenu } from "../../packages/coding-agent/src/modes/interactive/components/settings-selector-submenus.js";
-import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import {
+	getSelectListTheme,
+	getSettingsListTheme,
+	initTheme,
+	theme,
+} from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { makeClickScreen } from "../helpers/fullscreen-clicks.js";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
@@ -67,6 +81,38 @@ for (const width of [80, 160]) {
 		ui.tui.stop();
 	});
 }
+
+test("a wheel in an inline settings submenu honors the overlay's keyboard handoff to the composer (#5532)", async () => {
+	const ui = makeClickScreen();
+	const composer = new Input();
+	const choices = new SelectList(
+		["Alpha", "Bravo"].map((label) => ({ label, value: label })),
+		2,
+		getSelectListTheme(),
+	);
+	const settings = new SettingsList(
+		[{ id: "choice", label: "Choice", currentValue: "Alpha", submenu: () => choices }],
+		2,
+		getSettingsListTheme(),
+		() => {},
+		() => {},
+	);
+	try {
+		ui.dock(composer);
+		const preview = ui.tui.showOverlay(new Text("Preview", 0, 0), { anchor: "top-right", width: 20 });
+		ui.dock(settings);
+		ui.terminal.input(" ");
+		const row = ui.rowOf("Bravo");
+		assert.equal(choices.getSelectedItem()?.value, "Alpha");
+		preview.unfocus({ target: composer });
+		await ui.wheel("down", ui.columnOf(row, "Bravo"), row);
+		ui.terminal.input("k");
+		assert.equal(choices.getSelectedItem()?.value, "Bravo");
+		assert.equal(composer.getValue(), "k");
+	} finally {
+		ui.tui.stop();
+	}
+});
 
 test("a double-click on a setting changes it once", async () => {
 	const ui = makeClickScreen();

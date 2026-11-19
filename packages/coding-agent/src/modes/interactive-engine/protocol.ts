@@ -31,7 +31,6 @@ export type JsonValue = boolean | JsonObject | JsonValue[] | null | number | str
 export interface SerializableOverlayOptions {
 	anchor?: string;
 	modal?: boolean;
-	nonCapturing?: boolean;
 	col?: number | string;
 	margin?: number | { top?: number; right?: number; bottom?: number; left?: number };
 	maxHeight?: number | string;
