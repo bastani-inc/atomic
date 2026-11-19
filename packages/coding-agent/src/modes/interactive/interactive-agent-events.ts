@@ -288,9 +288,9 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 	this.footer.invalidate();
 	this.programStatus.handleEvent(event);
 	// Rows this event draws for a saved line stand for that line, wherever a compaction keeps them.
-	const liveChat = this.chatContainer;
-	const drawnFrom = liveChat.children.length;
-	const drawnAfter = liveChat.children.at(-1);
+	const liveChat = chatReceipt(event) ? this.chatContainer : undefined;
+	const drawnFrom = liveChat?.children.length ?? 0;
+	const drawnAfter = liveChat?.children.at(-1);
 
 	switch (event.type) {
 		case "agent_start":
@@ -858,7 +858,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 	if (receipt) {
 		chatRecordsChanged(this, receipt);
 		chatLineDrawnLive(this, receipt.id);
-		if (this.chatContainer === liveChat && liveChat.children[drawnFrom - 1] === drawnAfter)
+		if (liveChat && this.chatContainer === liveChat && liveChat.children[drawnFrom - 1] === drawnAfter)
 			noteLiveChatRows(
 				liveChat.children.slice(drawnFrom).filter((row) => !isChatMessageComponent(row)),
 				receipt.id,
