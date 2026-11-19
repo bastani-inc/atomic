@@ -122,8 +122,8 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
 			...(options.env !== undefined ? { env: options.env } : {}),
 			...(options.shell !== undefined ? { shell: options.shell } : {}),
-			// Setup hooks keep their native timeout. A sweep's timeout below stops the entire git process tree.
-			...(options.timeout !== undefined && !sweepTimeout.getStore() ? { timeout: options.timeout } : {}),
+			// Setup hooks keep their native timeout. A stalled check's timeout below stops the entire git process tree.
+			...(options.timeout !== undefined && !stalledCheck.getStore() ? { timeout: options.timeout } : {}),
 			stdio: [options.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
 			detached: process.platform !== "win32",
 			windowsHide: true,
@@ -231,31 +231,22 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 	});
 }
 
-/** Only cleanup commands get this deadline, not initial checkouts, setup hooks or a user's fetch. */
-const SWEEP_GIT_TIMEOUT_MS = 10_000;
-const sweepTimeout = new AsyncLocalStorage<() => void>();
-class SweepGitTimedOut extends Error {}
-
-export async function withWorktreeSweepTimeout(onTimeout: () => void, sweep: () => Promise<void>): Promise<void> {
-	try {
-		await sweepTimeout.run(onTimeout, sweep);
-	} catch (error) {
-		// An incomplete safety check or removal leaves the worktree tracked for the next sweep.
-		if (!(error instanceof SweepGitTimedOut)) throw error;
-	}
-}
+/**
+ * Only a failed resume's read-only check of its own worktree gets this deadline: never a capture, a removal, an initial
+ * checkout, a setup hook or a user's fetch, which run to completion however long they take.
+ */
+const STALLED_CHECK_GIT_TIMEOUT_MS = 10_000;
+const stalledCheck = new AsyncLocalStorage<() => void>();
 
 export async function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<GitResult> {
-	const onTimeout = sweepTimeout.getStore();
+	const onStall = stalledCheck.getStore();
 	const result = await spawnCollect("git", ["-C", cwd, ...args], {
-		env: createGitEnvironment(env, createChildProcessEnvironment()),
+		// A bounded check takes no optional lock, so stopping it never leaves an index.lock behind.
+		env: createGitEnvironment(onStall ? { ...env, GIT_OPTIONAL_LOCKS: "0" } : env, createChildProcessEnvironment()),
 		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
-		...(onTimeout && { timeout: SWEEP_GIT_TIMEOUT_MS }),
+		...(onStall && { timeout: STALLED_CHECK_GIT_TIMEOUT_MS }),
 	});
-	if (onTimeout && result.error?.code === "ETIMEDOUT") {
-		onTimeout();
-		throw new SweepGitTimedOut(`Worktree cleanup timed out running git ${args[0]}.`);
-	}
+	if (onStall && result.error?.code === "ETIMEDOUT") onStall();
 	return {
 		stdout: result.stdout,
 		stderr: result.stderr,
@@ -559,8 +550,7 @@ async function cleanupSingleWorktree(
 	await waitForGitLockRelease();
 	try {
 		await runGitChecked(repoCwd, ["branch", "-D", worktree.branch]);
-	} catch (error) {
-		if (error instanceof SweepGitTimedOut) throw error;
+	} catch {
 		/* idempotent */
 	}
 }
@@ -714,9 +704,16 @@ export async function recreateWorktree(
 
 /**
  * Whether removing this worktree would lose work: uncommitted or untracked changes other than its synthetic paths, or
- * commits not in the run's base. When git cannot tell, the work is treated as unsaved.
+ * commits not in the run's base. When git cannot tell, the work is treated as unsaved. With `onStall`, a git command
+ * of the check that does not finish within its deadline is stopped with its process tree, and the work is treated as
+ * unsaved.
  */
-export async function worktreeHasUnsavedWork(setup: WorktreeSetup, worktree: WorktreeInfo): Promise<boolean> {
+export async function worktreeHasUnsavedWork(
+	setup: WorktreeSetup,
+	worktree: WorktreeInfo,
+	onStall?: () => void,
+): Promise<boolean> {
+	if (onStall) return stalledCheck.run(onStall, () => worktreeHasUnsavedWork(setup, worktree));
 	if (!(await pathExists(worktree.path))) return false;
 	const status = await runGit(worktree.path, ["status", "--porcelain", "--untracked-files=all"]);
 	if (status.status !== 0) return true;

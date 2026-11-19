@@ -1049,10 +1049,10 @@ export async function restoreSubagentChild(
 			},
 		},
 	);
-	let releaseWorktree: (() => Promise<void>) | undefined;
+	let releaseWorktree: ((failed?: boolean) => Promise<void>) | undefined;
 	// The resume reports only once its run's worktrees are swept, so nothing of Atomic still runs in the child's worktree
 	// when it does (#5589). A sweep that fails leaves the worktree to the next one; it never changes how the resume ends.
-	const worktreeReleased = () => boundedWorktreeReply(record.runId, releaseWorktree?.());
+	const worktreeReleased = (failed: boolean) => boundedWorktreeReply(record.runId, releaseWorktree?.(failed));
 	const failedRestore = async (reason: string, deadline: number) => {
 		await markGone(reason);
 		// The broker acknowledgement yields: the last sibling may have begun sweeping this worktree meanwhile.
@@ -1094,7 +1094,7 @@ export async function restoreSubagentChild(
 				registered.knownPreviousIntercomId = knownPreviousIntercomId;
 			}
 			const deadline = Date.now() + WORKTREE_REPLY_WAIT_MS;
-			await worktreeReleased();
+			await worktreeReleased(outcome.kind === "unrestorable");
 			if (outcome.kind === "unrestorable") return failedRestore(outcome.reason, deadline);
 			if (outcome.kind !== "restored") release();
 			return outcome;
@@ -1102,7 +1102,7 @@ export async function restoreSubagentChild(
 		async (error: Error) => {
 			previousIntercomId.resolve(undefined);
 			const deadline = Date.now() + WORKTREE_REPLY_WAIT_MS;
-			await worktreeReleased();
+			await worktreeReleased(true);
 			// A failure that passes, such as a read of its history that ran out of file descriptors (#4502), leaves the
 			// child as it was, for a later wake or resume; only a lasting one makes it gone.
 			if (isRetryableStorageError(error)) {
