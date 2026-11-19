@@ -978,12 +978,11 @@ export class JsonlSessionStore implements SessionStore {
 			const inBranch = new Set(branchSeqs);
 			const branch = read.filter((held) => inBranch.has(held.seq));
 			const state = read.filter((held) => !inBranch.has(held.seq));
-			if (plan.compaction)
-				await readEarlierCompletionIntents(index, branch, state, plan.compaction.retainedStartSeq, (seqs) =>
-					this.entriesAt(path, jsonl, seqs, true),
-				);
 			const leaf = leafSeq > 0 ? (branch.find((held) => held.seq === leafSeq)?.entry.id ?? null) : null;
-			return sessionResumeFrom(index, header, branch, state, leaf);
+			const resume = sessionResumeFrom(index, header, branch, state, leaf);
+			if (resume.compaction)
+				await readEarlierCompletionIntents(index, resume, (seqs) => this.entriesAt(path, jsonl, seqs, true));
+			return resume;
 		});
 	}
 

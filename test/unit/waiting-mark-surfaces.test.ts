@@ -303,7 +303,7 @@ test("a surviving pause result takes precedence over a previously reopened heade
 	);
 });
 
-test("a compacted chat can show the stop recorded before its delivered card (#5690)", async () => {
+test("a compacted chat shows its earlier stop without carrying that evidence into another chat (#5690)", async () => {
 	const title = "Subagent docs worker timed out: quit · paused, awaiting resume: check the queue";
 	const taskId = savedNotices.stopped088.taskId;
 	await expectReopenedNotice(
@@ -346,6 +346,22 @@ test("a compacted chat can show the stop recorded before its delivered card (#56
 			);
 		},
 		"receipt",
+		(reopened) => {
+			const entry = reopened
+				.getBranch()
+				.find((e) => e.type === "custom_message" && e.customType === "task-completion");
+			assert.ok(entry);
+			const other = SessionManager.inMemory(process.cwd(), undefined, [entry]);
+			const message = other.buildSessionContext().messages.find((m) => m.role === "custom");
+			assert.ok(message);
+			const card = TaskCompletionMessage.fromMessage(message, false);
+			assert.ok(card);
+			assert.equal(
+				stripVTControlCharacters(card.render(120)[0]!).trim(),
+				"⏸ docs worker timed out: quit · awaiting resume",
+			);
+			card.dispose();
+		},
 	);
 });
 
@@ -529,6 +545,7 @@ async function expectReopenedNotice(
 	preview?: string,
 	beforeNotice?: (session: SessionManager) => Promise<void>,
 	admissionKey?: string,
+	onReopen?: (session: SessionManager) => void,
 ): Promise<void> {
 	for (const backend of ["sqlite", "jsonl"] as const)
 		await withDiskSessions(backend, async (open) => {
@@ -549,6 +566,7 @@ async function expectReopenedNotice(
 			await writer.close();
 
 			const { store: reader } = await open();
+			if (onReopen) onReopen(await SessionManager.open(reader, sessionId, undefined, { history: "tail" }));
 			const main = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
 			const store = createStore();
 			setupRun(store, "run-1", "stage-a", "completed");

@@ -1,5 +1,5 @@
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
-import { yieldToEventLoop } from "../../../utils/event-loop.js";
+import { yieldToEventLoop } from "../../../utils/event-loop.ts";
 import type { CompactionEntry, SessionEntry } from "../../session-manager-types.ts";
 import {
 	type LegacyCompletionTarget,
@@ -814,17 +814,16 @@ export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.lea
  * acknowledged intent back into outbox recovery. The existing index pairs intent/ack positions across branches. */
 function* earlierCompletionBatches(
 	index: SessionResumeIndex,
-	branch: readonly SessionStoredEntry[],
-	state: readonly SessionStoredEntry[],
-	retainedStart: number,
+	resume: SessionResume,
 ): Generator<number[], void, readonly SessionStoredEntry[]> {
+	const { branch, state, compaction } = resume;
 	const first = branch[0]?.seq ?? 1;
-	if (first <= 1 || index.acks.length === 0) return;
+	if (!compaction || first <= 1 || index.acks.length === 0) return;
 	const wanted = new Map<string, { entry: SessionEntry; target: LegacyCompletionTarget }[]>();
 	let visited = 0;
 	for (const { entry, seq } of branch) {
 		if (++visited % 1024 === 0) yield [];
-		if (seq < retainedStart || entry.type !== "custom_message") continue;
+		if (seq < compaction.retainedStartSeq || entry.type !== "custom_message") continue;
 		const target = legacyCompletionTarget(entry);
 		if (target) {
 			const group = wanted.get(target.id) ?? [];
@@ -857,7 +856,8 @@ function* earlierCompletionBatches(
 			if (entry.type !== "custom" || entry.customType !== TASK_COMPLETION_INTENT_TYPE) continue;
 			const id = completionIdOf(entry);
 			if (id === undefined) continue;
-			for (const card of wanted.get(id) ?? []) rememberEarlierCompletion(card.entry, card.target, entry.data);
+			for (const card of wanted.get(id) ?? [])
+				rememberEarlierCompletion(resume.recovery, card.entry, card.target, entry.data);
 			wanted.delete(id);
 		}
 		if (!wanted.size) return;
@@ -868,12 +868,10 @@ function* earlierCompletionBatches(
 /** Resolve old display evidence in the same store revision as the branch, without reading any intervening messages. */
 export async function readEarlierCompletionIntents(
 	index: SessionResumeIndex,
-	branch: readonly SessionStoredEntry[],
-	state: readonly SessionStoredEntry[],
-	retainedStart: number,
+	resume: SessionResume,
 	read: (seqs: number[]) => Promise<readonly SessionStoredEntry[] | undefined>,
 ): Promise<boolean> {
-	const batches = earlierCompletionBatches(index, branch, state, retainedStart);
+	const batches = earlierCompletionBatches(index, resume);
 	let batch = batches.next();
 	while (!batch.done) {
 		// A damaged or unreadable old receipt must not make an otherwise readable conversation fail to open.
@@ -946,12 +944,13 @@ export function sessionResumeOf(
 	const plan = sessionResumePlan(selected);
 	const branch = plan.branch.flatMap(([a, b]) => entries.slice(a - 1, b).map((entry, i) => ({ seq: a + i, entry })));
 	const state = plan.state.map((seq) => ({ seq, entry: entries[seq - 1]! }));
-	if (plan.compaction) {
-		const batches = earlierCompletionBatches(selected, branch, state, plan.compaction.retainedStartSeq);
+	const resume = sessionResumeFrom(selected, header, branch, state, leafSeq > 0 ? entries[leafSeq - 1]!.id : null);
+	if (resume.compaction) {
+		const batches = earlierCompletionBatches(selected, resume);
 		for (let batch = batches.next(); !batch.done; )
 			batch = batches.next(batch.value.map((seq) => ({ seq, entry: entries[seq - 1]! })));
 	}
-	return sessionResumeFrom(selected, header, branch, state, leafSeq > 0 ? entries[leafSeq - 1]!.id : null);
+	return resume;
 }
 
 export function resumeIndexNeedsRefold(previous: SessionResumeIndex, entries: readonly SessionEntry[]): boolean {

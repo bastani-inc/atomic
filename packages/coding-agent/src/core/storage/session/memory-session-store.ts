@@ -437,15 +437,14 @@ export class MemorySessionStore implements SessionStore {
 			const inBranch = new Set(branchSeqs);
 			const branch = read.filter((held) => inBranch.has(held.seq));
 			const state = read.filter((held) => !inBranch.has(held.seq));
+			const leaf = leafSeq > 0 ? (branch.find((held) => held.seq === leafSeq)?.entry.id ?? null) : null;
+			const resume = sessionResumeFrom(index, decodeHeader(record), branch, state, leaf);
 			if (
-				plan.compaction &&
-				!(await readEarlierCompletionIntents(index, branch, state, plan.compaction.retainedStartSeq, (seqs) =>
-					this.entriesAt(sessionId, record, seqs),
-				))
+				resume.compaction &&
+				!(await readEarlierCompletionIntents(index, resume, (seqs) => this.entriesAt(sessionId, record, seqs)))
 			)
 				continue;
-			const leaf = leafSeq > 0 ? (branch.find((held) => held.seq === leafSeq)?.entry.id ?? null) : null;
-			return sessionResumeFrom(index, decodeHeader(record), branch, state, leaf);
+			return resume;
 		}
 	}
 

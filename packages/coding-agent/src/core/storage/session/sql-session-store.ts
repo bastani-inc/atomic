@@ -1891,10 +1891,6 @@ export class SqlSessionStore implements SessionStore {
 			for (const [start, end] of plan.branch)
 				branch.push(...(await this.readRows(tx, sessionId, "seq >= ? AND seq <= ?", [start, end])));
 			const state = await this.readSeqs(tx, sessionId, plan.state);
-			if (plan.compaction)
-				await readEarlierCompletionIntents(index, branch, state, plan.compaction.retainedStartSeq, (seqs) =>
-					this.readSeqs(tx, sessionId, seqs),
-				);
 			const leaf =
 				leafSeq <= 0
 					? undefined
@@ -1903,7 +1899,10 @@ export class SqlSessionStore implements SessionStore {
 							sessionId,
 							leafSeq,
 						);
-			return sessionResumeFrom(index, source.header, branch, state, leaf?.entry_id ?? null);
+			const resume = sessionResumeFrom(index, source.header, branch, state, leaf?.entry_id ?? null);
+			if (resume.compaction)
+				await readEarlierCompletionIntents(index, resume, (seqs) => this.readSeqs(tx, sessionId, seqs));
+			return resume;
 		}, SESSION_TRANSACTION);
 	}
 

@@ -19,6 +19,7 @@ import type {
 	SessionProjection,
 	SessionTreeNode,
 } from "./session-manager-types.ts";
+import type { SessionRecoveryState } from "./storage/session/types.js";
 import { ReopenedCompletionHeaders } from "./tasks/reopened-completion.js";
 
 /** Build the single context message a durable entry contributes, if any. */
@@ -249,6 +250,7 @@ export function buildSessionProjection(
 	branch?: readonly SessionEntry[],
 	purpose: "model" | "transcript" = "model",
 	onTranscriptEdit?: () => void,
+	recovery?: SessionRecoveryState,
 ): SessionProjection {
 	// Build uuid index if not available
 	if (!byId) {
@@ -282,7 +284,7 @@ export function buildSessionProjection(
 	const { thinkingLevel, model } = getSessionContextSettings(path);
 	const contextEntries = buildContextEntries(entries, leaf.id, byId, walked);
 	const edits = collectContextEdits(contextEntries);
-	const headers = new ReopenedCompletionHeaders(() => path);
+	const headers = new ReopenedCompletionHeaders(() => ({ entries: path, recovery }));
 
 	const boundary = getLatestCompactionBoundaryEntry(path);
 	// A summary boundary from an older release replays with its kept messages as structured messages.

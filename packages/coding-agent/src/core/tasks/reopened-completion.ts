@@ -1,6 +1,7 @@
 import { isProxy } from "node:util/types";
-import type { CustomMessage, StageAdmittedCustomMessage } from "../messages.js";
-import type { SessionEntry } from "../session-manager-types.js";
+import type { CustomMessage, StageAdmittedCustomMessage } from "../messages.ts";
+import type { SessionEntry } from "../session-manager-types.ts";
+import type { SessionRecoveryState } from "../storage/session/types.js";
 import { cancelReasonText } from "./cancel-reason.js";
 
 // A lookup must not invoke an extension's getter or inspect a proxy. Persisted JSON has own data properties.
@@ -158,36 +159,50 @@ export function reopenedCompletionName(message: CustomMessage): string | undefin
 	return target && stopName(message, target, witness);
 }
 
-/** Names learned from an intent preceding the current window, scoped to the saved card (not the process's task ID). */
-const earlierWitnesses = new WeakMap<Card, StopWitness>();
-export function rememberEarlierCompletion(entry: SessionEntry, target: LegacyCompletionTarget, intent: unknown): void {
+/** An SDK caller can copy the same entry object into a different session. Evidence outside the window belongs to
+ * the store snapshot that supplied it, not to that entry on its own. Neither weak key keeps a session alive. */
+const earlierWitnesses = new WeakMap<SessionRecoveryState, WeakMap<Card, StopWitness>>();
+export function rememberEarlierCompletion(
+	scope: SessionRecoveryState,
+	entry: SessionEntry,
+	target: LegacyCompletionTarget,
+	intent: unknown,
+): void {
 	if (entry.type !== "custom_message" || field(intent, "completionId") !== target.id) return;
 	const witness = stopWitness(intent);
-	if (witness) earlierWitnesses.set(entry, witness);
+	if (!witness) return;
+	let cards = earlierWitnesses.get(scope);
+	if (!cards) {
+		cards = new WeakMap();
+		earlierWitnesses.set(scope, cards);
+	}
+	cards.set(entry, witness);
 }
+
+type RecordedBranch = { readonly entries: readonly SessionEntry[]; readonly recovery?: SessionRecoveryState };
 
 /** One index per projection, built only if it actually contains a damaged legacy card. */
 export class ReopenedCompletionHeaders {
 	private recorded?: Map<Card, StopWitness>;
-	private readonly branch: () => readonly SessionEntry[];
-	constructor(branch: () => readonly SessionEntry[]) {
+	private readonly branch: () => RecordedBranch;
+	constructor(branch: () => RecordedBranch) {
 		this.branch = branch;
 	}
 	apply(entry: Card, message: CustomMessage): void {
 		if (!legacyCompletionTarget(entry)) return;
 		if (!this.recorded) {
+			const { entries, recovery } = this.branch();
+			const earlier = recovery && earlierWitnesses.get(recovery);
 			const intents = new Map<string, unknown>();
 			this.recorded = new Map();
-			for (const item of this.branch()) {
+			for (const item of entries) {
 				if (item.type === "custom" && item.customType === "task-completion-intent") {
 					const id = field(item.data, "completionId");
 					if (typeof id === "string") intents.set(id, intents.has(id) ? undefined : item.data);
 				} else if (item.type === "custom_message") {
 					const target = legacyCompletionTarget(item);
 					if (!target) continue;
-					const witness = intents.has(target.id)
-						? stopWitness(intents.get(target.id))
-						: earlierWitnesses.get(item);
+					const witness = intents.has(target.id) ? stopWitness(intents.get(target.id)) : earlier?.get(item);
 					if (witness) this.recorded.set(item, witness);
 				}
 			}

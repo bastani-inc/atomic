@@ -8,7 +8,7 @@ import { projectTrustWarningVisible } from "../../core/project-trust-state.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry } from "../../core/session-manager.ts";
-import { sessionEntryToDisplayMessages } from "../../core/session-manager-history.js";
+import { sessionEntryToDisplayMessages } from "../../core/session-manager-history.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ReopenedCompletionHeaders } from "../../core/tasks/reopened-completion.js";
 import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
@@ -815,7 +815,10 @@ function planTranscript(
 		}
 		messageBuffer = [];
 	};
-	const headers = new ReopenedCompletionHeaders(() => mode.sessionManager.getBranch());
+	const headers = new ReopenedCompletionHeaders(() => ({
+		entries: mode.sessionManager.getBranch(),
+		recovery: mode.sessionManager.getSessionRecoveryState(),
+	}));
 	for (const entry of sessionEntries) {
 		if (entry.type === "custom") {
 			// An unrendered record between a tool call and its result must not split them into two cards.
