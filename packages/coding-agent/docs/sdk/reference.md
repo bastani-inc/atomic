@@ -1462,7 +1462,7 @@ Without a supported owner, explicit background execution is refused. Native Wind
 
 `watchHeldPromptAttention(sessionId, report)` maps the current prompt to task `input-needed` activity, clears attention when it settles and returns a stop function that unsubscribes and clears its last report. `isHeldPromptInput(input)` distinguishes Atomic's held-prompt adapter from an SDK host's adapter when forwarding child bindings. `isPresentationHostInput(input)` identifies a fallback adapter for a launching chat's presentation, so workflow stage hosts can discard that adapter without discarding explicitly supplied SDK input.
 
-Only Atomic's interactive hosts with a task inspector hold child prompts automatically. A plain RPC or SDK `uiContext` binding continues presenting them through its existing dialogs. Custom hosts that need session-local forms should supply their own `humanInput` adapter and route requests by `HostInputOptions.sessionId`. Workflow stage dialogs use their run's pending prompts instead; see [Workflow input](/workflows/operations).
+Only Atomic's interactive hosts with a task inspector hold child prompts automatically. A plain RPC or SDK `uiContext` binding continues presenting them through its existing dialogs. Custom hosts that need session-local forms should supply their own `humanInput` adapter and route requests by `HostInputOptions.sessionId`. Workflow stage dialogs use their run's pending prompts instead.
 
 ### Task transcript references
 
