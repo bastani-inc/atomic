@@ -495,6 +495,7 @@ function liveRunSession(
 		session: {
 			title: workflowRowTitle(run.name, run.id, identity, cwd, options),
 			detail,
+			...(handle === undefined ? {} : { resumeSelection: { updatedAt: saved?.updatedAt ?? handle.updatedAt } }),
 			path: `workflow-live:${run.id}`,
 			id: run.id,
 			cwd: "Live",
@@ -510,7 +511,7 @@ function liveRunSession(
 	};
 }
 
-function durableWorkflowSession(
+export function durableWorkflowSession(
 	entry: ResumableWorkflowEntry,
 	kind: "durable" | "completed",
 	now: number,
@@ -566,6 +567,7 @@ function durableWorkflowSession(
 				reason ? `✗ ${reason}` : undefined,
 				summary?.replace(/\s+/g, " ").trim(),
 			]),
+			resumeSelection: { updatedAt: entry.updatedAt },
 			path: `workflow-${kind}:${entry.workflowId}`,
 			id: entry.workflowId,
 			cwd: kind === "completed" ? "Completed" : "Durable",
@@ -670,6 +672,7 @@ export const WORKFLOW_RESUME_PICKER_UNAVAILABLE =
 export function toWorkflowPickerRow(item: WorkflowResumeSelectorItem): PiHostSessionPickerRow {
 	return {
 		...toPickerRow(item.session),
+		...(item.session.resumeSelection === undefined ? {} : { resumeSelection: item.session.resumeSelection }),
 		canDelete: item.session.canDelete ?? item.result.kind !== "live",
 	};
 }

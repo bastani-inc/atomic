@@ -320,6 +320,31 @@ export const SNAPSHOT_LEGACY_STAMP_BYTES = 16 * SNAPSHOT_BLOB_CHUNK_BYTES;
  */
 export const SNAPSHOT_CHUNK_MOVE_ROWS = 4;
 
+/**
+ * The free space a chunk table's move to the row layout leaves on the file system of a SQLite or libSQL database file
+ * beyond its copy, at least (#5694): the move starts only when the disk has room for the copy, its write-ahead log and
+ * this much more, so other writes keep room on the disk.
+ */
+export const SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Whether `error`, or a failure it wraps, says the database's disk is full or failed to read or write: SQLite's
+ * `SQLITE_FULL` or `SQLITE_IOERR` and its extended codes (node:sqlite's `errcode`, libSQL's code or `rawCode`), as a
+ * libSQL server answers when its disk fills, or PostgreSQL's `disk_full` (53100) or `io_error` (58030).
+ */
+function isStorageSpaceFailure(error: unknown): boolean {
+	const seen = new Set<object>();
+	for (let cause = error; typeof cause === "object" && cause !== null && !seen.has(cause); ) {
+		seen.add(cause);
+		const { code, errcode, rawCode } = cause as { code?: unknown; errcode?: unknown; rawCode?: unknown };
+		if (typeof code === "string" && /^(?:SQLITE_FULL|SQLITE_IOERR(?:_\w+)?|53100|58030)$/.test(code)) return true;
+		const number = errcode ?? rawCode;
+		if (typeof number === "number" && ((number & 0xff) === 13 || (number & 0xff) === 10)) return true;
+		cause = (cause as { cause?: unknown }).cause;
+	}
+	return false;
+}
+
 /** Rows of one referencing table that one backfill transaction indexes. */
 export const SNAPSHOT_INDEX_BACKFILL_BATCH = 500;
 
@@ -1840,8 +1865,11 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			(await executor.all<SqliteRow & { name: string }>(probe.sql, ...probe.params)).map((row) => row.name);
 		const rows = SNAPSHOT_CHUNK_MOVE_ROWS;
 		const pending = await clustered(this.database);
-		if (pending.includes(retired)) await this.dropRetiredChunks(options);
+		if (pending.includes(retired)) await this.dropChunkTable(retired, options);
 		if (!pending.includes(t.blobChunks)) return;
+		// A copy the disk has no room for would fill it (#5694): the table stays as it is, read and written as before, and a
+		// partial copy an earlier collection left is dropped, its pages back on the database's free list.
+		if (!(await this.roomForChunkCopy(next))) return this.dropChunkTable(next, options);
 		// Copies the rows after the last one copied: no other statement writes the new table before it is renamed.
 		const copyNext = async (transaction: SqliteExecutor) => {
 			const last = await transaction.get<SqliteRow & { hash: string; idx: number }>(
@@ -1867,42 +1895,51 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const stale = `SELECT hash, idx FROM ${next} EXCEPT SELECT hash, idx FROM ${t.blobChunks}`;
 		for (let copying = true; ; ) {
 			options.signal?.throwIfAborted();
-			const moved = await this.write(options.pace, async (transaction) => {
-				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
-				if (!(await clustered(transaction)).includes(t.blobChunks)) return true;
-				await transaction.exec(chunkTableDefinition(next, this.dialect));
-				if (copying) {
-					copying = (await copyNext(transaction)) === rows;
-					return false;
-				}
-				// Rows copied and stale copies dropped share the transaction's rows. The tables are renamed only by a transaction
-				// that leaves the new table holding exactly the chunk table's rows; otherwise the next transaction continues.
-				const copied = await copyMissing(transaction);
-				if (copied === rows) return false;
-				const room = rows - copied;
-				const { changes: dropped } = await transaction.run(
-					`DELETE FROM ${next} WHERE (hash, idx) IN (${stale} LIMIT ?)`,
-					room,
-				);
-				if (dropped === room && (await transaction.get(`${stale} LIMIT 1`)) !== undefined) return false;
-				// Renaming the table would point a trigger that names it at the old table: both of the delete triggers releases
-				// installed are dropped, and the current one is installed again on the new table.
-				await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs));
-				await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete_all`, t.blobs));
-				try {
-					await transaction.exec(`ALTER TABLE ${t.blobChunks} RENAME TO ${retired}`);
-					await transaction.exec(`ALTER TABLE ${next} RENAME TO ${t.blobChunks}`);
-				} catch (error) {
-					await this.confirmRenameBlocker(transaction, error);
-					throw error;
-				}
-				await transaction.exec(this.dialect.renderTrigger(chunksDeleteTrigger(t)));
-				return true;
-			});
+			let moved: boolean;
+			try {
+				moved = await this.write(options.pace, async (transaction) => {
+					if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
+					if (!(await clustered(transaction)).includes(t.blobChunks)) return true;
+					await transaction.exec(chunkTableDefinition(next, this.dialect));
+					if (copying) {
+						copying = (await copyNext(transaction)) === rows;
+						return false;
+					}
+					// Rows copied and stale copies dropped share the transaction's rows. The tables are renamed only by a transaction
+					// that leaves the new table holding exactly the chunk table's rows; otherwise the next transaction continues.
+					const copied = await copyMissing(transaction);
+					if (copied === rows) return false;
+					const room = rows - copied;
+					const { changes: dropped } = await transaction.run(
+						`DELETE FROM ${next} WHERE (hash, idx) IN (${stale} LIMIT ?)`,
+						room,
+					);
+					if (dropped === room && (await transaction.get(`${stale} LIMIT 1`)) !== undefined) return false;
+					// Renaming the table would point a trigger that names it at the old table: both of the delete triggers releases
+					// installed are dropped, and the current one is installed again on the new table.
+					await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs));
+					await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete_all`, t.blobs));
+					try {
+						await transaction.exec(`ALTER TABLE ${t.blobChunks} RENAME TO ${retired}`);
+						await transaction.exec(`ALTER TABLE ${next} RENAME TO ${t.blobChunks}`);
+					} catch (error) {
+						await this.confirmRenameBlocker(transaction, error);
+						throw error;
+					}
+					await transaction.exec(this.dialect.renderTrigger(chunksDeleteTrigger(t)));
+					return true;
+				});
+			} catch (error) {
+				// A disk that fills up ends the move, not the collection (#5694): the partial copy is dropped, its pages back on
+				// the database's free list, and a later collection tries again.
+				if (!isStorageSpaceFailure(error)) throw error;
+				await this.betweenBatches(options.pace);
+				return this.dropChunkTable(next, options);
+			}
 			await this.betweenBatches(options.pace);
 			if (moved) break;
 		}
-		await this.dropRetiredChunks(options);
+		await this.dropChunkTable(retired, options);
 	}
 
 	/**
@@ -1934,29 +1971,84 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	}
 
 	/**
-	 * Empties the chunk table a move to the row layout retired, in write transactions of at most
-	 * {@link SNAPSHOT_CHUNK_MOVE_ROWS} rows, from its first key on, then drops it.
+	 * Whether the file system of a SQLite or libSQL database file has room to copy what is left of the chunk table to the
+	 * row layout (#5694): the copy grows the file by the bytes its free pages do not hold, and the write-ahead log can
+	 * hold every page the copy writes until a checkpoint moves them into the file, with
+	 * {@link SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES} left over; the database's own `freeBytes` says how much the file system
+	 * holds. A database whose disk this process cannot see, such as a libSQL server, moves only what is left of a table
+	 * no larger than that headroom: the move must never be what fills a disk, and the old layout works as before.
 	 */
-	private async dropRetiredChunks(options: SnapshotIndexOptions): Promise<void> {
-		const { retired } = chunkMoveTables(this.tables);
-		const probe = this.dialect.tableExists(retired);
+	private async roomForChunkCopy(next: string): Promise<boolean> {
+		const rowsOf = async (table: string) =>
+			Number(
+				(await this.database.get<SqliteRow & { rows: number }>(`SELECT count(*) AS rows FROM ${table}`))?.rows ?? 0,
+			);
+		const copy = this.dialect.tableExists(next);
+		const copyExists = async () => (await this.database.get(copy.sql, ...copy.params)) !== undefined;
+		// The chunks the copy lacks, counted in one statement against what it holds: a copy may also hold copies of chunks
+		// deleted since, which take no more room, and chunks stored since that it lacks.
+		const lacking = async () =>
+			Number(
+				(
+					await this.database.get<SqliteRow & { rows: number }>(
+						`SELECT count(*) AS rows FROM ${this.tables.blobChunks} AS old WHERE NOT EXISTS (SELECT 1 FROM ${next} AS copy WHERE copy.hash = old.hash AND copy.idx = old.idx)`,
+					)
+				)?.rows ?? 0,
+			);
+		const rows = !(await copyExists())
+			? await rowsOf(this.tables.blobChunks)
+			: await lacking().catch(async (error: unknown) => {
+					// Another collector finished the move, which took the copy's name, or dropped the copy, since it was found:
+					// none of it is left to count on. The move's own transactions see which.
+					if (!(await copyExists())) return rowsOf(this.tables.blobChunks);
+					throw error;
+				});
+		const left = rows * SNAPSHOT_BLOB_CHUNK_BYTES;
+		let free: number | undefined;
+		try {
+			free = await this.database.freeBytes?.();
+		} catch {
+			// A reading that fails is no reading: the collection goes on as for a disk this process cannot see.
+			free = undefined;
+		}
+		if (free === undefined) return left <= SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES;
+		const freePages = await this.database.get<SqliteRow & { bytes: number }>(
+			"SELECT (SELECT freelist_count FROM pragma_freelist_count()) * (SELECT page_size FROM pragma_page_size()) AS bytes",
+		);
+		const reused = Math.min(left, Number(freePages?.bytes ?? 0));
+		return free >= left - reused + left + SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES;
+	}
+
+	/**
+	 * Empties `table`, the chunk table a move to the row layout retired or a partial copy of the move (#5694), in write
+	 * transactions of at most {@link SNAPSHOT_CHUNK_MOVE_ROWS} rows, from its first key on, then drops it; its pages go
+	 * to the database's free list. A full disk stops it without a failure: a later collection goes on.
+	 */
+	private async dropChunkTable(table: string, options: SnapshotIndexOptions): Promise<void> {
+		const probe = this.dialect.tableExists(table);
 		if ((await this.database.get(probe.sql, ...probe.params)) === undefined) return;
 		for (;;) {
 			options.signal?.throwIfAborted();
-			const dropped = await this.write(options.pace, async (transaction) => {
-				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
-				if ((await transaction.get(probe.sql, ...probe.params)) === undefined) return true;
-				const last = await transaction.get<SqliteRow & { hash: string; idx: number }>(
-					`SELECT hash, idx FROM ${retired} ORDER BY hash, idx LIMIT 1 OFFSET ?`,
-					SNAPSHOT_CHUNK_MOVE_ROWS - 1,
-				);
-				if (last === undefined) {
-					await transaction.exec(`DROP TABLE IF EXISTS ${retired}`);
-					return true;
-				}
-				await transaction.run(`DELETE FROM ${retired} WHERE (hash, idx) <= (?, ?)`, last.hash, last.idx);
-				return false;
-			});
+			let dropped: boolean;
+			try {
+				dropped = await this.write(options.pace, async (transaction) => {
+					if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
+					if ((await transaction.get(probe.sql, ...probe.params)) === undefined) return true;
+					const last = await transaction.get<SqliteRow & { hash: string; idx: number }>(
+						`SELECT hash, idx FROM ${table} ORDER BY hash, idx LIMIT 1 OFFSET ?`,
+						SNAPSHOT_CHUNK_MOVE_ROWS - 1,
+					);
+					if (last === undefined) {
+						await transaction.exec(`DROP TABLE IF EXISTS ${table}`);
+						return true;
+					}
+					await transaction.run(`DELETE FROM ${table} WHERE (hash, idx) <= (?, ?)`, last.hash, last.idx);
+					return false;
+				});
+			} catch (error) {
+				if (isStorageSpaceFailure(error)) return;
+				throw error;
+			}
 			await this.betweenBatches(options.pace);
 			if (dropped) return;
 		}
