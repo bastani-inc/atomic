@@ -1,7 +1,7 @@
 import { type Component, getKeybindings, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
-import { formatLabelTimestamp, getEntryDisplayText } from "./tree-selector-content.ts";
+import { formatLabelTimestamp, getEntryDisplayText, getPendingDisplayText } from "./tree-selector-content.ts";
 import { applyTreeFilter, buildActivePath, findNearestVisibleIndex, flattenTree } from "./tree-selector-model.ts";
 import type { FilterMode, HorizontalViewportRow, ToolCallInfo, TreeListState } from "./tree-selector-types.ts";
 import { renderHorizontalViewport } from "./tree-selector-viewport.ts";
@@ -114,7 +114,16 @@ export class TreeList implements Component {
 		const lines: string[] = [];
 
 		if (state.filteredNodes.length === 0) {
-			lines.push(truncateToWidth(theme.fg("dim", "  No entries match"), width));
+			// A stored session searches its archive in the background: no match is known until that read finishes.
+			const search = state.archive?.searchState(state.searchQuery);
+			const empty =
+				search === "pending"
+					? theme.fg("dim", "  Searching…")
+					: search
+						? theme.fg("error", `  Search failed: ${search.message}`)
+						: theme.fg("dim", "  No entries match");
+			lines.push(truncateToWidth(empty, width));
+			state.archive?.show([], width);
 			const status = this.getStatusLabels();
 			if (status.length > 0) lines.push(truncateToWidth(theme.fg("dim", `  ${status.join(" · ")}`), width));
 			return lines;
@@ -129,10 +138,6 @@ export class TreeList implements Component {
 		);
 		const endIndex = Math.min(startIndex + state.maxVisibleLines, state.filteredNodes.length);
 
-		state.archive?.show(
-			state.filteredNodes.slice(startIndex, endIndex).map((node) => node.node.entry.id),
-			width,
-		);
 		const renderedRows: HorizontalViewportRow[] = [];
 		for (let i = startIndex; i < endIndex; i++) {
 			const flatNode = state.filteredNodes[i];
@@ -206,9 +211,10 @@ export class TreeList implements Component {
 							isSelected,
 							new Map(preview.call ? [preview.call] : []),
 						)
-					: theme.fg(
-							"dim",
-							`[${state.archive.rows.get(entry.id)?.role ?? state.archive.rows.get(entry.id)?.type ?? "entry"}]`,
+					: getPendingDisplayText(
+							state.archive.rows.get(entry.id),
+							isSelected,
+							state.archive.failure(entry.id) !== undefined,
 						);
 			const prefixPart = theme.fg("dim", prefix) + foldMarker + pathMarker;
 			const anchorCol = visibleWidth(prefixPart);
@@ -222,6 +228,11 @@ export class TreeList implements Component {
 		}
 
 		lines.push(...renderHorizontalViewport(renderedRows, width));
+		// Read the rows on screen. The viewport can pan right by up to the deepest row's indent, so read that much more.
+		state.archive?.show(
+			state.filteredNodes.slice(startIndex, endIndex).map((node) => node.node.entry.id),
+			width + renderedRows.reduce((most, row) => Math.max(most, row.anchorCol), 0),
+		);
 		const above = startIndex;
 		const below = state.filteredNodes.length - endIndex;
 		const footer = [
