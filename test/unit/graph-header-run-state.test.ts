@@ -288,6 +288,22 @@ test("renderHeader never labels a run resumed, whatever its state (#4643)", () =
 	}
 });
 
+test("a recorded block only changes the graph header while the run is live and resumable (#5534)", () => {
+	for (const [field, value] of [
+		["endedAt", NOW],
+		["resumable", false],
+	] as const) {
+		const target = run({ blockedAt: 0 });
+		Object.defineProperty(target, field, { value, enumerable: false });
+		const view = graphView(target, "widget");
+		try {
+			assert.doesNotMatch(plain(view.render(WIDE).join("\n")), /↑ blocked/);
+		} finally {
+			view.dispose();
+		}
+	}
+});
+
 test("runStateIndicator classifies run-level states with the status glyphs (#4643)", () => {
 	assert.deepEqual(runStateIndicator(blockedExit), { kind: "blocked", glyph: "↑", text: "↑ blocked", reason: REASON });
 	assert.deepEqual(runStateIndicator(budgetStop), { kind: "blocked", glyph: "↑", text: "↑ blocked" });

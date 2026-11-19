@@ -33,6 +33,8 @@ import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 export interface HeaderOpts {
 	width: number;
 	theme: GraphTheme;
+	/** Status resolved from the owning run when the header receives expanded stage data. */
+	displayStatus?: () => RunSnapshot["status"];
 }
 
 export interface BandBadge {
@@ -214,7 +216,7 @@ export function renderBandHeader(opts: BandHeaderOpts): string[] {
  */
 export function renderHeader(run: RunSnapshot, opts: HeaderOpts): string[] {
 	const { width, theme } = opts;
-	const runState = runStateIndicator(run);
+	const runState = runStateIndicator(run, opts.displayStatus);
 	const pill = pillFor(run, runState, theme);
 
 	const counts = {
