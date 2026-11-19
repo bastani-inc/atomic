@@ -129,6 +129,34 @@ async function snapshotEntries(
 	return entries;
 }
 
+let copies = 0;
+/**
+ * What `{ history: "full" }` returned before it was removed: a manager holding every stored entry. The same entries
+ * are saved again under another id, in the same store and its snapshot blobs, with each boundary turned into a plain
+ * message, so the reopened copy retires nothing. No worktree reading depends on a boundary.
+ */
+async function wholeHistory(store: SessionStore, id: string): Promise<SessionManager> {
+	const { header, entries } = await store.load(id);
+	const copy = `${id}-whole-${++copies}`;
+	await store.create(
+		{ ...header, id: copy },
+		entries.map((entry): SessionEntry => {
+			if (entry.type !== "compaction") return entry;
+			const { id, parentId, timestamp } = entry;
+			return {
+				type: "message",
+				id,
+				parentId,
+				timestamp,
+				message: { role: "user", content: "boundary", timestamp: 0 },
+			};
+		}),
+	);
+	const manager = await SessionManager.open(store, copy);
+	expect(manager.hasFullHistory()).toBe(true);
+	return manager;
+}
+
 /** A snapshot record whose patch the store holds, as a capture leaves it. */
 async function record(store: SessionStore, id: string, root: string, index: number): Promise<WorktreeSnapshot> {
 	const data = new TextEncoder().encode(`patch of ${id}`);
@@ -221,7 +249,7 @@ describe.each(Object.keys(stores))("worktree snapshots of a resumed window on th
 		for (const turns of [30, 90]) {
 			const store = await stores[kind]!();
 			const { id } = await snapshotHistory(store, turns);
-			const full = await SessionManager.open(store, id, undefined, { history: "full" });
+			const full = await wholeHistory(store, id);
 			const window = await SessionManager.open(store, id);
 
 			expect(full.getWorktreeSnapshotRecords().size).toBe(turns + 3);
@@ -240,7 +268,7 @@ describe.each(Object.keys(stores))("worktree snapshots of a resumed window on th
 	it("gives every snapshot reading the same result as a manager holding the whole history", async () => {
 		const store = await stores[kind]!();
 		const { id } = await snapshotHistory(store, 30);
-		const full = await SessionManager.open(store, id, undefined, { history: "full" });
+		const full = await wholeHistory(store, id);
 		const window = await SessionManager.open(store, id);
 
 		for (const manager of [full, window]) expect(manager.hasFullHistory()).toBe(manager === full);
@@ -264,7 +292,7 @@ describe.each(Object.keys(stores))("worktree snapshots of a resumed window on th
 	it("reads archived snapshot records on demand, equal to the whole-history map", async () => {
 		const store = await stores[kind]!();
 		const { id, ids } = await snapshotHistory(store, 30);
-		const full = await SessionManager.open(store, id, undefined, { history: "full" });
+		const full = await wholeHistory(store, id);
 		const window = await SessionManager.open(store, id);
 
 		const all = full.getWorktreeSnapshotRecords();
@@ -285,7 +313,7 @@ describe.each(Object.keys(stores))("worktree snapshots of a resumed window on th
 	it("reads only the archived snapshot entries a reading needs, however long the history", async () => {
 		const { store, read } = counting(await stores[kind]!());
 		const { id } = await snapshotHistory(store, 60);
-		const full = await SessionManager.open(store, id, undefined, { history: "full" });
+		const full = await wholeHistory(store, id);
 		const window = await SessionManager.open(store, id);
 		const stored = full.getEntries().filter((entry) => entry.type === "worktree_snapshot");
 		expect(full.getEntries().length).toBeGreaterThan(stored.length + 60);
@@ -310,11 +338,11 @@ describe.each(Object.keys(stores))("worktree snapshots of a resumed window on th
 		const store = await stores[kind]!();
 		const { id } = await snapshotHistory(store, 30);
 		const window = await SessionManager.open(store, id);
-		const before = await SessionManager.open(store, id, undefined, { history: "full" });
+		const before = await wholeHistory(store, id);
 		const writer = await SessionManager.open(store, id);
 		await writer.appendWorktreeSnapshot(A, "a-1", await record(store, "a-1", A, 77));
 		await writer.appendWorktreeSnapshot(A, "a-40", await record(store, "a-40", A, 40));
-		const after = await SessionManager.open(store, id, undefined, { history: "full" });
+		const after = await wholeHistory(store, id);
 		expect(after.getWorktreeSnapshotRecords().get("a-1")).not.toEqual(before.getWorktreeSnapshotRecords().get("a-1"));
 
 		const records = before.getWorktreeSnapshotRecords();
@@ -354,29 +382,37 @@ describe.each(Object.keys(stores))("worktree snapshots of a resumed window on th
 		await writer.branch(fork);
 		await writer.appendMessage({ role: "user", content: "active", timestamp: 4 });
 		await writer.appendWorktreeSnapshot(B, "b-1", undefined);
-		const full = await SessionManager.open(store, id, undefined, { history: "full" });
 		const window = await SessionManager.open(store, id);
 		expect(
 			window.getEntries().some((entry) => entry.type === "worktree_snapshot" && entry.snapshotId === "x-1"),
 		).toBe(false);
 
-		const stored = full.getEntries().filter((entry) => entry.type === "worktree_snapshot");
+		// No manager holds an abandoned branch any more: what one holding every entry read, from the stored rows.
+		const { entries } = await store.load(id);
+		const stored = entries.filter((entry) => entry.type === "worktree_snapshot");
+		const byId = new Map(entries.map((entry) => [entry.id, entry]));
+		const path: SessionEntry[] = [];
+		for (let entry = byId.get(window.getLeafId()!); entry; entry = byId.get(entry.parentId ?? ""))
+			path.unshift(entry);
+		const records = new Map(stored.flatMap((entry) => (entry.snapshot ? [[entry.snapshotId, entry.snapshot]] : [])));
 		expect(stored.some((entry) => entry.restore?.to === moved)).toBe(true);
+		expect(records.has("x-1")).toBe(true);
 		expect(await snapshotEntries(window.readWorktreeSnapshotPages())).toEqual(stored);
 		expect(await snapshotEntries(window.readWorktreeSnapshotPages({ branch: true }))).toEqual(
-			full.getBranch().filter((entry) => entry.type === "worktree_snapshot"),
+			path.filter((entry) => entry.type === "worktree_snapshot"),
 		);
 		expect(await window.loadWorktreeSnapshotRecords(["x-1", "a-3"])).toEqual(
-			new Map(["x-1", "a-3"].map((id) => [id, full.getWorktreeSnapshotRecords().get(id)])),
+			new Map(["x-1", "a-3"].map((id) => [id, records.get(id)])),
 		);
 	});
 
 	it("states what an export file carries as a manager holding the whole history does", async () => {
 		const store = await stores[kind]!();
 		const { id } = await snapshotHistory(store, 30);
-		const full = await SessionManager.open(store, id, undefined, { history: "full" });
+		const full = await wholeHistory(store, id);
+		const window = await SessionManager.open(store, id);
 		const path = join(directory(), "export.jsonl");
-		await exportToJsonl.call({ sessionManager: full } as unknown as AgentSession, path);
+		await exportToJsonl.call({ sessionManager: window } as unknown as AgentSession, path);
 
 		const expected = describeSnapshotExport(full.getBranch(), full.getWorktreeSnapshotRecords());
 		expect(expected).toContain("Includes 33 worktree snapshot(s)");
@@ -399,7 +435,7 @@ describe.each(Object.keys(stores))("worktree snapshots of a resumed window on th
 			);
 			const store = await stores[kind]!();
 			await store.create({ ...stored.header }, entries);
-			const full = await SessionManager.open(store, id, undefined, { history: "full" });
+			const full = await wholeHistory(store, id);
 			const window = await SessionManager.open(store, id);
 			expect(window.getEntries().some((entry) => entry.type === "worktree_snapshot" && entry.blobs)).toBe(false);
 
@@ -421,7 +457,7 @@ describe.each(Object.keys(stores))("worktree snapshots of a resumed window on th
 		await window.appendWorktreeSnapshot(A, "a-1", undefined);
 		await expect(window.appendWorktreeSnapshot(A, "never-recorded", undefined)).rejects.toThrow(/snapshotId/);
 
-		const reopened = await SessionManager.open(store, id, undefined, { history: "full" });
+		const reopened = await wholeHistory(store, id);
 		expect(reopened.getLatestWorktreeSnapshots().get(A)?.id).toBe("a-1");
 		expect((await SessionManager.open(store, id)).getLatestWorktreeSnapshots().get(A)?.id).toBe("a-1");
 	});

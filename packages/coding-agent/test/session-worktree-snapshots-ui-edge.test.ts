@@ -10,6 +10,7 @@ import { exportToJsonl } from "../src/core/agent-session-export.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionEntry, SessionTreeNode, WorktreeSnapshotEntry } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { buildSessionIndex, getBranchPath } from "../src/core/session-manager-history.ts";
 import { describeSnapshotExport } from "../src/core/session-worktree-snapshots.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
@@ -279,11 +280,16 @@ describe("/export of a session holding only its context window (#5554)", () => {
 			InteractiveMode.prototype as unknown as { handleExportCommand(this: typeof host, text: string): Promise<void> }
 		).handleExportCommand.call(host, `/export ${file}`);
 
-		// The export no longer loads the session into the manager it exports; describe the whole session separately.
-		const full = await SessionManager.open(manager.getSessionStore(), manager.getSessionId(), undefined, {
-			history: "full",
-		});
-		const described = describeSnapshotExport(full.getBranch(), full.getWorktreeSnapshotRecords());
+		// The export no longer loads the session into the manager it exports; describe the whole stored session
+		// separately, as a manager holding every entry described it.
+		const { header, entries } = await manager.getSessionStore().load(manager.getSessionId());
+		const index = buildSessionIndex([{ type: "session", ...header }, ...entries]);
+		const records = new Map(
+			entries.flatMap((entry) =>
+				entry.type === "worktree_snapshot" && entry.snapshot ? [[entry.snapshotId, entry.snapshot] as const] : [],
+			),
+		);
+		const described = describeSnapshotExport(getBranchPath(index.leafId, index.byId), records);
 		assert.match(described ?? "", /^Includes 4 worktree snapshot\(s\)/);
 		assert.deepEqual(host.statuses, [`Session exported to: ${file}`, described]);
 		assert.equal(window.hasFullHistory(), false, "the window manager still holds only its window");

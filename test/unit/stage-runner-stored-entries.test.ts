@@ -107,7 +107,9 @@ describe("a position in the stage session's store that a compaction leaves valid
 			const session = agentSessionOver(manager);
 			const mark = storedEntryCount(session);
 			assert.equal(mark, (await store.load(writer.getSessionId())).lastSeq);
-			await manager.loadFullHistory();
+			// Reading the archive keeps nothing more in the manager, so the stored count stays the same.
+			for await (const _page of manager.readHistory()) {
+			}
 			assert.equal(storedEntryCount(session), mark);
 			assert.equal(storedAssistantMessageSince(session, mark), false);
 			await manager.appendMessage(assistant);

@@ -170,7 +170,21 @@ type SelectedWindow = SessionResume & {
 	readonly archiveOnlyEpoch?: true;
 	readonly childArchive?: ChildCatalog;
 };
-type OpenedSession = { readonly resume: SelectedWindow } | { readonly snapshot: SessionSnapshot };
+type OpenedSession = { readonly resume: SelectedWindow };
+
+/**
+ * `{ history: "full" }` was removed in 0.10.0. A session opens at its current context window; reading the older
+ * entries is the caller's paged read, never a copy the manager keeps. JavaScript callers bypass the option's type,
+ * so an unknown value is refused here instead of opening the window as if the whole history had been read.
+ */
+export function assertWindowHistoryOption(history: unknown): asserts history is "tail" | undefined {
+	if (history !== undefined && history !== "tail")
+		throw new TypeError(
+			history === "full"
+				? 'Session history: "full" has been removed. Open the session without it, and read older entries with sessionManager.readHistory().'
+				: `Unknown session history option ${JSON.stringify(history)}; the only accepted value is "tail".`,
+		);
+}
 async function withPriorAnswer(store: SessionStore, resume: SelectedWindow): Promise<SelectedWindow> {
 	const selected = resume.deferredChildren
 		? await (await import("./storage/session/child-reader.js")).resolveDeferredChildren(store, resume)
@@ -182,20 +196,9 @@ async function withPriorAnswer(store: SessionStore, resume: SelectedWindow): Pro
 async function readStoredSession(
 	store: SessionStore,
 	sessionId: string,
-	options: { readonly history?: "tail"; readonly leafId?: string } | undefined,
-): Promise<{ resume: SelectedWindow }>;
-async function readStoredSession(
-	store: SessionStore,
-	sessionId: string,
-	options: SessionOpenOptions | undefined,
-): Promise<OpenedSession>;
-async function readStoredSession(
-	store: SessionStore,
-	sessionId: string,
 	options: SessionOpenOptions | undefined,
 ): Promise<OpenedSession> {
-	// Kept for older SDK callers until the remaining built-in consumers have migrated to archive pages.
-	if (options?.history === "full") return { snapshot: await store.load(sessionId) };
+	assertWindowHistoryOption(options?.history);
 	if (!store.readResume || !store.readRange)
 		return {
 			resume: await (await import("./storage/session/snapshot-history.js")).snapshotWindow(
@@ -216,6 +219,7 @@ async function readStoredSession(
 }
 
 async function openSessionFileWindow(path: string, cwd: string | undefined, options?: SessionOpenOptions) {
+	assertWindowHistoryOption(options?.history);
 	const store = await JsonlSessionStore.open(dirname(path), { exactDirectory: true, scanExisting: false });
 	let id: string;
 	try {
@@ -232,7 +236,7 @@ async function openSessionFileWindow(path: string, cwd: string | undefined, opti
 }
 
 function openedHeader(opened: OpenedSession): SessionRecordHeader {
-	return "snapshot" in opened ? opened.snapshot.header : opened.resume.header;
+	return opened.resume.header;
 }
 
 /** A saved file being forked: any position of the same open file, its window when asked for, and a check that it
@@ -426,7 +430,6 @@ export class SessionManager {
 	private omittedTotals: SessionHistoryTotals | undefined;
 
 	private branchLinks: ReadonlyMap<string, string> | undefined;
-	private historyLoad: Promise<void> | undefined;
 
 	private constructor(store: SessionStore, cwd: string, sessionDir: string, options?: NewSessionOptions) {
 		this.store = store;
@@ -475,10 +478,6 @@ export class SessionManager {
 	}
 
 	private restoreOpened(opened: OpenedSession, location?: string): void {
-		if ("snapshot" in opened) {
-			this.restore(opened.snapshot, location);
-			return;
-		}
 		const resume = opened.resume;
 		const catalog = resume.childArchive ?? new ChildCatalog();
 		const archived = catalog.retire(resume.state, resume.branch);
@@ -545,7 +544,6 @@ export class SessionManager {
 		for (const [i, entry] of entries.entries()) updateWorkflowStarts(this.workflowStarts, entry, i + 1);
 		this.omittedTotals = partial?.omitted;
 		this.branchLinks = partial?.links;
-		this.historyLoad = undefined;
 		this.sessionFile =
 			location ?? (this.store instanceof JsonlSessionStore ? this.store.locationFor(header) : undefined);
 		this._buildIndex();
@@ -554,14 +552,6 @@ export class SessionManager {
 
 	hasFullHistory(): boolean {
 		return this.historyStartSeq <= 1;
-	}
-
-	loadFullHistory(): Promise<void> {
-		if (this.hasFullHistory()) return Promise.resolve();
-		this.historyLoad ??= this.hydrateHistory().finally(() => {
-			this.historyLoad = undefined;
-		});
-		return this.historyLoad;
 	}
 
 	async forEachStoredEntry(
@@ -610,23 +600,6 @@ export class SessionManager {
 		options: { readonly offset?: number; readonly signal?: AbortSignal } = {},
 	): AsyncGenerator<Uint8Array, void> {
 		return historyChunks(this.store, this.sessionId, this.historyEpoch, reference, options);
-	}
-
-	private async hydrateHistory(): Promise<void> {
-		const { store, sessionId, historyEpoch } = this;
-		const held = new Map<number, SessionEntry>();
-		await this.forEachStoredEntry(1, (entry, seq) => held.set(seq, entry));
-		if (this.store !== store || this.sessionId !== sessionId || this.historyEpoch !== historyEpoch) return;
-		const leafId = this.leafId;
-		for (const entry of this.getEntries()) held.set(this.entrySeqs.get(entry.id)!, entry);
-		const ordered = [...held].sort((a, b) => a[0] - b[0]);
-		this.fileEntries = [this.fileEntries[0]!, ...ordered.map(([, entry]) => entry)];
-		this.entrySeqs = new Map(ordered.map(([seq, entry]) => [entry.id, seq]));
-		this.historyStartSeq = 1;
-		this.omittedTotals = undefined;
-		this.branchLinks = undefined;
-		this._buildIndex();
-		this.leafId = leafId;
 	}
 
 	refreshFromStore(): Promise<boolean> {
@@ -897,9 +870,7 @@ export class SessionManager {
 			validateSessionFileEntries(
 				[
 					{ type: "session", ...openedHeader(opened) },
-					...("snapshot" in opened
-						? opened.snapshot.entries
-						: [...opened.resume.state, ...opened.resume.branch].map(({ entry }) => entry)),
+					...[...opened.resume.state, ...opened.resume.branch].map(({ entry }) => entry),
 				],
 				path,
 			);
@@ -1084,6 +1055,7 @@ export class SessionManager {
 		sessionDirectory?: string,
 		options?: SessionOpenOptions,
 	): Promise<SessionManager> {
+		assertWindowHistoryOption(options?.history);
 		let store =
 			sessionDirectory === undefined
 				? this.store
@@ -2344,10 +2316,7 @@ export class SessionManager {
 	 */
 	createBranchedSession(leafId: string, options?: { readonly history?: "tail" }): Promise<string | undefined> {
 		return this.runMutation(async () => {
-			if (options?.history !== undefined && options.history !== "tail")
-				throw new TypeError(
-					'Session history: "full" has been removed. Use sessionManager.readHistory() to iterate older entries.',
-				);
+			assertWindowHistoryOption(options?.history);
 			if (options?.history === "tail") {
 				const receipts = new Map<string, OversizedSessionEntry>();
 				return this.installFork(
@@ -2757,6 +2726,7 @@ export class SessionManager {
 		directoryOrCwd?: string,
 		options?: { includeInternal?: boolean } & SessionOpenOptions,
 	): Promise<SessionManager> {
+		assertWindowHistoryOption(options?.history);
 		const cwd = typeof cwdOrStore === "string" ? cwdOrStore : directoryOrCwd!;
 		if (typeof cwdOrStore === "string" && directoryOrCwd === undefined) {
 			const store = await resolveSessionStore(cwd);

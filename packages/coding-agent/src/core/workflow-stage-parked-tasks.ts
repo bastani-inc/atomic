@@ -44,8 +44,7 @@ export async function recordParkedStageTasks(
  * intent saved after the release names that shell. Returns how many were saved.
  */
 export async function recordTasksInterruptedByRestart(
-	sessionManager: Pick<SessionManager, "getEntries" | "appendCustomEntry"> &
-		Partial<Pick<SessionManager, "loadFullHistory">>,
+	sessionManager: Pick<SessionManager, "getEntries" | "appendCustomEntry">,
 	attemptId: string | undefined,
 ): Promise<number> {
 	const entries = sessionManager.getEntries();

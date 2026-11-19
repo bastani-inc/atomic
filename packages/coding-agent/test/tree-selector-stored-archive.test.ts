@@ -7,6 +7,7 @@ import { setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { buildSessionIndex, buildSessionTree } from "../src/core/session-manager-history.ts";
 import { CURRENT_SESSION_VERSION } from "../src/core/session-manager-types.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { StoredTreeView } from "../src/modes/interactive/components/stored-tree-view.js";
@@ -119,13 +120,15 @@ async function opened(file: string) {
 const screen = (selector: TreeSelectorComponent, width: number) =>
 	selector.render(width).map((line) => stripVTControlCharacters(line));
 
-/** The rows a session with every entry loaded shows: the tree as it was before archived history stayed on disk. */
+/** The rows a session with every entry loaded shows: the tree as it was before archived history stayed on disk,
+ * built from every stored row as a manager holding the whole session built it. */
 async function loadedRows(file: string, width: number, rows: number) {
 	const manager = await opened(file);
-	await manager.loadFullHistory();
+	const { header, entries } = await manager.getSessionStore().load(manager.getSessionId());
+	const index = buildSessionIndex([{ type: "session", ...header }, ...entries]);
 	const selector = new TreeSelectorComponent(
-		manager.getTree(),
-		manager.getLeafId(),
+		buildSessionTree(entries, index.labelsById, index.labelTimestampsById),
+		index.leafId,
 		rows,
 		() => {},
 		() => {},

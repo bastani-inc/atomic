@@ -115,3 +115,29 @@ test("runtime.switchSession and rehydrate always keep the window, with history a
 	assert.ok(manager.getEntries().length < manager.getLastSeq());
 	assert.equal(manager.getEntry("early"), undefined);
 });
+
+test('{ history: "full" } is refused before any session opens, switches or wakes, instead of yielding the window (#5554)', async () => {
+	const runtime = await runtimeWithCompactedSessions(["kept", "other"]);
+	const manager = runtime.session.sessionManager;
+	const store = manager.getSessionStore();
+	// A JavaScript caller, or a cast, still reaches the removed value at runtime.
+	const full = { history: "full" } as unknown as { readonly history: "tail" };
+	const removed = { name: "TypeError", message: /"full" has been removed.*readHistory\(\)/ };
+
+	await assert.rejects(SessionManager.open(store, "kept", undefined, full), removed);
+	await assert.rejects(manager.openSessionById("kept", undefined, undefined, full), removed);
+	await assert.rejects(SessionManager.continueRecent(store, manager.getCwd(), full), removed);
+	await assert.rejects(manager.createBranchedSession(manager.getLeafId() ?? "", full), removed);
+
+	const before = runtime.session.sessionId;
+	await assert.rejects(runtime.switchSession("other", full), removed);
+	assert.equal(runtime.session.sessionId, before);
+	await assert.rejects(runtime.rehydrate("other", full), removed);
+	assert.equal(runtime.rehydratedSessionCount, 0);
+
+	// The method itself is gone, so a call fails instead of returning with only the window.
+	assert.equal("loadFullHistory" in manager, false);
+	const opened = await SessionManager.open(store, "kept");
+	assert.equal(opened.hasFullHistory(), false);
+	assert.throws(() => (opened as unknown as { loadFullHistory(): Promise<void> }).loadFullHistory(), TypeError);
+});

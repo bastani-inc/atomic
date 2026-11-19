@@ -19,6 +19,14 @@
 - `atomic storage migrate` still sets up sessions and Intercom, but no longer creates workflow or worker-pool tables. Existing workflow data is not deleted.
 - A workflow stage can no longer launch another layer of subagents. Launch all children from the parent chat with codemode; when a child's result is ready, the parent can launch the next batch from its completion notice.
 - Task cancellation receipts can return `already-finishing`: the runner's outcome can no longer change, but its batch may still be using the directory. Wait for task settlement before removing its temporary worktree ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
+- `SessionManager.loadFullHistory()` and the `{ history: "full" }` option are removed; nothing loads a whole saved session into a live manager any more. `{ history: "full" }` passed to `SessionManager.open()`, `openSessionById()`, `continueRecent()`, `runtime.switchSession()` or `runtime.rehydrate()` is rejected with a `TypeError` before anything opens, and a call to `loadFullHistory()` fails because the method no longer exists (an optional `loadFullHistory?.()` call now does nothing). Extensions no longer have the whole history loaded before `session_start`: the state an extension saved with `pi.appendEntry()` on the current branch stays in `getBranch()` and `getEntries()`. Read older entries a page at a time instead; the manager keeps none of them ([#5554](https://github.com/bastani-inc/atomic/issues/5554)):
+
+  ```ts
+  for await (const page of sessionManager.readHistory()) {
+    for (const item of page.items) if ("entry" in item) visit(item.entry);
+  }
+  const entry = await sessionManager.readEntry(entryId);
+  ```
 
 ### Added
 

@@ -135,7 +135,7 @@ async function openForkPicker(manager: SessionManager) {
 	let selector: UserMessageSelectorComponent | undefined;
 	let dispose: (() => void) | undefined;
 	const fork = vi.fn(async (_entryId: string) => ({ cancelled: true }));
-	const loadFullHistory = vi.spyOn(manager, "loadFullHistory");
+	const held = manager.getEntries();
 	const mode = Object.assign(Object.create(InteractiveMode.prototype), {
 		runtimeHost: {
 			fork,
@@ -156,7 +156,8 @@ async function openForkPicker(manager: SessionManager) {
 	}) as { showUserMessageSelector(): Promise<void> };
 	await mode.showUserMessageSelector();
 	assert.ok(selector);
-	assert.equal(loadFullHistory.mock.calls.length, 0, "the picker must not load the whole history");
+	assert.deepEqual(manager.getEntries(), held, "the picker must not load the whole history");
+	assert.equal(manager.hasFullHistory(), false);
 	cleanups.push(async () => dispose?.());
 	return { selector, fork };
 }
