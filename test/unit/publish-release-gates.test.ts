@@ -122,7 +122,11 @@ function apiPull() {
 }
 
 function fakeTransport(
-	respond: (argv: readonly string[], call: number) => ReleaseCommandResult | Promise<ReleaseCommandResult>,
+	respond: (
+		argv: readonly string[],
+		call: number,
+		signal: AbortSignal,
+	) => ReleaseCommandResult | Promise<ReleaseCommandResult>,
 ): ReleaseCommandTransport & {
 	readonly calls: readonly (readonly string[])[];
 	readonly signals: readonly AbortSignal[];
@@ -135,7 +139,7 @@ function fakeTransport(
 		run: async (argv, _cwd, signal) => {
 			calls.push(argv);
 			signals.push(signal);
-			return await respond(argv, calls.length);
+			return await respond(argv, calls.length, signal);
 		},
 	};
 }
@@ -209,10 +213,24 @@ test("the preparation CLI rejects invalid release requests before reading the re
 });
 
 test("exact-head merge refuses changed PRs and absent or failed checks; a verified dry run has no side effects", async () => {
-	for (const state of ["drift", "wrong PR", "missing", "failed", "inconsistent merge", "passed", "execute"] as const) {
+	const olderBase = "a".repeat(40);
+	for (const state of [
+		"drift",
+		"wrong PR",
+		"missing",
+		"failed",
+		"inconsistent merge",
+		"unrelated parent",
+		"passed",
+		"execute",
+		"interrupt during pull",
+	] as const) {
 		let prReads = 0;
 		let merged = false;
-		const transport = fakeTransport((argv) => {
+		const inspection = new AbortController();
+		const sync = new AbortController();
+		let pullFinished = false;
+		const transport = fakeTransport((argv, _call, signal) => {
 			const cmd = argv.join(" ");
 			const prep = exactPreparationResponse(argv);
 			if (prep) return prep;
@@ -227,11 +245,19 @@ test("exact-head merge refuses changed PRs and absent or failed checks; a verifi
 					);
 				return commandResult(JSON.stringify(pr));
 			}
+			if (cmd.endsWith(`/compare/${baseSha}...${headSha}?per_page=1`))
+				return commandResult(
+					JSON.stringify({
+						base_commit: { sha: baseSha },
+						merge_base_commit: { sha: state === "unrelated parent" ? "b".repeat(40) : olderBase },
+						ahead_by: state === "unrelated parent" ? 2 : 1,
+					}),
+				);
 			if (cmd.includes(`commits/${headSha}?`))
 				return commandResult(
 					JSON.stringify({
 						sha: headSha,
-						parents: [{ sha: baseSha }],
+						parents: [{ sha: state === "passed" || state === "unrelated parent" ? olderBase : baseSha }],
 						files: [{ filename: "packages/coding-agent/CHANGELOG.md" }],
 					}),
 				);
@@ -256,17 +282,23 @@ test("exact-head merge refuses changed PRs and absent or failed checks; a verifi
 					}),
 				);
 			if (cmd.includes("/status?")) return commandResult('{"statuses":[]}');
-			if (state === "execute") {
+			if (state === "execute" || state === "interrupt during pull") {
 				if (cmd === `gh pr merge ${pullRequest.url} --squash --match-head-commit ${headSha}`) {
 					merged = true;
 					return commandResult();
 				}
-				if (
-					cmd === "git switch main" ||
-					cmd === "git fetch --no-tags origin refs/heads/main" ||
-					cmd === "git pull --ff-only origin main" ||
-					cmd === `git merge-base --is-ancestor ${baseSha} ${baseSha}`
-				)
+				if (cmd === "git fetch --no-tags origin refs/heads/main") {
+					inspection.abort(new DOMException("pre-merge deadline expired", "TimeoutError"));
+					signal.throwIfAborted();
+					return commandResult();
+				}
+				if (cmd === "git pull --ff-only origin main") {
+					if (state === "interrupt during pull") sync.abort(new Error("user stopped release"));
+					signal.throwIfAborted();
+					pullFinished = true;
+					return commandResult();
+				}
+				if (cmd === "git switch main" || cmd === `git merge-base --is-ancestor ${baseSha} ${baseSha}`)
 					return commandResult();
 				if (cmd === "git rev-parse HEAD") return commandResult(baseSha);
 				if (cmd === "git branch --show-current") return commandResult("main");
@@ -279,7 +311,8 @@ test("exact-head merge refuses changed PRs and absent or failed checks; a verifi
 				baseRef: "main",
 				release,
 				pullRequest,
-				signal: new AbortController().signal,
+				signal: inspection.signal,
+				syncSignal: sync.signal,
 				dryRun: state === "passed",
 			},
 			transport,
@@ -288,10 +321,13 @@ test("exact-head merge refuses changed PRs and absent or failed checks; a verifi
 		else if (state === "execute") {
 			assert.equal((await gate).baseSha, baseSha);
 			assert.equal(merged, true);
+		} else if (state === "interrupt during pull") {
+			await assert.rejects(gate, /user stopped release/u);
+			assert.equal(pullFinished, true);
 		} else
 			await assert.rejects(
 				gate,
-				/Expected open or merged|pending or not yet created|terminal failure|merged state changed/u,
+				/Expected open or merged|pending or not yet created|terminal failure|merged state changed|not exactly one commit/u,
 			);
 	}
 });
@@ -827,6 +863,30 @@ test("release-0.9.15 CI regression polls through delayed materialization and tim
 	assert.match(timedOut.summary, /timed out after 20 ms/u);
 });
 
+test("CI that passes between the last interval and the deadline permits the release", async () => {
+	const clock = fakeClock();
+	const result = await pollRequiredChecks({
+		expected: expectedCi,
+		signal: new AbortController().signal,
+		clock,
+		intervalMs: 30_000,
+		timeoutMs: 35_000,
+		inspect: async () =>
+			ciSnapshot({
+				observations: [
+					{
+						context: "test (linux)",
+						appId: 15368,
+						state: clock.elapsed() >= 32_000 ? "success" : "pending",
+						sequence: 10,
+					},
+				],
+			}),
+	});
+	assert.equal(result.status, "passed", result.summary);
+	assert.equal(clock.elapsed(), 35_000);
+});
+
 test("absent CI and publish evidence block after 45 and 60 minutes respectively", async () => {
 	const signal = new AbortController().signal;
 	const ciClock = fakeClock();
@@ -847,6 +907,49 @@ test("absent CI and publish evidence block after 45 and 60 minutes respectively"
 	});
 	assert.equal(publish.status, "failed");
 	assert.equal(publishClock.elapsed(), 60 * 60_000);
+});
+
+test("a 59-minute pending publish window can pass in the final minute or block at the hour", async () => {
+	for (const appears of [true, false]) {
+		const clock = fakeClock();
+		const wait = (ms: number) =>
+			pollPublish({
+				expected: expectedPublish,
+				clock,
+				signal: new AbortController().signal,
+				timeoutMs: ms,
+				inspect: async () => (appears && clock.elapsed() >= 60 * 60_000 - 1_000 ? [publishRun()] : []),
+			});
+		const first = await wait(59 * 60_000);
+		assert.equal(first.status, "failed");
+		assert.equal(first.lastObservation, "pending");
+		const final = await wait(60_000);
+		assert.equal(final.status, appears ? "passed" : "failed");
+		if (!appears) {
+			assert.equal(final.lastObservation, "pending");
+			assert.equal(clock.elapsed(), 60 * 60_000);
+		}
+	}
+});
+
+test("a CI deadline during sleep names the last observed pending checks", async () => {
+	const ctrl = new AbortController();
+	const clock: PollClock = {
+		now: () => 0,
+		sleep: async () => {
+			ctrl.abort(new DOMException("deadline", "TimeoutError"));
+			ctrl.signal.throwIfAborted();
+		},
+	};
+	const result = await pollRequiredChecks({
+		expected: expectedCi,
+		signal: ctrl.signal,
+		inspect: async () => ciSnapshot(),
+		timeoutMs: 123,
+		clock,
+	});
+	assert.equal(result.status, "failed");
+	assert.match(result.summary, /timed out after 123 ms.*pending.*test \(linux\) \(app 15368\)/u);
 });
 
 test("polling propagates aborts and inspection errors", async () => {
