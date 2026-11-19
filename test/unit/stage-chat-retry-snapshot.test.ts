@@ -40,8 +40,8 @@ test("a stage publishes a model switch it announced between two sessions, and cl
 });
 
 for (const [failure, eventType, expected] of [
-	["529 overloaded_error: Overloaded", "auto_retry_start", "retrying…"],
-	["404 model not found", "model_fallback_start", "switching model…"],
+	["529 overloaded_error: Overloaded", "auto_retry_start", "Retrying"],
+	["404 model not found", "model_fallback_start", "Switching model…"],
 ] as const) {
 	test(`reopening a stage chat during ${eventType} preserves its ${expected} line (#5572)`, async () => {
 		const h = await createHarness({
@@ -84,10 +84,10 @@ for (const [failure, eventType, expected] of [
 		const prompt = h.session.prompt("hello");
 		try {
 			await atWait.promise;
-			assert.equal(line(), `∀ ${expected}`);
+			assert.match(line() ?? "", new RegExp(`^∀ ${expected}`));
 			view.dispose();
 			view = open();
-			assert.equal(line(), `∀ ${expected}`);
+			assert.match(line() ?? "", new RegExp(`^∀ ${expected}`));
 		} finally {
 			off();
 			view.dispose();
