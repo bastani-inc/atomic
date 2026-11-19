@@ -311,9 +311,9 @@ test("probe queue time is not added to the filesystem timestamp (#5050, #5674)",
 		};
 		const now = await sharedClockNow(directory);
 		assert.equal(elapsed, 7_000);
-		// The ordinary non-Windows reading uses the entry time and wall-clock midpoint. Neither path
-		// puts the shared clock ahead of the actual creation stamp and falsely ages a live marker.
-		assert.equal(now, process.platform === "win32" ? io.stamp : io.stamp - 3_500);
+		// The time is the probe's stamp advanced from when its stat was delivered, never from before it was created,
+		// so the shared clock is not put ahead of the actual creation stamp to falsely age a live marker.
+		assert.equal(now, io.stamp);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
@@ -399,7 +399,7 @@ test.each(["suspend during cleanup", "delayed stat delivery", "delayed open deli
 	},
 );
 
-test("Windows filesystem time includes cleanup; ordinary non-Windows readings retain the measurement time (#5674)", async () => {
+test("a reading's filesystem time includes the sweep of old probes (#5674)", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "clock-time-"));
 	try {
 		let time = Date.now();
@@ -410,8 +410,53 @@ test("Windows filesystem time includes cleanup; ordinary non-Windows readings re
 			time += 1_000;
 		};
 		const now = await sharedClockNow(directory);
-		assert.equal(now, process.platform === "win32" ? io.stamp + 1_000 : io.stamp);
+		assert.equal(now, io.stamp + 1_000);
 		if (process.platform !== "win32") assert.deepEqual(io.calls, ["open", "close", "stat", "unlink", "readdir"]);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("a reading's filesystem time includes a probe delete that takes a second to fail (#5674)", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "clock-slow-delete-"));
+	try {
+		await sharedClockOffset(directory); // the periodic sweep is not due during the timed reading
+		let time = Date.now();
+		io.nativeTick = () => time;
+		vi.spyOn(Date, "now").mockImplementation(() => time);
+		vi.spyOn(performance, "now").mockImplementation(() => time);
+		io.refuseDelete = true;
+		io.beforeUnlink = () => {
+			time += 1_000;
+		};
+		const now = await sharedClockNow(directory);
+		assert.equal(time - Date.now(), 0);
+		// The time is read after the delete, not before it: it is the filesystem's time when the reading returns.
+		assert.equal(now, io.stamp + 1_000);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("a probe whose delete was refused is not deleted by name later, so a new file given its name stays (#5674)", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "clock-replaced-"));
+	try {
+		await sharedClockOffset(directory); // the periodic sweep is not due during these readings
+		const name = Buffer.alloc(8, 0xcd);
+		names.push(name);
+		const refused = join(directory, `.clock-${name.toString("hex")}.probe`);
+		io.refuseDelete = true;
+		await sharedClockNow(directory);
+		io.refuseDelete = false;
+		// Another process removes the probe, and a new file is created under exactly its name.
+		rmSync(refused, { force: true });
+		writeFileSync(refused, "a later file");
+		io.calls.length = 0;
+		await sharedClockNow(directory);
+		await sharedClockOffset(directory);
+		assert.equal(readFileSync(refused, "utf8"), "a later file");
+		const reading = process.platform === "win32" ? ["sample"] : ["open", "close", "stat", "unlink"];
+		assert.deepEqual(io.calls, [...reading, ...reading]);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
@@ -429,6 +474,29 @@ test("stepping the reader's wall clock during cleanup does not age a fresh remot
 		const now = await sharedClockNow(directory);
 		assert.equal(step, 180_000);
 		assert.ok(Math.abs(now - io.stamp) < 10_000, `filesystem time jumped by ${now - io.stamp} ms`);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("stepping the reader's wall clock back during a reading does not let its sweep remove a fresh probe (#5674)", async () => {
+	io.withoutDeleteOnClose = true;
+	const directory = mkdtempSync(join(tmpdir(), "clock-step-back-"));
+	try {
+		// Another process's probe, stamped after the clock of the filesystem and of this host stepped back 11 minutes.
+		const fresh = join(directory, ".clock-0123456789abcdef.probe");
+		writeFileSync(fresh, "");
+		const stamped = new Date(Date.now() - 11 * 60_000);
+		utimesSync(fresh, stamped, stamped);
+		const time = Date.now.bind(Date);
+		let step = 0;
+		vi.spyOn(Date, "now").mockImplementation(() => time() + step);
+		io.beforeUnlink = () => {
+			step = -11 * 60_000;
+		};
+		await sharedClockNow(directory);
+		assert.equal(step, -11 * 60_000);
+		assert.deepEqual(readdirSync(directory), [".clock-0123456789abcdef.probe"]);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
